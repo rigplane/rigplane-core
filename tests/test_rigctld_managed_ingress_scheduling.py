@@ -177,7 +177,7 @@ class _LeafHandler:
         self._has_canonical_state_store, self.error, self.calls = False, error, []
     async def _apply_packet_data_mode(self, *, receiver, filter_width): self.calls.append(("packet", receiver, filter_width))
     async def _execute_set_vfo(self, vfo): return self.calls.append(("vfo", vfo)) or self.error
-    async def _execute_set_level(self, level, value, *, receiver, vfo_arg): return self.calls.append(("level", level, value, receiver, vfo_arg)) or self.error
+    async def _execute_set_level(self, level, value, *, receiver, vfo_arg, power_native=None): return self.calls.append(("level", level, value, receiver, vfo_arg)) or self.error
     async def _execute_set_func(self, func, on, *, receiver, vfo_arg): return self.calls.append(("func", func, on, receiver, vfo_arg)) or self.error
     async def _execute_set_split_vfo(self, on, tx_vfo): return self.calls.append(("split", on, tx_vfo)) or self.error
 async def test_managed_non_ptt_families_keep_exact_legacy_leaf_parameters(monkeypatch):

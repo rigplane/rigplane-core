@@ -293,12 +293,17 @@ class IcomRadio:
                 "set_rf_power requires a radio that implements PowerControlCapable"
             )
         profile = getattr(self._radio, "profile", None)
+        # The backend's own unit, forwarded explicitly (the web handler's
+        # source): without it a raw_255 radio with a watts max is read as
+        # watts-native and the expected readback is recorded on the wrong
+        # scale.
+        power_native_unit = getattr(self._radio, "native_power_unit", "raw_255")
         power_max_watts = None
         power_min_watts = None
         # MOR-4352: the whole-watt write quantum needs the watts scale on a
         # raw_255 radio too, so the max is threaded whenever either applies.
         power_write_quantum = getattr(profile, "power_write_quantum", None)
-        if getattr(self._radio, "native_power_unit", "raw_255") == "watts":
+        if power_native_unit == "watts":
             power_max_watts = getattr(profile, "max_watts", None)
             power_min_watts = getattr(profile, "min_watts", None)
         elif power_write_quantum is not None:
@@ -309,6 +314,7 @@ class IcomRadio:
                     "set_rf_power",
                     {"value": level},
                     source="public_api",
+                    power_native_unit=power_native_unit,
                     power_max_watts=power_max_watts,
                     power_min_watts=power_min_watts,
                     power_write_quantum=power_write_quantum,

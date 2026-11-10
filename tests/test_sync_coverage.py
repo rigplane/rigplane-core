@@ -228,6 +228,35 @@ def test_sync_wrappers_delegate_and_return_values() -> None:
     r._loop.close()
 
 
+def test_set_rf_power_expects_the_whole_watt_readback_on_a_quantized_radio() -> None:
+    """MOR-4352: the wrapper forwards the backend's native power unit.
+
+    A G7250-profiled raw_255 radio with the declared whole-watt quantum:
+    the public API's documented raw byte (13) goes out as written, and the
+    wrapper's expected readback is the radio's own answer for the stored
+    watt (floor(13 * 100 / 255) = 5 W -> raw 12 -> 12/255) — not the
+    watts-native 13/100 a resolver guess without the unit would record.
+    """
+    from rigplane.profiles import get_radio_profile
+
+    r = _radio()
+    r._radio._profile = get_radio_profile("G7250")  # noqa: SLF001
+    r._radio.set_rf_power = AsyncMock()
+
+    r.set_rf_power(13)
+
+    r._radio.set_rf_power.assert_awaited_once_with(13)
+    assert (
+        r._state_store.snapshot()
+        .field(  # noqa: SLF001
+            "global.operator_controls.power_level"
+        )
+        .value
+        == 12 / 255
+    )
+    r._loop.close()
+
+
 def _power_sync_radio(
     *,
     native_power_unit: str,

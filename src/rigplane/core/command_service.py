@@ -1465,7 +1465,13 @@ def command_intent_from_request(
             raise ValueError(
                 f"value must be a number, got {normalized['value']!r}"
             ) from exc
-        _normalize_level_value(normalized)
+        _normalize_level_value(
+            normalized,
+            power_native_unit=power_native_unit,
+            power_max_watts=power_max_watts,
+            power_min_watts=power_min_watts,
+            power_write_quantum=power_write_quantum,
+        )
     elif command_name == "set_func":
         func = str(normalized["func"]).lower()
         normalized["func"] = func.upper()
@@ -1810,7 +1816,14 @@ def _is_dual_receiver_selection(params: Mapping[str, Any]) -> bool:
     return receiver_count is not None and receiver_count >= 2
 
 
-def _normalize_level_value(params: dict[str, Any]) -> None:
+def _normalize_level_value(
+    params: dict[str, Any],
+    *,
+    power_native_unit: str | None = None,
+    power_max_watts: int | float | None = None,
+    power_min_watts: int | float | None = None,
+    power_write_quantum: PowerWriteQuantum | None = None,
+) -> None:
     level = str(params["level"]).upper()
     value = float(params["value"])
     receiver_control_names = {
@@ -1828,7 +1841,20 @@ def _normalize_level_value(params: dict[str, Any]) -> None:
         "ATT": "att",
     }
     if level == "RFPOWER":
-        params["power_level"] = round(value * 255)
+        # The one shared power encoder resolves the wire byte and the
+        # admitted readback together (MOR-4352): the pending expectation
+        # records what the radio's own answer will be (a whole-watt radio
+        # admits floor(W * 255 / max_w) / 255), never a second, unquantized
+        # rounding of the request.
+        native, admitted = resolve_power_level_target(
+            value,
+            power_native_unit=power_native_unit,
+            power_max_watts=power_max_watts,
+            power_min_watts=power_min_watts,
+            power_write_quantum=power_write_quantum,
+        )
+        params["power_level"] = admitted
+        params["power_native"] = int(native)
     elif level in {"AF", "RF", "SQL", "NR", "NB", "COMP", "MICGAIN", "MONITOR_GAIN"}:
         params[receiver_control_names[level]] = max(0, min(255, round(value * 255)))
     elif level == "PREAMP" and "preamp" in params:
