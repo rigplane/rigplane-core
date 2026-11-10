@@ -10,7 +10,7 @@ import plistlib
 import struct
 import subprocess
 import time
-from typing import Any
+from typing import Any, TypedDict, cast
 
 from rigplane.audio._macos_uid import (
     AudioObjectPropertyAddress,
@@ -19,11 +19,27 @@ from rigplane.audio._macos_uid import (
 )
 
 
+class CoreAudioDeviceRow(TypedDict):
+    """One CoreAudio device exactly as ``_read_coreaudio`` records it.
+
+    The typed contract for the raw rows ``RawMacos.audio_devices`` carries
+    across the reader/adapter module boundary; a failed property read
+    leaves the field ``None``.
+    """
+
+    device_id: int
+    uid: str | None
+    name: str | None
+    transport_type: int | None
+    input_channels: int | None
+    output_channels: int | None
+
+
 @dataclass(frozen=True, slots=True)
 class RawMacos:
     usb_devices: tuple[dict[str, Any], ...] = ()
     serial_devices: tuple[dict[str, Any], ...] = ()
-    audio_devices: tuple[dict[str, Any], ...] = ()
+    audio_devices: tuple[CoreAudioDeviceRow, ...] = ()
     unavailable: tuple[dict[str, str], ...] = ()
 
     def to_json_dict(self) -> dict[str, Any]:
@@ -87,9 +103,10 @@ def _channels(ca: Any, obj: int, scope: str) -> int:
     )
 
 
-def _read_coreaudio() -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
+def _read_coreaudio() -> tuple[list[CoreAudioDeviceRow], list[dict[str, str]]]:
     ca = _load_coreaudio()
-    devices, unavailable = [], []
+    devices: list[CoreAudioDeviceRow] = []
+    unavailable = []
     for (obj,) in struct.iter_unpack("=I", _property(ca, 1, "dev#")):
         row: dict[str, Any] = {"device_id": obj}
         for field, read in (
@@ -115,7 +132,7 @@ def _read_coreaudio() -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
                         "reason": type(exc).__name__,
                     }
                 )
-        devices.append(row)
+        devices.append(cast(CoreAudioDeviceRow, row))
     return devices, unavailable
 
 
