@@ -118,40 +118,97 @@ test('terminal topology refuses skipped success and injected or incomplete jobs'
   const frontendPool = ['self-hosted', 'Linux', 'ARM64', 'build'];
   const pythonPool = ['self-hosted', 'Linux', 'X64', 'build'];
   const light = ['self-hosted', 'Linux', 'ARM64', 'light'];
+  const ran = (name, labels, runner) => ({name, status: 'completed', conclusion: 'success', run_attempt: 2, runner_name: runner, labels});
+  const skipped = (name, labels) => ({name, status: 'completed', conclusion: 'skipped', run_attempt: 2, runner_name: null, labels});
+  // MOR-4373: a core-only run. quick-python-tests runs in full (four legs on
+  // the X64 build pool); the frontend tier is job-level skipped, which
+  // collapses each matrix to exactly one bare entry named after the job id.
   const valid = [
-    {name: 'classify', status: 'completed', conclusion: 'success', run_attempt: 2, runner_name: 'mm-light-core-1', labels: light},
-    {name: 'quick-frontend', status: 'completed', conclusion: 'skipped', run_attempt: 2, runner_name: null, labels: frontendPool},
-    {name: 'quick-python', status: 'completed', conclusion: 'success', run_attempt: 2, runner_name: 'nsu-build-core-1', labels: pythonPool},
-    {name: 'quick', status: 'completed', conclusion: 'success', run_attempt: 2, runner_name: 'mm-light-core-1', labels: light},
+    ran('classify', light, 'mm-light-core-1'),
+    skipped('quick-frontend', frontendPool),
+    skipped('quick-frontend-e2e', frontendPool),
+    ran('quick-python', pythonPool, 'nsu-build-core-1'),
+    ...[1, 2, 3, 4].map((index) => ran(`quick-python-tests (${index})`, pythonPool, `nsu-build-core-${index}`)),
+    ran('quick', light, 'mm-light-core-1'),
   ];
   const ok = {ok: true, code: 'terminal_match', routeConcordance: true};
   assert.deepEqual(observer.evaluateJobTopology(run, valid, routes, false), ok);
-  const both = structuredClone(valid); both[1].conclusion = 'success'; both[1].runner_name = 'mini-server-build-core-1';
+  // A frontend run selects quick-frontend AND its e2e matrix in full.
+  const both = structuredClone(valid);
+  both[1] = ran('quick-frontend', frontendPool, 'mini-server-build-core-1');
+  both[2] = ran('quick-frontend-e2e (visual)', frontendPool, 'mini-server-build-core-1');
+  both.splice(3, 0,
+    ran('quick-frontend-e2e (guards)', frontendPool, 'mini-server-build-core-2'),
+    ran('quick-frontend-e2e (journey)', frontendPool, 'mini-server-build-core-3'));
   assert.deepEqual(observer.evaluateJobTopology(run, both, {...routes, frontend: true}, false), ok);
   const lightClassify = structuredClone(valid); lightClassify[0].labels = light; lightClassify[0].runner_name = 'mm-light-core-2';
   assert.deepEqual(observer.evaluateJobTopology(run, lightClassify, routes, false), ok);
-  const skipped = structuredClone(valid); skipped[3].conclusion = 'skipped'; skipped[3].runner_name = null;
-  assert.equal(observer.evaluateJobTopology(run, skipped, routes, false).code, 'skipped_substantive');
-  // An unknown root selects base core but no workflow half; the legacy run is
-  // still a match, as it was before the split.
-  const noWork = structuredClone(valid); noWork[2].conclusion = 'skipped'; noWork[2].runner_name = null;
-  assert.deepEqual(observer.evaluateJobTopology(run, noWork, routes, false), ok);
-  assert.equal(observer.evaluateJobTopology(run, noWork, {...routes, ci: true}, false).code, 'skipped_substantive');
+  const skippedAggregator = structuredClone(valid); skippedAggregator[skippedAggregator.length - 1].conclusion = 'skipped'; skippedAggregator[skippedAggregator.length - 1].runner_name = null;
+  assert.equal(observer.evaluateJobTopology(run, skippedAggregator, routes, false).code, 'skipped_substantive');
+  // An unknown root selects neither half nor tier: the skipped-shape legacy
+  // run (every matrix collapsed to its bare entry) is still a match.
+  const noWork = [
+    ran('classify', light, 'mm-light-core-1'),
+    skipped('quick-frontend', frontendPool),
+    skipped('quick-frontend-e2e', frontendPool),
+    skipped('quick-python', pythonPool),
+    skipped('quick-python-tests', pythonPool),
+    ran('quick', light, 'mm-light-core-1'),
+  ];
+  assert.deepEqual(observer.evaluateJobTopology(run, noWork, {core: false, frontend: false, ci: false, docs: false}, false), ok);
+  // The ci-only route runs quick-python's control tests but not the sharded
+  // suite: quick-python-tests is selected by the core route alone (MOR-4373).
+  const ciOnly = structuredClone(noWork);
+  ciOnly[3] = ran('quick-python', pythonPool, 'nsu-build-core-1');
+  assert.deepEqual(observer.evaluateJobTopology(run, ciOnly, {core: false, frontend: false, ci: true, docs: false}, false), ok);
   assert.equal(observer.evaluateJobTopology(run, valid, {...routes, frontend: true}, false).code, 'skipped_substantive');
-  const hostedWorker = structuredClone(valid); hostedWorker[2].labels = ['ubuntu-latest'];
+  // A required tier collapsing to its bare skipped entry while quick
+  // succeeded is skipped-substantive. Only the frontend tier is pinned by a
+  // base route (frontend ⟹ classifier frontend): the python suite tier is
+  // selected by the classifier's core route, which the base policy cannot
+  // express (its core route also covers unknown roots that select no tier),
+  // so a base core route accepts the python tier in either shape — the
+  // aggregator's own check_half is what fails a skipped selected tier.
+  const e2eSkipped = structuredClone(both).filter((job) => !job.name.startsWith('quick-frontend-e2e ('));
+  e2eSkipped.splice(2, 0, skipped('quick-frontend-e2e', frontendPool));
+  assert.equal(observer.evaluateJobTopology(run, e2eSkipped, {...routes, frontend: true}, false).code, 'skipped_substantive');
+  const frontendSkipped = structuredClone(both); frontendSkipped[1] = skipped('quick-frontend', frontendPool);
+  assert.equal(observer.evaluateJobTopology(run, frontendSkipped, {...routes, frontend: true}, false).code, 'skipped_substantive');
+  // A base core route covers unknown roots whose legacy run legitimately
+  // skips the python suite tier, so the tier in its skipped shape stays a
+  // terminal match there (same leniency quick-python always had on core).
+  const pythonTestsSkipped = structuredClone(valid).filter((job) => !job.name.startsWith('quick-python-tests ('));
+  pythonTestsSkipped.splice(4, 0, skipped('quick-python-tests', pythonPool));
+  assert.equal(observer.evaluateJobTopology(run, pythonTestsSkipped, routes, false).code, 'terminal_match');
+  const hostedWorker = structuredClone(valid); hostedWorker[3].labels = ['ubuntu-latest'];
   assert.equal(observer.evaluateJobTopology(run, hostedWorker, routes, false).code, 'route_mismatch');
-  // MOR-4214: the halves belong on their build pools; the 2 GiB gate pool or a
-  // swapped architecture is a routing mismatch.
-  const gatePython = structuredClone(valid); gatePython[2].labels = gate; gatePython[2].runner_name = 'mm-gate-core-1';
+  // MOR-4214: the halves and their tiers belong on their build pools; the
+  // 2 GiB gate pool or a swapped architecture is a routing mismatch.
+  const gatePython = structuredClone(valid); gatePython[3].labels = gate; gatePython[3].runner_name = 'mm-gate-core-1';
   assert.equal(observer.evaluateJobTopology(run, gatePython, routes, false).code, 'route_mismatch');
   const swapped = structuredClone(both); swapped[1].labels = pythonPool;
   assert.equal(observer.evaluateJobTopology(run, swapped, {...routes, frontend: true}, false).code, 'route_mismatch');
-  const buildAggregator = structuredClone(valid); buildAggregator[3].labels = ['self-hosted', 'Linux', 'ARM64', 'build'];
+  const buildAggregator = structuredClone(valid); buildAggregator[buildAggregator.length - 1].labels = ['self-hosted', 'Linux', 'ARM64', 'build'];
   assert.equal(observer.evaluateJobTopology(run, buildAggregator, routes, false).code, 'route_mismatch');
   assert.equal(observer.evaluateJobTopology(run, valid.filter((job) => job.name !== 'quick-frontend'), routes, false).code, 'route_mismatch');
-  assert.equal(observer.evaluateJobTopology(run, [...valid, {...valid[2], name: 'quick-shadow'}], routes, false).code, 'route_mismatch');
+  assert.equal(observer.evaluateJobTopology(run, [...valid, {...valid[3], name: 'quick-shadow'}], routes, false).code, 'route_mismatch');
+  // MOR-4373 shard-tier failure shapes: a missing leg, a duplicated leg, a
+  // leg on the wrong pool, and the bare entry present alongside its legs
+  // (a shape GitHub never produces) are all topology failures.
+  const missingLeg = valid.filter((job) => job.name !== 'quick-python-tests (3)');
+  assert.equal(observer.evaluateJobTopology(run, missingLeg, routes, false).code, 'route_mismatch');
+  const duplicateLeg = [...valid, valid.find((job) => job.name === 'quick-python-tests (2)')];
+  assert.equal(observer.evaluateJobTopology(run, duplicateLeg, routes, false).code, 'route_mismatch');
+  const wrongPoolLeg = structuredClone(valid); wrongPoolLeg[4].labels = frontendPool; wrongPoolLeg[4].runner_name = 'mini-server-build-core-1';
+  assert.equal(observer.evaluateJobTopology(run, wrongPoolLeg, routes, false).code, 'route_mismatch');
+  const gateLeg = structuredClone(valid); gateLeg[4].labels = gate; gateLeg[4].runner_name = 'mm-gate-core-1';
+  assert.equal(observer.evaluateJobTopology(run, gateLeg, routes, false).code, 'route_mismatch');
+  const bareAmongLegs = [...valid, skipped('quick-python-tests', pythonPool)];
+  assert.equal(observer.evaluateJobTopology(run, bareAmongLegs, routes, false).code, 'route_mismatch');
+  const failedLeg = structuredClone(valid); failedLeg[5].conclusion = 'failure';
+  assert.equal(observer.evaluateJobTopology({...run, conclusion: 'failure'}, failedLeg, routes, false).code, 'terminal_failure');
   assert.equal(observer.evaluateJobTopology({...run, conclusion: 'cancelled'}, valid, routes, false).code, 'terminal_failure');
-  const failedWorker = structuredClone(valid); failedWorker[2].conclusion = 'failure';
+  const failedWorker = structuredClone(valid); failedWorker[3].conclusion = 'failure';
   assert.equal(observer.evaluateJobTopology({...run, conclusion: 'failure'}, failedWorker, routes, false).code, 'terminal_failure');
   assert.equal(observer.evaluateJobTopology(run, valid, {...routes, docs: true}, false).code, 'route_mismatch');
 });

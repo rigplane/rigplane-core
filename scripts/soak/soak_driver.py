@@ -2106,8 +2106,18 @@ class SoakDriver:
                 self._transient_paused = False
                 self._transient_condition.notify_all()
 
-    async def _stability_probe(self, phase: str = "pre") -> ProcessSample:
+    async def _stability_probe(
+        self, phase: str = "pre", *, settle_baseline: bool = False
+    ) -> ProcessSample:
         async with self._quiesce_transient_actions():
+            if settle_baseline:
+                # The pre-reconnect baseline must be a steady state like the
+                # post sample, which is settled below. Transient server
+                # tasks (a debounced state broadcast, a CI-V command still in
+                # flight) outlive the paused periodic actions that created
+                # them; probing at once reads them as part of the baseline
+                # and the settled post count then sits below it.
+                await self._settle_quiesced_counts(None)
             return await self._stability_probe_samples(phase)
 
     async def _stability_probe_samples(self, phase: str) -> ProcessSample:
@@ -2192,8 +2202,12 @@ class SoakDriver:
         async with self._quiesce_transient_actions():
             await self._settle_quiesced_counts(pre)
 
-    async def _settle_quiesced_counts(self, pre: ProcessSample) -> None:
+    async def _settle_quiesced_counts(self, pre: ProcessSample | None) -> None:
         """Resample while the counts still decrease, within a window.
+
+        ``pre`` is None when settling the baseline itself (nothing to be
+        within tolerance of): the counts then read as settled after the
+        calm streak alone.
 
         A flat pair may be a plateau before further decay: the counts
         read as settled only after _STABILITY_SETTLE_STABLE_READINGS
@@ -2229,8 +2243,11 @@ class SoakDriver:
             else:
                 calm += 1
             previous = current
-            if calm >= _STABILITY_SETTLE_STABLE_READINGS and not _stability_surplus(
-                pre, current, self._runtime_task_adapter is not None
+            if calm >= _STABILITY_SETTLE_STABLE_READINGS and (
+                pre is None
+                or not _stability_surplus(
+                    pre, current, self._runtime_task_adapter is not None
+                )
             ):
                 return
 
@@ -2302,7 +2319,7 @@ class SoakDriver:
 
     async def _reconnect_cycle_inner(self) -> None:
         window_start_s = self._elapsed()
-        pre = await self._stability_probe()
+        pre = await self._stability_probe(settle_baseline=True)
         started_s = self._elapsed()
         diagnostics = self._probe_diagnostics if self._capture_cycle else None
         logger.info("soak: forced reconnect starting at +%.1fs", started_s)
