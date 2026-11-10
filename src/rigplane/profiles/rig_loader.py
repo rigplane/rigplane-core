@@ -757,6 +757,11 @@ class RigConfig:
     # Keyword-only so the positional constructor contract cannot shift.
     cw_text: CwTextSpec = field(default_factory=CwTextSpec, kw_only=True)
     usb_identity: UsbAudioIdentity | None = field(default=None, kw_only=True)
+    # ``[radio].xiegu_model_id`` (MOR-4352): the value bytes the radio
+    # answers to the Xiegu-only CI-V 0x1D 0x19 model-ID query, as one
+    # integer (``0x7250`` = reply bytes ``72 50``). ``None`` on every
+    # non-Xiegu profile. Keyword-only so no positional argument shifts.
+    xiegu_model_id: int | None = field(default=None, kw_only=True)
 
     def to_profile(self) -> RadioProfile:
         """Build a ``RadioProfile`` from this config."""
@@ -987,6 +992,7 @@ class RigConfig:
             memory=self.memory,
             cw_text=self.cw_text,
             usb_identity=self.usb_identity,
+            xiegu_model_id=self.xiegu_model_id,
         )
 
     def to_command_map(self) -> CommandMap:
@@ -2715,6 +2721,23 @@ def load_rig(path: Path) -> RigConfig:
     else:
         civ_addr = 0
 
+    # [radio].xiegu_model_id (MOR-4352): optional integer whose big-endian
+    # bytes are the radio's 0x1D 0x19 reply (0x7250 -> b"\x72\x50").
+    xiegu_model_id_raw = radio.get("xiegu_model_id")
+    if xiegu_model_id_raw is None:
+        xiegu_model_id = None
+    elif (
+        isinstance(xiegu_model_id_raw, bool)
+        or not isinstance(xiegu_model_id_raw, int)
+        or not 0x0000 <= xiegu_model_id_raw <= 0xFFFF
+    ):
+        raise RigLoadError(
+            f"{filename}: [radio].xiegu_model_id = {xiegu_model_id_raw!r} "
+            "must be an integer 0x0000-0xFFFF"
+        )
+    else:
+        xiegu_model_id = xiegu_model_id_raw
+
     # Validate [capabilities]
     features = data["capabilities"].get("features", [])
     if not features:
@@ -3630,6 +3653,7 @@ def load_rig(path: Path) -> RigConfig:
         id=radio["id"],
         model=radio["model"],
         civ_addr=civ_addr,
+        xiegu_model_id=xiegu_model_id,
         receiver_count=receiver_count,
         transceiver_count=int(radio.get("transceiver_count", 1)),
         hamlib_model_id=int(radio.get("hamlib_model_id", 2028)),

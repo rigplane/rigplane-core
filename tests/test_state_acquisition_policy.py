@@ -825,6 +825,7 @@ def test_field_policies_obey_their_cadence_class_not_their_rig() -> None:
     assert not failures, f"field_policies entries outside their class: {failures}"
     assert checked == {
         "FTX-1",
+        "G7250",
         "IC-705",
         "IC-7300",
         "IC-7300MK2",
@@ -882,6 +883,7 @@ def test_all_profiles_decay_ceiling_never_exceeds_freshness_limit() -> None:
 
     assert not failures, f"decay exceeds freshness window: {failures}"
     assert checked == {
+        "G7250",
         "IC-705",
         "IC-7300",
         "IC-7300MK2",
@@ -929,6 +931,7 @@ def test_every_capability_path_of_every_profile_has_a_registry_class() -> None:
     assert not failures, f"capability paths without a registry class: {failures}"
     assert checked == {
         "FTX-1",
+        "G7250",
         "IC-705",
         "IC-7300",
         "IC-7300MK2",
@@ -1304,6 +1307,7 @@ def test_civ_observation_stamp_is_the_policy_ttl_on_every_pollable_path() -> Non
 
     assert not failures, f"CI-V observation stamps off-policy: {failures}"
     assert checked == {
+        "G7250",
         "IC-705",
         "IC-7300",
         "IC-7300MK2",
@@ -2272,6 +2276,7 @@ _TX_ONLY_METER_PATHS = (
 #: unobserved PTT) and the power meter would never poll again.
 _TX_METER_GATE_EXEMPTIONS = {
     ("X6200", "global.meters.power"),
+    ("G7250", "global.meters.power"),
 }
 
 
@@ -2385,6 +2390,11 @@ _TX_TARGET_UNSUPPORTED: dict[str, str] = {
         "Xiegu-dialect CI-V profile: no transmit-frequency read is declared, "
         "and the RadioPoller derivation requires vfo_readback "
         '"selected_unselected", which this profile does not carry'
+    ),
+    "G7250": (
+        "Xiegu-dialect CI-V profile (MOR-4352): same shape as the X6200 — "
+        "no transmit-frequency read is declared and vfo_readback is not "
+        '"selected_unselected"'
     ),
 }
 

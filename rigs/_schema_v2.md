@@ -24,6 +24,10 @@ id = "unique_id"             # Internal identifier
 model = "IC-7610"            # Display name
 manufacturer = "Icom"        # "Icom" | "Yaesu" | "Kenwood" | "Xiegu" | "Lab599" | "SDRplay" | ...
 civ_addr = 0x98              # CI-V address (CI-V protocol only)
+xiegu_model_id = 0x6200      # Xiegu only: value bytes of the 0x1D 0x19 model-ID
+                             # reply as one integer (0x6200 = reply `62 00`).
+                             # Discovery maps the reply back to the profile
+                             # through this field; omit on non-Xiegu rigs.
 default_baud = 115200        # Serial baud rate
 receiver_count = 2           # 1 or 2 — number of simultaneous receivers in one transceiver
 transceiver_count = 1        # 1 or 2 — number of independent transceivers (defaults to 1;

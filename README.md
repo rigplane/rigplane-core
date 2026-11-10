@@ -66,6 +66,7 @@ Full guides: [getting started](https://rigplane.dev/3.0/guide/quickstart/),
 | Icom IC-9700     | `IC-9700`       | LAN, USB CI-V        | VHF/UHF/SHF                                                                                                                                                          |
 | Icom IC-905      | `IC-905`        | LAN, USB CI-V        | Documented profile only: 5.6 GHz spectrum and wide spans do not work yet, no 10 GHz/DD/ATV                                                                                  |
 | Xiegu X6200      | `X6200`         | USB CI-V             | CI-V `0xA4`, 19200 baud, QRP 8 W                                                                                                                                     |
+| Xiegu G7250      | `G7250`         | USB CI-V             | 115200 baud, HF/50 MHz; no scope/RIT/tuner/data mode; TX power unmeasured (MOR-4352)                                                                                 |
 | Xiegu X6100      | `X6100`         | USB CI-V             | Profile only, no backend yet                                                                                                                                         |
 | Lab599 TX-500    | `TX-500`        | USB Kenwood CAT      | Profile only, no backend yet; QRP, minimal CAT                                                                                                                       |
 

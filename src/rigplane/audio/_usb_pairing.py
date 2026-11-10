@@ -101,20 +101,38 @@ def pairing_refusal_error(refusal: PairRefused) -> WindowsAudioTopologyError:
 def _matches(
     snapshot: UsbSnapshot, record: PortAudioDeviceRecord, api: HostApiRecord, flow: Flow
 ) -> tuple[AudioEndpoint, ...]:
-    exact = tuple(
+    """Endpoints a PortAudio record stands for, per flow.
+
+    An endpoint the OS adapter bound to a PortAudio record
+    (``portaudio_index``) matches only that record, and a record with bound
+    endpoints for the flow matches only those; bound endpoints never fall
+    back to names. Unbound endpoints keep the name tiers below, so host
+    APIs without the binding behave exactly as before.
+    """
+    bound = tuple(
         endpoint
         for endpoint in snapshot.endpoints
-        if endpoint.flow == flow
-        and endpoint_name_key(record.name, strip_instance=False)
+        if endpoint.flow == flow and endpoint.portaudio_index == record.index
+    )
+    if bound:
+        return bound
+    unbound = [
+        endpoint
+        for endpoint in snapshot.endpoints
+        if endpoint.flow == flow and endpoint.portaudio_index is None
+    ]
+    exact = tuple(
+        endpoint
+        for endpoint in unbound
+        if endpoint_name_key(record.name, strip_instance=False)
         == endpoint_name_key(endpoint.name, strip_instance=False)
     )
     if exact:
         return exact
     return tuple(
         endpoint
-        for endpoint in snapshot.endpoints
-        if endpoint.flow == flow
-        and (
+        for endpoint in unbound
+        if (
             mme_listed_matches(record.name, endpoint.name, strip_instance=True)
             if api.name == "MME"
             else endpoint_name_key(record.name, strip_instance=True)
