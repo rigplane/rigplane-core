@@ -175,6 +175,27 @@ async def test_first_connect_to_a_radio_silent_on_civ_completes_when_it_answers(
 
 @pytest.mark.asyncio
 @_REALTIME
+async def test_silent_start_completes_even_when_the_radio_ignores_the_identity_read() -> (
+    None
+):
+    """CI-V readiness, not the ``19 00`` answer, completes the connect.
+
+    The radio answers ordinary CI-V late and never answers ``19 00``: after the
+    identity retries are spent the connect tail must still have run, so
+    freq/mode appear and commands work.
+    """
+    sim = ic705_lan_fake(
+        cls=_SilentIdentity,
+        single_owner=True,
+        keepalive_hold_s=30.0,
+        civ_silent_after_open_s=3.0,
+    )
+    async with _stack(sim, model="IC-705") as (web, _r, _s):
+        await _assert_recovered(web, 7_074_000)
+
+
+@pytest.mark.asyncio
+@_REALTIME
 async def test_civ_stream_stop_recovers_freq_and_mode() -> None:
     """The CI-V stream stops for 3 s and comes back."""
     async with _ic705() as (web, _radio, sim):

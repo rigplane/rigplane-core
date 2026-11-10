@@ -843,6 +843,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         self._identity_read_task: asyncio.Task[None] | None = None
         # True while a connect found the radio silent on CI-V: its tail waits.
         self._connect_tail_pending: bool = False
+        self._connect_tail_task: asyncio.Task[None] | None = None
         self._connect_lock = asyncio.Lock()
 
     # Host shims for ControlPhaseRuntime and Icom7610SerialRadio (delegate to civ_runtime)
@@ -1940,7 +1941,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         stops being managed until the next ``connect()``.
         """
         self._cancel_identity_read()
-        self._connect_tail_pending = False
+        self._cancel_connect_tail()
         # An owner stop supersedes any audio-silence repair still in flight
         # (MOR-3401): cancel it first so a backoff sleep cannot fire another
         # attempt while the teardown below runs.
@@ -1981,7 +1982,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         :meth:`_park_managed_tx`.
         """
         self._cancel_identity_read()
-        self._connect_tail_pending = False
+        self._cancel_connect_tail()
         if self._conn_state != RadioConnectionState.CONNECTED:
             self._connection_identity = None
             self._civ_runtime._notify_change("connection_facts_changed", {})
@@ -2117,7 +2118,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         reconnect callback) runs when the first answer arrives.
         """
         self._cancel_identity_read()
-        self._connect_tail_pending = False
+        self._cancel_connect_tail()
         epoch = self._civ_epoch
         self._connection_identity = RadioIdentity(
             status=RadioIdentityStatus.CHECKING, expected_model=self.model
@@ -2134,11 +2135,22 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             return True
         if self._civ_epoch == epoch:
             self._connect_tail_pending = True
+            self._connect_tail_task = asyncio.create_task(
+                self._run_connect_tail_when_ready(epoch),
+                name="lan-connect-tail",
+            )
             self._identity_read_task = asyncio.create_task(
                 self._identity_read_loop(epoch, first_attempt_done=True),
                 name="lan-identity-read",
             )
         return False
+
+    def _cancel_connect_tail(self) -> None:
+        self._connect_tail_pending = False
+        task = getattr(self, "_connect_tail_task", None)
+        if task is not None and not task.done() and task is not asyncio.current_task():
+            task.cancel()
+        self._connect_tail_task = None
 
     def _cancel_identity_read(self) -> None:
         task = getattr(self, "_identity_read_task", None)
@@ -2180,7 +2192,6 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
                 if delay:
                     await asyncio.sleep(delay)
                 if await self._read_identity_attempt(epoch):
-                    await self._run_deferred_connect_tail(epoch)
                     return
         except asyncio.CancelledError:
             pass
@@ -2279,12 +2290,26 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         # the same callback in ``_after_reconnect_parts``).
         self._run_reconnect_callback()
 
-    async def _run_deferred_connect_tail(self, epoch: int) -> None:
-        """Run the connect tail a silent radio owed, once, on its first answer."""
-        if not self._connect_tail_pending or self._civ_epoch != epoch:
-            return
-        self._connect_tail_pending = False
-        await self._complete_connect()
+    async def _run_connect_tail_when_ready(self, epoch: int) -> None:
+        """Run the connect tail a silent radio owed, once, when CI-V is ready.
+
+        Driven by ordinary CI-V readiness (any reply), never by the identity
+        answer: a radio that talks CI-V but ignores ``19 00`` completes too.
+        Ends with the link epoch, ``disconnect()`` or ``soft_disconnect()``.
+        """
+        try:
+            while self._connect_tail_pending and self._civ_epoch == epoch:
+                if self.radio_ready:
+                    self._connect_tail_pending = False
+                    await self._complete_connect()
+                    return
+                await asyncio.sleep(0.2)
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            logger.warning(
+                "rigplane (%s): connect completion failed", self.model, exc_info=True
+            )
 
     def _run_reconnect_callback(self) -> None:
         """Run the registered reconnect callback; its failure never propagates."""

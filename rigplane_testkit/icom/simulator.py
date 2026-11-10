@@ -751,6 +751,7 @@ class MockIcomRadio(AudioPortMixin):
         # Reusable for any smoke of the connect path; 0 keeps replies prompt.
         self.civ_silent_after_open_s: float = max(0.0, civ_silent_after_open_s)
         self._civ_silent_armed_for: object = None
+        self._civ_silence_token = 0
         # Power-off notice window (recording w2): after the 0x90 notice the
         # radio still answers discovery/pings until this deadline, then goes dark.
         self._poweroff_notice_until: float = 0.0
@@ -1054,10 +1055,18 @@ class MockIcomRadio(AudioPortMixin):
         if login is None or login == self._civ_silent_armed_for:
             return
         self._civ_silent_armed_for = login
+        self._civ_silence_token += 1
         self.civ_standby(True)
         asyncio.get_running_loop().call_later(
-            self.civ_silent_after_open_s, self.civ_standby, False
+            self.civ_silent_after_open_s,
+            self._end_civ_silence,
+            self._civ_silence_token,
         )
+
+    def _end_civ_silence(self, token: int) -> None:
+        """End the window, unless a later login replaced it."""
+        if token == self._civ_silence_token:
+            self.civ_standby(False)
 
     def civ_standby(self, on: bool) -> None:
         """Turn the CI-V standby scenario on or off (test helper).
