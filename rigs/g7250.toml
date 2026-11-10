@@ -312,6 +312,13 @@ raw_max = 255
 raw_min = 0
 raw_max = 255
 
+# RF power output range, both ends read on the bench (the Pro TX smoke
+# tool's profile band: it requires raw_max == 255 and drives the radio to
+# raw_min/255 through the HTTP command path before it keys).
+[controls.rf_power]
+raw_min = 12   # LIVE 2026-11-10: lowest setting, display 5 W, 14 0A reads 00 12
+raw_max = 255  # LIVE 2026-11-09: full setting, 14 0A reads 02 55 (100 W rated)
+
 # Display bands inherited from X6200, not probed on G7250 (the G7250 read
 # live was 00 00 = the bottom of the band; the top end is unconfirmed).
 [controls.cw_pitch]
@@ -349,60 +356,79 @@ name = "160m"
 start_hz = 1800000
 end_hz = 2000000
 default_hz = 1825000
+max_power_w = 100  # preliminary vendor spec
 
 [[freq_ranges.ranges.bands]]
 name = "80m"
 start_hz = 3500000
 end_hz = 3800000
 default_hz = 3600000
+max_power_w = 100  # preliminary vendor spec
 
 [[freq_ranges.ranges.bands]]
 name = "40m"
 start_hz = 7000000
 end_hz = 7200000
 default_hz = 7100000
+max_power_w = 100  # preliminary vendor spec
 
 [[freq_ranges.ranges.bands]]
 name = "30m"
 start_hz = 10100000
 end_hz = 10150000
 default_hz = 10125000
+max_power_w = 100  # preliminary vendor spec
 
 [[freq_ranges.ranges.bands]]
 name = "20m"
 start_hz = 14000000
 end_hz = 14350000
 default_hz = 14200000
+max_power_w = 100  # preliminary vendor spec
 
 [[freq_ranges.ranges.bands]]
 name = "17m"
 start_hz = 18068000
 end_hz = 18168000
 default_hz = 18100000
+max_power_w = 100  # preliminary vendor spec
 
 [[freq_ranges.ranges.bands]]
 name = "15m"
 start_hz = 21000000
 end_hz = 21450000
 default_hz = 21200000
+max_power_w = 100  # preliminary vendor spec
 
 [[freq_ranges.ranges.bands]]
 name = "12m"
 start_hz = 24890000
 end_hz = 24990000
 default_hz = 24940000
+max_power_w = 100  # preliminary vendor spec
 
 [[freq_ranges.ranges.bands]]
 name = "10m"
 start_hz = 28000000
 end_hz = 29700000
 default_hz = 28500000
+max_power_w = 100  # preliminary vendor spec
 
 [[freq_ranges.ranges.bands]]
 name = "6m"
 start_hz = 50000000
 end_hz = 54000000
 default_hz = 51000000
+max_power_w = 90  # preliminary vendor spec: 90 W ±1 dB on 50 MHz
+
+# Rated TX power: preliminary vendor spec (Radioddity / PileupDX / WIMO
+# product pages, 2026-11): 100 W ±1 dB on HF, 90 W ±1 dB on 50 MHz. NOT a
+# bench fact — the read-only audit never keyed the radio, and the CI-V
+# TX-band table never answered (0x1E no reply, LIVE 2026-11-09). Display
+# data for the power slider's scale and label only (per-band rows above);
+# nothing on the write path clamps or rescales by it.
+[power]
+max_watts = 100
 
 # ── CI-V Commands ────────────────────────────────────────────────
 # Every GET marked LIVE was answered on the bench (read-only audit — no
@@ -600,9 +626,11 @@ set_dial_lock    = { absent = "LIVE G7250 2026-11-09: read 0x02, meaning unconfi
 # (runtime/radio.py 0x00/0x01 allowlist), so the ruling is the same
 # ruling, written here rather than left absent because an absent section
 # and an empty one load identically — only a written section records that
-# this was decided. TX power range and TX band edges are unknown for the
-# G7250 (0x1E no reply, LIVE): nothing on this radio's path reads this
-# map today; empty means "nothing measured", not "nothing refuses".
+# this was decided. No CI-V TX-band table exists for the G7250 (0x1E no
+# reply, LIVE): TX band edges are unknown, and the watts figures under
+# [power]/max_power_w are preliminary vendor spec, never wire facts —
+# nothing on this radio's path reads this map today; empty means "nothing
+# measured", not "nothing refuses".
 refused_during_tx = []
 # Positive-RX rule (§3.7): the receiving byte only. This wire carries no
 # keying attribution, so nothing else is mapped and the transmitting byte

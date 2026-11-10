@@ -297,11 +297,59 @@ def test_rx_range_is_the_live_band_edge_reply() -> None:
     assert "Air" not in labels
 
 
-def test_no_tx_power_or_band_edge_facts_are_invented() -> None:
+def test_tx_power_watts_are_vendor_spec_not_wire_facts() -> None:
+    """The watts figures are the preliminary vendor spec, never wire facts.
+
+    The read-only audit never keyed the radio and the CI-V TX-band table
+    never answered (0x1E no reply, LIVE), so no TX fact here is
+    bench-proven; ``[power]``/``max_power_w`` (100 W HF, 90 W 50 MHz —
+    preliminary vendor spec) is display data for the power slider only.
+    """
     profile = get_radio_profile("G7250")
-    assert profile.max_watts is None
+    assert profile.max_watts == 100
     assert profile.min_watts is None
     assert "get_tx_band_count" in profile.absent_command_names
+    declared = {
+        band.name: band.max_power_w
+        for freq_range in profile.freq_ranges
+        for band in freq_range.bands
+        if band.max_power_w is not None
+    }
+    assert declared == {
+        "160m": 100,
+        "80m": 100,
+        "40m": 100,
+        "30m": 100,
+        "20m": 100,
+        "17m": 100,
+        "15m": 100,
+        "12m": 100,
+        "10m": 100,
+        "6m": 90,
+    }
     # TX policy posture inherited from the X6200, nothing measured.
     assert profile.tx_policy.refused_during_tx == frozenset()
     assert dict(profile.tx_policy.tx_state_map) == {"0": "rx"}
+
+
+# ---------------------------------------------------------------------------
+# RF power range — the LIVE 14 0A envelope (MOR-4352 follow-up)
+# ---------------------------------------------------------------------------
+
+
+def test_rf_power_control_declares_the_live_raw_range() -> None:
+    """``[controls.rf_power]`` is raw 12..255, both ends read on the bench.
+
+    The Pro TX smoke tool reads this band, requires ``raw_max == 255`` and
+    drives the radio to ``raw_min / 255`` over the HTTP command path before
+    it keys; without the table it refuses the G7250 with "unsupported RF
+    profile range". Sources: LIVE G7250 2026-11-10 — at the owner's lowest
+    possible setting (display 5 W, the menu goes no lower) ``14 0A``
+    answered ``00 12``; LIVE G7250 2026-11-09 — at the maximum setting
+    ``14 0A`` answered ``02 55``.
+    """
+    profile = get_radio_profile("G7250")
+    assert profile.controls is not None
+    entry = profile.controls["rf_power"]
+    assert entry["raw_min"] == 12
+    assert entry["raw_max"] == 255
