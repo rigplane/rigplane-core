@@ -1,3 +1,4 @@
+// MOR-4373 trial: never merge, only exercises quick-frontend-e2e on real CI.
 /// <reference types="vitest/config" />
 import path from 'path'
 import { defineConfig } from 'vite'
