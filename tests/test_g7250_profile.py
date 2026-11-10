@@ -196,8 +196,9 @@ def test_filter_encoding_is_the_ic7300_bcd_index_not_the_x6200_formula() -> None
 
 
 def test_unmeasured_filter_families_are_marked_not_measured_in_the_toml() -> None:
-    # RTTY/DIGI/FM widths were not measured on the bench; the profile
-    # must say so in prose instead of inventing values.
+    # RTTY/FM widths were not measured on the bench; the profile must say
+    # so in prose instead of inventing values. DIGI has no width table at
+    # all — not observed on the G7250 (read-only audit 2026-11-09).
     text = (RIGS_DIR / "g7250.toml").read_text()
     assert "not measured" in text
     assert _raw()["filters"]["encoding"] == "segmented_bcd_index"

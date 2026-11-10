@@ -196,8 +196,10 @@ meter_coalescing_window_seconds = 0.25
 
 # inherited from X6200, not probed on G7250: the audit read mode 0x04 as
 # LSB/FIL1 (LIVE) but never enumerated the dial's full value domain.
+# No DIGI in the list: not observed on the G7250 (read-only audit
+# 2026-11-09), and IcomRadio._coerce_mode cannot express it (MOR-1487).
 [modes]
-list = ["USB", "LSB", "CW", "CW-R", "AM", "FM", "RTTY", "DIGI"]
+list = ["USB", "LSB", "CW", "CW-R", "AM", "FM", "RTTY"]
 families = { cw = ["CW", "CW-R"] }
 
 [filters]
@@ -210,9 +212,10 @@ list = ["FIL1", "FIL2", "FIL3"]
 #   LSB FIL1 0x33=2900  FIL2 0x28=2400  FIL3 0x22=1800
 #   CW  FIL1 0x09=500   FIL2 0x05=300   FIL3 0x02=150
 #   AM  FIL1 0x44=9000  FIL2 0x29=6000  FIL3 0x14=3000
-# RTTY/DIGI/FM widths were NOT measured: do not invent them. RTTY/DIGI
-# carry the SSB segment table (the shared Xiegu family posture) and FM is
-# fixed — all three marked here as not measured, pending a live read.
+# RTTY/FM widths were NOT measured: do not invent them. RTTY carries the
+# SSB segment table (the shared Xiegu family posture) and FM is fixed —
+# both marked here as not measured, pending a live read. DIGI has no
+# entry at all: not observed on the G7250 (read-only audit 2026-11-09).
 encoding = "segmented_bcd_index"
 width_min_hz = 50
 width_max_hz = 9999
@@ -237,18 +240,9 @@ segments = [
     { hz_min = 600, hz_max = 3600, step_hz = 100, index_min = 10 },
 ]
 
-# RTTY/DIGI: NOT measured on the G7250 — SSB segments re-used per the
+# RTTY: NOT measured on the G7250 — SSB segments re-used per the
 # Xiegu family posture (inherited from X6200, not probed on G7250).
 [filters.width.RTTY]
-min_hz = 50
-max_hz = 3600
-defaults = [2900, 2400, 1800]
-segments = [
-    { hz_min = 50, hz_max = 500, step_hz = 50, index_min = 0 },
-    { hz_min = 600, hz_max = 3600, step_hz = 100, index_min = 10 },
-]
-
-[filters.width.DIGI]
 min_hz = 50
 max_hz = 3600
 defaults = [2900, 2400, 1800]
