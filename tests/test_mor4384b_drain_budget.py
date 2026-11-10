@@ -30,7 +30,11 @@ import time
 import pytest
 
 from rigplane import IC_7610_ADDR
-from rigplane.commands import CONTROLLER_ADDR, build_civ_frame
+from rigplane.commands import (
+    CONTROLLER_ADDR,
+    build_civ_frame,
+    parse_civ_frame,
+)
 from rigplane.radio import IcomRadio
 from rigplane.rigctld.contract import RigctldConfig
 from rigplane.rigctld.server import RigctldServer
@@ -48,7 +52,9 @@ from _helpers import (
 from serial_stub import SplitIcomTransport
 from test_rigctld_wsjtx_split_mk2 import _client, _exchange, _rf_state
 
-_SCOPE_ENABLE = build_civ_frame(IC_7610_ADDR, CONTROLLER_ADDR, 0x27, sub=0x10, data=b"\x01")
+_SCOPE_ENABLE = build_civ_frame(
+    IC_7610_ADDR, CONTROLLER_ADDR, 0x27, sub=0x10, data=b"\x01"
+)
 _SET_FREQ = build_civ_frame(
     IC_7610_ADDR, CONTROLLER_ADDR, 0x05, data=bytes.fromhex("0026361400")
 )
@@ -119,7 +125,10 @@ class TestDrainBudget:
         radio = _make_radio(transport)
         try:
             runtime = radio._civ_runtime
-            assert await runtime._execute_civ_raw(_SCOPE_ENABLE, wait_response=False) is None
+            assert (
+                await runtime._execute_civ_raw(_SCOPE_ENABLE, wait_response=False)
+                is None
+            )
             transport.queue_response_on_send(2, _ack_response())
             started = time.monotonic()
             await radio.set_freq(7_074_000)
@@ -148,9 +157,14 @@ class TestDrainBudget:
         radio = _make_radio(transport)
         try:
             runtime = radio._civ_runtime
-            assert await runtime._execute_civ_raw(_SCOPE_ENABLE, wait_response=False) is None
+            assert (
+                await runtime._execute_civ_raw(_SCOPE_ENABLE, wait_response=False)
+                is None
+            )
             ptt_reply = wrap_civ_in_udp(
-                build_civ_frame(CONTROLLER_ADDR, IC_7610_ADDR, 0x1C, sub=0x00, data=b"\x00")
+                build_civ_frame(
+                    CONTROLLER_ADDR, IC_7610_ADDR, 0x1C, sub=0x00, data=b"\x00"
+                )
             )
             transport.queue_response_on_send(2, ptt_reply)
             started = time.monotonic()
@@ -177,20 +191,86 @@ class _SilentWriteTransport(SplitIcomTransport):
     silent: set[tuple[int, int | None]] = {(0x1C, 0x00)}
 
     async def send_tracked(self, packet: bytes, **kwargs) -> None:
-        from _helpers import wrap_civ_in_udp as _wrap
         from rigplane.commands import parse_civ_frame
 
-        request = parse_civ_frame(packet[packet.index(b"\xfe\xfe"):])
+        request = parse_civ_frame(packet[packet.index(b"\xfe\xfe") :])
         if (request.command, request.sub) in self.silent and request.data:
             self.requests.append((request.command, request.sub, request.data))
             return
         await super().send_tracked(packet, **kwargs)
 
 
+class TestEvidenceExpiry:
+    """A newer directed answer retires older dead sinks by evidence."""
+
+    @pytest.mark.realtime(
+        reason="pins evidence-based sink retirement against a silent sink"
+    )
+    @pytest.mark.asyncio
+    async def test_newer_directed_answer_retires_older_dead_sink(self) -> None:
+        """An answered read proves the older sink's answer is lost (MOR-4209).
+
+        The radio answers in order on an ordered-ingress transport, so once
+        a directed answer to a newer request arrives, every older sink's
+        answer (data, FB or FA) was lost on the wire: the tracker retires
+        those sinks at once instead of making the next blocking command
+        wait out their windows. A late answer for the retired sink can no
+        longer settle that command — the same attribution the drain
+        protects, without the wait.
+        """
+        transport = _MockTransport()
+        radio = _make_radio(transport)
+        # A window far wider than any test join: only evidence retirement
+        # can clear the dead sink below, never a window expiry.
+        radio._civ_get_timeout = 10.0
+        try:
+            runtime = radio._civ_runtime
+            refused_read = build_civ_frame(
+                IC_7610_ADDR, CONTROLLER_ADDR, 0x1C, sub=0x01
+            )
+            assert (
+                await runtime._execute_civ_raw(refused_read, wait_response=False)
+                is None
+            )
+            assert radio._civ_request_tracker.ack_sink_count == 1
+            mode_get = build_civ_frame(IC_7610_ADDR, CONTROLLER_ADDR, 0x04)
+            task = asyncio.create_task(runtime._execute_civ_raw(mode_get))
+            try:
+                for _ in range(1000):
+                    if len(transport.sent_packets) >= 2:
+                        break
+                    await asyncio.sleep(0.001)
+                assert len(transport.sent_packets) == 2, (
+                    "the blocking read never went out"
+                )
+                answer = parse_civ_frame(
+                    build_civ_frame(
+                        CONTROLLER_ADDR, IC_7610_ADDR, 0x04, data=b"\x02\x01"
+                    )
+                )
+                await runtime._route_civ_frame(answer, generation=radio._civ_epoch)
+                result = await asyncio.wait_for(task, timeout=3.0)
+                assert result is not None and result.command == 0x04
+            finally:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+            assert radio._civ_request_tracker.ack_sink_count == 0, (
+                "the newer answer did not retire the older dead sink by evidence"
+            )
+        finally:
+            radio._civ_transport = None
+            pump = radio._civ_rx_task
+            if pump is not None:
+                await pump
+            radio._connected = False
+
+
 class TestRigctldDeadline:
     """A lost background answer must not eat the next command's deadline."""
 
-    @pytest.mark.realtime(reason="pins the rigctld 2 s command deadline against a silent sink")
+    @pytest.mark.realtime(
+        reason="pins the rigctld 2 s command deadline against a silent sink"
+    )
     @pytest.mark.asyncio
     async def test_set_freq_after_lost_background_answer_meets_deadline(
         self,
@@ -220,9 +300,7 @@ class TestRigctldDeadline:
             ptt_off = build_civ_frame(
                 IC_7610_ADDR, CONTROLLER_ADDR, 0x1C, sub=0x00, data=b"\x00"
             )
-            assert (
-                await radio._execute_civ_raw(ptt_off, wait_response=False) is None
-            )
+            assert await radio._execute_civ_raw(ptt_off, wait_response=False) is None
             await asyncio.sleep(0.01)
             async with _client(server) as (reader, writer):
                 started = time.monotonic()
@@ -239,7 +317,9 @@ class TestRigctldDeadline:
 class TestConnectBudget:
     """A connect with unanswered sweep reads stays within budget (IC-705)."""
 
-    @pytest.mark.realtime(reason="pins the connect-time budget with unanswered sweep reads")
+    @pytest.mark.realtime(
+        reason="pins the connect-time budget with unanswered sweep reads"
+    )
     @pytest.mark.asyncio
     async def test_connect_ready_within_budget_when_sweep_reads_unanswered(
         self,
@@ -269,16 +349,38 @@ class TestConnectBudget:
             | {
                 (0x14, sub)
                 for sub in (
-                    0x01, 0x02, 0x03, 0x06, 0x07, 0x08, 0x0A, 0x0B, 0x0D, 0x0E,
-                    0x12, 0x15, 0x16, 0x17,
+                    0x01,
+                    0x02,
+                    0x03,
+                    0x06,
+                    0x07,
+                    0x08,
+                    0x0A,
+                    0x0B,
+                    0x0D,
+                    0x0E,
+                    0x12,
+                    0x15,
+                    0x16,
+                    0x17,
                 )
             }
             | {(0x15, 0x02), (0x15, 0x15), (0x15, 0x16)}
             | {
                 (0x27, sub)
                 for sub in (
-                    0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x19, 0x1A, 0x1B, 0x1C,
-                    0x1D, 0x1E,
+                    0x12,
+                    0x13,
+                    0x14,
+                    0x15,
+                    0x16,
+                    0x17,
+                    0x19,
+                    0x1A,
+                    0x1B,
+                    0x1C,
+                    0x1D,
+                    0x1E,
                 )
             }
         )
@@ -315,4 +417,6 @@ class TestConnectBudget:
         finally:
             await radio.disconnect()
             await sim.stop()
-        assert elapsed < 2.8, f"connect stalled {elapsed:.2f}s on unanswered sweep reads"
+        assert elapsed < 2.8, (
+            f"connect stalled {elapsed:.2f}s on unanswered sweep reads"
+        )

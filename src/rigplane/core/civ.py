@@ -684,6 +684,25 @@ class CivRequestTracker:
                     continue
                 if self._matches(pending.key, frame):
                     self._response_waiters.pop(i)
+                    if ordered_ingress:
+                        # The radio answers in order, so a directed answer to
+                        # this newer request proves every older sink's answer
+                        # (data, FB or FA) was lost on the wire: retire them
+                        # by evidence instead of waiting out their windows
+                        # (MOR-4384 round 2). Same proof as
+                        # ``_retire_sinks_passed_by`` below, for a waiter that
+                        # lives outside the ACK list.
+                        passed = sum(
+                            1
+                            for waiter in self._ack_waiters
+                            if (
+                                waiter.sent_monotonic
+                                if waiter.sent_monotonic is not None
+                                else waiter.created_monotonic
+                            )
+                            < pending.created_monotonic
+                        )
+                        self._retire_sinks_passed_by(passed)
                     if not pending.future.done():
                         pending.future.set_result(frame)
                     return True

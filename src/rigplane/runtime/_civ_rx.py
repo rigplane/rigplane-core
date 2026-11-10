@@ -700,6 +700,16 @@ _CIV_DATA_WATCHDOG_RETRY = 0.1  # retry interval (wfview: 100ms via startCivData
 # recovery. A port that has gone completely silent gives up much sooner.
 _OPENCLOSE_DEADLINE = 60.0
 _SILENT_OPENCLOSE_DEADLINE = 5.0
+# Separate budget bounding the ACK-sink drain before a blocking command
+# (MOR-4384 round 2). The drain protects a bare-FB/FA answer from being
+# eaten by an older unanswered sink, but that wait must never come out of
+# the next command's own answer budget (rigctld's 2 s command deadline,
+# the 300 ms TX-read deadline, the 5 s connect readiness): it gets this
+# budget of its own. 0.5 s sits comfortably above real link lateness (the
+# round-1 tests pin a late FA at 0.2 s) and an order below answer windows,
+# so expiring sinks keep the round-1 misattribution tests green while a
+# silent radio stops stalling every blocking write.
+_ACK_SINK_DRAIN_BUDGET_S = 0.5
 
 
 class _PttNotQuiescent(CommandError):
@@ -1274,7 +1284,7 @@ class CivRuntime:
             self._host._civ_request_tracker.note_ack_unclaimed()
             return RawCivTransactionResult(status="sent")
 
-        await self._drain_ack_sinks_before_blocking()
+        await self._drain_ack_sinks_before_blocking(expects_data=expect == "data")
         dropped_backlog = self._host._civ_request_tracker.drop_ack_backlog()
         if dropped_backlog:
             logger.debug(
@@ -4681,21 +4691,37 @@ class CivRuntime:
         return len(frame.data) == 0
 
     async def _drain_ack_sinks_before_blocking(
-        self, *, check_current: Callable[[], None] | None = None
+        self,
+        *,
+        check_current: Callable[[], None] | None = None,
+        expects_data: bool = False,
     ) -> None:
         """Let fire-and-forget ACK sinks drain before a blocking command.
 
         A bare FB/FA names no command, and ``CivRequestTracker.resolve``
-        hands it to the oldest eligible waiter, so a blocking command must
+        hands it to the oldest eligible waiter, so a blocking write must
         not register its waiter while an earlier fire-and-forget sink is
-        still owed an answer: the answer retiring that sink — data, an
-        FB, or the FA of a refused read — would settle the new waiter
-        instead (MOR-4384). Each sink is owed its answer for one window
-        of ``_civ_get_timeout`` from its own send; a sink whose window
-        has closed is expired and its ambiguity recorded, so this returns
-        only once no open sink is still owed an answer.
+        still owed an answer: the answer retiring that sink — an FB, or
+        the FA of a refused read — would settle the new waiter instead,
+        and the write's own FB could be eaten by the older sink (MOR-4384).
+        A data answer is attributed by its request key instead — the
+        tracker's response waiters are consulted before any sink — so an
+        older unanswered sink can neither steal it nor be owed by it, and
+        data-expecting commands skip this drain entirely.
+
+        The remaining wait is bounded by its own separate budget
+        (``_ACK_SINK_DRAIN_BUDGET_S``), never by each sink's whole answer
+        window and never by the next command's answer budget. Sinks whose
+        window closes during the wait expire as before; whatever is still
+        open when the budget is spent is presumed lost — its FB/FA can no
+        longer be told from a later command's — and expired with the same
+        ambiguity recorded. A late answer for a sink retired inside the
+        budget still lands on that sink, so the round-1 attribution holds.
         """
+        if expects_data:
+            return
         tracker = self._host._civ_request_tracker
+        deadline = time.monotonic() + _ACK_SINK_DRAIN_BUDGET_S
         while True:
             expired = tracker.expire_ack_sinks(
                 answer_window=self._host._civ_get_timeout
@@ -4707,9 +4733,17 @@ class CivRuntime:
                 )
             if tracker.ack_sink_count == 0:
                 return
+            if time.monotonic() >= deadline:
+                break
             await asyncio.sleep(0.005)
             if check_current is not None:
                 check_current()
+        presumed = tracker.expire_ack_sinks(answer_window=0.0)
+        if presumed:
+            logger.debug(
+                "Presumed %d ACK sink waiter(s) lost at the drain budget",
+                presumed,
+            )
 
     async def _execute_civ_raw(
         self,
@@ -4726,14 +4760,14 @@ class CivRuntime:
         (NAK)`` and raises
         :class:`~rigplane.core.exceptions.CommandRejectedError` instead of
         waiting out ``_civ_get_timeout`` and reporting a timeout. A refusal
-        names no command, so ``_drain_ack_sinks_before_blocking`` keeps an
-        earlier fire-and-forget sink open for its own answer window and the
-        refusal retires that sink instead of this command's waiter
-        (MOR-4384); once such a sink's window closes the drain expires it
-        and records the ambiguity (``ack_unclaimed_at``), and a refusal
-        arriving later than that window can still settle this read — the
-        residual exposure the blocking write branch and the raw
-        transaction path's ``nak_terminal=True`` default carry as well.
+        names no command, so a data-expecting read skips
+        ``_drain_ack_sinks_before_blocking`` (its keyed answer cannot be
+        eaten by an older sink) while the earlier fire-and-forget sink stays
+        open and the refusal retires that sink instead of this command's
+        waiter (MOR-4384). A refusal arriving after the drain budget spent
+        can still settle a later waiter — the residual exposure the
+        blocking write branch and the raw transaction path's
+        ``nak_terminal=True`` default carry as well.
         """
         if self._host._civ_transport is None:
             raise ConnectionError("Not connected to radio")
@@ -4858,7 +4892,8 @@ class CivRuntime:
             return None
 
         await self._drain_ack_sinks_before_blocking(
-            check_current=check_current_pre_wire
+            check_current=check_current_pre_wire,
+            expects_data=expects_response,
         )
         check_current(pre_wire=True)
 
