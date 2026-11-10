@@ -32,6 +32,7 @@ class AudioEndpoint:
     owner: str
     flow: Flow
     name: str
+    portaudio_index: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
