@@ -529,7 +529,8 @@ def test_same_named_codecs_on_different_hubs_pair_through_their_own_records(
     )
     assert not selector.partition("|")[2].startswith("name:")
     assert [
-        record.index for record, _ in same_endpoint_records(snapshot, selector, "capture")
+        record.index
+        for record, _ in same_endpoint_records(snapshot, selector, "capture")
     ] == [result.rx_index]
 
 
