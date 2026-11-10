@@ -738,9 +738,24 @@
             sessionEpoch,
           } : null;
         }
+        // MOR-4387: the view follows the VFO unless the user explicitly
+        // pinned a window. A pinned band/segment preset stops serving its
+        // purpose the moment the confirmed VFO lies outside it — every path
+        // that moves the VFO beyond the edge (arrow/wheel/digit tuning,
+        // click-to-tune, band change, another client) needs follow back, so
+        // the pin retires on POSITION, not on which action moved it. The
+        // confirmed VFO is the authority frequency, falling back to the
+        // managed tuple. CENTER scope only: in FIX the radio itself owns
+        // the fixed window.
+        const confirmedHz = authority?.frequencyHz ?? frequency;
+        if (!fixed && requested !== null && confirmedHz !== null && confirmedHz !== undefined
+          && (confirmedHz < requested.startHz || confirmedHz > requested.endHz)) {
+          requestedView = null;
+          explicitView = false;
+        }
         if (geometry && geometry.view.endHz > geometry.view.startHz) {
           const span = follow ?? geometry.view.endHz - geometry.view.startHz;
-          scopeView.set('confirmed', requested ?? ((fixed && follow === null) || frequency === null || frequency === undefined ? geometry.view
+          scopeView.set('confirmed', requestedView ?? ((fixed && follow === null) || frequency === null || frequency === undefined ? geometry.view
             : { startHz: frequency - span / 2, endHz: frequency + span / 2 }));
         }
         const confirmed = scopeView.confirmed;
@@ -887,7 +902,6 @@
       return;
     }
     if ('startHz' in preset.view && 'endHz' in preset.view) {
-      followSpanHz = null;
       explicitView = true;
       requestedView = { startHz: preset.view.startHz, endHz: preset.view.endHz };
       scopeView.set('gesture', null);
@@ -895,8 +909,18 @@
   }
   function nudgeScopeZoom(factor: number): void {
     if (effectiveView.endHz <= effectiveView.startHz) return;
-    followSpanHz = null;
-    requestedView = zoomView(effectiveView, factor);
+    if (isFixedScope) {
+      // FIX scope: the window is wire-owned; zoom keeps absolute bounds.
+      followSpanHz = null;
+      requestedView = zoomView(effectiveView, factor);
+    } else {
+      // MOR-4387: zoom keeps follow mode with the new width — no pinned
+      // window, so later tuning still follows and the marker stays.
+      const zoomed = zoomView(effectiveView, factor);
+      requestedView = null;
+      explicitView = false;
+      followSpanHz = zoomed.endHz - zoomed.startHz;
+    }
     scopeView.set('gesture', null);
   }
 

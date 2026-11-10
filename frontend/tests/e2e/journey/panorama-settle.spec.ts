@@ -87,11 +87,18 @@ for (const [index, [model, zoomMode]] of ([['IC-705', 0], ['IC-7300', 0], ['IC-7
         await page.goto(`http://127.0.0.1:${port}/?ui=v2`);
         await expect.poll(() => frames.length, { timeout: 30_000 }).toBeGreaterThan(10);
         const area = page.locator('.spectrum-area').first();
+        const marker = page.locator('.waterfall-content .tune-line');
         if (zoom === true || (zoom === 'span' && zoomMode === 1)) {
           await page.getByRole('button', { name: 'More scope controls' }).first().click();
           await page.getByTestId('scope-zoom-in').first().click();
           await expect.poll(() => frames.at(-1)?.view).toEqual([14_225_000, 14_275_000]);
           await page.keyboard.press('Escape');
+          // MOR-4387: zoom keeps follow mode with the zoomed width — the
+          // VFO marker survives and later tuning still follows.
+          if (zoom === true) {
+            await expect.poll(() => sent.at(-1)?.view).toEqual({ follow: 'vfo', spanHz: 50_000 });
+            await expect(marker).toBeVisible();
+          }
         }
         const box = await area.boundingBox(); expect(box).not.toBeNull();
         const before = { subscriptions: sent.length, writes: (await writes()).length, work: await work() };
@@ -130,7 +137,9 @@ for (const [index, [model, zoomMode]] of ([['IC-705', 0], ['IC-7300', 0], ['IC-7
         const finalHz = zoom === 'span' ? 14_250_000 : zoom ? 14_290_000 : 14_265_000;
         await expect.poll(async () => (await page.request.get(`http://127.0.0.1:${port}/api/v1/state`)).json()).toMatchObject({ main: { freqHz: finalHz } });
         await expect.poll(async () => Number((await page.locator('.receiver-instrument [data-vfo-freq]').first().innerText()).replace(/\D/g, ''))).toBe(finalHz);
-        const view = zoom === 'span' ? (zoomMode === 1 ? [14_200_000, 14_300_000] : [14_150_000, 14_350_000]) : zoom ? [14_225_000, 14_275_000] : [finalHz - 50_000, finalHz + 50_000];
+        // MOR-4385 span presets are half-widths; MOR-4387: a zoomed view follows the VFO.
+        const view = zoom === 'span' ? (zoomMode === 1 ? [14_200_000, 14_300_000] : [14_150_000, 14_350_000]) : zoom ? [finalHz - 25_000, finalHz + 25_000] : [finalHz - 50_000, finalHz + 50_000];
+        if (zoom === true) await expect(marker).toBeVisible();
         const live = frames.slice(quietStart.frames, quietEnd.frames);
         expect.soft(live.length).toBeGreaterThan(10);
         expect.soft((live[0]?.receivedAt ?? Infinity) - quietStart.atMs).toBeLessThan(1000);
@@ -157,7 +166,7 @@ for (const [index, [model, zoomMode]] of ([['IC-705', 0], ['IC-7300', 0], ['IC-7
         console.log(JSON.stringify({ model, before, quietStart, quietEnd, idleStart, idleEnd, errors }));
         expect.soft(quietEnd.subscriptions - quietStart.subscriptions).toBe(0);
         expect.soft(before.work.draw).toBeGreaterThan(0);
-        expect.soft(sent.slice(before.subscriptions).every(request => ('follow' in request.view) !== (zoom === true))).toBe(true);
+        expect.soft(sent.every(request => 'follow' in request.view)).toBe(true);
         if (zoom !== 'span') expect.soft(commands.filter(command => command.name === 'set_freq').length).toBeGreaterThan(0);
         expect.soft(commands.filter(command => command.name === 'set_scope_span')).toHaveLength(0);
         expect.soft(quietEnd.writes - quietStart.writes).toBe(0);
@@ -176,4 +185,124 @@ for (const [index, [model, zoomMode]] of ([['IC-705', 0], ['IC-7300', 0], ['IC-7
       }
     });
   }
+}
+
+// ── MOR-4387: the view follows the VFO unless explicitly pinned ──
+// (a) click-tune burst + arrow tuning keeps the marker in view and the
+//     follow subscription quiet; (b) zoom + arrow tuning keeps the marker,
+//     the zoomed width, and emits no scope re-negotiation per step;
+// (c) a band preset stays pinned while the VFO is inside and returns to
+//     follow once the confirmed VFO leaves the pinned window.
+for (const [index, model] of ['IC-705', 'IC-7300'].entries()) {
+  test(`${model}: MOR-4387 click-tune burst then arrow tuning keeps the VFO marker in view`, async ({ page }, info) => {
+    const port = 18860 + index;
+    const server = await startJourneyServer(port, 14_250_000,
+      ['--model', model, '--evidence', info.outputPath('radio.jsonl')], 'tests/e2e/panorama_web_server.py');
+    try {
+      const state = { sent: 0, frames: 0 };
+      page.on('websocket', socket => {
+        if (!socket.url().endsWith('/api/v1/scope')) return;
+        socket.on('framesent', ({ payload }) => {
+          if (typeof payload === 'string' && (JSON.parse(payload) as { type: string }).type === 'subscribe') state.sent += 1;
+        });
+        socket.on('framereceived', ({ payload }) => { if (typeof payload !== 'string') state.frames += 1; });
+      });
+      await page.goto(`http://127.0.0.1:${port}/?ui=v2`);
+      const marker = page.locator('.waterfall-content .tune-line');
+      await expect(marker).toBeVisible({ timeout: 30_000 });
+      await expect.poll(() => state.frames, { timeout: 30_000 }).toBeGreaterThan(10);
+      const area = page.locator('.spectrum-area').first();
+      const box = await area.boundingBox();
+      expect(box).not.toBeNull();
+      for (const fraction of [0.62, 0.72, 0.42]) {
+        await page.mouse.click(box!.x + box!.width * fraction, box!.y + box!.height * 0.3);
+        await expect(marker).toBeVisible();
+      }
+      const radioState = async () => (await (await page.request.get(`http://127.0.0.1:${port}/api/v1/state`)).json()) as { main?: { freqHz?: number } };
+      await expect.poll(async () => (await radioState()).main?.freqHz, { timeout: 10_000 }).not.toBe(14_250_000);
+      const clickedHz = (await radioState()).main?.freqHz!;
+      const sentBefore = state.sent;
+      for (let i = 0; i < 12; i++) await page.keyboard.press('ArrowRight');
+      await expect.poll(radioState).toMatchObject({ main: { freqHz: clickedHz + 12_000 } });
+      await expect(marker).toBeVisible();
+      expect(state.sent - sentBefore).toBe(0);
+    } finally {
+      await server.kill();
+    }
+  });
+
+  test(`${model}: MOR-4387 zoom keeps follow and survives arrow tuning`, async ({ page }, info) => {
+    const port = 18870 + index;
+    const server = await startJourneyServer(port, 14_250_000,
+      ['--model', model, '--evidence', info.outputPath('radio.jsonl')], 'tests/e2e/panorama_web_server.py');
+    try {
+      const sent: Array<ScopeSubscription & { type: string }> = [];
+      const frames = { count: 0 };
+      page.on('websocket', socket => {
+        if (!socket.url().endsWith('/api/v1/scope')) return;
+        socket.on('framesent', ({ payload }) => {
+          if (typeof payload === 'string' && (JSON.parse(payload) as { type: string }).type === 'subscribe') {
+            sent.push(JSON.parse(payload));
+          }
+        });
+        socket.on('framereceived', ({ payload }) => { if (typeof payload !== 'string') frames.count += 1; });
+      });
+      await page.goto(`http://127.0.0.1:${port}/?ui=v2`);
+      const marker = page.locator('.waterfall-content .tune-line');
+      await expect(marker).toBeVisible({ timeout: 30_000 });
+      await expect.poll(() => frames.count, { timeout: 30_000 }).toBeGreaterThan(10);
+      await page.getByRole('button', { name: 'More scope controls' }).first().click();
+      await page.getByTestId('scope-zoom-in').first().click();
+      await page.keyboard.press('Escape');
+      await expect.poll(() => sent.at(-1)?.view).toEqual({ follow: 'vfo', spanHz: 50_000 });
+      await expect(marker).toBeVisible();
+      const sentBefore = sent.length;
+      for (let i = 0; i < 40; i++) await page.keyboard.press('ArrowRight');
+      await expect.poll(async () => (await page.request.get(`http://127.0.0.1:${port}/api/v1/state`)).json())
+        .toMatchObject({ main: { freqHz: 14_290_000 } });
+      await expect.poll(async () => Number((await page.locator('.receiver-instrument [data-vfo-freq]').first().innerText()).replace(/\D/g, ''))).toBe(14_290_000);
+      await expect(marker).toBeVisible();
+      expect(sent.filter(request => 'follow' in request.view)).toHaveLength(sent.length);
+      expect(sent.length - sentBefore).toBe(0);
+    } finally {
+      await server.kill();
+    }
+  });
+
+  test(`${model}: MOR-4387 band preset stays pinned inside and returns to follow beyond`, async ({ page }, info) => {
+    const port = 18880 + index;
+    const server = await startJourneyServer(port, 14_250_000,
+      ['--model', model, '--evidence', info.outputPath('radio.jsonl')], 'tests/e2e/panorama_web_server.py');
+    try {
+      const sent: Array<ScopeSubscription & { type: string }> = [];
+      const frames = { count: 0 };
+      page.on('websocket', socket => {
+        if (!socket.url().endsWith('/api/v1/scope')) return;
+        socket.on('framesent', ({ payload }) => {
+          if (typeof payload === 'string' && (JSON.parse(payload) as { type: string }).type === 'subscribe') {
+            sent.push(JSON.parse(payload));
+          }
+        });
+        socket.on('framereceived', ({ payload }) => { if (typeof payload !== 'string') frames.count += 1; });
+      });
+      await page.goto(`http://127.0.0.1:${port}/?ui=v2`);
+      const marker = page.locator('.waterfall-content .tune-line');
+      await expect(marker).toBeVisible({ timeout: 30_000 });
+      await expect.poll(() => frames.count, { timeout: 30_000 }).toBeGreaterThan(10);
+      await page.getByRole('button', { name: 'More scope controls' }).first().click();
+      const select = page.locator('[data-testid="scope-more-panel"] [data-testid="scope-preset-select"]');
+      await select.selectOption({ index: 1 });
+      await page.keyboard.press('Escape');
+      await expect.poll(() => sent.at(-1)?.view).toEqual({ startHz: 14_000_000, endHz: 14_350_000 });
+      for (let i = 0; i < 4; i++) await page.getByRole('button', { name: 'Increase tuning step' }).first().click();
+      await expect.poll(() => sent.at(-1)?.view).toEqual({ startHz: 14_000_000, endHz: 14_350_000 });
+      for (let i = 0; i < 4; i++) await page.keyboard.press('ArrowRight');
+      await expect.poll(async () => (await page.request.get(`http://127.0.0.1:${port}/api/v1/state`)).json())
+        .toMatchObject({ main: { freqHz: 14_650_000 } });
+      await expect.poll(() => sent.at(-1)?.view).toEqual({ follow: 'vfo', spanHz: 100_000 });
+      await expect(marker).toBeVisible();
+    } finally {
+      await server.kill();
+    }
+  });
 }
