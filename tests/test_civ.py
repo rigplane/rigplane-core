@@ -521,3 +521,26 @@ async def test_a_read_within_its_window_keeps_the_refusal_off_the_next_write() -
     assert not write.done(), "the read's refusal settled the write's waiter"
     assert tracker.ack_sink_count == 1  # the s_meter sink still waits
     write.cancel()
+
+
+def test_restore_refused_reads_requeues_undelivered_once() -> None:
+    """MOR-4384: a taken refusal no consumer took is not lost.
+
+    ``_record_refused_reads`` takes every refusal off the tracker and
+    hands the declared ones to the scheduler; whatever it cannot deliver
+    goes back, so the record of which read the radio refused survives
+    for the owner. A repeatedly refused read still keeps one entry.
+    """
+    tracker = CivRequestTracker()
+    tracker.register_ack(wait=False, response_key=_TUNER, refused_read=_TUNER)
+    assert tracker.resolve(CivEvent(type=CivEventType.NAK, frame=_nak_frame()))
+
+    taken = tracker.take_refused_reads()
+    assert taken == (_TUNER,)
+    tracker.restore_refused_reads(taken)
+
+    assert tracker.take_refused_reads() == (_TUNER,)
+
+    tracker.restore_refused_reads((_TUNER, _TUNER))
+    assert tracker.take_refused_reads() == (_TUNER,)
+    assert tracker.take_refused_reads() == ()

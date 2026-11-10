@@ -1525,8 +1525,8 @@ class TestAckSinkRobustness:
         """
         runtime = radio._civ_runtime
         radio._civ_min_interval = 0.0
-        # Only the read's answer, not the grace, may release the write.
-        radio._civ_ack_sink_grace = 10.0
+        # Only the read's answer, not the drain's window timeout, may
+        # release the write.
         read = bytes.fromhex("FEFE98E029001656FD")
         refusal = parse_civ_frame(bytes.fromhex("FEFEE098FAFD"))
         write = build_civ_frame(
@@ -1564,13 +1564,12 @@ class TestAckSinkRobustness:
 
         The background read is the ``cmd29-sub`` case of the same exchange,
         which the radio answers with data; the ``FA`` after it is the
-        write's own.  With the grace this long, a write that kept waiting on
-        the read once the read was answered fails here instead of only
-        running late.
+        write's own.  With the read's answer retired before the write
+        starts, a write that kept waiting on the read fails here instead
+        of only running late.
         """
         runtime = radio._civ_runtime
         radio._civ_min_interval = 0.0
-        radio._civ_ack_sink_grace = 10.0
         read = bytes.fromhex("FEFE98E029011656FD")
         answer = parse_civ_frame(bytes.fromhex("FEFEE0982901165600FD"))
         refusal = parse_civ_frame(bytes.fromhex("FEFEE098FAFD"))
@@ -1717,6 +1716,9 @@ class TestAckSinkRobustness:
     async def test_fire_and_forget_missing_ack_does_not_poison_next_ack(
         self, radio: IcomRadio, mock_transport: MockTransport
     ) -> None:
+        # A short window keeps the drain's wait for the missing answer
+        # brief without narrowing the set's own answer budget materially.
+        radio._civ_get_timeout = 0.25
         # Fire-and-forget scope enable (ACK intentionally missing)
         ff = build_civ_frame(
             IC_7610_ADDR, CONTROLLER_ADDR, 0x27, sub=0x10, data=b"\x01"
@@ -1725,7 +1727,8 @@ class TestAckSinkRobustness:
 
         # The set waits for its own ACK, delivered when its frame leaves
         # (send 2): the missing answer above must not make this waiter
-        # claim anything stale — the drain drops the leftover sink first.
+        # claim anything stale — the drain first waits out (and then
+        # expires) the leftover sink's own answer window.
         mock_transport.queue_response_on_send(2, _ack_response())
         await radio.set_freq(7_074_000)
 
@@ -1793,8 +1796,8 @@ class TestCapturedExecuteLifetime:
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
         "pause,wait_response",
-        [("pacing", False), ("pacing", True), ("ack-grace", True)],
-        ids=["pacing-ff", "pacing-blocking", "ack-grace"],
+        [("pacing", False), ("pacing", True), ("sink-drain", True)],
+        ids=["pacing-ff", "pacing-blocking", "sink-drain"],
     )
     @pytest.mark.parametrize("change", ["transport", "epoch", "transport-and-tracker"])
     async def test_stale_execute_refuses_before_formatter_and_preserves_tracker(
@@ -1814,8 +1817,10 @@ class TestCapturedExecuteLifetime:
         radio._last_civ_send_monotonic = now
         radio._civ_last_waiter_gc_monotonic = now
         radio._civ_min_interval = 10.0 if pause == "pacing" else 0.0
-        radio._civ_ack_sink_grace = 10.0
-        if pause == "ack-grace":
+        if pause == "sink-drain":
+            # An open fire-and-forget sink parks the blocking command in
+            # ``_drain_ack_sinks_before_blocking`` (MOR-4384); the clock
+            # stays frozen there, so its window never closes on its own.
             tracker.register_ack(wait=False)
         frame = build_civ_frame(
             IC_7610_ADDR, CONTROLLER_ADDR, _CMD_PTT, sub=_SUB_PTT, data=b"\x00"
@@ -1870,11 +1875,11 @@ class TestCapturedExecuteLifetime:
                         )
                     if change == "transport-and-tracker":
                         assert radio._civ_request_tracker.ack_sink_count == 1, (
-                            "stale grace dropped replacement sink"
+                            "stale drain dropped replacement sink"
                         )
-                tracker.drop_ack_sinks()
+                tracker.expire_ack_sinks(answer_window=0.0)
                 current_tracker = radio._civ_request_tracker
-                current_tracker.drop_ack_sinks()
+                current_tracker.expire_ack_sinks(answer_window=0.0)
                 radio._civ_min_interval = 0.0
                 current = asyncio.create_task(
                     runtime._execute_civ_raw(frame, wait_response)
@@ -1973,7 +1978,7 @@ class TestCapturedExecuteLifetime:
                     assert tracker.timeout_count == current_tracker.timeout_count == 0
                     assert tracker.pending_count == 0, "retired waiter leaked"
                     assert current_tracker.ack_sink_count == 1
-                current_tracker.drop_ack_sinks()
+                current_tracker.expire_ack_sinks(answer_window=0.0)
                 radio._last_civ_send_monotonic = 0.0
                 current = asyncio.create_task(runtime._execute_civ_raw(frame))
                 tasks.append(current)
@@ -2005,7 +2010,6 @@ class TestCapturedExecuteLifetime:
         entered, release = asyncio.Event(), asyncio.Event()
         now = time.monotonic()
         radio._civ_last_waiter_gc_monotonic = now
-        radio._civ_ack_sink_grace = 10.0
         tracker.register_ack(wait=False)
         frame = build_civ_frame(
             IC_7610_ADDR, CONTROLLER_ADDR, _CMD_PTT, sub=_SUB_PTT, data=b"\x00"
@@ -2051,7 +2055,7 @@ class TestCapturedExecuteLifetime:
                 if not stale.done():
                     stale.cancel()
                 await asyncio.gather(stale, return_exceptions=True)
-            tracker.drop_ack_sinks()
+            tracker.expire_ack_sinks(answer_window=0.0)
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("pause", ["pacing", "send"])
@@ -2114,7 +2118,7 @@ class TestCapturedExecuteLifetime:
                     assert not pending_response._log_traceback, (
                         "retired blocking waiter exception was not retrieved"
                     )
-                tracker.drop_ack_sinks()
+                tracker.expire_ack_sinks(answer_window=0.0)
                 radio._last_civ_send_monotonic = 0.0
                 radio._civ_min_interval = 0.0
                 current = asyncio.create_task(runtime._execute_civ_raw(frame))
@@ -2187,7 +2191,7 @@ class TestCapturedExecuteLifetime:
                 if not task.done():
                     task.cancel()
                 await asyncio.gather(task, return_exceptions=True)
-            tracker.drop_ack_sinks()
+            tracker.expire_ack_sinks(answer_window=0.0)
 
 
 class TestResponseDeadlineOpensAtSend:
@@ -2346,7 +2350,6 @@ class TestCivPacingIsSendToSend:
         reply = 0.040
         clock = _install_pacing_clock(monkeypatch, gap=gap)
         radio._civ_min_interval = gap
-        radio._civ_ack_sink_grace = 0.0
         _guard_radio_against_clock_jumps(radio, clock)
         radio._last_civ_send_monotonic = 0.0
         first_civ = build_civ_frame(IC_7610_ADDR, CONTROLLER_ADDR, 0x03)
@@ -2406,7 +2409,6 @@ class TestCivPacingIsSendToSend:
         gap = 0.025
         clock = _install_pacing_clock(monkeypatch, gap=gap)
         radio._civ_min_interval = gap
-        radio._civ_ack_sink_grace = 0.0
         _guard_radio_against_clock_jumps(radio, clock)
         radio._last_civ_send_monotonic = 0.0
         cmd = build_civ_frame(IC_7610_ADDR, CONTROLLER_ADDR, 0x03)
@@ -2453,7 +2455,6 @@ class TestCivPacingIsSendToSend:
         gap = 0.025
         clock = _install_pacing_clock(monkeypatch, gap=gap)
         radio._civ_min_interval = gap
-        radio._civ_ack_sink_grace = 0.0
         _guard_radio_against_clock_jumps(radio, clock)
         radio._last_civ_send_monotonic = 0.0
         current = [True]
@@ -2506,7 +2507,6 @@ class TestCivPacingIsSendToSend:
         gap = 0.025
         clock = _install_pacing_clock(monkeypatch, gap=gap)
         radio._civ_min_interval = gap
-        radio._civ_ack_sink_grace = 0.0
         _guard_radio_against_clock_jumps(radio, clock)
         radio._last_civ_send_monotonic = 0.0
         observer: list[tx.ProviderPttObservation] = []
@@ -2564,7 +2564,6 @@ class TestCivPacingIsSendToSend:
         gap = 0.010
         clock = _install_pacing_clock(monkeypatch, gap=gap)
         radio._civ_min_interval = gap
-        radio._civ_ack_sink_grace = 0.0
         _guard_radio_against_clock_jumps(radio, clock)
         radio._last_civ_send_monotonic = 0.0
         radio._civ_runtime.start_worker()
