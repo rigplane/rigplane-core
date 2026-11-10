@@ -2157,11 +2157,13 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             )
         return True
 
-    async def _identity_read_loop(self, epoch: int, *, first_attempt_done: bool) -> None:
+    async def _identity_read_loop(
+        self, epoch: int, *, first_attempt_done: bool
+    ) -> None:
         """Ask until the radio answers, a few times, on this link epoch only."""
         try:
             delays = self._IDENTITY_READ_RETRY_DELAYS_S
-            for delay in (delays if first_attempt_done else (0.0, *delays)):
+            for delay in delays if first_attempt_done else (0.0, *delays):
                 if delay:
                     await asyncio.sleep(delay)
                 if await self._read_identity_attempt(epoch):

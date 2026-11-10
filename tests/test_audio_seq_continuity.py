@@ -135,9 +135,7 @@ def _rebuild_stubs(radio: IcomRadio) -> Iterator[None]:
                 _OfflineAudioTransport,
             )
         )
-        stack.enter_context(
-            patch.object(radio, "_start_identity_read")
-        )
+        stack.enter_context(patch.object(radio, "_start_identity_read"))
         stack.enter_context(patch.object(radio, "rearm_managed_tx", new=AsyncMock()))
         stack.enter_context(patch.object(radio, "_start_audio_watchdog"))
         for name in (

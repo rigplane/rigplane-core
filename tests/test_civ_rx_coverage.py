@@ -68,7 +68,6 @@ from rigplane.core.state_acquisition_policy import (
     RadioAcquisitionProfile,
     acquisition_policy_for_class,
 )
-from rigplane.core.radio_protocol import RadioIdentity, RadioIdentityStatus
 from rigplane.core.state_diagnostics import StateDiagnosticsRecorder
 from rigplane.core.tx_target import KnownTxTarget, TxReceiver, UnknownTxTarget
 from rigplane.core.tx_observation import (

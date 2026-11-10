@@ -31,7 +31,6 @@ import pytest
 from rigplane.audio import AudioPacket
 from rigplane.audio.session import AudioSessionEvent, RX_LIVENESS_TIMEOUT_S
 from rigplane.core.exceptions import ConnectionError as CoreConnectionError
-from rigplane.core.radio_protocol import RadioIdentity, RadioIdentityStatus
 from rigplane.runtime._audio_recovery import AudioRecoveryState
 from rigplane.runtime._connection_state import RadioConnectionState
 from scripts.soak import soak_driver

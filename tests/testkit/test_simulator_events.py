@@ -389,6 +389,7 @@ async def test_failed_attempt_inside_loop_connect_keeps_the_loop(
         handler = _FailedRound(level=logging.WARNING)
         with fast_connect():
             await radio.connect()
+
             async def readiness(*args: object, **kwargs: object) -> None:
                 if failure_point == "startup_readiness" and take_injection():
                     raise RuntimeError("injected startup-readiness failure")

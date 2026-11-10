@@ -144,7 +144,9 @@ def _rebuild_stubs(
     with ExitStack() as stack:
         stack.enter_context(patch("rigplane.transport.IcomCivTransport", transport_cls))
         stack.enter_context(
-            patch.object(radio._control_phase, "_after_reconnect_parts", new=AsyncMock())
+            patch.object(
+                radio._control_phase, "_after_reconnect_parts", new=AsyncMock()
+            )
         )
         for name in (
             "advance_generation",

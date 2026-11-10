@@ -40,7 +40,7 @@ from rigplane.runtime._civ_rx import (
 )
 from rigplane.runtime._connection_state import RadioConnectionState
 
-from rigplane_testkit.icom import FaultPlan, MockIcomRadio
+from rigplane_testkit.icom import MockIcomRadio
 
 from _perf_helpers import fast_connect
 
