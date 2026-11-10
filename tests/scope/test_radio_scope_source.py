@@ -567,3 +567,109 @@ async def test_observed_external_span_is_adopted_never_reasserted():
     await session.reconcile()
     assert sim.writes == []
     assert session.observed is not None and session.observed.span == new_index
+
+
+@pytest.mark.parametrize("model", ["ic705", "ic7300"])
+async def test_follow_grant_is_requested_window_cropped_to_native(model):
+    """MOR-4392: a ±25k follow request inside ±100k native coverage
+    grants the ±25k window centred on the tuned frequency — never the
+    native coverage itself. The coverage stays the truthful native
+    ±100k and the encoded frame covers the requested window.
+    """
+    profile = load_rig(Path("rigs") / f"{model}.toml").to_profile()
+    sim = _SimRadio(profile)
+    session = _sim_session(sim, profile)
+    source = RadioScopeSource(profile, session)
+    hub, encoded, Subscription = _sim_hub(source)
+    sub = await hub.subscribe(
+        Subscription("radio", 0, FollowView("vfo", 50_000), 475, 20)
+    )
+    try:
+        source.feed_frame(ScopeFrame(0, 0, 14_000_000, 14_200_000, bytes(475), False))
+        await sub.receive()
+        frame = encoded[-1]
+        assert (frame.view_start_hz, frame.view_end_hz) == (14_075_000, 14_125_000)
+        assert (frame.coverage_start_hz, frame.coverage_end_hz) == (
+            14_075_000,
+            14_125_000,
+        )
+        assert frame.width == 475
+        assert frame.pixels is not None and len(frame.pixels) == 475
+        assert sub.granted.view == View(14_075_000, 14_125_000)
+        assert sub.granted.coverage == Coverage(14_000_000, 14_200_000)
+    finally:
+        await sub.close()
+
+
+@pytest.mark.parametrize("model", ["ic705", "ic7300"])
+async def test_external_narrowing_clips_follow_view_without_writes(model):
+    """MOR-4392: the radio narrows behind our back (±100k → ±10k) —
+    the follow grant becomes the clipped intersection and Core writes
+    nothing back (MOR-4385 adoption, no loop).
+    """
+    profile = load_rig(Path("rigs") / f"{model}.toml").to_profile()
+    sim = _SimRadio(profile)
+    session = _sim_session(sim, profile)
+    source = RadioScopeSource(profile, session)
+    hub, encoded, Subscription = _sim_hub(source)
+    sub = await hub.subscribe(
+        Subscription("radio", 0, FollowView("vfo", 50_000), 475, 20)
+    )
+    try:
+        source.feed_frame(ScopeFrame(0, 0, 14_000_000, 14_200_000, bytes(475), False))
+        await sub.receive()
+        assert sub.granted.view == View(14_075_000, 14_125_000)
+        sim.writes.clear()
+        narrow_index = profile.scope_span_presets_hz.index(10_000)
+        sim.span_index = narrow_index
+        session.observe("span", narrow_index, 0)
+        source.feed_frame(ScopeFrame(0, 0, 14_090_000, 14_110_000, bytes(475), False))
+        await sub.receive()
+        narrowed = encoded[-1]
+        assert (narrowed.view_start_hz, narrowed.view_end_hz) == (
+            14_090_000,
+            14_110_000,
+        )
+        assert (narrowed.coverage_start_hz, narrowed.coverage_end_hz) == (
+            14_090_000,
+            14_110_000,
+        )
+        assert sub.granted.view == View(14_090_000, 14_110_000)
+        assert sub.granted.coverage == Coverage(14_090_000, 14_110_000)
+        await session.reconcile()
+        assert sim.writes == []
+    finally:
+        await sub.close()
+
+
+@pytest.mark.parametrize("model", ["ic705", "ic7300"])
+async def test_follow_resubscribe_writes_only_on_preset_change(model):
+    """MOR-4392: re-subscribing with a new follow spanHz writes the
+    radio only when ``_center_span`` picks a different preset — the
+    existing ScopeSession suppression, no new cache.
+
+    IC-705/7300 presets are ±half-widths, so 500k and 250k both need
+    preset 250000 (no write on that step) while 200k/100k/50k each
+    step down to 100000/50000/25000 (one span write each).
+    """
+    profile = load_rig(Path("rigs") / f"{model}.toml").to_profile()
+    sim = _SimRadio(profile, start_span_hz=500_000)
+    session = _sim_session(sim, profile)
+    source = RadioScopeSource(profile, session)
+    hub, _, Subscription = _sim_hub(source)
+    subs = []
+    try:
+        deltas = []
+        for span_hz in (500_000, 250_000, 200_000, 100_000, 50_000):
+            before = [w for w in sim.writes if w[0] == "span"]
+            subs.append(
+                await hub.subscribe(
+                    Subscription("radio", 0, FollowView("vfo", span_hz), 475, 20)
+                )
+            )
+            after = [w for w in sim.writes if w[0] == "span"]
+            deltas.append(len(after) - len(before))
+        assert deltas == [1, 0, 1, 1, 1]
+    finally:
+        for sub in subs:
+            await sub.close()
