@@ -17,7 +17,9 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-_spec = importlib.util.spec_from_file_location("pre_push_scope", ROOT / "scripts/pre_push_scope.py")
+_spec = importlib.util.spec_from_file_location(
+    "pre_push_scope", ROOT / "scripts/pre_push_scope.py"
+)
 assert _spec is not None and _spec.loader is not None
 scope = importlib.util.module_from_spec(_spec)
 sys.modules["pre_push_scope"] = scope  # @dataclass looks the module up by name
@@ -48,10 +50,12 @@ def repo(tmp_path: Path) -> Path:
     _write(r, "src/rigplane/web/server.py", "Y = 1\n")
     _write(r, "frontend/src/lib/meter.ts", "export const m = 1;\n")
     _write(r, "tests/test_quick_workflow.py", 'PIN = ".github/workflows/quick.yml"\n')
-    _write(r, "tests/test_bridge.py", "from rigplane.audio import bridge\n")
+    _write(r, "tests/test_bridge.py", "from rigplane.audio.bridge import X\n")
     _write(r, "tests/test_meter_asset.py", 'SRC = "frontend/src/lib/meter.ts"\n')
     _write(r, "tests/test_unrelated.py", "def test_x():\n    pass\n")
-    _write(r, "tests/conftest.py", "# mentions __init__.py and conftest.py on purpose\n")
+    _write(
+        r, "tests/conftest.py", "# mentions __init__.py and conftest.py on purpose\n"
+    )
     _git(r, "add", "-A")
     _git(r, "commit", "-q", "-m", "base")
     _git(r, "update-ref", "refs/remotes/origin/main", "HEAD")
@@ -66,7 +70,9 @@ def _related(repo: Path) -> list[str]:
     return scope.related_tests(repo, _changes(repo))
 
 
-def test_changed_files_sees_committed_unstaged_deleted_and_untracked(repo: Path) -> None:
+def test_changed_files_sees_committed_unstaged_deleted_and_untracked(
+    repo: Path,
+) -> None:
     _write(repo, "src/rigplane/audio/bridge.py", "X = 2\n")
     _git(repo, "commit", "-qam", "edit")
     _git(repo, "rm", "-q", "tests/test_unrelated.py")
@@ -84,7 +90,9 @@ def test_a_test_that_names_the_changed_source_module_runs(repo: Path) -> None:
     assert _related(repo) == ["tests/test_bridge.py"]
 
 
-def test_a_test_that_pins_a_workflow_file_runs_when_that_file_changes(repo: Path) -> None:
+def test_a_test_that_pins_a_workflow_file_runs_when_that_file_changes(
+    repo: Path,
+) -> None:
     # the dependency pytest cannot see: the test reads the workflow as data
     _write(repo, ".github/workflows/quick.yml", "name: changed\n")
     assert _related(repo) == ["tests/test_quick_workflow.py"]
@@ -123,15 +131,26 @@ def test_no_change_selects_nothing(repo: Path) -> None:
         (["pyproject.toml"], ["python"]),
         # src/rigplane/web crosses the boundary: CI runs core AND frontend and the strict check
         (["src/rigplane/web/server.py"], ["python", "frontend", "mypy-web"]),
-        (["src/rigplane/audio/bridge.py", "frontend/src/lib/meter.ts"], ["python", "frontend", "mypy-web"]),
-        (["docs/guide/web-ui.md"], ["python"]),  # prose that a test reads is a core input
+        (
+            ["src/rigplane/audio/bridge.py", "frontend/src/lib/meter.ts"],
+            ["python", "frontend", "mypy-web"],
+        ),
+        (
+            ["docs/guide/web-ui.md"],
+            ["python"],
+        ),  # prose that a test reads is a core input
         (["docs/guide/other.md"], []),
         (["README.md"], []),
         (["scripts/pre_push_scope.py"], []),
-        (["tests/test_bridge.py", "frontend/package-lock.json"], ["python", "frontend", "mypy-web"]),
+        (
+            ["tests/test_bridge.py", "frontend/package-lock.json"],
+            ["python", "frontend", "mypy-web"],
+        ),
     ],
 )
-def test_the_legs_follow_ci_classification(paths: list[str], expected: list[str]) -> None:
+def test_the_legs_follow_ci_classification(
+    paths: list[str], expected: list[str]
+) -> None:
     changes = [scope.Change("M", p) for p in paths]
     assert scope.legs(changes) == expected
 
@@ -157,7 +176,9 @@ def test_a_stale_host_ruff_is_reported_with_the_fix() -> None:
     assert scope.ruff_version_problem("0.15.2", "") is not None
 
 
-def test_the_command_line_prints_what_the_script_runs(repo: Path, tmp_path: Path) -> None:
+def test_the_command_line_prints_what_the_script_runs(
+    repo: Path, tmp_path: Path
+) -> None:
     _write(repo, "src/rigplane/audio/bridge.py", "X = 2\n")
     _write(repo, "uv.lock", LOCK)
 
@@ -170,7 +191,9 @@ def test_the_command_line_prints_what_the_script_runs(repo: Path, tmp_path: Path
             check=False,
         )
 
-    assert run("related", "--base", "origin/main").stdout.split() == ["tests/test_bridge.py"]
+    assert run("related", "--base", "origin/main").stdout.split() == [
+        "tests/test_bridge.py"
+    ]
     assert run("legs", "--base", "origin/main").stdout.split() == ["python"]
     assert run("ruff-pin", "ruff 0.15.2").returncode == 0
     stale = run("ruff-pin", "ruff 0.14.0")

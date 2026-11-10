@@ -70,7 +70,7 @@ def sandbox(tmp_path: Path) -> tuple[Path, dict[str, str]]:
     _write(repo, "src/rigplane/web/server.py", "Y = 1\n")
     _write(repo, "frontend/src/lib/meter.ts", "export const m = 1;\n")
     _write(repo, "frontend/package-lock.json", "{}\n")
-    _write(repo, "tests/test_bridge.py", "from rigplane.audio import bridge\n")
+    _write(repo, "tests/test_bridge.py", "from rigplane.audio.bridge import X\n")
     _write(repo, "docs/guide/other.md", "prose\n")
     _git(repo, "init", "-q", "-b", "main")
     _git(repo, "config", "user.email", "t@example.com")
@@ -90,7 +90,11 @@ def sandbox(tmp_path: Path) -> tuple[Path, dict[str, str]]:
         (bin_dir / name).write_text(body, encoding="utf-8")
         (bin_dir / name).chmod(0o755)
     env = {
-        **{k: v for k, v in os.environ.items() if not k.startswith(("FAKE_", "LOCAL_CI"))},
+        **{
+            k: v
+            for k, v in os.environ.items()
+            if not k.startswith(("FAKE_", "LOCAL_CI"))
+        },
         "PATH": f"{bin_dir}:{os.environ['PATH']}",
         "FAKE_LOG": str(log),
         "FAKE_REPLY": "PRE-PUSH-HOST: PASS",
@@ -98,7 +102,9 @@ def sandbox(tmp_path: Path) -> tuple[Path, dict[str, str]]:
     return repo, env
 
 
-def _run(repo: Path, env: dict[str, str], *args: str) -> subprocess.CompletedProcess[str]:
+def _run(
+    repo: Path, env: dict[str, str], *args: str
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["bash", "scripts/local-ci.sh", *args],
         cwd=repo,
@@ -110,7 +116,9 @@ def _run(repo: Path, env: dict[str, str], *args: str) -> subprocess.CompletedPro
     )
 
 
-def _host_run(repo: Path, env: dict[str, str], **extra: str) -> subprocess.CompletedProcess[str]:
+def _host_run(
+    repo: Path, env: dict[str, str], **extra: str
+) -> subprocess.CompletedProcess[str]:
     """The steps as the test host runs them (the orchestrator execs this with the merge base)."""
     return _run(
         repo,
@@ -127,7 +135,9 @@ def _steps(env: dict[str, str]) -> list[str]:
 
 
 def _uv_steps(env: dict[str, str]) -> list[str]:
-    return [s for s in _steps(env) if s.startswith("uv run ") and "pre_push_scope" not in s]
+    return [
+        s for s in _steps(env) if s.startswith("uv run ") and "pre_push_scope" not in s
+    ]
 
 
 def _change(repo: Path, rel: str) -> None:
@@ -137,7 +147,9 @@ def _change(repo: Path, rel: str) -> None:
 # ---- orchestration on the laptop: where it runs and what the exit code means -------------------
 
 
-def test_the_orchestrator_runs_the_host_steps_on_the_mac_mini_with_the_merge_base(sandbox) -> None:
+def test_the_orchestrator_runs_the_host_steps_on_the_mac_mini_with_the_merge_base(
+    sandbox,
+) -> None:
     repo, env = sandbox
     _change(repo, "src/rigplane/audio/bridge.py")
     result = _run(repo, env, "--pre-push", "--base", "origin/main")
@@ -147,7 +159,10 @@ def test_the_orchestrator_runs_the_host_steps_on_the_mac_mini_with_the_merge_bas
     assert "host=moroz@192.168.55.152" in log
     assert "argv=--run -- bash -c" in log
     mb = subprocess.run(
-        ["git", "-C", str(repo), "rev-parse", "HEAD"], text=True, capture_output=True, check=True
+        ["git", "-C", str(repo), "rev-parse", "HEAD"],
+        text=True,
+        capture_output=True,
+        check=True,
     ).stdout.strip()
     assert log.rstrip().endswith(f"_ {mb}")  # the merge base is the last argument
     remote = (Path(env["FAKE_LOG"]) / "remote-script").read_text(encoding="utf-8")
@@ -166,11 +181,21 @@ def test_the_test_host_can_be_overridden(sandbox) -> None:
     ("reply", "rc", "word"),
     [
         ("PRE-PUSH-HOST: PASS", 0, "PASS"),
-        ("PRE-PUSH-HOST: FAIL", 1, "FAIL"),  # a real failure: the builder fixes and reruns
-        ("", 2, "NOT RUN"),  # the host never reached its verdict line: CI stays the gate
+        (
+            "PRE-PUSH-HOST: FAIL",
+            1,
+            "FAIL",
+        ),  # a real failure: the builder fixes and reruns
+        (
+            "",
+            2,
+            "NOT RUN",
+        ),  # the host never reached its verdict line: CI stays the gate
     ],
 )
-def test_the_verdict_line_decides_the_exit_code(sandbox, reply: str, rc: int, word: str) -> None:
+def test_the_verdict_line_decides_the_exit_code(
+    sandbox, reply: str, rc: int, word: str
+) -> None:
     repo, env = sandbox
     _change(repo, "src/rigplane/audio/bridge.py")
     result = _run(repo, {**env, "FAKE_REPLY": reply}, "--pre-push")
@@ -188,7 +213,11 @@ def test_an_unreachable_host_is_not_a_failure(sandbox) -> None:
 def test_without_mini_test_it_refuses_instead_of_running_here(sandbox) -> None:
     repo, env = sandbox
     (Path(env["PATH"].split(":")[0]) / "mini-test").unlink()
-    result = _run(repo, {**env, "PATH": f"{env['PATH'].split(':')[0]}:/usr/bin:/bin"}, "--pre-push")
+    result = _run(
+        repo,
+        {**env, "PATH": f"{env['PATH'].split(':')[0]}:/usr/bin:/bin"},
+        "--pre-push",
+    )
     assert result.returncode == 2
     assert "mini-test" in result.stderr
     assert _steps(env) == []  # nothing ran on this machine
@@ -217,7 +246,9 @@ def test_the_output_never_carries_the_environment(sandbox) -> None:
 # ---- the steps on the test host ----------------------------------------------------------------
 
 
-def test_a_python_change_runs_ruff_imports_goldens_and_the_tests_that_mention_it(sandbox) -> None:
+def test_a_python_change_runs_ruff_imports_goldens_and_the_tests_that_mention_it(
+    sandbox,
+) -> None:
     repo, env = sandbox
     _change(repo, "src/rigplane/audio/bridge.py")
     result = _host_run(repo, env)
@@ -228,15 +259,25 @@ def test_a_python_change_runs_ruff_imports_goldens_and_the_tests_that_mention_it
     assert "uv run ruff format --check src/ tests/" in uv
     assert "uv run lint-imports" in uv
     for model in ("IC-7610", "X6200", "FTX-1"):
-        assert any(f"--model {model} validate --provider native --dry-run --gate" in s for s in uv)
+        assert any(
+            f"--model {model} validate --provider native --dry-run --gate" in s
+            for s in uv
+        )
     pytest_calls = [s for s in uv if s.startswith("uv run pytest")]
     assert len(pytest_calls) == 1 and pytest_calls[0].endswith("tests/test_bridge.py")
-    assert "--timeout=300" in pytest_calls[0] and "--timeout-method=thread" in pytest_calls[0]
-    assert not any("mypy" in s for s in uv)  # CI runs the strict web check only with the frontend
+    assert (
+        "--timeout=300" in pytest_calls[0]
+        and "--timeout-method=thread" in pytest_calls[0]
+    )
+    assert not any(
+        "mypy" in s for s in uv
+    )  # CI runs the strict web check only with the frontend
     assert not any(s.startswith(("npm", "npx")) for s in _steps(env))
 
 
-def test_a_frontend_change_runs_install_check_tests_and_build_with_ci_heap_size(sandbox) -> None:
+def test_a_frontend_change_runs_install_check_tests_and_build_with_ci_heap_size(
+    sandbox,
+) -> None:
     repo, env = sandbox
     _change(repo, "frontend/src/lib/meter.ts")
     result = _host_run(repo, env)
@@ -251,13 +292,17 @@ def test_a_frontend_change_runs_install_check_tests_and_build_with_ci_heap_size(
         f"npx vitest run --maxWorkers=4 {heap}",
         f"npm run build {heap}",
     ]
-    assert not any("ruff" in s for s in steps)  # a frontend-only diff skips the Python checks
+    assert not any(
+        "ruff" in s for s in steps
+    )  # a frontend-only diff skips the Python checks
 
 
 def test_npm_ci_is_skipped_when_node_modules_matches_the_lockfile(sandbox) -> None:
     repo, env = sandbox
     _change(repo, "frontend/src/lib/meter.ts")
-    digest = hashlib.sha1((repo / "frontend/package-lock.json").read_bytes()).hexdigest()[:12]
+    digest = hashlib.sha1(
+        (repo / "frontend/package-lock.json").read_bytes()
+    ).hexdigest()[:12]
     _write(repo, "frontend/node_modules/.mini-test-lock", digest + "\n")
     _host_run(repo, env)
     steps = _steps(env)
