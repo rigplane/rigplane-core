@@ -102,14 +102,10 @@ async def test_full_reconnect_retires_then_services_pending_off_debt(tmp_path) -
     radio._managed_tx_arm_lock = asyncio.Lock()
     radio._civ_transport = first_transport
     radio._conn_state = RadioConnectionState.DISCONNECTED
-    # This fixture exercises TX composition; the LAN gate is tested separately.
-    radio._lan_identity_connect_lock = asyncio.Lock()
+    radio._connect_lock = asyncio.Lock()
+    radio._identity_read_task = None
     radio._civ_epoch = 0
-    radio._lan_identity_owned_epoch = None
-    radio._lan_identity_answer_epoch = None
-    radio._lan_identity_completed_epoch = None
-    radio._lan_identity_revalidate_origin = False
-    radio._hard_reconnect_deferred_audio = None
+    radio._on_reconnect = None
     radio._owner_stop_epoch = 0
     radio._token_task = None
     radio._auto_reconnect = False
@@ -124,13 +120,6 @@ async def test_full_reconnect_retires_then_services_pending_off_debt(tmp_path) -
         connect=AsyncMock(side_effect=replace_link)
     )
 
-    async def identity_answer() -> bool:
-        radio._connection_identity = None
-        radio._lan_identity_owned_epoch = radio._civ_epoch
-        radio._lan_identity_answer_epoch = radio._civ_epoch
-        return True
-
-    radio._gate_lan_identity = AsyncMock(side_effect=identity_answer)
     radio._fetch_initial_state = AsyncMock()
     radio._reset_external_cat_session = lambda: None
     await radio.connect()
