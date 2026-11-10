@@ -3003,7 +3003,11 @@ class TestScopeSpanPresets:
         assert rig.to_profile().scope_span_presets_hz == ()
 
     def test_parses_declared_presets(self, tmp_path):
-        toml = _MINIMAL_TOML + "\n[scope]\nspan_presets_hz = [2500, 5000, 10000]\n"
+        toml = (
+            _MINIMAL_TOML
+            + "\n[scope]\nspan_presets_hz = [2500, 5000, 10000]\n"
+            + 'span_preset_semantics = "half_width"\n'
+        )
         p = _write_toml(tmp_path, toml)
         rig = load_rig(p)
         assert rig.scope_span_presets_hz == (2500, 5000, 10000)

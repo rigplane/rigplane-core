@@ -54,9 +54,9 @@ async def test_profile_center_span_and_partial(model):
         2 * preset for preset in profile.scope_span_presets_hz
     )
     view = View(14_090_000, 14_105_000)
-    assert plugin.coverage_for(view) == Coverage(14_075_000, 14_125_000)
+    assert plugin.coverage_for(view) == Coverage(14_090_000, 14_110_000)
     await plugin.set_view(view)
-    assert writer.writes[-1] == (14_100_000, 25000, 0)
+    assert writer.writes[-1] == (14_100_000, 10000, 0)
     wide = View(13_000_000, 15_000_000)
     assert (await plugin.set_view(wide)).coverage == Coverage(13_600_000, 14_600_000)
     writer.frequency = 7_100_000
@@ -87,7 +87,7 @@ async def test_icom_span_steps_grant_their_own_preset_coverage(
     granted = await source.set_view(FollowView("vfo", view_width))
     half = view_width / 2
     assert granted.view == View(14_100_000 - half, 14_100_000 + half)
-    assert granted.coverage == granted.view
+    assert granted.coverage == Coverage(14_100_000 - half, 14_100_000 + half)
     assert writer.writes[-1] == (14_100_000, preset, 0)
 
 
@@ -112,7 +112,7 @@ async def test_full_width_semantics_profile_grants_half_of_each_preset(tmp_path)
     assert source.capabilities().span_choices_hz == (2500, 5000, 10000)
     granted = await source.set_view(FollowView("vfo", 5000))
     assert granted.view == View(14_097_500, 14_102_500)
-    assert granted.coverage == granted.view
+    assert granted.coverage == Coverage(14_097_500, 14_102_500)
     assert writer.writes[-1] == (14_100_000, 5000, 0)
     wide = await source.set_view(FollowView("vfo", 9000))
     assert wide.coverage == Coverage(14_095_000, 14_105_000)

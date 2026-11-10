@@ -121,6 +121,12 @@ class ScopeSession:
         await self.set_demand(ScopeDemand(subscribers, active))
 
     async def set_center(self, center_hz: float, span_hz: float, receiver: int) -> None:
+        """Center-mode viewport write.
+
+        ``span_hz`` is the profile preset value (``spans``), not the view
+        width: on Icom CI-V it is the ±half-width whose index the radio
+        selects (MOR-4385).
+        """
         await self.configure(
             receiver=receiver,
             mode=0,

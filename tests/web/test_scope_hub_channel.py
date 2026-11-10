@@ -7,7 +7,7 @@ import pytest
 from rigplane.profiles import resolve_radio_profile
 from rigplane.runtime.radio_scope_source import RadioScopeSource
 from rigplane.scope import ScopeFrame
-from rigplane.scope.models import ScopeTarget, Subscription, View
+from rigplane.scope.models import Coverage, ScopeTarget, Subscription, View
 from rigplane.testing.timing import await_until
 from rigplane.web.api_contract import STABLE_WEBSOCKET_ROUTES
 from rigplane.web.handlers.scope import ScopeHandler
@@ -523,7 +523,7 @@ async def test_writer_maps_profile_span_index_and_never_retunes_off_vfo_view(
         # MOR-4385: Icom presets are ±half-widths, so coverage is twice
         # the preset sent to the radio: a view reaching 100 kHz off center
         # gets the ±100 kHz preset and a 200 kHz wide grant.
-        assert grant.coverage == View(14_000_000, 14_200_000)
+        assert grant.coverage == Coverage(14_000_000, 14_200_000)
         preset_hz = (grant.coverage.end_hz - grant.coverage.start_hz) / 2
         index = radio.profile.scope_span_presets_hz.index(preset_hz)
         assert radio.scope_writes == [("mode", 0, 0), ("span", index, 0)]
