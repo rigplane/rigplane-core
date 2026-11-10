@@ -463,9 +463,7 @@ def test_expire_ack_sinks_drops_only_what_each_window_closed() -> None:
     has closed; the read's (100 + 5) keeps it claimable.
     """
     tracker = CivRequestTracker()
-    read = tracker.register_ack(
-        wait=False, response_key=_TUNER, refused_read=_TUNER
-    )
+    read = tracker.register_ack(wait=False, response_key=_TUNER, refused_read=_TUNER)
     write = tracker.register_ack(wait=False)
     tracker.mark_ack_sink_sent(read, sent_monotonic=100.0)
     tracker.mark_ack_sink_sent(write, sent_monotonic=90.0)
@@ -504,9 +502,7 @@ async def test_a_read_within_its_window_keeps_the_refusal_off_the_next_write() -
     lands on that read — not on the next write's waiter, and not on an
     s_meter sink registered after it."""
     tracker = CivRequestTracker()
-    tuner = tracker.register_ack(
-        wait=False, response_key=_TUNER, refused_read=_TUNER
-    )
+    tuner = tracker.register_ack(wait=False, response_key=_TUNER, refused_read=_TUNER)
     s_meter = tracker.register_ack(
         wait=False, response_key=_S_METER, refused_read=_S_METER
     )

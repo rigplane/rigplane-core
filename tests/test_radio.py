@@ -1635,14 +1635,19 @@ class TestAckSinkRobustness:
         late_refusal = parse_civ_frame(build_civ_frame(CONTROLLER_ADDR, addr, 0xFA))
         write_ack = parse_civ_frame(build_civ_frame(CONTROLLER_ADDR, addr, 0xFB))
         with patch.object(runtime, "start_pump"):
-            assert await runtime._execute_civ_raw(refused_read, wait_response=False) is None
+            assert (
+                await runtime._execute_civ_raw(refused_read, wait_response=False)
+                is None
+            )
             task = asyncio.create_task(radio.set_freq(7_218_000))
             try:
                 # Later than the retired fixed grace (120 ms): on the old
                 # code the read's sink was already dropped when this FA
                 # landed, and it settled the write's fresh waiter.
                 await asyncio.sleep(0.2)
-                await runtime._route_civ_frame(late_refusal, generation=radio._civ_epoch)
+                await runtime._route_civ_frame(
+                    late_refusal, generation=radio._civ_epoch
+                )
                 await await_until(
                     lambda: len(mock_transport.sent_packets) >= 2,
                     description="the blocking write to go out",
@@ -1689,11 +1694,16 @@ class TestAckSinkRobustness:
             build_civ_frame(CONTROLLER_ADDR, addr, 0x04, data=bytes([Mode.USB, 0x01]))
         )
         with patch.object(runtime, "start_pump"):
-            assert await runtime._execute_civ_raw(refused_read, wait_response=False) is None
+            assert (
+                await runtime._execute_civ_raw(refused_read, wait_response=False)
+                is None
+            )
             task = asyncio.create_task(radio.get_mode_info())
             try:
                 await asyncio.sleep(0.2)
-                await runtime._route_civ_frame(late_refusal, generation=radio._civ_epoch)
+                await runtime._route_civ_frame(
+                    late_refusal, generation=radio._civ_epoch
+                )
                 # Let a waiter the refusal wrongly settled fail before the
                 # real answer can also resolve it (``asyncio.wait`` checks
                 # the response future first).

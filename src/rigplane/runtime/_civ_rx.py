@@ -2787,9 +2787,7 @@ class CivRuntime:
         for path in scheduler.declared_paths():
             query = resolve(path)
             identity = (
-                read_identity_for_query(
-                    query, scope_receiver, profile.supports_cmd29
-                )
+                read_identity_for_query(query, scope_receiver, profile.supports_cmd29)
                 if query is not None
                 else None
             )
@@ -4848,9 +4846,7 @@ class CivRuntime:
                     # registration above (the pacing gap is this side's own
                     # scheduling) — the same rule the blocking branch
                     # applies to its ``_civ_get_timeout`` budget (MOR-4384).
-                    tracker.mark_ack_sink_sent(
-                        ack_sink_token, sent_monotonic=sent_at
-                    )
+                    tracker.mark_ack_sink_sent(ack_sink_token, sent_monotonic=sent_at)
                 check_current()
             except (Exception, asyncio.CancelledError) as exc:
                 if ack_sink_token is not None:
