@@ -1226,7 +1226,7 @@ describe('SpectrumPanel component', () => {
     expect(parseFloat(target.querySelector<HTMLElement>('.waterfall-content .tune-line')!.style.left)).toBeCloseTo(expectedLeft);
   });
 
-  it('maps a click through the zoomed View and retains it after a non-drag release', async () => {
+  it('maps a click through the zoomed View and follows on after a non-drag release', async () => {
     authorityHarness.state.current = authority({ frequencyHz: 14_050_000 });
     runtimeHarness.state.currentCaps = structuredClone(IC7300_CAPABILITIES);
     const target = mountPanel(); emitFrame(); await flushWaterfallPaint();
@@ -1236,7 +1236,39 @@ describe('SpectrumPanel component', () => {
     pointer(spectrum, 'pointerdown', 90, 150); pointer(spectrum, 'pointerup', 90, 150);
     expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledExactlyOnceWith(14_063_000, 0);
     const request = JSON.parse(target.querySelector('.spectrum-panel')!.getAttribute('data-scope-subscription')!);
-    expect(request.view).toEqual({ startHz: 14_025_000, endHz: 14_075_000 });
+    expect(request.view).toEqual({ follow: 'vfo', spanHz: 50_000 });
+  });
+
+  it('keeps follow mode with the zoomed width and re-centres on a later VFO move (MOR-4387)', async () => {
+    authorityHarness.state.current = authority({ frequencyHz: 14_050_000 });
+    runtimeHarness.state.currentCaps = structuredClone(IC7300_CAPABILITIES);
+    const target = mountPanel(); emitFrame(); await flushWaterfallPaint();
+    target.querySelector<HTMLButtonElement>('[data-testid="scope-zoom-in"]')!.click();
+    flushSync(); await flushWaterfallPaint();
+    const read = () => JSON.parse(target.querySelector('.spectrum-panel')!.getAttribute('data-scope-subscription')!);
+    expect(read().view).toEqual({ follow: 'vfo', spanHz: 50_000 });
+    expect(spectrumRendererHarness.lastOptions).toMatchObject({ spanHz: 50_000 });
+    authorityHarness.state.current = authority({ frequencyHz: 14_080_000 });
+    refreshSpectrumAuthority(); flushSync(); await flushWaterfallPaint();
+    expect(read().view).toEqual({ follow: 'vfo', spanHz: 50_000 });
+    expect(spectrumRendererHarness.lastOptions).toMatchObject({ spanHz: 50_000, tuneHz: 14_080_000 });
+  });
+
+  it('returns a pinned band preset to follow when the confirmed VFO leaves the window (MOR-4387)', async () => {
+    authorityHarness.state.current = authority({ frequencyHz: 14_050_250 });
+    runtimeHarness.state.currentCaps = structuredClone(IC7300_CAPABILITIES);
+    const target = mountPanel(); emitFrame(); await flushWaterfallPaint();
+    const select = target.querySelector<HTMLSelectElement>('[data-testid="scope-preset-select"]')!;
+    select.value = '0'; select.dispatchEvent(new Event('change', { bubbles: true }));
+    flushSync(); await flushWaterfallPaint();
+    const read = () => JSON.parse(target.querySelector('.spectrum-panel')!.getAttribute('data-scope-subscription')!);
+    expect(read().view).toEqual({ startHz: 14_000_000, endHz: 14_350_000 });
+    authorityHarness.state.current = authority({ frequencyHz: 14_100_000 });
+    refreshSpectrumAuthority(); flushSync(); await flushWaterfallPaint();
+    expect(read().view).toEqual({ startHz: 14_000_000, endHz: 14_350_000 });
+    authorityHarness.state.current = authority({ frequencyHz: 14_500_000 });
+    refreshSpectrumAuthority(); flushSync(); await flushWaterfallPaint();
+    expect(read().view).toEqual({ follow: 'vfo', spanHz: 100_000 });
   });
 
   it('applies repeated zoom and absolute requested bounds to a FIX scope too', async () => {
@@ -1255,7 +1287,9 @@ describe('SpectrumPanel component', () => {
     runtimeHarness.state.currentCaps = structuredClone(IC7300_CAPABILITIES);
     authorityHarness.state.current = authority({ frequencyHz: 14_050_000 });
     const target = mountPanel();
-    emitFrame();
+    // FIX scope: absolute requested bounds stay pinned there, so a zoomed-out
+    // request wider than the delivered coverage keeps both hatch margins.
+    emitFrame({ mode: 1 });
     target.querySelector<HTMLButtonElement>('[data-testid="scope-zoom-out"]')!.click();
     flushSync(); await flushWaterfallPaint();
     const hatches = target.querySelectorAll<HTMLElement>('.scope-hatch');
