@@ -11,6 +11,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.2.0rc8] — 2026-11-09
+
+This is the eighth release candidate of 3.2.0. Equals 3.2.0rc7 plus the Xiegu G7250 profile and macOS USB audio pairing for radios whose CODECs share one name.
+
+### Added
+
+- A Xiegu G7250 profile (USB CI-V). Discovery tells Xiegu models apart by their model id as profile data, and an unknown Xiegu id now reports "Unknown Xiegu" instead of falling back to X6200. (MOR-4352, #4544)
+- macOS USB audio pairing for radios whose CODECs share one name, such as G7250 and FTX-1 ("USB Audio Device"), by matching the CoreAudio enumeration order when device counts and channel numbers agree, otherwise refusing as before. (MOR-4356, #4545)
+
 ## [3.2.0rc7] — 2026-11-09
 
 This is the seventh release candidate of 3.2.0. Equals 3.2.0rc6 except one test fix: the scope-hidden test no longer sits on a float idle==interval boundary that failed on hosts in some uptime bands (the rc6 PyPI publish validation failed on it). No product code change. (MOR-4353, #4542)
@@ -5260,7 +5269,8 @@ These deprecation closures were announced in v0.19 and dropped on schedule.
 - Transport layer, authentication, CI-V commands, meters, PTT, keep-alive.
 - Clean-room Icom LAN UDP protocol implementation.
 
-[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.2.0rc7...HEAD
+[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.2.0rc8...HEAD
+[3.2.0rc8]: https://github.com/rigplane/rigplane-core/compare/v3.2.0rc7...v3.2.0rc8
 [3.2.0rc7]: https://github.com/rigplane/rigplane-core/compare/v3.2.0rc6...v3.2.0rc7
 [3.2.0rc6]: https://github.com/rigplane/rigplane-core/compare/v3.2.0rc5...v3.2.0rc6
 [3.2.0rc5]: https://github.com/rigplane/rigplane-core/compare/v3.2.0rc4...v3.2.0rc5
