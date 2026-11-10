@@ -1,13 +1,23 @@
-"""Pins two properties of `publish.yml` that a release depends on.
+"""Pins properties of `publish.yml` that a release depends on.
 
-Text-level checks, like `test_ci_pytest_invocation.py`: this repo declares no
-YAML parser for tests. They read the workflow text only; they do not run it.
+The first tests are text-level checks, like `test_ci_pytest_invocation.py`:
+this repo declares no YAML parser as a direct test dependency. The
+MOR-4375 rehearsal pins below parse the workflow instead: reachability
+(no step of the file may reach `uv publish` from a non-release event) and
+trigger shape are structural facts that substring pins cannot express.
+PyYAML is present in every environment that runs these tests (the dev
+group pulls it in via the docs tooling; quick-python and validate both
+`uv sync --all-extras`), so if it ever disappears these tests fail at
+import — visibly, not silently.
 """
 
 from __future__ import annotations
 
 import re
 from pathlib import Path
+from typing import Any
+
+import yaml
 
 PUBLISH = (
     Path(__file__).resolve().parent.parent / ".github" / "workflows" / "publish.yml"
@@ -20,6 +30,38 @@ def _job(name: str) -> str:
     match = re.search(rf"^  {name}:\n(.*?)(?=^  \w[\w-]*:\n|\Z)", text, re.S | re.M)
     assert match, f"publish.yml has no `{name}` job"
     return match.group(1)
+
+
+def _parsed() -> dict[str, Any]:
+    workflow: dict[str, Any] = yaml.safe_load(PUBLISH.read_text())
+    assert isinstance(workflow, dict), "publish.yml did not parse to a mapping"
+    return workflow
+
+
+def _triggers(workflow: dict[str, Any]) -> dict[str, Any]:
+    # YAML 1.1 parses the bare key `on:` as boolean True; accept the quoted
+    # string form too so the pin survives a future `on:` quoting change.
+    triggers = workflow.get(True, workflow.get("on"))
+    assert isinstance(triggers, dict), "publish.yml has no `on:` trigger map"
+    return triggers
+
+
+def _cron_entries(
+    node: Any, path: tuple[str, ...] = ()
+) -> list[tuple[tuple[str, ...], Any]]:
+    """Every `cron:` key in the parsed workflow, with its key path."""
+    entries: list[tuple[tuple[str, ...], Any]] = []
+    if isinstance(node, dict):
+        for key, value in node.items():
+            key_path = (*path, str(key))
+            if key == "cron":
+                entries.append((key_path, value))
+            else:
+                entries.extend(_cron_entries(value, key_path))
+    elif isinstance(node, list):
+        for index, value in enumerate(node):
+            entries.extend(_cron_entries(value, (*path, str(index))))
+    return entries
 
 
 def test_validate_pins_uv_to_the_matrix_interpreter() -> None:
@@ -72,3 +114,79 @@ def test_validate_runs_on_the_pool_quick_runs_its_frontend_on() -> None:
     validate_pool = re.search(r"^    runs-on: (\[.*\])$", _job("validate"), re.M)
     assert validate_pool, "validate declares no list-form `runs-on`"
     assert validate_pool.group(1) == quick_pool.group(1)
+
+
+# --- Nightly untagged rehearsal (MOR-4375): structural pins on the parsed
+# workflow. schedule/workflow_dispatch runs exercise the release pipeline
+# with no release; the assertions below are what keeps that a rehearsal
+# rather than an accidental publish path.
+
+
+def test_rehearsal_triggers_exist_and_schedule_is_the_only_cron() -> None:
+    workflow = _parsed()
+    triggers = _triggers(workflow)
+    assert triggers.get("release") == {"types": ["published"]}, (
+        "the release trigger itself must stay exactly `published`"
+    )
+    assert "workflow_dispatch" in triggers, (
+        "publish.yml needs a `workflow_dispatch` trigger so the active "
+        "release branch can be rehearsed on demand (MOR-4375)"
+    )
+    assert triggers.get("schedule") == [{"cron": "0 6 * * *"}], (
+        "the nightly rehearsal must be exactly one schedule entry, daily 06:00 UTC"
+    )
+    crons = _cron_entries(workflow)
+    assert len(crons) == 1, (
+        f"the schedule entry must be the only cron in the file; found {crons!r}"
+    )
+    [(path, value)] = crons
+    assert value == "0 6 * * *"
+    assert path[-3:] == ("schedule", "0", "cron"), (
+        f"the only cron must live under the schedule trigger; path {path!r}"
+    )
+
+
+def test_publish_job_is_release_only_and_keeps_needing_build() -> None:
+    publish = _parsed()["jobs"]["publish"]
+    assert publish.get("needs") == "build", (
+        "the publish job must need build; the textual `needs: build` first "
+        "line is pinned by test_publish_radio_smoke_gate"
+        ".test_needs_chain_unchanged"
+    )
+    assert publish.get("if") == "github.event_name == 'release'", (
+        "the nightly rehearsal (schedule/workflow_dispatch) must never "
+        "reach the PyPI upload: only a published release may. The exact "
+        "string also rules out an always()/failure() escape hatch."
+    )
+
+
+def test_the_pypi_upload_step_cannot_be_reached_from_a_non_release_event() -> None:
+    workflow = _parsed()
+    uploading = {
+        name
+        for name, job in workflow["jobs"].items()
+        for step in job.get("steps") or []
+        if "uv publish" in str(step.get("run") or "")
+    }
+    assert uploading == {"publish"}, (
+        f"only the publish job may run `uv publish`; found it in {sorted(uploading)}"
+    )
+    publish = workflow["jobs"]["publish"]
+    assert publish.get("if") == "github.event_name == 'release'", (
+        "the job holding the only `uv publish` step must itself be "
+        "release-only: a skipped job also skips everything that needs it, "
+        "so the `if` is the barrier that keeps schedule/dispatch runs away "
+        "from PyPI"
+    )
+    assert publish.get("needs") == "build", (
+        "the upload job must sit behind build, never beside it"
+    )
+
+
+def test_build_job_has_a_timeout() -> None:
+    build = _parsed()["jobs"]["build"]
+    assert build.get("timeout-minutes") == 15, (
+        "the build job needs its own timeout: it measures about a minute, "
+        "so 15 minutes covers a cold npm ci + uv build while a hung build "
+        "still releases the self-hosted runner (validate already has 25)"
+    )

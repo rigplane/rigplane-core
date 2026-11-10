@@ -3,6 +3,17 @@ name: Publish to PyPI
 on:
   release:
     types: [published]
+  schedule:
+    # Nightly untagged rehearsal (MOR-4375): the validate + build part of
+    # the release pipeline runs against the default branch's head with no
+    # release — the receipt step and the publish job below are
+    # release-only, so nothing downloads receipts and nothing reaches
+    # PyPI. A candidate is cut only from a commit whose rehearsal is green
+    # (AGENTS.md, "Release-candidate freeze"). GitHub runs scheduled
+    # workflows on the default branch only; the active release branch is
+    # rehearsed by dispatching this workflow on that ref.
+    - cron: '0 6 * * *'
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -51,6 +62,10 @@ jobs:
         run: uv python install ${{ matrix.python-version }}
 
       - name: Verify radio smoke receipts
+        # Release-only (MOR-4375): a rehearsal (schedule or dispatch) has
+        # no release and no receipts to verify, so this step is skipped and
+        # the rest of validate runs; on a release the gate below stays a
+        # mechanical condition of the publish.
         # MOR-3839: live radio smoke is a mechanical condition of a PyPI
         # publish. Both receipts must be attached to the triggering release
         # and validate against the tag and the tagged commit; a missing asset
@@ -61,6 +76,7 @@ jobs:
         # `uv run --no-project python` (job-level UV_PYTHON pins it),
         # because the runners' system python3 is 3.10 with no tomllib and
         # the checker needs Python >= 3.11.
+        if: github.event_name == 'release'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ github.event.release.tag_name }}
@@ -129,6 +145,9 @@ jobs:
   build:
     needs: validate
     runs-on: [self-hosted, Linux, ARM64, build]
+    # Measured about 1 minute on the build pool; 15 covers a cold npm ci
+    # plus uv build while a hung build still releases the runner.
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
 
@@ -200,6 +219,11 @@ jobs:
 
   publish:
     needs: build
+    # Release-only (MOR-4375): the nightly rehearsal ends at build —
+    # nothing but a published release may reach uv publish. The `pypi`
+    # environment has no protection rules, so this `if` is the only
+    # barrier between a rehearsal and an accidental upload.
+    if: github.event_name == 'release'
     runs-on: [self-hosted, Linux, ARM64, build]
     environment:
       name: pypi
