@@ -257,6 +257,29 @@ async def test_follow_view_refreshes_and_slow_consumer_keeps_only_latest(virtual
 
 
 @pytest.mark.asyncio
+async def test_passive_subscription_attaches_without_writing_and_tracks_coverage():
+    """MOR-4385: a max_fps=0 subscription never calls set_view (no radio
+    write) but its grant still tracks the streamed native coverage."""
+    hub, source, encoder = setup()
+    active = await hub.subscribe(request(width=4, fps=30))
+    try:
+        views_before = list(source.set_views)
+        passive = await hub.subscribe(
+            request(width=4, view=FollowView("vfo", 4), fps=0)
+        )
+        try:
+            assert source.set_views == views_before
+            source.emit(NativeFrame(0, Coverage(10, 14), b"efgh"))
+            assert source.set_views == views_before
+            assert passive.granted.view == View(10, 14)
+            assert passive.granted.coverage == Coverage(10, 14)
+        finally:
+            await passive.close()
+    finally:
+        await active.close()
+
+
+@pytest.mark.asyncio
 async def test_stop_serializes_new_demand_and_survives_close_cancellation(
     virtual_clock,
 ):
