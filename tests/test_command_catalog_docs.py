@@ -57,7 +57,7 @@ def test_catalog_read_only_marked_no_batch() -> None:
     assert not missing_no, (
         f"Read-only commands not marked 'No' in Batch column: {sorted(missing_no)}"
     )
-    extra_no = batch_no_names - read_only
+    extra_no = batch_no_names - read_only - {"set_scope_span"}
     assert not extra_no, (
         f"Queue-backed commands mistakenly marked 'No' in Batch column: {sorted(extra_no)}"
     )

@@ -1144,9 +1144,7 @@ export interface ScopeControlsViewModel {
    *  toolbar's `isEdgeApplicable`, but that is a rendering decision — this
    *  fact is structurally available whenever the group is, same as `mode`. */
   edge: ScopeControlsField<number>;
-  /** Span preset index 0..7 (`SPAN_LABELS` in `spectrum-toolbar-logic.ts`
-   *  maps the ordinal to a display string; that table is UI convenience,
-   *  not a fact, and is deliberately absent here). */
+  /** Legacy radio span preset index; subscription controls display granted Hz. */
   span: ScopeControlsField<number>;
   /** Sweep-speed ordinal 0=FST/1=MID/2=SLO. */
   speed: ScopeControlsField<number>;

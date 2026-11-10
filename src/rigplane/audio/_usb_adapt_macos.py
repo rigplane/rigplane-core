@@ -3,18 +3,73 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 
 from rigplane.audio._portaudio_enum import PortAudioEnumeration
 from rigplane.audio._usb_names import endpoint_name_key
-from rigplane.audio._usb_raw_macos import RawMacos
+from rigplane.audio._usb_raw_macos import CoreAudioDeviceRow, RawMacos
 from rigplane.audio._usb_snapshot import (
     AudioEndpoint,
-    Flow,
     SerialPortRef,
     Unavailable,
     UsbNode,
     UsbSnapshot,
 )
+
+
+def _portaudio_binding(
+    rows: Sequence[CoreAudioDeviceRow], portaudio: PortAudioEnumeration
+) -> dict[str, int]:
+    """Bind CoreAudio devices to PortAudio records by enumeration order.
+
+    PortAudio caches its device list at initialization and is never
+    re-initialized, while this snapshot reads CoreAudio fresh; after a
+    hot-plug the two lists disagree. So nothing binds at all unless the
+    WHOLE ordered sequence of ``(endpoint_name_key(name),
+    input_channels, output_channels)`` of the CoreAudio devices (rows with
+    uid and name) equals the ordered sequence of the PortAudio records on
+    the "Core Audio" host API. With the sequences equal, both lists walked
+    the same ``kAudioHardwarePropertyDevices`` order, and the k-th
+    CoreAudio device is the k-th PortAudio record — per name, the k-th to
+    the k-th. Keys are CoreAudio UIDs, the endpoint identity.
+    """
+    api_index = next(
+        (api.index for api in portaudio.hostapis if api.name == "Core Audio"),
+        None,
+    )
+    if api_index is None:
+        return {}
+    devices: list[tuple[str, tuple[str, int | None, int | None]]] = []
+    for row in rows:
+        uid, name = row["uid"], row["name"]
+        if not uid or name is None:
+            continue
+        devices.append(
+            (
+                uid,
+                (
+                    endpoint_name_key(name),
+                    row["input_channels"],
+                    row["output_channels"],
+                ),
+            )
+        )
+    records = sorted(
+        (record for record in portaudio.devices if record.hostapi == api_index),
+        key=lambda record: record.index,
+    )
+    if [shape for _, shape in devices] != [
+        (
+            endpoint_name_key(record.name),
+            record.max_input_channels,
+            record.max_output_channels,
+        )
+        for record in records
+    ]:
+        return {}
+    return {
+        uid: record.index for (uid, _), record in zip(devices, records, strict=True)
+    }
 
 
 def adapt_macos(raw: RawMacos, portaudio: PortAudioEnumeration) -> UsbSnapshot:
@@ -60,9 +115,10 @@ def adapt_macos(raw: RawMacos, portaudio: PortAudioEnumeration) -> UsbSnapshot:
         )
         unavailable.append(Unavailable(normalized, part + ":" + failure["reason"]))
     endpoints = []
-    for row in raw.audio_devices:
-        uid = row["uid"]
-        name = row["name"]
+    binding = _portaudio_binding(raw.audio_devices, portaudio)
+    for device_row in raw.audio_devices:
+        uid = device_row["uid"]
+        name = device_row["name"]
         if not uid or name is None:
             unavailable.append(Unavailable("endpoints", "CoreAudio identity missing"))
             continue
@@ -90,18 +146,18 @@ def adapt_macos(raw: RawMacos, portaudio: PortAudioEnumeration) -> UsbSnapshot:
                 == endpoint_name_key(device["product"] or "")
             }
         owner = next(iter(owners)) if len(owners) == 1 else "opaque:" + uid
-        directions: tuple[tuple[Flow, str], ...] = (
-            ("capture", "input_channels"),
-            ("render", "output_channels"),
-        )
-        for flow, field in directions:
-            channels = row[field]
+        for flow, channels in (
+            ("capture", device_row["input_channels"]),
+            ("render", device_row["output_channels"]),
+        ):
             if channels is None:
                 unavailable.append(
                     Unavailable("endpoints", "CoreAudio channels missing")
                 )
             elif channels > 0:
-                endpoints.append(AudioEndpoint(uid, owner, flow, name))
+                endpoints.append(
+                    AudioEndpoint(uid, owner, flow, name, binding.get(uid))
+                )
     return UsbSnapshot(
         "macos",
         (*roots.values(), *nodes),

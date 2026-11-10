@@ -2823,6 +2823,7 @@
         {moreAsSheet}
         onToggleChange={(field, next) => SCOPE_TOGGLE_INTENT[field](next)}
         onChoiceChange={(field, value) => SCOPE_CHOICE_INTENT[field](value)}
+        spanHz={runtime.scope?.spanControl?.spanHz ?? null}
         onSpanChange={scopeIntents.onSpanChange}
         onSpeedChange={scopeIntents.onSpeedChange}
         onRefChange={scopeIntents.onRefChange}

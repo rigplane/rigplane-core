@@ -13,9 +13,11 @@ import { resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Capabilities, FilterModeConfig } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';
+import type { ScopeSpanControl } from '$lib/runtime/scope-controller.svelte';
 import { FTX1_CAPABILITIES } from '../../adapters/__tests__/fixtures/ftx1-profile';
 
 const h = vi.hoisted(() => ({
+  spanStep: vi.fn(),
   state: null as ServerState | null,
   unavailable: new Set<string>(),
   caps: {
@@ -82,6 +84,7 @@ vi.mock('$lib/stores/capabilities.svelte', () => ({
 
 vi.mock('$lib/runtime/frontend-runtime', () => ({
   runtime: {
+    scope: { spanControl: { spanHz: 100000, step: h.spanStep } satisfies ScopeSpanControl },
     get rxEnabled() { return h.rxEnabled; },
     get audio() { return { volume: h.volume }; },
     setMuted: h.setMuted,
@@ -1871,7 +1874,6 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
 
     expect(exactCalls()).toEqual([
       ['set_dial_lock', { on: true }],
-      ['set_scope_span', { span: 7 }],
       // At the declared floor the down-step stays at -20 (clamped to the
       // radio's own range, not the old hard-coded -30).
       ['set_scope_ref', { ref: -20 }],
@@ -1913,7 +1915,6 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     expect(dispatchKeyboardRadioAction({ action: 'scope_ref_step', params: { direction: 'up' } })).toBe(true);
     expect(dispatchKeyboardRadioAction({ action: 'scope_toggle_fst' })).toBe(true);
     expect(exactCalls()).toEqual([
-      ['set_scope_span', { span: 0 }],
       // 10 is inside the IC-705-style declared range: the up-step goes to
       // 15 on the 5 dB grid, beyond the old hard-coded +10 ceiling.
       ['set_scope_ref', { ref: 15 }],
@@ -2640,7 +2641,7 @@ describe('MOR-1409 A03e canonical system, scope, and local keyboard ownership', 
     scope.onDuringTxChange(true); scope.onCenterTypeChange(2); scope.onVbwChange(true); scope.onRbwChange(2);
     expect(exactCalls()).toEqual([
       ['set_dial_lock', { on: true }], ['set_powerstat', { on: false }],
-      ['set_scope_mode', { mode: 0 }], ['set_scope_edge', { edge: 1 }], ['set_scope_span', { span: 7 }],
+      ['set_scope_mode', { mode: 0 }], ['set_scope_edge', { edge: 1 }],
       ['set_scope_speed', { speed: 2 }], ['set_scope_hold', { on: true }], ['set_scope_ref', { ref: 10 }],
       ['set_scope_dual', { dual: true }], ['switch_scope_receiver', { receiver: 1 }],
       ['set_scope_during_tx', { on: true }], ['set_scope_center_type', { center_type: 2 }],
@@ -3319,4 +3320,17 @@ describe('MOR-2535 onFilterWidthReset radio-default reset intent', () => {
     expect(h.sendCommand).not.toHaveBeenCalled();
     expect(getCommandLifecycles()).toHaveLength(0);
   });
+});
+
+
+it('keyboard span uses the subscription owner without a radio command', () => {
+  h.caps = { ...a06Caps(), capabilities: ['scope', 'dual_rx'] } as unknown as Record<string, unknown>;
+  h.state = a06State();
+  h.unavailable.clear();
+  h.spanStep.mockReset();
+  h.sendCommand.mockClear();
+  resetCommandLifecycle();
+  dispatchKeyboardRadioAction({ action: 'scope_span_step', params: { direction: 'up' } });
+  expect(h.spanStep).toHaveBeenCalledExactlyOnceWith(1);
+  expect(h.sendCommand).not.toHaveBeenCalled();
 });

@@ -43,6 +43,7 @@ __all__ = [
 class ScopeSourceCapabilities(TypedDict):
     scopeSources: list[SourceKind]
     scopeDefaultSourceId: SourceKind | None
+    span_choices_hz: list[int]
 
 
 # Message type constants

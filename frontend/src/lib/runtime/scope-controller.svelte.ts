@@ -60,7 +60,14 @@ const DEFAULT_TIMING: ScopeFrameTiming = {
   clearInterval: (handle) => clearInterval(handle),
 };
 
+export interface ScopeSpanControl {
+  /** Granted full view width in Hz; labels show ±half width. */
+  readonly spanHz: number | null;
+  step(delta: -1 | 1): void;
+}
+
 export class ScopeController {
+  spanControl = $state.raw<ScopeSpanControl | null>(null);
   get hardwareScopeDemanded() { return this._health.hardware.demanded; }
   get hardwareScopeConnected() { return this._health.hardware.transport === 'connected'; }
   get hardwareScopeFrameLive() { return this._health.hardware.frameSeen; }

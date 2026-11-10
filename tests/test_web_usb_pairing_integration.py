@@ -16,11 +16,15 @@ from test_usb_pairing_windows import (
     rename_w3_endpoints,
 )
 from test_usb_pairing_macos import (
+    FTX_PORT,
     MAC_PORT,
     MAC_RX_ID,
     MAC_TX_ID,
     _inject_macos,
     _macos_session,
+    _second_same_named_burr_brown,
+    _second_same_named_c_media,
+    _synthetic_macos,
 )
 from test_usb_pairing_linux import LINUX_ID, LINUX_NAME, LINUX_PORT, _inject_linux
 from test_web_server import (
@@ -30,11 +34,13 @@ from test_web_server import (
     _ws_recv_frame,
     _ws_send_text,
 )
+from test_yaesu_cat_identity_gate import FakeCatTransport
 
 from rigplane.audio import usb_driver
 from rigplane.backends.ic7300 import Ic7300SerialRadio
 from rigplane.backends.ic705 import Ic705SerialRadio
 from rigplane.backends.icom7610 import Icom7610SerialRadio
+from rigplane.backends.yaesu_cat.radio import YaesuCatRadio
 from rigplane.core.types import AudioCodec
 from rigplane.core.usb_identity import UsbAudioIdentity, UsbFunctionId
 from rigplane.profiles import get_radio_profile
@@ -713,6 +719,108 @@ async def test_w3_dual_cp210x_browser_audio_start_selects_ic7610_codec(
             driver.selected_rx_device.index,
             driver.selected_tx_device.index,
         ) == (1, 5)
+        assert len(backend.rx_streams) == 1
+        assert backend.rx_streams[0].running
+        pcm = b"\x01\x00" * 960
+        backend.rx_streams[0].inject_frame(pcm)
+        opcode, frame = await _ws_recv_frame(reader, timeout=5)
+        assert opcode == WS_OP_BINARY
+        assert frame[:2] == bytes([MSG_TYPE_AUDIO_RX, AUDIO_CODEC_PCM16])
+        assert frame[AUDIO_HEADER_SIZE:] == pcm
+    finally:
+        try:
+            if writer is not None:
+                await _close_ws(writer)
+        finally:
+            try:
+                await server.stop()
+            finally:
+                await radio.disconnect()
+
+
+@pytest.mark.parametrize(
+    "shape,port,indices",
+    [
+        ("split", MAC_PORT, (1, 0)),
+        ("split", "/dev/cu.other", (3, 2)),
+        ("duplex", FTX_PORT, (3, 3)),
+        ("duplex", "/dev/cu.other", (17, 17)),
+    ],
+)
+async def test_macos_same_named_codec_pair_browser_audio_start_uses_own_records(
+    monkeypatch, shape, port, indices
+):
+    """MOR-4356 product seam: browser ``audio_start`` over the REAL
+    ``/api/v1/audio`` WebSocket against two macOS radios whose CODECs share
+    one CoreAudio name — the split Burr-Brown "USB Audio CODEC" pair
+    (IC-705 + IC-7300 shape) and the duplex C-Media "USB Audio Device" pair
+    (G7250 + FTX-1 shape).
+
+    Only hardware is faked: topology, PortAudio and the audio backend come
+    from the recorded macOS session and the existing helpers; the web
+    server, pairing, driver selection and the radio stay real (the duplex
+    radio is the real YaesuCatRadio over a scripted CAT transport). With
+    the pre-binding name-only record matching each pair refused as
+    ``contested`` and these cases fail waiting for ``audio_format``.
+    """
+    if shape == "split":
+        session = _synthetic_macos()
+        _second_same_named_burr_brown(session)
+    else:
+        session = _macos_session()
+        _second_same_named_c_media(session)
+    backend, _ = _inject_macos(monkeypatch, session)
+    monkeypatch.setattr(usb_driver, "PortAudioBackend", lambda: backend)
+    if shape == "split":
+        radio = Ic705SerialRadio(
+            device=port,
+            profile=get_radio_profile("IC-705"),
+            audio_codec=AudioCodec.PCM_1CH_16BIT,
+            civ_link=_FakeSerialCivLink(model_id=0xA4),
+            _enumerate_serial_ports_fn=lambda: [],
+        )
+    else:
+        radio = YaesuCatRadio(device=port)
+        radio._transport = FakeCatTransport(["ID0840"])
+    server = WebServer(radio, WebConfig(host="127.0.0.1", port=0))
+    writer = None
+    try:
+        await radio.connect()
+        # Bind the real HTTP/WS dispatcher without the unrelated CAT poller.
+        server._server = await asyncio.start_server(
+            server._accept_client, "127.0.0.1", 0
+        )
+        reader, writer, _ = await _ws_connect("127.0.0.1", server.port, "/api/v1/audio")
+        await _ws_send_text(
+            writer,
+            json.dumps(
+                {
+                    "type": "audio_start",
+                    "direction": "rx",
+                    "preferred_rx_codec": "pcm16",
+                }
+            ),
+        )
+        messages = []
+        async with asyncio.timeout(5):
+            while True:
+                opcode, payload = await _ws_recv_frame(reader)
+                assert opcode == WS_OP_TEXT
+                message = json.loads(payload)
+                messages.append(message)
+                if message["type"] == "audio_format":
+                    break
+
+        status, _, body = await _http_get("127.0.0.1", server.port, "/api/v1/info")
+        assert status == 200
+        assert json.loads(body)["audioReceive"] == {"schemaVersion": 1, "failure": None}
+        assert not any(message["type"] == "error" for message in messages)
+        assert radio.audio_session.rx_demand == 1
+        driver = radio._serial_audio_driver if shape == "split" else radio._audio_driver
+        assert (
+            driver.selected_rx_device.index,
+            driver.selected_tx_device.index,
+        ) == indices
         assert len(backend.rx_streams) == 1
         assert backend.rx_streams[0].running
         pcm = b"\x01\x00" * 960

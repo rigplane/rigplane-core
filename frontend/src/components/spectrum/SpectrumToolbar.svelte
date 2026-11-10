@@ -14,10 +14,10 @@
   } from '$lib/stores/band-plan-region.svelte';
   import ScopeSettingsPopover from './ScopeSettingsPopover.svelte';
   import {
-    SPAN_LABELS, SPEED_LABELS, SPEED_STATIC_LABEL, MODE_BUTTONS,
+    formatSpanHz, SPEED_LABELS, SPEED_STATIC_LABEL, MODE_BUTTONS,
     toggleLayer as toggleLayerFn, isLayerVisible,
     isSpanApplicable, isEdgeApplicable,
-    clampSpan, clampSpeed, clampBrt, stepRef,
+    clampSpeed, clampBrt, stepRef,
   } from './spectrum-toolbar-logic';
   import { acceptedBoolean, acceptedLevel, acceptedNumber } from '../../semantic/accepted-scope-values';
 
@@ -224,7 +224,7 @@
   let scopeFacts = $derived(toSpectrumAuthority(runtime.state, runtime.caps)?.scopeControls ?? null);
   let scopeMode = $derived(acceptedNumber(scopeFacts?.['mode'], 0, 3));
   let scopeEdge = $derived(acceptedNumber(scopeFacts?.edge, 1, 4));
-  let scopeSpan = $derived(acceptedNumber(scopeFacts?.span, 0, 7));
+  let scopeSpan = $derived(runtime.scope?.spanControl?.spanHz ?? null);
   let scopeSpeed = $derived(acceptedNumber(scopeFacts?.speed, 0, 2));
   let scopeHold = $derived(acceptedBoolean(scopeFacts?.hold));
   /* MOR-3694: the radio's declared REF range (view model, from caps). No
@@ -239,13 +239,9 @@
   let scopeDual = $derived(acceptedBoolean(scopeFacts?.dual));
   let scopeReceiver = $derived(acceptedNumber(scopeFacts?.receiver, 0, 1));
 
-  // MOR-2565: while the mode is unread SPAN keeps its slot (owner ruling
-  //  2026-09-21 — unread renders unlit in place, not absent); only a READ
-  //  inapplicable mode (FIX/S-F) removes it.
-  let spanApplicable = $derived(scopeMode === null || isSpanApplicable(scopeMode));
-  /** MOR-2565 — the stepper lights only once BOTH the mode and the span
-   *  value are read; an unread mode makes it inert exactly like an unread
-   *  value (the neighbouring SPEED/REF steppers' unread pattern). */
+  // A subscription grant keeps SPAN visible in FIXED modes too. Without
+  // a grant, preserve the legacy mode slot, unlit while mode is unread.
+  let spanApplicable = $derived(scopeSpan !== null || scopeMode === null || isSpanApplicable(scopeMode));
   let spanUsable = $derived(scopeMode !== null && scopeSpan !== null);
   let edgeApplicable = $derived(scopeMode !== null && isEdgeApplicable(scopeMode));
 
@@ -261,7 +257,7 @@
 
   function cycleSpan(delta: -1 | 1) {
     if (scopeMode === null || scopeSpan === null) return;
-    scopeHandlers.onSpanChange(clampSpan(scopeSpan, delta));
+    scopeHandlers.onSpanChange(delta);
   }
 
   function cycleSpeed(delta: -1 | 1) {
@@ -540,10 +536,7 @@
           <button class="toolbar-btn small step-arrow" disabled={!spanUsable} onclick={() => cycleSpan(-1)} title="Decrease span">◀</button>
           <button class="toolbar-btn step-control" disabled={!spanUsable} onclick={() => cycleSpan(1)} title="Scope span">
             <span class="toolbar-label">SPAN</span>
-            <!-- MOR-2565: an unread mode (or value) renders EMPTY with the
-                 reserved width — never a '—' placeholder; a known span index
-                 (0–7, acceptedNumber's range) always hits SPAN_LABELS. -->
-            <span class="toolbar-value">{spanUsable && scopeSpan !== null ? SPAN_LABELS[scopeSpan] : ''}</span>
+            <span class="toolbar-value">{spanUsable && scopeSpan !== null ? formatSpanHz(scopeSpan) : ''}</span>
           </button>
           <button class="toolbar-btn small step-arrow" disabled={!spanUsable} onclick={() => cycleSpan(1)} title="Increase span">▶</button>
         </div>
