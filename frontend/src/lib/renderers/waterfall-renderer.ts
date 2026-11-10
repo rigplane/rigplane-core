@@ -86,13 +86,22 @@ uniform int uColorCount;
 ${declarations}
 vec4 rowInfo(int row, int part) { ${lookup} return vec4(0.0); }
 out vec4 color;
+// MOR-4383: every screen column samples the bin-space position of its
+// centre, coordinate * bins - 0.5, and linearly interpolates the adjacent
+// bins (edge bins repeat); each bin is calibrated before the lerp. One
+// interpolation rule for fractional and resting columns alike.
 float profile(float column, vec4 grid, vec4 extra, int row) {
   float coordinate = grid.y + column / grid.x * grid.z;
   if (coordinate < 0.0 || coordinate > 1.0) return 0.0;
-  int bin = clamp(int(floor(coordinate * extra.z + 0.0001)), 0, int(extra.z) - 1);
-  float value = texelFetch(uRing, ivec2(bin + int(extra.w), row), 0).r * 255.0;
-  if (extra.y == 80.0) return value;
-  return floor(min(value, extra.y) * 80.0 / extra.y + 0.5);
+  float pos = clamp(coordinate * extra.z - 0.5, 0.0, extra.z - 1.0);
+  float left = floor(pos + 0.0001);
+  float fraction = clamp(pos - left, 0.0, 1.0);
+  int right = int(left) + 1 < int(extra.z) ? int(left) + 1 : int(extra.z) - 1;
+  float v0 = texelFetch(uRing, ivec2(int(left) + int(extra.w), row), 0).r * 255.0;
+  float v1 = texelFetch(uRing, ivec2(right + int(extra.w), row), 0).r * 255.0;
+  float q0 = extra.y == 80.0 ? v0 : floor(min(v0, extra.y) * 80.0 / extra.y + 0.5);
+  float q1 = extra.y == 80.0 ? v1 : floor(min(v1, extra.y) * 80.0 / extra.y + 0.5);
+  return mix(q0, q1, fraction);
 }
 void main() {
   int age = int(floor(uSize.y - gl_FragCoord.y));
@@ -108,13 +117,12 @@ void main() {
     return;
   }
   vec4 grid = rowInfo(row, 2);
-  // rc3 pushRow interpolated the translated screen profile before the colour curve.
+  // The bin-space rule samples the pixel CENTRE (RigDeck: (2x+1)*n/(2W)-0.5).
   float spanScale = uView.y == info.z ? 1.0 : uView.y / info.z;
   float pixelScale = grid.x == uSize.x ? 1.0 : grid.x / uSize.x;
   float column = (delta / info.z - grid.y) / grid.z * grid.x
-    + floor(gl_FragCoord.x) * (spanScale / grid.z) * pixelScale;
-  float left = floor(column + 0.0001), fraction = clamp(column - left, 0.0, 1.0);
-  float sampleValue = mix(profile(left, grid, extra, row), profile(left + 1.0, grid, extra, row), fraction);
+    + (floor(gl_FragCoord.x) + 0.5) * (spanScale / grid.z) * pixelScale;
+  float sampleValue = profile(column, grid, extra, row);
   float t = floor(sqrt(clamp((sampleValue + uRef * (40.0/60.0)) / 80.0, 0.0, 1.0)) * 255.0) / 255.0;
   vec3 rgb = uColors[0];
   for (int i = 1; i < 6; i++) {
