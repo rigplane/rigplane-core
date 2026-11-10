@@ -38,7 +38,8 @@ for (const scheme of ['classic', 'thermal', 'grayscale'] as const) {
     expect(result.bright).toEqual(scheme === 'classic' ? [255, 175, 0, 255]
       : scheme === 'thermal' ? [255, 197, 0, 255] : [220, 220, 220, 255]);
     expect(result.shifted).toEqual(result.bright);
-    expect(result.gap).not.toEqual(result.stripe);
+    // MOR-4383 B1: no hatch — both uncovered pixels read as background.
+    expect(result.gap).toEqual(result.stripe);
     // MOR-4383 B1 RED: uncovered columns must read as noise-floor
     // background, never a hatch mark (x=2 sits outside the granted
     // coverage; the hatch paints it grey (36,48,60) instead).

@@ -125,9 +125,13 @@ void main() {
   float delta = (uView.x - info.x) + (uViewLow - info.y);
   float localHz = delta + floor(gl_FragCoord.x) / uSize.x * uView.y;
   float coordinate = localHz / info.z;
+  // MOR-4383 B1: no hatch pattern anywhere in the waterfall. Columns this
+  // row does not cover (older rows after a span widen, band edges) fill
+  // with the empty-history background; the row keeps its truthful coverage
+  // in the metadata. Matches the RigDeck presenter (uncovered columns
+  // carry amplitude 0) and the 2D reference model (background fill).
   if (coordinate < 0.0 || coordinate >= 1.0 || localHz < info.w || localHz >= extra.x) {
-    float hatch = step(4.0, mod(floor(gl_FragCoord.x) + floor(uSize.y - gl_FragCoord.y), 8.0));
-    color = vec4(mix(vec3(0.0, 16.0, 32.0), vec3(36.0, 48.0, 60.0), hatch) / 255.0, 1.0);
+    color = vec4(0.0, 16.0/255.0, 32.0/255.0, 1.0);
     return;
   }
   vec4 grid = rowInfo(row, 2);
