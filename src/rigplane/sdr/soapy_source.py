@@ -13,7 +13,7 @@ from typing import Any, Callable
 
 from rigplane.core._optional_deps import _require_numpy, _require_soapysdr
 
-from .types import IqBlock, SdrConfig
+from .types import IqBlock, IqSourceFacts, SdrConfig
 
 __all__ = ["SoapyIqSource"]
 
@@ -210,6 +210,11 @@ class SoapyIqSource:
     def is_open(self) -> bool:
         """Whether the source is in the open lifecycle state."""
         return self._is_open
+
+    @property
+    def facts(self) -> IqSourceFacts:
+        """SoapySDR sources tune independently of the radio VFO."""
+        return IqSourceFacts()
 
     # -- IqSource configuration ----------------------------------------------
 

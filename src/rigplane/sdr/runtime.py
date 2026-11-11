@@ -27,12 +27,14 @@ from collections.abc import Callable, Mapping, MutableMapping, Sequence
 from typing import Any
 
 from .protocol import IqSource
-from .types import SdrConfig
+from .types import IqSourceSpec, SdrConfig
 
 __all__ = [
     "SPAN_LIMIT_RATIO",
     "apply_remote_only_env",
+    "build_source",
     "default_source_factory",
+    "register_source_kind",
     "remote_only_env_updates",
     "resolve_sdr_config",
 ]
@@ -192,3 +194,29 @@ def default_source_factory(config: SdrConfig) -> IqSource:
     from .soapy_source import SoapyIqSource
 
     return SoapyIqSource(config)
+
+
+_SOURCE_FACTORIES: dict[str, Callable[[Any], IqSource]] = {}
+
+
+def register_source_kind(kind: str, factory: Callable[[Any], IqSource]) -> None:
+    """Register the factory that builds sources for one spec ``kind``."""
+    if kind in _SOURCE_FACTORIES:
+        raise ValueError(f"IQ source kind {kind!r} is already registered")
+    _SOURCE_FACTORIES[kind] = factory
+
+
+def build_source(spec: IqSourceSpec) -> IqSource:
+    """Build an IQ source through the factory registered for ``spec.kind``."""
+    kind = spec.kind
+    try:
+        factory = _SOURCE_FACTORIES[kind]
+    except KeyError:
+        known = ", ".join(sorted(_SOURCE_FACTORIES))
+        raise ValueError(
+            f"Unknown IQ source kind {kind!r}; known kinds: {known}"
+        ) from None
+    return factory(spec)
+
+
+register_source_kind("soapy", lambda spec: default_source_factory(spec.config))

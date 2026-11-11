@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 
 from rigplane.scope import ScopeFrame
-from rigplane.sdr import FakeIqSource, IqBlock, IqScopeSink, IqSource
+from rigplane.sdr import FakeIqSource, IqBlock, IqScopeSink, IqSource, IqSourceFacts
 
 
 def _pump_blocks(**kwargs: object) -> list[IqBlock]:
@@ -52,6 +52,16 @@ class _RecordingSink:
 
 def test_fake_iq_source_satisfies_protocol() -> None:
     assert isinstance(FakeIqSource(), IqSource)
+
+
+def test_fake_iq_source_default_facts() -> None:
+    assert FakeIqSource().facts == IqSourceFacts()
+
+
+def test_fake_iq_source_returns_injected_facts() -> None:
+    facts = IqSourceFacts("slaved", center_offset_hz=8000)
+
+    assert FakeIqSource(facts=facts).facts is facts
 
 
 def test_iq_scope_sink_protocol_shape() -> None:
