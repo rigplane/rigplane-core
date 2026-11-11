@@ -146,6 +146,25 @@ def test_slaved_default_span_uses_sample_rate_without_usable_bandwidth() -> None
     assert sink.calls == [("span", 32_000)]
 
 
+def test_slaved_default_span_clamps_usable_bandwidth_to_sample_rate() -> None:
+    controller, _source, sink, _clock = make_slaved_controller(
+        facts=IqSourceFacts("slaved", center_offset_hz=8000, usable_bandwidth_hz=96_000)
+    )
+
+    assert controller.span_hz == 32_000
+    assert sink.calls == [("span", 32_000)]
+
+
+def test_slaved_explicit_span_uses_sample_rate_as_capture_limit() -> None:
+    with pytest.raises(ValueError, match="span_hz"):
+        make_slaved_controller(
+            config=SdrConfig(device_args="driver=fake", span_hz=40_000),
+            facts=IqSourceFacts(
+                "slaved", center_offset_hz=8000, usable_bandwidth_hz=96_000
+            ),
+        )
+
+
 def test_slaved_default_span_rejects_offset_outside_usable_window() -> None:
     with pytest.raises(ValueError, match="center_offset_hz.*usable_bandwidth_hz"):
         make_slaved_controller(

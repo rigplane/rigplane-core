@@ -85,9 +85,9 @@ class SdrScopeController:
         sink: Scope sink driven with span/view/TX decisions.
         config: Display settings. ``span_hz=None`` selects a quarter of
             the sample rate for independent sources. For slaved sources
-            it selects the usable bandwidth (falling back to the sample
-            rate) minus twice the absolute centre offset. The effective
-            span is sent once, at construction.
+            it selects the usable bandwidth (falling back to, and clamped
+            to, the sample rate) minus twice the absolute centre offset.
+            The effective span is sent once, at construction.
         clock: Monotonic time source, injectable for determinism.
         tx_hold_s: Seconds to keep the sink TX-frozen after the radio
             leaves TX.
@@ -113,7 +113,10 @@ class SdrScopeController:
         if self._facts.tuning == "slaved":
             if config.freq_offset_hz != 0:
                 raise ValueError("freq_offset_hz is not supported for a slaved source")
-            usable_hz = self._facts.usable_bandwidth_hz or source.sample_rate_hz
+            usable_hz = min(
+                self._facts.usable_bandwidth_hz or source.sample_rate_hz,
+                source.sample_rate_hz,
+            )
             symmetric_span_hz = usable_hz - 2 * abs(self._facts.center_offset_hz)
             if config.span_hz is None:
                 if symmetric_span_hz <= 0:
