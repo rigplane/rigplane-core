@@ -17,6 +17,10 @@ from rigplane.ws import WS_OP_TEXT
 
 
 class Writer:
+    # MOR-4392 round 2: no observed mode on this fake — the source
+    # drives the radio as before.
+    observed_scope_mode = None
+
     def __init__(self):
         self.output = []
 

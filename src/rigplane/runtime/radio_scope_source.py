@@ -23,6 +23,19 @@ from rigplane.scope.models import (
 
 class RadioScopeWriter(Protocol):
     def tuned_frequency(self, receiver: int) -> float: ...
+
+    @property
+    def observed_scope_mode(self) -> int | None:
+        """Live radio-observed scope mode (0 center, 1 fixed).
+
+        MOR-4392 round 2: the writer owns the radio's observed scope
+        state (ScopeSession.observed, refreshed by every waveform
+        frame); the source consults it to decide whether a follow
+        gesture may drive center mode. None before the first read —
+        the source then drives the radio as before.
+        """
+        ...
+
     async def set_output(self, enabled: bool, *, release: bool = True) -> None: ...
     async def set_fixed(self, edges: ScopeFixedEdge, receiver: int) -> None: ...
 
@@ -165,6 +178,23 @@ class RadioScopeSource:
     ) -> GrantedView:
         selected = self._receiver(receiver)
         resolved = self.resolve_view(view, selected)
+        if (
+            isinstance(view, FollowView)
+            and selected == 0
+            and self._writer.observed_scope_mode == 1
+        ):
+            # MOR-4392 round 2: the radio is in FIX — a follow
+            # zoom/span gesture is a client crop (MOR-4387), never a
+            # mode change, so nothing is written: no 0x14 mode flip, no
+            # span, no fixed-edge rewrite. The grant keeps the requested
+            # window with unknown coverage; the hub re-resolves it per
+            # frame against the live fixed window, and the same branch
+            # re-resolves it against the native coverage once the radio
+            # is back in CENTER. (observed tracks the main receiver, so
+            # other receivers keep the previous behavior.) The FIX/CTR
+            # gestures themselves are explicit mode commands outside
+            # this path and still write.
+            return GrantedView(resolved, None)
         fixed = (
             None
             if isinstance(view, FollowView)

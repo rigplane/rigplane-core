@@ -9,6 +9,10 @@ from rigplane.scope.models import Coverage, FollowView, ScopeSourcePlugin, View
 
 
 class Writer(RadioScopeWriter):
+    # MOR-4392 round 2: no observed mode on this fake — the source
+    # drives the radio as before.
+    observed_scope_mode = None
+
     def __init__(self):
         self.writes = []
         self.frequency = 14_100_000
@@ -799,7 +803,9 @@ async def test_scope_region_recaptures_within_frames_after_mode_changes():
         ) -> bool:
             for native in natives[:3]:
                 source.feed_frame(
-                    ScopeFrame(0, mode, native.start_hz, native.end_hz, bytes(475), False)
+                    ScopeFrame(
+                        0, mode, native.start_hz, native.end_hz, bytes(475), False
+                    )
                 )
                 await sub.receive()
                 if sub.granted.view == view and sub.granted.coverage == coverage:

@@ -114,6 +114,17 @@ class ScopeSession:
             raise RuntimeError("scope frequency observation is unavailable")
         return self._frequency(receiver)
 
+    @property
+    def observed_scope_mode(self) -> int | None:
+        """Live radio-observed scope mode (0 center, 1 fixed).
+
+        MOR-4392 round 2: read by RadioScopeSource (see its
+        RadioScopeWriter contract) to keep follow gestures from
+        flipping a FIX radio back to CENTER. Tracks the main
+        receiver; None before the first session read.
+        """
+        return self.observed.mode if self.observed is not None else None
+
     async def set_output(self, enabled: bool, *, release: bool = True) -> None:
         current = self._demands.get("web", ScopeDemand(0, 0))
         subscribers = max(1, current.subscribers) if enabled or not release else 0

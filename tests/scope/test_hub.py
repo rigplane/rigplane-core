@@ -426,6 +426,9 @@ def real_flaky_source(probe):
     view = View(10_000_300, 10_002_700)
 
     class FlakyWriter(RadioScopeWriter):
+        # MOR-4392 round 2: no observed mode on this fake.
+        observed_scope_mode = None
+
         def tuned_frequency(self, receiver):
             return 10_000_000
 
@@ -528,6 +531,9 @@ async def test_stop_retry_serializes_with_new_demand_and_repeated_cancellation(
 
 
 class NativeWriter:
+    # MOR-4392 round 2: no observed mode on this fake.
+    observed_scope_mode = None
+
     def on_frame(self, frame):
         pass
 
