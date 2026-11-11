@@ -12,7 +12,6 @@ or install its artifact.
 | Input | Type | Default | Meaning |
 |---|---|---|---|
 | `core_ref` | string | required | tag, branch or 40-hex object ID naming a commit to build |
-| `controls_ref` | string | `main` | Core ref the workflow controls are checked out from |
 | `artifact_name` | string | `''` | exact artifact name; overrides the prefix |
 | `artifact_name_prefix` | string | `core-wheel` | artifact is `<prefix>-<sha12>` when `artifact_name` is empty |
 | `retention_days` | number | 3 | wheel artifact retention (artifact-cleanup sweeps older ones anyway) |
@@ -40,19 +39,30 @@ repository. Every `actions/checkout` in the workflow names
 `https://github.com/rigplane/rigplane-core.git` — never `github.repository`.
 
 The control files (the resolver, version, stamp and manifest scripts, and
-the contracts they load) are checked out at
-`controls_ref`. Core's own callers — `publish.yml` and
-`core-wheel-nightly.yml` — pass their triggering SHA (or `main`) explicitly.
-An external caller that omits `controls_ref` gets Core's `main`: convenient,
-but `main` can be newer than the workflow revision the caller referenced in
-`uses:`, so a caller that needs exact reproducibility pins `controls_ref` to
-the same SHA it calls the workflow at. That choice (an explicit input rather
-than deriving "the called workflow's own commit" from GitHub context) is
-deliberate: the `github.*` context cannot identify the called workflow's
-commit, and an input is a reviewed, pin-able Core revision either way.
+the contracts they load) are checked out at the CALLED WORKFLOW'S OWN
+COMMIT: `job.workflow_sha`, the documented job-context identity (added to
+GitHub Actions in April 2026) of the commit of the workflow file that
+defines the job. That is exactly the revision the caller invoked with
+`uses:` — `publish.yml`'s local call resolves to the release commit, the
+nightly's local call to main's head, an external caller's
+`core-wheel.yml@<tag-or-sha>` to that tag or SHA, and a
+`workflow_dispatch` run to the dispatched revision. No dispatcher or
+caller can choose different code as controls; until MOR-4408 a
+`controls_ref` input allowed exactly that, which — combined with the
+build job's Actions caches — CodeQL flagged as cache poisoning (two HIGH
+alerts). `github.*` cannot express this identity: in a called workflow
+`github.workflow_sha` names the CALLER's workflow file.
+`job.workflow_sha` is not available on GitHub Enterprise Server, which
+this repository does not use.
+
+The build job runs deliberately without Actions caches (`setup-uv` with
+`enable-cache: false`, `setup-node` without `cache`): it executes code
+from the checked-out target ref, and a shared cache would be a poisoning
+path in the privileged scheduled context. The cost — a cold `npm ci` and
+a cold `uv` install per build — is accepted.
 
 The installed-profile smoke script is the one control that does NOT come
-from `controls_ref`: it is taken from the TARGET revision (see
+from the workflow's own commit: it is taken from the TARGET revision (see
 "Installed-profile smoke" below), because the profile catalog it checks is
 revision-specific.
 
@@ -180,6 +190,10 @@ out.
 
 ## Proof gaps only GitHub can close
 
-Cross-workflow invocation, `publish.yml`'s delegation on a real run, and
-the `workflow_call.outputs` plumbing are GitHub-side facts; the pinned
-structure is enforced by `.github/scripts/core-wheel.test.py`.
+Cross-workflow invocation, `publish.yml`'s delegation on a real run, the
+`workflow_call.outputs` plumbing, and `job.workflow_sha` resolving to the
+called workflow's commit as documented are GitHub-side facts; the pinned
+structure is enforced by `.github/scripts/core-wheel.test.py`. So is the
+CodeQL verdict: the two cache-poisoning HIGH alerts on `inputs.controls_ref`
+are gone by construction (the input and the caches no longer exist), but
+only the next CodeQL run on the pushed head can show green.

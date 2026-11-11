@@ -11,8 +11,11 @@ name: Core wheel
 # Caller independence: in a called workflow github.repository and github.sha
 # belong to the CALLER, so every checkout, CORE_REMOTE and every control
 # script name rigplane/rigplane-core explicitly. Controls (the resolver,
-# version, stamp and manifest scripts) come from inputs.controls_ref; Core's
-# own callers pass their triggering SHA, external callers get Core's main.
+# version, stamp and manifest scripts) come from job.workflow_sha — the
+# documented job-context identity of the commit of THIS workflow file, i.e.
+# the revision the caller invoked with uses: — never from a caller-chosen
+# input (CodeQL cache-poisoning fix, MOR-4408; see
+# docs/internals/core-wheel-workflow.md, "Controls and the caller").
 
 on:
   workflow_call:
@@ -20,11 +23,6 @@ on:
       core_ref:
         description: Core ref to build - a tag, a branch, or a 40-hex commit SHA
         required: true
-        type: string
-      controls_ref:
-        description: Core ref the workflow controls (resolver, version, stamp, manifest, smoke scripts) are checked out from; pin the revision you call this workflow at
-        required: false
-        default: 'main'
         type: string
       artifact_name:
         description: Exact artifact name (overrides artifact_name_prefix)
@@ -63,11 +61,6 @@ on:
         description: Core ref to build - a tag, a branch, or a 40-hex commit SHA
         required: true
         type: string
-      controls_ref:
-        description: Core ref the workflow controls are checked out from
-        required: false
-        default: 'main'
-        type: string
       artifact_name_prefix:
         description: Artifact name is <prefix>-<sha12>
         required: false
@@ -97,13 +90,17 @@ jobs:
     steps:
       # Controls always come from Core itself, never from the caller: in a
       # called workflow github.repository/github.sha identify the CALLER
-      # (e.g. a private Pro repo), so both the repository and the ref are
-      # named here.
+      # (e.g. a private Pro repo), so the repository is named here, and
+      # the ref is job.workflow_sha — this workflow file's own commit,
+      # which GitHub resolved from the caller's uses:. github.* cannot
+      # express this (github.workflow_sha names the CALLER's workflow
+      # file); job.workflow_sha exists on github.com (not on GHES, which
+      # this repository does not use).
       - name: Check out reviewed workflow controls
         uses: actions/checkout@v6
         with:
           repository: rigplane/rigplane-core
-          ref: ${{ inputs.controls_ref }}
+          ref: ${{ job.workflow_sha }}
           persist-credentials: false
 
       # Light-pool contract (base-controlled-gates-v1.test.js): a job that
@@ -150,16 +147,16 @@ jobs:
       wheel_sha256: ${{ steps.wheel.outputs.wheel_sha256 }}
       artifact_name: ${{ steps.artifact.outputs.artifact_name }}
     steps:
-      # Controls come from Core at inputs.controls_ref; the built tree comes
-      # from the resolved SHA, in a throwaway directory, exactly like
-      # private-core-artifact.yml checks a target ref next to its controls.
-      # Both name Core explicitly: github.repository in a called workflow is
-      # the CALLER's repository.
+      # Controls come from Core at job.workflow_sha (this workflow file's
+      # own commit); the built tree comes from the resolved SHA, in a
+      # throwaway directory, exactly like private-core-artifact.yml checks
+      # a target ref next to its controls. Both name Core explicitly:
+      # github.repository in a called workflow is the CALLER's repository.
       - name: Check out reviewed workflow controls
         uses: actions/checkout@v6
         with:
           repository: rigplane/rigplane-core
-          ref: ${{ inputs.controls_ref }}
+          ref: ${{ job.workflow_sha }}
           path: control
           persist-credentials: false
 
@@ -173,22 +170,22 @@ jobs:
           fetch-depth: 1
 
       - name: Install uv
+        # No Actions cache (CodeQL cache-poisoning fix, MOR-4408): this
+        # job runs code from the checked-out target ref, and a shared
+        # cache is a poisoning path in the privileged scheduled context.
+        # Cold installs per build; the cost is accepted.
         uses: astral-sh/setup-uv@v8.1.0
         with:
-          enable-cache: true
-          cache-dependency-glob: |
-            core/pyproject.toml
-            core/uv.lock
+          enable-cache: false
 
       - name: Set up Python
         run: uv python install 3.13
 
       - name: Set up Node.js
+        # No npm cache, same cache-poisoning reasoning as setup-uv above.
         uses: actions/setup-node@v6
         with:
           node-version: '20'
-          cache: 'npm'
-          cache-dependency-path: core/frontend/package-lock.json
 
       - name: Compute and apply the wheel version
         # Tag rule: exactly one matching v-tag -> clean pyproject version;

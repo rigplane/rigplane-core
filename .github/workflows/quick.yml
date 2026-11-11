@@ -526,16 +526,16 @@ jobs:
         if: needs.classify.outputs.ci == 'true'
         run: python3 .github/scripts/quick-path-filters.test.py
 
+      - name: Playwright browser environment contract test
+        if: needs.classify.outputs.ci == 'true'
+        run: python3 .github/scripts/playwright-browser-env.test.py
+
       - name: Core wheel workflow contract tests
         # MOR-4408: under uv for a >=3.11 interpreter (the version-rule
         # script reads pyproject.toml through tomllib); UV_PYTHON is pinned
         # job-wide.
         if: needs.classify.outputs.ci == 'true'
         run: uv run --no-project python3 .github/scripts/core-wheel.test.py
-
-      - name: Playwright browser environment contract test
-        if: needs.classify.outputs.ci == 'true'
-        run: python3 .github/scripts/playwright-browser-env.test.py
 
       - name: Doc link gate contract tests
         if: needs.classify.outputs.ci == 'true'
