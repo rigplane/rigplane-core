@@ -73,6 +73,15 @@ def test_udp_source_spec_kind_and_optional_bandwidth() -> None:
     assert spec.usable_bandwidth_hz is None
 
 
+def test_udp_source_spec_accepts_largest_ipv4_datagram() -> None:
+    values = _udp_spec_kwargs()
+    values["samples_per_datagram"] = 16_376
+
+    spec = UdpIqSourceSpec(**values)  # type: ignore[arg-type]
+
+    assert spec.samples_per_datagram * 4 == 65_504
+
+
 @pytest.mark.parametrize("field", tuple(_udp_spec_kwargs())[1:])
 def test_udp_source_spec_rejects_bool_for_integer_fields(field: str) -> None:
     values = _udp_spec_kwargs()
@@ -94,6 +103,7 @@ def test_udp_source_spec_rejects_bool_for_integer_fields(field: str) -> None:
         ({"sample_rate_hz": 0}, "sample_rate_hz"),
         ({"sample_rate_hz": 48_000.0}, "sample_rate_hz"),
         ({"samples_per_datagram": 0}, "samples_per_datagram"),
+        ({"samples_per_datagram": 16_377}, "samples_per_datagram"),
         ({"tune_min_hz": 54_000_000}, "tune_min_hz"),
         ({"tune_max_hz": 100_000}, "tune_max_hz"),
         ({"usable_bandwidth_hz": 0}, "usable_bandwidth_hz"),

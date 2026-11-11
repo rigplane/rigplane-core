@@ -5,7 +5,7 @@ from __future__ import annotations
 import socket
 import struct
 import threading
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -87,6 +87,7 @@ def _source(
     start_settle_s: float = 0.1,
     stall_s: float = 1.0,
     host: str = "127.0.0.1",
+    resolver: Callable[[str], str] = socket.gethostbyname,
 ) -> Iterator[_Harness]:
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as radio:
         radio.bind(("127.0.0.1", 0))
@@ -98,6 +99,7 @@ def _source(
             start_grace_s=start_grace_s,
             start_settle_s=start_settle_s,
             stall_s=stall_s,
+            resolver=resolver,
         )
         blocks: list[IqBlock] = []
         source.on_block(blocks.append)
@@ -161,6 +163,34 @@ def test_bad_length_and_other_sender_are_dropped_without_samples() -> None:
         harness.send(bytes(768))
         wait_until(lambda: harness.source.dropped_datagrams == 1)
         assert harness.blocks == []
+
+
+def test_receive_port_is_exclusive_and_reusable_after_close() -> None:
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as radio:
+        radio.bind(("127.0.0.1", 0))
+        receive_port = _free_udp_port()
+        spec = _spec(int(radio.getsockname()[1]), receive_port)
+        first = XieguUdpIqSource(spec, start_grace_s=100.0)
+        second = XieguUdpIqSource(spec, start_grace_s=100.0)
+        blocks: list[IqBlock] = []
+        first.on_block(blocks.append)
+        first.set_center_freq(7_183_000)
+        try:
+            first.open()
+            with pytest.raises(OSError, match=str(receive_port)):
+                second.open()
+
+            for _ in range(10):
+                radio.sendto(bytes(768), ("127.0.0.1", receive_port))
+            wait_until(lambda: len(blocks) >= 1)
+            assert first.is_open is True
+
+            first.close()
+            first.open()
+            assert first.is_open is True
+        finally:
+            first.close()
+            second.close()
 
 
 def test_already_flowing_stream_never_causes_a_tune_command() -> None:
@@ -233,7 +263,7 @@ def test_nonfinite_timing_is_rejected(field: str, value: float) -> None:
             pass
 
 
-def test_stale_resolver_isolated_across_reopen(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_stale_resolver_isolated_across_reopen() -> None:
     started, release = threading.Event(), threading.Event()
     calls = 0
 
@@ -246,8 +276,7 @@ def test_stale_resolver_isolated_across_reopen(monkeypatch: pytest.MonkeyPatch) 
             release.wait(5)
         return "127.0.0.1"
 
-    monkeypatch.setattr(socket, "gethostbyname", resolve)
-    with _source(center_hz=7_183_000, host="localhost") as harness:
+    with _source(center_hz=7_183_000, host="localhost", resolver=resolve) as harness:
         wait_until(lambda: started.is_set())
         old_thread = harness.source._thread
         harness.source.close()
@@ -263,6 +292,48 @@ def test_stale_resolver_isolated_across_reopen(monkeypatch: pytest.MonkeyPatch) 
         harness.wait_for(2)
         assert harness.source.is_open is True
         assert harness.source.center_freq_hz == 7_183_000
+
+
+def test_transient_resolution_failure_recovers_without_tune_command() -> None:
+    failed = threading.Event()
+    attempts = 0
+
+    def resolve(host: str) -> str:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            failed.set()
+            raise socket.gaierror("temporary resolution failure")
+        return "127.0.0.1"
+
+    with _source(
+        center_hz=7_183_000,
+        host="radio.invalid",
+        resolver=resolve,
+        start_grace_s=0.0,
+        start_settle_s=0.0,
+    ) as harness:
+        wait_until(lambda: failed.is_set())
+        harness.send(bytes(768), count=10)
+        wait_until(lambda: harness.source.dropped_datagrams == 10)
+        assert harness.source.is_open is True
+        assert harness.blocks == []
+        assert harness.command() is None
+
+        harness.clock.advance(0.5)
+        harness.send(bytes(768), count=10)
+        wait_until(lambda: harness.source.dropped_datagrams == 20)
+        assert attempts == 1
+        assert harness.source.stalled is False
+        assert harness.command() is None
+
+        harness.clock.advance(0.5)
+        assert harness.source.stalled is True
+        harness.send(bytes(768), count=10)
+        blocks = harness.wait_for(1)
+        assert len(blocks[0].samples) == 1920
+        assert harness.source.is_open is True
+        assert harness.command() is None
 
 
 def test_malformed_radio_datagram_marks_next_block_overflowed() -> None:

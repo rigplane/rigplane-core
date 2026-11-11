@@ -183,6 +183,15 @@ class TestLoadRig:
         assert astuple(rig.iq_lan) == expected
         assert rig.to_profile().iq_lan == rig.iq_lan
 
+    def test_iq_lan_accepts_largest_ipv4_datagram(self, tmp_path):
+        section = _IQ_LAN_TOML.replace(
+            "samples_per_datagram = 192", "samples_per_datagram = 16376"
+        )
+
+        rig = load_rig(_write_toml(tmp_path, _MINIMAL_TOML + section))
+
+        assert rig.iq_lan.samples_per_datagram == 16_376
+
     def test_profile_without_iq_lan_has_none(self, tmp_path):
         rig = load_rig(_write_toml(tmp_path, _MINIMAL_TOML))
 
@@ -200,6 +209,11 @@ class TestLoadRig:
             ("receive_port = 50001\n", "", "receive_port"),
             ('protocol = "xiegu_udp"', 'protocol = "other"', "protocol"),
             ("sample_rate_hz = 48000", 'sample_rate_hz = "48000"', "sample_rate_hz"),
+            (
+                "samples_per_datagram = 192",
+                "samples_per_datagram = 16377",
+                "samples_per_datagram",
+            ),
         ],
     )
     def test_iq_lan_rejects_invalid_sections_naming_the_key(
