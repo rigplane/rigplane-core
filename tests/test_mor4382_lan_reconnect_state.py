@@ -74,6 +74,65 @@ async def _wait_state(
 
 
 @contextlib.asynccontextmanager
+async def _counting_stack(
+    sim: MockIcomRadio, *, model: str
+) -> AsyncIterator[tuple[WebServer, IcomRadio, MockIcomRadio, list[float]]]:
+    """Like ``_stack``, but records every ``_fetch_initial_state`` call time.
+
+    The late-connect tail (``radio.py``) and the web reconnect refetch
+    (``server.py``) both call the same radio method, so one counter on the
+    radio instance sees every initial fetch on every path.
+    """
+    await sim.start()
+    radio = IcomRadio(
+        host="127.0.0.1",
+        port=sim.control_port,
+        username="mor4382",
+        password="mor4382",
+        timeout=1.0,
+        model=model,
+        auto_reconnect=True,
+        reconnect_delay=0.5,
+    )
+    fetch_at: list[float] = []
+    orig_fetch = radio._fetch_initial_state
+
+    async def _counting_fetch() -> None:
+        fetch_at.append(time.monotonic())
+        await orig_fetch()
+
+    setattr(radio, "_fetch_initial_state", _counting_fetch)
+    web: WebServer | None = None
+    try:
+        await radio.connect()
+        web = WebServer(radio, WebConfig(host="127.0.0.1", port=0, discovery=False))
+        await web.start()
+        yield web, radio, sim, fetch_at
+    finally:
+        if web is not None:
+            await web.stop()
+        with contextlib.suppress(Exception):
+            await radio.disconnect()
+        await sim.stop()
+
+
+async def _wait_fetch_quiescent(
+    fetch_at: list[float], *, quiet_s: float, deadline_s: float
+) -> None:
+    """Wait until at least one fetch ran and none started for ``quiet_s``."""
+    deadline = time.monotonic() + deadline_s
+    while True:
+        if fetch_at and time.monotonic() - fetch_at[-1] >= quiet_s:
+            return
+        if time.monotonic() >= deadline:
+            raise AssertionError(
+                f"no quiescent fetch sequence after {deadline_s}s "
+                f"({len(fetch_at)} fetches so far)"
+            )
+        await asyncio.sleep(0.2)
+
+
+@contextlib.asynccontextmanager
 async def _stack(
     sim: MockIcomRadio, *, model: str
 ) -> AsyncIterator[tuple[WebServer, IcomRadio, MockIcomRadio]]:
@@ -192,6 +251,56 @@ async def test_silent_start_completes_even_when_the_radio_ignores_the_identity_r
     )
     async with _stack(sim, model="IC-705") as (web, _r, _s):
         await _assert_recovered(web, 7_074_000)
+
+
+@pytest.mark.asyncio
+@_REALTIME
+@pytest.mark.parametrize("model", ["IC-9700", "IC-7610"])
+async def test_late_first_answer_fetches_initial_state_exactly_once(
+    model: str,
+) -> None:
+    """One late first CI-V answer completes the connect with a single fetch.
+
+    The radio answers nothing for 3 s after login, so ``connect()`` returns
+    with the tail pending and the web registers its reconnect callback before
+    the first answer arrives. The tail's fetch and the callback's refetch must
+    not both run: exactly one initial fetch, then freq/mode published.
+    """
+    sim = MockIcomRadio(civ_silent_after_open_s=3.0)
+    async with _counting_stack(sim, model=model) as (web, _radio, _sim, fetch_at):
+        await _wait_state(
+            web,
+            _ready_with_freq_and_mode,
+            deadline_s=_DEADLINE_S,
+            what="ready, with freq and mode after the late first answer",
+        )
+        await _wait_fetch_quiescent(fetch_at, quiet_s=4.0, deadline_s=30.0)
+        assert len(fetch_at) == 1, (
+            f"initial state fetch ran {len(fetch_at)} times "
+            f"after one late first answer (model {model})"
+        )
+
+
+@pytest.mark.asyncio
+@_REALTIME
+@pytest.mark.parametrize("model", ["IC-9700", "IC-7610"])
+async def test_instant_first_answer_fetches_initial_state_exactly_once(
+    model: str,
+) -> None:
+    """Regression guard: an instantly answering radio also fetches exactly once."""
+    sim = MockIcomRadio()
+    async with _counting_stack(sim, model=model) as (web, _radio, _sim, fetch_at):
+        await _wait_state(
+            web,
+            _ready_with_freq_and_mode,
+            deadline_s=_DEADLINE_S,
+            what="ready, with freq and mode after an instant answer",
+        )
+        await _wait_fetch_quiescent(fetch_at, quiet_s=4.0, deadline_s=30.0)
+        assert len(fetch_at) == 1, (
+            f"initial state fetch ran {len(fetch_at)} times "
+            f"after one instant first answer (model {model})"
+        )
 
 
 @pytest.mark.asyncio
