@@ -796,6 +796,106 @@ async def test_restore_skips_span_adopted_during_teardown(windowed_sdk, monkeypa
         )  # only the subscribe's own span write
 
 
+def _dual_writes(sim) -> list:
+    """CI-V single/dual SETs (0x27 0x13, one data byte) Core sent."""
+    return [
+        frame
+        for raw in sim.civ_frames_received
+        if (frame := parse_civ_frame(raw)).command == 0x27
+        and frame.sub == 0x13
+        and len(frame.data) == 1
+    ]
+
+
+async def test_external_dual_flip_flop_leaves_the_restore_set(windowed_sdk):
+    """MOR-4392 last round: a SUB subscription acquires dual output (radio
+    started single); an external single→dual flip-flop on the radio during
+    the subscription is adopted through the production RX path, so closing
+    the last real scope WebSocket writes NO 0x27 0x13 — never Core's stale
+    single snapshot over the radio's own dual (owner rule «следовать за
+    рацией», applied to the radio-global dual key)."""
+    radio, sim = windowed_sdk
+    sim.capture_civ_frames = True
+    sim.set_frequency(14_100_000)
+    radio._radio_state.main.freq = 14_100_000
+    radio._radio_state.sub.freq = 14_100_000
+    sim._scope_13 = 0  # the radio starts in single-scope output
+    sim.views[1] = (1, 3, 1)
+    sim.windows[1] = (14_090_000, 14_110_000)
+    async with web(radio) as (_, client, base, protocols, _):
+        async with client.ws_connect(base + "/api/v1/scope", protocols=protocols) as ws:
+            await _subscribe(
+                ws, Subscription("radio", 1, FollowView("vfo", 50_000), 475, 20)
+            )
+            await _frame_with(ws, (14_090_000, 14_110_000))
+            assert sim._scope_13 == 1  # the subscription acquired dual
+            session = radio.scope_session()
+            # External flip to single (front panel): adopted, dual leaves
+            # the restore set.
+            sim._scope_13 = 0
+            sim.push_scope_setting(b"\x13\x00")
+            assert await await_until(
+                lambda: session._applied.get((0, "dual")) is False
+            )
+            # External flop back to dual: adopted too — the radio's choice.
+            sim._scope_13 = 1
+            sim.push_scope_setting(b"\x13\x01")
+            assert await await_until(
+                lambda: session._applied.get((0, "dual")) is True
+            )
+            writes_before_close = len(_dual_writes(sim))
+        assert await await_until(lambda: not radio.scope_session().active)
+        # The radio's own dual survives the close: teardown wrote no
+        # 0x27 0x13 at all (in particular no 0x13 00 single over it).
+        assert sim._scope_13 == 1
+        assert len(_dual_writes(sim)) == writes_before_close
+
+
+async def test_external_single_is_adopted_no_reassert_no_restore(windowed_sdk):
+    """MOR-4392 last round: an external switch to single during a SUB
+    subscription is adopted — no later reconcile re-asserts dual over it
+    (a real MAIN follow request drives one) and teardown writes nothing
+    for dual."""
+    radio, sim = windowed_sdk
+    sim.capture_civ_frames = True
+    sim.set_frequency(14_100_000)
+    radio._radio_state.main.freq = 14_100_000
+    radio._radio_state.sub.freq = 14_100_000
+    sim._scope_13 = 0
+    sim.views[1] = (1, 3, 1)
+    sim.windows[1] = (14_090_000, 14_110_000)
+    async with web(radio) as (_, client, base, protocols, _):
+        async with client.ws_connect(base + "/api/v1/scope", protocols=protocols) as ws:
+            await _subscribe(
+                ws, Subscription("radio", 1, FollowView("vfo", 50_000), 475, 20)
+            )
+            await _frame_with(ws, (14_090_000, 14_110_000))
+            assert sim._scope_13 == 1
+            session = radio.scope_session()
+            # External switch to single: adopted under the radio-global key.
+            sim._scope_13 = 0
+            sim.push_scope_setting(b"\x13\x00")
+            assert await await_until(
+                lambda: session._applied.get((0, "dual")) is False
+            )
+            acquisition_writes = len(_dual_writes(sim))
+            # A MAIN follow request drives a real reconcile (span/mode for
+            # MAIN): dual must NOT be re-asserted over the adopted single.
+            async with client.ws_connect(
+                base + "/api/v1/scope", protocols=protocols
+            ) as main:
+                await _subscribe(
+                    main,
+                    Subscription("radio", 0, FollowView("vfo", 100_000), 475, 20),
+                )
+                await _frame_with(main, (14_050_000, 14_150_000))
+                assert sim._scope_13 == 0
+                assert len(_dual_writes(sim)) == acquisition_writes
+        assert await await_until(lambda: not radio.scope_session().active)
+        assert sim._scope_13 == 0
+        assert len(_dual_writes(sim)) == acquisition_writes
+
+
 async def test_native_width_regrant_carries_native_coverage(windowed_sdk):
     """Gate round 1 finding 4: the initial follow grant and the first
     native-width regrant carry the truthful native coverage, which exceeds
