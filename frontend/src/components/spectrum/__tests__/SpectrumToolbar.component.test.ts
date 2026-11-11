@@ -749,6 +749,21 @@ describe('structural and browser-local behavior', () => {
     expect(sendCommandAlarm).not.toHaveBeenCalled();
   });
 
+  it('exposes the waterfall smoothing toggle, default ON and browser-local (MOR-4383)', () => {
+    const target = mountToolbar({ enableSmooth: true });
+    const smooth = button(target, 'SMTH')!;
+    const lit = () => smooth.getAttribute('aria-pressed') === 'true' || smooth.classList.contains('active');
+    expect(lit()).toBe(true);
+    smooth.click();
+    flushSync();
+    expect(lit()).toBe(false);
+    smooth.click();
+    flushSync();
+    expect(lit()).toBe(true);
+    for (const [, spy] of scopeSpies()) expect(spy).not.toHaveBeenCalled();
+    expect(sendCommandAlarm).not.toHaveBeenCalled();
+  });
+
   it('unmounts cleanly', () => {
     const target = mountToolbar();
     const component = components.pop()!;
@@ -1077,6 +1092,7 @@ describe('hosted one row + More screen group (MOR-2545 PR2)', () => {
     for (const [expr, count] of [
       ['onclick={() => (enableAvg = !enableAvg)}', 2],
       ['onclick={() => (enablePeakHold = !enablePeakHold)}', 2],
+      ['onclick={() => (enableSmooth = !enableSmooth)}', 2],
       ['{@render avgPeakKeys()}', 2],
       ['onclick={() => onScopeDemandChange(!scopeDemandOn)}', 2],
       ['onclick={() => (brtLevel = clampBrt(brtLevel, -5))}', 3],
