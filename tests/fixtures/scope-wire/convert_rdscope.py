@@ -62,22 +62,14 @@ def main() -> None:
     granted, frames = read_rdscope(args.rdscope)
     views = {
         (round(frame_view[0]), round(frame_view[1]))
-        for frame_view in (
-            struct.unpack_from("<dd", frame, 24) for frame in frames
-        )
+        for frame_view in (struct.unpack_from("<dd", frame, 24) for frame in frames)
     }
     coverages = {
         (round(frame_coverage[0]), round(frame_coverage[1]))
-        for frame_coverage in (
-            struct.unpack_from("<dd", frame, 40) for frame in frames
-        )
+        for frame_coverage in (struct.unpack_from("<dd", frame, 40) for frame in frames)
     }
-    widths = {
-        struct.unpack_from("<H", frame, 6)[0] for frame in frames
-    }
-    sequences = [
-        struct.unpack_from("<I", frame, 12)[0] for frame in frames
-    ]
+    widths = {struct.unpack_from("<H", frame, 6)[0] for frame in frames}
+    sequences = [struct.unpack_from("<I", frame, 12)[0] for frame in frames]
     if len(views) != 1 or len(coverages) != 1 or len(widths) != 1:
         raise ValueError("recording is not a single stable geometry")
     (width,) = widths
@@ -89,18 +81,14 @@ def main() -> None:
     if len(pixels) != len(frames) * width:
         raise ValueError("frame pixel lengths disagree with the width field")
 
-    envelope = b"".join(
-        struct.pack("<I", len(frame)) + frame for frame in frames
-    )
+    envelope = b"".join(struct.pack("<I", len(frame)) + frame for frame in frames)
     args.stem.with_suffix(".frames").write_bytes(envelope)
     sidecar = {
         "radio": args.radio,
         "frequency_hz": round(sum(views.pop()) / 2),
         "mode": args.mode,
         "span_hz": round(
-            (lambda view: view[1] - view[0])(
-                struct.unpack_from("<dd", frames[0], 24)
-            )
+            (lambda view: view[1] - view[0])(struct.unpack_from("<dd", frames[0], 24))
         ),
         "granted_width": width,
         "frame_count": len(frames),
@@ -112,9 +100,7 @@ def main() -> None:
         "byte_length": len(envelope),
         "format": "Repeated u32 little-endian byte length followed by a v2 binary scope frame",
     }
-    args.stem.with_suffix(".json").write_text(
-        json.dumps(sidecar, indent=2) + "\n"
-    )
+    args.stem.with_suffix(".json").write_text(json.dumps(sidecar, indent=2) + "\n")
     print(
         json.dumps(
             {
