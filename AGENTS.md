@@ -483,7 +483,7 @@ published artifacts.
   release branch:
 
   ```bash
-  git fetch origin
+  git fetch origin --prune --no-prune-tags
   git cherry origin/main origin/release/<major>.<minor>.x \
     | sed -n 's/^+ //p' | xargs -n1 git log -1 --format='%h %s'
   ```
@@ -491,11 +491,12 @@ published artifacts.
   `git cherry` compares by patch-id: `-` lines are changes already on `main`
   (the cherry-picks), `+` lines are not. A `+` commit is acceptable only when
   it is release bookkeeping (`chore(release): ...`: version files, lockfile
-  version line, changelog heading) or a cherry-pick whose conflict
-  resolution changed the patch (its `-x` line names the `main` commit, which
-  you check by hand). Any other `+` commit is a fix that never reached
+  version line, changelog heading), a cherry-pick whose conflict resolution
+  changed the patch (its `-x` line names the `main` commit, which you check
+  by hand), or a release-only fix for a defect that does not exist on `main`
+  (its PR body says so). Any other `+` commit is a fix that never reached
   `main`: bring it to `main` first (a normal PR), then open the back-merge.
-  Record the list and the decision in the release ticket.
+  Record the list and the decision for each `+` commit in the release ticket.
 
 ## Engineering rules
 

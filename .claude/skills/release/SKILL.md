@@ -46,10 +46,13 @@ git status --porcelain
 Any output → stop.
 
 ```bash
-# 2b. On main
+# 2b. On the release branch release/<major>.<minor>.x
 git branch --show-current
 ```
-Not `main` → warn, ask confirmation.
+Not the release branch → warn, ask confirmation. The branch is cut from a
+`main` commit whose nightly rehearsal run is green and is published once with
+`git push -u origin HEAD` right after the cut (`AGENTS.md`, "Release
+branches"); `main` itself is never tagged.
 
 ```bash
 # 2c. Sync deps (all extras, MOR-1978: the same set publish.yml's
@@ -87,11 +90,11 @@ cd ..
 
 The suite record for a head is that head's `quick.yml` run, and the full suite
 is not run on the laptop or the remote testbed for a head CI has run (CLAUDE.md
-§Testing, §Agent working rules). 2a requires a clean tree and 2b expects
-`main`, so the head under test here is `main`'s current HEAD, and its run is the
-one `quick.yml`'s `push: branches: [main]` trigger produced. A bump prepared on
-a branch reads that branch's PR run instead — `quick.yml` triggers on
-`pull_request: branches: [main]` too.
+§Testing, §Agent working rules). `quick.yml` runs on pull requests to `main` and
+in the merge queue only, so a release-branch head has no `quick` run of its own:
+the record is the `main` run of the newest `main` commit on the branch (the cut
+commit, or the `main` commit named in the last cherry-pick's `-x` line), and
+the classifier check below compares HEAD with that run's commit.
 
 ```bash
 gh run list --workflow "Tests (quick)" --branch main --limit 5 \
@@ -137,7 +140,7 @@ dispatching `full.yml`'s 3.11/3.12/3.13 matrix before tagging is a safety net,
 not redundant coverage — it moves a 3.12/3.13 failure to before the tag exists:
 
 ```bash
-gh workflow run "Tests (full matrix)" --ref main -f rc=true
+gh workflow run "Tests (full matrix)" --ref release/<major>.<minor>.x -f rc=true
 gh run list --workflow "Tests (full matrix)" --limit 3   # find the dispatched run
 gh run watch <id>
 ```
@@ -202,7 +205,7 @@ Release plan for vNEW:
   Files to edit:  pyproject.toml, docs/CHANGELOG.md
   Changelog:      [counts] Added / Changed / Fixed entries
   Tag:            vNEW
-  Push target:    origin/main (atomic --follow-tags)
+  Push target:    origin/release/<major>.<minor>.x (atomic --follow-tags)
   GH release:     gh release create vNEW --draft → RX + TX radio smoke →
                   upload both receipts → publish the draft (triggers publish.yml → PyPI)
 
