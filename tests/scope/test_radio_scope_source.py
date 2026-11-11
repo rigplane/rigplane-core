@@ -650,6 +650,188 @@ async def test_external_narrowing_clips_follow_view_without_writes(model):
         await sub.close()
 
 
+@pytest.mark.parametrize("model", ["ic7610", "ic7300"])
+async def test_follow_span_gesture_in_observed_fix_writes_nothing(model):
+    """MOR-4392 round 2: the radio is in FIX (observed mode 1) — a
+    follow zoom/span gesture is a client crop (MOR-4387), never a mode
+    change. Zero 0x14/0x15 writes; the grant keeps the requested window
+    and the hub re-resolves it per frame against the live fixed window.
+    """
+    profile = load_rig(Path("rigs") / f"{model}.toml").to_profile()
+    sim = _SimRadio(profile)
+    session = _sim_session(sim, profile)
+    source = RadioScopeSource(profile, session)
+    hub, encoded, Subscription = _sim_hub(source)
+    sub = await hub.subscribe(
+        Subscription("radio", 0, FollowView("vfo", 100_000), 475, 20)
+    )
+    try:
+        assert sim.writes
+        source.feed_frame(ScopeFrame(0, 0, 14_050_000, 14_150_000, bytes(475), False))
+        await sub.receive()
+        # External FIX entry (front panel): adopted, nothing written back.
+        sim.writes.clear()
+        sim.mode = 1
+        session.observe("mode", 1, 0)
+        await session.reconcile()
+        assert sim.writes == []
+        assert session.observed is not None and session.observed.mode == 1
+        # A follow span gesture inside FIX writes nothing at all.
+        grant = await source.set_view(FollowView("vfo", 50_000), 0)
+        assert grant.view == View(14_075_000, 14_125_000)
+        assert grant.coverage is None
+        assert sim.writes == []
+        # ...and a hub resubscribe (the real gesture path) is equally quiet.
+        gesture = await hub.subscribe(
+            Subscription("radio", 0, FollowView("vfo", 50_000), 475, 20)
+        )
+        try:
+            assert sim.writes == []
+            assert gesture.granted.view == View(14_075_000, 14_125_000)
+            assert gesture.granted.coverage is None
+        finally:
+            await gesture.close()
+    finally:
+        await sub.close()
+
+
+async def test_observed_external_fix_mode_is_adopted_never_reasserted():
+    """MOR-4392 round 2: a radio-reported FIX mode differing from our
+    last CENTER write becomes the desired state — reconcile never writes
+    our stale mode back (mirrors the MOR-4385 span adoption test).
+    """
+    profile = load_rig(Path("rigs/ic705.toml")).to_profile()
+    sim = _SimRadio(profile)
+    session = _sim_session(sim, profile)
+    await session.set_output(True)
+    await session.set_center(14_100_000, 50_000, 0)
+    assert ("span", profile.scope_span_presets_hz.index(50_000), 0) in sim.writes
+    sim.writes.clear()
+    sim.mode = 1
+    session.observe("mode", 1, 0)
+    await session.reconcile()
+    assert sim.writes == []
+    assert session.observed is not None and session.observed.mode == 1
+
+
+@pytest.mark.parametrize("model", ["ic7610", "ic7300"])
+async def test_fix_transitions_reresolve_follow_grant_per_frame(model):
+    """MOR-4392 round 2: CTR→FIX→CTR re-resolves the follow grant per
+    frame — the request clipped to the fixed window in FIX, to the
+    native coverage in CENTER — with zero radio writes after the initial
+    CENTER subscribe and no resubscribe for the grant to follow.
+    """
+    profile = load_rig(Path("rigs") / f"{model}.toml").to_profile()
+    sim = _SimRadio(profile)
+    session = _sim_session(sim, profile)
+    source = RadioScopeSource(profile, session)
+    hub, encoded, Subscription = _sim_hub(source)
+    sub = await hub.subscribe(
+        Subscription("radio", 0, FollowView("vfo", 100_000), 475, 20)
+    )
+    try:
+        source.feed_frame(ScopeFrame(0, 0, 14_000_000, 14_200_000, bytes(475), False))
+        await sub.receive()
+        assert sub.granted.view == View(14_050_000, 14_150_000)
+        assert sub.granted.coverage == Coverage(14_000_000, 14_200_000)
+        sim.writes.clear()
+        # CTR → FIX behind our back: adopt, then stream the fixed window.
+        sim.mode = 1
+        session.observe("mode", 1, 0)
+        source.feed_frame(ScopeFrame(0, 1, 14_000_000, 14_100_000, bytes(475), False))
+        await sub.receive()
+        fixed = encoded[-1]
+        assert (fixed.view_start_hz, fixed.view_end_hz) == (14_050_000, 14_100_000)
+        assert (fixed.coverage_start_hz, fixed.coverage_end_hz) == (
+            14_050_000,
+            14_100_000,
+        )
+        assert sub.granted.view == View(14_050_000, 14_100_000)
+        assert sub.granted.coverage == Coverage(14_000_000, 14_100_000)
+        # A follow span gesture inside FIX writes nothing (RED pre-fix:
+        # set_view drives set_center and writes 0x14 mode 0).
+        gesture = await hub.subscribe(
+            Subscription("radio", 0, FollowView("vfo", 50_000), 475, 20)
+        )
+        try:
+            assert sim.writes == []
+        finally:
+            await gesture.close()
+        # FIX → CTR behind our back: the same subscription follows.
+        sim.mode = 0
+        session.observe("mode", 0, 0)
+        source.feed_frame(ScopeFrame(0, 0, 14_000_000, 14_200_000, bytes(475), False))
+        await sub.receive()
+        back = encoded[-1]
+        assert (back.view_start_hz, back.view_end_hz) == (14_050_000, 14_150_000)
+        assert (back.coverage_start_hz, back.coverage_end_hz) == (
+            14_050_000,
+            14_150_000,
+        )
+        assert sub.granted.view == View(14_050_000, 14_150_000)
+        assert sub.granted.coverage == Coverage(14_000_000, 14_200_000)
+        await session.reconcile()
+        assert sim.writes == []
+    finally:
+        await sub.close()
+
+
+async def test_scope_region_recaptures_within_frames_after_mode_changes():
+    """MOR-4392 round 2 (MOR-4345 pattern): after CTR→FIX→CTR the
+    published scope region is current again within 3 frames each way —
+    view clipped to the fixed window in FIX, to native in CENTER.
+    """
+    profile = load_rig(Path("rigs/ic7610.toml")).to_profile()
+    sim = _SimRadio(profile)
+    sim.frequency = 14_250_000
+    session = _sim_session(sim, profile)
+    source = RadioScopeSource(profile, session)
+    hub, _, Subscription = _sim_hub(source)
+    sub = await hub.subscribe(
+        Subscription("radio", 0, FollowView("vfo", 100_000), 475, 20)
+    )
+    try:
+        fixed_native = Coverage(14_200_000, 14_300_000)
+        center_native = Coverage(14_150_000, 14_350_000)
+
+        async def recaptured(
+            view: View, coverage: Coverage, natives: list[Coverage], mode: int
+        ) -> bool:
+            for native in natives[:3]:
+                source.feed_frame(
+                    ScopeFrame(0, mode, native.start_hz, native.end_hz, bytes(475), False)
+                )
+                await sub.receive()
+                if sub.granted.view == view and sub.granted.coverage == coverage:
+                    return True
+            return False
+
+        source.feed_frame(ScopeFrame(0, 0, 14_150_000, 14_350_000, bytes(475), False))
+        await sub.receive()
+        assert sub.granted.view == View(14_200_000, 14_300_000)
+        sim.writes.clear()
+        sim.mode = 1
+        session.observe("mode", 1, 0)
+        assert await recaptured(
+            View(14_200_000, 14_300_000),
+            fixed_native,
+            [fixed_native] * 3,
+            1,
+        )
+        sim.mode = 0
+        session.observe("mode", 0, 0)
+        assert await recaptured(
+            View(14_200_000, 14_300_000),
+            center_native,
+            [center_native] * 3,
+            0,
+        )
+        await session.reconcile()
+        assert sim.writes == []
+    finally:
+        await sub.close()
+
+
 @pytest.mark.parametrize("model", ["ic705", "ic7300"])
 async def test_follow_resubscribe_writes_only_on_preset_change(model):
     """MOR-4392: re-subscribing with a new follow spanHz writes the
