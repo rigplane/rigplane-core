@@ -102,6 +102,27 @@ def test_nak_without_civ_frame_stays_empty(tmp_path: Path) -> None:
     assert receipt["civ_hex"] == ""
 
 
+def test_recorded_answers_cover_29_wrapped_reads(tmp_path: Path) -> None:
+    """D5: the real 7610 answers 0x29-wrapped per-receiver reads; the native
+    simulator NAKs them. The mounted table (from tests/fixtures pairs) must
+    answer with a 0x29-wrapped data reply, like the recorded radio."""
+    from e2e.panorama_web_server import _load_recorded_answers  # noqa: PLC0415
+    from rigplane.commands import parse_civ_frame  # noqa: PLC0415
+
+    assert _load_recorded_answers("IC-9700") is None
+    assert _load_recorded_answers("IC-7610") is not None
+    sim = PanoramaSimulator("IC-7610", tmp_path / "radio.jsonl")
+    reply = sim._dispatch_civ(0x29, bytes((0x00, 0x1A, 0x03)), 0xE0)
+    assert reply is not None
+    frame = parse_civ_frame(reply)
+    assert (frame.command, frame.receiver, frame.sub, frame.data) == (
+        0x1A,
+        0x00,
+        0x03,
+        b"\x40",
+    )
+
+
 def test_refuse_once_fires_exactly_once(tmp_path: Path) -> None:
     """D6: the armed 1C 01 refusal answers one matching read, then disarms.
 

@@ -39,6 +39,7 @@ from rigplane.runtime.radio import IcomRadio  # noqa: E402
 from rigplane.sdr.fake import FakeIqSource  # noqa: E402
 from rigplane.sdr.types import SdrConfig  # noqa: E402
 from rigplane.web.server import WebConfig, WebServer  # noqa: E402
+from rigplane_testkit.icom.replay import RecordedAnswerTable  # noqa: E402
 from rigplane_testkit.icom.simulator import MockIcomRadio  # noqa: E402
 from rigplane_testkit.icom.simulator import _CIV_HEADER_SIZE  # noqa: E402
 
@@ -51,6 +52,34 @@ class ScopeWriteReceipt:
 
     def to_json(self) -> str:
         return json.dumps(asdict(self))
+
+
+# D5: models with recorded CI-V pairs answer background reads the native
+# simulator does not model (notably the 7610's 0x29-wrapped per-receiver
+# reads — the real radio answers them, the native _dispatch_cmd29 NAKs
+# everything but ATT/PREAMP). The table is consulted only after the native
+# handlers NAK, so live scope state still wins; models without fixtures
+# (IC-9700) keep native-only behaviour. Typed, from the recorded answers.
+_RECORDED_FIXTURE_MODELS = {"IC-705": "ic705", "IC-7300": "ic7300", "IC-7610": "ic7610"}
+
+
+def _load_recorded_answers(model: str) -> RecordedAnswerTable | None:
+    fixture_dir = _RECORDED_FIXTURE_MODELS.get(model)
+    if fixture_dir is None:
+        return None
+    pairs = (
+        Path(__file__).resolve().parents[1]
+        / "fixtures"
+        / fixture_dir
+        / "civ_pairs.jsonl"
+    )
+    try:
+        rows = [
+            json.loads(line) for line in pairs.read_text().splitlines() if line.strip()
+        ]
+    except OSError:
+        return None
+    return RecordedAnswerTable.from_civ_pairs(rows, "lan")
 
 
 @dataclass(frozen=True)
@@ -89,6 +118,7 @@ class PanoramaSimulator(MockIcomRadio):
             scope_stream=True,
             dual_receiver=self.profile.receiver_count > 1,
             enable_audio=enable_audio,
+            recorded_answers=_load_recorded_answers(model),
         )
         self.evidence = evidence
         self.nak_evidence = evidence.with_suffix(".nak.jsonl")
