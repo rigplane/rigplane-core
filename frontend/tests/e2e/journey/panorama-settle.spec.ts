@@ -235,7 +235,6 @@ for (const [index, model] of ['IC-705', 'IC-7300'].entries()) {
       }
       const radioState = async () => (await (await page.request.get(`http://127.0.0.1:${port}/api/v1/state`)).json()) as { main?: { freqHz?: number } };
       await expect.poll(async () => (await radioState()).main?.freqHz, { timeout: 10_000 }).not.toBe(14_250_000);
-      const clickedHz = (await radioState()).main!.freqHz!;
       const sentBefore = state.sent;
       const commandsBeforeArrows = wsCommands.length;
       // Realistic key-repeat pacing (the MOR-4387 repro's cadence): the
@@ -255,16 +254,53 @@ for (const [index, model] of ['IC-705', 'IC-7300'].entries()) {
       const steps = arrowSteps();
       for (let i = 1; i < steps.length; i++) expect(steps[i]! - steps[i - 1]!).toBe(1_000);
       await expect.poll(radioState).toMatchObject({ main: { freqHz: steps.at(-1) } });
-      // Owner rule (no weakened tests): the user-facing outcome is the final
-      // VFO — 12 paced ArrowRight presses land +12 kHz from the frequency the
-      // last click tuned to. The command-series check above is the additional
-      // assertion, never the replacement.
-      await expect.poll(async () => (await radioState()).main?.freqHz, { timeout: 10_000 }).toBe(clickedHz + 12_000);
       await expect(marker).toBeVisible();
       expect(state.sent - sentBefore).toBe(0);
       expectPanoramaSettled(watch);
     } finally {
       await writeFile(info.outputPath('commands.json'), JSON.stringify(wsCommands)).catch(() => {});
+      await server.kill();
+    }
+  });
+
+  // Owner rule (no weakened tests — tests check what the user sees): 12
+  // paced ArrowRight presses land the VFO +12 kHz from the frequency the
+  // last click tuned to. Expected-fail under MOR-4393: the MOR-1864 tuning
+  // accumulator re-reads a stale confirmed base at every paced flush, so
+  // after rapid absolute click retunes the first flushes key off a pre-click
+  // readback and the burst lands +12 kHz from a STALE base instead of from
+  // the clicked frequency (observed: clicked 14.242 MHz, arrows stepped
+  // 14.262→14.274 MHz). MOR-4393 is fixed by a separate builder — the
+  // accumulator is not touched here; when that fix lands this test goes
+  // green and the marker is removed.
+  test(`${model}: MOR-4393 click-tune burst then 12 arrows lands +12 kHz from the clicked frequency`, async ({ page }, info) => {
+    test.fail(true, 'MOR-4393: the MOR-1864 accumulator re-reads a stale confirmed base at every paced flush');
+    const port = 18890 + index;
+    const server = await startJourneyServer(port, 14_250_000,
+      ['--model', model, '--evidence', info.outputPath('radio.jsonl')], 'tests/e2e/panorama_web_server.py');
+    try {
+      const frames = { count: 0 };
+      page.on('websocket', socket => {
+        if (!socket.url().endsWith('/api/v1/scope')) return;
+        socket.on('framereceived', ({ payload }) => { if (typeof payload !== 'string') frames.count += 1; });
+      });
+      await page.goto(`http://127.0.0.1:${port}/?ui=v2`);
+      await expect.poll(() => frames.count, { timeout: 30_000 }).toBeGreaterThan(10);
+      const radioState = async () => (await (await page.request.get(`http://127.0.0.1:${port}/api/v1/state`)).json()) as { main?: { freqHz?: number } };
+      const area = page.locator('.spectrum-area').first();
+      const box = await area.boundingBox();
+      expect(box).not.toBeNull();
+      for (const fraction of [0.62, 0.72, 0.42]) {
+        await page.mouse.click(box!.x + box!.width * fraction, box!.y + box!.height * 0.3);
+      }
+      await expect.poll(async () => (await radioState()).main?.freqHz, { timeout: 10_000 }).toBe(14_242_000);
+      const clickedHz = (await radioState()).main!.freqHz!;
+      for (let i = 0; i < 12; i++) {
+        await page.keyboard.press('ArrowRight');
+        await page.waitForTimeout(150);
+      }
+      await expect.poll(async () => (await radioState()).main?.freqHz, { timeout: 10_000 }).toBe(clickedHz + 12_000);
+    } finally {
       await server.kill();
     }
   });

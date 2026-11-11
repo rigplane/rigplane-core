@@ -1272,7 +1272,7 @@ describe('SpectrumPanel component', () => {
     expect(read().view).toEqual({ follow: 'vfo', spanHz: 100_000 });
   });
 
-  it('applies repeated zoom and absolute requested bounds to a FIX scope too', async () => {
+  it('crops a FIX zoom client-side while the subscription stays a follow view', async () => {
     runtimeHarness.state.currentCaps = structuredClone(IC7300_CAPABILITIES);
     const target = mountPanel(); emitFrame({ mode: 1 });
     await flushWaterfallPaint();
@@ -1280,7 +1280,9 @@ describe('SpectrumPanel component', () => {
     expect(read().view).toEqual({ follow: 'vfo', spanHz: 100_000 });
     target.querySelector<HTMLButtonElement>('[data-testid="scope-zoom-in"]')!.click();
     flushSync(); await flushWaterfallPaint();
-    expect(read().view).toEqual({ startHz: 14_025_000, endHz: 14_075_000 });
+    // MOR-4392: the FIX crop never rides the subscription — an absolute view
+    // in FIX would make the server rewrite the radio's fixed edges.
+    expect(read().view).toEqual({ follow: 'vfo', spanHz: 100_000 });
     expect(spectrumRendererHarness.lastOptions).toMatchObject({ centerHz: 14_050_000, spanHz: 50_000, sampleSpanHz: 100_000 });
   });
 
@@ -1400,9 +1402,11 @@ describe('SpectrumPanel component', () => {
     expect(spectrumRendererHarness.lastOptions.spanHz).toBe(100_000);
     target.querySelector<HTMLButtonElement>('[data-testid="scope-zoom-in"]')!.click();
     flushSync(); await flushWaterfallPaint();
-    expect(read().view).toEqual({ startHz: 14_025_000, endHz: 14_075_000 });
+    expect(spectrumRendererHarness.lastOptions).toMatchObject({ centerHz: 14_050_000, spanHz: 50_000 });
+    expect(read().view).toEqual({ follow: 'vfo', spanHz: 100_000 });
     target.querySelector<HTMLButtonElement>('[data-testid="scope-zoom-out"]')!.click();
     flushSync(); await flushWaterfallPaint();
+    expect(spectrumRendererHarness.lastOptions).toMatchObject({ centerHz: 14_050_000, spanHz: 100_000 });
     expect(read().view).toEqual({ follow: 'vfo', spanHz: 100_000 });
     expect(target.querySelectorAll('.scope-hatch')).toHaveLength(0);
   });

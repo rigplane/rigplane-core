@@ -749,8 +749,14 @@
         // managed tuple. CENTER scope only: in FIX the radio itself owns
         // the fixed window.
         const confirmedHz = authority?.frequencyHz ?? frequency;
-        if (!fixed && requested !== null && confirmedHz !== null && confirmedHz !== undefined
-          && (confirmedHz < requested.startHz || confirmedHz > requested.endHz)) {
+        if (!fixed && requested !== null && !explicitView) {
+          // MOR-4392: a non-explicit requested view in CENTER can only be a
+          // FIX zoom crop outliving its excursion — clear it so the follow
+          // view (and the CENTER marker reference) resumes at once.
+          requestedView = null;
+        }
+        if (!fixed && requestedView !== null && confirmedHz !== null && confirmedHz !== undefined
+          && (confirmedHz < requestedView.startHz || confirmedHz > requestedView.endHz)) {
           requestedView = null;
           explicitView = false;
         }
@@ -861,7 +867,12 @@
   });
   let scopeSubscriptionValue = $derived.by(() => {
     const stream = runtime.scope.stream(audioFft ? 'audio_fft' : 'hardware');
-    const view = !audioFft && requestedView !== null
+    // MOR-4392: in FIX the zoom crop stays client-side — the subscription
+    // must not carry it: an absolute view in FIX makes the server rewrite
+    // the radio's fixed edges (a radio write for a pure display crop). An
+    // explicit band/segment preset keeps the absolute subscription — there
+    // the fixed-window change IS the user's intent.
+    const view = !audioFft && requestedView !== null && (!isFixedScope || explicitView)
       ? requestedView
       : { follow: 'vfo' as const, spanHz: followSpanHz ?? (audioFft ? 48000 : 100000) };
     const facts = spectrumFacts;
@@ -945,6 +956,10 @@
       };
       requestedView = clipped.startHz <= geometry.view.startHz && clipped.endHz >= geometry.view.endHz
         ? null : clipped;
+      // The crop is scoped to the FIX excursion: it is never an explicit
+      // pin, so a return to CENTER resumes the follow view instead of
+      // holding a window the user never pinned there.
+      explicitView = false;
       scopeView.set('gesture', null);
       return;
     }

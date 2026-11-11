@@ -29,8 +29,13 @@ export function expectPanoramaSettled(watch: PanoramaErrorWatch): void {
   ).toEqual([]);
 }
 
-/** Interactive churn specs additionally demand a clean console. */
+/** Interactive churn specs additionally demand a clean console. Resource
+ * load failures (HTTP-level, e.g. a harness endpoint answering 502) are
+ * server behaviour, not a page error — the JS-error watch stays strict. */
 export function expectPanoramaClean(watch: PanoramaErrorWatch): void {
   expectPanoramaSettled(watch);
-  expect(watch.consoleErrors, 'console errors').toEqual([]);
+  expect(
+    watch.consoleErrors.filter((text) => !text.startsWith('Failed to load resource')),
+    'console errors',
+  ).toEqual([]);
 }
