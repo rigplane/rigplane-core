@@ -767,8 +767,12 @@
           // Only a shrink can be adoption — our own zoom/step gestures ask
           // the server for a covering preset, never for less than requested.
           const coverageSpan = geometry.view.endHz - geometry.view.startHz;
+          // The 1 Hz epsilon keeps the clamp from firing on wire/view
+          // reconstruction jitter (a freq±span/2 window rebuilds 1 ulp off
+          // the requested width); real adoptions are thousands of times
+          // larger.
           if (!fixed && follow !== null && lastCoverageSpanHz !== null
-            && coverageSpan < lastCoverageSpanHz && follow > coverageSpan) {
+            && coverageSpan < lastCoverageSpanHz - 1 && follow > coverageSpan + 1) {
             followSpanHz = coverageSpan;
           }
           lastCoverageSpanHz = coverageSpan;
@@ -966,13 +970,22 @@
     // MOR-4387 + MOR-4392: zoom edits ONE state — the requested visible
     // width centred on the VFO. It drives the subscription (the server
     // picks the smallest covering preset) and the crop alike, so a press
-    // inside one preset is a pure client crop with no radio write.
-    const current = effectiveView.endHz - effectiveView.startHz;
+    // inside one preset is a pure client crop with no radio write. The
+    // chain reads the exact requested width, not the freq±span/2 view
+    // reconstruction, so the floor/cap no-op is exact (1-ulp idempotence).
+    const current = followSpanHz ?? (effectiveView.endHz - effectiveView.startHz);
     let next = current * factor;
     if (factor < 1) {
+      // The floor is a few bins of the NARROWEST span choice: below it the
+      // radio cannot deliver more bins, and the wire view may already be
+      // the clipped crop (never the native coverage) on either grant
+      // contract, so the narrowest published choice is the honest source.
       const geometry = frameGeometry;
-      const binHz = geometry !== null && geometry.width > 0 && geometry.view.endHz > geometry.view.startHz
-        ? (geometry.view.endHz - geometry.view.startHz) / geometry.width : 0;
+      const choices = runtime.caps?.span_choices_hz;
+      const narrowestHz = choices?.length ? Math.min(...choices)
+        : (geometry !== null ? geometry.view.endHz - geometry.view.startHz : 0);
+      const binHz = geometry !== null && geometry.width > 0 && narrowestHz > 0
+        ? narrowestHz / geometry.width : 0;
       if (binHz > 0) next = Math.max(next, ZOOM_FLOOR_BINS * binHz);
     } else {
       const choices = runtime.caps?.span_choices_hz;

@@ -1308,10 +1308,10 @@ describe('SpectrumPanel component', () => {
     const target = mountPanel(); emitFrame(); await flushWaterfallPaint();
     const zoomIn = target.querySelector<HTMLButtonElement>('[data-testid="scope-zoom-in"]')!;
     const read = () => JSON.parse(target.querySelector('.spectrum-panel')!.getAttribute('data-scope-subscription')!);
-    // 100 kHz of coverage over 475 bins: the floor is a few native bins, far
-    // below the narrowest span preset — the crop never stalls at a preset.
-    const floor = 4 * (100_000 / 475);
-    for (let i = 0; i < 12; i++) { zoomIn.click(); flushSync(); }
+    // The floor is a few native bins of the narrowest span choice (475-bin
+    // frames): far below any preset, the crop never stalls at a preset.
+    const floor = 4 * (Math.min(...spanCapabilities.span_choices_hz) / 475);
+    for (let i = 0; i < 14; i++) { zoomIn.click(); flushSync(); }
     await flushWaterfallPaint();
     expect(read().view).toEqual({ follow: 'vfo', spanHz: expect.closeTo(floor, 0) });
     expect(spectrumRendererHarness.lastOptions.spanHz).toBeCloseTo(floor, 0);
