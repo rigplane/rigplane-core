@@ -891,10 +891,15 @@ async def test_external_single_is_adopted_no_reassert_no_restore(windowed_sdk):
 
 
 async def test_native_width_regrant_carries_native_coverage(windowed_sdk):
-    """Gate round 1 finding 4: the initial follow grant and the first
-    native-width regrant carry the truthful native coverage, which exceeds
-    the cropped view — the document shape the browser's parseScopeGranted
-    accepts (mirrored in scope-wire-v2.test.ts)."""
+    """Gate round 1 finding 4: the granted document at native width — the
+    initial grant when the source learned the native width before granting
+    (RadioScopeSource.feed_frame records it during the subscribe's
+    set_view await), otherwise the width-change regrant the sender emits
+    right before the first binary frame — carries the truthful native
+    coverage, which exceeds the cropped view: the document shape the
+    browser's parseScopeGranted accepts (mirrored in
+    scope-wire-v2.test.ts). Which of the two orderings happens is a race,
+    so the test accepts either."""
     radio, sim = windowed_sdk
     sim.set_frequency(14_100_000)
     radio._radio_state.main.freq = 14_100_000
@@ -914,32 +919,82 @@ async def test_native_width_regrant_carries_native_coverage(windowed_sdk):
                 14_050_000,
                 14_150_000,
             )
-            # The sender emits the width-change regrant (text) right before
-            # the first binary frame; capture both in wire order.
-            regrant = None
+            # Capture every granted document in wire order up to the first
+            # binary frame.
+            granted = [initial]
             native_width = None
             async with asyncio.timeout(5):
-                while True:
+                while native_width is None:
                     message = await ws.receive(timeout=5)
                     if message.type is aiohttp.WSMsgType.TEXT:
-                        candidate = decode_scope_granted(message.data)
-                        if candidate.width != initial.width:
-                            regrant = candidate
+                        granted.append(decode_scope_granted(message.data))
                     elif message.type is aiohttp.WSMsgType.BINARY:
                         native_width = decode_scope_frame_v2(message.data).width
-                        if regrant is not None:
-                            break
-            assert regrant is not None
-            assert regrant.width == native_width
-            assert (regrant.view.start_hz, regrant.view.end_hz) == (
+            # The contract: the granted document whose width equals the
+            # first binary frame's width — the initial grant if it already
+            # matches, otherwise the regrant that precedes the frame —
+            # carries the native coverage.
+            native_grant = next(
+                document for document in granted if document.width == native_width
+            )
+            assert (native_grant.view.start_hz, native_grant.view.end_hz) == (
                 14_070_000,
                 14_130_000,
             )
-            assert regrant.coverage is not None
-            assert (regrant.coverage.start_hz, regrant.coverage.end_hz) == (
+            assert native_grant.coverage is not None
+            assert (
+                native_grant.coverage.start_hz,
+                native_grant.coverage.end_hz,
+            ) == (
                 14_050_000,
                 14_150_000,
             )
             # Native coverage sits strictly outside the cropped view.
-            assert regrant.coverage.start_hz < regrant.view.start_hz
-            assert regrant.coverage.end_hz > regrant.view.end_hz
+            assert native_grant.coverage.start_hz < native_grant.view.start_hz
+            assert native_grant.coverage.end_hz > native_grant.view.end_hz
+
+
+async def test_native_width_known_at_subscribe_needs_no_regrant(windowed_sdk):
+    """The other ordering, deterministically: a receiver-0 frame reaches
+    RadioScopeSource.feed_frame BEFORE the subscription grant is computed
+    (a first subscription streams one frame, then closes — the learned
+    native width survives the stream stop, unlike the remembered
+    coverage). The second subscription's initial grant is then ALREADY at
+    native width and ScopeHandler._sender, which only re-sends the granted
+    document on a width change, emits no regrant: the first post-grant
+    wire message is the binary frame itself."""
+    radio, sim = windowed_sdk
+    sim.set_frequency(14_100_000)
+    radio._radio_state.main.freq = 14_100_000
+    async with web(radio) as (_, client, base, protocols, _):
+        async with client.ws_connect(
+            base + "/api/v1/scope", protocols=protocols
+        ) as first:
+            await _subscribe(
+                first, Subscription("radio", 0, FollowView("vfo", 60_000), 1024, 20)
+            )
+            native_width = (await _frame_with(first, (14_070_000, 14_130_000))).width
+        assert await await_until(lambda: not radio.scope_session().active)
+        async with client.ws_connect(base + "/api/v1/scope", protocols=protocols) as ws:
+            initial = await _subscribe(
+                ws, Subscription("radio", 0, FollowView("vfo", 60_000), 1024, 20)
+            )
+            # The grant is computed with the native width already known:
+            # native width and native coverage from the start.
+            assert initial.width == native_width
+            assert (initial.view.start_hz, initial.view.end_hz) == (
+                14_070_000,
+                14_130_000,
+            )
+            assert initial.coverage is not None
+            assert (initial.coverage.start_hz, initial.coverage.end_hz) == (
+                14_050_000,
+                14_150_000,
+            )
+            assert initial.coverage.start_hz < initial.view.start_hz
+            assert initial.coverage.end_hz > initial.view.end_hz
+            # No width-change regrant is required: the first wire message
+            # after the grant is the binary frame, at the same width.
+            message = await ws.receive(timeout=5)
+            assert message.type is aiohttp.WSMsgType.BINARY
+            assert decode_scope_frame_v2(message.data).width == native_width
