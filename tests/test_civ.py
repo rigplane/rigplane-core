@@ -453,3 +453,90 @@ async def test_generation_advance_forgets_refused_reads() -> None:
     tracker.advance_generation(RuntimeError("reconnect"))
 
     assert tracker.take_refused_reads() == ()
+
+
+def test_expire_ack_sinks_drops_only_what_each_window_closed() -> None:
+    """MOR-4384: a sink is owed its answer for one window from its send.
+
+    The write below was sent before the read but both windows open at
+    their own send stamps, so at t=96 only the write's window (90 + 5)
+    has closed; the read's (100 + 5) keeps it claimable.
+    """
+    tracker = CivRequestTracker()
+    read = tracker.register_ack(wait=False, response_key=_TUNER, refused_read=_TUNER)
+    write = tracker.register_ack(wait=False)
+    tracker.mark_ack_sink_sent(read, sent_monotonic=100.0)
+    tracker.mark_ack_sink_sent(write, sent_monotonic=90.0)
+
+    assert tracker.expire_ack_sinks(answer_window=5.0, now_monotonic=96.0) == 1
+    assert tracker.ack_unclaimed_at is not None  # the write's FB can still arrive
+
+    assert tracker.expire_ack_sinks(answer_window=5.0, now_monotonic=110.0) == 1
+    assert tracker.ack_sink_count == 0
+
+
+def test_an_expired_read_sink_also_flags_an_unclaimed_answer() -> None:
+    """MOR-4384: a refused read is answered with a bare ``FA`` too.
+
+    An expired sink never got the answer the radio owed it. For a write
+    that answer is a bare FB/FA; for a read it is the data answer, or an
+    ``FA`` when the radio refuses it. Whichever arrives late names no
+    command and can settle a later waiter, so a dropped read sink must
+    record the ambiguity just like a write's.
+    """
+    tracker = CivRequestTracker()
+    sink = tracker.register_ack(
+        wait=False, response_key=_S_METER, refused_read=_S_METER
+    )
+    tracker.mark_ack_sink_sent(sink, sent_monotonic=100.0)
+    assert tracker.ack_unclaimed_at is None
+
+    assert tracker.expire_ack_sinks(answer_window=5.0, now_monotonic=105.0) == 1
+
+    assert tracker.ack_unclaimed_at is not None
+
+
+@pytest.mark.asyncio
+async def test_a_read_within_its_window_keeps_the_refusal_off_the_next_write() -> None:
+    """MOR-4384: while a read is still owed its answer window, a refusal
+    lands on that read — not on the next write's waiter, and not on an
+    s_meter sink registered after it."""
+    tracker = CivRequestTracker()
+    tuner = tracker.register_ack(wait=False, response_key=_TUNER, refused_read=_TUNER)
+    s_meter = tracker.register_ack(
+        wait=False, response_key=_S_METER, refused_read=_S_METER
+    )
+    tracker.mark_ack_sink_sent(tuner, sent_monotonic=100.0)
+    tracker.mark_ack_sink_sent(s_meter, sent_monotonic=100.0)
+    write = tracker.register_ack(wait=True, consume_backlog=False)
+
+    assert tracker.expire_ack_sinks(answer_window=5.0, now_monotonic=101.0) == 0
+    assert tracker.resolve(CivEvent(type=CivEventType.NAK, frame=_nak_frame()))
+
+    assert tracker.take_refused_reads() == (_TUNER,)
+    assert not write.done(), "the read's refusal settled the write's waiter"
+    assert tracker.ack_sink_count == 1  # the s_meter sink still waits
+    write.cancel()
+
+
+def test_restore_refused_reads_requeues_undelivered_once() -> None:
+    """MOR-4384: a taken refusal no consumer took is not lost.
+
+    ``_record_refused_reads`` takes every refusal off the tracker and
+    hands the declared ones to the scheduler; whatever it cannot deliver
+    goes back, so the record of which read the radio refused survives
+    for the owner. A repeatedly refused read still keeps one entry.
+    """
+    tracker = CivRequestTracker()
+    tracker.register_ack(wait=False, response_key=_TUNER, refused_read=_TUNER)
+    assert tracker.resolve(CivEvent(type=CivEventType.NAK, frame=_nak_frame()))
+
+    taken = tracker.take_refused_reads()
+    assert taken == (_TUNER,)
+    tracker.restore_refused_reads(taken)
+
+    assert tracker.take_refused_reads() == (_TUNER,)
+
+    tracker.restore_refused_reads((_TUNER, _TUNER))
+    assert tracker.take_refused_reads() == (_TUNER,)
+    assert tracker.take_refused_reads() == ()
