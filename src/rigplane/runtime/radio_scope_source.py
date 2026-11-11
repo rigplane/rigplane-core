@@ -23,11 +23,30 @@ from rigplane.scope.models import (
 
 class RadioScopeWriter(Protocol):
     def tuned_frequency(self, receiver: int) -> float: ...
+
+    @property
+    def observed_scope_mode(self) -> int | None:
+        """Live radio-observed scope mode (0 center, 1 fixed).
+
+        MOR-4392 round 2: the writer owns the radio's observed scope
+        state (ScopeSession.observed, refreshed by every waveform
+        frame); the source consults it to decide whether a follow
+        gesture may drive center mode. None before the first read —
+        the source then drives the radio as before.
+        """
+        ...
+
     async def set_output(self, enabled: bool, *, release: bool = True) -> None: ...
     async def set_fixed(self, edges: ScopeFixedEdge, receiver: int) -> None: ...
-    async def set_center(
-        self, center_hz: float, span_hz: float, receiver: int
-    ) -> None: ...
+
+    async def set_center(self, center_hz: float, span_hz: float, receiver: int) -> None:
+        """Tune the center-mode viewport.
+
+        ``span_hz`` is the profile preset value (an entry of
+        ``RadioProfile.scope_span_presets_hz``): on Icom CI-V it is the
+        ±half-width the 0x27 0x15 span code selects, not the full view
+        width the grant reports (MOR-4385).
+        """
 
 
 class RadioScopeSource:
@@ -43,10 +62,15 @@ class RadioScopeSource:
         self._writer = writer
         self._fixed_ranges = profile.scope_fixed_edge_ranges
         self._fixed_step = profile.scope_fixed_edge_step_hz
+        self._presets = profile.scope_span_presets_hz
+        self._preset_semantics = profile.scope_span_preset_semantics
         self._caps = SourceCapabilities(
             tuple(range(profile.receiver_count)),
             ("center", "fixed") if self._fixed_ranges else ("center",),
-            profile.scope_span_presets_hz,
+            # MOR-4385: published choices are real VIEW widths (end -
+            # start), so a ±half-width preset appears as twice its
+            # number and the UI steps read like the radio's own table.
+            profile.scope_span_view_widths_hz,
             None,
             max_fps,
             "profile fixed edges or center ± span/2"
@@ -58,6 +82,11 @@ class RadioScopeSource:
         self._callbacks: list[Callable[[NativeFrame], None]] = []
         self._active = False
         self._native_widths: dict[int, int] = {}
+        # MOR-4392 round 2: last streamed (mode, coverage) per receiver —
+        # lets a FIX follow grant clip to the live fixed window already
+        # at subscribe time instead of granting a stale wide window for
+        # a frame. Same memory class as _native_widths, no new mechanism.
+        self._native_coverages: dict[int, tuple[int, Coverage]] = {}
 
     def capabilities(self) -> SourceCapabilities:
         return replace(
@@ -70,6 +99,36 @@ class RadioScopeSource:
             raise ValueError("unsupported receiver")
         return selected
 
+    def _coverage_half_width(self, preset: float) -> float:
+        """Half the coverage a preset grants, per the profile semantics.
+
+        A ``half_width`` preset (Icom CI-V 0x27 0x15) is itself the
+        ±half-width; a ``full_width`` preset covers its number on both
+        sides, i.e. half its number either side of center.
+        """
+        return preset if self._preset_semantics == "half_width" else preset / 2
+
+    def _center_span(self, view: ViewRequest, receiver: int) -> tuple[Coverage, int]:
+        """The center-mode grant for a view: coverage and radio preset.
+
+        Picks the smallest preset whose coverage contains the requested
+        view, so every granted view is covered with the least waste and
+        the radio receives the preset's own index.
+        """
+        resolved = self.resolve_view(view, receiver)
+        center = self._writer.tuned_frequency(receiver)
+        distance = max(abs(resolved.start_hz - center), abs(resolved.end_hz - center))
+        preset = next(
+            (
+                preset
+                for preset in self._presets
+                if self._coverage_half_width(preset) >= distance
+            ),
+            self._presets[-1],
+        )
+        half = self._coverage_half_width(preset)
+        return Coverage(center - half, center + half), preset
+
     def resolve_view(self, view: ViewRequest, receiver: int | None = None) -> View:
         selected = self._receiver(receiver)
         if isinstance(view, FollowView):
@@ -77,20 +136,34 @@ class RadioScopeSource:
             return View(center - view.span_hz / 2, center + view.span_hz / 2)
         return view
 
+    def resolve_follow(
+        self, view: FollowView, native: Coverage, receiver: int | None = None
+    ) -> View:
+        """Granted view for a follow request: the requested window
+        clipped to the live native coverage.
+
+        MOR-4392: ZOOM asks for a visible width (follow, centred on
+        the VFO); the radio is driven to the smallest preset covering
+        it (``_center_span``) and the remainder is a crop — so the
+        grant is the requested window, not the native coverage. When
+        an external change narrows native below the request, the grant
+        is the clipped intersection and nothing is written back
+        (MOR-4385 adoption). A disjoint request falls back to native.
+        """
+        requested = self.resolve_view(view, receiver)
+        start = max(requested.start_hz, native.start_hz)
+        end = min(requested.end_hz, native.end_hz)
+        if start < end:
+            return View(start, end)
+        return native
+
     def coverage_for(self, view: ViewRequest, receiver: int | None = None) -> Coverage:
         resolved = self.resolve_view(view, receiver)
-        fixed = (
-            None
-            if isinstance(view, FollowView)
-            else self._fixed_edges(resolved, self._receiver(receiver))
-        )
-        if fixed is not None:
-            return Coverage(fixed.start_hz, fixed.end_hz)
-        center = self._writer.tuned_frequency(self._receiver(receiver))
-        needed = 2 * max(abs(resolved.start_hz - center), abs(resolved.end_hz - center))
-        spans = self._caps.span_choices_hz
-        span = next((span for span in spans if span >= needed), spans[-1])
-        return Coverage(center - span / 2, center + span / 2)
+        if not isinstance(view, FollowView):
+            fixed = self._fixed_edges(resolved, self._receiver(receiver))
+            if fixed is not None:
+                return Coverage(fixed.start_hz, fixed.end_hz)
+        return self._center_span(view, self._receiver(receiver))[0]
 
     def _fixed_edges(self, view: View, receiver: int) -> ScopeFixedEdge | None:
         if self._fixed_step is None:
@@ -110,7 +183,29 @@ class RadioScopeSource:
     ) -> GrantedView:
         selected = self._receiver(receiver)
         resolved = self.resolve_view(view, selected)
-        coverage = self.coverage_for(view, selected)
+        if (
+            isinstance(view, FollowView)
+            and selected == 0
+            and self._writer.observed_scope_mode == 1
+        ):
+            # MOR-4392 round 2: the radio is in FIX — a follow
+            # zoom/span gesture is a client crop (MOR-4387), never a
+            # mode change, so nothing is written: no 0x14 mode flip, no
+            # span, no fixed-edge rewrite. The grant is the requested
+            # window clipped to the last streamed FIX window (the same
+            # resolve_follow rule the hub applies per frame), so the
+            # browser never holds a stale wide grant; with no FIX frame
+            # seen yet the coverage stays unknown and the first frame
+            # resolves it. Back in CENTER the hub branch re-resolves
+            # against the native coverage. (observed tracks the main
+            # receiver, so other receivers keep the previous behavior.)
+            # The FIX/CTR gestures themselves are explicit mode commands
+            # outside this path and still write.
+            remembered = self._native_coverages.get(selected)
+            if remembered is not None and remembered[0] == 1:
+                native = remembered[1]
+                return GrantedView(self.resolve_follow(view, native, selected), native)
+            return GrantedView(resolved, None)
         fixed = (
             None
             if isinstance(view, FollowView)
@@ -118,12 +213,13 @@ class RadioScopeSource:
         )
         if fixed is not None:
             await self._writer.set_fixed(fixed, selected)
-        else:
-            await self._writer.set_center(
-                (coverage.start_hz + coverage.end_hz) / 2,
-                coverage.end_hz - coverage.start_hz,
-                selected,
-            )
+            return GrantedView(resolved, Coverage(fixed.start_hz, fixed.end_hz))
+        coverage, preset = self._center_span(view, selected)
+        await self._writer.set_center(
+            (coverage.start_hz + coverage.end_hz) / 2,
+            preset,
+            selected,
+        )
         return GrantedView(resolved, coverage)
 
     async def start(self) -> None:
@@ -160,6 +256,7 @@ class RadioScopeSource:
         start, end = frame.start_freq_hz, frame.end_freq_hz
         if frame.out_of_range and frame.mode == 0:
             start, end = start - end, start + end
+        self._native_coverages[receiver] = (frame.mode, Coverage(start, end))
         native = NativeFrame(
             frame.receiver,
             Coverage(start, end),
