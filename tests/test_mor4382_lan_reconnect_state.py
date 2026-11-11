@@ -196,6 +196,24 @@ def _ready_with_freq_and_mode(state: dict[str, Any]) -> bool:
     )
 
 
+def _ready_with_top_freq_and_mode(state: dict[str, Any]) -> bool:
+    """The silent-smoke oracle: top-level ``main.freqHz`` + ``main.mode``.
+
+    The personality sims answer every radio-level read (the fetch populates
+    ``radio_state`` fully), but the per-VFO ``vfoA`` projection the recorded
+    fakes satisfy is not what the smoke waits on; the smoke waits on the
+    top-level fields, so the count test does too.
+    """
+    conn = state["connection"]
+    main = state.get("main") or {}
+    return (
+        conn["rigConnected"] is True
+        and conn["radioReady"] is True
+        and main.get("freqHz") is not None
+        and main.get("mode") is not None
+    )
+
+
 async def _assert_recovered(web: WebServer, freq_hz: int) -> None:
     """freq/mode are published again and an HTTP command works."""
     await _wait_state(
@@ -287,7 +305,7 @@ async def test_late_first_answer_fetches_initial_state_exactly_once(
     async with _counting_stack(sim, model=model) as (web, _radio, _sim, fetch_at):
         await _wait_state(
             web,
-            _ready_with_freq_and_mode,
+            _ready_with_top_freq_and_mode,
             deadline_s=_DEADLINE_S,
             what="ready, with freq and mode after the late first answer",
         )
@@ -310,7 +328,7 @@ async def test_instant_first_answer_fetches_initial_state_exactly_once(
     async with _counting_stack(sim, model=model) as (web, _radio, _sim, fetch_at):
         await _wait_state(
             web,
-            _ready_with_freq_and_mode,
+            _ready_with_top_freq_and_mode,
             deadline_s=_DEADLINE_S,
             what="ready, with freq and mode after an instant answer",
         )
