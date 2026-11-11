@@ -303,7 +303,7 @@ describe('MOR-1425 tuning accumulator', () => {
     }
   });
 
-  it('MOR-1864 preserves a repolled equal value, but requires association for a changed value', () => {
+  it('MOR-1864/MOR-4393 preserves a repolled equal value; a changed value queries registry association, then the send ledger', () => {
     const acceptedTarget = vi.fn(() => false);
     const local = createTuningAccumulator({ emit, paceMs: 60, acceptedTarget });
     local.step(0, 14_074_000, 14_075_000, 1);
@@ -312,7 +312,11 @@ describe('MOR-1425 tuning accumulator', () => {
     expect(emit).toHaveBeenLastCalledWith(0, 14_076_000);
     expect(acceptedTarget).not.toHaveBeenCalled();
 
-    local.step(0, 14_075_000, 14_076_000, 3); // changed, unmatched value
+    // A changed value still queries the registry association FIRST; it
+    // matches nothing there, but it exactly equals this burst's own first
+    // send — the MOR-4393 send ledger attributes it as our own echo, so the
+    // burst continues at the pace instead of cold re-emitting.
+    local.step(0, 14_075_000, 14_076_000, 3);
     expect(emit).toHaveBeenLastCalledWith(0, 14_076_000);
     expect(acceptedTarget).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
       frequency: 14_075_000, observationMarker: 3,
@@ -399,11 +403,13 @@ describe('MOR-2464 display-only tuning-burst publication', () => {
     const confirmed = 14_074_000;
     acc.step(0, confirmed, confirmed + 1_000, 1);
     vi.advanceTimersByTime(150);
-    // The echo confirms the first write (unassociated marker), so the next
-    // press of the same gesture re-emits the SAME target — an unchanged
-    // command emit. It is still local input: the visual latch refreshes.
+    // The echo confirms the first write (unassociated marker). MOR-4393: the
+    // echo of our own still-pending send continues the burst through the send
+    // ledger instead of cold-starting it, so the unchanged target waits for
+    // the pace rather than re-emitting immediately. It is still local input:
+    // the visual latch refreshes.
     acc.step(0, confirmed + 1_000, confirmed + 1_000, 2);
-    expect(emit).toHaveBeenCalledTimes(2);
+    expect(emit).toHaveBeenCalledTimes(1);
     expect(emit).toHaveBeenLastCalledWith(0, confirmed + 1_000);
     vi.advanceTimersByTime(100); // 250ms past the FIRST input, 100ms past the second
     expect(getTuningBurstTargetHz(0)).toBe(confirmed + 1_000);
