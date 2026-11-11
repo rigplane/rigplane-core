@@ -900,6 +900,11 @@
           ? geometry.view.endHz - geometry.view.startHz : null;
       },
       step(delta: -1 | 1): void {
+        // MOR-4392 (coordinator ruling 2026-11-10): span is a CENTER-mode
+        // setting — in a fixed-edges mode (FIX/S-F) the window is wire-owned
+        // and a step writes nothing, so the step is refused outright (the
+        // keys render disabled; never silently inert).
+        if (isFixedScope) return;
         const current = requestedView !== null ? requestedView.endHz - requestedView.startHz
           : followSpanHz ?? control.spanHz;
         const choices = runtime.caps?.span_choices_hz ?? [];

@@ -203,9 +203,12 @@
     return bindActionInstrument(() => {
       const field = spanField;
       // MOR-2565: unread mode ⇒ the keys stay inert even with a read span.
+      // MOR-4392 (coordinator ruling 2026-11-10): span is a CENTER-mode
+      // setting — in a fixed-edges mode (FIX/S-F) the window is wire-owned,
+      // so the keys render DISABLED rather than stepping into a no-op.
       return {
         field,
-        blocked: modeKnown === undefined,
+        blocked: modeKnown === undefined || !isSpanApplicable(modeKnown),
         invoke: () => onSpanChange?.(delta),
       };
     });
