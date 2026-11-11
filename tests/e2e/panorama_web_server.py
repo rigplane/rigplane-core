@@ -82,7 +82,9 @@ class PanoramaSimulator(MockIcomRadio):
                 # readback-lag shape, MOR-4393).
                 self._frequency = bcd_decode(civ[5:10])
                 echo = self._civ_frame(
-                    0x00, self._radio_addr, _CMD_FREQ_GET,
+                    0x00,
+                    self._radio_addr,
+                    _CMD_FREQ_GET,
                     data=bcd_encode(self._frequency),
                 )
                 self._send(proto, self._wrap_civ(echo, sender_id), addr, "civ")
