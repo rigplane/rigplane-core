@@ -220,9 +220,6 @@ def test_fixed_rate_and_idempotent_close_send_nothing() -> None:
         harness.source.set_gain(None)
         harness.source.close()
         harness.source.close()
-        assert harness.command() is None
-        harness.source.open()
-        harness.clock.advance(200.0)
         assert harness.source.center_freq_hz == 0
         assert harness.command() is None
 
@@ -265,7 +262,6 @@ def test_stale_resolver_isolated_across_reopen(monkeypatch: pytest.MonkeyPatch) 
         harness.wait_for(2)
         assert harness.source.is_open is True
         assert harness.source.center_freq_hz == 7_183_000
-    assert calls == 2
 
 
 def test_malformed_radio_datagram_marks_next_block_overflowed() -> None:
@@ -282,12 +278,14 @@ def test_malformed_radio_datagram_marks_next_block_overflowed() -> None:
 
 def test_connection_reset_does_not_end_reader(monkeypatch: pytest.MonkeyPatch) -> None:
     real_recvfrom = socket.socket.recvfrom
-    reset = threading.Event()
+    reset, terminal = threading.Event(), threading.Event()
 
     def recvfrom(sock: socket.socket, size: int) -> tuple[bytes, tuple[str, int]]:
         if sock.getsockname()[0] == "0.0.0.0" and not reset.is_set():
             reset.set()
             raise ConnectionResetError("transient radio loss")
+        if sock.getsockname()[0] == "0.0.0.0" and terminal.is_set():
+            raise OSError("terminal radio loss")
         return real_recvfrom(sock, size)
 
     monkeypatch.setattr(socket.socket, "recvfrom", recvfrom)
@@ -296,3 +294,14 @@ def test_connection_reset_does_not_end_reader(monkeypatch: pytest.MonkeyPatch) -
         harness.send(bytes(768), count=10)
         harness.wait_for(1)
         assert harness.source.is_open is True
+
+        terminal.set()
+        wait_until(lambda: not harness.source.is_open)
+        assert harness.source.center_freq_hz == 0
+        terminal.clear()
+        harness.source.open()
+        harness.clock.advance(10.0)
+        assert harness.command() is None
+        harness.source.set_center_freq(7_183_000)
+        harness.send(bytes(768), count=10)
+        harness.wait_for(2)

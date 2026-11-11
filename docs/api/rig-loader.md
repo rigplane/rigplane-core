@@ -215,7 +215,6 @@ except RigLoadError as e:
 | `[modes].families` members are in `[modes].list`, each at most once | `[modes].families.cw names mode 'X' that is not in [modes].list`, `[modes].families.cw repeats mode 'X' (already in family 'cw')` |
 | `[filters].list` present (may be empty: a radio without a selectable IF filter) | `missing required [filters].list` |
 | `[cw_text]` keys known and typed (if present): `supported` bool, `max_length` and `memory_channel` positive integers, `memory_type` `"text"` or `"message"` | `[cw_text].<key> must be ...` / `[cw_text] unknown key '<key>'` |
-| `[iq_lan]` has all nine measured wire-fact keys, a known `protocol`, integer values, and valid ports/rates/ranges (if present) | `[iq_lan].<key> must be ...` / `[iq_lan] unknown key '<key>'` |
 | `[cw_text].supported = true` only with a `send_cw` command the protocol can write (CI-V bytes on `civ`, a CAT write template on `yaesu_cat`) | `[cw_text].supported = true needs a send_cw command <protocol> can write` |
 | Without `[cw_text].supported`, CW text is supported only on CI-V profiles with a `send_cw` command; Yaesu CAT and Kenwood CAT default to `false` | — |
 | Kenwood CAT: `[cw_text].supported = true` is refused (no backend sends CW text) | `[cw_text].supported = true is not available for kenwood_cat profiles: ...` |

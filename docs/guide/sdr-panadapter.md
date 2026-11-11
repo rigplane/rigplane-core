@@ -67,11 +67,7 @@ rate (`controller.py: DEFAULT_SPAN_DIVISOR`); at the default 2.4 Msps that is
 
 ## Radio LAN IQ
 
-A radio's own LAN IQ can replace a separate SDR: Xiegu UDP carries 48,000
-complex samples/s (±24 kHz); the G7250 profile sets centre = VFO + 8 kHz and 40 kHz usable bandwidth from measured data.
-
-Startup writes the VFO, so it waits for a settled, known, in-range centre.
-No stop/keepalive exists; the radio streams until powered off. Server and CLI wiring arrives in a follow-up.
+A radio's own LAN IQ can replace a separate SDR: Xiegu UDP carries 48,000 complex samples/s (±24 kHz); the G7250 profile sets centre = VFO + 8 kHz and 40 kHz usable bandwidth from measured data. Startup writes the VFO, so it waits for a settled, known, in-range centre. No stop/keepalive exists; the radio streams until powered off. Server and CLI wiring arrives in a follow-up.
 
 ## Status in the Web UI state
 
