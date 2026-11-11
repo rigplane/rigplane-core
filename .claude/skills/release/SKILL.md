@@ -88,65 +88,38 @@ cd ..
 
 ### 2h. Python tests — read the record, do not run the suite
 
-The suite record for a head is that head's `quick.yml` run, and the full suite
-is not run on the laptop or the remote testbed for a head CI has run (CLAUDE.md
-§Testing, §Agent working rules). `quick.yml` runs on pull requests to `main` and
-in the merge queue only, so a release-branch head has no `quick` run of its own:
-the record is the `main` run of the newest `main` commit on the branch (the cut
-commit, or the `main` commit named in the last cherry-pick's `-x` line), and
-the classifier check below compares HEAD with that run's commit.
+The suite is not run on the laptop or the remote testbed for a head CI has run
+(CLAUDE.md §Testing, §Agent working rules). `quick.yml` runs on pull requests to
+`main` and in the merge queue only, so a release-branch head has no `quick` run
+of its own. The record for a release-branch head is the `full.yml` run
+dispatched on that branch for that exact head, which is also the interpreter
+matrix check below.
+
+**Full matrix on the exact head before the tag.** `publish.yml`'s `validate`
+matrix is `["3.12", "3.13"]` — 3.11 is dropped there (see the comment on that
+matrix) — and it runs on `release: published`, so it first reports after the
+tag and the GitHub Release exist. Its failure does stop PyPI: `build` needs
+`validate` and `publish` needs `build`. What it cannot undo is the tag and the
+Release, which is the last block of Error recovery below. So dispatching
+`full.yml`'s 3.11/3.12/3.13 matrix before tagging is both the suite record and
+a safety net — it moves a 3.12/3.13 failure to before the tag exists. The
+dispatch tests the remote head, so publish the branch head first and confirm
+the run's `headSha` equals the local HEAD:
 
 ```bash
-gh run list --workflow "Tests (quick)" --branch main --limit 5 \
-  --json databaseId,headSha,conclusion,createdAt
-gh run view <id> --json jobs \
-  --jq '.jobs[].steps[] | select(.name=="Run tests") | .conclusion'
-```
-
-The second command must print `success`. `quick.yml` gates `Run tests` on
-`needs.classify.outputs.core == 'true'` (the `classify` job runs
-`.github/scripts/classify-quick-paths.py`), so on a run whose changed paths did
-not select `core`, the step prints `skipped` while the run's
-own conclusion is still `success` — the run's conclusion is not the suite's.
-Then confirm that run's commit still covers HEAD by asking the same classifier
-about the paths that differ; do not keep a second path list here:
-
-```bash
-RUN_SHA=<run-sha>   # the full 40-character headSha printed above
-git diff --quiet "$RUN_SHA" HEAD || \
-  python3 .github/scripts/classify-quick-paths.py --repo . \
-    --base "$RUN_SHA" --head "$(git rev-parse HEAD)"
-```
-
-No output means HEAD has the same tree as the run's commit, so the run is the
-record. Otherwise the printed JSON must show `"core": false`.
-
-`core` true → that run is not the record for HEAD. Stop and get a run at
-HEAD.
-
-The check is against HEAD, not against the commit that gets tagged: Step 6
-commits the Step 5 edits on top of HEAD, so the released commit is HEAD plus a
-`pyproject.toml` version line and a `docs/CHANGELOG.md` entry. `pyproject.toml`
-is a `core` path, so that commit is a different head, with its own
-`quick` run when it lands.
-
-**Interpreter matrix before the tag.** `quick.yml` pins `UV_PYTHON: "3.11"`.
-`publish.yml`'s `validate` matrix is `["3.12", "3.13"]` — 3.11 is dropped there
-(see the comment on that matrix) — and it runs on `release: published`, so it
-first reports after the tag and the GitHub Release exist. Its failure does stop
-PyPI: `build` needs `validate` and `publish` needs `build`. What it cannot undo
-is the tag and the Release, which is the last block of Error recovery below. So
-dispatching `full.yml`'s 3.11/3.12/3.13 matrix before tagging is a safety net,
-not redundant coverage — it moves a 3.12/3.13 failure to before the tag exists:
-
-```bash
+git push                      # the dispatch runs the remote head
 gh workflow run "Tests (full matrix)" --ref release/<major>.<minor>.x -f rc=true
-gh run list --workflow "Tests (full matrix)" --limit 3   # find the dispatched run
+gh run list --workflow "Tests (full matrix)" --branch release/<major>.<minor>.x \
+  --limit 3 --json databaseId,headSha,status,conclusion
 gh run watch <id>
+test "$(gh run view <id> --json headSha --jq .headSha)" = "$(git rev-parse HEAD)"
 ```
 
-Without `rc=true` the dispatched run deselects the slow-marked tests, so it
-would not cover what `publish.yml`'s `validate` runs.
+The run must conclude `success` on a `headSha` equal to HEAD. Without
+`rc=true` the dispatched run deselects the slow-marked tests, so it would not
+cover what `publish.yml`'s `validate` runs. The released commit is HEAD plus the
+Step 5 edits (a `pyproject.toml` version line and a `docs/CHANGELOG.md` entry);
+that version-only difference is the same one the rc-to-final rule allows.
 
 ```bash
 # 2i. Build smoke

@@ -69,15 +69,16 @@ Scheduled against `main` (each also has `workflow_dispatch`):
 
 ## Release Candidate
 
-The RC tier is `full.yml` on a release-candidate tag (`vX.Y.ZrcN`, pattern `v*rc*`), or one dispatch on `main`:
+The RC tier is `full.yml` on a release-candidate tag (`vX.Y.ZrcN`, pattern `v*rc*`), or one dispatch on `main` or on the release branch (`release/<major>.<minor>.x`; the release skill uses this run as the suite record for the branch head):
 
 ```bash
 gh workflow run full.yml --ref main -f rc=true
+gh workflow run full.yml --ref release/<major>.<minor>.x -f rc=true
 ```
 
 `rc` is a boolean `workflow_dispatch` input, default false. When it is true, or the run is on a tag, the `Run tests` step passes `-m "not benchmark"`, which replaces the `addopts` selection, so the `slow`-marked tests run as well. Everything else is the scheduled `full.yml` run described above: the `test` job on Python 3.11, 3.12 and 3.13 and the `capture-harness` job, on `[self-hosted, linux, build]`. `tests/test_ci_pytest_invocation.py: test_full_runs_the_slow_tests_only_for_an_rc_dispatch_or_rc_tag` pins the selection for `rc` true, false and unset, and for a tag. The final is a separate version-only commit on top of the candidate (see "rc receipts for a version-only final" below), so the candidate run plus the checker's version-only proof cover the final tree.
 
-The run is a workflow run on `main` or on the tag, not a status on any pull request, and it is informational: no workflow reads its result, and `publish.yml` does not depend on it.
+The run is a workflow run on `main`, on the release branch or on the tag, not a status on any pull request, and it is informational: no workflow reads its result, and `publish.yml` does not depend on it.
 
 ## Rehearsal
 
