@@ -673,6 +673,25 @@ describe('handler guards are pinned independently of `disabled` (MOR-1304 F3)', 
     r.dispose();
   });
 
+  // MOR-4392 (coordinator ruling 2026-11-10): on Icom span is a CENTER-mode
+  // setting — in a fixed-edges mode (FIX/S-F) the window is wire-owned and a
+  // SPAN step writes nothing, so the keys render DISABLED (never silently
+  // inert) while the granted width stays on display.
+  it.each([1, 3])('disables the span keys in scope mode %i (fixed edges), width still displayed', (mode) => {
+    const onSpanChange = vi.fn();
+    const r = render(withSc({ mode: known(mode) }), { onSpanChange });
+    const keys = r.el('scope-span')!.querySelectorAll('button');
+    expect(keys).toHaveLength(2);
+    for (const key of keys) {
+      expect((key as HTMLButtonElement).disabled).toBe(true);
+      bypassClick(key as HTMLElement);
+    }
+    flushSync();
+    expect(r.el('scope-span-value')!.textContent).toBe('±50k');
+    expect(onSpanChange).not.toHaveBeenCalled();
+    r.dispose();
+  });
+
   const STALE: Availability = { structural: true, operational: false };
 
   it('refuses a choice click on a KNOWN but operationally-stale field', () => {
