@@ -217,18 +217,31 @@ class XieguUdpIqSource:
 
         peer_host: str | None = None
         next_resolve_s: float | None = None
+        next_receive_warning_s: float | None = None
         try:
             while not stop.is_set():
                 now = self._clock()
-                if peer_host is None and (
+                with self._lock:
+                    silence_since = (
+                        self._opened_at_s
+                        if self._last_valid_s is None
+                        else self._last_valid_s
+                    )
+                refresh_due = now - silence_since >= self._stall_s
+                if (peer_host is None or refresh_due) and (
                     next_resolve_s is None or now >= next_resolve_s
                 ):
+                    peer_host = None
+                    with self._lock:
+                        if self._thread is not threading.current_thread() or stop.is_set():
+                            return
+                        self._peer_host = None
+                    next_resolve_s = now + self._stall_s
                     try:
                         resolved_host = self._resolver(self._spec.host)
                     except OSError as exc:
                         if not stop.is_set():
                             logger.warning("UDP IQ host resolution failed: %s", exc)
-                        next_resolve_s = now + self._stall_s
                     else:
                         with self._lock:
                             if (
@@ -240,14 +253,16 @@ class XieguUdpIqSource:
                             self._peer_host = resolved_host
                 try:
                     payload, address = sock.recvfrom(65535)
-                except ConnectionResetError:
-                    pass
                 except TimeoutError:
                     pass
                 except OSError as exc:
-                    if not stop.is_set():
+                    if stop.is_set():
+                        break
+                    now = self._clock()
+                    if next_receive_warning_s is None or now >= next_receive_warning_s:
                         logger.warning("UDP IQ receive failed: %s", exc)
-                    break
+                        next_receive_warning_s = now + self._stall_s
+                    stop.wait(_SOCKET_TIMEOUT_S)
                 else:
                     now = self._clock()
                     if peer_host is None:
@@ -274,7 +289,9 @@ class XieguUdpIqSource:
                             pending_overflow = True
                         if pending and center != pending_center:
                             flush()
-                        if center != 0:
+                        if center == 0:
+                            pending_overflow = True
+                        else:
                             pairs = self._np.frombuffer(payload, dtype="<i2").astype(
                                 self._np.float32
                             )
@@ -295,7 +312,20 @@ class XieguUdpIqSource:
                 now = self._clock()
                 if pending and now - pending_started_s >= self._block_period_s:
                     flush()
-                if peer_host is not None:
+                with self._lock:
+                    silence_since = (
+                        self._opened_at_s
+                        if self._last_valid_s is None
+                        else self._last_valid_s
+                    )
+                if (
+                    peer_host is not None
+                    and not (
+                        now - silence_since >= self._stall_s
+                        and next_resolve_s is not None
+                        and now >= next_resolve_s
+                    )
+                ):
                     self._maybe_start(now)
         except OSError as exc:
             if not stop.is_set():

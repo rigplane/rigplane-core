@@ -295,6 +295,10 @@ class UdpIqSourceSpec:
             raise ValueError(
                 "samples_per_datagram: samples_per_datagram * 4 must be <= 65507"
             )
+        if self.tune_min_hz < 0:
+            raise ValueError("tune_min_hz must be non-negative")
+        if self.tune_max_hz > 2**64 - 1:
+            raise ValueError("tune_max_hz must fit an unsigned 64-bit integer")
         if self.tune_min_hz >= self.tune_max_hz:
             raise ValueError("tune_min_hz must be less than tune_max_hz")
         if self.usable_bandwidth_hz is not None and (

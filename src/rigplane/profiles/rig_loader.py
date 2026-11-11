@@ -2680,6 +2680,12 @@ def _parse_iq_lan(filename: str, raw: Any) -> IqLanSpec | None:
         raise RigLoadError(
             f"{filename}: [iq_lan].usable_bandwidth_hz must not exceed sample_rate_hz"
         )
+    if values["tune_min_hz"] < 0:
+        raise RigLoadError(f"{filename}: [iq_lan].tune_min_hz must be non-negative")
+    if values["tune_max_hz"] > 2**64 - 1:
+        raise RigLoadError(
+            f"{filename}: [iq_lan].tune_max_hz must fit an unsigned 64-bit integer"
+        )
     if values["tune_min_hz"] >= values["tune_max_hz"]:
         raise RigLoadError(
             f"{filename}: [iq_lan].tune_min_hz must be less than tune_max_hz"

@@ -198,6 +198,11 @@ class TestLoadRig:
         assert rig.iq_lan is None
         assert rig.to_profile().iq_lan is None
 
+    def test_iq_lan_accepts_zero_tune_min(self, tmp_path):
+        section = _IQ_LAN_TOML.replace("tune_min_hz = 100000", "tune_min_hz = 0")
+        rig = load_rig(_write_toml(tmp_path, _MINIMAL_TOML + section))
+        assert rig.iq_lan.tune_min_hz == 0
+
     @pytest.mark.parametrize(
         ("old", "new", "key"),
         [
@@ -209,6 +214,8 @@ class TestLoadRig:
             ("receive_port = 50001\n", "", "receive_port"),
             ('protocol = "xiegu_udp"', 'protocol = "other"', "protocol"),
             ("sample_rate_hz = 48000", 'sample_rate_hz = "48000"', "sample_rate_hz"),
+            ("tune_min_hz = 100000", "tune_min_hz = -1", "tune_min_hz"),
+            ("tune_max_hz = 54000000", "tune_max_hz = 18446744073709551616", "tune_max_hz"),
             (
                 "samples_per_datagram = 192",
                 "samples_per_datagram = 16377",

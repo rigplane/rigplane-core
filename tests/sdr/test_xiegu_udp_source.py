@@ -348,6 +348,82 @@ def test_malformed_radio_datagram_marks_next_block_overflowed() -> None:
     assert blocks[1].overflow is True
 
 
+def test_unknown_centre_discard_marks_only_next_block_overflowed() -> None:
+    with _source(center_hz=7_183_000) as harness:
+        harness.send(bytes(768), count=10)
+        harness.wait_for(1)
+        harness.source.set_center_freq(0)
+        harness.clock.advance(0.1)
+        harness.send(bytes(768))
+        wait_until(lambda: harness.source._last_valid_s == 0.1)
+        harness.source.set_center_freq(7_183_000)
+        harness.send(bytes(768), count=20)
+        blocks = harness.wait_for(3)
+    assert [block.overflow for block in blocks] == [False, True, False]
+
+
+def test_stall_refreshes_peer_before_sending(monkeypatch: pytest.MonkeyPatch) -> None:
+    attempts = []
+    destinations = []
+    real_sendto = socket.socket.sendto
+
+    def resolve(host: str) -> str:
+        attempts.append(host)
+        return "127.0.0.2" if len(attempts) == 1 else "127.0.0.1"
+
+    def sendto(sock: socket.socket, data: bytes, address: tuple[str, int]) -> int:
+        if data == encode_tune(7_175_000):
+            destinations.append(address[0])
+        return real_sendto(sock, data, address)
+
+    monkeypatch.setattr(socket.socket, "sendto", sendto)
+    with _source(center_hz=7_183_000, resolver=resolve, start_grace_s=10.0) as harness:
+        wait_until(lambda: len(attempts) == 1)
+        harness.clock.advance(1.0)
+        wait_until(lambda: len(attempts) >= 2)
+        harness.send(bytes(768), count=10)
+        harness.wait_for(1)
+        harness.clock.advance(10.0)
+        assert harness.command(timeout=2.0) == encode_tune(7_175_000)
+        assert destinations and all(host == "127.0.0.1" for host in destinations)
+
+
+def test_failed_peer_refresh_blocks_commands_until_retry() -> None:
+    attempts = []
+
+    def resolve(host: str) -> str:
+        attempts.append(host)
+        if len(attempts) == 2:
+            raise socket.gaierror("refresh failed")
+        return "127.0.0.1"
+
+    with _source(center_hz=7_183_000, resolver=resolve, start_grace_s=10.0) as harness:
+        wait_until(lambda: len(attempts) == 1)
+        harness.clock.advance(10.0)
+        wait_until(lambda: len(attempts) == 2)
+        assert harness.command() is None
+        harness.clock.advance(1.0)
+        assert harness.command(timeout=2.0) == encode_tune(7_175_000)
+
+
+def test_connection_refused_does_not_end_reader(monkeypatch: pytest.MonkeyPatch) -> None:
+    real_recvfrom = socket.socket.recvfrom
+    refused = threading.Event()
+
+    def recvfrom(sock: socket.socket, size: int) -> tuple[bytes, tuple[str, int]]:
+        if sock.getsockname()[0] == "0.0.0.0" and not refused.is_set():
+            refused.set()
+            raise ConnectionRefusedError("transient radio loss")
+        return real_recvfrom(sock, size)
+
+    monkeypatch.setattr(socket.socket, "recvfrom", recvfrom)
+    with _source(center_hz=7_183_000) as harness:
+        wait_until(refused.is_set)
+        harness.send(bytes(768), count=10)
+        harness.wait_for(1)
+        assert harness.source.is_open is True
+
+
 def test_connection_reset_does_not_end_reader(monkeypatch: pytest.MonkeyPatch) -> None:
     real_recvfrom = socket.socket.recvfrom
     reset, terminal = threading.Event(), threading.Event()
@@ -356,11 +432,17 @@ def test_connection_reset_does_not_end_reader(monkeypatch: pytest.MonkeyPatch) -
         if sock.getsockname()[0] == "0.0.0.0" and not reset.is_set():
             reset.set()
             raise ConnectionResetError("transient radio loss")
-        if sock.getsockname()[0] == "0.0.0.0" and terminal.is_set():
-            raise OSError("terminal radio loss")
         return real_recvfrom(sock, size)
 
     monkeypatch.setattr(socket.socket, "recvfrom", recvfrom)
+    original_start = XieguUdpIqSource._maybe_start
+
+    def maybe_start(source: XieguUdpIqSource, now: float) -> None:
+        if terminal.is_set():
+            raise OSError("terminal reader failure outside recvfrom")
+        original_start(source, now)
+
+    monkeypatch.setattr(XieguUdpIqSource, "_maybe_start", maybe_start)
     with _source(center_hz=7_183_000) as harness:
         wait_until(lambda: reset.is_set())
         harness.send(bytes(768), count=10)
