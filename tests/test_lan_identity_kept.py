@@ -1,7 +1,7 @@
 """MOR-4382: kept Icom LAN identity behaviours whose only tests were deleted.
 
-PR #4556 deleted ``tests/test_icom_lan_identity_gate.py`` and
-``tests/test_lan_identity_hold_stream.py``. The LAN ``19 00`` read stays
+PR #4556 deleted the identity-gate and hold-stream test modules. The LAN
+``19 00`` read stays
 information-only (``CoreRadio.probe_connection_identity`` publishes
 ``connection.identity`` and never gates readiness), and these four
 behaviours the PR keeps lost their coverage. Each test below drives the
