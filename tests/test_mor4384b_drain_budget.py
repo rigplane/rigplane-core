@@ -200,6 +200,86 @@ class _SilentWriteTransport(SplitIcomTransport):
         await super().send_tracked(packet, **kwargs)
 
 
+class TestSameKeyDrain:
+    """A data read must not register its waiter over an identical open sink."""
+
+    @pytest.mark.realtime(
+        reason="pins waiter-vs-sink attribution for two reads of one command"
+    )
+    @pytest.mark.asyncio
+    async def test_a_late_answer_to_an_identical_read_retires_its_sink_not_the_new_read(
+        self,
+    ) -> None:
+        """A blocking read must not take a reply owed to an older identical sink.
+
+        Two reads of the same command share one request key, so the key
+        cannot tell a reply owed to the older fire-and-forget read (a sink)
+        from the new blocking read's own answer. ``resolve`` tries response
+        waiters before sinks, so a late answer routed between the new read's
+        registration and its send settles the NEW waiter and leaves the sink
+        open — on the PTT-release readback that stolen reply fails the
+        provenance check (``answered_by is reply``) and every release attempt
+        reports UNCERTAIN (tests/integration/test_ptt_release_readback_api.py,
+        red on the round-2 head). The drain must hold the new read's
+        registration until the identical sink is answered; unrelated sinks
+        stay skipped.
+        """
+        transport = _MockTransport()
+        radio = _make_radio(transport)
+        # A window far wider than any test join: only the same-key drain may
+        # clear the older read's sink, never a window expiry.
+        radio._civ_get_timeout = 10.0
+        try:
+            runtime = radio._civ_runtime
+            ptt_read = build_civ_frame(IC_7610_ADDR, CONTROLLER_ADDR, 0x1C, sub=0x00)
+            assert await runtime._execute_civ_raw(ptt_read, wait_response=False) is None
+            assert radio._civ_request_tracker.ack_sink_count == 1
+            task = asyncio.create_task(runtime._execute_civ_raw(ptt_read))
+            try:
+                # The blocking read must not go out while the identical sink
+                # is still owed its answer.
+                await asyncio.sleep(0.05)
+                assert len(transport.sent_packets) == 1, (
+                    "the blocking read sent while an identical sink was open"
+                )
+                stale = parse_civ_frame(
+                    build_civ_frame(
+                        CONTROLLER_ADDR, IC_7610_ADDR, 0x1C, sub=0x00, data=b"\x01"
+                    )
+                )
+                await runtime._route_civ_frame(stale, generation=radio._civ_epoch)
+                # The sink is answered now, so the read may send.
+                for _ in range(1000):
+                    if len(transport.sent_packets) >= 2:
+                        break
+                    await asyncio.sleep(0.001)
+                assert len(transport.sent_packets) == 2, (
+                    "the blocking read never went out"
+                )
+                own = parse_civ_frame(
+                    build_civ_frame(
+                        CONTROLLER_ADDR, IC_7610_ADDR, 0x1C, sub=0x00, data=b"\x00"
+                    )
+                )
+                await runtime._route_civ_frame(own, generation=radio._civ_epoch)
+                result = await asyncio.wait_for(task, timeout=3.0)
+                assert result is not None and result.data == b"\x00", (
+                    "the read returned the older read's stale answer"
+                )
+            finally:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+            assert radio._civ_request_tracker.ack_sink_count == 0, (
+                "the stale answer settled the new read instead of the sink"
+            )
+        finally:
+            radio._civ_transport = None
+            pump = radio._civ_rx_task
+            if pump is not None:
+                await pump
+            radio._connected = False
+
+
 class TestEvidenceExpiry:
     """A newer directed answer retires older dead sinks by evidence."""
 

@@ -223,6 +223,30 @@ def read_identity_from_frame(frame: CivFrame) -> CivRequestKey:
     )
 
 
+def _keys_overlap(a: CivRequestKey, b: CivRequestKey) -> bool:
+    """Whether one inbound frame could match both request keys.
+
+    Mirrors :meth:`CivRequestTracker._matches` on both sides: the frame must
+    share command and sub with both keys, both receivers when both name one,
+    and both data prefixes — possible only when one prefix starts with the
+    other.
+    """
+    if a.command != b.command or a.sub != b.sub:
+        return False
+    if a.receiver is not None and b.receiver is not None and a.receiver != b.receiver:
+        return False
+    if (
+        a.data_prefix
+        and b.data_prefix
+        and not (
+            a.data_prefix.startswith(b.data_prefix)
+            or b.data_prefix.startswith(a.data_prefix)
+        )
+    ):
+        return False
+    return True
+
+
 def iter_civ_frames(payload: bytes) -> Iterator[bytes]:
     """Yield CI-V frames found in an arbitrary payload buffer."""
     idx = 0
@@ -305,6 +329,24 @@ class CivRequestTracker:
     def ack_sink_count(self) -> int:
         """Number of fire-and-forget ACK sink waiters currently tracked."""
         return sum(1 for w in self._ack_waiters if w.future is None)
+
+    def ack_sink_count_matching(self, key: CivRequestKey) -> int:
+        """Open read sinks whose owed answer would also match ``key``.
+
+        Two reads of one command share a request key, so the answer the
+        radio still owes an older fire-and-forget read would settle a new
+        blocking read's waiter if it registered now (``resolve`` tries
+        response waiters before sinks). A data-expecting command drains
+        only these sinks; sinks of other commands cannot eat its keyed
+        answer and are skipped (MOR-4384 round 2).
+        """
+        return sum(
+            1
+            for waiter in self._ack_waiters
+            if waiter.future is None
+            and waiter.response_key is not None
+            and _keys_overlap(waiter.response_key, key)
+        )
 
     @property
     def generation(self) -> int:
@@ -482,7 +524,11 @@ class CivRequestTracker:
                 return
 
     def expire_ack_sinks(
-        self, *, answer_window: float, now_monotonic: float | None = None
+        self,
+        *,
+        answer_window: float,
+        now_monotonic: float | None = None,
+        only_key: CivRequestKey | None = None,
     ) -> int:
         """Drop fire-and-forget sinks whose own answer window has closed.
 
@@ -491,6 +537,10 @@ class CivRequestTracker:
         sink still inside that window is kept claimable, because the
         bare FB/FA or data answer the radio owes it names no command for
         ``resolve`` and must land on it, not on a later waiter (MOR-4384).
+
+        ``only_key`` scopes the expiry to sinks whose answer would match
+        that request key (``_keys_overlap``): the data-read drain waits
+        only for those, so at its budget's end it presumes only them lost.
 
         A sink dropped here never got that answer, so whatever the radio
         still sends for it — an FB for a write, an FA for a refused read
@@ -508,6 +558,12 @@ class CivRequestTracker:
         for waiter in self._ack_waiters:
             if waiter.future is not None:
                 # Blocking waiters run out their own answer window.
+                kept.append(waiter)
+                continue
+            if only_key is not None and not (
+                waiter.response_key is not None
+                and _keys_overlap(waiter.response_key, only_key)
+            ):
                 kept.append(waiter)
                 continue
             opened_at = (

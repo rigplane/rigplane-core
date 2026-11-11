@@ -1284,7 +1284,9 @@ class CivRuntime:
             self._host._civ_request_tracker.note_ack_unclaimed()
             return RawCivTransactionResult(status="sent")
 
-        await self._drain_ack_sinks_before_blocking(expects_data=expect == "data")
+        await self._drain_ack_sinks_before_blocking(
+            expects_data=expect == "data", request_key=request_key
+        )
         dropped_backlog = self._host._civ_request_tracker.drop_ack_backlog()
         if dropped_backlog:
             logger.debug(
@@ -4695,6 +4697,7 @@ class CivRuntime:
         *,
         check_current: Callable[[], None] | None = None,
         expects_data: bool = False,
+        request_key: CivRequestKey | None = None,
     ) -> None:
         """Let fire-and-forget ACK sinks drain before a blocking command.
 
@@ -4704,10 +4707,18 @@ class CivRuntime:
         still owed an answer: the answer retiring that sink — an FB, or
         the FA of a refused read — would settle the new waiter instead,
         and the write's own FB could be eaten by the older sink (MOR-4384).
-        A data answer is attributed by its request key instead — the
-        tracker's response waiters are consulted before any sink — so an
-        older unanswered sink can neither steal it nor be owed by it, and
-        data-expecting commands skip this drain entirely.
+
+        A data answer IS attributed by its request key, so a
+        data-expecting command drains only the sinks whose owed answer
+        would match that same key (``CivRequestTracker.ack_sink_count_matching``)
+        and skips the rest. The skip is safe only across keys: two reads of
+        one command share the key, and ``resolve`` consults response
+        waiters before sinks, so a late answer owed to an older identical
+        fire-and-forget read would settle the new read's waiter if it
+        registered now — the PTT-release readback then rejects its own
+        real reply as unverifiable (tests/integration/
+        test_ptt_release_readback_api.py). Draining the identical sink
+        first keeps the late answer on the sink it belongs to.
 
         The remaining wait is bounded by its own separate budget
         (``_ACK_SINK_DRAIN_BUDGET_S``), never by each sink's whole answer
@@ -4718,9 +4729,15 @@ class CivRuntime:
         ambiguity recorded. A late answer for a sink retired inside the
         budget still lands on that sink, so the round-1 attribution holds.
         """
-        if expects_data:
-            return
         tracker = self._host._civ_request_tracker
+
+        def open_sinks() -> int:
+            if expects_data:
+                if request_key is None:
+                    return 0
+                return tracker.ack_sink_count_matching(request_key)
+            return tracker.ack_sink_count
+
         deadline = time.monotonic() + _ACK_SINK_DRAIN_BUDGET_S
         while True:
             expired = tracker.expire_ack_sinks(
@@ -4731,14 +4748,16 @@ class CivRuntime:
                     "Expired %d unanswered ACK sink waiter(s) before blocking command",
                     expired,
                 )
-            if tracker.ack_sink_count == 0:
+            if open_sinks() == 0:
                 return
             if time.monotonic() >= deadline:
                 break
             await asyncio.sleep(0.005)
             if check_current is not None:
                 check_current()
-        presumed = tracker.expire_ack_sinks(answer_window=0.0)
+        presumed = tracker.expire_ack_sinks(
+            answer_window=0.0, only_key=request_key if expects_data else None
+        )
         if presumed:
             logger.debug(
                 "Presumed %d ACK sink waiter(s) lost at the drain budget",
@@ -4894,6 +4913,7 @@ class CivRuntime:
         await self._drain_ack_sinks_before_blocking(
             check_current=check_current_pre_wire,
             expects_data=expects_response,
+            request_key=request_key,
         )
         check_current(pre_wire=True)
 
