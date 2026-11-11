@@ -200,7 +200,17 @@ class ScopeHub:
                         request.source_id,
                         request.receiver,
                         grant.view,
-                        _intersection(grant.view, grant.coverage),
+                        # MOR-4392 gate round 1: a follow grant carries the
+                        # truthful native coverage from the start — the same
+                        # semantics _on_frame publishes on every regrant, so
+                        # initial and subsequent granted documents agree
+                        # (the consumer contract accepts native coverage
+                        # outside the cropped view; the binary frame keeps
+                        # its in-view intersection). Pinned views keep the
+                        # in-view crop.
+                        grant.coverage
+                        if isinstance(request.view, FollowView)
+                        else _intersection(grant.view, grant.coverage),
                         # No upsampling: a request wider than the source's
                         # native bins is granted at native resolution, and
                         # the granted message reports the actual width.

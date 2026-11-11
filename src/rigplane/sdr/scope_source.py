@@ -137,8 +137,10 @@ class IqFftSource:
 
         MOR-4385: following never retunes the IQ provider (a partial
         view is a zoom crop), so the grant keeps the requested width
-        even when the native passband is wider (the hub still
-        intersects the two for the granted coverage).
+        even when the native passband is wider; the granted coverage
+        carries the truthful native coverage (MOR-4392 gate round 1),
+        while the binary frame's coverage stays the in-view
+        intersection.
         """
         return self.resolve_view(view, receiver)
 

@@ -114,16 +114,53 @@ class ScopeSession:
             raise RuntimeError("scope frequency observation is unavailable")
         return self._frequency(receiver)
 
-    @property
-    def observed_scope_mode(self) -> int | None:
-        """Live radio-observed scope mode (0 center, 1 fixed).
+    async def observed_scope_mode(self, receiver: int) -> int | None:
+        """The requested receiver's live radio-observed scope mode.
 
-        MOR-4392 round 2: read by RadioScopeSource (see its
-        RadioScopeWriter contract) to keep follow gestures from
-        flipping a FIX radio back to CENTER. Tracks the main
-        receiver; None before the first session read.
+        MOR-4392 round 2, gate round 1: read by RadioScopeSource (see
+        its RadioScopeWriter contract) to keep follow gestures from
+        flipping a fixed-family radio back to CENTER. The authority is
+        the receiver-specific capture/read (``_receiver_view``), never
+        the session snapshot — ``_read_scope_session`` seeds that from
+        the SELECTED receiver's cache, which says nothing about MAIN
+        when SUB is selected and no MAIN waveform has streamed yet.
+        Sessions without a receiver reader fall back to the main
+        snapshot; None before any observation.
         """
-        return self.observed.mode if self.observed is not None else None
+        async with self._lock:
+            view = self._views.get(receiver)
+            if view is not None:
+                return view.mode
+            if self._read_receiver is not None:
+                return (await self._receiver_view(receiver)).mode
+            if receiver != 0:
+                return None
+            if self.observed is not None:
+                return self.observed.mode
+            return self._original.mode if self._original is not None else None
+
+    async def _receiver_view(self, receiver: int) -> ScopeState:
+        """The radio's per-receiver scope state, captured once per session.
+
+        A receiver-specific read when the session has a receiver reader
+        — never the selected-receiver cache — else the session snapshot.
+        Seeding ``_applied`` here matches what reconcile does when it
+        captures restore state, so an early read (a follow-mode decision)
+        and a late one (a write capture) share one mechanism.
+        """
+        if receiver not in self._views:
+            view = (
+                await self._read_receiver(receiver)
+                if self._read_receiver is not None
+                else self._original
+            )
+            assert view is not None
+            self._views[receiver] = view
+            for setting in ("mode", "span", "edge"):
+                self._applied[receiver, cast(ScopeSetting, setting)] = getattr(
+                    view, setting
+                )
+        return self._views[receiver]
 
     async def set_output(self, enabled: bool, *, release: bool = True) -> None:
         current = self._demands.get("web", ScopeDemand(0, 0))
@@ -203,6 +240,14 @@ class ScopeSession:
             and self._desired[key] != value
         ):
             self._desired[key] = value
+            # MOR-4385 gate round 1 (owner rule «следовать за рацией»):
+            # an externally superseded setting leaves the restore set —
+            # the last unsubscribe must not write Core's stale snapshot
+            # over the radio's own value. Settings still owned by Core
+            # keep their snapshots and are still restored.
+            self._previous.pop(key, None)
+            if key[1] == "fixed_edge" and isinstance(value, ScopeFixedEdge):
+                self._fixed.pop((value.range_index, value.edge), None)
 
     def observe(self, name: ScopeSetting, value: ScopeValue, receiver: int = 0) -> None:
         if name == "fixed_edge" and isinstance(value, ScopeFixedEdge):
@@ -220,6 +265,11 @@ class ScopeSession:
                 return
         self._adopt_external((receiver, name), value)
         self._applied[receiver, name] = value
+        # Keep the captured per-receiver radio state truthful: later
+        # restore captures and follow-mode decisions read ``_views``.
+        view = self._views.get(receiver)
+        if view is not None and name in ("mode", "span", "edge"):
+            self._views[receiver] = replace(view, **{name: cast(int, value)})
         if name == "dual":
             if self.observed is not None:
                 self.observed = replace(self.observed, dual=bool(value))
@@ -512,17 +562,7 @@ class ScopeSession:
             elif self._original is not None:
                 key = (receiver, name)
                 if key not in self._previous:
-                    if receiver not in self._views:
-                        self._views[receiver] = (
-                            await self._read_receiver(receiver)
-                            if self._read_receiver is not None
-                            else self._original
-                        )
-                        for setting in ("mode", "span", "edge"):
-                            self._applied[receiver, cast(ScopeSetting, setting)] = (
-                                getattr(self._views[receiver], setting)
-                            )
-                    captured = self._views[receiver]
+                    captured = await self._receiver_view(receiver)
                     if self._applied.get(key) == value and key not in self._uncertain:
                         self._applied[key] = value
                         continue

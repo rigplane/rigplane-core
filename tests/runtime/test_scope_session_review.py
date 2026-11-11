@@ -619,8 +619,10 @@ async def test_last_unsubscribe_does_not_restore_over_external_span(windowed_sdk
             sim.views[0] = (0, presets.index(100_000), 1)
             session = radio.scope_session()
             assert await await_until(
-                lambda: session.observed is not None
-                and session.observed.span == presets.index(100_000)
+                lambda: (
+                    session.observed is not None
+                    and session.observed.span == presets.index(100_000)
+                )
             )
             span_sets_before_close = len(
                 [w for w in _viewport_writes(sim) if w.sub == 0x15]
@@ -648,8 +650,12 @@ async def test_last_unsubscribe_does_not_restore_over_external_fixed_edge(
     external = ScopeFixedEdge(6, 1, 14_060_000, 14_160_000)
     async with web(radio) as (_, client, base, protocols, _):
         async with client.ws_connect(base + "/api/v1/scope", protocols=protocols) as ws:
-            await _subscribe(ws, Subscription("radio", 0, View(14_050_000, 14_150_000), 475, 20))
-            assert sim.fixed[b"\x06\x01"] == ScopeFixedEdge(6, 1, 14_050_000, 14_150_000)
+            await _subscribe(
+                ws, Subscription("radio", 0, View(14_050_000, 14_150_000), 475, 20)
+            )
+            assert sim.fixed[b"\x06\x01"] == ScopeFixedEdge(
+                6, 1, 14_050_000, 14_150_000
+            )
             # External rewrite of the same slot, reported like a front-panel
             # change (0x1E report through the production RX path).
             sim.fixed[b"\x06\x01"] = external

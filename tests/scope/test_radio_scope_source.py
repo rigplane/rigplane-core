@@ -11,7 +11,8 @@ from rigplane.scope.models import Coverage, FollowView, ScopeSourcePlugin, View
 class Writer(RadioScopeWriter):
     # MOR-4392 round 2: no observed mode on this fake — the source
     # drives the radio as before.
-    observed_scope_mode = None
+    async def observed_scope_mode(self, receiver):
+        return None
 
     def __init__(self):
         self.writes = []
@@ -697,7 +698,9 @@ async def test_follow_span_gesture_in_observed_fix_writes_nothing(model):
         try:
             assert sim.writes == []
             assert gesture.granted.view == View(14_075_000, 14_125_000)
-            assert gesture.granted.coverage == Coverage(14_075_000, 14_125_000)
+            # Gate round 1: the granted coverage is the truthful native
+            # (fixed) window, matching every per-frame regrant.
+            assert gesture.granted.coverage == Coverage(14_050_000, 14_200_000)
         finally:
             await gesture.close()
     finally:

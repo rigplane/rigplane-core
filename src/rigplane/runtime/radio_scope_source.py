@@ -24,15 +24,16 @@ from rigplane.scope.models import (
 class RadioScopeWriter(Protocol):
     def tuned_frequency(self, receiver: int) -> float: ...
 
-    @property
-    def observed_scope_mode(self) -> int | None:
-        """Live radio-observed scope mode (0 center, 1 fixed).
+    async def observed_scope_mode(self, receiver: int) -> int | None:
+        """The requested receiver's live radio-observed scope mode.
 
-        MOR-4392 round 2: the writer owns the radio's observed scope
-        state (ScopeSession.observed, refreshed by every waveform
-        frame); the source consults it to decide whether a follow
-        gesture may drive center mode. None before the first read —
-        the source then drives the radio as before.
+        The CI-V 0x27 0x14 values: 0 center, 1 fixed, 2 scroll-C,
+        3 scroll-F. MOR-4392 round 2: the writer owns the radio's
+        observed scope state (ScopeSession, refreshed by every waveform
+        frame and able to read an explicit receiver); the source consults
+        it to decide whether a follow gesture may drive center mode.
+        None when the receiver's mode was never observed — the source
+        then drives the radio as before.
         """
         ...
 
@@ -47,6 +48,14 @@ class RadioScopeWriter(Protocol):
         ±half-width the 0x27 0x15 span code selects, not the full view
         width the grant reports (MOR-4385).
         """
+
+
+_FIXED_SCOPE_MODES = (1, 3)
+"""CI-V scope modes whose window is radio-held: FIX and SCROLL-F.
+
+A follow gesture in either is a client crop, never a mode change — the
+same family the frontend's fixed-mode presentation (FIX/S-F) uses.
+"""
 
 
 class RadioScopeSource:
@@ -183,26 +192,26 @@ class RadioScopeSource:
     ) -> GrantedView:
         selected = self._receiver(receiver)
         resolved = self.resolve_view(view, selected)
-        if (
-            isinstance(view, FollowView)
-            and selected == 0
-            and self._writer.observed_scope_mode == 1
-        ):
-            # MOR-4392 round 2: the radio is in FIX — a follow
-            # zoom/span gesture is a client crop (MOR-4387), never a
-            # mode change, so nothing is written: no 0x14 mode flip, no
-            # span, no fixed-edge rewrite. The grant is the requested
-            # window clipped to the last streamed FIX window (the same
+        observed_mode = (
+            await self._writer.observed_scope_mode(selected)
+            if isinstance(view, FollowView)
+            else None
+        )
+        if observed_mode in _FIXED_SCOPE_MODES:
+            # MOR-4392 round 2, gate round 1: the REQUESTED receiver is in
+            # a fixed-family mode (FIX or SCROLL-F) — a follow zoom/span
+            # gesture is a client crop (MOR-4387), never a mode change, so
+            # nothing is written: no 0x14 mode flip, no span, no
+            # fixed-edge rewrite. The grant is the requested window
+            # clipped to the last streamed fixed window (the same
             # resolve_follow rule the hub applies per frame), so the
-            # browser never holds a stale wide grant; with no FIX frame
-            # seen yet the coverage stays unknown and the first frame
-            # resolves it. Back in CENTER the hub branch re-resolves
-            # against the native coverage. (observed tracks the main
-            # receiver, so other receivers keep the previous behavior.)
-            # The FIX/CTR gestures themselves are explicit mode commands
-            # outside this path and still write.
+            # browser never holds a stale wide grant; with no fixed-mode
+            # frame seen yet the coverage stays unknown and the first
+            # frame resolves it. Back in CENTER the hub branch re-resolves
+            # against the native coverage. The FIX/CTR gestures themselves
+            # are explicit mode commands outside this path and still write.
             remembered = self._native_coverages.get(selected)
-            if remembered is not None and remembered[0] == 1:
+            if remembered is not None and remembered[0] in _FIXED_SCOPE_MODES:
                 native = remembered[1]
                 return GrantedView(self.resolve_follow(view, native, selected), native)
             return GrantedView(resolved, None)
