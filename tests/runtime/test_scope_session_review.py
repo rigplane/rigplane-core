@@ -679,6 +679,109 @@ async def test_last_unsubscribe_does_not_restore_over_external_fixed_edge(
         )
 
 
+async def test_single_scope_sub_fix_follow_acquires_dual_and_streams(windowed_sdk):
+    """Pre-review round 1: single-scope output (dual off), MAIN selected,
+    SUB in FIX — a SUB follow subscription still acquires dual output so
+    SUB streams (the CENTER path configures it via set_center/set_fixed),
+    while mode/span/edge/fixed writes stay at zero; teardown restores
+    dual off."""
+    radio, sim = windowed_sdk
+    sim.capture_civ_frames = True
+    sim.set_frequency(14_100_000)
+    radio._radio_state.main.freq = 14_100_000
+    radio._radio_state.sub.freq = 14_100_000
+    sim._scope_13 = 0
+    sim.views[1] = (1, 3, 1)
+    sim.windows[1] = (14_090_000, 14_110_000)
+    async with web(radio) as (_, client, base, protocols, _):
+        async with client.ws_connect(base + "/api/v1/scope", protocols=protocols) as ws:
+            await _subscribe(
+                ws, Subscription("radio", 1, FollowView("vfo", 50_000), 475, 20)
+            )
+            frame = await _frame_with(ws, (14_090_000, 14_110_000))
+            assert (frame.coverage_start_hz, frame.coverage_end_hz) == (
+                14_090_000,
+                14_110_000,
+            )
+            assert sim._scope_13 == 1
+            assert _viewport_writes(sim) == []
+            assert sim.views[1] == (1, 3, 1)
+        assert await await_until(lambda: not radio.scope_session().active)
+        assert sim._scope_13 == 0
+
+
+async def test_fix_follow_reopen_forgets_the_stopped_stream_window(windowed_sdk):
+    """Pre-review round 1 (P2): the remembered native coverage belongs to
+    the stream that produced it — close a FIX subscription, change the
+    window externally while stopped, reopen with frames withheld: the new
+    grant is the requested window, not a clip against the stale one."""
+    radio, sim = windowed_sdk
+    sim.capture_civ_frames = True
+    sim.set_frequency(14_100_000)
+    radio._radio_state.main.freq = 14_100_000
+    sim.views[0] = (1, 3, 1)
+    sim.windows[0] = (14_060_000, 14_140_000)
+    async with web(radio) as (_, client, base, protocols, _):
+        async with client.ws_connect(base + "/api/v1/scope", protocols=protocols) as ws:
+            await _subscribe(
+                ws, Subscription("radio", 0, FollowView("vfo", 100_000), 475, 20)
+            )
+            await _frame_with(ws, (14_060_000, 14_140_000))
+        assert await await_until(lambda: not radio.scope_session().active)
+        # The stream is stopped; the fixed window moves externally.
+        sim.windows[0] = (14_080_000, 14_120_000)
+        sim.muted.add(0)
+        async with client.ws_connect(base + "/api/v1/scope", protocols=protocols) as ws:
+            granted = await _subscribe(
+                ws, Subscription("radio", 0, FollowView("vfo", 100_000), 475, 20)
+            )
+            assert (granted.view.start_hz, granted.view.end_hz) == (
+                14_050_000,
+                14_150_000,
+            )
+            sim.muted.discard(0)
+            await _frame_with(ws, (14_080_000, 14_120_000))
+
+
+async def test_restore_skips_span_adopted_during_teardown(
+    windowed_sdk, monkeypatch
+):
+    """Pre-review round 1 (P2): an external span change landing BETWEEN two
+    restore writes leaves the restore set in time — the copied restore
+    loop must not write the stale span over the adopted value."""
+    radio, sim = windowed_sdk
+    sim.capture_civ_frames = True
+    sim.set_frequency(14_100_000)
+    radio._radio_state.main.freq = 14_100_000
+    presets = radio._profile.scope_span_presets_hz
+    async with web(radio) as (_, client, base, protocols, _):
+        ws = await client.ws_connect(base + "/api/v1/scope", protocols=protocols)
+        await _subscribe(ws, Subscription("radio", 0, FollowView("vfo", 100_000), 475, 20))
+        await _frame_with(ws, (14_050_000, 14_150_000))
+        assert sim.views[0][1] == presets.index(50_000)
+        # Hold the restore's first write (mode) in flight so the external
+        # span change lands while the restore loop is between iterations.
+        send = radio._send_civ_raw
+
+        async def slow_mode_ack(payload, **kwargs):
+            frame = parse_civ_frame(payload)
+            if frame.command == 0x27 and frame.sub == 0x14 and frame.data == b"\x00\x00":
+                await asyncio.sleep(0.3)
+            return await send(payload, **kwargs)
+
+        monkeypatch.setattr(radio, "_send_civ_raw", slow_mode_ack)
+        await ws.close()
+        session = radio.scope_session()
+        assert await await_until(lambda: session.restoring)
+        sim.views[0] = (0, presets.index(100_000), 1)
+        sim.push_scope_setting(b"\x15\x00" + bcd_encode(100_000))
+        assert await await_until(lambda: not session.active)
+        assert sim.views[0][1] == presets.index(100_000)
+        assert (
+            len([w for w in _viewport_writes(sim) if w.sub == 0x15]) == 1
+        )  # only the subscribe's own span write
+
+
 async def test_native_width_regrant_carries_native_coverage(windowed_sdk):
     """Gate round 1 finding 4: the initial follow grant and the first
     native-width regrant carry the truthful native coverage, which exceeds
