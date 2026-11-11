@@ -67,16 +67,14 @@ rate (`controller.py: DEFAULT_SPAN_DIVISOR`); at the default 2.4 Msps that is
 
 ## Radio LAN IQ
 
-Some radios can send their own IQ stream over the LAN instead of requiring a
-separate SDR. The Xiegu UDP source receives 48,000 complex samples/s, a
-±24 kHz window around its centre. The G7250 profile places that centre at
-VFO + 8 kHz and declares 40 kHz of flat, usable bandwidth; these are measured
-profile facts, not server settings.
+Some radios send their own LAN IQ instead of requiring a separate SDR. The
+Xiegu UDP source receives 48,000 complex samples/s (a ±24 kHz window). The
+G7250 profile's measured facts place the centre at VFO + 8 kHz and declare
+40 kHz of flat, usable bandwidth.
 
-Starting the stream tunes the radio's VFO, so the source waits for a settled
-controller frequency and never starts with an unknown or out-of-range VFO.
-There is no stop command or keepalive: once started, the radio keeps streaming
-until powered off. Server and CLI wiring arrives in a follow-up.
+Starting the stream tunes the radio's VFO, so the source waits for a settled,
+known, in-range controller frequency. There is no stop command or keepalive:
+the radio streams until powered off. Server and CLI wiring arrives in a follow-up.
 
 ## Status in the Web UI state
 

@@ -34,9 +34,7 @@ def _fixture_datagrams() -> list[bytes]:
     return datagrams
 
 
-def _spec(
-    radio_port: int, receive_port: int, host: str = "127.0.0.1"
-) -> UdpIqSourceSpec:
+def _spec(radio_port: int, receive_port: int, host="127.0.0.1") -> UdpIqSourceSpec:
     return UdpIqSourceSpec(
         host=host,
         radio_port=radio_port,
@@ -158,7 +156,7 @@ def test_bad_length_and_other_sender_are_dropped_without_samples() -> None:
     with _source(center_hz=7_183_000) as harness:
         harness.send(bytes(767))
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as other:
-            other.bind(("127.0.0.1", 0))
+            other.bind(("127.0.0.2", 0))
             other.sendto(bytes(768), ("127.0.0.1", harness.receive_port))
         wait_until(lambda: harness.source.dropped_datagrams == 2)
         assert harness.blocks == []
@@ -243,12 +241,22 @@ def test_nonfinite_timing_is_rejected(field: str, value: float) -> None:
             pass
 
 
-def test_hostname_peer_receives_blocks_without_repeated_start() -> None:
+def test_hostname_peer_resolves_on_reader_thread(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    resolver_threads: list[str] = []
+
+    def resolve(host: str) -> str:
+        resolver_threads.append(threading.current_thread().name)
+        return "127.0.0.1"
+
+    monkeypatch.setattr(socket, "gethostbyname", resolve)
     with _source(center_hz=7_183_000, host="localhost") as harness:
         harness.send(bytes(768), count=10)
         harness.wait_for(1)
         harness.clock.advance(0.6)
         assert harness.command() is None
+    assert resolver_threads == ["XieguUdpIqSource-reader"]
 
 
 def test_malformed_radio_datagram_marks_next_block_overflowed() -> None:

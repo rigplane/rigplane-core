@@ -670,14 +670,11 @@ These optional sections provide detailed configuration for specific capabilities
 ### `[iq_lan]`
 
 Optional measured radio-LAN IQ facts. `protocol` selects the wire family
-(currently `"xiegu_udp"`); `radio_port` and `receive_port` select its UDP
-ports. `sample_rate_hz`, `samples_per_datagram`, `center_offset_hz`, and
-`usable_bandwidth_hz` describe the stream, while `tune_min_hz` and
-`tune_max_hz` bound the VFO write that starts it. All nine keys are required
-when the section is present. The radio's LAN host is server configuration,
-not profile data. Unknown keys, unknown protocols, wrong types, and invalid
-ranges are load errors naming the key. See `profiles/rig_loader.py:
-_parse_iq_lan` and `sdr/types.py: UdpIqSourceSpec`.
+(currently `"xiegu_udp"`); `radio_port` and `receive_port` select its ports.
+Sample rate/datagram size, centre offset, and usable bandwidth describe the
+stream; `tune_min_hz`/`tune_max_hz` bound its starting VFO write. All nine
+keys are required. The host is server configuration, not profile data.
+Unknown keys/protocols, wrong types, and invalid ranges name the key. See `profiles/rig_loader.py: _parse_iq_lan` and `sdr/types.py: UdpIqSourceSpec`.
 
 ### `[memory]`
 

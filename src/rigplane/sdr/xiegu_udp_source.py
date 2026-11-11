@@ -24,7 +24,6 @@ _DATAGRAMS_PER_BLOCK = 10
 
 
 def encode_tune(hz: int) -> bytes:
-    """Encode the 14-byte tune/start command for an unsigned Hz value."""
     return struct.pack(">IHQ", 0xAA5555AA, 1, hz)
 
 
@@ -32,9 +31,8 @@ class XieguUdpIqSource:
     """Receive a radio-owned UDP IQ stream without independently tuning it.
 
     Ten datagrams form a 1920-sample block (about 40 ms, 25 callbacks/s);
-    partial blocks flush after the same interval. Tune writes wait for a
-    settled centre and silent stream. ``close()`` sends nothing: the radio
-    has no stop command and streams until powered off.
+    partial blocks flush after that interval. Tune writes wait for a settled
+    centre and silence; no stop exists, so the radio streams until poweroff.
     """
 
     def __init__(
@@ -56,16 +54,14 @@ class XieguUdpIqSource:
             raise ValueError("start_grace_s/start_settle_s must be >= 0; stall_s > 0")
 
         self._spec = spec
-        self._peer_host = socket.gethostbyname(spec.host)
+        self._peer_host: str | None = None
         self._np = np
         self._clock = clock
         self._start_grace_s = float(start_grace_s)
         self._start_settle_s = float(start_settle_s)
         self._stall_s = float(stall_s)
         self._facts = IqSourceFacts(
-            tuning="slaved",
-            center_offset_hz=spec.center_offset_hz,
-            usable_bandwidth_hz=spec.usable_bandwidth_hz,
+            "slaved", spec.center_offset_hz, spec.usable_bandwidth_hz
         )
         self._block_period_s = (
             _DATAGRAMS_PER_BLOCK * spec.samples_per_datagram / spec.sample_rate_hz
@@ -87,7 +83,6 @@ class XieguUdpIqSource:
         self._next_tune_s = 0.0
 
     def open(self) -> None:
-        """Bind the receive port and start one reader thread; idempotent."""
         with self._lock:
             if self._is_open:
                 return
@@ -104,6 +99,7 @@ class XieguUdpIqSource:
 
             now = self._clock()
             self._socket = sock
+            self._peer_host = None
             self._opened_at_s = now
             self._last_valid_s = None
             self._next_tune_s = now + self._start_grace_s
@@ -111,11 +107,9 @@ class XieguUdpIqSource:
             self._stop.clear()
             self._is_open = True
             thread = threading.Thread(
-                target=self._reader_loop,
-                args=(sock,),
-                name="XieguUdpIqSource-reader",
-                daemon=True,
+                target=self._reader_loop, args=(sock,), daemon=True
             )
+            thread.name = "XieguUdpIqSource-reader"
             self._thread = thread
             try:
                 thread.start()
@@ -128,7 +122,6 @@ class XieguUdpIqSource:
                 raise
 
     def close(self) -> None:
-        """Stop locally and withdraw VFO-write authorization; idempotent."""
         with self._lock:
             self._is_open = False
             self._center_freq = 0
@@ -157,7 +150,6 @@ class XieguUdpIqSource:
         return self._facts
 
     def set_center_freq(self, hz: int) -> None:
-        """Record the controller-computed centre; never send a command here."""
         with self._lock:
             value = int(hz)
             if value != self._center_freq:
@@ -227,6 +219,8 @@ class XieguUdpIqSource:
             self._deliver(block)
 
         try:
+            peer_host = socket.gethostbyname(self._spec.host)
+            self._peer_host = peer_host
             while not self._stop.is_set():
                 try:
                     payload, address = sock.recvfrom(65535)
@@ -240,7 +234,7 @@ class XieguUdpIqSource:
                     break
                 else:
                     now = self._clock()
-                    if address[0] != self._peer_host:
+                    if address[0] != peer_host:
                         with self._lock:
                             self._dropped_datagrams += 1
                     elif len(payload) != expected_size:
@@ -284,16 +278,21 @@ class XieguUdpIqSource:
                 if pending and now - pending_started_s >= self._block_period_s:
                     flush()
                 self._maybe_start(now)
+        except OSError as exc:
+            if not self._stop.is_set():
+                logger.warning("UDP IQ host resolution failed: %s", exc)
         finally:
             if not self._stop.is_set():
                 with self._lock:
                     self._is_open = False
+                    self._center_freq = 0
+                    self._center_changed_s = self._clock()
+                    self._peer_host = None
                     if self._socket is sock:
                         self._socket = None
                 sock.close()
 
     def _maybe_start(self, now: float) -> None:
-        """Send the current settled VFO only while the stream is silent."""
         with self._lock:
             if not self._is_open or self._center_freq == 0 or now < self._next_tune_s:
                 return
@@ -308,15 +307,14 @@ class XieguUdpIqSource:
             if not self._spec.tune_min_hz <= vfo_hz <= self._spec.tune_max_hz:
                 return
             sock = self._socket
-            if sock is None:
+            peer_host = self._peer_host
+            if sock is None or peer_host is None:
                 return
             self._next_tune_s = now + self._stall_s
             try:
                 # Keep the lock through sendto so a centre update cannot make
                 # this VFO-write stale between the snapshot and the wire.
-                sock.sendto(
-                    encode_tune(vfo_hz), (self._peer_host, self._spec.radio_port)
-                )
+                sock.sendto(encode_tune(vfo_hz), (peer_host, self._spec.radio_port))
             except OSError as exc:
                 logger.warning("UDP IQ tune command failed: %s", exc)
 
