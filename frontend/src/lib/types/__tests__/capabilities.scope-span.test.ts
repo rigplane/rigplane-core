@@ -5,7 +5,7 @@ import fixture from '$lib/runtime/adapters/__tests__/fixtures/ic7300-capabilitie
 
 it('parses producer span choices and rejects invalid widths/order', () => {
   const caps = validateCapabilities({ ...structuredClone(fixture), ...scopeCaps });
-  expect(caps.span_choices_hz).toEqual([2500, 5000, 10000, 25000, 50000, 100000, 250000, 500000]);
+  expect(caps.span_choices_hz).toEqual([5000, 10000, 20000, 50000, 100000, 200000, 500000, 1000000]);
   for (const invalid of [[0], [NaN], ['10000'], [5000, 2500], [2500, 2500], null]) {
     expect(() => validateCapabilities({ ...fixture, span_choices_hz: invalid })).toThrow(/span_choices_hz/);
   }
