@@ -266,7 +266,9 @@ async def test_late_first_answer_fetches_initial_state_exactly_once(
     the first answer arrives. The tail's fetch and the callback's refetch must
     not both run: exactly one initial fetch, then freq/mode published.
     """
-    sim = MockIcomRadio(civ_silent_after_open_s=3.0)
+    # dual_receiver: both profiles are dual-receiver radios; the single-receiver
+    # sim never answers the freq read, so freqHz would stay None forever.
+    sim = MockIcomRadio(civ_silent_after_open_s=3.0, dual_receiver=True)
     async with _counting_stack(sim, model=model) as (web, _radio, _sim, fetch_at):
         await _wait_state(
             web,
@@ -288,7 +290,7 @@ async def test_instant_first_answer_fetches_initial_state_exactly_once(
     model: str,
 ) -> None:
     """Regression guard: an instantly answering radio also fetches exactly once."""
-    sim = MockIcomRadio()
+    sim = MockIcomRadio(dual_receiver=True)
     async with _counting_stack(sim, model=model) as (web, _radio, _sim, fetch_at):
         await _wait_state(
             web,
