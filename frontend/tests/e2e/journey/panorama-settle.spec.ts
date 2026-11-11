@@ -270,16 +270,9 @@ for (const [index, model] of ['IC-705', 'IC-7300'].entries()) {
 
   // Owner rule (no weakened tests — tests check what the user sees): 12
   // paced ArrowRight presses land the VFO +12 kHz from the frequency the
-  // last click tuned to. Expected-fail under MOR-4393: the MOR-1864 tuning
-  // accumulator re-reads a stale confirmed base at every paced flush, so
-  // after rapid absolute click retunes the first flushes key off a pre-click
-  // readback and the burst lands +12 kHz from a STALE base instead of from
-  // the clicked frequency (observed: clicked 14.242 MHz, arrows stepped
-  // 14.262→14.274 MHz). MOR-4393 is fixed by a separate builder — the
-  // accumulator is not touched here; when that fix lands this test goes
-  // green and the marker is removed.
+  // last click tuned to (MOR-4393: the tuning accumulator continues a burst on
+  // echoes of its own sends, so readback latency no longer loses steps).
   test(`${model}: MOR-4393 click-tune burst then 12 arrows lands +12 kHz from the clicked frequency`, async ({ page }, info) => {
-    test.fail(true, 'MOR-4393: the MOR-1864 accumulator re-reads a stale confirmed base at every paced flush');
     const port = 18890 + index;
     const server = await startJourneyServer(port, 14_250_000,
       ['--model', model, '--evidence', info.outputPath('radio.jsonl')], 'tests/e2e/panorama_web_server.py');
