@@ -11,6 +11,7 @@ from rigplane.scope import ScopeFrame
 from rigplane.sdr import (
     FakeIqSource,
     IqBlock,
+    IqFftScope,
     IqScopeSink,
     IqSource,
     IqSourceFacts,
@@ -110,30 +111,103 @@ def make_slaved_controller(
     facts: IqSourceFacts = IqSourceFacts(
         "slaved", center_offset_hz=8000, usable_bandwidth_hz=40_000
     ),
+    frequency_range: tuple[int, int] = (100_000, 6_000_000_000),
 ) -> tuple[SdrScopeController, CountingSource, RecordingSink, FakeClock]:
     return make_controller(
         config=config,
         sample_rate_hz=48_000,
         facts=facts,
+        frequency_range=frequency_range,
     )
 
 
-def test_slaved_construction_uses_usable_bandwidth_as_default_span() -> None:
-    controller, _source, sink, _clock = make_slaved_controller()
+@pytest.mark.parametrize("center_offset_hz", [8000, -8000])
+def test_slaved_default_span_fits_symmetric_view_inside_capture(
+    center_offset_hz: int,
+) -> None:
+    controller, _source, sink, _clock = make_slaved_controller(
+        facts=IqSourceFacts(
+            "slaved",
+            center_offset_hz=center_offset_hz,
+            usable_bandwidth_hz=40_000,
+        )
+    )
 
-    assert controller.span_hz == 40_000
-    assert sink.calls == [("span", 40_000)]
+    assert controller.span_hz == 24_000
+    assert sink.calls == [("span", 24_000)]
 
 
-def test_slaved_construction_defaults_to_full_sample_rate_without_usable_bandwidth() -> (
-    None
-):
+def test_slaved_default_span_uses_sample_rate_without_usable_bandwidth() -> None:
     controller, _source, sink, _clock = make_slaved_controller(
         facts=IqSourceFacts("slaved", center_offset_hz=8000)
     )
 
-    assert controller.span_hz == 48_000
-    assert sink.calls == [("span", 48_000)]
+    assert controller.span_hz == 32_000
+    assert sink.calls == [("span", 32_000)]
+
+
+def test_slaved_default_span_rejects_offset_outside_usable_window() -> None:
+    with pytest.raises(ValueError, match="center_offset_hz.*usable_bandwidth_hz"):
+        make_slaved_controller(
+            facts=IqSourceFacts(
+                "slaved", center_offset_hz=8000, usable_bandwidth_hz=16_000
+            )
+        )
+
+
+def test_slaved_rejects_explicit_span_outside_symmetric_capture() -> None:
+    with pytest.raises(ValueError, match="span_hz"):
+        make_slaved_controller(
+            config=SdrConfig(device_args="driver=fake", span_hz=40_000)
+        )
+
+
+def test_slaved_accepts_explicit_span_inside_symmetric_capture() -> None:
+    controller, _source, sink, _clock = make_slaved_controller(
+        config=SdrConfig(device_args="driver=fake", span_hz=20_000)
+    )
+
+    assert controller.span_hz == 20_000
+    assert sink.calls == [("span", 20_000)]
+
+
+@pytest.mark.parametrize(
+    ("center_offset_hz", "tone_offset_hz"),
+    [(8000, -8000), (-8000, 8000)],
+)
+def test_slaved_real_scope_frames_stay_inside_capture(
+    center_offset_hz: int, tone_offset_hz: int
+) -> None:
+    source = FakeIqSource(
+        sample_rate_hz=48_000,
+        tones=[(tone_offset_hz, -6.0)],
+        facts=IqSourceFacts(
+            "slaved",
+            center_offset_hz=center_offset_hz,
+            usable_bandwidth_hz=40_000,
+        ),
+    )
+    scope = IqFftScope(fft_size=4096, start_worker=False)
+    frames: list[ScopeFrame] = []
+    scope.on_frame(frames.append)
+    controller = SdrScopeController(source, scope, SdrConfig(device_args="driver=fake"))
+    controller.on_radio_state(7_175_000, False)
+    source.on_block(scope.feed)
+    source.open()
+    try:
+        source.pump(1)
+        scope.process_pending()
+    finally:
+        source.close()
+        scope.close()
+
+    assert len(frames) == 1
+    frame = frames[0]
+    capture_low_hz = source.center_freq_hz - source.sample_rate_hz // 2
+    capture_high_hz = source.center_freq_hz + source.sample_rate_hz // 2
+    assert frame.pixels
+    assert frame.out_of_range is False
+    assert capture_low_hz <= frame.start_freq_hz <= frame.end_freq_hz <= capture_high_hz
 
 
 def test_slaved_follows_vfo_immediately_without_debounce_or_duplicate_retune() -> None:
@@ -158,15 +232,56 @@ def test_slaved_follows_vfo_immediately_without_debounce_or_duplicate_retune() -
     assert source.retune_calls == [7_183_000, 7_184_000]
 
 
-def test_slaved_applies_display_and_window_offsets() -> None:
-    controller, source, sink, _clock = make_slaved_controller(
-        config=SdrConfig(device_args="driver=fake", freq_offset_hz=1000)
-    )
+def test_slaved_rejects_display_offset() -> None:
+    with pytest.raises(ValueError, match="freq_offset_hz"):
+        make_slaved_controller(
+            config=SdrConfig(device_args="driver=fake", freq_offset_hz=1000)
+        )
 
+
+def test_slaved_unknown_frequency_clears_centre_then_recovers() -> None:
+    controller, source, _sink, _clock = make_slaved_controller()
     controller.on_radio_state(7_175_000, False)
 
-    assert source.center_freq_hz == 7_184_000
-    assert sink.of("view") == [7_176_000]
+    controller.on_radio_state(None, False)
+
+    assert source.center_freq_hz == 0
+    assert source.retune_calls == [7_183_000, 0]
+
+    controller.on_radio_state(None, False)
+    assert source.retune_calls == [7_183_000, 0]
+
+    controller.on_radio_state(7_175_000, False)
+    assert source.center_freq_hz == 7_183_000
+    assert source.retune_calls == [7_183_000, 0, 7_183_000]
+
+
+def test_slaved_out_of_range_frequency_clears_centre_then_recovers() -> None:
+    controller, source, _sink, _clock = make_slaved_controller(
+        frequency_range=(100_000, 30_000_000)
+    )
+    controller.on_radio_state(7_175_000, False)
+
+    controller.on_radio_state(31_000_000, False)
+
+    assert controller.frequency_in_range is False
+    assert source.center_freq_hz == 0
+    assert source.retune_calls == [7_183_000, 0]
+
+    controller.on_radio_state(7_175_000, False)
+    assert controller.frequency_in_range is True
+    assert source.center_freq_hz == 7_183_000
+
+
+def test_slaved_tx_rising_edge_with_unknown_frequency_still_freezes() -> None:
+    controller, source, sink, _clock = make_slaved_controller()
+    controller.on_radio_state(7_175_000, False)
+    sink.calls.clear()
+
+    controller.on_radio_state(None, True)
+
+    assert sink.calls == [("tx", True)]
+    assert source.center_freq_hz == 0
 
 
 def test_slaved_tx_freeze_uses_same_hold_policy() -> None:

@@ -46,8 +46,10 @@ class IqSource(Protocol):
     def set_center_freq(self, hz: int) -> None:
         """Set the source window centre.
 
-        For a slaved source, record the centre computed by the controller
-        from radio state; do not command the hardware.
+        For a slaved source, record the physical centre computed by the
+        controller from radio state. Centre ``0`` means the frequency is
+        unknown: drop samples and send no radio tune command until a real
+        centre is recorded.
         """
         ...
 
