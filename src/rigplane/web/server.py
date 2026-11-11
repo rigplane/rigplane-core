@@ -4535,6 +4535,7 @@ class WebServer:
             duplicate=stats.duplicate,
             lost=stats.lost,
             late=stats.late,
+            reanchored=stats.reanchored,
         )
 
     def _runtime_process_payload(self) -> dict[str, Any]:

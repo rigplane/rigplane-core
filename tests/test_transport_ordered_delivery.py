@@ -10,6 +10,7 @@ runs out. Timeouts run on the shared ``VirtualClock``.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import AsyncIterator
 from unittest.mock import AsyncMock, patch
 
@@ -26,6 +27,7 @@ from rigplane.core.transport import (
 )
 from rigplane.testing.timing import VirtualClock
 
+from _helpers import wrap_civ_in_udp
 from lan_reorder_fake import LanRadioFake, drain_seqs
 from test_transport import _FakeLoop
 
@@ -192,6 +194,91 @@ async def test_an_old_duplicate_far_behind_is_never_redelivered(
 
     assert drain_seqs(transport) == []
     assert transport.rx_order_stats == RxOrderStats(duplicate=1)
+
+
+async def test_a_numbering_jump_reanchors_onto_the_live_stream(
+    transport: IcomTransport, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A stale-high first packet must not starve the stream behind it.
+
+    The field failure (owner's IC-705 over LAN, MOR-4416): the first
+    numbered packet after a connect carried a number from the session that
+    had just ended, far ahead of the radio's live stream; every fresh
+    packet then counted as a duplicate behind that anchor until the CI-V
+    data watchdog tore the link down. A run of consecutive behind-packets
+    longer than ``REORDER_WINDOW`` is no reorder — the anchor is stale and
+    moves onto the live stream (counted once as ``reanchored``).
+    """
+    stale = 20001
+    radio = _radio(transport, 2 * REORDER_WINDOW)
+    radio.sent[stale] = wrap_civ_in_udp(_frame(0), seq=stale)
+
+    with caplog.at_level(logging.INFO, logger="rigplane.core.transport"):
+        radio.deliver(stale)
+        assert drain_seqs(transport) == [stale]  # the anchor packet itself
+        radio.deliver(*range(1, REORDER_WINDOW + 2))
+
+    # The run's first REORDER_WINDOW packets drop as duplicates like before;
+    # the next one re-anchors and is delivered, and the live stream flows on.
+    assert drain_seqs(transport) == [REORDER_WINDOW + 1]
+    assert transport.rx_order_stats == RxOrderStats(
+        duplicate=REORDER_WINDOW, reanchored=1
+    )
+
+    radio.deliver(*range(REORDER_WINDOW + 2, 2 * REORDER_WINDOW + 1))
+    assert drain_seqs(transport) == list(
+        range(REORDER_WINDOW + 2, 2 * REORDER_WINDOW + 1)
+    )
+
+    lines = [r.getMessage() for r in caplog.records]
+    assert sum("re-anchored" in line for line in lines) == 1
+    reanchor = next(line for line in lines if "re-anchored" in line)
+    # The stale packet 20001 anchored delivery; the frontier stood at 20002.
+    assert f"old_next={stale + 1}" in reanchor
+    assert f"new_seq={REORDER_WINDOW + 1}" in reanchor
+    assert f"behind_run={REORDER_WINDOW + 1}" in reanchor
+
+
+async def test_a_gap_right_after_a_reanchor_is_tracked(
+    transport: IcomTransport,
+) -> None:
+    """Re-anchoring restarts gap tracking at the new epoch's first packet:
+    a number skipped right after the jump is held for, not skipped over."""
+    stale = 20001
+    radio = _radio(transport, REORDER_WINDOW + 4)
+    radio.sent[stale] = wrap_civ_in_udp(_frame(0), seq=stale)
+
+    radio.deliver(stale)
+    assert drain_seqs(transport) == [stale]
+    radio.deliver(*range(1, REORDER_WINDOW + 2))  # the run re-anchors at 257
+    assert drain_seqs(transport) == [REORDER_WINDOW + 1]
+
+    skip = REORDER_WINDOW + 2  # 258
+    radio.deliver(skip + 1)  # 259 ahead of the missing 258: held, not lost
+    assert drain_seqs(transport) == []
+    assert skip in transport.rx_missing
+
+    radio.deliver(skip)
+    assert drain_seqs(transport) == [skip, skip + 1]
+    assert transport.rx_order_stats == RxOrderStats(
+        duplicate=REORDER_WINDOW, reordered=1, reanchored=1
+    )
+
+
+async def test_a_run_at_the_window_edge_still_drops_as_duplicates(
+    transport: IcomTransport,
+) -> None:
+    """A behind-run that never exceeds the window is no jump: drop as today."""
+    stale = 20001
+    radio = _radio(transport, REORDER_WINDOW)
+    radio.sent[stale] = wrap_civ_in_udp(_frame(9), seq=stale)
+
+    radio.deliver(stale)
+    assert drain_seqs(transport) == [stale]  # the anchor packet itself
+    radio.deliver(*range(1, REORDER_WINDOW + 1))
+
+    assert drain_seqs(transport) == []
+    assert transport.rx_order_stats == RxOrderStats(duplicate=REORDER_WINDOW)
 
 
 async def test_a_restarted_numbering_starts_with_the_new_session(
