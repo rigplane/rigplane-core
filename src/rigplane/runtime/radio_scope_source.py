@@ -82,6 +82,11 @@ class RadioScopeSource:
         self._callbacks: list[Callable[[NativeFrame], None]] = []
         self._active = False
         self._native_widths: dict[int, int] = {}
+        # MOR-4392 round 2: last streamed (mode, coverage) per receiver —
+        # lets a FIX follow grant clip to the live fixed window already
+        # at subscribe time instead of granting a stale wide window for
+        # a frame. Same memory class as _native_widths, no new mechanism.
+        self._native_coverages: dict[int, tuple[int, Coverage]] = {}
 
     def capabilities(self) -> SourceCapabilities:
         return replace(
@@ -186,14 +191,20 @@ class RadioScopeSource:
             # MOR-4392 round 2: the radio is in FIX — a follow
             # zoom/span gesture is a client crop (MOR-4387), never a
             # mode change, so nothing is written: no 0x14 mode flip, no
-            # span, no fixed-edge rewrite. The grant keeps the requested
-            # window with unknown coverage; the hub re-resolves it per
-            # frame against the live fixed window, and the same branch
-            # re-resolves it against the native coverage once the radio
-            # is back in CENTER. (observed tracks the main receiver, so
-            # other receivers keep the previous behavior.) The FIX/CTR
-            # gestures themselves are explicit mode commands outside
-            # this path and still write.
+            # span, no fixed-edge rewrite. The grant is the requested
+            # window clipped to the last streamed FIX window (the same
+            # resolve_follow rule the hub applies per frame), so the
+            # browser never holds a stale wide grant; with no FIX frame
+            # seen yet the coverage stays unknown and the first frame
+            # resolves it. Back in CENTER the hub branch re-resolves
+            # against the native coverage. (observed tracks the main
+            # receiver, so other receivers keep the previous behavior.)
+            # The FIX/CTR gestures themselves are explicit mode commands
+            # outside this path and still write.
+            remembered = self._native_coverages.get(selected)
+            if remembered is not None and remembered[0] == 1:
+                native = remembered[1]
+                return GrantedView(self.resolve_follow(view, native, selected), native)
             return GrantedView(resolved, None)
         fixed = (
             None
@@ -245,6 +256,7 @@ class RadioScopeSource:
         start, end = frame.start_freq_hz, frame.end_freq_hz
         if frame.out_of_range and frame.mode == 0:
             start, end = start - end, start + end
+        self._native_coverages[receiver] = (frame.mode, Coverage(start, end))
         native = NativeFrame(
             frame.receiver,
             Coverage(start, end),
