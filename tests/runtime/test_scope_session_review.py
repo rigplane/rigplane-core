@@ -121,7 +121,10 @@ async def test_sub_view_real_dispatch_preserves_main_sdk_selection(sdk):
             assert radio._scope_controls().receiver == 0
             await radio.set_scope_span(4)
             assert sim.views[0][1] == 4
-            assert sim.views[1][1] == 5
+            # MOR-4385 ±half-width presets: the 100 kHz VFO-centred
+            # sub view needs preset 50000 (index 4, center ±50000),
+            # not preset 100000 (index 5) as under full-width matching.
+            assert sim.views[1][1] == 4
     assert sim._scope_12 == sim._scope_13 == 0
 
 
@@ -149,6 +152,19 @@ async def test_sdk_frames_stay_visible_when_web_pauses(sdk):
 
 async def test_control_ws_refuses_legacy_span_preserving_subscription(sdk):
     radio, sim = sdk
+    # The scope_stream sim replays a fixed IC-7610 recording whose MAIN
+    # window is 14286000 ±100000 (span preset 100000). Under MOR-4385
+    # adoption the follow grant tracks that streamed window, so the
+    # request must be that same window — a real driven radio would
+    # stream what Core wrote, but the recording never changes. Both
+    # sides: the sim's VFO (so polls keep reporting it) and Core's
+    # cached copy (so the first grant resolves before the next poll).
+    # A narrower request would drive a smaller preset than the
+    # recording's span metadata, and the adoption would rewrite it on
+    # resubscribe; the 200 kHz request drives preset 100000 (index 5),
+    # which the streamed metadata confirms.
+    sim.set_frequency(14286000)
+    radio._radio_state.main.freq = 14286000
     sim.capture_civ_frames = True
 
     def scope_writes():
@@ -164,7 +180,7 @@ async def test_control_ws_refuses_legacy_span_preserving_subscription(sdk):
     async with web(radio) as (_, client, base, protocols, control):
         async with client.ws_connect(base + "/api/v1/scope", protocols=protocols) as ws:
             subscription = encode_scope_subscription(
-                Subscription("radio", 0, FollowView("vfo", 100000), 100, 20)
+                Subscription("radio", 0, FollowView("vfo", 200000), 100, 20)
             )
             await ws.send_str(subscription)
             granted = decode_scope_granted(await ws.receive_str(timeout=5))
