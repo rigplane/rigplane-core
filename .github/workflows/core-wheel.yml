@@ -84,9 +84,9 @@ permissions:
 
 jobs:
   resolve:
-    # The light pool: this is one `git ls-remote` plus (for a raw object ID)
-    # one exact-SHA fetch that also peels tag objects to their commit; no
-    # build tools needed.
+    # The light pool: this is one `git ls-remote` plus (for a raw object ID
+    # or a tag name) one exact-SHA fetch that also peels tag objects to
+    # their commit and proves the object is one; no build tools needed.
     runs-on: [self-hosted, Linux, ARM64, light]
     timeout-minutes: 5
     outputs:
@@ -251,37 +251,55 @@ jobs:
 
       - name: Smoke installed radio profiles
         # Same installed-artifact proof publish.yml has always run, against
-        # the produced wheel, with the resolved SHA as the candidate.
+        # the produced wheel, with the resolved SHA as the candidate — but
+        # judged by the TARGET revision's own smoke script: the profile
+        # catalog is revision-specific (v3.1.4 shipped nine radio profiles,
+        # current Core ships eleven), so the controls' current catalog
+        # would reject a valid historical wheel. A target older than the
+        # script is never silently passed: the skip is recorded as
+        # profile_smoke=not_available_for_target in the manifest (through
+        # the step output below) and in the job summary. Provenance
+        # verification stays with the controls and runs for every target.
+        id: smoke
         shell: bash
         run: |
           set -euo pipefail
           smoke_dir="$(mktemp -d)"
           cp "core/dist/$WHEEL_NAME" "$smoke_dir/$WHEEL_NAME"
-          cp control/.github/scripts/installed_profile_smoke.py "$smoke_dir/"
+          # The venv also carries the provenance verification below, so it
+          # is built for every target, smoke or not.
           uv venv --python 3.13 "$smoke_dir/.venv"
           uv pip install --python "$smoke_dir/.venv/bin/python" "$smoke_dir/$WHEEL_NAME"
-          cd "$smoke_dir"
-          UV_OFFLINE=true .venv/bin/python installed_profile_smoke.py \
-            --artifact "$WHEEL_NAME" \
-            --candidate-sha "$RESOLVED_SHA" \
-            --forbid-root "$GITHUB_WORKSPACE" \
-            | tee "$GITHUB_WORKSPACE/installed-profile-smoke.json"
+          target_smoke="$GITHUB_WORKSPACE/core/.github/scripts/installed_profile_smoke.py"
+          if [[ -f "$target_smoke" ]]; then
+            echo "profile_smoke=target" >> "$GITHUB_OUTPUT"
+            cp "$target_smoke" "$smoke_dir/"
+            cd "$smoke_dir"
+            UV_OFFLINE=true .venv/bin/python installed_profile_smoke.py \
+              --artifact "$WHEEL_NAME" \
+              --candidate-sha "$RESOLVED_SHA" \
+              --forbid-root "$GITHUB_WORKSPACE" \
+              | tee "$GITHUB_WORKSPACE/installed-profile-smoke.json"
+          else
+            echo "profile_smoke=not_available_for_target" >> "$GITHUB_OUTPUT"
+            echo "Installed-profile smoke: the built revision has no \`installed_profile_smoke.py\`; profile smoke skipped (profile_smoke: not_available_for_target in core-wheel.json)." >> "$GITHUB_STEP_SUMMARY"
+          fi
           # The wheel must carry its own provenance. The stamped resource
           # is verified through the CONTROLS' contract reader (the stamp
           # script loads build_info.py by file path), so any Core ref
           # passes — refs older than the contract have no
           # rigplane.core.build_info module of their own.
-          stamped="$(UV_OFFLINE=true .venv/bin/python -c \
+          stamped="$(UV_OFFLINE=true "$smoke_dir/.venv/bin/python" -c \
             'import importlib.resources; print(importlib.resources.files("rigplane.core") / "_build_info.json")')"
           uv run --no-project python "$GITHUB_WORKSPACE/control/scripts/release/stamp_build_info.py" \
             --verify-file "$stamped" \
             --expect-sha "$RESOLVED_SHA"
           # The runtime reader is exercised only when the target package
           # has the module at all.
-          if UV_OFFLINE=true .venv/bin/python -c \
+          if UV_OFFLINE=true "$smoke_dir/.venv/bin/python" -c \
             'import importlib.util, sys; sys.exit(0 if importlib.util.find_spec("rigplane.core.build_info") else 1)'
           then
-            core_sha="$(UV_OFFLINE=true .venv/bin/python -c \
+            core_sha="$(UV_OFFLINE=true "$smoke_dir/.venv/bin/python" -c \
               'from rigplane.core.build_info import load_build_info; print(load_build_info().git_sha or "")')"
             if [[ "$core_sha" != "$RESOLVED_SHA" ]]; then
               echo "installed wheel reports core_sha '$core_sha', expected '$RESOLVED_SHA'" >&2
@@ -303,6 +321,7 @@ jobs:
         env:
           ARTIFACT_NAME_INPUT: ${{ inputs.artifact_name }}
           ARTIFACT_NAME_PREFIX: ${{ inputs.artifact_name_prefix }}
+          PROFILE_SMOKE: ${{ steps.smoke.outputs.profile_smoke }}
           WHEEL_NAME: ${{ steps.wheel.outputs.wheel_name }}
           WHEEL_SHA256: ${{ steps.wheel.outputs.wheel_sha256 }}
           VERSION: ${{ steps.version.outputs.version }}
@@ -319,10 +338,15 @@ jobs:
             --requested-ref "$CORE_REF" \
             --wheel "$WHEEL_NAME" \
             --wheel-sha256 "$WHEEL_SHA256" \
+            --profile-smoke "$PROFILE_SMOKE" \
             --output dist/core-wheel.json
           echo "artifact_name=$artifact_name" >> "$GITHUB_OUTPUT"
 
       - name: Upload installed-profile smoke evidence
+        # Only when the target revision's own smoke ran; a target without
+        # the script has no evidence to upload — the skip is recorded in
+        # the manifest and the job summary instead.
+        if: steps.smoke.outputs.profile_smoke == 'target'
         # Derived from the wheel artifact name: two invocations from one
         # caller (distinct core_refs) must not collide on this name.
         uses: actions/upload-artifact@v7

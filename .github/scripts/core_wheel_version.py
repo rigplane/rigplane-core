@@ -77,13 +77,15 @@ def normalize_public_version(text: str) -> str:
     """Return the canonical public form of ``text``; local parts are rejected.
 
     ``3.2.0-rc.1``, ``3.2.0rc1`` and ``v3.2.0RC1`` all normalize to
-    ``3.2.0rc1``. Numeric pre/post/dev suffixes normalize as integers with
-    the omitted number meaning zero, per PEP 440: ``rc01`` equals ``rc1``,
-    and a bare ``rc`` equals ``rc0`` (same for ``.post``/``.dev``), so a
-    tag ``v3.2.0rc01`` releases pyproject's ``3.2.0rc1``. Release segments
-    are compared literally (``3.2`` is not ``3.2.0``): a release tag must
-    mirror the pyproject version exactly, and anything looser would hide a
-    release mistake.
+    ``3.2.0rc1``. Numeric epochs normalize as integers with the zero
+    epoch omitted, per PEP 440: ``3.2.0`` equals ``0!3.2.0``, and
+    ``1!3.2.0`` equals ``01!3.2.0``. Numeric pre/post/dev suffixes
+    normalize as integers with the omitted number meaning zero:
+    ``rc01`` equals ``rc1``, and a bare ``rc`` equals ``rc0`` (same for
+    ``.post``/``.dev``), so a tag ``v3.2.0rc01`` releases pyproject's
+    ``3.2.0rc1``. Release segments are compared literally (``3.2`` is
+    not ``3.2.0``): a release tag must mirror the pyproject version
+    exactly, and anything looser would hide a release mistake.
     """
     match = _VERSION_RE.fullmatch(text.strip())
     if match is None or match.group("release") is None:
@@ -93,7 +95,11 @@ def normalize_public_version(text: str) -> str:
             f"version {text!r} already carries a local part; the version rule "
             "generates local parts itself and never accepts one as input"
         )
-    epoch = f"{match.group('epoch')}!" if match.group("epoch") else ""
+    epoch = ""
+    if match.group("epoch"):
+        epoch_number = int(match.group("epoch"))
+        if epoch_number:
+            epoch = f"{epoch_number}!"
     canonical = epoch + match.group("release")
     if match.group("pre"):
         letter = match.group("pre_l").lower()

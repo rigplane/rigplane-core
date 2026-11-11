@@ -7,9 +7,13 @@ Three parts:
 - core_ref resolution (``resolve_core_ref.py``): pure parsing against
   fixtures, plus end-to-end runs against a real throwaway git repository
   (every runner pool that executes this file has git);
-- text pins on ``core-wheel.yml``, ``core-wheel-nightly.yml``, ``publish.yml``
-  (the build job's delegation to the reusable workflow) and the ``quick.yml``
-  step that runs this file — same text-pin style as
+- the ``core-wheel.json`` typed contract (``core_wheel_manifest.py``),
+  including the ``profile_smoke`` skip value, and the profile-smoke
+  catalog contract that makes the workflow run the TARGET revision's
+  smoke script (P1: revision-specific catalogs);
+- text pins on ``core-wheel.yml``, ``core-wheel-nightly.yml``,
+  ``publish.yml`` (the build job's delegation to the reusable workflow)
+  and the ``quick.yml`` step that runs this file — same text-pin style as
   ``tests/test_publish_workflow_contract.py``, no YAML dependency, because
   the control-test environment is a bare ``python3``.
 """
@@ -40,6 +44,7 @@ VERSION_SCRIPT = Path(__file__).with_name("core_wheel_version.py")
 RESOLVE_SCRIPT = Path(__file__).with_name("resolve_core_ref.py")
 
 MANIFEST_SCRIPT = Path(__file__).with_name("core_wheel_manifest.py")
+SMOKE_SCRIPT = Path(__file__).with_name("installed_profile_smoke.py")
 CALLER_FIXTURE = Path(__file__).with_name("core-wheel-caller-context.fixture.json")
 
 SHA = "0123456789abcdef0123456789abcdef01234567"
@@ -143,6 +148,26 @@ class WheelVersionRuleTest(unittest.TestCase):
             ("3.2.0.dev007", "3.2.0.dev7"),
         ]
         for left, right in equivalent:
+            with self.subTest(left=left, right=right):
+                self.assertEqual(
+                    VERSION.normalize_public_version(left),
+                    VERSION.normalize_public_version(right),
+                )
+
+    def test_epoch_normalizes_as_an_integer_with_zero_omitted(self) -> None:
+        # PEP 440: the epoch is numeric, and zero is the default epoch, so
+        # the canonical form omits it. A tag v0!3.2.0 releases pyproject
+        # 3.2.0, and v01!3.2.0 releases 1!3.2.0.
+        pairs = [
+            ("3.2.0", "v0!3.2.0"),
+            ("1!3.2.0", "v01!3.2.0"),
+        ]
+        for pyproject, tag in pairs:
+            with self.subTest(pyproject=pyproject, tag=tag):
+                self.assertEqual(
+                    VERSION.wheel_version(pyproject, SHA, [tag]), pyproject
+                )
+        for left, right in (("0!3.2.0", "3.2.0"), ("01!3.2.0", "1!3.2.0")):
             with self.subTest(left=left, right=right):
                 self.assertEqual(
                     VERSION.normalize_public_version(left),
@@ -278,6 +303,8 @@ class CoreWheelManifestTest(unittest.TestCase):
                     self.WHEEL,
                     "--wheel-sha256",
                     "a" * 64,
+                    "--profile-smoke",
+                    "target",
                     "--output",
                     str(output),
                 ]
@@ -292,7 +319,15 @@ class CoreWheelManifestTest(unittest.TestCase):
         self.assertIn('"', self.QUOTE_REF)  # the fixture really carries a quote
         parsed = json.loads(text)  # the written file is valid JSON, quote and all
         self.assertEqual(
-            set(parsed), {"sha", "version", "requested_ref", "wheel", "wheel_sha256"}
+            set(parsed),
+            {
+                "sha",
+                "version",
+                "requested_ref",
+                "wheel",
+                "wheel_sha256",
+                "profile_smoke",
+            },
         )
         manifest = self.manifest.parse_manifest(text)
         self.assertEqual(manifest["sha"], SHA)
@@ -300,6 +335,7 @@ class CoreWheelManifestTest(unittest.TestCase):
         self.assertEqual(manifest["requested_ref"], self.QUOTE_REF)
         self.assertEqual(manifest["wheel"], self.WHEEL)
         self.assertEqual(manifest["wheel_sha256"], "a" * 64)
+        self.assertEqual(manifest["profile_smoke"], "target")
         for key, value in manifest.items():
             self.assertIsInstance(value, str, key)
 
@@ -310,6 +346,7 @@ class CoreWheelManifestTest(unittest.TestCase):
             "requested_ref": "main",
             "wheel": self.WHEEL,
             "wheel_sha256": "a" * 64,
+            "profile_smoke": "target",
         }
         bad_payloads = {
             "not json": "{ nope",
@@ -327,11 +364,36 @@ class CoreWheelManifestTest(unittest.TestCase):
             "wheel with separator": json.dumps({**valid, "wheel": "dist/x.whl"}),
             "sha256 wrong length": json.dumps({**valid, "wheel_sha256": "a" * 63}),
             "sha256 wrong type": json.dumps({**valid, "wheel_sha256": None}),
+            "profile smoke unknown value": json.dumps(
+                {**valid, "profile_smoke": "skipped"}
+            ),
+            "profile smoke wrong type": json.dumps({**valid, "profile_smoke": True}),
         }
         for name, payload in bad_payloads.items():
             with self.subTest(payload=name):
                 with self.assertRaises(self.manifest.ManifestError):
                     self.manifest.parse_manifest(payload)
+
+    def test_both_profile_smoke_values_parse(self) -> None:
+        """The explicit skip value is part of the contract, not drift.
+
+        A target revision older than the installed-profile smoke script
+        yields ``not_available_for_target``: consumers must be able to rely
+        on that exact value — never a silent pass or a silent failure.
+        """
+        valid = {
+            "sha": SHA,
+            "version": "3.2.0",
+            "requested_ref": "v3.0.0",
+            "wheel": self.WHEEL,
+            "wheel_sha256": "a" * 64,
+        }
+        for value in ("target", "not_available_for_target"):
+            with self.subTest(value=value):
+                manifest = self.manifest.parse_manifest(
+                    json.dumps({**valid, "profile_smoke": value})
+                )
+                self.assertEqual(manifest["profile_smoke"], value)
 
     def test_cli_rejects_invalid_inputs_without_writing(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -348,12 +410,83 @@ class CoreWheelManifestTest(unittest.TestCase):
                     self.WHEEL,
                     "--wheel-sha256",
                     "a" * 64,
+                    "--profile-smoke",
+                    "target",
                     "--output",
                     str(output),
                 ]
             )
             self.assertEqual(code, 2)
             self.assertFalse(output.exists())
+
+    def test_cli_rejects_unknown_profile_smoke_value_without_writing(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            output = Path(raw) / "core-wheel.json"
+            code = self.manifest.main(
+                [
+                    "--sha",
+                    SHA,
+                    "--version",
+                    "3.2.0",
+                    "--requested-ref",
+                    "main",
+                    "--wheel",
+                    self.WHEEL,
+                    "--wheel-sha256",
+                    "a" * 64,
+                    "--profile-smoke",
+                    "skipped",
+                    "--output",
+                    str(output),
+                ]
+            )
+            self.assertEqual(code, 2)
+            self.assertFalse(output.exists())
+
+
+# ── Profile-smoke catalog contract (target vs controls) ────────────
+
+
+class ProfileSmokeCatalogContractTest(unittest.TestCase):
+    """Why the profile smoke must run the TARGET revision's script (P1).
+
+    The profile catalog is revision-specific: v3.1.4 shipped nine radio
+    profiles, current Core ships eleven (g7250.toml, ic905.toml). Judging a
+    historical wheel by the controls' current catalog rejects a valid
+    release, so the workflow runs the target's own smoke script — while a
+    wheel genuinely missing one of the TARGET's own resources is still
+    rejected (the switch must not weaken the smoke into a no-op).
+    """
+
+    def setUp(self) -> None:
+        self.smoke = _load(SMOKE_SCRIPT)
+
+    def _older_catalog(self) -> dict[str, tuple[str, str]]:
+        # The v3.1.4 catalog: everything but g7250.toml and ic905.toml.
+        return {
+            name: identity
+            for name, identity in self.smoke.EXPECTED_PROFILES.items()
+            if name not in ("g7250.toml", "ic905.toml")
+        }
+
+    def test_an_older_complete_target_catalog_passes_its_own_contract(self) -> None:
+        older = self._older_catalog()
+        self.assertEqual(len(older), 9)
+        older_names = tuple(sorted(older))
+        with mock.patch.object(self.smoke, "EXPECTED_PROFILES", older):
+            self.assertEqual(self.smoke.validate_catalog(older_names), older_names)
+        # The same complete wheel is rejected by the controls' current
+        # catalog: running the controls' script would break every
+        # historical ref.
+        with self.assertRaises(self.smoke.SmokeFailure):
+            self.smoke.validate_catalog(older_names)
+
+    def test_a_genuinely_missing_target_profile_is_still_rejected(self) -> None:
+        older = self._older_catalog()
+        incomplete = tuple(sorted(older))[:-1]  # ic9700.toml missing
+        with mock.patch.object(self.smoke, "EXPECTED_PROFILES", older):
+            with self.assertRaises(self.smoke.SmokeFailure):
+                self.smoke.validate_catalog(incomplete)
 
 
 # ── core_ref resolution ────────────────────────────────────────────
@@ -547,6 +680,38 @@ class ResolveEndToEndTest(unittest.TestCase):
             .stdout.decode()
             .strip()
         )
+        # A tree object, written the same way.
+        cls.tree_sha = (
+            subprocess.run(
+                ["git", "-C", str(cls.origin), "mktree"],
+                input=b"",
+                capture_output=True,
+                check=True,
+            )
+            .stdout.decode()
+            .strip()
+        )
+        # Tags pointing at non-commit objects: a tag NAME must be proven to
+        # name a commit exactly like a raw object ID — the peeled entry in
+        # ls-remote is not proof of a commit. Annotated tags need an
+        # identity in the bare repository.
+        for key, value in (
+            ("user.email", "core-wheel@test"),
+            ("user.name", "core-wheel test"),
+        ):
+            cls._run(("-C", str(cls.origin), "config", key, value))
+        for name, target in (
+            ("lightweight-blob-tag", cls.blob_sha),
+            ("lightweight-tree-tag", cls.tree_sha),
+        ):
+            cls._run(("-C", str(cls.origin), "tag", name, target))
+        for name, target in (
+            ("annotated-blob-tag", cls.blob_sha),
+            ("annotated-tree-tag", cls.tree_sha),
+        ):
+            cls._run(
+                ("-C", str(cls.origin), "tag", "-a", name, "-m", "non-commit", target)
+            )
 
     @classmethod
     def tearDownClass(cls) -> None:
@@ -632,6 +797,34 @@ class ResolveEndToEndTest(unittest.TestCase):
                 )
         self.assertEqual(code, 2)
         self.assertIn("not a commit", stderr.getvalue())
+
+    def test_named_tags_pointing_at_non_commit_objects_are_refused(self) -> None:
+        """A tag name must be proven to name a commit, like a raw object ID.
+
+        A lightweight tag at a blob or a tree, and an annotated tag peeling
+        to one, all come out of ls-remote pointing at a non-commit object;
+        each is refused with exit 2 and NO success outputs (no stdout JSON,
+        no GITHUB_OUTPUT written).
+        """
+        for tag_name in (
+            "lightweight-blob-tag",
+            "lightweight-tree-tag",
+            "annotated-blob-tag",
+            "annotated-tree-tag",
+        ):
+            with self.subTest(tag=tag_name):
+                with tempfile.TemporaryDirectory() as raw:
+                    output_path = Path(raw) / "out"
+                    env = dict(os.environ, GITHUB_OUTPUT=str(output_path))
+                    stdout = io.StringIO()
+                    with mock.patch.dict(os.environ, env):
+                        with redirect_stdout(stdout):
+                            code = RESOLVE.main(
+                                ["--ref", tag_name, "--remote", str(self.origin)]
+                            )
+                    self.assertEqual(code, 2)
+                    self.assertEqual(stdout.getvalue(), "")
+                    self.assertFalse(output_path.exists())
 
     def test_sha_not_in_repository_fails(self) -> None:
         code, _ = self._main("0" * 40, None)
@@ -773,11 +966,15 @@ class CoreWheelWorkflowPinsTest(unittest.TestCase):
         self.assertEqual(build.count("npm run build"), 1)
         self.assertEqual(build.count("run: uv build"), 1)
 
-    def test_installed_profile_smoke_unchanged_shape(self) -> None:
+    def test_installed_profile_smoke_judges_the_target_revision(self) -> None:
+        # P1 (MOR-4408): the profile catalog is revision-specific — v3.1.4
+        # shipped nine profiles, current Core ships eleven — so the smoke
+        # must run the TARGET revision's own script, never the controls'
+        # current catalog (see ProfileSmokeCatalogContractTest for why).
+        # Provenance (stamp) verification stays with the controls.
         build = _job_text(self.wheel, "build")
-        self.assertEqual(
-            build.count("control/.github/scripts/installed_profile_smoke.py"), 1
-        )
+        self.assertIn("core/.github/scripts/installed_profile_smoke.py", build)
+        self.assertNotIn("control/.github/scripts/installed_profile_smoke.py", build)
         self.assertEqual(build.count("python installed_profile_smoke.py"), 1)
         self.assertIn('--candidate-sha "$RESOLVED_SHA"', build)
         self.assertIn('--forbid-root "$GITHUB_WORKSPACE"', build)
@@ -788,6 +985,16 @@ class CoreWheelWorkflowPinsTest(unittest.TestCase):
             "name: ${{ steps.artifact.outputs.artifact_name }}-installed-profile-smoke",
             build,
         )
+
+    def test_target_without_the_smoke_script_skips_explicitly(self) -> None:
+        # Never fail silently, never pass silently: a target older than
+        # the smoke script records profile_smoke=not_available_for_target
+        # as the step output that feeds the manifest, and in the job
+        # summary; the evidence upload runs only when the smoke ran.
+        build = _job_text(self.wheel, "build")
+        self.assertIn("profile_smoke=not_available_for_target", build)
+        self.assertIn('>> "$GITHUB_STEP_SUMMARY"', build)
+        self.assertIn("if: steps.smoke.outputs.profile_smoke == 'target'", build)
 
     def test_wheel_reports_its_own_provenance(self) -> None:
         build = _job_text(self.wheel, "build")
@@ -804,6 +1011,11 @@ class CoreWheelWorkflowPinsTest(unittest.TestCase):
     def test_core_wheel_json_goes_through_the_typed_contract(self) -> None:
         build = _job_text(self.wheel, "build")
         self.assertIn("../control/.github/scripts/core_wheel_manifest.py", build)
+        # The manifest records the profile-smoke outcome, including the
+        # explicit not_available_for_target skip, through an env-derived
+        # argv value — never ${{ }} text substitution.
+        self.assertIn('--profile-smoke "$PROFILE_SMOKE"', build)
+        self.assertIn("PROFILE_SMOKE: ${{ steps.smoke.outputs.profile_smoke }}", build)
         # The heredoc with ${{ }} interpolation is gone for good.
         self.assertNotIn("<<'JSON'", build)
         # No ${{ }} text substitution into the manifest-writing step's
