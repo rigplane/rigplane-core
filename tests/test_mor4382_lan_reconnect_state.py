@@ -25,6 +25,7 @@ from rigplane.runtime.radio import IcomRadio
 from rigplane.web.server import WebConfig, WebServer
 from rigplane_testkit.icom import MockIcomRadio
 from rigplane_testkit.sim.serve import build_lan_personality
+from testkit.ic7610_fakes import ic7610_lan_fake
 from test_web_server import _http_get, _ws_connect, _ws_recv_frame, _ws_send_text
 from test_web_split_writes import _request
 from testkit.ic705_fakes import ic705_lan_fake
@@ -299,9 +300,15 @@ async def test_late_first_answer_fetches_initial_state_exactly_once(
     """
     # The personality builder the smoke uses: the profile drives the CI-V
     # address, the receiver layout and the identity answer, so the sim
-    # answers the profile's own state queries.
-    profile: RadioProfile = resolve_radio_profile(model=model)
-    sim = build_lan_personality(profile, civ_silent_after_open_s=3.0)
+    # answers the profile's own state queries. IC-7610 uses the recorded
+    # LAN fake instead: the personality core does not answer the safety-
+    # critical ``1C 03`` tx_target read, so the startup gate would abort
+    # before the count assertion is ever reached.
+    if model == "IC-7610":
+        sim = ic7610_lan_fake(civ_silent_after_open_s=3.0)
+    else:
+        profile: RadioProfile = resolve_radio_profile(model=model)
+        sim = build_lan_personality(profile, civ_silent_after_open_s=3.0)
     async with _counting_stack(sim, model=model) as (web, _radio, _sim, fetch_at):
         await _wait_state(
             web,
@@ -323,8 +330,11 @@ async def test_instant_first_answer_fetches_initial_state_exactly_once(
     model: str,
 ) -> None:
     """Regression guard: an instantly answering radio also fetches exactly once."""
-    profile = resolve_radio_profile(model=model)
-    sim = build_lan_personality(profile)
+    if model == "IC-7610":
+        sim = ic7610_lan_fake()
+    else:
+        profile = resolve_radio_profile(model=model)
+        sim = build_lan_personality(profile)
     async with _counting_stack(sim, model=model) as (web, _radio, _sim, fetch_at):
         await _wait_state(
             web,
