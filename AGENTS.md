@@ -33,7 +33,7 @@ Owner decisions of 2026-11-08 (Linear MOR-3876) and 2026-11-10 (MOR-4404):
 `main` through the normal gates (`quick`, `Agent Review Gate`). The only
 freeze is on a release branch:
 
-- A release is cut as `release/<minor>.x` (for example `release/3.2.x`) from
+- A release is cut as `release/<major>.<minor>.x` (for example `release/3.2.x`) from
   a `main` commit whose nightly rehearsal run (`publish.yml` on `schedule`:
   the validate and build jobs, no upload) is green. The branch is polished
   there with fixes only (see "Release branches" below), then merged back into
@@ -44,7 +44,7 @@ freeze is on a release branch:
   candidate (`rcN+1`), which is tested again; a moved or reused tag is never
   allowed.
 - The nightly schedule runs on `main` only, so the active release branch is
-  rehearsed with `gh workflow run publish.yml --ref release/<minor>.x` once
+  rehearsed with `gh workflow run publish.yml --ref release/<major>.<minor>.x` once
   the trigger change has been carried onto that branch.
 - After rc1 only fixes for defects found on that candidate go in; new scope
   goes to `main` and waits for the next release. A P0/P1 customer fix ships
@@ -463,9 +463,10 @@ pre-push checklist in
 
 ## Release branches
 
-Every release is cut as `release/<minor>.x` from `main` (owner decision
-2026-11-10, MOR-4404); `main` keeps moving and is never frozen. Tags remain the
-source of truth for published artifacts.
+Every release is cut as `release/<major>.<minor>.x` (for example
+`release/3.2.x`) from `main` (owner decision 2026-11-10, MOR-4404); `main`
+keeps moving and is never frozen. Tags remain the source of truth for
+published artifacts.
 
 - **Fixes land on `main` first, then are cherry-picked to the release
   branch** with `git cherry-pick -x <main commit>` (the `-x` line records the
@@ -474,13 +475,16 @@ source of truth for published artifacts.
   release branch and says so in the PR body.
 - **Only fixes for defects found on the candidate** go onto the release
   branch (see "Release-candidate freeze"); new scope stays on `main`.
-- **Release end: merge back with a real merge commit, never a squash.** The
-  merge keeps the release tags reachable from `main`. Before the merge, list
-  what exists only on the release branch:
+- **Release end: the back-merge is a normal PR from the release branch to
+  `main`**, squashed by the merge queue like any other PR, after the
+  `git cherry` check. Release tags are therefore not reachable from `main`;
+  nothing relies on that (versions are static in `pyproject.toml`, the
+  changelog cursor is a SHA). Before the PR, list what exists only on the
+  release branch:
 
   ```bash
   git fetch origin
-  git cherry origin/main origin/release/<minor>.x \
+  git cherry origin/main origin/release/<major>.<minor>.x \
     | sed -n 's/^+ //p' | xargs -n1 git log -1 --format='%h %s'
   ```
 
@@ -490,11 +494,8 @@ source of truth for published artifacts.
   version line, changelog heading) or a cherry-pick whose conflict
   resolution changed the patch (its `-x` line names the `main` commit, which
   you check by hand). Any other `+` commit is a fix that never reached
-  `main`: bring it to `main` first (a normal PR), then merge back. Record the
-  list and the decision in the release ticket.
-- The `merge queue main` ruleset squashes every queued PR, so the back-merge
-  needs the owner to switch that ruleset's merge method to MERGE for this one
-  merge and back right after, with the queue otherwise empty.
+  `main`: bring it to `main` first (a normal PR), then open the back-merge.
+  Record the list and the decision in the release ticket.
 
 ## Engineering rules
 
