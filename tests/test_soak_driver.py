@@ -853,8 +853,15 @@ async def _run_cycle_with_process_script(
     probe_diagnostics: bool = False,
     task_provenance: bool = False,
     clock: _SettleClock | None = None,
+    baseline_settle: bool = False,
 ) -> tuple[soak_driver.SoakDriver, list[float]]:
     """One recovered cycle over a scripted feed; records asyncio.sleep delays.
+
+    The pre-reconnect baseline settle (MOR-4373) is OFF by default: the
+    post-settle tests below script the pre probe as three flat samples and
+    pin the post settle's own samples and sleeps. The baseline settle has its
+    own tests (``baseline_settle=True``), which also show the old failure
+    mode with it off.
 
     ``hang_call`` makes the Nth ``fetch_runtime`` call sleep 30 real
     seconds (an unbounded sampler hang). ``clock``, when given, is
@@ -906,6 +913,14 @@ async def _run_cycle_with_process_script(
         if clock is not None:
             clock.advance(delay)
 
+    real_probe = driver._stability_probe
+
+    async def probe(phase: str = "pre", *, settle_baseline: bool = False) -> Any:
+        return await real_probe(
+            phase, settle_baseline=settle_baseline and baseline_settle
+        )
+
+    monkeypatch.setattr(driver, "_stability_probe", probe)
     monkeypatch.setattr(sampler, "fetch_runtime", runtime)
     monkeypatch.setattr(sampler, "fetch_connection_status", status)
     monkeypatch.setattr(driver, "_post_radio_control", control)
@@ -1284,6 +1299,100 @@ async def test_stability_post_probe_still_fails_a_persistent_tasks_surplus(
     assert _stability_status(entry, "fds")["status"] == "PASS"
     assert _stability_status(entry, "tasks")["status"] == "FAIL"
     assert sleeps == [3.0] + [soak_driver._STABILITY_SETTLE_STEP_S] * 20
+
+
+# ---------------------------------------------------------------------------
+# MOR-4373: the pre-reconnect baseline is settled like the post sample. Transient
+# server tasks (a debounced state broadcast, a CI-V command still in flight)
+# outlive the paused periodic actions that created them: probing at once reads
+# them into the baseline, and the settled post count then sits BELOW it. CI run
+# 42898960365 (shard 4 of Core quick, host load from seven concurrent jobs):
+# tasks pre 37, post 34, in-process tolerance 2. These scripted cycles run
+# without the in-process adapter, so they use the process-wide tolerance (5):
+# the feed drains from 40.
+# ---------------------------------------------------------------------------
+
+
+_DRAINING_BASELINE_TASKS = [40, 40, 34, 34, 34, 34] + [34] * 3 + [34] * 3 + [34] * 12
+
+
+async def test_stability_baseline_settles_tasks_still_draining_at_pre(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A baseline still draining at pre is settled before it is recorded."""
+    script = _process_script([48] * 30, tasks_values=_DRAINING_BASELINE_TASKS)
+    driver, sleeps = await _run_cycle_with_process_script(
+        monkeypatch, script, baseline_settle=True
+    )
+    (entry,) = driver._reconnects
+    assert entry["recovered"] is True
+    assert entry["tasksPre"] == 34
+    assert entry["tasksPost"] == 34
+    assert _stability_status(entry, "tasks")["status"] == "PASS"
+    assert _stability_status(entry, "fds")["status"] == "PASS"
+    # Baseline settle: four resamples (the drop resets the calm count), then
+    # the post settle's 3 s wait.
+    assert sleeps[:5] == [soak_driver._STABILITY_SETTLE_STEP_S] * 5
+    assert 3.0 in sleeps
+
+
+async def test_stability_without_baseline_settle_fails_a_drained_deficit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Control: the same feed without the baseline settle is the CI failure.
+
+    The pre probe reads 40 (still draining), the settled post reads 34: a
+    delta of -6 against the process-wide tolerance 5 of these scripted cycles. This is the behaviour the baseline
+    settle removes; it stays here so the failure mode is documented and the
+    settle test above cannot pass by accident.
+    """
+    script = _process_script([48] * 30, tasks_values=_DRAINING_BASELINE_TASKS)
+    driver, _sleeps = await _run_cycle_with_process_script(
+        monkeypatch, script, baseline_settle=False
+    )
+    (entry,) = driver._reconnects
+    assert entry["tasksPre"] == 40
+    assert entry["tasksPost"] == 34
+    assert _stability_status(entry, "tasks")["status"] == "FAIL"
+
+
+async def test_stability_baseline_settle_is_bounded_by_its_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A baseline that never settles ends at its resample budget; the cycle goes on."""
+    falling = itertools.count(1000, -1)
+
+    def script() -> dict[str, int]:
+        return {"rssBytes": 1024, "openFds": 48, "asyncioTasks": next(falling)}
+
+    driver, sleeps = await _run_cycle_with_process_script(
+        monkeypatch, script, baseline_settle=True
+    )
+    (entry,) = driver._reconnects
+    assert entry["recovered"] is True
+    assert entry["tasksPost"] is not None
+    # The counts fall forever, so calm never reaches its threshold: the
+    # baseline settle runs its full budget (window / step), then the cycle
+    # proceeds to the post settle's 3 s wait.
+    budget = int(
+        soak_driver._STABILITY_SETTLE_WINDOW_S // soak_driver._STABILITY_SETTLE_STEP_S
+    )
+    assert sleeps[:budget] == [soak_driver._STABILITY_SETTLE_STEP_S] * budget
+    assert sleeps[budget] == 3.0
+
+
+async def test_stability_baseline_settle_never_hides_a_persistent_surplus(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A settled baseline still fails a post count that stays above it."""
+    script = _process_script([48] * 40, tasks_values=[30] * 4 + [30] * 3 + [40] * 30)
+    driver, _sleeps = await _run_cycle_with_process_script(
+        monkeypatch, script, baseline_settle=True
+    )
+    (entry,) = driver._reconnects
+    assert entry["tasksPre"] == 30
+    assert entry["tasksPost"] == 40
+    assert _stability_status(entry, "tasks")["status"] == "FAIL"
 
 
 # ---------------------------------------------------------------------------
