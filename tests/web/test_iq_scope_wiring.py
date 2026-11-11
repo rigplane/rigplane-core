@@ -255,3 +255,63 @@ async def test_iq_status_retains_open_error_until_successful_retry(monkeypatch):
     await subscription.close()
     assert server._sdr_status_payload()["lastError"] is None
     assert server._sdr_status_payload()["state"] == "disabled"
+
+
+async def test_websocket_iq_usable_bandwidth():
+    import aiohttp
+    from rigplane.sdr.types import IqSourceFacts
+    from rigplane.web.protocol import decode_scope_frame_v2, encode_scope_subscription
+    from test_web_server import _addr
+
+    center = 14_108_000
+    provider = FakeIqSource(
+        center_freq_hz=center,
+        sample_rate_hz=48_000,
+        facts=IqSourceFacts(
+            "slaved", center_offset_hz=8000, usable_bandwidth_hz=40_000
+        ),
+    )
+    server = WebServer(
+        None,
+        WebConfig(
+            host="127.0.0.1",
+            port=0,
+            sdr_config=SdrConfig("fake", sample_rate_hz=48_000),
+            sdr_source_factory=lambda config: provider,
+        ),
+    )
+    _seed_audio_facts(server, frequency=center - 8000)
+    await server.start()
+    try:
+        source = server._iq_scope_source
+        source._width = 480
+        source._start_worker = False
+        host, port = _addr(server)
+        async with aiohttp.ClientSession() as client:
+            async with client.ws_connect(f"http://{host}:{port}/api/v1/scope") as ws:
+                await ws.send_str(
+                    encode_scope_subscription(
+                        Subscription(
+                            "iq_fft",
+                            None,
+                            View(center - 30_000, center + 30_000),
+                            400,
+                            20,
+                        )
+                    )
+                )
+                grant = await ws.receive_json(timeout=2)
+                assert grant["coverage"] == {
+                    "startHz": center - 20_000,
+                    "endHz": center + 20_000,
+                }
+                provider.pump(1)
+                source.producer.process_pending()
+                message = await ws.receive(timeout=2)
+                frame = decode_scope_frame_v2(message.data)
+                assert (frame.coverage_start_hz, frame.coverage_end_hz) == (
+                    center - 20_000,
+                    center + 20_000,
+                )
+    finally:
+        await server.stop()

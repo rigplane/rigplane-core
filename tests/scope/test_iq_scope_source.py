@@ -390,3 +390,99 @@ async def test_geometry_change_enqueues_on_existing_worker(monkeypatch):
         old_producer.close()
     assert not old_worker.is_alive()
     assert not provider.is_open
+
+
+@pytest.mark.parametrize("offset", [8000, -8000])
+@pytest.mark.parametrize("tone", [6000, 22000])
+async def test_slaved_usable_bandwidth_crops_native_pixels(offset, tone):
+    from rigplane.sdr.types import IqSourceFacts
+
+    center = 10_000_000 + offset
+    provider = FakeIqSource(
+        center_freq_hz=center,
+        sample_rate_hz=48_000,
+        block_size=4096,
+        facts=IqSourceFacts(
+            "slaved", center_offset_hz=offset, usable_bandwidth_hz=40_000
+        ),
+        tones=[(tone, -6)],
+        noise_floor_dbfs=-120,
+    )
+    source = IqFftSource(provider, native_width=480, start_worker=False)
+    assert source.coverage_for(View(center - 30_000, center + 30_000)) == Coverage(
+        center - 20_000, center + 20_000
+    )
+    frames = []
+    source.on_frame(frames.append)
+    await source.start()
+    try:
+        provider.pump(1)
+        source.producer.process_pending()
+        frame = frames[-1]
+        assert frame.coverage == Coverage(center - 20_000, center + 20_000)
+        assert len(frame.pixels) == source.capabilities().native_width == 400
+        if tone == 6000:
+            peak = int(np.argmax(np.frombuffer(frame.pixels, dtype=np.uint8)))
+            predicted = (center + tone - frame.coverage.start_hz) / 100
+            assert abs(peak + 0.5 - predicted) <= 1
+        else:
+            assert max(frame.pixels) < 100
+    finally:
+        await source.stop()
+
+
+async def test_full_bandwidth_preserves_native_frame_and_capabilities():
+    from rigplane.scope import ScopeFrame
+    from rigplane.scope.models import SourceCapabilities
+    from rigplane.sdr.types import IqSourceFacts
+
+    center, rate, width = 10_000_000, 48_000, 480
+    provider = FakeIqSource(
+        center_freq_hz=center, sample_rate_hz=rate, facts=IqSourceFacts()
+    )
+    source = IqFftSource(provider, native_width=width, start_worker=False)
+    assert source.coverage_for(View(center - rate, center + rate)) == Coverage(
+        center - rate / 2, center + rate / 2
+    )
+    assert source.capabilities() == SourceCapabilities(
+        (None,), ("free",), (), width, 20, "center ± sample_rate/2"
+    )
+    frames = []
+    source.on_frame(frames.append)
+    await source.start()
+    try:
+        pixels = bytes(range(240)) * 2
+        source._emit(
+            ScopeFrame(0, 0, center - rate // 2, center + rate // 2, pixels, False)
+        )
+        assert frames[-1].coverage == Coverage(center - rate / 2, center + rate / 2)
+        assert frames[-1].pixels == pixels
+    finally:
+        await source.stop()
+
+
+async def test_crop_uses_frame_center_and_whole_pixel_edges():
+    from rigplane.scope import ScopeFrame
+    from rigplane.sdr.types import IqSourceFacts
+
+    provider = FakeIqSource(
+        center_freq_hz=10_000_000,
+        sample_rate_hz=48_000,
+        facts=IqSourceFacts(
+            "slaved", center_offset_hz=8000, usable_bandwidth_hz=40_000
+        ),
+    )
+    source = IqFftSource(provider, native_width=10, start_worker=False)
+    frames = []
+    source.on_frame(frames.append)
+    await source.start()
+    try:
+        source._emit(ScopeFrame(0, 0, 10_076_000, 10_124_000, bytes(range(10)), False))
+        assert frames[-1].pixels == bytes(range(1, 9))
+        assert frames[-1].coverage == Coverage(10_080_800, 10_119_200)
+        assert len(frames[-1].pixels) == source.capabilities().native_width == 8
+        source._emit(ScopeFrame(0, 0, 10_076_000, 10_124_000, b"", True))
+        assert frames[-1].pixels is None
+        assert frames[-1].coverage == Coverage(10_080_000, 10_120_000)
+    finally:
+        await source.stop()

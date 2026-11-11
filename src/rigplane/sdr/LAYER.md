@@ -43,7 +43,9 @@ composes acquisition and TX policy for the shared scope hub;
   slaved sources immediately follow `radio RF + center_offset_hz`.
 - `IqFftSource` — demand-owned provider/controller/FFT composition. The
   controller's acquisition and TX decisions are retained, while each hub
-  subscription projects its own view from the full native capture.
+  subscription projects its own view from the source's usable capture.
+  Native pixels are cropped to whole pixel edges inside the usable bandwidth;
+  unspecified usable bandwidth preserves the full sample-rate capture.
 - `sdr.runtime` (not re-exported) — `default_source_factory`,
   `register_source_kind` / `build_source` for the source-kind registry,
   `resolve_sdr_config` and the remote-only GPL guard (MOR-3157).
