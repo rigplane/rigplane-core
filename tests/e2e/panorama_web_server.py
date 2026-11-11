@@ -21,6 +21,8 @@ def _bcd_level_decode(data: bytes) -> int:
     for byte in data:
         value = value * 100 + ((byte >> 4) & 0x0F) * 10 + (byte & 0x0F)
     return value
+
+
 from rigplane.commands import parse_civ_frame  # noqa: E402
 from rigplane.commands.scope import parse_scope_fixed_edge_response  # noqa: E402
 from rigplane.profiles import resolve_radio_profile  # noqa: E402
@@ -74,7 +76,9 @@ class PanoramaSimulator(MockIcomRadio):
             return self._civ_ack(from_addr, self._radio_addr)
         return self._civ_nak(from_addr, self._radio_addr)
 
-    def _dispatch_pbt(self, sub: int, rest: bytes, from_addr: int, reply) -> bytes | None:
+    def _dispatch_pbt(
+        self, sub: int, rest: bytes, from_addr: int, reply
+    ) -> bytes | None:
         if len(rest) == 0:  # GET: sub echo + BCD level (two bytes)
             return reply(sub, bcd_encode_value(self._pbt[sub], byte_count=2))
         if len(rest) != 2:
