@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """Resolve a Core ref to exactly one commit (MOR-4408).
 
-``core_ref`` may be a branch name, a tag name (annotated tags resolve to
-their peeled commit), or a 40-hex object ID that is reachable in the
-repository — either advertised by some ref in ``git ls-remote`` or fetchable
-by exact SHA — and names a commit: a raw annotated-tag OBJECT ID is peeled
-to its commit, and a fetchable non-commit object (a blob, a tree) is
-refused. Anything else — globs, short SHAs, commit-ish expressions such as
+``core_ref`` may be a branch name, a tag name, or a 40-hex object ID that
+is reachable in the repository — either advertised by some ref in
+``git ls-remote`` or fetchable by exact SHA. Whatever the form, the result
+must be proven to name a commit: an annotated tag (named or raw object ID)
+peels to its commit, and any fetchable non-commit object (a blob, a tree —
+including one a lightweight or annotated tag points at) is refused.
+Anything else — globs, short SHAs, commit-ish expressions such as
 ``HEAD~2``, or names that match both a branch and a tag pointing at
 different commits — is refused with exit code 2.
 
@@ -184,6 +185,17 @@ def _object_type(scratch: Path, sha: str) -> str:
         return "non-commit"
 
 
+def _resolved_through_a_tag(refs: dict[str, str], core_ref: str) -> bool:
+    """Whether a tag ref participated in resolving the name.
+
+    Branch refs always point at commits (git guarantees it), so only a
+    tag-matched name needs the commit proof below.
+    """
+    if core_ref.startswith("refs/tags/"):
+        return core_ref in refs
+    return f"refs/tags/{core_ref}" in refs
+
+
 def resolve(core_ref: str, *, remote: str, token: str | None) -> tuple[str, list[str]]:
     url = _remote_url(remote, token)
     listing = _run_git(["ls-remote", url], secret=token)
@@ -191,7 +203,13 @@ def resolve(core_ref: str, *, remote: str, token: str | None) -> tuple[str, list
     if _SHA_RE.fullmatch(core_ref):
         commit = _peel_to_commit(url, core_ref, token)
         return commit, tags_at_sha(refs, commit)
-    return resolve_ref(refs, core_ref)
+    sha, tags = resolve_ref(refs, core_ref)
+    if _resolved_through_a_tag(refs, core_ref):
+        # A tag may point at any object, and the peeled ls-remote entry is
+        # not proof of a commit: peel/validate it exactly like a raw
+        # object ID so a blob or a tree can never reach the build.
+        sha = _peel_to_commit(url, sha, token)
+    return sha, tags
 
 
 def main(argv: Sequence[str] | None = None) -> int:

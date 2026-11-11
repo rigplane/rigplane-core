@@ -19,13 +19,15 @@ or install its artifact.
 
 `workflow_dispatch` takes the same inputs minus `artifact_name`. A branch is
 resolved once, in the `resolve` job (`resolve_core_ref.py: main`); the build
-job checks out the SHA, never the moving ref. A raw 40-hex object ID is
-fetched and peeled: an annotated-tag object resolves to its tagged commit,
-and a fetchable non-commit object (a blob, a tree) is refused — a wheel must
-be built from a commit, and the peeled commit SHA is what propagates to the
-stamp, the manifest and the artifact name. Anything that does not resolve to
-exactly one commit — globs, short SHAs, `HEAD~2`, a name whose branch and
-tag point at different commits — fails loudly.
+job checks out the SHA, never the moving ref. Every raw 40-hex object ID
+and every tag name is fetched and proven to be a commit: an annotated-tag
+object resolves to its tagged commit, and a fetchable non-commit object
+(a blob, a tree — including one a lightweight or annotated tag points at)
+is refused — a wheel must be built from a commit, and the peeled commit SHA
+is what propagates to the stamp, the manifest and the artifact name.
+Anything that does not resolve to exactly one commit — globs, short SHAs,
+`HEAD~2`, a name whose branch and tag point at different commits — fails
+loudly.
 
 ## Controls and the caller
 
@@ -37,8 +39,8 @@ repository. Every `actions/checkout` in the workflow names
 `repository: rigplane/rigplane-core`, and `CORE_REMOTE` is fixed to
 `https://github.com/rigplane/rigplane-core.git` — never `github.repository`.
 
-The control files (the resolver, version, stamp and manifest scripts, the
-installed-profile smoke and the contracts they load) are checked out at
+The control files (the resolver, version, stamp and manifest scripts, and
+the contracts they load) are checked out at
 `controls_ref`. Core's own callers — `publish.yml` and
 `core-wheel-nightly.yml` — pass their triggering SHA (or `main`) explicitly.
 An external caller that omits `controls_ref` gets Core's `main`: convenient,
@@ -49,11 +51,20 @@ than deriving "the called workflow's own commit" from GitHub context) is
 deliberate: the `github.*` context cannot identify the called workflow's
 commit, and an input is a reviewed, pin-able Core revision either way.
 
+The installed-profile smoke script is the one control that does NOT come
+from `controls_ref`: it is taken from the TARGET revision (see
+"Installed-profile smoke" below), because the profile catalog it checks is
+revision-specific.
+
 ## Outputs
 
 `sha` (40-hex commit built), `version` (the wheel version), `wheel_name`,
-`wheel_sha256`, `artifact_name`. These five are the consumer contract; they
-are also inside `core-wheel.json` in the artifact.
+`wheel_sha256`, `artifact_name`. These five are the workflow-call consumer
+contract. The manifest inside the artifact, `core-wheel.json`, is a related
+but distinct contract (below): it carries `sha`, `version`,
+`requested_ref`, `wheel` (the file name the `wheel_name` output reports),
+`wheel_sha256` and `profile_smoke`. `artifact_name` is a workflow output
+only — it names the uploaded artifact and is not part of the manifest.
 
 ## Version rule
 
@@ -65,10 +76,12 @@ pyproject version, the SHA and the `v*` release tags at that SHA:
   — a mismatched tag must never ship);
 - otherwise (no release tag, or more than one) → `<pyproject>+g<sha12>`.
 
-Versions compare through their canonical PEP 440 form: numeric
-pre/post/dev suffixes normalize as integers with the omitted number meaning
-zero (`v3.2.0rc01` releases `3.2.0rc1`; a bare `rc` equals `rc0`), while
-release segments stay literal (`v3.2` is not `3.2.0`).
+Versions compare through their canonical PEP 440 form: numeric epochs
+normalize as integers with the zero epoch omitted (`v0!3.2.0` releases
+`3.2.0`; `v01!3.2.0` releases `1!3.2.0`), numeric pre/post/dev suffixes
+normalize as integers with the omitted number meaning zero (`v3.2.0rc01`
+releases `3.2.0rc1`; a bare `rc` equals `rc0`), while release segments
+stay literal (`v3.2` is not `3.2.0`).
 
 The local form is unique per commit, satisfies a `==<pyproject>` pin, sorts
 newer than the same public version, and PyPI rejects local versions, so an
@@ -83,7 +96,7 @@ wheel, the sdist, and `core-wheel.json`. The manifest goes through the typed
 contract in `.github/scripts/core_wheel_manifest.py`
 (`CoreWheelManifest` + `parse_manifest`): the workflow serializes it with a
 JSON encoder, never by interpolating ref text into a heredoc — a legal ref
-containing a quote must still produce valid JSON. The schema, five string
+containing a quote must still produce valid JSON. The schema, six string
 fields exactly:
 
 | Field | Rule |
@@ -93,14 +106,30 @@ fields exactly:
 | `requested_ref` | non-empty single line — the `core_ref` input, verbatim |
 | `wheel` | file name (no path separators) |
 | `wheel_sha256` | 64 lowercase hex |
+| `profile_smoke` | one of `target`, `not_available_for_target` — whether the target revision's installed-profile smoke ran (see below) |
 
 Unknown keys are rejected by the parser; consumers read these fields through
 the contract, not by re-guessing a raw dict.
 
+## Installed-profile smoke
+
+The profile smoke is run with the TARGET revision's own
+`.github/scripts/installed_profile_smoke.py`, never the controls' copy: the
+profile catalog is revision-specific (`v3.1.4` shipped nine radio profiles;
+current Core ships eleven), so judging a historical wheel by the controls'
+current catalog would reject a valid release.
+
+A target revision older than the script (it first shipped in `v3.0.0b10`)
+gets no silent pass and no silent failure: `core-wheel.json` records
+`profile_smoke: "not_available_for_target"`, the job summary states the
+skip, and the smoke-evidence artifact is not uploaded. The provenance
+verification (the stamped `_build_info.json`) always stays with the
+controls and runs for every target.
+
 A second artifact, `<wheel artifact name>-installed-profile-smoke`, carries
-the installed-wheel smoke evidence, exactly as `publish.yml` always did; the
-name derives from the wheel artifact's name so two invocations from one
-caller cannot collide.
+the installed-wheel smoke evidence when the smoke ran; the name derives
+from the wheel artifact's name so two invocations from one caller cannot
+collide.
 
 ## Build provenance
 

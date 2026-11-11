@@ -7,7 +7,7 @@ read it), so it goes through this typed contract instead of shell
 interpolation of ref text into a JSON heredoc — a legal ref containing a
 quote (``feature/"probe"``) would produce invalid JSON that way.
 
-- :class:`CoreWheelManifest` is the schema (exactly five string fields);
+- :class:`CoreWheelManifest` is the schema (exactly six string fields);
 - :func:`build_manifest` validates and :func:`render_manifest` serializes
   (a real JSON encoder, ``json.dumps``);
 - :func:`parse_manifest` is the reader consumers (and the tests) use: the
@@ -15,9 +15,13 @@ quote (``feature/"probe"``) would produce invalid JSON that way.
 
 Field rules: ``sha`` is 40 lowercase hex; ``version``, ``requested_ref`` and
 ``wheel`` are non-empty single-line strings; ``wheel`` is a file name (no
-path separators); ``wheel_sha256`` is 64 lowercase hex. Unknown keys are
-rejected — consumers read the contract's fields, and silent drift must fail
-loudly. The version's own semantics belong to ``core_wheel_version.py``.
+path separators); ``wheel_sha256`` is 64 lowercase hex; ``profile_smoke`` is
+one of :data:`PROFILE_SMOKE_VALUES` — ``target`` (the target revision's own
+smoke script verified the installed wheel) or ``not_available_for_target``
+(the target predates the script; the skip is explicit, never a silent pass
+or a silent failure). Unknown keys are rejected — consumers read the
+contract's fields, and silent drift must fail loudly. The version's own
+semantics belong to ``core_wheel_version.py``.
 
 Standard library only: the workflow runs this under ``uv run --no-project``
 and the tests under a bare ``python3``.
@@ -35,15 +39,19 @@ from typing import Sequence, TypedDict
 _SHA_RE = re.compile(r"[0-9a-f]{40}")
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
 
+# The installed-profile smoke outcomes a manifest may carry.
+PROFILE_SMOKE_VALUES = ("target", "not_available_for_target")
+
 
 class CoreWheelManifest(TypedDict):
-    """The five-field manifest inside the wheel artifact."""
+    """The six-field manifest inside the wheel artifact."""
 
     sha: str
     version: str
     requested_ref: str
     wheel: str
     wheel_sha256: str
+    profile_smoke: str
 
 
 class ManifestError(ValueError):
@@ -64,6 +72,10 @@ def _validate_field(name: str, value: object) -> str:
         raise ManifestError(f"{name} must be a non-empty single-line string")
     if name == "wheel" and ("/" in value or "\\" in value):
         raise ManifestError("wheel must be a file name, not a path")
+    if name == "profile_smoke" and value not in PROFILE_SMOKE_VALUES:
+        raise ManifestError(
+            f"profile_smoke must be one of {list(PROFILE_SMOKE_VALUES)}, not {value!r}"
+        )
     return value
 
 
@@ -74,6 +86,7 @@ def build_manifest(
     requested_ref: str,
     wheel: str,
     wheel_sha256: str,
+    profile_smoke: str,
 ) -> CoreWheelManifest:
     """Validate the fields and return the manifest."""
     manifest = CoreWheelManifest(
@@ -82,6 +95,7 @@ def build_manifest(
         requested_ref=requested_ref,
         wheel=wheel,
         wheel_sha256=wheel_sha256,
+        profile_smoke=profile_smoke,
     )
     for name in manifest:
         _validate_field(name, manifest[name])
@@ -121,6 +135,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--wheel", required=True, help="wheel file name")
     parser.add_argument("--wheel-sha256", required=True, help="sha256 of the wheel")
     parser.add_argument(
+        "--profile-smoke",
+        required=True,
+        help="installed-profile smoke outcome: 'target' or 'not_available_for_target'",
+    )
+    parser.add_argument(
         "--output", type=Path, required=True, help="manifest path to write"
     )
     args = parser.parse_args(argv)
@@ -131,6 +150,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             requested_ref=args.requested_ref,
             wheel=args.wheel,
             wheel_sha256=args.wheel_sha256,
+            profile_smoke=args.profile_smoke,
         )
     except ManifestError as exc:
         print(f"core-wheel manifest FAILED: {exc}", file=sys.stderr)
