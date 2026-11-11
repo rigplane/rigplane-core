@@ -53,9 +53,7 @@ def _kept_radio(*, expected_ids: tuple[str, ...]) -> tuple[IcomRadio, MockTransp
     return radio, transport
 
 
-def _owner_lifecycle_double(
-    radio: IcomRadio, *, connect: object
-) -> AsyncMock:
+def _owner_lifecycle_double(radio: IcomRadio, *, connect: object) -> AsyncMock:
     """A session lifecycle whose teardown just parks the link as idle.
 
     The connect half is the test's own gated fake; the disconnect half
@@ -86,9 +84,7 @@ def _token_answer(
     pkt[0x14] = reply_flag
     pkt[0x15] = request_type
     struct.pack_into("<I", pkt, 0x1C, token)
-    struct.pack_into(
-        "<I", pkt, ControlPhaseRuntime._RENEWAL_RESPONSE_OFFSET, result
-    )
+    struct.pack_into("<I", pkt, ControlPhaseRuntime._RENEWAL_RESPONSE_OFFSET, result)
     return bytes(pkt)
 
 
