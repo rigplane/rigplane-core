@@ -142,80 +142,21 @@ jobs:
         # this job also runs the slow-marked tests.
         run: uv run pytest tests/ -n auto -m 'not benchmark' --tb=short --timeout=300 --timeout-method=thread
 
+  # One wheel builder (MOR-4408): the build job delegates to the reusable
+  # core-wheel.yml, which resolves the ref, builds the frontend and the
+  # wheel from the resolved commit, runs the installed-profile smoke and
+  # uploads the artifact. A release event's github.sha is the tagged
+  # commit, so the version rule keeps the clean pyproject version; a
+  # rehearsal (schedule/dispatch) head is untagged and produces a local
+  # <pyproject>+g<sha12> version, which never reaches the release-only
+  # publish job below. The artifact keeps its historical `dist` name so
+  # the publish job downloads exactly what it did before.
   build:
     needs: validate
-    runs-on: [self-hosted, Linux, ARM64, build]
-    # Measured about 1 minute on the build pool; 15 covers a cold npm ci
-    # plus uv build while a hung build still releases the runner.
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v8.1.0
-        with:
-          enable-cache: true
-          cache-dependency-glob: |
-            pyproject.toml
-            uv.lock
-
-      - name: Set up Python
-        run: uv python install 3.13
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v6
-        with:
-          node-version: '20'
-          cache: 'npm'
-          cache-dependency-path: frontend/package-lock.json
-
-      - name: Build frontend
-        run: |
-          cd frontend
-          npm ci
-          npm run build
-          rm -f ../src/rigplane/web/static
-          mkdir -p ../src/rigplane/web/static
-          cp -r dist/* ../src/rigplane/web/static/
-
-      - name: Build package
-        run: uv build
-
-      - name: Smoke installed radio profiles
-        shell: bash
-        run: |
-          set -euo pipefail
-          smoke_dir="$(mktemp -d)"
-          mapfile -t wheels < <(find "$GITHUB_WORKSPACE/dist" -maxdepth 1 -type f -name '*.whl' -print)
-          if [[ "${#wheels[@]}" -ne 1 ]]; then
-            echo "expected exactly one wheel, found ${#wheels[@]}" >&2
-            exit 1
-          fi
-          wheel_name="$(basename "${wheels[0]}")"
-          cp "${wheels[0]}" "$smoke_dir/$wheel_name"
-          cp .github/scripts/installed_profile_smoke.py "$smoke_dir/"
-          uv venv --python 3.13 "$smoke_dir/.venv"
-          uv pip install --python "$smoke_dir/.venv/bin/python" "$smoke_dir/$wheel_name"
-          cd "$smoke_dir"
-          UV_OFFLINE=true .venv/bin/python installed_profile_smoke.py \
-            --artifact "$wheel_name" \
-            --candidate-sha "$GITHUB_SHA" \
-            --forbid-root "$GITHUB_WORKSPACE" \
-            | tee "$GITHUB_WORKSPACE/installed-profile-smoke.json"
-
-      - name: Upload installed-profile smoke evidence
-        uses: actions/upload-artifact@v7
-        with:
-          name: installed-profile-smoke
-          path: installed-profile-smoke.json
-          retention-days: 3
-
-      - name: Upload dist artifacts
-        uses: actions/upload-artifact@v7
-        with:
-          name: dist
-          path: dist/
-          retention-days: 3
+    uses: ./.github/workflows/core-wheel.yml
+    with:
+      core_ref: ${{ github.sha }}
+      artifact_name: dist
 
   publish:
     needs: build
@@ -239,10 +180,12 @@ jobs:
 
       # uv publish with this job's OIDC token instead of the Docker-based
       # pypa/gh-action-pypi-publish: the self-hosted runner image ships no Docker.
+      # The wheel and sdist are named explicitly: since MOR-4408 the dist
+      # artifact also carries core-wheel.json, which is not an uploadable.
       - name: Install uv
         uses: astral-sh/setup-uv@v8.1.0
 
       - name: Publish to PyPI
         env:
           DIST_DIR: ${{ runner.temp }}/dist-${{ github.run_id }}-${{ github.run_attempt }}
-        run: uv publish --trusted-publishing always "$DIST_DIR"/*
+        run: uv publish --trusted-publishing always "$DIST_DIR"/*.whl "$DIST_DIR"/*.tar.gz

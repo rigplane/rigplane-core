@@ -34,6 +34,7 @@ from ...core.exceptions import (
     ReceiverNotSelectedError,
 )
 from ...core.exceptions import TimeoutError as RigplaneTimeoutError
+from ...core.build_info import load_build_info
 from ...core.state_pipeline_contracts import CommandIntent, CommandSource, FieldPath
 from ...core.types import MemoryProfile
 from ...runtime.controller_authority import ControllerAuthority, ControllerError
@@ -1140,6 +1141,9 @@ class ControlHandler:
             "proto": 1,
             "server": "rigplane",
             "version": self._version,
+            # Build provenance from the stamped core/_build_info.json; null
+            # for unstamped source checkouts and PyPI wheels (MOR-4408).
+            "core_sha": load_build_info().git_sha,
             "radio": self._radio_model,
             "connected": raw_connected if isinstance(raw_connected, bool) else False,
             "radio_ready": self._radio_ready(),
