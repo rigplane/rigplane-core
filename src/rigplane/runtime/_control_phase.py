@@ -1058,16 +1058,6 @@ class ControlPhaseRuntime:
         start_identity_read = getattr(h, "_start_identity_read", None)
         if start_identity_read is not None:
             start_identity_read()
-        # The soft-recovery completion fetches the initial state here, in the
-        # radio layer, mirroring ``_complete_connect`` (fetch, TX re-arm,
-        # scope ready, callback): a recovered link owes the same completion
-        # as a fresh one. The web reconnect reacquire
-        # (``_on_radio_reconnect`` → ``_refetch_and_reenable``) replays only
-        # its web-epoch facts and never fetches — exactly one initial fetch
-        # per connect completion (MOR-4382 double fetch).
-        fetch_initial_state = getattr(h, "_fetch_initial_state", None)
-        if fetch_initial_state is not None:
-            await fetch_initial_state()
         # Managed TX is re-armed here, ahead of every reconnect consumer, so
         # the durable OFF a drop armed reaches the wire before any recovered
         # work does — and so it happens at all on a headless rig, which has no
@@ -1094,6 +1084,24 @@ class ControlPhaseRuntime:
         scope_ready = getattr(h, "_scope_session_ready", None)
         if scope_ready is not None:
             await scope_ready()
+        # The soft-recovery completion fetches the initial state here, in
+        # the radio layer: a recovered link owes the same completion as a
+        # fresh one (``_complete_connect``), and the web reconnect reacquire
+        # (``_on_radio_reconnect`` → ``_refetch_and_reenable``) replays only
+        # its web-epoch facts and never fetches — exactly one initial fetch
+        # per connect completion (MOR-4382 double fetch). After the re-arm
+        # and scope above, so a safety-owed OFF keeps wire priority over
+        # these best-effort reads; and only while the link is answering —
+        # the shared ``radio_ready`` signal the late-connect tail also waits
+        # on. A recovery whose CI-V is still silent skips the fetch instead
+        # of burning read timeouts ahead of the callback and audio below;
+        # its state stays as stale as a failed fetch would have left it,
+        # and the next recovery fetches again.
+        link_ready = getattr(h, "radio_ready", True)
+        if link_ready:
+            fetch_initial_state = getattr(h, "_fetch_initial_state", None)
+            if fetch_initial_state is not None:
+                await fetch_initial_state()
         on_reconnect = getattr(h, "_on_reconnect", None)
         if on_reconnect is not None:
             try:
