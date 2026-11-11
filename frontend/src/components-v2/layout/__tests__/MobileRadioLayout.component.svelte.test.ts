@@ -986,11 +986,12 @@ describe('MobileRadioLayout SCOPE chip tab (MOR-2851)', () => {
       const stub = () => t.querySelector<HTMLElement>('.spectrum-panel-stub')!;
       expect(stub().dataset.enableAvg).toBe('true');
       expect(stub().dataset.enablePeakHold).toBe('true');
+      expect(stub().dataset.enableSmooth).toBe('true');
       expect(stub().dataset.showBandPlan).toBe('true');
       scopeChip(t)!.click();
       flushSync();
       for (const [key, attr] of [
-        ['avg', 'enableAvg'], ['peak', 'enablePeakHold'], ['bands', 'showBandPlan'],
+        ['avg', 'enableAvg'], ['peak', 'enablePeakHold'], ['smooth', 'enableSmooth'], ['bands', 'showBandPlan'],
       ] as const) {
         t.querySelector<HTMLButtonElement>(`[data-testid="scope-key-${key}"]`)!.click();
         flushSync();
