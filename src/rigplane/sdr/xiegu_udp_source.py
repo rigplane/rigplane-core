@@ -233,7 +233,10 @@ class XieguUdpIqSource:
                 ):
                     peer_host = None
                     with self._lock:
-                        if self._thread is not threading.current_thread() or stop.is_set():
+                        if (
+                            self._thread is not threading.current_thread()
+                            or stop.is_set()
+                        ):
                             return
                         self._peer_host = None
                     next_resolve_s = now + self._stall_s
@@ -318,13 +321,10 @@ class XieguUdpIqSource:
                         if self._last_valid_s is None
                         else self._last_valid_s
                     )
-                if (
-                    peer_host is not None
-                    and not (
-                        now - silence_since >= self._stall_s
-                        and next_resolve_s is not None
-                        and now >= next_resolve_s
-                    )
+                if peer_host is not None and not (
+                    now - silence_since >= self._stall_s
+                    and next_resolve_s is not None
+                    and now >= next_resolve_s
                 ):
                     self._maybe_start(now)
         except OSError as exc:

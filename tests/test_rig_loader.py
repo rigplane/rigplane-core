@@ -215,7 +215,11 @@ class TestLoadRig:
             ('protocol = "xiegu_udp"', 'protocol = "other"', "protocol"),
             ("sample_rate_hz = 48000", 'sample_rate_hz = "48000"', "sample_rate_hz"),
             ("tune_min_hz = 100000", "tune_min_hz = -1", "tune_min_hz"),
-            ("tune_max_hz = 54000000", "tune_max_hz = 18446744073709551616", "tune_max_hz"),
+            (
+                "tune_max_hz = 54000000",
+                "tune_max_hz = 18446744073709551616",
+                "tune_max_hz",
+            ),
             (
                 "samples_per_datagram = 192",
                 "samples_per_datagram = 16377",

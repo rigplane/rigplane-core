@@ -329,6 +329,7 @@ def test_transient_resolution_failure_recovers_without_tune_command() -> None:
 
         harness.clock.advance(0.5)
         assert harness.source.stalled is True
+        wait_until(lambda: attempts == 2)
         harness.send(bytes(768), count=10)
         blocks = harness.wait_for(1)
         assert len(blocks[0].samples) == 1920
@@ -406,7 +407,9 @@ def test_failed_peer_refresh_blocks_commands_until_retry() -> None:
         assert harness.command(timeout=2.0) == encode_tune(7_175_000)
 
 
-def test_connection_refused_does_not_end_reader(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_connection_refused_does_not_end_reader(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     real_recvfrom = socket.socket.recvfrom
     refused = threading.Event()
 
