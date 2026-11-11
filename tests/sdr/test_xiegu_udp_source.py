@@ -155,10 +155,11 @@ def test_no_block_is_emitted_before_a_centre_is_recorded() -> None:
 def test_bad_length_and_other_sender_are_dropped_without_samples() -> None:
     with _source(center_hz=7_183_000) as harness:
         harness.send(bytes(767))
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as other:
-            other.bind(("127.0.0.2", 0))
-            other.sendto(bytes(768), ("127.0.0.1", harness.receive_port))
-        wait_until(lambda: harness.source.dropped_datagrams == 2)
+        wait_until(lambda: harness.source.dropped_datagrams == 1)
+        assert harness.blocks == []
+    with _source(center_hz=7_183_000, host="127.0.0.2") as harness:
+        harness.send(bytes(768))
+        wait_until(lambda: harness.source.dropped_datagrams == 1)
         assert harness.blocks == []
 
 
