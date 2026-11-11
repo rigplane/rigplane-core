@@ -669,7 +669,7 @@ These optional sections provide detailed configuration for specific capabilities
 
 ### `[iq_lan]`
 
-Optional measured radio-LAN IQ facts: `protocol` (currently `"xiegu_udp"`), UDP ports, sample rate/datagram size, centre offset, usable bandwidth, and tune bounds. All nine keys are required; the host is server configuration, not profile data.
+Optional measured radio-LAN IQ facts: `protocol` (currently `"xiegu_udp"`), UDP ports, sample rate/datagram size, centre offset, usable bandwidth, and tune bounds. All nine keys are required; the host is server configuration, not profile data. `samples_per_datagram` must be positive and at most 16376, keeping its four-byte I/Q payload within the 65,507-byte IPv4 UDP limit.
 Unknown keys/protocols, wrong types, and invalid ranges name the key. See `profiles/rig_loader.py: _parse_iq_lan` and `sdr/types.py: UdpIqSourceSpec`.
 
 ### `[memory]`

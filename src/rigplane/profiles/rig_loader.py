@@ -2672,6 +2672,10 @@ def _parse_iq_lan(filename: str, raw: Any) -> IqLanSpec | None:
     for key in ("sample_rate_hz", "samples_per_datagram", "usable_bandwidth_hz"):
         if values[key] <= 0:
             raise RigLoadError(f"{filename}: [iq_lan].{key} must be positive")
+    if values["samples_per_datagram"] * 4 > 65_507:
+        raise RigLoadError(
+            f"{filename}: [iq_lan].samples_per_datagram * 4 must be <= 65507"
+        )
     if values["usable_bandwidth_hz"] > values["sample_rate_hz"]:
         raise RigLoadError(
             f"{filename}: [iq_lan].usable_bandwidth_hz must not exceed sample_rate_hz"
