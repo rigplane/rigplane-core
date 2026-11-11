@@ -40,6 +40,15 @@ class RadioScopeWriter(Protocol):
     async def set_output(self, enabled: bool, *, release: bool = True) -> None: ...
     async def set_fixed(self, edges: ScopeFixedEdge, receiver: int) -> None: ...
 
+    async def set_dual(self, enabled: bool, receiver: int) -> None:
+        """Acquire dual-scope output for a SUB subscription (0x27 0x13).
+
+        Single-scope output streams only the selected receiver, so a SUB
+        subscription needs dual on — the same acquisition set_center and
+        set_fixed perform, restored by the session at teardown. Never a
+        mode/span/edge write.
+        """
+
     async def set_center(self, center_hz: float, span_hz: float, receiver: int) -> None:
         """Tune the center-mode viewport.
 
@@ -94,7 +103,8 @@ class RadioScopeSource:
         # MOR-4392 round 2: last streamed (mode, coverage) per receiver —
         # lets a FIX follow grant clip to the live fixed window already
         # at subscribe time instead of granting a stale wide window for
-        # a frame. Same memory class as _native_widths, no new mechanism.
+        # a frame. Dies with the stream (stop clears it), unlike
+        # _native_widths, which is a radio property that survives.
         self._native_coverages: dict[int, tuple[int, Coverage]] = {}
 
     def capabilities(self) -> SourceCapabilities:
@@ -210,6 +220,13 @@ class RadioScopeSource:
             # frame resolves it. Back in CENTER the hub branch re-resolves
             # against the native coverage. The FIX/CTR gestures themselves
             # are explicit mode commands outside this path and still write.
+            if selected:
+                # A SUB subscription still needs the radio's dual-scope
+                # output the CENTER path acquires (single-scope output
+                # streams only the selected receiver) — enable it through
+                # the same session mechanism, restored at teardown, while
+                # mode/span/edges stay untouched.
+                await self._writer.set_dual(True, selected)
             remembered = self._native_coverages.get(selected)
             if remembered is not None and remembered[0] in _FIXED_SCOPE_MODES:
                 native = remembered[1]
@@ -244,6 +261,10 @@ class RadioScopeSource:
     async def stop(self, *, release: bool = True) -> None:
         await self._writer.set_output(False, release=release)
         self._active = False
+        # The remembered coverage belongs to the stream that produced it:
+        # a window changed externally while the stream was stopped must
+        # not clip the next session's first grant.
+        self._native_coverages.clear()
 
     def on_frame(self, callback: Callable[[NativeFrame], None]) -> Callable[[], None]:
         self._callbacks.append(callback)

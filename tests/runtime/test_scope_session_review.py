@@ -383,11 +383,14 @@ class _ScopeWindowSimulator(ScopeControlSimulator):
     def pump_scope_stream(self) -> int:
         for receiver, templates in self._scope_templates.items():
             mode, span, _edge = self.views[receiver]
-            if mode in (1, 3):
-                first, last = self.windows.get(receiver, (14_000_000, 14_350_000))
-            else:
+            if mode == 0:
+                # Center mode carries (center, span); the assembler expands.
                 first = self._frequency
                 last = self.profile.scope_span_presets_hz[span]
+            else:
+                # Every other mode carries edges (ScopeAssembler expands
+                # only mode 0).
+                first, last = self.windows.get(receiver, (14_000_000, 14_350_000))
             self._scope_templates[receiver] = [
                 template[:9]
                 + bytes([mode])
@@ -743,9 +746,7 @@ async def test_fix_follow_reopen_forgets_the_stopped_stream_window(windowed_sdk)
             await _frame_with(ws, (14_080_000, 14_120_000))
 
 
-async def test_restore_skips_span_adopted_during_teardown(
-    windowed_sdk, monkeypatch
-):
+async def test_restore_skips_span_adopted_during_teardown(windowed_sdk, monkeypatch):
     """Pre-review round 1 (P2): an external span change landing BETWEEN two
     restore writes leaves the restore set in time — the copied restore
     loop must not write the stale span over the adopted value."""
@@ -754,18 +755,28 @@ async def test_restore_skips_span_adopted_during_teardown(
     sim.set_frequency(14_100_000)
     radio._radio_state.main.freq = 14_100_000
     presets = radio._profile.scope_span_presets_hz
+    # SCROLL-C start: the follow subscribe's set_center captures mode AND
+    # span for restoration, so the restore loop's mode write (held below)
+    # leaves a window for the external span change to land mid-restore.
+    sim.views[0] = (2, 3, 1)
     async with web(radio) as (_, client, base, protocols, _):
         ws = await client.ws_connect(base + "/api/v1/scope", protocols=protocols)
-        await _subscribe(ws, Subscription("radio", 0, FollowView("vfo", 100_000), 475, 20))
+        await _subscribe(
+            ws, Subscription("radio", 0, FollowView("vfo", 100_000), 475, 20)
+        )
         await _frame_with(ws, (14_050_000, 14_150_000))
-        assert sim.views[0][1] == presets.index(50_000)
+        assert sim.views[0] == (0, presets.index(50_000), 1)
         # Hold the restore's first write (mode) in flight so the external
         # span change lands while the restore loop is between iterations.
         send = radio._send_civ_raw
 
         async def slow_mode_ack(payload, **kwargs):
             frame = parse_civ_frame(payload)
-            if frame.command == 0x27 and frame.sub == 0x14 and frame.data == b"\x00\x00":
+            if (
+                frame.command == 0x27
+                and frame.sub == 0x14
+                and frame.data == b"\x00\x02"
+            ):
                 await asyncio.sleep(0.3)
             return await send(payload, **kwargs)
 
@@ -773,10 +784,13 @@ async def test_restore_skips_span_adopted_during_teardown(
         await ws.close()
         session = radio.scope_session()
         assert await await_until(lambda: session.restoring)
+        await asyncio.sleep(0.05)
         sim.views[0] = (0, presets.index(100_000), 1)
         sim.push_scope_setting(b"\x15\x00" + bcd_encode(100_000))
         assert await await_until(lambda: not session.active)
-        assert sim.views[0][1] == presets.index(100_000)
+        # The adopted span survives; restore wrote only mode (its owned
+        # setting, back to the pre-subscribe SCROLL-C) — no stale 0x15.
+        assert sim.views[0] == (2, presets.index(100_000), 1)
         assert (
             len([w for w in _viewport_writes(sim) if w.sub == 0x15]) == 1
         )  # only the subscribe's own span write

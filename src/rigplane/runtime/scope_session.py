@@ -191,6 +191,16 @@ class ScopeSession:
             **({"dual": True} if receiver else {}),
         )
 
+    async def set_dual(self, enabled: bool, receiver: int) -> None:
+        """Dual-scope output acquisition for a SUB subscription.
+
+        The fixed-mode follow suppression acquires the same dual output
+        set_center/set_fixed would (single-scope output streams only the
+        selected receiver), through the same configure/reconcile
+        mechanism — captured and restored like every other setting.
+        """
+        await self.configure(receiver=receiver, dual=enabled)
+
     def suspend(self) -> None:
         self._ready = False
 
@@ -461,11 +471,21 @@ class ScopeSession:
                 return
             failures: list[BaseException] = []
             for (receiver, name), value in tuple(self._previous.items()):
+                # An external change adopted during an earlier restore
+                # write already left the restore set — never write the
+                # stale snapshot the copy above still carries.
+                if self._previous.get((receiver, name)) != value:
+                    continue
                 try:
                     await self._put(name, value, receiver)
                 except BaseException as exc:
                     failures.append(exc)
-            for value in self._fixed.values():
+            for slot, value in tuple(self._fixed.items()):
+                # Same adoption race for shared fixed-edge slots (the
+                # snapshot also keeps the iteration safe when an
+                # adoption pops a slot mid-loop).
+                if self._fixed.get(slot) != value:
+                    continue
                 try:
                     await self._put("fixed_edge", value)
                 except BaseException as exc:
@@ -567,6 +587,11 @@ class ScopeSession:
                         self._applied[key] = value
                         continue
                     self._previous[key] = getattr(captured, name)
+            if self._desired.get((receiver, name)) != value:
+                # An external change adopted during a capture await above
+                # superseded this intent — never write the stale value
+                # the sorted copy still carries.
+                continue
             if (
                 self._applied.get((receiver, name)) != value
                 or (receiver, name) in self._uncertain
