@@ -172,10 +172,12 @@ def test_already_flowing_stream_never_causes_a_tune_command() -> None:
         assert harness.command() is None
 
 
-def test_settled_centre_starts_silent_stream_with_exact_vfo() -> None:
+def test_settled_centre_sends_exact_vfo_once_per_stall_interval() -> None:
     with _source(center_hz=7_183_000) as harness:
         harness.clock.advance(0.2)
         assert harness.command(timeout=2.0) == encode_tune(7_175_000)
+        harness.clock.advance(0.5)
+        assert harness.command() is None
 
 
 def test_changing_centre_defers_the_vfo_write() -> None:
@@ -196,14 +198,6 @@ def test_no_recorded_centre_means_no_vfo_write() -> None:
 def test_out_of_range_vfo_means_no_tune_command(center_hz: int) -> None:
     with _source(center_hz=center_hz, start_grace_s=0.0, start_settle_s=0.0) as harness:
         harness.clock.advance(10.0)
-        assert harness.command() is None
-
-
-def test_no_second_command_before_stall_interval() -> None:
-    with _source(center_hz=7_183_000) as harness:
-        harness.clock.advance(0.2)
-        assert harness.command(timeout=2.0) == encode_tune(7_175_000)
-        harness.clock.advance(0.5)
         assert harness.command() is None
 
 
@@ -241,22 +235,37 @@ def test_nonfinite_timing_is_rejected(field: str, value: float) -> None:
             pass
 
 
-def test_hostname_peer_resolves_on_reader_thread(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    resolver_threads: list[str] = []
+def test_stale_resolver_isolated_across_reopen(monkeypatch: pytest.MonkeyPatch) -> None:
+    started, release = threading.Event(), threading.Event()
+    calls = 0
 
     def resolve(host: str) -> str:
-        resolver_threads.append(threading.current_thread().name)
+        nonlocal calls
+        calls += 1
+        assert threading.current_thread().name == "XieguUdpIqSource-reader"
+        if calls == 1:
+            started.set()
+            release.wait(5)
         return "127.0.0.1"
 
     monkeypatch.setattr(socket, "gethostbyname", resolve)
     with _source(center_hz=7_183_000, host="localhost") as harness:
+        wait_until(lambda: started.is_set())
+        old_thread = harness.source._thread
+        harness.source.close()
+        harness.source.set_center_freq(7_183_000)
+        harness.source.open()
         harness.send(bytes(768), count=10)
         harness.wait_for(1)
-        harness.clock.advance(0.6)
-        assert harness.command() is None
-    assert resolver_threads == ["XieguUdpIqSource-reader"]
+
+        release.set()
+        old_thread.join(timeout=2)
+        assert not old_thread.is_alive()
+        harness.send(bytes(768), count=10)
+        harness.wait_for(2)
+        assert harness.source.is_open is True
+        assert harness.source.center_freq_hz == 7_183_000
+    assert calls == 2
 
 
 def test_malformed_radio_datagram_marks_next_block_overflowed() -> None:

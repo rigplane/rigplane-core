@@ -28,12 +28,7 @@ def encode_tune(hz: int) -> bytes:
 
 
 class XieguUdpIqSource:
-    """Receive a radio-owned UDP IQ stream without independently tuning it.
-
-    Ten datagrams form a 1920-sample block (about 40 ms, 25 callbacks/s);
-    partial blocks flush after that interval. Tune writes wait for a settled
-    centre and silence; no stop exists, so the radio streams until poweroff.
-    """
+    """Batch 10 datagrams (40 ms); guard VFO starts; no stop, radio streams on."""
 
     def __init__(
         self,
@@ -94,7 +89,7 @@ class XieguUdpIqSource:
             except OSError as exc:
                 sock.close()
                 raise OSError(
-                    f"could not bind UDP receive port {self._spec.receive_port}: {exc}"
+                    f"bind UDP receive port {self._spec.receive_port}: {exc}"
                 ) from exc
 
             now = self._clock()
@@ -104,10 +99,10 @@ class XieguUdpIqSource:
             self._last_valid_s = None
             self._next_tune_s = now + self._start_grace_s
             self._dropped_datagrams = 0
-            self._stop.clear()
+            self._stop = threading.Event()
             self._is_open = True
             thread = threading.Thread(
-                target=self._reader_loop, args=(sock,), daemon=True
+                target=self._reader_loop, args=(sock, self._stop), daemon=True
             )
             thread.name = "XieguUdpIqSource-reader"
             self._thread = thread
@@ -164,7 +159,7 @@ class XieguUdpIqSource:
     def set_sample_rate(self, hz: int) -> None:
         if hz != self._spec.sample_rate_hz:
             raise ValueError(
-                f"sample_rate_hz is fixed at {self._spec.sample_rate_hz}, got {hz}"
+                f"sample_rate_hz fixed at {self._spec.sample_rate_hz}: {hz}"
             )
 
     @property
@@ -195,12 +190,13 @@ class XieguUdpIqSource:
             since = self._opened_at_s if last_valid is None else last_valid
         return self._clock() - since >= self._stall_s
 
-    def _reader_loop(self, sock: socket.socket) -> None:
+    def _reader_loop(self, sock: socket.socket, stop: threading.Event) -> None:
         pending: list[Any] = []
         pending_center = 0
         pending_started_s = 0.0
         pending_overflow = False
-        expected_size = self._spec.samples_per_datagram * 4
+        sample_count = self._spec.samples_per_datagram
+        expected_size = sample_count * 4
 
         def flush() -> None:
             nonlocal pending, pending_overflow
@@ -208,11 +204,11 @@ class XieguUdpIqSource:
                 return
             samples = pending[0] if len(pending) == 1 else self._np.concatenate(pending)
             block = IqBlock(
-                samples=samples,
-                center_freq_hz=pending_center,
-                sample_rate_hz=self._spec.sample_rate_hz,
-                timestamp_s=pending_started_s,
-                overflow=pending_overflow,
+                samples,
+                pending_center,
+                self._spec.sample_rate_hz,
+                pending_started_s,
+                pending_overflow,
             )
             pending = []
             pending_overflow = False
@@ -220,8 +216,11 @@ class XieguUdpIqSource:
 
         try:
             peer_host = socket.gethostbyname(self._spec.host)
-            self._peer_host = peer_host
-            while not self._stop.is_set():
+            with self._lock:
+                if self._thread is not threading.current_thread() or stop.is_set():
+                    return
+                self._peer_host = peer_host
+            while not stop.is_set():
                 try:
                     payload, address = sock.recvfrom(65535)
                 except ConnectionResetError:
@@ -229,7 +228,7 @@ class XieguUdpIqSource:
                 except TimeoutError:
                     pass
                 except OSError as exc:
-                    if not self._stop.is_set():
+                    if not stop.is_set():
                         logger.warning("UDP IQ receive failed: %s", exc)
                     break
                 else:
@@ -261,8 +260,7 @@ class XieguUdpIqSource:
                             )
                             pairs = pairs.reshape(-1, 2)
                             samples = self._np.empty(
-                                self._spec.samples_per_datagram,
-                                dtype=self._np.complex64,
+                                sample_count, dtype=self._np.complex64
                             )
                             samples.real = pairs[:, 0]
                             samples.imag = pairs[:, 1]
@@ -279,21 +277,22 @@ class XieguUdpIqSource:
                     flush()
                 self._maybe_start(now)
         except OSError as exc:
-            if not self._stop.is_set():
+            if not stop.is_set():
                 logger.warning("UDP IQ host resolution failed: %s", exc)
         finally:
-            if not self._stop.is_set():
-                with self._lock:
+            with self._lock:
+                if self._thread is threading.current_thread() and self._socket is sock:
                     self._is_open = False
                     self._center_freq = 0
                     self._center_changed_s = self._clock()
                     self._peer_host = None
-                    if self._socket is sock:
-                        self._socket = None
-                sock.close()
+                    self._socket = None
+            sock.close()
 
     def _maybe_start(self, now: float) -> None:
         with self._lock:
+            if self._thread is not threading.current_thread():
+                return
             if not self._is_open or self._center_freq == 0 or now < self._next_tune_s:
                 return
             last_valid = self._last_valid_s
