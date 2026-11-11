@@ -8,8 +8,9 @@ import pytest
 
 from rigplane.commands import CONTROLLER_ADDR, build_civ_frame, parse_civ_frame
 from rigplane.core.exceptions import CommandError, TimeoutError
+from rigplane.core.types import ScopeFixedEdge, bcd_encode
 from rigplane.radio import IcomRadio
-from rigplane.scope.models import FollowView, Subscription
+from rigplane.scope.models import FollowView, Subscription, View
 from rigplane.testing.timing import await_until
 from rigplane.web.protocol import (
     decode_scope_frame_v2,
@@ -347,3 +348,381 @@ async def test_successive_fixed_sessions_capture_fresh_panel_slot(sdk):
                 assert sim.fixed[b"\x06\x01"] == requested
             assert await await_until(lambda: not radio.scope_session().active)
             assert sim.fixed[b"\x06\x01"] == original
+
+
+# ── MOR-4385 + MOR-4392 gate round 1: real /api/v1/scope regressions ──
+# Every scenario below drives a REAL ScopeControlSimulator over TCP: radio
+# observations arrive through the production RX path (CI-V waveform
+# assembly + 0x27 response routing into ScopeSession.observe) and
+# subscriptions through the real scope WebSocket handler — never through
+# direct session.observe()/hub.subscribe() calls.
+
+
+class _ScopeWindowSimulator(ScopeControlSimulator):
+    """Scope simulator whose streamed window follows its CI-V scope state.
+
+    The base class replays a fixed recording; here every pump reshapes the
+    templates the way the panorama journey simulator does: the mode byte
+    tracks ``views[receiver][0]``, and the window is ``windows[receiver]``
+    in FIX/SCROLL-F or center ± span preset in CENTER. A receiver in
+    ``muted`` does not stream (e.g. a radio streaming only SUB at startup).
+    """
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.windows: dict[int, tuple[int, int]] = {}
+        self.muted: set[int] = set()
+
+    def _scope_streaming_receivers(self) -> list[int]:
+        return [
+            receiver
+            for receiver in super()._scope_streaming_receivers()
+            if receiver not in self.muted
+        ]
+
+    def pump_scope_stream(self) -> int:
+        for receiver, templates in self._scope_templates.items():
+            mode, span, _edge = self.views[receiver]
+            if mode in (1, 3):
+                first, last = self.windows.get(receiver, (14_000_000, 14_350_000))
+            else:
+                first = self._frequency
+                last = self.profile.scope_span_presets_hz[span]
+            self._scope_templates[receiver] = [
+                template[:9]
+                + bytes([mode])
+                + bcd_encode(first)
+                + bcd_encode(last)
+                + b"\x00"
+                + bytes(15 + index % 30 for index in range(len(template) - 22))
+                + template[-1:]
+                for template in templates
+            ]
+        return super().pump_scope_stream()
+
+    def push_scope_setting(self, data: bytes) -> None:
+        """An unsolicited 0x27 report, like a front-panel scope change."""
+        if self._civ_proto is None or self._civ_owner_addr is None:
+            return
+        frame = self._civ_frame(CONTROLLER_ADDR, self._radio_addr, 0x27, data=data)
+        self._send(
+            self._civ_proto,
+            self._wrap_civ(frame, self._civ_owner_id),
+            self._civ_owner_addr,
+            "civ",
+        )
+
+
+@pytest.fixture
+async def windowed_sdk():
+    sim = _ScopeWindowSimulator(scope_stream=True, dual_receiver=True)
+    await sim.start()
+    radio = IcomRadio(
+        "127.0.0.1",
+        port=sim.control_port,
+        username="testuser",
+        password="testpass",
+        model="IC-7610",
+    )
+    await radio.connect()
+    try:
+        yield radio, sim
+    finally:
+        await radio.disconnect()
+        await sim.stop()
+
+
+def _viewport_writes(sim) -> list:
+    """CI-V scope viewport SETs the radio received (mode/span/edge/fixed)."""
+    lengths = {0x14: 2, 0x15: 6, 0x16: 2, 0x1E: 12}
+    return [
+        frame
+        for raw in sim.civ_frames_received
+        if (frame := parse_civ_frame(raw)).command == 0x27
+        and len(frame.data) == lengths.get(frame.sub)
+    ]
+
+
+async def _subscribe(ws, subscription):
+    await ws.send_str(encode_scope_subscription(subscription))
+    while True:
+        message = await ws.receive(timeout=5)
+        if message.type is aiohttp.WSMsgType.TEXT:
+            assert '"error"' not in message.data
+            return decode_scope_granted(message.data)
+
+
+async def _frame_with(ws, view, timeout=5):
+    """The next binary wire frame whose view matches ``view`` exactly."""
+    async with asyncio.timeout(timeout):
+        while True:
+            message = await ws.receive(timeout=5)
+            if message.type is not aiohttp.WSMsgType.BINARY:
+                continue
+            frame = decode_scope_frame_v2(message.data)
+            if (frame.view_start_hz, frame.view_end_hz) == view:
+                return frame
+
+
+async def test_ctr_fix_ctr_transitions_keep_one_follow_subscription_quiet(
+    windowed_sdk,
+):
+    """Gate round 1 finding 6: external CTR→FIX→CTR on ONE unchanged follow
+    subscription — no resubscribe, the wire geometry follows the radio, and
+    no unsolicited viewport write leaves Core in either transition."""
+    radio, sim = windowed_sdk
+    sim.capture_civ_frames = True
+    sim.set_frequency(14_100_000)
+    radio._radio_state.main.freq = 14_100_000
+    presets = radio._profile.scope_span_presets_hz
+    async with web(radio) as (_, client, base, protocols, _):
+        async with client.ws_connect(base + "/api/v1/scope", protocols=protocols) as ws:
+            granted = await _subscribe(
+                ws, Subscription("radio", 0, FollowView("vfo", 100_000), 475, 20)
+            )
+            assert (granted.view.start_hz, granted.view.end_hz) == (
+                14_050_000,
+                14_150_000,
+            )
+            await _frame_with(ws, (14_050_000, 14_150_000))
+            assert sim.views[0][1] == presets.index(50_000)
+            baseline = len(_viewport_writes(sim))
+            assert baseline > 0
+            # External FIX entry (front panel): the follow grant clips to the
+            # fixed window, no radio write leaves Core.
+            sim.windows[0] = (14_075_000, 14_175_000)
+            sim.views[0] = (1, 4, 1)
+            clipped = await _frame_with(ws, (14_075_000, 14_150_000))
+            assert (clipped.coverage_start_hz, clipped.coverage_end_hz) == (
+                14_075_000,
+                14_150_000,
+            )
+            assert len(_viewport_writes(sim)) == baseline
+            # External return to CENTER: the same subscription follows.
+            sim.views[0] = (0, 4, 1)
+            back = await _frame_with(ws, (14_050_000, 14_150_000))
+            assert (back.coverage_start_hz, back.coverage_end_hz) == (
+                14_050_000,
+                14_150_000,
+            )
+            assert len(_viewport_writes(sim)) == baseline
+        # The owned restore at close returns only what Core still owns:
+        # the span it drove (mode left the restore set at FIX adoption).
+        assert await await_until(lambda: not radio.scope_session().active)
+        assert sim.views[0] == (0, 3, 1)
+
+
+async def test_sub_fix_follow_gesture_writes_nothing(windowed_sdk):
+    """Gate round 1 finding 1: an IC-7610 SUB in FIX — a SUB follow
+    subscription writes no mode/span/edge/fixed-edge command; the grant
+    and frames clip to the SUB fixed window."""
+    radio, sim = windowed_sdk
+    sim.capture_civ_frames = True
+    sim.set_frequency(14_100_000)
+    radio._radio_state.main.freq = 14_100_000
+    radio._radio_state.sub.freq = 14_100_000
+    sim.views[1] = (1, 3, 1)
+    sim.windows[1] = (14_090_000, 14_110_000)
+    async with web(radio) as (_, client, base, protocols, _):
+        async with client.ws_connect(base + "/api/v1/scope", protocols=protocols) as ws:
+            await _subscribe(
+                ws, Subscription("radio", 1, FollowView("vfo", 50_000), 475, 20)
+            )
+            frame = await _frame_with(ws, (14_090_000, 14_110_000))
+            assert (frame.coverage_start_hz, frame.coverage_end_hz) == (
+                14_090_000,
+                14_110_000,
+            )
+            assert _viewport_writes(sim) == []
+            assert sim.views[1] == (1, 3, 1)
+
+
+async def test_main_scroll_f_follow_gesture_writes_nothing(windowed_sdk):
+    """Gate round 1 finding 1: MAIN in SCROLL-F (mode 3, fixed-family) —
+    a MAIN follow subscription writes nothing and clips to the radio's
+    window instead of flipping the radio to CENTER."""
+    radio, sim = windowed_sdk
+    sim.capture_civ_frames = True
+    sim.set_frequency(14_100_000)
+    radio._radio_state.main.freq = 14_100_000
+    sim.views[0] = (3, 3, 1)
+    sim.windows[0] = (14_060_000, 14_140_000)
+    async with web(radio) as (_, client, base, protocols, _):
+        async with client.ws_connect(base + "/api/v1/scope", protocols=protocols) as ws:
+            await _subscribe(
+                ws, Subscription("radio", 0, FollowView("vfo", 100_000), 475, 20)
+            )
+            frame = await _frame_with(ws, (14_060_000, 14_140_000))
+            assert (frame.coverage_start_hz, frame.coverage_end_hz) == (
+                14_060_000,
+                14_140_000,
+            )
+            assert _viewport_writes(sim) == []
+            assert sim.views[0] == (3, 3, 1)
+
+
+async def test_startup_main_fix_sub_selected_first_follow_preserves_fix(
+    windowed_sdk,
+):
+    """Gate round 1 finding 2: MAIN in FIX, SUB selected (the session
+    snapshot then reads the SELECTED receiver's CENTER cache), MAIN frames
+    withheld — the first MAIN follow subscription must acquire MAIN's own
+    mode and preserve FIX with zero viewport writes."""
+    radio, sim = windowed_sdk
+    sim.capture_civ_frames = True
+    sim.set_frequency(14_100_000)
+    radio._radio_state.main.freq = 14_100_000
+    sim.views[0] = (1, 3, 1)
+    sim.windows[0] = (14_060_000, 14_140_000)
+    sim.muted.add(0)
+    await radio.set_scope_receiver(1)
+    async with web(radio) as (_, client, base, protocols, _):
+        async with client.ws_connect(base + "/api/v1/scope", protocols=protocols) as ws:
+            granted = await _subscribe(
+                ws, Subscription("radio", 0, FollowView("vfo", 100_000), 475, 20)
+            )
+            # No MAIN frame has streamed: the grant is the requested window
+            # and the radio kept its FIX mode (no 0x14 flip to CENTER).
+            assert (granted.view.start_hz, granted.view.end_hz) == (
+                14_050_000,
+                14_150_000,
+            )
+            assert _viewport_writes(sim) == []
+            assert sim.views[0] == (1, 3, 1)
+            sim.muted.discard(0)
+            frame = await _frame_with(ws, (14_060_000, 14_140_000))
+            assert (frame.coverage_start_hz, frame.coverage_end_hz) == (
+                14_060_000,
+                14_140_000,
+            )
+            assert _viewport_writes(sim) == []
+            assert sim.views[0] == (1, 3, 1)
+
+
+async def test_last_unsubscribe_does_not_restore_over_external_span(windowed_sdk):
+    """Gate round 1 finding 3: an external span change is adopted; closing
+    the last real scope WebSocket must NOT restore Core's stale span over
+    it (owner rule «следовать за рацией»)."""
+    radio, sim = windowed_sdk
+    sim.capture_civ_frames = True
+    sim.set_frequency(14_100_000)
+    radio._radio_state.main.freq = 14_100_000
+    presets = radio._profile.scope_span_presets_hz
+    async with web(radio) as (_, client, base, protocols, _):
+        async with client.ws_connect(base + "/api/v1/scope", protocols=protocols) as ws:
+            await _subscribe(
+                ws, Subscription("radio", 0, FollowView("vfo", 100_000), 475, 20)
+            )
+            await _frame_with(ws, (14_050_000, 14_150_000))
+            assert sim.views[0][1] == presets.index(50_000)
+            # External ±100k (front panel / RigDeck): adopted via the stream.
+            sim.views[0] = (0, presets.index(100_000), 1)
+            session = radio.scope_session()
+            assert await await_until(
+                lambda: session.observed is not None
+                and session.observed.span == presets.index(100_000)
+            )
+            span_sets_before_close = len(
+                [w for w in _viewport_writes(sim) if w.sub == 0x15]
+            )
+        assert await await_until(lambda: not radio.scope_session().active)
+        # The externally set span survives the close; Core wrote no 0x15
+        # beyond the one its own subscribe drove.
+        assert sim.views[0][1] == presets.index(100_000)
+        assert (
+            len([w for w in _viewport_writes(sim) if w.sub == 0x15])
+            == span_sets_before_close
+        )
+
+
+async def test_last_unsubscribe_does_not_restore_over_external_fixed_edge(
+    windowed_sdk,
+):
+    """Gate round 1 finding 3: an external rewrite of the fixed-edge slot
+    Core configured leaves the restore set; closing the last real scope
+    WebSocket writes no fixed edge back over the external value."""
+    radio, sim = windowed_sdk
+    sim.capture_civ_frames = True
+    sim.set_frequency(14_100_000)
+    radio._radio_state.main.freq = 14_100_000
+    external = ScopeFixedEdge(6, 1, 14_060_000, 14_160_000)
+    async with web(radio) as (_, client, base, protocols, _):
+        async with client.ws_connect(base + "/api/v1/scope", protocols=protocols) as ws:
+            await _subscribe(ws, Subscription("radio", 0, View(14_050_000, 14_150_000), 475, 20))
+            assert sim.fixed[b"\x06\x01"] == ScopeFixedEdge(6, 1, 14_050_000, 14_150_000)
+            # External rewrite of the same slot, reported like a front-panel
+            # change (0x1E report through the production RX path).
+            sim.fixed[b"\x06\x01"] = external
+            sim.push_scope_setting(
+                b"\x1e\x06\x01"
+                + bcd_encode(external.start_hz)
+                + bcd_encode(external.end_hz)
+            )
+            session = radio.scope_session()
+            assert await await_until(
+                lambda: session._applied.get((0, "fixed_edge")) == external
+            )
+            fixed_sets_before_close = len(
+                [w for w in _viewport_writes(sim) if w.sub == 0x1E]
+            )
+        assert await await_until(lambda: not radio.scope_session().active)
+        assert sim.fixed[b"\x06\x01"] == external
+        assert (
+            len([w for w in _viewport_writes(sim) if w.sub == 0x1E])
+            == fixed_sets_before_close
+        )
+
+
+async def test_native_width_regrant_carries_native_coverage(windowed_sdk):
+    """Gate round 1 finding 4: the initial follow grant and the first
+    native-width regrant carry the truthful native coverage, which exceeds
+    the cropped view — the document shape the browser's parseScopeGranted
+    accepts (mirrored in scope-wire-v2.test.ts)."""
+    radio, sim = windowed_sdk
+    sim.set_frequency(14_100_000)
+    radio._radio_state.main.freq = 14_100_000
+    async with web(radio) as (_, client, base, protocols, _):
+        async with client.ws_connect(base + "/api/v1/scope", protocols=protocols) as ws:
+            # A ±30k request drives the ±50k preset: native coverage (±50k)
+            # exceeds the granted view (±30k) from the initial grant on.
+            initial = await _subscribe(
+                ws, Subscription("radio", 0, FollowView("vfo", 60_000), 1024, 20)
+            )
+            assert (initial.view.start_hz, initial.view.end_hz) == (
+                14_070_000,
+                14_130_000,
+            )
+            assert initial.coverage is not None
+            assert (initial.coverage.start_hz, initial.coverage.end_hz) == (
+                14_050_000,
+                14_150_000,
+            )
+            # The sender emits the width-change regrant (text) right before
+            # the first binary frame; capture both in wire order.
+            regrant = None
+            native_width = None
+            async with asyncio.timeout(5):
+                while True:
+                    message = await ws.receive(timeout=5)
+                    if message.type is aiohttp.WSMsgType.TEXT:
+                        candidate = decode_scope_granted(message.data)
+                        if candidate.width != initial.width:
+                            regrant = candidate
+                    elif message.type is aiohttp.WSMsgType.BINARY:
+                        native_width = decode_scope_frame_v2(message.data).width
+                        if regrant is not None:
+                            break
+            assert regrant is not None
+            assert regrant.width == native_width
+            assert (regrant.view.start_hz, regrant.view.end_hz) == (
+                14_070_000,
+                14_130_000,
+            )
+            assert regrant.coverage is not None
+            assert (regrant.coverage.start_hz, regrant.coverage.end_hz) == (
+                14_050_000,
+                14_150_000,
+            )
+            # Native coverage sits strictly outside the cropped view.
+            assert regrant.coverage.start_hz < regrant.view.start_hz
+            assert regrant.coverage.end_hz > regrant.view.end_hz
