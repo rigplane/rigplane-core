@@ -703,6 +703,9 @@
   // the drag writes `gesture`, the tuning legs write their own. Pan/zoom
   // presets edit the View directly (display-only until R4 grants views).
   let followSpanHz = $state<number | null>(null);
+  // MOR-4392: the last delivered coverage span, for the adoption clamp —
+  // only a coverage SHRINK can be an external change to adopt.
+  let lastCoverageSpanHz: number | null = null;
   const scopeView = createScopeView({ startHz: 0, endHz: 0 });
   let coordinatingView = false;
   let effectiveView = $state.raw<View>({ startHz: 0, endHz: 0 });
@@ -738,9 +741,49 @@
             sessionEpoch,
           } : null;
         }
+        // MOR-4387: the view follows the VFO unless the user explicitly
+        // pinned a window. A pinned band/segment preset stops serving its
+        // purpose the moment the confirmed VFO lies outside it — every path
+        // that moves the VFO beyond the edge (arrow/wheel/digit tuning,
+        // click-to-tune, band change, another client) needs follow back, so
+        // the pin retires on POSITION, not on which action moved it. The
+        // confirmed VFO is the authority frequency, falling back to the
+        // managed tuple. CENTER scope only: in FIX the radio itself owns
+        // the fixed window.
+        const confirmedHz = authority?.frequencyHz ?? frequency;
+        if (!fixed && requested !== null && !explicitView) {
+          // MOR-4392: a non-explicit requested view in CENTER can only be a
+          // FIX zoom crop outliving its excursion — clear it so the follow
+          // view (and the CENTER marker reference) resumes at once.
+          requestedView = null;
+        }
+        if (!fixed && requestedView !== null && confirmedHz !== null && confirmedHz !== undefined
+          && (confirmedHz < requestedView.startHz || confirmedHz > requestedView.endHz)) {
+          requestedView = null;
+          explicitView = false;
+        }
         if (geometry && geometry.view.endHz > geometry.view.startHz) {
-          const span = follow ?? geometry.view.endHz - geometry.view.startHz;
-          scopeView.set('confirmed', requested ?? ((fixed && follow === null) || frequency === null || frequency === undefined ? geometry.view
+          // MOR-4392: adopt external coverage changes without a write-back.
+          // A SHRINKING coverage that no longer contains the requested
+          // width clamps it to the new coverage; anything else keeps it.
+          // Only a shrink can be adoption — our own zoom/step gestures ask
+          // the server for a covering preset, never for less than requested.
+          const coverageSpan = geometry.view.endHz - geometry.view.startHz;
+          // The 1 Hz epsilon keeps the clamp from firing on wire/view
+          // reconstruction jitter (a freq±span/2 window rebuilds 1 ulp off
+          // the requested width); real adoptions are thousands of times
+          // larger.
+          if (!fixed && follow !== null && lastCoverageSpanHz !== null
+            && coverageSpan < lastCoverageSpanHz - 1 && follow > coverageSpan + 1) {
+            followSpanHz = coverageSpan;
+          }
+          lastCoverageSpanHz = coverageSpan;
+          const span = followSpanHz ?? coverageSpan;
+          // MOR-4392: in FIX the displayed window is the fixed window (or a
+          // requested crop inside it) — a leftover CENTER follow width must
+          // never replace it, or marker/passband/click math runs against a
+          // window that is not the one drawn.
+          scopeView.set('confirmed', requestedView ?? (fixed || frequency === null || frequency === undefined ? geometry.view
             : { startHz: frequency - span / 2, endHz: frequency + span / 2 }));
         }
         const confirmed = scopeView.confirmed;
@@ -830,7 +873,12 @@
   });
   let scopeSubscriptionValue = $derived.by(() => {
     const stream = runtime.scope.stream(audioFft ? 'audio_fft' : 'hardware');
-    const view = !audioFft && requestedView !== null
+    // MOR-4392: in FIX the zoom crop stays client-side — the subscription
+    // must not carry it: an absolute view in FIX makes the server rewrite
+    // the radio's fixed edges (a radio write for a pure display crop). An
+    // explicit band/segment preset keeps the absolute subscription — there
+    // the fixed-window change IS the user's intent.
+    const view = !audioFft && requestedView !== null && (!isFixedScope || explicitView)
       ? requestedView
       : { follow: 'vfo' as const, spanHz: followSpanHz ?? (audioFft ? 48000 : 100000) };
     const facts = spectrumFacts;
@@ -887,16 +935,68 @@
       return;
     }
     if ('startHz' in preset.view && 'endHz' in preset.view) {
-      followSpanHz = null;
       explicitView = true;
       requestedView = { startHz: preset.view.startHz, endHz: preset.view.endHz };
       scopeView.set('gesture', null);
     }
   }
+  // MOR-4392: ZOOM is a client crop of the requested visible width, never a
+  // bare radio SPAN write. Below the narrowest preset the crop keeps going
+  // down to a floor of a few native bins — fewer bins than that interpolate
+  // to a single smeared peak with no shape left to inspect.
+  const ZOOM_FLOOR_BINS = 4;
+
   function nudgeScopeZoom(factor: number): void {
     if (effectiveView.endHz <= effectiveView.startHz) return;
-    followSpanHz = null;
-    requestedView = zoomView(effectiveView, factor);
+    if (isFixedScope) {
+      // FIX scope: the window is wire-owned. Zoom crops inside it and clips
+      // to the fixed edges — a crop that reaches the edges is no crop. The
+      // CENTER requested width (followSpanHz) is not touched here, so it
+      // never leaks into FIX and survives the excursion.
+      const geometry = frameGeometry;
+      if (!geometry || geometry.view.endHz <= geometry.view.startHz) return;
+      const zoomed = zoomView(effectiveView, factor);
+      const clipped = {
+        startHz: Math.max(zoomed.startHz, geometry.view.startHz),
+        endHz: Math.min(zoomed.endHz, geometry.view.endHz),
+      };
+      requestedView = clipped.startHz <= geometry.view.startHz && clipped.endHz >= geometry.view.endHz
+        ? null : clipped;
+      // The crop is scoped to the FIX excursion: it is never an explicit
+      // pin, so a return to CENTER resumes the follow view instead of
+      // holding a window the user never pinned there.
+      explicitView = false;
+      scopeView.set('gesture', null);
+      return;
+    }
+    // MOR-4387 + MOR-4392: zoom edits ONE state — the requested visible
+    // width centred on the VFO. It drives the subscription (the server
+    // picks the smallest covering preset) and the crop alike, so a press
+    // inside one preset is a pure client crop with no radio write. The
+    // chain reads the exact requested width, not the freq±span/2 view
+    // reconstruction, so the floor/cap no-op is exact (1-ulp idempotence).
+    const current = followSpanHz ?? (effectiveView.endHz - effectiveView.startHz);
+    let next = current * factor;
+    if (factor < 1) {
+      // The floor is a few bins of the NARROWEST span choice: below it the
+      // radio cannot deliver more bins, and the wire view may already be
+      // the clipped crop (never the native coverage) on either grant
+      // contract, so the narrowest published choice is the honest source.
+      const geometry = frameGeometry;
+      const choices = runtime.caps?.span_choices_hz;
+      const narrowestHz = choices?.length ? Math.min(...choices)
+        : (geometry !== null ? geometry.view.endHz - geometry.view.startHz : 0);
+      const binHz = geometry !== null && geometry.width > 0 && narrowestHz > 0
+        ? narrowestHz / geometry.width : 0;
+      if (binHz > 0) next = Math.max(next, ZOOM_FLOOR_BINS * binHz);
+    } else {
+      const choices = runtime.caps?.span_choices_hz;
+      if (choices?.length) next = Math.min(next, Math.max(...choices));
+    }
+    if (next === current) return; // the bin floor / widest preset is a no-op
+    requestedView = null;
+    explicitView = false;
+    followSpanHz = next;
     scopeView.set('gesture', null);
   }
 
