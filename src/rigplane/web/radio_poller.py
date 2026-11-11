@@ -632,6 +632,7 @@ class RadioPoller:
         self._vfo_command_lock = asyncio.Lock()
         self._vfo_binding_generation = 0
         self._vfo_connect_attempt: tuple[int, object] | None = None
+        self._vfo_connect_unanswered = False
         self._vfo_recovery_generation: tuple[int, object] | None = None
         self._vfo_connection_started_at = 0.0
         # MOR-615: (main, sub) data_mode pair seen at the last MOD-input fetch;
@@ -3583,6 +3584,7 @@ class RadioPoller:
         if self._vfo_connect_attempt == generation:
             return
         self._vfo_connect_attempt = generation
+        self._vfo_connect_unanswered = False
         self._vfo_recovery_generation = generation
         reason: str | None = None
         if read_only:
@@ -3635,6 +3637,10 @@ class RadioPoller:
                 ):
                     reason = "ptt_predates_connection"
         if reason is not None:
+            self._vfo_connect_unanswered = reason in (
+                "ptt_refresh_failed",
+                "connection_changed",
+            )
             self._record_state_diagnostic(
                 "vfo_connect_skipped", "web.radio_poller", reason=reason
             )
@@ -3651,6 +3657,19 @@ class RadioPoller:
             logger.warning(
                 "radio-poller: VFO A connection selection failed", exc_info=True
             )
+
+    def retry_connect_selection_after_silence(self) -> None:
+        """Let the connect tail select VFO A once more after a silent link.
+
+        MOR-4382: a connect to a radio that answers nothing on CI-V yet (the
+        PTT read the policy needs got no answer) skipped its one attempt. The
+        radio's first answer runs the connect tail, which calls this before
+        the web layer retries. An attempt that reached a decision (selected,
+        refused for TX or read-only) is never repeated.
+        """
+        if self._vfo_connect_unanswered:
+            self._vfo_connect_unanswered = False
+            self._vfo_connect_attempt = None
 
     def reset_vfo_session(self, *, connection_recovery: bool = False) -> None:
         """Invalidate connection-epoch A/B proof without touching TX facts."""

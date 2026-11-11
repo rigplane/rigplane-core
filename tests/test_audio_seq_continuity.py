@@ -135,13 +135,7 @@ def _rebuild_stubs(radio: IcomRadio) -> Iterator[None]:
                 _OfflineAudioTransport,
             )
         )
-        stack.enter_context(
-            patch.object(
-                radio,
-                "revalidate_connection_identity",
-                new=AsyncMock(return_value=True),
-            )
-        )
+        stack.enter_context(patch.object(radio, "_start_identity_read"))
         stack.enter_context(patch.object(radio, "rearm_managed_tx", new=AsyncMock()))
         stack.enter_context(patch.object(radio, "_start_audio_watchdog"))
         for name in (
@@ -250,7 +244,7 @@ async def test_fresh_login_starts_the_audio_numbering_at_zero() -> None:
                 "rigplane.runtime._audio_runtime_mixin.IcomTransport",
                 _OfflineAudioTransport,
             ),
-            patch.object(radio, "_gate_lan_identity", new=AsyncMock(return_value=True)),
+            patch.object(radio, "probe_connection_identity", new=AsyncMock()),
             patch.object(radio, "_start_audio_watchdog"),
         ):
             await radio._control_phase._connect_once()
