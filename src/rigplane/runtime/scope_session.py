@@ -114,6 +114,54 @@ class ScopeSession:
             raise RuntimeError("scope frequency observation is unavailable")
         return self._frequency(receiver)
 
+    async def observed_scope_mode(self, receiver: int) -> int | None:
+        """The requested receiver's live radio-observed scope mode.
+
+        MOR-4392 round 2, gate round 1: read by RadioScopeSource (see
+        its RadioScopeWriter contract) to keep follow gestures from
+        flipping a fixed-family radio back to CENTER. The authority is
+        the receiver-specific capture/read (``_receiver_view``), never
+        the session snapshot — ``_read_scope_session`` seeds that from
+        the SELECTED receiver's cache, which says nothing about MAIN
+        when SUB is selected and no MAIN waveform has streamed yet.
+        Sessions without a receiver reader fall back to the main
+        snapshot; None before any observation.
+        """
+        async with self._lock:
+            view = self._views.get(receiver)
+            if view is not None:
+                return view.mode
+            if self._read_receiver is not None:
+                return (await self._receiver_view(receiver)).mode
+            if receiver != 0:
+                return None
+            if self.observed is not None:
+                return self.observed.mode
+            return self._original.mode if self._original is not None else None
+
+    async def _receiver_view(self, receiver: int) -> ScopeState:
+        """The radio's per-receiver scope state, captured once per session.
+
+        A receiver-specific read when the session has a receiver reader
+        — never the selected-receiver cache — else the session snapshot.
+        Seeding ``_applied`` here matches what reconcile does when it
+        captures restore state, so an early read (a follow-mode decision)
+        and a late one (a write capture) share one mechanism.
+        """
+        if receiver not in self._views:
+            view = (
+                await self._read_receiver(receiver)
+                if self._read_receiver is not None
+                else self._original
+            )
+            assert view is not None
+            self._views[receiver] = view
+            for setting in ("mode", "span", "edge"):
+                self._applied[receiver, cast(ScopeSetting, setting)] = getattr(
+                    view, setting
+                )
+        return self._views[receiver]
+
     async def set_output(self, enabled: bool, *, release: bool = True) -> None:
         current = self._demands.get("web", ScopeDemand(0, 0))
         subscribers = max(1, current.subscribers) if enabled or not release else 0
@@ -121,6 +169,12 @@ class ScopeSession:
         await self.set_demand(ScopeDemand(subscribers, active))
 
     async def set_center(self, center_hz: float, span_hz: float, receiver: int) -> None:
+        """Center-mode viewport write.
+
+        ``span_hz`` is the profile preset value (``spans``), not the view
+        width: on Icom CI-V it is the ±half-width whose index the radio
+        selects (MOR-4385).
+        """
         await self.configure(
             receiver=receiver,
             mode=0,
@@ -136,6 +190,18 @@ class ScopeSession:
             mode=1,
             **({"dual": True} if receiver else {}),
         )
+
+    async def set_dual(self, enabled: bool, receiver: int) -> None:
+        """Dual-scope output acquisition for a SUB subscription.
+
+        The fixed-mode follow suppression acquires the same dual output
+        set_center/set_fixed would (single-scope output streams only the
+        selected receiver), through the same configure/reconcile
+        mechanism — captured and restored like every other setting.
+        Dual is radio-global: the session keys it once, at receiver 0,
+        whichever receiver the caller passed.
+        """
+        await self.configure(receiver=receiver, dual=enabled)
 
     def suspend(self) -> None:
         self._ready = False
@@ -164,7 +230,41 @@ class ScopeSession:
         async with self._lock:
             self.invalidate_now(connection_epoch=connection_epoch)
 
+    def _adopt_external(self, key: tuple[int, ScopeSetting], value: ScopeValue) -> None:
+        """Take a radio-reported setting as the desired one (MOR-4385).
+
+        The radio is the authority for its scope settings: when an
+        observation differs from what Core last applied and no user
+        intent is pending (desired already equals applied), the
+        observation is an external change — front panel, another
+        controller, another Core on the same radio — so it becomes the
+        new desired state and reconcile never writes Core's stale
+        intent back (no write loop). While a write is in flight
+        (uncertain) a frame may still echo pre-write state, so the
+        observation is recorded but never adopted. Keys Core never
+        desired are only recorded: with nothing desired there is
+        nothing to re-assert.
+        """
+        if (
+            key not in self._uncertain
+            and key in self._desired
+            and self._desired[key] == self._applied.get(key)
+            and self._desired[key] != value
+        ):
+            self._desired[key] = value
+            # MOR-4385 gate round 1 (owner rule «следовать за рацией»):
+            # an externally superseded setting leaves the restore set —
+            # the last unsubscribe must not write Core's stale snapshot
+            # over the radio's own value. Settings still owned by Core
+            # keep their snapshots and are still restored.
+            self._previous.pop(key, None)
+            if key[1] == "fixed_edge" and isinstance(value, ScopeFixedEdge):
+                self._fixed.pop((value.range_index, value.edge), None)
+
     def observe(self, name: ScopeSetting, value: ScopeValue, receiver: int = 0) -> None:
+        if name == "dual":
+            # Radio-global setting: the same single key configure() builds.
+            receiver = 0
         if name == "fixed_edge" and isinstance(value, ScopeFixedEdge):
             matching = [
                 key
@@ -175,9 +275,16 @@ class ScopeSession:
             ]
             if matching:
                 for key in matching:
+                    self._adopt_external(key, value)
                     self._applied[key] = value
                 return
+        self._adopt_external((receiver, name), value)
         self._applied[receiver, name] = value
+        # Keep the captured per-receiver radio state truthful: later
+        # restore captures and follow-mode decisions read ``_views``.
+        view = self._views.get(receiver)
+        if view is not None and name in ("mode", "span", "edge"):
+            self._views[receiver] = replace(view, **{name: cast(int, value)})
         if name == "dual":
             if self.observed is not None:
                 self.observed = replace(self.observed, dual=bool(value))
@@ -320,7 +427,14 @@ class ScopeSession:
                             == (value.range_index, value.edge)
                         ):
                             del self._desired[key]
-                self._desired[receiver, cast(ScopeSetting, name)] = value
+                # dual is radio-global (0x27 0x13 carries no receiver), so
+                # desired/applied/previous/uncertain key it once, at receiver
+                # 0 — however the caller addressed it (set_dual/set_center/
+                # set_fixed pass the SUB receiver for a SUB subscription).
+                # observe() keys a radio-reported dual the same way.
+                self._desired[
+                    0 if name == "dual" else receiver, cast(ScopeSetting, name)
+                ] = value
             try:
                 await self._reconcile()
             except ValueError:
@@ -369,11 +483,21 @@ class ScopeSession:
                 return
             failures: list[BaseException] = []
             for (receiver, name), value in tuple(self._previous.items()):
+                # An external change adopted during an earlier restore
+                # write already left the restore set — never write the
+                # stale snapshot the copy above still carries.
+                if self._previous.get((receiver, name)) != value:
+                    continue
                 try:
                     await self._put(name, value, receiver)
                 except BaseException as exc:
                     failures.append(exc)
-            for value in self._fixed.values():
+            for slot, value in tuple(self._fixed.items()):
+                # Same adoption race for shared fixed-edge slots (the
+                # snapshot also keeps the iteration safe when an
+                # adoption pops a slot mid-loop).
+                if self._fixed.get(slot) != value:
+                    continue
                 try:
                     await self._put("fixed_edge", value)
                 except BaseException as exc:
@@ -470,21 +594,16 @@ class ScopeSession:
             elif self._original is not None:
                 key = (receiver, name)
                 if key not in self._previous:
-                    if receiver not in self._views:
-                        self._views[receiver] = (
-                            await self._read_receiver(receiver)
-                            if self._read_receiver is not None
-                            else self._original
-                        )
-                        for setting in ("mode", "span", "edge"):
-                            self._applied[receiver, cast(ScopeSetting, setting)] = (
-                                getattr(self._views[receiver], setting)
-                            )
-                    captured = self._views[receiver]
+                    captured = await self._receiver_view(receiver)
                     if self._applied.get(key) == value and key not in self._uncertain:
                         self._applied[key] = value
                         continue
                     self._previous[key] = getattr(captured, name)
+            if self._desired.get((receiver, name)) != value:
+                # An external change adopted during a capture await above
+                # superseded this intent — never write the stale value
+                # the sorted copy still carries.
+                continue
             if (
                 self._applied.get((receiver, name)) != value
                 or (receiver, name) in self._uncertain

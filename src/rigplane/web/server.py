@@ -4735,7 +4735,9 @@ class WebServer:
             and profile.scope_span_presets_hz
         ):
             available.append("radio")
-            facts["span_choices_hz"] = list(profile.scope_span_presets_hz)
+            # MOR-4385: real VIEW widths (twice a ±half-width Icom
+            # preset), the same conversion the scope source publishes.
+            facts["span_choices_hz"] = list(profile.scope_span_view_widths_hz)
         if self._audio_scope_source is not None:
             available.append("audio_fft")
         if self._config.sdr_config is not None:

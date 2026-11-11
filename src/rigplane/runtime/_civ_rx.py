@@ -3489,7 +3489,9 @@ class CivRuntime:
         session = getattr(self._host, "_control_scope_session", None)
         if isinstance(session, ScopeSession):
             for name, value in pairs:
-                if name in ("mode", "span", "edge", "fixed_edge"):
+                # dual (0x13) parses without a receiver — it is radio-global —
+                # so it forwards under the one radio-global key, receiver 0.
+                if name in ("mode", "span", "edge", "fixed_edge", "dual"):
                     session.observe(cast(ScopeSetting, name), value, receiver or 0)
         if (
             receiver is not None

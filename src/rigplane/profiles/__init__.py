@@ -12,7 +12,7 @@ import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 from collections.abc import Awaitable, Callable
-from typing import Literal, Never, NotRequired, Required, TypedDict, cast
+from typing import Literal, Never, NotRequired, Required, TypeAlias, TypedDict, cast
 
 from rigplane.commands._codec import (
     bcd_encode_value,
@@ -365,6 +365,11 @@ class CwTextSpec:
     memory_type: str | None = None
 
 
+# MOR-4385: the meaning of one ``scope_span_presets_hz`` entry on the
+# radio's own wire — a +/- half-width (Icom CI-V) or a full display width.
+SpanPresetSemantics: TypeAlias = Literal["half_width", "full_width"]
+
+
 @dataclass(frozen=True, slots=True)
 class IqLanSpec:
     """Radio-LAN IQ wire facts; the LAN host remains server configuration."""
@@ -653,6 +658,21 @@ class RadioProfile:
     # profile through profile data alone — no per-model branches.
     # Keyword-only and appended so no positional argument shifts.
     xiegu_model_id: int | None = field(default=None, kw_only=True)
+    # MOR-4385: what one entry of ``scope_span_presets_hz`` means on the
+    # radio's own wire. ``"half_width"``: the preset is a +/- half-width —
+    # the CI-V 0x27 0x15 span and the center-mode waveform field both
+    # carry the value the display spans either side of center (IC-7610
+    # CI-V Reference Guide p.14; runtime/_civ_rx.py:
+    # CivRuntime._publish_scope_span_observation derives frame edges as
+    # center - span / center + span). ``"full_width"``: the preset is the
+    # full display width. Every shipped profile with presets (all Icom
+    # CI-V) declares ``"half_width"``; the loader requires the field
+    # whenever presets are declared. The default covers direct Python
+    # construction of CI-V-style profiles. Keyword-only and appended so
+    # no positional argument shifts.
+    scope_span_preset_semantics: SpanPresetSemantics = field(
+        default="half_width", kw_only=True
+    )
     # Optional radio-LAN IQ wire facts from ``[iq_lan]`` (MOR-4398). The
     # dataclass stays in profiles to preserve the profiles/sdr independence.
     iq_lan: IqLanSpec | None = field(default=None, kw_only=True)
@@ -672,6 +692,21 @@ class RadioProfile:
         Retained for 3.x compatibility with the v2.11.1 truthy fallback.
         """
         return self.equal_main_sub_code or self.equal_ab_code
+
+    @property
+    def scope_span_view_widths_hz(self) -> tuple[int, ...]:
+        """View widths (``end - start``) each span preset grants, in Hz.
+
+        MOR-4385: the single preset-to-view-width conversion, consumed by
+        the scope source capabilities and the web capabilities endpoint.
+        A ``half_width`` preset (Icom CI-V) covers twice its number, a
+        ``full_width`` preset covers exactly its number. Empty when no
+        presets are declared.
+        """
+        if not self.scope_span_presets_hz:
+            return ()
+        factor = 2 if self.scope_span_preset_semantics == "half_width" else 1
+        return tuple(preset * factor for preset in self.scope_span_presets_hz)
 
     def supports_capability(self, capability: str) -> bool:
         return capability in self.capabilities
