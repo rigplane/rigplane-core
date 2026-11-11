@@ -156,6 +156,9 @@ jobs:
     uses: ./.github/workflows/core-wheel.yml
     with:
       core_ref: ${{ github.sha }}
+      # Core's own caller pins the controls to the triggering commit — the
+      # reviewed revision — instead of the workflow's main default.
+      controls_ref: ${{ github.sha }}
       artifact_name: dist
 
   publish:

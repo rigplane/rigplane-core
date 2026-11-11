@@ -155,6 +155,80 @@ def test_stamp_script_rejects_invalid_inputs(tmp_path: Path) -> None:
     assert not (package_dir / "_build_info.json").exists()
 
 
+# ── Verify mode: targets older than the contract ───────────────────
+
+
+def test_stamp_and_verify_target_package_without_contract_module(
+    tmp_path: Path,
+) -> None:
+    """A target package with no build_info.py can be stamped and verified.
+
+    The controls carry the contract: the stamp script loads it by file path,
+    so a Core ref older than MOR-4408 (the parent commit included) can be
+    stamped and its installed resource verified. This is the fixture behind
+    the wheel workflow's installed-smoke verify path.
+    """
+    module = _load_stamp_script()
+    package_dir = tmp_path / "src" / "rigplane" / "core"
+    package_dir.mkdir(parents=True)
+    stamped = package_dir / "_build_info.json"
+    assert not (package_dir / "build_info.py").exists()
+
+    assert (
+        module.main(["--sha", SHA, "--requested-ref", "main", "--root", str(tmp_path)])
+        == 0
+    )
+    assert module.main(["--verify-file", str(stamped), "--expect-sha", SHA]) == 0
+    # A mismatched or absent stamped resource must fail the verification.
+    assert module.main(["--verify-file", str(stamped), "--expect-sha", "f" * 40]) == 2
+    assert (
+        module.main(
+            ["--verify-file", str(tmp_path / "absent.json"), "--expect-sha", SHA]
+        )
+        == 2
+    )
+
+
+def test_verify_mode_requires_a_real_expect_sha(tmp_path: Path) -> None:
+    module = _load_stamp_script()
+    assert (
+        module.main(["--verify-file", str(tmp_path / "x.json"), "--expect-sha", "nope"])
+        == 2
+    )
+
+
+# ── No arbitrary ref length cap ────────────────────────────────────
+
+
+def test_long_requested_ref_round_trips(tmp_path: Path) -> None:
+    """A legal ref longer than 200 characters stamps and reads back whole.
+
+    The old validator refused refs over 200 characters — an arbitrary cap
+    with no contract behind it (a ref name is legal up to git's own limits).
+    """
+    long_ref = "release/" + "x" * 250
+    assert len(long_ref) > 200
+    target = tmp_path / "_build_info.json"
+    write_build_info(BuildInfo(git_sha=SHA, requested_ref=long_ref), target)
+    assert load_build_info(target) == BuildInfo(git_sha=SHA, requested_ref=long_ref)
+
+
+def test_stamp_script_accepts_long_requested_ref(tmp_path: Path) -> None:
+    module = _load_stamp_script()
+    package_dir = tmp_path / "src" / "rigplane" / "core"
+    package_dir.mkdir(parents=True)
+    long_ref = "feature/" + "y" * 260
+    assert (
+        module.main(
+            ["--sha", SHA, "--requested-ref", long_ref, "--root", str(tmp_path)]
+        )
+        == 0
+    )
+    assert load_build_info(package_dir / "_build_info.json") == BuildInfo(
+        git_sha=SHA, requested_ref=long_ref
+    )
+
+
 # ── Repository hygiene ─────────────────────────────────────────────
 
 

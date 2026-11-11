@@ -2,11 +2,13 @@
 """Resolve a Core ref to exactly one commit (MOR-4408).
 
 ``core_ref`` may be a branch name, a tag name (annotated tags resolve to
-their peeled commit), or a 40-hex SHA that is reachable in the repository —
-either advertised by some ref in ``git ls-remote`` or fetchable by exact SHA.
-Anything else — globs, short SHAs, commit-ish expressions such as ``HEAD~2``,
-or names that match both a branch and a tag pointing at different commits —
-is refused with exit code 2.
+their peeled commit), or a 40-hex object ID that is reachable in the
+repository — either advertised by some ref in ``git ls-remote`` or fetchable
+by exact SHA — and names a commit: a raw annotated-tag OBJECT ID is peeled
+to its commit, and a fetchable non-commit object (a blob, a tree) is
+refused. Anything else — globs, short SHAs, commit-ish expressions such as
+``HEAD~2``, or names that match both a branch and a tag pointing at
+different commits — is refused with exit code 2.
 
 The branch is resolved here, once: the caller (``core-wheel.yml``'s build
 job) checks out the resolved SHA, never the moving ref.
@@ -108,10 +110,19 @@ def tags_at_sha(refs: dict[str, str], sha: str) -> list[str]:
     return sorted(names)
 
 
+_USERINFO_RE = re.compile(r"://[^/@\s'\"]+@")
+
+
 def _sanitize(text: str, secret: str | None) -> str:
+    """Strip every credential form out of ``text``.
+
+    The token itself is replaced, and any URL userinfo git may have echoed
+    (``https://x-access-token:***@...`` after the first pass) collapses to
+    ``***@``: diagnostics must not even hint at the credential slot.
+    """
     if secret:
-        return text.replace(secret, "***")
-    return text
+        text = text.replace(secret, "***")
+    return _USERINFO_RE.sub("://***@", text)
 
 
 def _run_git(
@@ -127,7 +138,9 @@ def _run_git(
     if completed.returncode != 0:
         detail = _sanitize(completed.stderr.strip(), secret)
         detail = detail.splitlines()[-1] if detail else "unknown error"
-        raise RefResolutionError(f"git {' '.join(args[:2])} failed: {detail}")
+        # Never the argv: for ls-remote/fetch it carries the
+        # credential-bearing remote URL, sanitized or not.
+        raise RefResolutionError(f"git {args[0]} failed: {detail}")
     return completed.stdout
 
 
@@ -138,20 +151,37 @@ def _remote_url(remote: str, token: str | None) -> str:
     return f"{scheme}://x-access-token:{token}@{rest}"
 
 
-def _verify_sha_fetchable(remote: str, sha: str, token: str | None) -> None:
-    """Reachability proof for a SHA advertised by no ref.
+def _peel_to_commit(url: str, sha: str, token: str | None) -> str:
+    """Fetch ``sha`` into a scratch repo and peel it to its commit SHA.
 
-    GitHub's ``uploadpack.allowAnySHA1InWant`` serves exact-SHA fetches; a
-    SHA no ref points at and that cannot be fetched is not in the repo.
+    A SHA advertised by no ref must be proven fetchable anyway (GitHub's
+    ``uploadpack.allowAnySHA1InWant`` serves exact-SHA fetches), and a raw
+    object ID that is an annotated tag OBJECT — not its commit — must peel
+    so the commit SHA propagates everywhere (stamp, manifest, artifact
+    name). Anything fetchable that is not a commit (a blob, a tree) is
+    refused: a wheel must be built from a commit.
     """
     with tempfile.TemporaryDirectory(prefix="core-ref-") as raw:
         scratch = Path(raw)
         _run_git(["init", "--quiet"], cwd=scratch)
-        _run_git(
-            ["fetch", "--quiet", "--no-tags", remote, sha],
-            cwd=scratch,
-            secret=token,
-        )
+        _run_git(["fetch", "--quiet", "--no-tags", url, sha], cwd=scratch, secret=token)
+        try:
+            peeled = _run_git(["rev-parse", f"{sha}^{{commit}}"], cwd=scratch).strip()
+        except RefResolutionError:
+            object_type = _object_type(scratch, sha)
+            raise RefResolutionError(
+                f"core_ref {sha} is a {object_type} object, not a commit"
+            ) from None
+    if not _SHA_RE.fullmatch(peeled):
+        raise RefResolutionError(f"core_ref {sha} did not peel to a commit: {peeled!r}")
+    return peeled
+
+
+def _object_type(scratch: Path, sha: str) -> str:
+    try:
+        return _run_git(["cat-file", "-t", sha], cwd=scratch).strip()
+    except RefResolutionError:
+        return "non-commit"
 
 
 def resolve(core_ref: str, *, remote: str, token: str | None) -> tuple[str, list[str]]:
@@ -159,17 +189,16 @@ def resolve(core_ref: str, *, remote: str, token: str | None) -> tuple[str, list
     listing = _run_git(["ls-remote", url], secret=token)
     refs = parse_ls_remote(listing)
     if _SHA_RE.fullmatch(core_ref):
-        sha = core_ref
-        if sha not in refs.values():
-            _verify_sha_fetchable(url, sha, token)
-            return sha, []
-        return sha, tags_at_sha(refs, sha)
+        commit = _peel_to_commit(url, core_ref, token)
+        return commit, tags_at_sha(refs, commit)
     return resolve_ref(refs, core_ref)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--ref", required=True, help="branch, tag or 40-hex SHA")
+    parser.add_argument(
+        "--ref", required=True, help="branch, tag or 40-hex object ID naming a commit"
+    )
     parser.add_argument("--remote", required=True, help="remote URL or path")
     args = parser.parse_args(argv)
     try:

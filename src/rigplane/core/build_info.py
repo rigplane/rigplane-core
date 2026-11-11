@@ -22,7 +22,6 @@ from dataclasses import dataclass
 from pathlib import Path
 
 _SHA_RE = re.compile(r"[0-9a-f]{40}")
-_MAX_REF_LENGTH = 200
 
 _BUILD_INFO_FILENAME = "_build_info.json"
 
@@ -33,8 +32,8 @@ class BuildInfo:
 
     ``git_sha`` is the 40-hex commit the artifact was built from;
     ``requested_ref`` is the ref the consumer asked for (tag, branch or SHA).
-    Both are ``None`` for source checkouts and PyPI wheels, which are never
-    stamped.
+    Both are ``None`` when nothing was stamped: a plain source checkout, or
+    a wheel built before MOR-4408 (the publication build stamps its wheels).
     """
 
     git_sha: str | None
@@ -115,8 +114,7 @@ def _validate(info: BuildInfo, *, strict: bool) -> None:
         or not info.requested_ref
         or "\n" in info.requested_ref
         or "\r" in info.requested_ref
-        or len(info.requested_ref) > _MAX_REF_LENGTH
     ):
         raise ValueError(
-            f"BuildInfo.requested_ref must be a short single-line ref name: {info.requested_ref!r}"
+            f"BuildInfo.requested_ref must be a single-line ref name: {info.requested_ref!r}"
         )

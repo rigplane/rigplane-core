@@ -1142,7 +1142,8 @@ class ControlHandler:
             "server": "rigplane",
             "version": self._version,
             # Build provenance from the stamped core/_build_info.json; null
-            # for unstamped source checkouts and PyPI wheels (MOR-4408).
+            # when nothing was stamped (a source checkout, or a wheel built
+            # before MOR-4408 — the publication build stamps its wheels).
             "core_sha": load_build_info().git_sha,
             "radio": self._radio_model,
             "connected": raw_connected if isinstance(raw_connected, bool) else False,

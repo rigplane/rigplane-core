@@ -26,3 +26,4 @@ jobs:
     uses: ./.github/workflows/core-wheel.yml
     with:
       core_ref: main
+      controls_ref: main
