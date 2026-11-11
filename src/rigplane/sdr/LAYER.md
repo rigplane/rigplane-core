@@ -28,8 +28,9 @@ composes acquisition and TX policy for the shared scope hub;
   `span_hz` and `freq_offset_hz` settings; `SdrConfig` satisfies it.
 - `IqSource` — runtime_checkable Protocol: `open`/`close`/`is_open`,
   `facts`, tuning/rate/gain setters, `frequency_range_hz`, single-slot
-  `on_block` (callback runs on the reader thread). A slaved source only
-  records the controller-computed centre; it does not retune hardware.
+  `on_block` (callback runs on the reader thread). A slaved source records
+  the controller-computed physical centre; centre `0` means unknown, so it
+  drops samples and sends no radio tune command until a real centre arrives.
 - `IqScopeSink` — runtime_checkable Protocol: enqueue-only `feed`,
   display-only `set_view_center`, `set_span`, `set_tx_active`,
   single-slot `on_frame` emitting `scope.ScopeFrame`.

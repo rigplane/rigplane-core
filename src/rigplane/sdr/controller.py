@@ -41,10 +41,11 @@ class SdrScopeController:
     """Follow the radio VFO with view shifts, debounced retunes and a
     TX freeze (MOR-3156).
 
-    All frequency decisions run in SDR RF space: radio VFO +
-    ``config.freq_offset_hz`` (the frequency the SDR must see; view
-    centers passed to the sink are in this space too). ``ppm`` and
-    ``invert_spectrum`` belong to the source/sink wiring — this
+    Independent-source frequency decisions run in SDR RF space: radio VFO
+    + ``config.freq_offset_hz`` (the frequency the SDR must see; view
+    centers passed to the sink are in this space too). Slaved sources
+    reject that display offset and use the radio VFO directly. ``ppm``
+    and ``invert_spectrum`` belong to the source/sink wiring — this
     controller does no DSP.
 
     Decision rules, evaluated on every :meth:`on_radio_state` and
@@ -53,6 +54,7 @@ class SdrScopeController:
     * The source range is checked first: when the RF frequency lies
       outside ``source.frequency_range_hz()`` no retune and no view
       call happen, and :attr:`frequency_in_range` reports ``False``.
+      A slaved source also records centre ``0`` (frequency unknown).
     * Independent sources use view shift vs retune: when the display
       window (effective span around the VFO) fits inside the current IQ
       window minus a 10 % guard band at each edge, only
@@ -60,8 +62,9 @@ class SdrScopeController:
       retuned so the VFO sits at +1/4 of the IQ bandwidth from center
       (keeping the LO DC spike away from the VFO), clamped to the source
       range, and then the view is set.
-    * Slaved sources record ``rf_hz + facts.center_offset_hz`` at once
-      whenever that centre changes, without debounce or placement logic.
+    * Slaved sources record ``radio VFO + facts.center_offset_hz`` at
+      once whenever that centre changes, without debounce or placement
+      logic.
     * Independent-source hardware retunes are at least
       ``RETUNE_DEBOUNCE_S`` apart. A suppressed retune stays pending
       and is re-evaluated on the next :meth:`on_radio_state` or
@@ -73,16 +76,18 @@ class SdrScopeController:
       re-connected the SDR by then), applied from :meth:`tick` or the
       next :meth:`on_radio_state`.
 
-    ``freq_hz=None`` leaves the last known frequency tuning untouched
-    (only ``tx_active`` is processed).
+    For independent sources, ``freq_hz=None`` leaves the last known
+    frequency tuning untouched. For slaved sources it forgets that
+    frequency and records centre ``0``.
 
     Args:
         source: IQ source to (re)tune; never opened or closed here.
         sink: Scope sink driven with span/view/TX decisions.
         config: Display settings. ``span_hz=None`` selects a quarter of
-            the sample rate for independent sources, or the usable
-            bandwidth (falling back to the full sample rate) for slaved
-            sources. The effective span is sent once, at construction.
+            the sample rate for independent sources. For slaved sources
+            it selects the usable bandwidth (falling back to, and clamped
+            to, the sample rate) minus twice the absolute centre offset.
+            The effective span is sent once, at construction.
         clock: Monotonic time source, injectable for determinism.
         tx_hold_s: Seconds to keep the sink TX-frozen after the radio
             leaves TX.
@@ -105,14 +110,30 @@ class SdrScopeController:
         self._facts = source.facts
 
         self._span_hz: int
-        if config.span_hz is not None:
-            self._span_hz = config.span_hz
-        elif self._facts.tuning == "slaved":
-            self._span_hz = (
-                self._facts.usable_bandwidth_hz
-                if self._facts.usable_bandwidth_hz is not None
-                else source.sample_rate_hz
+        if self._facts.tuning == "slaved":
+            if config.freq_offset_hz != 0:
+                raise ValueError("freq_offset_hz is not supported for a slaved source")
+            usable_hz = min(
+                self._facts.usable_bandwidth_hz or source.sample_rate_hz,
+                source.sample_rate_hz,
             )
+            symmetric_span_hz = usable_hz - 2 * abs(self._facts.center_offset_hz)
+            if config.span_hz is None:
+                if symmetric_span_hz <= 0:
+                    raise ValueError(
+                        "center_offset_hz leaves no positive span inside "
+                        "usable_bandwidth_hz for a slaved source"
+                    )
+                self._span_hz = symmetric_span_hz
+            elif config.span_hz > symmetric_span_hz:
+                raise ValueError(
+                    "span_hz does not fit symmetrically inside the slaved "
+                    "source's usable window"
+                )
+            else:
+                self._span_hz = config.span_hz
+        elif config.span_hz is not None:
+            self._span_hz = config.span_hz
         else:
             self._span_hz = source.sample_rate_hz // DEFAULT_SPAN_DIVISOR
 
@@ -178,7 +199,8 @@ class SdrScopeController:
         A rising TX edge freezes the sink immediately; a falling edge
         schedules the release. The frequency decision (and any retune
         whose debounce has elapsed) is applied within this call.
-        ``freq_hz=None`` keeps the last known frequency.
+        ``freq_hz=None`` keeps the last known frequency for independent
+        sources and records centre ``0`` for slaved sources.
         """
         now = self._clock()
 
@@ -195,6 +217,10 @@ class SdrScopeController:
 
         if freq_hz is not None:
             self._freq_hz = int(freq_hz)
+        elif self._facts.tuning == "slaved":
+            self._freq_hz = None
+            if self._source.center_freq_hz != 0:
+                self._source.set_center_freq(0)
         self._apply_frequency(now)
 
     def tick(self) -> None:
@@ -227,6 +253,8 @@ class SdrScopeController:
         if not low_hz <= rf_hz <= high_hz:
             self._retune_pending = False
             self._frequency_in_range = False
+            if self._facts.tuning == "slaved" and source.center_freq_hz != 0:
+                source.set_center_freq(0)
             return
         self._frequency_in_range = True
 
