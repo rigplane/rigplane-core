@@ -3058,7 +3058,9 @@ class MockIcomRadio(AudioPortMixin):
     def _civ_nak(self, to: int, frm: int) -> bytes:
         return self._civ_frame(to, frm, _CMD_NAK)
 
-    def _wrap_civ(self, civ_frame: bytes, client_id: int, *, seq_shift: int = 0) -> bytes:
+    def _wrap_civ(
+        self, civ_frame: bytes, client_id: int, *, seq_shift: int = 0
+    ) -> bytes:
         """Wrap a CI-V frame in a 0x15-byte DATA header for the CI-V port.
 
         ``seq_shift`` moves THIS packet's sequence number only (header and

@@ -79,12 +79,18 @@ class RxOrderStats:
             or a jump wider than ``MAX_MISSING`` skipped them.
         late: Packets that arrived after their number was given up; dropped,
             because later packets were already delivered.
+        reanchored: Times the delivery anchor moved onto the live stream
+            after a numbering jump: a run of more than ``REORDER_WINDOW``
+            consecutive packets all behind the anchor (MOR-4416). One event,
+            however many packets the run held — the run's packets up to the
+            window still count as ``duplicate``/``late`` as before.
     """
 
     reordered: int = 0
     duplicate: int = 0
     lost: int = 0
     late: int = 0
+    reanchored: int = 0
 
 
 # One held inbound data packet, as ``_route_data_packet`` takes it:
@@ -194,6 +200,10 @@ class IcomTransport:
         self._rx_duplicate = 0
         self._rx_lost = 0
         self._rx_late = 0
+        self._rx_reanchored = 0
+        # Consecutive numbered packets seen behind the delivery anchor; a run
+        # past ``REORDER_WINDOW`` re-anchors (MOR-4416, ``_accept_in_order``).
+        self._rx_behind_run = 0
         self._udp_transport: asyncio.DatagramTransport | None = None
         self._udp_peer_addr: tuple[str, int] | None = None
         self._udp_close_event: asyncio.Event | None = None
@@ -242,6 +252,7 @@ class IcomTransport:
             duplicate=self._rx_duplicate,
             lost=self._rx_lost,
             late=self._rx_late,
+            reanchored=self._rx_reanchored,
         )
 
     @property
@@ -309,6 +320,7 @@ class IcomTransport:
         self._rx_next = None
         self._rx_held.clear()
         self._rx_given_up.clear()
+        self._rx_behind_run = 0
         self.remote_id = 0
         while True:
             try:
@@ -890,20 +902,38 @@ class IcomTransport:
     def _accept_in_order(self, packet: _HeldPacket, arrived_after_later: bool) -> None:
         """Hold one numbered data packet and deliver what is now in order."""
         seq = packet[2]
-        nxt = seq if self._rx_next is None else self._rx_next
+        if self._rx_next is None:
+            nxt = seq
+            logger.info(
+                "CI-V ingress anchored at the first numbered packet seq=%d", seq
+            )
+        else:
+            nxt = self._rx_next
         behind = (nxt - seq) & 0xFFFF
         if 0 < behind < 0x8000:
-            # Older than the next number, however far: within one session the
-            # radio never numbers backwards. Its numbering restarts only with
-            # a new session, and a new session is a new transport (or
-            # ``connect``, which resets this state); a radio that restarted
-            # without one delivers nothing new here, and the CI-V data
-            # watchdog's soft reconnect builds that new transport.
-            if seq in self._rx_given_up:
-                self._rx_late += 1
-            else:
-                self._rx_duplicate += 1
-            return
+            # Older than the next number, however far: a duplicate, or late
+            # after its number was given up. One such packet — even far
+            # behind — is never a reason to move the anchor: a stray old
+            # datagram must never be redelivered
+            # (test_an_old_duplicate_far_behind_is_never_redelivered). But a
+            # RUN of them past the window is no reorder: the anchor itself is
+            # stale. A first packet from the previous session's numbering
+            # (the radio may track numbering per client across processes,
+            # MOR-3418) or a radio that restarted its numbering on the live
+            # link (MOR-4416) otherwise drops every fresh packet until the
+            # counter climbs past the anchor — past the CI-V data watchdog.
+            self._rx_behind_run += 1
+            if self._rx_behind_run <= REORDER_WINDOW:
+                if seq in self._rx_given_up:
+                    self._rx_late += 1
+                else:
+                    self._rx_duplicate += 1
+                return
+            self._reanchor_rx(seq)
+            nxt = seq
+            arrived_after_later = False  # the frontier just reset
+        else:
+            self._rx_behind_run = 0
         if seq in self._rx_held:
             self._rx_duplicate += 1
             return
@@ -912,6 +942,35 @@ class IcomTransport:
         self._rx_held[seq] = packet
         self._rx_next = nxt
         self._release_in_order()
+
+    def _reanchor_rx(self, seq: int) -> None:
+        """Move the delivery anchor onto the live stream after a numbering jump.
+
+        The held packets and the missing set belong to the dead numbering
+        epoch: the radio never resumes them, and giving them up one by one
+        would count thousands of ``lost``. They drop uncounted — the event
+        itself is counted once (``reanchored``) and logged once, with the old
+        anchor, the new sequence and the run length that triggered it. The
+        frontier (``rx_last_seq``) restarts at the re-anchor packet, so a gap
+        right after the jump is tracked and asked for like any other.
+        """
+        old_next = self._rx_next
+        run = self._rx_behind_run
+        dropped_held = len(self._rx_held)
+        self._rx_held.clear()
+        self.rx_missing.clear()
+        self._rx_given_up.clear()
+        self._rx_behind_run = 0
+        self.rx_last_seq = seq
+        self._rx_reanchored += 1
+        logger.warning(
+            "CI-V ingress re-anchored after a numbering jump "
+            "(old_next=%s new_seq=%d behind_run=%d dropped_held=%d)",
+            old_next,
+            seq,
+            run,
+            dropped_held,
+        )
 
     def _release_in_order(self) -> None:
         """Deliver held packets from the next number on, giving up spent gaps.

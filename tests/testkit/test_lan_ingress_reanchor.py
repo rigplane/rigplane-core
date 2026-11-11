@@ -19,6 +19,7 @@ import pytest
 from rigplane.core.transport import REORDER_WINDOW
 from rigplane.radio import IcomRadio
 from rigplane.runtime._connection_state import RadioConnectionState
+from rigplane.testing.timing import await_until
 
 from rigplane_testkit.icom import MockIcomRadio
 
@@ -53,12 +54,12 @@ def _sim(factory, **kw) -> MockIcomRadio:
 
 async def _wait_connected(radio: IcomRadio) -> None:
     """Wait out the identity hold: CONNECTED once the first answers arrive."""
-    deadline = asyncio.get_running_loop().time() + _READY_DEADLINE_S
-    while radio.conn_state is not RadioConnectionState.CONNECTED:
-        assert asyncio.get_running_loop().time() < deadline, (
-            f"radio never reached CONNECTED (conn_state={radio.conn_state})"
-        )
-        await asyncio.sleep(0.05)
+    await await_until(
+        lambda: radio.conn_state is RadioConnectionState.CONNECTED,
+        timeout=_READY_DEADLINE_S,
+        interval=0.05,
+        description="radio CONNECTED after the numbering jump",
+    )
 
 
 @pytest.mark.parametrize(
@@ -143,4 +144,5 @@ async def test_reconnect_within_15s_after_clean_disconnect_answers_promptly(
         assert stats.duplicate <= REORDER_WINDOW
     finally:
         await second.disconnect()
+        await first.disconnect()  # idempotent; covers a failed first leg
         await sim.stop()

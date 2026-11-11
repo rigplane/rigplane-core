@@ -226,13 +226,43 @@ async def test_a_numbering_jump_reanchors_onto_the_live_stream(
     )
 
     radio.deliver(*range(REORDER_WINDOW + 2, 2 * REORDER_WINDOW + 1))
-    assert drain_seqs(transport) == list(range(REORDER_WINDOW + 2, 2 * REORDER_WINDOW + 1))
+    assert drain_seqs(transport) == list(
+        range(REORDER_WINDOW + 2, 2 * REORDER_WINDOW + 1)
+    )
 
     lines = [r.getMessage() for r in caplog.records]
     assert sum("re-anchored" in line for line in lines) == 1
     reanchor = next(line for line in lines if "re-anchored" in line)
-    assert f"old_next={stale}" in reanchor
+    # The stale packet 20001 anchored delivery; the frontier stood at 20002.
+    assert f"old_next={stale + 1}" in reanchor
     assert f"new_seq={REORDER_WINDOW + 1}" in reanchor
+    assert f"behind_run={REORDER_WINDOW + 1}" in reanchor
+
+
+async def test_a_gap_right_after_a_reanchor_is_tracked(
+    transport: IcomTransport,
+) -> None:
+    """Re-anchoring restarts gap tracking at the new epoch's first packet:
+    a number skipped right after the jump is held for, not skipped over."""
+    stale = 20001
+    radio = _radio(transport, REORDER_WINDOW + 4)
+    radio.sent[stale] = wrap_civ_in_udp(_frame(0), seq=stale)
+
+    radio.deliver(stale)
+    assert drain_seqs(transport) == [stale]
+    radio.deliver(*range(1, REORDER_WINDOW + 2))  # the run re-anchors at 257
+    assert drain_seqs(transport) == [REORDER_WINDOW + 1]
+
+    skip = REORDER_WINDOW + 2  # 258
+    radio.deliver(skip + 1)  # 259 ahead of the missing 258: held, not lost
+    assert drain_seqs(transport) == []
+    assert skip in transport.rx_missing
+
+    radio.deliver(skip)
+    assert drain_seqs(transport) == [skip, skip + 1]
+    assert transport.rx_order_stats == RxOrderStats(
+        duplicate=REORDER_WINDOW, reordered=1, reanchored=1
+    )
 
 
 async def test_a_run_at_the_window_edge_still_drops_as_duplicates(
