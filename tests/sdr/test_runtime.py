@@ -19,7 +19,8 @@ from rigplane.sdr.runtime import (
     remote_only_env_updates,
     resolve_sdr_config,
 )
-from rigplane.sdr.types import SdrConfig, SoapySourceSpec
+from rigplane.sdr.types import SdrConfig, SoapySourceSpec, UdpIqSourceSpec
+from rigplane.sdr.xiegu_udp_source import XieguUdpIqSource
 
 
 def test_build_source_uses_registered_soapy_factory(
@@ -39,6 +40,25 @@ def test_build_source_uses_registered_soapy_factory(
     assert build_source(spec) is provider
     assert seen == [spec]
     assert "SoapySDR" not in sys.modules
+
+
+def test_build_source_constructs_udp_source_without_opening_socket() -> None:
+    spec = UdpIqSourceSpec(
+        host="127.0.0.1",
+        radio_port=50002,
+        receive_port=50001,
+        sample_rate_hz=48_000,
+        samples_per_datagram=192,
+        center_offset_hz=8000,
+        usable_bandwidth_hz=40_000,
+        tune_min_hz=100_000,
+        tune_max_hz=54_000_000,
+    )
+
+    source = build_source(spec)
+
+    assert isinstance(source, XieguUdpIqSource)
+    assert source.is_open is False
 
 
 def test_build_source_rejects_unknown_kind() -> None:

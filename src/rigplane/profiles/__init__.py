@@ -45,6 +45,7 @@ __all__ = [
     "ControlSpec",
     "FilterWidthSegment",
     "FilterWidthRule",
+    "IqLanSpec",
     "MeterCalibrationPoint",
     "PowerWriteQuantum",
     "RadioProfile",
@@ -365,6 +366,21 @@ class CwTextSpec:
 
 
 @dataclass(frozen=True, slots=True)
+class IqLanSpec:
+    """Radio-LAN IQ wire facts; the LAN host remains server configuration."""
+
+    protocol: str
+    radio_port: int
+    receive_port: int
+    sample_rate_hz: int
+    samples_per_datagram: int
+    center_offset_hz: int
+    usable_bandwidth_hz: int
+    tune_min_hz: int
+    tune_max_hz: int
+
+
+@dataclass(frozen=True, slots=True)
 class RadioProfile:
     """Runtime radio profile used by command routing and capability checks."""
 
@@ -637,6 +653,9 @@ class RadioProfile:
     # profile through profile data alone — no per-model branches.
     # Keyword-only and appended so no positional argument shifts.
     xiegu_model_id: int | None = field(default=None, kw_only=True)
+    # Optional radio-LAN IQ wire facts from ``[iq_lan]`` (MOR-4398). The
+    # dataclass stays in profiles to preserve the profiles/sdr independence.
+    iq_lan: IqLanSpec | None = field(default=None, kw_only=True)
 
     @property
     def vfo_swap_code(self) -> int | None:

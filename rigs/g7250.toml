@@ -51,6 +51,19 @@ xiegu_model_id = 0x7250
 type = "civ"
 address = 0x88
 
+[iq_lan]
+# LIVE G7250 UDP IQ capture (MOR-4398): 48 kHz complex IQ, centred 8 kHz
+# above the VFO. Starting the stream writes that VFO; there is no stop.
+protocol = "xiegu_udp"
+radio_port = 50002
+receive_port = 50001
+sample_rate_hz = 48000
+samples_per_datagram = 192
+center_offset_hz = 8000
+usable_bandwidth_hz = 40000
+tune_min_hz = 100000
+tune_max_hz = 54000000
+
 [audio]
 # LIVE G7250 2026-11-09 (MOR-4352): the radio's USB hub enumerates a
 # C-Media "USB Audio Device" next to the CH340 serial port. The mono

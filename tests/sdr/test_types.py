@@ -8,7 +8,13 @@ from collections.abc import Mapping
 import numpy as np
 import pytest
 
-from rigplane.sdr import IqBlock, IqSourceFacts, SdrConfig, SoapySourceSpec
+from rigplane.sdr import (
+    IqBlock,
+    IqSourceFacts,
+    SdrConfig,
+    SoapySourceSpec,
+    UdpIqSourceSpec,
+)
 
 
 def test_iq_source_facts_defaults() -> None:
@@ -41,6 +47,79 @@ def test_soapy_source_spec_kind() -> None:
     spec = SoapySourceSpec(SdrConfig(device_args="driver=remote"))
 
     assert spec.kind == "soapy"
+
+
+def _udp_spec_kwargs() -> dict[str, object]:
+    return {
+        "host": "127.0.0.1",
+        "radio_port": 50002,
+        "receive_port": 50001,
+        "sample_rate_hz": 48_000,
+        "samples_per_datagram": 192,
+        "center_offset_hz": 8000,
+        "usable_bandwidth_hz": 40_000,
+        "tune_min_hz": 100_000,
+        "tune_max_hz": 54_000_000,
+    }
+
+
+def test_udp_source_spec_kind_and_optional_bandwidth() -> None:
+    values = _udp_spec_kwargs()
+    values["usable_bandwidth_hz"] = None
+
+    spec = UdpIqSourceSpec(**values)  # type: ignore[arg-type]
+
+    assert spec.kind == "xiegu_udp"
+    assert spec.usable_bandwidth_hz is None
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "radio_port",
+        "receive_port",
+        "sample_rate_hz",
+        "samples_per_datagram",
+        "center_offset_hz",
+        "usable_bandwidth_hz",
+        "tune_min_hz",
+        "tune_max_hz",
+    ],
+)
+def test_udp_source_spec_rejects_bool_for_integer_fields(field: str) -> None:
+    values = _udp_spec_kwargs()
+    values[field] = True
+
+    with pytest.raises(ValueError, match=field):
+        UdpIqSourceSpec(**values)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("override", "field"),
+    [
+        ({"host": ""}, "host"),
+        ({"host": 123}, "host"),
+        ({"radio_port": 0}, "radio_port"),
+        ({"radio_port": 65_536}, "radio_port"),
+        ({"receive_port": 0}, "receive_port"),
+        ({"receive_port": 65_536}, "receive_port"),
+        ({"sample_rate_hz": 0}, "sample_rate_hz"),
+        ({"sample_rate_hz": 48_000.0}, "sample_rate_hz"),
+        ({"samples_per_datagram": 0}, "samples_per_datagram"),
+        ({"tune_min_hz": 54_000_000}, "tune_min_hz"),
+        ({"tune_max_hz": 100_000}, "tune_max_hz"),
+        ({"usable_bandwidth_hz": 0}, "usable_bandwidth_hz"),
+        ({"usable_bandwidth_hz": 48_001}, "usable_bandwidth_hz"),
+    ],
+)
+def test_udp_source_spec_rejects_bad_values(
+    override: dict[str, object], field: str
+) -> None:
+    values = _udp_spec_kwargs()
+    values.update(override)
+
+    with pytest.raises(ValueError, match=field):
+        UdpIqSourceSpec(**values)  # type: ignore[arg-type]
 
 
 def test_sdr_config_defaults() -> None:

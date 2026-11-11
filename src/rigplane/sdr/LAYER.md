@@ -22,9 +22,13 @@ composes acquisition and TX policy for the shared scope hub;
 - `IqSourceFacts` — frozen dataclass declaring `independent` or `slaved`
   tuning, the slaved window's `center_offset_hz`, and optional positive
   `usable_bandwidth_hz` (`None` = full sample rate).
-- `SoapySourceSpec` / `IqSourceSpec` — frozen, `kind`-tagged source
-  selection carrying the `SdrConfig`; the alias is the union extension
-  point for additional source kinds.
+- `SoapySourceSpec` / `UdpIqSourceSpec` / `IqSourceSpec` — frozen,
+  `kind`-tagged source selection; the UDP spec carries radio-LAN wire facts
+  and the alias is the union extension point for additional source kinds.
+- `xiegu_udp_source.XieguUdpIqSource` — slaved radio-LAN UDP IQ, batched
+  into 1920-sample blocks. After stream silence it sends the settled centre
+  minus the profile offset, never a stale or out-of-range VFO; `close()`
+  sends nothing because the protocol has no stop command.
 - `IqDisplaySettings` — Protocol for the controller's read-only
   `span_hz` and `freq_offset_hz` settings; `SdrConfig` satisfies it.
 - `IqSource` — runtime_checkable Protocol: `open`/`close`/`is_open`,

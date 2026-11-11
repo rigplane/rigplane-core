@@ -27,7 +27,7 @@ from collections.abc import Callable, Mapping, MutableMapping, Sequence
 from typing import Any
 
 from .protocol import IqSource
-from .types import IqSourceSpec, SdrConfig
+from .types import IqSourceSpec, SdrConfig, UdpIqSourceSpec
 
 __all__ = [
     "SPAN_LIMIT_RATIO",
@@ -219,4 +219,11 @@ def build_source(spec: IqSourceSpec) -> IqSource:
     return factory(spec)
 
 
+def _udp_source_factory(spec: UdpIqSourceSpec) -> IqSource:
+    from .xiegu_udp_source import XieguUdpIqSource
+
+    return XieguUdpIqSource(spec)
+
+
 register_source_kind("soapy", lambda spec: default_source_factory(spec.config))
+register_source_kind("xiegu_udp", _udp_source_factory)

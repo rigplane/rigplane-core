@@ -65,6 +65,19 @@ The display span must fit inside the sampled bandwidth with guard room:
 rate (`controller.py: DEFAULT_SPAN_DIVISOR`); at the default 2.4 Msps that is
 600 kHz. Widen the span by raising the sample rate first.
 
+## Radio LAN IQ
+
+Some radios can send their own IQ stream over the LAN instead of requiring a
+separate SDR. The Xiegu UDP source receives 48,000 complex samples/s, a
+±24 kHz window around its centre. The G7250 profile places that centre at
+VFO + 8 kHz and declares 40 kHz of flat, usable bandwidth; these are measured
+profile facts, not server settings.
+
+Starting the stream tunes the radio's VFO, so the source waits for a settled
+controller frequency and never starts with an unknown or out-of-range VFO.
+There is no stop command or keepalive: once started, the radio keeps streaming
+until powered off. Server and CLI wiring arrives in a follow-up.
+
 ## Status in the Web UI state
 
 The public state payload carries a live `sdr` object

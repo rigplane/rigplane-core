@@ -15,7 +15,9 @@ from rigplane.sdr import (
     IqSource,
     IqSourceFacts,
     SdrConfig,
+    UdpIqSourceSpec,
 )
+from rigplane.sdr.xiegu_udp_source import XieguUdpIqSource
 from rigplane.sdr.controller import (
     DEFAULT_SPAN_DIVISOR,
     RETUNE_DEBOUNCE_S,
@@ -116,6 +118,30 @@ def make_slaved_controller(
         sample_rate_hz=48_000,
         facts=facts,
     )
+
+
+def test_real_udp_source_records_controller_computed_centre() -> None:
+    source = XieguUdpIqSource(
+        UdpIqSourceSpec(
+            host="127.0.0.1",
+            radio_port=50002,
+            receive_port=50001,
+            sample_rate_hz=48_000,
+            samples_per_datagram=192,
+            center_offset_hz=8000,
+            usable_bandwidth_hz=40_000,
+            tune_min_hz=100_000,
+            tune_max_hz=54_000_000,
+        )
+    )
+    sink = RecordingSink()
+    controller = SdrScopeController(source, sink, SdrConfig(device_args="driver=fake"))
+
+    controller.on_radio_state(7_175_000, False)
+
+    assert source.is_open is False
+    assert source.center_freq_hz == 7_183_000
+    assert sink.of("view") == [7_175_000]
 
 
 def test_slaved_construction_uses_usable_bandwidth_as_default_span() -> None:

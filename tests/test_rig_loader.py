@@ -22,6 +22,7 @@ from rigplane.profiles import (
     BandInfo,
     ControlSpec,
     FreqRangeInfo,
+    IqLanSpec,
     RadioProfile,
     TxPolicy,
     get_radio_profile,
@@ -141,6 +142,20 @@ set_freq = [0x05]
 """
 
 
+_IQ_LAN_TOML = """\
+[iq_lan]
+protocol = "xiegu_udp"
+radio_port = 50002
+receive_port = 50001
+sample_rate_hz = 48000
+samples_per_datagram = 192
+center_offset_hz = 8000
+usable_bandwidth_hz = 40000
+tune_min_hz = 100000
+tune_max_hz = 54000000
+"""
+
+
 # ── RigConfig loading ────────────────────────────────────────────
 
 
@@ -159,6 +174,54 @@ class TestLoadRig:
         p = _write_toml(tmp_path, _MINIMAL_TOML)
         rig = load_rig(p)
         assert rig.model == "IC-7300"
+
+    def test_iq_lan_loads_as_optional_typed_profile_data(self, tmp_path):
+        rig = load_rig(_write_toml(tmp_path, _MINIMAL_TOML + _IQ_LAN_TOML))
+
+        expected = IqLanSpec(
+            protocol="xiegu_udp",
+            radio_port=50002,
+            receive_port=50001,
+            sample_rate_hz=48000,
+            samples_per_datagram=192,
+            center_offset_hz=8000,
+            usable_bandwidth_hz=40000,
+            tune_min_hz=100000,
+            tune_max_hz=54000000,
+        )
+        assert rig.iq_lan == expected
+        assert rig.to_profile().iq_lan == expected
+
+    def test_profile_without_iq_lan_has_none(self, tmp_path):
+        rig = load_rig(_write_toml(tmp_path, _MINIMAL_TOML))
+
+        assert rig.iq_lan is None
+        assert rig.to_profile().iq_lan is None
+
+    @pytest.mark.parametrize(
+        ("old", "new", "key"),
+        [
+            (
+                'protocol = "xiegu_udp"',
+                'protocol = "xiegu_udp"\nunexpected = 1',
+                "unexpected",
+            ),
+            ("receive_port = 50001\n", "", "receive_port"),
+            ('protocol = "xiegu_udp"', 'protocol = "other"', "protocol"),
+            ("sample_rate_hz = 48000", 'sample_rate_hz = "48000"', "sample_rate_hz"),
+        ],
+    )
+    def test_iq_lan_rejects_invalid_sections_naming_the_key(
+        self, tmp_path, old, new, key
+    ):
+        section = _IQ_LAN_TOML.replace(old, new)
+
+        with pytest.raises(RigLoadError, match=key):
+            load_rig(_write_toml(tmp_path, _MINIMAL_TOML + section))
+
+    @pytest.mark.parametrize("model", ["IC-7300", "IC-7610", "X6200"])
+    def test_other_shipped_profiles_have_no_iq_lan(self, model):
+        assert get_radio_profile(model).iq_lan is None
 
     def test_modes_codes_load_parallel_to_list(self, tmp_path):
         """MOR-2518: [modes].codes loads as a parallel single-character code
