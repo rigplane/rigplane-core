@@ -20,9 +20,11 @@ from typing import Any
 import aiohttp
 import pytest
 
+from rigplane.profiles import RadioProfile, resolve_radio_profile
 from rigplane.runtime.radio import IcomRadio
 from rigplane.web.server import WebConfig, WebServer
 from rigplane_testkit.icom import MockIcomRadio
+from rigplane_testkit.sim.serve import build_lan_personality
 from test_web_server import _http_get, _ws_connect, _ws_recv_frame, _ws_send_text
 from test_web_split_writes import _request
 from testkit.ic705_fakes import ic705_lan_fake
@@ -266,9 +268,11 @@ async def test_late_first_answer_fetches_initial_state_exactly_once(
     the first answer arrives. The tail's fetch and the callback's refetch must
     not both run: exactly one initial fetch, then freq/mode published.
     """
-    # dual_receiver: both profiles are dual-receiver radios; the single-receiver
-    # sim never answers the freq read, so freqHz would stay None forever.
-    sim = MockIcomRadio(civ_silent_after_open_s=3.0, dual_receiver=True)
+    # The personality builder the smoke uses: the profile drives the CI-V
+    # address, the receiver layout and the identity answer, so the sim
+    # answers the profile's own state queries.
+    profile: RadioProfile = resolve_radio_profile(model=model)
+    sim = build_lan_personality(profile, civ_silent_after_open_s=3.0)
     async with _counting_stack(sim, model=model) as (web, _radio, _sim, fetch_at):
         await _wait_state(
             web,
@@ -290,7 +294,8 @@ async def test_instant_first_answer_fetches_initial_state_exactly_once(
     model: str,
 ) -> None:
     """Regression guard: an instantly answering radio also fetches exactly once."""
-    sim = MockIcomRadio(dual_receiver=True)
+    profile = resolve_radio_profile(model=model)
+    sim = build_lan_personality(profile)
     async with _counting_stack(sim, model=model) as (web, _radio, _sim, fetch_at):
         await _wait_state(
             web,
