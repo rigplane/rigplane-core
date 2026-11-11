@@ -982,6 +982,30 @@ describe('SpectrumPanel component', () => {
     expect(control.spanHz).toBe(150_000);
   });
 
+  // MOR-4392 (coordinator ruling 2026-11-10): in a fixed-edges scope mode
+  // (FIX/S-F) the window is wire-owned — a SPAN step writes nothing to the
+  // radio (no mode flip, no span write), so the step is refused outright and
+  // the toolbar keys render disabled with the fixed width still displayed.
+  it.each([
+    ['IC-705', 1], ['IC-7300', 1], ['IC-7610', 3],
+  ] as const)('refuses SPAN steps while %s observes fixed scope mode %i', async (model, mode) => {
+    runtimeHarness.state.currentCaps = validateCapabilities({ ...IC7300_CAPABILITIES, ...spanCapabilities, model });
+    authorityHarness.state.current = authority({ scopeControls: testScopeControls(mode) });
+    const target = mountPanel();
+    emitFrame({ mode, startFreq: 14_000_000, endFreq: 14_100_000 }); await flushWaterfallPaint();
+    const control = mockRuntime.scope.spanControl!;
+    const view = () => JSON.parse(target.querySelector('.spectrum-panel')!.getAttribute('data-scope-subscription')!).view;
+    expect(view()).toEqual({ follow: 'vfo', spanHz: 100_000 });
+    expect(control.spanHz).toBe(100_000);
+    control.step(-1); flushSync();
+    expect(view()).toEqual({ follow: 'vfo', spanHz: 100_000 });
+    control.step(1); flushSync();
+    expect(view()).toEqual({ follow: 'vfo', spanHz: 100_000 });
+    expect(control.spanHz).toBe(100_000);
+    expect(target.querySelector<HTMLButtonElement>('[title="Increase span"]')!.disabled).toBe(true);
+    expect(target.querySelector('[title="Scope span"] .toolbar-value')?.textContent).toBe('±50k');
+  });
+
   it('keeps trace controls absent in an ordinary build', () => {
     const target = mountPanel();
     expect(target.querySelector('[aria-label="Scope render trace"]')).toBeNull();
