@@ -109,19 +109,45 @@ for (const [index, [model, zoomMode]] of ([['IC-705', 0], ['IC-7300', 0], ['IC-7
         const box = await area.boundingBox(); expect(box).not.toBeNull();
         const before = { subscriptions: sent.length, writes: (await writes()).length, work: await work() };
         if (zoom === 'span') {
-          const widths = [50000, 100000, 250000];
-          await expect(page.getByTestId('scope-span-value').first()).toHaveText('±50k');
-          if (zoomMode === 1) expect((await writes()).filter(receipt => receipt.sub === 0x14).at(-1)?.data[1]).toBe(1);
-          for (const [step, action] of ['Decrease scope span', 'Increase scope span', ']'].entries()) {
-            const width = widths[step]!;
-            const mark = frames.length;
-            if (action === ']') await page.keyboard.press(action);
-            else await page.getByRole('button', { name: action, exact: true }).first().click();
-            const bounds = [14_250_000 - width / 2, 14_250_000 + width / 2];
-            await expect.poll(() => grants.at(-1)?.view).toEqual({ startHz: bounds[0], endHz: bounds[1] });
-            await expect.poll(() => frames.slice(mark).some(frame => frame.pixels && frame.view.every((hz, i) => hz === bounds[i])
-              && frame.coverage.every((hz, i) => hz === bounds[i]))).toBe(true);
-            await expect(page.getByTestId('scope-span-value').first()).toHaveText(`±${width / 2000}k`);
+          if (zoomMode === 1) {
+            // MOR-4392 round 2 (coordinator ruling 2026-11-10): in FIX the
+            // window is the radio's fixed window and SPAN is a CENTER-mode
+            // setting — the keys render DISABLED and stepping writes nothing
+            // to the radio (no mode flip, no span write); the frames stay the
+            // fixed window. (No grant-shape assertion here: on this branch
+            // alone the hub keeps the stale follow grant; the 4385-resolved
+            // spec asserts the clipped grant.)
+            const fixed = [14_200_000, 14_300_000];
+            const spanValue = page.getByTestId('scope-span-value').first();
+            await expect(spanValue).toHaveText('±50k');
+            for (const name of ['Decrease scope span', 'Increase scope span']) {
+              await expect(page.getByRole('button', { name, exact: true }).first()).toBeDisabled();
+            }
+            const receiptsBefore = await writes();
+            await page.keyboard.press('[');
+            await page.keyboard.press(']');
+            await page.waitForTimeout(1000);
+            const receiptsAfter = await writes();
+            expect(receiptsAfter.length).toBe(receiptsBefore.length);
+            const scopeWrites = (list: typeof receiptsAfter) =>
+              list.filter(receipt => receipt.sub === 0x14 || receipt.sub === 0x15);
+            expect(scopeWrites(receiptsAfter)).toEqual(scopeWrites(receiptsBefore));
+            await expect(spanValue).toHaveText('±50k');
+            await expect.poll(() => frames.at(-1)?.view).toEqual(fixed);
+          } else {
+            const widths = [50000, 100000, 250000];
+            await expect(page.getByTestId('scope-span-value').first()).toHaveText('±50k');
+            for (const [step, action] of ['Decrease scope span', 'Increase scope span', ']'].entries()) {
+              const width = widths[step]!;
+              const mark = frames.length;
+              if (action === ']') await page.keyboard.press(action);
+              else await page.getByRole('button', { name: action, exact: true }).first().click();
+              const bounds = [14_250_000 - width / 2, 14_250_000 + width / 2];
+              await expect.poll(() => grants.at(-1)?.view).toEqual({ startHz: bounds[0], endHz: bounds[1] });
+              await expect.poll(() => frames.slice(mark).some(frame => frame.pixels && frame.view.every((hz, i) => hz === bounds[i])
+                && frame.coverage.every((hz, i) => hz === bounds[i]))).toBe(true);
+              await expect(page.getByTestId('scope-span-value').first()).toHaveText(`±${width / 2000}k`);
+            }
           }
         } else {
         await page.mouse.move(box!.x + box!.width * (zoom ? 0.9 : 0.6), box!.y + box!.height * 0.3);
@@ -140,8 +166,12 @@ for (const [index, [model, zoomMode]] of ([['IC-705', 0], ['IC-7300', 0], ['IC-7
         await expect.poll(async () => (await page.request.get(`http://127.0.0.1:${port}/api/v1/state`)).json()).toMatchObject({ main: { freqHz: finalHz } });
         await expect.poll(async () => Number((await page.locator('.receiver-instrument [data-vfo-freq]').first().innerText()).replace(/\D/g, ''))).toBe(finalHz);
         // MOR-4387: a zoomed view follows the VFO (span preserved); only a
-        // preset pin may hold a fixed window.
-        const view = zoom === 'span' ? [14_125_000, 14_375_000] : zoom ? [finalHz - 25_000, finalHz + 25_000] : [finalHz - 50_000, finalHz + 50_000];
+        // preset pin may hold a fixed window. MOR-4392 round 2: the FIX span
+        // variant never steps (keys disabled) so the window stays the fixed
+        // edges.
+        const view = zoom === 'span'
+          ? (zoomMode === 1 ? [14_200_000, 14_300_000] : [14_125_000, 14_375_000])
+          : zoom ? [finalHz - 25_000, finalHz + 25_000] : [finalHz - 50_000, finalHz + 50_000];
         if (zoom === true) await expect(marker).toBeVisible();
         const live = frames.slice(quietStart.frames, quietEnd.frames);
         expect.soft(live.length).toBeGreaterThan(10);
@@ -264,17 +294,15 @@ for (const [index, model] of ['IC-705', 'IC-7300'].entries()) {
   });
 
   // Owner rule (no weakened tests — tests check what the user sees): 12
-  // paced ArrowRight presses land the VFO +12 kHz from the frequency the
-  // last click tuned to. Expected-fail under MOR-4393: the MOR-1864 tuning
-  // accumulator re-reads a stale confirmed base at every paced flush, so
-  // after rapid absolute click retunes the first flushes key off a pre-click
-  // readback and the burst lands +12 kHz from a STALE base instead of from
-  // the clicked frequency (observed: clicked 14.242 MHz, arrows stepped
-  // 14.262→14.274 MHz). MOR-4393 is fixed by a separate builder — the
-  // accumulator is not touched here; when that fix lands this test goes
-  // green and the marker is removed.
+  // paced ArrowRight presses land the VFO exactly +12 kHz from the settled
+  // frequency the last click tuned to. Each click is proved against the
+  // viewport visible at click time (the rendered subscription bounds), so a
+  // later click mapping against the moved viewport cannot hide behind a
+  // hard-coded frequency. (MOR-4393: fixed on codex/mor-4393-tuning-steps —
+  // the MOR-1864 accumulator continues a burst on echoes of its own sends,
+  // so readback latency no longer loses steps. Green only on a stack with
+  // that fix; on this branch alone the +12 kHz assertion still fails.)
   test(`${model}: MOR-4393 click-tune burst then 12 arrows lands +12 kHz from the clicked frequency`, async ({ page }, info) => {
-    test.fail(true, 'MOR-4393: the MOR-1864 accumulator re-reads a stale confirmed base at every paced flush');
     const port = 18890 + index;
     const server = await startJourneyServer(port, 14_250_000,
       ['--model', model, '--evidence', info.outputPath('radio.jsonl')], 'tests/e2e/panorama_web_server.py');
@@ -287,13 +315,25 @@ for (const [index, model] of ['IC-705', 'IC-7300'].entries()) {
       await page.goto(`http://127.0.0.1:${port}/?ui=v2`);
       await expect.poll(() => frames.count, { timeout: 30_000 }).toBeGreaterThan(10);
       const radioState = async () => (await (await page.request.get(`http://127.0.0.1:${port}/api/v1/state`)).json()) as { main?: { freqHz?: number } };
+      const panel = page.locator('.spectrum-panel').first();
+      await expect.poll(async () => panel.getAttribute('data-scope-subscription')).not.toBeNull();
       const area = page.locator('.spectrum-area').first();
       const box = await area.boundingBox();
       expect(box).not.toBeNull();
+      // Click-to-tune snaps to the 1 kHz tuning step (SpectrumPanel
+      // snapFrequency over getTuningStep); the follow viewport is the
+      // confirmed VFO ± span/2 (MOR-4387: the view follows the VFO).
       for (const fraction of [0.62, 0.72, 0.42]) {
+        const subscription = JSON.parse((await panel.getAttribute('data-scope-subscription'))!) as
+          { view: { follow: 'vfo'; spanHz: number } | { startHz: number; endHz: number } };
+        const centerHz = (await radioState()).main!.freqHz!;
+        const bounds = 'follow' in subscription.view
+          ? [centerHz - subscription.view.spanHz / 2, centerHz + subscription.view.spanHz / 2]
+          : [subscription.view.startHz, subscription.view.endHz];
+        const expectedHz = Math.round((bounds[0]! + fraction * (bounds[1]! - bounds[0]!)) / 1000) * 1000;
         await page.mouse.click(box!.x + box!.width * fraction, box!.y + box!.height * 0.3);
+        await expect.poll(async () => (await radioState()).main?.freqHz, { timeout: 10_000 }).toBe(expectedHz);
       }
-      await expect.poll(async () => (await radioState()).main?.freqHz, { timeout: 10_000 }).toBe(14_242_000);
       const clickedHz = (await radioState()).main!.freqHz!;
       for (let i = 0; i < 12; i++) {
         await page.keyboard.press('ArrowRight');
