@@ -1,0 +1,18 @@
+{
+  "radio": "IC-705",
+  "frequency_hz": 14266000,
+  "mode": "follow-VFO",
+  "span_hz": 100000,
+  "granted_width": 475,
+  "frame_count": 84,
+  "duration_seconds": 20,
+  "recorded_at": "2026-11-09",
+  "core_version": "3.2.0rc8",
+  "load": "bench antenna",
+  "retained_frame_range_1_based": [
+    1,
+    84
+  ],
+  "byte_length": 45360,
+  "format": "Repeated u32 little-endian byte length followed by a v2 binary scope frame"
+}
