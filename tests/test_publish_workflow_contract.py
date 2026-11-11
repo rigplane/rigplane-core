@@ -210,6 +210,10 @@ def test_build_job_delegates_to_the_core_wheel_workflow() -> None:
     assert with_map.get("core_ref") == "${{ github.sha }}", (
         "the release build pins the exact triggering commit"
     )
+    assert with_map.get("controls_ref") == "${{ github.sha }}", (
+        "Core's own caller pins the workflow controls to the triggering "
+        "commit — the reviewed revision — not the workflow's main default"
+    )
     assert with_map.get("artifact_name") == "dist", (
         "the publish job downloads the wheel artifact under its historical `dist` name"
     )

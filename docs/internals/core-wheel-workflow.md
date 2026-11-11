@@ -11,16 +11,43 @@ or install its artifact.
 
 | Input | Type | Default | Meaning |
 |---|---|---|---|
-| `core_ref` | string | required | tag, branch or 40-hex SHA to build |
+| `core_ref` | string | required | tag, branch or 40-hex object ID naming a commit to build |
+| `controls_ref` | string | `main` | Core ref the workflow controls are checked out from |
 | `artifact_name` | string | `''` | exact artifact name; overrides the prefix |
 | `artifact_name_prefix` | string | `core-wheel` | artifact is `<prefix>-<sha12>` when `artifact_name` is empty |
 | `retention_days` | number | 3 | wheel artifact retention (artifact-cleanup sweeps older ones anyway) |
 
 `workflow_dispatch` takes the same inputs minus `artifact_name`. A branch is
 resolved once, in the `resolve` job (`resolve_core_ref.py: main`); the build
-job checks out the SHA, never the moving ref. Anything that does not resolve
-to exactly one commit — globs, short SHAs, `HEAD~2`, a name whose branch and
+job checks out the SHA, never the moving ref. A raw 40-hex object ID is
+fetched and peeled: an annotated-tag object resolves to its tagged commit,
+and a fetchable non-commit object (a blob, a tree) is refused — a wheel must
+be built from a commit, and the peeled commit SHA is what propagates to the
+stamp, the manifest and the artifact name. Anything that does not resolve to
+exactly one commit — globs, short SHAs, `HEAD~2`, a name whose branch and
 tag point at different commits — fails loudly.
+
+## Controls and the caller
+
+In a called workflow `github.repository` and `github.sha` identify the
+CALLER, not Core: a private caller (Pro) invoking
+`rigplane/rigplane-core/.github/workflows/core-wheel.yml@<ref>` would
+otherwise check out, resolve against and load control files from its own
+repository. Every `actions/checkout` in the workflow names
+`repository: rigplane/rigplane-core`, and `CORE_REMOTE` is fixed to
+`https://github.com/rigplane/rigplane-core.git` — never `github.repository`.
+
+The control files (the resolver, version, stamp and manifest scripts, the
+installed-profile smoke and the contracts they load) are checked out at
+`controls_ref`. Core's own callers — `publish.yml` and
+`core-wheel-nightly.yml` — pass their triggering SHA (or `main`) explicitly.
+An external caller that omits `controls_ref` gets Core's `main`: convenient,
+but `main` can be newer than the workflow revision the caller referenced in
+`uses:`, so a caller that needs exact reproducibility pins `controls_ref` to
+the same SHA it calls the workflow at. That choice (an explicit input rather
+than deriving "the called workflow's own commit" from GitHub context) is
+deliberate: the `github.*` context cannot identify the called workflow's
+commit, and an input is a reviewed, pin-able Core revision either way.
 
 ## Outputs
 
@@ -38,6 +65,11 @@ pyproject version, the SHA and the `v*` release tags at that SHA:
   — a mismatched tag must never ship);
 - otherwise (no release tag, or more than one) → `<pyproject>+g<sha12>`.
 
+Versions compare through their canonical PEP 440 form: numeric
+pre/post/dev suffixes normalize as integers with the omitted number meaning
+zero (`v3.2.0rc01` releases `3.2.0rc1`; a bare `rc` equals `rc0`), while
+release segments stay literal (`v3.2` is not `3.2.0`).
+
 The local form is unique per commit, satisfies a `==<pyproject>` pin, sorts
 newer than the same public version, and PyPI rejects local versions, so an
 untagged wheel can never be published by accident. The rule is applied only
@@ -47,20 +79,28 @@ the repository.
 ## Artifact layout
 
 One artifact named `<artifact_name>` (or `<prefix>-<sha12>`) containing the
-wheel, the sdist, and `core-wheel.json`:
+wheel, the sdist, and `core-wheel.json`. The manifest goes through the typed
+contract in `.github/scripts/core_wheel_manifest.py`
+(`CoreWheelManifest` + `parse_manifest`): the workflow serializes it with a
+JSON encoder, never by interpolating ref text into a heredoc — a legal ref
+containing a quote must still produce valid JSON. The schema, five string
+fields exactly:
 
-```json
-{
-  "sha": "<40-hex commit>",
-  "version": "<wheel version>",
-  "requested_ref": "<the core_ref input>",
-  "wheel": "<wheel file name>",
-  "wheel_sha256": "<sha256 of the wheel file>"
-}
-```
+| Field | Rule |
+|---|---|
+| `sha` | 40 lowercase hex — the commit built (peeled) |
+| `version` | non-empty single line — the wheel version |
+| `requested_ref` | non-empty single line — the `core_ref` input, verbatim |
+| `wheel` | file name (no path separators) |
+| `wheel_sha256` | 64 lowercase hex |
 
-A second artifact, `installed-profile-smoke`, carries the installed-wheel
-smoke evidence, exactly as `publish.yml` always did.
+Unknown keys are rejected by the parser; consumers read these fields through
+the contract, not by re-guessing a raw dict.
+
+A second artifact, `<wheel artifact name>-installed-profile-smoke`, carries
+the installed-wheel smoke evidence, exactly as `publish.yml` always did; the
+name derives from the wheel artifact's name so two invocations from one
+caller cannot collide.
 
 ## Build provenance
 
@@ -73,6 +113,13 @@ reports it as `core_sha` (string or null). Source checkouts and wheels built
 before MOR-4408 have no file: the reader returns unknown and `core_sha` is
 null. The reader never falls back to `git` at runtime — an installed package
 inside an unrelated git repository would report the wrong repository.
+
+The installed-wheel smoke verifies the stamped resource through the
+CONTROLS' contract reader (`stamp_build_info.py --verify-file
+--expect-sha`), which works for a Core ref of any age — refs older than the
+contract have no `rigplane.core.build_info` module of their own; the
+controls carry it for them. The runtime reader is exercised additionally,
+but only when the target package has the module.
 
 `_build_info.json` is intentionally not gitignored: hatchling excludes
 ignored files from the wheel. The repository itself must never carry the

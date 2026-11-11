@@ -7,6 +7,12 @@ name: Core wheel
 # Station, RigDeck CI) call this workflow or install its artifact; Pro does
 # NOT install the wheel — it freezes a sibling source checkout of the same
 # SHA and reuses only the stamp script (docs/internals/core-wheel-workflow.md).
+#
+# Caller independence: in a called workflow github.repository and github.sha
+# belong to the CALLER, so every checkout, CORE_REMOTE and every control
+# script name rigplane/rigplane-core explicitly. Controls (the resolver,
+# version, stamp and manifest scripts) come from inputs.controls_ref; Core's
+# own callers pass their triggering SHA, external callers get Core's main.
 
 on:
   workflow_call:
@@ -14,6 +20,11 @@ on:
       core_ref:
         description: Core ref to build - a tag, a branch, or a 40-hex commit SHA
         required: true
+        type: string
+      controls_ref:
+        description: Core ref the workflow controls (resolver, version, stamp, manifest, smoke scripts) are checked out from; pin the revision you call this workflow at
+        required: false
+        default: 'main'
         type: string
       artifact_name:
         description: Exact artifact name (overrides artifact_name_prefix)
@@ -52,6 +63,11 @@ on:
         description: Core ref to build - a tag, a branch, or a 40-hex commit SHA
         required: true
         type: string
+      controls_ref:
+        description: Core ref the workflow controls are checked out from
+        required: false
+        default: 'main'
+        type: string
       artifact_name_prefix:
         description: Artifact name is <prefix>-<sha12>
         required: false
@@ -68,8 +84,9 @@ permissions:
 
 jobs:
   resolve:
-    # The light pool: this is one `git ls-remote` (plus an exact-SHA fetch
-    # only when no ref advertises the SHA), no build tools needed.
+    # The light pool: this is one `git ls-remote` plus (for a raw object ID)
+    # one exact-SHA fetch that also peels tag objects to their commit; no
+    # build tools needed.
     runs-on: [self-hosted, Linux, ARM64, light]
     timeout-minutes: 5
     outputs:
@@ -78,10 +95,15 @@ jobs:
       requested_ref: ${{ steps.resolve.outputs.requested_ref }}
       tags_json: ${{ steps.resolve.outputs.tags_json }}
     steps:
+      # Controls always come from Core itself, never from the caller: in a
+      # called workflow github.repository/github.sha identify the CALLER
+      # (e.g. a private Pro repo), so both the repository and the ref are
+      # named here.
       - name: Check out reviewed workflow controls
         uses: actions/checkout@v6
         with:
-          ref: ${{ github.sha }}
+          repository: rigplane/rigplane-core
+          ref: ${{ inputs.controls_ref }}
           persist-credentials: false
 
       # Light-pool contract (base-controlled-gates-v1.test.js): a job that
@@ -100,7 +122,9 @@ jobs:
         shell: bash
         env:
           CORE_REF: ${{ inputs.core_ref }}
-          CORE_REMOTE: ${{ github.server_url }}/${{ github.repository }}.git
+          # The Core repository, fixed — never github.repository, which in
+          # a called workflow names the caller.
+          CORE_REMOTE: https://github.com/rigplane/rigplane-core.git
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
@@ -126,19 +150,23 @@ jobs:
       wheel_sha256: ${{ steps.wheel.outputs.wheel_sha256 }}
       artifact_name: ${{ steps.artifact.outputs.artifact_name }}
     steps:
-      # Controls come from the workflow's own ref; the built tree comes from
-      # the resolved SHA, in a throwaway directory, exactly like
+      # Controls come from Core at inputs.controls_ref; the built tree comes
+      # from the resolved SHA, in a throwaway directory, exactly like
       # private-core-artifact.yml checks a target ref next to its controls.
+      # Both name Core explicitly: github.repository in a called workflow is
+      # the CALLER's repository.
       - name: Check out reviewed workflow controls
         uses: actions/checkout@v6
         with:
-          ref: ${{ github.sha }}
+          repository: rigplane/rigplane-core
+          ref: ${{ inputs.controls_ref }}
           path: control
           persist-credentials: false
 
       - name: Check out the resolved Core commit
         uses: actions/checkout@v6
         with:
+          repository: rigplane/rigplane-core
           ref: ${{ needs.resolve.outputs.sha }}
           path: core
           persist-credentials: false
@@ -238,24 +266,46 @@ jobs:
             --candidate-sha "$RESOLVED_SHA" \
             --forbid-root "$GITHUB_WORKSPACE" \
             | tee "$GITHUB_WORKSPACE/installed-profile-smoke.json"
-          # The wheel must report its own provenance: the stamped build
-          # info is the contract consumers rely on at runtime.
-          core_sha="$(UV_OFFLINE=true .venv/bin/python -c \
-            'from rigplane.core.build_info import load_build_info; print(load_build_info().git_sha or "")')"
-          if [[ "$core_sha" != "$RESOLVED_SHA" ]]; then
-            echo "installed wheel reports core_sha '$core_sha', expected '$RESOLVED_SHA'" >&2
-            exit 1
+          # The wheel must carry its own provenance. The stamped resource
+          # is verified through the CONTROLS' contract reader (the stamp
+          # script loads build_info.py by file path), so any Core ref
+          # passes — refs older than the contract have no
+          # rigplane.core.build_info module of their own.
+          stamped="$(UV_OFFLINE=true .venv/bin/python -c \
+            'import importlib.resources; print(importlib.resources.files("rigplane.core") / "_build_info.json")')"
+          uv run --no-project python "$GITHUB_WORKSPACE/control/scripts/release/stamp_build_info.py" \
+            --verify-file "$stamped" \
+            --expect-sha "$RESOLVED_SHA"
+          # The runtime reader is exercised only when the target package
+          # has the module at all.
+          if UV_OFFLINE=true .venv/bin/python -c \
+            'import importlib.util, sys; sys.exit(0 if importlib.util.find_spec("rigplane.core.build_info") else 1)'
+          then
+            core_sha="$(UV_OFFLINE=true .venv/bin/python -c \
+              'from rigplane.core.build_info import load_build_info; print(load_build_info().git_sha or "")')"
+            if [[ "$core_sha" != "$RESOLVED_SHA" ]]; then
+              echo "installed wheel reports core_sha '$core_sha', expected '$RESOLVED_SHA'" >&2
+              exit 1
+            fi
           fi
         env:
           WHEEL_NAME: ${{ steps.wheel.outputs.wheel_name }}
 
       - name: Write core-wheel.json and resolve the artifact name
+        # core-wheel.json goes through the typed contract
+        # (core_wheel_manifest.py, a JSON encoder): a legal ref containing
+        # a quote must still produce valid JSON, which shell interpolation
+        # into a heredoc cannot guarantee. Values reach the script through
+        # env-derived argv, never through ${{ }} text substitution.
         id: artifact
         working-directory: core
         shell: bash
         env:
           ARTIFACT_NAME_INPUT: ${{ inputs.artifact_name }}
           ARTIFACT_NAME_PREFIX: ${{ inputs.artifact_name_prefix }}
+          WHEEL_NAME: ${{ steps.wheel.outputs.wheel_name }}
+          WHEEL_SHA256: ${{ steps.wheel.outputs.wheel_sha256 }}
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
           set -euo pipefail
           if [[ -n "$ARTIFACT_NAME_INPUT" ]]; then
@@ -263,21 +313,21 @@ jobs:
           else
             artifact_name="${ARTIFACT_NAME_PREFIX}-${RESOLVED_SHA:0:12}"
           fi
-          cat > dist/core-wheel.json <<'JSON'
-          {
-            "sha": "${{ needs.resolve.outputs.sha }}",
-            "version": "${{ steps.version.outputs.version }}",
-            "requested_ref": "${{ inputs.core_ref }}",
-            "wheel": "${{ steps.wheel.outputs.wheel_name }}",
-            "wheel_sha256": "${{ steps.wheel.outputs.wheel_sha256 }}"
-          }
-          JSON
+          uv run --no-project python ../control/.github/scripts/core_wheel_manifest.py \
+            --sha "$RESOLVED_SHA" \
+            --version "$VERSION" \
+            --requested-ref "$CORE_REF" \
+            --wheel "$WHEEL_NAME" \
+            --wheel-sha256 "$WHEEL_SHA256" \
+            --output dist/core-wheel.json
           echo "artifact_name=$artifact_name" >> "$GITHUB_OUTPUT"
 
       - name: Upload installed-profile smoke evidence
+        # Derived from the wheel artifact name: two invocations from one
+        # caller (distinct core_refs) must not collide on this name.
         uses: actions/upload-artifact@v7
         with:
-          name: installed-profile-smoke
+          name: ${{ steps.artifact.outputs.artifact_name }}-installed-profile-smoke
           path: installed-profile-smoke.json
           retention-days: 3
 
