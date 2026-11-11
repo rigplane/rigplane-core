@@ -339,6 +339,21 @@ describe('scope-control intents', () => {
     expectOnlyScopeCall('onSpanChange', 1);
   });
 
+  // MOR-4392 (coordinator ruling 2026-11-10): on Icom span is a CENTER-mode
+  // setting — in a fixed-edges mode (FIX/S-F) the window is wire-owned and a
+  // SPAN step writes nothing, so the keys render DISABLED (never silently
+  // inert) while the granted width stays on display.
+  it.each([1, 3])('shows SPAN disabled in scope mode %i (fixed edges), width still displayed', (mode) => {
+    authorityHarness.current = authority({ scopeControls: scopeFacts({ mode: field(mode) }) });
+    const target = mountToolbar();
+    const keys = ['Decrease span', 'Scope span', 'Increase span']
+      .map((title) => buttons(target).find((item) => item.title === title)!);
+    for (const key of keys) expect(key.disabled).toBe(true);
+    expect(keys[1]!.textContent).toContain('±50k');
+    for (const key of keys) { key.click(); flushSync(); }
+    for (const [, spy] of scopeSpies()) expect(spy).not.toHaveBeenCalled();
+  });
+
   it('routes speed down/up through exactly one clamped intent', () => {
     const target = mountToolbar();
     buttons(target).find((item) => item.title === 'Decrease speed')!.click();
