@@ -198,6 +198,8 @@ class ScopeSession:
         set_center/set_fixed would (single-scope output streams only the
         selected receiver), through the same configure/reconcile
         mechanism — captured and restored like every other setting.
+        Dual is radio-global: the session keys it once, at receiver 0,
+        whichever receiver the caller passed.
         """
         await self.configure(receiver=receiver, dual=enabled)
 
@@ -260,6 +262,9 @@ class ScopeSession:
                 self._fixed.pop((value.range_index, value.edge), None)
 
     def observe(self, name: ScopeSetting, value: ScopeValue, receiver: int = 0) -> None:
+        if name == "dual":
+            # Radio-global setting: the same single key configure() builds.
+            receiver = 0
         if name == "fixed_edge" and isinstance(value, ScopeFixedEdge):
             matching = [
                 key
@@ -422,7 +427,14 @@ class ScopeSession:
                             == (value.range_index, value.edge)
                         ):
                             del self._desired[key]
-                self._desired[receiver, cast(ScopeSetting, name)] = value
+                # dual is radio-global (0x27 0x13 carries no receiver), so
+                # desired/applied/previous/uncertain key it once, at receiver
+                # 0 — however the caller addressed it (set_dual/set_center/
+                # set_fixed pass the SUB receiver for a SUB subscription).
+                # observe() keys a radio-reported dual the same way.
+                self._desired[
+                    0 if name == "dual" else receiver, cast(ScopeSetting, name)
+                ] = value
             try:
                 await self._reconcile()
             except ValueError:
