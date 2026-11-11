@@ -34,9 +34,11 @@ def _fixture_datagrams() -> list[bytes]:
     return datagrams
 
 
-def _spec(radio_port: int, receive_port: int) -> UdpIqSourceSpec:
+def _spec(
+    radio_port: int, receive_port: int, host: str = "127.0.0.1"
+) -> UdpIqSourceSpec:
     return UdpIqSourceSpec(
-        host="127.0.0.1",
+        host=host,
         radio_port=radio_port,
         receive_port=receive_port,
         sample_rate_hz=48_000,
@@ -54,28 +56,13 @@ def _free_udp_port() -> int:
         return int(sock.getsockname()[1])
 
 
-class _Collector:
-    def __init__(self) -> None:
-        self.blocks: list[IqBlock] = []
-        self._lock = threading.Lock()
-
-    def __call__(self, block: IqBlock) -> None:
-        with self._lock:
-            self.blocks.append(block)
-
-    def wait_for(self, count: int) -> list[IqBlock]:
-        wait_until(lambda: len(self.blocks) >= count)
-        with self._lock:
-            return list(self.blocks)
-
-
 @dataclass
 class _Harness:
     source: XieguUdpIqSource
     radio: socket.socket
     receive_port: int
     clock: ManualClock
-    collector: _Collector
+    blocks: list[IqBlock]
 
     def send(self, payload: bytes, *, count: int = 1) -> None:
         for _ in range(count):
@@ -88,35 +75,40 @@ class _Harness:
         except TimeoutError:
             return None
 
+    def wait_for(self, count: int) -> list[IqBlock]:
+        wait_until(lambda: len(self.blocks) >= count)
+        return list(self.blocks)
+
 
 @contextmanager
 def _source(
     *,
     center_hz: int | None = None,
     opened: bool = True,
-    start_grace_s: float = 0.5,
-    start_settle_s: float = 0.5,
-    stall_s: float = 2.0,
+    start_grace_s: float = 0.1,
+    start_settle_s: float = 0.1,
+    stall_s: float = 1.0,
+    host: str = "127.0.0.1",
 ) -> Iterator[_Harness]:
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as radio:
         radio.bind(("127.0.0.1", 0))
         receive_port = _free_udp_port()
         clock = ManualClock()
         source = XieguUdpIqSource(
-            _spec(int(radio.getsockname()[1]), receive_port),
+            _spec(int(radio.getsockname()[1]), receive_port, host),
             clock=clock,
             start_grace_s=start_grace_s,
             start_settle_s=start_settle_s,
             stall_s=stall_s,
         )
-        collector = _Collector()
-        source.on_block(collector)
+        blocks: list[IqBlock] = []
+        source.on_block(blocks.append)
         if center_hz is not None:
             source.set_center_freq(center_hz)
         if opened:
             source.open()
         try:
-            yield _Harness(source, radio, receive_port, clock, collector)
+            yield _Harness(source, radio, receive_port, clock, blocks)
         finally:
             source.close()
 
@@ -143,7 +135,7 @@ def test_fixture_replay_emits_scaled_complex64_blocks_at_recorded_centre() -> No
         harness.source.open()  # idempotent
         for datagram in datagrams:
             harness.send(datagram)
-        blocks = harness.collector.wait_for(2)
+        blocks = harness.wait_for(2)
 
     samples = np.concatenate([block.samples for block in blocks])
     assert len(samples) == 20 * 192
@@ -159,7 +151,7 @@ def test_no_block_is_emitted_before_a_centre_is_recorded() -> None:
         harness.send(bytes(768), count=10)
         harness.send(bytes(767))  # ordered behind the valid datagrams
         wait_until(lambda: harness.source.dropped_datagrams == 1)
-        assert harness.collector.blocks == []
+        assert harness.blocks == []
 
 
 def test_bad_length_and_other_sender_are_dropped_without_samples() -> None:
@@ -169,25 +161,21 @@ def test_bad_length_and_other_sender_are_dropped_without_samples() -> None:
             other.bind(("127.0.0.1", 0))
             other.sendto(bytes(768), ("127.0.0.1", harness.receive_port))
         wait_until(lambda: harness.source.dropped_datagrams == 2)
-        assert harness.collector.blocks == []
+        assert harness.blocks == []
 
 
 def test_already_flowing_stream_never_causes_a_tune_command() -> None:
-    with _source(
-        center_hz=7_183_000, start_grace_s=0.05, start_settle_s=0.05, stall_s=10.0
-    ) as harness:
+    with _source(center_hz=7_183_000, stall_s=10.0) as harness:
         harness.send(bytes(768), count=10)
-        harness.collector.wait_for(1)
+        harness.wait_for(1)
         harness.clock.advance(1.0)
         harness.send(bytes(768), count=10)
-        harness.collector.wait_for(2)
+        harness.wait_for(2)
         assert harness.command() is None
 
 
 def test_settled_centre_starts_silent_stream_with_exact_vfo() -> None:
-    with _source(
-        center_hz=7_183_000, start_grace_s=0.1, start_settle_s=0.1, stall_s=1.0
-    ) as harness:
+    with _source(center_hz=7_183_000) as harness:
         harness.clock.advance(0.2)
         assert harness.command(timeout=2.0) == encode_tune(7_175_000)
 
@@ -214,9 +202,7 @@ def test_out_of_range_vfo_means_no_tune_command(center_hz: int) -> None:
 
 
 def test_no_second_command_before_stall_interval() -> None:
-    with _source(
-        center_hz=7_183_000, start_grace_s=0.1, start_settle_s=0.1, stall_s=1.0
-    ) as harness:
+    with _source(center_hz=7_183_000) as harness:
         harness.clock.advance(0.2)
         assert harness.command(timeout=2.0) == encode_tune(7_175_000)
         harness.clock.advance(0.5)
@@ -243,3 +229,53 @@ def test_fixed_rate_and_idempotent_close_send_nothing() -> None:
         harness.source.close()
         harness.source.close()
         assert harness.command() is None
+        harness.source.open()
+        harness.clock.advance(200.0)
+        assert harness.source.center_freq_hz == 0
+        assert harness.command() is None
+
+
+@pytest.mark.parametrize("field", ["start_grace_s", "start_settle_s", "stall_s"])
+@pytest.mark.parametrize("value", [float("nan"), float("inf")])
+def test_nonfinite_timing_is_rejected(field: str, value: float) -> None:
+    with pytest.raises(ValueError, match="finite"):
+        with _source(opened=False, **{field: value}):
+            pass
+
+
+def test_hostname_peer_receives_blocks_without_repeated_start() -> None:
+    with _source(center_hz=7_183_000, host="localhost") as harness:
+        harness.send(bytes(768), count=10)
+        harness.wait_for(1)
+        harness.clock.advance(0.6)
+        assert harness.command() is None
+
+
+def test_malformed_radio_datagram_marks_next_block_overflowed() -> None:
+    with _source(center_hz=7_183_000) as harness:
+        harness.send(bytes(768))
+        harness.send(bytes(767))
+        harness.send(bytes(768), count=10)
+        blocks = harness.wait_for(2)
+
+    assert len(blocks[0].samples) == 192
+    assert blocks[0].overflow is False
+    assert blocks[1].overflow is True
+
+
+def test_connection_reset_does_not_end_reader(monkeypatch: pytest.MonkeyPatch) -> None:
+    real_recvfrom = socket.socket.recvfrom
+    reset = threading.Event()
+
+    def recvfrom(sock: socket.socket, size: int) -> tuple[bytes, tuple[str, int]]:
+        if sock.getsockname()[0] == "0.0.0.0" and not reset.is_set():
+            reset.set()
+            raise ConnectionResetError("transient radio loss")
+        return real_recvfrom(sock, size)
+
+    monkeypatch.setattr(socket.socket, "recvfrom", recvfrom)
+    with _source(center_hz=7_183_000) as harness:
+        wait_until(lambda: reset.is_set())
+        harness.send(bytes(768), count=10)
+        harness.wait_for(1)
+        assert harness.source.is_open is True

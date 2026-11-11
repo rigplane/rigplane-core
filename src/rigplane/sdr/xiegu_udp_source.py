@@ -7,6 +7,7 @@ import socket
 import struct
 import threading
 import time
+from math import isfinite
 from typing import Any, Callable
 
 from rigplane.core._optional_deps import _require_numpy
@@ -30,14 +31,10 @@ def encode_tune(hz: int) -> bytes:
 class XieguUdpIqSource:
     """Receive a radio-owned UDP IQ stream without independently tuning it.
 
-    Ten datagrams are batched into each full block: 1920 samples at the
-    measured rate, or about 40 ms, so consumers run near 25 Hz rather than
-    250 Hz. A partial block is emitted after that same interval.
-
-    The tune command writes the radio VFO. It is therefore sent only after
-    the recorded controller centre has settled and the stream has been
-    silent for the configured grace/stall interval. ``close()`` sends no
-    stop command: none exists, and the radio keeps streaming until powered off.
+    Ten datagrams form a 1920-sample block (about 40 ms, 25 callbacks/s);
+    partial blocks flush after the same interval. Tune writes wait for a
+    settled centre and silent stream. ``close()`` sends nothing: the radio
+    has no stop command and streams until powered off.
     """
 
     def __init__(
@@ -52,10 +49,14 @@ class XieguUdpIqSource:
         _require_numpy()
         import numpy as np
 
+        timings = (start_grace_s, start_settle_s, stall_s)
+        if not all(isfinite(value) for value in timings):
+            raise ValueError("timing values must be finite")
         if start_grace_s < 0 or start_settle_s < 0 or stall_s <= 0:
             raise ValueError("start_grace_s/start_settle_s must be >= 0; stall_s > 0")
 
         self._spec = spec
+        self._peer_host = socket.gethostbyname(spec.host)
         self._np = np
         self._clock = clock
         self._start_grace_s = float(start_grace_s)
@@ -127,9 +128,11 @@ class XieguUdpIqSource:
                 raise
 
     def close(self) -> None:
-        """Stop locally without telling the radio to stop; idempotent."""
+        """Stop locally and withdraw VFO-write authorization; idempotent."""
         with self._lock:
             self._is_open = False
+            self._center_freq = 0
+            self._center_changed_s = self._clock()
             self._stop.set()
             sock = self._socket
             self._socket = None
@@ -167,7 +170,6 @@ class XieguUdpIqSource:
             return self._center_freq
 
     def set_sample_rate(self, hz: int) -> None:
-        """Accept only the fixed rate declared by the wire profile."""
         if hz != self._spec.sample_rate_hz:
             raise ValueError(
                 f"sample_rate_hz is fixed at {self._spec.sample_rate_hz}, got {hz}"
@@ -184,7 +186,6 @@ class XieguUdpIqSource:
         return (self._spec.tune_min_hz, self._spec.tune_max_hz)
 
     def on_block(self, callback: Callable[[IqBlock], None] | None) -> None:
-        """Set (or clear with ``None``) the single block callback."""
         with self._lock:
             self._callback = callback
 
@@ -225,55 +226,71 @@ class XieguUdpIqSource:
             pending_overflow = False
             self._deliver(block)
 
-        while not self._stop.is_set():
-            try:
-                payload, address = sock.recvfrom(65535)
-            except TimeoutError:
-                pass
-            except OSError as exc:
-                if not self._stop.is_set():
-                    logger.warning("UDP IQ receive failed: %s", exc)
-                break
-            else:
-                now = self._clock()
-                if address[0] != self._spec.host or len(payload) != expected_size:
-                    with self._lock:
-                        self._dropped_datagrams += 1
+        try:
+            while not self._stop.is_set():
+                try:
+                    payload, address = sock.recvfrom(65535)
+                except ConnectionResetError:
+                    pass
+                except TimeoutError:
+                    pass
+                except OSError as exc:
+                    if not self._stop.is_set():
+                        logger.warning("UDP IQ receive failed: %s", exc)
+                    break
                 else:
-                    with self._lock:
-                        previous_valid = self._last_valid_s
-                        self._last_valid_s = now
-                        center = self._center_freq
-                    if (
-                        previous_valid is not None
-                        and now - previous_valid >= self._stall_s
-                    ):
+                    now = self._clock()
+                    if address[0] != self._peer_host:
+                        with self._lock:
+                            self._dropped_datagrams += 1
+                    elif len(payload) != expected_size:
+                        with self._lock:
+                            self._dropped_datagrams += 1
                         flush()
                         pending_overflow = True
-                    if pending and center != pending_center:
-                        flush()
-                    if center != 0:
-                        pairs = self._np.frombuffer(payload, dtype="<i2").astype(
-                            self._np.float32
-                        )
-                        pairs = pairs.reshape(-1, 2)
-                        samples = self._np.empty(
-                            self._spec.samples_per_datagram, dtype=self._np.complex64
-                        )
-                        samples.real = pairs[:, 0]
-                        samples.imag = pairs[:, 1]
-                        samples *= self._np.float32(1 / 32768)
-                        if not pending:
-                            pending_center = center
-                            pending_started_s = now
-                        pending.append(samples)
-                        if len(pending) >= _DATAGRAMS_PER_BLOCK:
+                    else:
+                        with self._lock:
+                            previous_valid = self._last_valid_s
+                            self._last_valid_s = now
+                            center = self._center_freq
+                        if (
+                            previous_valid is not None
+                            and now - previous_valid >= self._stall_s
+                        ):
                             flush()
+                            pending_overflow = True
+                        if pending and center != pending_center:
+                            flush()
+                        if center != 0:
+                            pairs = self._np.frombuffer(payload, dtype="<i2").astype(
+                                self._np.float32
+                            )
+                            pairs = pairs.reshape(-1, 2)
+                            samples = self._np.empty(
+                                self._spec.samples_per_datagram,
+                                dtype=self._np.complex64,
+                            )
+                            samples.real = pairs[:, 0]
+                            samples.imag = pairs[:, 1]
+                            samples *= self._np.float32(1 / 32768)
+                            if not pending:
+                                pending_center = center
+                                pending_started_s = now
+                            pending.append(samples)
+                            if len(pending) >= _DATAGRAMS_PER_BLOCK:
+                                flush()
 
-            now = self._clock()
-            if pending and now - pending_started_s >= self._block_period_s:
-                flush()
-            self._maybe_start(now)
+                now = self._clock()
+                if pending and now - pending_started_s >= self._block_period_s:
+                    flush()
+                self._maybe_start(now)
+        finally:
+            if not self._stop.is_set():
+                with self._lock:
+                    self._is_open = False
+                    if self._socket is sock:
+                        self._socket = None
+                sock.close()
 
     def _maybe_start(self, now: float) -> None:
         """Send the current settled VFO only while the stream is silent."""
@@ -298,7 +315,7 @@ class XieguUdpIqSource:
                 # Keep the lock through sendto so a centre update cannot make
                 # this VFO-write stale between the snapshot and the wire.
                 sock.sendto(
-                    encode_tune(vfo_hz), (self._spec.host, self._spec.radio_port)
+                    encode_tune(vfo_hz), (self._peer_host, self._spec.radio_port)
                 )
             except OSError as exc:
                 logger.warning("UDP IQ tune command failed: %s", exc)

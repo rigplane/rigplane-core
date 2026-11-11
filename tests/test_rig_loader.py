@@ -9,6 +9,7 @@ import json
 import re
 import textwrap
 import tomllib
+from dataclasses import astuple
 from decimal import Decimal
 from hashlib import sha256
 from pathlib import Path
@@ -22,7 +23,6 @@ from rigplane.profiles import (
     BandInfo,
     ControlSpec,
     FreqRangeInfo,
-    IqLanSpec,
     RadioProfile,
     TxPolicy,
     get_radio_profile,
@@ -178,19 +178,10 @@ class TestLoadRig:
     def test_iq_lan_loads_as_optional_typed_profile_data(self, tmp_path):
         rig = load_rig(_write_toml(tmp_path, _MINIMAL_TOML + _IQ_LAN_TOML))
 
-        expected = IqLanSpec(
-            protocol="xiegu_udp",
-            radio_port=50002,
-            receive_port=50001,
-            sample_rate_hz=48000,
-            samples_per_datagram=192,
-            center_offset_hz=8000,
-            usable_bandwidth_hz=40000,
-            tune_min_hz=100000,
-            tune_max_hz=54000000,
-        )
-        assert rig.iq_lan == expected
-        assert rig.to_profile().iq_lan == expected
+        expected = ("xiegu_udp", 50002, 50001, 48000, 192)
+        expected += (8000, 40000, 100000, 54000000)
+        assert astuple(rig.iq_lan) == expected
+        assert rig.to_profile().iq_lan == rig.iq_lan
 
     def test_profile_without_iq_lan_has_none(self, tmp_path):
         rig = load_rig(_write_toml(tmp_path, _MINIMAL_TOML))

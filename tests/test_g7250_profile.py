@@ -11,6 +11,7 @@ a transmit claim: the audit never keyed the radio.
 from __future__ import annotations
 
 import tomllib
+from dataclasses import astuple
 from pathlib import Path
 
 import pytest
@@ -119,16 +120,9 @@ def test_identity_is_g7250_with_the_live_baud_and_model_id() -> None:
 def test_iq_lan_wire_facts_are_profile_data() -> None:
     iq_lan = get_radio_profile("G7250").iq_lan
 
-    assert iq_lan is not None
-    assert iq_lan.protocol == "xiegu_udp"
-    assert iq_lan.radio_port == 50002
-    assert iq_lan.receive_port == 50001
-    assert iq_lan.sample_rate_hz == 48000
-    assert iq_lan.samples_per_datagram == 192
-    assert iq_lan.center_offset_hz == 8000
-    assert iq_lan.usable_bandwidth_hz == 40000
-    assert iq_lan.tune_min_hz == 100000
-    assert iq_lan.tune_max_hz == 54000000
+    expected = ("xiegu_udp", 50002, 50001, 48000, 192)
+    expected += (8000, 40000, 100000, 54000000)
+    assert astuple(iq_lan) == expected
 
 
 def test_registry_rows_resolve_the_model() -> None:

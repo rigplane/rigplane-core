@@ -73,19 +73,7 @@ def test_udp_source_spec_kind_and_optional_bandwidth() -> None:
     assert spec.usable_bandwidth_hz is None
 
 
-@pytest.mark.parametrize(
-    "field",
-    [
-        "radio_port",
-        "receive_port",
-        "sample_rate_hz",
-        "samples_per_datagram",
-        "center_offset_hz",
-        "usable_bandwidth_hz",
-        "tune_min_hz",
-        "tune_max_hz",
-    ],
-)
+@pytest.mark.parametrize("field", tuple(_udp_spec_kwargs())[1:])
 def test_udp_source_spec_rejects_bool_for_integer_fields(field: str) -> None:
     values = _udp_spec_kwargs()
     values[field] = True
