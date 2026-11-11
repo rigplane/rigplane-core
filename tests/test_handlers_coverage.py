@@ -2125,6 +2125,30 @@ async def test_control_run_registers_unregisters_and_sends_hello() -> None:
     assert hello["type"] == "hello"
     assert hello["connected"] is True
     assert hello["radio_ready"] is True
+    # A source checkout carries no stamped build-info file, so an unstamped
+    # server reports core_sha null — never a guess (MOR-4408).
+    assert hello["core_sha"] is None
+
+
+async def test_control_hello_reports_stamped_core_sha(monkeypatch) -> None:
+    """hello carries the stamped build provenance when present (MOR-4408)."""
+    from rigplane.core.build_info import BuildInfo
+    from rigplane.web.handlers import ControlHandler
+    from rigplane.web.handlers import control as control_module
+
+    sha = "0123456789abcdef0123456789abcdef01234567"
+    ws = SimpleNamespace(send_text=AsyncMock())
+    radio = SimpleNamespace(connected=True, radio_ready=True)
+    handler = ControlHandler(ws, radio, "9.9.9", "IC-7610")
+    monkeypatch.setattr(
+        control_module,
+        "load_build_info",
+        lambda: BuildInfo(git_sha=sha, requested_ref="main"),
+    )
+    await handler._send_hello()
+    hello = decode_json(ws.send_text.await_args.args[0])
+    assert hello["type"] == "hello"
+    assert hello["core_sha"] == sha
 
 
 @pytest.mark.asyncio

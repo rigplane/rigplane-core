@@ -377,6 +377,10 @@ def _api_channel_payload_contracts() -> dict[str, ApiWirePayload]:
                 "proto": "control-channel protocol version, currently 1",
                 "server": 'always "rigplane"',
                 "version": "server version string",
+                "core_sha": (
+                    "build provenance from the stamped core/_build_info.json "
+                    "(MOR-4408); null when the build was not stamped"
+                ),
                 "radio": "active radio model name",
                 "connected": "backend radio link state",
                 "radio_ready": "backend radio readiness (CI-V healthy)",
@@ -1269,15 +1273,16 @@ def _golden_control_hello_document() -> GoldenTextDocument:
     ``_send_hello`` sends it (:func:`rigplane.web.protocol.encode_json`:
     compact separators, the producer's key order). The control channel
     has no separate attach ack — this hello is itself the proof of the
-    attach. ``version``, ``radio`` and ``capabilities`` are example
-    values (they follow the live server and radio); the keys and their
-    order are the contract, which the replay test pins."""
+    attach. ``version``, ``core_sha``, ``radio`` and ``capabilities`` are
+    example values (they follow the live server and radio); the keys and
+    their order are the contract, which the replay test pins."""
     from .handlers.control import control_hello_message  # noqa: TID251
     from .protocol import encode_json  # noqa: TID251
 
     text = encode_json(
         control_hello_message(
             version="3.1.2",
+            core_sha="d26ab7ca4bb2755cbdcc4270862b53e534ab6c14",
             radio="IC-7610",
             connected=True,
             radio_ready=True,
