@@ -883,8 +883,20 @@ class CallerContextPinsTest(unittest.TestCase):
             "controls x2 and the built commit x1 must all name Core",
         )
 
-    def test_controls_ref_and_built_ref(self) -> None:
-        self.assertEqual(self.wheel.count("ref: ${{ inputs.controls_ref }}"), 2)
+    def test_controls_follow_the_called_workflows_own_commit(self) -> None:
+        # CodeQL cache-poisoning root fix (MOR-4408): the controls used to
+        # be checked out from a caller-controlled inputs.controls_ref — a
+        # privileged checkout of caller-chosen code (two HIGH alerts).
+        # job.workflow_sha is the documented job-context identity (GitHub
+        # Actions, April 2026) of the commit of the workflow file that
+        # defines this job — exactly the revision the caller invoked with
+        # uses: — so no dispatcher or caller can choose different code as
+        # controls. github.* cannot express this: in a called workflow
+        # github.workflow_sha names the CALLER's workflow file. Not
+        # available on GitHub Enterprise Server, which this repository
+        # does not use.
+        self.assertNotIn("controls_ref", self.wheel)
+        self.assertEqual(self.wheel.count("ref: ${{ job.workflow_sha }}"), 2)
         self.assertEqual(self.wheel.count("ref: ${{ needs.resolve.outputs.sha }}"), 1)
 
     def test_core_remote_is_fixed_to_core(self) -> None:
@@ -892,9 +904,14 @@ class CallerContextPinsTest(unittest.TestCase):
             "CORE_REMOTE: https://github.com/rigplane/rigplane-core.git", self.wheel
         )
 
-    def test_controls_ref_input_defaults_to_main_on_both_triggers(self) -> None:
-        self.assertIn("controls_ref:", self.wheel)
-        self.assertEqual(self.wheel.count("default: 'main'"), 2)
+    def test_no_controls_ref_input_remains_on_any_trigger(self) -> None:
+        # The input is gone from BOTH triggers — including
+        # workflow_dispatch: a dispatcher must not choose which code runs
+        # as controls; dispatch uses the dispatched ref's own revision,
+        # schedule the default branch's. With the input removed, nothing
+        # can override the job.workflow_sha checkout pinned above.
+        self.assertNotIn("controls_ref", self.wheel)
+        self.assertNotIn("default: 'main'", self.wheel)
 
     def test_smoke_evidence_artifact_name_is_derived_per_invocation(self) -> None:
         build = _job_text(self.wheel, "build")
@@ -965,6 +982,18 @@ class CoreWheelWorkflowPinsTest(unittest.TestCase):
         build = _job_text(self.wheel, "build")
         self.assertEqual(build.count("npm run build"), 1)
         self.assertEqual(build.count("run: uv build"), 1)
+
+    def test_build_job_runs_without_actions_caches(self) -> None:
+        # CodeQL cache-poisoning root fix (MOR-4408): the build job
+        # executes code from the checked-out target ref, so no Actions
+        # cache may be written or read around it — a shared cache is a
+        # poisoning path in the privileged scheduled context. The cost is
+        # a cold npm ci and uv install per build; accepted.
+        build = _job_text(self.wheel, "build")
+        self.assertIn("enable-cache: false", build)
+        self.assertNotIn("enable-cache: true", self.wheel)
+        self.assertNotIn("cache: 'npm'", build)
+        self.assertNotIn("cache-dependency-path", self.wheel)
 
     def test_installed_profile_smoke_judges_the_target_revision(self) -> None:
         # P1 (MOR-4408): the profile catalog is revision-specific — v3.1.4
@@ -1039,9 +1068,11 @@ class CoreWheelWorkflowPinsTest(unittest.TestCase):
         self.assertRegex(build, r"(?m)^    needs: validate$")
         self.assertIn("uses: ./.github/workflows/core-wheel.yml", build)
         self.assertIn("core_ref: ${{ github.sha }}", build)
-        # Core's own caller pins the controls to the triggering commit —
-        # the reviewed revision — instead of the workflow's main default.
-        self.assertIn("controls_ref: ${{ github.sha }}", build)
+        # controls_ref is no longer an input: core-wheel.yml checks the
+        # controls out at its own job.workflow_sha, which for this
+        # same-repo call IS the triggering commit. There is nothing to
+        # pass (CodeQL cache-poisoning fix, MOR-4408).
+        self.assertNotIn("controls_ref", build)
         self.assertIn("artifact_name: dist", build)
         self.assertNotIn("steps:", build)
         self.assertNotIn("npm", build)
@@ -1063,7 +1094,7 @@ class CoreWheelWorkflowPinsTest(unittest.TestCase):
         self.assertIn("group: core-wheel-nightly", self.nightly)
         self.assertIn("uses: ./.github/workflows/core-wheel.yml", self.nightly)
         self.assertIn("core_ref: main", self.nightly)
-        self.assertIn("controls_ref: main", self.nightly)
+        self.assertNotIn("controls_ref", self.nightly)
         # The cron slot justification must stay next to the schedule.
         self.assertIn("# 05:10 UTC", self.nightly)
 
