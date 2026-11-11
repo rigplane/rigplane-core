@@ -407,9 +407,7 @@ class TestReadinessAbortInsideRecovery:
         try:
             with (
                 _ConnectOnceStubs(radio),
-                patch.object(
-                    radio, "_gate_lan_identity", new=AsyncMock(return_value=True)
-                ),
+                patch.object(radio, "probe_connection_identity", new=AsyncMock()),
                 patch(
                     "rigplane.runtime._control_phase.wait_for_radio_startup_ready",
                     new=readiness_fails_once,
