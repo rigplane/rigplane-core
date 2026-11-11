@@ -107,7 +107,18 @@ async def _counting_stack(
     web: WebServer | None = None
     try:
         await radio.connect()
-        web = WebServer(radio, WebConfig(host="127.0.0.1", port=0, discovery=False))
+        # The ``rigplane web`` order and config: the gate + sweep prime the
+        # acquisition drain, the same path the CLI smoke relies on for freq.
+        web = WebServer(
+            radio,
+            WebConfig(
+                host="127.0.0.1",
+                port=0,
+                discovery=False,
+                await_initial_state=True,
+                radio_model=model,
+            ),
+        )
         await web.start()
         yield web, radio, sim, fetch_at
     finally:
