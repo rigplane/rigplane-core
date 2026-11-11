@@ -680,10 +680,15 @@ async def test_follow_span_gesture_in_observed_fix_writes_nothing(model):
         await session.reconcile()
         assert sim.writes == []
         assert session.observed is not None and session.observed.mode == 1
+        # The FIX window streams before the gesture, so the grant is
+        # already clipped to it at subscribe time (no stale wide grant).
+        source.feed_frame(ScopeFrame(0, 1, 14_050_000, 14_200_000, bytes(475), False))
+        await sub.receive()
+        assert sub.granted.view == View(14_050_000, 14_150_000)
         # A follow span gesture inside FIX writes nothing at all.
         grant = await source.set_view(FollowView("vfo", 50_000), 0)
         assert grant.view == View(14_075_000, 14_125_000)
-        assert grant.coverage is None
+        assert grant.coverage == Coverage(14_050_000, 14_200_000)
         assert sim.writes == []
         # ...and a hub resubscribe (the real gesture path) is equally quiet.
         gesture = await hub.subscribe(
@@ -692,7 +697,7 @@ async def test_follow_span_gesture_in_observed_fix_writes_nothing(model):
         try:
             assert sim.writes == []
             assert gesture.granted.view == View(14_075_000, 14_125_000)
-            assert gesture.granted.coverage is None
+            assert gesture.granted.coverage == Coverage(14_075_000, 14_125_000)
         finally:
             await gesture.close()
     finally:
