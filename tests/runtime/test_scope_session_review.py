@@ -834,15 +834,11 @@ async def test_external_dual_flip_flop_leaves_the_restore_set(windowed_sdk):
             # the restore set.
             sim._scope_13 = 0
             sim.push_scope_setting(b"\x13\x00")
-            assert await await_until(
-                lambda: session._applied.get((0, "dual")) is False
-            )
+            assert await await_until(lambda: session._applied.get((0, "dual")) is False)
             # External flop back to dual: adopted too — the radio's choice.
             sim._scope_13 = 1
             sim.push_scope_setting(b"\x13\x01")
-            assert await await_until(
-                lambda: session._applied.get((0, "dual")) is True
-            )
+            assert await await_until(lambda: session._applied.get((0, "dual")) is True)
             writes_before_close = len(_dual_writes(sim))
         assert await await_until(lambda: not radio.scope_session().active)
         # The radio's own dual survives the close: teardown wrote no
@@ -875,9 +871,7 @@ async def test_external_single_is_adopted_no_reassert_no_restore(windowed_sdk):
             # External switch to single: adopted under the radio-global key.
             sim._scope_13 = 0
             sim.push_scope_setting(b"\x13\x00")
-            assert await await_until(
-                lambda: session._applied.get((0, "dual")) is False
-            )
+            assert await await_until(lambda: session._applied.get((0, "dual")) is False)
             acquisition_writes = len(_dual_writes(sim))
             # A MAIN follow request drives a real reconcile (span/mode for
             # MAIN): dual must NOT be re-asserted over the adopted single.
