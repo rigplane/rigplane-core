@@ -114,6 +114,9 @@ export class ScopeStream {
     }
     this.retryNeeded = false;
     const previous = this.subscriptionsValue;
+    // A grant acknowledges the preceding intent until the changed request
+    // receives its own response; keep its pixels, but retire that acknowledgment.
+    this.grantedStore.set(null);
     this.subscriptionKey = key;
     this.subscriptionsValue = next.map(request => ({ ...request, view: { ...request.view } }));
     this.subscriptionValue = this.subscriptionsValue[0] ?? null;

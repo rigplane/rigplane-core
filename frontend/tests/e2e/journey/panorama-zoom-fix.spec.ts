@@ -1,10 +1,9 @@
 import { writeFile } from 'node:fs/promises';
-import { installSampler, settlePassband, passbandGaps } from './panorama-passband-probe';
+import { installSampler, settlePassband, passbandGaps, watchScopeFrames } from './panorama-passband-probe';
 import { createReadStream } from 'node:fs';
 import { expect, test } from '@playwright/test';
 import type { WsCommand } from '../../../src/lib/types/protocol';
 import type { ScopeSubscription } from '../../../src/lib/runtime/scope-view';
-import { parseCurrentScopeFrame } from '../../../src/lib/runtime/scope-frame';
 import { startJourneyServer } from './server-process';
 import { parseScopeWriteReceipt } from './panorama-receipt';
 import { expectPanoramaClean, expectPanoramaSettled, watchPanoramaErrors } from './panorama-guards';
@@ -17,20 +16,6 @@ import { expectPanoramaClean, expectPanoramaSettled, watchPanoramaErrors } from 
 // width behind. Item 4: the filter passband overlay disappeared after
 // CTR ↔ FIX switching at ±250k. These specs pin all three on the harness.
 
-function watchScopeFrames(page: import('@playwright/test').Page) {
-  const frames: Array<{ view: number[]; pixels: boolean; receivedAt: number }> = [];
-  page.on('websocket', (socket) => {
-    if (!socket.url().endsWith('/api/v1/scope')) return;
-    socket.on('framereceived', ({ payload }) => {
-      if (typeof payload === 'string') return;
-      const buffer = Uint8Array.from(payload).buffer;
-      const parsed = parseCurrentScopeFrame(buffer, { source: 'radio', sourceId: 'radio', epoch: 0 });
-      if (parsed.ok) frames.push({ view: [parsed.frame.viewStartHz, parsed.frame.viewEndHz],
-        pixels: parsed.frame.pixels?.some((value) => value > 0) === true, receivedAt: performance.now() });
-    });
-  });
-  return frames;
-}
 
 async function scopeWriteReceipts(evidence: string) {
   let contents = '';
@@ -332,3 +317,51 @@ for (const [index, model] of ['IC-705', 'IC-7300'].entries()) {
     } finally { await server.kill(); }
   });
 }
+
+test('IC-7610: preset FIX zoom keeps the negotiated subscription and radio window', async ({ page }, info) => {
+  const port = 18944;
+  const evidence = info.outputPath('radio.jsonl');
+  const server = await startJourneyServer(port, 14_250_000,
+    ['--model', 'IC-7610', '--evidence', evidence], 'tests/e2e/panorama_web_server.py');
+  const watch = watchPanoramaErrors(page);
+  const frames = watchScopeFrames(page);
+  const subscriptions: ScopeSubscription[] = [];
+  page.on('websocket', socket => {
+    if (!socket.url().endsWith('/api/v1/scope')) return;
+    socket.on('framesent', ({ payload }) => {
+      if (typeof payload !== 'string') return;
+      const request = JSON.parse(payload) as ScopeSubscription & { type: 'subscribe' };
+      if (request.type === 'subscribe') subscriptions.push(request);
+    });
+  });
+  try {
+    await installSampler(page);
+    await page.goto(`http://127.0.0.1:${port}/?ui=v2`);
+    await settlePassband(page, port);
+    await page.getByTestId('scope-more').first().click();
+    await page.getByTestId('scope-zoom-in').first().click();
+    await expect.poll(() => frames.at(-1)?.view[1]! - frames.at(-1)?.view[0]!).toBe(50_000);
+    await page.getByTestId('scope-preset-select').first().selectOption('0');
+    const preset = subscriptions.at(-1)!.view;
+    expect('startHz' in preset).toBe(true);
+    if (!('startHz' in preset)) throw new Error('Preset did not request absolute bounds');
+    await expect.poll(() => frames.at(-1)?.view).toEqual([preset.startHz, preset.endHz]);
+    await expect(page.getByRole('radio', { name: 'FIX', exact: true }).first()).toBeChecked();
+    await expect(page.locator('.waterfall-content .passband-overlay')).toBeVisible({ timeout: 30_000 });
+    const writesBefore = (await scopeWriteReceipts(evidence)).length;
+    const requestsBefore = subscriptions.length;
+    const fromT = await page.evaluate(() => performance.now());
+    await page.getByTestId('scope-zoom-in').first().click();
+    await expect.poll(() => page.evaluate(() => window.passbandSamples.at(-1)?.gates)).toMatchObject({
+      viewStartHz: 14_162_500, viewEndHz: 14_337_500,
+    });
+    await page.waitForTimeout(1500);
+    expect(subscriptions.length).toBe(requestsBefore);
+    expect((await scopeWriteReceipts(evidence)).length).toBe(writesBefore);
+    await expect(page.getByRole('radio', { name: 'FIX', exact: true }).first()).toBeChecked();
+    expect(frames.at(-1)?.view).toEqual([preset.startHz, preset.endHz]);
+    expect(passbandGaps(await page.evaluate(() => window.passbandSamples), fromT,
+      await page.evaluate(() => performance.now())).every(gap => gap.frames <= 1)).toBe(true);
+    expectPanoramaSettled(watch);
+  } finally { await server.kill(); }
+});

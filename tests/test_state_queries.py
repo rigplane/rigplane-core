@@ -29,6 +29,8 @@ from rigplane.core.state_pipeline_contracts import (
 )
 from rigplane.core.state_store import StateSnapshot, StateStore
 from rigplane.exceptions import CommandError
+from rigplane.radio import IcomRadio
+from rigplane.types import bcd_encode
 from rigplane.profiles import resolve_radio_profile
 from rigplane.profiles.rig_loader import discover_rigs
 from rigplane.rigctld.server import RigctldServer
@@ -1151,19 +1153,47 @@ class TestScopeFixedEdgeSlot:
     @pytest.mark.parametrize("receiver", [0, 1])
     def test_numeric_active_frequency_paths_match_runtime(self, receiver: int) -> None:
         profile = resolve_radio_profile(model="IC-7610")
-        snapshot = self._snapshot({
-            f"receiver.{receiver}.active.freq_mode.freq_hz": 7_222_000,
-            "scope_controls.global.display.receiver": receiver,
-            "scope_controls.global.display.edge": 2,
-        })
+        snapshot = self._snapshot(
+            {
+                f"receiver.{receiver}.active.freq_mode.freq_hz": 7_222_000,
+                "scope_controls.global.display.receiver": receiver,
+                "scope_controls.global.display.edge": 2,
+            }
+        )
         assert state_queries_module.scope_fixed_edge_slot(profile, snapshot) == (4, 2)
+
+    @pytest.mark.parametrize("model,expected", [("IC-705", None), ("IC-7610", (4, 2))])
+    async def test_real_civ_producer_paths_resolve_the_read_slot(self, model, expected):
+        radio = IcomRadio("127.0.0.1", model=model)
+        for command, data in (
+            (0x03, bcd_encode(7_222_000)),
+            (0x27, b"\x12\x00"),
+            (0x27, b"\x16\x00\x02"),
+        ):
+            frame = parse_civ_frame(
+                build_civ_frame(0xE0, radio._radio_addr, command, data=data)
+            )
+            await radio._civ_runtime._route_civ_frame(
+                frame, generation=radio._civ_epoch
+            )
+        snapshot = radio.state_store.snapshot()
+        assert (
+            snapshot.field(FieldPath.active("0", "freq_mode", "freq_hz")).value
+            == 7_222_000
+        )
+        assert (
+            state_queries_module.scope_fixed_edge_slot(radio._profile, snapshot)
+            == expected
+        )
 
     def test_unknown_dual_receiver_is_not_assumed_main(self) -> None:
         profile = resolve_radio_profile(model="IC-7610")
-        snapshot = self._snapshot({
-            "receiver.0.active.freq_mode.freq_hz": 7_222_000,
-            "scope_controls.global.display.edge": 2,
-        })
+        snapshot = self._snapshot(
+            {
+                "receiver.0.active.freq_mode.freq_hz": 7_222_000,
+                "scope_controls.global.display.edge": 2,
+            }
+        )
         assert state_queries_module.scope_fixed_edge_slot(profile, snapshot) is None
 
     def test_ic7610_band_change_moves_the_addressed_range(self) -> None:

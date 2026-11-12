@@ -1,3 +1,5 @@
+import type { Page } from '@playwright/test';
+import type { ServerState } from '../../../src/lib/types/state';
 import { writeFile } from 'node:fs/promises';
 import { expect, test } from '@playwright/test';
 import { startJourneyServer } from './server-process';
@@ -14,7 +16,12 @@ import { expectPanoramaSettled, watchPanoramaErrors } from './panorama-guards';
 // driving the two scenarios, so the regression assertion names the gate
 // that dropped instead of just "overlay gone".
 
-import { installSampler, settlePassband, passbandGaps, gateDiff } from './panorama-passband-probe';
+import { installSampler, settlePassband, passbandGaps, gateDiff, requireProbeStimulus, watchScopeFrames } from './panorama-passband-probe';
+
+async function radioFrequency(page: Page, port: number): Promise<number> {
+  const state = await (await page.request.get(`http://127.0.0.1:${port}/api/v1/state`)).json() as ServerState;
+  return state.main?.freqHz ?? NaN;
+}
 
 for (const [index, model] of ['IC-705', 'IC-7300'].entries()) {
   test(`${model}: passband overlay holds through a 12-step arrow burst (MOR-4387 owner b4)`, async ({ page }, info) => {
@@ -27,12 +34,19 @@ for (const [index, model] of ['IC-705', 'IC-7300'].entries()) {
       await page.goto(`http://127.0.0.1:${port}/?ui=v2`);
       await settlePassband(page, port);
       await page.waitForTimeout(1000);
+      // Width setup can leave a native range input focused; arrow keys
+      // belong to tuning only after leaving that editor.
+      await page.evaluate(() => { if (document.activeElement instanceof HTMLElement) document.activeElement.blur(); });
+      const beforeHz = await radioFrequency(page, port);
       const fromT = await page.evaluate(() => performance.now());
       // Human-speed burst: 12 ArrowRight presses ~100 ms apart.
       for (let i = 0; i < 12; i++) {
         await page.keyboard.press('ArrowRight');
         await page.waitForTimeout(100);
       }
+      await expect.poll(async () => await radioFrequency(page, port))
+        .toBe(beforeHz + 12_000);
+      requireProbeStimulus(beforeHz, await radioFrequency(page, port), 'up');
       await page.waitForTimeout(2000);
       const toT = await page.evaluate(() => performance.now());
       const samples = await page.evaluate(() => window.passbandSamples);
@@ -62,12 +76,16 @@ for (const [index, model] of ['IC-705', 'IC-7300'].entries()) {
     const server = await startJourneyServer(port, 14_250_000,
       ['--model', model, '--evidence', info.outputPath('radio.jsonl')], 'tests/e2e/panorama_web_server.py');
     const watch = watchPanoramaErrors(page);
+    const frames = watchScopeFrames(page);
     try {
       await installSampler(page);
       await page.goto(`http://127.0.0.1:${port}/?ui=v2`);
       await settlePassband(page, port);
       await page.waitForTimeout(1000);
       await page.getByRole('button', { name: 'More scope controls' }).first().click();
+      await expect.poll(() => frames.filter(f => f.pixels).length).toBeGreaterThan(2);
+      const beforeWidth = frames.at(-1)!.view[1]! - frames.at(-1)!.view[0]!;
+      const frameMark = frames.length;
       const fromT = await page.evaluate(() => performance.now());
       // ZOOM+ twice: each halves the requested width; on the simulator's
       // preset ladder (±50k → ±25k → …) each press switches the granted
@@ -76,6 +94,9 @@ for (const [index, model] of ['IC-705', 'IC-7300'].entries()) {
       await page.waitForTimeout(800);
       await page.getByTestId('scope-zoom-in').first().click();
       await page.keyboard.press('Escape');
+      await expect.poll(() => frames.slice(frameMark).some(f => f.pixels && f.view[1]! - f.view[0]! < beforeWidth)).toBe(true);
+      const afterWidth = frames.slice(frameMark).filter(f => f.pixels).at(-1)!;
+      requireProbeStimulus(beforeWidth, afterWidth.view[1]! - afterWidth.view[0]!, 'down');
       await page.waitForTimeout(2000);
       const toT = await page.evaluate(() => performance.now());
       const samples = await page.evaluate(() => window.passbandSamples);

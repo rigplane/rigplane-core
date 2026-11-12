@@ -4,6 +4,7 @@ import { expect, test } from '@playwright/test';
 import { parseCurrentScopeFrame, parseScopeGranted } from '../../../src/lib/runtime/scope-frame';
 import type { ScopeGranted, ScopeSubscription } from '../../../src/lib/runtime/scope-view';
 import type { WsCommand } from '../../../src/lib/types/protocol';
+import { readPassbandDiagnostics } from './panorama-passband-probe';
 import { startJourneyServer } from './server-process';
 import { parseScopeWriteReceipt } from './panorama-receipt';
 import { expectPanoramaSettled, watchPanoramaErrors } from './panorama-guards';
@@ -332,7 +333,7 @@ for (const [index, model] of ['IC-705', 'IC-7300'].entries()) {
           : [subscription.view.startHz, subscription.view.endHz];
         // Readback may lead the animated viewport. The exact-coordinate
         // oracle below applies only after that displayed window settles.
-        await expect.poll(async () => JSON.parse((await panel.getAttribute('data-passband-gates')) ?? '{}'))
+        await expect.poll(async () => readPassbandDiagnostics(await panel.getAttribute('data-passband-gates')))
           .toMatchObject({ viewStartHz: bounds[0], viewEndHz: bounds[1] });
         const expectedHz = Math.round((bounds[0]! + fraction * (bounds[1]! - bounds[0]!)) / 1000) * 1000;
         await page.mouse.click(box!.x + box!.width * fraction, box!.y + box!.height * 0.3);

@@ -146,18 +146,35 @@ def scope_fixed_edge_slot(
         or not 1 <= edge <= 4
     ):
         return None
-    try:
-        receiver_value = snapshot.field(
-            FieldPath.scope_control("display", "receiver")
-        ).value
-    except KeyError:
-        receiver_value = 0
-    receiver_id = "sub" if receiver_value == 1 else "main"
-    try:
-        freq_field = snapshot.field(
-            FieldPath.receiver(receiver_id, "freq_mode", "freq_hz")
-        )
-    except KeyError:
+    receiver_value = 0
+    if profile.receiver_count > 1:
+        try:
+            receiver_field = snapshot.field(
+                FieldPath.scope_control("display", "receiver")
+            )
+        except KeyError:
+            return None
+        receiver_value = receiver_field.value
+        if (
+            receiver_field.freshness not in (FreshnessState.FRESH, FreshnessState.STALE)
+            or isinstance(receiver_value, bool)
+            or receiver_value not in (0, 1)
+        ):
+            return None
+    # CI-V produces relative ACTIVE observations under numeric receiver ids;
+    # providers may expose the equivalent unslotted MAIN/SUB spelling.
+    active = FieldPath.active(str(receiver_value), "freq_mode", "freq_hz")
+    plain = FieldPath.receiver(str(receiver_value), "freq_mode", "freq_hz")
+    freq_field = None
+    for path in (active, active.receiver_alias(), plain, plain.receiver_alias()):
+        if path is None:
+            continue
+        try:
+            freq_field = snapshot.field(path)
+            break
+        except KeyError:
+            continue
+    if freq_field is None:
         return None
     freq_hz = freq_field.value
     if (

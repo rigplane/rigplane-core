@@ -28,6 +28,27 @@ export type ScopePassbandDisplay =
   | Readonly<{ state: 'current' | 'stale'; tuple: ScopePassbandTuple; translated?: true }>
   | Readonly<{ state: 'unknown'; reason: string }>
   | Readonly<{ state: 'unsupported' }>;
+/** Diagnostic document emitted by SpectrumPanel and consumed by panorama probes. */
+export interface ScopePassbandDiagnostics {
+  tuneVisible: boolean;
+  confirmed: boolean;
+  freqHz: number | null;
+  viewStartHz: number;
+  viewEndHz: number;
+  inView: boolean;
+  proportional: boolean;
+  mode: string | null;
+  widthHz: number | null;
+  shiftHz: number | null;
+  tuple: boolean;
+  tupleState: ScopePassbandDisplay['state'] | 'legacy' | 'unavailable';
+  tupleReason: string | null;
+  tupleStale: boolean;
+  passbandHz: number;
+  spanPositive: boolean;
+  overlay: boolean;
+}
+
 export interface ScopePassbandDisplayState {
   readonly display: ScopePassbandDisplay;
   readonly identity: string | null;
