@@ -1136,6 +1136,7 @@ class TestScopeFixedEdgeSlot:
         snapshot = self._snapshot(
             {
                 "receiver.main.freq_mode.freq_hz": 7_222_000,
+                "scope_controls.global.display.receiver": 0,
                 "scope_controls.global.display.edge": 2,
             }
         )
@@ -1147,11 +1148,30 @@ class TestScopeFixedEdgeSlot:
             query.sub == 0x1E and query.data != b"\x04\x02" for query in queries
         )
 
+    @pytest.mark.parametrize("receiver", [0, 1])
+    def test_numeric_active_frequency_paths_match_runtime(self, receiver: int) -> None:
+        profile = resolve_radio_profile(model="IC-7610")
+        snapshot = self._snapshot({
+            f"receiver.{receiver}.active.freq_mode.freq_hz": 7_222_000,
+            "scope_controls.global.display.receiver": receiver,
+            "scope_controls.global.display.edge": 2,
+        })
+        assert state_queries_module.scope_fixed_edge_slot(profile, snapshot) == (4, 2)
+
+    def test_unknown_dual_receiver_is_not_assumed_main(self) -> None:
+        profile = resolve_radio_profile(model="IC-7610")
+        snapshot = self._snapshot({
+            "receiver.0.active.freq_mode.freq_hz": 7_222_000,
+            "scope_controls.global.display.edge": 2,
+        })
+        assert state_queries_module.scope_fixed_edge_slot(profile, snapshot) is None
+
     def test_ic7610_band_change_moves_the_addressed_range(self) -> None:
         profile = resolve_radio_profile(model="IC-7610")
         snapshot = self._snapshot(
             {
                 "receiver.main.freq_mode.freq_hz": 14_250_000,
+                "scope_controls.global.display.receiver": 0,
                 "scope_controls.global.display.edge": 1,
             }
         )
@@ -1185,6 +1205,7 @@ class TestScopeFixedEdgeSlot:
         snapshot = self._snapshot(
             {
                 "receiver.main.freq_mode.freq_hz": 7_222_000,
+                "scope_controls.global.display.receiver": 0,
                 "scope_controls.global.display.edge": 2,
             }
         )

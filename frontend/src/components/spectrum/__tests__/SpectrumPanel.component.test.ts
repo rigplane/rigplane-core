@@ -786,6 +786,8 @@ type EmitOverrides = {
   outOfRange?: boolean;
   pixels?: Uint8Array | null;
   sequence?: number;
+  coverageStartHz?: number;
+  coverageEndHz?: number;
 };
 function encodeScopeWire(overrides: EmitOverrides): Uint8Array<ArrayBuffer> {
   const supplied = overrides.pixels === undefined ? new Uint8Array(475).fill(64) : overrides.pixels;
@@ -794,6 +796,7 @@ function encodeScopeWire(overrides: EmitOverrides): Uint8Array<ArrayBuffer> {
   return new Uint8Array(scopeWire({ source: iq ? 'iq_fft' : 'radio', receiver: iq ? null : overrides.receiver ?? 0,
     sourceId: iq ? 'iq_fft' : 'radio', viewStartHz: overrides.startFreq ?? 14_000_000,
     viewEndHz: overrides.endFreq ?? 14_100_000, seq: overrides.sequence ?? 1,
+    coverageStartHz: overrides.coverageStartHz, coverageEndHz: overrides.coverageEndHz,
     outOfRange: overrides.outOfRange ?? false, pixels }));
 }
 function emitFrame(overrides: EmitOverrides = {}): EmitOverrides {
@@ -1364,6 +1367,49 @@ describe('SpectrumPanel component', () => {
     expect(read()).toEqual(settled);
   });
 
+  it('keeps a newer zoom width when the earlier narrow grant arrives late', async () => {
+    authorityHarness.state.current = authority({ frequencyHz: 14_050_000 });
+    const target = mountPanel(); emitFrame(); await flushWaterfallPaint();
+    const read = () => JSON.parse(target.querySelector('.spectrum-panel')!.getAttribute('data-scope-subscription')!);
+    target.querySelector<HTMLButtonElement>('[data-testid="scope-zoom-in"]')!.click(); flushSync();
+    target.querySelector<HTMLButtonElement>('[data-testid="scope-zoom-out"]')!.click(); flushSync();
+    expect(read().view).toEqual({ follow: 'vfo', spanHz: 100_000 });
+    const stream = scopeControllerHarness.stream('hardware');
+    stream.handleMessage({ type: 'granted', ...stream.subscription!,
+      view: { startHz: 14_025_000, endHz: 14_075_000 },
+      coverage: { startHz: 14_025_000, endHz: 14_075_000 }, fps: 20 });
+    flushSync();
+    emitFrame({ startFreq: 14_025_000, endFreq: 14_075_000, sequence: 2 });
+    expect(read().view).toEqual({ follow: 'vfo', spanHz: 100_000 });
+    expect(spectrumRendererHarness.lastOptions.spanHz).toBe(100_000);
+  });
+
+  it('zooms from the displayed preset instead of a hidden earlier follow width', async () => {
+    const target = mountPanel(); emitFrame(); await flushWaterfallPaint();
+    target.querySelector<HTMLButtonElement>('[data-testid="scope-zoom-in"]')!.click(); flushSync();
+    const select = target.querySelector<HTMLSelectElement>('[data-testid="scope-preset-select"]')!;
+    select.value = '0'; select.dispatchEvent(new Event('change', { bubbles: true })); flushSync();
+    const read = () => JSON.parse(target.querySelector('.spectrum-panel')!.getAttribute('data-scope-subscription')!);
+    const preset = read().view;
+    target.querySelector<HTMLButtonElement>('[data-testid="scope-zoom-in"]')!.click(); flushSync();
+    expect(read().view).toEqual({ follow: 'vfo', spanHz: (preset.endHz - preset.startHz) / 2 });
+  });
+
+  it('preserves an absolute preset subscription through a FIX crop and tuning', async () => {
+    const target = mountPanel(); emitFrame(); await flushWaterfallPaint();
+    const select = target.querySelector<HTMLSelectElement>('[data-testid="scope-preset-select"]')!;
+    select.value = '0'; select.dispatchEvent(new Event('change', { bubbles: true })); flushSync();
+    const read = () => JSON.parse(target.querySelector('.spectrum-panel')!.getAttribute('data-scope-subscription')!);
+    const preset = read().view;
+    emitFrame({ mode: 1, startFreq: preset.startHz, endFreq: preset.endHz });
+    target.querySelector<HTMLButtonElement>('[data-testid="scope-zoom-in"]')!.click(); flushSync();
+    expect(read().view).toEqual(preset);
+    expect(spectrumRendererHarness.lastOptions.spanHz).toBe((preset.endHz - preset.startHz) / 2);
+    authorityHarness.state.current = authority({ frequencyHz: 14_060_000 });
+    emitFrame({ mode: 1, startFreq: preset.startHz, endFreq: preset.endHz, sequence: 2 });
+    expect(read().view).toEqual(preset);
+  });
+
   it('clamps the requested width only when an adopted coverage no longer contains it (MOR-4392)', async () => {
     runtimeHarness.state.currentCaps = validateCapabilities({ ...IC7300_CAPABILITIES, ...spanCapabilities, model: 'IC-705' });
     authorityHarness.state.current = authority({ frequencyHz: 14_050_000 });
@@ -1376,7 +1422,12 @@ describe('SpectrumPanel component', () => {
     expect(read().view).toEqual({ follow: 'vfo', spanHz: 200_000 });
     // An external narrowing (front panel / RigDeck) that no longer contains
     // the requested window clamps it to the new coverage — adoption only.
-    emitFrame({ startFreq: 14_000_000, endFreq: 14_100_000, sequence: 3 }); flushSync();
+    const stream = scopeControllerHarness.stream('hardware');
+    stream.handleMessage({ type: 'granted', ...stream.subscription!,
+      view: { startHz: 13_950_000, endHz: 14_150_000 },
+      coverage: { startHz: 13_950_000, endHz: 14_150_000 }, fps: 20 });
+    emitFrame({ startFreq: 13_950_000, endFreq: 14_150_000,
+      coverageStartHz: 14_000_000, coverageEndHz: 14_100_000, sequence: 3 }); flushSync();
     expect(read().view).toEqual({ follow: 'vfo', spanHz: 100_000 });
     target.querySelector<HTMLButtonElement>('[data-testid="scope-zoom-in"]')!.click(); flushSync();
     expect(read().view).toEqual({ follow: 'vfo', spanHz: 50_000 });
