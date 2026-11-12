@@ -69,23 +69,24 @@ def _scope_module(
 
 
 def _scope_path_to_clock(clock: VirtualClock, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Point every module on the driven path at the virtual clock."""
-    import rigplane.runtime._control_phase as control_phase_module
-    import rigplane.runtime.managed_radio_runtime as managed_tx_runtime_module
-    import rigplane.runtime.radio as radio_module
-    import rigplane.runtime.radio_initial_state as initial_state_module
-    import rigplane.web.radio_poller as radio_poller_module
-    import rigplane.web.server as web_server_module
+    """Point every module on the driven path at the virtual clock.
 
-    for module in (
-        control_phase_module,
-        initial_state_module,
-        managed_tx_runtime_module,
-        radio_module,
-        radio_poller_module,
-        web_server_module,
+    Modules are resolved through ``sys.modules`` (via ``import_module``), not
+    the ``import x.y.z as m`` form: the latter walks package *attributes*,
+    which another test can leave pointing at a stale module object after a
+    re-import, while the executing code lives in the ``sys.modules`` entry.
+    """
+    import importlib
+
+    for name in (
+        "rigplane.runtime._control_phase",
+        "rigplane.runtime.radio_initial_state",
+        "rigplane.runtime.managed_radio_runtime",
+        "rigplane.runtime.radio",
+        "rigplane.web.radio_poller",
+        "rigplane.web.server",
     ):
-        _scope_module(clock, monkeypatch, module)
+        _scope_module(clock, monkeypatch, importlib.import_module(name))
 
 
 async def _keyed_station() -> tuple[Any, Any, list[bool]]:
@@ -328,3 +329,30 @@ async def test_full_reconnect_real_path_arms_clean_fetch_once_select_once(
     snapshot = radio.tx_snapshot
     assert snapshot is not None and snapshot.phase is TxPhase.IDLE
     assert snapshot.provider_ready
+
+
+def test_path_scoping_survives_a_stale_package_attribute(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``_scope_path_to_clock`` must scope the executing module, always.
+
+    The gate flake behind MOR-4382's follow-up: on an xdist worker where an
+    earlier test had left ``rigplane.runtime``'s ``radio`` *attribute*
+    pointing at a stale module object, the ``import x.y.z as m`` form of the
+    helper scoped that stale object while ``radio_ready`` kept reading real
+    ``time.monotonic`` from the executing module — so the readiness gate saw
+    a million-second-old mark and skipped the fetch (``fetch_count == 0``).
+    Reproduce that divergence directly: with the attribute swapped out, the
+    soft-path scenario must still pass end to end.
+    """
+    import types
+
+    import rigplane.runtime as runtime_pkg
+
+    stale = types.ModuleType("stale_radio")  # no ``time``/``asyncio`` at all
+    monkeypatch.setattr(runtime_pkg, "radio", stale, raising=False)
+    # The divergence must really be in force, or the scenario below pins nothing.
+    assert runtime_pkg.radio is stale
+    test_soft_recovery_real_path_orders_off_before_fetch_before_reacquire(
+        monkeypatch=monkeypatch
+    )
