@@ -1,3 +1,5 @@
+import { writeFile } from 'node:fs/promises';
+import { installSampler, settlePassband, passbandGaps } from './panorama-passband-probe';
 import { createReadStream } from 'node:fs';
 import { expect, test } from '@playwright/test';
 import { parseCurrentScopeFrame } from '../../../src/lib/runtime/scope-frame';
@@ -246,3 +248,79 @@ test('IC-7610: passband overlay survives CTR↔FIX at ±250k, LSB 3 kHz, after a
     await server.kill();
   }
 });
+
+for (const [index, model] of ['IC-705', 'IC-7300'].entries()) {
+  test(`${model}: FIX crop follows arrows, wheel, click-tune and drag-to-tune (MOR-4387)`, async ({ page }, info) => {
+    const port = 18940 + index;
+    const evidence = info.outputPath('radio.jsonl');
+    const server = await startJourneyServer(port, 14_250_000,
+      ['--model', model, '--evidence', evidence], 'tests/e2e/panorama_web_server.py');
+    const watch = watchPanoramaErrors(page);
+    const frames = watchScopeFrames(page);
+    const commands: string[] = [];
+    const subscriptions: unknown[] = [];
+    page.on('websocket', socket => socket.on('framesent', ({ payload }) => {
+      if (typeof payload !== 'string') return;
+      const message = JSON.parse(payload);
+      if (socket.url().endsWith('/api/v1/control') && message.type === 'command') commands.push(message.name);
+      if (socket.url().endsWith('/api/v1/scope') && message.type === 'subscribe') subscriptions.push(message);
+    }));
+    try {
+      await installSampler(page);
+      await page.goto(`http://127.0.0.1:${port}/?ui=v2`);
+      await settlePassband(page, port);
+      await page.getByRole('radio', { name: 'FIX', exact: true }).first().click();
+      await expect.poll(async () => (await scopeWriteReceipts(evidence)).filter(r => r.sub === 0x14).at(-1)?.data[1]).toBe(1);
+      await expect(page.locator('.waterfall-content .passband-overlay')).toBeVisible();
+      await expect.poll(() => frames.at(-1)?.view).toEqual([14_200_000, 14_300_000]);
+      const writesBefore = (await scopeWriteReceipts(evidence)).length;
+      const commandsBefore = commands.length;
+      const subscriptionsBefore = subscriptions.length;
+      const fromT = await page.evaluate(() => performance.now());
+      await page.getByTestId('scope-more').first().click();
+      for (let i = 0; i < 3; i++) await page.getByTestId('scope-zoom-in').first().click();
+      await page.keyboard.press('Escape');
+      const surface = page.locator('.waterfall-content');
+      const check = async () => {
+        await expect(surface.locator('.tune-line')).toBeVisible();
+        await expect(surface.locator('.passband-overlay')).toBeVisible();
+        const ticks = page.locator('.freq-axis .tick');
+        const start = Number(await ticks.first().textContent()) * 1e6;
+        const end = Number(await ticks.last().textContent()) * 1e6;
+        expect(start).toBeGreaterThanOrEqual(14_200_000);
+        expect(end).toBeLessThanOrEqual(14_300_000);
+        expect(end - start).toBeLessThan(20_000);
+      };
+      await check();
+      for (let i = 0; i < 12; i++) {
+        await page.keyboard.press('ArrowRight'); await page.waitForTimeout(100);
+      }
+      await check();
+      const box = (await surface.boundingBox())!;
+      await page.mouse.move(box.x + box.width / 2, box.y + box.height * 0.7);
+      await page.mouse.wheel(0, -120);
+      await expect.poll(async () => (await (await page.request.get('/api/v1/state')).json()).main.freqHz).toBeGreaterThan(14_262_000);
+      await check();
+      await page.mouse.click(box.x + box.width * 0.7, box.y + box.height * 0.7);
+      await check();
+      const beforeDrag = commands.filter(name => name === 'set_freq').length;
+      await page.mouse.move(box.x + box.width * 0.7, box.y + box.height * 0.7);
+      await page.mouse.down();
+      await page.mouse.move(box.x + box.width * 0.4, box.y + box.height * 0.7, { steps: 6 });
+      await page.mouse.up();
+      await expect.poll(() => commands.filter(name => name === 'set_freq').length).toBeGreaterThan(beforeDrag);
+      await check();
+      await page.waitForTimeout(1000);
+      const toT = await page.evaluate(() => performance.now());
+      const samples = await page.evaluate(() => window.passbandSamples);
+      const gaps = passbandGaps(samples, fromT, toT);
+      await writeFile(info.outputPath('fix-follow-passband.json'), JSON.stringify({ model, gaps, samples }, null, 2));
+      expect(samples.filter(sample => sample.t >= fromT && sample.t <= toT).length).toBeGreaterThan(20);
+      for (const gap of gaps) expect(gap.frames, JSON.stringify(gap)).toBeLessThanOrEqual(1);
+      expect(commands.slice(commandsBefore).filter(name => name.startsWith('set_scope_'))).toEqual([]);
+      expect((await scopeWriteReceipts(evidence)).length).toBe(writesBefore);
+      expect(subscriptions.slice(subscriptionsBefore)).toEqual([]);
+      expectPanoramaSettled(watch);
+    } finally { await server.kill(); }
+  });
+}

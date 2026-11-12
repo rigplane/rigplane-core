@@ -1436,6 +1436,48 @@ describe('SpectrumPanel component', () => {
     expect(target.querySelector('[data-testid="zoom-fixed-hint"]')).toBeNull();
   });
 
+  it.each([
+    [14_010_000, 14_025_000], [14_060_000, 14_060_000], [14_090_000, 14_075_000],
+  ])('centres a FIX zoom on VFO %i clamped to fixed edges (MOR-4387)', async (hz, center) => {
+    runtimeHarness.state.currentCaps = structuredClone(IC7300_CAPABILITIES);
+    authorityHarness.state.current = authority({ frequencyHz: hz });
+    const target = mountPanel(); emitFrame({ mode: 1 }); await flushWaterfallPaint();
+    target.querySelector<HTMLButtonElement>('[data-testid="scope-zoom-in"]')!.click();
+    flushSync(); await flushWaterfallPaint();
+    const options = spectrumRendererHarness.lastOptions;
+    expect(options.spanHz).toBe(50_000);
+    expect(options.centerHz + options.panoramaShiftHz).toBe(center);
+  });
+
+  it('follows confirmed, burst and pending VFO positions with one bounded FIX crop (MOR-4387)', async () => {
+    runtimeHarness.state.currentCaps = structuredClone(IC7300_CAPABILITIES);
+    authorityHarness.state.current = authority({ frequencyHz: 14_050_000 });
+    const target = mountPanel(); emitFrame({ mode: 1 }); await flushWaterfallPaint();
+    const subscription = () => target.querySelector('.spectrum-panel')!.getAttribute('data-scope-subscription');
+    const initial = subscription();
+    target.querySelector<HTMLButtonElement>('[data-testid="scope-zoom-in"]')!.click();
+    flushSync(); await flushWaterfallPaint();
+    const check = async (center: number) => {
+      flushSync(); await flushWaterfallPaint();
+      const options = spectrumRendererHarness.lastOptions;
+      expect(options.spanHz).toBe(50_000);
+      expect(options.centerHz + options.panoramaShiftHz).toBe(center);
+      expect(subscription()).toBe(initial);
+    };
+    for (const [hz, center] of [[14_010_000, 14_025_000], [14_060_000, 14_060_000], [14_090_000, 14_075_000]]) {
+      authorityHarness.state.current = authority({ frequencyHz: hz });
+      await check(center!);
+    }
+    setTuningBurstFrequency(0, 14_030_000); await check(14_030_000);
+    setPendingFrequency(0, 14_040_000); await check(14_030_000);
+    authorityHarness.state.current = authority({ frequencyHz: 14_035_000 });
+    await check(14_030_000);
+    setTuningBurstFrequency(0, null); await check(14_040_000);
+    setPendingFrequency(0, null); await check(14_035_000);
+    emitFrame({ mode: 0 }); flushSync(); await flushWaterfallPaint();
+    expect(spectrumRendererHarness.lastOptions.spanHz).toBe(100_000);
+  });
+
   it('clips a FIX zoom-out to the fixed window instead of hatching beyond it (MOR-4392)', async () => {
     runtimeHarness.state.currentCaps = structuredClone(IC7300_CAPABILITIES);
     authorityHarness.state.current = authority({ frequencyHz: 14_050_000 });
