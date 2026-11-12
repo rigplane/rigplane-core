@@ -199,7 +199,7 @@ async def test_yaesu_poller_dispatches_cat_ab_swap(radio):
     poller = YaesuCatPoller(radio)
     poller._post_write_freq_mode_readback = AsyncMock()
     await poller._execute_command(VfoSwap())
-    radio._transport.write.assert_awaited_once_with("SV;")
+    assert [c.args[0] for c in radio._transport.write.await_args_list] == ["SV;"]
 
 
 @pytest.mark.asyncio
@@ -240,7 +240,7 @@ async def test_yaesu_ab_swap_only_despite_declared_equalize(tmp_path):
     poller = YaesuCatPoller(radio)
     poller._post_write_freq_mode_readback = AsyncMock()
     await poller._execute_command(VfoSwap())
-    radio._transport.write.assert_awaited_once_with("SV;")
+    assert [c.args[0] for c in radio._transport.write.await_args_list] == ["SV;"]
     with pytest.raises(NotImplementedError, match="equal_ab_code"):
         await poller._execute_command(VfoEqualize())
 
