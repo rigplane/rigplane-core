@@ -324,8 +324,11 @@ function inspect(input: ScopePassbandDisplayInput): Inspection {
       tuple, stale: effectiveStale, frequencyCurrent, frequencyAligned,
     context: JSON.stringify(context),
     identity: JSON.stringify([...context, frequency, geometry.view.startHz, geometry.view.endHz]),
+    // FIX follow views clip against native edges, so tuning can change their
+    // width without changing any RF evidence. CENTER still pins the span.
     bandlessIdentity: flatBands.length === 0 ? null
-      : JSON.stringify([...context, geometry.view.endHz - geometry.view.startHz]),
+      : JSON.stringify([...context, geometry.mode === 1 || geometry.mode === 3
+        ? null : geometry.view.endHz - geometry.view.startHz]),
     strict: frequencyAligned && !!strict && strict.receiver === receiver && strict.frequencyHz === frequency
       && modeName(strict.mode ?? undefined) === mode && strict.filter === `FIL${filter}`
       && strict.filterWidthHz === width
