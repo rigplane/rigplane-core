@@ -950,7 +950,7 @@ describe('SpectrumPanel component', () => {
       control.step(-1); flushSync();
       expect(view()).toEqual({ follow: 'vfo', spanHz: 50_000 });
       control.step(second); flushSync();
-      const expected = second === -1 ? 25_000 : 100_000;
+      const expected = second === -1 ? 20_000 : 100_000;
       expect(view()).toEqual({ follow: 'vfo', spanHz: expected });
       expect(control.spanHz).toBe(100_000);
       expect(target.querySelector('[title="Scope span"] .toolbar-value')?.textContent).toBe('±50k');
@@ -964,7 +964,7 @@ describe('SpectrumPanel component', () => {
       target.querySelector<HTMLButtonElement>('[data-testid="scope-zoom-in"]')!.click(); flushSync();
       mockRuntime.scope.spanControl!.step(-1); flushSync();
       const request = JSON.parse(target.querySelector('.spectrum-panel')!.getAttribute('data-scope-subscription')!);
-      expect(request.view).toEqual({ follow: 'vfo', spanHz: 25_000 });
+      expect(request.view).toEqual({ follow: 'vfo', spanHz: 20_000 });
       expect(mockRuntime.scope.spanControl!.spanHz).toBe(100_000);
     });
   });

@@ -266,6 +266,18 @@ class ScopeSourcePlugin(Protocol):
 
     def capabilities(self) -> SourceCapabilities: ...
     def resolve_view(self, view: ViewRequest, receiver: int | None = None) -> View: ...
+    def resolve_follow(
+        self, view: FollowView, native: Coverage, receiver: int | None = None
+    ) -> View:
+        """Granted view for a follow request against live native coverage.
+
+        Each source defines what following means when the streamed
+        native coverage and the requested width disagree: a source
+        that drives its own coverage from the request (the radio, via
+        scope writes) adopts the native coverage, while a source with
+        a fixed native passband (FFT) keeps the requested crop.
+        """
+
     def coverage_for(
         self, view: ViewRequest, receiver: int | None = None
     ) -> Coverage | None: ...

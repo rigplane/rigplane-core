@@ -96,9 +96,36 @@ for (const [index, [model, zoomMode]] of ([['IC-705', 0], ['IC-7300', 0], ['IC-7
         const box = await area.boundingBox(); expect(box).not.toBeNull();
         const before = { subscriptions: sent.length, writes: (await writes()).length, work: await work() };
         if (zoom === 'span') {
-          const widths = zoomMode === 1 ? [25000, 50000, 100000] : [50000, 100000, 250000];
-          await expect(page.getByTestId('scope-span-value').first()).toHaveText(zoomMode === 1 ? '±25k' : '±50k');
-          if (zoomMode === 1) expect((await writes()).filter(receipt => receipt.sub === 0x14).at(-1)?.data[1]).toBe(1);
+          if (zoomMode === 1) {
+            // MOR-4392 (coordinator ruling 2026-11-10): in FIX a SPAN step
+            // is a client crop — it writes NOTHING to the radio (no 0x14
+            // mode flip, no 0x15 span write) and the granted window is the
+            // request clipped to the radio's unchanged fixed window,
+            // including the final widening request that cannot outgrow it.
+            const fixed = [14_225_000, 14_275_000];
+            const spanValue = page.getByTestId('scope-span-value').first();
+            await expect(spanValue).toHaveText('±25k');
+            expect((await writes()).filter(receipt => receipt.sub === 0x14).at(-1)?.data[1]).toBe(1);
+            const receiptsAtFix = (await writes()).length;
+            for (const [step, action] of ['Decrease scope span', 'Increase scope span', ']'].entries()) {
+              const width = [20000, 50000, 100000][step]!;
+              const requested = [14_250_000 - width / 2, 14_250_000 + width / 2];
+              const bounds = [Math.max(requested[0], fixed[0]), Math.min(requested[1], fixed[1])];
+              const mark = frames.length;
+              if (action === ']') await page.keyboard.press(action);
+              else await page.getByRole('button', { name: action, exact: true }).first().click();
+              await expect.poll(() => grants.at(-1)?.view).toEqual({ startHz: bounds[0], endHz: bounds[1] });
+              await expect.poll(() => frames.slice(mark).some(frame => frame.pixels && frame.view.every((hz, i) => hz === bounds[i])
+                && frame.coverage.every((hz, i) => hz === bounds[i]))).toBe(true);
+              await expect(spanValue).toHaveText(`±${(bounds[1] - bounds[0]) / 2000}k`);
+              expect((await writes()).length).toBe(receiptsAtFix);
+            }
+          } else {
+          // MOR-4385: span choices are real view widths (twice the Icom
+          // ±half-width preset), so the steps read like the radio's own
+          // span table and each 0x15 write lands on the width/2 preset.
+          const widths = [50000, 100000, 200000];
+          await expect(page.getByTestId('scope-span-value').first()).toHaveText('±50k');
           for (const [step, action] of ['Decrease scope span', 'Increase scope span', ']'].entries()) {
             const width = widths[step]!;
             const mark = frames.length;
@@ -109,6 +136,8 @@ for (const [index, [model, zoomMode]] of ([['IC-705', 0], ['IC-7300', 0], ['IC-7
             await expect.poll(() => frames.slice(mark).some(frame => frame.pixels && frame.view.every((hz, i) => hz === bounds[i])
               && frame.coverage.every((hz, i) => hz === bounds[i]))).toBe(true);
             await expect(page.getByTestId('scope-span-value').first()).toHaveText(`±${width / 2000}k`);
+            expect((await writes()).filter(receipt => receipt.sub === 0x15).at(-1)?.span).toBe(width / 2);
+          }
           }
         } else {
         await page.mouse.move(box!.x + box!.width * (zoom ? 0.9 : 0.6), box!.y + box!.height * 0.3);
@@ -126,7 +155,9 @@ for (const [index, [model, zoomMode]] of ([['IC-705', 0], ['IC-7300', 0], ['IC-7
         const finalHz = zoom === 'span' ? 14_250_000 : zoom ? 14_290_000 : 14_265_000;
         await expect.poll(async () => (await page.request.get(`http://127.0.0.1:${port}/api/v1/state`)).json()).toMatchObject({ main: { freqHz: finalHz } });
         await expect.poll(async () => Number((await page.locator('.receiver-instrument [data-vfo-freq]').first().innerText()).replace(/\D/g, ''))).toBe(finalHz);
-        const view = zoom === 'span' ? (zoomMode === 1 ? [14_200_000, 14_300_000] : [14_125_000, 14_375_000]) : zoom ? [14_225_000, 14_275_000] : [finalHz - 50_000, finalHz + 50_000];
+        // MOR-4392: the FIX span variant ends clipped to the unchanged
+        // fixed window — the final 100 kHz request cannot outgrow it.
+        const view = zoom === 'span' ? (zoomMode === 1 ? [14_225_000, 14_275_000] : [14_150_000, 14_350_000]) : zoom ? [14_225_000, 14_275_000] : [finalHz - 50_000, finalHz + 50_000];
         const live = frames.slice(quietStart.frames, quietEnd.frames);
         expect.soft(live.length).toBeGreaterThan(10);
         expect.soft((live[0]?.receivedAt ?? Infinity) - quietStart.atMs).toBeLessThan(1000);
