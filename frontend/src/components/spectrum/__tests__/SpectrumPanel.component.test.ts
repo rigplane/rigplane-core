@@ -1307,7 +1307,7 @@ describe('SpectrumPanel component', () => {
     // MOR-4392: the FIX crop never rides the subscription — an absolute view
     // in FIX would make the server rewrite the radio's fixed edges.
     expect(read().view).toEqual({ follow: 'vfo', spanHz: 100_000 });
-    expect(spectrumRendererHarness.lastOptions).toMatchObject({ centerHz: 14_050_000, spanHz: 50_000, sampleSpanHz: 100_000 });
+    expect(spectrumRendererHarness.lastOptions).toMatchObject({ centerHz: 14_050_250, spanHz: 50_000, sampleSpanHz: 100_000 });
   });
 
   it('hatches the uncovered requested margin of a band preset with a typed reason', async () => {
@@ -1440,43 +1440,62 @@ describe('SpectrumPanel component', () => {
     [14_010_000, 14_025_000], [14_060_000, 14_060_000], [14_090_000, 14_075_000],
   ])('centres a FIX zoom on VFO %i clamped to fixed edges (MOR-4387)', async (hz, center) => {
     runtimeHarness.state.currentCaps = structuredClone(IC7300_CAPABILITIES);
-    authorityHarness.state.current = authority({ frequencyHz: hz });
+    authorityHarness.state.current = authority({ frequencyHz: hz, scopeControls: testScopeControls(1) });
     const target = mountPanel(); emitFrame({ mode: 1 }); await flushWaterfallPaint();
     target.querySelector<HTMLButtonElement>('[data-testid="scope-zoom-in"]')!.click();
     flushSync(); await flushWaterfallPaint();
     const options = spectrumRendererHarness.lastOptions;
     expect(options.spanHz).toBe(50_000);
-    expect(options.centerHz + options.panoramaShiftHz).toBe(center);
+    expect(options.centerHz).toBe(center);
   });
 
   it('follows confirmed, burst and pending VFO positions with one bounded FIX crop (MOR-4387)', async () => {
     runtimeHarness.state.currentCaps = structuredClone(IC7300_CAPABILITIES);
-    authorityHarness.state.current = authority({ frequencyHz: 14_050_000 });
+    authorityHarness.state.current = authority({ frequencyHz: 14_050_000, scopeControls: testScopeControls(1) });
     const target = mountPanel(); emitFrame({ mode: 1 }); await flushWaterfallPaint();
     const subscription = () => target.querySelector('.spectrum-panel')!.getAttribute('data-scope-subscription');
     const initial = subscription();
     target.querySelector<HTMLButtonElement>('[data-testid="scope-zoom-in"]')!.click();
     flushSync(); await flushWaterfallPaint();
     const check = async (center: number) => {
-      flushSync(); await flushWaterfallPaint();
+      refreshSpectrumAuthority(); flushSync(); await flushWaterfallPaint();
       const options = spectrumRendererHarness.lastOptions;
       expect(options.spanHz).toBe(50_000);
-      expect(options.centerHz + options.panoramaShiftHz).toBe(center);
+      expect(options.centerHz).toBe(center);
       expect(subscription()).toBe(initial);
     };
     for (const [hz, center] of [[14_010_000, 14_025_000], [14_060_000, 14_060_000], [14_090_000, 14_075_000]]) {
-      authorityHarness.state.current = authority({ frequencyHz: hz });
+      authorityHarness.state.current = authority({ frequencyHz: hz, scopeControls: testScopeControls(1) });
       await check(center!);
     }
     setTuningBurstFrequency(0, 14_030_000); await check(14_030_000);
     setPendingFrequency(0, 14_040_000); await check(14_030_000);
-    authorityHarness.state.current = authority({ frequencyHz: 14_035_000 });
+    authorityHarness.state.current = authority({ frequencyHz: 14_035_000, scopeControls: testScopeControls(1) });
     await check(14_030_000);
     setTuningBurstFrequency(0, null); await check(14_040_000);
     setPendingFrequency(0, null); await check(14_035_000);
+    authorityHarness.state.current = authority({ frequencyHz: 14_035_000, scopeControls: testScopeControls(0) });
+    refreshSpectrumAuthority();
     emitFrame({ mode: 0 }); flushSync(); await flushWaterfallPaint();
     expect(spectrumRendererHarness.lastOptions.spanHz).toBe(100_000);
   });
+
+  it.each([[14_010_000, 100, 40, 14_025_000], [14_090_000, 100, 160, 14_075_000]])(
+    'centres a FIX drag after leaving the clamp at VFO %i', async (hz, from, to, center) => {
+      runtimeHarness.state.currentCaps = structuredClone(IC7300_CAPABILITIES);
+      authorityHarness.state.current = authority({ frequencyHz: hz, scopeControls: testScopeControls(1) });
+      const target = mountPanel(); emitFrame({ mode: 1 }); await flushWaterfallPaint();
+      target.querySelector<HTMLButtonElement>('[data-testid="scope-zoom-in"]')!.click();
+      flushSync(); await flushWaterfallPaint();
+      const surface = target.querySelector<HTMLElement>('.waterfall-content')!;
+      rect(surface);
+      pointer(surface, 'pointerdown', 71, from!);
+      pointer(window, 'pointermove', 71, to!);
+      flushSync(); await flushWaterfallPaint();
+      expect(spectrumRendererHarness.lastOptions.centerHz).toBe(center);
+      pointer(window, 'pointerup', 71, to!);
+    },
+  );
 
   it('clips a FIX zoom-out to the fixed window instead of hatching beyond it (MOR-4392)', async () => {
     runtimeHarness.state.currentCaps = structuredClone(IC7300_CAPABILITIES);
@@ -3381,7 +3400,7 @@ describe('managed scope projection (MOR-2367)', () => {
         pixels: new Uint8Array([10, 100, 200]), sequence: ++sequence });
       state = deliver(); input.state = state;
       input.frame = { source: 'hardware', receiver: 0, providerGeneration: 1,
-        demanded: true, transport: 'connected', transportEpoch: hardwareStream.sessionEpoch, geometry: streamGeometry, receipt: hardwareStream.receipt };
+        demanded: true, transport: 'connected', transportEpoch: hardwareStream.sessionEpoch, geometry: streamGeometry, lastFrameHasPixels: streamGeometry?.hasPixels === true, receipt: hardwareStream.receipt };
       result = projectScopePassbandDisplay(result, input);
       props.set('projection', result.display); flushSync();
     }
@@ -3477,7 +3496,7 @@ describe('managed scope projection (MOR-2367)', () => {
       emitFrame({ startFreq: center - 50_000, endFreq: center + 50_000,
         pixels: new Uint8Array([10, 100, 200]), sequence: ++sequence });
       input.frame = { source: 'hardware', receiver: 0, providerGeneration: 1,
-        demanded: true, transport: 'connected', transportEpoch: hardwareStream.sessionEpoch, geometry: streamGeometry, receipt: hardwareStream.receipt };
+        demanded: true, transport: 'connected', transportEpoch: hardwareStream.sessionEpoch, geometry: streamGeometry, lastFrameHasPixels: streamGeometry?.hasPixels === true, receipt: hardwareStream.receipt };
       result = projectScopePassbandDisplay(result, input);
       props.set('projection', result.display); flushSync();
     }
