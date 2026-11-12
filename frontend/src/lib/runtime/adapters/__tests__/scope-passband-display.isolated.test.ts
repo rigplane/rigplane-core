@@ -766,6 +766,37 @@ describe('coherent RF passband display', () => {
     // holds without fresh geometry evidence.
     expect(project(input, reseated).display.state).toBe('current');
   });
+  it('holds the tuple across the grant placeholder of a regrant (stale, pixel-less geometry)', () => {
+    const input = fixture();
+    const current = project(input);
+    expect(current.display.state).toBe('current');
+    // The regrant beat: scopeGrantedGeometry announces the new window stale
+    // and pixel-less by construction; it is not evidence against the tuple.
+    input.frame = { ...input.frame!, geometry: { ...input.frame!.geometry!, freshness: 'stale', hasPixels: false } };
+    expect(project(input, current)).toBe(current);
+  });
+  it('holds through the full ZOOM preset-switch sequence: placeholder, then the new window', () => {
+    const input = fixture();
+    const current = project(input);
+    expect(current.display.state).toBe('current');
+    input.frame = { ...input.frame!, geometry: { ...input.frame!.geometry!, freshness: 'stale', hasPixels: false } };
+    const held = project(input, current);
+    expect(held).toBe(current);
+    receipt(input, 2, { startFreq: 14_049_000, endFreq: 14_099_000 });
+    const reseated = project(input, held);
+    expect(reseated.display).toMatchObject({ state: 'current', tuple: { startHz: 14_049_000, endHz: 14_099_000 } });
+  });
+  it('still reports the placeholder as frame-unavailable before the first capture', () => {
+    const input = fixture();
+    input.frame = { ...input.frame!, geometry: { ...input.frame!.geometry!, freshness: 'stale', hasPixels: false } };
+    expect(project(input).display).toEqual({ state: 'unknown', reason: 'frame-unavailable' });
+  });
+  it('frame silence (stale WITH the last pixels) is not a placeholder and still retires', () => {
+    const input = fixture();
+    const current = project(input);
+    input.frame = { ...input.frame!, geometry: { ...input.frame!.geometry!, freshness: 'stale' } };
+    expect(project(input, current).display.state).toBe('unknown');
+  });
   it.each([
     ['mode', (i: ScopePassbandDisplayInput) => { edit(i, (s) => { s.main!.mode = 'LSB'; }); }],
     ['DATA', (i: ScopePassbandDisplayInput) => { edit(i, (s) => { s.main!.dataMode = 1; }); }],
