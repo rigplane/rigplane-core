@@ -330,6 +330,10 @@ for (const [index, model] of ['IC-705', 'IC-7300'].entries()) {
         const bounds = 'follow' in subscription.view
           ? [centerHz - subscription.view.spanHz / 2, centerHz + subscription.view.spanHz / 2]
           : [subscription.view.startHz, subscription.view.endHz];
+        // Readback may lead the animated viewport. The exact-coordinate
+        // oracle below applies only after that displayed window settles.
+        await expect.poll(async () => JSON.parse((await panel.getAttribute('data-passband-gates')) ?? '{}'))
+          .toMatchObject({ viewStartHz: bounds[0], viewEndHz: bounds[1] });
         const expectedHz = Math.round((bounds[0]! + fraction * (bounds[1]! - bounds[0]!)) / 1000) * 1000;
         await page.mouse.click(box!.x + box!.width * fraction, box!.y + box!.height * 0.3);
         await expect.poll(async () => (await radioState()).main?.freqHz, { timeout: 10_000 }).toBe(expectedHz);
