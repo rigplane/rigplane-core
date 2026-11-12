@@ -272,6 +272,26 @@ describe('confirmed VFO selection recovery (MOR-2441)', () => {
 });
 
 describe('confirmed tuning display continuity (MOR-2437)', () => {
+  it.each([1, 3])('keeps FIX mode %s tuning continuity when native clipping changes the delivered width', mode => {
+    const input = banded();
+    receipt(input, 1, { mode });
+    let result = project(input);
+    expect(result.display.state).toBe('current');
+    tune(input, 14_075_000, 11);
+    receipt(input, 2, { mode, startFreq: 14_025_000, endFreq: 14_100_000 });
+    result = project(input, result);
+    expect(result.display).toMatchObject({ state: 'stale', translated: true,
+      tuple: { frequencyHz: 14_075_000, startHz: 14_025_000, endHz: 14_100_000 } });
+    const floors = result.floors;
+    // Pixels can lead the next control readback while the held shape recovers.
+    receipt(input, 3, { mode, startFreq: 14_026_000, endFreq: 14_100_000 });
+    result = project(input, result);
+    expect(result.display).toMatchObject({ state: 'stale', translated: true,
+      tuple: { frequencyHz: 14_075_000, startHz: 14_026_000, endHz: 14_100_000 } });
+    expect(result.floors).toEqual(floors);
+    renew(input, 20, 4);
+    expect(project(input, result).display.state).toBe('current');
+  });
   it('holds the last qualified tuple through a stale frequency gap and recovers while tuning continues', () => {
     const input = banded();
     let result = project(input);
