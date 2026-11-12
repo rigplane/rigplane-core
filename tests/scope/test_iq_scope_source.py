@@ -1,6 +1,3 @@
-import math
-import time
-
 import numpy as np
 import pytest
 
@@ -102,15 +99,20 @@ async def test_early_tx_deadline_callback_waits_without_spinning(
     await source.start()
     try:
         source.on_radio_state(None, False)
-        resolution = max(
-            time.get_clock_info("monotonic").resolution, math.ulp(virtual_clock())
-        )
-        # asyncio may run a timer up to one clock resolution early. Keep
-        # virtual time inside that window so a premature callback must defer.
-        virtual_clock.advance(TX_HOLD_S - resolution / 2)
-        await virtual_clock.elapse(resolution / 4)
+        # Run the deadline callback itself early (asyncio may run a timer
+        # up to one clock resolution early): with most of the hold left,
+        # it must defer the release and leave a retry scheduled rather
+        # than release early or spin. Millisecond margins keep this
+        # independent of the float granularity of either clock domain
+        # and of the host clock resolution.
+        await virtual_clock.elapse(TX_HOLD_S / 2)
+        source._tick_controller()
         assert source.tx_frozen
-        await virtual_clock.elapse(resolution * 2)
+        assert source._timer is not None
+        await virtual_clock.elapse(0.001)
+        assert source.tx_frozen
+        virtual_clock.advance(TX_HOLD_S)
+        source._tick_controller()
         assert not source.tx_frozen
     finally:
         await source.stop()
