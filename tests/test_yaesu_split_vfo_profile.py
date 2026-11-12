@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -13,9 +16,11 @@ from rigplane.backends.yaesu_cat.radio import YaesuCatRadio
 from rigplane.commands.command_spec import AbsentCommandSpec
 from rigplane.profiles.rig_loader import RigLoadError, load_rig
 from rigplane.web.handlers.control import ControlHandler
-from rigplane.web.radio_poller import VfoSwap
+from rigplane.web.radio_poller import VfoEqualize, VfoSwap
 from rigplane.web.runtime_helpers import projected_vfo_capability_tags
+from rigplane.web.server import WebConfig, WebServer
 from rigplane_testkit.sim.adapters.yaesu_cat import YaesuCatSerialFake
+from test_web_server import _http_get, _read_http_response
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = ROOT / "tests/fixtures/rigs/yaesu_single_rx_fixture.toml"
@@ -198,6 +203,49 @@ async def test_yaesu_poller_dispatches_cat_ab_swap(radio):
 
 
 @pytest.mark.asyncio
+async def test_yaesu_ab_swap_only_despite_declared_equalize(tmp_path):
+    """MOR-4427 R2 P1-1: projection, admission and execution agree that
+    Yaesu ``ab`` exposes only ``vfo_swap``.
+
+    Even with ``vfo_equalize`` declared in the profile's ``[commands]``
+    table, the shared rule (``RadioProfile.supports_vfo_command``) must
+    not project it, not admit it, and the backend poller must still
+    refuse to execute it — the CAT set has no per-receiver A→B copy
+    primitive.
+    """
+    path = tmp_path / "swap-only.toml"
+    path.write_text(
+        FIXTURE.read_text() + 'vfo_equalize = { cat = { write = "AB;" } }\n'
+    )
+    config = load_rig(path)
+    assert config.to_profile().supports_command("vfo_equalize")
+    radio = YaesuCatRadio("/dev/null", profile=config)
+    radio._transport._connected = True
+    radio._transport.write = AsyncMock()
+    # projection
+    assert radio.profile.supports_vfo_command("vfo_swap")
+    assert not radio.profile.supports_vfo_command("vfo_equalize")
+    assert projected_vfo_capability_tags(radio, None) == {"vfo_swap"}
+    # admission
+    handler = ControlHandler.__new__(ControlHandler)
+    handler._radio = radio
+    queued: list[object] = []
+    queue = SimpleNamespace(put=queued.append)
+    assert handler._enqueue_rc_frequency("vfo_swap", {}, queue, radio) == {}
+    assert len(queued) == 1
+    assert isinstance(queued[0], VfoSwap)
+    with pytest.raises(ValueError, match="not supported"):
+        handler._enqueue_rc_frequency("vfo_equalize", {}, queue, radio)
+    # execution agrees with admission
+    poller = YaesuCatPoller(radio)
+    poller._post_write_freq_mode_readback = AsyncMock()
+    await poller._execute_command(VfoSwap())
+    radio._transport.write.assert_awaited_once_with("SV;")
+    with pytest.raises(NotImplementedError, match="equal_ab_code"):
+        await poller._execute_command(VfoEqualize())
+
+
+@pytest.mark.asyncio
 async def test_fixture_split_and_vfo_roundtrip_over_cat_transport(monkeypatch):
     fake = YaesuCatSerialFake.from_profile(ROOT, SIM_FIXTURE, rig_path=FIXTURE)
     wire: list[str] = []
@@ -237,3 +285,134 @@ async def test_fixture_split_and_vfo_roundtrip_over_cat_transport(monkeypatch):
             assert fake.model.handle(command) == "?;"
     finally:
         await radio._transport.close()
+
+
+@pytest.mark.realtime(
+    reason="real HTTP socket and the production backend poller/readback path"
+)
+@pytest.mark.asyncio
+async def test_vfo_swap_end_to_end_over_http_with_cat_sim(tmp_path, monkeypatch):
+    """MOR-4427 R2 P1-2: ``vfo_swap`` through the real local HTTP API.
+
+    The real ``WebServer`` serves a real fixture-profiled ``YaesuCatRadio``
+    on the CAT simulator: the suite posts ``vfo_swap`` to
+    ``/api/v1/commands`` over a real socket (real handler, real queue,
+    real backend-poller dispatch, real post-write readback — no
+    constructor bypasses, no mocked readback), then reads the exchanged
+    frequencies back from the user-visible ``/api/v1/state``.
+
+    No existing harness serves this fixture over HTTP — the web-server
+    tests use mock/Icom radios and the sim tests stop at the radio layer
+    — so this test composes the two proven pieces (``test_web_server``
+    HTTP helpers + the CAT-sim wiring above). The acquisition section is
+    a test-local variant append: the observation adapter that feeds
+    ``/api/v1/state`` requires ``[state_acquisition]`` metadata, which the
+    committed fixture does not carry.
+    """
+    rig_path = tmp_path / "swap-e2e.toml"
+    rig_path.write_text(
+        FIXTURE.read_text() + "\n[state_acquisition]\n"
+        'provider = "yaesu_cat"\n'
+        "\n[state_acquisition.capabilities]\n"
+        "polling_only = [\n"
+        '    "receiver.main.active.freq_mode.freq_hz",\n'
+        "]\n"
+        "command_response_observable = [\n"
+        '    "receiver.main.active.freq_mode.freq_hz",\n'
+        "]\n"
+    )
+    radio = YaesuCatRadio("/dev/fixture", profile=load_rig(rig_path))
+    fake = YaesuCatSerialFake.from_profile(ROOT, SIM_FIXTURE, rig_path=rig_path)
+    wire: list[str] = []
+    handle = fake.model.handle_with_outcome
+
+    def logged(line):
+        wire.append(line)
+        return handle(line)
+
+    monkeypatch.setattr(fake.model, "handle_with_outcome", logged)
+
+    async def open_port(*args, **kwargs):
+        return await fake.open_serial_connection()
+
+    monkeypatch.setattr(
+        "rigplane.backends.yaesu_cat.transport.open_serial_port", open_port
+    )
+    await radio._transport.connect()
+    try:
+        await radio.set_freq(14_074_000)
+        await radio.set_freq(14_080_000, receiver=1)
+        server = WebServer(
+            radio,
+            WebConfig(host="127.0.0.1", port=0, keepalive_interval=9999.0),
+        )
+        await server.start()
+        try:
+            host, port = "127.0.0.1", server.port
+
+            async def main_freq_hz() -> int | None:
+                status, _, body = await _http_get(host, port, "/api/v1/state")
+                assert status == 200
+                return json.loads(body).get("main", {}).get("freqHz")
+
+            async def wait_for_freq_hz(want: int) -> None:
+                deadline = time.monotonic() + 10.0
+                while await main_freq_hz() != want:
+                    if time.monotonic() >= deadline:
+                        raise AssertionError(f"state main.freqHz never became {want}")
+                    await asyncio.sleep(0.1)
+
+            # the observation path is live before the swap is submitted
+            await wait_for_freq_hz(14_074_000)
+
+            reader, writer = await asyncio.open_connection(host, port)
+            try:
+                payload = json.dumps(
+                    {"id": "swap-e2e", "name": "vfo_swap", "params": {}}
+                ).encode()
+                writer.write(
+                    (
+                        "POST /api/v1/commands HTTP/1.1\r\n"
+                        f"Host: {host}:{port}\r\n"
+                        "Connection: close\r\nContent-Type: application/json\r\n"
+                        f"Content-Length: {len(payload)}\r\n\r\n"
+                    ).encode()
+                    + payload
+                )
+                await writer.drain()
+                status, _, response = await asyncio.wait_for(
+                    _read_http_response(reader), 10
+                )
+            finally:
+                writer.close()
+                await writer.wait_closed()
+            assert status == 200
+            assert json.loads(response)["ok"] is True
+            assert "SV;" in wire
+            # the exchanged frequencies surface in the user-visible state
+            await wait_for_freq_hz(14_080_000)
+        finally:
+            await server.stop()
+    finally:
+        await radio._transport.close()
+
+
+def test_sim_applies_frequency_domain_to_inactive_slot_writes():
+    """MOR-4427 R2 P2: the single-receiver inactive VFO slot enforces the
+    same frequency domain as VFO A (30 kHz–470 MHz from the fixture
+    ranges); a refused write leaves the slot unchanged."""
+    fake = YaesuCatSerialFake.from_profile(ROOT, SIM_FIXTURE, rig_path=FIXTURE)
+    model = fake.model
+    assert model.handle("FA;") == "FA014074000;"
+    assert model.handle("FB;") == "FB014074000;"
+    # above the max and below the floor are refused on both slots ...
+    assert model.handle("FB999999999;") == "?;"
+    assert model.handle("FB000029999;") == "?;"
+    assert model.handle("FA999999999;") == "?;"
+    assert model.handle("FA;") == "FA014074000;"
+    assert model.handle("FB;") == "FB014074000;"
+    # ... while the domain edges are accepted on both slots.
+    assert model.handle("FB470000000;") is None
+    assert model.handle("FB;") == "FB470000000;"
+    assert model.handle("FA000030000;") is None
+    assert model.handle("FA;") == "FA000030000;"

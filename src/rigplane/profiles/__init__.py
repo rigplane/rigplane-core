@@ -716,6 +716,51 @@ class RadioProfile:
         """
         return command_name in self.command_names
 
+    def supports_vfo_command(self, command_name: str) -> bool:
+        """Whether the VFO-primitive command ``command_name`` is executable.
+
+        Single shared rule for the VFO-swap/equalize admission consumed by
+        capability projection
+        (``web/runtime_helpers.py: projected_vfo_capability_tags``) and
+        command admission
+        (``web/handlers/control.py: _enqueue_rc_frequency``), so the two
+        cannot disagree.
+
+        The Yaesu CAT family declares these primitives as CAT commands,
+        not CI-V opcode bytes: ``ab`` (single-receiver, e.g. the FT-991A
+        class) implements only ``vfo_swap`` (``SV;``) — the CAT set has no
+        per-receiver A→B copy primitive
+        (``YaesuCatRadio.equalize_vfo_ab`` raises, and the backend poller
+        refuses ``VfoEqualize`` without ``equal_ab_code``) — while
+        ``ab_shared`` (dual-RX, e.g. FTX-1) implements both ``vfo_swap``
+        (``SV;``) and ``vfo_equalize`` (``AB;``, OM 2508-C). Every other
+        family keeps its opcode-byte rule.
+        """
+        if command_name not in ("vfo_swap", "vfo_equalize"):
+            return False
+        if self.protocol_type == "yaesu_cat" and self.vfo_scheme in {
+            "ab",
+            "ab_shared",
+        }:
+            if self.vfo_scheme == "ab" and command_name == "vfo_equalize":
+                return False
+            return self.supports_command(command_name)
+        if self.vfo_scheme == "ab":
+            code = (
+                self.swap_ab_code if command_name == "vfo_swap" else self.equal_ab_code
+            )
+            return code is not None
+        if self.vfo_scheme == "main_sub":
+            code = (
+                self.swap_main_sub_code
+                if command_name == "vfo_swap"
+                else self.equal_main_sub_code
+            )
+            return code is not None
+        if self.vfo_scheme == "ab_shared":
+            return self.supports_command(command_name)
+        return False
+
     @property
     def infers_power_on_from_liveness(self) -> bool:
         """Whether power state is inferred from link liveness evidence.

@@ -471,7 +471,14 @@ class YaesuCatModel:
             digits = body[2:]
             if len(digits) != 9 or not digits.isdigit():
                 return REFUSAL
-            inactive.frequency_hz = int(digits)
+            # Same frequency-domain rule the engine applies to VFO A
+            # (``SimEngine`` ``SetFrequency``): an out-of-band inactive
+            # write is refused and leaves the slot unchanged.
+            hz = int(digits)
+            lo, hi = self._engine.frequency_range_hz
+            if not lo <= hz <= hi:
+                return REFUSAL
+            inactive.frequency_hz = hz
             return None
         if body == verb:
             return f"{verb}{self._read_int('frequency_hz', receiver):09d};"
