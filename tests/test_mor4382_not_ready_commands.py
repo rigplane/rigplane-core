@@ -407,7 +407,9 @@ class TestRigctldMirrorReadiness:
 
     @pytest.mark.asyncio
     @_REALTIME
-    @pytest.mark.parametrize("command", [b"f VFOB\n", b"m VFOB\n"])
+    @pytest.mark.parametrize(
+        "command", [b"f VFOB\n", b"m VFOB\n", b"l VFOB STRENGTH\n"]
+    )
     @pytest.mark.parametrize("ready", [False, True])
     async def test_unobserved_sub_is_unavailable(
         self, command: bytes, ready: bool
