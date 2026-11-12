@@ -775,6 +775,22 @@ describe('coherent RF passband display', () => {
     input.frame = { ...input.frame!, geometry: { ...input.frame!.geometry!, freshness: 'stale', hasPixels: false } };
     expect(project(input, current)).toBe(current);
   });
+  it('holds a pixel-less grant even when the health clock marks it fresh', () => {
+    const input = fixture(); const current = project(input);
+    input.frame = { ...input.frame!, geometry: { ...input.frame!.geometry!, freshness: 'fresh', hasPixels: false } };
+    expect(project(input, current).display).toEqual(current.display);
+  });
+  it.each(['mode', 'width', 'provider'] as const)('does not hold an obsolete tuple across a %s change during a grant', kind => {
+    const input = fixture(); const current = project(input);
+    input.frame = { ...input.frame!, geometry: { ...input.frame!.geometry!, freshness: 'stale', hasPixels: false } };
+    if (kind === 'mode') edit(input, state => { state.main!.mode = 'LSB'; });
+    if (kind === 'width') edit(input, state => { state.main!.filterWidth = 1800; });
+    if (kind === 'provider') {
+      edit(input, state => { state.providerGeneration = 2; });
+      editCapabilities(input, caps => { caps.providerGeneration = 2; });
+    }
+    expect(project(input, current).display.state).toBe('unknown');
+  });
   it('holds through the full ZOOM preset-switch sequence: placeholder, then the new window', () => {
     const input = fixture();
     const current = project(input);
