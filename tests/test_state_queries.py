@@ -1150,6 +1150,147 @@ class TestScopeFixedEdgeSlot:
             query.sub == 0x1E and query.data != b"\x04\x02" for query in queries
         )
 
+    @pytest.mark.realtime(reason="real LAN simulator and local HTTP acquisition")
+    @pytest.mark.timeout(120)
+    @pytest.mark.parametrize("model", ["IC-7610", "IC-705"])
+    async def test_fixed_edge_acquisition_through_local_api(self, model):
+        import asyncio
+
+        import aiohttp
+        from rigplane_testkit.icom.scope_control import ScopeControlSimulator
+        from test_web_split_writes import _request
+
+        from rigplane.types import ScopeFixedEdge
+        from rigplane.web.server import WebConfig, WebServer
+        from rigplane.web.state_schema import ServerStatePublic
+
+        profile = resolve_radio_profile(model=model)
+        sim = ScopeControlSimulator(
+            radio_addr=profile.civ_addr, capture_civ_frames=True
+        )
+        sim.profile = profile
+        sim.views[0] = (1, 3, 2)
+        sim.set_frequency(7_222_000)
+        sim.fixed = {
+            bytes([int(str(band.range_index), 16), edge]): ScopeFixedEdge(
+                band.range_index,
+                edge,
+                band.start_hz + edge * 1_000,
+                band.end_hz - edge * 1_000,
+            )
+            for band in profile.scope_fixed_edge_ranges
+            for edge in (1, 2, 3)
+        }
+
+        def fixed_edge_reads():
+            frames = map(parse_civ_frame, sim.civ_frames_received)
+            return [
+                frame.data
+                for frame in frames
+                if frame.command == 0x27 and frame.sub == 0x1E and len(frame.data) == 2
+            ]
+
+        await sim.start()
+        radio = IcomRadio(
+            "127.0.0.1",
+            port=sim.control_port,
+            username="testuser",
+            password="testpass",
+            model=model,
+        )
+        server = WebServer(radio, WebConfig(host="127.0.0.1", port=0, discovery=False))
+        try:
+            await radio.connect()
+            await server.start()
+            async with aiohttp.ClientSession() as client:
+
+                async def acquired(freq_hz, edge):
+                    band = next(
+                        (
+                            band
+                            for band in profile.scope_fixed_edge_ranges
+                            if band.start_hz <= freq_hz < band.end_hz
+                        ),
+                        None,
+                    )
+                    slot = (
+                        bytes([int(str(band.range_index), 16), edge])
+                        if band is not None
+                        else None
+                    )
+                    expected = sim.fixed[slot] if slot is not None else None
+                    state = None
+                    try:
+                        async with asyncio.timeout(50):
+                            while True:
+                                async with client.get(
+                                    f"http://127.0.0.1:{server.port}/api/v1/state"
+                                ) as response:
+                                    assert response.status == 200
+                                    state = ServerStatePublic.model_validate(
+                                        await response.json()
+                                    )
+                                controls = state.scopeControls
+                                fixed = controls.fixedEdge
+                                if (
+                                    state.main.freqHz == freq_hz
+                                    and controls.edge == edge
+                                    and (
+                                        fixed is None
+                                        if expected is None
+                                        else fixed is not None
+                                        and (
+                                            fixed.rangeIndex,
+                                            fixed.edge,
+                                            fixed.startHz,
+                                            fixed.endHz,
+                                        )
+                                        == (
+                                            expected.range_index,
+                                            expected.edge,
+                                            expected.start_hz,
+                                            expected.end_hz,
+                                        )
+                                    )
+                                ):
+                                    return slot
+                    except TimeoutError:
+                        pytest.fail(
+                            f"fixed-edge acquisition: expected {expected}, "
+                            f"last controls={state.scopeControls if state else None}, "
+                            f"CI-V slots={fixed_edge_reads()}"
+                        )
+
+                slot = await acquired(7_222_000, 2)
+                if profile.scope_fixed_edge_ranges:
+                    assert slot == b"\x04\x02"
+                    assert slot in fixed_edge_reads()
+                else:
+                    assert fixed_edge_reads() == []
+                known_at = len(fixed_edge_reads())
+                for name, params in (
+                    ("set_freq", {"freq": 14_250_000}),
+                    ("set_scope_edge", {"edge": 3}),
+                ):
+                    status, result = await _request(server, "http", name, params)
+                    assert status == 200
+                    assert result["ok"] is True
+                slot = await acquired(14_250_000, 3)
+                if profile.scope_fixed_edge_ranges:
+                    assert slot == b"\x06\x03"
+                    assert slot in fixed_edge_reads()[known_at:]
+                else:
+                    assert fixed_edge_reads() == []
+                assert b"\x01\x01" not in fixed_edge_reads()
+        finally:
+            try:
+                await server.stop()
+            finally:
+                try:
+                    await radio.disconnect()
+                finally:
+                    await sim.stop()
+
     @pytest.mark.parametrize("receiver", [0, 1])
     def test_numeric_active_frequency_paths_match_runtime(self, receiver: int) -> None:
         profile = resolve_radio_profile(model="IC-7610")
