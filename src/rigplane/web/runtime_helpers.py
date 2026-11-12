@@ -750,7 +750,7 @@ def projected_vfo_capability_tags(
       declaration is present: ``swap_ab_code``/``equal_ab_code`` for
       ``vfo_scheme == "ab"``, ``swap_main_sub_code``/``equal_main_sub_code``
       for ``vfo_scheme == "main_sub"``, or the ``vfo_swap``/``vfo_equalize``
-      CAT command entries for ``vfo_scheme == "ab_shared"`` (the Yaesu CAT
+      CAT command entries for Yaesu ``ab`` or ``ab_shared`` (the Yaesu CAT
       family declares these as commands, not opcode bytes) — pinned by
       ``test_vfo_tags_match_across_consumers_for_real_profiles`` and
       ``test_vfo_tags_keep_partial_and_mismatched_schemes_in_parity``.
@@ -787,7 +787,14 @@ def projected_vfo_capability_tags(
         return frozenset()
 
     primitives: tuple[tuple[str, int | None], ...]
-    if profile.vfo_scheme == "ab":
+    if profile.protocol_type == "yaesu_cat" and profile.vfo_scheme in {
+        "ab",
+        "ab_shared",
+    }:
+        tags = {
+            tag for tag in ("vfo_swap", "vfo_equalize") if profile.supports_command(tag)
+        }
+    elif profile.vfo_scheme == "ab":
         primitives = (
             ("vfo_swap", profile.swap_ab_code),
             ("vfo_equalize", profile.equal_ab_code),

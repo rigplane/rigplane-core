@@ -2813,7 +2813,12 @@ class ControlHandler:
                         profile = None
                 declared = False
                 if isinstance(profile, RadioProfile):
-                    if profile.vfo_scheme == "ab":
+                    if profile.protocol_type == "yaesu_cat" and profile.vfo_scheme in {
+                        "ab",
+                        "ab_shared",
+                    }:
+                        declared = profile.supports_command(name)
+                    elif profile.vfo_scheme == "ab":
                         declared = (
                             profile.swap_ab_code
                             if name == "vfo_swap"

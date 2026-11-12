@@ -1291,6 +1291,9 @@ class YaesuCatRadio:
     def supports_command(self, command: str, *, receiver: int | None = None) -> bool:
         """Return profile-derived support only for an executable operation."""
         dependencies = {
+            "get_vfo_slot": ("get_vfo_select",),
+            "set_vfo_slot": ("set_vfo_select",),
+            "swap_vfo_ab": ("vfo_swap",),
             "get_tuner_status": ("get_tuner",),
             "set_tuner_status": ("get_tuner", "set_tuner"),
             # RepeaterControlCapable (MOR-2111 tone half): the protocol
@@ -1307,6 +1310,11 @@ class YaesuCatRadio:
             "get_tsql_freq": ("get_ctcss_tone",),
             "set_tsql_freq": ("set_ctcss_tone",),
         }.get(command)
+        if (
+            command in {"get_vfo_slot", "set_vfo_slot", "swap_vfo_ab"}
+            and self._config.vfo_scheme != "ab"
+        ):
+            return False
         if dependencies is None:
             profile_supported = supports_callable(self.profile, command)
         else:
@@ -2894,13 +2902,8 @@ class YaesuCatRadio:
 
     @property
     def transceiver_count(self) -> int:
-        """Number of independent transceivers exposed by this rig.
-
-        FTX-1 is wired as two independent transceivers (HF+50 MHz and
-        144+430 MHz) sharing a single control head; other Yaesu CAT rigs
-        are single-transceiver.
-        """
-        return 2 if self._config.id == "yaesu_ftx1" else 1
+        """Number of independent transceivers declared by the profile."""
+        return self._config.transceiver_count
 
     async def set_tx_source(self, xcvr: int) -> None:
         """Make ``xcvr`` the active TX transceiver (FTX-1 ``FT`` command).
@@ -2963,14 +2966,9 @@ class YaesuCatRadio:
         await self.set_tx_source(tx_xcvr)  # FT{tx_xcvr}: route TX
 
     async def read_split(self) -> bool:
-        """Read split operation state without mutating legacy state.
-
-        Issues a single ``ST`` read. Feeds the observation pipeline via
-        :class:`YaesuObservationAdapter`; the legacy ``self._state`` mirror is
-        not written (MOR-434 / MOR-446).
-        """
+        """Read split using the profile's answer map."""
         result = await self._query("get_split")
-        return bool(result["state"] == "1")
+        return self._config.split.read_map.get(str(result["state"]), False)
 
     async def get_split(self) -> bool:
         """Get split operation state."""
@@ -2978,7 +2976,7 @@ class YaesuCatRadio:
 
     async def set_split(self, state: bool) -> None:
         """Set split operation state."""
-        await self._write("set_split", state="1" if state else "0")
+        await self._write("set_split", state=self._config.split.write_map[state])
 
     async def read_vfo_select(self) -> int:
         """Read VFO/receiver selection without mutating legacy state.
@@ -2989,6 +2987,8 @@ class YaesuCatRadio:
         ``global.slow_state.active`` ``"MAIN"``/``"SUB"`` string; the legacy
         ``self._state`` mirror is not written (MOR-434 / MOR-446).
         """
+        if not self.supports_command("get_vfo_select"):
+            raise NotImplementedError(f"get_vfo_select not supported on {self.model}")
         result = await self._query("get_vfo_select")
         return int(result["vfo"])
 
@@ -2998,6 +2998,8 @@ class YaesuCatRadio:
 
     async def set_vfo_select(self, vfo: int) -> None:
         """Set VFO selection (0 = MAIN, 1 = SUB)."""
+        if not self.supports_command("set_vfo_select"):
+            raise NotImplementedError(f"set_vfo_select not supported on {self.model}")
         async with self._mode_lock:
             await self._write("set_vfo_select", vfo=str(vfo))
 
@@ -3080,16 +3082,9 @@ class YaesuCatRadio:
 
     # -- VfoSlotCapable ----------------------------------------------------
 
-    def _vfo_slot_supported(self) -> bool:
-        """``True`` when the active profile exposes per-receiver A/B slots.
-
-        The FTX-1 family uses ``vfo_scheme = "ab_shared"`` — there is no
-        per-receiver A/B pair (each receiver has a single VFO addressed
-        via ``FA;``/``FB;``).  Single-RX Yaesu CAT rigs use
-        ``vfo_scheme = "ab"`` and route ``FR{vfo};`` through the shared
-        ``set_vfo_select`` / ``get_vfo_select`` plumbing.
-        """
-        return bool(self._config.vfo_scheme == "ab")
+    def _vfo_slot_supported(self, operation: str) -> bool:
+        """Whether the profile declares the requested A/B slot operation."""
+        return self.supports_command(operation)
 
     @staticmethod
     def _slot_to_index(slot: str) -> int:
@@ -3114,16 +3109,13 @@ class YaesuCatRadio:
     async def get_vfo_slot(self, receiver: int = 0) -> str:
         """Return the active VFO slot (``"A"`` or ``"B"``) for ``receiver``.
 
-        Raises :class:`NotImplementedError` on FTX-1 (``ab_shared`` scheme):
-        the FTX-1 has no per-receiver A/B pair.  Use
-        :meth:`select_receiver` for MAIN/SUB switching instead.
+        Raises :class:`NotImplementedError` without a slot read command.
         """
         self._check_single_receiver(receiver, operation="get_vfo_slot")
-        if not self._vfo_slot_supported():
+        if not self._vfo_slot_supported("get_vfo_slot"):
             raise NotImplementedError(
                 f"get_vfo_slot not supported on {self.model} "
-                f"(vfo_scheme={self._config.vfo_scheme!r}); "
-                "use select_receiver() for MAIN/SUB on dual-RX Yaesu rigs"
+                f"(vfo_scheme={self._config.vfo_scheme!r})"
             )
         result = await self._query("get_vfo_select")
         return "B" if int(result["vfo"]) == 1 else "A"
@@ -3131,33 +3123,28 @@ class YaesuCatRadio:
     async def set_vfo_slot(self, slot: str, receiver: int = 0) -> None:
         """Make ``slot`` (``"A"`` or ``"B"``) the active VFO on ``receiver``.
 
-        Raises :class:`NotImplementedError` on FTX-1 (``ab_shared`` scheme).
+        Raises :class:`NotImplementedError` without a slot select command.
         """
         self._check_single_receiver(receiver, operation="set_vfo_slot")
         index = self._slot_to_index(slot)
-        if not self._vfo_slot_supported():
+        if not self._vfo_slot_supported("set_vfo_slot"):
             raise NotImplementedError(
                 f"set_vfo_slot not supported on {self.model} "
-                f"(vfo_scheme={self._config.vfo_scheme!r}); "
-                "use select_receiver() for MAIN/SUB on dual-RX Yaesu rigs"
+                f"(vfo_scheme={self._config.vfo_scheme!r})"
             )
         async with self._mode_lock:
             await self._write("set_vfo_select", vfo=str(index))
 
     async def swap_vfo_ab(self, receiver: int = 0) -> None:
-        """Swap VFO A and VFO B state on ``receiver``.
-
-        Yaesu CAT has no symmetric A↔B swap primitive: FTX-1 ``AB;``/
-        ``BA;`` are MAIN→SUB / SUB→MAIN copies (one-way), and Lab599-style
-        single-RX profiles do not expose a swap command at all.  This
-        method therefore raises :class:`NotImplementedError` on every
-        currently supported Yaesu CAT rig.
-        """
+        """Swap A/B through the profile's command on an A/B rig."""
         self._check_single_receiver(receiver, operation="swap_vfo_ab")
-        raise NotImplementedError(
-            f"swap_vfo_ab not supported on {self.model}: "
-            "Yaesu CAT has no symmetric A↔B swap primitive"
-        )
+        if not self.supports_command("swap_vfo_ab"):
+            raise NotImplementedError(
+                f"swap_vfo_ab not supported on {self.model}: the profile "
+                "declares no symmetric A↔B swap primitive (vfo_swap)"
+            )
+        async with self._mode_lock:
+            await self._write("vfo_swap")
 
     async def equalize_vfo_ab(self, receiver: int = 0) -> None:
         """Copy the active VFO's state to the inactive VFO on ``receiver``.
