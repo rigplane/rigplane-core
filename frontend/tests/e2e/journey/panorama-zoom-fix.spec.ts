@@ -2,6 +2,8 @@ import { writeFile } from 'node:fs/promises';
 import { installSampler, settlePassband, passbandGaps } from './panorama-passband-probe';
 import { createReadStream } from 'node:fs';
 import { expect, test } from '@playwright/test';
+import type { WsCommand } from '../../../src/lib/types/protocol';
+import type { ScopeSubscription } from '../../../src/lib/runtime/scope-view';
 import { parseCurrentScopeFrame } from '../../../src/lib/runtime/scope-frame';
 import { startJourneyServer } from './server-process';
 import { parseScopeWriteReceipt } from './panorama-receipt';
@@ -258,11 +260,11 @@ for (const [index, model] of ['IC-705', 'IC-7300'].entries()) {
     const watch = watchPanoramaErrors(page);
     const frames = watchScopeFrames(page);
     const commands: string[] = [];
-    const subscriptions: unknown[] = [];
+    const subscriptions: ScopeSubscription[] = [];
     page.on('websocket', socket => socket.on('framesent', ({ payload }) => {
       if (typeof payload !== 'string') return;
       const message = JSON.parse(payload);
-      if (socket.url().endsWith('/api/v1/control') && message.type === 'command') commands.push(message.name);
+      if (socket.url().endsWith('/api/v1/ws') && message.type === 'cmd') commands.push((message as WsCommand).name);
       if (socket.url().endsWith('/api/v1/scope') && message.type === 'subscribe') subscriptions.push(message);
     }));
     try {
