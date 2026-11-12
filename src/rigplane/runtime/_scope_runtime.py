@@ -160,10 +160,23 @@ class ScopeRuntimeMixin(_MixinBase):  # type: ignore[misc]
                 )
 
     async def _read_scope_receiver(self, receiver: int) -> ScopeState:
-        _, mode = await self._read_scope_view_setting("mode", receiver)
-        _, span = await self._read_scope_view_setting("span", receiver)
-        _, edge = await self._read_scope_view_setting("edge", receiver)
-        return ScopeState(False, False, mode, span, edge)
+        values: dict[Literal["mode", "span", "edge"], int | None] = {
+            "mode": None,
+            "span": None,
+            "edge": None,
+        }
+        for name in values:
+            try:
+                _, values[name] = await self._read_scope_view_setting(name, receiver)
+            except (CommandError, TimeoutError, asyncio.TimeoutError) as exc:
+                values[name] = None
+                logger.warning(
+                    "scope capture failed receiver=%s key=%s: %s",
+                    receiver,
+                    name,
+                    exc,
+                )
+        return ScopeState(False, False, values["mode"], values["span"], values["edge"])
 
     async def _read_scope_view_setting(
         self, name: Literal["mode", "span", "edge"], receiver: int

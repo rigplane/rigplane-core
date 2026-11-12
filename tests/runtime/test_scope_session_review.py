@@ -634,6 +634,8 @@ async def test_capture_read_failure_degrades_through_scope_ws(
                 assert initial.receiver == receiver
                 half = profile.scope_span_presets_hz[3] if refuse_span_write else 50_000
                 view = (14_100_000 - half, 14_100_000 + half)
+                if initial.coverage is not None:
+                    assert (initial.coverage.start_hz, initial.coverage.end_hz) == view
                 first = await _frame_with(ws, view)
                 second = await _frame_with(ws, view)
                 assert first.pixels and second.pixels and second.seq > first.seq

@@ -10,6 +10,7 @@ from dataclasses import dataclass, replace
 from typing import Literal, Protocol, TypeAlias, cast
 
 from rigplane.core.types import ScopeFixedEdge
+from rigplane.core.exceptions import CommandError, TimeoutError
 from rigplane.scope import ScopeFrame
 from rigplane.scope.models import ScopeDemand
 
@@ -25,9 +26,9 @@ ScopeValue: TypeAlias = bool | int | ScopeFixedEdge
 class ScopeState:
     scope_on: bool
     output_on: bool
-    mode: int = 0
-    span: int = 2
-    edge: int = 1
+    mode: int | None = 0
+    span: int | None = 2
+    edge: int | None = 1
     dual: bool = False
 
 
@@ -86,7 +87,7 @@ class ScopeSession:
         self.observed: ScopeState | None = None
         self._original: ScopeState | None = None
         self._desired: dict[tuple[int, ScopeSetting], ScopeValue] = {}
-        self._previous: dict[tuple[int, ScopeSetting], ScopeValue] = {}
+        self._previous: dict[tuple[int, ScopeSetting], ScopeValue | None] = {}
         self._views: dict[int, ScopeState] = {}
         self._fixed: dict[tuple[int, int], ScopeFixedEdge] = {}
         self._applied: dict[tuple[int, ScopeSetting], ScopeValue] = {}
@@ -157,9 +158,12 @@ class ScopeSession:
             assert view is not None
             self._views[receiver] = view
             for setting in ("mode", "span", "edge"):
-                self._applied[receiver, cast(ScopeSetting, setting)] = getattr(
-                    view, setting
-                )
+                value = getattr(view, setting)
+                if value is not None:
+                    self._applied[receiver, setting] = value
+                else:
+                    # Later frames cannot supply the pre-write restore value.
+                    self._previous[receiver, setting] = None
         return self._views[receiver]
 
     async def set_output(self, enabled: bool, *, release: bool = True) -> None:
@@ -449,7 +453,11 @@ class ScopeSession:
         if self._tx or (self.tx_probe is not None and self.tx_probe()):
             raise RuntimeError("scope control is deferred during transmit")
         self._uncertain.add((receiver, name))
-        await self._write(name, value, receiver)
+        try:
+            await self._write(name, value, receiver)
+        except (CommandError, TimeoutError, asyncio.TimeoutError):
+            self._desired.pop((receiver, name), None)
+            raise
         self._uncertain.discard((receiver, name))
         if name == "fixed_edge" and isinstance(value, ScopeFixedEdge):
             for key, prior in tuple(self._applied.items()):
@@ -483,6 +491,8 @@ class ScopeSession:
                 return
             failures: list[BaseException] = []
             for (receiver, name), value in tuple(self._previous.items()):
+                if value is None:
+                    continue
                 # An external change adopted during an earlier restore
                 # write already left the restore set — never write the
                 # stale snapshot the copy above still carries.
@@ -598,7 +608,9 @@ class ScopeSession:
                     if self._applied.get(key) == value and key not in self._uncertain:
                         self._applied[key] = value
                         continue
-                    self._previous[key] = getattr(captured, name)
+                    previous = getattr(captured, name)
+                    if previous is not None:
+                        self._previous[key] = previous
             if self._desired.get((receiver, name)) != value:
                 # An external change adopted during a capture await above
                 # superseded this intent — never write the stale value

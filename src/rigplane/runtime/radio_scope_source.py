@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
 from dataclasses import replace
 import math
@@ -9,6 +10,7 @@ from typing import Literal, Protocol
 
 from rigplane.profiles import RadioProfile
 from rigplane.core.types import ScopeFixedEdge
+from rigplane.core.exceptions import CommandError, TimeoutError
 from rigplane.scope import ScopeFrame
 from rigplane.scope.models import (
     Coverage,
@@ -241,11 +243,20 @@ class RadioScopeSource:
             await self._writer.set_fixed(fixed, selected)
             return GrantedView(resolved, Coverage(fixed.start_hz, fixed.end_hz))
         coverage, preset = self._center_span(view, selected)
-        await self._writer.set_center(
-            (coverage.start_hz + coverage.end_hz) / 2,
-            preset,
-            selected,
-        )
+        try:
+            await self._writer.set_center(
+                (coverage.start_hz + coverage.end_hz) / 2,
+                preset,
+                selected,
+            )
+        except (CommandError, TimeoutError, asyncio.TimeoutError):
+            if not isinstance(view, FollowView):
+                raise
+            remembered = self._native_coverages.get(selected)
+            if remembered is not None:
+                native = remembered[1]
+                return GrantedView(self.resolve_follow(view, native, selected), native)
+            return GrantedView(resolved, None)
         return GrantedView(resolved, coverage)
 
     async def start(self) -> None:
