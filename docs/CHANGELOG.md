@@ -16,6 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Experimental** — 4 m (70 MHz) band for the IC-7300 and IC-7300MK2: a 4 m band button (tunes 70.200 MHz) with the band's rated power (50 W), and 4 m segments in the IARU Region 1 band-plan overlay. Whether the radio transmits on 70 MHz is left to the radio (only European versions do). Experimental until a real European radio confirms it. (MOR-4300)
 - Control WebSocket: managed-transmit, connection identity/session and audio-receive facts are pushed as typed records. The `managed_transmit_changed` event now carries the full `GET /api/v1/managed-transmit` document (including `txObservation.observedPtt`) instead of an empty payload, sent once on connect and on every change; the public state payload gains `connection.identity`, `connection.session` and `audioReceive` leaves with the same records `GET /api/v1/info` serves. All pushes are change-driven. The record types are exposed in `rigplane.web.api_contract` for SDK consumers. (MOR-4279)
 
+### Fixed
+
+- Icom LAN: after a full reconnect (the resident reconnect loop, or DISCONNECT then CONNECT in the UI) the frequency and mode are published again and commands work, as after a fresh connect. The reconnect callback now also runs after a full connect, so the web layer re-selects its VFO identity. The connect-time `19 00` identity read no longer refuses commands or holds state reads: it is published as `connection.identity` (verified, unverified, a different model, no response) and nothing waits for it. Serial and Yaesu connects are unchanged. (MOR-4382)
+
 ### Removed
 
 - The quiet RX audio hint and its unused profile field `[audio].rx_audio_level_menu` are removed. The public `/api/v1/capabilities` response no longer includes `rxAudioLevelMenu`; API consumers should stop relying on it. (MOR-4294)

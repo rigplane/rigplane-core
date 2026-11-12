@@ -1642,8 +1642,9 @@ class RadioIdentityStatus(Enum):
     identifying the other model.
 
     ``NO_RESPONSE``: nothing answered the read. Not terminal — the read is
-    retried on the open link and the connect completes when the right radio
-    answers.
+    retried on the open link. Serial and Yaesu hold the connect until the
+    right radio answers; the Icom LAN runtime only publishes the status and
+    never blocks commands or state reads on it (MOR-4382).
     """
 
     CHECKING = "checking"
