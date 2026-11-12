@@ -5,7 +5,6 @@ from __future__ import annotations
 from collections import Counter
 from dataclasses import replace
 import logging
-import time
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, call, patch
@@ -361,7 +360,7 @@ def _observe_main_mode(store: StateStore, mode: str) -> None:
             path=_MAIN_MODE,
             value=mode,
             source=SourceMetadata(source="test", provider="test"),
-            timestamp_monotonic=time.monotonic(),
+            timestamp_monotonic=1000.0,
         )
     )
 
@@ -1118,7 +1117,7 @@ class TestScopeFixedEdgeSlot:
                     path=FieldPath.parse(raw),
                     value=value,
                     source=SourceMetadata(source="test", provider="test"),
-                    timestamp_monotonic=time.monotonic(),
+                    timestamp_monotonic=1000.0,
                 )
             )
         return store.snapshot()
