@@ -730,13 +730,23 @@ panoramaTest.describe('simulated mixed receiver panorama with real PCM', () => {
       const modeKey = page.getByTestId('standard-mode-LSB').getByRole('radio');
       await expect.poll(async () => (await panoramaWitness(page)).pinned).toBe(true);
       const requestsBefore = (await panoramaWitness(page)).requests.length;
+      const viewBeforeZoom = (await panoramaWitness(page)).requests.at(-1)!.view;
+      const spanBeforeZoom = 'spanHz' in viewBeforeZoom ? viewBeforeZoom.spanHz
+        : viewBeforeZoom.endHz - viewBeforeZoom.startHz;
       const refusalsBefore = (await panoramaWitness(page)).refusals.length;
       await modeKey.click();
       await page.getByTestId('scope-more').click();
       await page.getByTestId('scope-zoom-in').click();
       await page.keyboard.press('Escape');
-      await expect.poll(async () => (await panoramaWitness(page)).requests.slice(requestsBefore)
-        .some(request => 'startHz' in request.view)).toBe(true);
+      try {
+        await expect.poll(async () => (await panoramaWitness(page)).requests.slice(requestsBefore)
+          .some(request => 'startHz' in request.view)).toBe(true);
+      } finally {
+        const witness = await panoramaWitness(page);
+        await testInfo.attach('zoom-contract.json', { contentType: 'application/json',
+          body: JSON.stringify({ spanBeforeZoom, requests: witness.requests.slice(requestsBefore),
+            refusals: witness.refusals.slice(refusalsBefore), grants: witness.grants }) });
+      }
       await expect.poll(async () => (await panoramaWitness(page)).refusals.length).toBeGreaterThan(refusalsBefore);
       await expect.poll(() => sentParams(page, 'set_mode')).toContainEqual({ mode: 'LSB', receiver: 0 });
       await expectServerMain(page, { mode: 'LSB' });
