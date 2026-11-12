@@ -1,3 +1,7 @@
+import asyncio
+import time
+from types import SimpleNamespace
+
 import numpy as np
 import pytest
 
@@ -6,6 +10,7 @@ from rigplane.sdr.controller import SdrScopeController, TX_HOLD_S
 from rigplane.sdr.scope_source import IqFftSource
 from rigplane.sdr.types import SdrConfig
 from rigplane.scope.models import Coverage, FollowView, View
+from rigplane.testing.timing import VirtualClock
 
 
 def controlled_source(
@@ -88,34 +93,67 @@ async def test_controller_initial_tx_freeze_releases_after_hold(virtual_clock):
         await source.stop()
 
 
+# asyncio fires a timer up to one clock resolution early
+# (BaseEventLoop._run_once moves a handle to ready while its deadline is
+# inside time() + _clock_resolution). Production clamps the retry to at
+# least the monotonic resolution so a retry scheduled from an early
+# callback clears that window instead of spinning. Both sides are pinned
+# to a fixed 10 ms here, so the early fire is deterministic and
+# millisecond-scale, independent of host ulps. Starts stay within the
+# magnitudes where a 0.3 s hold is representable (at 2**24 its ulp is
+# 2 s and the controller deadline itself collapses).
+EARLY_FIRE_RESOLUTION_S = 0.01
+
+
 @pytest.mark.parametrize("clock_offset", [0, 1_000_000])
+@pytest.mark.parametrize("start", [0, 5e6])
 async def test_early_tx_deadline_callback_waits_without_spinning(
-    virtual_clock, clock_offset
+    monkeypatch, clock_offset, start
 ):
-    provider = FakeIqSource(center_freq_hz=0, sample_rate_hz=48000)
-    source = controlled_source(
-        provider, virtual_clock, tx_active=True, clock_offset=clock_offset
-    )
-    await source.start()
+    loop = asyncio.get_running_loop()
+    monkeypatch.setattr(loop, "_clock_resolution", EARLY_FIRE_RESOLUTION_S)
+    real_get_clock_info = time.get_clock_info
+
+    def _fixed_monotonic_resolution(name):
+        info = real_get_clock_info(name)
+        if name == "monotonic":
+            return SimpleNamespace(
+                implementation=info.implementation,
+                monotonic=info.monotonic,
+                adjustable=info.adjustable,
+                resolution=EARLY_FIRE_RESOLUTION_S,
+            )
+        return info
+
+    monkeypatch.setattr(time, "get_clock_info", _fixed_monotonic_resolution)
+    clock = VirtualClock(start=start)
+    clock.install(loop)
     try:
-        source.on_radio_state(None, False)
-        # Run the deadline callback itself early (asyncio may run a timer
-        # up to one clock resolution early): with most of the hold left,
-        # it must defer the release and leave a retry scheduled rather
-        # than release early or spin. Millisecond margins keep this
-        # independent of the float granularity of either clock domain
-        # and of the host clock resolution.
-        await virtual_clock.elapse(TX_HOLD_S / 2)
-        source._tick_controller()
-        assert source.tx_frozen
-        assert source._timer is not None
-        await virtual_clock.elapse(0.001)
-        assert source.tx_frozen
-        virtual_clock.advance(TX_HOLD_S)
-        source._tick_controller()
-        assert not source.tx_frozen
+        provider = FakeIqSource(center_freq_hz=0, sample_rate_hz=48000)
+        source = controlled_source(
+            provider, clock, tx_active=True, clock_offset=clock_offset
+        )
+        await source.start()
+        try:
+            source.on_radio_state(None, False)
+            # Park the hold ~4 ms out, inside the 10 ms early-fire window.
+            clock.advance(TX_HOLD_S - 0.004)
+            # The deadline timer fires before the hold is over; the early
+            # callback must not release the freeze.
+            await clock.elapse(0)
+            assert source.tx_frozen
+            # It must leave a retry pending that clears the window, or the
+            # callback spins on the frozen clock.
+            assert source._timer is not None
+            assert source._timer.when() >= loop.time() + EARLY_FIRE_RESOLUTION_S
+            # The retry itself releases the freeze once the hold is over.
+            await clock.elapse(0.02)
+            assert not source.tx_frozen
+            assert source._timer is None
+        finally:
+            await source.stop()
     finally:
-        await source.stop()
+        clock.uninstall(loop)
 
 
 async def test_controller_retune_debounce_and_stop_cancel_pending_actions(
