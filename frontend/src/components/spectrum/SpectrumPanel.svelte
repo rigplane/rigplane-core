@@ -24,6 +24,7 @@
     getFilterHandlers,
     getFilterWidthCommandLifecycle,
     getPendingFrequencyHz,
+    hasPendingScopeModeChange,
     getTuningBurstFrequencyHz,
     isTuningBurstObservation,
     getVfoHandlers,
@@ -730,6 +731,7 @@
     const center = scopeControlsMode !== null ? !isFixedScopeFn(scopeControlsMode) : null;
     const sessionEpoch = runtime.controlSession.epoch;
     const fixed = isFixedScope;
+    const changingMode = authority !== null && hasPendingScopeModeChange(authority.providerGeneration, sessionEpoch);
     const follow = followSpanHz;
     const requested = requestedView;
     const fixedCrop = fixed && requested !== null && (explicitView === null
@@ -788,7 +790,7 @@
           // reconstruction jitter (a freq±span/2 window rebuilds 1 ulp off
           // the requested width); real adoptions are thousands of times
           // larger.
-          if (!fixed && requestedView === null && currentGrant && coverageSpan > 0
+          if (!fixed && !changingMode && requestedView === null && currentGrant && coverageSpan > 0
             && follow !== null && lastCoverageSpanHz !== null
             && coverageSpan < lastCoverageSpanHz - 1 && follow > coverageSpan + 1) {
             followSpanHz = coverageSpan;
