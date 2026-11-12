@@ -740,7 +740,10 @@ panoramaTest.describe('simulated mixed receiver panorama with real PCM', () => {
       await page.keyboard.press('Escape');
       try {
         await expect.poll(async () => (await panoramaWitness(page)).requests.slice(requestsBefore)
-          .some(request => 'startHz' in request.view)).toBe(true);
+          .some(request => request.receiver === 0 && 'follow' in request.view
+            && request.view.follow === 'vfo' && request.view.spanHz < spanBeforeZoom)).toBe(true);
+        expect((await panoramaWitness(page)).requests.slice(requestsBefore)
+          .some(request => 'startHz' in request.view)).toBe(false);
       } finally {
         const witness = await panoramaWitness(page);
         await testInfo.attach('zoom-contract.json', { contentType: 'application/json',
