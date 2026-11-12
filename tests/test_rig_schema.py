@@ -217,7 +217,6 @@ class TestNarrowFilterWidthSchemaDoc:
         content = SCHEMA_PATH.read_text()
         for token in (
             "narrow_table",
-            "narrow_defaults",
             "_validate_filter_narrow_variant",
         ):
             assert token in content, f"_schema.md must document {token}"

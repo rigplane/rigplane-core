@@ -242,15 +242,6 @@ class FilterWidthRule:
     """Per-mode filter-width behavior loaded from rig TOML."""
 
     defaults: tuple[int, ...] = ()
-    #: Optional narrow-state variant of the SH index table (MOR-4428):
-    #: when NARROW is on, the same SH code maps to ``narrow_table``
-    #: instead of ``table``. Empty (the default) means the mapping does
-    #: not depend on the narrow state and no narrow read is issued.
-    #: Only valid with ``table_index`` encoding; rejected on fixed rules.
-    narrow_table: tuple[int, ...] = ()
-    #: Optional narrow-state variant of ``defaults`` (same length, same
-    #: FIL-slot order). Empty means the defaults do not depend on state.
-    narrow_defaults: tuple[int, ...] = ()
     fixed: bool = False
     step_hz: int | None = None
     min_hz: int | None = None
@@ -278,6 +269,14 @@ class FilterWidthRule:
     #: Distinct from ``step_hz`` above, which quantises the filter WIDTH; the
     #: two collide at 200 in AM and differ in USB.
     pbt_step_hz: int | None = None
+    #: Optional narrow-state variant of the SH index table (MOR-4428):
+    #: when NARROW is on, the same SH code maps to ``narrow_table``
+    #: instead of ``table``. Empty (the default) means the mapping does
+    #: not depend on the narrow state and no narrow read is issued.
+    #: Only valid with ``table_index`` encoding; rejected on fixed rules.
+    #: Declared last so existing positional constructor calls keep their
+    #: field bindings.
+    narrow_table: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

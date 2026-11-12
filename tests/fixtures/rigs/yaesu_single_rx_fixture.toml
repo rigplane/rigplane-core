@@ -32,13 +32,11 @@ first_code = 0
 defaults = [2400, 1800, 500]
 table = [2400, 2600, 3000, 3200, 4000]
 narrow_table = [1500, 1800, 2000]
-narrow_defaults = [1500, 1200, 500]
 
 [filters.width.CW]
 defaults = [500, 300, 100]
 table = [500, 800, 1200, 2400]
 narrow_table = [200, 300, 500]
-narrow_defaults = [300, 200, 100]
 
 [filters.width.FM]
 fixed = true

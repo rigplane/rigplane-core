@@ -293,12 +293,10 @@ declare the narrow variant alongside the wide table:
 defaults = [2400, 1800, 500]
 table = [2400, 2600, 3000, 3200, 4000]
 narrow_table = [1500, 1800, 2000]
-narrow_defaults = [1500, 1200, 500]
 ```
 
 While NARROW is on, an SH code maps through `narrow_table` instead of
-`table` (`narrow_defaults` replaces `defaults`, same length, same
-FIL-slot order). The backend reads the narrow state
+`table`. The backend reads the narrow state
 (`get_narrow`/`get_narrow_sub`) before mapping SH in both the width read
 and the width write — but only for modes whose rule declares the
 variant; modes without one issue no extra narrow query.
@@ -306,9 +304,7 @@ variant; modes without one issue no extra narrow query.
 Loader rules (`rig_loader.py: _validate_filter_narrow_variant`): a narrow
 variant is rejected unless `[filters].encoding` is `"table_index"`, the
 rule is not `fixed`, the rule has a non-empty `table`, `narrow_table` is
-non-empty and strictly increasing, `narrow_defaults` (when present) comes
-with `narrow_table` and matches `defaults` entry for entry, and the
-profile declares the narrow read (`[commands].get_narrow`, plus
+non-empty and strictly increasing, and the profile declares the narrow read (`[commands].get_narrow`, plus
 `get_narrow_sub` on a multi-receiver profile). Absent narrow data keeps
 today's single-table behavior.
 

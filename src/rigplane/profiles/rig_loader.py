@@ -2821,8 +2821,7 @@ def _validate_filter_narrow_variant(
 ) -> None:
     """Validate the optional narrow-state filter-width variant (MOR-4428).
 
-    A mode rule may carry ``narrow_table`` (and, mirroring ``defaults``,
-    ``narrow_defaults``): while NARROW is on, an SH code maps through the
+    A mode rule may carry ``narrow_table``: while NARROW is on, an SH code maps through the
     narrow table instead of ``table``. Absent narrow data keeps exactly
     today's behavior — the loader leaves the tuples empty and no narrow
     read is ever issued for the mode.
@@ -2838,8 +2837,7 @@ def _validate_filter_narrow_variant(
     for mode_key in sorted((filter_config or {}).keys()):
         rule = (filter_config or {})[mode_key]
         where = f"{filename}: [filters.width.{mode_key}]"
-        has_narrow = bool(rule.narrow_table) or bool(rule.narrow_defaults)
-        if not has_narrow:
+        if not rule.narrow_table:
             continue
         if filter_width_encoding != "table_index":
             raise RigLoadError(
@@ -2855,21 +2853,11 @@ def _validate_filter_narrow_variant(
             raise RigLoadError(
                 f"{where}.narrow_table needs a [filters.width.{mode_key}].table"
             )
-        if not rule.narrow_table:
-            raise RigLoadError(f"{where}.narrow_defaults needs narrow_table")
         if any(
             first >= second
             for first, second in zip(rule.narrow_table, rule.narrow_table[1:])
         ):
             raise RigLoadError(f"{where}.narrow_table must be strictly increasing")
-        if rule.narrow_defaults:
-            if not rule.defaults:
-                raise RigLoadError(f"{where}.narrow_defaults needs defaults")
-            if len(rule.narrow_defaults) != len(rule.defaults):
-                raise RigLoadError(
-                    f"{where}.narrow_defaults must list one entry per "
-                    f"defaults entry ({len(rule.defaults)})"
-                )
         if not _has_readable("get_narrow"):
             raise RigLoadError(
                 f"{where}.narrow_table needs a [commands].get_narrow read"
@@ -3150,11 +3138,9 @@ def load_rig(path: Path) -> RigConfig:
             defaults_raw = raw_rule.get("defaults", [])
             table_raw = raw_rule.get("table", [])
             narrow_table_raw = raw_rule.get("narrow_table", [])
-            narrow_defaults_raw = raw_rule.get("narrow_defaults", [])
             filter_config[str(mode_key).upper()] = FilterWidthRule(
                 defaults=tuple(int(value) for value in defaults_raw),
                 narrow_table=tuple(int(v) for v in narrow_table_raw),
-                narrow_defaults=tuple(int(v) for v in narrow_defaults_raw),
                 fixed=bool(raw_rule.get("fixed", False)),
                 step_hz=(int(raw_rule["step_hz"]) if "step_hz" in raw_rule else None),
                 pbt_step_hz=(

@@ -1,8 +1,8 @@
 """MOR-4428: narrow-dependent Yaesu filter-width (SH) tables.
 
-The single-receiver fixture declares per-mode ``narrow_table`` /
-``narrow_defaults`` pairs: while NARROW is on, an SH code maps through
-the narrow table instead of the wide one. FTX-1 declares no narrow data
+The single-receiver fixture declares per-mode ``narrow_table``: while
+NARROW is on, an SH code maps through the narrow table instead of the
+wide one. FTX-1 declares no narrow data
 and keeps today's single-table behavior with no extra NA query.
 """
 
@@ -15,6 +15,7 @@ import pytest
 
 from rigplane.backends.yaesu_cat.radio import YaesuCatRadio
 from rigplane.exceptions import CommandError
+from rigplane.profiles import FilterWidthRule
 from rigplane.profiles.rig_loader import RigLoadError, load_rig
 from rigplane_testkit.sim.adapters.yaesu_cat import YaesuCatSerialFake
 
@@ -65,13 +66,11 @@ def test_fixture_narrow_variant_loads() -> None:
     ssb = config.filter_config["SSB"]
     assert ssb.table == (2400, 2600, 3000, 3200, 4000)
     assert ssb.narrow_table == (1500, 1800, 2000)
-    assert ssb.narrow_defaults == (1500, 1200, 500)
     cw = config.filter_config["CW"]
     assert cw.narrow_table == (200, 300, 500)
     fm = config.filter_config["FM"]
     assert fm.fixed
     assert fm.narrow_table == ()
-    assert fm.narrow_defaults == ()
 
 
 def test_ftx1_loads_with_no_narrow_variant() -> None:
@@ -80,7 +79,6 @@ def test_ftx1_loads_with_no_narrow_variant() -> None:
     assert config.filter_config
     for mode, rule in config.filter_config.items():
         assert rule.narrow_table == (), mode
-        assert rule.narrow_defaults == (), mode
 
 
 # ---------------------------------------------------------------------------
@@ -108,23 +106,8 @@ def test_ftx1_loads_with_no_narrow_variant() -> None:
         ),
         (
             "narrow_table = [1500, 1800, 2000]",
-            "narrow_table = []",
-            "needs narrow_table",
-        ),
-        (
-            "narrow_table = [1500, 1800, 2000]",
             "narrow_table = [1500, 1500, 2000]",
             "strictly increasing",
-        ),
-        (
-            "narrow_defaults = [1500, 1200, 500]",
-            "narrow_defaults = [1500, 1200]",
-            "one entry per",
-        ),
-        (
-            "defaults = [2400, 1800, 500]\ntable = [2400, 2600, 3000, 3200, 4000]",
-            "table = [2400, 2600, 3000, 3200, 4000]",
-            "needs defaults",
         ),
         (
             'get_narrow = { cat = { read = "NA0;", parse = "NA0{state};" } }',
@@ -280,7 +263,7 @@ async def test_mode_without_narrow_variant_issues_no_na_query(
     """A non-fixed rule without narrow data reads the wide table only."""
     path = _write_variant(
         tmp_path,
-        "narrow_table = [200, 300, 500]\nnarrow_defaults = [300, 200, 100]\n",
+        "narrow_table = [200, 300, 500]\n",
         "",
     )
     radio = YaesuCatRadio("/dev/null", profile=load_rig(path))
@@ -373,3 +356,11 @@ async def test_narrow_width_roundtrip_over_cat_transport(
         assert wire[-3:] == ["MD0;", "SH0;", "NA0;"]
     finally:
         await radio._transport.close()
+
+
+def test_filter_width_rule_keeps_existing_positional_bindings() -> None:
+    """Existing SDK callers construct ``FilterWidthRule((9000,), True)``."""
+    rule = FilterWidthRule((9000,), True)
+    assert rule.defaults == (9000,)
+    assert rule.fixed is True
+    assert rule.narrow_table == ()
