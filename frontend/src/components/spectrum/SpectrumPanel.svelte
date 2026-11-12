@@ -1072,6 +1072,39 @@
   let pbLeftPct = $derived(passbandOverlay?.leftPx ?? 0);
   let pbRightPct = $derived(passbandOverlay?.rightPx ?? 0);
 
+  // MOR-4387 owner build-4: the passband overlay blinked ~1 s during a
+  // tuning burst and across a ZOOM preset switch. The overlay renders only
+  // while `tuneVisible && spanHz > 0 && pbWidthPct > 0`, each of which
+  // gates on a chain of derived facts (authority mode/width/shift, the
+  // managed passband tuple state, the viewport containment). This JSON
+  // diagnostic attribute is the one place the whole gate chain is
+  // observable per frame — the panorama passband-hold spec samples it on
+  // every animation frame to pin WHICH gate drops instead of guessing.
+  // Same diagnostic family as `data-passband-state` /
+  // `data-scope-subscription` on the panel root below.
+  let passbandGatesJson = $derived(JSON.stringify({
+    tuneVisible,
+    confirmed: confirmedPassband,
+    freqHz: displayFrequencyHz ?? null,
+    inView: !proportionalIndicator
+      || (displayFrequencyHz !== null && displayFrequencyHz !== undefined
+        && frequencyInView(displayFrequencyHz)),
+    proportional: proportionalIndicator,
+    mode: spectrumAuthority?.mode ?? null,
+    widthHz: spectrumAuthority?.filterWidthHz ?? null,
+    shiftHz: spectrumAuthority?.ifShiftHz ?? null,
+    tuple: displayTuple !== null,
+    tupleState: managed ? scopeRegion?.passband.state ?? 'unavailable' : 'legacy',
+    tupleReason: (() => {
+      const passband = managed ? scopeRegion?.passband : undefined;
+      return passband?.state === 'unknown' ? passband.reason : null;
+    })(),
+    tupleStale: displayStale,
+    passbandHz,
+    spanPositive: spanHz > 0,
+    overlay: tuneVisible && spanHz > 0 && pbWidthPct > 0,
+  }));
+
   function readAuthority(): SpectrumAuthority | null {
     return audioFft ? null : toSpectrumAuthority(runtime.state, runtime.caps);
   }
@@ -1587,6 +1620,7 @@
   data-passband-state={managed ? scopeRegion?.passband?.state ?? 'unavailable' : 'legacy'}
   data-scope-subscription={JSON.stringify(scopeSubscriptionValue)}
   data-passband-resizable={canResizePassband}
+  data-passband-gates={passbandGatesJson}
   data-filter-rule={spectrumAuthority?.rule?.kind ?? 'none'}
   tabindex="-1"
   onwheel={handleWheel}

@@ -723,8 +723,6 @@ describe('coherent RF passband display', () => {
     ['DATA', (i) => { edit(i, (s) => { s.main!.dataMode = 1; }); }],
     ['filter', (i) => { edit(i, (s) => { s.main!.filter = 2; }); }],
     ['frame mode', (i) => receipt(i, 2, { mode: 1 })],
-    ['frame start', (i) => receipt(i, 2, { startFreq: 14_010_000 })],
-    ['frame end', (i) => receipt(i, 2, { endFreq: 14_110_000 })],
   ];
   it.each(transitions)('retires %s until newer geometry AND post-boundary receipt', (name, change) => {
     const input = fixture(); if (name === 'slot') slotted(input);
@@ -740,6 +738,51 @@ describe('coherent RF passband display', () => {
     const nextFrame = input.frame; input.frame = oldFrame;
     expect(project(input, retired).display.state).toBe('unknown');
     input.frame = nextFrame; expect(project(input, retired).display.state).toBe('current');
+  });
+  // MOR-4387 (owner build-4): a ZOOM preset switch re-grants the frame
+  // window while every RF fact the tuple carries (frequency, mode, width,
+  // shift, frame scope mode) stays identical. The tuple's window legs
+  // describe the sample plane the facts were proven against — the overlay
+  // geometry reads only the RF legs — so a window-only change RESEATS the
+  // tuple onto the new window instead of retiring it. Retiring cost a full
+  // geometry re-observation cycle (crossedFloors waits for fresh
+  // filterWidth/PBT markers), which was the owner's ~1 s passband blink.
+  it.each([
+    ['narrower (ZOOM+ preset switch)', { startFreq: 14_049_000, endFreq: 14_099_000 }],
+    ['wider (ZOOM− preset switch)', { startFreq: 13_950_000, endFreq: 14_200_000 }],
+    ['start-only', { startFreq: 14_010_000 }],
+    ['end-only', { endFreq: 14_110_000 }],
+  ])('reseats the tuple when the window changes %s with unchanged RF facts', (_name, window) => {
+    const input = fixture();
+    const current = project(input);
+    expect(current.display.state).toBe('current');
+    receipt(input, 2, window);
+    const reseated = project(input, current);
+    expect(reseated.display).toMatchObject({ state: 'current', tuple: {
+      frequencyHz: 14_074_000, mode: 'USB', widthHz: 2400, shiftHz: 0,
+      startHz: window.startFreq ?? 14_000_000, endHz: window.endFreq ?? 14_100_000,
+    } });
+    // Continuity is re-established on the new window: the next projection
+    // holds without fresh geometry evidence.
+    expect(project(input, reseated).display.state).toBe('current');
+  });
+  it.each([
+    ['mode', (i: ScopePassbandDisplayInput) => { edit(i, (s) => { s.main!.mode = 'LSB'; }); }],
+    ['DATA', (i: ScopePassbandDisplayInput) => { edit(i, (s) => { s.main!.dataMode = 1; }); }],
+    ['filter width', (i: ScopePassbandDisplayInput) => {
+      edit(i, (s) => { s.main!.filterWidth = 1800; });
+      status(i, 'main.filterWidth', { lastObservedMonotonic: 11 });
+    }],
+    ['frame mode', undefined],
+  ] as const)('still retires when %s changes together with the window', (_name, change) => {
+    const input = fixture();
+    const current = project(input);
+    expect(current.display.state).toBe('current');
+    if (change) change(input);
+    receipt(input, 2, _name === 'frame mode'
+      ? { startFreq: 14_049_000, endFreq: 14_099_000, mode: 1 }
+      : { startFreq: 14_049_000, endFreq: 14_099_000 });
+    expect(project(input, current).display.state).toBe('unknown');
   });
   it('rejects A→B→A replay even with renewed receipt and old geometry markers', () => {
     const input = fixture(); slotted(input); const a = project(input);
