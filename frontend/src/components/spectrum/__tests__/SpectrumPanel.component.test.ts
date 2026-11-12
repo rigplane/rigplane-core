@@ -1436,6 +1436,29 @@ describe('SpectrumPanel component', () => {
     expect(read().view).toEqual(preset);
   });
 
+  it.each(['pending', 'acknowledged'] as const)('does not adopt FIX coverage before mode readback while the command is %s', async (status) => {
+    const commands = await import('$lib/stores/commands.svelte');
+    const target = mountPanel(); emitFrame(); await flushWaterfallPaint();
+    const read = () => JSON.parse(target.querySelector('.spectrum-panel')!.getAttribute('data-scope-subscription')!);
+    target.querySelector<HTMLButtonElement>('[data-testid="scope-zoom-out"]')!.click(); flushSync();
+    const stream = scopeControllerHarness.stream('hardware');
+    stream.handleMessage({ type: 'granted', ...stream.subscription!,
+      view: { startHz: 13_950_000, endHz: 14_150_000 },
+      coverage: { startHz: 13_950_000, endHz: 14_150_000 }, fps: 20 }); flushSync();
+    const command: import('$lib/stores/commands.svelte').CommandLifecycle = {
+      id: 'scope-mode-race', name: 'set_scope_mode', params: { mode: 1 }, originalEpoch: 1,
+      providerGeneration: 17, createdAt: Date.now(), updatedAt: Date.now(), timeoutMs: 10_000, status,
+    };
+    const spy = vi.spyOn(commands, 'getCommandLifecycles').mockReturnValue([command]);
+    try {
+      // Native FIX pixels can precede the control readback. The follow
+      // request still wraps them in its previously requested 200k view.
+      emitFrame({ startFreq: 13_950_000, endFreq: 14_150_000,
+        coverageStartHz: 14_000_000, coverageEndHz: 14_100_000, sequence: 2 });
+      expect(read().view).toEqual({ follow: 'vfo', spanHz: 200_000 });
+    } finally { spy.mockRestore(); }
+  });
+
   it('clamps the requested width only when an adopted coverage no longer contains it (MOR-4392)', async () => {
     runtimeHarness.state.currentCaps = validateCapabilities({ ...IC7300_CAPABILITIES, ...spanCapabilities, model: 'IC-705' });
     authorityHarness.state.current = authority({ frequencyHz: 14_050_000 });
