@@ -310,3 +310,111 @@ class TestRigctldOverLanSimulator:
                     await writer.wait_closed()
             finally:
                 await server.stop()
+
+
+class TestRigctldMirrorReadiness:
+    @pytest.mark.asyncio
+    @_REALTIME
+    @pytest.mark.parametrize("model", ["IC-7610", "IC-705"])
+    async def test_populated_mirror_during_silent_reconnect(self, model: str) -> None:
+        async with _silent_lan_radio(model) as (radio, sim):
+            await await_until(
+                lambda: radio.radio_ready and radio.radio_state.main.freq > 0,
+                timeout=30.0,
+                description="initial live frequency",
+            )
+            server = RigctldServer(
+                radio,
+                RigctldConfig(host="127.0.0.1", port=0, cache_ttl=0, command_timeout=2),
+                allow_not_ready=True,
+            )
+            try:
+                await server.start()
+                host, port = server._server.sockets[0].getsockname()[:2]
+                reader, writer = await asyncio.open_connection(host, port)
+                try:
+                    live_freq = await radio.get_freq()
+                    assert await _exchange(writer, reader, b"f\n") == (
+                        f"{live_freq}\n".encode()
+                    )
+                    await radio.disconnect()
+                    sim.civ_silent_after_open_s = 20.0
+                    await radio.connect()
+                    assert radio.connected and not radio.radio_ready
+                    assert radio.radio_state.main.freq == live_freq
+                    reply = await _exchange(writer, reader, b"f\n")
+                    assert reply == b"RPRT -5\n", reply
+                    await await_until(
+                        lambda: radio.radio_ready,
+                        timeout=30.0,
+                        description="reconnected radio answers again",
+                    )
+                    assert await _exchange(writer, reader, b"f\n") == (
+                        f"{await radio.get_freq()}\n".encode()
+                    )
+                finally:
+                    writer.close()
+                    await writer.wait_closed()
+            finally:
+                await server.stop()
+
+    @pytest.mark.asyncio
+    @_REALTIME
+    @pytest.mark.parametrize("model", ["IC-7610", "IC-705"])
+    @pytest.mark.parametrize(
+        "command",
+        [b"m\n", b"v\n", b"t\n", b"l STRENGTH\n", b"l RFPOWER\n", b"s\n"],
+    )
+    async def test_mirror_reads_during_silence(self, model: str, command: bytes) -> None:
+        async with _silent_lan_radio(model, silence_s=20.0) as (radio, _sim):
+            server = RigctldServer(
+                radio,
+                RigctldConfig(host="127.0.0.1", port=0, cache_ttl=0, command_timeout=2),
+                allow_not_ready=True,
+            )
+            try:
+                await server.start()
+                host, port = server._server.sockets[0].getsockname()[:2]
+                reader, writer = await asyncio.open_connection(host, port)
+                try:
+                    reply = await _exchange(writer, reader, command)
+                    assert reply == b"RPRT -5\n", reply
+                finally:
+                    writer.close()
+                    await writer.wait_closed()
+            finally:
+                await server.stop()
+
+    @pytest.mark.asyncio
+    @_REALTIME
+    @pytest.mark.parametrize("command", [b"f VFOB\n", b"m VFOB\n"])
+    @pytest.mark.parametrize("ready", [False, True])
+    async def test_unobserved_sub_is_unavailable(
+        self, command: bytes, ready: bool
+    ) -> None:
+        async with _silent_lan_radio("IC-7610", silence_s=20.0) as (radio, _sim):
+            if ready:
+                await await_until(
+                    lambda: radio.radio_ready,
+                    timeout=30.0,
+                    description="MAIN answers before SUB observation",
+                )
+            assert radio.radio_state.sub.freq == 0
+            server = RigctldServer(
+                radio,
+                RigctldConfig(host="127.0.0.1", port=0, cache_ttl=0, command_timeout=2),
+                allow_not_ready=True,
+            )
+            try:
+                await server.start()
+                host, port = server._server.sockets[0].getsockname()[:2]
+                reader, writer = await asyncio.open_connection(host, port)
+                try:
+                    assert await _exchange(writer, reader, b"\\chk_vfo\n") == b"1\n"
+                    reply = await _exchange(writer, reader, command)
+                    assert reply == b"RPRT -5\n", reply
+                finally:
+                    writer.close()
+                    await writer.wait_closed()
+            finally:
+                await server.stop()
