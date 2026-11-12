@@ -210,6 +210,19 @@ class TestSchemaDoc:
         assert len(content.strip()) > 0
 
 
+class TestNarrowFilterWidthSchemaDoc:
+    """_schema.md documents the MOR-4428 narrow width-table variant."""
+
+    def test_schema_documents_narrow_tables(self):
+        content = SCHEMA_PATH.read_text()
+        for token in (
+            "narrow_table",
+            "narrow_defaults",
+            "_validate_filter_narrow_variant",
+        ):
+            assert token in content, f"_schema.md must document {token}"
+
+
 def _assert_wire_bytes(value: list, label: str) -> None:
     """Assert that value is a list of ints in 0x00–0xFF range."""
     assert isinstance(value, list), f"{label} must be a list, got {type(value)}"
