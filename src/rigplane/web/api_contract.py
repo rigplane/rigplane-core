@@ -43,6 +43,7 @@ class CivIngressPayload(TypedDict):
     duplicate: int
     lost: int
     late: int
+    reanchored: int
 
 
 class ConnectionIdentityRecord(TypedDict):
