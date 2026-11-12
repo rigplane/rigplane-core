@@ -187,3 +187,22 @@ it('advances selected geometry receipt only on a matching valid-session frame an
   input.emit(); expect(stream.geometryReceipt).toBe(5); expect(next).toHaveBeenCalledTimes(1);
   stream.dispose();
 });
+
+it('exposes selected cached pixel presence through grants, health ticks and pixel gaps', () => {
+  const input = source(); const stream = new ScopeStream(input.port, context, 'borrowed');
+  stream.setSlotFilter(scopeSlotKey('scope-1', 0));
+  expect(stream.lastFrameHasPixels).toBe(false);
+  input.emit(); input.emit();
+  expect(stream.lastFrameHasPixels).toBe(true);
+  stream.handleMessage({ type: 'granted', sourceId: 'scope-1', receiver: 0,
+    view: { startHz: 14_000_000, endHz: 14_050_000 }, width: 3, fps: 20 });
+  stream.setFreshness('fresh');
+  expect(stream.lastFrameHasPixels).toBe(true);
+  input.emit(fixtures.outOfRange);
+  expect(stream.lastFrameHasPixels).toBe(true); // Unselected SUB cannot retire MAIN.
+  stream.setSlotFilter(scopeSlotKey('scope-1', 1));
+  input.emit(fixtures.outOfRange);
+  expect(stream.lastFrameHasPixels).toBe(false);
+  stream.reset(); expect(stream.lastFrameHasPixels).toBe(false);
+  stream.dispose();
+});

@@ -232,3 +232,30 @@ def test_lan_fake_dual_receiver_default() -> None:
     assert sim._dispatch_civ(0x07, b"\xd2", _FROM_CONTROLLER) == (  # noqa: SLF001
         b"\xfe\xfe\xe0\x98\x07\xd2\x01\xfd"
     )
+
+
+def test_ab_select_is_opt_in_and_preserves_default_recorded_refusals() -> None:
+    sim = MockIcomRadio()
+    for letter in (b"\x00", b"\x01"):
+        assert sim._dispatch_civ(0x07, letter, _FROM_CONTROLLER) == _NAK
+
+
+def test_profile_ab_selection_swaps_only_slotted_vfos() -> None:
+    from rigplane.profiles import resolve_radio_profile
+
+    for model in ("IC-705", "IC-7300", "IC-7610"):
+        profile = resolve_radio_profile(model=model)
+        sim = MockIcomRadio(vfo_ab=profile.vfo_scheme == "ab")
+        main = sim._frequency
+        other = sim._unselected_frequency
+        reply = sim._dispatch_civ(0x07, b"\x01", _FROM_CONTROLLER)
+        if profile.vfo_scheme == "ab":
+            assert reply == _ACK
+            assert sim._frequency == other
+            assert sim._dispatch_civ(0x07, b"\x01", _FROM_CONTROLLER) == _ACK
+            assert sim._frequency == other
+            assert sim._dispatch_civ(0x07, b"\x00", _FROM_CONTROLLER) == _ACK
+            assert sim._frequency == main
+        else:
+            assert reply == _NAK
+            assert sim._frequency == main

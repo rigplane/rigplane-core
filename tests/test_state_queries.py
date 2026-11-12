@@ -27,8 +27,10 @@ from rigplane.core.state_pipeline_contracts import (
     Observation,
     SourceMetadata,
 )
-from rigplane.core.state_store import StateStore
+from rigplane.core.state_store import StateSnapshot, StateStore
 from rigplane.exceptions import CommandError
+from rigplane.radio import IcomRadio
+from rigplane.types import bcd_encode
 from rigplane.profiles import resolve_radio_profile
 from rigplane.profiles.rig_loader import discover_rigs
 from rigplane.rigctld.server import RigctldServer
@@ -769,6 +771,8 @@ class TestBuildStateQueries:
         resolve = acquisition_query_resolver_for_profile(profile)
         expected = []
         for path in pollable:
+            if path == FieldPath.scope_control("display", "fixed_edge"):
+                continue  # No snapshot: the addressed slot is unknown.
             query = resolve(path)
             if query is None:
                 continue
@@ -844,6 +848,8 @@ class TestBuildStateQueries:
         resolver = acquisition_query_resolver_for_profile(profile)
         expected = []
         for path in pollable:
+            if path == FieldPath.scope_control("display", "fixed_edge"):
+                continue  # No snapshot: the addressed slot is unknown.
             query = resolver(path)
             assert query is not None, f"{model}: unresolved declared path {path}"
             if query.receiver is not None and not profile.supports_cmd29(
@@ -870,7 +876,11 @@ class TestBuildStateQueries:
         profile = resolve_radio_profile(model=model)
         acquisition = profile.state_acquisition
         assert acquisition is not None
-        pollable = acquisition.pollable_paths()
+        pollable = tuple(
+            path
+            for path in acquisition.pollable_paths()
+            if path != FieldPath.scope_control("display", "fixed_edge")
+        )
         sent: list[AcquisitionQueryCase] = []
 
         async def sender(
@@ -916,9 +926,9 @@ class TestBuildStateQueries:
         # MOR-3623 adds four pollable paths (repeater_tone, repeater_tsql,
         # tone_squelch_type, repeater_shift); the first three collapse into
         # one 16 5D query and repeater_shift into split's existing bare 0F
-        # read, so 39 paths resolve to 36 distinct queries.
+        # read; without an observed fixed-edge slot, 39 paths yield 35 queries.
         assert len(pollable) == 39
-        assert len(queries) == 36
+        assert len(queries) == 35
         assert all(query.receiver is None for query in queries)
         assert not any(
             query.command in {0x25, 0x26} and query.data == b"\x01" for query in queries
@@ -1056,9 +1066,12 @@ class TestScopeReceiverSelector:
 
         assert with_selector == _SELECTOR_SUBS - {0x1F}
         assert bare == _BARE_SUBS
-        assert acquisition_query(0x27, sub=0x1E, data=b"\x01\x01") in scope
+        # MOR-4387 (owner build-4): without a snapshot the sweep cannot know
+        # the <range><edge> slot, so no 0x27 0x1E goes out at all — the
+        # legacy 01/01 default published an unrelated slot's bounds.
+        assert not any(part.sub == 0x1E for part in frame_parts)
         assert acquisition_query(0x27, sub=0x1F, data=b"\x00") not in scope
-        assert len(scope) == 12
+        assert len(scope) == 11
 
     def test_sweep_selector_is_one_byte_and_main(self) -> None:
         profile = resolve_radio_profile(model="IC-7300")
@@ -1090,6 +1103,156 @@ class TestScopeReceiverSelector:
         assert all(
             part.receiver is None for part in map(civ_frame_parts, queries) if part.data
         )
+
+
+# ------------------------------------------------------------------
+# MOR-4387 (owner build-4): the fixed-edge read's <range><edge> slot
+# ------------------------------------------------------------------
+
+
+class TestScopeFixedEdgeSlot:
+    """The periodic 0x27 0x1E read answers for the ADDRESSED slot only
+    (MOR-662). It must address the range holding the scope receiver's
+    current frequency (from the profile's ``scope_fixed_edge_ranges``) and
+    the observed edge — and until both are known it must not go out at all:
+    the legacy 01/01 default published an unrelated slot's bounds while the
+    owner's VFO sat at 7.222 MHz (``GET /api/v1/state`` showed
+    ``fixedEdge {rangeIndex: 1, edge: 1, 500000..1500000}``)."""
+
+    @staticmethod
+    def _snapshot(observations: dict[str, object]) -> StateSnapshot:
+        store = StateStore()
+        for raw, value in observations.items():
+            store.apply(
+                Observation(
+                    path=FieldPath.parse(raw),
+                    value=value,
+                    source=SourceMetadata(source="test", provider="test"),
+                    timestamp_monotonic=1000.0,
+                )
+            )
+        return store.snapshot()
+
+    def test_ic7610_addresses_the_vfo_band_range_and_the_observed_edge(self) -> None:
+        profile = resolve_radio_profile(model="IC-7610")
+        snapshot = self._snapshot(
+            {
+                "receiver.main.freq_mode.freq_hz": 7_222_000,
+                "scope_controls.global.display.receiver": 0,
+                "scope_controls.global.display.edge": 2,
+            }
+        )
+        # 7.222 MHz sits in the profile's range 4 (6–8 MHz).
+        assert state_queries_module.scope_fixed_edge_slot(profile, snapshot) == (4, 2)
+        queries = build_state_queries(profile, snapshot=snapshot)
+        assert acquisition_query(0x27, sub=0x1E, data=b"\x04\x02") in queries
+        assert not any(
+            query.sub == 0x1E and query.data != b"\x04\x02" for query in queries
+        )
+
+    @pytest.mark.parametrize("receiver", [0, 1])
+    def test_numeric_active_frequency_paths_match_runtime(self, receiver: int) -> None:
+        profile = resolve_radio_profile(model="IC-7610")
+        snapshot = self._snapshot(
+            {
+                f"receiver.{receiver}.active.freq_mode.freq_hz": 7_222_000,
+                "scope_controls.global.display.receiver": receiver,
+                "scope_controls.global.display.edge": 2,
+            }
+        )
+        assert state_queries_module.scope_fixed_edge_slot(profile, snapshot) == (4, 2)
+
+    @pytest.mark.parametrize("model,expected", [("IC-705", None), ("IC-7610", (4, 2))])
+    async def test_real_civ_producer_paths_resolve_the_read_slot(self, model, expected):
+        radio = IcomRadio("127.0.0.1", model=model)
+        for command, data in (
+            (0x03, bcd_encode(7_222_000)),
+            (0x27, b"\x12\x00"),
+            (0x27, b"\x16\x00\x02"),
+        ):
+            frame = parse_civ_frame(
+                build_civ_frame(0xE0, radio._radio_addr, command, data=data)
+            )
+            await radio._civ_runtime._route_civ_frame(
+                frame, generation=radio._civ_epoch
+            )
+        snapshot = radio.state_store.snapshot()
+        assert (
+            snapshot.field(FieldPath.active("0", "freq_mode", "freq_hz")).value
+            == 7_222_000
+        )
+        assert (
+            state_queries_module.scope_fixed_edge_slot(radio._profile, snapshot)
+            == expected
+        )
+
+    def test_unknown_dual_receiver_is_not_assumed_main(self) -> None:
+        profile = resolve_radio_profile(model="IC-7610")
+        snapshot = self._snapshot(
+            {
+                "receiver.0.active.freq_mode.freq_hz": 7_222_000,
+                "scope_controls.global.display.edge": 2,
+            }
+        )
+        assert state_queries_module.scope_fixed_edge_slot(profile, snapshot) is None
+
+    def test_ic7610_band_change_moves_the_addressed_range(self) -> None:
+        profile = resolve_radio_profile(model="IC-7610")
+        snapshot = self._snapshot(
+            {
+                "receiver.main.freq_mode.freq_hz": 14_250_000,
+                "scope_controls.global.display.receiver": 0,
+                "scope_controls.global.display.edge": 1,
+            }
+        )
+        # 14.25 MHz sits in range 6 (11–15 MHz).
+        assert state_queries_module.scope_fixed_edge_slot(profile, snapshot) == (6, 1)
+        assert acquisition_query(0x27, sub=0x1E, data=b"\x06\x01") in (
+            build_state_queries(profile, snapshot=snapshot)
+        )
+
+    def test_ic7610_skips_the_read_until_range_and_edge_are_known(self) -> None:
+        profile = resolve_radio_profile(model="IC-7610")
+        empty = StateSnapshot.empty()
+        assert state_queries_module.scope_fixed_edge_slot(profile, empty) is None
+        assert not any(
+            query.sub == 0x1E for query in build_state_queries(profile, snapshot=empty)
+        )
+        # The frequency without the edge is not enough either.
+        snapshot = self._snapshot({"receiver.main.freq_mode.freq_hz": 7_222_000})
+        assert state_queries_module.scope_fixed_edge_slot(profile, snapshot) is None
+        assert not any(
+            query.sub == 0x1E
+            for query in build_state_queries(profile, snapshot=snapshot)
+        )
+
+    def test_ic705_without_declared_ranges_reads_nothing(self) -> None:
+        # The IC-705 profile declares no fixed-edge range table (the radio's
+        # exists physically but is undeclared), so there is never an honest
+        # slot — the read is skipped rather than publishing slot 1.
+        profile = resolve_radio_profile(model="IC-705")
+        assert profile.scope_fixed_edge_ranges == ()
+        snapshot = self._snapshot(
+            {
+                "receiver.main.freq_mode.freq_hz": 7_222_000,
+                "scope_controls.global.display.receiver": 0,
+                "scope_controls.global.display.edge": 2,
+            }
+        )
+        assert state_queries_module.scope_fixed_edge_slot(profile, snapshot) is None
+        assert not any(
+            query.sub == 0x1E
+            for query in build_state_queries(profile, snapshot=snapshot)
+        )
+
+    def test_supplier_less_resolver_keeps_the_legacy_identity_frame(self) -> None:
+        # The refusal-mapping/diagnostics callers never send the query; the
+        # supplier-less resolver keeps the legacy 01/01 frame for them.
+        profile = resolve_radio_profile(model="IC-7610")
+        query = acquisition_query_resolver_for_profile(profile)(
+            FieldPath.scope_control("display", "fixed_edge")
+        )
+        assert query == acquisition_query(0x27, sub=0x1E, data=b"\x01\x01")
 
 
 # ------------------------------------------------------------------
@@ -1205,15 +1368,11 @@ class TestFetchInitialState:
             assert call(0x27, sub=sub, data=b"", wait_response=False) in sent, (
                 f"0x27/0x{sub:02X} was not sent bare"
             )
-        assert (
-            call(
-                0x27,
-                sub=0x1E,
-                data=b"\x01\x01",
-                wait_response=False,
-            )
-            in sent
-        )
+        # MOR-4387 (owner build-4): the fixed-edge read needs the slot of
+        # the scope receiver's current band and the observed edge; on an
+        # empty store there is no honest slot, so no 0x27 0x1E goes out at
+        # all — the legacy 01/01 read published an unrelated slot's bounds.
+        assert not any(c.args[0] == 0x27 and c.kwargs["sub"] == 0x1E for c in sent)
         assert (
             call(
                 0x27,

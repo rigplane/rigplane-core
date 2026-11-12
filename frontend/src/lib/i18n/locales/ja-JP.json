@@ -140,6 +140,7 @@
   "core.overlay.scopeSwitchToCtr": "CTR に切り替え",
   "core.scope.webglRequired": "ウォーターフォールには WebGL が必要です",
   "core.scope.presets": "スコープのプリセット",
+  "core.scope.spanWorksInCtr": "SPAN は CTR で使えます",
   "core.scope.viewRefused": "スコープ表示の要求が拒否されました: {reason}",
   "core.scope.preset.follow": "VFO に追従",
   "core.scope.zoomIn": "パノラマ表示を拡大",
