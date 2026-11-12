@@ -32,6 +32,7 @@ __all__ = [
     "PACKET_QUEUE_MAXSIZE",
     "PING_SIZE",
     "PRESSURE_THRESHOLD",
+    "RENUMBER_JUMP",
     "REORDER_WINDOW",
     "RxOrderStats",
 ]
@@ -49,6 +50,7 @@ DISCOVERY_RETRIES = 10
 DISCOVERY_TIMEOUT = 1.0  # seconds per attempt
 BUFSIZE = 500
 MAX_MISSING = 50
+RENUMBER_JUMP = 2000
 # Ordered delivery (MOR-4205): the most sequence numbers that may lie between
 # the oldest undelivered number and the newest one received. Past it the
 # oldest gap is given up even while its retransmit is still being asked for,
@@ -76,12 +78,14 @@ class RxOrderStats:
             delivered or is already held.
         lost: Numbers delivery moved past without their packet: the
             retransmit budget ran out or the hold reached ``REORDER_WINDOW``.
+            Includes burst loss for forward frontier deltas greater than
+            ``MAX_MISSING`` and up to ``RENUMBER_JUMP``.
         late: Packets that arrived after their number was given up; dropped,
             because later packets were already delivered.
         reanchored: Times the delivery anchor moved onto the live stream
             after a numbering jump: a run of more than ``REORDER_WINDOW``
             consecutive packets all behind the anchor, or a forward frontier
-            delta greater than ``MAX_MISSING`` (MOR-4416). One event,
+            delta greater than ``RENUMBER_JUMP`` (MOR-4416). One event,
             however many packets the run held — the run's packets up to the
             window still count as ``duplicate``/``late`` as before.
     """
@@ -735,8 +739,25 @@ class IcomTransport:
 
         if 1 <= delta <= 0x7FFF:
             # Forward progress in uint16 sequence space.
-            if delta > MAX_MISSING:
+            if delta > RENUMBER_JUMP:
                 self._reanchor_rx(seq, forward_jump=delta)
+                return
+            if delta > MAX_MISSING:
+                self.rx_missing.clear()
+                if self.ordered_ingress:
+                    # Settle older held gaps before advancing past this burst.
+                    self._release_in_order()
+                    self._rx_lost += delta - 1
+                    for offset in range(max(1, delta - REORDER_WINDOW), delta):
+                        self._rx_given_up.append((last_seq + offset) & 0xFFFF)
+                    self._rx_next = seq
+                self.rx_last_seq = seq
+                logger.warning(
+                    "CI-V burst loss %d packets (last_seq=%d, new_seq=%d)",
+                    delta - 1,
+                    last_seq,
+                    seq,
+                )
                 return
 
             for offset in range(1, delta):

@@ -19,6 +19,7 @@ import pytest
 from rigplane.commands import CONTROLLER_ADDR, build_civ_frame
 from rigplane.core.transport import (
     MAX_MISSING,
+    RENUMBER_JUMP,
     REORDER_WINDOW,
     RETRANSMIT_PERIOD,
     ConnectionState,
@@ -362,7 +363,9 @@ async def test_forward_gap_exactly_max_missing_is_tracked(
     assert transport.rx_order_stats == RxOrderStats(reordered=MAX_MISSING - 1)
 
 
-@pytest.mark.parametrize("delta", [MAX_MISSING + 1, 120, 2000, 2001])
+@pytest.mark.parametrize(
+    "delta", [MAX_MISSING + 1, 120, RENUMBER_JUMP, RENUMBER_JUMP + 1]
+)
 async def test_forward_gap_bands_preserve_loss_visibility(
     transport: IcomTransport,
     virtual_clock: VirtualClock,
@@ -380,7 +383,7 @@ async def test_forward_gap_bands_preserve_loss_visibility(
         await virtual_clock.elapse(_BUDGET)
 
     assert drain_seqs(transport) == list(range(new_seq, new_seq + REORDER_WINDOW + 3))
-    burst = delta <= 2000
+    burst = delta <= RENUMBER_JUMP
     assert transport.rx_order_stats == RxOrderStats(
         lost=delta - 1 if burst else 0, reanchored=0 if burst else 1
     )
