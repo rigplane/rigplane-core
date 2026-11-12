@@ -300,7 +300,12 @@
     }
   }
 
-  onDestroy(() => { unsubscribeTrace?.(); trace?.dispose(); panoramaScheduler.dispose(); });
+  onDestroy(() => {
+    unsubscribeTrace?.();
+    trace?.dispose();
+    panoramaScheduler.dispose();
+    if (zoomFixedHintTimer !== null) clearTimeout(zoomFixedHintTimer);
+  });
   // RF geometry stays wire-owned. AF axes use observed carrier/polarity;
   // the legacy symmetric fallback is presentation-only.
   let audioProjection = $derived(audioFft ? audioScopeProjection(displayGeometry, runtime.state) : null);
@@ -949,6 +954,19 @@
   // to a single smeared peak with no shape left to inspect.
   const ZOOM_FLOOR_BINS = 4;
 
+  // MOR-4387 (owner build-4): the ZOOM−-at-fixed-edges no-op explains
+  // itself — one transient chip with the reason and the one-tap CTR return
+  // (the same vocabulary as the out-of-range overlay's CTR button). The
+  // chip also dies on its own after a few seconds; leaving FIX hides it
+  // via the render condition.
+  let zoomFixedHint = $state(false);
+  let zoomFixedHintTimer: ReturnType<typeof setTimeout> | null = null;
+  function showZoomFixedHint(): void {
+    zoomFixedHint = true;
+    if (zoomFixedHintTimer !== null) clearTimeout(zoomFixedHintTimer);
+    zoomFixedHintTimer = setTimeout(() => { zoomFixedHint = false; zoomFixedHintTimer = null; }, 6000);
+  }
+
   function nudgeScopeZoom(factor: number): void {
     if (effectiveView.endHz <= effectiveView.startHz) return;
     if (isFixedScope) {
@@ -963,8 +981,11 @@
         startHz: Math.max(zoomed.startHz, geometry.view.startHz),
         endHz: Math.min(zoomed.endHz, geometry.view.endHz),
       };
-      requestedView = clipped.startHz <= geometry.view.startHz && clipped.endHz >= geometry.view.endHz
-        ? null : clipped;
+      const coversWindow = clipped.startHz <= geometry.view.startHz && clipped.endHz >= geometry.view.endHz;
+      // MOR-4387 (owner build-4): ZOOM− already AT the fixed edges changes
+      // nothing — say so instead of reading as "ZOOM stopped working".
+      if (factor > 1 && coversWindow && requestedView === null) showZoomFixedHint();
+      requestedView = coversWindow ? null : clipped;
       // The crop is scoped to the FIX excursion: it is never an explicit
       // pin, so a return to CENTER resumes the follow view instead of
       // holding a window the user never pinned there.
@@ -1838,6 +1859,19 @@
           title={passbandMarkerTitle}
         >{passbandMarkerText}</div>
       {/if}
+      <!-- MOR-4387 (owner build-4): a ZOOM− that is a no-op at the fixed
+           edges says why and offers the one-tap CTR return — the same
+           reason the disabled SPAN keys carry in FIX. -->
+      {#if zoomFixedHint && isFixedScope}
+        <div class="passband-unknown scope-zoom-hint" data-testid="zoom-fixed-hint" role="status">
+          <span>{t('core.scope.spanWorksInCtr')}</span>
+          <button
+            type="button"
+            data-testid="zoom-fixed-ctr"
+            onclick={() => { zoomFixedHint = false; scopeHandlers.onModeChange(0); }}
+          >{t('core.overlay.scopeSwitchToCtr')}</button>
+        </div>
+      {/if}
     </div>
   </div>
   </div>
@@ -2073,6 +2107,24 @@
     border: 1px solid var(--panel-border);
     border-radius: var(--radius);
     pointer-events: none;
+  }
+  /* MOR-4387: the ZOOM hint is the same chip, but its CTR return key is
+     interactive. */
+  .scope-zoom-hint {
+    pointer-events: auto;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .scope-zoom-hint button {
+    pointer-events: auto;
+    font: inherit;
+    color: var(--text);
+    background: transparent;
+    border: 1px solid var(--panel-border);
+    border-radius: var(--radius);
+    padding: 0 6px;
+    cursor: pointer;
   }
 
   .passband-resize-zone {
