@@ -924,7 +924,7 @@ class TestBuildStateQueries:
         # MOR-3623 adds four pollable paths (repeater_tone, repeater_tsql,
         # tone_squelch_type, repeater_shift); the first three collapse into
         # one 16 5D query and repeater_shift into split's existing bare 0F
-        # read, so 39 paths resolve to 36 distinct queries.
+        # read; without an observed fixed-edge slot, 39 paths yield 35 queries.
         assert len(pollable) == 39
         assert len(queries) == 35
         assert all(query.receiver is None for query in queries)

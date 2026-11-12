@@ -264,7 +264,7 @@ for (const [index, model] of ['IC-705', 'IC-7300'].entries()) {
     page.on('websocket', socket => socket.on('framesent', ({ payload }) => {
       if (typeof payload !== 'string') return;
       const message = JSON.parse(payload);
-      if (socket.url().endsWith('/api/v1/ws') && message.type === 'cmd') commands.push((message as WsCommand).name);
+      if (new URL(socket.url()).pathname === '/api/v1/ws' && message.type === 'cmd') commands.push((message as WsCommand).name);
       if (socket.url().endsWith('/api/v1/scope') && message.type === 'subscribe') subscriptions.push(message);
     }));
     try {
@@ -275,6 +275,8 @@ for (const [index, model] of ['IC-705', 'IC-7300'].entries()) {
       await expect.poll(async () => (await scopeWriteReceipts(evidence)).filter(r => r.sub === 0x14).at(-1)?.data[1]).toBe(1);
       await expect(page.locator('.waterfall-content .passband-overlay')).toBeVisible();
       await expect.poll(() => frames.at(-1)?.view).toEqual([14_200_000, 14_300_000]);
+      await expect.poll(() => page.evaluate(() => window.passbandSamples.at(-1)), { timeout: 30_000 })
+        .toMatchObject({ overlay: true, gates: { proportional: true, tupleState: 'current' } });
       const writesBefore = (await scopeWriteReceipts(evidence)).length;
       const commandsBefore = commands.length;
       const subscriptionsBefore = subscriptions.length;
@@ -301,7 +303,7 @@ for (const [index, model] of ['IC-705', 'IC-7300'].entries()) {
       const box = (await surface.boundingBox())!;
       await page.mouse.move(box.x + box.width / 2, box.y + box.height * 0.7);
       await page.mouse.wheel(0, -120);
-      await expect.poll(async () => (await (await page.request.get('/api/v1/state')).json()).main.freqHz).toBeGreaterThan(14_262_000);
+      await expect.poll(async () => (await (await page.request.get(`http://127.0.0.1:${port}/api/v1/state`)).json()).main.freqHz).toBeGreaterThan(14_262_000);
       await check();
       await page.mouse.click(box.x + box.width * 0.7, box.y + box.height * 0.7);
       await check();
@@ -319,6 +321,10 @@ for (const [index, model] of ['IC-705', 'IC-7300'].entries()) {
       await writeFile(info.outputPath('fix-follow-passband.json'), JSON.stringify({ model, gaps, samples }, null, 2));
       expect(samples.filter(sample => sample.t >= fromT && sample.t <= toT).length).toBeGreaterThan(20);
       for (const gap of gaps) expect(gap.frames, JSON.stringify(gap)).toBeLessThanOrEqual(1);
+      for (const sample of samples.filter(sample => sample.t >= fromT && sample.t <= toT)) {
+        expect(sample.gates?.viewStartHz).toBeGreaterThanOrEqual(14_200_000);
+        expect(sample.gates?.viewEndHz).toBeLessThanOrEqual(14_300_000);
+      }
       expect(commands.slice(commandsBefore).filter(name => name.startsWith('set_scope_'))).toEqual([]);
       expect((await scopeWriteReceipts(evidence)).length).toBe(writesBefore);
       expect(subscriptions.slice(subscriptionsBefore)).toEqual([]);

@@ -250,6 +250,10 @@ export class ScopeStream {
   /** Last accepted ID for valid selected geometry; preserved across evidence boundaries. */
   get geometryReceipt(): number { return this.geometryAccepted; }
 
+  get lastFrameHasPixels(): boolean {
+    return this.geometryKey !== null && Boolean(this.frames.get(this.geometryKey)?.pixels?.length);
+  }
+
   /** A transport-session change retires cached receipts; wire epochs remain producer-owned. */
   setSessionEpoch(epoch: number): void {
     if (this.disposed) return;

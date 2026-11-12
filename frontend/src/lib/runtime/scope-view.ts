@@ -25,8 +25,11 @@ export interface ScopeGranted {
 
 export function viewCenterHz(view: View): number { return (view.startHz + view.endHz) / 2; }
 export function viewSpanHz(view: View): number { return view.endHz - view.startHz; }
-export function panView(view: View, deltaHz: number): View {
-  return { startHz: view.startHz + deltaHz, endHz: view.endHz + deltaHz };
+export function panView(view: View, deltaHz: number, bounds?: View): View {
+  if (!bounds) return { startHz: view.startHz + deltaHz, endHz: view.endHz + deltaHz };
+  const span = Math.min(viewSpanHz(view), viewSpanHz(bounds));
+  const startHz = Math.max(bounds.startHz, Math.min(bounds.endHz - span, view.startHz + deltaHz));
+  return { startHz, endHz: startHz + span };
 }
 export function zoomView(view: View, factor: number): View {
   const halfSpan = viewSpanHz(view) * factor / 2;

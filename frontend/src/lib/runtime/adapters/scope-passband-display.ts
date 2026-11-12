@@ -60,6 +60,7 @@ export interface ScopeFrameFacts {
   readonly demanded: boolean;
   readonly transport: 'disconnected' | 'connecting' | 'connected' | 'reconnecting';
   readonly geometry: ScopeGeometry | null;
+  readonly lastFrameHasPixels: boolean;
   readonly receipt: number;
 }
 export interface ScopePassbandDisplayInput {
@@ -149,22 +150,6 @@ function inspect(input: ScopePassbandDisplayInput): Inspection {
     if (receiver.state !== 'current' && receiver.state !== 'stale') return result;
   }
   result.domain = JSON.stringify([state.providerGeneration, selection.receiver]);
-  // MOR-4387 (owner build-4): a scope GRANT placeholder
-  // (`scopeGrantedGeometry` in scope-adapter.ts — stale and pixel-less by
-  // construction, announcing the granted window before its first frame) is
-  // not evidence AGAINST a proven tuple. On a ZOOM preset switch the
-  // regrant lands one beat before the new window's frames; treating the
-  // placeholder as missing frame evidence retired the tuple here and the
-  // recapture then waited a full geometry re-observation cycle — the
-  // owner's ~1 s passband blink. Distinct from frame SILENCE: a silenced
-  // stream keeps the last frame's pixels (`setFreshness` flips freshness
-  // only), so `hasPixels` separates the placeholder from a real gap.
-  if (geometry !== null && geometry.freshness === 'stale' && !geometry.hasPixels
-    && session?.state === 'connected' && facts?.transport === 'connected') {
-    result.placeholder = true;
-    result.reason = 'frame-unavailable';
-    return result;
-  }
   const has = (tag: string) => caps.capabilities.includes(tag);
   const native = has('if_shift');
   const scale = native ? undefined : pbtRangeFromCaps(caps);
@@ -293,11 +278,15 @@ function inspect(input: ScopePassbandDisplayInput): Inspection {
     || facts.transport !== 'connected' || !facts.demanded
     || !integer(facts.transportEpoch) || facts.transportEpoch === 0
     || geometry.source !== 'radio' || geometry.receiver !== receiver
-    || geometry.freshness !== 'fresh' || !geometry.hasPixels
+    || (geometry.hasPixels && geometry.freshness !== 'fresh')
+    || (!geometry.hasPixels && (geometry.outOfRange || !facts.lastFrameHasPixels))
     || !integer(geometry.mode) || geometry.mode > 255
     || !Number.isFinite(geometry.view.startHz) || !Number.isFinite(geometry.view.endHz)
     || geometry.view.endHz <= geometry.view.startHz
     || !nonnegative(facts.receipt) || facts.receipt === 0) return result;
+  // A health tick can mark a grant fresh using the last frame's receipt.
+  // Pixel presence distinguishes the grant from actual frame evidence.
+  result.placeholder = !geometry.hasPixels && facts.lastFrameHasPixels;
   const tuple = Object.freeze({ frequencyHz: frequency, mode, widthHz: width, shiftHz,
     frameMode: geometry.mode, startHz: geometry.view.startHz, endHz: geometry.view.endHz });  // A held-stale value carrying provider-confirmed readback is still an
   // authoritative radio fact.  IC-7610 polling intervals intentionally exceed
@@ -345,10 +334,6 @@ export function projectScopePassbandDisplay(
   previous: ScopePassbandDisplayState, input: ScopePassbandDisplayInput,
 ): ScopePassbandDisplayState {
   const next = inspect(input);
-  // A grant placeholder carries no new evidence: hold the proven tuple
-  // across the regrant beat; without one, fall through to the usual
-  // unknown handling (startup before the first frame).
-  if (next.placeholder && active(previous.display)) return previous;
   const candidate = next.candidate;
   const sameDomain = next.domain !== null && previous.domain === next.domain;
   const changedIdentity = !!candidate && previous.identity !== null && candidate.identity !== previous.identity;
@@ -398,7 +383,13 @@ export function projectScopePassbandDisplay(
   // re-proven against the current plane — and a mode, DATA, filter-width,
   // provider or frame-mode change keeps the context unequal and still
   // retires: an unknown width is never drawn.
-  const reseating = !continuous && candidate !== null && previousTuple !== null
+  const holdingGrant = next.placeholder && candidate !== null && previousTuple !== null
+    && sameDomain && candidate.context === previous.context
+    && candidate.tuple.frequencyHz === previousTuple.frequencyHz
+    && !wasTranslated && !regression && !receiptRegression && !changedGeometry
+    && !candidate.stale && candidate.strict && !selectionRecovery;
+  if (holdingGrant) return previous;
+  const reseating = !next.placeholder && !continuous && candidate !== null && previousTuple !== null
     && sameDomain && previous.context !== null && candidate.context === previous.context
     && (candidate.tuple.startHz !== previousTuple.startHz || candidate.tuple.endHz !== previousTuple.endHz)
     && candidate.tuple.frequencyHz === previousTuple.frequencyHz
@@ -407,10 +398,10 @@ export function projectScopePassbandDisplay(
   const holdingFrequency = hasTuple && continuous && candidate !== null
     && !candidate.frequencyCurrent && candidate.frequencyAligned
     && !regression && !receiptRegression && !changedGeometry;
-  const invalid = !candidate || regression || receiptRegression || (!candidate.stale && !candidate.strict)
+  const invalid = next.placeholder || !candidate || regression || receiptRegression || (!candidate.stale && !candidate.strict)
     || ((candidate.stale || wasTranslated) && changedGeometry)
     || (wasTranslated && !candidate.frequencyCurrent && !holdingFrequency);
-  const canTranslate = hasTuple && continuous && candidate !== null
+  const canTranslate = !next.placeholder && hasTuple && continuous && candidate !== null
     && candidate.frequencyCurrent && !regression && !receiptRegression && !changedGeometry
     && (candidate.stale || candidate.strict || !candidate.frequencyAligned);
   const translating = canTranslate && (changedIdentity || wasTranslated);
@@ -444,7 +435,7 @@ export function projectScopePassbandDisplay(
   const axisAligned = candidate && (candidate.tuple.frameMode === 1 || candidate.tuple.frameMode === 3
     || candidate.tuple.frequencyHz === (candidate.tuple.startHz + candidate.tuple.endHz) / 2);
   const canRetain = hasTuple && !selectionRecovery && !retire && !invalid && !translating;
-  const canCapture = candidate && !candidate.stale && candidate.strict && !regression
+  const canCapture = !next.placeholder && candidate && !candidate.stale && candidate.strict && !regression
     && !receiptRegression && !retire && crossedFloors && (!selectionRecovery || axisAligned);
   const display: ScopePassbandDisplay = holdingFrequency
     ? { state: 'stale', translated: true, tuple: {
@@ -464,7 +455,7 @@ export function projectScopePassbandDisplay(
     ? { state: candidate!.stale ? 'stale' : 'current',
       tuple: canRetain && !changedGeometry ? tupleOf(previous.display) : candidate!.tuple }
     : next.unsupported ? { state: 'unsupported' }
-      : { state: 'unknown', reason: retire ? 'retired' : candidate?.stale ? 'first-stale'
+      : { state: 'unknown', reason: retire ? 'retired' : next.placeholder ? 'frame-unavailable' : candidate?.stale ? 'first-stale'
         : candidate ? 'awaiting-evidence' : next.reason };
   const observations: Record<string, Observation> = next.domain === null || sameDomain
     ? { ...previous.observations } : {};

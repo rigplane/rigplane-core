@@ -535,6 +535,7 @@ class MockIcomRadio(AudioPortMixin):
         civ_inherited_drop_unanswered_rounds: int = 0,
         clock: Callable[[], float] | None = None,
         dual_receiver: bool = False,
+        vfo_ab: bool = False,
         scope_stream: bool = False,
         scope_blank_waves: bool = False,
         rx_source: RxSource | None = None,
@@ -615,6 +616,7 @@ class MockIcomRadio(AudioPortMixin):
         # VFO A/B letter of the selected receiver (CI-V 0x07 00/01). A radio
         # powers up on VFO A; selecting the idle letter swaps the
         # selected/unselected pair, selecting the current one is idempotent.
+        self._vfo_ab = vfo_ab
         self._selected_vfo_letter: str = "A"
         # MOR-4036: the set of CI-V mode bytes that can carry the DATA flag
         # (None = every mode, today's behaviour — unchanged for all existing
@@ -2660,7 +2662,12 @@ class MockIcomRadio(AudioPortMixin):
         # (``RadioPoller.select_vfo_a_on_connect``) sends 0x07 0x00 at
         # connect to bind the A/B identity; a NAK here leaves
         # ``main.activeSlot`` unobserved and the passband tuple unprovable.
-        if cmd == _CMD_VFO_SELECT and len(payload) == 1 and payload[0] in (0x00, 0x01):
+        if (
+            self._vfo_ab
+            and cmd == _CMD_VFO_SELECT
+            and len(payload) == 1
+            and payload[0] in (0x00, 0x01)
+        ):
             target_letter = "A" if payload[0] == 0x00 else "B"
             if target_letter != self._selected_vfo_letter:
                 self._swap_selected_unselected()

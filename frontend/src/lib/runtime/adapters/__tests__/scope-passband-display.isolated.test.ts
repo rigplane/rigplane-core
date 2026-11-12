@@ -72,7 +72,7 @@ function receipt(input: ScopePassbandDisplayInput, sequence = 1, overrides: Reco
     mode: typeof overrides.mode === 'number' ? overrides.mode : 0 });
   if (!ingress.ok) throw new Error(`invalid fixture: ${ingress.reason}`);
   input.frame = Object.freeze({ source: 'hardware', receiver, providerGeneration: generation,
-    transportEpoch: 1, demanded: true, transport: 'connected', geometry: ingress.geometry, receipt: sequence });
+    transportEpoch: 1, demanded: true, transport: 'connected', geometry: ingress.geometry, lastFrameHasPixels: ingress.geometry.hasPixels, receipt: sequence });
 
 }
 /**
@@ -778,6 +778,12 @@ describe('coherent RF passband display', () => {
   it('holds a pixel-less grant even when the health clock marks it fresh', () => {
     const input = fixture(); const current = project(input);
     input.frame = { ...input.frame!, geometry: { ...input.frame!.geometry!, freshness: 'fresh', hasPixels: false } };
+    expect(project(input, current).display).toEqual(current.display);
+  });
+  it('holds a grant when an unprojected frame advanced the stream receipt', () => {
+    const input = fixture(); const current = project(input);
+    input.frame = { ...input.frame!, receipt: 2,
+      geometry: { ...input.frame!.geometry!, freshness: 'stale', hasPixels: false } };
     expect(project(input, current).display).toEqual(current.display);
   });
   it.each(['mode', 'width', 'provider'] as const)('does not hold an obsolete tuple across a %s change during a grant', kind => {

@@ -49,6 +49,7 @@ class PanoramaSimulator(MockIcomRadio):
             radio_addr=self.profile.civ_addr,
             scope_stream=True,
             dual_receiver=self.profile.receiver_count > 1,
+            vfo_ab=self.profile.vfo_scheme == "ab",
         )
         self.evidence = evidence
         if self.profile.expected_identity_ids:

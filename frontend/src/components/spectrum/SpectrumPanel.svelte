@@ -729,9 +729,10 @@
     const fixed = isFixedScope;
     const follow = followSpanHz;
     const requested = requestedView;
-    const active = panoramaActive;
-    const burst = active && requested === null && authority !== null ? getTuningBurstFrequencyHz(authority.receiver) : null;
-    const pending = active && requested === null && authority !== null ? getPendingFrequencyHz(authority.receiver) : null;
+    const fixedCrop = fixed && requested !== null && !explicitView;
+    const active = (panoramaActive && requested === null) || fixedCrop;
+    const burst = active && authority !== null ? getTuningBurstFrequencyHz(authority.receiver) : null;
+    const pending = active && authority !== null ? getPendingFrequencyHz(authority.receiver) : null;
     const key = panoramaResetKey;
     untrack(() => {
       coordinatingView = true;
@@ -786,12 +787,14 @@
           // requested crop inside it) — a leftover CENTER follow width must
           // never replace it, or marker/passband/click math runs against a
           // window that is not the one drawn.
-          scopeView.set('confirmed', requestedView ?? (fixed || frequency === null || frequency === undefined ? geometry.view
+          const crop = fixedCrop && confirmedHz !== null && confirmedHz !== undefined
+            ? panView(requested!, confirmedHz - viewCenterHz(requested!), geometry.view) : requestedView;
+          scopeView.set('confirmed', crop ?? (fixed || frequency === null || frequency === undefined ? geometry.view
             : { startHz: frequency - span / 2, endHz: frequency + span / 2 }));
         }
         const confirmed = scopeView.confirmed;
         const panFrom = (hz: number | null) => hz === null || confirmed.endHz <= confirmed.startHz
-          ? null : panView(confirmed, hz - viewCenterHz(confirmed));
+          ? null : panView(confirmed, hz - viewCenterHz(confirmed), fixedCrop ? geometry?.view : undefined);
         scopeView.set('tuningBurst', panFrom(burst));
         scopeView.set('pending', panFrom(pending));
       } finally {
@@ -977,10 +980,8 @@
       const geometry = frameGeometry;
       if (!geometry || geometry.view.endHz <= geometry.view.startHz) return;
       const zoomed = zoomView(effectiveView, factor);
-      const clipped = {
-        startHz: Math.max(zoomed.startHz, geometry.view.startHz),
-        endHz: Math.min(zoomed.endHz, geometry.view.endHz),
-      };
+      const frequency = spectrumAuthority?.frequencyHz ?? displayFrequencyHz ?? viewCenterHz(effectiveView);
+      const clipped = panView(zoomed, frequency - viewCenterHz(zoomed), geometry.view);
       const coversWindow = clipped.startHz <= geometry.view.startHz && clipped.endHz >= geometry.view.endHz;
       // MOR-4387 (owner build-4): ZOOM− already AT the fixed edges changes
       // nothing — say so instead of reading as "ZOOM stopped working".
@@ -1107,6 +1108,8 @@
     tuneVisible,
     confirmed: confirmedPassband,
     freqHz: displayFrequencyHz ?? null,
+    viewStartHz: viewportStartFreq,
+    viewEndHz: viewportEndFreq,
     inView: !proportionalIndicator
       || (displayFrequencyHz !== null && displayFrequencyHz !== undefined
         && frequencyInView(displayFrequencyHz)),
@@ -1426,10 +1429,11 @@
     const changed = dragCandidate !== null || gestureCandidateHz !== null;
     gestureCandidateHz = dragCandidate;
     if (changed && candidate !== null) vfoHandlers.onFreqChange(candidate, capture.authority.receiver, 'drag');
-    if (panoramaActive) {
+    if (panoramaActive || (isFixedScope && requestedView !== null && !explicitView)) {
       const base = capture.view ?? untrack(() => scopeView.confirmed);
       scopeView.set('gesture', dragCandidate !== null && base.endHz > base.startHz
-        ? panView(base, dragCandidate - capture.authority.frequencyHz!) : base);
+        ? panView(base, dragCandidate - (isFixedScope ? viewCenterHz(base) : capture.authority.frequencyHz!),
+          isFixedScope ? frameGeometry?.view : undefined) : base);
     }
   }
 
