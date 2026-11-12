@@ -18,6 +18,7 @@ import pytest
 
 from rigplane.commands import CONTROLLER_ADDR, build_civ_frame
 from rigplane.core.transport import (
+    MAX_MISSING,
     REORDER_WINDOW,
     RETRANSMIT_PERIOD,
     ConnectionState,
@@ -317,3 +318,45 @@ async def test_the_control_and_audio_ports_keep_arrival_order() -> None:
 
     assert drain_seqs(transport) == [1, 3, 2]
     assert transport.rx_order_stats == RxOrderStats()
+
+
+async def test_forward_wrapping_numbering_jump_reanchors_without_phantom_loss(
+    transport: IcomTransport, caplog: pytest.LogCaptureFixture
+) -> None:
+    radio = _radio(transport, 20, first_seq=0)
+    stale = 45633
+    radio.sent[stale] = wrap_civ_in_udp(_frame(0), seq=stale)
+    radio.deliver(stale)
+    assert drain_seqs(transport) == [stale]
+
+    with caplog.at_level(logging.WARNING, logger="rigplane.core.transport"):
+        radio.deliver(*range(20))
+
+    assert drain_seqs(transport) == list(range(20))
+    assert transport.rx_order_stats == RxOrderStats(reanchored=1)
+    assert transport.rx_missing == {}
+    assert not transport._rx_held
+    assert not transport._rx_given_up
+    warnings = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+    assert len(warnings) == 1
+    assert "re-anchored" in warnings[0]
+    assert "old_next=45634" in warnings[0]
+    assert "new_seq=0" in warnings[0]
+    assert "forward_jump=19903" in warnings[0]
+
+
+async def test_forward_gap_exactly_max_missing_is_tracked(
+    transport: IcomTransport, virtual_clock: VirtualClock
+) -> None:
+    radio = _radio(transport, MAX_MISSING + 1)
+    radio.deliver(1, 1 + MAX_MISSING)
+    assert drain_seqs(transport) == [1]
+    assert set(transport.rx_missing) == set(range(2, 1 + MAX_MISSING))
+    assert transport.rx_order_stats == RxOrderStats()
+
+    radio.serve_retransmits = True
+    await virtual_clock.elapse(RETRANSMIT_PERIOD)
+
+    assert set(radio.retransmit_requests) == set(range(2, 1 + MAX_MISSING))
+    assert drain_seqs(transport) == list(range(2, MAX_MISSING + 2))
+    assert transport.rx_order_stats == RxOrderStats(reordered=MAX_MISSING - 1)

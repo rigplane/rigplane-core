@@ -53,9 +53,9 @@ def _sim(factory, **kw) -> MockIcomRadio:
 
 
 async def _wait_connected(radio: IcomRadio) -> None:
-    """Wait out the identity hold: CONNECTED once the first answers arrive."""
+    """Wait for CONNECTED and radio readiness after the numbering jump."""
     await await_until(
-        lambda: radio.conn_state is RadioConnectionState.CONNECTED,
+        lambda: radio.conn_state is RadioConnectionState.CONNECTED and radio.radio_ready,
         timeout=_READY_DEADLINE_S,
         interval=0.05,
         description="radio CONNECTED after the numbering jump",
@@ -145,4 +145,47 @@ async def test_reconnect_within_15s_after_clean_disconnect_answers_promptly(
     finally:
         await second.disconnect()
         await first.disconnect()  # idempotent; covers a failed first leg
+        await sim.stop()
+
+
+@pytest.mark.parametrize(
+    "factory, model",
+    [(ic705_lan_fake, "IC-705"), (ic7610_lan_fake, "IC-7610")],
+    ids=["ic705", "ic7610"],
+)
+@_REALTIME
+async def test_forward_wrapping_open_marker_reanchors_without_phantom_loss(
+    factory, model: str
+) -> None:
+    # _wrap_civ shifts only the marker: the next real sequence advances by
+    # (1 - 45000) & 0xFFFF = 20537, a forward jump across the uint16 wrap.
+    sim = factory(
+        single_owner=True,
+        keepalive_hold_s=30.0,
+        civ_tx_seq_jump=45000,
+        unsolicited_civ=True,
+        unsolicited_interval_s=_STREAM_INTERVAL_S,
+    )
+    await sim.start()
+    radio = IcomRadio(
+        "127.0.0.1",
+        port=sim.control_port,
+        username="testuser",
+        password="testpass",
+        model=model,
+        timeout=0.5,
+    )
+    try:
+        with fast_connect():
+            await asyncio.wait_for(radio.connect(), 10.0)
+            await _wait_connected(radio)
+            freq = await asyncio.wait_for(radio.get_freq(), 5.0)
+        assert radio.conn_state is RadioConnectionState.CONNECTED
+        assert radio.radio_ready
+        assert freq > 0
+        stats = radio._civ_transport.rx_order_stats  # noqa: SLF001
+        assert stats.reanchored == 1
+        assert stats.lost == 0
+    finally:
+        await radio.disconnect()
         await sim.stop()
