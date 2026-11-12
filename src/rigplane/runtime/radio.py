@@ -187,12 +187,14 @@ from rigplane.core.exceptions import (
     CommandError,
     CommandRejectedError,
     ConnectionError,
+    RadioNotReadyError,
     ReceiverNotSelectedError,
     StaleBeforeWireError,
     TimeoutError,
 )
 from rigplane.runtime._dual_rx_runtime import (
     RECEIVER_ADMISSION,
+    radio_not_ready,
     receiver_not_selected,
 )
 from rigplane.core.radio_protocol import (
@@ -451,11 +453,14 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
                 )
                 return True
             return self._level_command29(command, receiver=receiver) is not None
-        except ReceiverNotSelectedError:
+        except (ReceiverNotSelectedError, RadioNotReadyError):
             # Admission stays the static, route-based answer: MAIN is
             # admitted and the call itself refuses with the stable reason
             # code while MAIN is not selected; SUB without a route is not
-            # admitted (MOR-3591).
+            # admitted (MOR-3591). A silent-since-connect radio answers the
+            # same static admission: the refusal it would raise is the
+            # retriable not-ready timeout, not a capability fact
+            # (MOR-4382 follow-up).
             return receiver == RECEIVER_MAIN
         except CommandError:
             return False
@@ -2732,8 +2737,14 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         first known in this CI-V generation are owned by a known receiver;
         earlier ones (e.g. right after a reconnect, filed under a stale
         selection) are not trusted. Nothing trusted:
-        :class:`ReceiverNotSelectedError`.
+        :class:`ReceiverNotSelectedError` -- unless the radio has not
+        answered CI-V since the link was established at all, when the
+        answer is the retriable :class:`RadioNotReadyError` instead
+        (MOR-4382 follow-up): the selection is unknown because the radio is
+        silent, not because a receiver is not selected.
         """
+        if self._never_answered_since_connect():
+            raise radio_not_ready(operation, self._profile.model)
         known_since = self._selection_known_since
         try:
             field = self._state_store.snapshot().field(

@@ -45,6 +45,7 @@ from rigplane.core.exceptions import (
     CommandError,
     CommandRejectedError,
     ConnectionError,
+    RadioNotReadyError,
     ReceiverNotSelectedError,
     StaleBeforeWireError,
     TimeoutError,
@@ -135,6 +136,14 @@ def receiver_not_selected(
     )
 
 
+def radio_not_ready(operation: str, model: str) -> RadioNotReadyError:
+    """The retriable answer for a radio silent since the link came up."""
+    return RadioNotReadyError(
+        f"{operation}: radio {model} has not answered CI-V since the link "
+        "was established; it is not ready yet -- retry shortly"
+    )
+
+
 def require_receiver_for_profile(
     profile: RadioProfile, receiver: int, *, operation: str
 ) -> None:
@@ -154,6 +163,25 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
     _last_vfo: str | None
     _receiver_select_inflight: int
     _selection_known_since: float | None
+    # CI-V liveness, owned by CoreRadio and declared by the Radio protocol:
+    # cleared on every generation advance, stamped on every valid
+    # radio-originated frame (see ``_never_answered_since_connect``).
+    last_valid_frame_monotonic: float | None
+
+    def _never_answered_since_connect(self) -> bool:
+        """Whether this CI-V generation has not heard the radio at all.
+
+        ``last_valid_frame_monotonic`` is cleared on every generation
+        advance (connect, reconnect, release) and stamped by the CI-V RX
+        path on every valid radio-originated frame, identity answers
+        included. ``None`` therefore means the link is up but the radio has
+        answered nothing since it was established: the post-connect tail is
+        still pending, ``radio_ready`` is False and the receiver selection
+        cannot be known. A receiver-scoped command in that window cannot be
+        answered and must say so instead of claiming a receiver is not
+        selected (MOR-4382 follow-up).
+        """
+        return self.last_valid_frame_monotonic is None
 
     @contextmanager
     def _vfo_selection_change(self) -> Iterator[None]:
@@ -222,6 +250,12 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
                 )
             return
         RECEIVER_ADMISSION.set(None)
+        if self._never_answered_since_connect():
+            # The selection is unknown only because the radio has not
+            # answered anything since the link came up: the command cannot
+            # be answered yet, which is a retriable not-ready outcome, not
+            # a receiver refusal (MOR-4382 follow-up).
+            raise radio_not_ready(operation, self._profile.model)
         raise receiver_not_selected(
             operation,
             receiver,

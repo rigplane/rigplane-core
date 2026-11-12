@@ -19,7 +19,11 @@ from collections.abc import AsyncIterator
 
 import pytest
 
-from rigplane.core.exceptions import ReceiverNotSelectedError, TimeoutError
+from rigplane.core.exceptions import (
+    RadioNotReadyError,
+    ReceiverNotSelectedError,
+    TimeoutError,
+)
 from rigplane.radio import IcomRadio
 from rigplane.rigctld.contract import RigctldConfig
 from rigplane.rigctld.server import RigctldServer
@@ -73,6 +77,7 @@ class TestSilentDualReceiverCommands:
         try:
             with pytest.raises(TimeoutError, match=_NOT_READY_MATCH) as excinfo:
                 await asyncio.wait_for(radio.get_freq(), 10)
+            assert isinstance(excinfo.value, RadioNotReadyError)
             assert not isinstance(excinfo.value, ReceiverNotSelectedError)
         finally:
             await radio._civ_runtime.stop_worker()
@@ -85,6 +90,7 @@ class TestSilentDualReceiverCommands:
         try:
             with pytest.raises(TimeoutError, match=_NOT_READY_MATCH) as excinfo:
                 await asyncio.wait_for(radio.set_freq(14_074_000), 10)
+            assert isinstance(excinfo.value, RadioNotReadyError)
             assert not isinstance(excinfo.value, ReceiverNotSelectedError)
         finally:
             await radio._civ_runtime.stop_worker()
@@ -162,6 +168,7 @@ class TestCoreOverLanSimulator:
         async with _silent_lan_radio("IC-7610") as (radio, _sim):
             with pytest.raises(TimeoutError, match=_NOT_READY_MATCH) as excinfo:
                 await asyncio.wait_for(radio.get_freq(), 15)
+            assert isinstance(excinfo.value, RadioNotReadyError)
             assert not isinstance(excinfo.value, ReceiverNotSelectedError)
             # The radio answers: the same call now returns the real value.
             await await_until(

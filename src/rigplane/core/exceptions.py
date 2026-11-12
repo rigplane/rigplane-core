@@ -12,6 +12,7 @@ __all__ = [
     "ModeReadbackError",
     "ReceiverNotSelectedError",
     "TimeoutError",
+    "RadioNotReadyError",
     "DiscoveryTimeout",
     "AudioError",
     "AudioCodecBackendError",
@@ -110,6 +111,22 @@ class ReceiverNotSelectedError(CommandError):
 
 class TimeoutError(RigplaneError):
     """Raised when an operation times out."""
+
+
+class RadioNotReadyError(TimeoutError):
+    """A command cannot be answered yet: the radio has not answered CI-V
+    since the link was established (MOR-4382 follow-up).
+
+    A ``connect()`` whose radio answers nothing keeps the link up; the
+    receiver selection stays unknown and ``radio_ready`` stays False until
+    the first answer. A receiver-scoped command in that window raises this
+    instead of claiming a receiver is not selected. A subclass of
+    :class:`TimeoutError`, so every existing handler keeps treating it as
+    retriable: rigctld's ``RPRT -5`` (ETIMEOUT), the web
+    ``command_timeout`` envelope, the poller's timeout backoff. Once the
+    radio has answered, a genuinely unselected receiver still raises
+    :class:`ReceiverNotSelectedError` (MOR-3591).
+    """
 
 
 class DiscoveryTimeout(TimeoutError):
