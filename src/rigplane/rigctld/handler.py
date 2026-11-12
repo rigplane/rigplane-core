@@ -2658,6 +2658,8 @@ class RigctldHandler:
                 state = self._radio_state()
                 if state is not None:
                     raw = state.sub.s_meter
+                    if raw == 0 and state.sub.freq <= 0:
+                        return _err(HamlibError.ETIMEOUT)
                     return RigctldResponse(
                         values=[str(round((raw / 241.0) * 114.0 - 54.0))]
                     )
