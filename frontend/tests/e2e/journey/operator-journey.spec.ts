@@ -464,6 +464,7 @@ test.describe('audio server killed and restarted on the same port', () => {
 interface PanoramaWitness {
   requests: ScopeSubscription[];
   grants: ScopeGranted[];
+  zoomGrantedAt: number | null;
   acknowledgments: string[];
   active: boolean;
   pinned: boolean;
@@ -495,7 +496,7 @@ async function installPanoramaWitness(page: Page): Promise<void> {
     Object.defineProperty(window, 'AudioDecoder', { configurable: true, value: undefined });
     const win = window as Window & { __PANORAMA__?: PanoramaWitness };
     const w: PanoramaWitness = {
-      requests: [], grants: [],
+      requests: [], grants: [], zoomGrantedAt: null,
       acknowledgments: [], active: false, pinned: false, baselineSignal: 0, pixelLosses: 0, main: 0, sub: 0, audioWire: 0, pcmBuffers: 0,
       refusals: [], changingMain: 0, advancingSpectrum: 0,
       finiteSamples: 0, nonzeroSamples: 0, invalidSamples: 0, subChecks: 0, losses: 0,
@@ -573,7 +574,18 @@ async function installPanoramaWitness(page: Page): Promise<void> {
               const message = JSON.parse(event.data);
               if (message.type === 'response' && message.ok === true) w.acknowledgments.push(String(message.id));
               const grant = parseGrant(message);
-              if (grant?.sourceId === 'radio') w.grants.push(grant);
+              if (grant?.sourceId === 'radio') {
+                w.grants.push(grant);
+                if (grant.receiver === 0 && w.requests.length > 1) {
+                  w.zoomGrantedAt = performance.now();
+                  // A granted zoom establishes a new MAIN sample plane.
+                  // Pin its canvas on MAIN, then detect losses across SUB.
+                  w.pinned = false;
+                  panel = null;
+                  canvas = null;
+                  renderedSignal = null;
+                }
+              }
               if (path === '/api/v1/scope' && message.type === 'error') w.refusals.push(message.message);
             } catch { /* Non-JSON control traffic is irrelevant to this witness. */ }
             return;
@@ -588,7 +600,7 @@ async function installPanoramaWitness(page: Page): Promise<void> {
           if (!parsed.ok || parsed.frame.source !== 'radio' || parsed.frame.outOfRange || !parsed.frame.pixels) return;
           const { receiver, width: pixels, viewStartHz: start, viewEndHz: end, seq: sequence } = parsed.frame;
           if (receiver !== 0 && receiver !== 1) return;
-          if (receiver === 0 && w.refusals.length > 0) {
+          if (receiver === 0 && w.zoomGrantedAt !== null) {
             const nextPixels = Array.from(parsed.frame.pixels).join(',');
             if (mainPixels && nextPixels !== mainPixels) w.changingMain += 1;
             mainPixels = nextPixels;
@@ -606,7 +618,7 @@ async function installPanoramaWitness(page: Page): Promise<void> {
             const current = document.querySelector<HTMLElement>(selector);
             const currentCanvas = current?.querySelector<HTMLCanvasElement>('.spectrum-area canvas') ?? null;
             const rect = currentCanvas?.getBoundingClientRect();
-            if (receiver === 0 && w.pinned && w.refusals.length > 0 && currentCanvas === canvas) {
+            if (receiver === 0 && w.pinned && w.zoomGrantedAt !== null && currentCanvas === canvas) {
               const signal = signalPixels(currentCanvas);
               if (renderedSignal !== null && signal !== renderedSignal) w.advancingSpectrum += 1;
               renderedSignal = signal;
@@ -734,6 +746,7 @@ panoramaTest.describe('simulated mixed receiver panorama with real PCM', () => {
       const spanBeforeZoom = 'spanHz' in viewBeforeZoom ? viewBeforeZoom.spanHz
         : viewBeforeZoom.endHz - viewBeforeZoom.startHz;
       const refusalsBefore = (await panoramaWitness(page)).refusals.length;
+      const grantsBefore = (await panoramaWitness(page)).grants.length;
       await modeKey.click();
       await page.getByTestId('scope-more').click();
       await page.getByTestId('scope-zoom-in').click();
@@ -744,13 +757,19 @@ panoramaTest.describe('simulated mixed receiver panorama with real PCM', () => {
             && request.view.follow === 'vfo' && request.view.spanHz < spanBeforeZoom)).toBe(true);
         expect((await panoramaWitness(page)).requests.slice(requestsBefore)
           .some(request => 'startHz' in request.view)).toBe(false);
+        await expect.poll(async () => (await panoramaWitness(page)).grants.slice(grantsBefore)
+          .filter(grant => grant.receiver === 0).at(-1)).toMatchObject({
+            sourceId: 'radio', receiver: 0,
+            view: { startHz: 14_261_000, endHz: 14_311_000 },
+            coverage: { startHz: 14_261_000, endHz: 14_311_000 },
+          });
       } finally {
         const witness = await panoramaWitness(page);
         await testInfo.attach('zoom-contract.json', { contentType: 'application/json',
           body: JSON.stringify({ spanBeforeZoom, requests: witness.requests.slice(requestsBefore),
-            refusals: witness.refusals.slice(refusalsBefore), grants: witness.grants }) });
+            refusals: witness.refusals.slice(refusalsBefore), grants: witness.grants.slice(grantsBefore) }) });
       }
-      await expect.poll(async () => (await panoramaWitness(page)).refusals.length).toBeGreaterThan(refusalsBefore);
+      expect((await panoramaWitness(page)).refusals.length).toBe(refusalsBefore);
       await expect.poll(() => sentParams(page, 'set_mode')).toContainEqual({ mode: 'LSB', receiver: 0 });
       await expectServerMain(page, { mode: 'LSB' });
       await expect(modeKey).toHaveAttribute('aria-checked', 'true');
@@ -760,6 +779,11 @@ panoramaTest.describe('simulated mixed receiver panorama with real PCM', () => {
       await expect.poll(async () => (await panoramaWitness(page)).main - before.main).toBeGreaterThan(3);
       await expect.poll(async () => (await panoramaWitness(page)).sub - before.sub).toBeGreaterThan(15);
       await expect.poll(async () => (await panoramaWitness(page)).pcmBuffers - before.pcmBuffers).toBeGreaterThan(10);
+      await expect.poll(async () => {
+        const witness = await panoramaWitness(page);
+        return witness.zoomGrantedAt === null ? 0
+          : witness.frames.filter(frame => frame.receiver === 0 && frame.at > witness.zoomGrantedAt!).length;
+      }).toBeGreaterThan(3);
       const after = await panoramaWitness(page);
       // These preconditions must pass even on the deliberately unchanged RED controller.
       expect(after.main - before.main).toBeGreaterThan(3);
@@ -774,8 +798,11 @@ panoramaTest.describe('simulated mixed receiver panorama with real PCM', () => {
       expect(intervalPcm.every((sample) => sample.state === 'running' && sample.rate === 48_000)).toBe(true);
       expect(after.requests).toContainEqual(expect.objectContaining({ receiver: 0, view: { follow: 'vfo', spanHz: 100_000 } }));
       const mainGrant = after.grants.filter(grant => grant.receiver === 0).at(-1)!;
-      expect(mainGrant.view).toEqual({ startHz: 14_236_000, endHz: 14_336_000 });
-      expect(after.frames.filter((frame) => frame.receiver === 0)
+      expect(mainGrant.view).toEqual({ startHz: 14_261_000, endHz: 14_311_000 });
+      expect(after.zoomGrantedAt).not.toBeNull();
+      const zoomFrames = after.frames.filter(frame => frame.receiver === 0 && frame.at > after.zoomGrantedAt!);
+      expect(zoomFrames.length).toBeGreaterThan(3);
+      expect(zoomFrames
         .every((frame) => frame.start === mainGrant.view.startHz && frame.end === mainGrant.view.endHz)).toBe(true);
       // Persist independent checks before a failing visual target can stop the test.
       const healthPath = testInfo.outputPath('joint-health.json');
@@ -789,12 +816,12 @@ panoramaTest.describe('simulated mixed receiver panorama with real PCM', () => {
         { message: 'Actual MAIN signal must render while mixed scope, PCM and controls are healthy' }).toBeGreaterThanOrEqual(20);
       await expect.poll(async () => (await panoramaWitness(page)).subChecks).toBeGreaterThanOrEqual(20);
       await expect.poll(async () => (await panoramaWitness(page)).advancingSpectrum,
-        { message: 'Mounted MAIN spectrum must advance after refusal across SUB-only intervals' }).toBeGreaterThan(2);
+        { message: 'Mounted MAIN spectrum must advance after degraded grant across SUB-only intervals' }).toBeGreaterThan(2);
       const rendered = await panoramaWitness(page);
-      expect(rendered.changingMain, 'MAIN wire pixels must change after negotiation refusal').toBeGreaterThan(2);
-      expect.soft(rendered.advancingSpectrum, 'Mounted MAIN spectrum must advance after refusal across SUB-only intervals').toBeGreaterThan(2);
-      await expect.soft(page.locator('[data-testid="toolbar-scope-status"]')).toContainText('Scope view refused');
-      await expect(page.locator('.spectrum-panel').getByRole('status').filter({ hasText: 'Scope view refused' })).toBeVisible();
+      expect(rendered.changingMain, 'MAIN wire pixels must change after degraded grant').toBeGreaterThan(2);
+      expect.soft(rendered.advancingSpectrum, 'Mounted MAIN spectrum must advance after degraded grant across SUB-only intervals').toBeGreaterThan(2);
+      await expect(page.locator('[data-testid="toolbar-scope-status"]')).not.toContainText('Scope view refused');
+      await expect(page.locator('.spectrum-panel').getByRole('status').filter({ hasText: 'Scope view refused' })).toHaveCount(0);
       expect(rendered.pixelLosses, 'Actual MAIN signal pixels cleared during a SUB-only interval').toBe(0);
       expect(rendered.losses, 'MAIN canvas disappeared or changed geometry after valid SUB before next MAIN').toBe(0);
     } finally {
