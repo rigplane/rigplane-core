@@ -1190,14 +1190,17 @@ class RigctldHandler:
             await self._radio.set_data_mode(False, receiver=receiver)
         return True
 
-    def _radio_state(self) -> RadioState | None:
+    def _radio_state(self, *, require_ready: bool = True) -> RadioState | None:
+        if require_ready and getattr(self._radio, "radio_ready", None) is False:
+            raise RigplaneTimeoutError("Radio is not ready for mirror reads")
         state = getattr(self._radio, "radio_state", None)
         return state if isinstance(state, RadioState) else None
 
     def _main_receiver_state(self) -> ReceiverState | None:
-        state = self._radio_state()
+        state = self._radio_state(require_ready=False)
         if state is None or state.main.freq <= 0:
             return None
+        self._radio_state()
         return state.main
 
     def _session_id(self) -> str | None:
@@ -1693,6 +1696,8 @@ class RigctldHandler:
         if receiver == 1:
             state = self._radio_state()
             if state is not None:
+                if state.sub.freq <= 0:
+                    return _err(HamlibError.ETIMEOUT)
                 return RigctldResponse(values=[str(state.sub.freq)])
             # State unavailable. For an EXPLICIT VFOB request under chk_vfo=1
             # surface ENIMPL rather than silently returning MAIN data labelled
@@ -1797,6 +1802,8 @@ class RigctldHandler:
             state = self._radio_state()
             if state is not None:
                 sub = state.sub
+                if sub.freq <= 0:
+                    return _err(HamlibError.ETIMEOUT)
                 mode_str = _mode_to_hamlib_str(sub.mode)
                 passband = _filter_to_passband(sub.filter)
                 data_mode = sub.data_mode
@@ -2345,13 +2352,13 @@ class RigctldHandler:
         Falls back to ``VFOA`` when state is missing or profile is unknown.
         """
         info = self._profile_vfo_info()
-        state = self._radio_state()
         if info is not None and info[0] >= 2:
             path = self._active_receiver_path()
             projection = self._project_fields((path,))
             active = projection.value(path)
             if active is not None:
                 return "VFOB" if str(active.value).upper() == "SUB" else "VFOA"
+            state = self._radio_state(require_ready=False)
             if state is None:
                 return "VFOA"
             return "VFOB" if state.active == "SUB" else "VFOA"
@@ -2359,6 +2366,7 @@ class RigctldHandler:
         active_slot = projection.value(self._active_slot_path())
         if active_slot is not None:
             return "VFOB" if str(active_slot.value).upper() == "B" else "VFOA"
+        state = self._radio_state(require_ready=False)
         if info is None or state is None:
             return "VFOA"
         return "VFOB" if state.main.active_slot == "B" else "VFOA"
@@ -2471,6 +2479,7 @@ class RigctldHandler:
             # a non-VFO rig (no profile VFO info) ``_active_vfo_name`` already
             # returns the legacy ``VFOA`` default and never fabricates a VFO for
             # a capability the rig lacks, so both cases share one answer.
+            self._radio_state()
             return RigctldResponse(values=[self._active_vfo_name()])
         return RigctldResponse(values=[active_vfo])
 
@@ -2640,8 +2649,6 @@ class RigctldHandler:
                         return _err(HamlibError.ENAVAIL)
                     return RigctldResponse(values=[str(db)])
                 return RigctldResponse(values=[str(projected.value)])
-        main_state = self._main_receiver_state()
-
         # STRENGTH — per-receiver on dual-RX. VFOB reads SUB s_meter
         # directly from RadioState until runtime observations own SUB meters.
         # Mirror answers go to this client only — an untimestamped mirror
@@ -2666,6 +2673,7 @@ class RigctldHandler:
                         values=[str(round((raw / 241.0) * 114.0 - 54.0))]
                     )
                 return _err(HamlibError.ENIMPL)
+            main_state = self._main_receiver_state()
             if main_state is not None:
                 raw = main_state.s_meter
                 return RigctldResponse(
@@ -2685,6 +2693,7 @@ class RigctldHandler:
 
         # RFPOWER — prefer RadioState, then meter call
         if level == "RFPOWER":
+            main_state = self._main_receiver_state()
             state = self._radio_state()
             if state is not None and main_state is not None:
                 raw_power = state.power_level / 255.0
