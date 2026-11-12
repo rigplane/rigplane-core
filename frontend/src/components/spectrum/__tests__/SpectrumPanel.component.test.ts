@@ -1411,6 +1411,31 @@ describe('SpectrumPanel component', () => {
     expect(overlay.style.width).toBe('30%');
   });
 
+  it('explains a ZOOM− no-op at the fixed edges and offers one-tap CTR (MOR-4387 owner b4)', async () => {
+    radio.current = structuredClone(IC7300_STATE);
+    expect(setCapabilities(structuredClone(IC7300_CAPABILITIES))).toBe(true);
+    runtimeHarness.state.currentCaps = structuredClone(IC7300_CAPABILITIES);
+    authorityHarness.state.current = authority({ frequencyHz: 14_050_000 });
+    const target = mountPanel();
+    emitFrame({ mode: 1 }); await flushWaterfallPaint();
+    expect(target.querySelector('[data-testid="zoom-fixed-hint"]')).toBeNull();
+    // ZOOM− at the fixed edges is a no-op (the window is wire-owned in
+    // FIX): the panel says why and offers the one-tap CTR return.
+    scopeCommandHarness.dispatch.mockClear();
+    target.querySelector<HTMLButtonElement>('[data-testid="scope-zoom-out"]')!.click();
+    flushSync();
+    const hint = target.querySelector<HTMLElement>('[data-testid="zoom-fixed-hint"]');
+    expect(hint).not.toBeNull();
+    expect(hint!.textContent).toContain('SPAN works in CTR');
+    expect(scopeCommandHarness.dispatch).not.toHaveBeenCalled();
+    hint!.querySelector<HTMLButtonElement>('[data-testid="zoom-fixed-ctr"]')!.click();
+    flushSync();
+    expect(scopeCommandHarness.dispatch).toHaveBeenCalledExactlyOnceWith({
+      name: 'set_scope_mode', params: { mode: 0 },
+    });
+    expect(target.querySelector('[data-testid="zoom-fixed-hint"]')).toBeNull();
+  });
+
   it('clips a FIX zoom-out to the fixed window instead of hatching beyond it (MOR-4392)', async () => {
     runtimeHarness.state.currentCaps = structuredClone(IC7300_CAPABILITIES);
     authorityHarness.state.current = authority({ frequencyHz: 14_050_000 });
