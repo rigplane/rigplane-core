@@ -6,7 +6,7 @@ optional cmd29 receiver route distinct.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import replace
 
 from rigplane.commands._frame import (
@@ -29,7 +29,7 @@ from rigplane.core.acquisition_scheduler import (
 )
 from rigplane.core.civ import CivRequestKey, read_identity_from_frame
 from rigplane.core.state_pipeline_contracts import FieldPath
-from rigplane.core.state_store import StateSnapshot
+from rigplane.core.state_store import FreshnessState, StateSnapshot
 from rigplane.profiles import RadioProfile
 
 _RECEIVER_IDS = {"0": 0, "main": 0, "1": 1, "sub": 1}
@@ -130,6 +130,57 @@ _SCOPE_CONTROL_GETTERS = {
 }
 
 
+def scope_fixed_edge_slot(
+    profile: RadioProfile, snapshot: StateSnapshot
+) -> tuple[int, int] | None:
+    """Resolve the addressed fixed-edge slot from observed position and profile ranges."""
+    try:
+        edge_field = snapshot.field(FieldPath.scope_control("display", "edge"))
+    except KeyError:
+        return None
+    edge = edge_field.value
+    if (
+        edge_field.freshness not in (FreshnessState.FRESH, FreshnessState.STALE)
+        or isinstance(edge, bool)
+        or not isinstance(edge, int)
+        or not 1 <= edge <= 4
+    ):
+        return None
+    try:
+        receiver_value = snapshot.field(
+            FieldPath.scope_control("display", "receiver")
+        ).value
+    except KeyError:
+        receiver_value = 0
+    receiver_id = "sub" if receiver_value == 1 else "main"
+    try:
+        freq_field = snapshot.field(
+            FieldPath.receiver(receiver_id, "freq_mode", "freq_hz")
+        )
+    except KeyError:
+        return None
+    freq_hz = freq_field.value
+    if (
+        freq_field.freshness not in (FreshnessState.FRESH, FreshnessState.STALE)
+        or isinstance(freq_hz, bool)
+        or not isinstance(freq_hz, int)
+        or freq_hz <= 0
+    ):
+        return None
+    ranges = profile.scope_fixed_edge_ranges
+    range_index = next(
+        (item.range_index for item in ranges if item.start_hz <= freq_hz < item.end_hz),
+        None,
+    )
+    if range_index is None:
+        # Boundaries belong to the range that STARTS there; the only
+        # covered point the strict form misses is the final range's end.
+        if not ranges or freq_hz != ranges[-1].end_hz:
+            return None
+        range_index = ranges[-1].range_index
+    return range_index, edge
+
+
 def acquisition_query_from_wire_tuple(
     wire: tuple[int, ...],
     *,
@@ -187,8 +238,14 @@ def read_identity_for_query(
 
 def acquisition_query_resolver_for_profile(
     profile: RadioProfile,
+    *,
+    fixed_edge_slot: Callable[[], tuple[int, int] | None] | None = None,
 ) -> AcquisitionQueryResolver:
-    """Bind acquisition FieldPaths to one profile's declared getter bytes."""
+    """Bind getters; senders supply the live fixed-edge slot.
+
+    Without a supplier the fixed-edge frame is only an identity template
+    for refusal mapping and startup diagnostics.
+    """
 
     command_map = profile.command_map
 
@@ -258,11 +315,16 @@ def acquisition_query_resolver_for_profile(
             if query is None:
                 return None
             if getter == "get_scope_fixed_edge":
+                slot = fixed_edge_slot() if fixed_edge_slot is not None else (1, 1)
+                if slot is None:
+                    return None
                 frame = parse_civ_frame(
                     get_scope_fixed_edge(
                         0x00,
                         from_addr=0x00,
                         cmd_map=command_map,
+                        range_index=slot[0],
+                        edge=slot[1],
                     )
                 )
                 return AcquisitionQuery(
@@ -326,6 +388,11 @@ def build_state_queries(
     availability = (
         {} if snapshot is None else resolve_available_when(acquisition, snapshot)
     )
+    # MOR-4387: the fixed-edge read addresses the slot of the scope
+    # receiver's current band and the observed edge; without a snapshot that
+    # slot is unknowable, so the sweep emits no 0x27 0x1E at all — never the
+    # 01/01 default that published an unrelated slot's bounds.
+    slot = scope_fixed_edge_slot(profile, snapshot) if snapshot is not None else None
     return _civ_queries(
         profile,
         (
@@ -333,6 +400,7 @@ def build_state_queries(
             for path in acquisition.pollable_paths()
             if availability.get(path) is not False
         ),
+        fixed_edge_slot=lambda: slot,
     )
 
 
@@ -360,11 +428,16 @@ def availability_source_queries(profile: RadioProfile) -> list[AcquisitionQuery]
 
 
 def _civ_queries(
-    profile: RadioProfile, paths: Iterable[FieldPath]
+    profile: RadioProfile,
+    paths: Iterable[FieldPath],
+    *,
+    fixed_edge_slot: Callable[[], tuple[int, int] | None] | None = None,
 ) -> list[AcquisitionQuery]:
     """Resolve ``paths`` to wire queries: de-duplicated, cmd29-checked, ordered."""
 
-    resolve = acquisition_query_resolver_for_profile(profile)
+    resolve = acquisition_query_resolver_for_profile(
+        profile, fixed_edge_slot=fixed_edge_slot
+    )
     queries: list[AcquisitionQuery] = []
     seen: set[AcquisitionQuery] = set()
     for path in paths:

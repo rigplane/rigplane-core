@@ -769,6 +769,8 @@ class TestBuildStateQueries:
         resolve = acquisition_query_resolver_for_profile(profile)
         expected = []
         for path in pollable:
+            if path == FieldPath.scope_control("display", "fixed_edge"):
+                continue  # No snapshot: the addressed slot is unknown.
             query = resolve(path)
             if query is None:
                 continue
@@ -844,6 +846,8 @@ class TestBuildStateQueries:
         resolver = acquisition_query_resolver_for_profile(profile)
         expected = []
         for path in pollable:
+            if path == FieldPath.scope_control("display", "fixed_edge"):
+                continue  # No snapshot: the addressed slot is unknown.
             query = resolver(path)
             assert query is not None, f"{model}: unresolved declared path {path}"
             if query.receiver is not None and not profile.supports_cmd29(
@@ -870,7 +874,11 @@ class TestBuildStateQueries:
         profile = resolve_radio_profile(model=model)
         acquisition = profile.state_acquisition
         assert acquisition is not None
-        pollable = acquisition.pollable_paths()
+        pollable = tuple(
+            path
+            for path in acquisition.pollable_paths()
+            if path != FieldPath.scope_control("display", "fixed_edge")
+        )
         sent: list[AcquisitionQueryCase] = []
 
         async def sender(
@@ -918,7 +926,7 @@ class TestBuildStateQueries:
         # one 16 5D query and repeater_shift into split's existing bare 0F
         # read, so 39 paths resolve to 36 distinct queries.
         assert len(pollable) == 39
-        assert len(queries) == 36
+        assert len(queries) == 35
         assert all(query.receiver is None for query in queries)
         assert not any(
             query.command in {0x25, 0x26} and query.data == b"\x01" for query in queries
@@ -1164,7 +1172,8 @@ class TestScopeFixedEdgeSlot:
         snapshot = self._snapshot({"receiver.main.freq_mode.freq_hz": 7_222_000})
         assert state_queries_module.scope_fixed_edge_slot(profile, snapshot) is None
         assert not any(
-            query.sub == 0x1E for query in build_state_queries(profile, snapshot=snapshot)
+            query.sub == 0x1E
+            for query in build_state_queries(profile, snapshot=snapshot)
         )
 
     def test_ic705_without_declared_ranges_reads_nothing(self) -> None:
@@ -1181,7 +1190,8 @@ class TestScopeFixedEdgeSlot:
         )
         assert state_queries_module.scope_fixed_edge_slot(profile, snapshot) is None
         assert not any(
-            query.sub == 0x1E for query in build_state_queries(profile, snapshot=snapshot)
+            query.sub == 0x1E
+            for query in build_state_queries(profile, snapshot=snapshot)
         )
 
     def test_supplier_less_resolver_keeps_the_legacy_identity_frame(self) -> None:
@@ -1311,9 +1321,7 @@ class TestFetchInitialState:
         # the scope receiver's current band and the observed edge; on an
         # empty store there is no honest slot, so no 0x27 0x1E goes out at
         # all — the legacy 01/01 read published an unrelated slot's bounds.
-        assert not any(
-            c.args[0] == 0x27 and c.kwargs["sub"] == 0x1E for c in sent
-        )
+        assert not any(c.args[0] == 0x27 and c.kwargs["sub"] == 0x1E for c in sent)
         assert (
             call(
                 0x27,
