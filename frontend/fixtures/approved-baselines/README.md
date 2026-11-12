@@ -2,7 +2,23 @@
 
 Tracked, reviewed screenshots compared by `npm run test:e2e:visual` (`playwright.visual.config.ts`, whose `testDir` runs every `*.spec.ts` under `tests/e2e/visual/`): `visual-baselines.spec.ts` for a representative slice of the MOR-1070/1085 fixture matrix, `gallery-baselines.spec.ts` (MOR-2219) for the `gallery-*` rows below, which preserve individual instrument looks rendered on the `?demo=control-buttons` page, and `spectrum-baselines.spec.ts` for the `spectrum-panel--managed-frame` row. Distinct from `frontend/fixtures-baselines/` (gitignored capture OUTPUT from `capture.mjs`/`capture-ptt.mjs`) — this directory is the APPROVED, committed comparison target.
 
-## Linux re-pin provenance — 2026-11-08 MOR-4270 CI capture correction (current)
+## Linux re-pin provenance — 2026-11-12 MOR-4383 spectrum smoothing (current)
+
+Intentional re-pin of the spectrum witness for MOR-4383 (#4562). The smoothed
+trace, the new `SMTH` toolbar key and the denser first waterfall row change
+the `spectrum-panel--managed-frame` capture by 5,779 pixels (about 2% of the
+image); the axes, tune line, passband and toolbar layout otherwise stay in
+place.
+
+`spectrum-panel--managed-frame.png` and `manifest.json` come from the Linux
+regeneration run 43128758898 (`visual.yml` with `regenerate=true`) on branch
+`codex/mor-4383-waterfall-smoothing` at
+`3464261c46ff5b9ec7e07092d0f1a09740805e1f`. That run re-pins every capture
+(`--update-snapshots=all`); only this PNG and the manifest were copied, and the
+other captures' same-tree antialiasing noise was left out. No other approved
+PNG was regenerated.
+
+## Linux re-pin provenance — 2026-11-08 MOR-4270 CI capture correction (superseded)
 
 The spectrum witness and `manifest.json` were regenerated from
 `86795aeb50e856ff11e906adb386180a363d289c` in the Core CI runner image
