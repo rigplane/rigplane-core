@@ -1,6 +1,7 @@
 """R5 review regressions: real Core RX, SDK and local WebSocket seams."""
 
 import asyncio
+import logging
 from contextlib import asynccontextmanager
 
 import aiohttp
@@ -10,6 +11,7 @@ from rigplane.commands import CONTROLLER_ADDR, build_civ_frame, parse_civ_frame
 from rigplane.core.exceptions import CommandError, TimeoutError
 from rigplane.core.types import ScopeFixedEdge, bcd_encode
 from rigplane.radio import IcomRadio
+from rigplane.profiles import resolve_radio_profile
 from rigplane.scope.models import FollowView, Subscription, View
 from rigplane.testing.timing import await_until
 from rigplane.web.protocol import (
@@ -560,6 +562,107 @@ async def _frame_with(ws, view, timeout=5):
             frame = decode_scope_frame_v2(message.data)
             if (frame.view_start_hz, frame.view_end_hz) == view:
                 return frame
+
+
+@pytest.mark.parametrize(
+    "model,receiver", [("IC-7610", 0), ("IC-7610", 1), ("IC-705", 0)]
+)
+@pytest.mark.parametrize("sub,key", [(0x14, "mode"), (0x15, "span"), (0x16, "edge")])
+@pytest.mark.parametrize("failure", ["nak", "timeout"])
+@pytest.mark.parametrize("refuse_span_write", [False, True])
+async def test_capture_read_failure_degrades_through_scope_ws(
+    model, receiver, sub, key, failure, refuse_span_write, monkeypatch, caplog
+):
+    profile = resolve_radio_profile(model=model)
+    sim = _ScopeWindowSimulator(
+        scope_stream=True,
+        dual_receiver=profile.receiver_count > 1,
+        radio_addr=profile.civ_addr,
+        capture_civ_frames=True,
+    )
+    sim.profile = profile
+    sim.set_frequency(14_100_000)
+    await sim.start()
+    radio = IcomRadio(
+        "127.0.0.1",
+        port=sim.control_port,
+        username="testuser",
+        password="testpass",
+        model=model,
+    )
+    await radio.connect()
+    dispatch = sim._dispatch_civ
+    failed_reads = 0
+    refused_writes = 0
+
+    def one_shot(cmd, payload, from_addr):
+        nonlocal failed_reads, refused_writes
+        if cmd == 0x27 and payload == bytes([sub, receiver]) and not failed_reads:
+            failed_reads += 1
+            if failure == "timeout":
+                return None
+            sim.refused_civ_commands.add((cmd, sub))
+            try:
+                return dispatch(cmd, payload, from_addr)
+            finally:
+                sim.refused_civ_commands.remove((cmd, sub))
+        if (
+            cmd == 0x27
+            and payload[:1] == b"\x15"
+            and len(payload) > 2
+            and refuse_span_write
+            and not refused_writes
+        ):
+            refused_writes += 1
+            return sim._civ_nak(from_addr, sim._radio_addr)
+        return dispatch(cmd, payload, from_addr)
+
+    monkeypatch.setattr(sim, "_dispatch_civ", one_shot)
+    radio._radio_state.main.freq = radio._radio_state.sub.freq = 14_100_000
+    caplog.set_level(logging.WARNING)
+    try:
+        async with web(radio) as (_, client, base, protocols, _):
+            async with client.ws_connect(
+                base + "/api/v1/scope", protocols=protocols
+            ) as ws:
+                initial = await _subscribe(
+                    ws,
+                    Subscription(
+                        "radio", receiver, FollowView("vfo", 100_000), 475, 20
+                    ),
+                )
+                assert initial.receiver == receiver
+                half = profile.scope_span_presets_hz[3] if refuse_span_write else 50_000
+                view = (14_100_000 - half, 14_100_000 + half)
+                first = await _frame_with(ws, view)
+                second = await _frame_with(ws, view)
+                assert first.pixels and second.pixels and second.seq > first.seq
+                assert (second.coverage_start_hz, second.coverage_end_hz) == view
+                if refuse_span_write:
+                    assert refused_writes == 1
+                    assert len([f for f in _viewport_writes(sim) if f.sub == 0x15]) == 1
+                before_close = len(_viewport_writes(sim))
+            assert await await_until(lambda: not radio.scope_session().active)
+            restores = _viewport_writes(sim)[before_close:]
+            assert not [f for f in restores if f.sub == sub and f.data[0] == receiver]
+            assert failed_reads == 1
+            warnings = [
+                record
+                for record in caplog.records
+                if record.levelno == logging.WARNING
+                and "scope capture failed" in record.message
+            ]
+            assert len(warnings) == 1
+            assert f"receiver={receiver}" in warnings[0].message
+            assert f"key={key}" in warnings[0].message
+            assert (
+                "timed out" in warnings[0].message.lower()
+                if failure == "timeout"
+                else "NAK" in warnings[0].message
+            )
+    finally:
+        await radio.disconnect()
+        await sim.stop()
 
 
 async def test_ctr_fix_ctr_transitions_keep_one_follow_subscription_quiet(
