@@ -79,6 +79,101 @@ async def grant(ws, receiver=0, fps=20):
             return
 
 
+async def test_mixed_journey_server_grants_follow_before_refusing_pinned_view(
+    monkeypatch, tmp_path
+):
+    import argparse
+    from pathlib import Path
+
+    monkeypatch.syspath_prepend(str(Path(__file__).parents[1] / "e2e"))
+    import journey_web_server
+    from rigplane_testkit.icom.simulator import MockIcomRadio
+
+    exchanges = []
+    dispatch = MockIcomRadio._dispatch_civ
+
+    def record(self, command, payload, from_addr):
+        reply = dispatch(self, command, payload, from_addr)
+        if command == 0x27 and reply is not None:
+            exchanges.append((payload.hex(), reply.hex()))
+        return reply
+
+    monkeypatch.setattr(MockIcomRadio, "_dispatch_civ", record)
+    monkeypatch.setattr(
+        journey_web_server,
+        "parse_args",
+        lambda: argparse.Namespace(
+            host="127.0.0.1",
+            port=0,
+            static_dir=tmp_path,
+            panorama_audio=True,
+            freq=14_286_000,
+            read_only=False,
+        ),
+    )
+
+    async def exercise(server, *, on_started):
+        await server.start()
+        port = server._server.sockets[0].getsockname()[1]
+        try:
+            async with aiohttp.ClientSession() as client:
+                async with client.ws_connect(
+                    f"http://127.0.0.1:{port}/api/v1/scope"
+                ) as ws:
+                    for receiver in (0, 1):
+                        await ws.send_str(
+                            encode_scope_subscription(
+                                Subscription(
+                                    "radio",
+                                    receiver,
+                                    FollowView("vfo", 100000),
+                                    1206,
+                                    20,
+                                )
+                            )
+                        )
+                    frames = {0: [], 1: []}
+                    grants = set()
+                    while not (grants == {0, 1} and all(frames.values())):
+                        message = await ws.receive(timeout=5)
+                        if message.type is aiohttp.WSMsgType.TEXT:
+                            assert '"error"' not in message.data, (
+                                message.data,
+                                exchanges,
+                            )
+                            grants.add(decode_scope_granted(message.data).receiver)
+                        else:
+                            assert message.type is aiohttp.WSMsgType.BINARY
+                            frame = decode_scope_frame_v2(message.data)
+                            assert frame.pixels and not frame.out_of_range
+                            frames[frame.receiver].append(frame)
+                    await ws.send_str(
+                        encode_scope_subscription(
+                            Subscription(
+                                "radio", 0, View(14_260_000, 14_310_000), 1206, 20
+                            )
+                        )
+                    )
+                    while True:
+                        message = await ws.receive(timeout=5)
+                        if message.type is aiohttp.WSMsgType.TEXT:
+                            assert '"error"' in message.data
+                            break
+                    for receiver in frames:
+                        previous = frames[receiver][-1].seq
+                        while True:
+                            message = await ws.receive(timeout=5)
+                            if message.type is aiohttp.WSMsgType.BINARY:
+                                frame = decode_scope_frame_v2(message.data)
+                                if frame.receiver == receiver and frame.seq > previous:
+                                    break
+        finally:
+            await server.stop()
+
+    monkeypatch.setattr(WebServer, "serve_forever", exercise)
+    await journey_web_server.run()
+
+
 def ptt_reply(radio, on):
     radio._update_state_cache_from_frame(
         parse_civ_frame(
