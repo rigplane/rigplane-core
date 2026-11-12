@@ -55,7 +55,9 @@ def _sim(factory, **kw) -> MockIcomRadio:
 async def _wait_connected(radio: IcomRadio) -> None:
     """Wait for CONNECTED and radio readiness after the numbering jump."""
     await await_until(
-        lambda: radio.conn_state is RadioConnectionState.CONNECTED and radio.radio_ready,
+        lambda: (
+            radio.conn_state is RadioConnectionState.CONNECTED and radio.radio_ready
+        ),
         timeout=_READY_DEADLINE_S,
         interval=0.05,
         description="radio CONNECTED after the numbering jump",

@@ -75,13 +75,13 @@ class RxOrderStats:
         duplicate: Packets dropped because their number was already
             delivered or is already held.
         lost: Numbers delivery moved past without their packet: the
-            retransmit budget ran out, the hold reached ``REORDER_WINDOW``,
-            or a jump wider than ``MAX_MISSING`` skipped them.
+            retransmit budget ran out or the hold reached ``REORDER_WINDOW``.
         late: Packets that arrived after their number was given up; dropped,
             because later packets were already delivered.
         reanchored: Times the delivery anchor moved onto the live stream
             after a numbering jump: a run of more than ``REORDER_WINDOW``
-            consecutive packets all behind the anchor (MOR-4416). One event,
+            consecutive packets all behind the anchor, or a forward frontier
+            delta greater than ``MAX_MISSING`` (MOR-4416). One event,
             however many packets the run held — the run's packets up to the
             window still count as ``duplicate``/``late`` as before.
     """
@@ -736,9 +736,7 @@ class IcomTransport:
         if 1 <= delta <= 0x7FFF:
             # Forward progress in uint16 sequence space.
             if delta > MAX_MISSING:
-                logger.warning("Large seq gap: %d -> %d, resetting", last_seq, seq)
-                self.rx_missing.clear()
-                self.rx_last_seq = seq
+                self._reanchor_rx(seq, forward_jump=delta)
                 return
 
             for offset in range(1, delta):
@@ -943,14 +941,14 @@ class IcomTransport:
         self._rx_next = nxt
         self._release_in_order()
 
-    def _reanchor_rx(self, seq: int) -> None:
+    def _reanchor_rx(self, seq: int, *, forward_jump: int = 0) -> None:
         """Move the delivery anchor onto the live stream after a numbering jump.
 
         The held packets and the missing set belong to the dead numbering
         epoch: the radio never resumes them, and giving them up one by one
         would count thousands of ``lost``. They drop uncounted — the event
         itself is counted once (``reanchored``) and logged once, with the old
-        anchor, the new sequence and the run length that triggered it. The
+        anchor, the new sequence and the run length or forward delta. The
         frontier (``rx_last_seq``) restarts at the re-anchor packet, so a gap
         right after the jump is tracked and asked for like any other.
         """
@@ -962,13 +960,15 @@ class IcomTransport:
         self._rx_given_up.clear()
         self._rx_behind_run = 0
         self.rx_last_seq = seq
+        self._rx_next = seq
         self._rx_reanchored += 1
         logger.warning(
             "CI-V ingress re-anchored after a numbering jump "
-            "(old_next=%s new_seq=%d behind_run=%d dropped_held=%d)",
+            "(old_next=%s new_seq=%d behind_run=%d forward_jump=%d dropped_held=%d)",
             old_next,
             seq,
             run,
+            forward_jump,
             dropped_held,
         )
 
