@@ -209,6 +209,8 @@ class RadioScopeSource:
             if isinstance(view, FollowView)
             else None
         )
+        if isinstance(view, FollowView) and selected:
+            await self._writer.set_dual(True, selected)
         if observed_mode in _FIXED_SCOPE_MODES:
             # MOR-4392 round 2, gate round 1: the REQUESTED receiver is in
             # a fixed-family mode (FIX or SCROLL-F) — a follow zoom/span
@@ -222,13 +224,6 @@ class RadioScopeSource:
             # frame resolves it. Back in CENTER the hub branch re-resolves
             # against the native coverage. The FIX/CTR gestures themselves
             # are explicit mode commands outside this path and still write.
-            if selected:
-                # A SUB subscription still needs the radio's dual-scope
-                # output the CENTER path acquires (single-scope output
-                # streams only the selected receiver) — enable it through
-                # the same session mechanism, restored at teardown, while
-                # mode/span/edges stay untouched.
-                await self._writer.set_dual(True, selected)
             remembered = self._native_coverages.get(selected)
             if remembered is not None and remembered[0] in _FIXED_SCOPE_MODES:
                 native = remembered[1]

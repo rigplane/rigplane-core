@@ -10,7 +10,7 @@ from dataclasses import dataclass, replace
 from typing import Literal, Protocol, TypeAlias, cast
 
 from rigplane.core.types import ScopeFixedEdge
-from rigplane.core.exceptions import CommandError, TimeoutError
+from rigplane.core.exceptions import CommandError, CommandRejectedError, TimeoutError
 from rigplane.scope import ScopeFrame
 from rigplane.scope.models import ScopeDemand
 
@@ -118,22 +118,17 @@ class ScopeSession:
     async def observed_scope_mode(self, receiver: int) -> int | None:
         """The requested receiver's live radio-observed scope mode.
 
-        MOR-4392 round 2, gate round 1: read by RadioScopeSource (see
-        its RadioScopeWriter contract) to keep follow gestures from
-        flipping a fixed-family radio back to CENTER. The authority is
-        the receiver-specific capture/read (``_receiver_view``), never
-        the session snapshot — ``_read_scope_session`` seeds that from
-        the SELECTED receiver's cache, which says nothing about MAIN
-        when SUB is selected and no MAIN waveform has streamed yet.
+        Receiver-specific captures and waveform observations share
+        ``_applied``; a failed capture must not hide a live observation.
         Sessions without a receiver reader fall back to the main
         snapshot; None before any observation.
         """
         async with self._lock:
             view = self._views.get(receiver)
+            if view is None and self._read_receiver is not None:
+                view = await self._receiver_view(receiver)
             if view is not None:
-                return view.mode
-            if self._read_receiver is not None:
-                return (await self._receiver_view(receiver)).mode
+                return cast(int | None, self._applied.get((receiver, "mode")))
             if receiver != 0:
                 return None
             if self.observed is not None:
@@ -261,7 +256,8 @@ class ScopeSession:
             # the last unsubscribe must not write Core's stale snapshot
             # over the radio's own value. Settings still owned by Core
             # keep their snapshots and are still restored.
-            self._previous.pop(key, None)
+            if self._previous.get(key) is not None:
+                self._previous.pop(key)
             if key[1] == "fixed_edge" and isinstance(value, ScopeFixedEdge):
                 self._fixed.pop((value.range_index, value.edge), None)
 
@@ -452,9 +448,20 @@ class ScopeSession:
             raise RuntimeError("scope control is deferred until radio readiness")
         if self._tx or (self.tx_probe is not None and self.tx_probe()):
             raise RuntimeError("scope control is deferred during transmit")
+        applied = self._applied.get((receiver, name))
         self._uncertain.add((receiver, name))
         try:
             await self._write(name, value, receiver)
+        except CommandRejectedError:
+            self._uncertain.discard((receiver, name))
+            if applied is not None:
+                observed = self._applied.get((receiver, name), applied)
+                self._applied[receiver, name] = applied
+                self._desired[receiver, name] = applied
+                self.observe(name, observed, receiver)
+            else:
+                self._desired.pop((receiver, name), None)
+            raise
         except (CommandError, TimeoutError, asyncio.TimeoutError):
             self._desired.pop((receiver, name), None)
             raise

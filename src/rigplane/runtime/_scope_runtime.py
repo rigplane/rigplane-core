@@ -53,7 +53,7 @@ from rigplane.commands import (
     parse_scope_speed_response,
     parse_scope_vbw_response,
 )
-from rigplane.core.exceptions import CommandError, TimeoutError
+from rigplane.core.exceptions import CommandError, CommandRejectedError, TimeoutError
 from rigplane.core._bounded_queue import BoundedQueue
 from rigplane.core.radio_state import ScopeControlsState
 from rigplane.scope import ScopeFrame
@@ -258,6 +258,8 @@ class ScopeRuntimeMixin(_MixinBase):  # type: ignore[misc]
             )
         frame = self._scope_setting_frame(name, value, receiver)
         response = await self._send_civ_raw(frame, wait_response=True)
+        if response is not None and parse_ack_nak(response) is False:
+            raise CommandRejectedError(f"Radio refused scope {name} (NAK)")
         if response is None or parse_ack_nak(response) is not True:
             raise CommandError(f"Radio did not acknowledge scope {name}")
         controls = self._scope_controls()

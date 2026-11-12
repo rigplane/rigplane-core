@@ -518,7 +518,8 @@ async def windowed_sdk(request):
     model = getattr(request, "param", "IC-7610")
     profile = resolve_radio_profile(model=model)
     sim = _ScopeWindowSimulator(
-        scope_stream=True, dual_receiver=profile.receiver_count > 1,
+        scope_stream=True,
+        dual_receiver=profile.receiver_count > 1,
         radio_addr=profile.civ_addr,
     )
     sim.profile = profile
@@ -588,6 +589,7 @@ async def test_capture_read_failure_degrades_through_scope_ws(
     )
     sim.profile = profile
     sim.set_frequency(14_100_000)
+    sim._unselected_frequency = 14_100_000
     await sim.start()
     radio = IcomRadio(
         "127.0.0.1",
@@ -688,9 +690,11 @@ async def test_sub_follow_refuses_failed_dual_acquisition(windowed_sdk, monkeypa
     monkeypatch.setattr(sim, "_dispatch_civ", refuse_dual)
     async with web(radio) as (_, client, base, protocols, _):
         async with client.ws_connect(base + "/api/v1/scope", protocols=protocols) as ws:
-            await ws.send_str(encode_scope_subscription(
-                Subscription("radio", 1, FollowView("vfo", 100_000), 475, 20)
-            ))
+            await ws.send_str(
+                encode_scope_subscription(
+                    Subscription("radio", 1, FollowView("vfo", 100_000), 475, 20)
+                )
+            )
             message = await ws.receive(timeout=5)
             assert message.type is aiohttp.WSMsgType.TEXT
             assert '"type":"error"' in message.data
@@ -722,7 +726,9 @@ async def test_timed_out_mode_capture_preserves_streamed_fixed_mode(
     monkeypatch.setattr(sim, "_dispatch_civ", timeout_mode)
     async with web(radio) as (_, client, base, protocols, _):
         async with client.ws_connect(base + "/api/v1/scope", protocols=protocols) as ws:
-            await _subscribe(ws, Subscription("radio", 0, FollowView("vfo", 100_000), 475, 20))
+            await _subscribe(
+                ws, Subscription("radio", 0, FollowView("vfo", 100_000), 475, 20)
+            )
             assert _viewport_writes(sim) == []
             first = await _frame_with(ws, sim.windows[0])
             second = await _frame_with(ws, sim.windows[0])
@@ -733,7 +739,7 @@ async def test_timed_out_mode_capture_preserves_streamed_fixed_mode(
 
 
 @pytest.mark.parametrize("windowed_sdk", ["IC-7610", "IC-705"], indirect=True)
-@pytest.mark.parametrize("failure", ["nak", "timeout"])
+@pytest.mark.parametrize("failure", ["nak", "nak_during", "timeout"])
 async def test_failed_follow_span_write_keeps_restore_ownership_truthful(
     windowed_sdk, failure, monkeypatch
 ):
@@ -748,7 +754,12 @@ async def test_failed_follow_span_write_keeps_restore_ownership_truthful(
         nonlocal failed
         if cmd == 0x27 and payload[:1] == b"\x15" and len(payload) > 2 and not failed:
             failed = True
-            if failure == "nak":
+            if failure != "timeout":
+                if failure == "nak_during":
+                    sim.views[0] = (0, 5, 1)
+                    sim.push_scope_setting(
+                        b"\x15\x00" + bcd_encode(sim.profile.scope_span_presets_hz[5])
+                    )
                 return sim._civ_nak(from_addr, sim._radio_addr)
             dispatch(cmd, payload, from_addr)
             return None
@@ -757,21 +768,67 @@ async def test_failed_follow_span_write_keeps_restore_ownership_truthful(
     monkeypatch.setattr(sim, "_dispatch_civ", fail_span)
     async with web(radio) as (_, client, base, protocols, _):
         async with client.ws_connect(base + "/api/v1/scope", protocols=protocols) as ws:
-            await _subscribe(ws, Subscription("radio", 0, FollowView("vfo", 100_000), 475, 20))
+            await _subscribe(
+                ws, Subscription("radio", 0, FollowView("vfo", 100_000), 475, 20)
+            )
             if failure == "nak":
                 sim.views[0] = (0, 5, 1)
-                sim.push_scope_setting(b"\x15\x00" + bcd_encode(sim.profile.scope_span_presets_hz[5]))
+                sim.push_scope_setting(
+                    b"\x15\x00" + bcd_encode(sim.profile.scope_span_presets_hz[5])
+                )
             frame = await _frame_with(ws, (14_050_000, 14_150_000))
             assert frame.pixels and failed
             before_close = len(_viewport_writes(sim))
         assert await await_until(lambda: not radio.scope_session().active)
         restores = [f for f in _viewport_writes(sim)[before_close:] if f.sub == 0x15]
-        if failure == "nak":
+        if failure != "timeout":
             assert sim.views[0][1] == 5
             assert restores == []
         else:
             assert sim.views[0][1] == 3
             assert len(restores) == 1
+
+
+@pytest.mark.parametrize("windowed_sdk", ["IC-7610", "IC-705"], indirect=True)
+async def test_unread_span_stays_unowned_after_external_adoption_and_new_gesture(
+    windowed_sdk, monkeypatch
+):
+    radio, sim = windowed_sdk
+    sim.capture_civ_frames = True
+    sim.set_frequency(14_100_000)
+    radio._radio_state.main.freq = 14_100_000
+    dispatch = sim._dispatch_civ
+    failed = False
+
+    def refuse_read(cmd, payload, from_addr):
+        nonlocal failed
+        if cmd == 0x27 and payload == b"\x15\x00" and not failed:
+            failed = True
+            return sim._civ_nak(from_addr, sim._radio_addr)
+        return dispatch(cmd, payload, from_addr)
+
+    monkeypatch.setattr(sim, "_dispatch_civ", refuse_read)
+    async with web(radio) as (_, client, base, protocols, _):
+        async with client.ws_connect(base + "/api/v1/scope", protocols=protocols) as ws:
+            await _subscribe(
+                ws, Subscription("radio", 0, FollowView("vfo", 100_000), 475, 20)
+            )
+            await _frame_with(ws, (14_050_000, 14_150_000))
+            sim.views[0] = (0, 5, 1)
+            sim.push_scope_setting(
+                b"\x15\x00" + bcd_encode(sim.profile.scope_span_presets_hz[5])
+            )
+            assert await await_until(
+                lambda: radio.scope_session()._applied.get((0, "span")) == 5
+            )
+            await _subscribe(
+                ws, Subscription("radio", 0, FollowView("vfo", 500_000), 475, 20)
+            )
+            assert (await _frame_with(ws, (13_850_000, 14_350_000))).pixels
+            before_close = len(_viewport_writes(sim))
+        assert await await_until(lambda: not radio.scope_session().active)
+        assert sim.views[0][1] == 6 and failed
+        assert not [f for f in _viewport_writes(sim)[before_close:] if f.sub == 0x15]
 
 
 async def test_ctr_fix_ctr_transitions_keep_one_follow_subscription_quiet(
