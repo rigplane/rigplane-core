@@ -251,8 +251,8 @@ async def test_first_connect_to_a_radio_silent_on_civ_completes_when_it_answers(
 ):
     """The first connect (the ``rigplane web`` order) must not abort.
 
-    The IC-705 can hold a stale session and answer nothing on CI-V for a few
-    seconds after the link opens. ``connect()`` used to abort with "radio is
+    CI-V data may not be delivered for a few seconds after the link opens
+    (simulated by ``civ_silent_after_open_s``). ``connect()`` used to abort with "radio is
     not fully ready" and take the whole startup down; it must return, and the
     post-connect tail (initial state, VFO selection) must run once the radio
     answers, so freq/mode appear and a command works.

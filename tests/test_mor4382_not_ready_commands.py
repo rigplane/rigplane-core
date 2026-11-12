@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 from collections.abc import AsyncIterator
 
 import pytest
@@ -24,10 +25,12 @@ from rigplane.core.exceptions import (
     ReceiverNotSelectedError,
     TimeoutError,
 )
+from rigplane.core.state_pipeline_contracts import CommandLifecycleEvent
 from rigplane.radio import IcomRadio
 from rigplane.rigctld.contract import RigctldConfig
 from rigplane.rigctld.server import RigctldServer
 from rigplane.testing.timing import await_until
+from rigplane.web.server import WebConfig, WebServer
 from rigplane_testkit.leaked_radio_guard import fake_connected
 
 from _helpers import observe_selected_receiver
@@ -119,19 +122,21 @@ class TestSelectionRefusalSurvives:
 @contextlib.asynccontextmanager
 async def _silent_lan_radio(
     model: str,
+    *,
+    silence_s: float = _SILENT_AFTER_OPEN_S,
 ) -> AsyncIterator[tuple[IcomRadio, object]]:
     """A real ``IcomRadio`` connected to a LAN simulator silent since open."""
     sim = (
         ic7610_lan_fake(
             single_owner=True,
             keepalive_hold_s=30.0,
-            civ_silent_after_open_s=_SILENT_AFTER_OPEN_S,
+            civ_silent_after_open_s=silence_s,
         )
         if model == "IC-7610"
         else ic705_lan_fake(
             single_owner=True,
             keepalive_hold_s=30.0,
-            civ_silent_after_open_s=_SILENT_AFTER_OPEN_S,
+            civ_silent_after_open_s=silence_s,
         )
     )
     await sim.start()
@@ -178,6 +183,95 @@ class TestCoreOverLanSimulator:
             )
             freq = await radio.get_freq()
             assert freq > 0
+
+
+async def _http_command(
+    web: WebServer, name: str, params: dict[str, object], *, cmd_id: str
+) -> tuple[int, dict[str, object]]:
+    """POST one command to the real HTTP API, with a bound that admits the
+    commander timing out behind queued poller queries first."""
+    body = json.dumps({"id": cmd_id, "name": name, "params": params}).encode()
+    reader, writer = await asyncio.open_connection("127.0.0.1", web.port)
+    try:
+        writer.write(
+            (
+                "POST /api/v1/commands HTTP/1.1\r\n"
+                f"Host: 127.0.0.1:{web.port}\r\n"
+                "Connection: close\r\nContent-Type: application/json\r\n"
+                f"Content-Length: {len(body)}\r\n\r\n"
+            ).encode()
+            + body
+        )
+        await writer.drain()
+        raw = await asyncio.wait_for(reader.read(), 15)
+    finally:
+        writer.close()
+        await writer.wait_closed()
+    response = raw.split(b"\r\n\r\n", 1)[1].decode()
+    return int(raw.split(b" ", 2)[1]), json.loads(response)
+
+
+def _event(
+    events: list[CommandLifecycleEvent], cmd_id: str, states: tuple[str, ...]
+) -> CommandLifecycleEvent | None:
+    return next(
+        (e for e in reversed(events) if e.command_id == cmd_id and e.state in states),
+        None,
+    )
+
+
+class TestWebCommandOverLanSimulator:
+    """HTTP writes traverse the production queue and poller during silence."""
+
+    @pytest.mark.asyncio
+    @_REALTIME
+    @pytest.mark.parametrize("model", ["IC-7610", "IC-705"])
+    async def test_set_freq_while_silent_fails_retriable_then_recovers(
+        self, model: str
+    ) -> None:
+        async with _silent_lan_radio(model, silence_s=20.0) as (radio, _sim):
+            web = WebServer(radio, WebConfig(host="127.0.0.1", port=0, discovery=False))
+            events: list[CommandLifecycleEvent] = []
+            unsubscribe = web.command_service.subscribe_lifecycle(events.append)
+            try:
+                await web.start()
+                status, result = await _http_command(
+                    web, "set_freq", {"freq": 14_174_000}, cmd_id="mor4382-silent"
+                )
+                assert not radio.radio_ready
+                assert status == 504 and result["error"] == "command_timeout", (
+                    status,
+                    result,
+                )
+                silent_id = next(e.command_id for e in events if e.source == "http")
+                failure = await await_until(
+                    lambda: _event(events, silent_id, ("failed", "timed_out")),
+                    timeout=25.0,
+                    description="the queued set_freq fails",
+                )
+                assert failure.state == "timed_out", failure
+                if radio.profile.receiver_count > 1:
+                    assert _NOT_READY_MATCH in str(failure.message), failure
+                assert (failure.details or {}).get("reason") != (
+                    "receiver_not_selected"
+                ), failure
+                # The radio answers: the same command through the same API
+                # now completes on the radio.
+                await await_until(
+                    lambda: radio.radio_ready,
+                    timeout=30.0,
+                    description="the radio answers and becomes ready",
+                )
+                status, result = await _http_command(
+                    web, "set_freq", {"freq": 14_174_000}, cmd_id="mor4382-awake"
+                )
+                assert status == 200 and result["ok"] is True, (status, result)
+                # The HTTP response awaits the poller-settled future. Check
+                # the radio readback as well, rather than an enqueue ack.
+                assert await radio.get_freq() == 14_174_000
+            finally:
+                unsubscribe()
+                await web.stop()
 
 
 class TestRigctldOverLanSimulator:

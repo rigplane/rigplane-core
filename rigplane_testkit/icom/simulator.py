@@ -744,11 +744,14 @@ class MockIcomRadio(AudioPortMixin):
         # so turning standby off resumes cleanly; discovery,
         # pings and OpenClose still work, and the control port is unaffected.
         self._civ_standby: bool = False
-        # CI-V replies start late after a LAN connect: for this many seconds
-        # after the first accepted OpenClose(open) of each login the radio is
-        # in CI-V standby (the bench IC-705 holding a stale session answers
-        # nothing on CI-V for 12-14 s while pings and discovery still work).
-        # Reusable for any smoke of the connect path; 0 keeps replies prompt.
+        # CI-V data not yet delivered after a LAN connect: for this many
+        # seconds after the first accepted OpenClose(open) of each login the
+        # simulator answers nothing on CI-V while pings and discovery still
+        # work (a radio that is off, busy or still starting). The 12-14 s
+        # "silence" once seen on the bench IC-705 was client-side, the
+        # ordered-ingress stale anchor fixed in MOR-4416, not recorded radio
+        # behaviour. Reusable for any smoke of the connect path; 0 keeps
+        # replies prompt.
         self.civ_silent_after_open_s: float = max(0.0, civ_silent_after_open_s)
         self._civ_silent_armed_for: object = None
         self._civ_silence_token = 0
