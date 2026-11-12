@@ -263,8 +263,8 @@ for (const [index, model] of ['IC-705', 'IC-7300'].entries()) {
     const subscriptions: ScopeSubscription[] = [];
     page.on('websocket', socket => socket.on('framesent', ({ payload }) => {
       if (typeof payload !== 'string') return;
-      const message = JSON.parse(payload);
-      if (new URL(socket.url()).pathname === '/api/v1/ws' && message.type === 'cmd') commands.push((message as WsCommand).name);
+      const message = JSON.parse(payload) as WsCommand | (ScopeSubscription & { type: 'subscribe' });
+      if (new URL(socket.url()).pathname === '/api/v1/ws' && message.type === 'cmd') commands.push(message.name);
       if (socket.url().endsWith('/api/v1/scope') && message.type === 'subscribe') subscriptions.push(message);
     }));
     try {

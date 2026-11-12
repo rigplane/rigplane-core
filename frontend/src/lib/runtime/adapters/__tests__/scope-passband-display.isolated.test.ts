@@ -760,7 +760,8 @@ describe('coherent RF passband display', () => {
     const reseated = project(input, current);
     expect(reseated.display).toMatchObject({ state: 'current', tuple: {
       frequencyHz: 14_074_000, mode: 'USB', widthHz: 2400, shiftHz: 0,
-      startHz: window.startFreq ?? 14_000_000, endHz: window.endFreq ?? 14_100_000,
+      startHz: 'startFreq' in window ? window.startFreq : 14_000_000,
+      endHz: 'endFreq' in window ? window.endFreq : 14_100_000,
     } });
     // Continuity is re-established on the new window: the next projection
     // holds without fresh geometry evidence.
