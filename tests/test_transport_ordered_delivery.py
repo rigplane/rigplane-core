@@ -360,3 +360,68 @@ async def test_forward_gap_exactly_max_missing_is_tracked(
     assert set(radio.retransmit_requests) == set(range(2, 1 + MAX_MISSING))
     assert drain_seqs(transport) == list(range(2, MAX_MISSING + 2))
     assert transport.rx_order_stats == RxOrderStats(reordered=MAX_MISSING - 1)
+
+
+@pytest.mark.parametrize("delta", [MAX_MISSING + 1, 120, 2000, 2001])
+async def test_forward_gap_bands_preserve_loss_visibility(
+    transport: IcomTransport,
+    virtual_clock: VirtualClock,
+    caplog: pytest.LogCaptureFixture,
+    delta: int,
+) -> None:
+    anchor = 100
+    new_seq = anchor + delta
+    radio = _radio(transport, delta + REORDER_WINDOW + 3, first_seq=anchor)
+    radio.deliver(anchor)
+    assert drain_seqs(transport) == [anchor]
+
+    with caplog.at_level(logging.WARNING, logger="rigplane.core.transport"):
+        radio.deliver(*range(new_seq, new_seq + REORDER_WINDOW + 3))
+        await virtual_clock.elapse(_BUDGET)
+
+    assert drain_seqs(transport) == list(range(new_seq, new_seq + REORDER_WINDOW + 3))
+    burst = delta <= 2000
+    assert transport.rx_order_stats == RxOrderStats(
+        lost=delta - 1 if burst else 0, reanchored=0 if burst else 1
+    )
+    assert transport.rx_last_seq == new_seq + REORDER_WINDOW + 2
+    assert transport.rx_missing == {}
+    assert not transport._rx_held
+    assert radio.retransmit_requests == []
+    warnings = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+    assert len(warnings) == 1
+    if burst:
+        assert warnings[0] == (
+            f"CI-V burst loss {delta - 1} packets "
+            f"(last_seq={anchor}, new_seq={new_seq})"
+        )
+    else:
+        assert "re-anchored" in warnings[0]
+
+
+@pytest.mark.parametrize("give_up_first", [False, True], ids=["held", "given-up"])
+async def test_burst_loss_does_not_recount_an_older_gap(
+    transport: IcomTransport,
+    virtual_clock: VirtualClock,
+    give_up_first: bool,
+) -> None:
+    radio = _radio(transport, 125)
+    radio.deliver(1, 3)
+    assert drain_seqs(transport) == [1]
+    if give_up_first:
+        await virtual_clock.elapse(_BUDGET)
+        assert drain_seqs(transport) == [3]
+        assert transport.rx_order_stats == RxOrderStats(lost=1)
+
+    radio.deliver(123, 124, 125)
+    assert drain_seqs(transport) == (
+        [123, 124, 125] if give_up_first else [3, 123, 124, 125]
+    )
+    await virtual_clock.elapse(_BUDGET)
+    assert transport.rx_order_stats == RxOrderStats(lost=120)
+    assert transport.rx_missing == {}
+    assert not transport._rx_held
+
+    radio.deliver(122)
+    assert drain_seqs(transport) == []
+    assert transport.rx_order_stats == RxOrderStats(lost=120, late=1)

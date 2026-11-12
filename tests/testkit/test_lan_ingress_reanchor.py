@@ -191,3 +191,70 @@ async def test_forward_wrapping_open_marker_reanchors_without_phantom_loss(
     finally:
         await radio.disconnect()
         await sim.stop()
+
+
+@pytest.mark.parametrize(
+    "factory, model",
+    [(ic705_lan_fake, "IC-705"), (ic7610_lan_fake, "IC-7610")],
+    ids=["ic705", "ic7610"],
+)
+@_REALTIME
+async def test_contiguous_burst_loss_stays_visible_and_civ_answers(
+    factory, model: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    from rigplane_testkit.icom.faults import FaultPlan, FaultRule
+
+    sim = factory(
+        single_owner=True,
+        keepalive_hold_s=30.0,
+        unsolicited_civ=True,
+        unsolicited_interval_s=_STREAM_INTERVAL_S,
+    )
+    await sim.start()
+    radio = IcomRadio(
+        "127.0.0.1",
+        port=sim.control_port,
+        username="testuser",
+        password="testpass",
+        model=model,
+        timeout=0.5,
+    )
+    try:
+        with fast_connect():
+            await asyncio.wait_for(radio.connect(), 10.0)
+            await _wait_connected(radio)
+            transport = radio._civ_transport  # noqa: SLF001
+            before = transport.rx_order_stats
+            rule = FaultRule(drop_probability=1.0, max_packets=119)
+            sim.fault_plan = FaultPlan(civ_to_client=rule)
+            await await_until(
+                lambda: rule.dropped == 119,
+                timeout=5.0,
+                interval=0.01,
+                description="contiguous CI-V outage injected",
+            )
+            await await_until(
+                lambda: transport.rx_order_stats != before,
+                timeout=5.0,
+                interval=0.01,
+                description="live stream resumes after the outage",
+            )
+            freq = await asyncio.wait_for(radio.get_freq(), 5.0)
+        assert freq > 0
+        stats = transport.rx_order_stats
+        assert 50 <= stats.lost - before.lost <= 119
+        assert stats.reanchored == before.reanchored
+        warnings = [
+            r.getMessage()
+            for r in caplog.records
+            if r.name == "rigplane.core.transport" and r.levelno >= 30
+        ]
+        assert len(warnings) == 1
+        assert warnings[0].startswith(
+            f"CI-V burst loss {stats.lost - before.lost} packets "
+        )
+        assert not transport.rx_missing
+        assert not transport._rx_held
+    finally:
+        await radio.disconnect()
+        await sim.stop()
