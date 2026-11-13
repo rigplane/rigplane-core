@@ -18,7 +18,7 @@ fidelity = "C"
 gaps = [
     "no hardware recording: all answers follow the FT-991A CAT manual tables (PDF pages cited in rigs/ft991a.toml), none a captured radio",
     "IF bulk status is not modelled: the manual's 3-character channel layout has no shared parser shape and the real answer length is unverified (28 bytes per manual vs 41 on some FT-991 firmware per Hamlib)",
-    "RM answers the single manual-documented value; meter scaling is uncalibrated (capture list)",
+    "RM and PC answers are not simulated: the sim has no RM/PC handler and answers ?; to both; meter scaling is uncalibrated (capture list)",
     "writes are accepted for the natively served SET verbs only; every other SET verb answers ?; until its handler and evidence exist",
     "no scope or hardware spectrum",
     "firmware V02-07 is the customer's report, not readable over CAT",

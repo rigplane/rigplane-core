@@ -31,8 +31,9 @@ from rigplane.profiles.rig_loader import load_rig
 from rigplane.web.handlers.control import ControlHandler
 from rigplane.web.radio_poller import VfoEqualize
 from rigplane.web.runtime_helpers import projected_vfo_capability_tags
-from rigplane.web.server import _serialize_filter_config
+from rigplane.web.server import WebConfig, WebServer, _serialize_filter_config
 from rigplane_testkit.sim.adapters.yaesu_cat import YaesuCatSerialFake
+from test_yaesu_split_vfo_profile import _http_post_command, _wait_for_state
 
 ROOT = Path(__file__).resolve().parents[1]
 RIG = ROOT / "rigs/ft991a.toml"
@@ -639,3 +640,124 @@ def test_factory_forwards_the_model_in_both_yaesu_branches():
     )
     for config, profile_id in cases:
         assert create_radio(config)._config.id == profile_id
+
+
+async def _serve_ft991a_over_http(monkeypatch):
+    """Serve the real FT-991A profile over HTTP on the CAT simulator.
+
+    Unlike ``_serve_fixture_over_http`` in
+    ``tests/test_yaesu_split_vfo_profile.py`` (which appends a patched
+    ``[state_acquisition]`` section to a profile that declares none), the
+    committed ``rigs/ft991a.toml`` already carries its own acquisition
+    policy, so the radio and the fake both load it unmodified: the
+    mode/narrow/width polling below is the profile's own contract.
+
+    Returns ``(radio, wire, host, port, server)`` with the server started;
+    the caller stops the server and closes the transport.
+    """
+    radio = YaesuCatRadio("/dev/fixture", profile=load_rig(RIG))
+    fake = YaesuCatSerialFake.from_profile(ROOT, SIM_PROFILE, rig_path=RIG)
+    wire: list[str] = []
+    handle = fake.model.handle_with_outcome
+
+    def logged(line):
+        wire.append(line)
+        return handle(line)
+
+    monkeypatch.setattr(fake.model, "handle_with_outcome", logged)
+
+    async def open_port(*args, **kwargs):
+        return await fake.open_serial_connection()
+
+    monkeypatch.setattr(
+        "rigplane.backends.yaesu_cat.transport.open_serial_port", open_port
+    )
+    await radio._transport.connect()
+    server = WebServer(
+        radio,
+        WebConfig(host="127.0.0.1", port=0, keepalive_interval=9999.0),
+    )
+    await server.start()
+    return radio, wire, "127.0.0.1", server.port, server
+
+
+@pytest.mark.realtime(
+    reason="real HTTP socket and the production backend poller/readback path"
+)
+@pytest.mark.asyncio
+async def test_narrow_width_end_to_end_over_http_with_cat_sim(monkeypatch):
+    """MOR-4433 PR2 P1-2: NARROW + width through the real local HTTP API.
+
+    The real ``WebServer`` serves a real-profiled ``YaesuCatRadio`` (the
+    committed ``rigs/ft991a.toml``, not a patched variant) on the CAT
+    simulator: the suite posts ``set_filter_width`` / ``set_narrow`` to
+    ``/api/v1/commands`` over a real socket (real handler, real queue,
+    real backend-poller dispatch, real post-write readback) and asserts
+    the admitted widths and ``main.filterWidth`` through the user-visible
+    ``/api/v1/state``.
+
+    Wide state admits the wide table (SSB 2400 Hz, wire ``SH014;``); with
+    NARROW on the same band admits through the narrow table (SSB 1800 Hz,
+    wire ``SH009;``) and publishes through the profile's own polling
+    policy. A narrow-only width (400 Hz) submitted in the wide state
+    admits the nearest wide entry (1800 Hz) and never reads back as
+    400 Hz. Restoring the FTX-1-style narrow-state width exclusion the
+    profile dropped would leave ``filterWidth`` stuck at the wide value
+    once NARROW is on, so the narrow assertion fails.
+    """
+    radio, wire, host, port, server = await _serve_ft991a_over_http(monkeypatch)
+    try:
+        # Mode and narrow are freshly observed before the first
+        # submission: the admission hint maps through live state.
+        await _wait_for_state(host, port, "mode", "USB")
+        await _wait_for_state(host, port, "narrow", False)
+
+        # Wide state: SSB 2400 Hz is on the wide table (manual PDF p.17:
+        # code 14 -> SH014;).
+        body = await _http_post_command(
+            host, port, "set_filter_width", {"width": 2400}
+        )
+        assert body["result"]["admitted_width"] == 2400
+        await _wait_for_state(host, port, "filterWidth", 2400)
+        assert "SH014;" in wire
+
+        # NARROW on: the stored wide code 14 sits outside the narrow
+        # table (codes 01-09), so the narrow write below is what
+        # publishes the next width.
+        await _http_post_command(host, port, "set_narrow", {"on": True})
+        assert "NA01;" in wire
+        await _wait_for_state(host, port, "narrow", True)
+
+        # Narrow state: 1800 Hz admits through the narrow table (manual
+        # PDF p.17: code 09 -> SH009;) and publishes through the
+        # profile's own polling policy -- no patched copy involved. The
+        # 2400 -> 1800 transition proves the narrow-state read is live:
+        # with the old narrow-state exclusion restored, filterWidth
+        # would stay stuck at 2400 and this wait would time out.
+        body = await _http_post_command(
+            host, port, "set_filter_width", {"width": 1800}
+        )
+        assert body["result"]["admitted_width"] == 1800
+        await _wait_for_state(host, port, "filterWidth", 1800)
+        assert "SH009;" in wire
+
+        # Back to wide with a distinct width first, so the narrow-only
+        # check below proves a live roundtrip rather than a stale value.
+        await _http_post_command(host, port, "set_narrow", {"on": False})
+        await _wait_for_state(host, port, "narrow", False)
+        body = await _http_post_command(
+            host, port, "set_filter_width", {"width": 2400}
+        )
+        assert body["result"]["admitted_width"] == 2400
+        await _wait_for_state(host, port, "filterWidth", 2400)
+
+        # Wide state: a narrow-only width (400 Hz) admits the nearest
+        # wide entry and must not read back as 400 Hz.
+        body = await _http_post_command(
+            host, port, "set_filter_width", {"width": 400}
+        )
+        assert body["result"]["admitted_width"] == 1800
+        await _wait_for_state(host, port, "filterWidth", 1800)
+    finally:
+        await server.stop()
+        await radio._transport.close()
