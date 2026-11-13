@@ -2404,6 +2404,13 @@ _TX_TARGET_UNSUPPORTED: dict[str, str] = {
         "and the RadioPoller derivation requires vfo_readback "
         '"selected_unselected", which this profile does not carry'
     ),
+    "FT-991A": (
+        "MOR-4433: single-receiver Yaesu CAT profile with no get_tx_func; its "
+        "FT; read answers the TX VFO (A/B, i.e. split state), not a "
+        "transceiver target, and TX is unverified on hardware in v1, so no "
+        "TX-target source is declared (polling it without the command "
+        "aborted the whole medium poll batch)"
+    ),
     "G7250": (
         "Xiegu-dialect CI-V profile (MOR-4352): same shape as the X6200 — "
         "no transmit-frequency read is declared and vfo_readback is not "
