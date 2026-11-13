@@ -555,7 +555,10 @@ def _observed_receiver_narrow(server: Any, receiver: int) -> bool | None:
     and the same receiver-id order is probed. A stale or absent narrow
     observation reads as unknown (``None``) rather than as wide — the
     caller keeps today's wide-table mapping then, exactly as before narrow
-    data existed.
+    data existed. The narrow flag lives on a receiver-scoped path
+    (``FieldPath.receiver``, no VFO slot — the same path the command
+    service resolves for ``set_narrow``): a slotted
+    ``FieldPath.active`` lookup is invalid here outside ``freq_mode``.
     """
     state_store = getattr(server, "command_state_store", None)
     if not isinstance(state_store, StateStore):
@@ -565,7 +568,7 @@ def _observed_receiver_narrow(server: Any, receiver: int) -> bool | None:
     for receiver_id in receiver_ids:
         try:
             field = snapshot.field(
-                FieldPath.active(receiver_id, "operator_toggles", "narrow")
+                FieldPath.receiver(receiver_id, "operator_toggles", "narrow")
             )
         except KeyError:
             continue

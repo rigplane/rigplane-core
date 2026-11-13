@@ -1229,7 +1229,8 @@ class YaesuCatPoller:
                         )
                         raise NotImplementedError(
                             f"VfoEqualize unsupported on {model}: "
-                            "profile declares no vfo_a_to_b copy primitive"
+                            "profile declares no equal_ab_code "
+                            "or vfo_a_to_b copy primitive"
                         )
                     await radio.equalize_vfo_ab(0)
                 await self._post_write_freq_mode_readback()
