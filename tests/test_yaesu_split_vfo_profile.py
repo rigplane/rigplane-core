@@ -170,7 +170,12 @@ def test_split_contract_is_typed_and_consumed():
     assert config.split.write_map == {False: "2", True: "3"}
     assert config.split.read_map == {"0": False, "1": True}
     radio = YaesuCatRadio("/dev/null", profile=config)
-    assert projected_vfo_capability_tags(radio, None) == {"vfo_swap"}
+    # MOR-4433 follow-up A: the fixture declares vfo_a_to_b, so the shared
+    # admission rule projects vfo_equalize alongside vfo_swap.
+    assert projected_vfo_capability_tags(radio, None) == {
+        "vfo_swap",
+        "vfo_equalize",
+    }
 
 
 def test_transceiver_count_comes_from_profile_without_model_branch(tmp_path):
@@ -183,15 +188,19 @@ def test_transceiver_count_comes_from_profile_without_model_branch(tmp_path):
 
 
 def test_web_admits_declared_cat_ab_swap(radio):
+    # MOR-4433 follow-up A: the fixture declares vfo_a_to_b, so the web
+    # layer admits vfo_equalize exactly as it projects it (the refusal
+    # lives on in test_yaesu_ab_equalize_refused_without_the_copy_primitive
+    # on a variant without the primitive).
     handler = ControlHandler.__new__(ControlHandler)
     handler._radio = radio
     queued: list[object] = []
     queue = SimpleNamespace(put=queued.append)
     assert handler._enqueue_rc_frequency("vfo_swap", {}, queue, radio) == {}
-    assert len(queued) == 1
+    assert handler._enqueue_rc_frequency("vfo_equalize", {}, queue, radio) == {}
+    assert len(queued) == 2
     assert isinstance(queued[0], VfoSwap)
-    with pytest.raises(ValueError, match="not supported"):
-        handler._enqueue_rc_frequency("vfo_equalize", {}, queue, radio)
+    assert isinstance(queued[1], VfoEqualize)
 
 
 @pytest.mark.asyncio
@@ -249,11 +258,13 @@ async def test_yaesu_ab_equalize_refused_without_the_copy_primitive(tmp_path):
     """The same shared rule, negative side: no ``vfo_a_to_b`` declaration
     means no projection, no admission and no execution."""
     path = tmp_path / "no-copy.toml"
-    path.write_text(
-        FIXTURE.read_text().replace(
-            'vfo_a_to_b     = { cat = { write = "AB;" } }', ""
-        )
-    )
+    # Drop both directional-copy declarations with their exact file text:
+    # a whitespace-mismatched replace would silently keep the primitive
+    # and the variant would still admit equalize.
+    text = FIXTURE.read_text()
+    text = text.replace('vfo_a_to_b = { cat = { write = "AB;" } }', "")
+    text = text.replace('vfo_b_to_a = { cat = { write = "BA;" } }', "")
+    path.write_text(text)
     config = load_rig(path)
     assert not config.to_profile().supports_vfo_command("vfo_equalize")
     radio = YaesuCatRadio("/dev/null", profile=config)

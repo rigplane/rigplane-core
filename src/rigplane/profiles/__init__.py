@@ -738,9 +738,11 @@ class RadioProfile:
         not CI-V opcode bytes: ``ab`` (single-receiver, e.g. the FT-991A
         class) implements ``vfo_swap`` (``SV;``), and implements
         ``vfo_equalize`` exactly when the profile declares the ``vfo_a_to_b``
-        copy primitive — equalize is that A→B copy, admitted and executed
-        through it (``YaesuCatRadio.equalize_vfo_ab`` delegates to
-        ``vfo_a_to_b``; a profile without it keeps today's refusal) — while
+        copy primitive on a single transceiver — equalize is that A→B copy,
+        admitted and executed through it (``YaesuCatRadio.equalize_vfo_ab``
+        delegates to ``vfo_a_to_b``; a profile without it keeps today's
+        refusal, as does a multi-transceiver ``ab`` command set whose
+        ``AB;`` spans receivers instead of copying within one) — while
         ``ab_shared`` (dual-RX, e.g. FTX-1) implements both ``vfo_swap``
         (``SV;``) and ``vfo_equalize`` (``AB;``, OM 2508-C) as declared
         commands. Every other family keeps its opcode-byte rule.
@@ -752,7 +754,9 @@ class RadioProfile:
             "ab_shared",
         }:
             if self.vfo_scheme == "ab" and command_name == "vfo_equalize":
-                return self.supports_command("vfo_a_to_b")
+                return (
+                    self.supports_command("vfo_a_to_b") and self.transceiver_count == 1
+                )
             return self.supports_command(command_name)
         if self.vfo_scheme == "ab":
             code = (

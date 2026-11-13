@@ -176,17 +176,24 @@ async def test_poller_sends_no_vs_fr_st(radio):
 
 @pytest.mark.asyncio
 async def test_single_value_rm_and_headless_pc(radio):
-    radio._transport.query.side_effect = ["RM503"]
+    # Manual PDF p.16: the RM answer is P1 plus three P2 digits (0-255), so
+    # COMP (P1 3) reading 3 arrives as "RM3003" (the transport strips ";").
+    radio._transport.query.side_effect = ["RM3003"]
     assert await radio.read_comp_meter() == 3
-    radio._transport.query.side_effect = ["PC075;"]
+    # The headless PC answer likewise arrives without ";".
+    radio._transport.query.side_effect = ["PC075"]
     assert await radio.read_power() == (0, 75)
 
 
 @pytest.mark.asyncio
 async def test_width_maps_narrow_and_wide_tables_by_na_state(radio):
-    radio._transport.query = AsyncMock(side_effect=["MD02", "SH0000", "NA01"])
+    # MD02 reads USB, whose rule declares the narrow variant, so the NA
+    # state selects the table. SH code 00 is the mode-dependent "(Default)"
+    # (manual PDF p.17) and carries no Hz by design -- real codes go here:
+    # code 07 is 1500 Hz narrow, code 06 is 2400 Hz wide (first_code = 1).
+    radio._transport.query = AsyncMock(side_effect=["MD02", "SH0007", "NA01"])
     assert await radio.get_filter_width() == 1500
-    radio._transport.query = AsyncMock(side_effect=["MD02", "SH0000", "NA00"])
+    radio._transport.query = AsyncMock(side_effect=["MD02", "SH0006", "NA00"])
     assert await radio.get_filter_width() == 2400
 
 
@@ -240,9 +247,13 @@ async def test_equalize_writes_ab_and_poller_dispatches_it(radio):
 @pytest.mark.asyncio
 async def test_equalize_still_refused_without_vfo_a_to_b(tmp_path):
     path = tmp_path / "no-copy.toml"
-    path.write_text(
-        FIXTURE.read_text().replace('vfo_a_to_b     = { cat = { write = "AB;" } }', "")
-    )
+    # Drop both directional-copy declarations with their exact file text:
+    # a whitespace-mismatched replace would silently keep the primitive
+    # and the variant would still admit equalize.
+    text = FIXTURE.read_text()
+    text = text.replace('vfo_a_to_b = { cat = { write = "AB;" } }', "")
+    text = text.replace('vfo_b_to_a = { cat = { write = "BA;" } }', "")
+    path.write_text(text)
     config = load_rig(path)
     assert not config.to_profile().supports_vfo_command("vfo_equalize")
     radio = YaesuCatRadio("/dev/null", profile=config)
@@ -390,7 +401,10 @@ async def test_ft991a_split_swap_copy_and_width_roundtrip(monkeypatch):
         await radio.set_filter_width(1800)
         assert await radio.get_filter_width() == 1800
         await radio.set_narrow(True)
-        assert await radio.get_filter_width() == 1800
+        # The stored SH code is unchanged; the narrow table re-maps it:
+        # code 01 is 1800 Hz wide but 200 Hz narrow (mirrors the fixture
+        # roundtrip's 2400 -> 1500 remap).
+        assert await radio.get_filter_width() == 200
         await radio.set_filter_width(400)
         assert await radio.get_filter_width() == 400
         await radio.set_narrow(False)

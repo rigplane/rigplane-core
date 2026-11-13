@@ -790,8 +790,8 @@ def projected_vfo_capability_tags(
     # One shared rule — ``RadioProfile.supports_vfo_command`` — so
     # projection cannot disagree with command admission
     # (``web/handlers/control.py: _enqueue_rc_frequency``). The Yaesu
-    # single-receiver ``ab`` scheme admits ``vfo_equalize`` exactly when the
-    # profile declares the ``vfo_a_to_b`` copy primitive (MOR-4433
+    # single-transceiver ``ab`` scheme admits ``vfo_equalize`` exactly when
+    # the profile declares the ``vfo_a_to_b`` copy primitive (MOR-4433
     # follow-up A): equalize is that A→B copy.
     tags = {
         tag for tag in ("vfo_swap", "vfo_equalize") if profile.supports_vfo_command(tag)

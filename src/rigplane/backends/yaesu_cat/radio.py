@@ -3195,21 +3195,28 @@ class YaesuCatRadio:
     async def equalize_vfo_ab(self, receiver: int = 0) -> None:
         """Copy VFO-A to VFO-B on ``receiver`` (MOR-4433 follow-up A).
 
-        On a single-receiver ``ab`` profile that declares the ``vfo_a_to_b``
-        copy primitive (e.g. FT-991A ``AB;``), equalize is that A→B copy and
-        delegates to :meth:`vfo_a_to_b`. Every other profile keeps today's
-        refusal: ``ab_shared`` (dual-RX, e.g. FTX-1) copies between
-        receivers, not between A/B within a receiver, and a profile without
-        the primitive exposes no equalize command.
+        On a single-transceiver ``ab`` profile that declares the
+        ``vfo_a_to_b`` copy primitive (e.g. FT-991A ``AB;``), equalize is
+        that A→B copy and delegates to :meth:`vfo_a_to_b`. Every other
+        profile keeps today's refusal: ``ab_shared`` (dual-RX, e.g. FTX-1)
+        copies between receivers, not between A/B within a receiver; a
+        multi-transceiver ``ab`` command set (same reason: its ``AB;``
+        spans receivers, so it is no per-receiver copy); and a profile
+        without the primitive exposes no equalize command.
         Raises :class:`NotImplementedError`.
         """
         self._check_single_receiver(receiver, operation="equalize_vfo_ab")
-        if self._config.vfo_scheme == "ab" and self.supports_command("vfo_a_to_b"):
+        if (
+            self._config.vfo_scheme == "ab"
+            and self._config.transceiver_count == 1
+            and self.supports_command("vfo_a_to_b")
+        ):
             await self.vfo_a_to_b()
             return
         raise NotImplementedError(
             f"equalize_vfo_ab not supported on {self.model}: "
-            "the profile declares no vfo_a_to_b copy primitive"
+            "Yaesu CAT has no per-receiver A→B copy primitive "
+            "(the profile declares no single-transceiver vfo_a_to_b copy)"
         )
 
     # -- D6: TX Stack -------------------------------------------------------

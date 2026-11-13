@@ -320,6 +320,7 @@ class TestInfoEndpoint:
             ("IC-7610", {"vfo_swap", "vfo_equalize"}),
             ("IC-9700", {"vfo_swap", "vfo_equalize"}),
             ("FTX-1", {"vfo_swap", "vfo_equalize"}),
+            ("FT-991A", {"vfo_swap", "vfo_equalize"}),
             ("TX-500", set()),
             ("X6100", set()),
             ("X6200", set()),
@@ -385,6 +386,7 @@ class TestCapabilitiesEndpoint:
             ("IC-7610", 2, "main_sub"),
             ("IC-7300", 1, "ab"),
             ("FTX-1", 2, "ab_shared"),
+            ("FT-991A", 1, "ab"),
         ],
     )
     async def test_capabilities_pins_known_wire_subset_and_types(
@@ -432,6 +434,7 @@ class TestCapabilitiesEndpoint:
         [
             ("IC-7300", True),
             ("X6200", False),
+            ("FT-991A", False),
         ],
     )
     async def test_capabilities_power_on_command_matches_profile(
@@ -697,6 +700,7 @@ class TestCapabilitiesEndpoint:
             ("IC-7610", {"vfo_swap", "vfo_equalize"}),
             ("IC-9700", {"vfo_swap", "vfo_equalize"}),
             ("FTX-1", {"vfo_swap", "vfo_equalize"}),
+            ("FT-991A", {"vfo_swap", "vfo_equalize"}),
             ("TX-500", set()),
             ("X6100", set()),
             ("X6200", set()),
