@@ -27,15 +27,16 @@
 # execute. Every number here is re-measured and asserted by that
 # test. Regenerate, do not edit.
 census	builders_compared	0
-census	cat_only_profiles	1
+census	cat_only_profiles	2
 census	dual_implementation_sites	0
 census	frames_diverged	0
 census	frames_identical	0
 census	hardcode_only_builders	0
 census	profile_builder_map_gaps	0
-census	profiles	11
+census	profiles	12
 census	public_builders	246
 census	sites_compared	0
+cat-only	FT-991A	75
 cat-only	FTX-1	131
 requires-map	antenna.py:get_antenna_1
 requires-map	antenna.py:get_antenna_2

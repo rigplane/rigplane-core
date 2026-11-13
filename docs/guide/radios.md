@@ -89,6 +89,20 @@ visible on both radios. VFO labels switch to "VFO A" / "VFO B" automatically.
     Full frequency, mode, PTT, and audio control is working.
     The Web UI uses the Audio FFT Scope for spectrum display (no hardware panadapter on FTX-1).
 
+### Yaesu FT-991A
+
+- **Protocol:** Yaesu CAT (text)
+- **Connectivity:** USB serial (38400 bps)
+- **Rig profile:** `rigs/ft991a.toml`
+- **Features:** HF/VHF/UHF all-mode, single receiver, VFO A/B, split, IF shift, narrow/wide filter widths, TX meters (ALC/COMP/power/SWR)
+- **VFO scheme:** `ab` (1 receiver, 1 transceiver)
+- **Audio:** USB audio RX/TX; channel layout and sample rate are unverified on hardware
+- **Status:** Profile only; no hardware capture yet — unverified items are marked in the profile
+
+!!! tip "Setup Guide"
+    **[FT-991A USB Setup](ft991a-usb-setup.md)** — the CAT port and rate, radio
+    settings for USB audio, and the CLI, Web UI and Python entry points.
+
 ## Long-tail CAT / Profile Candidates
 
 These radios have profiles or known CAT surfaces. The intended direction is assisted discovery and

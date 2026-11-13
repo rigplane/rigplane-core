@@ -1,0 +1,934 @@
+# Rig Configuration — Yaesu FT-991A
+# Yaesu FT-991A HF/VHF/UHF all-mode transceiver (single receiver).
+# Protocol: Yaesu CAT (not CI-V)
+# Source: Yaesu FT-991A CAT Operation Reference Manual (PDF page numbers
+# below are PDF pages; the printed page number is the PDF page minus 1).
+# Anything below that the manual does not establish, or that was not
+# confirmed on the customer's radio, is marked UNVERIFIED and belongs to
+# the customer capture pass (MOR-4433 report, capture list).
+
+[radio]
+id = "yaesu_ft991a"
+model = "FT-991A"
+# Hamlib RIG_MODEL_FT991 = 1035 (Hamlib yaesu/ft991.c groups the FT-991A
+# under the FT-991 rig id; the value is from Hamlib, not the CAT manual).
+# Declared explicitly: the loader default (2028, RIG_MODEL_FTX1) would
+# otherwise make this radio report as an FTX-1 through rigctld dump_state.
+hamlib_model_id = 1035
+receiver_count = 1
+transceiver_count = 1
+has_lan = false
+has_wifi = false
+# Customer fact: CAT 38400 bps (menu 031 CAT RATE, PDF p.8). The core Yaesu
+# CAT transport opens 8N1 with no hardware flow control; that framing is the
+# transport default, not a profile fact, so no framing field is encoded here.
+# 8N1 is the owner's assumption, to confirm on the customer capture; Hamlib
+# lists 2 stop bits + handshake, host flow control unknown (menu 033 CAT
+# RTS was not confirmed on the customer's radio).
+default_baud = 38400
+
+[protocol]
+type = "yaesu_cat"
+
+[identity]
+# ID command, PDF p.11: ID0670; answered. The plain FT-991 answers 0570
+# (Hamlib newcat); only the A variant is declared until a plain FT-991 is
+# tested (MOR-4422 report).
+expected_ids = ["0670"]
+
+[audio]
+# UNVERIFIED: the USB audio codec channel layout and sample rate were not
+# captured on the customer's radio, so rx_audio_channel stays at the schema
+# default ("mix"). The FTX-1 profile takes "left" because bench evidence
+# showed RX audio on the left channel only; no such evidence exists here.
+
+[usb]
+# Customer fact: Silicon Labs CP210x bridge VID:PID 10C4:EA70. The Enhanced
+# COM port is the CAT port, the Standard COM port is the second port. COM
+# port numbers are host-specific and never encoded.
+serial_functions = [{ vid = "10C4", pid = "EA70" }]
+# UNVERIFIED: the USB audio codec VID:PID was not captured, so no
+# audio_codec entry is declared. UNVERIFIED: USB audio RX channel layout
+# and sample rate (see [audio] above).
+
+[power]
+max_watts = 100
+# PC POWER CONTROL (PDF p.15): P1 spans 005-100 W, so the radio refuses
+# anything below 5 W; the backend clamps a lower request up to this floor
+# before the wire (same rationale as the FTX-1 min_watts, MOR-2998).
+# UNVERIFIED on this radio: Hamlib notes 5-50 W on VHF/UHF and 25 W max on
+# AM; only the 100 W HF figure above is profiled.
+min_watts = 5
+
+[capabilities]
+features = [
+    "audio",
+    "af_level",
+    "rf_gain",
+    "squelch",
+    "attenuator",
+    "preamp",
+    # NOTE: no "nb"/"nr" tags in v1. NB/NR on/off are independent switches
+    # (NB0/NR0) with separate levels (NL0/RL0); the shared observation
+    # adapter only derives the toggles from the levels, so disabling a
+    # switch while its level stays nonzero would read back as enabled.
+    # Needs a shared switch-read mechanism (follow-up), not a profile fact.
+    "notch",
+    # NA0/NA1 narrow filter (set_narrow below). Radios that do not declare
+    # this tag refuse the web command.
+    "narrow",
+    "agc",
+    "if_shift",
+    "contour",
+    "filter_width",
+    "tx",
+    "split",
+    # A<->B / A=B (MOR-4433 follow-up A): native CAT commands SV; (SWAP VFO),
+    # AB; (VFO-A to VFO-B) and BA; (VFO-B to VFO-A), PDF p.5. Equalize is the
+    # A->B copy, admitted and executed through the declared vfo_a_to_b
+    # primitive (RadioProfile.supports_vfo_command); the web layer re-derives
+    # both tags from the same rule, so projection and admission agree.
+    "vfo_swap",
+    "vfo_equalize",
+    # NOTE: no "tuner" tag in v1. The FT-991A AC P3 encoding (0 = OFF,
+    # 1 = ON, 2 = start/stop, PDF p.5) differs from the shared tuner
+    # code's FTX-1 mapping (native 3 = start), and its decoder rejects
+    # state 2. Needs typed native-state data (follow-up), not a remap.
+    "vox",
+    # NOTE: no "compressor" tag. The FT-991A PR command uses P2 1=OFF/2=ON
+    # (PDF p.14) while the shared backend drives PR P2 0/1 (FTX-1 shape); a
+    # declared tag would drive the radio inverted. ON/OFF stays out until a
+    # profile-driven toggle encoding exists or hardware confirms otherwise.
+    "cw",
+    "break_in",
+    # NOTE: no "rit"/"xit" tags. RIT/XIT on this radio is RT/XT/RU/RD/RC
+    # (PDF p.14-15) while the shared backend drives CF000/CF001 (FTX-1
+    # shape); nothing the backend calls can reach those verbs. Same for
+    # "monitor" (ML, PDF p.12): the backend monitor methods raise
+    # unconditionally on every Yaesu CAT radio.
+    "meters",
+    "dial_lock",
+    "sql_type",
+    # CT SQL-type codes are the FT-991A's own (PDF p.6): 0 OFF, 1 CTCSS
+    # ENC/DEC, 2 CTCSS ENC, 3 DCS ENC/DEC, 4 DCS ENC. The observation adapter
+    # reads their meaning from [tone_squelch_types] below, so the two
+    # booleans stay correct for this mapping.
+    "repeater_tone",
+    "tsql",
+    "repeater_shift",
+    # No "repeater_shift_ars": OS P2 on this radio is 0/1/2 only (PDF p.13);
+    # there is no ARS code to advertise.
+]
+
+[state_acquisition]
+provider = "yaesu_cat"
+default_cadence_seconds = 2.0
+default_freshness_ttl_seconds = 8.0
+default_reconciliation_priority = "poll"
+adaptive_decay = true
+adaptive_decay_idle_multiplier = 3.0
+adaptive_decay_max_cadence_seconds = 20.0
+external_cat_pause = "pause_polling"
+meter_coalescing_window_seconds = 0.2
+
+[state_acquisition.capabilities]
+polling_only = [
+    "receiver.main.active.freq_mode.freq_hz",
+    "receiver.main.active.freq_mode.mode",
+    "global.tx_state.ptt",
+    "global.tx_state.tx_target",
+    "receiver.main.operator_controls.af_level",
+    "receiver.main.operator_controls.rf_gain",
+    "receiver.main.operator_controls.squelch",
+    "receiver.main.operator_controls.att",
+    "receiver.main.operator_controls.preamp",
+    "receiver.main.operator_controls.agc",
+    "receiver.main.operator_controls.if_shift",
+    "receiver.main.operator_toggles.narrow",
+    "receiver.main.active.freq_mode.filter_width",
+    # MOR-3677: the radio-default flag twin, published by the same SH read
+    # as the width (no extra CAT traffic).
+    "receiver.main.active.freq_mode.filter_width_radio_default",
+    # NOTE: no nb/nr/tuner polling in v1 (omitted controls/commands,
+    # see [capabilities] and [commands]): nothing may poll a path whose
+    # command is gone.
+    "receiver.main.operator_toggles.auto_notch",
+    "receiver.main.operator_toggles.manual_notch",
+    "receiver.main.operator_controls.manual_notch_freq",
+    "global.operator_controls.power_level",
+    "global.operator_controls.mic_gain",
+    "global.tx_state.vox_on",
+    "global.tx_state.split",
+    "global.tx_state.dial_lock",
+    "global.operator_controls.key_speed",
+    "global.operator_controls.cw_pitch",
+    "global.operator_controls.break_in",
+    "global.operator_controls.break_in_delay",
+    "global.slow_state.cw_spot",
+    "receiver.main.operator_toggles.repeater_tone",
+    "receiver.main.operator_toggles.repeater_tsql",
+    "receiver.main.operator_controls.tone_freq",
+    "receiver.main.operator_controls.tsql_freq",
+    # MOR-2969: read by the same CT query as the two booleans.
+    "receiver.main.operator_controls.tone_squelch_type",
+    "receiver.main.operator_controls.repeater_shift",
+    # MOR-2425/T147: drain voltage/current (CAT RM P1 8 = VDD, 7 = IDD). Plain
+    # polling_only at the slow-control cadence (see the field policies).
+    # UNVERIFIED: meter scaling was not bench-calibrated on this radio; only
+    # the RM codes come from the manual (PDF p.16).
+    "global.meters.vd",
+    "global.meters.id",
+]
+stream_like_meters = [
+    "receiver.main.meters.s_meter",
+    # MOR-2425/T80b: emitted only while transmitting. ALC (RM P1 4, manual
+    # PDF p.16) rides the same TX-only lane as PO/SWR/COMP below; its
+    # scaling is UNVERIFIED like every other meter here (capture list).
+    "global.meters.alc",
+    "global.meters.power",
+    "global.meters.swr",
+    "global.meters.comp",
+]
+command_response_observable = [
+    "receiver.main.active.freq_mode.freq_hz",
+    "receiver.main.active.freq_mode.mode",
+]
+supported_controls = [
+    "receiver.main.active.freq_mode.freq_hz",
+    "receiver.main.active.freq_mode.mode",
+    "global.tx_state.ptt",
+]
+unsupported = ["global.tx_state.power_on"]
+
+[state_acquisition.field_policies."receiver.main.meters.s_meter"]
+cadence_seconds = 0.2
+freshness_ttl_seconds = 0.8
+adaptive_decay = false
+meter_coalescing_window_seconds = 0.2
+
+# MOR-2425/T80b: emitted only while transmitting -- YaesuCatPoller.
+# _emit_fast_observations reaches poll_tx_meters, the only source of these
+# four paths, only under a truthy PTT observation.
+#
+# MOR-2425/T141: after dekey the four stay in the store carrying their last
+# transmit values instead of leaving it. The clause below declares them
+# absent while `global.tx_state.ptt` reads false, so StateFreshnessService
+# discards them. `tx_only` stays and gains nothing from the clause.
+[state_acquisition.field_policies."global.meters.alc"]
+cadence_seconds = 0.2
+freshness_ttl_seconds = 0.8
+adaptive_decay = false
+meter_coalescing_window_seconds = 0.2
+tx_only = true
+available_when = [
+    { field = "global.tx_state.ptt", equals = true },
+]
+
+[state_acquisition.field_policies."global.meters.power"]
+cadence_seconds = 0.2
+freshness_ttl_seconds = 0.8
+adaptive_decay = false
+meter_coalescing_window_seconds = 0.2
+tx_only = true
+available_when = [
+    { field = "global.tx_state.ptt", equals = true },
+]
+
+[state_acquisition.field_policies."global.meters.swr"]
+cadence_seconds = 0.2
+freshness_ttl_seconds = 0.8
+adaptive_decay = false
+meter_coalescing_window_seconds = 0.2
+tx_only = true
+available_when = [
+    { field = "global.tx_state.ptt", equals = true },
+]
+
+[state_acquisition.field_policies."global.meters.comp"]
+cadence_seconds = 0.2
+freshness_ttl_seconds = 0.8
+adaptive_decay = false
+meter_coalescing_window_seconds = 0.2
+tx_only = true
+available_when = [
+    { field = "global.tx_state.ptt", equals = true },
+]
+
+# MOR-2425/T147: drain voltage and current (CAT RM P1 8 = VDD, 7 = IDD, PDF
+# p.16). Neither `tx_only` nor `available_when`: these ride the 1.0s
+# slow-control group below (YaesuCatPoller._SLOW_INTERVAL), so 1.0s cadence
+# with twice the TTL -- the same pair `af_level` carries. UNVERIFIED: scaling
+# was not bench-calibrated on this radio.
+[state_acquisition.field_policies."global.meters.vd"]
+cadence_seconds = 1.0
+freshness_ttl_seconds = 2.0
+
+[state_acquisition.field_policies."global.meters.id"]
+cadence_seconds = 1.0
+freshness_ttl_seconds = 2.0
+
+# --- Slow-control tier ------------------------------------------------------
+# 1.0s/2.0s is the slow-control tier's pair (owner ruling, 2026-09-07): the
+# bookkeeping the FTX-1 profile documents applies unchanged -- these keys
+# drive StateFreshnessService verdicts, not wire traffic, and 1.0s is
+# YaesuCatPoller._SLOW_INTERVAL, the interval of the group
+# (YaesuCatPoller._poll_slow) that re-reads this tier.
+[state_acquisition.field_policies."receiver.main.operator_controls.af_level"]
+cadence_seconds = 1.0
+freshness_ttl_seconds = 2.0
+
+[state_acquisition.field_policies."receiver.main.operator_controls.rf_gain"]
+cadence_seconds = 1.0
+freshness_ttl_seconds = 2.0
+
+[state_acquisition.field_policies."receiver.main.operator_controls.squelch"]
+cadence_seconds = 1.0
+freshness_ttl_seconds = 2.0
+
+# Single receiver (MOR-4433): no SUB-side paths and nothing gated on a
+# second receiver. Attenuator RA0 (PDF p.14) is band/mode-independent on the
+# wire; no available_when clause narrowed it on the FTX-1 either beyond its
+# dual-RX stand, which does not apply here.
+[state_acquisition.field_policies."receiver.main.operator_controls.att"]
+cadence_seconds = 1.0
+freshness_ttl_seconds = 2.0
+
+[state_acquisition.field_policies."receiver.main.operator_controls.preamp"]
+cadence_seconds = 1.0
+freshness_ttl_seconds = 2.0
+
+[state_acquisition.field_policies."receiver.main.operator_controls.agc"]
+cadence_seconds = 1.0
+freshness_ttl_seconds = 2.0
+
+# IF-shift / narrow / filter_width DSP controls. filter_width is a
+# slow-changing control (not a meter), so it uses the slow-control cadence
+# even though it is emitted in the freq/mode lane.
+[state_acquisition.field_policies."receiver.main.operator_controls.if_shift"]
+cadence_seconds = 1.0
+freshness_ttl_seconds = 2.0
+
+[state_acquisition.field_policies."receiver.main.operator_toggles.narrow"]
+cadence_seconds = 1.0
+freshness_ttl_seconds = 2.0
+
+# MOR-4433: the width reads unconditionally, narrow or wide. With NARROW
+# on, SH0 still answers -- it is the narrow table that applies (PDF p.17)
+# -- so withholding the read would disable the Width control exactly when
+# the narrow tables apply. (The FTX-1 keeps its narrow-false gate: an
+# FTX-1 bench probe, MOR-2803, showed SH0 is not the passband there.)
+[state_acquisition.field_policies."receiver.main.active.freq_mode.filter_width"]
+cadence_seconds = 1.0
+freshness_ttl_seconds = 2.0
+
+# MOR-3677: the radio-default flag rides the same SH read as the width, so
+# it carries the same cadence and TTL.
+[state_acquisition.field_policies."receiver.main.active.freq_mode.filter_width_radio_default"]
+cadence_seconds = 1.0
+freshness_ttl_seconds = 2.0
+
+# NOTE: no nb/nr field policies in v1 (omitted from the profile).
+[state_acquisition.field_policies."receiver.main.operator_toggles.auto_notch"]
+cadence_seconds = 1.0
+freshness_ttl_seconds = 2.0
+
+[state_acquisition.field_policies."receiver.main.operator_toggles.manual_notch"]
+cadence_seconds = 1.0
+freshness_ttl_seconds = 2.0
+
+[state_acquisition.field_policies."receiver.main.operator_controls.manual_notch_freq"]
+cadence_seconds = 1.0
+freshness_ttl_seconds = 2.0
+
+[state_acquisition.field_policies."global.operator_controls.power_level"]
+cadence_seconds = 1.0
+freshness_ttl_seconds = 2.0
+
+[state_acquisition.field_policies."global.operator_controls.mic_gain"]
+cadence_seconds = 1.0
+freshness_ttl_seconds = 2.0
+
+[state_acquisition.field_policies."global.tx_state.vox_on"]
+cadence_seconds = 1.0
+freshness_ttl_seconds = 2.0
+
+[state_acquisition.field_policies."global.tx_state.split"]
+cadence_seconds = 1.0
+freshness_ttl_seconds = 2.0
+
+[state_acquisition.field_policies."global.tx_state.dial_lock"]
+cadence_seconds = 1.0
+freshness_ttl_seconds = 2.0
+
+[state_acquisition.field_policies."global.operator_controls.key_speed"]
+cadence_seconds = 1.0
+freshness_ttl_seconds = 2.0
+
+[state_acquisition.field_policies."global.operator_controls.cw_pitch"]
+cadence_seconds = 1.0
+freshness_ttl_seconds = 2.0
+
+[state_acquisition.field_policies."global.operator_controls.break_in"]
+cadence_seconds = 1.0
+freshness_ttl_seconds = 2.0
+
+[state_acquisition.field_policies."global.operator_controls.break_in_delay"]
+cadence_seconds = 1.0
+freshness_ttl_seconds = 2.0
+
+[state_acquisition.field_policies."global.slow_state.cw_spot"]
+cadence_seconds = 1.0
+freshness_ttl_seconds = 2.0
+
+[state_acquisition.field_policies."receiver.main.operator_toggles.repeater_tone"]
+cadence_seconds = 1.0
+freshness_ttl_seconds = 2.0
+
+[state_acquisition.field_policies."receiver.main.operator_toggles.repeater_tsql"]
+cadence_seconds = 1.0
+freshness_ttl_seconds = 2.0
+
+# MOR-2969: read by the same CT query as the two booleans.
+[state_acquisition.field_policies."receiver.main.operator_controls.tone_squelch_type"]
+cadence_seconds = 1.0
+freshness_ttl_seconds = 2.0
+
+[state_acquisition.field_policies."receiver.main.operator_controls.tone_freq"]
+cadence_seconds = 1.0
+freshness_ttl_seconds = 2.0
+
+[state_acquisition.field_policies."receiver.main.operator_controls.tsql_freq"]
+cadence_seconds = 1.0
+freshness_ttl_seconds = 2.0
+
+[state_acquisition.field_policies."receiver.main.operator_controls.repeater_shift"]
+cadence_seconds = 1.0
+freshness_ttl_seconds = 2.0
+
+[ctcss]
+table = "standard_50"
+
+# What each CAT `CT` P2 code means (PDF p.6): 0 OFF, 1 CTCSS ENC/DEC, 2 CTCSS
+# ENC, 3 DCS ENC/DEC, 4 DCS ENC. The single CTCSS tone frequency (CN P2=0)
+# is shared by encode and decode, as on the FTX-1 (MOR-458): the same
+# centiHz value is emitted to both tone_freq and tsql_freq. DCS (CN P2=1)
+# is out of scope, as there.
+[tone_squelch_types]
+0 = "off"
+1 = "tsql"
+2 = "tone"
+3 = "dtcs"
+4 = "dtcs_t"
+
+[modes]
+list = [
+    "LSB", "USB", "CW-U", "FM", "AM",
+    "RTTY-L", "CW-L", "DATA-L", "RTTY-U", "DATA-FM",
+    "FM-N", "DATA-U", "AM-N", "C4FM",
+]
+# MOR-3679: the CW modes, named once here for every client.
+families = { cw = ["CW-U", "CW-L"] }
+# MD (OPERATING MODE) P2 codes, one per name above, parallel to list
+# (MD table, PDF p.12): 1-9, A-E. P1 is 0 (MAIN RX) fixed. No H/I: the
+# FT-991A has a single C4FM code (E), not the FTX-1 DN/VW pair.
+codes = [
+    "1", "2", "3", "4", "5",
+    "6", "7", "8", "9", "A",
+    "B", "C", "D", "E",
+]
+
+[filters]
+list = []
+encoding = "table_index"
+# SH WIDTH codes (PDF p.17) form ONE code space per mode: code 00 is the
+# mode-dependent "(Default)" with the table's Hz value per narrow state.
+# A read CAN answer 00 (same shape as the FTX-1, MOR-3677); the width read
+# reports such an answer with no Hz plus the `filter_width_radio_default`
+# observation flag. The loader validates the code sits below every table
+# base and derives the `filter_width_radio_default` capability from its
+# presence. Narrow and wide tables sit at DIFFERENT code ranges: each rule
+# declares the wide table's base (`first_code`) and the narrow table's
+# base (`narrow_first_code`), defaulting to the profile-level `first_code`
+# when absent. UNVERIFIED: real SH behaviour on hardware (capture list).
+first_code = 1
+radio_default_code = 0
+width_min_hz = 50
+width_max_hz = 3200
+
+# SH table (PDF p.17), SSB row: narrow codes 01-09, wide codes 09-21
+# (code 09 is 1800 Hz in BOTH states).
+# defaults carries the code-00 "(Default)" row: wide 2400 Hz, narrow
+# 1500 Hz (informational; the backend only uses defaults[0] for fixed
+# rules).
+[filters.width.SSB]
+defaults = [2400, 1500]
+table = [1800, 1950, 2100, 2200, 2300, 2400, 2500, 2600, 2700, 2800, 2900, 3000, 3200]
+narrow_table = [200, 400, 600, 850, 1100, 1350, 1500, 1650, 1800]
+first_code = 9
+narrow_first_code = 1
+
+# SH table CW row, shared by CW-U and CW-L (both declared: the resolver has
+# no CW-U->CW fallback): narrow codes 01-10, wide codes 10-17 (code 10 is
+# 500 Hz in BOTH states).
+[filters.width.CW-L]
+defaults = [2400, 500]
+table = [500, 800, 1200, 1400, 1700, 2000, 2400, 3000]
+narrow_table = [50, 100, 150, 200, 250, 300, 350, 400, 450, 500]
+first_code = 10
+narrow_first_code = 1
+
+[filters.width.CW-U]
+defaults = [2400, 500]
+table = [500, 800, 1200, 1400, 1700, 2000, 2400, 3000]
+narrow_table = [50, 100, 150, 200, 250, 300, 350, 400, 450, 500]
+first_code = 10
+narrow_first_code = 1
+
+# SH table RTTY/PSK row, shared by RTTY-L/RTTY-U/DATA-L/DATA-U (each
+# declared; no cross-mode fallback): narrow codes 01-10, wide codes 10-17.
+# The radio has no PSK mode (MD codes end at E=C4FM), but its row is the one
+# the manual prints for these four modes.
+[filters.width.RTTY-L]
+defaults = [500, 300]
+table = [500, 800, 1200, 1400, 1700, 2000, 2400, 3000]
+narrow_table = [50, 100, 150, 200, 250, 300, 350, 400, 450, 500]
+first_code = 10
+narrow_first_code = 1
+
+[filters.width.RTTY-U]
+defaults = [500, 300]
+table = [500, 800, 1200, 1400, 1700, 2000, 2400, 3000]
+narrow_table = [50, 100, 150, 200, 250, 300, 350, 400, 450, 500]
+first_code = 10
+narrow_first_code = 1
+
+[filters.width.DATA-L]
+defaults = [500, 300]
+table = [500, 800, 1200, 1400, 1700, 2000, 2400, 3000]
+narrow_table = [50, 100, 150, 200, 250, 300, 350, 400, 450, 500]
+first_code = 10
+narrow_first_code = 1
+
+[filters.width.DATA-U]
+defaults = [500, 300]
+table = [500, 800, 1200, 1400, 1700, 2000, 2400, 3000]
+narrow_table = [50, 100, 150, 200, 250, 300, 350, 400, 450, 500]
+first_code = 10
+narrow_first_code = 1
+
+# NOTE: FM, FM-N, AM, AM-N, DATA-FM and C4FM declare no rule. The SH table
+# (PDF p.17) prints no row for them, and the manual documents no SH
+# behaviour there; the backend refuses width reads/sets for a mode without
+# a table with the same CommandError it uses for the FTX-1 C4FM-DN mode.
+# UNVERIFIED: real SH behaviour in FM/AM/C4FM (capture list).
+
+[vfo]
+scheme = "ab"
+readback = "absolute"
+
+# Split without ST (MOR-4427 PR A): FT carries split with different
+# encodings per direction (PDF p.10). Set: FT2 = split off, FT3 = split on.
+# Read: FT; answers FT0/FT1. VS/FR/ST do not exist on this radio.
+[vfo.split]
+write_map = { off = "2", on = "3" }
+read_map = { "0" = "off", "1" = "on" }
+
+[attenuator]
+values = [0, 1]
+
+[attenuator.labels]
+"0" = "OFF"
+"1" = "ON"
+
+[preamp]
+values = [0, 1, 2]
+
+[preamp.labels]
+"0" = "IPO"
+"1" = "AMP1"
+"2" = "AMP2"
+
+[controls.attenuator]
+style = "selector"
+
+# omitted from v1: NB/NR on/off are independent switches (NB0/NR0) with
+# separate levels; needs a shared switch-read mechanism (follow-up).
+[controls.manual_notch_freq]
+mapping = "linear"
+raw_min = 1
+raw_max = 320
+raw_step = 1
+raw_origin = 1
+display_min = 10
+display_max = 3200
+display_step = 10
+display_origin = 10
+display_unit = "Hz"
+quantization = "reject"
+restoration = "exact"
+
+[controls.if_shift]
+mapping = "identity"
+raw_min = -1200
+raw_max = 1200
+raw_step = 20
+raw_origin = 0
+display_min = -1200
+display_max = 1200
+display_step = 20
+display_origin = 0
+display_unit = "Hz"
+quantization = "reject"
+restoration = "exact"
+
+# KP (KEY PITCH, PDF p.11): P1 index 00-75 maps 300-1050 Hz in 10 Hz steps,
+# the same lattice the backend decodes via this domain.
+[controls.cw_pitch]
+mapping = "identity"
+raw_min = 300
+raw_max = 1050
+raw_step = 10
+raw_origin = 300
+display_min = 300
+display_max = 1050
+display_step = 10
+display_origin = 300
+display_unit = "Hz"
+quantization = "reject"
+restoration = "exact"
+
+[controls.rf_gain]
+raw_min = 0
+raw_max = 255
+
+# SQ (SQUELCH LEVEL, PDF p.18): P2 000-100 -- not the FTX-1 000-255 range.
+[controls.squelch]
+raw_min = 0
+raw_max = 100
+
+[controls.af_level]
+raw_min = 0
+raw_max = 255
+
+# Frequency ranges: Hamlib RX 30 kHz-56 MHz, 118-164, 420-470 MHz; TX
+# 1.8-54, 144-148, 430-450 MHz (ft991.c). Bands below carry TX permission
+# with the BS band code (BS table, PDF p.6); ranges without bands are
+# tune/receive only. UNVERIFIED: band edges beyond the Hamlib figures.
+[[freq_ranges.ranges]]
+label = "HF"
+start_hz = 100000
+end_hz = 56000000
+
+[[freq_ranges.ranges.bands]]
+name = "160m"
+start_hz = 1800000
+end_hz = 2000000
+default_hz = 1825000
+bsr_code = 0x00
+
+[[freq_ranges.ranges.bands]]
+name = "80m"
+start_hz = 3500000
+end_hz = 3800000
+default_hz = 3600000
+bsr_code = 0x01
+
+[[freq_ranges.ranges.bands]]
+name = "60m"
+start_hz = 5351500
+end_hz = 5366500
+default_hz = 5357000
+bsr_code = 0x02
+
+[[freq_ranges.ranges.bands]]
+name = "40m"
+start_hz = 7000000
+end_hz = 7200000
+default_hz = 7100000
+bsr_code = 0x03
+
+[[freq_ranges.ranges.bands]]
+name = "30m"
+start_hz = 10100000
+end_hz = 10150000
+default_hz = 10125000
+bsr_code = 0x04
+
+[[freq_ranges.ranges.bands]]
+name = "20m"
+start_hz = 14000000
+end_hz = 14350000
+default_hz = 14200000
+bsr_code = 0x05
+
+[[freq_ranges.ranges.bands]]
+name = "17m"
+start_hz = 18068000
+end_hz = 18168000
+default_hz = 18100000
+bsr_code = 0x06
+
+[[freq_ranges.ranges.bands]]
+name = "15m"
+start_hz = 21000000
+end_hz = 21450000
+default_hz = 21200000
+bsr_code = 0x07
+
+[[freq_ranges.ranges.bands]]
+name = "12m"
+start_hz = 24890000
+end_hz = 24990000
+default_hz = 24940000
+bsr_code = 0x08
+
+[[freq_ranges.ranges.bands]]
+name = "10m"
+start_hz = 28000000
+end_hz = 29700000
+default_hz = 28500000
+bsr_code = 0x09
+
+[[freq_ranges.ranges.bands]]
+name = "6m"
+start_hz = 50000000
+end_hz = 54000000
+default_hz = 50125000
+bsr_code = 0x0A
+
+[[freq_ranges.ranges]]
+label = "Gen"
+start_hz = 30000
+end_hz = 56000000
+
+[[freq_ranges.ranges]]
+label = "VHF RX"
+start_hz = 118000000
+end_hz = 164000000
+
+[[freq_ranges.ranges]]
+label = "2m"
+start_hz = 144000000
+end_hz = 148000000
+repeater = true
+
+[[freq_ranges.ranges.bands]]
+name = "2m"
+start_hz = 144000000
+end_hz = 148000000
+default_hz = 146520000
+bsr_code = 0x0F
+
+[[freq_ranges.ranges]]
+label = "UHF RX"
+start_hz = 420000000
+end_hz = 470000000
+
+[[freq_ranges.ranges]]
+label = "70cm"
+start_hz = 430000000
+end_hz = 450000000
+repeater = true
+
+[[freq_ranges.ranges.bands]]
+name = "70cm"
+start_hz = 430000000
+end_hz = 450000000
+default_hz = 446000000
+bsr_code = 0x10
+
+[agc]
+# GT (AGC FUNCTION, PDF p.10): set P2 0 OFF, 1 FAST, 2 MID, 3 SLOW, 4 AUTO;
+# read P3 0 OFF, 1 FAST, 2 MID, 3 SLOW, 4 AUTO-FAST, 5 AUTO-MID, 6
+# AUTO-SLOW. Same shape as the FTX-1 block.
+modes = [0, 1, 2, 3, 4]
+readback_modes = [0, 1, 2, 3, 4, 5, 6]
+auto_mode = 4
+auto_speed_labels = { "4" = "FAST", "5" = "MID", "6" = "SLOW" }
+
+[agc.labels]
+"0" = "OFF"
+"1" = "FAST"
+"2" = "MID"
+"3" = "SLOW"
+"4" = "AUTO"
+
+[break_in]
+# CAT `BI` (PDF p.5): P1 0 = OFF, 1 = ON. SEMI/FULL is the menu item CW
+# SETTING 15 (CW BK-IN TYPE), not a BI value.
+values = [0, 1]
+labels = { "0" = "OFF", "1" = "ON" }
+
+[commands]
+# Single receiver: P1 is 0 (MAIN) fixed on every P1-carrying verb and there
+# are no SUB (P1=1) forms, no VS/FR/ST, and no memory verbs. What is
+# deliberately absent, and why:
+# - get/set_vfo_select, get_vfo_slot, set_vfo_slot: no VS verb (PDF p.3-4
+#   command list); slot reads/selections raise NotImplementedError.
+# - get/set_tx_func, get/set_rx_func: no ST/FR verbs; FT carries split via
+#   [vfo.split] and transceiver_count is 1.
+# - get_if_status: the IF answer layout (PDF p.11) uses a 3-character
+#   channel where the shared parser's {chan} placeholder is 5 characters
+#   (FTX-1 shape); declaring it would misparse. UNVERIFIED: real IF length
+#   (28 bytes per manual vs 41 on some FT-991 firmware per Hamlib).
+# - Memory (MC/MR/MT/AM/MA/MW/VM): memory_read is out of v1; the MR layout
+#   (PDF p.13) is UNVERIFIED against the shared MR parser.
+# - PS power-on: the PS1 sequence needs a dummy byte plus 1-2 s timing
+#   (PDF p.15); out of v1.
+# - ML monitor, RT/XT/RU/RD/RC clarifier, PR speech-processor on/off:
+#   shapes the shared backend cannot drive -- ML methods raise
+#   unconditionally, clarifier is CF000/CF001-shaped, PR P2 is 1/2 while the
+#   backend writes 0/1 (inverted). See [capabilities] notes.
+# - NB/NR toggles and levels (NB0/NR0, NL0/RL0): independent switches need
+#   a shared switch-read mechanism (v1 omission, see [capabilities]).
+# - AC tuner: P3 2 = start/stop differs from the shared tuner code's
+#   FTX-1 mapping; needs typed native-state data (v1 omission).
+# - MD1 sub-receiver mode forms: the MD selector is fixed at 0 (PDF p.12).
+# - VD/VG (VOX delay/gain), KR (keyer on/off), KY/KM (keyer memories),
+#   MX (MOX), TS (TXW), SC/CH/QS and the panel verbs: no backend caller.
+# ── Frequency / Mode ──
+get_freq       = { cat = { read = "FA;", parse = "FA{freq:09d};" } }
+set_freq       = { cat = { write = "FA{freq:09d};" } }
+get_freq_sub   = { cat = { read = "FB;", parse = "FB{freq:09d};" } }
+set_freq_sub   = { cat = { write = "FB{freq:09d};" } }
+get_mode       = { cat = { read = "MD0;", parse = "MD0{mode};" } }
+set_mode       = { cat = { write = "MD0{mode};" } }
+# NOTE: no MD1 forms in v1. The MD selector is fixed at 0 (PDF p.12);
+# get_mode(receiver=1) refuses through the absent-command convention.
+
+# ── VFO ──
+# SV; SWAP VFO, AB; VFO-A to VFO-B, BA; VFO-B to VFO-A (PDF p.5, set-only).
+# Equalize (A=B) is the A->B copy, admitted through the declared vfo_a_to_b
+# primitive (MOR-4433 follow-up A); no separate vfo_equalize verb exists.
+vfo_a_to_b     = { cat = { write = "AB;" } }
+vfo_b_to_a     = { cat = { write = "BA;" } }
+vfo_swap       = { cat = { write = "SV;" } }
+# BS: write-only band select (PDF p.6); P1P1 is the band code directly (no
+# RX digit, unlike the FTX-1 BS0 form). Codes match [freq_ranges] bsr_code.
+set_band       = { cat = { write = "BS{band:02d};" } }
+band_up        = { cat = { write = "BU0;" } }
+band_down      = { cat = { write = "BD0;" } }
+
+# ── Split (no ST verb) ──
+# FT (FUNCTION TX, PDF p.10): set P1 2 = VFO-A TX (split off), 3 = VFO-B TX
+# (split on); read answers FT0/FT1. Values come from [vfo.split].
+get_split      = { cat = { read = "FT;", parse = "FT{state};" } }
+set_split      = { cat = { write = "FT{state};" } }
+
+# ── PTT / TX ──
+get_ptt        = { cat = { read = "TX;", parse = "TX{state};" } }
+set_ptt        = { cat = { write = "TX{state};" } }
+
+# ── Meters ──
+get_s_meter    = { cat = { read = "SM0;", parse = "SM0{raw:03d};" } }
+# RM (PDF p.16): single 3-digit value (P1 selects the meter). The shared
+# backend also accepts a MAIN+SUB pair (FTX-1 shape); with one value the SUB
+# read falls back to MAIN in radio._read_meter (MOR-4433).
+get_meter      = { cat = { read = "RM{type};", parse = "RM{type}{main:03d};" } }
+
+# ── Audio / RF Controls ──
+get_af_level       = { cat = { read = "AG0;", parse = "AG0{level:03d};" } }
+set_af_level       = { cat = { write = "AG0{level:03d};" } }
+get_rf_gain        = { cat = { read = "RG0;", parse = "RG0{level:03d};" } }
+set_rf_gain        = { cat = { write = "RG0{level:03d};" } }
+get_squelch        = { cat = { read = "SQ0;", parse = "SQ0{level:03d};" } }
+set_squelch        = { cat = { write = "SQ0{level:03d};" } }
+
+# ── RF Front End ──
+get_attenuator = { cat = { read = "RA0;", parse = "RA0{state};" } }
+set_attenuator = { cat = { write = "RA0{state};" } }
+# PA (PDF p.13): P1 0 fixed, P2 0 IPO / 1 AMP1 / 2 AMP2. The backend passes
+# band=0 by default, which renders the fixed P1.
+get_preamp     = { cat = { read = "PA0;", parse = "PA0{value};" } }
+set_preamp     = { cat = { write = "PA{band}{value};" } }
+
+# ── DSP / Noise ──
+# omitted from v1: NB/NR on/off are independent switches (NB0/NR0) with
+# separate levels; needs a shared switch-read mechanism (follow-up).
+get_auto_notch = { cat = { read = "BC0;", parse = "BC0{state};" } }
+set_auto_notch = { cat = { write = "BC0{state};" } }
+get_manual_notch = { cat = { read = "BP00;", parse = "BP00{state:03d};" } }
+set_manual_notch = { cat = { write = "BP00{state:03d};" } }
+get_manual_notch_freq = { cat = { read = "BP01;", parse = "BP01{freq:03d};" } }
+set_manual_notch_freq = { cat = { write = "BP01{freq:03d};" } }
+
+# ── AGC ──
+get_agc        = { cat = { read = "GT0;", parse = "GT0{mode};" } }
+set_agc        = { cat = { write = "GT0{mode};" } }
+
+# ── Filter / IF ──
+# SH0 reads the MAIN width, NA0 the narrow state (PDF p.14, p.17).
+# SH carries P1 (fixed 0) plus a TWO-digit width code (PDF p.17:
+# SSB wide 2400 Hz is code 14 -> SH014;); IS carries P1 (fixed 0),
+# the sign and four offset digits (PDF p.11: IS0+0200;).
+get_filter_width = { cat = { read = "SH0;", parse = "SH0{code:02d};" } }
+set_filter_width = { cat = { write = "SH0{code:02d};" } }
+get_if_shift   = { cat = { read = "IS0;", parse = "IS0{sign}{offset:04d};" } }
+set_if_shift   = { cat = { write = "IS0{sign}{offset:04d};" } }
+get_narrow     = { cat = { read = "NA0;", parse = "NA0{state};" } }
+set_narrow     = { cat = { write = "NA0{state};" } }
+
+# ── TX / Power ──
+# PC (PDF p.15): P1 005-100 with no head digit (unlike the FTX-1
+# PC{head}{watts} form). The backend returns head 0 for a headless PC
+# (MOR-4433); only watts is consumed downstream.
+get_power      = { cat = { read = "PC;", parse = "PC{watts:03d};" } }
+set_power      = { cat = { write = "PC{watts:03d};" } }
+get_mic_gain   = { cat = { read = "MG;", parse = "MG{level:03d};" } }
+set_mic_gain   = { cat = { write = "MG{level:03d};" } }
+# NOTE: no PL (processor level) and no PR (processor on/off): the level is
+# only reachable through the "compressor" capability, which stays out (see
+# above), so declaring them would leave them unwired.
+# ── CW ──
+get_keyer_speed = { cat = { read = "KS;", parse = "KS{wpm:03d};" } }
+set_keyer_speed = { cat = { write = "KS{wpm:03d};" } }
+get_key_pitch  = { cat = { read = "KP;", parse = "KP{idx:02d};" } }
+set_key_pitch  = { cat = { write = "KP{idx:02d};" } }
+get_break_in   = { cat = { read = "BI;", parse = "BI{state};" } }
+set_break_in   = { cat = { write = "BI{state};" } }
+get_cw_spot    = { cat = { read = "CS;", parse = "CS{state};" } }
+set_cw_spot    = { cat = { write = "CS{state};" } }
+get_break_in_delay = { cat = { read = "SD;", parse = "SD{delay:04d};" } }
+set_break_in_delay = { cat = { write = "SD{delay:04d};" } }
+
+# ── Tone / CTCSS ──
+# CT (PDF p.6): P1 0 fixed, single-digit P2 (0 OFF, 1 ENC/DEC, 2 ENC,
+# 3 DCS ENC/DEC, 4 DCS ENC). `receiver` names the manual P1 selector.
+get_sql_type   = { cat = { read = "CT{receiver};", parse = "CT{receiver}{type};" } }
+set_sql_type   = { cat = { write = "CT{receiver}{type};" } }
+# CN (PDF p.5): P1 0 fixed, P2 0 CTCSS, P3 the 50-tone chart index.
+get_ctcss_tone = { cat = { read = "CN{receiver}0;", parse = "CN{receiver}0{code:03d};" } }
+set_ctcss_tone = { cat = { write = "CN{receiver}0{code:03d};" } }
+
+# ── Repeater Shift ──
+# OS (PDF p.13): P1 0 fixed, P2 0 Simplex / 1 Plus / 2 Minus. FM only per
+# the manual footnote. `receiver` names the P1 selector.
+get_repeater_shift = { cat = { read = "OS{receiver};", parse = "OS{receiver}{shift};" } }
+set_repeater_shift = { cat = { write = "OS{receiver}{shift};" } }
+
+# ── System ──
+get_id         = { cat = { read = "ID;", parse = "ID{model:04d};" } }
+get_auto_info  = { cat = { read = "AI;", parse = "AI{state};" } }
+set_auto_info  = { cat = { write = "AI{state};" } }
+get_vox        = { cat = { read = "VX;", parse = "VX{state};" } }
+set_vox        = { cat = { write = "VX{state};" } }
+get_lock       = { cat = { read = "LK;", parse = "LK{state};" } }
+set_lock       = { cat = { write = "LK{state};" } }
+# omitted from v1: AC P3 encoding differs (2 = start/stop) from the
+# FTX-1 mapping in the shared tuner code; needs typed native-state data.
+# CO (PDF p.6): P1 0 fixed; P2 0 contour on/off, 1 contour freq, 2 APF
+# on/off, 3 APF freq; P3 the 4-digit value.
+get_contour    = { cat = { read = "CO00;", parse = "CO00{val:04d};" } }
+set_contour    = { cat = { write = "CO00{val:04d};" } }
+get_apf        = { cat = { read = "CO02;", parse = "CO02{val:04d};" } }
+set_apf        = { cat = { write = "CO02{val:04d};" } }
+get_apf_freq   = { cat = { read = "CO03;", parse = "CO03{val:04d};" } }
+set_apf_freq   = { cat = { write = "CO03{val:04d};" } }
+
+[tx_policy]
+# UNVERIFIED on this radio: refused_during_tx is the FTX-1 bench measurement
+# (MOR-1912); the manual documents no write-during-transmit behaviour.
+# tx_state_map IS the manual (TX, PDF p.18): 0 RX, 1 CAT-keyed TX, 2
+# self-keyed TX.
+refused_during_tx = ["mode", "vfo-topology"]
+tx_state_map = { "0" = "rx", "1" = "tx_cat", "2" = "tx_other" }

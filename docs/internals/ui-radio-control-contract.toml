@@ -33,6 +33,11 @@ provider = "xiegu_civ"
 required_proof = "LIVE G7250 read-only bench audit 2026-11-09 (MOR-4352); TX/SET round-trips pending"
 
 [[profiles]]
+path = "rigs/ft991a.toml"
+provider = "yaesu_cat"
+required_proof = "MOR-4433 manual CAT conformance; real FT-991A proof pending"
+
+[[profiles]]
 path = "rigs/ftx1.toml"
 provider = "yaesu_cat"
 required_proof = "MOR-1410 real FTX-1"
