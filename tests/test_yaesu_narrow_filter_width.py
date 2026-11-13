@@ -366,7 +366,9 @@ async def test_two_digit_sh_code_format_roundtrip_over_real_loader(
     ``test_ftx1_width_read_and_set_issue_no_narrow_query``).
     """
     text = FIXTURE.read_text()
-    old_read = 'get_filter_width = { cat = { read = "SH0;", parse = "SH0{code:03d};" } }'
+    old_read = (
+        'get_filter_width = { cat = { read = "SH0;", parse = "SH0{code:03d};" } }'
+    )
     old_write = 'set_filter_width = { cat = { write = "SH0{code:03d};" } }'
     assert old_read in text
     assert old_write in text

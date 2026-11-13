@@ -266,16 +266,24 @@ class TestYaesuModelForwarding:
     async def test_cli_chain_serial_branch_with_ftx1_selects_ftx1(self) -> None:
         profile_id = await self._cli_chain_profile_id(
             [
-                "--model", "FTX-1", "--backend", "serial",
-                "--serial-port", "/dev/ttyUSB0", "status",
+                "--model",
+                "FTX-1",
+                "--backend",
+                "serial",
+                "--serial-port",
+                "/dev/ttyUSB0",
+                "status",
             ]
         )
         assert profile_id == "yaesu_ftx1"
 
-    @pytest.mark.parametrize("config", [
-        YaesuCatBackendConfig(device="/dev/ttyUSB0", model="FT-710"),
-        SerialBackendConfig(device="/dev/ttyUSB0", model="FT-710"),
-    ])
+    @pytest.mark.parametrize(
+        "config",
+        [
+            YaesuCatBackendConfig(device="/dev/ttyUSB0", model="FT-710"),
+            SerialBackendConfig(device="/dev/ttyUSB0", model="FT-710"),
+        ],
+    )
     def test_unprofiled_yaesu_model_falls_back_to_ftx1(self, config) -> None:
         radio = create_radio(config)
         assert isinstance(radio, YaesuCatRadio)
