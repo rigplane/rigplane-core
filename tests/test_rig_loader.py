@@ -1779,12 +1779,11 @@ choices = [
     # exact validated form (the legacy raw_center shape fail-closes the
     # RIT/XIT control in the MOR-1730 frontend contract).
     _EXACT_DOMAIN_REGISTER = {
-        # MOR-4433: FT-991A declares five exact domains; unlike the FTX-1
+        # MOR-4433: FT-991A declares three exact domains; unlike the FTX-1
         # it has no [controls.rit] table (RIT/XIT ride the RT/XT/RU/RD/RC
-        # commands with no exact domain), so "rit" is absent here.
+        # commands with no exact domain), so "rit" is absent here, and
+        # NB/NR are omitted from v1 (no [controls.nb*]/[controls.nr*]).
         "ft991a.toml": {
-            "nr_level",
-            "nb_level",
             "manual_notch_freq",
             "if_shift",
             "cw_pitch",

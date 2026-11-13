@@ -799,12 +799,13 @@ def _serialize_filter_config(profile: "RadioProfile") -> dict[str, dict[str, obj
                 else {}
             ),
             **({"table": list(rule.table)} if rule.table else {}),
-            # MOR-4433 follow-up B: the narrow-state variant rides along as
-            # data (no new state distribution — the live narrow flag already
-            # reaches the frontend through the state store). Consumers with
-            # the narrow flag select it; profiles without the variant
-            # (e.g. FTX-1) serialize exactly as before.
-            **({"narrowTable": list(rule.narrow_table)} if rule.narrow_table else {}),
+            # MOR-4433 follow-up B: no narrow-table projection. The typed
+            # frontend contract (FilterModeConfig) has no narrow-table
+            # field, nothing consumes it, and width selection still uses
+            # the wide table. The narrow variant stays server-side, where
+            # admitted_filter_width already maps through it from the live
+            # narrow flag. Frontend narrow-table consumption is a
+            # follow-up.
         }
     return result
 

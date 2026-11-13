@@ -16,6 +16,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from rigplane.backends.discovery import _parse_yaesu_id_response
+from rigplane.backends.yaesu_cat.parser import CatParseError
 from rigplane.backends.yaesu_cat.poller import YaesuCatPoller
 from rigplane.backends.yaesu_cat.radio import YaesuCatRadio
 from rigplane.core.exceptions import CommandError
@@ -141,6 +142,66 @@ def test_ft991a_declares_the_narrow_read_the_variant_requires():
     assert "narrow" in config.to_profile().capabilities
 
 
+def test_ft991a_declares_the_hamlib_ft991_model_id():
+    # Hamlib groups the FT-991A under RIG_MODEL_FT991 = 1035
+    # (yaesu/ft991.c); without it the loader default (2028, RIG_MODEL_FTX1)
+    # would make rigctld dump_state report this radio as an FTX-1.
+    config = load_rig(RIG)
+    assert config.hamlib_model_id == 1035
+    assert config.to_profile().hamlib_model_id == 1035
+
+
+def test_ft991a_reports_its_hamlib_model_through_dump_state():
+    # MOR-4433 P2: rigctld dump_state substitutes line 1 from the radio's
+    # TOML id (closes #441). The FT-991A reports 1035 (RIG_MODEL_FT991),
+    # not the 2028 FTX-1 default; the FTX-1 keeps reporting 2028.
+    from rigplane.rigctld.routing import YaesuRouting
+
+    ft991a = YaesuCatRadio("/dev/null", profile=load_rig(RIG))
+    assert ft991a.hamlib_model_id == 1035
+    assert YaesuRouting(ft991a, 100.0).dump_state()[1] == "1035"
+    ftx1 = YaesuCatRadio("/dev/null", profile=load_rig(ROOT / "rigs/ftx1.toml"))
+    assert YaesuRouting(ftx1, 100.0).dump_state()[1] == "2028"
+
+
+def test_ft991a_omits_nb_nr_tuner_and_sub_mode():
+    # MOR-4433 v1 omissions: NB/NR need a shared switch-read mechanism,
+    # the AC tuner encoding needs typed native-state data, and the MD
+    # selector is fixed at 0 (manual PDF p.12). Nothing may expect them.
+    profile = load_rig(RIG).to_profile()
+    for capability in ("nb", "nr", "tuner"):
+        assert capability not in profile.capabilities
+    for command in (
+        "set_nb",
+        "set_nr",
+        "get_nb_level",
+        "set_nb_level",
+        "get_nr_level",
+        "set_nr_level",
+        "get_tuner",
+        "set_tuner",
+        "get_tuner_status",
+        "set_tuner_status",
+        "get_mode_sub",
+        "set_mode_sub",
+    ):
+        assert not profile.supports_command(command), command
+
+
+@pytest.mark.asyncio
+async def test_sub_mode_read_refuses_on_the_single_receiver(radio):
+    # The ordinary single-receiver path (receiver 0) is unaffected; only
+    # the sub-receiver form refuses (the command is undeclared, so the
+    # backend raises before any wire traffic).
+    radio._transport.query = AsyncMock(side_effect=["MD02"])
+    mode, _ = await radio.get_mode(0)
+    assert mode == "USB"
+    assert radio._transport.query.call_count == 1
+    with pytest.raises(CommandError, match="get_mode_sub"):
+        await radio.get_mode(1)
+    assert radio._transport.query.call_count == 1
+
+
 # ---------------------------------------------------------------------------
 # Wire: CAT double mirroring the PR-A fixture contract
 # ---------------------------------------------------------------------------
@@ -215,43 +276,44 @@ async def test_width_maps_narrow_and_wide_tables_by_na_state(radio):
     # state selects the SH table AND its code base (MOR-4433: narrow base
     # 01, wide base 09). SH code 00 is the mode-dependent "(Default)"
     # (manual PDF p.17) and carries no Hz by design -- real codes go here:
-    # code 07 is 1500 Hz narrow, code 14 is 2400 Hz wide.
-    radio._transport.query = AsyncMock(side_effect=["MD02", "SH0007", "NA01"])
+    # code 07 is 1500 Hz narrow, code 14 is 2400 Hz wide. The wire carries
+    # two-digit codes (manual SH table, PDF p.17): SH007;/SH014;.
+    radio._transport.query = AsyncMock(side_effect=["MD02", "SH007", "NA01"])
     assert await radio.get_filter_width() == 1500
-    radio._transport.query = AsyncMock(side_effect=["MD02", "SH0014", "NA00"])
+    radio._transport.query = AsyncMock(side_effect=["MD02", "SH014", "NA00"])
     assert await radio.get_filter_width() == 2400
 
 
 @pytest.mark.asyncio
 async def test_set_filter_width_uses_the_active_table_base(radio):
-    # USB wide 2400 Hz is table index 5 from base 09 -> SH14, not SH06.
+    # USB wide 2400 Hz is table index 5 from base 09 -> SH014;, not SH06;
     radio._transport.query = AsyncMock(side_effect=["MD02", "NA00"])
     await radio.set_filter_width(2400)
-    radio._transport.write.assert_called_once_with("SH0014;")
-    # USB narrow 1500 Hz is table index 6 from base 01 -> SH07.
+    radio._transport.write.assert_called_once_with("SH014;")
+    # USB narrow 1500 Hz is table index 6 from base 01 -> SH07;.
     radio._transport.query = AsyncMock(side_effect=["MD02", "NA01"])
     radio._transport.write.reset_mock()
     await radio.set_filter_width(1500)
-    radio._transport.write.assert_called_once_with("SH0007;")
+    radio._transport.write.assert_called_once_with("SH007;")
 
 
 @pytest.mark.asyncio
 async def test_shared_boundary_code_reads_1800_hz_in_both_states(radio):
     # Manual PDF p.17: code 09 is 1800 Hz in BOTH SSB states (narrow
     # index 8 from base 01, wide index 0 from base 09).
-    radio._transport.query = AsyncMock(side_effect=["MD02", "SH0009", "NA01"])
+    radio._transport.query = AsyncMock(side_effect=["MD02", "SH009", "NA01"])
     assert await radio.get_filter_width() == 1800
-    radio._transport.query = AsyncMock(side_effect=["MD02", "SH0009", "NA00"])
+    radio._transport.query = AsyncMock(side_effect=["MD02", "SH009", "NA00"])
     assert await radio.get_filter_width() == 1800
 
 
 @pytest.mark.asyncio
 async def test_cw_wide_table_counts_from_code_10(radio):
-    # MD03 reads CW-U: CW wide 2400 Hz is table index 6 from base 10 -> SH16.
+    # MD03 reads CW-U: CW wide 2400 Hz is table index 6 from base 10 -> SH16;.
     radio._transport.query = AsyncMock(side_effect=["MD03", "NA00"])
     await radio.set_filter_width(2400, receiver=0)
-    radio._transport.write.assert_called_once_with("SH0016;")
-    radio._transport.query = AsyncMock(side_effect=["MD03", "SH0016", "NA00"])
+    radio._transport.write.assert_called_once_with("SH016;")
+    radio._transport.query = AsyncMock(side_effect=["MD03", "SH016", "NA00"])
     assert await radio.get_filter_width() == 2400
 
 
@@ -259,10 +321,57 @@ async def test_cw_wide_table_counts_from_code_10(radio):
 async def test_narrow_only_code_in_wide_state_reads_no_hz(radio):
     # SH03 is a narrow-table code; in the wide state (base 09) it is
     # outside the active table: (None, False), as for any out-of-table code.
-    radio._transport.query = AsyncMock(side_effect=["MD02", "SH0003", "NA00"])
+    radio._transport.query = AsyncMock(side_effect=["MD02", "SH003", "NA00"])
     reading = await radio.read_filter_width_reading()
     assert reading.hz is None
     assert reading.radio_default is False
+
+
+@pytest.mark.asyncio
+async def test_sh_literal_frames_match_the_manual_table(radio):
+    # Manual PDF p.17: SSB wide 2400 Hz is code 14, answered and written
+    # as SH014; -- the extra digit of the old three-digit shape (SH0014;)
+    # is rejected by the parse template.
+    radio._transport.query = AsyncMock(side_effect=["MD02", "SH014", "NA00"])
+    reading = await radio.read_filter_width_reading()
+    assert (reading.hz, reading.radio_default) == (2400, False)
+    radio._transport.write.reset_mock()
+    radio._transport.query = AsyncMock(side_effect=["MD02", "SH0014", "NA00"])
+    with pytest.raises(CatParseError):
+        await radio.get_filter_width()
+
+
+@pytest.mark.asyncio
+async def test_sh_reset_code_00_reads_radio_default_and_writes_two_digits(
+    radio,
+):
+    # Manual PDF p.17: code 00 is the mode-dependent "(Default)". The
+    # reset command writes SH000;; a read of SH000; reports the default.
+    await radio.reset_filter_width()
+    radio._transport.write.assert_called_once_with("SH000;")
+    radio._transport.query = AsyncMock(side_effect=["MD02", "SH000", "NA00"])
+    reading = await radio.read_filter_width_reading()
+    assert reading.hz is None
+    assert reading.radio_default is True
+
+
+@pytest.mark.asyncio
+async def test_if_shift_literal_frames_match_the_manual_table(radio):
+    # Manual PDF p.11: one fixed P1 digit, the sign and four offset
+    # digits -- IS0+0200; for +200 Hz. The old two-zero shape
+    # (IS00+0200;) is rejected by the parse template.
+    radio._transport.query = AsyncMock(side_effect=["IS0+0200"])
+    assert await radio.get_if_shift() == 200
+    await radio.set_if_shift(200)
+    radio._transport.write.assert_called_once_with("IS0+0200;")
+    radio._transport.write.reset_mock()
+    radio._transport.query = AsyncMock(side_effect=["IS0-0200"])
+    assert await radio.get_if_shift() == -200
+    await radio.set_if_shift(-200)
+    radio._transport.write.assert_called_once_with("IS0-0200;")
+    radio._transport.query = AsyncMock(side_effect=["IS00+0200"])
+    with pytest.raises(CatParseError):
+        await radio.get_if_shift()
 
 
 @pytest.mark.asyncio
@@ -292,24 +401,13 @@ def test_ft991a_and_fixture_admit_equalize_via_vfo_a_to_b():
 
 
 @pytest.mark.asyncio
-async def test_equalize_writes_ab_and_poller_dispatches_it(radio):
+async def test_equalize_writes_ab(radio):
+    # Unit-level wire fact; the API-to-outcome coverage (enqueue through
+    # public state) lives in the HTTP + CAT-simulator harness in
+    # tests/test_yaesu_split_vfo_profile.py, which keeps the real
+    # handler, queue, dispatch and readback active.
     await radio.equalize_vfo_ab(0)
     radio._transport.write.assert_called_once_with("AB;")
-    handler = ControlHandler.__new__(ControlHandler)
-    handler._radio = radio
-    queued: list[object] = []
-    assert (
-        handler._enqueue_rc_frequency(
-            "vfo_equalize", {}, SimpleNamespace(put=queued.append), radio
-        )
-        == {}
-    )
-    assert isinstance(queued[0], VfoEqualize)
-    poller = YaesuCatPoller(radio)
-    poller._post_write_freq_mode_readback = AsyncMock()
-    radio._transport.write.reset_mock()
-    await poller._execute_command(VfoEqualize())
-    assert [c.args[0] for c in radio._transport.write.await_args_list] == ["AB;"]
 
 
 @pytest.mark.asyncio
@@ -395,21 +493,16 @@ def test_admitted_width_selects_table_by_narrow():
     assert ftx1.admitted_filter_width("USB", 2400, narrow=True) == 2400
 
 
-def test_serialized_filter_config_carries_narrow_variant_only_where_declared():
-    ft991a = _serialize_filter_config(load_rig(RIG).to_profile())
-    assert ft991a["SSB"]["narrowTable"] == [
-        200,
-        400,
-        600,
-        850,
-        1100,
-        1350,
-        1500,
-        1650,
-        1800,
-    ]
-    ftx1 = _serialize_filter_config(load_rig(ROOT / "rigs/ftx1.toml").to_profile())
-    assert "narrowTable" not in ftx1["SSB"]
+def test_serialized_filter_config_carries_no_narrow_table():
+    # MOR-4433: the wire contract (FilterModeConfig) has no narrow-table
+    # field and nothing consumes one, so the projection omits it even
+    # where the profile declares the variant. The narrow table stays
+    # server-side, where admitted_filter_width maps through it.
+    for path in (RIG, ROOT / "rigs/ftx1.toml"):
+        config = _serialize_filter_config(load_rig(path).to_profile())
+        assert config, path
+        for rule in config.values():
+            assert "narrowTable" not in rule, path
 
 
 # ---------------------------------------------------------------------------
@@ -426,6 +519,46 @@ def test_discovery_maps_yaesu_ids():
         _parse_yaesu_id_response("/dev/ttyUSB0", 38400, "ID0840").profile_id
         == "yaesu_ftx1"
     )
+
+
+@pytest.mark.asyncio
+async def test_cli_model_selects_ft991a_profile_through_factory(monkeypatch):
+    """MOR-4433: the documented entry points drive the FT-991A profile.
+
+    ``rigplane --model FT-991A`` builds a ``YaesuCatBackendConfig``
+    carrying the model (the CLI forwards it); the factory resolves it to
+    ``yaesu_ft991a`` instead of the ``"ftx1"`` default, and the assembled
+    radio completes the identity handshake with a fake FT-991A answering
+    ``ID0670;``. Without a model the factory keeps the FTX-1 default,
+    exactly as before.
+    """
+    from rigplane.backends.config import YaesuCatBackendConfig
+    from rigplane.backends.factory import create_radio
+    from rigplane.cli import _build_backend_config, _build_parser
+
+    args = _build_parser().parse_args(
+        ["--model", "FT-991A", "--serial-port", "/dev/fixture", "status"]
+    )
+    config = await _build_backend_config(args)
+    assert isinstance(config, YaesuCatBackendConfig)
+    assert config.model == "FT-991A"
+    fake = YaesuCatSerialFake.from_profile(ROOT, SIM_PROFILE, rig_path=RIG)
+
+    async def open_port(*args, **kwargs):
+        return await fake.open_serial_connection()
+
+    monkeypatch.setattr(
+        "rigplane.backends.yaesu_cat.transport.open_serial_port", open_port
+    )
+    radio = create_radio(config)
+    assert radio._config.id == "yaesu_ft991a"
+    await radio._transport.connect()
+    try:
+        assert await radio.get_id() == "0670"
+    finally:
+        await radio._transport.close()
+    fallback = create_radio(YaesuCatBackendConfig(device="/dev/null"))
+    assert fallback._config.id == "yaesu_ftx1"
 
 
 @pytest.mark.asyncio
@@ -486,3 +619,19 @@ async def test_ft991a_split_swap_copy_and_width_roundtrip(monkeypatch):
             assert fake.model.handle(command) == "?;"
     finally:
         await radio._transport.close()
+
+
+def test_factory_forwards_the_model_in_both_yaesu_branches():
+    """MOR-4433: explicit model resolves its own profile; no model keeps FTX-1."""
+    from rigplane.backends.config import SerialBackendConfig, YaesuCatBackendConfig
+    from rigplane.backends.factory import create_radio
+
+    cases = (
+        (YaesuCatBackendConfig(device="/dev/null", model="FTX-1"), "yaesu_ftx1"),
+        (YaesuCatBackendConfig(device="/dev/null", model="FT-991A"), "yaesu_ft991a"),
+        (YaesuCatBackendConfig(device="/dev/null"), "yaesu_ftx1"),
+        (SerialBackendConfig(device="/dev/null", model="FTX-1"), "yaesu_ftx1"),
+        (SerialBackendConfig(device="/dev/null", model="FT-991A"), "yaesu_ft991a"),
+    )
+    for config, profile_id in cases:
+        assert create_radio(config)._config.id == profile_id

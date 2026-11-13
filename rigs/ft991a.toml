@@ -10,8 +10,11 @@
 [radio]
 id = "yaesu_ft991a"
 model = "FT-991A"
-# No hamlib_model_id: Hamlib groups the FT-991A under its FT-991 rig id and
-# the in-tree integer for it is not established from a source read here.
+# Hamlib RIG_MODEL_FT991 = 1035 (Hamlib yaesu/ft991.c groups the FT-991A
+# under the FT-991 rig id; the value is from Hamlib, not the CAT manual).
+# Declared explicitly: the loader default (2028, RIG_MODEL_FTX1) would
+# otherwise make this radio report as an FTX-1 through rigctld dump_state.
+hamlib_model_id = 1035
 receiver_count = 1
 transceiver_count = 1
 has_lan = false
@@ -65,8 +68,11 @@ features = [
     "squelch",
     "attenuator",
     "preamp",
-    "nb",
-    "nr",
+    # NOTE: no "nb"/"nr" tags in v1. NB/NR on/off are independent switches
+    # (NB0/NR0) with separate levels (NL0/RL0); the shared observation
+    # adapter only derives the toggles from the levels, so disabling a
+    # switch while its level stays nonzero would read back as enabled.
+    # Needs a shared switch-read mechanism (follow-up), not a profile fact.
     "notch",
     # NA0/NA1 narrow filter (set_narrow below). Radios that do not declare
     # this tag refuse the web command.
@@ -84,6 +90,10 @@ features = [
     # both tags from the same rule, so projection and admission agree.
     "vfo_swap",
     "vfo_equalize",
+    # NOTE: no "tuner" tag in v1. The FT-991A AC P3 encoding (0 = OFF,
+    # 1 = ON, 2 = start/stop, PDF p.5) differs from the shared tuner
+    # code's FTX-1 mapping (native 3 = start), and its decoder rejects
+    # state 2. Needs typed native-state data (follow-up), not a remap.
     "vox",
     # NOTE: no "compressor" tag. The FT-991A PR command uses P2 1=OFF/2=ON
     # (PDF p.14) while the shared backend drives PR P2 0/1 (FTX-1 shape); a
@@ -96,7 +106,6 @@ features = [
     # shape); nothing the backend calls can reach those verbs. Same for
     # "monitor" (ML, PDF p.12): the backend monitor methods raise
     # unconditionally on every Yaesu CAT radio.
-    "tuner",
     "meters",
     "dial_lock",
     "sql_type",
@@ -140,10 +149,9 @@ polling_only = [
     # MOR-3677: the radio-default flag twin, published by the same SH read
     # as the width (no extra CAT traffic).
     "receiver.main.active.freq_mode.filter_width_radio_default",
-    "receiver.main.operator_controls.nb_level",
-    "receiver.main.operator_toggles.nb",
-    "receiver.main.operator_controls.nr_level",
-    "receiver.main.operator_toggles.nr",
+    # NOTE: no nb/nr/tuner polling in v1 (omitted controls/commands,
+    # see [capabilities] and [commands]): nothing may poll a path whose
+    # command is gone.
     "receiver.main.operator_toggles.auto_notch",
     "receiver.main.operator_toggles.manual_notch",
     "receiver.main.operator_controls.manual_notch_freq",
@@ -151,7 +159,6 @@ polling_only = [
     "global.operator_controls.mic_gain",
     "global.tx_state.vox_on",
     "global.tx_state.split",
-    "global.operator_controls.tuner_status",
     "global.tx_state.dial_lock",
     "global.operator_controls.key_speed",
     "global.operator_controls.cw_pitch",
@@ -305,43 +312,22 @@ freshness_ttl_seconds = 2.0
 cadence_seconds = 1.0
 freshness_ttl_seconds = 2.0
 
-# MOR-2803 (FTX-1 evidence, same CAT shape here): with NARROW on, SH0 is not
-# the passband for modes whose rule declares a narrow variant -- the SH
-# table notes the narrow/wide columns separately (PDF p.17). Declared
-# absent while this receiver's `narrow` reads true, so the adapter withholds
-# the SH0 read and the frontend disables the Width control with its reason.
+# MOR-4433: the width reads unconditionally, narrow or wide. With NARROW
+# on, SH0 still answers -- it is the narrow table that applies (PDF p.17)
+# -- so withholding the read would disable the Width control exactly when
+# the narrow tables apply. (The FTX-1 keeps its narrow-false gate: an
+# FTX-1 bench probe, MOR-2803, showed SH0 is not the passband there.)
 [state_acquisition.field_policies."receiver.main.active.freq_mode.filter_width"]
 cadence_seconds = 1.0
 freshness_ttl_seconds = 2.0
-available_when = [
-    { field = "receiver.main.operator_toggles.narrow", equals = false },
-]
 
 # MOR-3677: the radio-default flag rides the same SH read as the width, so
-# it carries the same cadence, TTL and narrow clause.
+# it carries the same cadence and TTL.
 [state_acquisition.field_policies."receiver.main.active.freq_mode.filter_width_radio_default"]
 cadence_seconds = 1.0
 freshness_ttl_seconds = 2.0
-available_when = [
-    { field = "receiver.main.operator_toggles.narrow", equals = false },
-]
 
-[state_acquisition.field_policies."receiver.main.operator_controls.nb_level"]
-cadence_seconds = 1.0
-freshness_ttl_seconds = 2.0
-
-[state_acquisition.field_policies."receiver.main.operator_toggles.nb"]
-cadence_seconds = 1.0
-freshness_ttl_seconds = 2.0
-
-[state_acquisition.field_policies."receiver.main.operator_controls.nr_level"]
-cadence_seconds = 1.0
-freshness_ttl_seconds = 2.0
-
-[state_acquisition.field_policies."receiver.main.operator_toggles.nr"]
-cadence_seconds = 1.0
-freshness_ttl_seconds = 2.0
-
+# NOTE: no nb/nr field policies in v1 (omitted from the profile).
 [state_acquisition.field_policies."receiver.main.operator_toggles.auto_notch"]
 cadence_seconds = 1.0
 freshness_ttl_seconds = 2.0
@@ -367,10 +353,6 @@ cadence_seconds = 1.0
 freshness_ttl_seconds = 2.0
 
 [state_acquisition.field_policies."global.tx_state.split"]
-cadence_seconds = 1.0
-freshness_ttl_seconds = 2.0
-
-[state_acquisition.field_policies."global.operator_controls.tuner_status"]
 cadence_seconds = 1.0
 freshness_ttl_seconds = 2.0
 
@@ -569,49 +551,8 @@ values = [0, 1, 2]
 [controls.attenuator]
 style = "selector"
 
-[controls.nb]
-style = "level_is_toggle"
-range_min = 0
-range_max = 10
-
-# NL (NOISE BLANKER LEVEL, PDF p.14): P2 000 = OFF, 001-010 = NB level.
-[controls.nb_level]
-mapping = "identity"
-raw_min = 0
-raw_max = 10
-raw_step = 1
-raw_origin = 0
-display_min = 0
-display_max = 10
-display_step = 1
-display_origin = 0
-display_unit = "level"
-quantization = "reject"
-restoration = "exact"
-
-[controls.nr]
-style = "level_is_toggle"
-# RL (NOISE REDUCTION LEVEL, PDF p.14): P2 01-15, 2 digits. 00 as OFF follows
-# the NB/NL convention above; the manual documents only 01-15.
-range_min = 0
-range_max = 15
-
-# RL level domain for the range-aware writes (same shape as nb_level; raw
-# 0-15 per the RL table, PDF p.14).
-[controls.nr_level]
-mapping = "identity"
-raw_min = 0
-raw_max = 15
-raw_step = 1
-raw_origin = 0
-display_min = 0
-display_max = 15
-display_step = 1
-display_origin = 0
-display_unit = "level"
-quantization = "reject"
-restoration = "exact"
-
+# omitted from v1: NB/NR on/off are independent switches (NB0/NR0) with
+# separate levels; needs a shared switch-read mechanism (follow-up).
 [controls.manual_notch_freq]
 mapping = "linear"
 raw_min = 1
@@ -838,6 +779,11 @@ labels = { "0" = "OFF", "1" = "ON" }
 #   shapes the shared backend cannot drive -- ML methods raise
 #   unconditionally, clarifier is CF000/CF001-shaped, PR P2 is 1/2 while the
 #   backend writes 0/1 (inverted). See [capabilities] notes.
+# - NB/NR toggles and levels (NB0/NR0, NL0/RL0): independent switches need
+#   a shared switch-read mechanism (v1 omission, see [capabilities]).
+# - AC tuner: P3 2 = start/stop differs from the shared tuner code's
+#   FTX-1 mapping; needs typed native-state data (v1 omission).
+# - MD1 sub-receiver mode forms: the MD selector is fixed at 0 (PDF p.12).
 # - VD/VG (VOX delay/gain), KR (keyer on/off), KY/KM (keyer memories),
 #   MX (MOX), TS (TXW), SC/CH/QS and the panel verbs: no backend caller.
 # ── Frequency / Mode ──
@@ -847,8 +793,8 @@ get_freq_sub   = { cat = { read = "FB;", parse = "FB{freq:09d};" } }
 set_freq_sub   = { cat = { write = "FB{freq:09d};" } }
 get_mode       = { cat = { read = "MD0;", parse = "MD0{mode};" } }
 set_mode       = { cat = { write = "MD0{mode};" } }
-get_mode_sub   = { cat = { read = "MD1;", parse = "MD1{mode};" } }
-set_mode_sub   = { cat = { write = "MD1{mode};" } }
+# NOTE: no MD1 forms in v1. The MD selector is fixed at 0 (PDF p.12);
+# get_mode(receiver=1) refuses through the absent-command convention.
 
 # ── VFO ──
 # SV; SWAP VFO, AB; VFO-A to VFO-B, BA; VFO-B to VFO-A (PDF p.5, set-only).
@@ -897,15 +843,8 @@ get_preamp     = { cat = { read = "PA0;", parse = "PA0{value};" } }
 set_preamp     = { cat = { write = "PA{band}{value};" } }
 
 # ── DSP / Noise ──
-# NB/NR have dedicated toggle verbs (PDF p.14); the backend prefers them
-# over the level-as-switch fallback. Toggle reads stay level-derived (the
-# observation adapter derives nb/nr from NL/RL > 0).
-set_nb         = { cat = { write = "NB0{state};" } }
-set_nr         = { cat = { write = "NR0{state};" } }
-get_nb_level   = { cat = { read = "NL0;", parse = "NL0{level:03d};" } }
-set_nb_level   = { cat = { write = "NL0{level:03d};" } }
-get_nr_level   = { cat = { read = "RL0;", parse = "RL0{level:02d};" } }
-set_nr_level   = { cat = { write = "RL0{level:02d};" } }
+# omitted from v1: NB/NR on/off are independent switches (NB0/NR0) with
+# separate levels; needs a shared switch-read mechanism (follow-up).
 get_auto_notch = { cat = { read = "BC0;", parse = "BC0{state};" } }
 set_auto_notch = { cat = { write = "BC0{state};" } }
 get_manual_notch = { cat = { read = "BP00;", parse = "BP00{state:03d};" } }
@@ -919,10 +858,13 @@ set_agc        = { cat = { write = "GT0{mode};" } }
 
 # ── Filter / IF ──
 # SH0 reads the MAIN width, NA0 the narrow state (PDF p.14, p.17).
-get_filter_width = { cat = { read = "SH0;", parse = "SH0{code:03d};" } }
-set_filter_width = { cat = { write = "SH0{code:03d};" } }
-get_if_shift   = { cat = { read = "IS0;", parse = "IS00{sign}{offset:04d};" } }
-set_if_shift   = { cat = { write = "IS00{sign}{offset:04d};" } }
+# SH carries P1 (fixed 0) plus a TWO-digit width code (PDF p.17:
+# SSB wide 2400 Hz is code 14 -> SH014;); IS carries P1 (fixed 0),
+# the sign and four offset digits (PDF p.11: IS0+0200;).
+get_filter_width = { cat = { read = "SH0;", parse = "SH0{code:02d};" } }
+set_filter_width = { cat = { write = "SH0{code:02d};" } }
+get_if_shift   = { cat = { read = "IS0;", parse = "IS0{sign}{offset:04d};" } }
+set_if_shift   = { cat = { write = "IS0{sign}{offset:04d};" } }
 get_narrow     = { cat = { read = "NA0;", parse = "NA0{state};" } }
 set_narrow     = { cat = { write = "NA0{state};" } }
 
@@ -972,12 +914,8 @@ get_vox        = { cat = { read = "VX;", parse = "VX{state};" } }
 set_vox        = { cat = { write = "VX{state};" } }
 get_lock       = { cat = { read = "LK;", parse = "LK{state};" } }
 set_lock       = { cat = { write = "LK{state};" } }
-# AC (PDF p.5): P1 0 fixed, P2 0 fixed, P3 0 Tuner OFF / 1 ON /
-# 2 Tuning Start/Stop. The shared ATU decode accepts 0/1 natively; a P3=2
-# (tuning in progress) read raises CommandError until the capture pass
-# confirms the tuning-state mapping.
-get_tuner      = { cat = { read = "AC;", parse = "AC{src}{type}{state};" } }
-set_tuner      = { cat = { write = "AC{src}{type}{state};" } }
+# omitted from v1: AC P3 encoding differs (2 = start/stop) from the
+# FTX-1 mapping in the shared tuner code; needs typed native-state data.
 # CO (PDF p.6): P1 0 fixed; P2 0 contour on/off, 1 contour freq, 2 APF
 # on/off, 3 APF freq; P3 the 4-digit value.
 get_contour    = { cat = { read = "CO00;", parse = "CO00{val:04d};" } }

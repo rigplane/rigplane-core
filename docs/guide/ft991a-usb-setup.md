@@ -56,8 +56,9 @@ layout, the sample rate, and the radio-side menu for the TX audio source.
 
 ## CLI
 
-`--model FT-991A` selects the Yaesu CAT backend from the FT-991A profile;
-`--backend yaesu-cat` does the same.
+`--model FT-991A` selects the Yaesu CAT backend with the FT-991A profile.
+`--backend yaesu-cat` alone keeps the FTX-1 default profile; pair it with
+`--model FT-991A` to drive this radio.
 
 ```bash
 # Status
@@ -86,7 +87,9 @@ import asyncio
 from rigplane import create_radio, YaesuCatBackendConfig
 
 async def main():
-    config = YaesuCatBackendConfig(device="/dev/cu.usbserial-XXXX")
+    config = YaesuCatBackendConfig(
+        device="/dev/cu.usbserial-XXXX", model="FT-991A"
+    )
     async with create_radio(config) as radio:
         freq = await radio.get_freq()
         mode, _ = await radio.get_mode()

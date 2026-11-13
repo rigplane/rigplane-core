@@ -99,9 +99,14 @@ def create_radio(config: BackendConfig) -> Radio:
             model=config.model,
         )
     if isinstance(config, YaesuCatBackendConfig):
+        # MOR-4433: the CLI records the selected model on the config
+        # (``--model FT-991A``); forward it so the radio resolves the
+        # matching rig profile instead of the ``"ftx1"`` default. No model
+        # still means FTX-1, exactly as before.
         return YaesuCatRadio(
             device=config.device,
             baudrate=config.baudrate,
+            profile=config.model if config.model else "ftx1",
             rx_device=config.rx_device,
             tx_device=config.tx_device,
             audio_sample_rate=config.audio_sample_rate,
@@ -126,9 +131,13 @@ def create_radio(config: BackendConfig) -> Radio:
         model = config.model.upper()
 
         if _is_yaesu_serial_model(model):
+            # MOR-4433: same forwarding as the yaesu-cat branch above --
+            # the validated model string resolves through the shared
+            # loader aliases (``FT-991A`` -> ``yaesu_ft991a``).
             return YaesuCatRadio(
                 device=config.device,
                 baudrate=config.baudrate or 38400,
+                profile=config.model,
                 rx_device=config.rx_device,
                 tx_device=config.tx_device,
                 audio_sample_rate=config.audio_sample_rate or 48000,

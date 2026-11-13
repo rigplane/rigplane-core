@@ -325,6 +325,31 @@ async def test_fixture_split_and_vfo_roundtrip_over_cat_transport(monkeypatch):
         await radio._transport.close()
 
 
+async def _http_post_command(host: str, port: int, name: str, params: dict) -> dict:
+    """POST one command to /api/v1/commands over a real socket."""
+    reader, writer = await asyncio.open_connection(host, port)
+    try:
+        payload = json.dumps({"name": name, "params": params}).encode()
+        writer.write(
+            (
+                "POST /api/v1/commands HTTP/1.1\r\n"
+                f"Host: {host}:{port}\r\n"
+                "Connection: close\r\nContent-Type: application/json\r\n"
+                f"Content-Length: {len(payload)}\r\n\r\n"
+            ).encode()
+            + payload
+        )
+        await writer.drain()
+        status, _, response = await asyncio.wait_for(_read_http_response(reader), 10)
+    finally:
+        writer.close()
+        await writer.wait_closed()
+    assert status == 200
+    body = json.loads(response)
+    assert body["ok"] is True
+    return body
+
+
 @pytest.mark.realtime(
     reason="real HTTP socket and the production backend poller/readback path"
 )
@@ -454,3 +479,145 @@ def test_sim_applies_frequency_domain_to_inactive_slot_writes():
     assert model.handle("FB;") == "FB470000000;"
     assert model.handle("FA000030000;") is None
     assert model.handle("FA;") == "FA000030000;"
+
+
+async def _serve_fixture_over_http(tmp_path, monkeypatch):
+    """Serve the single-RX fixture over HTTP on the CAT simulator.
+
+    Returns ``(radio, wire, host, port, server)`` with the server started;
+    the caller stops the server and closes the transport. The observation
+    path polls frequency, mode, narrow state and filter width so the
+    public state carries all four.
+    """
+    rig_path = tmp_path / "http-e2e.toml"
+    rig_path.write_text(
+        FIXTURE.read_text().replace(
+            'features = ["split", "vfo_swap"]',
+            'features = ["split", "vfo_swap", "narrow"]',
+        )
+        + "\n[state_acquisition]\n"
+        'provider = "yaesu_cat"\n'
+        "\n[state_acquisition.capabilities]\n"
+        "polling_only = [\n"
+        '    "receiver.main.active.freq_mode.freq_hz",\n'
+        '    "receiver.main.active.freq_mode.mode",\n'
+        '    "receiver.main.operator_toggles.narrow",\n'
+        '    "receiver.main.active.freq_mode.filter_width",\n'
+        "]\n"
+        "command_response_observable = [\n"
+        '    "receiver.main.active.freq_mode.freq_hz",\n'
+        "]\n"
+    )
+    radio = YaesuCatRadio("/dev/fixture", profile=load_rig(rig_path))
+    fake = YaesuCatSerialFake.from_profile(ROOT, SIM_FIXTURE, rig_path=rig_path)
+    wire: list[str] = []
+    handle = fake.model.handle_with_outcome
+
+    def logged(line):
+        wire.append(line)
+        return handle(line)
+
+    monkeypatch.setattr(fake.model, "handle_with_outcome", logged)
+
+    async def open_port(*args, **kwargs):
+        return await fake.open_serial_connection()
+
+    monkeypatch.setattr(
+        "rigplane.backends.yaesu_cat.transport.open_serial_port", open_port
+    )
+    await radio._transport.connect()
+    server = WebServer(
+        radio,
+        WebConfig(host="127.0.0.1", port=0, keepalive_interval=9999.0),
+    )
+    await server.start()
+    return radio, wire, "127.0.0.1", server.port, server
+
+
+async def _wait_for_state(host: str, port: int, key: str, want: object) -> None:
+    deadline = time.monotonic() + 10.0
+    while True:
+        status, _, body = await _http_get(host, port, "/api/v1/state")
+        assert status == 200
+        if json.loads(body).get("main", {}).get(key) == want:
+            return
+        if time.monotonic() >= deadline:
+            raise AssertionError(f"state main.{key} never became {want!r}")
+        await asyncio.sleep(0.1)
+
+
+@pytest.mark.realtime(
+    reason="real HTTP socket and the production backend poller/readback path"
+)
+@pytest.mark.asyncio
+async def test_vfo_equalize_end_to_end_over_http_with_cat_sim(tmp_path, monkeypatch):
+    """MOR-4433: ``vfo_equalize`` through the real local HTTP API.
+
+    The real ``WebServer`` serves a fixture-profiled ``YaesuCatRadio``
+    on the CAT simulator: the suite posts ``vfo_equalize`` to
+    ``/api/v1/commands`` over a real socket (real handler, real queue,
+    real backend-poller dispatch, real post-write readback), then proves
+    the A->B copy landed by retuning A away and swapping: the swapped-in
+    VFO A is the copied frequency, read back from public state.
+    """
+    radio, wire, host, port, server = await _serve_fixture_over_http(
+        tmp_path, monkeypatch
+    )
+    try:
+        await radio.set_freq(14_074_000)
+        await radio.set_freq(14_080_000, receiver=1)
+        await _wait_for_state(host, port, "freqHz", 14_074_000)
+
+        await _http_post_command(host, port, "vfo_equalize", {})
+        assert "AB;" in wire
+
+        # The copy is on the inactive slot: move A away, swap the copy in.
+        await radio.set_freq(14_090_000)
+        await _wait_for_state(host, port, "freqHz", 14_090_000)
+        await _http_post_command(host, port, "vfo_swap", {})
+        # A held 14090000, B the equalized 14074000: the swap surfaces it.
+        await _wait_for_state(host, port, "freqHz", 14_074_000)
+    finally:
+        await server.stop()
+        await radio._transport.close()
+
+
+@pytest.mark.realtime(
+    reason="real HTTP socket and the production backend poller/readback path"
+)
+@pytest.mark.asyncio
+async def test_narrow_width_end_to_end_over_http_with_cat_sim(tmp_path, monkeypatch):
+    """MOR-4433: narrow-state width admission through the real HTTP API.
+
+    Submits ``set_filter_width`` in the wide state (the response admits
+    the nearest wide-table entry), enables NARROW, then submits a
+    narrow-table width: the response carries the narrow ``admitted_width``
+    and the observed public width follows. Real handler, real queue,
+    real dispatch and readback throughout.
+    """
+    radio, wire, host, port, server = await _serve_fixture_over_http(
+        tmp_path, monkeypatch
+    )
+    try:
+        # Mode, narrow flag and width are all freshly observed before the
+        # first submission: the admission hint maps through live state.
+        await _wait_for_state(host, port, "mode", "USB")
+        await _wait_for_state(host, port, "narrow", False)
+        await _wait_for_state(host, port, "filterWidth", 2400)
+
+        # Wide state: 1500 Hz is not on the wide table ([2400, ...]), so
+        # the response admits the nearest wide entry.
+        body = await _http_post_command(host, port, "set_filter_width", {"width": 1500})
+        assert body["result"]["admitted_width"] == 2400
+
+        await _http_post_command(host, port, "set_narrow", {"on": True})
+        assert "NA01;" in wire
+        await _wait_for_state(host, port, "narrow", True)
+
+        body = await _http_post_command(host, port, "set_filter_width", {"width": 1800})
+        assert body["result"]["admitted_width"] == 1800
+        assert "SH001;" in wire
+        await _wait_for_state(host, port, "filterWidth", 1800)
+    finally:
+        await server.stop()
+        await radio._transport.close()

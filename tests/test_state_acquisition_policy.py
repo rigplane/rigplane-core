@@ -2172,12 +2172,6 @@ def test_available_when_is_declared_only_where_a_probe_established_it() -> None:
         ("FT-991A", "global.meters.comp"),
         ("FT-991A", "global.meters.power"),
         ("FT-991A", "global.meters.swr"),
-        # FT-991A: the width pair takes the FTX-1 narrow-false gate for the
-        # same structural reason (MOR-2803, same CAT shape: with NARROW on,
-        # SH0 is not the passband for modes with a narrow variant; SH table
-        # PDF p.17). Real SH/NA behaviour is UNVERIFIED (capture list).
-        ("FT-991A", "receiver.main.active.freq_mode.filter_width"),
-        ("FT-991A", "receiver.main.active.freq_mode.filter_width_radio_default"),
         ("IC-705", "global.meters.alc"),
         ("IC-705", "global.meters.comp"),
         ("IC-705", "global.meters.power"),
