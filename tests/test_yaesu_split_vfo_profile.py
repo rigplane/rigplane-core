@@ -203,45 +203,72 @@ async def test_yaesu_poller_dispatches_cat_ab_swap(radio):
 
 
 @pytest.mark.asyncio
-async def test_yaesu_ab_swap_only_despite_declared_equalize(tmp_path):
-    """MOR-4427 R2 P1-1: projection, admission and execution agree that
-    Yaesu ``ab`` exposes only ``vfo_swap``.
-
-    Even with ``vfo_equalize`` declared in the profile's ``[commands]``
-    table, the shared rule (``RadioProfile.supports_vfo_command``) must
-    not project it, not admit it, and the backend poller must still
-    refuse to execute it — the CAT set has no per-receiver A→B copy
-    primitive.
+async def test_yaesu_ab_equalize_admits_through_declared_copy(tmp_path):
+    """MOR-4433 follow-up A replaces the MOR-4427 R2 family-wide refusal:
+    projection, admission and execution agree that Yaesu ``ab`` exposes
+    ``vfo_equalize`` exactly when the profile declares the ``vfo_a_to_b``
+    copy primitive (equalize is that A→B copy). A declared ``vfo_equalize``
+    command entry is not required and not consulted; a profile without the
+    copy primitive keeps the refusal.
     """
-    path = tmp_path / "swap-only.toml"
-    path.write_text(
-        FIXTURE.read_text() + 'vfo_equalize = { cat = { write = "AB;" } }\n'
-    )
-    config = load_rig(path)
-    assert config.to_profile().supports_command("vfo_equalize")
+    config = load_rig(FIXTURE)
+    assert config.to_profile().supports_vfo_command("vfo_equalize")
     radio = YaesuCatRadio("/dev/null", profile=config)
     radio._transport._connected = True
     radio._transport.write = AsyncMock()
     # projection
     assert radio.profile.supports_vfo_command("vfo_swap")
-    assert not radio.profile.supports_vfo_command("vfo_equalize")
-    assert projected_vfo_capability_tags(radio, None) == {"vfo_swap"}
+    assert radio.profile.supports_vfo_command("vfo_equalize")
+    assert projected_vfo_capability_tags(radio, None) == {
+        "vfo_swap",
+        "vfo_equalize",
+    }
     # admission
     handler = ControlHandler.__new__(ControlHandler)
     handler._radio = radio
     queued: list[object] = []
     queue = SimpleNamespace(put=queued.append)
     assert handler._enqueue_rc_frequency("vfo_swap", {}, queue, radio) == {}
-    assert len(queued) == 1
+    assert handler._enqueue_rc_frequency("vfo_equalize", {}, queue, radio) == {}
+    assert len(queued) == 2
     assert isinstance(queued[0], VfoSwap)
-    with pytest.raises(ValueError, match="not supported"):
-        handler._enqueue_rc_frequency("vfo_equalize", {}, queue, radio)
-    # execution agrees with admission
+    assert isinstance(queued[1], VfoEqualize)
+    # execution agrees with admission: equalize writes the A->B copy
     poller = YaesuCatPoller(radio)
     poller._post_write_freq_mode_readback = AsyncMock()
     await poller._execute_command(VfoSwap())
-    assert [c.args[0] for c in radio._transport.write.await_args_list] == ["SV;"]
-    with pytest.raises(NotImplementedError, match="equal_ab_code"):
+    await poller._execute_command(VfoEqualize())
+    assert [c.args[0] for c in radio._transport.write.await_args_list] == [
+        "SV;",
+        "AB;",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_yaesu_ab_equalize_refused_without_the_copy_primitive(tmp_path):
+    """The same shared rule, negative side: no ``vfo_a_to_b`` declaration
+    means no projection, no admission and no execution."""
+    path = tmp_path / "no-copy.toml"
+    path.write_text(
+        FIXTURE.read_text().replace(
+            'vfo_a_to_b     = { cat = { write = "AB;" } }', ""
+        )
+    )
+    config = load_rig(path)
+    assert not config.to_profile().supports_vfo_command("vfo_equalize")
+    radio = YaesuCatRadio("/dev/null", profile=config)
+    radio._transport._connected = True
+    radio._transport.write = AsyncMock()
+    assert projected_vfo_capability_tags(radio, None) == {"vfo_swap"}
+    handler = ControlHandler.__new__(ControlHandler)
+    handler._radio = radio
+    queued: list[object] = []
+    queue = SimpleNamespace(put=queued.append)
+    with pytest.raises(ValueError, match="not supported"):
+        handler._enqueue_rc_frequency("vfo_equalize", {}, queue, radio)
+    poller = YaesuCatPoller(radio)
+    poller._post_write_freq_mode_readback = AsyncMock()
+    with pytest.raises(NotImplementedError, match="vfo_a_to_b"):
         await poller._execute_command(VfoEqualize())
 
 

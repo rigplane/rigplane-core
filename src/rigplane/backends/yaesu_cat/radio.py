@@ -2275,10 +2275,15 @@ class YaesuCatRadio:
         Routes through the ``get_meter`` profile entry (parameterised read
         template, e.g. ``"RM{type};"``) rather than a hardcoded command —
         a malformed or short reply fails the parse template and raises
-        :class:`~.parser.CatParseError` (a ``ValueError`` subclass).
+        :class:`~.parser.CatParseError` (a ``ValueError`` subclass). A
+        single-value answer (single-receiver profiles such as the FT-991A,
+        whose ``RM`` reply carries no SUB group) reads back as (main, main):
+        the shape comes from the profile's parse template, not from a
+        per-radio branch.
         """
         result = await self._query("get_meter", type=meter_type)
-        return result["main"], result["sub"]
+        main = result["main"]
+        return main, result.get("sub", main)
 
     async def read_comp_meter(self) -> int:
         """Read COMP (compression) meter without mutating legacy state."""
@@ -3188,17 +3193,23 @@ class YaesuCatRadio:
             await self._write("vfo_swap")
 
     async def equalize_vfo_ab(self, receiver: int = 0) -> None:
-        """Copy the active VFO's state to the inactive VFO on ``receiver``.
+        """Copy VFO-A to VFO-B on ``receiver`` (MOR-4433 follow-up A).
 
-        Not supported by Yaesu CAT: FTX-1 ``AB;``/``BA;`` copy between
-        receivers (MAIN↔SUB), not between A/B within a receiver, and
-        single-RX Yaesu profiles do not expose an equalize command.
+        On a single-receiver ``ab`` profile that declares the ``vfo_a_to_b``
+        copy primitive (e.g. FT-991A ``AB;``), equalize is that A→B copy and
+        delegates to :meth:`vfo_a_to_b`. Every other profile keeps today's
+        refusal: ``ab_shared`` (dual-RX, e.g. FTX-1) copies between
+        receivers, not between A/B within a receiver, and a profile without
+        the primitive exposes no equalize command.
         Raises :class:`NotImplementedError`.
         """
         self._check_single_receiver(receiver, operation="equalize_vfo_ab")
+        if self._config.vfo_scheme == "ab" and self.supports_command("vfo_a_to_b"):
+            await self.vfo_a_to_b()
+            return
         raise NotImplementedError(
             f"equalize_vfo_ab not supported on {self.model}: "
-            "Yaesu CAT has no per-receiver A→B copy primitive"
+            "the profile declares no vfo_a_to_b copy primitive"
         )
 
     # -- D6: TX Stack -------------------------------------------------------
@@ -3209,10 +3220,15 @@ class YaesuCatRadio:
         Returns:
             Tuple of (head: int, watts: int).  This is the configured
             (SET) power level via the ``PC`` command — the watt setpoint,
-            distinct from the measured ``RM5`` power meter.
+            distinct from the measured ``RM5`` power meter.  A headless
+            ``PC`` answer (profiles such as the FT-991A whose ``PC`` reply
+            carries no head digit) reads back head 0 — no head selection;
+            only watts is consumed downstream.  The shape comes from the
+            profile's parse template, not from a per-radio branch.
         """
         result = await self._query("get_power")
-        return int(result["head"]), result["watts"]
+        head = result.get("head")
+        return (int(head) if head is not None else 0), result["watts"]
 
     async def get_power(self) -> tuple[int, int]:
         """Get TX power setting.

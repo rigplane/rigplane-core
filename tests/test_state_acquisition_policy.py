@@ -824,6 +824,7 @@ def test_field_policies_obey_their_cadence_class_not_their_rig() -> None:
 
     assert not failures, f"field_policies entries outside their class: {failures}"
     assert checked == {
+        "FT-991A",
         "FTX-1",
         "G7250",
         "IC-705",
@@ -930,6 +931,7 @@ def test_every_capability_path_of_every_profile_has_a_registry_class() -> None:
 
     assert not failures, f"capability paths without a registry class: {failures}"
     assert checked == {
+        "FT-991A",
         "FTX-1",
         "G7250",
         "IC-705",

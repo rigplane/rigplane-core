@@ -799,6 +799,12 @@ def _serialize_filter_config(profile: "RadioProfile") -> dict[str, dict[str, obj
                 else {}
             ),
             **({"table": list(rule.table)} if rule.table else {}),
+            # MOR-4433 follow-up B: the narrow-state variant rides along as
+            # data (no new state distribution — the live narrow flag already
+            # reaches the frontend through the state store). Consumers with
+            # the narrow flag select it; profiles without the variant
+            # (e.g. FTX-1) serialize exactly as before.
+            **({"narrowTable": list(rule.narrow_table)} if rule.narrow_table else {}),
         }
     return result
 

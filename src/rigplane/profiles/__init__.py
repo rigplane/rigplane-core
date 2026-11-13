@@ -736,13 +736,14 @@ class RadioProfile:
 
         The Yaesu CAT family declares these primitives as CAT commands,
         not CI-V opcode bytes: ``ab`` (single-receiver, e.g. the FT-991A
-        class) implements only ``vfo_swap`` (``SV;``) — the CAT set has no
-        per-receiver A→B copy primitive
-        (``YaesuCatRadio.equalize_vfo_ab`` raises, and the backend poller
-        refuses ``VfoEqualize`` without ``equal_ab_code``) — while
+        class) implements ``vfo_swap`` (``SV;``), and implements
+        ``vfo_equalize`` exactly when the profile declares the ``vfo_a_to_b``
+        copy primitive — equalize is that A→B copy, admitted and executed
+        through it (``YaesuCatRadio.equalize_vfo_ab`` delegates to
+        ``vfo_a_to_b``; a profile without it keeps today's refusal) — while
         ``ab_shared`` (dual-RX, e.g. FTX-1) implements both ``vfo_swap``
-        (``SV;``) and ``vfo_equalize`` (``AB;``, OM 2508-C). Every other
-        family keeps its opcode-byte rule.
+        (``SV;``) and ``vfo_equalize`` (``AB;``, OM 2508-C) as declared
+        commands. Every other family keeps its opcode-byte rule.
         """
         if command_name not in ("vfo_swap", "vfo_equalize"):
             return False
@@ -751,7 +752,7 @@ class RadioProfile:
             "ab_shared",
         }:
             if self.vfo_scheme == "ab" and command_name == "vfo_equalize":
-                return False
+                return self.supports_command("vfo_a_to_b")
             return self.supports_command(command_name)
         if self.vfo_scheme == "ab":
             code = (
@@ -888,7 +889,9 @@ class RadioProfile:
             return None
         return rule.defaults[filter_num - 1]
 
-    def admitted_filter_width(self, mode: str | None, width_hz: int) -> int | None:
+    def admitted_filter_width(
+        self, mode: str | None, width_hz: int, *, narrow: bool = False
+    ) -> int | None:
         """The on-table width a ``set_filter_width`` write will land on.
 
         Only ``table_index`` profiles quantize a requested width through
@@ -898,13 +901,20 @@ class RadioProfile:
         no admission to report. ``None`` when the mode resolves to no
         rule, a fixed-width rule (the backend refuses the write there), or
         an empty table. Pinned by tests/test_filter_width_admitted_width.py.
+
+        When ``narrow`` is true and the mode's rule declares a narrow
+        variant (MOR-4428/MOR-4433), the narrow table selects the entry —
+        the same table the backend write maps through — so the hint stays
+        exact while NARROW is on. ``False`` (unknown or off) keeps today's
+        wide-table mapping.
         """
         if self.filter_width_encoding != "table_index":
             return None
         rule = self.resolve_filter_rule(mode)
         if rule is None or rule.fixed or not rule.table:
             return None
-        return rule.table[hz_to_table_index(width_hz, table=rule.table)]
+        table = rule.narrow_table if narrow and rule.narrow_table else rule.table
+        return table[hz_to_table_index(width_hz, table=table)]
 
 
 # ── TOML-driven profile registry ──────────────────────────────────
