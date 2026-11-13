@@ -123,6 +123,9 @@ capture pass confirms them. If something misbehaves, capture it and see
 - Noise blanker and noise reduction on/off, clarifier (RIT/XIT), monitor,
   speech processor, IF bulk status, power-on and memory channels are not
   exposed in this version.
+- Contour is not exposed: nothing polls its CAT path yet.
+- Squelch is not exposed: its 0–100 CAT range does not fit the shared
+  0–255 level path yet.
 
 ## See Also
 

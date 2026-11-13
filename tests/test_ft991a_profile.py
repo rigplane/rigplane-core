@@ -777,3 +777,226 @@ async def test_narrow_width_end_to_end_over_http_with_cat_sim(monkeypatch):
     finally:
         await server.stop()
         await radio._transport.close()
+
+
+# ---------------------------------------------------------------------------
+# Round 3 cuts: contour and squelch leave v1
+# ---------------------------------------------------------------------------
+
+
+def test_ft991a_omits_contour_and_squelch_from_v1():
+    # Pre-review round 1 (P1 contour, P1 squelch): neither feature has a
+    # working read path -- contour has no observation-reader, squelch has
+    # no domain-driven level path -- so neither is declared. The profile
+    # must not advertise, poll, or serve them.
+    profile = load_rig(RIG).to_profile()
+    assert "contour" not in profile.capabilities
+    assert "squelch" not in profile.capabilities
+    for command in (
+        "get_contour",
+        "set_contour",
+        "get_squelch",
+        "set_squelch",
+    ):
+        assert not profile.supports_command(command), command
+    acquisition = profile.state_acquisition
+    assert acquisition is not None
+    squelch = FieldPath.receiver("main", "operator_controls", "squelch")
+    assert not acquisition.capability_for(squelch).can_poll
+    assert "squelch" not in (profile.controls or {})
+
+
+# ---------------------------------------------------------------------------
+# Preamp P1 fixed at zero (P2)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_preamp_write_fixes_p1_at_zero_with_nonzero_band(radio):
+    # Manual PDF p.13: PA P1 is 0 fixed, P2 selects IPO/AMP1/AMP2. The
+    # backend still passes band, but the template ignores it: a nonzero
+    # band must not reach the wire (PA11; would address no P1 on record).
+    await radio.set_preamp(1, band=1)
+    await radio.set_preamp(2)
+    writes = [c.args[0] for c in radio._transport.write.call_args_list]
+    assert writes == ["PA01;", "PA02;"]
+
+
+@pytest.mark.asyncio
+async def test_preamp_reads_through_fixed_p1(radio):
+    radio._transport.query = AsyncMock(return_value="PA01")
+    assert await radio.get_preamp() == 1
+    radio._transport.query.assert_called_once_with("PA0;")
+
+
+# ---------------------------------------------------------------------------
+# Profile-driven CT toggles (P1 CTCSS)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("code", "expected_tone", "expected_tsql"),
+    [
+        # FT-991A CAT manual: 1 = CTCSS ENC/DEC, 2 = CTCSS ENC --
+        # the reverse of the FTX-1 ordering.
+        (0, False, False),
+        (1, True, True),
+        (2, True, False),
+    ],
+)
+@pytest.mark.asyncio
+async def test_repeater_tone_tsql_follow_the_ft991a_ct_table(
+    radio, code: int, expected_tone: bool, expected_tsql: bool
+):
+    """The getters resolve through [tone_squelch_types], not FTX-1 codes."""
+    radio._transport.query = AsyncMock(return_value=f"CT0{code}")
+    assert await radio.get_repeater_tone(0) is expected_tone
+    assert await radio.get_repeater_tsql(0) is expected_tsql
+    radio._transport.query.assert_any_call("CT0;")
+
+
+@pytest.mark.parametrize("code", [3, 4])
+@pytest.mark.asyncio
+async def test_repeater_tone_tsql_refuse_dcs_on_ft991a(radio, code: int):
+    """CT 3/4 (DCS ENC/DEC, DCS ENC) have no two-boolean pair: MOR-2572."""
+    radio._transport.query = AsyncMock(return_value=f"CT0{code}")
+    for getter in (radio.get_repeater_tone, radio.get_repeater_tsql):
+        with pytest.raises(ValueError, match=r"DCS/PR FREQ/REV TONE"):
+            await getter(0)
+
+
+@pytest.mark.parametrize(
+    ("current_code", "setter", "on", "frame"),
+    [
+        # (tone, tsql) target: (F,F)->0, (T,F)->2, (T,T)->1 (manual PDF p.6).
+        (0, "set_repeater_tone", True, "CT02;"),  # off -> ENC (no decode)
+        (2, "set_repeater_tone", False, "CT00;"),  # ENC -> off
+        (2, "set_repeater_tone", True, "CT02;"),  # ENC -> ENC (idempotent)
+        (0, "set_repeater_tsql", True, "CT01;"),  # off -> ENC/DEC
+        (2, "set_repeater_tsql", True, "CT01;"),  # ENC -> ENC/DEC
+        (1, "set_repeater_tsql", False, "CT02;"),  # ENC/DEC -> ENC
+        (1, "set_repeater_tsql", True, "CT01;"),  # ENC/DEC idempotent
+        (0, "set_repeater_tsql", False, "CT00;"),  # off idempotent
+    ],
+)
+@pytest.mark.asyncio
+async def test_ct_toggles_resolve_through_the_ft991a_table(
+    radio, current_code: int, setter: str, on: bool, frame: str
+):
+    """Writes reverse-resolve through [tone_squelch_types] (MOR-4433 R3)."""
+    radio._transport.query = AsyncMock(return_value=f"CT0{current_code}")
+    radio._transport.write = AsyncMock()
+    await getattr(radio, setter)(on)
+    radio._transport.query.assert_awaited_once_with("CT0;")
+    radio._transport.write.assert_called_once_with(frame)
+
+
+@pytest.mark.parametrize("setter", ["set_repeater_tone", "set_repeater_tsql"])
+@pytest.mark.parametrize("code", [3, 4])
+@pytest.mark.asyncio
+async def test_ct_toggles_refuse_dcs_without_a_write(radio, setter: str, code: int):
+    radio._transport.query = AsyncMock(return_value=f"CT0{code}")
+    radio._transport.write = AsyncMock()
+    with pytest.raises(ValueError, match="refusing to overwrite"):
+        await getattr(radio, setter)(True)
+    radio._transport.query.assert_awaited_once_with("CT0;")
+    radio._transport.write.assert_not_awaited()
+
+
+def _real_ft991a_ct_radio():
+    """A real YaesuCatRadio (shipping ft991a.toml) over a scripted CT register."""
+    radio = YaesuCatRadio("/dev/null", profile=load_rig(RIG))
+    radio._transport._connected = True  # noqa: SLF001
+    ct = {0: 0}
+    writes: list[str] = []
+
+    async def query(cmd, *args, **kwargs):
+        assert cmd == "CT0;"
+        return f"CT0{ct[0]}"
+
+    async def write(cmd, *args, **kwargs):
+        writes.append(cmd)
+        if cmd.startswith("CT"):
+            ct[0] = int(cmd[3])
+
+    radio._transport.query = AsyncMock(side_effect=query)  # noqa: SLF001
+    radio._transport.write = AsyncMock(side_effect=write)  # noqa: SLF001
+
+    def set_ct(value: int) -> None:
+        ct[0] = value
+
+    return radio, writes, set_ct
+
+
+@pytest.mark.asyncio
+async def test_rigctld_tone_then_tsql_enable_encode_without_decode():
+    """F TONE 1 from CT00 enables encode only; F TSQL 1 joins decode.
+
+    Through the real rigctld entry point (RigctldHandler ->
+    YaesuRouting -> YaesuCatRadio -> wire): the pre-review failure wrote
+    CT01; for TONE, enabling decode as well as encode.
+    """
+    from rigplane.rigctld.contract import RigctldCommand, RigctldConfig
+    from rigplane.rigctld.handler import RigctldHandler
+
+    radio, writes, set_ct = _real_ft991a_ct_radio()
+    handler = RigctldHandler(radio, RigctldConfig())
+
+    def cmd(long_cmd: str, *args: str) -> RigctldCommand:
+        return RigctldCommand(
+            short_cmd="",
+            long_cmd=long_cmd,
+            args=tuple(args),
+            is_set=long_cmd.startswith("set"),
+        )
+
+    set_ct(0)
+    resp = await handler.execute(cmd("set_func", "TONE", "1"))
+    assert resp.ok
+    assert writes == ["CT02;"]
+
+    resp = await handler.execute(cmd("get_func", "TSQL"))
+    assert resp.ok
+    assert resp.values == ["0"]
+
+    resp = await handler.execute(cmd("set_func", "TSQL", "1"))
+    assert resp.ok
+    assert writes == ["CT02;", "CT01;"]
+
+    resp = await handler.execute(cmd("get_func", "TSQL"))
+    assert resp.ok
+    assert resp.values == ["1"]
+    resp = await handler.execute(cmd("get_func", "TONE"))
+    assert resp.ok
+    assert resp.values == ["1"]
+
+
+# ---------------------------------------------------------------------------
+# Sim follows the loaded contracts (P2)
+# ---------------------------------------------------------------------------
+
+
+def test_sim_leaves_if_unanswered_for_ft991a():
+    """The profile omits get_if_status: IF; must stay unanswered (``?;``).
+
+    The FTX-1 keeps its answered layout on the same sim build.
+    """
+    ft991a = YaesuCatSerialFake.from_profile(ROOT, SIM_PROFILE, rig_path=RIG)
+    assert ft991a.model.handle("IF;") == "?;"
+    assert ft991a.model.not_modelled.get("IF;") == 1
+
+    ftx1 = YaesuCatSerialFake.from_profile(ROOT)
+    reply = ftx1.model.handle("IF;")
+    assert reply is not None and reply != "?;"
+    assert reply.startswith("IF") and reply.endswith(";")
+
+
+def test_sim_refuses_squelch_for_ft991a_but_serves_ftx1():
+    """v1 declares no squelch command: SQ reads and writes answer ``?;``."""
+    ft991a = YaesuCatSerialFake.from_profile(ROOT, SIM_PROFILE, rig_path=RIG)
+    assert ft991a.model.handle("SQ0;") == "?;"
+    assert ft991a.model.handle("SQ0050;") == "?;"
+
+    ftx1 = YaesuCatSerialFake.from_profile(ROOT)
+    assert ftx1.model.handle("SQ0050;") is None
+    assert ftx1.model.handle("SQ0;") == "SQ0050;"

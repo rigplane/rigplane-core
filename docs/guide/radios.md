@@ -98,6 +98,8 @@ visible on both radios. VFO labels switch to "VFO A" / "VFO B" automatically.
 - **VFO scheme:** `ab` (1 receiver, 1 transceiver)
 - **Audio:** USB audio RX/TX; channel layout and sample rate are unverified on hardware
 - **Status:** Profile only; no hardware capture yet — unverified items are marked in the profile
+- **Known limits (v1):** contour is not exposed — nothing polls its CAT path yet
+- **Known limits (v1):** squelch is not exposed — its 0–100 CAT range does not fit the shared 0–255 level path yet
 
 !!! tip "Setup Guide"
     **[FT-991A USB Setup](ft991a-usb-setup.md)** — the CAT port and rate, radio

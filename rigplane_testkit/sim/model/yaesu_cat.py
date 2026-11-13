@@ -246,6 +246,31 @@ _LEVELS = (
 _LEVEL_BY_VERB = {codec.verb: codec for codec in _LEVELS}
 
 
+def _level_codecs(squelch_max: int | None) -> tuple[_LevelCodec, ...]:
+    """Per-profile level verbs: SQ carries *squelch_max*, or is absent.
+
+    ``None`` means the loaded capability profile declares no squelch read
+    (FT-991A v1): the verb is not served at all. Anything else is the
+    profile's published top value (255 on the FTX-1), enforced on SET and
+    reported by reads. ``squelch_max`` outside ``int >= 0`` raises
+    ``ValueError``.
+    """
+    if squelch_max is not None and (
+        type(squelch_max) is not int or squelch_max < 0
+    ):
+        raise ValueError(
+            f"squelch_max must be a non-negative int or None, got {squelch_max!r}"
+        )
+    if squelch_max is None:
+        return tuple(codec for codec in _LEVELS if codec.verb != "SQ")
+    return tuple(
+        _LevelCodec(codec.verb, codec.name, squelch_max)
+        if codec.verb == "SQ"
+        else codec
+        for codec in _LEVELS
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class _SelectorCodec:
     """One receiver-routed 1-digit selector; a SET accepts 0..set_max."""
@@ -288,6 +313,8 @@ class YaesuCatModel:
         on_not_modelled: Callable[[str], None] | None = None,
         direct_vfo_slots: bool = False,
         width_digits: int = 3,
+        squelch_max: int | None = 255,
+        support_if: bool = True,
     ) -> None:
         if type(identity) is not str or not identity:
             raise ValueError(f"identity must be a non-empty string, got {identity!r}")
@@ -328,14 +355,21 @@ class YaesuCatModel:
             "KM": self._keying_memory_command,
             "KY": self._keyer_play,
         }
-        for codec in _LEVELS:
+        for codec in _level_codecs(squelch_max):
             self._handlers[codec.verb] = lambda body, c=codec: self._level(body, c)
         for codec in _SELECTORS:
             self._handlers[codec.verb] = lambda body, c=codec: self._selector(body, c)
+        if not support_if:
+            # The loaded capability profile declares no IF read (FT-991A
+            # v1): the verb stays unanswered instead of echoing a layout
+            # the profile's own parser cannot read.
+            self._handlers.pop("IF", None)
         if type(width_digits) is not int or width_digits <= 0:
             raise ValueError(
                 f"width_digits must be a positive int, got {width_digits!r}"
             )
+        if type(support_if) is not bool:
+            raise ValueError(f"support_if must be a bool, got {support_if!r}")
         self._width_digits = width_digits
         if direct_vfo_slots:
             self._handlers.pop("ST")
@@ -794,7 +828,12 @@ class YaesuCatModel:
 
 
 def build_ftx1_engine(
-    profile: SimProfile, rig: _RigData, *, clock: Clock, seed: int = 0
+    profile: SimProfile,
+    rig: _RigData,
+    *,
+    clock: Clock,
+    seed: int = 0,
+    squelch_max: int | None = 255,
 ) -> SimEngine:
     """Build CAT engine capabilities from *rig*, initial state from *profile*.
 
@@ -820,7 +859,9 @@ def build_ftx1_engine(
         receiver_count=rig.receiver_count,
         modes=tuple(rig.modes),
         frequency_range_hz=(lo, hi),
-        levels={codec.name: (0, codec.maximum) for codec in _LEVELS},
+        levels={
+            codec.name: (0, codec.maximum) for codec in _level_codecs(squelch_max)
+        },
         selectors={
             "agc": tuple(rig.agc_readback_modes),
             "preamp": tuple(rig.pre_values),

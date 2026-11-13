@@ -65,7 +65,13 @@ features = [
     "audio",
     "af_level",
     "rf_gain",
-    "squelch",
+    # NOTE: no "squelch" tag in v1. SQ carries P2 000-100 (PDF p.18),
+    # but the shared level path assumes a 255 range end to end: the
+    # rigctld live read divides by 255, the write multiplies by 255,
+    # and the command-service readback normalization divides by 255
+    # with no radio context to resolve the published range from. Needs
+    # a domain-driven level mechanism shared by all radios (follow-up),
+    # not a profile fact.
     "attenuator",
     "preamp",
     # NOTE: no "nb"/"nr" tags in v1. NB/NR on/off are independent switches
@@ -79,7 +85,12 @@ features = [
     "narrow",
     "agc",
     "if_shift",
-    "contour",
+    # NOTE: no "contour" tag in v1. The radio reports contour through CO
+    # P2 0/1 (PDF p.6), but nothing polls that path: with the production
+    # observation callback installed the slow poller returns before its
+    # legacy contour read, and the observation adapter has no contour
+    # reader, so an enabled contour would never publish. Needs a shared
+    # contour observation path (follow-up), not a profile fact.
     "filter_width",
     "tx",
     "split",
@@ -145,7 +156,6 @@ polling_only = [
     # chain is a follow-up; the profile must not declare what it cannot read.
     "receiver.main.operator_controls.af_level",
     "receiver.main.operator_controls.rf_gain",
-    "receiver.main.operator_controls.squelch",
     "receiver.main.operator_controls.att",
     "receiver.main.operator_controls.preamp",
     "receiver.main.operator_controls.agc",
@@ -284,10 +294,6 @@ cadence_seconds = 1.0
 freshness_ttl_seconds = 2.0
 
 [state_acquisition.field_policies."receiver.main.operator_controls.rf_gain"]
-cadence_seconds = 1.0
-freshness_ttl_seconds = 2.0
-
-[state_acquisition.field_policies."receiver.main.operator_controls.squelch"]
 cadence_seconds = 1.0
 freshness_ttl_seconds = 2.0
 
@@ -607,11 +613,8 @@ restoration = "exact"
 raw_min = 0
 raw_max = 255
 
-# SQ (SQUELCH LEVEL, PDF p.18): P2 000-100 -- not the FTX-1 000-255 range.
-[controls.squelch]
-raw_min = 0
-raw_max = 100
-
+# Omitted in v1: [controls.squelch] (SQ P2 000-100, PDF p.18) -- see the
+# [capabilities] note.
 [controls.af_level]
 raw_min = 0
 raw_max = 255
@@ -787,6 +790,9 @@ labels = { "0" = "OFF", "1" = "ON" }
 #   backend writes 0/1 (inverted). See [capabilities] notes.
 # - NB/NR toggles and levels (NB0/NR0, NL0/RL0): independent switches need
 #   a shared switch-read mechanism (v1 omission, see [capabilities]).
+# - get/set_squelch (SQ0): the 000-100 range needs a domain-driven level
+#   mechanism shared by rigctld, web and command-service (v1 omission,
+#   see [capabilities]).
 # - AC tuner: P3 2 = start/stop differs from the shared tuner code's
 #   FTX-1 mapping; needs typed native-state data (v1 omission).
 # - MD1 sub-receiver mode forms: the MD selector is fixed at 0 (PDF p.12).
@@ -837,16 +843,17 @@ get_af_level       = { cat = { read = "AG0;", parse = "AG0{level:03d};" } }
 set_af_level       = { cat = { write = "AG0{level:03d};" } }
 get_rf_gain        = { cat = { read = "RG0;", parse = "RG0{level:03d};" } }
 set_rf_gain        = { cat = { write = "RG0{level:03d};" } }
-get_squelch        = { cat = { read = "SQ0;", parse = "SQ0{level:03d};" } }
-set_squelch        = { cat = { write = "SQ0{level:03d};" } }
+# Omitted in v1: get/set_squelch (SQ0 P2 000-100) -- see the
+# [capabilities] note.
 
 # ── RF Front End ──
 get_attenuator = { cat = { read = "RA0;", parse = "RA0{state};" } }
 set_attenuator = { cat = { write = "RA0{state};" } }
-# PA (PDF p.13): P1 0 fixed, P2 0 IPO / 1 AMP1 / 2 AMP2. The backend passes
-# band=0 by default, which renders the fixed P1.
+# PA (PDF p.13): P1 0 fixed, P2 0 IPO / 1 AMP1 / 2 AMP2. P1 is fixed at
+# the template level: the backend still passes band, but only {value}
+# reaches the wire, so set_preamp(1, band=1) writes PA01;, not PA11;.
 get_preamp     = { cat = { read = "PA0;", parse = "PA0{value};" } }
-set_preamp     = { cat = { write = "PA{band}{value};" } }
+set_preamp     = { cat = { write = "PA0{value};" } }
 
 # ── DSP / Noise ──
 # omitted from v1: NB/NR on/off are independent switches (NB0/NR0) with
@@ -924,8 +931,7 @@ set_lock       = { cat = { write = "LK{state};" } }
 # FTX-1 mapping in the shared tuner code; needs typed native-state data.
 # CO (PDF p.6): P1 0 fixed; P2 0 contour on/off, 1 contour freq, 2 APF
 # on/off, 3 APF freq; P3 the 4-digit value.
-get_contour    = { cat = { read = "CO00;", parse = "CO00{val:04d};" } }
-set_contour    = { cat = { write = "CO00{val:04d};" } }
+# Omitted in v1: get/set_contour (P2 0) -- see the [capabilities] note.
 get_apf        = { cat = { read = "CO02;", parse = "CO02{val:04d};" } }
 set_apf        = { cat = { write = "CO02{val:04d};" } }
 get_apf_freq   = { cat = { read = "CO03;", parse = "CO03{val:04d};" } }
