@@ -379,11 +379,11 @@ async def test_two_digit_sh_code_format_roundtrip_over_real_loader(
 
     # Code 00 reads through the active table: 2400 Hz wide, 1500 Hz narrow.
     radio._transport.query.side_effect = _query_fn(
-        {"MD0;": "MD02", "NA0;": "NA00", "SH0;": "SH000;"}
+        {"MD0;": "MD02", "NA0;": "NA00", "SH0;": "SH000"}
     )
     assert await radio.read_filter_width(mode="USB") == 2400
     radio._transport.query.side_effect = _query_fn(
-        {"MD0;": "MD02", "NA0;": "NA01", "SH0;": "SH000;"}
+        {"MD0;": "MD02", "NA0;": "NA01", "SH0;": "SH000"}
     )
     assert await radio.read_filter_width(mode="USB") == 1500
 
