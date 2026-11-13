@@ -321,9 +321,7 @@ class TestYaesuFixtureAliasForwarding:
         return rigs
 
     def _patch_dirs(self, monkeypatch: pytest.MonkeyPatch, rigs: Path) -> None:
-        monkeypatch.setattr(
-            "rigplane.backends.yaesu_cat.radio._RIGS_DIR", rigs
-        )
+        monkeypatch.setattr("rigplane.backends.yaesu_cat.radio._RIGS_DIR", rigs)
         monkeypatch.setattr("rigplane.cli._rigs_dir", lambda: rigs)
 
     @pytest.mark.parametrize("backend", ["yaesu-cat", "serial"])

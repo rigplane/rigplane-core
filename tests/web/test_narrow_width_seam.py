@@ -34,8 +34,7 @@ ROOT = Path(__file__).resolve().parents[2]
 FIXTURE = ROOT / "tests/fixtures/rigs/yaesu_single_rx_fixture.toml"
 SIM_FIXTURE = ROOT / "rigplane_testkit/sim/profiles/yaesu-single-rx-fixture.toml"
 SEAM_PATH = (
-    ROOT
-    / "frontend/src/lib/transport/__tests__/fixtures/narrow-width-seam.json"
+    ROOT / "frontend/src/lib/transport/__tests__/fixtures/narrow-width-seam.json"
 )
 _RENDER_COMMAND = "see tests/web/test_narrow_width_seam.py::render_seam_document"
 
@@ -86,9 +85,7 @@ def _store_with_narrow(mode: str, narrow: bool | None) -> StateStore:
     return store
 
 
-async def _dispatch_width(
-    profile, store: StateStore, width: int
-) -> dict[str, object]:
+async def _dispatch_width(profile, store: StateStore, width: int) -> dict[str, object]:
     """The real handler reply for one ``set_filter_width`` request."""
     queue: _QueueRecorder = _QueueRecorder()
     server = SimpleNamespace(command_queue=queue, command_state_store=store)
@@ -125,9 +122,7 @@ async def _drive_case(narrow: bool, width: int) -> tuple[list[str], int | None]:
 
     with (
         mock.patch.object(fake.model, "handle_with_outcome", logged),
-        mock.patch(
-            "rigplane.backends.yaesu_cat.transport.open_serial_port", open_port
-        ),
+        mock.patch("rigplane.backends.yaesu_cat.transport.open_serial_port", open_port),
     ):
         radio = YaesuCatRadio("/dev/fixture", profile=load_rig(FIXTURE))
         await radio._transport.connect()
@@ -154,9 +149,7 @@ def _render_case(
         "state": {"mode": "USB", "narrow": narrow, "filterWidth": state_width},
         "request": {"width": request_width, "receiver": 0},
         "reply": asyncio.run(
-            _dispatch_width(
-                profile, _store_with_narrow("USB", narrow), request_width
-            )
+            _dispatch_width(profile, _store_with_narrow("USB", narrow), request_width)
         ),
     }
     if drive:

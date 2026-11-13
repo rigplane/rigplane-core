@@ -46,7 +46,10 @@ from rigplane.rig_loader import discover_rigs, load_rig
 
 RIGS_DIR = Path(__file__).resolve().parent.parent / "rigs"
 _FIXTURE_TOML = (
-    Path(__file__).resolve().parent / "fixtures" / "rigs" / "yaesu_single_rx_fixture.toml"
+    Path(__file__).resolve().parent
+    / "fixtures"
+    / "rigs"
+    / "yaesu_single_rx_fixture.toml"
 )
 
 
@@ -96,7 +99,9 @@ _MEDIUM_READS: tuple[_RequiredRead, ...] = (
 # (observations.py:2155-2168) and the slow lane (observations.py:1156-1181)
 # read get_narrow(_sub) with no capability gate on MAIN.
 _WIDTH_READS: tuple[_RequiredRead, ...] = (
-    _RequiredRead(yaesu_obs._MAIN_FILTER_WIDTH, "get_filter_width", _all("filter_width")),
+    _RequiredRead(
+        yaesu_obs._MAIN_FILTER_WIDTH, "get_filter_width", _all("filter_width")
+    ),
     _RequiredRead(
         yaesu_obs._MAIN_FILTER_WIDTH_RADIO_DEFAULT,
         "get_filter_width",
@@ -104,7 +109,9 @@ _WIDTH_READS: tuple[_RequiredRead, ...] = (
         requires_pollable=(yaesu_obs._MAIN_FILTER_WIDTH,),
     ),
     _RequiredRead(
-        yaesu_obs._SUB_FILTER_WIDTH, "get_filter_width_sub", _all("dual_rx", "filter_width")
+        yaesu_obs._SUB_FILTER_WIDTH,
+        "get_filter_width_sub",
+        _all("dual_rx", "filter_width"),
     ),
     _RequiredRead(
         yaesu_obs._SUB_FILTER_WIDTH_RADIO_DEFAULT,
@@ -165,7 +172,9 @@ _SLOW_READS: tuple[_RequiredRead, ...] = (
     _RequiredRead(yaesu_obs._MAIN_AGC, "get_agc"),
     _RequiredRead(yaesu_obs._SUB_AGC, "get_agc_sub", _all("dual_rx")),
     _RequiredRead(yaesu_obs._MAIN_IF_SHIFT, "get_if_shift", _all("if_shift")),
-    _RequiredRead(yaesu_obs._SUB_IF_SHIFT, "get_if_shift_sub", _all("dual_rx", "if_shift")),
+    _RequiredRead(
+        yaesu_obs._SUB_IF_SHIFT, "get_if_shift_sub", _all("dual_rx", "if_shift")
+    ),
     _RequiredRead(yaesu_obs._MAIN_NB_LEVEL, "get_nb_level", _all("nb")),
     _RequiredRead(yaesu_obs._MAIN_NB, "get_nb_level", _all("nb")),
     _RequiredRead(yaesu_obs._SUB_NB_LEVEL, "get_nb_level_sub", _all("dual_rx", "nb")),
@@ -175,26 +184,48 @@ _SLOW_READS: tuple[_RequiredRead, ...] = (
     _RequiredRead(yaesu_obs._SUB_NR_LEVEL, "get_nr_level_sub", _all("dual_rx", "nr")),
     _RequiredRead(yaesu_obs._SUB_NR, "get_nr_level_sub", _all("dual_rx", "nr")),
     _RequiredRead(yaesu_obs._MAIN_AUTO_NOTCH, "get_auto_notch", _all("notch")),
-    _RequiredRead(yaesu_obs._SUB_AUTO_NOTCH, "get_auto_notch_sub", _all("dual_rx", "notch")),
-    _RequiredRead(yaesu_obs._MAIN_MANUAL_NOTCH, "get_manual_notch", _all("notch")),
-    _RequiredRead(yaesu_obs._SUB_MANUAL_NOTCH, "get_manual_notch_sub", _all("dual_rx", "notch")),
-    _RequiredRead(yaesu_obs._MAIN_MANUAL_NOTCH_FREQ, "get_manual_notch_freq", _all("notch")),
     _RequiredRead(
-        yaesu_obs._SUB_MANUAL_NOTCH_FREQ, "get_manual_notch_freq_sub", _all("dual_rx", "notch")
+        yaesu_obs._SUB_AUTO_NOTCH, "get_auto_notch_sub", _all("dual_rx", "notch")
+    ),
+    _RequiredRead(yaesu_obs._MAIN_MANUAL_NOTCH, "get_manual_notch", _all("notch")),
+    _RequiredRead(
+        yaesu_obs._SUB_MANUAL_NOTCH, "get_manual_notch_sub", _all("dual_rx", "notch")
+    ),
+    _RequiredRead(
+        yaesu_obs._MAIN_MANUAL_NOTCH_FREQ, "get_manual_notch_freq", _all("notch")
+    ),
+    _RequiredRead(
+        yaesu_obs._SUB_MANUAL_NOTCH_FREQ,
+        "get_manual_notch_freq_sub",
+        _all("dual_rx", "notch"),
     ),
     _RequiredRead(yaesu_obs._MAIN_REPEATER_TONE, "get_sql_type", _all("sql_type")),
     _RequiredRead(yaesu_obs._MAIN_REPEATER_TSQL, "get_sql_type", _all("sql_type")),
     _RequiredRead(yaesu_obs._MAIN_TONE_SQUELCH_TYPE, "get_sql_type", _all("sql_type")),
-    _RequiredRead(yaesu_obs._SUB_REPEATER_TONE, "get_sql_type", _all("dual_rx", "sql_type")),
-    _RequiredRead(yaesu_obs._SUB_REPEATER_TSQL, "get_sql_type", _all("dual_rx", "sql_type")),
-    _RequiredRead(yaesu_obs._SUB_TONE_SQUELCH_TYPE, "get_sql_type", _all("dual_rx", "sql_type")),
+    _RequiredRead(
+        yaesu_obs._SUB_REPEATER_TONE, "get_sql_type", _all("dual_rx", "sql_type")
+    ),
+    _RequiredRead(
+        yaesu_obs._SUB_REPEATER_TSQL, "get_sql_type", _all("dual_rx", "sql_type")
+    ),
+    _RequiredRead(
+        yaesu_obs._SUB_TONE_SQUELCH_TYPE, "get_sql_type", _all("dual_rx", "sql_type")
+    ),
     _RequiredRead(yaesu_obs._MAIN_TONE_FREQ, "get_ctcss_tone", _all("sql_type")),
     _RequiredRead(yaesu_obs._MAIN_TSQL_FREQ, "get_ctcss_tone", _all("sql_type")),
-    _RequiredRead(yaesu_obs._SUB_TONE_FREQ, "get_ctcss_tone", _all("dual_rx", "sql_type")),
-    _RequiredRead(yaesu_obs._SUB_TSQL_FREQ, "get_ctcss_tone", _all("dual_rx", "sql_type")),
-    _RequiredRead(yaesu_obs._MAIN_REPEATER_SHIFT, "get_repeater_shift", _all("repeater_shift")),
     _RequiredRead(
-        yaesu_obs._SUB_REPEATER_SHIFT, "get_repeater_shift", _all("dual_rx", "repeater_shift")
+        yaesu_obs._SUB_TONE_FREQ, "get_ctcss_tone", _all("dual_rx", "sql_type")
+    ),
+    _RequiredRead(
+        yaesu_obs._SUB_TSQL_FREQ, "get_ctcss_tone", _all("dual_rx", "sql_type")
+    ),
+    _RequiredRead(
+        yaesu_obs._MAIN_REPEATER_SHIFT, "get_repeater_shift", _all("repeater_shift")
+    ),
+    _RequiredRead(
+        yaesu_obs._SUB_REPEATER_SHIFT,
+        "get_repeater_shift",
+        _all("dual_rx", "repeater_shift"),
     ),
     _RequiredRead(yaesu_obs._ACTIVE, "get_vfo_select"),
     _RequiredRead(yaesu_obs._CW_SPOT, "get_cw_spot", _all("cw")),
@@ -215,12 +246,16 @@ _TX_CONTROL_READS: tuple[_RequiredRead, ...] = (
     _RequiredRead(yaesu_obs._POWER_LEVEL, "get_power", _all("tx")),
     _RequiredRead(yaesu_obs._MIC_GAIN, "get_mic_gain"),
     _RequiredRead(yaesu_obs._COMPRESSOR_ON, "get_processor", _all("compressor")),
-    _RequiredRead(yaesu_obs._COMPRESSOR_LEVEL, "get_processor_level", _all("compressor")),
+    _RequiredRead(
+        yaesu_obs._COMPRESSOR_LEVEL, "get_processor_level", _all("compressor")
+    ),
     _RequiredRead(yaesu_obs._VOX_ON, "get_vox", _all("vox")),
     _RequiredRead(yaesu_obs._SPLIT, "get_split", _all("split")),
     _RequiredRead(yaesu_obs._RIT_ON, "get_clarifier", frozenset(), _all("rit", "xit")),
     _RequiredRead(yaesu_obs._RIT_TX, "get_clarifier", frozenset(), _all("rit", "xit")),
-    _RequiredRead(yaesu_obs._RIT_FREQ, "get_clarifier_freq", frozenset(), _all("rit", "xit")),
+    _RequiredRead(
+        yaesu_obs._RIT_FREQ, "get_clarifier_freq", frozenset(), _all("rit", "xit")
+    ),
     _RequiredRead(yaesu_obs._TUNER, "get_tuner", _all("tuner")),
     _RequiredRead(yaesu_obs._DIAL_LOCK, "get_lock", _all("dial_lock")),
     _RequiredRead(yaesu_obs._KEY_SPEED, "get_keyer_speed", _all("cw")),
