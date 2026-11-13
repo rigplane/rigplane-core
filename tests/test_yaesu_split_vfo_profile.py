@@ -592,7 +592,7 @@ async def test_narrow_width_end_to_end_over_http_with_cat_sim(tmp_path, monkeypa
     Submits ``set_filter_width`` in the wide state (the response admits
     the nearest wide-table entry), enables NARROW, then submits a
     narrow-table width: the response carries the narrow ``admitted_width``
-    and the observed public width follows. Real handler, real queue,
+    and the width reads back narrow over the CAT wire. Real handler, real queue,
     real dispatch and readback throughout.
     """
     radio, wire, host, port, server = await _serve_fixture_over_http(
@@ -615,8 +615,13 @@ async def test_narrow_width_end_to_end_over_http_with_cat_sim(tmp_path, monkeypa
 
         body = await _http_post_command(host, port, "set_filter_width", {"width": 1800})
         assert body["result"]["admitted_width"] == 1800
-        assert "SH001;" in wire
-        await _wait_for_state(host, port, "filterWidth", 1800)
+        assert "SH0001;" in wire
+        # The fixture profile declares no width polling, so the public
+        # state carries no filterWidth; read the width back through the
+        # real radio over the CAT wire instead (SH answer mapped through
+        # the narrow table because NARROW is on).
+        reading = await radio.read_filter_width_reading(0, mode="USB")
+        assert reading.hz == 1800
     finally:
         await server.stop()
         await radio._transport.close()
