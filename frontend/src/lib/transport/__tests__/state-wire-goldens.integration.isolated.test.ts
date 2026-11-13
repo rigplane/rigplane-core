@@ -143,59 +143,51 @@ describe('state wire goldens → real client chain', () => {
     if (!observed) expect(currentDisplayCount(viewModel!)).toBe(0);
   });
 
-  // ─── MOR-4434: narrow/wide control on a NEW generated fixture ───────────
+  // ─── MOR-4434: narrow/wide control on a producer-generated envelope ─────
   //
   // `../../runtime/adapters/__tests__/fixtures/fixture-narrow-capabilities.json`
   // carries the single-RX fixture profile's capabilities projection with the
-  // SSB/CW `narrowTable` the server publishes. The envelopes below are
-  // hand-built in the committed goldens' envelope shape (the validator in
-  // `stores/radio.svelte` only requires the contract fields); they assert the
+  // SSB/CW `narrowTable` the server publishes (see its provenance wrapper,
+  // `../../runtime/adapters/__tests__/fixtures/fixture-narrow-profile.ts`).
+  // The envelopes below are NOT hand-built: each one clones the committed
+  // FTX-1 `allObserved` full envelope from `fixtures/state-wire-goldens.json`
+  // (emitted by `scripts/gen_state_wire_goldens.py` from the Python
+  // producers), re-epochs it to the fixture capabilities' generation (7),
+  // advances its revisions to `seq`, and overrides only
+  // `main.mode`/`main.narrow`/`main.filterWidth` — plus the `main.narrow`
+  // field-status entry for the unknown-narrow case, copied from the same
+  // goldens' FTX-1 `allUnobserved` producer entry shape. They assert the
   // browser seam end to end: server JSON → real ws-client → radio store →
   // `toRadioViewModel` bounds follow the narrow-selected table, and an
   // unobserved narrow reading keeps the wide table.
   function narrowEnvelope(
     seq: number, narrow: boolean | null, filterWidth: number, markNarrowMissing: boolean,
   ): Record<string, unknown> {
-    const data: Record<string, unknown> = {
-      stateContractVersion: 1,
-      providerGeneration: 7,
-      revision: seq,
-      stateRevision: seq,
-      freshnessRevision: 0,
-      observationSeq: seq,
-      updatedAt: '2026-01-01T00:00:00.000Z',
-      active: 'MAIN',
-      ptt: null,
-      split: null,
-      dualWatch: null,
-      tunerStatus: null,
-      main: {
-        freqHz: 14_074_000,
-        mode: 'USB',
-        filter: null,
-        dataMode: null,
-        sMeter: null,
-        att: null,
-        preamp: null,
-        nb: null,
-        nr: null,
-        afLevel: null,
-        rfGain: null,
-        squelch: null,
-        filterWidth,
-        narrow,
-      },
-      connection: { rigConnected: true, radioReady: true, controlConnected: true },
-      txTarget: { status: 'unknown', reason: 'narrow-table seam' },
-    };
+    const envelope = structuredClone(goldens['FTX-1'].allObserved!) as Record<string, unknown>;
+    envelope.providerGeneration = 7;
+    envelope.revision = seq;
+    envelope.stateRevision = seq;
+    envelope.freshnessRevision = seq;
+    envelope.observationSeq = seq;
+    const data = envelope.data as Record<string, unknown>;
+    data.providerGeneration = 7;
+    data.revision = seq;
+    data.stateRevision = seq;
+    data.freshnessRevision = seq;
+    data.observationSeq = seq;
+    const main = data.main as Record<string, unknown>;
+    main.mode = 'USB';
+    main.narrow = narrow;
+    main.filterWidth = filterWidth;
     if (markNarrowMissing) {
-      data.fieldStatus = {
-        'main.narrow': {
-          availability: 'missing', freshness: 'fresh', observed: false, storePath: 'main.narrow',
-        },
+      (data.fieldStatus as Record<string, unknown>)['main.narrow'] = {
+        availability: 'missing',
+        freshness: 'unknown',
+        observed: false,
+        storePath: 'receiver.main.operator_toggles.narrow',
       };
     }
-    return data;
+    return envelope;
   }
 
   function widthBounds(viewModel: RadioViewModel | null): [unknown, unknown] {
