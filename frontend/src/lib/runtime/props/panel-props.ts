@@ -26,7 +26,7 @@ import {
 } from '$lib/radio/filter-controls';
 import type { NrLevelProjection, ControlDisplayDomain, PbtRange } from '$lib/radio/filter-controls';
 import { decodeControlDomain, encodeControlDomain } from '$lib/radio/control-domain';
-import { isFieldAvailable, isFieldRead } from '$lib/state/field-status';
+import { isFieldAvailable, isFieldFreshlyObserved, isFieldRead } from '$lib/state/field-status';
 import { finiteValue } from '../../../primitives/reading-text';
 import { FULL_RF_POWER_SCALE, type RfPowerScale } from '../../../primitives/scalar/value-control-core';
 import { modInputStateKey } from '$lib/radio/mod-input';
@@ -56,6 +56,18 @@ function topFieldAvailable(state: ServerState | null, field: string): boolean {
 function activeFieldAvailable(state: ServerState | null, field: string): boolean {
   if (!state) return false;
   return isFieldAvailable(state, `${activeReceiverKey(state)}.${field}`);
+}
+
+/**
+ * The narrow value for table selection (MOR-4434): the reading only when
+ * the active receiver's narrow leaf is freshly observed, else `null`
+ * (unknown) so the wide table applies. Stale counts as unknown — the
+ * backend's `_observed_receiver_narrow` reads the same way, so commit
+ * validation and the admission hint can never disagree on a held value.
+ */
+function activeFreshNarrow(state: ServerState | null, value: boolean | null | undefined): boolean | null {
+  if (!state) return null;
+  return isFieldFreshlyObserved(state, `${activeReceiverKey(state)}.narrow`) ? (value ?? null) : null;
 }
 
 function activeFieldShown(state: ServerState | null, field: string): boolean {
@@ -365,10 +377,38 @@ export function modeHasTwinPbt(
   return !anyModeDeclares;
 }
 
+/**
+ * The mode rule with the NARROW-selected table published as `table`
+ * (MOR-4434): while the OBSERVED narrow state is on and the rule declares
+ * a non-empty `narrowTable`, the SH codes map through that table instead
+ * of the wide one — the same selection the backend write path makes, so
+ * bounds, choices, quantization, validation and commit can keep reading
+ * `table` and never disagree about which widths the radio accepts.
+ * `false`, `null` or `undefined` narrow keeps the wide table — exactly
+ * today's behavior for every radio without narrow data and for every
+ * unobserved or stale narrow reading (callers pass `null` for stale via
+ * `isFieldFreshlyObserved`, MOR-4434). Returns the declared entry itself
+ * unless the narrow table is actually selected, so unchanged cases keep
+ * the identical object reference. The selected table also resolves the
+ * explicit bounds: a rule carrying wide-table `minHz`/`maxHz` beside its
+ * narrow variant would otherwise fail every table-consumer validity check
+ * (`validResolvedFilterWidth`, `normalizeFilterRule` reject a table whose
+ * endpoints differ from the explicit bounds).
+ */
+function activeFilterTableConfig(
+  config: FilterModeConfig,
+  narrow: boolean | null | undefined,
+): FilterModeConfig {
+  if (narrow !== true || !config.narrowTable || config.narrowTable.length === 0) return config;
+  const table = [...config.narrowTable];
+  return { ...config, table, minHz: table[0], maxHz: table[table.length - 1] };
+}
+
 export function resolveFilterModeConfig(
   caps: Capabilities | null,
   mode: string | undefined,
   dataMode: number | undefined,
+  narrow?: boolean | null,
 ): FilterModeConfig | null {
   const filterConfig = caps?.filterConfig;
   const normalizedMode = mode?.toUpperCase();
@@ -396,7 +436,7 @@ export function resolveFilterModeConfig(
   for (const candidate of candidates) {
     const config = filterConfig?.[candidate];
     if (config) {
-      return config;
+      return activeFilterTableConfig(config, narrow);
     }
   }
   return null;
@@ -451,7 +491,11 @@ export function toFilterProps(
 ): FilterProps {
   const rx = state ? activeRx(state) : null;
   // MOR-2513: an unobserved mode/dataMode (null) resolves no config.
-  const filterConfig = resolveFilterModeConfig(caps, rx?.mode ?? undefined, rx?.dataMode ?? undefined);
+  // MOR-4434: the freshly observed narrow state selects the mode's active
+  // table — unobserved or stale narrow keeps the wide table, exactly as
+  // before, and exactly as the backend's admission hint does.
+  const narrow = activeFreshNarrow(state, rx?.narrow);
+  const filterConfig = resolveFilterModeConfig(caps, rx?.mode ?? undefined, rx?.dataMode ?? undefined, narrow);
   // MOR-2497: PBT reads in Hz on the measured lattice — the mode's declared
   // step and the OBSERVED filter width — through the one derivation both
   // control surfaces share (`measuredPbtDisplayDomain`). No lattice (no step
@@ -1384,7 +1428,11 @@ export function toAudioSpectrumProps(
 ): AudioSpectrumProps {
   const rx = state ? activeRx(state) : null;
   // MOR-2513: null mode/dataMode (unobserved) resolves no config.
-  const filterConfig = resolveFilterModeConfig(caps, rx?.mode ?? undefined, rx?.dataMode ?? undefined);
+  // MOR-4434: same narrow-selected table as `toFilterProps` — the spectrum
+  // ceiling follows the active table, freshly observed only (stale is
+  // unknown, like the backend's admission read).
+  const narrow = activeFreshNarrow(state, rx?.narrow);
+  const filterConfig = resolveFilterModeConfig(caps, rx?.mode ?? undefined, rx?.dataMode ?? undefined, narrow);
   const filterWidthMax = filterConfig?.table?.length
     ? filterConfig.table[filterConfig.table.length - 1]
     : (filterConfig?.maxHz ?? caps?.filterWidthMax ?? 4000);

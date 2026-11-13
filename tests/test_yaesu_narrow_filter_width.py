@@ -353,6 +353,54 @@ async def test_offset_bases_map_by_active_table_on_second_profile(
 
 
 @pytest.mark.asyncio
+async def test_two_digit_sh_code_format_roundtrip_over_real_loader(
+    tmp_path: Path,
+) -> None:
+    """``{code:02d}`` SH templates carry two-digit wire codes (MOR-4434).
+
+    A tmp copy of the fixture with the SH templates narrowed to two digits
+    loads through the real loader and pins the wire literally, including
+    code 00: ``SH000;`` reads back through the active table in both narrow
+    states, and both states write it back. The committed FTX-1 profile
+    keeps its three-digit shape (pinned by
+    ``test_ftx1_width_read_and_set_issue_no_narrow_query``).
+    """
+    text = FIXTURE.read_text()
+    old_read = (
+        'get_filter_width = { cat = { read = "SH0;", parse = "SH0{code:03d};" } }'
+    )
+    old_write = 'set_filter_width = { cat = { write = "SH0{code:03d};" } }'
+    assert old_read in text
+    assert old_write in text
+    path = tmp_path / "two-digit.toml"
+    path.write_text(text.replace("{code:03d}", "{code:02d}"))
+    radio = YaesuCatRadio("/dev/null", profile=load_rig(path))
+    radio._transport._connected = True
+    radio._transport.write = AsyncMock()
+    radio._transport.query = AsyncMock()
+
+    # Code 00 reads through the active table: 2400 Hz wide, 1500 Hz narrow.
+    radio._transport.query.side_effect = _query_fn(
+        {"MD0;": "MD02", "NA0;": "NA00", "SH0;": "SH000"}
+    )
+    assert await radio.read_filter_width(mode="USB") == 2400
+    radio._transport.query.side_effect = _query_fn(
+        {"MD0;": "MD02", "NA0;": "NA01", "SH0;": "SH000"}
+    )
+    assert await radio.read_filter_width(mode="USB") == 1500
+
+    # The same code 00 writes back in both states: 2400 Hz wide and
+    # 1500 Hz narrow both sit at index 0 of their own table.
+    radio._transport.query.side_effect = _query_fn({"MD0;": "MD02", "NA0;": "NA00"})
+    await radio.set_filter_width(2400)
+    radio._transport.write.assert_called_once_with("SH000;")
+    radio._transport.write.reset_mock()
+    radio._transport.query.side_effect = _query_fn({"MD0;": "MD02", "NA0;": "NA01"})
+    await radio.set_filter_width(1500)
+    radio._transport.write.assert_called_once_with("SH000;")
+
+
+@pytest.mark.asyncio
 async def test_cw_pair_maps_by_narrow_state(radio: YaesuCatRadio) -> None:
     radio._transport.query.side_effect = _query_fn({"NA0;": "NA01", "SH0;": "SH0001"})
     assert await radio.read_filter_width(mode="CW") == 300
@@ -473,6 +521,65 @@ async def test_narrow_width_roundtrip_over_cat_transport(
         # Code 2 in the wide table.
         assert await radio.get_filter_width() == 3000
         assert wire[-3:] == ["MD0;", "SH0;", "NA0;"]
+    finally:
+        await radio._transport.close()
+
+
+@pytest.mark.asyncio
+async def test_two_digit_sh_shape_roundtrip_through_sim(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two-digit SH templates drive the sim's two-digit shape (MOR-4434).
+
+    A tmp copy of the fixture with ``{code:03d}`` narrowed to ``{code:02d}``
+    mounts the CAT simulator through ``YaesuCatSerialFake.from_profile`` —
+    real loader plus real CAT transport, no mocked methods — and pins the
+    literal two-digit wire, including code 00, in both narrow states. The
+    three-digit coverage stays in the neighboring roundtrip test. Fails if
+    the sim's ``width_digits`` handling reverts to three digits
+    (``_sh_code_digits``): the sim would render answers the radio never
+    parses.
+    """
+    text = FIXTURE.read_text()
+    old_read = (
+        'get_filter_width = { cat = { read = "SH0;", parse = "SH0{code:03d};" } }'
+    )
+    old_write = 'set_filter_width = { cat = { write = "SH0{code:03d};" } }'
+    assert old_read in text
+    assert old_write in text
+    path = tmp_path / "two-digit.toml"
+    path.write_text(text.replace("{code:03d}", "{code:02d}"))
+    fake = YaesuCatSerialFake.from_profile(ROOT, SIM_FIXTURE, rig_path=path)
+    wire: list[str] = []
+    handle = fake.model.handle_with_outcome
+
+    def logged(line):
+        wire.append(line)
+        return handle(line)
+
+    monkeypatch.setattr(fake.model, "handle_with_outcome", logged)
+
+    async def open_port(*args, **kwargs):
+        return await fake.open_serial_connection()
+
+    monkeypatch.setattr(
+        "rigplane.backends.yaesu_cat.transport.open_serial_port", open_port
+    )
+    radio = YaesuCatRadio("/dev/two-digit", profile=load_rig(path))
+    await radio._transport.connect()
+    try:
+        await radio.set_mode("USB")
+        # Code 00 writes and reads back literally in the wide state ...
+        await radio.set_narrow(False)
+        await radio.set_filter_width(2400)
+        assert await radio.get_filter_width() == 2400
+        # ... and re-maps through the narrow table while NARROW is on.
+        await radio.set_narrow(True)
+        assert await radio.get_filter_width() == 1500
+        await radio.set_filter_width(1500)
+        assert await radio.get_filter_width() == 1500
+        assert "SH000;" in wire
+        assert "SH0000;" not in wire
     finally:
         await radio._transport.close()
 
