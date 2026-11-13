@@ -509,16 +509,26 @@ def test_admitted_width_selects_table_by_narrow():
     assert ftx1.admitted_filter_width("USB", 2400, narrow=True) == 2400
 
 
-def test_serialized_filter_config_carries_no_narrow_table():
-    # MOR-4433: the wire contract (FilterModeConfig) has no narrow-table
-    # field and nothing consumes one, so the projection omits it even
-    # where the profile declares the variant. The narrow table stays
-    # server-side, where admitted_filter_width maps through it.
-    for path in (RIG, ROOT / "rigs/ftx1.toml"):
-        config = _serialize_filter_config(load_rig(path).to_profile())
-        assert config, path
-        for rule in config.values():
-            assert "narrowTable" not in rule, path
+def test_serialized_filter_config_carries_the_ft991a_narrow_tables():
+    # MOR-4433 on top of MOR-4434: the typed filter contract carries
+    # ``narrowTable`` wherever a rule declares the variant (the narrow-cut
+    # of the first FT-991A cut is gone), and only there. FTX-1 declares no
+    # narrow variant: its projection stays byte-identical.
+    profile = load_rig(RIG).to_profile()
+    config = _serialize_filter_config(profile)
+    assert config
+    for mode, rule in config.items():
+        declared = profile.resolve_filter_rule(mode)
+        assert declared is not None, mode
+        if declared.narrow_table:
+            assert rule["narrowTable"] == list(declared.narrow_table), mode
+        else:
+            assert "narrowTable" not in rule, mode
+    assert any("narrowTable" in rule for rule in config.values())
+    ftx1 = _serialize_filter_config(load_rig(ROOT / "rigs/ftx1.toml").to_profile())
+    assert ftx1
+    for rule in ftx1.values():
+        assert "narrowTable" not in rule
 
 
 # ---------------------------------------------------------------------------
