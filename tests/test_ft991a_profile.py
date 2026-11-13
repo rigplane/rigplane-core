@@ -175,8 +175,7 @@ def test_ft991a_does_not_poll_tx_target_without_a_tx_func_command():
     acquisition = load_rig(RIG).to_profile().state_acquisition
     assert acquisition is not None
     assert (
-        FieldPath.global_("tx_state", "tx_target")
-        not in acquisition.pollable_paths()
+        FieldPath.global_("tx_state", "tx_target") not in acquisition.pollable_paths()
     )
 
 
@@ -739,9 +738,7 @@ async def test_narrow_width_end_to_end_over_http_with_cat_sim(monkeypatch):
 
         # Wide state: SSB 2400 Hz is on the wide table (manual PDF p.17:
         # code 14 -> SH014;).
-        body = await _http_post_command(
-            host, port, "set_filter_width", {"width": 2400}
-        )
+        body = await _http_post_command(host, port, "set_filter_width", {"width": 2400})
         assert body["result"]["admitted_width"] == 2400
         await _wait_for_state(host, port, "filterWidth", 2400)
         assert "SH014;" in wire
@@ -759,9 +756,7 @@ async def test_narrow_width_end_to_end_over_http_with_cat_sim(monkeypatch):
         # 2400 -> 1800 transition proves the narrow-state read is live:
         # with the old narrow-state exclusion restored, filterWidth
         # would stay stuck at 2400 and this wait would time out.
-        body = await _http_post_command(
-            host, port, "set_filter_width", {"width": 1800}
-        )
+        body = await _http_post_command(host, port, "set_filter_width", {"width": 1800})
         assert body["result"]["admitted_width"] == 1800
         await _wait_for_state(host, port, "filterWidth", 1800)
         assert "SH009;" in wire
@@ -770,17 +765,13 @@ async def test_narrow_width_end_to_end_over_http_with_cat_sim(monkeypatch):
         # check below proves a live roundtrip rather than a stale value.
         await _http_post_command(host, port, "set_narrow", {"on": False})
         await _wait_for_state(host, port, "narrow", False)
-        body = await _http_post_command(
-            host, port, "set_filter_width", {"width": 2400}
-        )
+        body = await _http_post_command(host, port, "set_filter_width", {"width": 2400})
         assert body["result"]["admitted_width"] == 2400
         await _wait_for_state(host, port, "filterWidth", 2400)
 
         # Wide state: a narrow-only width (400 Hz) admits the nearest
         # wide entry and must not read back as 400 Hz.
-        body = await _http_post_command(
-            host, port, "set_filter_width", {"width": 400}
-        )
+        body = await _http_post_command(host, port, "set_filter_width", {"width": 400})
         assert body["result"]["admitted_width"] == 1800
         await _wait_for_state(host, port, "filterWidth", 1800)
     finally:
