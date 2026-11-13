@@ -547,12 +547,43 @@ def _observed_receiver_mode(server: Any, receiver: int) -> str | None:
     return None
 
 
+def _observed_receiver_narrow(server: Any, receiver: int) -> bool | None:
+    """The state store's fresh observed narrow flag for *receiver*, if any.
+
+    Sibling of :func:`_observed_receiver_mode`: snapshots key the primary
+    receiver under "0" (legacy Icom poller) or "main" (Yaesu CAT, rigctld),
+    and the same receiver-id order is probed. A stale or absent narrow
+    observation reads as unknown (``None``) rather than as wide — the
+    caller keeps today's wide-table mapping then, exactly as before narrow
+    data existed. The narrow flag lives on a receiver-scoped path
+    (``FieldPath.receiver``, no VFO slot — the same path the command
+    service resolves for ``set_narrow``): a slotted
+    ``FieldPath.active`` lookup is invalid here outside ``freq_mode``.
+    """
+    state_store = getattr(server, "command_state_store", None)
+    if not isinstance(state_store, StateStore):
+        return None
+    snapshot = state_store.snapshot()
+    receiver_ids = primary_receiver_snapshot_ids() if receiver == 0 else ("1", "sub")
+    for receiver_id in receiver_ids:
+        try:
+            field = snapshot.field(
+                FieldPath.receiver(receiver_id, "operator_toggles", "narrow")
+            )
+        except KeyError:
+            continue
+        if field.freshness is FreshnessState.FRESH and isinstance(field.value, bool):
+            return field.value
+    return None
+
+
 def _with_admitted_width(
     intent: CommandIntent,
     details: dict[str, Any],
     *,
     profile: RadioProfile | None,
     mode: str | None,
+    narrow: bool | None = None,
 ) -> dict[str, Any]:
     """Attach the profile-admitted width to a ``set_filter_width`` response.
 
@@ -562,6 +593,11 @@ def _with_admitted_width(
     table, non-table profile) leaves *details* untouched; the client then
     confirms on plain equality with the requested width. Pinned by
     tests/test_filter_width_admitted_width.py.
+
+    When the narrow state is freshly observed (MOR-4428/MOR-4433), the hint
+    maps through the mode's narrow table — the same table the backend
+    write uses — so NARROW-on writes confirm exactly. Unknown or stale
+    narrow keeps the wide-table mapping.
     """
     if intent.name != "set_filter_width":
         return details
@@ -573,7 +609,7 @@ def _with_admitted_width(
         or "admitted_width" in details
     ):
         return details
-    admitted = profile.admitted_filter_width(mode, width)
+    admitted = profile.admitted_filter_width(mode, width, narrow=narrow is True)
     if not isinstance(admitted, int):
         return details
     return {**details, "admitted_width": admitted}
@@ -2082,13 +2118,13 @@ class ControlHandler:
         )
         details = _with_admitted_level(intent, result)
         if intent.name == "set_filter_width":
+            receiver = int(params.get("receiver", 0))
             details = _with_admitted_width(
                 intent,
                 details,
                 profile=getattr(self._radio, "profile", None),
-                mode=_observed_receiver_mode(
-                    self._server, int(params.get("receiver", 0))
-                ),
+                mode=_observed_receiver_mode(self._server, receiver),
+                narrow=_observed_receiver_narrow(self._server, receiver),
             )
         return CommandExecutionResult(details=details)
 
@@ -2815,8 +2851,7 @@ class ControlHandler:
                 if isinstance(profile, RadioProfile):
                     # One shared rule with capability projection
                     # (``web/runtime_helpers.py:
-                    # projected_vfo_capability_tags``): Yaesu ``ab``
-                    # admits only ``vfo_swap``.
+                    # projected_vfo_capability_tags``).
                     declared = profile.supports_vfo_command(name)
                 if not declared:
                     raise ValueError(

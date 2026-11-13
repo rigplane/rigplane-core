@@ -750,8 +750,9 @@ def projected_vfo_capability_tags(
       declaration is present, through the single shared rule
       ``RadioProfile.supports_vfo_command`` (opcode bytes for the CI-V
       families; the declared ``vfo_swap``/``vfo_equalize`` CAT command
-      entries for the Yaesu CAT family — except that Yaesu ``ab``
-      admits only ``vfo_swap``, never ``vfo_equalize``) — pinned by
+      entries for the Yaesu CAT family — with Yaesu ``ab`` admitting
+      ``vfo_equalize`` exactly when the profile declares the ``vfo_a_to_b``
+      copy primitive (MOR-4433 follow-up A) — pinned by
       ``test_vfo_tags_match_across_consumers_for_real_profiles`` and
       ``test_vfo_tags_keep_partial_and_mismatched_schemes_in_parity``.
     - Otherwise exactly one candidate model string is tried: ``radio.model``
@@ -789,9 +790,9 @@ def projected_vfo_capability_tags(
     # One shared rule — ``RadioProfile.supports_vfo_command`` — so
     # projection cannot disagree with command admission
     # (``web/handlers/control.py: _enqueue_rc_frequency``). The Yaesu
-    # single-receiver ``ab`` scheme admits only ``vfo_swap`` even when the
-    # profile declares ``vfo_equalize``: the CAT set has no per-receiver
-    # A→B copy primitive.
+    # single-transceiver ``ab`` scheme admits ``vfo_equalize`` exactly when
+    # the profile declares the ``vfo_a_to_b`` copy primitive (MOR-4433
+    # follow-up A): equalize is that A→B copy.
     tags = {
         tag for tag in ("vfo_swap", "vfo_equalize") if profile.supports_vfo_command(tag)
     }

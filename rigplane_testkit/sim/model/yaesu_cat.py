@@ -287,6 +287,7 @@ class YaesuCatModel:
         recorded: RecordedCatAnswerTable | None = None,
         on_not_modelled: Callable[[str], None] | None = None,
         direct_vfo_slots: bool = False,
+        width_digits: int = 3,
     ) -> None:
         if type(identity) is not str or not identity:
             raise ValueError(f"identity must be a non-empty string, got {identity!r}")
@@ -331,17 +332,24 @@ class YaesuCatModel:
             self._handlers[codec.verb] = lambda body, c=codec: self._level(body, c)
         for codec in _SELECTORS:
             self._handlers[codec.verb] = lambda body, c=codec: self._selector(body, c)
+        if type(width_digits) is not int or width_digits <= 0:
+            raise ValueError(
+                f"width_digits must be a positive int, got {width_digits!r}"
+            )
+        self._width_digits = width_digits
         if direct_vfo_slots:
             self._handlers.pop("ST")
             self._handlers.pop("VS")
             self._handlers["FT"] = self._split_tx_vfo
             for verb in ("SV", "AB", "BA"):
                 self._handlers[verb] = self._vfo_transfer
-            # Fixture-only SH/NA verbs (MOR-4428): the single-receiver
-            # test fixture models per-receiver narrow state and the raw
-            # SH code store. The radio under test computes the codes
-            # from the loader tables, so the sim only echoes them —
-            # never interprets Hz. FTX-1 keeps answering "?;" here.
+            # SH/NA verbs (MOR-4428, MOR-4433): a single-receiver profile
+            # with VFO scheme "ab" models per-receiver narrow state and
+            # the raw SH code store. The radio under test computes the
+            # codes from the loader tables, so the sim only echoes them —
+            # never interprets Hz — in the code shape the loaded command
+            # contract declares (``width_digits``). FTX-1 keeps
+            # answering "?;" here.
             self._handlers["NA"] = self._narrow_state
             self._handlers["SH"] = self._width_code
             self._narrow = [False, False]
@@ -584,15 +592,18 @@ class YaesuCatModel:
         return REFUSAL
 
     def _width_code(self, body: str) -> str | None:
-        """Fixture-only SH verb (MOR-4428): raw SH code store.
+        """SH verb (MOR-4428, MOR-4433): raw SH code store.
 
         The radio under test computes codes from the loader tables; the
-        sim stores any 3-digit code verbatim and echoes it back, so the
-        loader and the CAT transport are exercised end to end.
+        sim stores any code verbatim in the loaded contract's shape
+        (``width_digits``: 3 for the fixture, 2 for the FT-991A) and
+        echoes it back, so the loader and the CAT transport are exercised
+        end to end.
         """
+        digits = self._width_digits
         if len(body) == 3 and body[2] in "01":
-            return f"SH{body[2]}{self._width[int(body[2])]:03d};"
-        if len(body) == 6 and body[2] in "01" and body[3:].isdigit():
+            return f"SH{body[2]}{self._width[int(body[2])]:0{digits}d};"
+        if len(body) == 3 + digits and body[2] in "01" and body[3:].isdigit():
             self._width[int(body[2])] = int(body[3:])
             return None
         return REFUSAL

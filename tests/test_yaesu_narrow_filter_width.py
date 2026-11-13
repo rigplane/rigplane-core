@@ -81,6 +81,86 @@ def test_ftx1_loads_with_no_narrow_variant() -> None:
         assert rule.narrow_table == (), mode
 
 
+def test_per_table_bases_default_to_profile_first_code() -> None:
+    """Rules without the new fields resolve to `[filters] first_code`."""
+    config = load_rig(FIXTURE)
+    profile = config.to_profile()
+    assert config.filter_width_first_code == 0
+    for mode, rule in config.filter_config.items():
+        assert rule.first_code is None, mode
+        assert rule.narrow_first_code is None, mode
+        resolved = profile.resolve_filter_rule(mode)
+        assert profile.resolve_filter_first_code(resolved, narrow=False) == 0
+        assert profile.resolve_filter_first_code(resolved, narrow=True) == 0
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "match"),
+    [
+        (
+            "table = [2400, 2600, 3000, 3200, 4000]",
+            'table = [2400, 2600, 3000, 3200, 4000]\nfirst_code = "9"',
+            "non-negative integer",
+        ),
+        (
+            "narrow_table = [1500, 1800, 2000]",
+            "narrow_table = [1500, 1800, 2000]\nnarrow_first_code = -1",
+            "non-negative integer",
+        ),
+        (
+            "table = [2400, 2600, 3000, 3200, 4000]",
+            "table = [2400, 2600, 3000, 3200, 4000]\nfirst_code = true",
+            "non-negative integer",
+        ),
+        (
+            "[filters.width.FM]\nfixed = true",
+            "[filters.width.FM]\nfixed = true\nfirst_code = 2",
+            "fixed-width mode",
+        ),
+        (
+            "narrow_table = [200, 300, 500]",
+            "narrow_first_code = 1",
+            "narrow_table",
+        ),
+    ],
+)
+def test_per_table_bases_rejected(
+    tmp_path: Path, old: str, new: str, match: str
+) -> None:
+    path = _write_variant(tmp_path, old, new)
+    with pytest.raises(RigLoadError, match=match):
+        load_rig(path)
+
+
+def test_per_table_bases_need_table_index_encoding(tmp_path: Path) -> None:
+    """The new fields are meaningless off `table_index`, like `narrow_table`."""
+    text = FIXTURE.read_text()
+    text = text.replace('encoding = "table_index"', 'encoding = "segmented_bcd_index"')
+    text = text.replace(
+        "narrow_table = [1500, 1800, 2000]",
+        "narrow_table = [1500, 1800, 2000]\nfirst_code = 2",
+    )
+    path = tmp_path / "variant.toml"
+    path.write_text(text)
+    with pytest.raises(RigLoadError, match="table_index"):
+        load_rig(path)
+
+
+def test_per_table_base_below_radio_default_rejected(tmp_path: Path) -> None:
+    """A base at or below the default code would swallow the default."""
+    text = FIXTURE.read_text()
+    text = text.replace("first_code = 0", "first_code = 2\nradio_default_code = 1", 1)
+    text = text.replace(
+        "narrow_table = [1500, 1800, 2000]",
+        "narrow_table = [1500, 1800, 2000]\nnarrow_first_code = 1",
+        1,
+    )
+    path = tmp_path / "variant.toml"
+    path.write_text(text)
+    with pytest.raises(RigLoadError, match="must sit above"):
+        load_rig(path)
+
+
 # ---------------------------------------------------------------------------
 # Loader: narrow variant rejected
 # ---------------------------------------------------------------------------
@@ -231,6 +311,45 @@ async def test_code_invalid_in_narrow_state_reads_no_hz(
     reading = await radio.read_filter_width_reading(mode="USB")
     assert reading.hz is None
     assert reading.radio_default is False
+
+
+@pytest.mark.asyncio
+async def test_offset_bases_map_by_active_table_on_second_profile(
+    tmp_path: Path,
+) -> None:
+    """A tmp fixture variant with offset bases (wide from 02, narrow from
+    01) maps exactly like the FT-991A: the mechanism is not model-specific.
+    """
+    text = FIXTURE.read_text().replace(
+        "narrow_table = [1500, 1800, 2000]",
+        "narrow_table = [1500, 1800, 2000]\nfirst_code = 2\nnarrow_first_code = 1",
+        1,
+    )
+    path = tmp_path / "offset-bases.toml"
+    path.write_text(text)
+    radio = YaesuCatRadio("/dev/null", profile=load_rig(path))
+    radio._transport._connected = True
+    radio._transport.query = AsyncMock()
+    radio._transport.write = AsyncMock()
+
+    # Wide code 04 is index 2 from base 02 -> 3000 Hz.
+    radio._transport.query.side_effect = _query_fn({"NA0;": "NA00", "SH0;": "SH0004"})
+    assert await radio.read_filter_width(mode="USB") == 3000
+    # Narrow code 04 is past the narrow table (base 01, 3 entries): no Hz.
+    radio._transport.query.side_effect = _query_fn({"NA0;": "NA01", "SH0;": "SH0004"})
+    reading = await radio.read_filter_width_reading(mode="USB")
+    assert reading.hz is None
+    assert reading.radio_default is False
+    # Narrow 2000 Hz writes index 2 from base 01 -> SH03 ...
+    radio._transport.query.side_effect = _query_fn({"MD0;": "MD02", "NA0;": "NA01"})
+    await radio.set_filter_width(2000)
+    radio._transport.write.assert_called_once_with("SH0003;")
+    # ... while wide 2600 Hz writes index 1 from base 02 -> SH03 too:
+    # the same wire code means different widths per state, by table data.
+    radio._transport.query.side_effect = _query_fn({"MD0;": "MD02", "NA0;": "NA00"})
+    radio._transport.write.reset_mock()
+    await radio.set_filter_width(2600)
+    radio._transport.write.assert_called_once_with("SH0003;")
 
 
 @pytest.mark.asyncio

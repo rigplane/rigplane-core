@@ -35,6 +35,7 @@ import errno
 import json
 import logging
 import math
+import re
 import time
 import weakref
 from collections import deque
@@ -110,10 +111,27 @@ def _build_seeded_model(
         identity=rig.expected_identity_ids[0],
         recorded=recorded,
         direct_vfo_slots=rig.receiver_count == 1 and rig.vfo_scheme == "ab",
+        width_digits=_sh_code_digits(rig),
         on_not_modelled=on_not_modelled,
     )
     seed_from_recording(model, recorded)
     return model
+
+
+def _sh_code_digits(rig: RigConfig) -> int:
+    """Width-code digits from the loaded SH command contract (MOR-4433).
+
+    Reads ``get_filter_width``'s parse template (``SH0{code:02d};`` on the
+    FT-991A, ``SH0{code:03d};`` on the fixture/FTX-1) so the sim echoes the
+    shape the radio under test writes and parses. Unknown or absent
+    contracts keep the historical 3-digit shape.
+    """
+    spec = rig.commands.get("get_filter_width")
+    template = getattr(spec, "parse", "") or ""
+    match = re.search(r"\{code:0(\d+)d\}", template)
+    if match is None:
+        return 3
+    return int(match.group(1))
 
 
 def recorded_divergences(
