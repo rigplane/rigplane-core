@@ -304,3 +304,27 @@ def test_shipped_profiles_keep_todays_admission(
     profile = resolve_radio_profile(model=model)
 
     assert profile.admitted_filter_width(mode, width) == expected
+
+
+def test_frontend_narrow_capabilities_fixture_matches_the_server_serializer() -> None:
+    """MOR-4434: the committed frontend fixture's ``filterConfig`` IS the producer output.
+
+    ``fixture-narrow-capabilities.json`` feeds the browser-side resolver
+    tests; its ``filterConfig`` must equal what ``_serialize_filter_config``
+    emits for the fixture profile, so the frontend never tests against a
+    hand-drifted shape (narrow variant present, fixed mode without one).
+    """
+    from rigplane.web.server import _serialize_filter_config
+
+    root = Path(__file__).resolve().parents[1]
+    fixture = json.loads(
+        (
+            root
+            / "frontend/src/lib/runtime/adapters/__tests__/fixtures"
+            / "fixture-narrow-capabilities.json"
+        ).read_text()
+    )
+    profile = load_rig(
+        root / "tests/fixtures/rigs/yaesu_single_rx_fixture.toml"
+    ).to_profile()
+    assert fixture["filterConfig"] == _serialize_filter_config(profile)
