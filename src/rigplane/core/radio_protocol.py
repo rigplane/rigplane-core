@@ -1612,7 +1612,14 @@ class VfoSlotCapable(Protocol):
         ...
 
     async def equalize_vfo_ab(self, receiver: int = 0) -> None:
-        """Copy the active VFO's state to the inactive VFO on ``receiver``."""
+        """Copy VFO A onto VFO B on ``receiver`` (MOR-4433).
+
+        The copy direction is A→B on every backend that implements it: a
+        single-transceiver ``ab`` profile delegates to its ``vfo_a_to_b``
+        copy primitive, and an ``ab_shared`` (dual-receiver) profile copies
+        between receivers, not between A/B within one receiver. This is not
+        an active-to-inactive copy.
+        """
         ...
 
 

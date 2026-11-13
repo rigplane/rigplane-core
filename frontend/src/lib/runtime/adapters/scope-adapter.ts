@@ -80,6 +80,7 @@ export function ingressScopeFrame(buffer: ArrayBuffer, context: CurrentScopeCont
 }
 
 import type { Capabilities, FilterModeConfig, FilterSegmentConfig } from '$lib/types/capabilities';
+import { isFieldFreshlyObserved } from '$lib/state/field-status';
 import type { ServerState } from '$lib/types/state';
 import type { FilterWidthDisplay, ScopeControlsViewModel } from '../../../semantic/radio-view-model';
 import { resolveFilterModeConfig } from '$lib/runtime/props/panel-props';
@@ -298,9 +299,15 @@ export function toSpectrumAuthority(
   const modeFact = knownReading(state, `${key}.mode`, modeFilter?.currentMode);
   const widthFact = knownReading(state, `${key}.filterWidth`, modeFilter?.filterWidth);
   const dataFact = knownReading(state, `${key}.dataMode`, passband?.dataMode);
-  // MOR-4434: the passband rule follows the observed narrow state, like
-  // every other `table` consumer — unobserved narrow keeps the wide table.
-  const narrowFact = knownReading(state, `${key}.narrow`, passband?.narrow);
+  // MOR-4434: the spectrum rule follows the freshly observed narrow state,
+  // like every other `table` consumer — unobserved or stale narrow keeps
+  // the wide table. Read straight from the receiver's observed state, NOT
+  // through `passband.narrow`: that fact is structural to the interactive
+  // `narrow` control (absent without the capability tag), but a profile can
+  // publish narrow tables and poll `get_narrow` without exposing the
+  // control — spectrum snapping and the commit path must then still agree.
+  const narrowReading = (key === 'sub' ? state.sub : state.main)?.narrow ?? null;
+  const narrowFact = isFieldFreshlyObserved(state, `${key}.narrow`) ? narrowReading : null;
   const filterWidthHz = positiveInteger(widthFact) ? widthFact : null;
   // MOR-3677: the composed display verdict rides beside the Hz — the
   // spectrum chip reads it, geometry still gates on `filterWidthHz`.

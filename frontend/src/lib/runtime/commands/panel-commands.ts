@@ -19,7 +19,7 @@ import {
   capabilitiesMatchGeneration,
   getCapabilities,
 } from '$lib/stores/capabilities.svelte';
-import { getFieldStatus, isFieldAvailable } from '$lib/state/field-status';
+import { getFieldStatus, isFieldAvailable, isFieldFreshlyObserved } from '$lib/state/field-status';
 import { runtime } from '../frontend-runtime';
 import { consumePendingFocus, setPendingFocus } from '$lib/radio/pending-focus';
 import { getModeFilter } from '$lib/radio/mode-filter-memory';
@@ -865,9 +865,10 @@ function activeFilterRule(receiver: Receiver): FilterModeConfig | null {
   const rx = receiver === 1 ? state.sub : state.main;
   const prefix = receiver === 1 ? 'sub' : 'main';
   // MOR-2513: null mode/dataMode (unobserved) resolves no config.
-  // MOR-4434: the observed narrow state selects the active table — an
-  // unobserved narrow reading keeps the wide table, exactly as before.
-  const narrow = isFieldAvailable(state, `${prefix}.narrow`) ? (rx?.narrow ?? null) : null;
+  // MOR-4434: the freshly observed narrow state selects the active table —
+  // an unobserved or stale narrow reading keeps the wide table, exactly as
+  // before and as the backend's admission hint reads it.
+  const narrow = isFieldFreshlyObserved(state, `${prefix}.narrow`) ? (rx?.narrow ?? null) : null;
   return resolveFilterModeConfig(caps, rx?.mode ?? undefined, rx?.dataMode ?? undefined, narrow);
 }
 
@@ -949,8 +950,10 @@ export function makeFilterHandlers() {
         || !Number.isSafeInteger(dataMode) || (dataMode as number) < 0)) return;
       // MOR-4434: the commit validates against the NARROW-selected table —
       // a narrow-only width commits instead of dying in `table.includes`.
-      // Unobserved narrow keeps the wide table, exactly as before.
+      // Unobserved or stale narrow keeps the wide table, exactly as before
+      // and as the backend's admission hint reads it.
       const narrow = knownA03cReceiver(context, active, 'narrow') === receiver
+        && isFieldFreshlyObserved(context.state, `${key}.narrow`)
         ? (observed?.narrow ?? null)
         : null;
       const rule = resolveFilterModeConfig(context.caps, mode, dataMode as number, narrow);

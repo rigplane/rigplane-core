@@ -15,6 +15,9 @@ import type { Capabilities, FilterModeConfig } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';
 import type { ScopeSpanControl } from '$lib/runtime/scope-controller.svelte';
 import { FTX1_CAPABILITIES } from '../../adapters/__tests__/fixtures/ftx1-profile';
+import { FIXTURE_NARROW_CAPABILITIES } from '../../adapters/__tests__/fixtures/fixture-narrow-profile';
+import { resolveFilterModeConfig } from '../../runtime/props/panel-props';
+import narrowWidthSeamJson from '../../transport/__tests__/fixtures/narrow-width-seam.json';
 
 const h = vi.hoisted(() => ({
   spanStep: vi.fn(),
@@ -70,6 +73,16 @@ vi.mock('$lib/state/field-status', () => ({
       : h.state?.fieldStatus?.[path]),
   isFieldAvailable: vi.fn((_state: ServerState | null, path: string) =>
     h.state !== null && !h.unavailable.has(path)),
+  // MOR-4434: the production narrow reads use the fresh-only gate, so the
+  // mock carries it with the real predicate over the mocked statuses: fresh
+  // entries pass, the stale entries above (and missing ones) read unknown.
+  isFieldFreshlyObserved: vi.fn((_state: ServerState | null, path: string) => {
+    const status = h.unavailable.has(path)
+      ? { observed: true, freshness: 'stale', availability: 'stale' }
+      : h.state?.fieldStatus?.[path] as { observed?: boolean; freshness?: string; availability?: string } | undefined;
+    return status?.observed === true && status.freshness === 'fresh'
+      && status.availability === 'available';
+  }),
 }));
 
 vi.mock('$lib/stores/capabilities.svelte', () => ({
@@ -2990,16 +3003,33 @@ describe('MOR-1409 A06a1 synchronous final filter-width authority', () => {
 
 /**
  * MOR-4434: the commit and debounce paths validate against the
- * NARROW-selected table. The rule below mirrors the producer-shaped
- * fixture (`adapters/__tests__/fixtures/fixture-narrow-capabilities.json`):
- * the SSB wide table plus its narrow variant.
+ * NARROW-selected table. Widths, requests and admitted widths come from the
+ * shared seam document
+ * `../../transport/__tests__/fixtures/narrow-width-seam.json` (Python
+ * companion: `tests/web/test_narrow_width_seam.py`, which replays the same
+ * requests through the real handler + CAT sim and checks the drift); the
+ * rule is the producer-shaped fixture from `fixture-narrow-profile`. These
+ * cases drive the commit/debounce paths from the document's states, assert
+ * the emitted commands equal its requests, and pin each admitted width as
+ * a member of the active table.
  */
-const NARROW_RULE: FilterModeConfig = {
-  defaults: [2400, 1800, 500],
-  fixed: false,
-  table: [2400, 2600, 3000, 3200, 4000],
-  narrowTable: [1500, 1800, 2000],
-};
+interface SeamExchange {
+  state: { mode: string; narrow: boolean | null; filterWidth: number };
+  request: { width: number; receiver: number };
+  reply: { width: number; receiver: number; admitted_width?: number };
+}
+interface NarrowWidthSeam {
+  cases: { wide: SeamExchange; narrow: SeamExchange; unknown: SeamExchange };
+}
+const SEAM = narrowWidthSeamJson as unknown as NarrowWidthSeam;
+// The rule is the producer output for the single-RX fixture, pinned by
+// tests/test_filter_width_admitted_width.py against the server serializer.
+const NARROW_RULE: FilterModeConfig = structuredClone(
+  FIXTURE_NARROW_CAPABILITIES.filterConfig!.SSB!,
+);
+
+/** The SSB rule plus explicit wide bounds beside its narrow variant (P2). */
+const BOUNDED_NARROW_RULE: FilterModeConfig = { ...NARROW_RULE, minHz: 2400, maxHz: 4000 };
 
 function narrowCaps(): Record<string, unknown> {
   return {
@@ -3038,14 +3068,14 @@ describe('MOR-4434 narrow-selected filter-width table', () => {
   });
 
   it('commits a narrow-only width unquantized-to-wide when narrow is observed on', () => {
-    makeFilterHandlers().onFilterWidthCommit(1500, 0, 31);
+    makeFilterHandlers().onFilterWidthCommit(SEAM.cases.narrow.request.width, 0, 31);
 
-    expect(exactCalls()).toEqual([['set_filter_width', { width: 1500, receiver: 0 }]]);
+    expect(exactCalls()).toEqual([['set_filter_width', SEAM.cases.narrow.request]]);
     expectIntentTransport();
   });
 
   it('refuses a wide-only width while narrow is on', () => {
-    makeFilterHandlers().onFilterWidthCommit(4000, 0, 31);
+    makeFilterHandlers().onFilterWidthCommit(SEAM.cases.wide.request.width, 0, 31);
 
     expect(h.sendCommand).not.toHaveBeenCalled();
     expect(getCommandLifecycles()).toHaveLength(0);
@@ -3054,7 +3084,7 @@ describe('MOR-4434 narrow-selected filter-width table', () => {
   it('refuses a narrow-only width while narrow is observed off', () => {
     h.state = narrowState(false);
 
-    makeFilterHandlers().onFilterWidthCommit(1500, 0, 31);
+    makeFilterHandlers().onFilterWidthCommit(SEAM.cases.narrow.request.width, 0, 31);
 
     expect(h.sendCommand).not.toHaveBeenCalled();
     expect(getCommandLifecycles()).toHaveLength(0);
@@ -3063,7 +3093,18 @@ describe('MOR-4434 narrow-selected filter-width table', () => {
   it('refuses a narrow-only width while narrow is unobserved, keeping today behavior', () => {
     h.unavailable.add('main.narrow');
 
-    makeFilterHandlers().onFilterWidthCommit(1500, 0, 31);
+    makeFilterHandlers().onFilterWidthCommit(SEAM.cases.narrow.request.width, 0, 31);
+
+    expect(h.sendCommand).not.toHaveBeenCalled();
+    expect(getCommandLifecycles()).toHaveLength(0);
+  });
+
+  it('refuses a narrow-only width while narrow has no reading at all', () => {
+    // `a06State` carries no narrow leaf: neither observed nor stale, so the
+    // wide table applies exactly as for an unobserved reading.
+    h.state = a06State();
+
+    makeFilterHandlers().onFilterWidthCommit(SEAM.cases.narrow.request.width, 0, 31);
 
     expect(h.sendCommand).not.toHaveBeenCalled();
     expect(getCommandLifecycles()).toHaveLength(0);
@@ -3072,18 +3113,63 @@ describe('MOR-4434 narrow-selected filter-width table', () => {
   it('commits a wide width while narrow is unobserved', () => {
     h.unavailable.add('main.narrow');
 
-    makeFilterHandlers().onFilterWidthCommit(2600, 0, 31);
+    makeFilterHandlers().onFilterWidthCommit(SEAM.cases.wide.request.width, 0, 31);
 
-    expect(exactCalls()).toEqual([['set_filter_width', { width: 2600, receiver: 0 }]]);
+    expect(exactCalls()).toEqual([['set_filter_width', SEAM.cases.wide.request]]);
     expectIntentTransport();
   });
 
   it('debounces a narrow-only width to the wire unquantized while narrow is on', () => {
-    makeFilterHandlers().onFilterWidthChange(1500);
+    makeFilterHandlers().onFilterWidthChange(SEAM.cases.narrow.request.width);
     expect(h.sendCommand).not.toHaveBeenCalled();
     vi.advanceTimersByTime(200);
 
-    expect(exactCalls()).toEqual([['set_filter_width', { width: 1500, receiver: 0 }]]);
+    expect(exactCalls()).toEqual([['set_filter_width', SEAM.cases.narrow.request]]);
+  });
+
+  it('the documented admitted widths sit in the document rule active table', () => {
+    const caps = narrowCaps() as unknown as Capabilities;
+    for (const key of ['wide', 'narrow'] as const) {
+      const exchange = SEAM.cases[key];
+      const rule = resolveFilterModeConfig(caps, exchange.state.mode, 0, exchange.state.narrow);
+      expect(rule?.table).toContain(exchange.reply.admitted_width);
+    }
+    expect(SEAM.cases.unknown.reply).toEqual({
+      width: SEAM.cases.unknown.request.width,
+      receiver: SEAM.cases.unknown.request.receiver,
+    });
+  });
+
+  it('commits a narrow-only width with no narrow capability tag (spectrum agrees)', () => {
+    // P2: the commit path never gated on the tag; fails if one is added.
+    // The spectrum half is pinned in `filter-narrow-consumers.test.ts`.
+    expect((narrowCaps() as unknown as Capabilities).capabilities).not.toContain('narrow');
+
+    makeFilterHandlers().onFilterWidthCommit(SEAM.cases.narrow.request.width, 0, 31);
+
+    expect(exactCalls()).toEqual([['set_filter_width', SEAM.cases.narrow.request]]);
+    expectIntentTransport();
+  });
+
+  it('resolves an explicit-bounds rule from the selected table on commit', () => {
+    // P2: a rule carrying wide minHz/maxHz beside its narrow variant commits
+    // a narrow-only width while narrow is on and refuses a wide-only one.
+    // Fails if activeFilterTableConfig keeps the wide bounds on the narrow
+    // table (validResolvedFilterWidth rejects the mismatch).
+    h.caps = {
+      ...narrowCaps(),
+      filterConfig: { USB: BOUNDED_NARROW_RULE },
+    };
+
+    makeFilterHandlers().onFilterWidthCommit(SEAM.cases.narrow.request.width, 0, 31);
+
+    expect(exactCalls()).toEqual([['set_filter_width', SEAM.cases.narrow.request]]);
+    expectIntentTransport();
+
+    h.sendCommand.mockClear();
+    makeFilterHandlers().onFilterWidthCommit(4000, 0, 31);
+
+    expect(h.sendCommand).not.toHaveBeenCalled();
   });
 });
 

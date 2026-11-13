@@ -43,7 +43,7 @@ import type { TxAuthoritySnapshot } from '../../../semantic/rx-tx-surface';
 import { qualifyDisplayObservation, qualifyRadioDisplayObservation } from './display-observation';
 import { deriveFilterWidthDisplay } from './filter-width-display';
 import { refRangeFromCaps } from '../../../components/spectrum/spectrum-toolbar-logic';
-import { isFieldAvailable } from '$lib/state/field-status';
+import { isFieldAvailable, isFieldFreshlyObserved } from '$lib/state/field-status';
 import { modInputStateKey } from '$lib/radio/mod-input';
 import { flattenBands, findActiveBand, receiverInRepeaterBand } from '$lib/radio/band-plan';
 import { shiftFromDirection } from '$lib/radio/repeater-transitions';
@@ -579,17 +579,18 @@ function deriveModeFilter(
   // The active mode-keyed filter config, resolved by the ONE shipped
   // derivation (`resolveFilterModeConfig`) — see the doc comment above.
   // MOR-2513: null mode/dataMode (unobserved) resolves no config.
-  // MOR-4434: the observed narrow state selects the active table, for the
-  // displayed receiver and for the configuration receiver alike —
-  // unobserved narrow keeps the wide table, exactly as before.
-  const narrow = topFieldAvailable(state, `${base}narrow`) ? (rx?.narrow ?? null) : null;
+  // MOR-4434: the freshly observed narrow state selects the active table,
+  // for the displayed receiver and for the configuration receiver alike —
+  // unobserved or stale narrow keeps the wide table, exactly as before
+  // and as the backend's admission hint reads it.
+  const narrow = isFieldFreshlyObserved(state, `${base}narrow`) ? (rx?.narrow ?? null) : null;
   const filterConfig = resolveFilterModeConfig(caps, rx?.mode ?? undefined, rx?.dataMode ?? undefined, narrow);
   const activeBase = activeId === 'SUB' ? 'sub' : 'main';
   const activeRx = activeId === null ? undefined : state?.[activeBase];
   const dataValue = activeRx?.dataMode;
   const configObserved = activeId !== null && strictFieldAvailable(state, activeBase + '.mode')
     && (!hasCap(caps, 'data_mode') || (isDataModeValue(dataValue) && strictFieldAvailable(state, activeBase + '.dataMode')));
-  const activeNarrow = activeId !== null && topFieldAvailable(state, `${activeBase}.narrow`)
+  const activeNarrow = activeId !== null && isFieldFreshlyObserved(state, `${activeBase}.narrow`)
     ? (activeRx?.narrow ?? null) : null;
   const activeFilterConfiguration = configObserved
     ? copyFilterConfiguration(resolveFilterModeConfig(caps, activeRx?.mode ?? undefined, activeRx?.dataMode ?? undefined, activeNarrow), filterChoices) : null;

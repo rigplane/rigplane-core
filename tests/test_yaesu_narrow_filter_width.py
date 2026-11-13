@@ -525,6 +525,65 @@ async def test_narrow_width_roundtrip_over_cat_transport(
         await radio._transport.close()
 
 
+@pytest.mark.asyncio
+async def test_two_digit_sh_shape_roundtrip_through_sim(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two-digit SH templates drive the sim's two-digit shape (MOR-4434).
+
+    A tmp copy of the fixture with ``{code:03d}`` narrowed to ``{code:02d}``
+    mounts the CAT simulator through ``YaesuCatSerialFake.from_profile`` —
+    real loader plus real CAT transport, no mocked methods — and pins the
+    literal two-digit wire, including code 00, in both narrow states. The
+    three-digit coverage stays in the neighboring roundtrip test. Fails if
+    the sim's ``width_digits`` handling reverts to three digits
+    (``_sh_code_digits``): the sim would render answers the radio never
+    parses.
+    """
+    text = FIXTURE.read_text()
+    old_read = (
+        'get_filter_width = { cat = { read = "SH0;", parse = "SH0{code:03d};" } }'
+    )
+    old_write = 'set_filter_width = { cat = { write = "SH0{code:03d};" } }'
+    assert old_read in text
+    assert old_write in text
+    path = tmp_path / "two-digit.toml"
+    path.write_text(text.replace("{code:03d}", "{code:02d}"))
+    fake = YaesuCatSerialFake.from_profile(ROOT, SIM_FIXTURE, rig_path=path)
+    wire: list[str] = []
+    handle = fake.model.handle_with_outcome
+
+    def logged(line):
+        wire.append(line)
+        return handle(line)
+
+    monkeypatch.setattr(fake.model, "handle_with_outcome", logged)
+
+    async def open_port(*args, **kwargs):
+        return await fake.open_serial_connection()
+
+    monkeypatch.setattr(
+        "rigplane.backends.yaesu_cat.transport.open_serial_port", open_port
+    )
+    radio = YaesuCatRadio("/dev/two-digit", profile=load_rig(path))
+    await radio._transport.connect()
+    try:
+        await radio.set_mode("USB")
+        # Code 00 writes and reads back literally in the wide state ...
+        await radio.set_narrow(False)
+        await radio.set_filter_width(2400)
+        assert await radio.get_filter_width() == 2400
+        # ... and re-maps through the narrow table while NARROW is on.
+        await radio.set_narrow(True)
+        assert await radio.get_filter_width() == 1500
+        await radio.set_filter_width(1500)
+        assert await radio.get_filter_width() == 1500
+        assert "SH000;" in wire
+        assert "SH0000;" not in wire
+    finally:
+        await radio._transport.close()
+
+
 def test_filter_width_rule_keeps_existing_positional_bindings() -> None:
     """Existing SDK callers construct ``FilterWidthRule((9000,), True)``."""
     rule = FilterWidthRule((9000,), True)

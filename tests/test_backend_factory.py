@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 
 import pytest
 
@@ -288,6 +289,78 @@ class TestYaesuModelForwarding:
         radio = create_radio(config)
         assert isinstance(radio, YaesuCatRadio)
         assert radio._config.id == "yaesu_ftx1"  # noqa: SLF001
+
+
+class TestYaesuFixtureAliasForwarding:
+    """The factory forwards a resolved Yaesu model, not the default.
+
+    A TEMPORARY alias registers the single-receiver fixture under an
+    FT-prefixed model in a test-only ``tmp_path`` rigs dir (mirroring
+    ``test_sim_cw_text_entry_points.py``). Both factory routes and the CLI
+    chain must yield the FIXTURE profile; removing either
+    ``profile=_yaesu_profile_for(...)`` argument falls back to
+    ``yaesu_ftx1`` and fails every assertion here.
+    """
+
+    FIXTURE = (
+        Path(__file__).resolve().parents[1]
+        / "tests/fixtures/rigs/yaesu_single_rx_fixture.toml"
+    )
+    MODEL = "FT-Fixture"
+
+    def _rigs_dir(self, tmp_path: Path) -> Path:
+        text = self.FIXTURE.read_text(encoding="utf-8")
+        anchor = 'model = "Yaesu single RX fixture"'
+        assert anchor in text
+        rigs = tmp_path / "rigs"
+        rigs.mkdir()
+        (rigs / "ft_fixture.toml").write_text(
+            text.replace(anchor, f'model = "{self.MODEL}"', 1),
+            encoding="utf-8",
+        )
+        return rigs
+
+    def _patch_dirs(self, monkeypatch: pytest.MonkeyPatch, rigs: Path) -> None:
+        monkeypatch.setattr(
+            "rigplane.backends.yaesu_cat.radio._RIGS_DIR", rigs
+        )
+        monkeypatch.setattr("rigplane.cli._rigs_dir", lambda: rigs)
+
+    @pytest.mark.parametrize("backend", ["yaesu-cat", "serial"])
+    def test_factory_routes_forward_fixture_profile(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, backend: str
+    ) -> None:
+        rigs = self._rigs_dir(tmp_path)
+        self._patch_dirs(monkeypatch, rigs)
+        if backend == "yaesu-cat":
+            config = YaesuCatBackendConfig(device="/dev/ttyUSB0", model=self.MODEL)
+        else:
+            config = SerialBackendConfig(device="/dev/ttyUSB0", model=self.MODEL)
+        radio = create_radio(config)
+        assert isinstance(radio, YaesuCatRadio)
+        assert radio._config.id == "yaesu_single_rx_fixture"  # noqa: SLF001
+
+    @pytest.mark.parametrize("backend", ["yaesu-cat", "serial"])
+    async def test_cli_chain_forwards_fixture_profile(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, backend: str
+    ) -> None:
+        rigs = self._rigs_dir(tmp_path)
+        self._patch_dirs(monkeypatch, rigs)
+        args = _build_parser().parse_args(
+            [
+                "--model",
+                self.MODEL,
+                "--backend",
+                backend,
+                "--serial-port",
+                "/dev/ttyUSB0",
+                "status",
+            ]
+        )
+        config = await _build_backend_config(args)
+        radio = create_radio(config)
+        assert isinstance(radio, YaesuCatRadio)
+        assert radio._config.id == "yaesu_single_rx_fixture"  # noqa: SLF001
 
 
 class TestContracts:

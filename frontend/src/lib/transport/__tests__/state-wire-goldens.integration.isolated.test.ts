@@ -4,6 +4,7 @@ import type { RadioViewModel } from '../../../semantic/radio-view-model';
 import { toRadioViewModel } from '../../runtime/adapters/radio-view-model-adapter';
 import { MockWebSocket, instances } from './support/fake-ws-backend';
 import goldenFile from './fixtures/state-wire-goldens.json';
+import narrowWidthSeamJson from './fixtures/narrow-width-seam.json';
 import fixtureNarrowCapsJson from '../../runtime/adapters/__tests__/fixtures/fixture-narrow-capabilities.json';
 
 const fetchCapabilities = vi.hoisted(() => vi.fn());
@@ -143,23 +144,30 @@ describe('state wire goldens → real client chain', () => {
     if (!observed) expect(currentDisplayCount(viewModel!)).toBe(0);
   });
 
-  // ─── MOR-4434: narrow/wide control on a producer-generated envelope ─────
+  // ─── MOR-4434: narrow/wide control on a producer-paired envelope ─────
   //
   // `../../runtime/adapters/__tests__/fixtures/fixture-narrow-capabilities.json`
   // carries the single-RX fixture profile's capabilities projection with the
   // SSB/CW `narrowTable` the server publishes (see its provenance wrapper,
   // `../../runtime/adapters/__tests__/fixtures/fixture-narrow-profile.ts`).
-  // The envelopes below are NOT hand-built: each one clones the committed
-  // FTX-1 `allObserved` full envelope from `fixtures/state-wire-goldens.json`
-  // (emitted by `scripts/gen_state_wire_goldens.py` from the Python
-  // producers), re-epochs it to the fixture capabilities' generation (7),
-  // advances its revisions to `seq`, and overrides only
-  // `main.mode`/`main.narrow`/`main.filterWidth` — plus the `main.narrow`
+  // The observed values below (mode, narrow, filterWidth per state) and the
+  // admitted widths come from the shared seam document
+  // `fixtures/narrow-width-seam.json`, produced by the Python side from the
+  // real handler + CAT simulator harness (Python companion:
+  // `tests/web/test_narrow_width_seam.py`, which replays the same requests
+  // through the real `ControlHandler` and checks the document for drift).
+  // The envelopes themselves still clone the committed FTX-1 `allObserved`
+  // full envelope from `fixtures/state-wire-goldens.json` (emitted by
+  // `scripts/gen_state_wire_goldens.py` from the Python producers),
+  // re-epoch it to the fixture capabilities' generation (7), advance its
+  // revisions to `seq`, and override only `main.mode`/`main.narrow`/
+  // `main.filterWidth` with the document's values — plus the `main.narrow`
   // field-status entry for the unknown-narrow case, copied from the same
   // goldens' FTX-1 `allUnobserved` producer entry shape. They assert the
   // browser seam end to end: server JSON → real ws-client → radio store →
-  // `toRadioViewModel` bounds follow the narrow-selected table, and an
-  // unobserved narrow reading keeps the wide table.
+  // `toRadioViewModel` bounds follow the narrow-selected table, an
+  // unobserved narrow reading keeps the wide table, and the bounds admit
+  // the document's admitted widths.
   function narrowEnvelope(
     seq: number, narrow: boolean | null, filterWidth: number, markNarrowMissing: boolean,
   ): Record<string, unknown> {
@@ -198,6 +206,12 @@ describe('state wire goldens → real client chain', () => {
   }
 
   it('narrow on selects the narrow table bounds; unknown narrow keeps the wide table', async () => {
+    const seam = narrowWidthSeamJson as unknown as {
+      cases: Record<string, {
+        state: { mode: string; narrow: boolean | null; filterWidth: number };
+        reply: { admitted_width?: number };
+      }>;
+    };
     const caps = validateCapabilities(structuredClone(fixtureNarrowCapsJson));
     expect(caps.filterConfig?.SSB?.narrowTable).toEqual([1500, 1800, 2000]);
     fetchCapabilities.mockResolvedValue(caps);
@@ -207,23 +221,40 @@ describe('state wire goldens → real client chain', () => {
     wsClient.connect('ws://test/api/v1/ws');
     instances[0].simulateOpen();
 
-    sendStateUpdate(instances[0], narrowEnvelope(1, true, 1800, false));
-    expect(widthBounds(toRadioViewModel(store.getRadioState(), capabilities.getCapabilities()))).toEqual([
+    const boundsOf = () => widthBounds(toRadioViewModel(store.getRadioState(), capabilities.getCapabilities()));
+    const admits = (admitted: number | undefined) => {
+      const [min, max] = boundsOf();
+      expect(min).toEqual({ status: 'known', value: expect.any(Number) });
+      expect(max).toEqual({ status: 'known', value: expect.any(Number) });
+      if (admitted !== undefined) {
+        expect(admitted).toBeGreaterThanOrEqual((min as { value: number }).value);
+        expect(admitted).toBeLessThanOrEqual((max as { value: number }).value);
+      }
+    };
+
+    const narrow = seam.cases.narrow.state;
+    sendStateUpdate(instances[0], narrowEnvelope(1, narrow.narrow, narrow.filterWidth, false));
+    expect(boundsOf()).toEqual([
       { status: 'known', value: 1500 },
       { status: 'known', value: 2000 },
     ]);
+    admits(seam.cases.narrow.reply.admitted_width);
 
-    sendStateUpdate(instances[0], narrowEnvelope(2, false, 2600, false));
-    expect(widthBounds(toRadioViewModel(store.getRadioState(), capabilities.getCapabilities()))).toEqual([
+    const wide = seam.cases.wide.state;
+    sendStateUpdate(instances[0], narrowEnvelope(2, wide.narrow, wide.filterWidth, false));
+    expect(boundsOf()).toEqual([
       { status: 'known', value: 2400 },
       { status: 'known', value: 4000 },
     ]);
+    admits(seam.cases.wide.reply.admitted_width);
 
-    sendStateUpdate(instances[0], narrowEnvelope(3, null, 2600, true));
-    expect(widthBounds(toRadioViewModel(store.getRadioState(), capabilities.getCapabilities()))).toEqual([
+    const unknown = seam.cases.unknown.state;
+    sendStateUpdate(instances[0], narrowEnvelope(3, unknown.narrow, unknown.filterWidth, true));
+    expect(boundsOf()).toEqual([
       { status: 'known', value: 2400 },
       { status: 'known', value: 4000 },
     ]);
+    admits(seam.cases.unknown.reply.admitted_width);
   });
 
   it('negative control: an envelope without the required `main` key is rejected', async () => {
