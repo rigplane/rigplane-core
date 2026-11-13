@@ -16,8 +16,8 @@ import type { ServerState } from '$lib/types/state';
 import type { ScopeSpanControl } from '$lib/runtime/scope-controller.svelte';
 import { FTX1_CAPABILITIES } from '../../adapters/__tests__/fixtures/ftx1-profile';
 import { FIXTURE_NARROW_CAPABILITIES } from '../../adapters/__tests__/fixtures/fixture-narrow-profile';
-import { resolveFilterModeConfig } from '../../runtime/props/panel-props';
-import narrowWidthSeamJson from '../../transport/__tests__/fixtures/narrow-width-seam.json';
+import { resolveFilterModeConfig } from '../../props/panel-props';
+import narrowWidthSeamJson from '../../../transport/__tests__/fixtures/narrow-width-seam.json';
 
 const h = vi.hoisted(() => ({
   spanStep: vi.fn(),

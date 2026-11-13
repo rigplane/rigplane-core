@@ -65,15 +65,18 @@ function narrowState(narrowCase: NarrowCase, width: number, caps: Capabilities):
   } as unknown as ServerState;
 }
 
-const cases: Array<{ case: NarrowCase; table: number[]; min: number; max: number }> = [
-  { case: 'on', table: SSB_NARROW, min: 1500, max: 2000 },
-  { case: 'off', table: SSB_WIDE, min: 2400, max: 4000 },
+const cases: Array<{
+  case: NarrowCase; table: number[]; min: number; max: number;
+  cfgMin: number | null; cfgMax: number | null;
+}> = [
+  { case: 'on', table: SSB_NARROW, min: 1500, max: 2000, cfgMin: 1500, cfgMax: 2000 },
+  { case: 'off', table: SSB_WIDE, min: 2400, max: 4000, cfgMin: null, cfgMax: null },
   // Unobserved and stale both read unknown (fresh-only gate), like the backend.
-  { case: 'missing', table: SSB_WIDE, min: 2400, max: 4000 },
-  { case: 'stale', table: SSB_WIDE, min: 2400, max: 4000 },
+  { case: 'missing', table: SSB_WIDE, min: 2400, max: 4000, cfgMin: null, cfgMax: null },
+  { case: 'stale', table: SSB_WIDE, min: 2400, max: 4000, cfgMin: null, cfgMax: null },
 ];
 
-describe.each(cases)('narrow $case selects the $min-$max table', ({ case: narrowCase, table, min, max }) => {
+describe.each(cases)('narrow $case selects the $min-$max table', ({ case: narrowCase, table, min, max, cfgMin, cfgMax }) => {
   // Fails if the consumer stops forwarding narrow (panel-props.ts:
   // activeFreshNarrow calls; radio-view-model-adapter.ts: the two
   // isFieldFreshlyObserved reads; scope-adapter.ts: the narrowFact read).
@@ -99,8 +102,13 @@ describe.each(cases)('narrow $case selects the $min-$max table', ({ case: narrow
     const modeFilter = validateRadioViewModel(view).modeFilter;
 
     expect(modeFilter?.activeFilterConfiguration?.table).toEqual(table);
-    expect(modeFilter?.activeFilterConfiguration?.minHz).toBe(min);
-    expect(modeFilter?.activeFilterConfiguration?.maxHz).toBe(max);
+    // The producer fixture declares no explicit min/maxHz on the wide SSB
+    // rule, so the copied configuration carries the contract's null bounds
+    // (ActiveFilterConfiguration.minHz/maxHz are nullable); only the narrow
+    // selector synthesizes bounds from the narrow table endpoints. The
+    // display bounds below still resolve from the table endpoints either way.
+    expect(modeFilter?.activeFilterConfiguration?.minHz).toBe(cfgMin);
+    expect(modeFilter?.activeFilterConfiguration?.maxHz).toBe(cfgMax);
     expect(modeFilter?.filterWidthMin.reading).toEqual({ status: 'known', value: min });
     expect(modeFilter?.filterWidthMax.reading).toEqual({ status: 'known', value: max });
   });
