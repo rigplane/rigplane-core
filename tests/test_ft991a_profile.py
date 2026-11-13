@@ -872,7 +872,6 @@ async def test_repeater_tone_tsql_refuse_dcs_on_ft991a(radio, code: int):
         (0, "set_repeater_tone", True, "CT02;"),  # off -> ENC (no decode)
         (2, "set_repeater_tone", False, "CT00;"),  # ENC -> off
         (2, "set_repeater_tone", True, "CT02;"),  # ENC -> ENC (idempotent)
-        (0, "set_repeater_tsql", True, "CT01;"),  # off -> ENC/DEC
         (2, "set_repeater_tsql", True, "CT01;"),  # ENC -> ENC/DEC
         (1, "set_repeater_tsql", False, "CT02;"),  # ENC/DEC -> ENC
         (1, "set_repeater_tsql", True, "CT01;"),  # ENC/DEC idempotent
@@ -889,6 +888,16 @@ async def test_ct_toggles_resolve_through_the_ft991a_table(
     await getattr(radio, setter)(on)
     radio._transport.query.assert_awaited_once_with("CT0;")
     radio._transport.write.assert_called_once_with(frame)
+
+
+@pytest.mark.asyncio
+async def test_tsql_on_while_tone_off_is_refused_without_a_write(radio):
+    """Same two-boolean rule as FTX-1: decode cannot be on while encode is off."""
+    radio._transport.query = AsyncMock(return_value="CT00")
+    radio._transport.write = AsyncMock()
+    with pytest.raises(ValueError, match="tone squelch cannot be on"):
+        await radio.set_repeater_tsql(True)
+    radio._transport.write.assert_not_awaited()
 
 
 @pytest.mark.parametrize("setter", ["set_repeater_tone", "set_repeater_tsql"])
