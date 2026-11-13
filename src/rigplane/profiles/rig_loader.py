@@ -47,6 +47,7 @@ from rigplane.profiles.control_domain import (
 
 __all__ = [
     "RigConfig",
+    "SplitSpec",
     "RigLoadError",
     "load_rig",
     "discover_rigs",
@@ -650,6 +651,50 @@ def _parse_control_spec(
 
 
 @dataclass(frozen=True, slots=True)
+class SplitSpec:
+    """CAT split value encodings, separate from command templates."""
+
+    write_map: dict[bool, str] = field(default_factory=lambda: {False: "0", True: "1"})
+    read_map: dict[str, bool] = field(default_factory=lambda: {"0": False, "1": True})
+
+
+def _parse_split(filename: str, raw: object) -> SplitSpec:
+    if raw is None:
+        return SplitSpec()
+    if not isinstance(raw, dict):
+        raise RigLoadError(f"{filename}: [vfo.split] must be a table")
+    _reject_unknown_keys(
+        filename, "[vfo.split]", raw, frozenset({"write_map", "read_map"})
+    )
+    write = raw.get("write_map", {"off": "0", "on": "1"})
+    read = raw.get("read_map", {"0": "off", "1": "on"})
+    if (
+        not isinstance(write, dict)
+        or set(write) != {"off", "on"}
+        or not all(isinstance(value, str) and value for value in write.values())
+        or write["off"] == write["on"]
+    ):
+        raise RigLoadError(
+            f"{filename}: [vfo.split].write_map must map off/on to distinct non-empty strings"
+        )
+    if (
+        not isinstance(read, dict)
+        or not all(isinstance(key, str) and key for key in read)
+        or not all(
+            isinstance(value, str) and value in ("off", "on") for value in read.values()
+        )
+        or set(read.values()) != {"off", "on"}
+    ):
+        raise RigLoadError(
+            f"{filename}: [vfo.split].read_map must map non-empty strings to both off and on"
+        )
+    return SplitSpec(
+        write_map={False: cast(str, write["off"]), True: cast(str, write["on"])},
+        read_map={cast(str, key): value == "on" for key, value in read.items()},
+    )
+
+
+@dataclass(frozen=True, slots=True)
 class RigConfig:
     """Parsed rig configuration from a TOML file."""
 
@@ -775,6 +820,7 @@ class RigConfig:
     fixed_value_checks: dict[str, str] = field(default_factory=dict)
     state_acquisition: RadioAcquisitionProfile | None = None
     tx_policy: TxPolicy = field(default_factory=TxPolicy)
+    split: SplitSpec = field(default_factory=SplitSpec)
     ctcss_tones_centihz: tuple[int, ...] | None = None
     tone_squelch_types: dict[int, ToneSquelchType] | None = None
     # Protocol-native expected identity tokens (MOR-3064), from the optional
@@ -2908,6 +2954,7 @@ def load_rig(path: Path) -> RigConfig:
 
     # Validate [vfo]
     vfo = data["vfo"]
+    split = _parse_split(filename, vfo.get("split"))
     scheme = vfo.get("scheme", "")
     if scheme not in VALID_VFO_SCHEMES:
         raise RigLoadError(
@@ -3906,6 +3953,7 @@ def load_rig(path: Path) -> RigConfig:
         fixed_value_checks=fixed_value_checks,
         state_acquisition=state_acquisition,
         tx_policy=tx_policy,
+        split=split,
         expected_identity_ids=expected_identity_ids,
         memory=memory,
         cw_text=cw_text,

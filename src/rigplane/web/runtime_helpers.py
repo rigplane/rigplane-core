@@ -747,11 +747,11 @@ def projected_vfo_capability_tags(
 
     - A resolved :class:`~rigplane.profiles.RadioProfile` on ``radio.profile``
       is used as-is, and each tag is included only when its profile
-      declaration is present: ``swap_ab_code``/``equal_ab_code`` for
-      ``vfo_scheme == "ab"``, ``swap_main_sub_code``/``equal_main_sub_code``
-      for ``vfo_scheme == "main_sub"``, or the ``vfo_swap``/``vfo_equalize``
-      CAT command entries for ``vfo_scheme == "ab_shared"`` (the Yaesu CAT
-      family declares these as commands, not opcode bytes) — pinned by
+      declaration is present, through the single shared rule
+      ``RadioProfile.supports_vfo_command`` (opcode bytes for the CI-V
+      families; the declared ``vfo_swap``/``vfo_equalize`` CAT command
+      entries for the Yaesu CAT family — except that Yaesu ``ab``
+      admits only ``vfo_swap``, never ``vfo_equalize``) — pinned by
       ``test_vfo_tags_match_across_consumers_for_real_profiles`` and
       ``test_vfo_tags_keep_partial_and_mismatched_schemes_in_parity``.
     - Otherwise exactly one candidate model string is tried: ``radio.model``
@@ -786,30 +786,15 @@ def projected_vfo_capability_tags(
     if not isinstance(profile, RadioProfile):
         return frozenset()
 
-    primitives: tuple[tuple[str, int | None], ...]
-    if profile.vfo_scheme == "ab":
-        primitives = (
-            ("vfo_swap", profile.swap_ab_code),
-            ("vfo_equalize", profile.equal_ab_code),
-        )
-        tags = {tag for tag, primitive in primitives if primitive is not None}
-    elif profile.vfo_scheme == "main_sub":
-        primitives = (
-            ("vfo_swap", profile.swap_main_sub_code),
-            ("vfo_equalize", profile.equal_main_sub_code),
-        )
-        tags = {tag for tag, primitive in primitives if primitive is not None}
-    elif profile.vfo_scheme == "ab_shared":
-        # Yaesu dual-RX CAT rigs (FTX-1, MOR-2531): the MAIN↔SUB swap and
-        # equalize are native CAT commands declared in the profile's
-        # [commands] table (SV; / AB;, OM 2508-C), not CI-V opcode bytes,
-        # so the declared command is the authority here — pinned by
-        # ``test_vfo_tags_match_across_consumers_for_real_profiles``.
-        tags = {
-            tag for tag in ("vfo_swap", "vfo_equalize") if profile.supports_command(tag)
-        }
-    else:
-        tags = set()
+    # One shared rule — ``RadioProfile.supports_vfo_command`` — so
+    # projection cannot disagree with command admission
+    # (``web/handlers/control.py: _enqueue_rc_frequency``). The Yaesu
+    # single-receiver ``ab`` scheme admits only ``vfo_swap`` even when the
+    # profile declares ``vfo_equalize``: the CAT set has no per-receiver
+    # A→B copy primitive.
+    tags = {
+        tag for tag in ("vfo_swap", "vfo_equalize") if profile.supports_vfo_command(tag)
+    }
     from ..core.radio_protocol import RelativeVfoFrequencyWritable
 
     cmd_map = profile.command_map

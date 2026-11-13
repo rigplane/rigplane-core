@@ -443,6 +443,31 @@ swap_ab  = [0xB0]   # VFO A ↔ B
 equal_ab = [0xA0]   # VFO A = B
 ```
 
+### CAT split value maps
+
+`[vfo.split]` is parsed into `RigConfig.split` (`SplitSpec`) by
+`src/rigplane/profiles/rig_loader.py: _parse_split`. The existing
+`get_split` / `set_split` CAT command templates define the wire verbs and
+the `state` field. The split spec maps that field to and from booleans.
+Omitting the section (or either map) uses write values off/on = `"0"`/`"1"`
+and read values `"0"`/`"1"` = off/on (the `ST` encoding). An explicitly supplied write map must contain
+exactly `off` and `on`, with distinct non-empty string values. A read map
+must map non-empty string keys to `off` or `on` and cover both states.
+
+```toml
+[vfo.split]
+write_map = { off = "2", on = "3" }
+read_map = { "0" = "off", "1" = "on" }
+```
+
+For Yaesu CAT `scheme = "ab"`, `FA`/`FB` templates can address A/B directly
+without `get_vfo_select` / `set_vfo_select`. Those commands determine whether
+slot reading and selection are available. `get_active_receiver` returns
+receiver index zero for a single receiver; it does not report an A/B slot.
+The `vfo_swap`, `vfo_a_to_b`, and `vfo_b_to_a` command templates supply swap
+and directional copies. See `tests/test_yaesu_split_vfo_profile.py` for the
+non-product fixture, maps, missing selection and simulator roundtrip cases.
+
 ### Deprecated legacy keys
 
 The flat keys `swap` and `equal` conflate MAIN↔SUB with VFO A↔B — the same

@@ -67,6 +67,7 @@ from __future__ import annotations
 import logging
 import re
 from collections.abc import Callable, Mapping
+from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -285,6 +286,7 @@ class YaesuCatModel:
         identity: str,
         recorded: RecordedCatAnswerTable | None = None,
         on_not_modelled: Callable[[str], None] | None = None,
+        direct_vfo_slots: bool = False,
     ) -> None:
         if type(identity) is not str or not identity:
             raise ValueError(f"identity must be a non-empty string, got {identity!r}")
@@ -307,6 +309,9 @@ class YaesuCatModel:
         self._code_to_name = {code: name for name, code in self._name_to_code.items()}
         self._keying_memory: dict[int, str] = {}
         self._keyer_play_requests: list[tuple[int, int]] = []
+        self._inactive_vfo = (
+            deepcopy(engine.state.receivers[0]) if direct_vfo_slots else None
+        )
         self._handlers: dict[str, Callable[[str], str | None | _NotModelled]] = {
             "ID": self._identity_read,
             "IF": self._information,
@@ -326,6 +331,12 @@ class YaesuCatModel:
             self._handlers[codec.verb] = lambda body, c=codec: self._level(body, c)
         for codec in _SELECTORS:
             self._handlers[codec.verb] = lambda body, c=codec: self._selector(body, c)
+        if direct_vfo_slots:
+            self._handlers.pop("ST")
+            self._handlers.pop("VS")
+            self._handlers["FT"] = self._split_tx_vfo
+            for verb in ("SV", "AB", "BA"):
+                self._handlers[verb] = self._vfo_transfer
 
     @property
     def engine(self) -> SimEngine:
@@ -453,6 +464,22 @@ class YaesuCatModel:
         return REFUSAL
 
     def _frequency(self, body: str, verb: str, receiver: int) -> str | None:
+        inactive = self._inactive_vfo if receiver == 1 else None
+        if inactive is not None:
+            if body == verb:
+                return f"{verb}{inactive.frequency_hz:09d};"
+            digits = body[2:]
+            if len(digits) != 9 or not digits.isdigit():
+                return REFUSAL
+            # Same frequency-domain rule the engine applies to VFO A
+            # (``SimEngine`` ``SetFrequency``): an out-of-band inactive
+            # write is refused and leaves the slot unchanged.
+            hz = int(digits)
+            lo, hi = self._engine.frequency_range_hz
+            if not lo <= hz <= hi:
+                return REFUSAL
+            inactive.frequency_hz = hz
+            return None
         if body == verb:
             return f"{verb}{self._read_int('frequency_hz', receiver):09d};"
         digits = body[2:]
@@ -505,6 +532,30 @@ class YaesuCatModel:
         if body in ("ST0", "ST1"):
             return self._applied(SetSplit(body == "ST1"))
         return REFUSAL
+
+    def _split_tx_vfo(self, body: str) -> str | None:
+        """Fixture wire facts: FT2/FT3 set, FT0/FT1 answer."""
+        if body == "FT":
+            return "FT1;" if self._read_bool("split") else "FT0;"
+        if body in ("FT2", "FT3"):
+            return self._applied(SetSplit(body == "FT3"))
+        return REFUSAL
+
+    def _vfo_transfer(self, body: str) -> str | None:
+        inactive = self._inactive_vfo
+        if inactive is None or body not in ("SV", "AB", "BA"):
+            return REFUSAL
+        active = deepcopy(self._engine.state.receivers[0])
+        if body in ("SV", "BA"):
+            reply = self._applied(SetFrequency(0, inactive.frequency_hz))
+            if reply is not None:
+                return reply
+            reply = self._applied(SetMode(0, inactive.mode, inactive.filter))
+            if reply is not None:
+                return reply
+        if body in ("SV", "AB"):
+            self._inactive_vfo = active
+        return None
 
     def _vfo_select(self, body: str) -> str | None:
         if body == "VS":
@@ -701,16 +752,13 @@ class YaesuCatModel:
 def build_ftx1_engine(
     profile: SimProfile, rig: _RigData, *, clock: Clock, seed: int = 0
 ) -> SimEngine:
-    """Build the FTX-1 engine: capabilities from *rig* (the loaded
-    ``rigs/ftx1.toml``), receiver-0 initial state from *profile*.
+    """Build CAT engine capabilities from *rig*, initial state from *profile*.
 
     The profile's ``[state.extra]`` is overlaid on the model's own extra
     defaults (profile values win, unknown keys pass through untouched) and
     the model-owned keys are then validated: a bad value raises
     ``ValueError``.
     """
-    if rig.receiver_count != 2:
-        raise ValueError(f"{rig.model!r}: the model expects 2 receivers")
     if not rig.mode_codes or len(rig.mode_codes) != len(rig.modes):
         raise ValueError(f"{rig.model!r}: [modes] list/codes must be parallel")
     if any("," in mode for mode in rig.modes):
@@ -766,7 +814,7 @@ def build_ftx1_engine(
                 data_mode=False if main_data_mode is None else main_data_mode,
             ),
             ReceiverState(frequency_hz=default_hz, mode=caps.modes[0]),
-        ],
+        ][: rig.receiver_count],
         meters={"s_meter_main": 0, "s_meter_sub": 0},
         extra=extra,
     )

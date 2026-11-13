@@ -1189,13 +1189,16 @@ class YaesuCatPoller:
                         )
                     await radio.swap_main_sub()
                 else:
-                    if profile is None or profile.swap_ab_code is None:
+                    if profile is None or (
+                        profile.swap_ab_code is None
+                        and not profile.supports_command("vfo_swap")
+                    ):
                         model = getattr(
                             profile, "model", getattr(radio, "model", "unknown")
                         )
                         raise NotImplementedError(
                             f"VfoSwap unsupported on {model}: "
-                            "profile declares no swap_ab_code"
+                            "profile declares no swap_ab_code or vfo_swap command"
                         )
                     await radio.swap_vfo_ab(0)
                 await self._post_write_freq_mode_readback()
@@ -1710,13 +1713,14 @@ class YaesuCatPoller:
             except Exception:
                 logger.debug("YaesuCatPoller: get_tx_func failed", exc_info=True)
 
-        # -- VFO select (always) --
-        try:
-            state.vfo_select = await radio.get_vfo_select()
-        except NotImplementedError:
-            pass
-        except Exception:
-            logger.debug("YaesuCatPoller: get_vfo_select failed", exc_info=True)
+        # -- VFO select --
+        if radio.supports_command("get_vfo_select"):
+            try:
+                state.vfo_select = await radio.get_vfo_select()
+            except NotImplementedError:
+                pass
+            except Exception:
+                logger.debug("YaesuCatPoller: get_vfo_select failed", exc_info=True)
 
         if self._callback is not None:
             self._callback(state)
