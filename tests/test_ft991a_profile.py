@@ -106,9 +106,33 @@ def test_ft991a_narrow_tables_come_from_the_manual_sh_table():
         3000,
         3200,
     )
+    # MOR-4433: one code space per mode — the narrow and wide tables sit
+    # at DIFFERENT code ranges (manual PDF p.17: SSB narrow 01-09, wide
+    # 09-21; CW/RTTY/DATA narrow 01-10, wide 10-17).
+    assert (ssb.first_code, ssb.narrow_first_code) == (9, 1)
     for mode in ("CW-U", "CW-L", "RTTY-L", "RTTY-U", "DATA-L", "DATA-U"):
         rule = config.filter_config[mode]
         assert rule.narrow_table and rule.table, mode
+        assert (rule.first_code, rule.narrow_first_code) == (10, 1), mode
+
+
+def test_predating_profiles_keep_profile_level_first_code():
+    """Rules without per-table bases resolve to `[filters] first_code`."""
+    for path in (FIXTURE, ROOT / "rigs/ftx1.toml"):
+        config = load_rig(path)
+        assert config.filter_config
+        for mode, rule in config.filter_config.items():
+            assert rule.first_code is None, (path, mode)
+            assert rule.narrow_first_code is None, (path, mode)
+        profile = config.to_profile()
+        for mode in config.filter_config:
+            rule = profile.resolve_filter_rule(mode)
+            assert profile.resolve_filter_first_code(rule, narrow=False) == (
+                profile.filter_width_first_code
+            )
+            assert profile.resolve_filter_first_code(rule, narrow=True) == (
+                profile.filter_width_first_code
+            )
 
 
 def test_ft991a_declares_the_narrow_read_the_variant_requires():
@@ -188,13 +212,57 @@ async def test_single_value_rm_and_headless_pc(radio):
 @pytest.mark.asyncio
 async def test_width_maps_narrow_and_wide_tables_by_na_state(radio):
     # MD02 reads USB, whose rule declares the narrow variant, so the NA
-    # state selects the table. SH code 00 is the mode-dependent "(Default)"
+    # state selects the SH table AND its code base (MOR-4433: narrow base
+    # 01, wide base 09). SH code 00 is the mode-dependent "(Default)"
     # (manual PDF p.17) and carries no Hz by design -- real codes go here:
-    # code 07 is 1500 Hz narrow, code 06 is 2400 Hz wide (first_code = 1).
+    # code 07 is 1500 Hz narrow, code 14 is 2400 Hz wide.
     radio._transport.query = AsyncMock(side_effect=["MD02", "SH0007", "NA01"])
     assert await radio.get_filter_width() == 1500
-    radio._transport.query = AsyncMock(side_effect=["MD02", "SH0006", "NA00"])
+    radio._transport.query = AsyncMock(side_effect=["MD02", "SH0014", "NA00"])
     assert await radio.get_filter_width() == 2400
+
+
+@pytest.mark.asyncio
+async def test_set_filter_width_uses_the_active_table_base(radio):
+    # USB wide 2400 Hz is table index 5 from base 09 -> SH14, not SH06.
+    radio._transport.query = AsyncMock(side_effect=["MD02", "NA00"])
+    await radio.set_filter_width(2400)
+    radio._transport.write.assert_called_once_with("SH0014;")
+    # USB narrow 1500 Hz is table index 6 from base 01 -> SH07.
+    radio._transport.query = AsyncMock(side_effect=["MD02", "NA01"])
+    radio._transport.write.reset_mock()
+    await radio.set_filter_width(1500)
+    radio._transport.write.assert_called_once_with("SH0007;")
+
+
+@pytest.mark.asyncio
+async def test_shared_boundary_code_reads_1800_hz_in_both_states(radio):
+    # Manual PDF p.17: code 09 is 1800 Hz in BOTH SSB states (narrow
+    # index 8 from base 01, wide index 0 from base 09).
+    radio._transport.query = AsyncMock(side_effect=["MD02", "SH0009", "NA01"])
+    assert await radio.get_filter_width() == 1800
+    radio._transport.query = AsyncMock(side_effect=["MD02", "SH0009", "NA00"])
+    assert await radio.get_filter_width() == 1800
+
+
+@pytest.mark.asyncio
+async def test_cw_wide_table_counts_from_code_10(radio):
+    # MD03 reads CW-U: CW wide 2400 Hz is table index 6 from base 10 -> SH16.
+    radio._transport.query = AsyncMock(side_effect=["MD03", "NA00"])
+    await radio.set_filter_width(2400, receiver=0)
+    radio._transport.write.assert_called_once_with("SH0016;")
+    radio._transport.query = AsyncMock(side_effect=["MD03", "SH0016", "NA00"])
+    assert await radio.get_filter_width() == 2400
+
+
+@pytest.mark.asyncio
+async def test_narrow_only_code_in_wide_state_reads_no_hz(radio):
+    # SH03 is a narrow-table code; in the wide state (base 09) it is
+    # outside the active table: (None, False), as for any out-of-table code.
+    radio._transport.query = AsyncMock(side_effect=["MD02", "SH0003", "NA00"])
+    reading = await radio.read_filter_width_reading()
+    assert reading.hz is None
+    assert reading.radio_default is False
 
 
 @pytest.mark.asyncio
@@ -402,13 +470,15 @@ async def test_ft991a_split_swap_copy_and_width_roundtrip(monkeypatch):
         assert await radio.get_filter_width() == 1800
         await radio.set_narrow(True)
         # The stored SH code is unchanged; the narrow table re-maps it:
-        # code 01 is 1800 Hz wide but 200 Hz narrow (mirrors the fixture
-        # roundtrip's 2400 -> 1500 remap).
-        assert await radio.get_filter_width() == 200
+        # code 09 is 1800 Hz wide AND narrow (manual PDF p.17), so the
+        # width stays 1800 across the state flip.
+        assert await radio.get_filter_width() == 1800
         await radio.set_filter_width(400)
         assert await radio.get_filter_width() == 400
         await radio.set_narrow(False)
-        assert await radio.get_filter_width() == 1950
+        # SH02 from base 09 is outside the wide table: no Hz, as for any
+        # out-of-table code.
+        assert await radio.get_filter_width() is None
         await YaesuCatPoller(radio)._poll_slow()
         assert not any(cmd.startswith(("VS", "FR", "ST")) for cmd in wire)
         assert fake.model.handle("ID;") == "ID0670;"

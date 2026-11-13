@@ -2767,12 +2767,17 @@ class YaesuCatRadio:
         if table is None:
             return FilterWidthReading(hz=None, radio_default=False)
         try:
-            # Table 5 codes count from ``first_code``; codes below it (the
-            # code-00 "(Default)") are outside the 0-based codec table.
+            # Table codes count from the ACTIVE table's own base
+            # (MOR-4433): a per-rule ``first_code``/``narrow_first_code``
+            # when the rule declares one, else the profile-level
+            # ``first_code``. Codes below the base (the code-00
+            # "(Default)") are outside the 0-based codec table.
             return FilterWidthReading(
                 hz=int(
                     table_index_to_hz(
-                        code - self.profile.filter_width_first_code, table=table
+                        code
+                        - self.profile.resolve_filter_first_code(rule, narrow=narrow),
+                        table=table,
                     )
                 ),
                 radio_default=False,
@@ -2850,9 +2855,8 @@ class YaesuCatRadio:
             raise CommandError(
                 f"set_filter_width is unsupported for mode {mode} without a width table"
             )
-        index = (
-            hz_to_table_index(width_hz, table=table)
-            + self.profile.filter_width_first_code
+        index = hz_to_table_index(width_hz, table=table) + (
+            self.profile.resolve_filter_first_code(rule, narrow=narrow)
         )
         await self._write(cmd, code=index)
 

@@ -308,6 +308,35 @@ non-empty and strictly increasing, and the profile declares the narrow read (`[c
 `get_narrow_sub` on a multi-receiver profile). Absent narrow data keeps
 today's single-table behavior.
 
+### Per-table wire-code bases (MOR-4433)
+
+The narrow and wide tables may sit at DIFFERENT code ranges of one code
+space (FT-991A SH table: SSB narrow codes 01-09 but wide codes 09-21, CW
+narrow 01-10 but wide 10-17). A per-mode rule may therefore declare the
+wide table's base alongside it:
+
+```toml
+[filters.width.SSB]
+table = [1800, 1950, 2100, 2200, 2300, 2400, 2500, 2600, 2700, 2800, 2900, 3000, 3200]
+narrow_table = [200, 400, 600, 850, 1100, 1350, 1500, 1650, 1800]
+first_code = 9          # the wide table counts from code 09
+narrow_first_code = 1   # the narrow table counts from code 01
+```
+
+Both fields are optional: an absent field falls back to the profile-level
+`[filters] first_code`, which is the behavior every pre-MOR-4433 profile
+keeps. The backend resolves the base for the table in effect (narrow
+state first, as for the table itself) in both the width read and the
+width write; a code outside the active table's range keeps today's
+out-of-table handling.
+
+Loader rules (`rig_loader.py: _validate_filter_table_first_codes`): the
+fields need `[filters].encoding` `"table_index"`, are rejected on a
+`fixed` rule, `first_code` needs a `table`, `narrow_first_code` needs a
+`narrow_table`, each present value must be a non-negative integer, and
+each present base must sit above `[filters].radio_default_code` (the same
+below-the-table rule the profile-level `first_code` follows).
+
 ### RF power write quantum
 
 `[controls.rf_power]` may declare `write_quantum_w` — the fixed watt lattice

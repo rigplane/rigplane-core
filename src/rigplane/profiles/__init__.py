@@ -277,6 +277,16 @@ class FilterWidthRule:
     #: Declared last so existing positional constructor calls keep their
     #: field bindings.
     narrow_table: tuple[int, ...] = ()
+    #: Optional per-table wire-code bases (MOR-4433): the SH code the
+    #: rule's wide ``table`` (``first_code``) and narrow ``narrow_table``
+    #: (``narrow_first_code``) count from. ``None`` (the default) keeps
+    #: today's behavior — the profile-level ``[filters] first_code``.
+    #: Only valid with ``table_index`` encoding; rejected on fixed rules,
+    #: and ``narrow_first_code`` additionally needs a ``narrow_table``.
+    #: Declared after ``narrow_table`` so existing positional constructor
+    #: calls keep their field bindings.
+    first_code: int | None = None
+    narrow_first_code: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -833,6 +843,24 @@ class RadioProfile:
             if rule is not None:
                 return rule
         return None
+
+    def resolve_filter_first_code(
+        self, rule: FilterWidthRule | None, *, narrow: bool = False
+    ) -> int:
+        """Effective wire-code base for one filter-width table (MOR-4433).
+
+        The narrow state selects not only the table (``narrow_table`` vs
+        ``table``) but also its code base: a per-rule ``narrow_first_code``
+        while NARROW is on, a per-rule ``first_code`` while it is off.
+        Either may be absent (``None``) — including every rule written
+        before per-table bases existed — and falls back to the
+        profile-level ``[filters] first_code``, which is today's behavior.
+        """
+        if rule is not None:
+            override = rule.narrow_first_code if narrow else rule.first_code
+            if override is not None:
+                return override
+        return self.filter_width_first_code
 
     def encode_filter_width(
         self, width_hz: int, mode: str | None, *, data_mode: int = 0

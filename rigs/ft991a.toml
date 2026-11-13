@@ -458,22 +458,23 @@ codes = [
 [filters]
 list = []
 encoding = "table_index"
-# SH WIDTH codes (PDF p.17) count from 01; code 00 is the mode-dependent
-# "(Default)" with the table's Hz value per narrow state. A read CAN answer
-# 00 (same shape as the FTX-1, MOR-3677); the width read reports such an
-# answer with no Hz plus the `filter_width_radio_default` observation flag.
-# The loader validates the code sits below first_code and derives the
-# `filter_width_radio_default` capability from its presence.
-# UNVERIFIED -- shared code base: the manual prints narrow codes 01-09 but
-# wide codes 09-21 per row, while the table_index mechanism addresses both
-# tables from first_code (dense). Real wide SH wire codes are unconfirmed;
-# confirm on the customer capture (capture list).
+# SH WIDTH codes (PDF p.17) form ONE code space per mode: code 00 is the
+# mode-dependent "(Default)" with the table's Hz value per narrow state.
+# A read CAN answer 00 (same shape as the FTX-1, MOR-3677); the width read
+# reports such an answer with no Hz plus the `filter_width_radio_default`
+# observation flag. The loader validates the code sits below every table
+# base and derives the `filter_width_radio_default` capability from its
+# presence. Narrow and wide tables sit at DIFFERENT code ranges: each rule
+# declares the wide table's base (`first_code`) and the narrow table's
+# base (`narrow_first_code`), defaulting to the profile-level `first_code`
+# when absent. UNVERIFIED: real SH behaviour on hardware (capture list).
 first_code = 1
 radio_default_code = 0
 width_min_hz = 50
 width_max_hz = 3200
 
-# SH table (PDF p.17), SSB row: narrow codes 01-09, wide codes 09-21.
+# SH table (PDF p.17), SSB row: narrow codes 01-09, wide codes 09-21
+# (code 09 is 1800 Hz in BOTH states).
 # defaults carries the code-00 "(Default)" row: wide 2400 Hz, narrow
 # 1500 Hz (informational; the backend only uses defaults[0] for fixed
 # rules).
@@ -481,18 +482,25 @@ width_max_hz = 3200
 defaults = [2400, 1500]
 table = [1800, 1950, 2100, 2200, 2300, 2400, 2500, 2600, 2700, 2800, 2900, 3000, 3200]
 narrow_table = [200, 400, 600, 850, 1100, 1350, 1500, 1650, 1800]
+first_code = 9
+narrow_first_code = 1
 
 # SH table CW row, shared by CW-U and CW-L (both declared: the resolver has
-# no CW-U->CW fallback): narrow codes 01-10, wide codes 10-17.
+# no CW-U->CW fallback): narrow codes 01-10, wide codes 10-17 (code 10 is
+# 500 Hz in BOTH states).
 [filters.width.CW-L]
 defaults = [2400, 500]
 table = [500, 800, 1200, 1400, 1700, 2000, 2400, 3000]
 narrow_table = [50, 100, 150, 200, 250, 300, 350, 400, 450, 500]
+first_code = 10
+narrow_first_code = 1
 
 [filters.width.CW-U]
 defaults = [2400, 500]
 table = [500, 800, 1200, 1400, 1700, 2000, 2400, 3000]
 narrow_table = [50, 100, 150, 200, 250, 300, 350, 400, 450, 500]
+first_code = 10
+narrow_first_code = 1
 
 # SH table RTTY/PSK row, shared by RTTY-L/RTTY-U/DATA-L/DATA-U (each
 # declared; no cross-mode fallback): narrow codes 01-10, wide codes 10-17.
@@ -502,21 +510,29 @@ narrow_table = [50, 100, 150, 200, 250, 300, 350, 400, 450, 500]
 defaults = [500, 300]
 table = [500, 800, 1200, 1400, 1700, 2000, 2400, 3000]
 narrow_table = [50, 100, 150, 200, 250, 300, 350, 400, 450, 500]
+first_code = 10
+narrow_first_code = 1
 
 [filters.width.RTTY-U]
 defaults = [500, 300]
 table = [500, 800, 1200, 1400, 1700, 2000, 2400, 3000]
 narrow_table = [50, 100, 150, 200, 250, 300, 350, 400, 450, 500]
+first_code = 10
+narrow_first_code = 1
 
 [filters.width.DATA-L]
 defaults = [500, 300]
 table = [500, 800, 1200, 1400, 1700, 2000, 2400, 3000]
 narrow_table = [50, 100, 150, 200, 250, 300, 350, 400, 450, 500]
+first_code = 10
+narrow_first_code = 1
 
 [filters.width.DATA-U]
 defaults = [500, 300]
 table = [500, 800, 1200, 1400, 1700, 2000, 2400, 3000]
 narrow_table = [50, 100, 150, 200, 250, 300, 350, 400, 450, 500]
+first_code = 10
+narrow_first_code = 1
 
 # NOTE: FM, FM-N, AM, AM-N, DATA-FM and C4FM declare no rule. The SH table
 # (PDF p.17) prints no row for them, and the manual documents no SH

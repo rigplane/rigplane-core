@@ -529,6 +529,18 @@ non-empty and strictly increasing, and the profile
 declares the narrow read (`[commands].get_narrow`, plus `get_narrow_sub` on
 a multi-receiver profile). Absent narrow data keeps today's behavior.
 
+A rule whose narrow and wide tables sit at DIFFERENT code ranges of one
+code space (MOR-4433; FT-991A SH table: SSB narrow codes 01-09 but wide
+codes 09-21) declares each table's base: `first_code` for the wide
+`table`, `narrow_first_code` for the `narrow_table`. An absent field falls
+back to the profile-level `[filters] first_code`. The backend uses the
+active table's base in both the width read and the width write. Loader
+rules (`rig_loader.py: _validate_filter_table_first_codes`): both fields
+need `[filters].encoding` `"table_index"`, are rejected on a `fixed`
+rule, `first_code` needs a `table`, `narrow_first_code` needs a
+`narrow_table`, each present value must be a non-negative integer, and
+each present base must sit above `[filters].radio_default_code`.
+
 ## `[vfo]` — VFO Configuration
 
 | Field             | Type   | Required    | Description                                                  |

@@ -218,6 +218,9 @@ class TestNarrowFilterWidthSchemaDoc:
         for token in (
             "narrow_table",
             "_validate_filter_narrow_variant",
+            # MOR-4433 per-table wire-code bases.
+            "narrow_first_code",
+            "_validate_filter_table_first_codes",
         ):
             assert token in content, f"_schema.md must document {token}"
 
