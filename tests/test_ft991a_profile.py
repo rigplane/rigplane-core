@@ -165,6 +165,21 @@ def test_ft991a_reports_its_hamlib_model_through_dump_state():
     assert YaesuRouting(ftx1, 100.0).dump_state()[1] == "2028"
 
 
+def test_ft991a_does_not_poll_tx_target_without_a_tx_func_command():
+    # MOR-4433 R2: the single transceiver has no TX-function read verb (no
+    # ST/FR/get_tx_func), so a pollable tx_target makes
+    # YaesuObservationAdapter._read_tx_target raise CommandError out of
+    # _query — outside its except clauses — discarding the whole medium
+    # batch (freq, mode, PTT, width) every cycle while the slow lane keeps
+    # publishing. The profile must not declare the path pollable.
+    acquisition = load_rig(RIG).to_profile().state_acquisition
+    assert acquisition is not None
+    assert (
+        FieldPath.global_("tx_state", "tx_target")
+        not in acquisition.pollable_paths()
+    )
+
+
 def test_ft991a_omits_nb_nr_tuner_and_sub_mode():
     # MOR-4433 v1 omissions: NB/NR need a shared switch-read mechanism,
     # the AC tuner encoding needs typed native-state data, and the MD
