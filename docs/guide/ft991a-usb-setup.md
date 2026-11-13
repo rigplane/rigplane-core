@@ -114,6 +114,16 @@ flow control, TX audio and PTT all rest on the manual until the customer
 capture pass confirms them. If something misbehaves, capture it and see
 [Troubleshooting](troubleshooting.md).
 
+## Known Limits in This Version
+
+- **Transmit from the web UI is not available yet.** The profile declares no
+  TX-target source (the radio has no transmit-target read), so the web TX
+  authority and the TUNE action stay closed for the FT-991A. TX is also
+  unverified on hardware, and the antenna tuner (`AC`) is not exposed.
+- Noise blanker and noise reduction on/off, clarifier (RIT/XIT), monitor,
+  speech processor, IF bulk status, power-on and memory channels are not
+  exposed in this version.
+
 ## See Also
 
 - [Supported Radios](radios.md)
