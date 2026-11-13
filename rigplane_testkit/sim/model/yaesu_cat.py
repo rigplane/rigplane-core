@@ -255,9 +255,7 @@ def _level_codecs(squelch_max: int | None) -> tuple[_LevelCodec, ...]:
     reported by reads. ``squelch_max`` outside ``int >= 0`` raises
     ``ValueError``.
     """
-    if squelch_max is not None and (
-        type(squelch_max) is not int or squelch_max < 0
-    ):
+    if squelch_max is not None and (type(squelch_max) is not int or squelch_max < 0):
         raise ValueError(
             f"squelch_max must be a non-negative int or None, got {squelch_max!r}"
         )
@@ -859,9 +857,7 @@ def build_ftx1_engine(
         receiver_count=rig.receiver_count,
         modes=tuple(rig.modes),
         frequency_range_hz=(lo, hi),
-        levels={
-            codec.name: (0, codec.maximum) for codec in _level_codecs(squelch_max)
-        },
+        levels={codec.name: (0, codec.maximum) for codec in _level_codecs(squelch_max)},
         selectors={
             "agc": tuple(rig.agc_readback_modes),
             "preamp": tuple(rig.pre_values),
