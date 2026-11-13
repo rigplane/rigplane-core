@@ -298,6 +298,9 @@ export function toSpectrumAuthority(
   const modeFact = knownReading(state, `${key}.mode`, modeFilter?.currentMode);
   const widthFact = knownReading(state, `${key}.filterWidth`, modeFilter?.filterWidth);
   const dataFact = knownReading(state, `${key}.dataMode`, passband?.dataMode);
+  // MOR-4434: the passband rule follows the observed narrow state, like
+  // every other `table` consumer — unobserved narrow keeps the wide table.
+  const narrowFact = knownReading(state, `${key}.narrow`, passband?.narrow);
   const filterWidthHz = positiveInteger(widthFact) ? widthFact : null;
   // MOR-3677: the composed display verdict rides beside the Hz — the
   // spectrum chip reads it, geometry still gates on `filterWidthHz`.
@@ -316,7 +319,7 @@ export function toSpectrumAuthority(
   const supportsData = caps.capabilities.includes('data_mode');
   const rule = mode !== null && modeFact === mode && filterWidthHz !== null
     && (!supportsData || dataMode !== null) && caps.capabilities.includes('filter_width')
-    ? normalizeFilterRule(resolveFilterModeConfig(caps, mode, supportsData ? dataMode! : 0)) : null;
+    ? normalizeFilterRule(resolveFilterModeConfig(caps, mode, supportsData ? dataMode! : 0, narrowFact)) : null;
   const core = {
     providerGeneration: generation,
     receiver,

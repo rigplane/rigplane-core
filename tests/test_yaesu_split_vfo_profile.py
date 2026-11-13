@@ -481,19 +481,22 @@ def test_sim_applies_frequency_domain_to_inactive_slot_writes():
     assert model.handle("FA;") == "FA000030000;"
 
 
-async def _serve_fixture_over_http(tmp_path, monkeypatch):
+async def _serve_fixture_over_http(tmp_path, monkeypatch, extra_features=()):
     """Serve the single-RX fixture over HTTP on the CAT simulator.
 
     Returns ``(radio, wire, host, port, server)`` with the server started;
     the caller stops the server and closes the transport. The observation
     path polls frequency, mode, narrow state and filter width so the
-    public state carries all four.
+    public state carries all four. ``extra_features`` appends [capabilities]
+    feature tags to the test-local variant (the harness default keeps the
+    caller's existing wire logs untouched).
     """
+    features = ["split", "vfo_swap", "narrow", *extra_features]
     rig_path = tmp_path / "http-e2e.toml"
     rig_path.write_text(
         FIXTURE.read_text().replace(
             'features = ["split", "vfo_swap"]',
-            'features = ["split", "vfo_swap", "narrow"]',
+            f"features = {features!r}".replace("'", '"'),
         )
         + "\n[state_acquisition]\n"
         'provider = "yaesu_cat"\n'
@@ -622,6 +625,70 @@ async def test_narrow_width_end_to_end_over_http_with_cat_sim(tmp_path, monkeypa
         # the narrow table because NARROW is on).
         reading = await radio.read_filter_width_reading(0, mode="USB")
         assert reading.hz == 1800
+    finally:
+        await server.stop()
+        await radio._transport.close()
+
+
+@pytest.mark.realtime(
+    reason="real HTTP socket and the production backend poller/readback path"
+)
+@pytest.mark.asyncio
+async def test_narrow_table_end_to_end_over_http_with_cat_sim(tmp_path, monkeypatch):
+    """MOR-4434: the narrow/wide filter tables through the real HTTP API.
+
+    The seam the browser drives: ``/api/v1/capabilities`` publishes the
+    mode's narrow table beside the wide one, the frontend resolver's
+    active-table rule (observed narrow on with a non-empty narrow table
+    selects it, anything else keeps the wide table) is replayed here
+    against that payload, and ``set_filter_width`` is submitted in both
+    states — pinning both the admitted-width hint and the public
+    ``main.filterWidth`` the poller reads back over the CAT wire.
+    """
+    # The width readback needs the filter_width runtime tag: the shared
+    # harness omits it (its wire logs pin no SH polling), so this test
+    # serves its own variant with the tag appended.
+    radio, wire, host, port, server = await _serve_fixture_over_http(
+        tmp_path, monkeypatch, extra_features=("filter_width",)
+    )
+    try:
+        status, _, body = await _http_get(host, port, "/api/v1/capabilities")
+        assert status == 200
+        caps = json.loads(body)
+        ssb = caps["filterConfig"]["SSB"]
+        assert ssb["table"] == [2400, 2600, 3000, 3200, 4000]
+        assert ssb["narrowTable"] == [1500, 1800, 2000]
+
+        def active_table(caps_doc: dict, narrow: bool | None) -> list:
+            # The frontend resolver's rule, replayed against the served
+            # payload (panel-props.ts ``resolveFilterModeConfig``): USB
+            # resolves to the SSB entry through the shared fallback, and
+            # only a freshly observed narrow-on with a declared narrow
+            # table selects it.
+            rule = caps_doc["filterConfig"]["SSB"]
+            if narrow is True and rule.get("narrowTable"):
+                return rule["narrowTable"]
+            return rule["table"]
+
+        await _wait_for_state(host, port, "mode", "USB")
+        await _wait_for_state(host, port, "narrow", False)
+        assert active_table(caps, False) == [2400, 2600, 3000, 3200, 4000]
+
+        # Wide state: a wide-only width commits and reads back over the wire.
+        body = await _http_post_command(host, port, "set_filter_width", {"width": 2600})
+        assert body["result"]["admitted_width"] == 2600
+        assert "SH0001;" in wire
+        await _wait_for_state(host, port, "filterWidth", 2600)
+
+        # Narrow state: the narrow-only width is accepted (not quantized to
+        # the wide table) and reads back narrow.
+        await _http_post_command(host, port, "set_narrow", {"on": True})
+        await _wait_for_state(host, port, "narrow", True)
+        assert active_table(caps, True) == [1500, 1800, 2000]
+        body = await _http_post_command(host, port, "set_filter_width", {"width": 1500})
+        assert body["result"]["admitted_width"] == 1500
+        assert "SH0000;" in wire
+        await _wait_for_state(host, port, "filterWidth", 1500)
     finally:
         await server.stop()
         await radio._transport.close()

@@ -353,6 +353,52 @@ async def test_offset_bases_map_by_active_table_on_second_profile(
 
 
 @pytest.mark.asyncio
+async def test_two_digit_sh_code_format_roundtrip_over_real_loader(
+    tmp_path: Path,
+) -> None:
+    """``{code:02d}`` SH templates carry two-digit wire codes (MOR-4434).
+
+    A tmp copy of the fixture with the SH templates narrowed to two digits
+    loads through the real loader and pins the wire literally, including
+    code 00: ``SH000;`` reads back through the active table in both narrow
+    states, and both states write it back. The committed FTX-1 profile
+    keeps its three-digit shape (pinned by
+    ``test_ftx1_width_read_and_set_issue_no_narrow_query``).
+    """
+    text = FIXTURE.read_text()
+    old_read = 'get_filter_width = { cat = { read = "SH0;", parse = "SH0{code:03d};" } }'
+    old_write = 'set_filter_width = { cat = { write = "SH0{code:03d};" } }'
+    assert old_read in text
+    assert old_write in text
+    path = tmp_path / "two-digit.toml"
+    path.write_text(text.replace("{code:03d}", "{code:02d}"))
+    radio = YaesuCatRadio("/dev/null", profile=load_rig(path))
+    radio._transport._connected = True
+    radio._transport.write = AsyncMock()
+    radio._transport.query = AsyncMock()
+
+    # Code 00 reads through the active table: 2400 Hz wide, 1500 Hz narrow.
+    radio._transport.query.side_effect = _query_fn(
+        {"MD0;": "MD02", "NA0;": "NA00", "SH0;": "SH000;"}
+    )
+    assert await radio.read_filter_width(mode="USB") == 2400
+    radio._transport.query.side_effect = _query_fn(
+        {"MD0;": "MD02", "NA0;": "NA01", "SH0;": "SH000;"}
+    )
+    assert await radio.read_filter_width(mode="USB") == 1500
+
+    # The same code 00 writes back in both states: 2400 Hz wide and
+    # 1500 Hz narrow both sit at index 0 of their own table.
+    radio._transport.query.side_effect = _query_fn({"MD0;": "MD02", "NA0;": "NA00"})
+    await radio.set_filter_width(2400)
+    radio._transport.write.assert_called_once_with("SH000;")
+    radio._transport.write.reset_mock()
+    radio._transport.query.side_effect = _query_fn({"MD0;": "MD02", "NA0;": "NA01"})
+    await radio.set_filter_width(1500)
+    radio._transport.write.assert_called_once_with("SH000;")
+
+
+@pytest.mark.asyncio
 async def test_cw_pair_maps_by_narrow_state(radio: YaesuCatRadio) -> None:
     radio._transport.query.side_effect = _query_fn({"NA0;": "NA01", "SH0;": "SH0001"})
     assert await radio.read_filter_width(mode="CW") == 300

@@ -4,6 +4,7 @@ import type { RadioViewModel } from '../../../semantic/radio-view-model';
 import { toRadioViewModel } from '../../runtime/adapters/radio-view-model-adapter';
 import { MockWebSocket, instances } from './support/fake-ws-backend';
 import goldenFile from './fixtures/state-wire-goldens.json';
+import fixtureNarrowCapsJson from '../../runtime/adapters/__tests__/fixtures/fixture-narrow-capabilities.json';
 
 const fetchCapabilities = vi.hoisted(() => vi.fn());
 vi.mock('../http-client', async (importOriginal) => ({
@@ -140,6 +141,97 @@ describe('state wire goldens → real client chain', () => {
     expect(viewModel).not.toBeNull();
     expect(new Set(viewModel?.vfos.map((vfo) => vfo.receiver)).size).toBe(caps.receivers);
     if (!observed) expect(currentDisplayCount(viewModel!)).toBe(0);
+  });
+
+  // ─── MOR-4434: narrow/wide control on a NEW generated fixture ───────────
+  //
+  // `../../runtime/adapters/__tests__/fixtures/fixture-narrow-capabilities.json`
+  // carries the single-RX fixture profile's capabilities projection with the
+  // SSB/CW `narrowTable` the server publishes. The envelopes below are
+  // hand-built in the committed goldens' envelope shape (the validator in
+  // `stores/radio.svelte` only requires the contract fields); they assert the
+  // browser seam end to end: server JSON → real ws-client → radio store →
+  // `toRadioViewModel` bounds follow the narrow-selected table, and an
+  // unobserved narrow reading keeps the wide table.
+  function narrowEnvelope(
+    seq: number, narrow: boolean | null, filterWidth: number, markNarrowMissing: boolean,
+  ): Record<string, unknown> {
+    const data: Record<string, unknown> = {
+      stateContractVersion: 1,
+      providerGeneration: 7,
+      revision: seq,
+      stateRevision: seq,
+      freshnessRevision: 0,
+      observationSeq: seq,
+      updatedAt: '2026-01-01T00:00:00.000Z',
+      active: 'MAIN',
+      ptt: null,
+      split: null,
+      dualWatch: null,
+      tunerStatus: null,
+      main: {
+        freqHz: 14_074_000,
+        mode: 'USB',
+        filter: null,
+        dataMode: null,
+        sMeter: null,
+        att: null,
+        preamp: null,
+        nb: null,
+        nr: null,
+        afLevel: null,
+        rfGain: null,
+        squelch: null,
+        filterWidth,
+        narrow,
+      },
+      connection: { rigConnected: true, radioReady: true, controlConnected: true },
+      txTarget: { status: 'unknown', reason: 'narrow-table seam' },
+    };
+    if (markNarrowMissing) {
+      data.fieldStatus = {
+        'main.narrow': {
+          availability: 'missing', freshness: 'fresh', observed: false, storePath: 'main.narrow',
+        },
+      };
+    }
+    return data;
+  }
+
+  function widthBounds(viewModel: RadioViewModel | null): [unknown, unknown] {
+    return [
+      viewModel?.modeFilter?.filterWidthMin?.reading,
+      viewModel?.modeFilter?.filterWidthMax?.reading,
+    ];
+  }
+
+  it('narrow on selects the narrow table bounds; unknown narrow keeps the wide table', async () => {
+    const caps = validateCapabilities(structuredClone(fixtureNarrowCapsJson));
+    expect(caps.filterConfig?.SSB?.narrowTable).toEqual([1500, 1800, 2000]);
+    fetchCapabilities.mockResolvedValue(caps);
+    const { wsClient, store, capabilities } = await loadModules();
+    expect(capabilities.setCapabilities(caps)).toBe(true);
+
+    wsClient.connect('ws://test/api/v1/ws');
+    instances[0].simulateOpen();
+
+    sendStateUpdate(instances[0], narrowEnvelope(1, true, 1800, false));
+    expect(widthBounds(toRadioViewModel(store.getRadioState(), capabilities.getCapabilities()))).toEqual([
+      { status: 'known', value: 1500 },
+      { status: 'known', value: 2000 },
+    ]);
+
+    sendStateUpdate(instances[0], narrowEnvelope(2, false, 2600, false));
+    expect(widthBounds(toRadioViewModel(store.getRadioState(), capabilities.getCapabilities()))).toEqual([
+      { status: 'known', value: 2400 },
+      { status: 'known', value: 4000 },
+    ]);
+
+    sendStateUpdate(instances[0], narrowEnvelope(3, null, 2600, true));
+    expect(widthBounds(toRadioViewModel(store.getRadioState(), capabilities.getCapabilities()))).toEqual([
+      { status: 'known', value: 2400 },
+      { status: 'known', value: 4000 },
+    ]);
   });
 
   it('negative control: an envelope without the required `main` key is rejected', async () => {

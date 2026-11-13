@@ -579,14 +579,20 @@ function deriveModeFilter(
   // The active mode-keyed filter config, resolved by the ONE shipped
   // derivation (`resolveFilterModeConfig`) — see the doc comment above.
   // MOR-2513: null mode/dataMode (unobserved) resolves no config.
-  const filterConfig = resolveFilterModeConfig(caps, rx?.mode ?? undefined, rx?.dataMode ?? undefined);
+  // MOR-4434: the observed narrow state selects the active table, for the
+  // displayed receiver and for the configuration receiver alike —
+  // unobserved narrow keeps the wide table, exactly as before.
+  const narrow = topFieldAvailable(state, `${base}narrow`) ? (rx?.narrow ?? null) : null;
+  const filterConfig = resolveFilterModeConfig(caps, rx?.mode ?? undefined, rx?.dataMode ?? undefined, narrow);
   const activeBase = activeId === 'SUB' ? 'sub' : 'main';
   const activeRx = activeId === null ? undefined : state?.[activeBase];
   const dataValue = activeRx?.dataMode;
   const configObserved = activeId !== null && strictFieldAvailable(state, activeBase + '.mode')
     && (!hasCap(caps, 'data_mode') || (isDataModeValue(dataValue) && strictFieldAvailable(state, activeBase + '.dataMode')));
+  const activeNarrow = activeId !== null && topFieldAvailable(state, `${activeBase}.narrow`)
+    ? (activeRx?.narrow ?? null) : null;
   const activeFilterConfiguration = configObserved
-    ? copyFilterConfiguration(resolveFilterModeConfig(caps, activeRx?.mode ?? undefined, activeRx?.dataMode ?? undefined), filterChoices) : null;
+    ? copyFilterConfiguration(resolveFilterModeConfig(caps, activeRx?.mode ?? undefined, activeRx?.dataMode ?? undefined, activeNarrow), filterChoices) : null;
   const widthMin = filterConfig?.minHz ?? filterConfig?.table?.[0] ?? caps.filterWidthMin;
   const widthMax = filterConfig?.maxHz
     ?? (filterConfig?.table?.length ? filterConfig.table[filterConfig.table.length - 1] : undefined)

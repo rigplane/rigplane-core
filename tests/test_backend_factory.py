@@ -14,6 +14,8 @@ from rigplane.backends.config import (
     SerialBackendConfig,
     YaesuCatBackendConfig,
 )
+from rigplane.backends.factory import _yaesu_profile_for
+from rigplane.cli import _build_backend_config, _build_parser
 from rigplane.backends.ic7300.serial import Ic7300SerialRadio
 from rigplane.backends.icom7610 import Icom7610SerialRadio
 from rigplane.backends.yaesu_cat.radio import YaesuCatRadio
@@ -221,6 +223,63 @@ class TestCreateRadioFactory:
 
         with pytest.raises(ValueError, match="Unsupported backend"):
             create_radio(_UnknownConfig())  # type: ignore[arg-type]
+
+
+class TestYaesuModelForwarding:
+    """MOR-4434: the CLI-selected Yaesu model reaches the rig profile.
+
+    ``--model FTX-1`` (or no model) resolves the ``yaesu_ftx1`` profile; a
+    Yaesu model with no shipped profile (FT-710) keeps the long-standing
+    ``ftx1`` default instead of raising. Both Yaesu backend branches
+    (``YaesuCatBackendConfig`` and ``SerialBackendConfig``) forward the
+    same way. ``--model FT-710`` cannot travel the parser chain:
+    ``_resolve_model`` rejects unprofiled models before the factory runs,
+    so the FT-710 cases below construct the backend config directly.
+    """
+
+    @pytest.mark.parametrize(
+        ("model", "expected"),
+        [(None, "ftx1"), ("FTX-1", "FTX-1"), ("FT-710", "ftx1")],
+    )
+    def test_yaesu_profile_for(self, model: str | None, expected: str) -> None:
+        assert _yaesu_profile_for(model) == expected
+
+    async def _cli_chain_profile_id(self, argv: list[str]) -> str:
+        args = _build_parser().parse_args(argv)
+        config = await _build_backend_config(args)
+        radio = create_radio(config)
+        assert isinstance(radio, YaesuCatRadio)
+        return radio._config.id  # noqa: SLF001
+
+    async def test_cli_chain_without_model_selects_ftx1_default(self) -> None:
+        profile_id = await self._cli_chain_profile_id(
+            ["--backend", "yaesu-cat", "--serial-port", "/dev/ttyUSB0", "status"]
+        )
+        assert profile_id == "yaesu_ftx1"
+
+    async def test_cli_chain_with_ftx1_selects_ftx1(self) -> None:
+        profile_id = await self._cli_chain_profile_id(
+            ["--model", "FTX-1", "--serial-port", "/dev/ttyUSB0", "status"]
+        )
+        assert profile_id == "yaesu_ftx1"
+
+    async def test_cli_chain_serial_branch_with_ftx1_selects_ftx1(self) -> None:
+        profile_id = await self._cli_chain_profile_id(
+            [
+                "--model", "FTX-1", "--backend", "serial",
+                "--serial-port", "/dev/ttyUSB0", "status",
+            ]
+        )
+        assert profile_id == "yaesu_ftx1"
+
+    @pytest.mark.parametrize("config", [
+        YaesuCatBackendConfig(device="/dev/ttyUSB0", model="FT-710"),
+        SerialBackendConfig(device="/dev/ttyUSB0", model="FT-710"),
+    ])
+    def test_unprofiled_yaesu_model_falls_back_to_ftx1(self, config) -> None:
+        radio = create_radio(config)
+        assert isinstance(radio, YaesuCatRadio)
+        assert radio._config.id == "yaesu_ftx1"  # noqa: SLF001
 
 
 class TestContracts:

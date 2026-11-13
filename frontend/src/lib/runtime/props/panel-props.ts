@@ -365,10 +365,32 @@ export function modeHasTwinPbt(
   return !anyModeDeclares;
 }
 
+/**
+ * The mode rule with the NARROW-selected table published as `table`
+ * (MOR-4434): while the OBSERVED narrow state is on and the rule declares
+ * a non-empty `narrowTable`, the SH codes map through that table instead
+ * of the wide one — the same selection the backend write path makes, so
+ * bounds, choices, quantization, validation and commit can keep reading
+ * `table` and never disagree about which widths the radio accepts.
+ * `false`, `null` or `undefined` narrow keeps the wide table — exactly
+ * today's behavior for every radio without narrow data and for every
+ * unobserved or stale narrow reading. Returns the declared entry itself
+ * unless the narrow table is actually selected, so unchanged cases keep
+ * the identical object reference.
+ */
+function activeFilterTableConfig(
+  config: FilterModeConfig,
+  narrow: boolean | null | undefined,
+): FilterModeConfig {
+  if (narrow !== true || !config.narrowTable || config.narrowTable.length === 0) return config;
+  return { ...config, table: [...config.narrowTable] };
+}
+
 export function resolveFilterModeConfig(
   caps: Capabilities | null,
   mode: string | undefined,
   dataMode: number | undefined,
+  narrow?: boolean | null,
 ): FilterModeConfig | null {
   const filterConfig = caps?.filterConfig;
   const normalizedMode = mode?.toUpperCase();
@@ -396,7 +418,7 @@ export function resolveFilterModeConfig(
   for (const candidate of candidates) {
     const config = filterConfig?.[candidate];
     if (config) {
-      return config;
+      return activeFilterTableConfig(config, narrow);
     }
   }
   return null;
@@ -451,7 +473,10 @@ export function toFilterProps(
 ): FilterProps {
   const rx = state ? activeRx(state) : null;
   // MOR-2513: an unobserved mode/dataMode (null) resolves no config.
-  const filterConfig = resolveFilterModeConfig(caps, rx?.mode ?? undefined, rx?.dataMode ?? undefined);
+  // MOR-4434: the observed narrow state selects the mode's active table —
+  // unobserved narrow keeps the wide table, exactly as before.
+  const narrow = activeFieldAvailable(state, 'narrow') ? (rx?.narrow ?? null) : null;
+  const filterConfig = resolveFilterModeConfig(caps, rx?.mode ?? undefined, rx?.dataMode ?? undefined, narrow);
   // MOR-2497: PBT reads in Hz on the measured lattice — the mode's declared
   // step and the OBSERVED filter width — through the one derivation both
   // control surfaces share (`measuredPbtDisplayDomain`). No lattice (no step
@@ -1384,7 +1409,10 @@ export function toAudioSpectrumProps(
 ): AudioSpectrumProps {
   const rx = state ? activeRx(state) : null;
   // MOR-2513: null mode/dataMode (unobserved) resolves no config.
-  const filterConfig = resolveFilterModeConfig(caps, rx?.mode ?? undefined, rx?.dataMode ?? undefined);
+  // MOR-4434: same narrow-selected table as `toFilterProps` — the spectrum
+  // ceiling follows the active table.
+  const narrow = activeFieldAvailable(state, 'narrow') ? (rx?.narrow ?? null) : null;
+  const filterConfig = resolveFilterModeConfig(caps, rx?.mode ?? undefined, rx?.dataMode ?? undefined, narrow);
   const filterWidthMax = filterConfig?.table?.length
     ? filterConfig.table[filterConfig.table.length - 1]
     : (filterConfig?.maxHz ?? caps?.filterWidthMax ?? 4000);

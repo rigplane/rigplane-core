@@ -596,8 +596,12 @@ def _with_admitted_width(
 
     When the narrow state is freshly observed (MOR-4428/MOR-4433), the hint
     maps through the mode's narrow table — the same table the backend
-    write uses — so NARROW-on writes confirm exactly. Unknown or stale
-    narrow keeps the wide-table mapping.
+    write uses — so NARROW-on writes confirm exactly. Freshly observed
+    off keeps today's wide-table mapping. When the narrow state is unknown
+    or stale (MOR-4434) and the resolved rule declares a narrow variant,
+    neither table is trustworthy, so the hint is omitted and the client
+    confirms on plain equality with the requested width. Rules without a
+    narrow variant keep today's hints byte-for-byte.
     """
     if intent.name != "set_filter_width":
         return details
@@ -609,6 +613,10 @@ def _with_admitted_width(
         or "admitted_width" in details
     ):
         return details
+    if narrow is None:
+        rule = profile.resolve_filter_rule(mode)
+        if rule is not None and rule.narrow_table:
+            return details
     admitted = profile.admitted_filter_width(mode, width, narrow=narrow is True)
     if not isinstance(admitted, int):
         return details

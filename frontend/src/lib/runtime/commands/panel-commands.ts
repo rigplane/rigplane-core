@@ -863,8 +863,12 @@ function activeFilterRule(receiver: Receiver): FilterModeConfig | null {
   const caps = getCapabilities();
   if (!state || !caps) return null;
   const rx = receiver === 1 ? state.sub : state.main;
+  const prefix = receiver === 1 ? 'sub' : 'main';
   // MOR-2513: null mode/dataMode (unobserved) resolves no config.
-  return resolveFilterModeConfig(caps, rx?.mode ?? undefined, rx?.dataMode ?? undefined);
+  // MOR-4434: the observed narrow state selects the active table — an
+  // unobserved narrow reading keeps the wide table, exactly as before.
+  const narrow = isFieldAvailable(state, `${prefix}.narrow`) ? (rx?.narrow ?? null) : null;
+  return resolveFilterModeConfig(caps, rx?.mode ?? undefined, rx?.dataMode ?? undefined, narrow);
 }
 
 export function makeFilterHandlers() {
@@ -943,7 +947,13 @@ export function makeFilterHandlers() {
       const dataMode = supportsData ? observed.dataMode : 0;
       if (supportsData && (!observedAvailableField(context.state, `${key}.dataMode`)
         || !Number.isSafeInteger(dataMode) || (dataMode as number) < 0)) return;
-      const rule = resolveFilterModeConfig(context.caps, mode, dataMode as number);
+      // MOR-4434: the commit validates against the NARROW-selected table —
+      // a narrow-only width commits instead of dying in `table.includes`.
+      // Unobserved narrow keeps the wide table, exactly as before.
+      const narrow = knownA03cReceiver(context, active, 'narrow') === receiver
+        ? (observed?.narrow ?? null)
+        : null;
+      const rule = resolveFilterModeConfig(context.caps, mode, dataMode as number, narrow);
       if (!validResolvedFilterWidth(width, rule)) return;
       dispatchRadioIntent({ name: 'set_filter_width', params: { width, receiver } });
     },

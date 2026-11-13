@@ -2989,6 +2989,105 @@ describe('MOR-1409 A06a1 synchronous final filter-width authority', () => {
 });
 
 /**
+ * MOR-4434: the commit and debounce paths validate against the
+ * NARROW-selected table. The rule below mirrors the producer-shaped
+ * fixture (`adapters/__tests__/fixtures/fixture-narrow-capabilities.json`):
+ * the SSB wide table plus its narrow variant.
+ */
+const NARROW_RULE: FilterModeConfig = {
+  defaults: [2400, 1800, 500],
+  fixed: false,
+  table: [2400, 2600, 3000, 3200, 4000],
+  narrowTable: [1500, 1800, 2000],
+};
+
+function narrowCaps(): Record<string, unknown> {
+  return {
+    ...a06Caps(NARROW_RULE),
+    receivers: 1,
+    vfoScheme: 'ab',
+    capabilities: ['filter_width'],
+  } as unknown as Record<string, unknown>;
+}
+
+function narrowState(narrow: boolean | null): ServerState {
+  const base = a06State();
+  return {
+    ...base,
+    main: { ...base.main, narrow },
+    fieldStatus: {
+      ...base.fieldStatus,
+      'main.narrow': { ...freshStatus, storePath: 'main.narrow' },
+    },
+  } as ServerState;
+}
+
+describe('MOR-4434 narrow-selected filter-width table', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    h.caps = narrowCaps();
+    h.state = narrowState(true);
+    h.unavailable.clear();
+    h.sendCommand.mockClear();
+    resetCommandLifecycle();
+  });
+
+  afterEach(() => {
+    resetCommandLifecycle();
+    vi.useRealTimers();
+  });
+
+  it('commits a narrow-only width unquantized-to-wide when narrow is observed on', () => {
+    makeFilterHandlers().onFilterWidthCommit(1500, 0, 31);
+
+    expect(exactCalls()).toEqual([['set_filter_width', { width: 1500, receiver: 0 }]]);
+    expectIntentTransport();
+  });
+
+  it('refuses a wide-only width while narrow is on', () => {
+    makeFilterHandlers().onFilterWidthCommit(4000, 0, 31);
+
+    expect(h.sendCommand).not.toHaveBeenCalled();
+    expect(getCommandLifecycles()).toHaveLength(0);
+  });
+
+  it('refuses a narrow-only width while narrow is observed off', () => {
+    h.state = narrowState(false);
+
+    makeFilterHandlers().onFilterWidthCommit(1500, 0, 31);
+
+    expect(h.sendCommand).not.toHaveBeenCalled();
+    expect(getCommandLifecycles()).toHaveLength(0);
+  });
+
+  it('refuses a narrow-only width while narrow is unobserved, keeping today behavior', () => {
+    h.unavailable.add('main.narrow');
+
+    makeFilterHandlers().onFilterWidthCommit(1500, 0, 31);
+
+    expect(h.sendCommand).not.toHaveBeenCalled();
+    expect(getCommandLifecycles()).toHaveLength(0);
+  });
+
+  it('commits a wide width while narrow is unobserved', () => {
+    h.unavailable.add('main.narrow');
+
+    makeFilterHandlers().onFilterWidthCommit(2600, 0, 31);
+
+    expect(exactCalls()).toEqual([['set_filter_width', { width: 2600, receiver: 0 }]]);
+    expectIntentTransport();
+  });
+
+  it('debounces a narrow-only width to the wire unquantized while narrow is on', () => {
+    makeFilterHandlers().onFilterWidthChange(1500);
+    expect(h.sendCommand).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(200);
+
+    expect(exactCalls()).toEqual([['set_filter_width', { width: 1500, receiver: 0 }]]);
+  });
+});
+
+/**
  * MOR-1518 (live IC-7300 bench): dragging the Filter Width slider mid-drag
  * emitted raw, unaligned values (1050/2150/3150 Hz) straight onto the wire.
  * Each is a multiple of the WRONG segment's step — the slider's own fixed
