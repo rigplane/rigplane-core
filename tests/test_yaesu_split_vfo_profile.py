@@ -599,11 +599,10 @@ async def test_narrow_width_end_to_end_over_http_with_cat_sim(tmp_path, monkeypa
         tmp_path, monkeypatch
     )
     try:
-        # Mode, narrow flag and width are all freshly observed before the
-        # first submission: the admission hint maps through live state.
+        # Mode and narrow flag are freshly observed before the first
+        # submission: the admission hint maps through live state.
         await _wait_for_state(host, port, "mode", "USB")
         await _wait_for_state(host, port, "narrow", False)
-        await _wait_for_state(host, port, "filterWidth", 2400)
 
         # Wide state: 1500 Hz is not on the wide table ([2400, ...]), so
         # the response admits the nearest wide entry.

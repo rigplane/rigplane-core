@@ -632,6 +632,10 @@ def test_factory_forwards_the_model_in_both_yaesu_branches():
         (YaesuCatBackendConfig(device="/dev/null"), "yaesu_ftx1"),
         (SerialBackendConfig(device="/dev/null", model="FTX-1"), "yaesu_ftx1"),
         (SerialBackendConfig(device="/dev/null", model="FT-991A"), "yaesu_ft991a"),
+        # Yaesu models routed to the CAT backend without a shipped profile
+        # keep the pre-MOR-4433 FTX-1 default (no new failure for them).
+        (SerialBackendConfig(device="/dev/null", model="FT-710"), "yaesu_ftx1"),
+        (SerialBackendConfig(device="/dev/null", model="FTDX10"), "yaesu_ftx1"),
     )
     for config, profile_id in cases:
         assert create_radio(config)._config.id == profile_id

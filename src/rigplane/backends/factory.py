@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from ..radio import IcomRadio  # noqa: TID251
+from ..profiles.rig_loader import RigLoadError
 from ..radio_protocol import Radio
 from .config import (
     BackendConfig,
@@ -19,11 +20,28 @@ from .ic705.serial import Ic705SerialRadio, XieguSerialRadio
 from .ic9700.serial import Ic9700SerialRadio
 from .icom7610.serial import Icom7610SerialRadio
 from .rigctld_client.radio import RigctldClientRadio
-from .yaesu_cat.radio import YaesuCatRadio
+from .yaesu_cat.radio import YaesuCatRadio, _load_config
 
 #: Yaesu CAT models routed to the YaesuCatRadio serial backend. Any model
 #: starting with ``FT`` is treated as Yaesu CAT too (:func:`create_radio`).
 _YAESU_MODELS = frozenset({"FTX-1", "FT-710", "FT-991A", "FT-991", "FTDX101", "FTDX10"})
+
+
+def _yaesu_profile_for(model: str | None) -> str:
+    """Rig profile name for a Yaesu CAT *model*.
+
+    A model that resolves to a shipped rig profile (``FT-991A``) selects it.
+    No model, or a model with no shipped profile (``FT-710``, ``FTDX101``,
+    ``FTDX10``: routed to the Yaesu CAT backend but never profiled), keeps
+    the long-standing ``"ftx1"`` default exactly as before MOR-4433.
+    """
+    if model:
+        try:
+            _load_config(model)
+        except RigLoadError:
+            return "ftx1"
+        return model
+    return "ftx1"
 
 
 def _is_yaesu_serial_model(model: str) -> bool:
@@ -106,7 +124,7 @@ def create_radio(config: BackendConfig) -> Radio:
         return YaesuCatRadio(
             device=config.device,
             baudrate=config.baudrate,
-            profile=config.model if config.model else "ftx1",
+            profile=_yaesu_profile_for(config.model),
             rx_device=config.rx_device,
             tx_device=config.tx_device,
             audio_sample_rate=config.audio_sample_rate,
@@ -137,7 +155,7 @@ def create_radio(config: BackendConfig) -> Radio:
             return YaesuCatRadio(
                 device=config.device,
                 baudrate=config.baudrate or 38400,
-                profile=config.model,
+                profile=_yaesu_profile_for(config.model),
                 rx_device=config.rx_device,
                 tx_device=config.tx_device,
                 audio_sample_rate=config.audio_sample_rate or 48000,
