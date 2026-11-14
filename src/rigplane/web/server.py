@@ -799,6 +799,10 @@ def _serialize_filter_config(profile: "RadioProfile") -> dict[str, dict[str, obj
                 else {}
             ),
             **({"table": list(rule.table)} if rule.table else {}),
+            # MOR-4434: the narrow-state variant of the table, published only
+            # for rules that declare it. Every other radio's serialized
+            # output stays byte-identical to before.
+            **({"narrowTable": list(rule.narrow_table)} if rule.narrow_table else {}),
         }
     return result
 

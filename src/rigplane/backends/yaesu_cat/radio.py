@@ -2762,12 +2762,17 @@ class YaesuCatRadio:
         if table is None:
             return FilterWidthReading(hz=None, radio_default=False)
         try:
-            # Table 5 codes count from ``first_code``; codes below it (the
-            # code-00 "(Default)") are outside the 0-based codec table.
+            # Table codes count from the ACTIVE table's own base
+            # (MOR-4433): a per-rule ``first_code``/``narrow_first_code``
+            # when the rule declares one, else the profile-level
+            # ``first_code``. Codes below the base (the code-00
+            # "(Default)") are outside the 0-based codec table.
             return FilterWidthReading(
                 hz=int(
                     table_index_to_hz(
-                        code - self.profile.filter_width_first_code, table=table
+                        code
+                        - self.profile.resolve_filter_first_code(rule, narrow=narrow),
+                        table=table,
                     )
                 ),
                 radio_default=False,
@@ -2845,9 +2850,8 @@ class YaesuCatRadio:
             raise CommandError(
                 f"set_filter_width is unsupported for mode {mode} without a width table"
             )
-        index = (
-            hz_to_table_index(width_hz, table=table)
-            + self.profile.filter_width_first_code
+        index = hz_to_table_index(width_hz, table=table) + (
+            self.profile.resolve_filter_first_code(rule, narrow=narrow)
         )
         await self._write(cmd, code=index)
 
@@ -3188,17 +3192,30 @@ class YaesuCatRadio:
             await self._write("vfo_swap")
 
     async def equalize_vfo_ab(self, receiver: int = 0) -> None:
-        """Copy the active VFO's state to the inactive VFO on ``receiver``.
+        """Copy VFO-A to VFO-B on ``receiver`` (MOR-4433 follow-up A).
 
-        Not supported by Yaesu CAT: FTX-1 ``AB;``/``BA;`` copy between
-        receivers (MAIN↔SUB), not between A/B within a receiver, and
-        single-RX Yaesu profiles do not expose an equalize command.
+        On a single-transceiver ``ab`` profile that declares the
+        ``vfo_a_to_b`` copy primitive (e.g. FT-991A ``AB;``), equalize is
+        that A→B copy and delegates to :meth:`vfo_a_to_b`. Every other
+        profile keeps today's refusal: ``ab_shared`` (dual-RX, e.g. FTX-1)
+        copies between receivers, not between A/B within a receiver; a
+        multi-transceiver ``ab`` command set (same reason: its ``AB;``
+        spans receivers, so it is no per-receiver copy); and a profile
+        without the primitive exposes no equalize command.
         Raises :class:`NotImplementedError`.
         """
         self._check_single_receiver(receiver, operation="equalize_vfo_ab")
+        if (
+            self._config.vfo_scheme == "ab"
+            and self._config.transceiver_count == 1
+            and self.supports_command("vfo_a_to_b")
+        ):
+            await self.vfo_a_to_b()
+            return
         raise NotImplementedError(
             f"equalize_vfo_ab not supported on {self.model}: "
-            "Yaesu CAT has no per-receiver A→B copy primitive"
+            "Yaesu CAT has no per-receiver A→B copy primitive "
+            "(the profile declares no single-transceiver vfo_a_to_b copy)"
         )
 
     # -- D6: TX Stack -------------------------------------------------------

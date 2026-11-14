@@ -1217,13 +1217,20 @@ class YaesuCatPoller:
                         )
                     await radio.equalize_main_sub()
                 else:
-                    if profile is None or profile.equal_ab_code is None:
+                    # MOR-4433 follow-up A: one shared admission rule --
+                    # RadioProfile.supports_vfo_command -- so the poller
+                    # cannot disagree with capability projection or command
+                    # admission. Equalize is the declared vfo_a_to_b copy.
+                    if profile is None or not profile.supports_vfo_command(
+                        "vfo_equalize"
+                    ):
                         model = getattr(
                             profile, "model", getattr(radio, "model", "unknown")
                         )
                         raise NotImplementedError(
                             f"VfoEqualize unsupported on {model}: "
-                            "profile declares no equal_ab_code"
+                            "profile declares no equal_ab_code "
+                            "or vfo_a_to_b copy primitive"
                         )
                     await radio.equalize_vfo_ab(0)
                 await self._post_write_freq_mode_readback()

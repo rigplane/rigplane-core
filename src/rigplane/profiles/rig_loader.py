@@ -2812,6 +2812,79 @@ def _validate_band_max_power(
                 )
 
 
+def _parse_optional_first_code(
+    filename: str, mode_key: str, raw_rule: dict[str, Any], field: str
+) -> int | None:
+    """Parse one optional per-rule wire-code base (MOR-4433).
+
+    ``None`` (absent) keeps the profile-level ``[filters] first_code``;
+    a present value must be a non-negative integer (bools excluded —
+    ``isinstance(True, int)`` would otherwise admit them).
+    """
+    raw = raw_rule.get(field)
+    if raw is None:
+        return None
+    if isinstance(raw, bool) or not isinstance(raw, int) or raw < 0:
+        raise RigLoadError(
+            f"{filename}: [filters.width.{mode_key}].{field} must be "
+            f"a non-negative integer, got {raw!r}"
+        )
+    return raw
+
+
+def _validate_filter_table_first_codes(
+    filename: str,
+    filter_width_encoding: str,
+    filter_width_radio_default_code: int | None,
+    filter_config: dict[str, FilterWidthRule] | None,
+) -> None:
+    """Validate the optional per-table wire-code bases (MOR-4433).
+
+    A rule may carry its own base for the wide ``table`` (``first_code``)
+    and for the narrow ``narrow_table`` (``narrow_first_code``) — the
+    FT-991A SH space counts the wide table from 09/10 while the narrow
+    table counts from 01. Absent fields fall back to the profile-level
+    ``[filters] first_code`` (every pre-MOR-4433 profile), so only rules
+    that set at least one field are checked here.
+    """
+    for mode_key in sorted((filter_config or {}).keys()):
+        rule = (filter_config or {})[mode_key]
+        if rule.first_code is None and rule.narrow_first_code is None:
+            continue
+        where = f"{filename}: [filters.width.{mode_key}]"
+        if filter_width_encoding != "table_index":
+            raise RigLoadError(
+                f"{where} per-table first codes need [filters].encoding "
+                f'"table_index", got {filter_width_encoding!r}'
+            )
+        if rule.fixed:
+            raise RigLoadError(
+                f"{where} per-table first codes are rejected on a fixed-width mode"
+            )
+        if rule.first_code is not None and not rule.table:
+            raise RigLoadError(
+                f"{where}.first_code needs a [filters.width.{mode_key}].table"
+            )
+        if rule.narrow_first_code is not None and not rule.narrow_table:
+            raise RigLoadError(
+                f"{where}.narrow_first_code needs a "
+                f"[filters.width.{mode_key}].narrow_table"
+            )
+        if filter_width_radio_default_code is not None:
+            for field, base in (
+                ("first_code", rule.first_code),
+                ("narrow_first_code", rule.narrow_first_code),
+            ):
+                if base is not None and not filter_width_radio_default_code < base:
+                    raise RigLoadError(
+                        f"{where}.{field} ({base}) must sit above "
+                        "[filters].radio_default_code "
+                        f"({filter_width_radio_default_code}): a default "
+                        "among the table codes would be a table entry, "
+                        "not the radio's default"
+                    )
+
+
 def _validate_filter_narrow_variant(
     filename: str,
     filter_width_encoding: str,
@@ -3141,6 +3214,12 @@ def load_rig(path: Path) -> RigConfig:
             filter_config[str(mode_key).upper()] = FilterWidthRule(
                 defaults=tuple(int(value) for value in defaults_raw),
                 narrow_table=tuple(int(v) for v in narrow_table_raw),
+                first_code=_parse_optional_first_code(
+                    filename, mode_key, raw_rule, "first_code"
+                ),
+                narrow_first_code=_parse_optional_first_code(
+                    filename, mode_key, raw_rule, "narrow_first_code"
+                ),
                 fixed=bool(raw_rule.get("fixed", False)),
                 step_hz=(int(raw_rule["step_hz"]) if "step_hz" in raw_rule else None),
                 pbt_step_hz=(
@@ -3922,6 +4001,12 @@ def load_rig(path: Path) -> RigConfig:
         filter_config,
         commands,
         receiver_count,
+    )
+    _validate_filter_table_first_codes(
+        filename,
+        filter_width_encoding,
+        filter_width_radio_default_code,
+        filter_config,
     )
 
     return RigConfig(
