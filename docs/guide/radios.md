@@ -120,6 +120,76 @@ broader coverage than maintaining a bespoke backend for each dialect.
   X6200-vs-IC-705 disambiguation because both radios can report CI-V address
   `0xA4`. Hardware reports are welcome.
 
+### Xiegu G7250
+
+- **Protocol:** CI-V (Xiegu/Icom-compatible subset), per the Xiegu G7250 CI-V
+  Reference Rev 1.2
+- **CI-V Address:** the radio answers any address over USB. Over the network
+  only `0xA0` answers. <!-- PENDING: L3 (profile moves to 0xA0 and has_lan) -->
+- **Connectivity:** USB (CI-V serial + USB audio); network control in the
+  radio's "wfview" mode (firmware V1.0.1 or later) <!-- PENDING: L1+L2+L3 -->
+- **Rig profile:** `rigs/g7250.toml`
+- **Features:** HF + 6m, single receiver, VFO A/B, frequency, mode, levels,
+  switches and meters
+- **Setup guide:** [G7250 USB and network setup](g7250-setup.md)
+
+**USB.** The radio's USB port shows a serial port for CI-V (115200 baud;
+the radio did not answer at 19200) and a separate USB audio device. RX audio
+uses the audio device. The USB link has no panorama: the radio does not answer
+the CI-V scope commands over serial.
+
+**Network.** The radio's network port has two modes, chosen in the radio's
+network menu: **HDSDR** and **wfview**. The menu offers one at a time.
+
+| Mode | What the radio sends | RigPlane |
+|------|----------------------|----------|
+| HDSDR | Raw IQ stream over UDP | Used only as a panorama source ([Radio LAN IQ](sdr-panadapter.md#radio-lan-iq)), not for control |
+| wfview | Icom-style network control: CI-V, audio, scope | Network control <!-- PENDING: L1+L2+L3 --> |
+
+Network control needs the **wfview** mode and firmware **V1.0.1 or later**.
+In wfview mode the radio uses the Icom network handshake on UDP ports 50001
+(control), 50002 (CI-V) and 50003 (audio), and asks for the user name and
+password set in its network menu.
+
+What works, per connection:
+
+| | USB | Network (wfview mode) |
+|---|---|---|
+| Frequency, mode, levels, switches | Yes | Yes <!-- PENDING: L2+L3 --> |
+| Meters (S, power, SWR) | Yes | Yes <!-- PENDING: L3 --> |
+| RX audio | Yes (USB audio device) | Yes <!-- PENDING: L1+L3 (audio sub-stream) --> |
+| Panorama | No | The radio sends scope data (475 points per sweep, spans 48, 96, 192 and 384 kHz); the display is not part of the first network release <!-- PENDING: scope-PR (alt: "Yes, spans 48 to 384 kHz") --> |
+| TX and TX audio | Not verified | Not verified <!-- PENDING: TX-check (alt: replace with the verified result per connection) --> |
+
+TX, PTT and TX audio have not been verified on this radio, over either
+connection. They are not claimed. The radio has a 10 s PTT timer
+(CI-V Reference Rev 1.2). <!-- PENDING: TX-check -->
+
+**Settings on the radio.** For network control: network mode `wfview`, and a
+user name and password in the network menu. The radio does not report its
+network mode over CI-V; if RigPlane cannot connect, check the mode first.
+Whether a mode change needs a power cycle is not verified. In wfview mode the
+radio's network name shows as "IC-7300" and discovery does not name the
+G7250, so choose the model yourself (`--model G7250`).
+<!-- PENDING: L3 (model choice wording) -->
+
+**Known limits:**
+
+- The radio's AGC menu has Off, Fast, Medium, Slow and Auto. Over CI-V only
+  Off, Fast and Slow take effect; Medium and Auto cannot be selected by
+  command in V1.0.1, so RigPlane offers only Off, Fast and Slow. A later
+  firmware may change this.
+- Controls the radio only stores without acting on (the reference marks them
+  as compatibility values) are not offered. Examples: the CW-R and RTTY modes,
+  and AGC Medium.
+- Band edges, filter widths and the RIT/XIT, VOX, notch and dial-lock
+  controls follow the reference and are being checked on the radio; treat
+  them as unverified. <!-- PENDING: scope-PR (profile data PR; cut if merged and verified) -->
+- Writing a frequency over the network works through the radio's second
+  frequency command; the plain one is echoed but not applied. RigPlane does
+  this itself. <!-- PENDING: L2+L3 -->
+- Hardware reports are welcome.
+
 ### Lab599 TX-500
 
 - **Protocol:** Kenwood CAT (text) / Hamlib candidate
