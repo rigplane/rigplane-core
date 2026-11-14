@@ -161,6 +161,7 @@ async def _station(
     )
     radio = create_radio(await _build_backend_config(args))
     radio._civ_get_timeout = _ANSWER_WINDOW_S
+    radio._civ_min_interval = 0.0  # no hardware pacing sleep (MOR-4075: no real waits)
     radio._enumerate_serial_ports_fn = lambda: []  # no OS port enumeration
     await asyncio.wait_for(radio.connect(), 30)
     web = WebServer(radio, WebConfig(host="127.0.0.1", port=0))
