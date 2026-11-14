@@ -34,8 +34,10 @@ rigplane --backend serial --model G7250 --serial-port /dev/cu.usbserial-XXXX \
 Replace the port with the one `discover` lists. The radio answers any CI-V
 address over USB. RX audio comes from the radio's USB audio device.
 
-There is no panorama over USB: the radio does not answer the CI-V scope
-commands on the serial port.
+A USB-connected G7250 gets the audio-derived panorama only: the radio does not
+answer the CI-V scope commands on the serial port. With `--model G7250`, always
+pass `--serial-port` for USB; without `--serial-port` or `--host` RigPlane
+searches the network.
 
 ## Network (wfview mode)
 
@@ -68,19 +70,22 @@ rigplane --model G7250 --backend lan --host RADIO_IP --user RADIO_USER \
 between you and the radio.
 
 - Network discovery finds the radio but does not name the model. Pass
-  `--model G7250` yourself. <!-- PENDING: L3 -->
+  `--model G7250` yourself. With several radios on the network, give the
+  radio's address with `--host`. <!-- PENDING: L1+L3 -->
 - Over the network only CI-V address `0xA0` answers; the G7250 profile uses
   it. <!-- PENDING: L3 -->
 - Panorama over the network: the radio sends scope data in wfview mode
-  (spans 48, 96, 192 and 384 kHz). RigPlane does not show it yet.
+  (spans 48, 96, 192 and 384 kHz). RigPlane shows it in a later release than network control. In wfview mode the
+  HDSDR IQ stream is not available.
   <!-- PENDING: scope-PR (alt: "Panorama works over the network.") -->
 - TX and TX audio over the network are not verified.
   <!-- PENDING: TX-check (alt: verified result) -->
 
 ## Limits
 
-- AGC: the radio has Off, Fast, Medium, Slow and Auto, but only Off, Fast and
-  Slow can be set by CI-V command in V1.0.1. RigPlane offers those three.
+- AGC (firmware V1.0.1): the panel has Auto, Slow, Fast and Off. Only Off,
+  Fast and Slow can be set over CI-V. Auto reads back the same as Off, so
+  RigPlane shows "AGC off" while the radio is in Auto.
 - Controls the radio only stores without acting on are not offered.
 
 See [Supported Radios](radios.md#xiegu-g7250) for the full list.

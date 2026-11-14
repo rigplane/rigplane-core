@@ -135,15 +135,18 @@ broader coverage than maintaining a bespoke backend for each dialect.
 
 **USB.** The radio's USB port shows a serial port for CI-V (115200 baud;
 the radio did not answer at 19200) and a separate USB audio device. RX audio
-uses the audio device. The USB link has no panorama: the radio does not answer
-the CI-V scope commands over serial.
+uses the audio device. A USB-connected G7250 gets the audio-derived panorama
+only: the radio does not answer the CI-V scope commands over serial, so there
+is no hardware scope. With `--model G7250`, pass `--serial-port` for USB;
+without `--serial-port` or `--host`, RigPlane searches the network instead.
 
 **Network.** The radio's network port has two modes, chosen in the radio's
-network menu: **HDSDR** and **wfview**. The menu offers one at a time.
+network menu: **HDSDR** and **wfview**. The menu offers one at a time, so the HDSDR IQ stream is not available while
+the radio is in wfview mode.
 
 | Mode | What the radio sends | RigPlane |
 |------|----------------------|----------|
-| HDSDR | Raw IQ stream over UDP | Used only as a panorama source ([Radio LAN IQ](sdr-panadapter.md#radio-lan-iq)), not for control |
+| HDSDR | Raw IQ stream over UDP | Not used for control; a G7250 IQ panorama is not shipped ([Radio LAN IQ](sdr-panadapter.md#radio-lan-iq)) |
 | wfview | Icom-style network control: CI-V, audio, scope | Network control <!-- PENDING: L1+L2+L3 --> |
 
 Network control needs the **wfview** mode and firmware **V1.0.1 or later**.
@@ -158,7 +161,7 @@ What works, per connection:
 | Frequency, mode, levels, switches | Yes | Yes <!-- PENDING: L2+L3 --> |
 | Meters (S, power, SWR) | Yes | Yes <!-- PENDING: L3 --> |
 | RX audio | Yes (USB audio device) | Yes <!-- PENDING: L1+L3 (audio sub-stream) --> |
-| Panorama | No | The radio sends scope data (475 points per sweep, spans 48, 96, 192 and 384 kHz); the display is not part of the first network release <!-- PENDING: scope-PR (alt: "Yes, spans 48 to 384 kHz") --> |
+| Panorama | Audio-derived only | The radio sends scope data (475 points per sweep, spans 48, 96, 192 and 384 kHz); the hardware panorama ships in a later release than network control <!-- PENDING: scope-PR (alt: "Yes, spans 48 to 384 kHz") --> |
 | TX and TX audio | Not verified | Not verified <!-- PENDING: TX-check (alt: replace with the verified result per connection) --> |
 
 TX, PTT and TX audio have not been verified on this radio, over either
@@ -168,20 +171,19 @@ connection. They are not claimed. The radio has a 10 s PTT timer
 **Settings on the radio.** For network control: network mode `wfview`, and a
 user name and password in the network menu. The radio does not report its
 network mode over CI-V; if RigPlane cannot connect, check the mode first.
-Whether a mode change needs a power cycle is not verified. In wfview mode the
-radio's network name shows as "IC-7300" and discovery does not name the
-G7250, so choose the model yourself (`--model G7250`).
-<!-- PENDING: L3 (model choice wording) -->
+Whether a mode change needs a power cycle is not verified. Network discovery finds the
+radio, but it does not name the model, so pass `--model G7250`. With several
+radios on the network, give the radio's address with `--host`.
+<!-- PENDING: L1+L3 (discovery and model choice) -->
 
 **Known limits:**
 
-- The radio's AGC menu has Off, Fast, Medium, Slow and Auto. Over CI-V only
-  Off, Fast and Slow take effect; Medium and Auto cannot be selected by
-  command in V1.0.1, so RigPlane offers only Off, Fast and Slow. A later
-  firmware may change this.
+- AGC (firmware V1.0.1): the radio's panel has Auto, Slow, Fast and Off. Over
+  CI-V only Off, Fast and Slow can be selected. Auto cannot be selected by
+  command and reads back the same as Off, so RigPlane shows "AGC off" while
+  the radio is in Auto. <!-- PENDING: L3 (profile limits AGC choices to Off, Fast, Slow) -->
 - Controls the radio only stores without acting on (the reference marks them
-  as compatibility values) are not offered. Examples: the CW-R and RTTY modes,
-  and AGC Medium.
+  as compatibility values) are not offered. Examples: the CW-R and RTTY modes.
 - Band edges, filter widths and the RIT/XIT, VOX, notch and dial-lock
   controls follow the reference and are being checked on the radio; treat
   them as unverified. <!-- PENDING: scope-PR (profile data PR; cut if merged and verified) -->
