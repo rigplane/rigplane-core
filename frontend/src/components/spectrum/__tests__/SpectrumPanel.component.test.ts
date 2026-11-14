@@ -3321,7 +3321,9 @@ describe('managed scope projection (MOR-2367)', () => {
     try {
       mountPanel(); const frame = emitFrame();
       await flushWaterfallPaint();
-      expect(push).toHaveBeenCalledWith(frame.pixels);
+      // MOR-4383: the raw pixels still flow unfiltered; the delivery now
+      // carries the frame identity (wire defaults seq 1, epoch 1).
+      expect(push).toHaveBeenCalledWith(frame.pixels, { seq: 1, epoch: 1 });
     } finally { push.mockRestore(); }
   });
   it('consolidates backlog handling into the rAF pump: a burst before one animation frame paints only the latest delivery (MOR-4206)', async () => {

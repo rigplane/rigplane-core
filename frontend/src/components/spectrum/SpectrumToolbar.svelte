@@ -30,6 +30,7 @@
   interface Props {
     enableAvg?: boolean;
     enablePeakHold?: boolean;
+    enableSmooth?: boolean;
     brtLevel?: number;
     colorScheme?: ColorSchemeName;
     fullscreen?: boolean;
@@ -57,6 +58,7 @@
   let {
     enableAvg = $bindable(true),
     enablePeakHold = $bindable(true),
+    enableSmooth = $bindable(true),
     brtLevel = $bindable(0),
     colorScheme = $bindable('classic' as ColorSchemeName),
     fullscreen = $bindable(false),
@@ -311,6 +313,10 @@
     onclick={() => (enableAvg = !enableAvg)}>AVG</button>
   <button type="button" class="scope-flat-key" data-lit={enablePeakHold} aria-pressed={enablePeakHold}
     onclick={() => (enablePeakHold = !enablePeakHold)}>PEAK</button>
+  <!-- MOR-4383: the waterfall temporal-smoothing toggle rides the same
+       bindable state as AVG/PEAK (default ON) — no parallel prefs. -->
+  <button type="button" class="scope-flat-key" data-lit={enableSmooth} aria-pressed={enableSmooth}
+    onclick={() => (enableSmooth = !enableSmooth)}>SMTH</button>
 {/snippet}
 
 {#snippet rowTail()}
@@ -586,6 +592,7 @@
     <div class="toolbar-group">
       <button class="toolbar-btn" class:active={enableAvg} onclick={() => (enableAvg = !enableAvg)}>AVG</button>
       <button class="toolbar-btn" class:active={enablePeakHold} onclick={() => (enablePeakHold = !enablePeakHold)}>PEAK</button>
+      <button class="toolbar-btn" class:active={enableSmooth} onclick={() => (enableSmooth = !enableSmooth)}>SMTH</button>
     </div>
     <div class="toolbar-sub-separator hide-mobile"></div>
     <div class="toolbar-group hide-mobile">

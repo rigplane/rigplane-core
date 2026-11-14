@@ -111,8 +111,14 @@ function expectCentralOutput(input: { pixels: Uint8Array }, options: Parameters<
   expect(positions(actual.moveTo.mock.calls)).toEqual(positions(expected.moveTo.mock.calls));
   const f = webglFixture(640, 240);
   paintWaterfall.call(new WaterfallRenderer(f.canvas, { ...defaultWaterfallOptions, ...options }), input.pixels);
-  expect(f.named('texSubImage2D').at(-1)!.args[8]).toBe(input.pixels);
-  expect(f.named('texSubImage2D').at(-1)!.args[4]).toBe(input.pixels.length);
+  // MOR-4383: the ring stores the [1 2 1]-filtered row in a reused upload
+  // buffer (fresh renderer: the IIR restarts from raw, no blend).
+  const uploaded = f.named('texSubImage2D').at(-1)!;
+  const bins = input.pixels;
+  const expectedRow = Array.from(bins, (_, i) => Math.round(
+    (bins[i > 0 ? i - 1 : 0] + 2 * bins[i] + bins[i + 1 < bins.length ? i + 1 : bins.length - 1]) / 4));
+  expect(Array.from((uploaded.args[8] as Uint8Array).subarray(0, bins.length))).toEqual(expectedRow);
+  expect(uploaded.args[4]).toBe(input.pixels.length);
   return converted;
 }
 
@@ -386,7 +392,9 @@ describe('MOR-2355 central default scope source', () => {
       const renderOptions = render.mock.calls.at(-1)![4];
       expect(renderOptions).toMatchObject({ spanHz: span, sampleSpanHz: span, centerHz: center, sampleOffset: 0,
         sampleWindow: { start: 0.5, end: 1 }, sampleAmplitudeMax: 160 });
-      expect(push).toHaveBeenLastCalledWith(projected);
+      // MOR-4383: the delivery carries the frame identity (scopeWire
+      // defaults seq 0, epoch 1); same-seq redeliveries dedupe by design.
+      expect(push).toHaveBeenLastCalledWith(projected, { seq: 0, epoch: 1 });
       expect(target.querySelector('.freq-axis')!.textContent).toContain(`${span / 1000} kHz`);
       const displayed = expectCentralOutput(input, renderOptions);
       expect(displayed).toHaveLength(count);
@@ -410,7 +418,8 @@ describe('MOR-2355 central default scope source', () => {
     const renderOptions = render.mock.calls.at(-1)![4];
     expect(renderOptions).toMatchObject({ sampleOffset: 0, sampleWindow: { start: 0.5, end: 1 }, sampleAmplitudeMax: 160 });
     expect(expectCentralOutput(input, renderOptions)).toEqual(new Uint8Array([0, 40, 60, 80]));
-    expect(push).toHaveBeenLastCalledWith(projected);
+    // MOR-4383: the delivery carries the frame identity (scopeWire defaults).
+    expect(push).toHaveBeenLastCalledWith(projected, { seq: 0, epoch: 1 });
 
     const renderer = new SpectrumRenderer();
     renderer.setAvgEnabled(false);
@@ -436,7 +445,9 @@ describe('MOR-2355 central default scope source', () => {
     await vi.waitFor(() => expect(hardware.connect).toHaveBeenCalledWith('/api/v1/scope'));
     expect(host.snapshot('audio-fft').demand).toBe(0);
     const input = frame(14100000, 14200000, undefined, 'radio'); hardware.fire(input.data); draw();
-    expect(push).toHaveBeenCalledWith(input.pixels);
+    // MOR-4383: the raw pixels flow unfiltered; the delivery carries the
+    // frame identity (scopeWire defaults seq 0, epoch 1).
+    expect(push).toHaveBeenCalledWith(input.pixels, { seq: 0, epoch: 1 });
     expect(target.querySelector('.spectrum-toolbar')).not.toBeNull();
     target.querySelector<HTMLButtonElement>('[title="Toggle fullscreen"]')!.click(); flushSync();
     expect(target.querySelector('.spectrum-panel.fullscreen')).not.toBeNull();
