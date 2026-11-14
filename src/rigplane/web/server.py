@@ -8204,9 +8204,7 @@ class WebServer:
 
         ws = WebSocketConnection(reader, writer, deflate=upgrade.deflate)
         peer = writer.get_extra_info("peername", ("?", 0))
-        await self.serve_client_channel(
-            ws, kind, ticket, params, peer, transport="ws"
-        )
+        await self.serve_client_channel(ws, kind, ticket, params, peer, transport="ws")
 
 
 # ------------------------------------------------------------------

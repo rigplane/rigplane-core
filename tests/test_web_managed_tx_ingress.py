@@ -502,9 +502,7 @@ async def test_webrtc_control_handler_receives_explicit_exact_authority(
         _FakeDataChannelConn,
     )
     manager = WebRtcSessionManager(_radio(), server, "IC-9700")
-    session = SimpleNamespace(
-        pc=MagicMock(), tasks=[], controller_owners=set()
-    )
+    session = SimpleNamespace(pc=MagicMock(), tasks=[], controller_owners=set())
     channel = SimpleNamespace(label="control", on=MagicMock())
 
     manager._dispatch_channel("test-session", session, channel)  # noqa: SLF001
