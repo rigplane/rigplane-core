@@ -2426,25 +2426,30 @@ class MockIcomRadio(AudioPortMixin):
             return self._civ_nak(to, frm)
 
         native = self._dispatch_civ_native(cmd, payload, from_addr)
+        if native is None or native[4] != _CMD_NAK:
+            reply: bytes | None = native
+        else:
+            reply = None
+            if self.recorded_answers is not None:
+                reply = self.recorded_answers.answer(
+                    self._civ_frame(frm, to, cmd, data=payload)
+                )
+            if reply is None:
+                reply = native
         if (
             self._write_confirmation == "echo"
-            and native is not None
-            and native[4] == _CMD_ACK
+            and reply is not None
+            and reply[4] == _CMD_ACK
         ):
             # Echo-only confirmation: answer the SET with its own frame,
             # radio to controller; state changes above still apply. (The
             # LAN echo is a raw bounce that keeps the request's
             # controller-to-radio addresses, so the client drops it.)
+            # The choice applies after the native-or-recorded reply is
+            # picked, so a recorded-answer FB becomes the addressed echo
+            # of the SET rather than a bare FB.
             return self._civ_frame(to, frm, cmd, data=payload)
-        if native is None or native[4] != _CMD_NAK:
-            return native
-        if self.recorded_answers is not None:
-            recorded = self.recorded_answers.answer(
-                self._civ_frame(frm, to, cmd, data=payload)
-            )
-            if recorded is not None:
-                return recorded
-        return native
+        return reply
 
     def _dispatch_civ_native(
         self, cmd: int, payload: bytes, from_addr: int
