@@ -647,6 +647,7 @@ class MockIcomRadio(AudioPortMixin):
         civ_inherited_drop_unanswered_rounds: int = 0,
         clock: Callable[[], float] | None = None,
         dual_receiver: bool = False,
+        vfo_ab: bool = False,
         scope_stream: bool = False,
         scope_blank_waves: bool = False,
         rx_source: RxSource | None = None,
@@ -733,6 +734,11 @@ class MockIcomRadio(AudioPortMixin):
         # the selected receiver, 1 = SUB is (recorded vfo_select window).
         self._dual_receiver: bool = dual_receiver
         self._selected_receiver: int = 0
+        # VFO A/B letter of the selected receiver (CI-V 0x07 00/01). A radio
+        # powers up on VFO A; selecting the idle letter swaps the
+        # selected/unselected pair, selecting the current one is idempotent.
+        self._vfo_ab = vfo_ab
+        self._selected_vfo_letter: str = "A"
         # MOR-4036: the set of CI-V mode bytes that can carry the DATA flag
         # (None = every mode, today's behaviour — unchanged for all existing
         # tests). When set, a 0x26 SET whose data byte is non-zero for a mode
@@ -2661,6 +2667,25 @@ class MockIcomRadio(AudioPortMixin):
             return self._civ_frame(to, frm, cmd, data=payload)
         return reply
 
+    def _swap_selected_unselected(self) -> None:
+        """Exchange the selected and unselected receiver/VFO state pairs."""
+        self._frequency, self._unselected_frequency = (
+            self._unselected_frequency,
+            self._frequency,
+        )
+        self._mode, self._unselected_mode = (
+            self._unselected_mode,
+            self._mode,
+        )
+        self._data_mode, self._unselected_data_mode = (
+            self._unselected_data_mode,
+            self._data_mode,
+        )
+        self._filter, self._unselected_filter = (
+            self._unselected_filter,
+            self._filter,
+        )
+
     def _dispatch_civ_native(
         self, cmd: int, payload: bytes, from_addr: int
     ) -> bytes | None:
@@ -2856,24 +2881,28 @@ class MockIcomRadio(AudioPortMixin):
             if len(payload) == 1 and payload[0] in (0xD0, 0xD1):
                 target = payload[0] - 0xD0  # D0 -> MAIN (0), D1 -> SUB (1)
                 if target != self._selected_receiver:
-                    self._frequency, self._unselected_frequency = (
-                        self._unselected_frequency,
-                        self._frequency,
-                    )
-                    self._mode, self._unselected_mode = (
-                        self._unselected_mode,
-                        self._mode,
-                    )
-                    self._data_mode, self._unselected_data_mode = (
-                        self._unselected_data_mode,
-                        self._data_mode,
-                    )
-                    self._filter, self._unselected_filter = (
-                        self._unselected_filter,
-                        self._filter,
-                    )
+                    self._swap_selected_unselected()
                     self._selected_receiver = target
                 return self._civ_ack(to, frm)
+        # --- VFO A/B select (0x07 00/01) on the selected receiver ---
+        # Single-receiver "VFO A/B" radios (IC-705, IC-7300) take the letter
+        # form: selecting the idle letter swaps the selected/unselected pair
+        # (same exchange as a receiver re-select), selecting the current
+        # letter is an idempotent ACK. Core's connection policy
+        # (``RadioPoller.select_vfo_a_on_connect``) sends 0x07 0x00 at
+        # connect to bind the A/B identity; a NAK here leaves
+        # ``main.activeSlot`` unobserved and the passband tuple unprovable.
+        if (
+            self._vfo_ab
+            and cmd == _CMD_VFO_SELECT
+            and len(payload) == 1
+            and payload[0] in (0x00, 0x01)
+        ):
+            target_letter = "A" if payload[0] == 0x00 else "B"
+            if target_letter != self._selected_vfo_letter:
+                self._swap_selected_unselected()
+                self._selected_vfo_letter = target_letter
+            return self._civ_ack(to, frm)
         # The bare D2 read is answered with or without ``dual_receiver``: a
         # dual-receiver radio always reports its selection, and Core refuses
         # receiver-scoped plain commands until it has (MOR-3591). Without

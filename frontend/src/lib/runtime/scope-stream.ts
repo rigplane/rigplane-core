@@ -114,6 +114,9 @@ export class ScopeStream {
     }
     this.retryNeeded = false;
     const previous = this.subscriptionsValue;
+    // A grant acknowledges the preceding intent until the changed request
+    // receives its own response; keep its pixels, but retire that acknowledgment.
+    this.grantedStore.set(null);
     this.subscriptionKey = key;
     this.subscriptionsValue = next.map(request => ({ ...request, view: { ...request.view } }));
     this.subscriptionValue = this.subscriptionsValue[0] ?? null;
@@ -249,6 +252,10 @@ export class ScopeStream {
 
   /** Last accepted ID for valid selected geometry; preserved across evidence boundaries. */
   get geometryReceipt(): number { return this.geometryAccepted; }
+
+  get lastFrameHasPixels(): boolean {
+    return this.geometryKey !== null && Boolean(this.frames.get(this.geometryKey)?.pixels?.length);
+  }
 
   /** A transport-session change retires cached receipts; wire epochs remain producer-owned. */
   setSessionEpoch(epoch: number): void {
