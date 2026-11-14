@@ -829,7 +829,11 @@ async def test_missing_attach_closes_channel_within_timeout(
     dc = _DcControlClient()
     try:
         await dc.connect(stack.web)
+        opened_at = asyncio.get_running_loop().time()
         await dc.wait_closed(timeout=10.0)
+        elapsed = asyncio.get_running_loop().time() - opened_at
+        # Closed by the server's attach timeout (5 s), not by the client.
+        assert elapsed <= 5.0 + 2.0, elapsed
     finally:
         await dc.close()
         await _tear_down_stack(stack)
