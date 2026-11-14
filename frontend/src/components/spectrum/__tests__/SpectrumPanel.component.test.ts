@@ -707,7 +707,7 @@ const defaultRule: SpectrumFilterRule = Object.freeze({
   kind: 'step', minHz: 100, maxHz: 5_000, stepHz: 100,
 });
 
-function testScopeControls(modeValue = 2): ScopeControlsViewModel {
+function testScopeControls(modeValue = 2, spanValue = 3): ScopeControlsViewModel {
   const field = <T,>(value: T) => Object.freeze({
     reading: Object.freeze({ status: 'known' as const, value }),
     availability: Object.freeze({ structural: true, operational: true }),
@@ -715,7 +715,7 @@ function testScopeControls(modeValue = 2): ScopeControlsViewModel {
   return Object.freeze({
     mode: field(modeValue),
     edge: field(1),
-    span: field(3),
+    span: field(spanValue),
     speed: field(0),
     hold: field(false),
     refDb: field(0),
@@ -1510,9 +1510,11 @@ describe('SpectrumPanel component', () => {
     } finally { spy.mockRestore(); }
   });
 
-  it('clamps the requested width only when an adopted coverage no longer contains it (MOR-4392)', async () => {
+  it('keeps the requested width on delayed partially intersecting frames and adopts only an observed narrowing (MOR-4451)', async () => {
     runtimeHarness.state.currentCaps = validateCapabilities({ ...IC7300_CAPABILITIES, ...spanCapabilities, model: 'IC-705' });
-    authorityHarness.state.current = authority({ frequencyHz: 14_050_000 });
+    // Observed span index 5 names the 100 kHz CENTER half-width preset: the
+    // native window is 200 kHz, matching the zoomed follow width below.
+    authorityHarness.state.current = authority({ frequencyHz: 14_050_000, scopeControls: testScopeControls(2, 5) });
     const target = mountPanel(); emitFrame(); await flushWaterfallPaint();
     const read = () => JSON.parse(target.querySelector('.spectrum-panel')!.getAttribute('data-scope-subscription')!);
     target.querySelector<HTMLButtonElement>('[data-testid="scope-zoom-out"]')!.click(); flushSync();
@@ -1520,25 +1522,56 @@ describe('SpectrumPanel component', () => {
     // The grant of the requested width arrives: nothing to clamp.
     emitFrame({ startFreq: 13_950_000, endFreq: 14_150_000, sequence: 2 }); flushSync();
     expect(read().view).toEqual({ follow: 'vfo', spanHz: 200_000 });
-    // An external narrowing (front panel / RigDeck) that no longer contains
-    // the requested window clamps it to the new coverage — adoption only.
     const stream = scopeControllerHarness.stream('hardware');
     stream.handleMessage({ type: 'granted', ...stream.subscription!,
       view: { startHz: 13_950_000, endHz: 14_150_000 },
       coverage: { startHz: 13_950_000, endHz: 14_150_000 }, fps: 20 });
+    flushSync();
+    const subscribes = () => (harnessChannels.scope.sendRaw as unknown as Mock).mock.calls
+      .map(([message]) => message as { type?: unknown })
+      .filter((message) => message?.type === 'subscribe');
+    const sentBefore = subscribes().length;
+    expect(sentBefore).toBeGreaterThan(0);
+    // Delayed pixels cover only the left three quarters of the requested
+    // view while the observed native window is unchanged: the requested
+    // width stays, no extra subscription goes out, and the transient margin
+    // stays unhatched.
     emitFrame({ startFreq: 13_950_000, endFreq: 14_150_000,
-      coverageStartHz: 14_000_000, coverageEndHz: 14_100_000, sequence: 3 }); flushSync();
+      coverageStartHz: 13_950_000, coverageEndHz: 14_100_000, sequence: 3 }); flushSync();
+    await flushWaterfallPaint();
+    expect(read().view).toEqual({ follow: 'vfo', spanHz: 200_000 });
+    expect(subscribes()).toHaveLength(sentBefore);
+    expect(target.querySelectorAll('.scope-hatch')).toHaveLength(0);
+    // A genuinely observed narrowing (front panel / RigDeck) below the follow
+    // width still adopts: the span index drops to the 50 kHz preset.
+    authorityHarness.state.current = authority({ frequencyHz: 14_050_000, scopeControls: testScopeControls(2, 4) });
+    refreshSpectrumAuthority(); flushSync();
     expect(read().view).toEqual({ follow: 'vfo', spanHz: 100_000 });
-    target.querySelector<HTMLButtonElement>('[data-testid="scope-zoom-in"]')!.click(); flushSync();
-    expect(read().view).toEqual({ follow: 'vfo', spanHz: 50_000 });
-    emitFrame({ startFreq: 14_025_000, endFreq: 14_075_000, sequence: 4 }); flushSync();
-    expect(read().view).toEqual({ follow: 'vfo', spanHz: 50_000 });
-    // Adoptions whose coverage still contains the requested width keep it —
-    // the subscription value is untouched, so no new subscription is caused.
-    emitFrame({ startFreq: 13_925_000, endFreq: 14_175_000, sequence: 5 }); flushSync();
-    expect(read().view).toEqual({ follow: 'vfo', spanHz: 50_000 });
-    emitFrame({ startFreq: 14_000_000, endFreq: 14_100_000, sequence: 6 }); flushSync();
-    expect(read().view).toEqual({ follow: 'vfo', spanHz: 50_000 });
+    expect(subscribes()).toHaveLength(sentBefore + 1);
+    expect(subscribes().at(-1)).toMatchObject({ type: 'subscribe', view: { follow: 'vfo', spanHz: 100_000 } });
+  });
+
+  it('hatches a genuinely narrower observed native even when the grant coverage is as wide as the view (MOR-4451)', async () => {
+    runtimeHarness.state.currentCaps = validateCapabilities({ ...IC7300_CAPABILITIES, ...spanCapabilities, model: 'IC-705' });
+    // Observed span index 3 names the 25 kHz CENTER half-width preset: the
+    // radio delivers a 50 kHz window. The follow width zooms out to 100 kHz
+    // while the grant below still carries the old 100 kHz coverage, so only
+    // the observed span can hatch the undelivered margins.
+    authorityHarness.state.current = authority({ frequencyHz: 14_050_000, scopeControls: testScopeControls(2, 3) });
+    const target = mountPanel();
+    emitFrame({ startFreq: 14_025_000, endFreq: 14_075_000 }); await flushWaterfallPaint();
+    target.querySelector<HTMLButtonElement>('[data-testid="scope-zoom-out"]')!.click(); flushSync();
+    const stream = scopeControllerHarness.stream('hardware');
+    stream.handleMessage({ type: 'granted', ...stream.subscription!,
+      view: { startHz: 14_000_000, endHz: 14_100_000 },
+      coverage: { startHz: 14_000_000, endHz: 14_100_000 }, fps: 20 });
+    flushSync();
+    emitFrame({ startFreq: 14_025_000, endFreq: 14_075_000, sequence: 2 });
+    flushSync(); await flushWaterfallPaint();
+    const hatches = target.querySelectorAll<HTMLElement>('.scope-hatch');
+    expect(hatches).toHaveLength(2);
+    expect(hatches[0]!.dataset.reason).toBe('view wider than coverage');
+    expect(hatches[1]!.dataset.reason).toBe('view wider than coverage');
   });
 
   it('keeps the fixed window for the FIX marker and passband after a CENTER zoom (MOR-4392)', async () => {

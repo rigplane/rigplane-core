@@ -709,9 +709,10 @@
   // the drag writes `gesture`, the tuning legs write their own. Pan/zoom
   // presets edit the View directly (display-only until R4 grants views).
   let followSpanHz = $state<number | null>(null);
-  // MOR-4392: the last delivered coverage span, for the adoption clamp —
-  // only a coverage SHRINK can be an external change to adopt.
-  let lastCoverageSpanHz: number | null = null;
+  // MOR-4451: the last OBSERVED native width, for the adoption clamp —
+  // only a narrowing of the radio's own native window can be an external
+  // change to adopt, never a shrinking frame intersection.
+  let lastNativeWidthHz: number | null = null;
   const scopeView = createScopeView({ startHz: 0, endHz: 0 });
   let coordinatingView = false;
   let effectiveView = $state.raw<View>({ startHz: 0, endHz: 0 });
@@ -721,6 +722,33 @@
       if (!coordinatingView) untrack(() => syncPanoramaMotion(panoramaResetKey, panoramaTargetHz));
     });
     return stop;
+  });
+  // MOR-4451: one source of truth for the radio's NATIVE width in Hz, shared
+  // by the follow adoption below and the hatch input. The observed scope-span
+  // index in the state store names a CENTER half-width preset, so the full
+  // native width is 2 × span_choices_hz[i]. The cached grant coverage is only
+  // a subscription-time intersection the server republishes on pixel-width
+  // changes — after a front-panel span reduction it still claims the old
+  // width — so it is the fallback only while the observed span is unknown.
+  // Unknown both ways keeps today's hatch, as before.
+  let nativeScopeWidthHz = $derived.by(() => {
+    if (!audioFft && !sdrSource) {
+      const reading = spectrumAuthority?.scopeControls?.span.reading;
+      const choices = runtime.caps?.span_choices_hz;
+      if (reading?.status === 'known' && Number.isInteger(reading.value)
+        && choices && reading.value >= 0 && reading.value < choices.length) {
+        const halfHz = choices[reading.value];
+        if (Number.isFinite(halfHz) && halfHz > 0) return 2 * halfHz;
+      }
+    }
+    if (frameGrant !== null && displayGeometry !== null
+      && frameGrant.receiver === displayGeometry.receiver
+      && Math.abs(frameGrant.view.endHz - frameGrant.view.startHz
+        - (effectiveView.endHz - effectiveView.startHz)) < 1
+      && frameGrant.coverage !== null) {
+      return frameGrant.coverage.endHz - frameGrant.coverage.startHz;
+    }
+    return null;
   });
   $effect(() => {
     const geometry = frameGeometry;
@@ -775,14 +803,17 @@
           explicitView = null;
         }
         if (geometry && geometry.view.endHz > geometry.view.startHz) {
-          // MOR-4392: adopt external coverage changes without a write-back.
-          // A SHRINKING coverage that no longer contains the requested
-          // width clamps it to the new coverage; anything else keeps it.
-          // Only a shrink can be adoption — our own zoom/step gestures ask
-          // the server for a covering preset, never for less than requested.
-          const coverageSpan = geometry.coverage === null ? 0 : geometry.coverage.endHz - geometry.coverage.startHz;
+          // MOR-4451: adopt external NATIVE-width changes without a
+          // write-back. The frame coverage is the intersection of the delayed
+          // pixels with the requested view — during tuning lag it shrinks
+          // (100→90 kHz) while the radio's native window is unchanged, so an
+          // intersection shrink must never adopt. Only an OBSERVED narrowing
+          // of the native width below the follow width clamps it to the new
+          // native width; anything else keeps it. Only a narrowing can be
+          // adoption — our own zoom/step gestures ask the server for a
+          // covering preset, never for less than requested.
+          const nativeWidthHz = nativeScopeWidthHz;
           // A late response to an earlier zoom cannot adopt over newer intent.
-          // Native coverage can shrink while the hub retains the requested view.
           const currentGrant = follow !== null && grant !== null && geometry.receiver === grant.receiver
             && Math.abs(grant.view.endHz - grant.view.startHz - follow) < 1
             && Math.abs(geometry.view.endHz - geometry.view.startHz - follow) < 1;
@@ -790,12 +821,12 @@
           // reconstruction jitter (a freq±span/2 window rebuilds 1 ulp off
           // the requested width); real adoptions are thousands of times
           // larger.
-          if (!fixed && !changingMode && requestedView === null && currentGrant && coverageSpan > 0
-            && follow !== null && lastCoverageSpanHz !== null
-            && coverageSpan < lastCoverageSpanHz - 1 && follow > coverageSpan + 1) {
-            followSpanHz = coverageSpan;
+          if (!fixed && !changingMode && requestedView === null && currentGrant && nativeWidthHz !== null
+            && follow !== null && lastNativeWidthHz !== null
+            && nativeWidthHz < lastNativeWidthHz - 1 && follow > nativeWidthHz + 1) {
+            followSpanHz = nativeWidthHz;
           }
-          lastCoverageSpanHz = coverageSpan;
+          lastNativeWidthHz = nativeWidthHz;
           const span = followSpanHz ?? (geometry.view.endHz - geometry.view.startHz);
           // MOR-4392: in FIX the displayed window is the fixed window (or a
           // requested crop inside it) — a leftover CENTER follow width must
@@ -884,17 +915,15 @@
   let spectrumGeometryKey = $derived(`${spectrumAuthority?.providerGeneration ?? 'x'}|${displayGeometry?.receiver ?? 'legacy'}|${startFreq}|${endFreq}|${frameGeometry?.width ?? 0}|${audioProjection?.zero ?? 'legacy'}|${audioProjection?.perHz ?? 0}`);
   // MOR-4270: the coverage projection hatches the requested view's
   // uncovered columns with the typed reason — never stretched pixels.
-  // MOR-4451: the native coverage is the truthful one the current grant
-  // carries, when the grant matches the frame's receiver and grants (about)
-  // the displayed width — the same receiver/width match the follow-grant
-  // logic requires. An uncovered column against an as-wide-or-wider native
-  // is a transient lag (plain background, the waterfall's treatment), never
-  // a hatch block; only a truly narrower native hatches.
-  let nativeScopeCoverage = $derived(frameGrant !== null && displayGeometry !== null
-    && frameGrant.receiver === displayGeometry.receiver
-    && Math.abs(frameGrant.view.endHz - frameGrant.view.startHz
-      - (effectiveView.endHz - effectiveView.startHz)) < 1
-    ? frameGrant.coverage : null);
+  // MOR-4451: the hatch reads the same native width as the follow adoption
+  // above (the reviewer's P2: the cached grant coverage is a stale
+  // subscription-time intersection, not the current native window). Only the
+  // span feeds the gap decision, so the width rides a span-only view here.
+  // An uncovered column against an as-wide-or-wider native is a transient lag
+  // (plain background, the waterfall's treatment), never a hatch block; only
+  // a truly narrower native hatches.
+  let nativeScopeCoverage = $derived(nativeScopeWidthHz !== null
+    ? { startHz: 0, endHz: nativeScopeWidthHz } : null);
   let coverageProjection = $derived(!audioFft && displayGeometry !== null && scopeDemandOn
     ? projectScopeCoverage(displayGeometry, effectiveView, nativeScopeCoverage) : null);
   let coverageHatched = $derived(coverageProjection?.hatched.filter(
