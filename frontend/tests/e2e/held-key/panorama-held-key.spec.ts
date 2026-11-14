@@ -185,9 +185,16 @@ const LATENCIES = [
 
 const STEPS = [1_000, 100] as const;
 
+const BASE_FREQ_HZ = 14_250_000;
+
 const ZOOMS = [
-  { name: 'zoomed', spanHz: 400_000, spanText: '±200k', framesView: [14_050_000, 14_450_000] },
-  { name: 'native', spanHz: 250_000, spanText: null, framesView: [14_125_000, 14_375_000] },
+  { name: 'zoomed', spanHz: 400_000, spanText: '±200k' },
+  // Native means no zoom crop by the user: the expected frame view is never
+  // hard-coded here — it is derived from the server grant below (follow view
+  // centred on the base frequency with the granted width), so it tracks the
+  // client's default follow width on any UI (100 kHz here, ±250 kHz with
+  // #4565's 250000 preset) instead of the radio span.
+  { name: 'native', spanHz: null, spanText: null },
 ] as const;
 
 let caseIndex = 0;
@@ -205,6 +212,12 @@ for (const zoom of ZOOMS) {
         // asserts.
         let setupDone = false;
         let server: JourneyServerHandle | undefined;
+        // Declared before the try: the catch skip-rule reads frames, so it
+        // must be visible there (a `const` inside the try is not).
+        const sent: Array<ScopeSubscription & { type: string }> = [];
+        const grants: Array<{ tWall: number; grant: ScopeGranted }> = [];
+        const frames: Array<{ view: number[]; coverage: number[]; receivedAt: number }> = [];
+        const setFreqCommands: Array<{ tWall: number; freqHz: number | null }> = [];
         try {
           server = await startJourneyServer(port, 14_250_000,
             ['--model', 'IC-705', '--evidence', evidence,
@@ -214,10 +227,6 @@ for (const zoom of ZOOMS) {
               '--seed', String(seed)],
             'tests/e2e/panorama_web_server.py');
           const watch = watchPanoramaErrors(page);
-          const sent: Array<ScopeSubscription & { type: string }> = [];
-          const grants: Array<{ tWall: number; grant: ScopeGranted }> = [];
-          const frames: Array<{ view: number[]; coverage: number[]; receivedAt: number }> = [];
-          const setFreqCommands: Array<{ tWall: number; freqHz: number | null }> = [];
           page.on('websocket', (socket) => {
             if (new URL(socket.url()).pathname === '/api/v1/ws') {
               socket.on('framesent', ({ payload }) => {
@@ -285,8 +294,22 @@ for (const zoom of ZOOMS) {
             await page.keyboard.press('Escape');
             await expect.poll(() => sent.at(-1)?.view).toEqual({ follow: 'vfo', spanHz: zoom.spanHz });
             await expect(page.getByTestId('scope-span-value').first()).toHaveText(zoom.spanText!);
+            // The server must have granted the zoomed width before frames
+            // can carry it — otherwise the expectation below could pin a
+            // stale pre-zoom grant and pass vacuously.
+            await expect.poll(() => {
+              const grant = grants.at(-1)?.grant;
+              return grant ? grant.view.endHz - grant.view.startHz : 0;
+            }).toBe(zoom.spanHz);
           }
-          await expect.poll(() => frames.at(-1)?.view).toEqual([...zoom.framesView]);
+          // The expected frame view comes from the server grant, never from
+          // a hard-coded span: follow view centred on the base frequency
+          // with the granted width. Frames must carry exactly that view.
+          await expect.poll(() => grants.length).toBeGreaterThan(0);
+          const grantedView = grants.at(-1)!.grant.view;
+          const grantedWidthHz = grantedView.endHz - grantedView.startHz;
+          const expectedView = [BASE_FREQ_HZ - grantedWidthHz / 2, BASE_FREQ_HZ + grantedWidthHz / 2];
+          await expect.poll(() => frames.at(-1)?.view).toEqual(expectedView);
 
           // Tuning step: 1 kHz is the LSB auto default; smaller steps cycle down.
           if (stepHz !== 1_000) {
