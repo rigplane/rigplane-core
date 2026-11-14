@@ -137,7 +137,7 @@ async def test_all_data_run_yaesu_ft991a() -> None:
     assert {row.outcome for row in report.file.commands} <= {"data", "refused"}
     assert report.file.radio.identity_matches_profile is True
     assert report.file.radio.identity_reported.parsed == "0670"
-    assert report.file.unsolicited == []
+    assert report.file.unsolicited == ()
 
 
 async def test_all_data_run_yaesu_ftx1() -> None:
@@ -283,16 +283,19 @@ async def test_five_silent_in_a_row_aborts_with_plain_message() -> None:
 
 
 async def test_garbled_reply_is_malformed_and_does_not_abort() -> None:
+    # KS is not a snapshot read, so the one-shot garble lands on the pass row.
     config = _load("ftx1")
     radio = FakeCatRadio(profile="ftx1")
     await radio.start()
-    radio.garble_next_reply("FA")
+    radio.garble_next_reply("KS")
     try:
-        report = await _run_yaesu(config, radio, items=_subset(config, "get_freq", "get_id"))
+        report = await _run_yaesu(
+            config, radio, items=_subset(config, "get_keyer_speed", "get_id")
+        )
     finally:
         await radio.stop()
     by_name = {row.name: row for row in report.file.commands}
-    assert by_name["get_freq"].outcome == "malformed"
+    assert by_name["get_keyer_speed"].outcome == "malformed"
     assert by_name["get_id"].outcome == "data"
     assert report.aborted is None
 
