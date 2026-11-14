@@ -55,6 +55,7 @@ from rigplane.backends.factory import create_radio
 from rigplane.cli import _build_backend_config, _build_parser
 from rigplane.commands import CONTROLLER_ADDR, build_civ_frame
 from rigplane.core import serial_open
+from rigplane.core.types import bcd_decode, bcd_encode
 from rigplane.core.state_pipeline_contracts import (
     FieldPath,
     Observation,
@@ -138,6 +139,23 @@ class _G7250OperatorFake(CivSerialFake):
                     sub=parsed.sub,
                     data=getattr(self, register),
                 )
+            # Frequency SET the profile now uses: `25 00` + 5 BCD bytes
+            # stores the frequency (the radio applies it and answers FB,
+            # like the real radio on serial — reference Table 1-1 — and
+            # over LAN, where bare `05` is only echoed, never applied).
+            # 0x25 carries no sub-command byte, so the 00 selector rides in
+            # the payload: the SET has 6 payload bytes, the bare `25 00`
+            # GET has 1 and falls through to the shared fake, which answers
+            # it from frequency_hz — as does `03`. `05` is deliberately
+            # unhandled here: whatever the shared fake does with it stands.
+            if (
+                parsed.command == 0x25
+                and parsed.sub is None
+                and len(parsed.data) == 6
+                and parsed.data[:1] == b"\x00"
+            ):
+                self.frequency_hz = bcd_decode(parsed.data[1:])
+                return self._ack()
         return super()._answer(parsed, connection, frame)
 
 
@@ -431,3 +449,41 @@ async def test_key_speed_50_wpm_encodes_raw_255_and_serves_50(
         await poller._send_query()
         state = await _wait_served(host, port, ("keySpeed",), 50)
         assert state["keySpeed"] == 50
+
+
+@pytest.mark.asyncio
+async def test_set_freq_writes_25_00_to_a0_and_serves_readback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Frequency is written as ``25 00`` + BCD, never bare ``05``.
+
+    Previous profile (``set_freq = [0x05]``): the write goes out as
+    ``05 <bcd>`` — which the live G7250 over LAN echoes without applying
+    (LIVE G7250 LAN 2026-11-13), and which the reference (Table 1-1)
+    does not class as the serial write either — so the ``25 00`` frame
+    assertion and the no-``05`` assertion below both fail there, while
+    the served readback alone would stay green.
+    """
+    async with _station(monkeypatch) as (web, _radio, fake, entries, executed, poller):
+        host, port = _addr(web)
+        status, result = await _request(
+            web, "http", "set_freq", {"freq": 7_280_000, "receiver": 0}
+        )
+        assert status == 200, result
+        assert result["ok"] is True
+        await asyncio.wait_for(executed.wait(), 5)
+        assert len(entries) == 1
+
+        # FE FE A0 E0 25 00 00 00 28 07 00 FD on the wire. 0x25 carries no
+        # sub-command byte, so the frame parses with sub None and the 00
+        # selector rides in the payload ahead of the 5 BCD bytes.
+        written = _single_set(fake, 0x25, None)
+        assert written.to_addr == _CIV_ADDR
+        assert written.sub is None
+        assert bytes(written.data) == b"\x00" + bcd_encode(7_280_000)
+        assert bcd_encode(7_280_000) == bytes.fromhex("00 00 28 07 00")
+        assert not any(frame.command == 0x05 for frame in fake.commands)
+
+        await poller._send_query()
+        state = await _wait_served(host, port, ("main", "freqHz"), 7_280_000)
+        assert state["main"]["freqHz"] == 7_280_000

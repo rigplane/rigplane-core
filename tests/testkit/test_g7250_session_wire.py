@@ -51,8 +51,11 @@ _BENCH_ROWS = [
     # 0x1D 0x19 asked at the echoed broadcast address 0x00 -> `72 50`.
     {"dir": "c2r", "frame": "fefe00e01d19fd"},
     {"dir": "r2c", "frame": "fefee0001d197250fd"},
-    # Filter width at the session address 0xA0: 0x1A 0x03 -> 0x33 (=2900 Hz
-    # through the profile's segmented_bcd_index table).
+    # Filter width asked at the audit address 0x88 (LIVE G7250 2026-11-09),
+    # not the session address 0xA0: 0x1A 0x03 -> 0x33 (=2900 Hz through
+    # the profile's segmented_bcd_index table). The answer table keys on
+    # the CI-V body (addresses excluded), so the row still serves the 0xA0
+    # session below.
     {"dir": "c2r", "frame": "fefe88e01a03fd"},
     {"dir": "r2c", "frame": "fefee0881a0333fd"},
     # NAKed on the bench: the 0x1A 0x01 register (band spectrum / BSR) and
