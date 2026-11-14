@@ -77,12 +77,14 @@ export function parseScopeGranted(message: unknown): ScopeGranted | null {
     return typeof candidate.startHz === 'number' && Number.isFinite(candidate.startHz) && candidate.startHz >= 0
       && typeof candidate.endHz === 'number' && Number.isFinite(candidate.endHz) && candidate.endHz > candidate.startHz;
   };
+  // MOR-4392 gate round 1: the grant's coverage is the truthful native
+  // coverage and MAY exceed the cropped follow view — only the binary
+  // frame (parseCurrentScopeFrame) requires in-view coverage.
   if (value.type !== 'granted' || typeof value.sourceId !== 'string' || !/^[!-~]{1,255}$/.test(value.sourceId)
     || !(value.receiver === null || (Number.isInteger(value.receiver) && (value.receiver as number) >= 0 && (value.receiver as number) < 65535))
     || !view(value.view) || !(value.coverage === null || view(value.coverage))
     || !Number.isInteger(value.width) || (value.width as number) < 1 || (value.width as number) > 65535
     || typeof value.fps !== 'number' || !Number.isFinite(value.fps) || value.fps < 0) return null;
-  if (value.coverage && (value.coverage.startHz < value.view.startHz || value.coverage.endHz > value.view.endHz)) return null;
   return { type: 'granted', sourceId: value.sourceId, receiver: value.receiver as number | null,
     view: { ...value.view }, coverage: value.coverage === null ? null : { ...value.coverage }, width: value.width as number, fps: value.fps };
 }
