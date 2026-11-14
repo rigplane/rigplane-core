@@ -1628,6 +1628,16 @@ async def test_set_tx_source_rejects_out_of_range(connected_radio):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("xcvr", [-1, 2, 3])
+async def test_set_tx_source_rejects_outside_the_declared_bank(connected_radio, xcvr):
+    """set_tx_source rejects indices outside the declared bank (count=2)."""
+    connected_radio._transport.write = AsyncMock()
+    with pytest.raises(ValueError, match="transceiver_count=2"):
+        await connected_radio.set_tx_source(xcvr)
+    connected_radio._transport.write.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_get_tx_source_sub(connected_radio):
     """get_tx_source parses FT1; and returns 1 (SUB-side active)."""
     connected_radio._transport.query = AsyncMock(return_value="FT1")

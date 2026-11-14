@@ -34,7 +34,12 @@ from rigplane.profiles.rig_loader import RigLoadError, TxFuncTarget, load_rig
 from rigplane.web.handlers.control import ControlHandler
 from rigplane.web.radio_poller import VfoEqualize
 from rigplane.web.runtime_helpers import projected_vfo_capability_tags
-from rigplane.web.server import WebConfig, WebServer, _serialize_filter_config
+from rigplane.web.server import _serialize_filter_config
+from support.yaesu_ft991a_http import (
+    post_command as ft991a_post_command,
+    serve_ft991a_over_http,
+    wait_for_state_value as ft991a_wait_for_state_value,
+)
 from rigplane_testkit.sim.adapters.yaesu_cat import YaesuCatSerialFake
 from test_yaesu_split_vfo_profile import _http_post_command, _wait_for_state
 
@@ -229,6 +234,85 @@ async def test_ft991a_tx_target_names_main_ab_slots(
         call(freq_command),
         call("FT;"),
     ]
+
+
+@pytest.mark.asyncio
+async def test_ft991a_tx_source_zero_is_noop_and_split_survives(radio):
+    # Single-transceiver profile: selecting transmitter 0 is a no-op
+    # (TransceiverBankCapable contract) — in particular it must not send
+    # FT2;, which would drop split and move TX to VFO-A. Split enabled
+    # first still reads back on afterwards, and the getter reports 0
+    # without touching the wire.
+    await radio.set_split(True)
+    await radio.set_tx_source(0)
+    assert [c.args[0] for c in radio._transport.write.call_args_list] == ["FT3;"]
+    assert await radio.get_tx_source() == 0
+    radio._transport.query.assert_not_called()
+    radio._transport.query = AsyncMock(return_value="FT1")
+    assert await radio.read_split() is True
+    assert radio._transport.query.call_args_list == [call("FT;")]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("xcvr", [1, 2, -1])
+async def test_ft991a_tx_source_rejects_outside_the_single_bank(radio, xcvr):
+    # The declared bank holds one transmitter: anything but 0 is rejected
+    # before any wire traffic. Index 1 used to send FT3; — addressing a
+    # nonexistent second transmitter while dropping split.
+    with pytest.raises(ValueError, match="transceiver_count=1"):
+        await radio.set_tx_source(xcvr)
+    radio._transport.write.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("which", [0, "main", "MAIN"])
+async def test_ft991a_select_receiver_zero_is_noop(radio, which):
+    # Single-receiver profile: selecting receiver 0 is a no-op with no
+    # wire traffic (ReceiverBankCapable contract); anything else is out
+    # of the declared bank.
+    await radio.select_receiver(which)
+    assert await radio.get_active_receiver() == 0
+    radio._transport.write.assert_not_called()
+    radio._transport.query.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("which", [1, 2, -1, "sub"])
+async def test_ft991a_select_receiver_rejects_outside_the_single_bank(radio, which):
+    with pytest.raises(ValueError):
+        await radio.select_receiver(which)
+    radio._transport.write.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("pair", [(0, 0), (0, 1), (1, 0)])
+async def test_ft991a_cross_band_split_refuses_on_one_transceiver(radio, pair):
+    # Cross-band split needs two distinct transceivers; a count-1
+    # profile refuses every combination before any wire traffic. The
+    # bank API has no web or rigctld entry point, so the radio object
+    # is the public surface pinned here.
+    with pytest.raises(ValueError):
+        await radio.set_cross_band_split(*pair)
+    radio._transport.write.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_rigctld_split_routes_through_the_vfo_level_api(radio):
+    # The rigctld surface for split (get/set SPLIT) reaches the radio
+    # through the VFO-level split API — never through the
+    # transmitter-bank API: FT3;/FT2; on the wire, FT1/FT0 answers.
+    from rigplane.rigctld.routing import YaesuRouting
+
+    routing = YaesuRouting(radio, 100.0)
+    assert (await routing.set_func("SPLIT", True)).ok
+    assert (await routing.set_func("SPLIT", False)).ok
+    assert [c.args[0] for c in radio._transport.write.call_args_list] == [
+        "FT3;",
+        "FT2;",
+    ]
+    radio._transport.query = AsyncMock(side_effect=["FT1", "FT0"])
+    assert (await routing.get_func("SPLIT")).values == ["1"]
+    assert (await routing.get_func("SPLIT")).values == ["0"]
 
 
 @pytest.mark.asyncio
@@ -883,32 +967,13 @@ async def _serve_ft991a_over_http(monkeypatch):
     mode/narrow/width polling below is the profile's own contract.
 
     Returns ``(radio, wire, host, port, server)`` with the server started;
-    the caller stops the server and closes the transport.
+    the caller stops the server and closes the transport. One thin
+    wrapper over the reusable ``tests/support/yaesu_ft991a_http.py``
+    harness so this module keeps its tuple shape.
     """
-    radio = YaesuCatRadio("/dev/fixture", profile=load_rig(RIG))
-    fake = YaesuCatSerialFake.from_profile(ROOT, SIM_PROFILE, rig_path=RIG)
-    wire: list[str] = []
-    handle = fake.model.handle_with_outcome
-
-    def logged(line):
-        wire.append(line)
-        return handle(line)
-
-    monkeypatch.setattr(fake.model, "handle_with_outcome", logged)
-
-    async def open_port(*args, **kwargs):
-        return await fake.open_serial_connection()
-
-    monkeypatch.setattr(
-        "rigplane.backends.yaesu_cat.transport.open_serial_port", open_port
-    )
-    await radio._transport.connect()
-    server = WebServer(
-        radio,
-        WebConfig(host="127.0.0.1", port=0, keepalive_interval=9999.0),
-    )
-    await server.start()
-    return radio, wire, "127.0.0.1", server.port, server
+    station = await serve_ft991a_over_http(monkeypatch)
+    assert station.server is not None
+    return station.radio, station.wire, station.host, station.port, station.server
 
 
 @pytest.mark.realtime(
@@ -983,6 +1048,59 @@ async def test_narrow_width_end_to_end_over_http_with_cat_sim(monkeypatch):
     finally:
         await server.stop()
         await radio._transport.close()
+
+
+@pytest.mark.realtime(
+    reason="real HTTP socket and the production backend poller/readback path"
+)
+@pytest.mark.asyncio
+async def test_tx_target_end_to_end_over_http_with_cat_sim(monkeypatch):
+    """MOR-4433 PR1 P1-2: TX-target publication through the real local HTTP API.
+
+    VFO A and B sit on distinct frequencies; split toggles through POST
+    ``/api/v1/commands``; GET ``/api/v1/state`` publishes the global TX
+    target ``MAIN/A`` (split off) and ``MAIN/B`` (split on) with the
+    matching frequencies. Real handler, real queue, real backend-poller
+    dispatch, real store and projection throughout — losing the A/B slot
+    or the frequency between polling and public-state delivery fails
+    this test. Against the pre-fix hard-coded 0/1 -> MAIN/SUB mapping
+    this publishes ``MAIN``/``SUB`` with no slot, so the waits time out.
+    """
+    station = await serve_ft991a_over_http(monkeypatch)
+    try:
+        host, port = station.host, station.port
+        await station.radio.set_freq(14_074_000)
+        await station.radio.set_freq(7_074_000, receiver=1)
+        want_a = {
+            "status": "known",
+            "receiver": "MAIN",
+            "slot": "A",
+            "frequencyHz": 14_074_000,
+        }
+        want_b = {
+            "status": "known",
+            "receiver": "MAIN",
+            "slot": "B",
+            "frequencyHz": 7_074_000,
+        }
+
+        # The observation path is live before split is touched: TX rides
+        # VFO-A while split is off.
+        assert await ft991a_wait_for_state_value(host, port, "txTarget", want_a)
+
+        await ft991a_post_command(host, port, "set_split", {"on": True})
+        assert "FT3;" in station.wire
+
+        # Split on: TX rides VFO-B at its own frequency.
+        assert await ft991a_wait_for_state_value(host, port, "txTarget", want_b)
+
+        await ft991a_post_command(host, port, "set_split", {"on": False})
+        assert "FT2;" in station.wire
+
+        # Split off again: TX is back on VFO-A.
+        assert await ft991a_wait_for_state_value(host, port, "txTarget", want_a)
+    finally:
+        await station.aclose()
 
 
 # ---------------------------------------------------------------------------
