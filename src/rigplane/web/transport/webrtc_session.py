@@ -324,6 +324,7 @@ class WebRtcSessionManager:
                 kind,
                 params,
                 (session_id, 0),
+                transport="datachannel",
                 track_owners=session.controller_owners,
             )
         except ControllerError as exc:

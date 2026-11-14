@@ -443,6 +443,12 @@ async def test_managed_force_off_remains_available_while_generic_ptt_is_closed()
 async def test_webrtc_control_handler_receives_explicit_exact_authority(
     monkeypatch: pytest.MonkeyPatch, with_server: bool
 ) -> None:
+    import json as _json
+
+    from rigplane.web import server as _server_module
+    from rigplane.web.transport import webrtc_session as _webrtc_session_module
+    from rigplane.ws import WS_OP_TEXT
+
     authority = _Authority()
     server = None
     if with_server:
@@ -459,15 +465,58 @@ async def test_webrtc_control_handler_receives_explicit_exact_authority(
         async def run(self) -> None:
             return None
 
+    monkeypatch.setattr(_server_module, "ControlHandler", _Handler)
     monkeypatch.setattr(web_handlers, "ControlHandler", _Handler)
+
+    _attach = _json.dumps(
+        {"type": "attach", "controller_key": None, "state_delta": 2, "role": "primary"}
+    ).encode()
+    _closed: dict[str, Any] = {}
+
+    class _FakeDataChannelConn:
+        def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+            pass
+
+        async def recv(self) -> tuple[int, bytes]:
+            return (WS_OP_TEXT, _attach)
+
+        async def send_text(self, _text: str) -> None:
+            return None
+
+        async def send_binary(self, _data: bytes) -> None:
+            return None
+
+        async def close(self, code: int = 1000, reason: str = "") -> None:
+            _closed["code"] = code
+            _closed["reason"] = reason
+
+        def abort(self) -> None:
+            return None
+
+        def is_alive(self) -> bool:
+            return True
+
+    monkeypatch.setattr(
+        _webrtc_session_module,
+        "WebRtcDataChannelConnection",
+        _FakeDataChannelConn,
+    )
     manager = WebRtcSessionManager(_radio(), server, "IC-9700")
-    session = SimpleNamespace(pc=MagicMock(), tasks=[])
+    session = SimpleNamespace(
+        pc=MagicMock(), tasks=[], controller_owners=set()
+    )
     channel = SimpleNamespace(label="control", on=MagicMock())
 
-    manager._dispatch_channel(session, channel)  # noqa: SLF001
+    manager._dispatch_channel("test-session", session, channel)  # noqa: SLF001
     await session.tasks[0]
 
-    assert captured.get("managed_tx_authority") is (authority if with_server else None)
+    if with_server:
+        assert captured.get("managed_tx_authority") is authority
+    else:
+        # No server: the data-channel adapter closes the channel with
+        # "no server" before any handler exists (see _attach_and_serve).
+        assert _closed == {"code": 1008, "reason": "no server"}
+        assert captured == {}
 
 
 def test_managed_web_ptt_cannot_reach_legacy_control_producers() -> None:

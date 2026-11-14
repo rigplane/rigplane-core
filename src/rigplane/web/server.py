@@ -151,7 +151,11 @@ from .api_contract import (  # noqa: TID251
     ConnectionSessionRecord,
     ManagedTransmitDocument,
 )
-from .channel_attach import ChannelKind, ClientChannelParams  # noqa: TID251
+from .channel_attach import (  # noqa: TID251
+    ChannelKind,
+    ClientChannelParams,
+    TransportKind,
+)
 from .discovery import DiscoveryResponder  # noqa: TID251
 from .dx_cluster import DXClusterClient, SpotBuffer  # noqa: TID251
 from .handlers import (  # noqa: TID251
@@ -7864,6 +7868,7 @@ class WebServer:
         params: ClientChannelParams,
         peer: tuple[str, int],
         *,
+        transport: TransportKind,
         track_owners: set[str] | None = None,
     ) -> None:
         """Attach one client channel through the single shared mechanism.
@@ -7871,19 +7876,22 @@ class WebServer:
         Resolves the controller ticket from ``params``, then serves the
         channel (handler construction, registration, caps, keepalive,
         cleanup) via :meth:`serve_client_channel`. The data-channel
-        adapter calls this directly; the WebSocket upgrade calls
-        :meth:`_resolve_client_ticket` and :meth:`serve_client_channel`
-        around the 101 handshake, which must stay between the refusal
-        decision and the first handler byte. When ``track_owners`` is
-        given, the attached session owner is recorded in it for the
-        channel's lifetime, so a transport-loss signal can fence that
-        session through the existing session-loss path.
+        adapter calls this directly with ``transport="datachannel"``;
+        the WebSocket upgrade calls :meth:`_resolve_client_ticket` and
+        :meth:`serve_client_channel` with ``transport="ws"`` around the
+        101 handshake, which must stay between the refusal decision and
+        the first handler byte. When ``track_owners`` is given, the
+        attached session owner is recorded in it for the channel's
+        lifetime, so a transport-loss signal can fence that session
+        through the existing session-loss path.
         """
         ticket = self._resolve_client_ticket(params, kind)
         if track_owners is not None and ticket.tx_owner is not None:
             track_owners.add(ticket.tx_owner)
         try:
-            await self.serve_client_channel(conn, kind, ticket, params, peer)
+            await self.serve_client_channel(
+                conn, kind, ticket, params, peer, transport=transport
+            )
         finally:
             if track_owners is not None and ticket.tx_owner is not None:
                 track_owners.discard(ticket.tx_owner)
@@ -7923,6 +7931,8 @@ class WebServer:
         ticket: ControllerTicket,
         params: ClientChannelParams,
         peer: tuple[str, int],
+        *,
+        transport: TransportKind,
     ) -> None:
         """Serve one attached channel: handlers, caps, keepalive, cleanup.
 
@@ -7932,7 +7942,10 @@ class WebServer:
         historical early close). ``peer`` is the ``(host, port)`` pair
         the WebSocket lane passes to connection tracking; a data-channel
         peer passes its WebRTC session id so each peer scopes its own
-        connection bucket.
+        connection bucket. ``transport`` is the adapter-declared
+        ``"ws"`` / ``"datachannel"`` tag used for logging and keepalive
+        selection; the shared path never branches on the connection's
+        concrete type.
         """
         raw_model = (
             getattr(self._radio, "model", None) if self._radio is not None else None
@@ -7989,7 +8002,7 @@ class WebServer:
             return
 
         ip = str(peer[0])
-        transport_tag = "ws" if isinstance(conn, WebSocketConnection) else "datachannel"
+        transport_tag = transport
 
         # Register with connection manager; evict oldest excess connections.
         # MOR-3534: a session-attached channel counts against its session, not
@@ -8033,9 +8046,9 @@ class WebServer:
             self._conn_manager.unregister(scope, _ATTACH_PATH_FOR_KIND[kind], conn)
             conn.abort()
             return
-        if isinstance(conn, WebSocketConnection):
+        if transport == "ws":
             keepalive = asyncio.create_task(
-                conn.keepalive_loop(self._config.keepalive_interval)
+                cast(Any, conn).keepalive_loop(self._config.keepalive_interval)
             )
         else:
             keepalive = asyncio.create_task(self._supervise_data_channel(conn, ticket))
@@ -8161,6 +8174,17 @@ class WebServer:
                 state_delta=2 if (query or {}).get("state_delta") == ["2"] else 1,
             )
         assert ticket is not None
+        if kind == "rigctl" and ticket.tx_owner is None:
+            # MOR-3536: rigctl lines key as the session the channel
+            # joined. This covers the local-mode sessionless capture
+            # above, which bypasses _resolve_client_ticket; the attach
+            # branch was already refused inside _resolve_client_ticket.
+            # The refusal stays before the 101, exactly as on origin/main.
+            self._controller.detach(ticket)
+            await self._send_json(
+                writer, 403, "Forbidden", {"error": "controller_session_required"}
+            )
+            return
         # Key check, accept header and 101 response bytes come from the
         # shared lowest-layer implementation (rigplane.ws).
         upgrade = _make_upgrade_response(headers, protocol=selected_protocol)
@@ -8180,7 +8204,9 @@ class WebServer:
 
         ws = WebSocketConnection(reader, writer, deflate=upgrade.deflate)
         peer = writer.get_extra_info("peername", ("?", 0))
-        await self.serve_client_channel(ws, kind, ticket, params, peer)
+        await self.serve_client_channel(
+            ws, kind, ticket, params, peer, transport="ws"
+        )
 
 
 # ------------------------------------------------------------------

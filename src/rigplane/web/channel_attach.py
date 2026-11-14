@@ -17,11 +17,16 @@ from typing import Literal, Self
 
 from ..runtime.controller_authority import ControllerError
 
-__all__ = ["ChannelKind", "ClientChannelParams"]
+__all__ = ["ChannelKind", "ClientChannelParams", "TransportKind"]
 
 #: Client channel kinds. ``rigctl`` exists only on the WebSocket lane;
 #: data channels carry ``control`` / ``scope`` / ``audio`` labels.
 ChannelKind = Literal["control", "scope", "audio", "rigctl"]
+
+#: Per-transport tag carried explicitly from the adapter into the shared
+#: attach path. The shared serve never branches on the connection's
+#: concrete type; the adapter states which transport it is.
+TransportKind = Literal["ws", "datachannel"]
 
 
 @dataclass(frozen=True, slots=True)
