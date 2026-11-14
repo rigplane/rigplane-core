@@ -91,6 +91,11 @@ class ScopeSession:
         self._views: dict[int, ScopeState] = {}
         self._fixed: dict[tuple[int, int], ScopeFixedEdge] = {}
         self._applied: dict[tuple[int, ScopeSetting], ScopeValue] = {}
+        # Last acknowledged comparison values, kept across invalidate_now
+        # (which clears _applied): an unchanged reconnect report still
+        # matches them, so it keeps restore ownership. Reset when a fresh
+        # session captures its own state.
+        self._acked: dict[tuple[int, ScopeSetting], ScopeValue] = {}
         self._uncertain: set[tuple[int, ScopeSetting]] = set()
         self._restore_pending = False
         self._event_tasks: set[asyncio.Task[None]] = set()
@@ -222,6 +227,10 @@ class ScopeSession:
         self.generation += 1
         if not self.menu_guard_active():
             self.observed = None
+            if self._applied:
+                # A silent second loss must not wipe the last acknowledged
+                # values while no observation repopulated _applied.
+                self._acked = dict(self._applied)
             self._applied.clear()
         self._ready = False
 
@@ -246,7 +255,13 @@ class ScopeSession:
         """
         if key in self._uncertain:
             return
-        applied = self._applied.get(key)
+        # _acked survives invalidate_now (which clears _applied): after a
+        # reconnect an unchanged report still equals the last acknowledged
+        # value, so it keeps restore ownership; a genuinely superseding
+        # observation differs from it and still releases the snapshot.
+        # _desired is intent, not acknowledgement — a pending or refused
+        # write must never count as acknowledged.
+        applied = self._applied.get(key, self._acked.get(key))
         if value != applied:
             # MOR-4385 gate rounds 1-2 (owner rule «следовать за рацией»):
             # an externally superseded setting leaves the restore set —
@@ -558,6 +573,7 @@ class ScopeSession:
             and self._original is None
         ):
             self._applied.clear()
+            self._acked.clear()
             self._original = await self._read()
             self.observed = self._original
             if self._original.output_on:
