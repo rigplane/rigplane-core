@@ -81,7 +81,13 @@ def test_pre_save_summary_with_skipped_and_findings() -> None:
         settings_lines=["frequency 14.074 MHz"],
         private_reads_included=False,
         skipped_counts={"unsafe_family": 3, "private": 1},
-        absent_answered=["get_data_mode"],
+        absent_answered=[
+            render.AbsentAnswer(
+                name="get_data_mode",
+                request_hex="1a06",
+                reply_hex="fefee01a1a0601fd",
+            )
+        ],
         present_missed=["get_freq"],
     )
     assert text == (
@@ -94,7 +100,7 @@ def test_pre_save_summary_with_skipped_and_findings() -> None:
         "  - 4 reads were not sent (3 unsafe_family, 1 private); "
         "each is listed under 'skipped' in the file with why\n"
         "  - notable: the radio answered 1 read the profile calls absent: "
-        "get_data_mode\n"
+        "get_data_mode (01)\n"
         "  - notable: the radio did not answer 1 read the profile declares "
         "present: get_freq\n"
         "It does NOT contain: your name, IP address, computer name or log files.\n"
@@ -102,6 +108,53 @@ def test_pre_save_summary_with_skipped_and_findings() -> None:
         "Nothing has been sent anywhere. "
         "To review it: open the file in any text editor.\n"
         "Save the file? [Y/n] "
+    )
+
+
+def test_absent_answered_line_lists_name_and_value() -> None:
+    assert render.absent_answered_line(
+        [
+            render.AbsentAnswer(
+                name="get_auto_notch",
+                request_hex="1601",
+                reply_hex="fefee01a160102fd",
+            )
+        ]
+    ) == (
+        "  - notable: the radio answered 1 read the profile calls absent: "
+        "get_auto_notch (02)\n"
+    )
+
+
+def test_absent_answered_line_brackets_reply_without_request_echo() -> None:
+    assert render.absent_answered_line(
+        [
+            render.AbsentAnswer(
+                name="get_auto_notch",
+                request_hex="1601",
+                reply_hex="fefee01a160202fd",
+            )
+        ]
+    ) == (
+        "  - notable: the radio answered 1 read the profile calls absent: "
+        "get_auto_notch ([fefee01a160202fd])\n"
+    )
+
+
+def test_absent_answered_entries_cap_at_ten() -> None:
+    entries = [
+        render.AbsentAnswer(
+            name=f"get_item_{index:02d}",
+            request_hex="1601",
+            reply_hex="fefee01a160101fd",
+        )
+        for index in range(12)
+    ]
+    assert render.absent_answered_line(entries) == (
+        "  - notable: the radio answered 12 reads the profile calls absent: "
+        "get_item_00 (01), get_item_01 (01), get_item_02 (01), get_item_03 (01), "
+        "get_item_04 (01), get_item_05 (01), get_item_06 (01), get_item_07 (01), "
+        "get_item_08 (01), get_item_09 (01) and 2 more\n"
     )
 
 

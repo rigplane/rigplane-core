@@ -110,6 +110,9 @@ def test_g7250_skipped_reasons() -> None:
     plan = build_read_plan(_load("g7250"), siblings=_siblings())
     skipped = {entry.name: entry for entry in plan.skipped}
     assert skipped["get_transceiver_status"].reason == "unsafe_family"
+    assert skipped["get_transceiver_status"].request_hex == "1c00"
+    assert skipped["get_tuner_status"].reason == "unsafe_family"
+    assert skipped["get_tuner_status"].request_hex == "1c01"
     assert skipped["get_command_error_fa"].reason == "response_code"
     assert skipped["get_command_ok_fb"].reason == "response_code"
     assert skipped["get_memory_contents"].reason == "private"
@@ -191,3 +194,25 @@ def test_set_only_lender_lends_nothing() -> None:
 def test_borrow_safe_list_holds_no_refused_command() -> None:
     """The positive borrow list can never admit a refused family (MOR-4464)."""
     assert not (set(_BORROW_READ_SAFE_COMMANDS) & set(_REFUSED_COMMANDS))
+
+
+def test_borrow_safe_list_includes_tx_band_table_byte() -> None:
+    """0x1E 0x00/0x01 (TX band count/edges) are plain table reads (MOR-4464)."""
+    assert 0x1E in _BORROW_READ_SAFE_COMMANDS
+    assert 0x1C not in _BORROW_READ_SAFE_COMMANDS
+
+
+def test_g7250_tx_band_table_reads_are_asked_as_absent() -> None:
+    """The G7250 borrows the unanimous 0x1E sibling bytes (MOR-4464)."""
+    plan = build_read_plan(_load("g7250"), siblings=_siblings())
+    by_name = {item.name: item for item in plan.asked}
+    assert by_name["get_tx_band_count"].expected == "absent"
+    assert by_name["get_tx_band_count"].body == bytes((0x1E, 0x00))
+    assert by_name["get_tx_band_edge"].expected == "absent"
+    assert by_name["get_tx_band_edge"].body == bytes((0x1E, 0x01))
+    asked_absent = [item for item in plan.asked if item.expected == "absent"]
+    assert len(asked_absent) == 15
+    skipped_unsafe = [
+        entry for entry in plan.skipped if entry.reason == "unsafe_family"
+    ]
+    assert len(skipped_unsafe) == 2
