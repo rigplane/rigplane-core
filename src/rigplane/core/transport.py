@@ -418,6 +418,14 @@ class IcomTransport:
         are-you-there phase with the ping's sender as remote_id. The 0x04
         path is checked first and is byte-for-byte unchanged.
 
+        Each attempt lasts the full DISCOVERY_TIMEOUT from its Are-You-There
+        send: queued packets that are neither I-Am-Here nor the ping signal
+        (for example an audio sub-stream's RX data flood arriving before the
+        radio's ping) are drained without ending the attempt, so a burst of
+        datagrams cannot burn the retries. The ping handler records its
+        sender through the event independently of the queue, so draining
+        never eats the ping.
+
         Raises:
             DiscoveryTimeout: If radio does not respond after retries (a
                 TimeoutError subclass; the message is unchanged).
@@ -425,51 +433,59 @@ class IcomTransport:
         ping_event = asyncio.Event()
         self._discover_ping_event = ping_event
         self._discovery_ping_sender = None
+        loop = asyncio.get_running_loop()
         try:
             for attempt in range(DISCOVERY_RETRIES):
                 pkt = self._build_control(ptype=PacketType.ARE_YOU_THERE, seq=0)
                 self._raw_send(pkt)
-                queue_task = asyncio.create_task(self._packet_queue.get())
-                ping_task = asyncio.create_task(ping_event.wait())
-                done, pending = await asyncio.wait(
-                    (queue_task, ping_task),
-                    timeout=DISCOVERY_TIMEOUT,
-                    return_when=asyncio.FIRST_COMPLETED,
-                )
-                for task in pending:
-                    task.cancel()
-                for task in pending:
-                    try:
-                        await task
-                    except asyncio.CancelledError:
-                        pass
-                if not done:
+                deadline = loop.time() + DISCOVERY_TIMEOUT
+                while True:
+                    remaining = deadline - loop.time()
+                    if remaining <= 0:
+                        break
+                    queue_task = asyncio.create_task(self._packet_queue.get())
+                    ping_task = asyncio.create_task(ping_event.wait())
+                    done, pending = await asyncio.wait(
+                        (queue_task, ping_task),
+                        timeout=remaining,
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    for task in pending:
+                        task.cancel()
+                    for task in pending:
+                        try:
+                            await task
+                        except asyncio.CancelledError:
+                            pass
+                    if queue_task in done:
+                        resp = queue_task.result()
+                        if len(resp) >= CONTROL_SIZE:
+                            ptype = struct.unpack_from("<H", resp, 4)[0]
+                            if ptype == PacketType.I_AM_HERE:
+                                self.remote_id = struct.unpack_from("<I", resp, 8)[0]
+                                logger.info(
+                                    "I Am Here received, remote_id=0x%08X",
+                                    self.remote_id,
+                                )
+                                return
+
+                    if ping_task in done and self._discovery_ping_sender is not None:
+                        self.remote_id = self._discovery_ping_sender
+                        logger.info(
+                            "Discovery via ping request, remote_id=0x%08X",
+                            self.remote_id,
+                        )
+                        return
+                    if queue_task in done:
+                        # Stray data packet: drained, the same attempt continues
+                        # with its remaining time.
+                        continue
                     logger.debug(
                         "Are You There attempt %d/%d — no response",
                         attempt + 1,
                         DISCOVERY_RETRIES,
                     )
-                    continue
-
-                if queue_task in done:
-                    resp = queue_task.result()
-                    if len(resp) >= CONTROL_SIZE:
-                        ptype = struct.unpack_from("<H", resp, 4)[0]
-                        if ptype == PacketType.I_AM_HERE:
-                            self.remote_id = struct.unpack_from("<I", resp, 8)[0]
-                            logger.info(
-                                "I Am Here received, remote_id=0x%08X",
-                                self.remote_id,
-                            )
-                            return
-
-                if ping_task in done and self._discovery_ping_sender is not None:
-                    self.remote_id = self._discovery_ping_sender
-                    logger.info(
-                        "Discovery via ping request, remote_id=0x%08X",
-                        self.remote_id,
-                    )
-                    return
+                    break
         finally:
             self._discover_ping_event = None
 

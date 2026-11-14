@@ -24,6 +24,7 @@ from unittest.mock import patch
 
 import pytest
 
+from rigplane.audio.lan_stream import build_audio_packet
 from rigplane.core.exceptions import DiscoveryTimeout
 from rigplane.core.transport import IcomTransport
 from rigplane.testing.timing import VirtualClock
@@ -92,11 +93,24 @@ class _FakeDatagramTransport:
 
 
 class _FakeLoop:
-    """Fake loop for full connect(): records the endpoint transport."""
+    """Fake loop for full connect(): records the endpoint transport.
 
-    def __init__(self, sockname: tuple[str, int]) -> None:
+    ``time()`` delegates to the real running loop captured before the
+    ``get_running_loop`` patch, so deadline math in ``_discover``
+    reads the real (possibly virtual) clock.
+    """
+
+    def __init__(
+        self,
+        sockname: tuple[str, int],
+        real_loop: asyncio.AbstractEventLoop,
+    ) -> None:
         self.sockname = sockname
+        self._real_loop = real_loop
         self.endpoint: _FakeDatagramTransport | None = None
+
+    def time(self) -> float:
+        return self._real_loop.time()
 
     async def create_datagram_endpoint(
         self,
@@ -121,7 +135,8 @@ async def test_ping_only_discovery_completes_connect() -> None:
     """AYT answered with pings only: discovery learns remote_id from ping."""
     t = IcomTransport()
     radio = _radio(RADIO_ID)
-    loop = _FakeLoop(("192.168.2.194", 50002))
+    real_loop = asyncio.get_running_loop()
+    loop = _FakeLoop(("192.168.2.194", 50002), real_loop)
 
     with patch("rigplane.transport.asyncio.get_running_loop", return_value=loop):
         task = asyncio.create_task(t.connect("192.168.2.1", 50002))
@@ -172,14 +187,16 @@ async def test_audio_stream_without_ready_reply_proceeds(
     monkeypatch.setattr("rigplane.core.transport.DISCOVERY_TIMEOUT", 0.05)
     t = IcomTransport()
     radio = _radio(RADIO_ID)
-    loop = _FakeLoop(("192.168.2.194", 50003))
+    real_loop = asyncio.get_running_loop()
+    loop = _FakeLoop(("192.168.2.194", 50003), real_loop)
 
     with patch("rigplane.transport.asyncio.get_running_loop", return_value=loop):
         task = asyncio.create_task(t.connect("192.168.2.1", 50003))
         await _wait_for(lambda: loop.endpoint is not None and loop.endpoint.sent)
-    # The fake loop only fakes endpoint creation; packet handling and
-    # clock.elapse() below need the real running loop back (elapse reads
-    # loop.time, which the fake does not provide).
+    # The fake loop only fakes endpoint creation; the patch ends
+    # here while the connect task keeps running. Its time()
+    # delegates to the real loop captured above, so deadline math
+    # and clock.elapse() below stay on the same (virtual) clock.
     assert loop.endpoint is not None
     t._handle_packet(radio._build_ping())
     await _wait_for(lambda: t.remote_id == RADIO_ID)
@@ -278,3 +295,79 @@ async def test_ping_replies_do_not_trigger_discovery(
 
     assert t.remote_id == 0
     assert t._discovery_ping_sender is None
+
+
+async def test_audio_flood_then_ping_completes_discovery(
+    monkeypatch: pytest.MonkeyPatch,
+    virtual_clock: VirtualClock,
+) -> None:
+    """An RX audio flood must not burn the discovery attempts (MOR-4436).
+
+    The audio sub-stream streams data-size packets right after our
+    Are-You-There and only pings ~100 ms later: each attempt lasts its full
+    DISCOVERY_TIMEOUT, the flood is drained, and the ping still ends
+    discovery with the ping sender as remote_id after a single
+    Are-You-There. On the old code the flood burned one attempt per
+    datagram, so discovery raised before the ping could arrive.
+    """
+    monkeypatch.setattr("rigplane.core.transport.DISCOVERY_RETRIES", 3)
+    monkeypatch.setattr("rigplane.core.transport.DISCOVERY_TIMEOUT", 0.5)
+    t = IcomTransport()
+    sent: list[bytes] = []
+    t._raw_send = sent.append
+    radio = _radio(RADIO_ID)
+
+    def _rx_audio(inner_seq: int) -> bytes:
+        # Production RX audio layout with no connection ID established yet
+        # (sentid 0): like the live flood it must not decide remote_id ahead
+        # of the ping — a nonzero sender would be learned by
+        # ``_route_data_packet`` and the ping guard (``remote_id == 0``)
+        # would then ignore the ping by design.
+        return build_audio_packet(
+            bytes(160), sender_id=0, receiver_id=0, send_seq=inner_seq
+        )
+
+    async def _flood_then_ping() -> None:
+        for inner in range(5):  # more than DISCOVERY_RETRIES
+            t._handle_packet(_rx_audio(inner))
+        await asyncio.sleep(0.1)  # the radio's ping lands ~100 ms later
+        t._handle_packet(radio._build_ping())
+
+    task = asyncio.create_task(t._discover())
+    responder = asyncio.create_task(_flood_then_ping())
+    try:
+        await virtual_clock.elapse(0.5)
+        await asyncio.wait_for(task, timeout=10.0)
+    finally:
+        await responder
+
+    assert t.remote_id == RADIO_ID
+    assert t._discovery_ping_sender == RADIO_ID
+    assert t._discover_ping_event is None
+    assert t._packet_queue.qsize() == 0
+    assert len(_sent_ptypes(sent, PacketType.ARE_YOU_THERE)) == 1
+
+
+async def test_audio_flood_without_ping_still_times_out(
+    monkeypatch: pytest.MonkeyPatch,
+    virtual_clock: VirtualClock,
+) -> None:
+    """A data flood with no ping/0x04 still raises _DiscoveryTimeout."""
+    monkeypatch.setattr("rigplane.core.transport.DISCOVERY_RETRIES", 3)
+    monkeypatch.setattr("rigplane.core.transport.DISCOVERY_TIMEOUT", 0.05)
+    t = IcomTransport()
+    sent: list[bytes] = []
+    t._raw_send = sent.append
+
+    task = asyncio.create_task(t._discover())
+    await _wait_for(lambda: _sent_ptypes(sent, PacketType.ARE_YOU_THERE))
+    for inner in range(8):  # more than DISCOVERY_RETRIES, still no answer
+        t._handle_packet(
+            build_audio_packet(bytes(160), sender_id=0, receiver_id=0, send_seq=inner)
+        )
+    await virtual_clock.elapse(3 * 0.05 + 0.1)
+    with pytest.raises(DiscoveryTimeout):
+        await task
+
+    assert t.remote_id == 0
+    assert len(_sent_ptypes(sent, PacketType.ARE_YOU_THERE)) == 3
