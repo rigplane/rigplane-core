@@ -468,8 +468,21 @@ async def test_webrtc_control_handler_receives_explicit_exact_authority(
     monkeypatch.setattr(_server_module, "ControlHandler", _Handler)
     monkeypatch.setattr(web_handlers, "ControlHandler", _Handler)
 
+    # Data channels admit only keyed peers: attach with a real session key
+    # when a server exists (the serverless path never reaches the parser).
+    if with_server:
+        assert server is not None
+        grant = server._controller.acquire("pro")  # noqa: SLF001
+        attach_key = grant["controller_key"]
+    else:
+        attach_key = None
     _attach = _json.dumps(
-        {"type": "attach", "controller_key": None, "state_delta": 2, "role": "primary"}
+        {
+            "type": "attach",
+            "controller_key": attach_key,
+            "state_delta": 2,
+            "role": "primary",
+        }
     ).encode()
     _closed: dict[str, Any] = {}
 

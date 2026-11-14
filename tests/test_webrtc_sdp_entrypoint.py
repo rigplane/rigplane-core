@@ -186,13 +186,21 @@ async def test_full_session_negotiates_control_scope_audio() -> None:
     assert all(c.readyState == "open" for c in client_ch.values())
 
     # Attach every channel through the shared attach path (first text
-    # frame), then the control channel's handler sends its hello.
+    # frame). Data channels admit only keyed peers, so acquire a session
+    # first. All three attaches go out back to back right after open, as
+    # before: each channel must send its attach within 5 s of dispatch,
+    # and a hello wait between them would push scope/audio past that
+    # window on slow ICE. Control is sent first — scope/audio join as
+    # auxiliaries and need the primary in place — then the control
+    # channel's handler sends its hello.
+    grant = server._controller.acquire("pro")  # noqa: SLF001
+    key = grant["controller_key"]
     for label, channel in client_ch.items():
         channel.send(
             json.dumps(
                 {
                     "type": "attach",
-                    "controller_key": None,
+                    "controller_key": key,
                     "state_delta": 2,
                     "role": "primary" if label == "control" else "auxiliary",
                 }
