@@ -310,7 +310,7 @@ def build_allowed_bodies(
         bodies.add(body)
     if command_map.has("get_freq"):
         bodies.add(bytes(command_map.get("get_freq")))
-    return bodies | frozenset(_UNKNOWN_BODIES)
+    return frozenset(bodies) | frozenset(_UNKNOWN_BODIES)
 
 
 def is_forbidden(frame_body: bytes, allowed: frozenset[bytes] | set[bytes]) -> bool:
@@ -380,6 +380,7 @@ def snapshot_names(config: RigConfig) -> list[str]:
     Only reads the pass would send anyway: a name is kept when it is in
     the produced read list.
     """
+    candidates: tuple[str, ...]
     if config.protocol_type == "yaesu_cat":
         candidates = _YAESU_SNAPSHOT_CANDIDATES
     elif config.protocol_type == "civ":

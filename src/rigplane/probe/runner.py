@@ -168,6 +168,32 @@ def _garbled_civ(chunk: bytes) -> bool:
     return False
 
 
+def _attribute(protocol: str, body: bytes, chunk: bytes) -> bool:
+    if protocol == "yaesu_cat":
+        return _match_cat(body, chunk)
+    return _match_civ(body, chunk)
+
+
+def _is_garbled(protocol: str, chunk: bytes) -> bool:
+    if protocol == "yaesu_cat":
+        return _garbled_cat(chunk)
+    return _garbled_civ(chunk)
+
+
+def _matcher(protocol: str, body: bytes) -> Callable[[bytes], bool]:
+    def attribute(chunk: bytes) -> bool:
+        return _attribute(protocol, body, chunk)
+
+    return attribute
+
+
+def _garble_check(protocol: str) -> Callable[[bytes], bool]:
+    def garbled(chunk: bytes) -> bool:
+        return _is_garbled(protocol, chunk)
+
+    return garbled
+
+
 def _cat_template_of(config: RigConfig, name: str, body: bytes) -> str:
     spec = config.commands.get(name)
     if isinstance(spec, CatCommandSpec) and spec.read:
@@ -250,15 +276,14 @@ async def _read_identity(
 ) -> tuple[_Identity, BaseException | None]:
     """Send the identity reads; a mismatch never stops the run."""
     protocol = config.protocol_type
-    match = _match_cat if protocol == "yaesu_cat" else _match_civ
-    garbled = _garbled_cat if protocol == "yaesu_cat" else _garbled_civ
+    garbled = _garble_check(protocol)
     raws: list[tuple[str, str, str]] = []
     for item in identity_requests(config):
         answer = await _ask(
             exchange,
             item.body,
             window,
-            attribute=lambda chunk, want=item.body: match(want, chunk),
+            attribute=_matcher(protocol, item.body),
             garbled=garbled,
         )
         if answer.broken is not None:
@@ -283,8 +308,7 @@ async def _read_snapshot(
 ) -> dict[str, str | None]:
     """Read the profile state reads once; silence records ``None``."""
     protocol = config.protocol_type
-    match = _match_cat if protocol == "yaesu_cat" else _match_civ
-    garbled = _garbled_cat if protocol == "yaesu_cat" else _garbled_civ
+    garbled = _garble_check(protocol)
     out: dict[str, str | None] = {}
     for name in snapshot_names(config):
         item = full[name]
@@ -292,7 +316,7 @@ async def _read_snapshot(
             exchange,
             item.body,
             window,
-            attribute=lambda chunk, want=item.body: match(want, chunk),
+            attribute=_matcher(protocol, item.body),
             garbled=garbled,
         )
         if answer.broken is not None:
@@ -441,13 +465,12 @@ async def _ask_once(
 ) -> tuple[CommandRow, bool]:
     """Send one read; return its file row and whether it was silent."""
     protocol = config.protocol_type
-    match = _match_cat if protocol == "yaesu_cat" else _match_civ
-    garbled = _garbled_cat if protocol == "yaesu_cat" else _garbled_civ
+    garbled = _garble_check(protocol)
     answer = await _ask(
         exchange,
         item.body,
         window,
-        attribute=lambda chunk: match(item.body, chunk),
+        attribute=_matcher(protocol, item.body),
         garbled=garbled,
     )
     for stray in answer.strays:

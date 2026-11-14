@@ -77,9 +77,10 @@ async def _yaesu_exchange(reader: Any, writer: Any) -> Exchange:
             writer.write(request)
             await writer.drain()
         try:
-            return await asyncio.wait_for(reader.readuntil(b";"), timeout)
+            raw: bytes = await asyncio.wait_for(reader.readuntil(b";"), timeout)
         except (asyncio.TimeoutError, asyncio.IncompleteReadError):
             return None
+        return raw
 
     return exchange
 
@@ -100,10 +101,12 @@ async def _civ_exchange(reader: Any, writer: Any, radio_addr: int) -> Exchange:
             await writer.drain()
         try:
             while True:
-                frame = await asyncio.wait_for(reader.readuntil(b"\xfd"), timeout)
-                if sent is not None and frame == sent:
+                raw: bytes = await asyncio.wait_for(
+                    reader.readuntil(b"\xfd"), timeout
+                )
+                if sent is not None and raw == sent:
                     continue  # USB echo of our own frame, not the answer
-                return frame
+                return raw
         except (asyncio.TimeoutError, asyncio.IncompleteReadError):
             return None
 
@@ -249,7 +252,8 @@ def profile_source_bytes(rigs_dir: Path, config: RigConfig) -> bytes:
         if path.name.startswith("_") or path.name.endswith(".draft.toml"):
             continue
         try:
-            data = tomllib.loads(path.read_bytes())
+            with path.open("rb") as handle:
+                data = tomllib.load(handle)
         except (OSError, tomllib.TOMLDecodeError):
             continue
         radio = data.get("radio")
