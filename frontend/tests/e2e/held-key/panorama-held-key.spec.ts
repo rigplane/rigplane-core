@@ -34,6 +34,11 @@ import {
 import { startJourneyServer } from '../journey/server-process';
 import type { JourneyServerHandle } from '../journey/server-process';
 import { expectPanoramaSettled, watchPanoramaErrors } from '../journey/panorama-guards';
+import {
+  checkAdvanceAndSettle,
+  classifyHeldKeyCatch,
+  requirePopulatedSeries,
+} from './held-key-analysis';
 
 /** One rAF sample of the held-key burst: VFO readout, marker geometry and the rendered view. */
 interface HeldKeySample {
@@ -211,6 +216,7 @@ for (const zoom of ZOOMS) {
         // after frames flow is a FAILURE, never a skip. Never weaken the
         // asserts.
         let setupDone = false;
+        let serverReady = false;
         let server: JourneyServerHandle | undefined;
         // Declared before the try: the catch skip-rule reads frames, so it
         // must be visible there (a `const` inside the try is not).
@@ -226,6 +232,7 @@ for (const zoom of ZOOMS) {
               '--span-hz', '250000',
               '--seed', String(seed)],
             'tests/e2e/panorama_web_server.py');
+          serverReady = true;
           const watch = watchPanoramaErrors(page);
           page.on('websocket', (socket) => {
             if (new URL(socket.url()).pathname === '/api/v1/ws') {
@@ -354,6 +361,28 @@ for (const zoom of ZOOMS) {
             inWindow.map((s) => ({ t: s.tPerf, v: markerFrequency(s) })), burstStartPerf, toleranceHz);
           const center = checkMonotonic(
             inWindow.map((s) => ({ t: s.tPerf, v: viewCenterHz(s) })), burstStartPerf, toleranceHz);
+          // Every rendered series must be measured: a broken VFO selector or
+          // a frozen viewport is trivially monotonic, so an empty, all-missing
+          // or frozen series fails here instead of passing below. The marker
+          // and the view centre must additionally travel with the burst and
+          // rest at the confirmed frequency. These throw — never a skip.
+          requirePopulatedSeries('vfo', vfo);
+          requirePopulatedSeries('marker', markerSeries);
+          requirePopulatedSeries('centre', center);
+          // The marker is pixel-quantized: allow half a step plus one pixel.
+          const pxScales = inWindow
+            .filter((s) => s.gates !== null && Number.isFinite(s.gates.viewStartHz)
+              && Number.isFinite(s.gates.viewEndHz) && Number.isFinite(s.areaWidth) && s.areaWidth > 0)
+            .map((s) => (s.gates!.viewEndHz - s.gates!.viewStartHz) / s.areaWidth);
+          const hzPerPx = pxScales.length > 0 ? pxScales[pxScales.length - 1] : grantedWidthHz / 800;
+          const markerAdvance = checkAdvanceAndSettle({
+            name: 'marker', values: inWindow.map((s) => ({ t: s.tPerf, v: markerFrequency(s) })),
+            confirmedHz: afterHz, toleranceHz: toleranceHz + hzPerPx, minimumAdvanceHz: stepHz,
+          });
+          const centreAdvance = checkAdvanceAndSettle({
+            name: 'centre', values: inWindow.map((s) => ({ t: s.tPerf, v: viewCenterHz(s) })),
+            confirmedHz: afterHz, toleranceHz, minimumAdvanceHz: stepHz,
+          });
           const gaps = passbandGaps(passbandSamples, burstStartPerf, settleEndPerf);
           const longGaps = gaps.filter((gap) => gap.durationMs > 200).map((gap) => ({
             startRelMs: gap.startMs - burstStartPerf,
@@ -385,6 +414,8 @@ for (const zoom of ZOOMS) {
           console.log(`[held-key ${zoom.name} ${latency.name} step=${stepHz}] ` +
             `vfo maxBackward=${vfo.maxBackwardHz}Hz marker maxBackward=${markerSeries.maxBackwardHz}Hz ` +
             `center maxBackward=${center.maxBackwardHz}Hz longGaps=${longGaps.length} ` +
+            `marker advance=${markerAdvance.advanceHz}Hz settle=${markerAdvance.settleHz}Hz ` +
+            `centre advance=${centreAdvance.advanceHz}Hz settle=${centreAdvance.settleHz}Hz ` +
             `before=${beforeHz} after=${afterHz} setFreq=${setFreqCommands.length}`);
 
           // (a) monotonic: no series may move backwards by more than half a step.
@@ -406,18 +437,19 @@ for (const zoom of ZOOMS) {
           expectPanoramaSettled(watch);
         } catch (error) {
           // A skip is allowed ONLY for a genuine connect failure: the
-          // server exits before /api/v1/state answers, or no scope frames
-          // arrive at all within the existing timeout. A setup expectation
-          // that fails after frames flow is a FAILURE, never a skip.
-          if (!setupDone && frames.length === 0) {
-            test.skip(true,
-              `MOR-4451 held-key acceptance (${zoom.name}, ${latency.name} ` +
-              `delay=${latency.delay}s jitter=${latency.jitter}s, step ${stepHz}Hz): ` +
-              `cannot connect on this tree ` +
-              `(${error instanceof Error ? error.message.split('\n')[0] : String(error)})`);
+          // server never starts, or no scope frames arrive at all within
+          // the existing timeout. A setup expectation that fails after
+          // frames flow is a FAILURE with the original error, never a skip.
+          const verdict = classifyHeldKeyCatch({
+            setupDone, serverReady, framesObserved: frames.length, error,
+            row: `${zoom.name}, ${latency.name} delay=${latency.delay}s ` +
+              `jitter=${latency.jitter}s, step ${stepHz}Hz`,
+          });
+          if (verdict.disposition === 'skip') {
+            test.skip(true, verdict.reason);
             return;
           }
-          throw error;
+          throw verdict.error;
         } finally {
           await server?.kill();
         }
