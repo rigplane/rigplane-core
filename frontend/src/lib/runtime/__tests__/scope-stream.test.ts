@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { get } from 'svelte/store';
 import { scopeFixtures as fixtures } from './scope-wire-fixture';
 import { ScopeStream } from '../scope-stream';
 import type { ScopeMessageSource } from '../scope-stream';
@@ -195,7 +196,15 @@ it('exposes selected cached pixel presence through grants, health ticks and pixe
   input.emit(); input.emit();
   expect(stream.lastFrameHasPixels).toBe(true);
   stream.handleMessage({ type: 'granted', sourceId: 'scope-1', receiver: 0,
-    view: { startHz: 14_000_000, endHz: 14_050_000 }, width: 3, fps: 20 });
+    view: { startHz: 14_000_000, endHz: 14_050_000 },
+    coverage: { startHz: 14_000_000, endHz: 14_050_000 }, width: 3, fps: 20 });
+  expect(get(stream.granted)).toMatchObject({ type: 'granted', sourceId: 'scope-1', receiver: 0,
+    view: { startHz: 14_000_000, endHz: 14_050_000 },
+    coverage: { startHz: 14_000_000, endHz: 14_050_000 }, width: 3, fps: 20 });
+  const grantGeometry = get(stream.geometry);
+  expect(grantGeometry).toMatchObject({ view: { startHz: 14_000_000, endHz: 14_050_000 },
+    coverage: { startHz: 14_000_000, endHz: 14_050_000 }, hasPixels: false });
+  expect(grantGeometry).not.toHaveProperty('pixels');
   stream.setFreshness('fresh');
   expect(stream.lastFrameHasPixels).toBe(true);
   input.emit(fixtures.outOfRange);
