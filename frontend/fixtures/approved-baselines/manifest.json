@@ -1,9 +1,9 @@
 {
   "ticket": "MOR-1090",
-  "generatedAt": "2026-11-08T15:16:02.018Z",
-  "commit": "86795aeb50e856ff11e906adb386180a363d289c",
-  "commitShort": "86795aeb",
-  "branch": "codex/mor-4270-r1-scope-stream",
+  "generatedAt": "2026-11-12T00:41:00.944Z",
+  "commit": "3464261c46ff5b9ec7e07092d0f1a09740805e1f",
+  "commitShort": "3464261c",
+  "branch": "codex/mor-4383-waterfall-smoothing",
   "platform": "linux-arm64",
   "node": "v20.20.2",
   "playwright": "1.58.2",
