@@ -1028,6 +1028,7 @@ class WebConfig:
     # backend filling the store leave it off.
     await_initial_state: bool = False
     webrtc_enabled: bool = False  # enable the gated WebRTC transport entrypoint
+    webrtc_include_vpn: bool = False  # admit VPN/tunnel interfaces as ICE host candidates
     state_diagnostics: bool = False  # enable behavior-neutral state diagnostics
     # Adaptive per-client egress codec controller (MOR-588, ADR §3.6):
     # PCM16↔Opus switching on detected slow/lossy links. Off (default) =
@@ -7243,6 +7244,9 @@ class WebServer:
         """Return the lazily-built WebRTC session manager for this server."""
         if self._webrtc_sessions is None:
             from .transport.webrtc_session import WebRtcSessionManager  # noqa: TID251
+            from .transport.ice_gathering import (  # noqa: TID251
+                IceGatheringPolicy,
+            )
 
             raw_model = (
                 getattr(self._radio, "model", None) if self._radio is not None else None
@@ -7250,7 +7254,14 @@ class WebServer:
             model = (
                 raw_model if isinstance(raw_model, str) else self._config.radio_model
             )
-            self._webrtc_sessions = WebRtcSessionManager(self._radio, self, model)
+            self._webrtc_sessions = WebRtcSessionManager(
+                self._radio,
+                self,
+                model,
+                gather_policy=IceGatheringPolicy(
+                    include_vpn=self._config.webrtc_include_vpn
+                ),
+            )
         return self._webrtc_sessions
 
     async def _webrtc_unavailable(
@@ -7312,9 +7323,29 @@ class WebServer:
             return
 
         from .transport.webrtc_session import WebRtcSessionError  # noqa: TID251
+        from .transport.ice_gathering import parse_ice_servers  # noqa: TID251
+
+        ice_servers_raw = payload.get("ice_servers", None)
+        try:
+            ice_servers = parse_ice_servers(ice_servers_raw)
+        except ValueError as exc:
+            err = json.dumps(
+                {
+                    "status": "error",
+                    "code": "invalid_ice_servers",
+                    "message": str(exc),
+                },
+                separators=(",", ":"),
+            ).encode()
+            await _send_response(
+                writer, 400, "Bad Request", err, {"Content-Type": "application/json"}
+            )
+            return
 
         try:
-            result = await self._webrtc_session_manager().negotiate(sdp, offer_type)
+            result = await self._webrtc_session_manager().negotiate(
+                sdp, offer_type, ice_servers
+            )
         except WebRtcSessionError as exc:
             err = json.dumps(
                 {"status": "error", "code": "sdp_error", "message": str(exc)},
