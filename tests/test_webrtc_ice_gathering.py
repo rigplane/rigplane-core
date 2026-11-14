@@ -360,16 +360,43 @@ async def test_offer_with_malformed_ice_servers_rejected() -> None:
 
 
 def _has_non_loopback_ipv4() -> bool:
-    """True when the host exposes an IPv4 address beyond 127/8."""
-    ips: set[str] = set()
+    """True when the host exposes an IPv4 address beyond 127/8.
+
+    Enumerates real interface addresses instead of resolving the
+    hostname: ``socket.gethostname()`` is not in DNS on some hosts
+    (e.g. ``Sergeys-Mini-2.msmsoft.net``), which made the old guard
+    report loopback-only on a multi-homed machine and skip the test
+    this guards. Uses only stdlib + the optional ``ifaddr`` package,
+    never the implementation under test, so the skip decision stays
+    non-circular.
+    """
+    # Stdlib first: UDP "connect" sends no packets; it asks the routing
+    # table for the source address of the default route.
     with contextlib.suppress(Exception):
-        ips.update(socket.gethostbyname_ex(socket.gethostname())[2])
+        probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            probe.connect(("8.8.8.8", 53))
+            ip = probe.getsockname()[0]
+            if ip and not ip.startswith("127."):
+                return True
+        finally:
+            probe.close()
+    # Fallback: true interface enumeration. ``ifaddr`` ships with
+    # ``aioice`` (an aiortc dependency), so it is present wherever the
+    # aiortc-gated tests below can run; the import stays defensive.
     with contextlib.suppress(Exception):
-        for info in socket.getaddrinfo(socket.gethostname(), None):
-            addr = info[4][0]
-            if "." in addr:
-                ips.add(addr)
-    return any(ip and not ip.startswith("127.") for ip in ips)
+        import ifaddr
+
+        for adapter in ifaddr.get_adapters():
+            for ipinfo in adapter.ips:
+                ip = ipinfo.ip
+                if (
+                    ipinfo.is_IPv4
+                    and isinstance(ip, str)
+                    and not ip.startswith("127.")
+                ):
+                    return True
+    return False
 
 
 class _StunResponder(asyncio.DatagramProtocol):
