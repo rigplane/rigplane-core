@@ -5,9 +5,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
+from collections.abc import Callable
+from contextlib import asynccontextmanager
 from dataclasses import replace
 import socket
-from collections.abc import Callable
 
 import pytest
 
@@ -46,19 +47,31 @@ async def _turns(n: int) -> None:
         await asyncio.sleep(0)
 
 
+@asynccontextmanager
+async def _running(node):
+    await node.start()
+    try:
+        yield node
+    finally:
+        await node.stop()
+
+
+def _blast(port: int, packets: list[N1mmSpectrumPacket]) -> None:
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+        for packet in packets:
+            sock.sendto(emit_n1mm_spectrum(packet), ("127.0.0.1", port))
+
+
 @pytest.mark.timeout(30)
 async def test_receiver_delivers_emitted_packet() -> None:
     received: list[N1mmSpectrumPacket] = []
     receiver = N1mmSpectrumReceiver(port=0, on_packet=received.append)
-    await receiver.start()
-    try:
+    async with _running(receiver):
         assert receiver.port != 0
         packet = _packet()
         _send(receiver.port, emit_n1mm_spectrum(packet))
         await await_until(lambda: received, description="packet delivery")
         assert received == [packet]
-    finally:
-        await receiver.stop()
 
 
 @pytest.mark.timeout(30)
@@ -67,8 +80,7 @@ async def test_receiver_name_filter_and_rejection_counts() -> None:
     receiver = N1mmSpectrumReceiver(
         port=0, source_name="Thetis_1", on_packet=received.append
     )
-    await receiver.start()
-    try:
+    async with _running(receiver):
         other = replace(_packet(), name="Other")
         _send(receiver.port, emit_n1mm_spectrum(other))
         _send(receiver.port, b"not xml at all")
@@ -83,64 +95,54 @@ async def test_receiver_name_filter_and_rejection_counts() -> None:
         _send(receiver.port, emit_n1mm_spectrum(wanted))
         await await_until(lambda: received, description="wanted packet")
         assert received == [wanted]
-    finally:
-        await receiver.stop()
 
 
 @pytest.mark.timeout(30)
 async def test_receiver_latest_wins_on_burst() -> None:
     received: list[N1mmSpectrumPacket] = []
     receiver = N1mmSpectrumReceiver(port=0, on_packet=received.append)
-    await receiver.start()
-    try:
+    async with _running(receiver):
         packets = [_packet(index) for index in range(5)]
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
-            for packet in packets:
-                sock.sendto(emit_n1mm_spectrum(packet), ("127.0.0.1", receiver.port))
+        _blast(receiver.port, packets)
         await await_until(
             lambda: received and received[-1] == packets[-1],
             description="burst delivery",
         )
         await _turns(_MAX_COALESCE_TURNS * 3)
         assert received == [packets[-1]]
-    finally:
-        await receiver.stop()
 
 
+@pytest.mark.parametrize("middle", ["filtered", "malformed"])
 @pytest.mark.timeout(30)
-async def test_source_burst_renders_latest_packet() -> None:
-    source = N1mmSpectrumSource(port=0, fps_limit=1000.0)
+async def test_burst_coalesces_across_unaccepted_datagram(
+    virtual_clock: VirtualClock, middle: str
+) -> None:
+    source = N1mmSpectrumSource(fps_limit=10.0)
     frames: list[NativeFrame] = []
     source.on_frame(frames.append)
-    receiver = N1mmSpectrumReceiver(port=0, on_packet=source.handle_packet)
-    await receiver.start()
-    try:
-        packets = [
-            replace(
-                _packet(index),
-                low_hz=14_000_000.0 + index * 10_000.0,
-                high_hz=14_000_000.0 + index * 10_000.0 + 3_000.0,
-            )
-            for index in range(5)
-        ]
+    first = replace(_packet(0), name="wanted")
+    last = replace(_packet(1), name="wanted", low_hz=14_010_000.0, high_hz=14_013_000.0)
+    other = replace(_packet(9), name="Other")
+    gap = b"<bogus" if middle == "malformed" else emit_n1mm_spectrum(other)
+    receiver = N1mmSpectrumReceiver(
+        port=0, source_name="wanted", on_packet=source.handle_packet
+    )
+    async with _running(receiver):
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
-            for packet in packets:
-                sock.sendto(emit_n1mm_spectrum(packet), ("127.0.0.1", receiver.port))
-        await await_until(lambda: frames, description="burst frame")
-        await _turns(_MAX_COALESCE_TURNS * 3)
+            sock.sendto(emit_n1mm_spectrum(first), ("127.0.0.1", receiver.port))
+            sock.sendto(gap, ("127.0.0.1", receiver.port))
+            sock.sendto(emit_n1mm_spectrum(last), ("127.0.0.1", receiver.port))
+        await await_until(lambda: frames, description="coalesced frame")
+        await _turns(_MAX_COALESCE_TURNS * 2)
         assert len(frames) == 1
-        assert frames[0].coverage == Coverage(packets[-1].low_hz, packets[-1].high_hz)
-    finally:
-        await receiver.stop()
-        await source.stop()
+        assert frames[0].coverage == Coverage(last.low_hz, last.high_hz)
 
 
 @pytest.mark.timeout(60)
 async def test_receiver_sustained_backlog_makes_progress() -> None:
     received: list[N1mmSpectrumPacket] = []
     receiver = N1mmSpectrumReceiver(port=0, on_packet=received.append)
-    await receiver.start()
-    try:
+    async with _running(receiver):
         packets = [
             replace(
                 _packet(index),
@@ -149,9 +151,7 @@ async def test_receiver_sustained_backlog_makes_progress() -> None:
             )
             for index in range(40)
         ]
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
-            for packet in packets:
-                sock.sendto(emit_n1mm_spectrum(packet), ("127.0.0.1", receiver.port))
+        _blast(receiver.port, packets)
         await await_until(
             lambda: received and received[-1] == packets[-1],
             description="backlog drain",
@@ -160,16 +160,13 @@ async def test_receiver_sustained_backlog_makes_progress() -> None:
         assert 2 <= len(received) < len(packets)
         order = [packets.index(packet) for packet in received]
         assert order == sorted(order) and order[-1] == len(packets) - 1
-    finally:
-        await receiver.stop()
 
 
 @pytest.mark.timeout(60)
 async def test_receiver_stream_no_starvation(virtual_clock: VirtualClock) -> None:
     received: list[N1mmSpectrumPacket] = []
     receiver = N1mmSpectrumReceiver(port=0, on_packet=received.append)
-    await receiver.start()
-    try:
+    async with _running(receiver):
         packets = [_packet(index) for index in range(20)]
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
             for step, packet in enumerate(packets):
@@ -177,22 +174,6 @@ async def test_receiver_stream_no_starvation(virtual_clock: VirtualClock) -> Non
                 await await_until(lambda: len(received) > step, description="delivery")
                 await virtual_clock.elapse(0.1)
         assert received == packets
-    finally:
-        await receiver.stop()
-
-
-@pytest.mark.timeout(30)
-async def test_receiver_stop_idempotent_and_port_busy() -> None:
-    first = N1mmSpectrumReceiver(port=0, on_packet=lambda packet: None)
-    await first.start()
-    try:
-        busy = N1mmSpectrumReceiver(port=first.port, on_packet=lambda packet: None)
-        with pytest.raises(OSError):
-            await busy.start()
-        await first.stop()
-        await first.stop()
-    finally:
-        await first.stop()
 
 
 def _free_port() -> int:
@@ -209,13 +190,11 @@ async def test_receiver_restart_same_port_after_stop() -> None:
     await receiver.start()
     await receiver.stop()
     await receiver.start()
-    try:
+    async with _running(receiver):
         packet = _packet()
         _send(port, emit_n1mm_spectrum(packet))
         await await_until(lambda: received, description="post-restart delivery")
         assert received == [packet]
-    finally:
-        await receiver.stop()
 
 
 @pytest.mark.timeout(30)
@@ -227,22 +206,80 @@ async def test_source_restart_same_port_after_stop() -> None:
     await source.start()
     await source.stop()
     await source.start()
-    try:
+    async with _running(source):
         packet = _packet()
         _send(port, emit_n1mm_spectrum(packet))
         await await_until(lambda: frames, description="post-restart frame")
         assert len(frames) == 1
         assert frames[0].coverage == Coverage(packet.low_hz, packet.high_hz)
+
+
+@pytest.mark.parametrize("target", ["receiver", "source"])
+@pytest.mark.timeout(30)
+async def test_cancelled_late_start_keeps_shared_startup(target: str) -> None:
+    port = _free_port()
+    packets: list[N1mmSpectrumPacket] = []
+    frames: list[NativeFrame] = []
+    if target == "receiver":
+        node = N1mmSpectrumReceiver(port=port, on_packet=packets.append)
+    else:
+        node = N1mmSpectrumSource(port=port, fps_limit=1000.0)
+        node.on_frame(frames.append)
+    loop = asyncio.get_running_loop()
+    real_endpoint = loop.create_datagram_endpoint
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def gated(*args, **kwargs):
+        entered.set()
+        await release.wait()
+        return await real_endpoint(*args, **kwargs)
+
+    loop.create_datagram_endpoint = gated
+    try:
+        owner = asyncio.create_task(node.start())
+        await await_until(entered.is_set, description="start entered bind")
+        waiter = asyncio.create_task(node.start())
+        await _turns(2)
+        waiter.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await waiter
+        release.set()
+        await owner
+        busy = N1mmSpectrumReceiver(port=port, on_packet=lambda packet: None)
+        with pytest.raises(OSError):
+            await busy.start()
+        _send(port, emit_n1mm_spectrum(_packet()))
+        await await_until(lambda: packets or frames, description="delivery")
+        assert len(packets) + len(frames) == 1
     finally:
-        await source.stop()
+        loop.create_datagram_endpoint = real_endpoint
+        await node.stop()
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+        probe.bind(("127.0.0.1", port))
 
 
 @pytest.mark.timeout(30)
-async def test_receiver_concurrent_start_single_endpoint() -> None:
+async def test_source_concurrent_and_cancelled_stop_close_fully() -> None:
     port = _free_port()
-    receiver = N1mmSpectrumReceiver(port=port, on_packet=lambda packet: None)
-    await asyncio.gather(receiver.start(), receiver.start())
-    await receiver.stop()
+    source = N1mmSpectrumSource(port=port, fps_limit=1000.0)
+    frames: list[NativeFrame] = []
+    source.on_frame(frames.append)
+    await source.start()
+    first = asyncio.create_task(source.stop())
+    await _turns(1)
+    second = asyncio.create_task(source.stop())
+    await _turns(2)
+    assert not second.done()
+    await asyncio.gather(first, second)
+    await source.start()
+    _send(port, emit_n1mm_spectrum(_packet()))
+    await await_until(lambda: frames, description="post-restart frame")
+    doomed = asyncio.create_task(source.stop())
+    await _turns(2)
+    doomed.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await doomed
+    await source.stop()
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
         probe.bind(("127.0.0.1", port))
 
@@ -470,16 +507,12 @@ async def test_replay_moving_tone_over_noise(virtual_clock: VirtualClock) -> Non
     frames: list[NativeFrame] = []
     source.on_frame(frames.append)
     receiver = N1mmSpectrumReceiver(port=0, on_packet=source.handle_packet)
-    await receiver.start()
-    try:
+    async with _running(receiver), _running(source):
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
             for index, packet in enumerate(packets):
                 sock.sendto(emit_n1mm_spectrum(packet), ("127.0.0.1", receiver.port))
                 await await_until(lambda: len(frames) == index + 1, description="frame")
                 await virtual_clock.elapse(0.2)
-    finally:
-        await receiver.stop()
-        await source.stop()
     assert len(frames) == count
     for frame, step in zip(frames, range(count)):
         pixels = frame.pixels
@@ -499,36 +532,33 @@ def _expected_index(freq_hz: float, size: int) -> int:
 
 
 def _known_signal_packet(
-    size: int, carrier_a: int = 6000, carrier_b: int = 4000
+    size: int, carrier_a: int = 60, carrier_b: int = 40
 ) -> N1mmSpectrumPacket:
     rng = random.Random(4394)
-    levels = [1000 + rng.randrange(101) for _ in range(size)]
+    levels = [1 + rng.randrange(9) for _ in range(size)]
     levels[_expected_index(_CARRIER_A_HZ, size)] = carrier_a
     levels[_expected_index(_CARRIER_B_HZ, size)] = carrier_b
-    return N1mmSpectrumPacket("known", "signal", _LOW_HZ, _HIGH_HZ, 0.01, tuple(levels))
+    return N1mmSpectrumPacket("known", "signal", _LOW_HZ, _HIGH_HZ, 1.0, tuple(levels))
 
 
 @pytest.mark.parametrize("size", [475, 1024, 16384])
 @pytest.mark.timeout(60)
 async def test_known_signal_end_to_end(virtual_clock: VirtualClock, size: int) -> None:
-    if size == 16384:
-        pytest.skip(
-            "16384 four-digit levels (~82 kB) exceed the 65507-byte UDP ceiling"
-        )
     packet = _known_signal_packet(size)
+    raw = emit_n1mm_spectrum(packet)
+    if size == 16384:
+        # Single-digit levels fit one datagram; real multi-digit senders would
+        # NOT fit 16384 points (open question for Win4Yaesu, needs a capture).
+        assert len(raw) <= 65_507
     source = N1mmSpectrumSource(port=0, fps_limit=1000.0)
     frames: list[NativeFrame] = []
     source.on_frame(frames.append)
     receiver = N1mmSpectrumReceiver(port=0, on_packet=source.handle_packet)
-    await receiver.start()
-    try:
+    async with _running(receiver), _running(source):
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
-            sock.sendto(emit_n1mm_spectrum(packet), ("127.0.0.1", receiver.port))
+            sock.sendto(raw, ("127.0.0.1", receiver.port))
         await await_until(lambda: frames, description="known-signal frame")
         assert len(frames) == 1
-    finally:
-        await receiver.stop()
-        await source.stop()
     frame = frames[0]
     assert frame.coverage == Coverage(_LOW_HZ, _HIGH_HZ)
     pixels = frame.pixels
@@ -553,17 +583,13 @@ async def test_known_signal_level_steps(virtual_clock: VirtualClock) -> None:
     frames: list[NativeFrame] = []
     source.on_frame(frames.append)
     receiver = N1mmSpectrumReceiver(port=0, on_packet=source.handle_packet)
-    await receiver.start()
-    try:
+    async with _running(receiver), _running(source):
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
-            for step, level in enumerate((1500, 2500, 3500, 4500)):
+            for step, level in enumerate((15, 25, 35, 45)):
                 packet = _known_signal_packet(size, carrier_a=level)
                 sock.sendto(emit_n1mm_spectrum(packet), ("127.0.0.1", receiver.port))
                 await await_until(lambda: len(frames) == step + 1, description="step")
                 await virtual_clock.elapse(0.2)
-    finally:
-        await receiver.stop()
-        await source.stop()
     assert len(frames) == 4
     stepped = [f.pixels[stepped_at] for f in frames if f.pixels is not None]
     assert len(stepped) == 4

@@ -94,6 +94,7 @@ class N1mmSpectrumReceiver:
         self._flush_seen = 0
         self._flush_defers = 0
         self._start_future: asyncio.Future[None] | None = None
+        self._stop_future: asyncio.Future[None] | None = None
         self._closed_future: asyncio.Future[None] | None = None
         self.rejected_count = 0
         self.filtered_count = 0
@@ -112,7 +113,7 @@ class N1mmSpectrumReceiver:
         if self._transport is not None:
             return
         if self._start_future is not None:
-            await self._start_future
+            await asyncio.shield(self._start_future)
             return
         loop = asyncio.get_running_loop()
         future: asyncio.Future[None] = loop.create_future()
@@ -128,7 +129,8 @@ class N1mmSpectrumReceiver:
                 future.set_exception(exc)
             raise
         else:
-            future.set_result(None)
+            if not future.done():
+                future.set_result(None)
         finally:
             self._start_future = None
 
@@ -139,23 +141,30 @@ class N1mmSpectrumReceiver:
         start_future = self._start_future
         if start_future is not None:
             try:
-                await start_future
+                await asyncio.shield(start_future)
             except BaseException:
                 pass
-        transport, self._transport = self._transport, None
-        self._flush_scheduled = False
-        self._latest = None
-        self._flush_defers = 0
-        self._flush_seen = self._arrivals
-        if transport is not None:
-            transport.close()
-            closed = self._closed_future
-            if closed is not None:
-                try:
+        if self._stop_future is not None:
+            await asyncio.shield(self._stop_future)
+            return
+        closing: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+        self._stop_future = closing
+        try:
+            transport = self._transport
+            if transport is not None:
+                transport.close()
+                closed = self._closed_future
+                if closed is not None:
                     await closed
-                except BaseException:
-                    pass
-                self._closed_future = None
+                    self._closed_future = None
+            self._transport = None
+            self._flush_scheduled = False
+            self._latest = None
+            self._flush_defers = 0
+            self._flush_seen = self._arrivals
+        finally:
+            self._stop_future = None
+            closing.set_result(None)
 
     def _connection_lost(self) -> None:
         future, self._closed_future = self._closed_future, None
@@ -163,6 +172,9 @@ class N1mmSpectrumReceiver:
             future.set_result(None)
 
     def _datagram(self, data: bytes) -> None:
+        # Count every datagram, even rejected/filtered ones, so a gap cannot
+        # make _flush treat the turn as quiet and deliver an earlier packet.
+        self._arrivals += 1
         parsed = parse_n1mm_spectrum(data)
         if isinstance(parsed, N1mmSpectrumRejected):
             self.rejected_count += 1
@@ -176,7 +188,6 @@ class N1mmSpectrumReceiver:
         if self._source_name is not None and parsed.name != self._source_name:
             self.filtered_count += 1
             return
-        self._arrivals += 1
         self._latest = parsed
         if not self._flush_scheduled:
             self._flush_scheduled = True
@@ -237,6 +248,7 @@ class N1mmSpectrumSource:
         self._last_emit_s: float | None = None
         self._callbacks: list[Callable[[NativeFrame], None]] = []
         self._start_future: asyncio.Future[None] | None = None
+        self._stop_future: asyncio.Future[None] | None = None
         self._active = False
         self.dropped_nonfinite = 0
 
@@ -287,7 +299,7 @@ class N1mmSpectrumSource:
         if self._active:
             return
         if self._start_future is not None:
-            await self._start_future
+            await asyncio.shield(self._start_future)
             return
         loop = asyncio.get_running_loop()
         future: asyncio.Future[None] = loop.create_future()
@@ -306,7 +318,8 @@ class N1mmSpectrumSource:
                 future.set_exception(exc)
             raise
         else:
-            future.set_result(None)
+            if not future.done():
+                future.set_result(None)
         finally:
             self._start_future = None
 
@@ -317,13 +330,23 @@ class N1mmSpectrumSource:
         start_future = self._start_future
         if start_future is not None:
             try:
-                await start_future
+                await asyncio.shield(start_future)
             except BaseException:
                 pass
-        receiver, self._receiver = self._receiver, None
-        self._active = False
-        if receiver is not None:
-            await receiver.stop()
+        if self._stop_future is not None:
+            await asyncio.shield(self._stop_future)
+            return
+        closing: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+        self._stop_future = closing
+        try:
+            receiver = self._receiver
+            self._active = False
+            if receiver is not None:
+                await receiver.stop()
+            self._receiver = None
+        finally:
+            self._stop_future = None
+            closing.set_result(None)
 
     def on_frame(self, callback: Callable[[NativeFrame], None]) -> Callable[[], None]:
         self._callbacks.append(callback)
