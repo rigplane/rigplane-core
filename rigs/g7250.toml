@@ -353,10 +353,14 @@ write_quantum_w = 1
 # Table 2-2 / page 4: CW pitch native 400-1200 Hz in 10 Hz steps; the full
 # protocol range is scaled, x=400+10*round(N*80/255), read N=round(255(x-400)/800).
 # decode_quantum = 10 reproduces that lattice exactly (half-step ties are
-# impossible here: 160*raw is even, 255*(2k+1) is odd). encode is
-# nearest_half_down, not ceil: for display 410 Hz the reference inverts to
-# raw 3 (ceil would give 4, whose read-back is still 3); it differs from the
-# reference round-half-up only on exact ties (e.g. 480 Hz -> 25, ref 26).
+# impossible here: 160*raw is even, 255*(2k+1) is odd). encode is ceil:
+# the radio quantizes on write, so ceil lands on the raw the read formula
+# maps back to the request, and every 400-1200 Hz step-10 value round-trips
+# exactly (410 Hz -> raw 4, stored as 410 Hz, read raw 3, decoded 410 Hz).
+# It matches the reference round-half-up on exact ties (e.g. 480 Hz -> 26).
+# Live-radio caveat: pitch write is not observable on V1.0.1 (LIVE G7250
+# V1.0.1 2026-11-14, USB, also in CW mode — the read-back was 0 for every
+# written raw), so the write/read formula above is unverified.
 [controls.cw_pitch]
 raw_min = 0
 raw_max = 255
@@ -364,14 +368,17 @@ display_min = 400
 display_max = 1200
 display_unit = "Hz"
 decode_quantum = 10
-encode_rounding = "nearest_half_down"
+encode_rounding = "ceil"
 
 # Xiegu G7250 CI-V Reference Rev 1.2 (2026-11-06), Table 1-4 / page 4 and
 # Table 2-2 / page 4: native 5-50 WPM, write 5+floor(N*45/255), read
-# floor((x-5)*255/45). The legacy band cannot express floor (decode always
-# rounds half-even, encode is ceil or nearest_half_down): raw 3 reads 5 WPM
-# on the radio but decodes to 6 here — the closest available domain, same
-# rule family as the IC-7300/X6200 key-speed control.
+# floor((x-5)*255/45). encode is ceil: the radio floors on write, so ceil
+# lands on the smallest raw whose stored WPM reads back as the request, and
+# every 5-50 WPM value round-trips exactly (25 WPM -> raw 114, stored as
+# 25 WPM, read raw 113, decoded 25 WPM). nearest_half_down misses 15 of the
+# 46 values (7, 10, ..., 49: 25 WPM encodes as 113, stored as 24 WPM).
+# LIVE G7250 V1.0.1 2026-11-14 (USB): floor on write and floor on read
+# exactly as the reference (61 measured write->read points).
 [controls.key_speed]
 raw_min = 0
 raw_max = 255
@@ -379,22 +386,29 @@ display_min = 5
 display_max = 50
 display_unit = "WPM"
 decode_quantum = 1
-encode_rounding = "nearest_half_down"
+encode_rounding = "ceil"
 
 # Xiegu G7250 CI-V Reference Rev 1.2 (2026-11-06), Table 1-4 / page 4 and
 # Table 2-2 / page 4: MIC gain native 0-30, write floor(N*30/255), read
-# floor(x*255/30). Same legacy-band caveat as key_speed above: raw 200 is
-# native 23 but decodes to 24 here — the closest available domain. Display
-# key names mirror the other display-scaled levels ([controls.cw_pitch] /
-# [controls.key_speed]); no other shipped profile declares a display band
-# on mic_gain.
+# floor(x*255/30). encode is ceil: the radio floors on write, so ceil lands
+# on the smallest raw whose stored gain reads back as the request, and every
+# 0-30 value round-trips exactly (15 -> raw 128, stored as 15, read raw 127,
+# decoded 15). nearest_half_down misses all 15 odd values (1, 3, ..., 29).
+# LIVE G7250 V1.0.1 2026-11-14 (USB): floor on write and floor on read
+# exactly as the reference (46 measured write->read points).
+# Display key names mirror the other display-scaled levels
+# ([controls.cw_pitch] / [controls.key_speed]); no other shipped profile
+# declares a display band on mic_gain. NOTE: the live set/get path
+# (runtime/radio.py set_mic_gain/get_mic_gain) still moves raw 0-255 levels
+# end to end — this band is the profile's display mapping, exercised by the
+# round-trip test, not by the HTTP command path.
 [controls.mic_gain]
 raw_min = 0
 raw_max = 255
 display_min = 0
 display_max = 30
 decode_quantum = 1
-encode_rounding = "nearest_half_down"
+encode_rounding = "ceil"
 
 # LIVE G7250 2026-11-09 (MOR-4352): the 0x02 band-edge read answered RX
 # 0.5 .. 54 MHz — the HF envelope is live; it bounds the receiver at

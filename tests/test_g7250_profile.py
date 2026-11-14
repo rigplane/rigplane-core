@@ -24,6 +24,10 @@ from rigplane.profiles import (
     profile_by_xiegu_model_id,
     resolve_radio_profile,
 )
+from rigplane.profiles.control_domain import (
+    decode_legacy_control,
+    encode_legacy_control,
+)
 from rigplane.profiles.rig_loader import RigConfig, discover_rigs
 from rigplane.runtime.meter_cal import interpolate_meter
 from rigplane.runtime.radios import RADIOS, get_civ_addr
@@ -482,3 +486,72 @@ def test_no_get_vfo_key_and_no_bare_07_poll() -> None:
     paths = [str(capability.path) for capability in acquisition.capabilities]
     assert paths, "expected polled/observable acquisition paths"
     assert not [path for path in paths if "vfo" in path.lower()], paths
+
+
+# ---------------------------------------------------------------------------
+# MOR-4436 part A gate P1 — key-speed rounding regression: encode -> radio
+# formulas -> decode must be the identity for every settable value.
+# ---------------------------------------------------------------------------
+
+
+def _half_up(numerator: int, denominator: int) -> int:
+    """Round-to-nearest with exact halves up (the reference's own ``round``)."""
+    quotient, remainder = divmod(numerator, denominator)
+    return quotient + (1 if 2 * remainder >= denominator else 0)
+
+
+def radio_roundtrip(control: str, raw: int) -> int:
+    """Apply the vendor's documented write/read formulas to wire raw *raw*.
+
+    Xiegu G7250 CI-V Reference Rev 1.2 (2026-11-06): key speed Table 1-4 /
+    page 4 (write ``5+floor(N*45/255)``, read ``floor((x-5)*255/45)``) and
+    Table 2-2 / page 4; MIC gain, same tables (write ``floor(N*30/255)``,
+    read ``floor(x*255/30)``); CW pitch Table 1-5 / page 5 and Table 2-2 /
+    page 4 (write ``x=400+10*round(N*80/255)``, read
+    ``N=round(255*(x-400)/800)``). Returns the raw level a GET would report
+    after the radio stored a SET of *raw* — the quantization the old
+    echo-everything fake hid.
+    """
+    if control == "key_speed":
+        stored = 5 + (raw * 45) // 255
+        return (stored - 5) * 255 // 45
+    if control == "mic_gain":
+        stored = (raw * 30) // 255
+        return stored * 255 // 30
+    if control == "cw_pitch":
+        stored = 400 + 10 * _half_up(raw * 80, 255)
+        return _half_up(255 * (stored - 400), 800)
+    raise ValueError(f"no vendor write/read formula for {control!r}")
+
+
+def _roundtrip_cases() -> list[tuple[str, int]]:
+    """Every user-settable value of the three display-band levels."""
+    return (
+        [("key_speed", wpm) for wpm in range(5, 51)]
+        + [("mic_gain", gain) for gain in range(0, 31)]
+        + [("cw_pitch", hz) for hz in range(400, 1201, 10)]
+    )
+
+
+@pytest.mark.parametrize(("control", "display"), _roundtrip_cases())
+def test_display_value_survives_encode_radio_formulas_and_decode(
+    control: str, display: int
+) -> None:
+    """Encode -> the radio's own write/read -> decode is the identity.
+
+    The profile declares ``encode_rounding = "ceil"`` because the radio
+    floors (key speed, MIC gain) or rounds (CW pitch) on write; ``ceil``
+    lands on the raw whose stored value reads back as the request. Under the
+    previous ``nearest_half_down`` this fails for 15 of the 46 key-speed
+    values (every third WPM from 7: 7, 10, 13, ..., 49 — e.g. 25 WPM encodes
+    as raw 113, stored as 24 WPM) and for all 15 odd MIC-gain values
+    (1, 3, ..., 29); CW pitch round-trips under either rounding.
+    """
+    controls = _config().controls
+    assert controls is not None
+    assert controls[control]["encode_rounding"] == "ceil"
+    raw = encode_legacy_control(controls, control, display)
+    assert (
+        decode_legacy_control(controls, control, radio_roundtrip(control, raw))
+        == display
+    )
