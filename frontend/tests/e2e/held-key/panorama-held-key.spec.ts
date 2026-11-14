@@ -12,10 +12,11 @@
 //
 // It is not part of the per-PR CI sweep on purpose (the journey and panorama
 // configs do not match this directory), same reason as the slow-link spec's
-// header. On a tree without #4555, rows above 0.05 s cannot connect, so a row
-// that never reaches scope setup skips at runtime with that reason
-// (server/connect failure) instead of asserting — the monotonic and overlay
-// assertions below are never weakened.
+// header. A row that cannot connect SKIPS LOUDLY at runtime with the row
+// name and delay in the skip reason (visible in the report) instead of
+// asserting — the monotonic and overlay assertions below are never weakened.
+// The integrated-tree run must show ZERO skips: any skip there is a failure
+// of this acceptance.
 import type { Page } from '@playwright/test';
 import { writeFile } from 'node:fs/promises';
 import { expect, test } from '@playwright/test';
@@ -198,7 +199,10 @@ for (const zoom of ZOOMS) {
         const seed = 1234;
         const evidence = info.outputPath('radio.jsonl');
         // Rows past the latency this branch can connect at never reach
-        // setup: skip at runtime (detected here), never weaken the asserts.
+        // setup: only a genuine connect failure (no scope frames at all)
+        // skips at runtime (detected here); a setup expectation that fails
+        // after frames flow is a FAILURE, never a skip. Never weaken the
+        // asserts.
         let setupDone = false;
         let server: JourneyServerHandle | undefined;
         try {
@@ -378,9 +382,15 @@ for (const zoom of ZOOMS) {
 
           expectPanoramaSettled(watch);
         } catch (error) {
-          if (!setupDone) {
+          // A skip is allowed ONLY for a genuine connect failure: the
+          // server exits before /api/v1/state answers, or no scope frames
+          // arrive at all within the existing timeout. A setup expectation
+          // that fails after frames flow is a FAILURE, never a skip.
+          if (!setupDone && frames.length === 0) {
             test.skip(true,
-              `cannot connect at ${latency.name} on this tree: needs #4555 ` +
+              `MOR-4451 held-key acceptance (${zoom.name}, ${latency.name} ` +
+              `delay=${latency.delay}s jitter=${latency.jitter}s, step ${stepHz}Hz): ` +
+              `cannot connect on this tree ` +
               `(${error instanceof Error ? error.message.split('\n')[0] : String(error)})`);
             return;
           }
