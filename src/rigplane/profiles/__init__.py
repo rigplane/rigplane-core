@@ -443,12 +443,6 @@ class RadioProfile:
     # Meaning of selector 01 for split TX on dual-RX radios. This is
     # separate from receiver attribution of transceiver-wide replies.
     split_tx_target: str = "none"
-    # Profile-declared FT (TX function) answer/write map
-    # (``rig_loader.TxFuncSpec``): which receiver (and A/B slot) each
-    # ``get_tx_func`` answer digit names, and which wire digit each
-    # ``set_tx_func`` selector writes. ``None`` when the profile declares
-    # no TX-function commands (single-receiver radios without an FT verb).
-    tx_func: TxFuncSpec | None = None
     has_lan: bool = False
     freq_ranges: tuple[FreqRangeInfo, ...] = ()
     modes: tuple[str, ...] = ()
@@ -691,6 +685,14 @@ class RadioProfile:
     # Optional radio-LAN IQ wire facts from ``[iq_lan]`` (MOR-4398). The
     # dataclass stays in profiles to preserve the profiles/sdr independence.
     iq_lan: IqLanSpec | None = field(default=None, kw_only=True)
+    # Profile-declared FT (TX function) answer/write map
+    # (``rig_loader.TxFuncSpec``): which receiver (and A/B slot) each
+    # ``get_tx_func`` answer digit names, and which wire digit each
+    # ``set_tx_func`` selector writes. ``None`` when the profile declares
+    # no TX-function commands (single-receiver radios without an FT verb).
+    # Keyword-only and appended so no positional argument shifts
+    # (tests/test_discovery_probe_baud_order.py).
+    tx_func: TxFuncSpec | None = field(default=None, kw_only=True)
 
     @property
     def vfo_swap_code(self) -> int | None:
