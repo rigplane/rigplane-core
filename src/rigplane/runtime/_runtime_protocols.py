@@ -44,7 +44,6 @@ class CivRuntimeHost(Protocol):
     # CI-V request tracking / generation
     _civ_request_tracker: "CivRequestTracker"
     _civ_epoch: int
-    _civ_ack_sink_grace: float
     _civ_get_timeout: float
 
     # CI-V send pacing / sequence numbers

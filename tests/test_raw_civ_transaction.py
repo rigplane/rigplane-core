@@ -36,7 +36,6 @@ def radio(transport: MockTransport):
     r._ctrl_transport = transport
     r._connected = True
     r._radio_addr = IC_7610_ADDR
-    r._civ_ack_sink_grace = 0.001
     yield r
     r._connected = False
     r._civ_transport = None

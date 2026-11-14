@@ -173,7 +173,7 @@ async def radio(monkeypatch):
     radio._civ_transport = _LanTransport()
     radio._civ_transport.answer = "silence"
     radio._connected = True
-    radio._civ_min_interval = radio._civ_ack_sink_grace = 0
+    radio._civ_min_interval = 0
     monkeypatch.setattr(CoreRadio, "_PTT_READBACK_SETTLE_S", 0.001)
     try:
         yield radio
@@ -249,7 +249,7 @@ async def test_poll_debt_outlives_waiters_and_sinks(radio, ending, monkeypatch):
     else:
         await runtime.execute_civ_raw(raw, wait_response=False)
         if ending == "sink-removed":
-            radio._civ_request_tracker.drop_ack_sinks()
+            radio._civ_request_tracker.expire_ack_sinks(answer_window=0.0)
         if ending == "malformed":
             for shape in (
                 "unmapped",
