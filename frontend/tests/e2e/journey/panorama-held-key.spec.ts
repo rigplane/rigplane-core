@@ -558,7 +558,7 @@ function buildMoveContext(
 
 async function runRound2Case(page: Page, info: TestInfo, def: Round2CaseDef, port: number): Promise<void> {
   const { latency, view, stepHz } = def;
-  test.setTimeout(150_000);
+  test.setTimeout(240_000);
   const seed = 1234;
   const evidence = await info.outputPath('radio.jsonl');
   const server = await startJourneyServer(port, 14_250_000,
@@ -622,26 +622,41 @@ async function runRound2Case(page: Page, info: TestInfo, def: Round2CaseDef, por
     await installSampler(page);
     await installHeldKeySampler(page);
     await page.goto(`http://127.0.0.1:${port}/?ui=v2`);
-    try {
-      await expect.poll(() => frames.length, { timeout: 30_000 }).toBeGreaterThan(10);
-    } catch (error) {
-      // Setup-flake diagnostics (temporary): the scope socket sometimes
-      // connects but never streams. Dump the client-side connection state
-      // so the stall can be told apart from a slow link.
-      const diag = await page.evaluate(() => ({
-        visibility: document.visibilityState,
-        url: location.href,
-        spectrumPanels: document.querySelectorAll('.spectrum-panel').length,
-        canvases: document.querySelectorAll('canvas').length,
-        tuneLines: document.querySelectorAll('.waterfall-content .tune-line').length,
-        stateText: document.querySelector('[data-testid="scope-span-value"]')?.textContent ?? null,
-        bodyText: document.body.innerText.slice(0, 300),
-      }));
-      console.log(`[held-key round2 ${latency.name} ${view.name} step=${stepHz}] SETUP STALL: ` +
-        `frames=${frames.length} sent=${sent.length} grants=${grants.length} ` +
-        `pageErrors=${JSON.stringify(watch.pageErrors)} consoleErrors=${JSON.stringify(watch.consoleErrors)} ` +
-        `diag=${JSON.stringify(diag)}`);
-      throw error;
+    // The scope handshake over a delayed link stalls stochastically (the
+    // server connects both sockets but the stream never starts, with a
+    // "refused scope output_on (NAK)" on the client). A page reload
+    // replays the handshake against the same healthy server; it changes
+    // nothing about the burst or the assertions below.
+    for (let setupAttempt = 0; ; setupAttempt++) {
+      if (setupAttempt > 0) {
+        frames.length = 0;
+        sent.length = 0;
+        subTimes.length = 0;
+        grants.length = 0;
+        setFreqCommands.length = 0;
+        console.log(`[held-key round2 ${latency.name} ${view.name} step=${stepHz}] ` +
+          `setup attempt ${setupAttempt + 1}: reloading after stall`);
+        await page.reload();
+      }
+      try {
+        await expect.poll(() => frames.length, { timeout: 30_000 }).toBeGreaterThan(10);
+        break;
+      } catch (error) {
+        const diag = await page.evaluate(() => ({
+          visibility: document.visibilityState,
+          url: location.href,
+          spectrumPanels: document.querySelectorAll('.spectrum-panel').length,
+          canvases: document.querySelectorAll('canvas').length,
+          tuneLines: document.querySelectorAll('.waterfall-content .tune-line').length,
+          stateText: document.querySelector('[data-testid="scope-span-value"]')?.textContent ?? null,
+          bodyText: document.body.innerText.slice(0, 300),
+        }));
+        console.log(`[held-key round2 ${latency.name} ${view.name} step=${stepHz}] SETUP STALL: ` +
+          `frames=${frames.length} sent=${sent.length} grants=${grants.length} ` +
+          `pageErrors=${JSON.stringify(watch.pageErrors)} consoleErrors=${JSON.stringify(watch.consoleErrors)} ` +
+          `diag=${JSON.stringify(diag)}`);
+        if (setupAttempt >= 2) throw error;
+      }
     }
     const marker = page.locator('.waterfall-content .tune-line');
     await expect(marker).toBeVisible({ timeout: 30_000 });
