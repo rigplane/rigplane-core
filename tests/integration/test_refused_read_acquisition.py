@@ -16,8 +16,11 @@ scheduler, and the web or rigctld seat on top.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import json
 import logging
 import time
+from typing import Any
 
 import pytest
 
@@ -27,7 +30,9 @@ from rigplane.core.state_pipeline_contracts import FieldPath
 from rigplane.radio import IcomRadio
 from rigplane.rigctld.contract import RigctldConfig
 from rigplane.rigctld.server import RigctldServer
+from rigplane.testing.timing import await_until
 from rigplane.web.server import WebConfig, WebServer
+from rigplane.web.web_startup import _observed_paths
 from rigplane_testkit.serial.endpoints import PtyEndpoint, pty_supported
 from testkit.ic705_fakes import RADIO_ADDR, ic705_lan_fake, ic705_usb_fake
 from testkit.ic7610_fakes import ic7610_usb_fake
@@ -162,6 +167,92 @@ async def test_refused_tx_target_read_no_longer_fails_startup(
             )
             > 0
         )
+        assert await _served_tx_target(web) == {
+            "status": "unknown",
+            "reason": "not-observed",
+        }
+    finally:
+        await web.stop()
+        await radio.disconnect()
+        await endpoint.stop()
+
+
+async def _http_get_json(port: int, path: str) -> tuple[int, Any]:
+    """GET *path* from the test listener over a raw socket, parsed as JSON."""
+    reader, writer = await asyncio.open_connection("127.0.0.1", port)
+    try:
+        writer.write(
+            f"GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n"
+            "Connection: close\r\n\r\n".encode()
+        )
+        await writer.drain()
+        raw = await asyncio.wait_for(reader.read(-1), 5.0)
+    finally:
+        writer.close()
+        with contextlib.suppress(Exception):
+            await writer.wait_closed()
+    head, _, body = raw.partition(b"\r\n\r\n")
+    return int(head.split(b" ", 2)[1]), json.loads(body)
+
+
+async def _served_tx_target(web: WebServer) -> Any:
+    """The ``txTarget`` the running listener serves on ``/api/v1/state``."""
+    port = int(web._server.sockets[0].getsockname()[1])  # noqa: SLF001
+    status, body = await _http_get_json(port, "/api/v1/state")
+    assert status == 200
+    return body["txTarget"]
+
+
+async def test_silent_tx_target_read_does_not_hold_the_startup_gate() -> None:
+    """MOR-4433 (Icom shape): a silent ``1C 03`` neither aborts nor starves.
+
+    The fake answers everything except the TX-target read — which stays
+    silent instead of NAKed — through the production serial backend and
+    poller. PTT and split still arrive, the gate opens with the TX target
+    unobserved, the silence is counted as timeouts (not dropped), and the
+    real HTTP state reports the TX target unknown.
+    """
+    fake, endpoint, radio = await _connected("IC-7610")
+    real_answer = fake._answer  # noqa: SLF001
+
+    def _answer_all_but_tx_target(parsed, connection, frame):
+        if parsed.command == 0x1C and parsed.sub == 0x03:
+            return None  # the radio stays silent on 1C 03; the rest answers
+        return real_answer(parsed, connection, frame)
+
+    fake._answer = _answer_all_but_tx_target  # noqa: SLF001
+    web = _gated_web(radio, "IC-7610")
+    tx_target = FieldPath.global_("tx_state", "tx_target")
+    try:
+        await asyncio.wait_for(web.start(), 30)
+        # Not vacuous: the radio was asked for the TX target — and stayed
+        # silent, so the request timed out instead of being refused.
+        assert any((f.command, f.sub) == (0x1C, 0x03) for f in fake.commands)
+        await await_until(
+            lambda: (
+                radio._acquisition_scheduler.consecutive_request_timeouts(tx_target) > 0
+            ),
+            timeout=15.0,
+            description="silent 1C 03 request timeout",
+        )
+        assert radio._acquisition_scheduler.consecutive_refusals(tx_target) == 0
+        scheduler = radio._acquisition_scheduler
+        assert scheduler.startup_defect is None
+        # Profile-spelled observed paths (the store spells receivers
+        # ``0``/``1``; ``_observed_paths`` resolves the alias).
+        observed = _observed_paths(web, scheduler)
+        assert tx_target not in observed
+        for path in (
+            FieldPath.active("main", "freq_mode", "freq_hz"),
+            FieldPath.active("main", "freq_mode", "mode"),
+            FieldPath.global_("tx_state", "ptt"),
+            FieldPath.global_("tx_state", "split"),
+        ):
+            assert path in observed, path
+        assert await _served_tx_target(web) == {
+            "status": "unknown",
+            "reason": "not-observed",
+        }
     finally:
         await web.stop()
         await radio.disconnect()

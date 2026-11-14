@@ -16,6 +16,7 @@ Covers the four pieces of that gate:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from collections import deque
@@ -27,15 +28,17 @@ from collections.abc import (
     Mapping,
     Sequence,
 )
-from contextlib import asynccontextmanager, contextmanager
+from contextlib import asynccontextmanager, contextmanager, suppress
 from dataclasses import replace
 from pathlib import Path
+from typing import Any
 from types import MappingProxyType, SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from rigplane.backends._icom_serial_base import _IcomSerialRadioBase
+from rigplane.backends.yaesu_cat.radio import YaesuCatRadio
 from rigplane.commands import CONTROLLER_ADDR, build_civ_frame, parse_civ_frame
 from rigplane.core.acquisition_scheduler import (
     AcquisitionRequest,
@@ -74,6 +77,8 @@ from rigplane.web.web_startup import (
 from rigplane.testing.timing import await_until
 from test_icom7610_serial_radio import _FakeSerialCivLink
 from rigplane_testkit.leaked_radio_guard import fake_connected
+from rigplane_testkit.yaesu import FakeCatRadio
+from rigplane_testkit.yaesu.replay import RecordedCatAnswerTable, reply_closes
 
 FREQ = FieldPath.active("main", "freq_mode", "freq_hz")
 MODE = FieldPath.active("main", "freq_mode", "mode")
@@ -1327,45 +1332,6 @@ def _yaesu_critical_profile() -> RadioAcquisitionProfile:
     )
 
 
-def _yaesu_tx_target_gate_profile(model: str = "FTX-1") -> RadioAcquisitionProfile:
-    """Safety-critical paths plus the TX-target path of a shipped profile.
-
-    MOR-4433: ``tx_target`` is no longer safety-critical, so a Yaesu whose
-    ``FT;`` stays silent must still open. Derived from the shipped ``model``
-    (``FTX-1`` on main — the Yaesu profile declaring a TX-target source via
-    ``get_tx_func``), keeping every safety-critical path and the TX-target
-    path, so the test follows any Yaesu profile declaring such a source.
-    """
-
-    from rigplane.backends.yaesu_cat.observations import _TX_TARGET
-
-    acquisition = get_radio_profile(model).state_acquisition
-    assert acquisition is not None
-    outstanding = AcquisitionScheduler(profile=acquisition).unobserved_startup_paths(())
-    assert _TX_TARGET in outstanding, f"{model}: no TX-target startup path to pin"
-    keep = tuple(
-        path
-        for path in outstanding
-        if startup_critical_path(path) or path == _TX_TARGET
-    )
-    assert any(startup_critical_path(path) for path in keep), (
-        f"{model}: no safety-critical path left to answer"
-    )
-    return replace(
-        acquisition,
-        capabilities=tuple(
-            capability
-            for capability in acquisition.capabilities
-            if capability.path in keep
-        ),
-        field_policies={
-            path: policy
-            for path, policy in acquisition.field_policies.items()
-            if path in keep
-        },
-    )
-
-
 class _YaesuCriticalPoller:
     """Drives the real Yaesu adapter's medium lane, like ``YaesuCatPoller``.
 
@@ -1514,65 +1480,152 @@ class _Ftx1CriticalRadio:
         return None
 
 
+_FTX1_CAT_PAIRS = (
+    Path(__file__).resolve().parent / "fixtures" / "ftx1" / "cat_pairs.jsonl"
+)
+
+
+def _ftx1_table_silent_on_ft() -> RecordedCatAnswerTable:
+    """The bench FTX-1 recording with every ``FT;`` answer dropped.
+
+    :func:`RecordedCatAnswerTable.from_cat_pairs` records a request the
+    next request overtakes without a reply as silence — the bench fact
+    "this read timed out" — so dropping the recorded ``FT0;`` replies
+    replays a radio that answers everything except ``FT;``, with no
+    hand-placed timeout standing in for the wire.
+
+    The live fake holds USB state while the bench recorded the MAIN/SUB
+    manual-notch reads in FM (``BP01F35;``/``BP11F35;`` — the FM answer
+    has no decimal form, see the ``available_when`` note on the notch
+    policy in ``rigs/ftx1.toml``). Those two replies are repaired to the
+    USB decimal form (``150`` mirrors the SUB USB sample ``BP11150;``
+    from the same session); without the repair the profile's decimal
+    parse would reject a bench answer the live radio state contradicts.
+
+    The same surgery answers ``RA0;`` (MAIN attenuator) with the
+    profile's well-formed OFF value: the recording holds exactly one
+    ``RA0;`` row — the probe window's refusal, which the 10-minute Core
+    session never re-asked — while this scenario needs the read answered
+    like every other non-TX-target read.
+    """
+    rows = [
+        json.loads(line) for line in _FTX1_CAT_PAIRS.read_text().splitlines() if line
+    ]
+    kept: list[dict[str, object]] = []
+    pending: str | None = None
+    for row in rows:
+        if row["dir"] == "c2r":
+            pending = str(row["line"])
+            kept.append(row)
+        elif pending == "FT;" and reply_closes(pending, str(row["line"])):
+            pending = None  # swallow the FT0; reply: FT; stays silent
+        else:
+            if row["dir"] == "r2c" and row["line"] in ("BP01F35;", "BP11F35;"):
+                row = {**row, "line": str(row["line"])[:4] + "150;"}
+            elif (
+                pending == "RA0;"
+                and row["line"] == "?;"
+                and reply_closes(pending, str(row["line"]))
+            ):
+                # Bench probe refused the attenuator read; this scenario
+                # answers it OFF (see the docstring).
+                row = {**row, "line": "RA00;"}
+            pending = None
+            kept.append(row)
+    table = RecordedCatAnswerTable.from_cat_pairs(kept)
+    ft_answer = table.lookup("FT;")
+    assert ft_answer is not None and ft_answer.kind == "silence"
+    st_answer = table.lookup("ST;")
+    assert st_answer is not None and st_answer.reply == "ST0;"
+    assert table.lookup("BP01;") is not None
+    assert table.lookup("BP01;").reply == "BP01150;"  # type: ignore[union-attr]
+    ra_answer = table.lookup("RA0;")
+    assert ra_answer is not None and ra_answer.reply == "RA00;"
+    return table
+
+
+async def _http_get_json(port: int, path: str) -> tuple[int, Any]:
+    """GET *path* from the test listener over a raw socket, parsed as JSON."""
+    reader, writer = await asyncio.open_connection("127.0.0.1", port)
+    try:
+        writer.write(
+            f"GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n"
+            "Connection: close\r\n\r\n".encode()
+        )
+        await writer.drain()
+        raw = await asyncio.wait_for(reader.read(-1), 5.0)
+    finally:
+        writer.close()
+        with suppress(Exception):
+            await writer.wait_closed()
+    head, _, body = raw.partition(b"\r\n\r\n")
+    status = int(head.split(b" ", 2)[1])
+    return status, json.loads(body)
+
+
 @pytest.mark.asyncio
 async def test_yaesu_silent_tx_func_still_opens_with_tx_target_unknown() -> None:
-    """MOR-4433: a fake FTX-1 that never answers ``FT;`` still opens.
+    """MOR-4433: a real FTX-1 backend whose ``FT;`` stays silent still opens.
 
-    ``tx_target`` left the safety-critical set, so the silent TX-target
-    read no longer ends startup: one real medium cycle proves ``FT;``
-    stays silent while the rest answers, the gate then completes at the
-    non-critical deadline with ``tx_target`` still unobserved, no defect
-    is recorded, and the served state reports it unknown. Replaces the
-    MOR-2757 abort assertion on this same fake.
+    The full production path — ``FakeCatRadio`` (bench recording with
+    every ``FT;`` answer dropped) behind the real ``YaesuCatRadio`` and
+    its real observation poller, through ``WebServer.start()``. ``FT;``
+    times out on the wire every medium cycle while the rest answers, so
+    the critical observations (frequency, mode, PTT, split) arrive
+    naturally, no defect is recorded, the listener binds, and the real
+    HTTP state reports the TX target unknown.
     """
     from rigplane.backends.yaesu_cat.observations import (
+        _MAIN_FREQ,
+        _MAIN_MODE,
+        _PTT,
+        _SPLIT,
         _TX_TARGET,
-        YaesuObservationAdapter,
-    )
-    from rigplane.backends.yaesu_cat.transport import CatTimeoutError
-    from rigplane.web.runtime_helpers import build_public_state_payload_from_snapshot
-
-    radio = _Ftx1CriticalRadio(
-        never_answers="FT;", profile=_yaesu_tx_target_gate_profile()
-    )
-    server = WebServer(radio, _gated_config())
-    scheduler = radio._acquisition_scheduler
-
-    # Not vacuous: the real adapter attempts the read and the transport
-    # timeout surfaces — ``FT;`` is silent, not merely unasked.
-    adapter = YaesuObservationAdapter(radio, profile=scheduler._profile)
-    with pytest.raises(CatTimeoutError):
-        await adapter.poll_medium()
-    assert radio.tx_func_reads >= 1
-
-    # ``tx_target`` is answered by nothing here: excluded explicitly (not
-    # via ``startup_critical_path``) so the test also pins the pre-fix
-    # behaviour — on the old code it stays outstanding and blocks the gate.
-    critical = tuple(
-        path
-        for path in scheduler.unobserved_startup_paths(())
-        if startup_critical_path(path) and path != _TX_TARGET
-    )
-    assert critical, "no safety-critical path left to answer"
-    for path in critical:
-        server.command_state_store.apply(
-            _observation(path, _critical_startup_value(path), at=0.0)
-        )
-    assert _TX_TARGET in scheduler.unobserved_startup_paths(
-        _observed_paths(server, scheduler)
     )
 
-    clock = _GateClock(stop_at=11.0)
-    with _fake_gate_clock(clock):
-        await _await_initial_state_acquisition(server, sweep=False)
+    fake = FakeCatRadio(recorded_answers=_ftx1_table_silent_on_ft())
+    await fake.start()
+    try:
+        radio = YaesuCatRadio(device=fake.device_url, profile="ftx1")
+        await asyncio.wait_for(radio.connect(), 30)
+        assert radio.connected
+        config = _gated_config()
+        config.radio_model = "FTX-1"
+        server = WebServer(radio, config)
+        try:
+            await asyncio.wait_for(server.start(), 60)
+            scheduler = radio._acquisition_scheduler
 
-    assert clock.now >= 10.0
-    assert _TX_TARGET not in _observed_paths(server, scheduler)
-    assert scheduler.startup_defect is None
-    payload = build_public_state_payload_from_snapshot(
-        server.command_state_store.snapshot(), radio=None, receiver_count=2
-    )
-    assert payload["txTarget"] == {"status": "unknown", "reason": "not-observed"}
+            # Not vacuous: the production poller asked for ``FT;`` on the
+            # wire — it is silent, not merely unasked.
+            assert "FT;" in fake.commands
+
+            # The critical observations arrived through the real poller —
+            # nothing was seeded by hand. The TX target is observed too —
+            # as unknown, republished every medium cycle — instead of
+            # staying unanswered.
+            from rigplane.core.tx_target import UnknownTxTarget
+
+            observed = _observed_paths(server, scheduler)
+            for path in (_MAIN_FREQ, _MAIN_MODE, _PTT, _SPLIT):
+                assert path in observed, path
+            assert scheduler.startup_defect is None
+            tx_field = server.command_state_store.snapshot().field(_TX_TARGET)
+            assert isinstance(tx_field.value, UnknownTxTarget)
+            assert tx_field.value.reason == "not-observed"
+
+            port = int(server._server.sockets[0].getsockname()[1])  # noqa: SLF001
+            status, body = await _http_get_json(port, "/api/v1/state")
+            assert status == 200
+            assert body["txTarget"] == {
+                "status": "unknown",
+                "reason": "not-observed",
+            }
+        finally:
+            await server.stop()
+            await radio.disconnect()
+    finally:
+        await fake.stop()
 
 
 @pytest.mark.asyncio
@@ -1633,6 +1686,41 @@ async def test_yaesu_gate_is_unchanged_when_the_fake_answers_everything() -> Non
     assert scheduler.startup_defect is None
     assert scheduler.unobserved_startup_paths(_observed_paths(server, scheduler)) == ()
     assert radio.tx_func_reads >= 1
+
+
+@pytest.mark.asyncio
+async def test_yaesu_fully_silent_link_still_serves_not_answering() -> None:
+    """Control: a Yaesu link that answers nothing keeps its old outcome.
+
+    Full silence from ``t=0`` never answers the identity read, so the
+    connect holds the open port without verifying and startup serves the
+    radio-not-answering state (MOR-3071) — it must not turn into an abort
+    from the TX-target containment, nor open as if acquisition completed.
+    """
+    fake = FakeCatRadio()
+    fake.silence(300.0)
+    await fake.start()
+    try:
+        radio = YaesuCatRadio(device=fake.device_url, profile="ftx1")
+        await asyncio.wait_for(radio.connect(), 60)
+        config = _gated_config()
+        config.radio_model = "FTX-1"
+        server = WebServer(radio, config)
+        try:
+            await asyncio.wait_for(server.start(), 60)
+            assert server._served_with_silent_link is True  # noqa: SLF001
+            assert radio._acquisition_scheduler.startup_defect is None
+            assert (
+                radio._acquisition_scheduler.unobserved_startup_paths(
+                    _observed_paths(server, radio._acquisition_scheduler)
+                )
+                != ()
+            )
+        finally:
+            await server.stop()
+            await radio.disconnect()
+    finally:
+        await fake.stop()
 
 
 @pytest.mark.asyncio
