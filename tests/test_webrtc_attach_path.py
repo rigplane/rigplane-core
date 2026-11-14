@@ -684,37 +684,57 @@ def test_attach_frame_parser_rejects_keyless_frame() -> None:
 async def test_data_channel_leaf_deltas_match_websocket_size(
     tmp_path: Path,
 ) -> None:
-    """State deltas over a data channel match the WS leaf deltas (~2x)."""
+    """State deltas over a data channel equal the WS leaf deltas, revision by revision."""
     stack = await _stand_up_stack(tmp_path)
     dc = _DcControlClient()
+    # Two observers (data channel and WebSocket) and a separate driver lane,
+    # so neither observer drops state updates while waiting for a response.
     ws = _WsControlClient(stack.web.port, None, query="?state_delta=2")
+    driver = _WsControlClient(stack.web.port, None, query="?state_delta=2")
     try:
         await dc.connect(stack.web)
-        # Data channels admit only keyed peers; the WS lane stays
+        # Data channels admit only keyed peers; the WS lanes stay
         # sessionless here, exactly as on origin/main.
         key = await _acquire_session(stack.web.port)
         hello = await dc.attach(key)
         assert hello["type"] == "hello"
         await ws.connect()
-        # Drive N real state changes through the WS lane.
+        await driver.connect()
+        # Let both observers settle on the same baseline before driving.
+        await dc.state_updates(1)
+        await ws.state_updates(1)
         for i in range(6):
-            response = await ws.command(
+            response = await driver.command(
                 f"freq-{i}", "set_freq", {"freq": 14_074_000 + 1000 * (i % 2)}
             )
             assert response.get("ok") is True, response
-        dc_frames = await dc.state_updates(6)
-        ws_frames = await ws.state_updates(6)
+        dc_frames = await dc.state_updates(10)
+        ws_frames = await ws.state_updates(10)
     finally:
         await dc.close()
         await ws.close()
+        await driver.close()
         await _tear_down_stack(stack)
-    # The first state_update is the full baseline; the rest are deltas.
-    dc_deltas, ws_deltas = dc_frames[1:], ws_frames[1:]
-    assert dc_deltas and ws_deltas
-    assert all(frame.get("deltaVersion") == 2 for frame in dc_deltas)
-    dc_mean = sum(len(json.dumps(f)) for f in dc_deltas) / len(dc_deltas)
-    ws_mean = sum(len(json.dumps(f)) for f in ws_deltas) / len(ws_deltas)
-    assert dc_mean <= 2.0 * ws_mean, (dc_mean, ws_mean)
+
+    # Compare the SAME state changes on both lanes, keyed by their revision
+    # pair; only per-lane counters (transportSeq) may differ.
+    def _deltas(frames: list[Any]) -> dict[tuple[Any, Any], dict[str, Any]]:
+        return {
+            (frame.get("revision"), frame.get("freshnessRevision")): frame
+            for frame in frames
+            if frame.get("type") == "delta"
+        }
+
+    dc_deltas = _deltas(dc_frames)
+    ws_deltas = _deltas(ws_frames)
+    assert dc_deltas and all(f.get("deltaVersion") == 2 for f in dc_deltas.values())
+    common = sorted(set(dc_deltas) & set(ws_deltas), key=str)
+    assert len(common) >= 3, (sorted(dc_deltas, key=str), sorted(ws_deltas, key=str))
+    for revision in common:
+        dc_size = len(json.dumps(dc_deltas[revision]))
+        ws_size = len(json.dumps(ws_deltas[revision]))
+        # Before the unified attach a data-channel delta was ~49 KB.
+        assert dc_size <= ws_size + 128, (revision, dc_size, ws_size)
 
 
 @_webrtc
