@@ -941,9 +941,8 @@ new AsyncFunction('github', 'context', 'core', script)(github, context, core)
                     all(self.ignored_by_block(path, block) for block in blocks)
                 )
 
-    def test_docs_only_does_not_trigger_citation_or_rebrand_jobs(self) -> None:
+    def test_docs_only_does_not_trigger_citation_job(self) -> None:
         citation = DOC_CITATION_YML.read_text(encoding="utf-8")
-        rebrand = REBRAND_YML.read_text(encoding="utf-8")
 
         self.assertNotIn('      - "**/*.md"', citation)
         self.assertNotIn('      - "docs/**"', citation)
@@ -953,23 +952,21 @@ new AsyncFunction('github', 'context', 'core', script)(github, context, core)
         self.assertEqual(
             citation.count('      - ".github/workflows/doc-citation-gate.yml"'), 1
         )
-        for ignored in (
-            '      - "!docs/**"',
-            '      - "!**/*.md"',
-            '      - "!**/*.rst"',
-            '      - "!.claude/**"',
-            '      - "!.github/**"',
-            '      - "!tests/test_ci_path_filters.py"',
-        ):
-            with self.subTest(ignored=ignored):
-                self.assertEqual(rebrand.count(ignored), 1)
-        for control in (
-            '      - ".github/scripts/check-rebrand-allowlist.sh"',
-            '      - ".github/workflows/rebrand-gate.yml"',
-        ):
-            with self.subTest(control=control):
-                self.assertEqual(rebrand.count(control), 1)
 
+    def test_rebrand_gate_reports_on_every_pr_and_merge_group(self) -> None:
+        # grep-gate is meant to be a required context on main: a path filter
+        # would leave the context missing on docs/CI-only PRs, and a missing
+        # merge_group trigger would stall the merge queue.
+        rebrand = REBRAND_YML.read_text(encoding="utf-8")
+        on_block = "\n" + rebrand.split("\non:\n", 1)[1].split("\nconcurrency:", 1)[0]
+
+        self.assertNotIn("paths:", on_block)
+        self.assertNotIn("paths-ignore:", on_block)
+        self.assertIn("\n  pull_request:\n    branches: [main]\n", on_block)
+        self.assertIn("\n  merge_group:\n    types: [checks_requested]\n", on_block)
+        self.assertIn("\n  workflow_call:\n", on_block)
+        self.assertNotIn("\n  push:", on_block)
+        self.assertIn("\n  grep-gate:\n", rebrand)
 
 if __name__ == "__main__":
     unittest.main()
