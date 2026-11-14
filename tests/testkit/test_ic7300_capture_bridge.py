@@ -2,9 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import sys
 from pathlib import Path
+
+from rigplane.commands import CONTROLLER_ADDR, build_civ_frame, command_carries_sub
+from rigplane.core.serial_open import open_serial_port
+from rigplane.probe import runner
+from rigplane.probe.runner import Exchange
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -67,22 +73,48 @@ def test_wrong_addresses_and_junk_are_refused() -> None:
     assert not guard(b"\xfe\xfe\xfd")
 
 
+def _civ_exchange(reader, writer, radio_addr: int) -> Exchange:
+    async def exchange(request: bytes | None, timeout: float) -> bytes | None:
+        sent: bytes | None = None
+        if request:
+            command, rest = request[0], request[1:]
+            if command_carries_sub(command) and rest:
+                sub, data = rest[0], rest[1:]
+            else:
+                sub, data = None, rest
+            sent = build_civ_frame(
+                radio_addr, CONTROLLER_ADDR, command, sub=sub, data=data or None
+            )
+            writer.write(sent)
+            await writer.drain()
+        try:
+            while True:
+                raw: bytes = await asyncio.wait_for(
+                    reader.readuntil(b"\xfd"), timeout
+                )
+                if sent is not None and raw == sent:
+                    continue
+                return raw
+        except (asyncio.TimeoutError, asyncio.IncompleteReadError):
+            return None
+
+    return exchange
+
+
 async def test_probe_driver_through_the_guarded_bridge_is_never_blocked(
     tmp_path,
 ) -> None:
-    """The production client + the probe list pass the guard untouched.
+    """The probe and the bridge guard pass each other untouched.
 
-    Rehearsal of the bench path on a fake: ``probe.py``'s client connects
-    to the guarded recorder over ``socket://`` and every probe plus the
-    client's own connect traffic reaches the radio; a blocked frame here
-    would mean the bench session silently loses requests.
+    Rehearsal of the bench path on a fake: ``rigplane probe`` connects
+    to the guarded recorder over ``socket://`` and every read the
+    profile lists reaches the radio; a blocked frame here would mean
+    the bench session silently loses requests.
     """
-    from rigplane.backends.config import SerialBackendConfig
-    from rigplane.backends.factory import create_radio
+    from rigplane.profiles.rig_loader import load_rig
     from rigplane_testkit.serial import CivSerialFake, SerialCivRecorder
 
-    probe = bridge.PROBE  # the IC-7610 probe driver, loaded by bridge.py
-    build_allowed_bodies = bridge.build_allowed_bodies
+    config = load_rig(REPO_ROOT / "rigs" / "ic7300.toml")
     fake = CivSerialFake(echo=False)
     out = tmp_path / "rec.jsonl"
     rec = SerialCivRecorder(
@@ -92,44 +124,29 @@ async def test_probe_driver_through_the_guarded_bridge_is_never_blocked(
         client_filter=bridge.make_guard("IC-7300", 0x94).new_filter,
     )
     await rec.start()
-    radio = create_radio(
-        SerialBackendConfig(
-            device=f"socket://127.0.0.1:{rec.listen_port}",
-            baudrate=115200,
-            radio_addr=0x94,
-            model="IC-7300",
-        )
-    )
     try:
-        await radio.connect()
-        profile = probe.load_profile("IC-7300")
-        results = await probe.run_probes(
-            radio,
-            probe.build_probe_list(profile)[:25],
-            build_allowed_bodies(profile),
-            pace=0.0,
-            timeout=0.5,
+        reader, writer = await open_serial_port(
+            f"socket://127.0.0.1:{rec.listen_port}", baudrate=115200
         )
+        try:
+            report = await runner.run_probe(
+                config,
+                "0" * 64,
+                exchange=_civ_exchange(reader, writer, 0x94),
+                port_kind="usb",
+                baud=115200,
+                label="",
+                include_private=False,
+                gap_s=0.0,
+                timeout_s=0.5,
+            )
+        finally:
+            writer.close()
     finally:
-        await radio.disconnect()
         await rec.stop()
     assert rec.blocked_lines == 0
-    assert {r["class"] for r in results} <= {"data", "nak", "ack"}
-
-
-def test_loading_the_bridge_leaves_other_radios_probe_modules_alone() -> None:
-    """FTX-1's capture scripts use the same bare module names (probe, probe_list)."""
-    sentinel_probe, sentinel_list = object(), object()
-    saved = {n: sys.modules.get(n) for n in ("probe", "probe_list")}
-    sys.modules["probe"], sys.modules["probe_list"] = sentinel_probe, sentinel_list
-    try:
-        fresh = _load("bridge")  # a second load while those names are taken
-        assert fresh.PROBE is not sentinel_probe
-        assert sys.modules["probe"] is sentinel_probe
-        assert sys.modules["probe_list"] is sentinel_list
-    finally:
-        for name, mod in saved.items():
-            if mod is None:
-                sys.modules.pop(name, None)
-            else:
-                sys.modules[name] = mod
+    assert {row.outcome for row in report.file.commands} <= {
+        "data",
+        "refused",
+        "ack_only",
+    }
