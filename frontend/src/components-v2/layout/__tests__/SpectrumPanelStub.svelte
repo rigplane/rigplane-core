@@ -18,6 +18,7 @@
     hideAutoStepToggle = false,
     hideToolbar = false,
     enableAvg = $bindable(true),
+    enableSmooth = $bindable(true),
     enablePeakHold = $bindable(true),
     showBandPlan = $bindable(true),
     scopeControls,
@@ -27,7 +28,7 @@
     onScopeDemandChange,
   }: {
     hideScopeControls?: boolean; hideAutoStepToggle?: boolean; hideToolbar?: boolean;
-    enableAvg?: boolean; enablePeakHold?: boolean; showBandPlan?: boolean;
+    enableAvg?: boolean; enableSmooth?: boolean; enablePeakHold?: boolean; showBandPlan?: boolean;
     scopeControls?: Snippet; scopeStatusIndicator?: Snippet;
     // MOR-2442/MOR-4270 — the managed region/demand props, recorded the way
     // the contract fields above are, so layout tests prove who gets the
@@ -43,6 +44,7 @@
   data-hide-auto-step-toggle={hideAutoStepToggle}
   data-hide-toolbar={hideToolbar}
   data-enable-avg={enableAvg}
+  data-enable-smooth={enableSmooth}
   data-enable-peak-hold={enablePeakHold}
   data-show-band-plan={showBandPlan}
   data-has-scope-controls={scopeControls !== undefined}

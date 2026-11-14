@@ -32,11 +32,18 @@ for (const scheme of ['classic', 'thermal', 'grayscale'] as const) {
       renderer.updateOptions({ colorScheme: scheme, refLevel: 0, centerHz: 14_050_000 }); renderer.draw();
       return { bright, gap, stripe, shifted, recoloured, dimmed, uploads, error: gl.getError() };
     }, scheme);
-    expect(result.error).toBe(0); expect(result.uploads).toBe(25);
-    expect(result.bright).toEqual(scheme === 'classic' ? [255, 0, 0, 255]
-      : scheme === 'thermal' ? [255, 255, 0, 255] : [255, 255, 255, 255]);
+    // MOR-4383: one row group (3 rows) per frame; 25 frames upload 75 rows.
+    expect(result.error).toBe(0); expect(result.uploads).toBe(75);
+    // The peak bin filters to (40 + 2*80 + 40)/4 = 60 -> t = sqrt(60/80).
+    expect(result.bright).toEqual(scheme === 'classic' ? [255, 175, 0, 255]
+      : scheme === 'thermal' ? [255, 197, 0, 255] : [220, 220, 220, 255]);
     expect(result.shifted).toEqual(result.bright);
-    expect(result.gap).not.toEqual(result.stripe);
+    // MOR-4383 B1: no hatch — both uncovered pixels read as background.
+    expect(result.gap).toEqual(result.stripe);
+    // MOR-4383 B1 RED: uncovered columns must read as noise-floor
+    // background, never a hatch mark (x=2 sits outside the granted
+    // coverage; the hatch paints it grey (36,48,60) instead).
+    expect(result.gap).toEqual([0, 16, 32, 255]);
     expect(result.recoloured).not.toEqual(result.bright);
     expect(result.dimmed).not.toEqual(result.recoloured);
     expect(errors).toEqual([]);
@@ -71,7 +78,11 @@ test('retains isolated peaks after a large band change and the last valid View d
     r.pushRow(pixels); const before = read();
     r.updateOptions({ centerHz: 432_000_000 }); r.pushRow(pixels); const after = read();
     r.updateOptions({ centerHz: 0, spanHz: 0 }); r.draw(); const silent = read();
-    return { before, after, silent, expected: Array.from(pixels, value => Math.floor(Math.sqrt(value / 80) * 255)), error: gl.getError() };
+    // MOR-4383: the ring stores the [1 2 1]-filtered row (width equals the
+    // bin count, so every column fetches its own filtered bin exactly).
+    const filtered = Array.from(pixels, (_, i) =>
+      Math.round((pixels[i > 0 ? i - 1 : 0] + 2 * pixels[i] + pixels[i + 1 < 475 ? i + 1 : 474]) / 4));
+    return { before, after, silent, expected: filtered.map(value => Math.floor(Math.sqrt(value / 80) * 255)), error: gl.getError() };
   });
   expect(result.error).toBe(0);
   expect(result.before.every((value, index) => index % 4 === 3 || Math.abs(value - result.expected[Math.floor(index / 4)]) <= 1)).toBe(true);
@@ -92,7 +103,7 @@ test('preserves distinct historical rows across width, height and incoming raste
     const before = read(6);
     r.resize(48, 6); const wide = read(6);
     r.resize(48, 1298); const tall = read(6);
-    r.pushRow(new Uint8Array(96).fill(80)); const newRaster = read(7);
+    r.pushRow(new Uint8Array(96).fill(80)); const newRaster = read(9);
     r.resize(48, 4); const short = read(4);
     r.resize(48, 1298);
     const steady = new Uint8Array(96).fill(80);
@@ -100,14 +111,19 @@ test('preserves distinct historical rows across width, height and incoming raste
     const acrossBlocks = read(524);
     return { before, wide, tall, newRaster, short, retainedAcrossBlocks: acrossBlocks.slice(520), newest: acrossBlocks[0], error: gl.getError() };
   });
-  expect(result.error).toBe(0);
-  expect(new Set(result.before.map(row => row.join(','))).size).toBe(6);
-  expect(result.wide).toEqual(result.before); expect(result.tall).toEqual(result.before);
-  expect(result.newRaster.slice(1)).toEqual(result.before);
-  expect(result.short).toEqual(result.newRaster.slice(0, 4));
-  expect(result.retainedAcrossBlocks).toEqual(result.short);
-  expect(result.newest).toEqual([255, 255, 255, 255]);
-});
+    expect(result.error).toBe(0);
+    expect(new Set(result.before.map(row => row.join(','))).size).toBe(6);
+    expect(result.wide).toEqual(result.before); expect(result.tall).toEqual(result.before);
+    // The 96-bin push resets the geometry: its first group is three copies,
+    // so the six retained rows sit at ages 3..8.
+    expect(result.newRaster.slice(3, 9)).toEqual(result.before);
+    expect(result.short).toEqual(result.newRaster.slice(0, 4));
+    // 520 steady frames scroll 1560 rows through the 1298-row ring, crossing
+    // every uniform-block boundary repeatedly; all surviving rows are the
+    // steady filtered 80 (white).
+    expect(result.retainedAcrossBlocks.every(row => row.join(',') === '255,255,255,255')).toBe(true);
+    expect(result.newest).toEqual([255, 255, 255, 255]);
+  });
 
 test('recovers the surface and its cached frame after context restoration', async ({ page }) => {
   await page.goto('/fixtures/spectrum-witness.html');
@@ -203,7 +219,21 @@ test('retains each row calibration and the reversed AF sample window', async ({ 
     return { before, old, converted, reversed: read(0), error: gl.getError() };
   });
   expect(result.error).toBe(0);
-  expect(result.before).toEqual([[127, 127, 127, 255], [255, 255, 255, 255]]);
-  expect(result.old).toEqual(result.before); expect(result.converted).toEqual(result.before);
-  expect(result.reversed).toEqual(result.before);
+  // Push 1 stores [(40+40+160)/4, (40+160+160)/4] = [70,130] at calibration
+  // 160. Push 2 keeps the geometry: the IIR runs on RAW bins,
+  // [(40+20)/2, (160+80)/2] = [30,120], filtering to [53,98], blended 1/3
+  // and 2/3 towards it from [70,130] at calibration 80. Push 3 reverses the
+  // sample window (geometry reset, raw + [1 2 1] of [80,20] = [65,35]).
+  // Column centres x=25/75 sample bin positions 0.01 and 1.0 (0.245 ->
+  // clamped 0 through the reversed window).
+  const near = (channels: number[], expected: number[]) =>
+    channels.every((value, i) => Math.abs(value - expected[i]) <= 1);
+  expect(near(result.before[0], [169, 169, 169, 255])).toBe(true);
+  expect(near(result.before[1], [229, 229, 229, 255])).toBe(true);
+  expect(near(result.old[0], [219, 219, 219, 255])).toBe(true);
+  expect(near(result.old[1], [255, 255, 255, 255])).toBe(true);
+  expect(near(result.converted[0], [208, 208, 208, 255])).toBe(true);
+  expect(result.converted[1]).toEqual([255, 255, 255, 255]);
+  expect(near(result.reversed[0], [169, 169, 169, 255])).toBe(true);
+  expect(near(result.reversed[1], [229, 229, 229, 255])).toBe(true);
 });

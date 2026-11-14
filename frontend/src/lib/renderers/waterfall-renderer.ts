@@ -43,6 +43,10 @@ export interface WaterfallOptions {
   // Viewport center minus sample-window center, Hz (MOR-2464). Samples the
   // NEW row only; history is projected from its retained frequency coordinates.
   panoramaShiftHz: number;
+  // MOR-4383: temporal per-bin IIR (alpha 0.5 per new frame) on the
+  // waterfall rows. Default on; the spatial [1 2 1]/4 and the 3-row blended
+  // groups are part of the single render path and always apply.
+  temporalSmoothing?: boolean;
 }
 
 export const defaultWaterfallOptions: WaterfallOptions = {
@@ -52,7 +56,17 @@ export const defaultWaterfallOptions: WaterfallOptions = {
   centerHz: 0,
   spanHz: 0,
   panoramaShiftHz: 0,
+  temporalSmoothing: true,
 };
+
+/** Frame identity for the per-frame dedupe (MOR-4383): one row group per NEW
+ * frame. A repeated or stale identity is a registration replay, never a new
+ * row; a new epoch restarts the smoothing state like a geometry change.
+ * Field names match the ScopeFrame contract the delivery maps from. */
+export interface WaterfallFrameIdentity {
+  readonly seq: number;
+  readonly epoch: number;
+}
 
 export class WaterfallRenderError extends Error {
   readonly code = 'webgl-required';
@@ -86,13 +100,22 @@ uniform int uColorCount;
 ${declarations}
 vec4 rowInfo(int row, int part) { ${lookup} return vec4(0.0); }
 out vec4 color;
+// MOR-4383: every screen column samples the bin-space position of its
+// centre, coordinate * bins - 0.5, and linearly interpolates the adjacent
+// bins (edge bins repeat); each bin is calibrated before the lerp. One
+// interpolation rule for fractional and resting columns alike.
 float profile(float column, vec4 grid, vec4 extra, int row) {
   float coordinate = grid.y + column / grid.x * grid.z;
   if (coordinate < 0.0 || coordinate > 1.0) return 0.0;
-  int bin = clamp(int(floor(coordinate * extra.z + 0.0001)), 0, int(extra.z) - 1);
-  float value = texelFetch(uRing, ivec2(bin + int(extra.w), row), 0).r * 255.0;
-  if (extra.y == 80.0) return value;
-  return floor(min(value, extra.y) * 80.0 / extra.y + 0.5);
+  float pos = clamp(coordinate * extra.z - 0.5, 0.0, extra.z - 1.0);
+  float left = floor(pos + 0.0001);
+  float fraction = clamp(pos - left, 0.0, 1.0);
+  int right = int(left) + 1 < int(extra.z) ? int(left) + 1 : int(extra.z) - 1;
+  float v0 = texelFetch(uRing, ivec2(int(left) + int(extra.w), row), 0).r * 255.0;
+  float v1 = texelFetch(uRing, ivec2(right + int(extra.w), row), 0).r * 255.0;
+  float q0 = extra.y == 80.0 ? v0 : floor(min(v0, extra.y) * 80.0 / extra.y + 0.5);
+  float q1 = extra.y == 80.0 ? v1 : floor(min(v1, extra.y) * 80.0 / extra.y + 0.5);
+  return mix(q0, q1, fraction);
 }
 void main() {
   int age = int(floor(uSize.y - gl_FragCoord.y));
@@ -102,19 +125,22 @@ void main() {
   float delta = (uView.x - info.x) + (uViewLow - info.y);
   float localHz = delta + floor(gl_FragCoord.x) / uSize.x * uView.y;
   float coordinate = localHz / info.z;
+  // MOR-4383 B1: no hatch pattern anywhere in the waterfall. Columns this
+  // row does not cover (older rows after a span widen, band edges) fill
+  // with the empty-history background; the row keeps its truthful coverage
+  // in the metadata. Matches the RigDeck presenter (uncovered columns
+  // carry amplitude 0) and the 2D reference model (background fill).
   if (coordinate < 0.0 || coordinate >= 1.0 || localHz < info.w || localHz >= extra.x) {
-    float hatch = step(4.0, mod(floor(gl_FragCoord.x) + floor(uSize.y - gl_FragCoord.y), 8.0));
-    color = vec4(mix(vec3(0.0, 16.0, 32.0), vec3(36.0, 48.0, 60.0), hatch) / 255.0, 1.0);
+    color = vec4(0.0, 16.0/255.0, 32.0/255.0, 1.0);
     return;
   }
   vec4 grid = rowInfo(row, 2);
-  // rc3 pushRow interpolated the translated screen profile before the colour curve.
+  // The bin-space rule samples the pixel CENTRE (RigDeck: (2x+1)*n/(2W)-0.5).
   float spanScale = uView.y == info.z ? 1.0 : uView.y / info.z;
   float pixelScale = grid.x == uSize.x ? 1.0 : grid.x / uSize.x;
   float column = (delta / info.z - grid.y) / grid.z * grid.x
-    + floor(gl_FragCoord.x) * (spanScale / grid.z) * pixelScale;
-  float left = floor(column + 0.0001), fraction = clamp(column - left, 0.0, 1.0);
-  float sampleValue = mix(profile(left, grid, extra, row), profile(left + 1.0, grid, extra, row), fraction);
+    + (floor(gl_FragCoord.x) + 0.5) * (spanScale / grid.z) * pixelScale;
+  float sampleValue = profile(column, grid, extra, row);
   float t = floor(sqrt(clamp((sampleValue + uRef * (40.0/60.0)) / 80.0, 0.0, 1.0)) * 255.0) / 255.0;
   vec3 rgb = uColors[0];
   for (int i = 1; i < 6; i++) {
@@ -153,6 +179,25 @@ export class WaterfallRenderer {
   private sentHead = -2;
   private sentCount = -1;
   private destroyed = false;
+  // MOR-4383 smoothing state, ported from the RigDeck presenter: temporal
+  // per-bin IIR, spatial [1 2 1]/4, and one blended 3-row group per new
+  // frame. Reset by geometry change (bins, span, window, sample centre)
+  // or clear().
+  private smoothState = new Float32Array(0);
+  private filtered = new Float32Array(0);
+  private currentRow = new Uint8Array(0);
+  private previousRow = new Uint8Array(0);
+  private rowUpload = new Uint8Array(0);
+  private smoothBins = 0;
+  private smoothSpan = 0;
+  private smoothStart = 0;
+  private smoothRange = 1;
+  private smoothCentre = 0;
+  private previousValid = false;
+  // MOR-4383 frame dedupe: the last delivered identity (mirrors the 2D
+  // reference's frameEpoch/lastSeq, both starting at zero = none seen).
+  private frameEpoch = 0;
+  private lastSeq = 0;
 
   constructor(private readonly canvas: HTMLCanvasElement, options: WaterfallOptions) {
     const gl = canvas.getContext('webgl2', { alpha: false, antialias: false, depth: false, stencil: false });
@@ -295,28 +340,79 @@ export class WaterfallRenderer {
     gl.deleteTexture(this.texture); this.texture = texture; this.textureWidth = width;
   }
 
-  pushRow(data: Uint8Array): void {
+  pushRow(data: Uint8Array, identity?: WaterfallFrameIdentity): void {
     if (this.destroyed || !this.program || this.width <= 0 || this.height <= 0) return;
     const offset = this.options.sampleOffset ?? 0, samples = data.length - offset;
     if (samples <= 0) return;
+    // One group per NEW frame: a repeated or older identity is a
+    // registration replay — no rows, no draw. A new epoch restarts the
+    // smoothing state exactly like a geometry change (keep goes false
+    // below via smoothBins/previousValid). Calls without an identity keep
+    // the legacy always-process behaviour.
+    if (identity !== undefined) {
+      if (identity.epoch !== this.frameEpoch) {
+        this.frameEpoch = identity.epoch;
+        this.lastSeq = 0;
+        this.smoothBins = 0;
+        this.previousValid = false;
+      }
+      if (identity.seq <= this.lastSeq) return;
+      this.lastSeq = identity.seq;
+    }
     if (data.length > this.textureWidth) this.growTexture(data.length);
     const gl = this.gl;
-    this.head = (this.head + 1) % this.rows;
-    this.count = Math.min(this.rows, this.count + 1);
     const o = this.options, span = o.sampleSpanHz || o.spanHz || 1;
     const start = o.sampleWindow?.start ?? 0, range = (o.sampleWindow?.end ?? 1) - start;
-    const sampleStart = o.centerHz - o.panoramaShiftHz - span / 2 - start * span / range;
+    const centre = o.centerHz - o.panoramaShiftHz;
+    const keep = this.smoothBins === samples && this.smoothSpan === span
+      && this.smoothStart === start && this.smoothRange === range && this.smoothCentre === centre;
+    if (this.smoothState.length !== samples) {
+      this.smoothState = new Float32Array(samples);
+      this.filtered = new Float32Array(samples);
+      this.currentRow = new Uint8Array(samples);
+      this.previousRow = new Uint8Array(samples);
+    }
+    if (this.rowUpload.length < data.length) this.rowUpload = new Uint8Array(data.length);
+    for (let i = 0; i < offset; i++) this.rowUpload[i] = data[i];
+    const temporal = o.temporalSmoothing !== false && keep;
+    for (let i = 0; i < samples; i++) {
+      const value = data[offset + i];
+      this.smoothState[i] = temporal ? (this.smoothState[i] + value) / 2 : value;
+    }
+    for (let i = 0; i < samples; i++) {
+      const left = this.smoothState[i > 0 ? i - 1 : 0];
+      const right = this.smoothState[i + 1 < samples ? i + 1 : samples - 1];
+      this.filtered[i] = (left + 2 * this.smoothState[i] + right) / 4;
+      this.currentRow[i] = Math.round(this.filtered[i]);
+    }
+    const sampleStart = centre - span / 2 - start * span / range;
     const delta = sampleStart - this.originHz;
     this.row[0] = Math.fround(delta); this.row[1] = delta - this.row[0]; this.row[2] = span / range;
     this.row[3] = (o.coverage?.startHz ?? Math.min(sampleStart, sampleStart + span / range)) - sampleStart;
     this.row[4] = (o.coverage?.endHz ?? Math.max(sampleStart, sampleStart + span / range)) - sampleStart;
     this.row[5] = o.sampleAmplitudeMax ?? 80; this.row[6] = samples; this.row[7] = offset;
     this.row[8] = this.width; this.row[9] = start; this.row[10] = range;
-    this.metadata.set(this.row, this.head * 12);
-    gl.bindBuffer(gl.UNIFORM_BUFFER, this.blocks[Math.floor(this.head / this.blockRows)]);
-    gl.bufferSubData(gl.UNIFORM_BUFFER, (this.head % this.blockRows) * 48, this.row);
-    gl.bindTexture(gl.TEXTURE_2D, this.texture);
-    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, this.head, data.length, 1, gl.RED, gl.UNSIGNED_BYTE, data, 0);
+    const group = Math.min(3, this.rows);
+    const blend = this.previousValid && keep;
+    for (let k = 1; k <= group; k++) {
+      if (blend && k < group) {
+        for (let i = 0; i < samples; i++) {
+          this.rowUpload[offset + i] = Math.round(
+            (this.previousRow[i] * (group - k) + this.currentRow[i] * k) / group);
+        }
+      } else this.rowUpload.set(this.currentRow, offset);
+      this.head = (this.head + 1) % this.rows;
+      this.count = Math.min(this.rows, this.count + 1);
+      this.metadata.set(this.row, this.head * 12);
+      gl.bindBuffer(gl.UNIFORM_BUFFER, this.blocks[Math.floor(this.head / this.blockRows)]);
+      gl.bufferSubData(gl.UNIFORM_BUFFER, (this.head % this.blockRows) * 48, this.row);
+      gl.bindTexture(gl.TEXTURE_2D, this.texture);
+      gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, this.head, data.length, 1, gl.RED, gl.UNSIGNED_BYTE, this.rowUpload, 0);
+    }
+    this.previousRow.set(this.currentRow);
+    this.previousValid = true;
+    this.smoothBins = samples; this.smoothSpan = span;
+    this.smoothStart = start; this.smoothRange = range; this.smoothCentre = centre;
     this.draw();
   }
 
@@ -380,7 +476,11 @@ export class WaterfallRenderer {
     return this.width > 0 && this.options.spanHz > 0
       ? this.options.centerHz - this.options.spanHz / 2 + x / this.width * this.options.spanHz : this.options.centerHz;
   }
-  clear(): void { this.head = -1; this.count = 0; this.draw(); }
+  clear(): void {
+    this.head = -1; this.count = 0;
+    this.smoothBins = 0; this.previousValid = false;
+    this.draw();
+  }
   destroy(): void {
     if (!this.destroyed) {
       this.destroyed = true; this.releaseProgram(); this.gl.deleteTexture(this.texture); this.texture = null;
