@@ -622,7 +622,27 @@ async function runRound2Case(page: Page, info: TestInfo, def: Round2CaseDef, por
     await installSampler(page);
     await installHeldKeySampler(page);
     await page.goto(`http://127.0.0.1:${port}/?ui=v2`);
-    await expect.poll(() => frames.length, { timeout: 30_000 }).toBeGreaterThan(10);
+    try {
+      await expect.poll(() => frames.length, { timeout: 30_000 }).toBeGreaterThan(10);
+    } catch (error) {
+      // Setup-flake diagnostics (temporary): the scope socket sometimes
+      // connects but never streams. Dump the client-side connection state
+      // so the stall can be told apart from a slow link.
+      const diag = await page.evaluate(() => ({
+        visibility: document.visibilityState,
+        url: location.href,
+        spectrumPanels: document.querySelectorAll('.spectrum-panel').length,
+        canvases: document.querySelectorAll('canvas').length,
+        tuneLines: document.querySelectorAll('.waterfall-content .tune-line').length,
+        stateText: document.querySelector('[data-testid="scope-span-value"]')?.textContent ?? null,
+        bodyText: document.body.innerText.slice(0, 300),
+      }));
+      console.log(`[held-key round2 ${latency.name} ${view.name} step=${stepHz}] SETUP STALL: ` +
+        `frames=${frames.length} sent=${sent.length} grants=${grants.length} ` +
+        `pageErrors=${JSON.stringify(watch.pageErrors)} consoleErrors=${JSON.stringify(watch.consoleErrors)} ` +
+        `diag=${JSON.stringify(diag)}`);
+      throw error;
+    }
     const marker = page.locator('.waterfall-content .tune-line');
     await expect(marker).toBeVisible({ timeout: 30_000 });
 
