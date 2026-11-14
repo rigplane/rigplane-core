@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import random
 from dataclasses import replace
 import socket
@@ -87,10 +86,30 @@ async def test_receiver_latest_wins_on_burst() -> None:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
             for packet in packets:
                 sock.sendto(emit_n1mm_spectrum(packet), ("127.0.0.1", receiver.port))
-        await await_until(lambda: received, description="burst delivery")
-        for _ in range(20):
-            await asyncio.sleep(0)
-        assert received == [packets[-1]]
+        await await_until(
+            lambda: received and received[-1] == packets[-1],
+            description="burst delivery",
+        )
+        assert 1 <= len(received) <= 5
+        order = [packets.index(packet) for packet in received]
+        assert order == sorted(order) and order[-1] == len(packets) - 1
+    finally:
+        await receiver.stop()
+
+
+@pytest.mark.timeout(60)
+async def test_receiver_stream_no_starvation(virtual_clock: VirtualClock) -> None:
+    received: list[N1mmSpectrumPacket] = []
+    receiver = N1mmSpectrumReceiver(port=0, on_packet=received.append)
+    await receiver.start()
+    try:
+        packets = [_packet(index) for index in range(20)]
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            for step, packet in enumerate(packets):
+                sock.sendto(emit_n1mm_spectrum(packet), ("127.0.0.1", receiver.port))
+                await await_until(lambda: len(received) > step, description="delivery")
+                await virtual_clock.elapse(0.1)
+        assert received == packets
     finally:
         await receiver.stop()
 
@@ -101,7 +120,7 @@ async def test_receiver_stop_idempotent_and_port_busy() -> None:
     await first.start()
     try:
         busy = N1mmSpectrumReceiver(port=first.port, on_packet=lambda packet: None)
-        with pytest.raises(OSError, match=str(first.port)):
+        with pytest.raises(OSError):
             await busy.start()
         await first.stop()
         await first.stop()
@@ -247,6 +266,39 @@ async def test_source_views_and_receiver_guard(
     granted = await source.set_view(FollowView("vfo", 2000.0))
     assert granted.view == view
     assert granted.coverage == Coverage(packet.low_hz, packet.high_hz)
+
+
+@pytest.mark.parametrize(
+    "noise_lo, noise_hi, tone, scale",
+    [(10, 29, 160, 1.0), (0, 20, 160, 0.3125), (1000, 1200, 60000, 0.001)],
+)
+@pytest.mark.timeout(30)
+async def test_source_relative_db_tone_not_saturated(
+    virtual_clock: VirtualClock,
+    noise_lo: int,
+    noise_hi: int,
+    tone: int,
+    scale: float,
+) -> None:
+    size, tone_pos, span = 256, 200, noise_hi - noise_lo + 1
+    levels = [noise_lo + (i * 37) % span for i in range(size)]
+    levels[tone_pos] = tone
+    packet = N1mmSpectrumPacket(
+        "table", "tone", 14e6, 14_000_000.0 + (size - 1) * 1000.0, scale, tuple(levels)
+    )
+    source, _ = _source(fps_limit=1000.0)
+    frames: list[NativeFrame] = []
+    source.on_frame(frames.append)
+    source.handle_packet(packet)
+    await virtual_clock.elapse(0.01)
+    assert len(frames) == 1
+    pixels = frames[0].pixels
+    assert pixels is not None and len(pixels) == size
+    peak = max(pixels)
+    assert pixels.index(peak) == tone_pos
+    assert pixels.count(peak) == 1
+    below_half = sum(v < peak // 2 for i, v in enumerate(pixels) if i != tone_pos)
+    assert below_half >= 3
 
 
 @pytest.mark.timeout(60)

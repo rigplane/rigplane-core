@@ -12,7 +12,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
-import select
 from collections.abc import Callable
 from typing import Literal
 
@@ -38,6 +37,15 @@ __all__ = ["N1mmSpectrumReceiver", "N1mmSpectrumSource"]
 logger = logging.getLogger(__name__)
 
 DEFAULT_PORT = 13064
+
+# N1MM levels × ScalingFactor are relative dB with no absolute reference,
+# unlike the dBFS-tuned mapper defaults: open the absolute clamps wide
+# (finite bounds for levels.window()'s min()/max()) and keep every default.
+_RELATIVE_DB_MAPPER_KWARGS: dict[str, float] = {
+    "abs_floor_min_db": -1e6,
+    "abs_floor_max_db": 1e6,
+    "abs_ceil_max_db": 1e6,
+}
 
 ReceiverFactory = Callable[
     [Callable[[N1mmSpectrumPacket], None]], "N1mmSpectrumReceiver"
@@ -126,23 +134,10 @@ class N1mmSpectrumReceiver:
         packet, self._latest = self._latest, None
         if packet is None or self._transport is None:
             return
-        if self._more_waiting():
-            self._latest = packet
-            self._flush_scheduled = True
-            asyncio.get_running_loop().call_soon(self._flush)
-            return
         try:
             self._on_packet(packet)
         except Exception:  # noqa: BLE001 — loop callbacks must not raise
             logger.exception("n1mm.spectrum.on_packet_failed")
-
-    def _more_waiting(self) -> bool:
-        try:
-            transport = self._transport
-            sock = None if transport is None else transport.get_extra_info("socket")
-            return sock is not None and bool(select.select([sock], [], [], 0)[0])
-        except (OSError, ValueError):
-            return False
 
 
 class N1mmSpectrumSource:
@@ -172,7 +167,7 @@ class N1mmSpectrumSource:
             )
         self._receiver_factory = receiver_factory
         self._receiver: N1mmSpectrumReceiver | None = None
-        self._mapper = AdaptiveLevelMapper()
+        self._mapper = AdaptiveLevelMapper(**_RELATIVE_DB_MAPPER_KWARGS)
         self._coverage: Coverage | None = None
         self._native_width: int | None = None
         self._epoch = 0

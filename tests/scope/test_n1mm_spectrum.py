@@ -149,8 +149,8 @@ REJECTIONS: list[tuple[str, bytes, str]] = [
 ]
 
 
-@pytest.mark.parametrize("(_label, xml, reason)", REJECTIONS)
-def test_rejections(_label: str, xml: bytes, reason: str) -> None:
+@pytest.mark.parametrize("label, xml, reason", REJECTIONS)
+def test_rejections(label: str, xml: bytes, reason: str) -> None:
     result = parse_n1mm_spectrum(xml)
     assert isinstance(result, N1mmSpectrumRejected)
     assert result.reason == reason
