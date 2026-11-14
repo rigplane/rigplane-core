@@ -17,10 +17,22 @@
 // name and delay in the skip reason (visible in the report) instead of
 // asserting — the monotonic and overlay assertions below are never weakened.
 // The integrated-tree run must show ZERO skips: any skip there is a failure
-// of this acceptance. On a tree WITHOUT #4565's fix the transient-seam
-// requirement below FAILS BY DESIGN (the server still clips the view, so
-// the burst observes zero partials) — that failure is the expected red, not
-// a skip and not a reason to weaken the check.
+// of this acceptance.
+//
+// The matrix rows below assert the monotonic and passband shape plus zero
+// transient hatch, WITHOUT requiring partially covered frames: every matrix
+// row's native margin legitimately contains the whole burst (the 100 Hz rows
+// move 12.1 kHz inside a 300 kHz margin; the 1 kHz native rows move 121 kHz
+// with the lag far below the 50 kHz per-side margin), so a lagged matrix row
+// with zero partials never met the transient and must NOT fail. The transient
+// itself is pinned by ONE dedicated narrow-zoom row further below (5 ZOOM+
+// steps to a 3125 Hz view inside a 10 kHz native wave, 1 kHz step, d300ms):
+// there the VFO outruns the frames, so the burst MUST observe partially
+// covered frames AND zero hatch. That row FAILS BY DESIGN on a tree WITHOUT
+// #4565's fix (the server clips the view, so the burst observes zero
+// partials) or WITHOUT the hatch fix (the offset coverage hatches) — those
+// failures are the expected red, not a skip and not a reason to weaken
+// the check.
 import type { Page } from '@playwright/test';
 import { writeFile } from 'node:fs/promises';
 import { expect, test } from '@playwright/test';
@@ -393,15 +405,8 @@ for (const zoom of ZOOMS) {
             name: 'centre', values: inWindow.map((s) => ({ t: s.tPerf, v: viewCenterHz(s) })),
             confirmedHz: afterHz, toleranceHz, minimumAdvanceHz: stepHz,
           });
-          // The transient seam: a lagged burst must POSITIVELY observe
-          // partially covered frames (the lag transient itself), and no margin
-          // may hatch for them while the native window covers the requested
-          // view. requireTransientSeamObserved throws on both a missing
-          // transient (partials 0 with lag — vacuous pass) and a hatched one
-          // (the previous rendering behaviour). Delay-free rows have no lag
-          // transient to observe. The seam is additionally pinned by the
-          // component regression (accepted follow grant, delayed intersecting
-          // frames, zero hatch).
+          // Burst-window transient populations (partials counted for the log
+          // line only — NOT required here, see the header).
           const burstSamples = inWindow.filter((s) => s.tPerf >= burstStartPerf && s.tPerf <= burstEndPerf);
           const burstPartials = frames.filter((f) => f.tWall >= burstStartWall && f.tWall <= burstEndWall
             && (f.view[1] - f.view[0]) - (f.coverage[1] - f.coverage[0]) > 1);
@@ -446,14 +451,11 @@ for (const zoom of ZOOMS) {
             `before=${beforeHz} after=${afterHz} setFreq=${setFreqCommands.length}`);
 
           // (t) transient seam: no margin may hatch during the burst while the
-          // native window covers the requested view — and a lagged burst must
-          // have observed the transient at all (unit-pinned in
-          // held-key-analysis.ts; fails by design without #4565's fix).
-          requireTransientSeamObserved({
-            responseDelayS: latency.delay,
-            partialCount: burstPartials.length,
-            hatchedCount: hatchedBurst.length,
-          });
+          // native window covers the requested view. Partial coverage is NOT
+          // required here: every matrix row's native margin contains the whole
+          // burst (see the header), so zero partials are legitimate — the
+          // dedicated narrow-zoom row below pins the transient itself
+          // (unit-pinned in held-key-analysis.ts).
           expect(hatchedBurst,
             `transient margin hatched in ${hatchedBurst.length} burst samples`).toEqual([]);
 
@@ -496,6 +498,274 @@ for (const zoom of ZOOMS) {
     }
   }
 }
+
+// Dedicated transient row: the ONLY row that requires the lag transient.
+// Five ZOOM+ steps narrow the follow view to 3125 Hz inside the 10 kHz
+// native wave the server selects for it (smallest covering preset 5000),
+// so the ~9 kHz VFO-vs-frames lag at d300ms/1kHz exceeds the ~3.4 kHz
+// per-side margin and the burst MUST observe partially covered frames —
+// with zero hatch, since the native stays wider than the view (merely
+// offset). Fails by design without #4565's fix (zero partials: the server
+// clips the view) or without the hatch fix (the offset coverage hatches).
+// Needs the same integrated tree as the matrix rows above.
+test('IC-705 held-key transient seam shows partials without hatch (narrow zoom, d300ms, step 1kHz)', async ({ page }, info) => {
+  const port = 21598;
+  const seed = 1234;
+  const delayS = 0.3;
+  const stepHz = 1_000;
+  const zoomSpanHz = 3_125;
+  const evidence = info.outputPath('radio.jsonl');
+  // Same skip rule as the matrix rows: only a genuine connect failure
+  // (no scope frames at all) skips at runtime; anything else fails.
+  let setupDone = false;
+  let serverReady = false;
+  let server: JourneyServerHandle | undefined;
+  const sent: Array<ScopeSubscription & { type: string }> = [];
+  const grants: Array<{ tWall: number; grant: ScopeGranted }> = [];
+  const frames: Array<{ view: number[]; coverage: number[]; receivedAt: number; tWall: number }> = [];
+  const setFreqCommands: Array<{ tWall: number; freqHz: number | null }> = [];
+  try {
+    server = await startJourneyServer(port, 14_250_000,
+      ['--model', 'IC-705', '--evidence', evidence,
+        '--response-delay', String(delayS),
+        '--response-jitter', '0',
+        '--span-hz', '250000',
+        '--seed', String(seed)],
+      'tests/e2e/panorama_web_server.py');
+    serverReady = true;
+    const watch = watchPanoramaErrors(page);
+    page.on('websocket', (socket) => {
+      if (new URL(socket.url()).pathname === '/api/v1/ws') {
+        socket.on('framesent', ({ payload }) => {
+          if (typeof payload === 'string') {
+            const command = JSON.parse(payload) as WsCommand;
+            if (command.type === 'cmd' && command.name === 'set_freq') {
+              setFreqCommands.push({
+                tWall: Date.now(),
+                freqHz: (command.params as { freq?: number } | undefined)?.freq ?? null,
+              });
+            }
+          }
+        });
+        return;
+      }
+      if (!socket.url().endsWith('/api/v1/scope')) return;
+      socket.on('framesent', ({ payload }) => {
+        if (typeof payload === 'string') {
+          const message = JSON.parse(payload) as ScopeSubscription & { type: string };
+          if (message.type === 'subscribe') sent.push(message);
+        }
+      });
+      socket.on('framereceived', ({ payload }) => {
+        if (typeof payload === 'string') {
+          const grant = parseScopeGranted(JSON.parse(payload));
+          if (grant) grants.push({ tWall: Date.now(), grant });
+        } else {
+          const buffer = Uint8Array.from(payload).buffer;
+          const parsed = parseCurrentScopeFrame(buffer, { source: 'radio', sourceId: 'radio', epoch: 0 });
+          if (parsed.ok) {
+            frames.push({
+              view: [parsed.frame.viewStartHz, parsed.frame.viewEndHz],
+              coverage: [parsed.frame.coverageStartHz, parsed.frame.coverageEndHz],
+              receivedAt: performance.now(),
+              tWall: Date.now(),
+            });
+          }
+        }
+      });
+    });
+    await installSampler(page);
+    await installHeldKeySampler(page);
+    await page.goto(`http://127.0.0.1:${port}/?ui=v2`);
+    await expect.poll(() => frames.length, { timeout: 30_000 }).toBeGreaterThan(10);
+    const marker = page.locator('.waterfall-content .tune-line');
+    await expect(marker).toBeVisible({ timeout: 30_000 });
+
+    // CTR (CENTER) scope mode — the owner's failing shape.
+    const ctr = page.getByRole('radio', { name: 'CTR' }).first();
+    if (!(await ctr.isChecked())) await ctr.click();
+    await expect(ctr).toBeChecked();
+
+    // Passband overlay must be drawable before the burst (mode + filter
+    // width evidence chain, as in panorama-passband-hold).
+    await settlePassband(page, port);
+    await page.waitForTimeout(1000);
+
+    // Five ZOOM+ steps from the 100 kHz default follow width: 100000 / 2^5.
+    // The server answers with the smallest covering radio preset (5000),
+    // whose 10 kHz wave stays wider than the view; the burst itself performs
+    // no span write.
+    await page.getByRole('button', { name: 'More scope controls' }).first().click();
+    for (let i = 0; i < 5; i++) {
+      await page.getByTestId('scope-zoom-in').first().click();
+    }
+    await page.keyboard.press('Escape');
+    await expect.poll(() => sent.at(-1)?.view).toEqual({ follow: 'vfo', spanHz: zoomSpanHz });
+    // The server must have granted the narrowed width before frames can
+    // carry it — otherwise the expectation below could pin a stale
+    // pre-zoom grant and pass vacuously.
+    await expect.poll(() => {
+      const grant = grants.at(-1)?.grant;
+      return grant ? grant.view.endHz - grant.view.startHz : 0;
+    }).toBe(zoomSpanHz);
+    // The expected frame view comes from the server grant, never from
+    // a hard-coded span: follow view centred on the base frequency
+    // with the granted width. Frames must carry exactly that view.
+    await expect.poll(() => grants.length).toBeGreaterThan(0);
+    const grantedView = grants.at(-1)!.grant.view;
+    const grantedWidthHz = grantedView.endHz - grantedView.startHz;
+    const expectedView = [BASE_FREQ_HZ - grantedWidthHz / 2, BASE_FREQ_HZ + grantedWidthHz / 2];
+    await expect.poll(() => frames.at(-1)?.view).toEqual(expectedView);
+
+    // 1 kHz is the LSB auto default: no step clicks needed.
+    await expect.poll(() => page.getByTestId('toolbar-row-step').first().innerText())
+      .toContain('1kHz');
+
+    // Arrow keys belong to tuning only after leaving any editor.
+    await page.evaluate(() => { if (document.activeElement instanceof HTMLElement) document.activeElement.blur(); });
+    await page.waitForTimeout(1000);
+    setupDone = true;
+    const beforeHz = await radioFrequency(page, port);
+
+    // The owner's gesture: hold ArrowRight for 4 s. Repeated down()
+    // dispatches keydown with repeat=true while the key stays held.
+    const burstStartWall = Date.now();
+    const burstStartPerf = await page.evaluate(() => performance.now());
+    await page.keyboard.down('ArrowRight');
+    for (let i = 0; i < 120; i++) {
+      await page.keyboard.down('ArrowRight');
+      await page.waitForTimeout(33);
+    }
+    await page.keyboard.up('ArrowRight');
+    const burstEndWall = Date.now();
+    const burstEndPerf = await page.evaluate(() => performance.now());
+    await page.waitForTimeout(3000);
+    const settleEndPerf = await page.evaluate(() => performance.now());
+    const afterHz = await radioFrequency(page, port);
+
+    // The burst must have moved the VFO at all — otherwise monotonicity
+    // and overlay continuity below would pass vacuously.
+    expect(afterHz, 'held-key burst did not move the VFO; the stimulus is invalid').toBeGreaterThan(beforeHz);
+
+    const samples = await page.evaluate(() => window.heldKeySamples);
+    const passbandSamples = await page.evaluate(() => window.passbandSamples);
+    const inWindow = samples.filter((s) => s.tPerf >= burstStartPerf && s.tPerf <= settleEndPerf);
+    const toleranceHz = stepHz / 2;
+    const vfo = checkMonotonic(
+      inWindow.map((s) => ({ t: s.tPerf, v: parseVfoText(s.vfoText) })), burstStartPerf, toleranceHz);
+    const markerSeries = checkMonotonic(
+      inWindow.map((s) => ({ t: s.tPerf, v: markerFrequency(s) })), burstStartPerf, toleranceHz);
+    const center = checkMonotonic(
+      inWindow.map((s) => ({ t: s.tPerf, v: viewCenterHz(s) })), burstStartPerf, toleranceHz);
+    // Every rendered series must be measured: a broken VFO selector or
+    // a frozen viewport is trivially monotonic, so an empty, all-missing
+    // or frozen series fails here instead of passing below. The marker
+    // and the view centre must additionally travel with the burst and
+    // rest at the confirmed frequency. These throw — never a skip.
+    requirePopulatedSeries('vfo', vfo);
+    requirePopulatedSeries('marker', markerSeries);
+    requirePopulatedSeries('centre', center);
+    // The marker is pixel-quantized: allow half a step plus one pixel.
+    const pxScales = inWindow
+      .filter((s) => s.gates !== null && Number.isFinite(s.gates.viewStartHz)
+        && Number.isFinite(s.gates.viewEndHz) && Number.isFinite(s.areaWidth) && s.areaWidth > 0)
+      .map((s) => (s.gates!.viewEndHz - s.gates!.viewStartHz) / s.areaWidth);
+    const hzPerPx = pxScales.length > 0 ? pxScales[pxScales.length - 1] : grantedWidthHz / 800;
+    const markerAdvance = checkAdvanceAndSettle({
+      name: 'marker', values: inWindow.map((s) => ({ t: s.tPerf, v: markerFrequency(s) })),
+      confirmedHz: afterHz, toleranceHz: toleranceHz + hzPerPx, minimumAdvanceHz: stepHz,
+    });
+    const centreAdvance = checkAdvanceAndSettle({
+      name: 'centre', values: inWindow.map((s) => ({ t: s.tPerf, v: viewCenterHz(s) })),
+      confirmedHz: afterHz, toleranceHz, minimumAdvanceHz: stepHz,
+    });
+    // THE transient seam: at this zoom the native margin (~3.4 kHz per side)
+    // is smaller than the VFO-vs-frames lag, so the burst MUST have observed
+    // partially covered frames — and none may hatch, since the native stays
+    // wider than the view (unit-pinned in held-key-analysis.ts; fails by
+    // design without #4565's fix or without the hatch fix).
+    const burstSamples = inWindow.filter((s) => s.tPerf >= burstStartPerf && s.tPerf <= burstEndPerf);
+    const burstPartials = frames.filter((f) => f.tWall >= burstStartWall && f.tWall <= burstEndWall
+      && (f.view[1] - f.view[0]) - (f.coverage[1] - f.coverage[0]) > 1);
+    const hatchedBurst = burstSamples.filter((s) => s.hatchCount > 0);
+    const gaps = passbandGaps(passbandSamples, burstStartPerf, settleEndPerf);
+    const longGaps = gaps.filter((gap) => gap.durationMs > 200).map((gap) => ({
+      startRelMs: gap.startMs - burstStartPerf,
+      frames: gap.frames,
+      durationMs: gap.durationMs,
+      gateDiff: gateDiff(gap),
+    }));
+
+    const spanText = await page.getByTestId('scope-span-value').first().innerText().catch(() => null);
+    const timeline: HeldKeyTimeline = {
+      params: { zoom: 'narrow-transient', latency: 'd300ms', responseDelayS: delayS,
+        responseJitterS: 0, stepHz, seed, spanHz: 250_000, freqHz: 14_250_000 },
+      burst: { startPerf: burstStartPerf, endPerf: burstEndPerf, settleEndPerf },
+      setup: { spanValue: spanText, grantedView: sent.at(-1)?.view ?? null,
+        framesView: frames.at(-1)?.view ?? null, beforeHz, afterHz },
+      monotonic: { toleranceHz, vfo, marker: markerSeries, center },
+      passband: { gaps: longGaps },
+      setFreqCommands,
+      grants,
+      subscribes: sent,
+      frames,
+      samples,
+    };
+    await info.attach('held-key-timeline', {
+      body: JSON.stringify(timeline, null, 2),
+      contentType: 'application/json',
+    });
+    await writeFile(info.outputPath('held-key-timeline.json'), JSON.stringify(timeline, null, 2));
+    const burstWallFrames = frames.filter((f) => f.tWall >= burstStartWall && f.tWall <= burstEndWall);
+    const burstCovMin = Math.min(...burstWallFrames.map((f) => f.coverage[1] - f.coverage[0]));
+    const burstViewMin = Math.min(...burstWallFrames.map((f) => f.view[1] - f.view[0]));
+    console.log(`[held-key narrow-transient d300ms step=${stepHz}] ` +
+      `vfo maxBackward=${vfo.maxBackwardHz}Hz marker maxBackward=${markerSeries.maxBackwardHz}Hz ` +
+      `center maxBackward=${center.maxBackwardHz}Hz longGaps=${longGaps.length} ` +
+      `marker advance=${markerAdvance.advanceHz}Hz settle=${markerAdvance.settleHz}Hz ` +
+      `centre advance=${centreAdvance.advanceHz}Hz settle=${centreAdvance.settleHz}Hz ` +
+      `partials=${burstPartials.length} burstCovMin=${burstCovMin}Hz burstViewMin=${burstViewMin}Hz ` +
+      `before=${beforeHz} after=${afterHz} setFreq=${setFreqCommands.length}`);
+
+    requireTransientSeamObserved({
+      responseDelayS: delayS,
+      partialCount: burstPartials.length,
+      hatchedCount: hatchedBurst.length,
+    });
+    expect(hatchedBurst,
+      `transient margin hatched in ${hatchedBurst.length} burst samples`).toEqual([]);
+
+    // (a) monotonic: no series may move backwards by more than half a step.
+    expect.soft(vfo.first,
+      `VFO moved backwards ${vfo.maxBackwardHz}Hz at +${vfo.first?.tRelMs.toFixed(0)}ms ` +
+      `(value=${vfo.first?.valueHz}, prevMax=${vfo.first?.prevMaxHz}, tol=${toleranceHz}Hz)`).toBeNull();
+    expect.soft(markerSeries.first,
+      `marker moved backwards ${markerSeries.maxBackwardHz}Hz at +${markerSeries.first?.tRelMs.toFixed(0)}ms ` +
+      `(value=${markerSeries.first?.valueHz}, prevMax=${markerSeries.first?.prevMaxHz}, tol=${toleranceHz}Hz)`).toBeNull();
+    expect.soft(center.first,
+      `view centre moved backwards ${center.maxBackwardHz}Hz at +${center.first?.tRelMs.toFixed(0)}ms ` +
+      `(value=${center.first?.valueHz}, prevMax=${center.first?.prevMaxHz}, tol=${toleranceHz}Hz)`).toBeNull();
+    // (b) the passband overlay is never absent for more than 200 ms.
+    expect.soft(longGaps,
+      `passband absent ${longGaps.length}x >200ms; first at +${longGaps[0]?.startRelMs.toFixed(0)}ms ` +
+      `for ${longGaps[0]?.durationMs.toFixed(0)}ms (${longGaps[0]?.frames} frames), ` +
+      `gate diff: ${JSON.stringify(longGaps[0]?.gateDiff)}`).toEqual([]);
+
+    expectPanoramaSettled(watch);
+  } catch (error) {
+    const verdict = classifyHeldKeyCatch({
+      setupDone, serverReady, framesObserved: frames.length, error,
+      row: 'narrow-transient, d300ms delay=0.3s jitter=0s, step 1000Hz',
+    });
+    if (verdict.disposition === 'skip') {
+      test.skip(true, verdict.reason);
+      return;
+    }
+    throw verdict.error;
+  } finally {
+    await server?.kill();
+  }
+});
 
 // Control row: a genuinely narrower native window MUST hatch. After setup the
 // harness narrows the radio span preset to 25 kHz (a front-panel change — no
