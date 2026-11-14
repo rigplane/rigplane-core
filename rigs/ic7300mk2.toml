@@ -40,6 +40,13 @@ codec_preference = ["PCM_1CH_16BIT", "ULAW_1CH"]
 
 [scope]
 span_presets_hz = [2500, 5000, 10000, 25000, 50000, 100000, 250000, 500000]
+# MOR-4385: the 27 15 numbers (IC-7300MK2 CI-V guide, the same 27 15
+# family table p.25 documents for 27 19) are ±half-widths: the scope
+# display spans center ± value, and the center-mode waveform payload
+# carries that same value (IC-7610 CI-V Reference Guide p.14, "Scope
+# waveform data", quoted in runtime/_civ_rx.py:
+# CivRuntime._publish_scope_span_observation).
+span_preset_semantics = "half_width"
 # 27 19: adjustable range -20.0 ~ +20.0 dB in 0.5 dB steps (CI-V guide p.25).
 ref_min_db = -20.0
 ref_max_db = 20.0

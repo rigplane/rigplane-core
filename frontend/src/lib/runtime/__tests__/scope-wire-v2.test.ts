@@ -57,3 +57,30 @@ describe('shared Python v2 scope wire fixtures', () => {
     expect(parseCurrentScopeFrame(new ArrayBuffer(55), context)).toEqual({ ok: false, reason: 'short header' });
   });
 });
+
+describe('granted control documents', () => {
+  // MOR-4392 gate round 1: the follow grant's coverage is the truthful
+  // native coverage and may exceed the cropped view — this is the exact
+  // document tests/runtime/test_scope_session_review.py::
+  // test_native_width_regrant_carries_native_coverage receives from
+  // /api/v1/scope (a ±30k follow request driven at the ±50k preset).
+  // The binary frame's in-view coverage requirement is unchanged (the
+  // 'coverage outside view' rejection above).
+  const document = {
+    type: 'granted', sourceId: 'radio', receiver: 0,
+    view: { startHz: 14_070_000, endHz: 14_130_000 },
+    coverage: { startHz: 14_050_000, endHz: 14_150_000 },
+    width: 689, fps: 20,
+  };
+  it('accepts native coverage outside the cropped follow view', () => {
+    expect(parseScopeGranted(document)).toEqual({
+      ...document,
+      view: { startHz: 14_070_000, endHz: 14_130_000 },
+      coverage: { startHz: 14_050_000, endHz: 14_150_000 },
+    });
+  });
+  it('still rejects malformed coverage geometry', () => {
+    expect(parseScopeGranted({ ...document, coverage: { startHz: 14_150_000, endHz: 14_050_000 } })).toBeNull();
+    expect(parseScopeGranted({ ...document, coverage: { startHz: -1, endHz: 14_150_000 } })).toBeNull();
+  });
+});
