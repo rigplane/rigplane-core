@@ -20,6 +20,7 @@ from rigplane.core.civ import (
     CivEvent,
     CivEventType,
     CivRequestKey,
+    CivRequestTracker,
     OwedReplyEntry,
     PttReplyLedger,
     is_directed_ptt_reply,
@@ -4782,7 +4783,7 @@ class CivRuntime:
         (``CivRequestTracker.scaled_wait_budget``): time only sizes these
         waits, never the attribution.
         """
-        tracker = self._host._civ_request_tracker
+        tracker: CivRequestTracker = self._host._civ_request_tracker
         drain_budget = tracker.scaled_wait_budget(_ACK_SINK_DRAIN_BUDGET_S)
         answer_window = tracker.scaled_wait_budget(self._host._civ_get_timeout)
 
