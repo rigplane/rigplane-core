@@ -32,6 +32,10 @@ _READ = CivRequestKey(command=0x03, sub=None)
 _METER = CivRequestKey(command=0x15, sub=0x02)
 _WRITE_KEY = CivRequestKey(command=0x05, sub=None)
 _PTT = CivRequestKey(command=0x1C, sub=0x00)
+_ECHO_DATA = b"\x00\x26\x36\x00\x14"
+# Full write identity as stored for echo confirmation: the echo must match
+# the outgoing write byte-identically (command, sub, receiver, full data).
+_WRITE_IDENTITY = CivRequestKey(command=0x05, sub=None, data_prefix=_ECHO_DATA)
 
 
 def _fb(*, to_addr: int = _CTRL) -> CivFrame:
@@ -141,13 +145,13 @@ async def test_blocking_write_never_takes_older_lost_fb(
     now = _clock(monkeypatch)
     tracker = CivRequestTracker()
 
-    token = tracker.register_ack(wait=False, write_key=_WRITE_KEY)
+    token = tracker.register_ack(wait=False, write_identity=_WRITE_KEY)
     assert isinstance(token, int)
     tracker.mark_ack_sink_sent(token, sent_monotonic=now[0])
     now[0] += 0.6
     assert tracker.expire_ack_sinks(answer_window=0.5, now_monotonic=now[0]) == 1
 
-    blocking = tracker.register_ack(wait=True, write_key=_WRITE_KEY)
+    blocking = tracker.register_ack(wait=True, write_identity=_WRITE_KEY)
     tracker.mark_ack_waiter_sent(blocking, sent_monotonic=now[0])
 
     assert tracker.resolve(CivEvent(type=CivEventType.ACK, frame=_fb())) is True
@@ -172,7 +176,7 @@ async def test_ptt_interleaved_with_refused_reads_and_lost_fb(
     _tombstone_read(tracker, _READ, now[0])
     now[0] += 0.6
     tracker.expire_ack_sinks(answer_window=0.5, now_monotonic=now[0])
-    ptt_off = tracker.register_ack(wait=True, write_key=_PTT)
+    ptt_off = tracker.register_ack(wait=True, write_identity=_PTT)
     tracker.mark_ack_waiter_sent(ptt_off, sent_monotonic=now[0])
     assert tracker.resolve(CivEvent(type=CivEventType.NAK, frame=_fa())) is True
     assert not ptt_off.done()
@@ -182,12 +186,12 @@ async def test_ptt_interleaved_with_refused_reads_and_lost_fb(
 
     # Direction 2: a lost PTT-ON FB must not succeed the PTT-OFF write.
     tracker = CivRequestTracker()
-    token = tracker.register_ack(wait=False, write_key=_PTT)
+    token = tracker.register_ack(wait=False, write_identity=_PTT)
     assert isinstance(token, int)
     tracker.mark_ack_sink_sent(token, sent_monotonic=now[0])
     now[0] += 0.6
     tracker.expire_ack_sinks(answer_window=0.5, now_monotonic=now[0])
-    ptt_off = tracker.register_ack(wait=True, write_key=_PTT)
+    ptt_off = tracker.register_ack(wait=True, write_identity=_PTT)
     tracker.mark_ack_waiter_sent(ptt_off, sent_monotonic=now[0])
     assert tracker.resolve(CivEvent(type=CivEventType.ACK, frame=_fb())) is True
     assert not ptt_off.done()
@@ -199,25 +203,19 @@ async def test_ptt_interleaved_with_refused_reads_and_lost_fb(
 async def test_write_echo_confirms_write_and_retires_older_tombstones(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """On an echo-ack radio the echo is the write's self-identifying answer."""
+    """The single echo mechanism confirms the sink and retires tombstones."""
     now = _clock(monkeypatch)
     tracker = CivRequestTracker()
     _tombstone_read(tracker, _READ, now[0])
-    token = tracker.register_ack(wait=False, write_key=_WRITE_KEY)
+    token = tracker.register_ack(wait=False, write_identity=_WRITE_IDENTITY)
     assert isinstance(token, int)
     tracker.mark_ack_sink_sent(token, sent_monotonic=now[0] + 0.5)
     now[0] += 0.6
     tracker.expire_ack_sinks(answer_window=0.5, now_monotonic=now[0])
     assert tracker.tombstone_count == 1
 
-    echo = _response(0x05, b"\x00\x26\x36\x00\x14")
-    assert (
-        tracker.resolve(
-            CivEvent(type=CivEventType.RESPONSE, frame=echo),
-            ordered_ingress=True,
-        )
-        is True
-    )
+    echo = _response(0x05, _ECHO_DATA)
+    assert tracker.resolve_write_echo(echo, ordered_ingress=True) is True
     assert tracker.ack_sink_count == 0
     assert tracker.tombstone_count == 0
     assert tracker.take_refused_reads() == ()
@@ -226,32 +224,23 @@ async def test_write_echo_confirms_write_and_retires_older_tombstones(
     # Unordered: the echo still confirms the write but proves nothing older.
     tracker = CivRequestTracker()
     _tombstone_read(tracker, _READ, now[0])
-    token = tracker.register_ack(wait=False, write_key=_WRITE_KEY)
+    token = tracker.register_ack(wait=False, write_identity=_WRITE_IDENTITY)
     assert isinstance(token, int)
     tracker.mark_ack_sink_sent(token, sent_monotonic=now[0] + 0.5)
     now[0] += 0.6
     tracker.expire_ack_sinks(answer_window=0.5, now_monotonic=now[0])
-    assert (
-        tracker.resolve(
-            CivEvent(type=CivEventType.RESPONSE, frame=echo),
-            ordered_ingress=False,
-        )
-        is True
-    )
+    assert tracker.resolve_write_echo(echo, ordered_ingress=False) is True
     assert tracker.ack_sink_count == 0
     assert tracker.tombstone_count == 1
 
     # A transceive broadcast answers nothing: it must not confirm the write.
     tracker = CivRequestTracker()
-    token = tracker.register_ack(wait=False, write_key=_WRITE_KEY)
+    token = tracker.register_ack(wait=False, write_identity=_WRITE_IDENTITY)
     assert isinstance(token, int)
     tracker.mark_ack_sink_sent(token, sent_monotonic=now[0])
     assert (
-        tracker.resolve(
-            CivEvent(
-                type=CivEventType.RESPONSE,
-                frame=_response(0x05, b"\x00\x26\x36\x00\x14", to_addr=0x00),
-            ),
+        tracker.resolve_write_echo(
+            _response(0x05, _ECHO_DATA, to_addr=0x00),
             ordered_ingress=True,
         )
         is False

@@ -202,7 +202,9 @@ def _flags(raw, path, nonempty_keys=False):
     return MappingProxyType(values)
 
 
-def load_sim_profile(path: Path, *, root: Path) -> SimProfile:
+def load_sim_profile(
+    path: Path, *, root: Path, rig_path: Path | None = None
+) -> SimProfile:
     """Load and validate one profile; ``root`` resolves evidence paths."""
     try:
         data = tomllib.loads(Path(path).read_text(encoding="utf-8"))
@@ -219,7 +221,14 @@ def load_sim_profile(path: Path, *, root: Path) -> SimProfile:
         _fail(f"sim.id: must match [a-z0-9][a-z0-9-]*, got {sim_id!r}")
     model = _scalar(sim_t, "radio", "sim", str)
     try:
-        radio = resolve_radio_profile(model=model)
+        if rig_path is None:
+            radio = resolve_radio_profile(model=model)
+        else:
+            from rigplane.profiles.rig_loader import load_rig
+
+            radio = load_rig(rig_path).to_profile()
+            if radio.model != model:
+                _fail(f"sim.radio: must match supplied profile model {radio.model!r}")
     except (KeyError, ValueError) as exc:
         reason = exc.args[0] if exc.args else exc
         _fail(f"sim.radio: {reason}")

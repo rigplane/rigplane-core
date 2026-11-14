@@ -69,6 +69,16 @@ async def _cycle(
     async def sleep(delay: float) -> None:
         calls.append(delay)
 
+    # These tests script the six probes (pre trio, post trio) one sample each.
+    # The pre-reconnect baseline settle (MOR-4373) takes its own samples before
+    # the pre trio, so it is off here; it has its own tests in
+    # tests/test_soak_driver.py.
+    real_probe = driver._stability_probe
+
+    async def probe(phase: str = "pre", *, settle_baseline: bool = False) -> Any:
+        return await real_probe(phase, settle_baseline=False)
+
+    monkeypatch.setattr(driver, "_stability_probe", probe)
     monkeypatch.setattr(sampler, "fetch_runtime", runtime)
     monkeypatch.setattr(sampler, "fetch_connection_status", status)
     monkeypatch.setattr(driver, "_post_radio_control", control)

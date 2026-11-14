@@ -9,6 +9,7 @@ import json
 import re
 import textwrap
 import tomllib
+from dataclasses import astuple
 from decimal import Decimal
 from hashlib import sha256
 from pathlib import Path
@@ -141,6 +142,20 @@ set_freq = [0x05]
 """
 
 
+_IQ_LAN_TOML = """\
+[iq_lan]
+protocol = "xiegu_udp"
+radio_port = 50002
+receive_port = 50001
+sample_rate_hz = 48000
+samples_per_datagram = 192
+center_offset_hz = 8000
+usable_bandwidth_hz = 40000
+tune_min_hz = 100000
+tune_max_hz = 54000000
+"""
+
+
 # ── RigConfig loading ────────────────────────────────────────────
 
 
@@ -159,6 +174,70 @@ class TestLoadRig:
         p = _write_toml(tmp_path, _MINIMAL_TOML)
         rig = load_rig(p)
         assert rig.model == "IC-7300"
+
+    def test_iq_lan_loads_as_optional_typed_profile_data(self, tmp_path):
+        rig = load_rig(_write_toml(tmp_path, _MINIMAL_TOML + _IQ_LAN_TOML))
+
+        expected = ("xiegu_udp", 50002, 50001, 48000, 192)
+        expected += (8000, 40000, 100000, 54000000)
+        assert astuple(rig.iq_lan) == expected
+        assert rig.to_profile().iq_lan == rig.iq_lan
+
+    def test_iq_lan_accepts_largest_ipv4_datagram(self, tmp_path):
+        section = _IQ_LAN_TOML.replace(
+            "samples_per_datagram = 192", "samples_per_datagram = 16376"
+        )
+
+        rig = load_rig(_write_toml(tmp_path, _MINIMAL_TOML + section))
+
+        assert rig.iq_lan.samples_per_datagram == 16_376
+
+    def test_profile_without_iq_lan_has_none(self, tmp_path):
+        rig = load_rig(_write_toml(tmp_path, _MINIMAL_TOML))
+
+        assert rig.iq_lan is None
+        assert rig.to_profile().iq_lan is None
+
+    def test_iq_lan_accepts_zero_tune_min(self, tmp_path):
+        section = _IQ_LAN_TOML.replace("tune_min_hz = 100000", "tune_min_hz = 0")
+        rig = load_rig(_write_toml(tmp_path, _MINIMAL_TOML + section))
+        assert rig.iq_lan.tune_min_hz == 0
+
+    @pytest.mark.parametrize(
+        ("old", "new", "key"),
+        [
+            (
+                'protocol = "xiegu_udp"',
+                'protocol = "xiegu_udp"\nunexpected = 1',
+                "unexpected",
+            ),
+            ("receive_port = 50001\n", "", "receive_port"),
+            ('protocol = "xiegu_udp"', 'protocol = "other"', "protocol"),
+            ("sample_rate_hz = 48000", 'sample_rate_hz = "48000"', "sample_rate_hz"),
+            ("tune_min_hz = 100000", "tune_min_hz = -1", "tune_min_hz"),
+            (
+                "tune_max_hz = 54000000",
+                "tune_max_hz = 18446744073709551616",
+                "tune_max_hz",
+            ),
+            (
+                "samples_per_datagram = 192",
+                "samples_per_datagram = 16377",
+                "samples_per_datagram",
+            ),
+        ],
+    )
+    def test_iq_lan_rejects_invalid_sections_naming_the_key(
+        self, tmp_path, old, new, key
+    ):
+        section = _IQ_LAN_TOML.replace(old, new)
+
+        with pytest.raises(RigLoadError, match=key):
+            load_rig(_write_toml(tmp_path, _MINIMAL_TOML + section))
+
+    @pytest.mark.parametrize("model", ["IC-7300", "IC-7610", "X6200"])
+    def test_other_shipped_profiles_have_no_iq_lan(self, model):
+        assert get_radio_profile(model).iq_lan is None
 
     def test_modes_codes_load_parallel_to_list(self, tmp_path):
         """MOR-2518: [modes].codes loads as a parallel single-character code
@@ -1700,6 +1779,15 @@ choices = [
     # exact validated form (the legacy raw_center shape fail-closes the
     # RIT/XIT control in the MOR-1730 frontend contract).
     _EXACT_DOMAIN_REGISTER = {
+        # MOR-4433: FT-991A declares three exact domains; unlike the FTX-1
+        # it has no [controls.rit] table (RIT/XIT ride the RT/XT/RU/RD/RC
+        # commands with no exact domain), so "rit" is absent here, and
+        # NB/NR are omitted from v1 (no [controls.nb*]/[controls.nr*]).
+        "ft991a.toml": {
+            "manual_notch_freq",
+            "if_shift",
+            "cw_pitch",
+        },
         "ftx1.toml": {
             "rit",
             "nr_level",
@@ -3403,6 +3491,11 @@ _SHIPPED_RIG_TOMLS = sorted(
 # profile cannot land with a receive-only row silently counting as a TX
 # band: its author must classify every row here first.
 _SHIPPED_RX_ONLY_BANDS = {
+    # MOR-4433: every FT-991A band row is a TX-capable ham band (160m..70cm,
+    # inside the manual/Hamlib TX ranges 1.8-54, 144-148, 430-450 MHz), so no
+    # row is flagged rx_only. The profile declares no general-coverage,
+    # air, WFM, or utility rows.
+    "ft991a.toml": (),
     "ftx1.toml": (),
     "g7250.toml": (),
     "ic705.toml": ("2200m", "630m", "WFM", "Air", "Gen"),

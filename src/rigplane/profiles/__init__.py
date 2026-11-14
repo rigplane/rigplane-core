@@ -45,6 +45,7 @@ __all__ = [
     "ControlSpec",
     "FilterWidthSegment",
     "FilterWidthRule",
+    "IqLanSpec",
     "MeterCalibrationPoint",
     "PowerWriteQuantum",
     "RadioProfile",
@@ -268,6 +269,24 @@ class FilterWidthRule:
     #: Distinct from ``step_hz`` above, which quantises the filter WIDTH; the
     #: two collide at 200 in AM and differ in USB.
     pbt_step_hz: int | None = None
+    #: Optional narrow-state variant of the SH index table (MOR-4428):
+    #: when NARROW is on, the same SH code maps to ``narrow_table``
+    #: instead of ``table``. Empty (the default) means the mapping does
+    #: not depend on the narrow state and no narrow read is issued.
+    #: Only valid with ``table_index`` encoding; rejected on fixed rules.
+    #: Declared last so existing positional constructor calls keep their
+    #: field bindings.
+    narrow_table: tuple[int, ...] = ()
+    #: Optional per-table wire-code bases (MOR-4433): the SH code the
+    #: rule's wide ``table`` (``first_code``) and narrow ``narrow_table``
+    #: (``narrow_first_code``) count from. ``None`` (the default) keeps
+    #: today's behavior — the profile-level ``[filters] first_code``.
+    #: Only valid with ``table_index`` encoding; rejected on fixed rules,
+    #: and ``narrow_first_code`` additionally needs a ``narrow_table``.
+    #: Declared after ``narrow_table`` so existing positional constructor
+    #: calls keep their field bindings.
+    first_code: int | None = None
+    narrow_first_code: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -362,6 +381,21 @@ class CwTextSpec:
     max_length: int = 512
     memory_channel: int | None = None
     memory_type: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class IqLanSpec:
+    """Radio-LAN IQ wire facts; the LAN host remains server configuration."""
+
+    protocol: str
+    radio_port: int
+    receive_port: int
+    sample_rate_hz: int
+    samples_per_datagram: int
+    center_offset_hz: int
+    usable_bandwidth_hz: int
+    tune_min_hz: int
+    tune_max_hz: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -637,6 +671,9 @@ class RadioProfile:
     # profile through profile data alone — no per-model branches.
     # Keyword-only and appended so no positional argument shifts.
     xiegu_model_id: int | None = field(default=None, kw_only=True)
+    # Optional radio-LAN IQ wire facts from ``[iq_lan]`` (MOR-4398). The
+    # dataclass stays in profiles to preserve the profiles/sdr independence.
+    iq_lan: IqLanSpec | None = field(default=None, kw_only=True)
 
     @property
     def vfo_swap_code(self) -> int | None:
@@ -696,6 +733,56 @@ class RadioProfile:
         a later change — not implemented by this method.
         """
         return command_name in self.command_names
+
+    def supports_vfo_command(self, command_name: str) -> bool:
+        """Whether the VFO-primitive command ``command_name`` is executable.
+
+        Single shared rule for the VFO-swap/equalize admission consumed by
+        capability projection
+        (``web/runtime_helpers.py: projected_vfo_capability_tags``) and
+        command admission
+        (``web/handlers/control.py: _enqueue_rc_frequency``), so the two
+        cannot disagree.
+
+        The Yaesu CAT family declares these primitives as CAT commands,
+        not CI-V opcode bytes: ``ab`` (single-receiver, e.g. the FT-991A
+        class) implements ``vfo_swap`` (``SV;``), and implements
+        ``vfo_equalize`` exactly when the profile declares the ``vfo_a_to_b``
+        copy primitive on a single transceiver — equalize is that A→B copy,
+        admitted and executed through it (``YaesuCatRadio.equalize_vfo_ab``
+        delegates to ``vfo_a_to_b``; a profile without it keeps today's
+        refusal, as does a multi-transceiver ``ab`` command set whose
+        ``AB;`` spans receivers instead of copying within one) — while
+        ``ab_shared`` (dual-RX, e.g. FTX-1) implements both ``vfo_swap``
+        (``SV;``) and ``vfo_equalize`` (``AB;``, OM 2508-C) as declared
+        commands. Every other family keeps its opcode-byte rule.
+        """
+        if command_name not in ("vfo_swap", "vfo_equalize"):
+            return False
+        if self.protocol_type == "yaesu_cat" and self.vfo_scheme in {
+            "ab",
+            "ab_shared",
+        }:
+            if self.vfo_scheme == "ab" and command_name == "vfo_equalize":
+                return (
+                    self.supports_command("vfo_a_to_b") and self.transceiver_count == 1
+                )
+            return self.supports_command(command_name)
+        if self.vfo_scheme == "ab":
+            code = (
+                self.swap_ab_code if command_name == "vfo_swap" else self.equal_ab_code
+            )
+            return code is not None
+        if self.vfo_scheme == "main_sub":
+            code = (
+                self.swap_main_sub_code
+                if command_name == "vfo_swap"
+                else self.equal_main_sub_code
+            )
+            return code is not None
+        if self.vfo_scheme == "ab_shared":
+            return self.supports_command(command_name)
+        return False
 
     @property
     def infers_power_on_from_liveness(self) -> bool:
@@ -757,6 +844,24 @@ class RadioProfile:
                 return rule
         return None
 
+    def resolve_filter_first_code(
+        self, rule: FilterWidthRule | None, *, narrow: bool = False
+    ) -> int:
+        """Effective wire-code base for one filter-width table (MOR-4433).
+
+        The narrow state selects not only the table (``narrow_table`` vs
+        ``table``) but also its code base: a per-rule ``narrow_first_code``
+        while NARROW is on, a per-rule ``first_code`` while it is off.
+        Either may be absent (``None``) — including every rule written
+        before per-table bases existed — and falls back to the
+        profile-level ``[filters] first_code``, which is today's behavior.
+        """
+        if rule is not None:
+            override = rule.narrow_first_code if narrow else rule.first_code
+            if override is not None:
+                return override
+        return self.filter_width_first_code
+
     def encode_filter_width(
         self, width_hz: int, mode: str | None, *, data_mode: int = 0
     ) -> bytes:
@@ -816,7 +921,9 @@ class RadioProfile:
             return None
         return rule.defaults[filter_num - 1]
 
-    def admitted_filter_width(self, mode: str | None, width_hz: int) -> int | None:
+    def admitted_filter_width(
+        self, mode: str | None, width_hz: int, *, narrow: bool = False
+    ) -> int | None:
         """The on-table width a ``set_filter_width`` write will land on.
 
         Only ``table_index`` profiles quantize a requested width through
@@ -826,13 +933,20 @@ class RadioProfile:
         no admission to report. ``None`` when the mode resolves to no
         rule, a fixed-width rule (the backend refuses the write there), or
         an empty table. Pinned by tests/test_filter_width_admitted_width.py.
+
+        When ``narrow`` is true and the mode's rule declares a narrow
+        variant (MOR-4428/MOR-4433), the narrow table selects the entry —
+        the same table the backend write maps through — so the hint stays
+        exact while NARROW is on. ``False`` (unknown or off) keeps today's
+        wide-table mapping.
         """
         if self.filter_width_encoding != "table_index":
             return None
         rule = self.resolve_filter_rule(mode)
         if rule is None or rule.fixed or not rule.table:
             return None
-        return rule.table[hz_to_table_index(width_hz, table=rule.table)]
+        table = rule.narrow_table if narrow and rule.narrow_table else rule.table
+        return table[hz_to_table_index(width_hz, table=table)]
 
 
 # ── TOML-driven profile registry ──────────────────────────────────

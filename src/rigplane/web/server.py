@@ -112,8 +112,15 @@ from ..runtime.tx_interlock import (
     resolve_rf_state,
     send_civ_frame,
 )
-from ..sdr import IqSource, IqScopeSink, SdrConfig, SdrScopeController
-from ..sdr.runtime import default_source_factory
+from ..sdr import (
+    IqScopeSink,
+    IqSource,
+    IqSourceSpec,
+    SdrConfig,
+    SdrScopeController,
+    SoapySourceSpec,
+)
+from ..sdr.runtime import build_source
 from ..sdr.scope_source import FRAME_STALE_S, IqFftSource
 from ..scope.hub import ScopeHub
 from ..scope.models import SourceKind
@@ -792,6 +799,10 @@ def _serialize_filter_config(profile: "RadioProfile") -> dict[str, dict[str, obj
                 else {}
             ),
             **({"table": list(rule.table)} if rule.table else {}),
+            # MOR-4434: the narrow-state variant of the table, published only
+            # for rules that declare it. Every other radio's serialized
+            # output stays byte-identical to before.
+            **({"narrowTable": list(rule.narrow_table)} if rule.narrow_table else {}),
         }
     return result
 
@@ -1032,12 +1043,21 @@ class WebConfig:
     # SoapyIqSource, lazily).
     scope_source: str = "auto"
     sdr_config: SdrConfig | None = None
+    iq_source: IqSourceSpec | None = None
     sdr_source_factory: Callable[[SdrConfig], IqSource] | None = None
     # Band plan data directory (also holds the persisted ``_config.toml``);
     # None = the bundled ``band-plans/`` (``bundled_band_plans_dir``). Tests inject a copy.
     band_plans_dir: pathlib.Path | None = None
 
     def __post_init__(self) -> None:
+        if self.sdr_config is not None:
+            if self.iq_source is None:
+                self.iq_source = SoapySourceSpec(self.sdr_config)
+            elif (
+                isinstance(self.iq_source, SoapySourceSpec)
+                and self.iq_source.config != self.sdr_config
+            ):
+                raise ValueError("iq_source config must match sdr_config")
         if self.auth_token:
             raise ValueError(
                 "Application authentication was removed; auth_token must be empty."
@@ -1801,9 +1821,13 @@ class WebServer:
         config = self._config.sdr_config
         if config is None or self._iq_scope_source is not None:
             return
-        factory = self._config.sdr_source_factory or default_source_factory
+        factory = self._config.sdr_source_factory
+        iq_source = self._config.iq_source
+        assert iq_source is not None
         try:
-            provider = factory(config)
+            provider = (
+                factory(config) if factory is not None else build_source(iq_source)
+            )
         except Exception as exc:
             self._iq_scope_construction_error = str(exc)
             raise

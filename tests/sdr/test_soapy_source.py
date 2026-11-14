@@ -240,6 +240,15 @@ def _make_source(
     )
 
 
+def test_facts_are_independent_without_opening_device(
+    soapy: _FakeSoapyHarness,
+) -> None:
+    source = _make_source(soapy)
+
+    assert source.facts.tuning == "independent"
+    assert source.is_open is False
+
+
 def test_imports_without_soapysdr_and_construction_raises() -> None:
     with _soapy_module(None):
         assert importlib.import_module("rigplane")

@@ -47,6 +47,7 @@ from rigplane.profiles.control_domain import (
 
 __all__ = [
     "RigConfig",
+    "SplitSpec",
     "RigLoadError",
     "load_rig",
     "discover_rigs",
@@ -71,6 +72,7 @@ from rigplane.profiles import (
     FilterWidthRule,
     FilterWidthSegment,
     FreqRangeInfo,
+    IqLanSpec,
     KeyboardBinding,
     KeyboardConfig,
     MemoryProfile,
@@ -649,6 +651,50 @@ def _parse_control_spec(
 
 
 @dataclass(frozen=True, slots=True)
+class SplitSpec:
+    """CAT split value encodings, separate from command templates."""
+
+    write_map: dict[bool, str] = field(default_factory=lambda: {False: "0", True: "1"})
+    read_map: dict[str, bool] = field(default_factory=lambda: {"0": False, "1": True})
+
+
+def _parse_split(filename: str, raw: object) -> SplitSpec:
+    if raw is None:
+        return SplitSpec()
+    if not isinstance(raw, dict):
+        raise RigLoadError(f"{filename}: [vfo.split] must be a table")
+    _reject_unknown_keys(
+        filename, "[vfo.split]", raw, frozenset({"write_map", "read_map"})
+    )
+    write = raw.get("write_map", {"off": "0", "on": "1"})
+    read = raw.get("read_map", {"0": "off", "1": "on"})
+    if (
+        not isinstance(write, dict)
+        or set(write) != {"off", "on"}
+        or not all(isinstance(value, str) and value for value in write.values())
+        or write["off"] == write["on"]
+    ):
+        raise RigLoadError(
+            f"{filename}: [vfo.split].write_map must map off/on to distinct non-empty strings"
+        )
+    if (
+        not isinstance(read, dict)
+        or not all(isinstance(key, str) and key for key in read)
+        or not all(
+            isinstance(value, str) and value in ("off", "on") for value in read.values()
+        )
+        or set(read.values()) != {"off", "on"}
+    ):
+        raise RigLoadError(
+            f"{filename}: [vfo.split].read_map must map non-empty strings to both off and on"
+        )
+    return SplitSpec(
+        write_map={False: cast(str, write["off"]), True: cast(str, write["on"])},
+        read_map={cast(str, key): value == "on" for key, value in read.items()},
+    )
+
+
+@dataclass(frozen=True, slots=True)
 class RigConfig:
     """Parsed rig configuration from a TOML file."""
 
@@ -774,6 +820,7 @@ class RigConfig:
     fixed_value_checks: dict[str, str] = field(default_factory=dict)
     state_acquisition: RadioAcquisitionProfile | None = None
     tx_policy: TxPolicy = field(default_factory=TxPolicy)
+    split: SplitSpec = field(default_factory=SplitSpec)
     ctcss_tones_centihz: tuple[int, ...] | None = None
     tone_squelch_types: dict[int, ToneSquelchType] | None = None
     # Protocol-native expected identity tokens (MOR-3064), from the optional
@@ -796,6 +843,7 @@ class RigConfig:
     # integer (``0x7250`` = reply bytes ``72 50``). ``None`` on every
     # non-Xiegu profile. Keyword-only so no positional argument shifts.
     xiegu_model_id: int | None = field(default=None, kw_only=True)
+    iq_lan: IqLanSpec | None = field(default=None, kw_only=True)
 
     def to_profile(self) -> RadioProfile:
         """Build a ``RadioProfile`` from this config."""
@@ -1030,6 +1078,7 @@ class RigConfig:
             cw_text=self.cw_text,
             usb_identity=self.usb_identity,
             xiegu_model_id=self.xiegu_model_id,
+            iq_lan=self.iq_lan,
         )
 
     def to_command_map(self) -> CommandMap:
@@ -2627,6 +2676,69 @@ def _parse_cw_text(
     )
 
 
+_IQ_LAN_PROTOCOL = "xiegu_udp"
+_IQ_LAN_INT_KEYS = (
+    "radio_port",
+    "receive_port",
+    "sample_rate_hz",
+    "samples_per_datagram",
+    "center_offset_hz",
+    "usable_bandwidth_hz",
+    "tune_min_hz",
+    "tune_max_hz",
+)
+_IQ_LAN_KEYS = frozenset({"protocol", *_IQ_LAN_INT_KEYS})
+
+
+def _parse_iq_lan(filename: str, raw: Any) -> IqLanSpec | None:
+    """Parse optional radio-LAN IQ wire facts without importing ``sdr``."""
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise RigLoadError(f"{filename}: [iq_lan] must be a table")
+    _reject_unknown_keys(filename, "[iq_lan]", raw, _IQ_LAN_KEYS)
+    missing = sorted(_IQ_LAN_KEYS - set(raw))
+    if missing:
+        raise RigLoadError(f"{filename}: [iq_lan] missing required key(s): {missing!r}")
+    protocol = raw["protocol"]
+    if protocol != _IQ_LAN_PROTOCOL:
+        raise RigLoadError(
+            f"{filename}: [iq_lan].protocol must be {_IQ_LAN_PROTOCOL!r}, "
+            f"got {protocol!r}"
+        )
+    values: dict[str, int] = {}
+    for key in _IQ_LAN_INT_KEYS:
+        value = raw[key]
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise RigLoadError(f"{filename}: [iq_lan].{key} must be an integer")
+        values[key] = value
+    for key in ("radio_port", "receive_port"):
+        if not 1 <= values[key] <= 65_535:
+            raise RigLoadError(f"{filename}: [iq_lan].{key} must be in 1..65535")
+    for key in ("sample_rate_hz", "samples_per_datagram", "usable_bandwidth_hz"):
+        if values[key] <= 0:
+            raise RigLoadError(f"{filename}: [iq_lan].{key} must be positive")
+    if values["samples_per_datagram"] * 4 > 65_507:
+        raise RigLoadError(
+            f"{filename}: [iq_lan].samples_per_datagram * 4 must be <= 65507"
+        )
+    if values["usable_bandwidth_hz"] > values["sample_rate_hz"]:
+        raise RigLoadError(
+            f"{filename}: [iq_lan].usable_bandwidth_hz must not exceed sample_rate_hz"
+        )
+    if values["tune_min_hz"] < 0:
+        raise RigLoadError(f"{filename}: [iq_lan].tune_min_hz must be non-negative")
+    if values["tune_max_hz"] > 2**64 - 1:
+        raise RigLoadError(
+            f"{filename}: [iq_lan].tune_max_hz must fit an unsigned 64-bit integer"
+        )
+    if values["tune_min_hz"] >= values["tune_max_hz"]:
+        raise RigLoadError(
+            f"{filename}: [iq_lan].tune_min_hz must be less than tune_max_hz"
+        )
+    return IqLanSpec(protocol=protocol, **values)
+
+
 def _parse_identity(filename: str, raw: Any) -> tuple[str, ...]:
     """Parse the optional top-level ``[identity]`` section (MOR-3064).
 
@@ -2698,6 +2810,136 @@ def _validate_band_max_power(
                     f"{where} must not exceed [power].max_watts ({max_watts})"
                     f"{band_name}"
                 )
+
+
+def _parse_optional_first_code(
+    filename: str, mode_key: str, raw_rule: dict[str, Any], field: str
+) -> int | None:
+    """Parse one optional per-rule wire-code base (MOR-4433).
+
+    ``None`` (absent) keeps the profile-level ``[filters] first_code``;
+    a present value must be a non-negative integer (bools excluded —
+    ``isinstance(True, int)`` would otherwise admit them).
+    """
+    raw = raw_rule.get(field)
+    if raw is None:
+        return None
+    if isinstance(raw, bool) or not isinstance(raw, int) or raw < 0:
+        raise RigLoadError(
+            f"{filename}: [filters.width.{mode_key}].{field} must be "
+            f"a non-negative integer, got {raw!r}"
+        )
+    return raw
+
+
+def _validate_filter_table_first_codes(
+    filename: str,
+    filter_width_encoding: str,
+    filter_width_radio_default_code: int | None,
+    filter_config: dict[str, FilterWidthRule] | None,
+) -> None:
+    """Validate the optional per-table wire-code bases (MOR-4433).
+
+    A rule may carry its own base for the wide ``table`` (``first_code``)
+    and for the narrow ``narrow_table`` (``narrow_first_code``) — the
+    FT-991A SH space counts the wide table from 09/10 while the narrow
+    table counts from 01. Absent fields fall back to the profile-level
+    ``[filters] first_code`` (every pre-MOR-4433 profile), so only rules
+    that set at least one field are checked here.
+    """
+    for mode_key in sorted((filter_config or {}).keys()):
+        rule = (filter_config or {})[mode_key]
+        if rule.first_code is None and rule.narrow_first_code is None:
+            continue
+        where = f"{filename}: [filters.width.{mode_key}]"
+        if filter_width_encoding != "table_index":
+            raise RigLoadError(
+                f"{where} per-table first codes need [filters].encoding "
+                f'"table_index", got {filter_width_encoding!r}'
+            )
+        if rule.fixed:
+            raise RigLoadError(
+                f"{where} per-table first codes are rejected on a fixed-width mode"
+            )
+        if rule.first_code is not None and not rule.table:
+            raise RigLoadError(
+                f"{where}.first_code needs a [filters.width.{mode_key}].table"
+            )
+        if rule.narrow_first_code is not None and not rule.narrow_table:
+            raise RigLoadError(
+                f"{where}.narrow_first_code needs a "
+                f"[filters.width.{mode_key}].narrow_table"
+            )
+        if filter_width_radio_default_code is not None:
+            for field, base in (
+                ("first_code", rule.first_code),
+                ("narrow_first_code", rule.narrow_first_code),
+            ):
+                if base is not None and not filter_width_radio_default_code < base:
+                    raise RigLoadError(
+                        f"{where}.{field} ({base}) must sit above "
+                        "[filters].radio_default_code "
+                        f"({filter_width_radio_default_code}): a default "
+                        "among the table codes would be a table entry, "
+                        "not the radio's default"
+                    )
+
+
+def _validate_filter_narrow_variant(
+    filename: str,
+    filter_width_encoding: str,
+    filter_config: dict[str, FilterWidthRule] | None,
+    commands: dict[str, Any],
+    receiver_count: int,
+) -> None:
+    """Validate the optional narrow-state filter-width variant (MOR-4428).
+
+    A mode rule may carry ``narrow_table``: while NARROW is on, an SH code maps through the
+    narrow table instead of ``table``. Absent narrow data keeps exactly
+    today's behavior — the loader leaves the tuples empty and no narrow
+    read is ever issued for the mode.
+    """
+
+    def _has_readable(name: str) -> bool:
+        spec = commands.get(name)
+        if spec is None or isinstance(spec, AbsentCommandSpec):
+            return False
+        read = getattr(spec, "read", None)
+        return isinstance(read, str) and bool(read)
+
+    for mode_key in sorted((filter_config or {}).keys()):
+        rule = (filter_config or {})[mode_key]
+        where = f"{filename}: [filters.width.{mode_key}]"
+        if not rule.narrow_table:
+            continue
+        if filter_width_encoding != "table_index":
+            raise RigLoadError(
+                f"{where}.narrow_table needs [filters].encoding "
+                '"table_index", '
+                f"got {filter_width_encoding!r}"
+            )
+        if rule.fixed:
+            raise RigLoadError(
+                f"{where}.narrow_table is rejected on a fixed-width mode"
+            )
+        if not rule.table:
+            raise RigLoadError(
+                f"{where}.narrow_table needs a [filters.width.{mode_key}].table"
+            )
+        if any(
+            first >= second
+            for first, second in zip(rule.narrow_table, rule.narrow_table[1:])
+        ):
+            raise RigLoadError(f"{where}.narrow_table must be strictly increasing")
+        if not _has_readable("get_narrow"):
+            raise RigLoadError(
+                f"{where}.narrow_table needs a [commands].get_narrow read"
+            )
+        if receiver_count > 1 and not _has_readable("get_narrow_sub"):
+            raise RigLoadError(
+                f"{where}.narrow_table needs a [commands].get_narrow_sub "
+                "read on a multi-receiver profile"
+            )
 
 
 def load_rig(path: Path) -> RigConfig:
@@ -2842,6 +3084,7 @@ def load_rig(path: Path) -> RigConfig:
 
     # Validate [vfo]
     vfo = data["vfo"]
+    split = _parse_split(filename, vfo.get("split"))
     scheme = vfo.get("scheme", "")
     if scheme not in VALID_VFO_SCHEMES:
         raise RigLoadError(
@@ -2967,8 +3210,16 @@ def load_rig(path: Path) -> RigConfig:
             )
             defaults_raw = raw_rule.get("defaults", [])
             table_raw = raw_rule.get("table", [])
+            narrow_table_raw = raw_rule.get("narrow_table", [])
             filter_config[str(mode_key).upper()] = FilterWidthRule(
                 defaults=tuple(int(value) for value in defaults_raw),
+                narrow_table=tuple(int(v) for v in narrow_table_raw),
+                first_code=_parse_optional_first_code(
+                    filename, mode_key, raw_rule, "first_code"
+                ),
+                narrow_first_code=_parse_optional_first_code(
+                    filename, mode_key, raw_rule, "narrow_first_code"
+                ),
                 fixed=bool(raw_rule.get("fixed", False)),
                 step_hz=(int(raw_rule["step_hz"]) if "step_hz" in raw_rule else None),
                 pbt_step_hz=(
@@ -3718,6 +3969,7 @@ def load_rig(path: Path) -> RigConfig:
         data.get("state_acquisition"),
     )
     tx_policy = _parse_tx_policy(filename, data.get("tx_policy"))
+    iq_lan = _parse_iq_lan(filename, data.get("iq_lan"))
     expected_identity_ids = _parse_identity(filename, data.get("identity"))
     memory = _parse_memory(filename, data.get("memory"), ctcss_tones_centihz)
     cw_text = _parse_cw_text(
@@ -3742,6 +3994,20 @@ def load_rig(path: Path) -> RigConfig:
             *capability_features,
             CAP_FILTER_WIDTH_RADIO_DEFAULT,
         )
+
+    _validate_filter_narrow_variant(
+        filename,
+        filter_width_encoding,
+        filter_config,
+        commands,
+        receiver_count,
+    )
+    _validate_filter_table_first_codes(
+        filename,
+        filter_width_encoding,
+        filter_width_radio_default_code,
+        filter_config,
+    )
 
     return RigConfig(
         id=radio["id"],
@@ -3839,10 +4105,12 @@ def load_rig(path: Path) -> RigConfig:
         fixed_value_checks=fixed_value_checks,
         state_acquisition=state_acquisition,
         tx_policy=tx_policy,
+        split=split,
         expected_identity_ids=expected_identity_ids,
         memory=memory,
         cw_text=cw_text,
         usb_identity=usb_identity,
+        iq_lan=iq_lan,
     )
 
 

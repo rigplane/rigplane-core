@@ -359,6 +359,15 @@ async def test_driver_second_cycle_fail_and_partial_cleanup(
     async def noop(*args: Any, **kwargs: Any) -> bool:
         return True
 
+    # These tests script the probe samples one by one. The pre-reconnect
+    # baseline settle (MOR-4373) takes its own samples before the pre trio, so
+    # it is off here; it has its own tests in tests/test_soak_driver.py.
+    real_probe = driver._stability_probe
+
+    async def probe(phase: str = "pre", *, settle_baseline: bool = False) -> Any:
+        return await real_probe(phase, settle_baseline=False)
+
+    monkeypatch.setattr(driver, "_stability_probe", probe)
     monkeypatch.setattr(sampler, "fetch_runtime", runtime)
     monkeypatch.setattr(sampler, "fetch_connection_status", status)
     monkeypatch.setattr(driver, "_post_radio_control", noop)
@@ -506,6 +515,15 @@ async def test_opt_in_numeric_and_legacy_mode_equivalence(
         async def noop(*args: Any, **kwargs: Any) -> bool:
             return True
 
+        # These tests script the probe samples one by one. The pre-reconnect
+        # baseline settle (MOR-4373) takes its own samples before the pre trio, so
+        # it is off here; it has its own tests in tests/test_soak_driver.py.
+        real_probe = driver._stability_probe
+
+        async def probe(phase: str = "pre", *, settle_baseline: bool = False) -> Any:
+            return await real_probe(phase, settle_baseline=False)
+
+        monkeypatch.setattr(driver, "_stability_probe", probe)
         monkeypatch.setattr(sampler, "fetch_runtime", runtime)
         monkeypatch.setattr(sampler, "fetch_connection_status", status)
         monkeypatch.setattr(driver, "_post_radio_control", noop)

@@ -22,6 +22,7 @@ Supported placeholders
 {band:02d}    Band index, 2 digits zero-padded
 {wpm:03d}     CW speed in WPM, 3 digits zero-padded
 {idx:02d}     Index value, 2 digits zero-padded
+{code:02d}   Width/table code, 2 digits zero-padded (e.g. FT-991A SH)
 {delay:04d}   Delay in milliseconds, 4 digits zero-padded
 {head}        Head selector, single character
 {watts:03d}   Power in watts, 3 digits zero-padded
@@ -131,6 +132,11 @@ _PLACEHOLDER_REGEX: dict[str, tuple[str, Any]] = {
     "band:02d": (r"(?P<band>\d{2})", int),
     "wpm:03d": (r"(?P<wpm>\d{3})", int),
     "code:03d": (r"(?P<code>\d{3})", int),
+    # MOR-4433: the FT-991A SH width code is two digits (manual SH table,
+    # PDF p.17: SH014; for 2400 Hz wide). ``format_command`` renders
+    # ``{code:02d}`` through plain ``str.format``; this entry lets the
+    # reply parser accept the same shape.
+    "code:02d": (r"(?P<code>\d{2})", int),
     "idx:02d": (r"(?P<idx>\d{2})", int),
     # MOR-561: the FTX-1 answers ``SD;`` with a short ``SD09;`` (2-digit) form
     # while the template is the canonical ``SD{delay:04d};`` (4-digit). Accept

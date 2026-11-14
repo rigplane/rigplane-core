@@ -5,12 +5,59 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field, fields
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 if TYPE_CHECKING:
     import numpy as np
 
-__all__ = ["IqBlock", "SdrConfig"]
+__all__ = [
+    "IqBlock",
+    "IqDisplaySettings",
+    "IqSourceFacts",
+    "IqSourceSpec",
+    "IqTuning",
+    "SdrConfig",
+    "SoapySourceSpec",
+    "UdpIqSourceSpec",
+]
+
+IqTuning = Literal["independent", "slaved"]
+
+
+class IqDisplaySettings(Protocol):
+    """Display fields the SDR controller reads from its configuration."""
+
+    @property
+    def span_hz(self) -> int | None: ...
+
+    @property
+    def freq_offset_hz(self) -> int: ...
+
+
+@dataclass(frozen=True)
+class IqSourceFacts:
+    """Tuning ownership and usable-window facts declared by an IQ source."""
+
+    tuning: IqTuning = "independent"
+    center_offset_hz: int = 0
+    usable_bandwidth_hz: int | None = None
+
+    def __post_init__(self) -> None:
+        if self.tuning not in ("independent", "slaved"):
+            raise ValueError(f"tuning: unknown IQ source tuning {self.tuning!r}")
+        if isinstance(self.center_offset_hz, bool) or not isinstance(
+            self.center_offset_hz, int
+        ):
+            raise ValueError("center_offset_hz: must be an integer")
+        if self.tuning == "independent" and self.center_offset_hz != 0:
+            raise ValueError("center_offset_hz: must be 0 when tuning is 'independent'")
+        if self.usable_bandwidth_hz is not None:
+            if isinstance(self.usable_bandwidth_hz, bool) or not isinstance(
+                self.usable_bandwidth_hz, int
+            ):
+                raise ValueError("usable_bandwidth_hz: must be an integer or None")
+            if self.usable_bandwidth_hz <= 0:
+                raise ValueError("usable_bandwidth_hz: must be positive")
 
 
 def _is_set(data: Mapping[str, Any], name: str) -> bool:
@@ -191,3 +238,76 @@ class SdrConfig:
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             raise ValueError(f"{name}: must be a number, got {type(value).__name__}")
         return float(value)
+
+
+@dataclass(frozen=True)
+class SoapySourceSpec:
+    """Select a SoapySDR source and its device configuration."""
+
+    config: SdrConfig
+    kind: Literal["soapy"] = "soapy"
+
+
+@dataclass(frozen=True)
+class UdpIqSourceSpec:
+    """Wire facts for a radio-owned UDP IQ stream; host is configuration."""
+
+    host: str
+    radio_port: int
+    receive_port: int
+    sample_rate_hz: int
+    samples_per_datagram: int
+    center_offset_hz: int
+    usable_bandwidth_hz: int | None
+    tune_min_hz: int
+    tune_max_hz: int
+    kind: Literal["xiegu_udp"] = "xiegu_udp"
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.host, str) or not self.host.strip():
+            raise ValueError("host: must be a non-empty string")
+        integer_fields = (
+            "radio_port",
+            "receive_port",
+            "sample_rate_hz",
+            "samples_per_datagram",
+            "center_offset_hz",
+            "tune_min_hz",
+            "tune_max_hz",
+        )
+        for name in integer_fields:
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise ValueError(f"{name}: must be an integer")
+        if self.usable_bandwidth_hz is not None and (
+            isinstance(self.usable_bandwidth_hz, bool)
+            or not isinstance(self.usable_bandwidth_hz, int)
+        ):
+            raise ValueError("usable_bandwidth_hz: must be an integer or None")
+        for name in ("radio_port", "receive_port"):
+            if not 1 <= getattr(self, name) <= 65_535:
+                raise ValueError(f"{name}: must be in 1..65535")
+        if self.sample_rate_hz <= 0:
+            raise ValueError("sample_rate_hz: must be positive")
+        if self.samples_per_datagram <= 0:
+            raise ValueError("samples_per_datagram: must be positive")
+        if self.samples_per_datagram * 4 > 65_507:
+            raise ValueError(
+                "samples_per_datagram: samples_per_datagram * 4 must be <= 65507"
+            )
+        if self.tune_min_hz < 0:
+            raise ValueError("tune_min_hz must be non-negative")
+        if self.tune_max_hz > 2**64 - 1:
+            raise ValueError("tune_max_hz must fit an unsigned 64-bit integer")
+        if self.tune_min_hz >= self.tune_max_hz:
+            raise ValueError("tune_min_hz must be less than tune_max_hz")
+        if self.usable_bandwidth_hz is not None and (
+            self.usable_bandwidth_hz <= 0
+            or self.usable_bandwidth_hz > self.sample_rate_hz
+        ):
+            raise ValueError(
+                "usable_bandwidth_hz: must be positive and no greater than sample_rate_hz"
+            )
+
+
+IqSourceSpec = SoapySourceSpec | UdpIqSourceSpec

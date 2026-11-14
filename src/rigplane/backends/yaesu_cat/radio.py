@@ -22,7 +22,7 @@ from ...commands import hz_to_table_index, table_index_to_hz
 from ...core.priority_exchange import ExchangeTier
 from ...core.radio_protocol import RadioIdentity, RadioIdentityStatus, RelativeVfoState
 from ...core.tx_observation import TxStateReading
-from ...core.types import MemoryEntry
+from ...core.types import MemoryEntry, ToneSquelchType
 from ...exceptions import (
     AudioFormatError,
     CommandError,
@@ -1291,6 +1291,9 @@ class YaesuCatRadio:
     def supports_command(self, command: str, *, receiver: int | None = None) -> bool:
         """Return profile-derived support only for an executable operation."""
         dependencies = {
+            "get_vfo_slot": ("get_vfo_select",),
+            "set_vfo_slot": ("set_vfo_select",),
+            "swap_vfo_ab": ("vfo_swap",),
             "get_tuner_status": ("get_tuner",),
             "set_tuner_status": ("get_tuner", "set_tuner"),
             # RepeaterControlCapable (MOR-2111 tone half): the protocol
@@ -1307,6 +1310,11 @@ class YaesuCatRadio:
             "get_tsql_freq": ("get_ctcss_tone",),
             "set_tsql_freq": ("set_ctcss_tone",),
         }.get(command)
+        if (
+            command in {"get_vfo_slot", "set_vfo_slot", "swap_vfo_ab"}
+            and self._config.vfo_scheme != "ab"
+        ):
+            return False
         if dependencies is None:
             profile_supported = supports_callable(self.profile, command)
         else:
@@ -2267,10 +2275,15 @@ class YaesuCatRadio:
         Routes through the ``get_meter`` profile entry (parameterised read
         template, e.g. ``"RM{type};"``) rather than a hardcoded command —
         a malformed or short reply fails the parse template and raises
-        :class:`~.parser.CatParseError` (a ``ValueError`` subclass).
+        :class:`~.parser.CatParseError` (a ``ValueError`` subclass). A
+        single-value answer (single-receiver profiles such as the FT-991A,
+        whose ``RM`` reply carries no SUB group) reads back as (main, main):
+        the shape comes from the profile's parse template, not from a
+        per-radio branch.
         """
         result = await self._query("get_meter", type=meter_type)
-        return result["main"], result["sub"]
+        main = result["main"]
+        return main, result.get("sub", main)
 
     async def read_comp_meter(self) -> int:
         """Read COMP (compression) meter without mutating legacy state."""
@@ -2662,19 +2675,43 @@ class YaesuCatRadio:
 
     # -- D4: Filters --------------------------------------------------------
 
-    def _filter_width_table(self, mode: str | None) -> tuple[int, ...] | None:
+    def _filter_width_table(
+        self, mode: str | None, *, narrow: bool = False
+    ) -> tuple[int, ...] | None:
         """Return the filter-width table for a mode, or None.
 
         Returns None for non-``table_index`` encodings and for modes
         without a table row; the caller supplies the radio's live mode
-        (``read_filter_width`` resolves it via ``read_mode``).
+        (``read_filter_width`` resolves it via ``read_mode``). When
+        ``narrow`` is true and the mode's rule declares a narrow variant
+        (MOR-4428), the narrow table is returned instead of the wide one.
         """
         if self.profile.filter_width_encoding != "table_index":
             return None
         rule = self.profile.resolve_filter_rule(mode)
-        if rule and rule.table:
+        if rule is None:
+            return None
+        if narrow and rule.narrow_table:
+            return rule.narrow_table
+        if rule.table:
             return rule.table
         return None
+
+    async def _resolve_width_narrow(self, mode: str | None, receiver: int) -> bool:
+        """Whether the SH mapping uses the mode's narrow table (MOR-4428).
+
+        Reads the radio's narrow state (``get_narrow``/``get_narrow_sub``)
+        only when the live mode's rule declares a narrow variant; every
+        other mode keeps today's single-table behavior with no extra CAT
+        query. Fixed-width modes never reach here with narrow data (the
+        loader rejects that combination).
+        """
+        if self.profile.filter_width_encoding != "table_index":
+            return False
+        rule = self.profile.resolve_filter_rule(mode)
+        if rule is None or not rule.narrow_table:
+            return False
+        return await self.read_narrow(receiver)
 
     async def read_filter_width_reading(
         self, receiver: int = 0, mode: str | None = None
@@ -2687,7 +2724,9 @@ class YaesuCatRadio:
         from the live mode, not the legacy ``self._state`` mirror — the
         observation adapter never writes that mirror, so during polling it is
         stale and would select the wrong table, leaking the raw SH code as the
-        "Hz" value (MOR-507).
+        "Hz" value (MOR-507). When the mode's rule declares a narrow variant
+        (MOR-4428), the narrow state is read first and selects the narrow
+        table instead of the wide one.
 
         A code-00 "(Default)" answer carries no Hz value (bench: ``MD0C;
         SH0000;`` in DATA-U, ``MD03; SH0000;`` in CW-U) and reads back as
@@ -2716,19 +2755,29 @@ class YaesuCatRadio:
         )
         if rule and rule.fixed and rule.defaults:
             return FilterWidthReading(hz=int(rule.defaults[0]), radio_default=False)
+        # MOR-4428: the narrow state selects the SH table, so it is read
+        # before the SH answer is mapped -- but only for modes whose rule
+        # declares a narrow variant. Every other mode keeps today's wire
+        # log (no extra NA query).
+        narrow = await self._resolve_width_narrow(mode, receiver)
         default_code = self.profile.filter_width_radio_default_code
         if default_code is not None and code == default_code:
             return FilterWidthReading(hz=None, radio_default=True)
-        table = self._filter_width_table(mode)
+        table = self._filter_width_table(mode, narrow=narrow)
         if table is None:
             return FilterWidthReading(hz=None, radio_default=False)
         try:
-            # Table 5 codes count from ``first_code``; codes below it (the
-            # code-00 "(Default)") are outside the 0-based codec table.
+            # Table codes count from the ACTIVE table's own base
+            # (MOR-4433): a per-rule ``first_code``/``narrow_first_code``
+            # when the rule declares one, else the profile-level
+            # ``first_code``. Codes below the base (the code-00
+            # "(Default)") are outside the 0-based codec table.
             return FilterWidthReading(
                 hz=int(
                     table_index_to_hz(
-                        code - self.profile.filter_width_first_code, table=table
+                        code
+                        - self.profile.resolve_filter_first_code(rule, narrow=narrow),
+                        table=table,
                     )
                 ),
                 radio_default=False,
@@ -2796,9 +2845,18 @@ class YaesuCatRadio:
             raise CommandError(
                 f"set_filter_width is unsupported for mode {mode} without a width table"
             )
-        index = (
-            hz_to_table_index(width_hz, table=rule.table)
-            + self.profile.filter_width_first_code
+        # MOR-4428: map through the narrow table while NARROW is on —
+        # read before the write, only for modes with a narrow variant.
+        # A Hz value the active table cannot spell lands on the nearest
+        # entry, exactly as the wide table always has.
+        narrow = await self._resolve_width_narrow(mode, receiver)
+        table = self._filter_width_table(mode, narrow=narrow)
+        if table is None:  # pragma: no cover - loader pairs the tables
+            raise CommandError(
+                f"set_filter_width is unsupported for mode {mode} without a width table"
+            )
+        index = hz_to_table_index(width_hz, table=table) + (
+            self.profile.resolve_filter_first_code(rule, narrow=narrow)
         )
         await self._write(cmd, code=index)
 
@@ -2894,13 +2952,8 @@ class YaesuCatRadio:
 
     @property
     def transceiver_count(self) -> int:
-        """Number of independent transceivers exposed by this rig.
-
-        FTX-1 is wired as two independent transceivers (HF+50 MHz and
-        144+430 MHz) sharing a single control head; other Yaesu CAT rigs
-        are single-transceiver.
-        """
-        return 2 if self._config.id == "yaesu_ftx1" else 1
+        """Number of independent transceivers declared by the profile."""
+        return self._config.transceiver_count
 
     async def set_tx_source(self, xcvr: int) -> None:
         """Make ``xcvr`` the active TX transceiver (FTX-1 ``FT`` command).
@@ -2963,14 +3016,9 @@ class YaesuCatRadio:
         await self.set_tx_source(tx_xcvr)  # FT{tx_xcvr}: route TX
 
     async def read_split(self) -> bool:
-        """Read split operation state without mutating legacy state.
-
-        Issues a single ``ST`` read. Feeds the observation pipeline via
-        :class:`YaesuObservationAdapter`; the legacy ``self._state`` mirror is
-        not written (MOR-434 / MOR-446).
-        """
+        """Read split using the profile's answer map."""
         result = await self._query("get_split")
-        return bool(result["state"] == "1")
+        return self._config.split.read_map.get(str(result["state"]), False)
 
     async def get_split(self) -> bool:
         """Get split operation state."""
@@ -2978,7 +3026,7 @@ class YaesuCatRadio:
 
     async def set_split(self, state: bool) -> None:
         """Set split operation state."""
-        await self._write("set_split", state="1" if state else "0")
+        await self._write("set_split", state=self._config.split.write_map[state])
 
     async def read_vfo_select(self) -> int:
         """Read VFO/receiver selection without mutating legacy state.
@@ -2989,6 +3037,8 @@ class YaesuCatRadio:
         ``global.slow_state.active`` ``"MAIN"``/``"SUB"`` string; the legacy
         ``self._state`` mirror is not written (MOR-434 / MOR-446).
         """
+        if not self.supports_command("get_vfo_select"):
+            raise NotImplementedError(f"get_vfo_select not supported on {self.model}")
         result = await self._query("get_vfo_select")
         return int(result["vfo"])
 
@@ -2998,6 +3048,8 @@ class YaesuCatRadio:
 
     async def set_vfo_select(self, vfo: int) -> None:
         """Set VFO selection (0 = MAIN, 1 = SUB)."""
+        if not self.supports_command("set_vfo_select"):
+            raise NotImplementedError(f"set_vfo_select not supported on {self.model}")
         async with self._mode_lock:
             await self._write("set_vfo_select", vfo=str(vfo))
 
@@ -3080,16 +3132,9 @@ class YaesuCatRadio:
 
     # -- VfoSlotCapable ----------------------------------------------------
 
-    def _vfo_slot_supported(self) -> bool:
-        """``True`` when the active profile exposes per-receiver A/B slots.
-
-        The FTX-1 family uses ``vfo_scheme = "ab_shared"`` — there is no
-        per-receiver A/B pair (each receiver has a single VFO addressed
-        via ``FA;``/``FB;``).  Single-RX Yaesu CAT rigs use
-        ``vfo_scheme = "ab"`` and route ``FR{vfo};`` through the shared
-        ``set_vfo_select`` / ``get_vfo_select`` plumbing.
-        """
-        return bool(self._config.vfo_scheme == "ab")
+    def _vfo_slot_supported(self, operation: str) -> bool:
+        """Whether the profile declares the requested A/B slot operation."""
+        return self.supports_command(operation)
 
     @staticmethod
     def _slot_to_index(slot: str) -> int:
@@ -3114,16 +3159,13 @@ class YaesuCatRadio:
     async def get_vfo_slot(self, receiver: int = 0) -> str:
         """Return the active VFO slot (``"A"`` or ``"B"``) for ``receiver``.
 
-        Raises :class:`NotImplementedError` on FTX-1 (``ab_shared`` scheme):
-        the FTX-1 has no per-receiver A/B pair.  Use
-        :meth:`select_receiver` for MAIN/SUB switching instead.
+        Raises :class:`NotImplementedError` without a slot read command.
         """
         self._check_single_receiver(receiver, operation="get_vfo_slot")
-        if not self._vfo_slot_supported():
+        if not self._vfo_slot_supported("get_vfo_slot"):
             raise NotImplementedError(
                 f"get_vfo_slot not supported on {self.model} "
-                f"(vfo_scheme={self._config.vfo_scheme!r}); "
-                "use select_receiver() for MAIN/SUB on dual-RX Yaesu rigs"
+                f"(vfo_scheme={self._config.vfo_scheme!r})"
             )
         result = await self._query("get_vfo_select")
         return "B" if int(result["vfo"]) == 1 else "A"
@@ -3131,46 +3173,54 @@ class YaesuCatRadio:
     async def set_vfo_slot(self, slot: str, receiver: int = 0) -> None:
         """Make ``slot`` (``"A"`` or ``"B"``) the active VFO on ``receiver``.
 
-        Raises :class:`NotImplementedError` on FTX-1 (``ab_shared`` scheme).
+        Raises :class:`NotImplementedError` without a slot select command.
         """
         self._check_single_receiver(receiver, operation="set_vfo_slot")
         index = self._slot_to_index(slot)
-        if not self._vfo_slot_supported():
+        if not self._vfo_slot_supported("set_vfo_slot"):
             raise NotImplementedError(
                 f"set_vfo_slot not supported on {self.model} "
-                f"(vfo_scheme={self._config.vfo_scheme!r}); "
-                "use select_receiver() for MAIN/SUB on dual-RX Yaesu rigs"
+                f"(vfo_scheme={self._config.vfo_scheme!r})"
             )
         async with self._mode_lock:
             await self._write("set_vfo_select", vfo=str(index))
 
     async def swap_vfo_ab(self, receiver: int = 0) -> None:
-        """Swap VFO A and VFO B state on ``receiver``.
-
-        Yaesu CAT has no symmetric A↔B swap primitive: FTX-1 ``AB;``/
-        ``BA;`` are MAIN→SUB / SUB→MAIN copies (one-way), and Lab599-style
-        single-RX profiles do not expose a swap command at all.  This
-        method therefore raises :class:`NotImplementedError` on every
-        currently supported Yaesu CAT rig.
-        """
+        """Swap A/B through the profile's command on an A/B rig."""
         self._check_single_receiver(receiver, operation="swap_vfo_ab")
-        raise NotImplementedError(
-            f"swap_vfo_ab not supported on {self.model}: "
-            "Yaesu CAT has no symmetric A↔B swap primitive"
-        )
+        if not self.supports_command("swap_vfo_ab"):
+            raise NotImplementedError(
+                f"swap_vfo_ab not supported on {self.model}: the profile "
+                "declares no symmetric A↔B swap primitive (vfo_swap)"
+            )
+        async with self._mode_lock:
+            await self._write("vfo_swap")
 
     async def equalize_vfo_ab(self, receiver: int = 0) -> None:
-        """Copy the active VFO's state to the inactive VFO on ``receiver``.
+        """Copy VFO-A to VFO-B on ``receiver`` (MOR-4433 follow-up A).
 
-        Not supported by Yaesu CAT: FTX-1 ``AB;``/``BA;`` copy between
-        receivers (MAIN↔SUB), not between A/B within a receiver, and
-        single-RX Yaesu profiles do not expose an equalize command.
+        On a single-transceiver ``ab`` profile that declares the
+        ``vfo_a_to_b`` copy primitive (e.g. FT-991A ``AB;``), equalize is
+        that A→B copy and delegates to :meth:`vfo_a_to_b`. Every other
+        profile keeps today's refusal: ``ab_shared`` (dual-RX, e.g. FTX-1)
+        copies between receivers, not between A/B within a receiver; a
+        multi-transceiver ``ab`` command set (same reason: its ``AB;``
+        spans receivers, so it is no per-receiver copy); and a profile
+        without the primitive exposes no equalize command.
         Raises :class:`NotImplementedError`.
         """
         self._check_single_receiver(receiver, operation="equalize_vfo_ab")
+        if (
+            self._config.vfo_scheme == "ab"
+            and self._config.transceiver_count == 1
+            and self.supports_command("vfo_a_to_b")
+        ):
+            await self.vfo_a_to_b()
+            return
         raise NotImplementedError(
             f"equalize_vfo_ab not supported on {self.model}: "
-            "Yaesu CAT has no per-receiver A→B copy primitive"
+            "Yaesu CAT has no per-receiver A→B copy primitive "
+            "(the profile declares no single-transceiver vfo_a_to_b copy)"
         )
 
     # -- D6: TX Stack -------------------------------------------------------
@@ -3181,10 +3231,15 @@ class YaesuCatRadio:
         Returns:
             Tuple of (head: int, watts: int).  This is the configured
             (SET) power level via the ``PC`` command — the watt setpoint,
-            distinct from the measured ``RM5`` power meter.
+            distinct from the measured ``RM5`` power meter.  A headless
+            ``PC`` answer (profiles such as the FT-991A whose ``PC`` reply
+            carries no head digit) reads back head 0 — no head selection;
+            only watts is consumed downstream.  The shape comes from the
+            profile's parse template, not from a per-radio branch.
         """
         result = await self._query("get_power")
-        return int(result["head"]), result["watts"]
+        head = result.get("head")
+        return (int(head) if head is not None else 0), result["watts"]
 
     async def get_power(self) -> tuple[int, int]:
         """Get TX power setting.
@@ -3611,85 +3666,133 @@ class YaesuCatRadio:
     async def get_repeater_tone(self, receiver: int = 0) -> bool:
         """Get repeater tone (CTCSS ENC) on/off state, derived from ``CT``.
 
-        Codes 1 and 2 carry CTCSS encode (MOR-2130). Codes 3/4/5 (DCS /
-        PR FREQ / REV TONE) have no two-boolean representation, so the read
-        refuses loudly with ``ValueError`` — the same refusal the setters
-        make — instead of inventing ``False`` (MOR-2572).
+        The current code's meaning comes from the profile's
+        ``[tone_squelch_types]`` table: ``tone`` and ``tsql`` both carry
+        encode, ``off`` carries neither. A code the table maps to any
+        other type (DCS and friends) has no two-boolean representation,
+        so the read refuses loudly with ``ValueError`` — the same refusal
+        the setters make — instead of inventing ``False`` (MOR-2572).
         """
         code = await self.read_sql_type(receiver)
-        if code not in (0, 1, 2):
-            raise ValueError(
-                f"cannot express a CTCSS tone pair over CT code {code} "
-                "(DCS/PR FREQ/REV TONE)"
-            )
-        return code in (1, 2)
+        neutral = (self.profile.tone_squelch_types or {}).get(code)
+        if neutral in (ToneSquelchType.TONE, ToneSquelchType.TSQL):
+            return True
+        if neutral == ToneSquelchType.OFF:
+            return False
+        raise ValueError(
+            f"cannot express a CTCSS tone pair over CT code {code} "
+            "(DCS/PR FREQ/REV TONE)" + ("" if neutral is not None else " [unmapped]")
+        )
 
     async def set_repeater_tone(self, on: bool, receiver: int = 0) -> None:
         """Set repeater tone (CTCSS ENC) on/off (CT command, read-modify-write).
 
-        Reads the current ``CT`` code first. When it is 3, 4 or 5 (DCS /
-        PR FREQ / REV TONE) the write is refused loudly and nothing is sent:
-        the two-boolean vocabulary cannot express that state, and overwriting
-        it would destroy the radio's configuration. ``tone=False`` while tone
-        squelch is on ((False, True)) is likewise refused as not
-        representable.
+        Reads the current ``CT`` code first and resolves it through the
+        profile's ``[tone_squelch_types]`` table. A current code mapped to
+        anything but ``off``/``tone``/``tsql`` (DCS and friends) is refused
+        loudly and nothing is sent: the two-boolean vocabulary cannot
+        express that state, and overwriting it would destroy the radio's
+        configuration. ``tone=False`` while tone squelch is on
+        ((False, True)) is likewise refused as not representable.
         """
         receiver = self._validate_receiver(receiver)
+        table = dict(self.profile.tone_squelch_types or {})
         current = await self.read_sql_type(receiver)
-        if current not in (0, 1, 2):
+        neutral = table.get(current)
+        if neutral not in (
+            ToneSquelchType.OFF,
+            ToneSquelchType.TONE,
+            ToneSquelchType.TSQL,
+        ):
             raise ValueError(
                 f"cannot express a CTCSS toggle over CT code {current} "
                 "(DCS/PR FREQ/REV TONE); refusing to overwrite it"
+                + ("" if neutral is not None else " [unmapped]")
             )
         tone = bool(on)
-        tsql = current == 2
+        tsql = neutral == ToneSquelchType.TSQL
         if not tone and tsql:
             raise ValueError(
                 "tone squelch cannot stay on while the repeater tone is off "
                 "(CT has no code for encode-off/decode-on)"
             )
-        await self.set_sql_type(2 if tsql else (1 if tone else 0), receiver)
+        target = (
+            ToneSquelchType.TSQL
+            if tsql
+            else (ToneSquelchType.TONE if tone else ToneSquelchType.OFF)
+        )
+        code = next((c for c, n in table.items() if n == target), None)
+        if code is None:
+            raise ValueError(
+                f"profile {self.profile.model!r} has no CT code for "
+                f"{target.value}; refusing to invent one"
+            )
+        await self.set_sql_type(code, receiver)
 
     async def get_repeater_tsql(self, receiver: int = 0) -> bool:
         """Get tone squelch (CTCSS ENC+DEC) on/off state, derived from ``CT``.
 
-        Only code 2 carries decode (MOR-2130). Codes 3/4/5 (DCS / PR FREQ /
-        REV TONE) have no two-boolean representation, so the read refuses
-        loudly with ``ValueError`` — the same refusal the setters make —
-        instead of inventing ``False`` (MOR-2572).
+        The current code's meaning comes from the profile's
+        ``[tone_squelch_types]`` table: only ``tsql`` carries decode. A
+        code the table maps to any other type (DCS and friends) has no
+        two-boolean representation, so the read refuses loudly with
+        ``ValueError`` — the same refusal the setters make — instead of
+        inventing ``False`` (MOR-2572).
         """
         code = await self.read_sql_type(receiver)
-        if code not in (0, 1, 2):
-            raise ValueError(
-                f"cannot express a CTCSS tone pair over CT code {code} "
-                "(DCS/PR FREQ/REV TONE)"
-            )
-        return code == 2
+        neutral = (self.profile.tone_squelch_types or {}).get(code)
+        if neutral == ToneSquelchType.TSQL:
+            return True
+        if neutral in (ToneSquelchType.OFF, ToneSquelchType.TONE):
+            return False
+        raise ValueError(
+            f"cannot express a CTCSS tone pair over CT code {code} "
+            "(DCS/PR FREQ/REV TONE)" + ("" if neutral is not None else " [unmapped]")
+        )
 
     async def set_repeater_tsql(self, on: bool, receiver: int = 0) -> None:
         """Set tone squelch (CTCSS ENC+DEC) on/off (CT command, read-modify-write).
 
-        Reads the current ``CT`` code first. When it is 3, 4 or 5 (DCS /
-        PR FREQ / REV TONE) the write is refused loudly and nothing is sent.
-        Turning tone squelch on while CTCSS encode is off ((False, True)) is
-        refused as not representable: ``CT`` expresses decode only together
-        with encode.
+        Reads the current ``CT`` code first and resolves it through the
+        profile's ``[tone_squelch_types]`` table. A current code mapped to
+        anything but ``off``/``tone``/``tsql`` (DCS and friends) is refused
+        loudly and nothing is sent. Turning tone squelch on while CTCSS
+        encode is off ((False, True)) is refused as not representable:
+        ``CT`` expresses decode only together with encode.
         """
         receiver = self._validate_receiver(receiver)
+        table = dict(self.profile.tone_squelch_types or {})
         current = await self.read_sql_type(receiver)
-        if current not in (0, 1, 2):
+        neutral = table.get(current)
+        if neutral not in (
+            ToneSquelchType.OFF,
+            ToneSquelchType.TONE,
+            ToneSquelchType.TSQL,
+        ):
             raise ValueError(
                 f"cannot express a CTCSS toggle over CT code {current} "
                 "(DCS/PR FREQ/REV TONE); refusing to overwrite it"
+                + ("" if neutral is not None else " [unmapped]")
             )
-        tone = current in (1, 2)
+        tone = neutral in (ToneSquelchType.TONE, ToneSquelchType.TSQL)
         tsql = bool(on)
         if not tone and tsql:
             raise ValueError(
                 "tone squelch cannot be on while the repeater tone is off "
                 "(CT has no code for encode-off/decode-on)"
             )
-        await self.set_sql_type(2 if tsql else (1 if tone else 0), receiver)
+        target = (
+            ToneSquelchType.TSQL
+            if tsql
+            else (ToneSquelchType.TONE if tone else ToneSquelchType.OFF)
+        )
+        code = next((c for c, n in table.items() if n == target), None)
+        if code is None:
+            raise ValueError(
+                f"profile {self.profile.model!r} has no CT code for "
+                f"{target.value}; refusing to invent one"
+            )
+        await self.set_sql_type(code, receiver)
 
     async def read_repeater_shift(self, receiver: int = 0) -> int:
         """Read one receiver's repeater shift direction — pure read.

@@ -180,10 +180,12 @@ class _AckWaiter:
     #: MOR-4455: a sink whose answer window closed without its answer,
     #: kept in the FIFO so a late FB/FA still lands on it by send order.
     tombstone: bool = False
-    #: MOR-4455: the outgoing write's request key, for echo confirmation.
-    #: A write's only addressed answer is its echo (a bare FB/FA names no
-    #: command); reads match by ``response_key`` instead.
-    write_key: CivRequestKey | None = None
+    #: The outgoing write's full identity
+    #: (:func:`read_identity_from_frame`): the single echo-confirmation
+    #: mechanism (:meth:`resolve_write_echo`) matches the radio's echo
+    #: against it. A write's only addressed answer is its echo (a bare
+    #: FB/FA names no command); reads match by ``response_key`` instead.
+    write_identity: CivRequestKey | None = None
 
     @property
     def kind(self) -> Literal["read", "write"]:
@@ -482,7 +484,7 @@ class CivRequestTracker:
         nak_only: bool = False,
         response_key: CivRequestKey | None = None,
         refused_read: CivRequestKey | None = None,
-        write_key: CivRequestKey | None = None,
+        write_identity: CivRequestKey | None = None,
     ) -> asyncio.Future[CivFrame] | int:
         """Register a pending request that expects an ACK/NAK.
 
@@ -490,8 +492,9 @@ class CivRequestTracker:
         says when a data response retires that sink. ``refused_read`` (sinks
         only, :func:`read_identity_from_frame`) is what
         :meth:`take_refused_reads` reports when a refusal retires the sink.
-        ``write_key`` (writes only) is the outgoing write's request key: a
-        bare FB/FA cannot identify it, but its echo can.
+        ``write_identity`` (:func:`read_identity_from_frame` of the outgoing
+        write) is what :meth:`resolve_write_echo` matches the radio's echo
+        against; it is stored for blocking waiters and sinks alike.
 
         Returns:
             - Future when ``wait=True`` (caller awaits ACK/NAK)
@@ -521,7 +524,7 @@ class CivRequestTracker:
                     created_monotonic=created,
                     generation=self._generation,
                     nak_only=nak_only,
-                    write_key=write_key,
+                    write_identity=write_identity,
                 )
             )
             return future
@@ -534,7 +537,7 @@ class CivRequestTracker:
                 generation=self._generation,
                 response_key=response_key,
                 refused_read=refused_read,
-                write_key=write_key,
+                write_identity=write_identity,
             )
         )
         return token
@@ -969,34 +972,101 @@ class CivRequestTracker:
                             else answered.created_monotonic
                         )
                     return True
-            # MOR-4455: on an echo-ack radio the write's own echo is its
-            # self-identifying answer. It confirms the write's sink (or
-            # tombstone, for a late echo) and, on an ordered transport,
-            # proves older tombstones lost like any directed answer. A
-            # blocking write still waits for its own FB/FA.
-            if frame.to_addr == _CONTROLLER_ADDR:
-                for index, waiter in enumerate(self._ack_waiters):
-                    if (
-                        waiter.future is None
-                        and waiter.write_key is not None
-                        and self._matches(waiter.write_key, frame)
-                    ):
-                        answered = self._ack_waiters.pop(index)
-                        self._note_answer_rtt(
-                            answered.sent_monotonic,
-                            answered.created_monotonic,
-                            now_monotonic=time.monotonic(),
-                        )
-                        if ordered_ingress:
-                            self._retire_sinks_passed_by(
-                                answered.sent_monotonic
-                                if answered.sent_monotonic is not None
-                                else answered.created_monotonic
-                            )
-                        return True
             return False
 
         return False
+
+    def resolve_write_echo(
+        self,
+        frame: CivFrame,
+        *,
+        generation: int | None = None,
+        ordered_ingress: bool = False,
+    ) -> bool:
+        """Claim a pending write with the radio's byte-identical echo.
+
+        Some radios answer a SET over LAN with the write's own frame
+        (radio to controller) instead of FB. This is the one
+        echo-confirmation mechanism: the echo acks the oldest-by-send
+        current-generation, non-``nak_only`` waiter whose
+        ``write_identity`` it matches exactly — a blocking waiter, an
+        open sink, or a tombstone whose answer arrived late. A blocking
+        waiter's future then resolves with a synthesized FB; a sink or
+        tombstone is confirmed and removed.
+
+        Any pending read wins: when the frame matches a blocking
+        response waiter or a sink carrying ``response_key``, it is not
+        an echo and this returns False.
+
+        On an ordered transport (``ordered_ingress``) the echo is a
+        self-identifying directed answer like any other: it proves
+        older tombstones' answers were lost, so they retire by evidence
+        via :meth:`_retire_sinks_passed_by` instead of absorbing a
+        later stranger's FB/FA.
+        """
+        if generation is not None and generation != self._generation:
+            return False
+        if frame.command in (0xFB, 0xFA):
+            return False
+        if frame.to_addr == _BROADCAST_ADDR:
+            return False
+        for pending in self._response_waiters:
+            if pending.generation == self._generation and self._matches(
+                pending.key, frame
+            ):
+                return False
+        for waiter in self._ack_waiters:
+            if (
+                waiter.generation == self._generation
+                and waiter.response_key is not None
+                and self._matches(waiter.response_key, frame)
+            ):
+                return False
+        best_index: int | None = None
+        best_key = 0.0
+        for index, waiter in enumerate(self._ack_waiters):
+            if waiter.generation != self._generation or waiter.nak_only:
+                continue
+            identity = waiter.write_identity
+            if identity is None:
+                continue
+            if (
+                frame.command == identity.command
+                and frame.sub == identity.sub
+                and frame.receiver == identity.receiver
+                and frame.data == identity.data_prefix
+            ):
+                key = (
+                    waiter.sent_monotonic
+                    if waiter.sent_monotonic is not None
+                    else float("inf")
+                )
+                if best_index is None or key < best_key:
+                    best_index = index
+                    best_key = key
+        if best_index is None:
+            return False
+        answered = self._ack_waiters.pop(best_index)
+        self._note_answer_rtt(
+            answered.sent_monotonic,
+            answered.created_monotonic,
+            now_monotonic=time.monotonic(),
+        )
+        if ordered_ingress:
+            self._retire_sinks_passed_by(
+                answered.sent_monotonic
+                if answered.sent_monotonic is not None
+                else answered.created_monotonic
+            )
+        if answered.future is not None and not answered.future.done():
+            answered.future.set_result(
+                CivFrame(
+                    to_addr=frame.to_addr,
+                    from_addr=frame.from_addr,
+                    command=0xFB,
+                )
+            )
+        return True
 
     def _retire_sinks_passed_by(self, answered_at: float) -> None:
         """Drop the sinks and tombstones older than a directed answer.

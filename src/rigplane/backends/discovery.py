@@ -762,8 +762,10 @@ def _parse_xiegu_model_id_reply(port: str, data: bytes) -> bytes | None:
 # ---------------------------------------------------------------------------
 
 #: Mapping from 4-digit hex model ID string to (model_name, profile_id).
+#: IDs are the `ID` CAT answer payload (FT-991A CAT manual, PDF p.11).
 _YAESU_CAT_MODEL_MAP: dict[str, tuple[str, str]] = {
     "0840": ("FTX-1", "yaesu_ftx1"),
+    "0670": ("FT-991A", "yaesu_ft991a"),
 }
 
 _YaesuTransportFactory = Callable[..., Any]
