@@ -221,7 +221,11 @@ async def execute(
     for entry in report.file.skipped:
         skipped_counts[entry.reason] = skipped_counts.get(entry.reason, 0) + 1
     absent_answered = [
-        row.name
+        render.AbsentAnswer(
+            name=row.name,
+            request_hex=row.request_hex,
+            reply_hex=row.reply_hex,
+        )
         for row in report.file.commands
         if row.expected == "absent"
         and row.outcome == "data"

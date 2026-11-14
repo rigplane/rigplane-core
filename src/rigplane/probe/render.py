@@ -6,7 +6,13 @@ the CLI only wires prompts and ports.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+from dataclasses import dataclass
+
+from rigplane.commands import parse_civ_frame
+
 __all__ = [
+    "AbsentAnswer",
     "absent_answered_line",
     "closing_line",
     "cannot_open_message",
@@ -26,6 +32,19 @@ _REASON_ORDER = ("unsafe_family", "private", "response_code", "no_unambiguous_by
 
 #: How many finding names print before the rest folds into "and N more".
 _MAX_FINDING_NAMES = 10
+
+
+@dataclass(frozen=True, slots=True)
+class AbsentAnswer:
+    """One declared-absent read the radio answered with data.
+
+    ``request_hex`` is the sent body; ``reply_hex`` is the raw reply chunk
+    (the full CI-V frame on CI-V profiles), or ``None`` when nothing arrived.
+    """
+
+    name: str
+    request_hex: str
+    reply_hex: str | None
 
 
 def probe_help() -> str:
@@ -94,14 +113,49 @@ def skipped_line(counts: dict[str, int]) -> str:
     )
 
 
-def absent_answered_line(names: list[str]) -> str:
+def _civ_payload(reply_hex: str) -> bytes | None:
+    """Frame data of one CI-V reply frame, or ``None`` when not a frame."""
+    try:
+        reply = bytes.fromhex(reply_hex)
+    except ValueError:
+        return None
+    try:
+        parse_civ_frame(reply)
+    except ValueError:
+        return None
+    return reply[4:-1]
+
+
+def _answer_value(request_hex: str, reply_hex: str | None) -> str:
+    """The value text for one answered absent read.
+
+    The reply payload after the echoed request body: for a CI-V reply
+    ``FE FE <ctrl> <radio> <request body> <value bytes> FD`` that is the
+    ``<value bytes>`` hex. When the reply does not start with the request
+    body, the full reply hex in brackets instead.
+    """
+    try:
+        request = bytes.fromhex(request_hex)
+    except ValueError:
+        request = b""
+    payload = _civ_payload(reply_hex or "")
+    if payload is not None and request and payload.startswith(request):
+        return payload[len(request) :].hex()
+    return f"[{reply_hex or ''}]"
+
+
+def absent_answered_line(entries: Sequence[AbsentAnswer]) -> str:
     """Reads the profile calls absent that the radio answered with data."""
-    if not names:
+    if not entries:
         return ""
-    reads = "read" if len(names) == 1 else "reads"
+    reads = "read" if len(entries) == 1 else "reads"
+    shown = [
+        f"{entry.name} ({_answer_value(entry.request_hex, entry.reply_hex)})"
+        for entry in entries
+    ]
     return (
-        f"  - notable: the radio answered {len(names)} {reads} "
-        f"the profile calls absent: {_short_names(names)}\n"
+        f"  - notable: the radio answered {len(entries)} {reads} "
+        f"the profile calls absent: {_short_names(shown)}\n"
     )
 
 
@@ -125,7 +179,7 @@ def pre_save_summary(
     private_reads_included: bool,
     *,
     skipped_counts: dict[str, int] | None = None,
-    absent_answered: list[str] | None = None,
+    absent_answered: Sequence[AbsentAnswer] | None = None,
     present_missed: list[str] | None = None,
 ) -> str:
     """The summary shown before the file exists on disk."""

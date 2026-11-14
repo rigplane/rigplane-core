@@ -211,7 +211,7 @@ def test_g7250_tx_band_table_reads_are_asked_as_absent() -> None:
     assert by_name["get_tx_band_edge"].expected == "absent"
     assert by_name["get_tx_band_edge"].body == bytes((0x1E, 0x01))
     asked_absent = [item for item in plan.asked if item.expected == "absent"]
-    assert len(asked_absent) == 15
+    assert len(asked_absent) == 19
     skipped_unsafe = [
         entry for entry in plan.skipped if entry.reason == "unsafe_family"
     ]
