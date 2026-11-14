@@ -391,7 +391,7 @@ def test_agc_has_no_mid_or_auto_and_preamp_has_two_stages() -> None:
     Source: Reference Table 1-6 / page 6 — 0x16 0x12 is 00 OFF, 01 FAST,
     03 SLOW ([Real]); 02 MID is [Compat] (stored, never drives hardware)
     and native AUTO has no protocol code. 0x16 0x02 is 00 OFF, 01 PRE1,
-    02 PRE2 ([Real]). The panel's MEDIUM/AUTO are not commandable over
+    02 PRE2 ([Real]). The panel's AUTO is not commandable over
     CI-V in V1.0.1, so no AUTO value is declared.
     """
     config = _config()
