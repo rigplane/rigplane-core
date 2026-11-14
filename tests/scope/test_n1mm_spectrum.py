@@ -31,6 +31,10 @@ def _without_tag(xml: bytes, tag: str) -> bytes:
     return re.sub(rf"<{tag}>.*?</{tag}>".encode(), b"", xml, count=1)
 
 
+def _rep(old: bytes, new: bytes) -> bytes:
+    return EXAMPLE.replace(old, new, 1)
+
+
 def test_valid_example_parses_with_hz_edges() -> None:
     result = parse_n1mm_spectrum(EXAMPLE)
     assert result == N1mmSpectrumPacket(
@@ -48,7 +52,7 @@ def test_valid_example_parses_with_hz_edges() -> None:
     [
         ("7074.123", 7_074_123.0),
         ("14000,000", 14_000_000.0),
-        ("14055.5", 14_055_500.0),
+        ("14000.5", 14_000_500.0),
         ("  14000.000  ", 14_000_000.0),
     ],
 )
@@ -85,7 +89,7 @@ def test_whitespace_around_commas_is_allowed() -> None:
 REJECTIONS: list[tuple[str, bytes, str]] = [
     ("too_large", b"x" * (MAX_DATAGRAM_BYTES + 1), "too_large"),
     ("malformed", b"<Spectrum><app>", "malformed_xml"),
-    ("bad_freq", EXAMPLE.replace(b"14000.000", b"abc", 1), "bad_number"),
+    ("bad_freq", _rep(b"14000.000", b"abc"), "bad_number"),
     ("non_utf8", b"\xff\xfe<Spectrum/>", "malformed_xml"),
     (
         "laughs",
@@ -99,53 +103,25 @@ REJECTIONS: list[tuple[str, bytes, str]] = [
         "doctype_forbidden",
     ),
     ("wrong_root", EXAMPLE.replace(b"Spectrum", b"Radio"), "wrong_root"),
-    ("empty_item", EXAMPLE.replace(b"10,20", b"1,,2", 1), "bad_number"),
-    ("trailing_comma", EXAMPLE.replace(b"65535,0", b"65535,0,", 1), "bad_number"),
-    ("non_numeric_level", EXAMPLE.replace(b"10,20", b"10,ab", 1), "bad_number"),
-    ("level_65536", EXAMPLE.replace(b"10,20", b"10,65536", 1), "level_out_of_range"),
-    ("negative_level", EXAMPLE.replace(b"10,20", b"10,-1", 1), "level_out_of_range"),
-    (
-        "too_few_count",
-        EXAMPLE.replace(b"<DataCount>4<", b"<DataCount>1<", 1),
-        "count_mismatch",
-    ),
-    ("short_items", EXAMPLE.replace(b"10,20,65535,0", b"10,20,0", 1), "count_mismatch"),
-    (
-        "long_items",
-        EXAMPLE.replace(b"10,20,65535,0", b"10,20,30,0,5", 1),
-        "count_mismatch",
-    ),
-    (
-        "huge_count",
-        EXAMPLE.replace(b"<DataCount>4<", b"<DataCount>65536<", 1),
-        "too_many_points",
-    ),
-    ("bad_count", EXAMPLE.replace(b"<DataCount>4<", b"<DataCount>x<", 1), "bad_number"),
-    ("low_ge_high", EXAMPLE.replace(b"14000.000", b"14055.000", 1), "bad_range"),
-    ("zero_low", EXAMPLE.replace(b"14000.000", b"0", 1), "bad_range"),
-    ("nan_freq", EXAMPLE.replace(b"14000.000", b"nan", 1), "bad_number"),
-    ("inf_freq", EXAMPLE.replace(b"14000.000", b"inf", 1), "bad_number"),
-    ("two_separators", EXAMPLE.replace(b"14000.000", b"14,000.5", 1), "bad_number"),
-    (
-        "zero_scale",
-        EXAMPLE.replace(b"<ScalingFactor>1<", b"<ScalingFactor>0<", 1),
-        "bad_number",
-    ),
-    (
-        "nan_scale",
-        EXAMPLE.replace(b"<ScalingFactor>1<", b"<ScalingFactor>NaN<", 1),
-        "bad_number",
-    ),
-    (
-        "inf_scale",
-        EXAMPLE.replace(b"<ScalingFactor>1<", b"<ScalingFactor>1e999<", 1),
-        "bad_number",
-    ),
-    (
-        "overlong_app",
-        EXAMPLE.replace(b"Thetis</app>", b"T" * 65 + b"</app>", 1),
-        "too_long",
-    ),
+    ("empty_item", _rep(b"10,20", b"1,,2"), "bad_number"),
+    ("trailing_comma", _rep(b"65535,0", b"65535,0,"), "bad_number"),
+    ("non_numeric_level", _rep(b"10,20", b"10,ab"), "bad_number"),
+    ("level_65536", _rep(b"10,20", b"10,65536"), "level_out_of_range"),
+    ("negative_level", _rep(b"10,20", b"10,-1"), "level_out_of_range"),
+    ("too_few_count", _rep(b"<DataCount>4<", b"<DataCount>1<"), "count_mismatch"),
+    ("short_items", _rep(b"10,20,65535,0", b"10,20,0"), "count_mismatch"),
+    ("long_items", _rep(b"10,20,65535,0", b"10,20,30,0,5"), "count_mismatch"),
+    ("huge_count", _rep(b"<DataCount>4<", b"<DataCount>65536<"), "too_many_points"),
+    ("bad_count", _rep(b"<DataCount>4<", b"<DataCount>x<"), "bad_number"),
+    ("low_ge_high", _rep(b"14000.000", b"14055.000"), "bad_range"),
+    ("zero_low", _rep(b"14000.000", b"0"), "bad_range"),
+    ("nan_freq", _rep(b"14000.000", b"nan"), "bad_number"),
+    ("inf_freq", _rep(b"14000.000", b"inf"), "bad_number"),
+    ("two_separators", _rep(b"14000.000", b"14,000.5"), "bad_number"),
+    ("zero_scale", _rep(b"<ScalingFactor>1<", b"<ScalingFactor>0<"), "bad_number"),
+    ("nan_scale", _rep(b"<ScalingFactor>1<", b"<ScalingFactor>NaN<"), "bad_number"),
+    ("inf_scale", _rep(b"<ScalingFactor>1<", b"<ScalingFactor>1e999<"), "bad_number"),
+    ("overlong_app", _rep(b"Thetis</app>", b"T" * 65 + b"</app>"), "too_long"),
 ]
 
 
@@ -184,15 +160,13 @@ def test_single_point_is_rejected() -> None:
 def test_parse_never_raises_on_random_bytes() -> None:
     rng = random.Random(4394)
     alphabet = b"<>&'\"!ENTITYdoctype Spectrum0123456789,.\xff\xfe \n"
-    for _ in range(250):
-        blob = bytes(rng.randrange(256) for _ in range(rng.randrange(0, 200)))
+    for i in range(500):
+        if i < 250:
+            blob = bytes(rng.randrange(256) for _ in range(rng.randrange(0, 200)))
+        else:
+            blob = bytes(rng.choice(alphabet) for _ in range(rng.randrange(0, 200)))
         assert isinstance(
             parse_n1mm_spectrum(blob), (N1mmSpectrumPacket, N1mmSpectrumRejected)
-        )
-    for _ in range(250):
-        soup = bytes(rng.choice(alphabet) for _ in range(rng.randrange(0, 200)))
-        assert isinstance(
-            parse_n1mm_spectrum(soup), (N1mmSpectrumPacket, N1mmSpectrumRejected)
         )
 
 

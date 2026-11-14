@@ -167,9 +167,7 @@ async def test_source_start_stop_lifecycle(virtual_clock: VirtualClock) -> None:
 
 
 @pytest.mark.timeout(30)
-async def test_source_frames_cover_packet_edges(
-    virtual_clock: VirtualClock,
-) -> None:
+async def test_source_frames_cover_packet_edges(virtual_clock: VirtualClock) -> None:
     for size in (475, 1024, 16384):
         source, _ = _source(fps_limit=1000.0)
         frames: list[NativeFrame] = []
@@ -188,9 +186,7 @@ async def test_source_frames_cover_packet_edges(
 
 
 @pytest.mark.timeout(30)
-async def test_source_epoch_tracks_geometry_only(
-    virtual_clock: VirtualClock,
-) -> None:
+async def test_source_epoch_tracks_geometry_only(virtual_clock: VirtualClock) -> None:
     source, _ = _source(fps_limit=1000.0)
     frames: list[NativeFrame] = []
     source.on_frame(frames.append)
@@ -209,9 +205,7 @@ async def test_source_epoch_tracks_geometry_only(
 
 
 @pytest.mark.timeout(30)
-async def test_source_fps_limit_drops_not_queues(
-    virtual_clock: VirtualClock,
-) -> None:
+async def test_source_fps_limit_drops_not_queues(virtual_clock: VirtualClock) -> None:
     source, _ = _source(fps_limit=10.0)
     frames: list[NativeFrame] = []
     source.on_frame(frames.append)
@@ -228,9 +222,7 @@ async def test_source_fps_limit_drops_not_queues(
 
 
 @pytest.mark.timeout(30)
-async def test_source_views_and_receiver_guard(
-    virtual_clock: VirtualClock,
-) -> None:
+async def test_source_views_and_receiver_guard(virtual_clock: VirtualClock) -> None:
     source, _ = _source()
     caps = source.capabilities()
     assert caps.receivers == (None,)
@@ -274,11 +266,7 @@ async def test_source_views_and_receiver_guard(
 )
 @pytest.mark.timeout(30)
 async def test_source_relative_db_tone_not_saturated(
-    virtual_clock: VirtualClock,
-    noise_lo: int,
-    noise_hi: int,
-    tone: int,
-    scale: float,
+    virtual_clock: VirtualClock, noise_lo: int, noise_hi: int, tone: int, scale: float
 ) -> None:
     size, tone_pos, span = 256, 200, noise_hi - noise_lo + 1
     levels = [noise_lo + (i * 37) % span for i in range(size)]
