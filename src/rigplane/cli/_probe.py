@@ -101,9 +101,7 @@ async def _civ_exchange(reader: Any, writer: Any, radio_addr: int) -> Exchange:
             await writer.drain()
         try:
             while True:
-                raw: bytes = await asyncio.wait_for(
-                    reader.readuntil(b"\xfd"), timeout
-                )
+                raw: bytes = await asyncio.wait_for(reader.readuntil(b"\xfd"), timeout)
                 if sent is not None and raw == sent:
                     continue  # USB echo of our own frame, not the answer
                 return raw

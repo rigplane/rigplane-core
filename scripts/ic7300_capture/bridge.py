@@ -50,6 +50,7 @@ def load_profile(model: str) -> RadioProfile:
         )
     return config.to_profile()
 
+
 #: Scope panel / wave-output switches (``27 10 xx``, ``27 11 xx``).
 SCOPE_SWITCH_BODIES = frozenset(
     bytes((0x27, sub, value)) for sub in (0x10, 0x11) for value in (0x00, 0x01)
