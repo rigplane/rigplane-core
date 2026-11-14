@@ -304,8 +304,9 @@ values = [0, 1, 2]
 # Xiegu G7250 CI-V Reference Rev 1.2 (2026-11-06), Table 1-6 / page 6:
 # 0x16 0x12 [Real] 00 OFF, 01 FAST, 03 SLOW; 02 MID is [Compat] (stored per
 # A/B, never drives hardware). Native AGC AUTO has no direct protocol code.
-# The radio panel also shows MEDIUM and AUTO natively, but they are not
-# commandable over CI-V in V1.0.1 — so a later firmware is a data edit here.
+# AUTO exists on the radio panel and cannot be selected over CI-V in V1.0.1;
+# CI-V code 02 (MID) is a compat-only stored value per the vendor reference.
+# A later firmware that commands AUTO is a data edit here.
 # LIVE G7250 2026-11-09 (MOR-4352): read back 02 (a MID shadow, pre-1.0.1).
 [agc]
 modes = [0, 1, 3]
