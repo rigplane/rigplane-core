@@ -60,9 +60,7 @@ def test_parse_ice_servers_valid_and_malformed() -> None:
     )
     assert parsed == [
         IceServer(urls=["stun:stun.example:3478"]),
-        IceServer(
-            urls=["turn:turn.example:3478"], username="user", credential="pass"
-        ),
+        IceServer(urls=["turn:turn.example:3478"], username="user", credential="pass"),
     ]
 
     assert parse_ice_servers(None) == []
@@ -92,14 +90,11 @@ def test_parse_ice_servers_valid_and_malformed() -> None:
 def test_classify_linux_physical_bridge_tunnel_unknown() -> None:
     """sysfs fakes map to PHYSICAL / BRIDGE / TUNNEL / UNKNOWN."""
     assert (
-        classify_linux_interface("eth0", {"device": "", "type": "1"})
-        == IfKind.PHYSICAL
+        classify_linux_interface("eth0", {"device": "", "type": "1"}) == IfKind.PHYSICAL
     )
     assert classify_linux_interface("br0", {"brif": "vethX"}) == IfKind.BRIDGE
     assert classify_linux_interface("br0", {"bridge": ""}) == IfKind.BRIDGE
-    assert (
-        classify_linux_interface("tun0", {"type": "65534"}) == IfKind.TUNNEL
-    )
+    assert classify_linux_interface("tun0", {"type": "65534"}) == IfKind.TUNNEL
     assert classify_linux_interface("tun0", {"tun_flags": "0"}) == IfKind.TUNNEL
     assert classify_linux_interface("eth0", {}) == IfKind.UNKNOWN
     assert classify_linux_interface("eth0", {"type": "1"}) == IfKind.UNKNOWN
@@ -108,31 +103,23 @@ def test_classify_linux_physical_bridge_tunnel_unknown() -> None:
 def test_classify_linux_tunnel_beats_bridge_beats_physical() -> None:
     """Precedence: tunnel signals > bridge signals > device present."""
     assert (
-        classify_linux_interface(
-            "x", {"device": "", "brif": "vethX", "tun_flags": "0"}
-        )
+        classify_linux_interface("x", {"device": "", "brif": "vethX", "tun_flags": "0"})
         == IfKind.TUNNEL
     )
     assert (
-        classify_linux_interface("x", {"device": "", "brif": "vethX"})
-        == IfKind.BRIDGE
+        classify_linux_interface("x", {"device": "", "brif": "vethX"}) == IfKind.BRIDGE
     )
 
 
 def test_classify_macos_tunnel_physical_unknown() -> None:
     """POINTOPOINT flags win; known hardware ports are physical."""
     assert (
-        classify_macos_interface("utun9", 0x10, frozenset({"en0"}))
-        == IfKind.TUNNEL
+        classify_macos_interface("bridge0", 0x0, frozenset({"bridge0", "en0"}))
+        == IfKind.BRIDGE
     )
-    assert (
-        classify_macos_interface("en0", 0x0, frozenset({"en0"}))
-        == IfKind.PHYSICAL
-    )
-    assert (
-        classify_macos_interface("utun9", 0x0, frozenset({"en0"}))
-        == IfKind.UNKNOWN
-    )
+    assert classify_macos_interface("utun9", 0x10, frozenset({"en0"})) == IfKind.TUNNEL
+    assert classify_macos_interface("en0", 0x0, frozenset({"en0"})) == IfKind.PHYSICAL
+    assert classify_macos_interface("utun9", 0x0, frozenset({"en0"})) == IfKind.UNKNOWN
 
 
 def test_classify_windows_physical_tunnel_unknown() -> None:
@@ -195,9 +182,7 @@ def test_policy_select_default_excludes_bridge_and_tunnel() -> None:
 
 def test_policy_select_include_vpn_keeps_tunnels() -> None:
     """include_vpn admits non-default-route tunnels; bridges stay out."""
-    assert IceGatheringPolicy(include_vpn=True).select(
-        _mixed_candidates()
-    ) == [
+    assert IceGatheringPolicy(include_vpn=True).select(_mixed_candidates()) == [
         "10.0.0.2",
         "10.8.0.2",
         "169.254.1.2",
@@ -390,11 +375,7 @@ def _has_non_loopback_ipv4() -> bool:
         for adapter in ifaddr.get_adapters():
             for ipinfo in adapter.ips:
                 ip = ipinfo.ip
-                if (
-                    ipinfo.is_IPv4
-                    and isinstance(ip, str)
-                    and not ip.startswith("127.")
-                ):
+                if ipinfo.is_IPv4 and isinstance(ip, str) and not ip.startswith("127."):
                     return True
     return False
 
@@ -430,18 +411,15 @@ class _StunResponder(asyncio.DatagramProtocol):
             + struct.pack("!HH", 0x0001, 8)
             + mapped_attr
         )
-        header = (
-            b"\x01\x01"
-            + struct.pack("!H", len(attrs))
-            + cookie
-            + txn
-        )
+        header = b"\x01\x01" + struct.pack("!H", len(attrs)) + cookie + txn
         if self.transport is not None:
             self.transport.sendto(header + attrs, addr)
 
 
 @_webrtc
-@pytest.mark.realtime(reason="measures real ICE/STUN wall-clock time against live sockets")
+@pytest.mark.realtime(
+    reason="measures real ICE/STUN wall-clock time against live sockets"
+)
 async def test_multihomed_answer_fast_with_stun() -> None:
     """A responsive STUN server yields srflx candidates well within the bound."""
     if not _has_non_loopback_ipv4():
@@ -473,7 +451,9 @@ async def test_multihomed_answer_fast_with_stun() -> None:
 
 
 @_webrtc
-@pytest.mark.realtime(reason="measures real ICE/STUN wall-clock time against live sockets")
+@pytest.mark.realtime(
+    reason="measures real ICE/STUN wall-clock time against live sockets"
+)
 async def test_blackhole_stun_answer_within_bound() -> None:
     """An unresponsive STUN server still yields a host-only answer in time."""
     from rigplane.web.transport.webrtc_session import WebRtcSessionManager
