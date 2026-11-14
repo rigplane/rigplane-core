@@ -8,7 +8,10 @@
   let p = $derived(deriveAgcProps());
   // MOR-2978: `NaN` is the unread sentinel (`toAgcProps`) — the keys expose
   // the confirmed selection and stay disabled until an AGC mode is observed.
-  let agcKnown = $derived(!Number.isNaN(p.agcMode));
+  // MOR-4436: a readback-only label (panel-selected mode the protocol
+  // cannot command) is a KNOWN state too — buttons stay usable, none is
+  // selected, and the label renders as non-clickable text below.
+  let agcKnown = $derived(!Number.isNaN(p.agcMode) || p.agcReadbackLabel !== undefined);
   let options = $derived(buildAgcOptions(p.agcModes, p.agcLabels));
   let showAgc = $derived(p.hasAgc ?? true);
   // MOR-1536: the freshest in-flight `set_agc` target, DISPLAY ONLY (see
@@ -42,6 +45,9 @@
         {/if}
       {/each}
     </div>
+    {#if p.agcReadbackLabel !== undefined}
+      <p class="readback-label">{t('core.agcPanel.setOnRadio', { label: p.agcReadbackLabel })}</p>
+    {/if}
   </div>
 {/if}
 
@@ -51,6 +57,13 @@
     flex-direction: column;
     gap: 6px;
     padding: 7px 8px;
+  }
+
+  /* MOR-4436 — readback-only state: plain non-clickable text under the
+     buttons, reusing the panel's own typography (no new control). */
+  .readback-label {
+    margin: 0;
+    opacity: 0.75;
   }
 
   /* MOR-1536 — same convention as `ModePanel.svelte`'s `.sr-only`: visually

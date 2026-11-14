@@ -4084,11 +4084,19 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             sub=sub,
             bcd_bytes=1,
         )
+        # MOR-4436: a radio can REPORT a mode its panel selected that the
+        # protocol cannot command (e.g. G7250 Medium/Auto) — those codes are
+        # declared in ``[agc].readback_modes`` and are legal read results,
+        # while ``set_agc`` below still gates on the settable ``agc_modes``.
+        agc_readback_modes = self._profile.agc_readback_modes
         agc_modes = self._profile.agc_modes
-        if agc_modes is not None and value not in agc_modes:
+        domain = (
+            agc_readback_modes if agc_readback_modes is not None else agc_modes
+        )
+        if domain is not None and value not in domain:
             raise ValueError(
                 f"AGC mode {value} reported by radio is not in declared domain "
-                f"{sorted(agc_modes)} for {self._profile.model}"
+                f"{sorted(domain)} for {self._profile.model}"
             )
         return value
 

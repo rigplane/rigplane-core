@@ -239,6 +239,7 @@
   "core.modePanel.pendingAnnouncement": "В ожидании, ещё не подтверждено",
   "core.modePanel.dataMode.pendingAnnouncement": "В ожидании, ещё не подтверждено",
   "core.agcPanel.pendingAnnouncement": "В ожидании, ещё не подтверждено",
+  "core.agcPanel.setOnRadio": "{label} (установлено на радио)",
   "core.rfFrontEnd.att.pendingAnnouncement": "В ожидании, ещё не подтверждено",
   "core.dsp.notch.pendingAnnouncement": "В ожидании, ещё не подтверждено",
   "core.vfo.groupLabel": "VFO",

@@ -258,6 +258,7 @@
   "core.modePanel.modInputLabel": "MOD IN",
   "core.modePanel.dataMode.pendingAnnouncement": "保留中、まだ確認されていません",
   "core.agcPanel.pendingAnnouncement": "保留中、まだ確認されていません",
+  "core.agcPanel.setOnRadio": "{label}（本体で設定）",
   "core.rfFrontEnd.att.pendingAnnouncement": "保留中、まだ確認されていません",
   "core.dsp.notch.pendingAnnouncement": "保留中、まだ確認されていません",
   "core.modePanel.modInputAria": "変調入力ソース",

@@ -493,6 +493,9 @@ class RadioProfile:
     agc_modes: tuple[int, ...] | None = None
     agc_labels: dict[str, str] | None = None
     agc_readback_modes: tuple[int, ...] | None = None
+    # MOR-4436: appended keyword-only per the positional-contract rule
+    # (tests/test_discovery_probe_baud_order.py) — never inserted.
+    agc_readback_labels: dict[str, str] | None = field(default=None, kw_only=True)
     agc_auto_mode: int | None = None
     agc_auto_speed_labels: dict[str, str] | None = None
     # MOR-1534: enumerated-domain controls that were declared in TOML but

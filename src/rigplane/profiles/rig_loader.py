@@ -682,6 +682,7 @@ class RigConfig:
     agc_modes: tuple[int, ...] | None
     agc_labels: dict[str, str] | None
     agc_readback_modes: tuple[int, ...] | None
+    agc_readback_labels: dict[str, str] | None
     agc_auto_mode: int | None
     agc_auto_speed_labels: dict[str, str] | None
     break_in_modes: tuple[int, ...] | None = None
@@ -963,6 +964,7 @@ class RigConfig:
             agc_modes=self.agc_modes,
             agc_labels=self.agc_labels,
             agc_readback_modes=self.agc_readback_modes,
+            agc_readback_labels=self.agc_readback_labels,
             agc_auto_mode=self.agc_auto_mode,
             agc_auto_speed_labels=self.agc_auto_speed_labels,
             ctcss_tones_centihz=self.ctcss_tones_centihz,
@@ -3264,6 +3266,7 @@ def load_rig(path: Path) -> RigConfig:
                     "modes",
                     "labels",
                     "readback_modes",
+                    "readback_labels",
                     "auto_mode",
                     "auto_speed_labels",
                 }
@@ -3369,6 +3372,49 @@ def load_rig(path: Path) -> RigConfig:
         ):
             raise RigLoadError(
                 f"{filename}: [agc].auto_speed_labels values must be non-empty strings"
+            )
+    raw_agc_readback_labels = agc_section.get("readback_labels")
+    if raw_agc_readback_labels is not None and not isinstance(
+        raw_agc_readback_labels, dict
+    ):
+        raise RigLoadError(f"{filename}: [agc].readback_labels must be a table")
+    agc_readback_labels = (
+        dict(raw_agc_readback_labels)
+        if raw_agc_readback_labels is not None
+        else None
+    )
+    if agc_readback_labels is not None:
+        if agc_readback_modes is None:
+            raise RigLoadError(
+                f"{filename}: [agc].readback_labels requires readback_modes"
+            )
+        declared_readbacks = {str(mode) for mode in agc_readback_modes}
+        settable_codes = {str(mode) for mode in agc_modes or ()}
+        for key in sorted(agc_readback_labels):
+            try:
+                int(key)
+            except (TypeError, ValueError):
+                raise RigLoadError(
+                    f"{filename}: [agc].readback_labels key {key!r} "
+                    "must be an integer code"
+                )
+            if key in settable_codes:
+                raise RigLoadError(
+                    f"{filename}: [agc].readback_labels key {key!r} "
+                    "names a settable mode — readback_labels is only for "
+                    "readable-but-not-settable codes"
+                )
+            if key not in declared_readbacks:
+                raise RigLoadError(
+                    f"{filename}: [agc].readback_labels key {key!r} "
+                    "has no matching entry in [agc].readback_modes"
+                )
+        if any(
+            not isinstance(label, str) or not label.strip()
+            for label in agc_readback_labels.values()
+        ):
+            raise RigLoadError(
+                f"{filename}: [agc].readback_labels values must be non-empty strings"
             )
     if agc_modes is not None:
         missing_agc_labels = sorted(
@@ -3856,6 +3902,7 @@ def load_rig(path: Path) -> RigConfig:
         agc_modes=agc_modes,
         agc_labels=agc_labels,
         agc_readback_modes=agc_readback_modes,
+        agc_readback_labels=agc_readback_labels,
         agc_auto_mode=agc_auto_mode,
         agc_auto_speed_labels=agc_auto_speed_labels,
         ctcss_tones_centihz=ctcss_tones_centihz,

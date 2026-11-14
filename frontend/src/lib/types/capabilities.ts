@@ -213,6 +213,20 @@ export interface BreakInChoice {
   label: string;
 }
 
+/** AGC readback contract (MOR-4436): the readable mode superset the radio
+ *  can report. `modes` is always present when the contract exists;
+ *  `autoMode`/`autoSpeedLabels` only for the auto-projection radios that
+ *  declare them (e.g. FTX-1); `labels` only names readable-but-NOT-settable
+ *  codes (e.g. panel-selected Medium/Auto), never a `Capabilities.agcModes`
+ *  entry. Absent (`undefined`) on older servers; `null` when the profile
+ *  declares no `readback_modes`. */
+export interface AgcReadbackContract {
+  modes?: number[];
+  autoMode?: number;
+  autoSpeedLabels?: Record<string, string>;
+  labels?: Record<string, string>;
+}
+
 export interface Capabilities {
   [extension: string]: unknown;
   model: string;
@@ -255,6 +269,7 @@ export interface Capabilities {
   preLabels?: Record<string, string>;  // Preamp labels (e.g. {"0":"OFF","1":"P1","2":"P2"})
   agcModes?: number[];    // AGC mode values (e.g. [1,2,3] = FAST/MID/SLOW)
   agcLabels?: Record<string, string>;  // AGC mode labels (e.g. {"1":"FAST","2":"MID","3":"SLOW"})
+  agcReadback?: AgcReadbackContract | null;  // Readable AGC superset (MOR-4436); null when undeclared
   scanTypeValues?: number[];    // Profile-declared scan start types
   scanResumeValues?: number[];  // Profile-declared scan resume modes
   /** Profile-declared Manual Notch Width choices (MOR-1685), in value

@@ -340,10 +340,12 @@ Optional section. Defines available preamp settings.
 
 Optional section. Defines available AGC modes and their display labels.
 
-| Field    | Type                | Required | Description                                     |
-|----------|---------------------|----------|-------------------------------------------------|
-| `modes`  | int[]               | yes      | Available AGC mode values (e.g. `[1, 2, 3]`)   |
-| `labels` | table (string→string) | yes    | Map of mode value to display label              |
+| Field            | Type                | Required | Description                                                        |
+|------------------|---------------------|----------|--------------------------------------------------------------------|
+| `modes`          | int[]               | yes      | Settable AGC mode values (e.g. `[1, 2, 3]`) — the UI buttons       |
+| `labels`         | table (string→string) | yes    | Map of settable mode value to display label                        |
+| `readback_modes` | int[]               | no       | Readable superset incl. every `modes` entry (panel-selected codes the radio can report but the UI cannot command) |
+| `readback_labels` | table (string→string) | no    | Map of readable-but-NOT-settable code to display label; every key must be in `readback_modes` and NOT in `modes`; requires `readback_modes` |
 
 Example:
 
@@ -352,6 +354,20 @@ Example:
 modes = [1, 2, 3]
 labels = { "1" = "FAST", "2" = "MID", "3" = "SLOW" }
 ```
+
+A radio whose panel offers modes the CI-V protocol cannot command
+declares them as readback-only:
+
+```toml
+[agc]
+modes = [0, 1, 3]
+labels = { "0" = "OFF", "1" = "FAST", "3" = "SLOW" }
+readback_modes = [0, 1, 2, 3]
+readback_labels = { "2" = "MID" }
+```
+
+`get_agc` accepts any `readback_modes` entry; `set_agc` still accepts
+only `modes`.
 
 ## `[controls]` — Control Styles
 

@@ -804,17 +804,20 @@ def _serialize_filter_config(profile: "RadioProfile") -> dict[str, dict[str, obj
 
 
 def _serialize_agc_readback(profile: "RadioProfile") -> dict[str, object] | None:
-    if (
-        profile.agc_readback_modes is None
-        or profile.agc_auto_mode is None
-        or profile.agc_auto_speed_labels is None
-    ):
+    if profile.agc_readback_modes is None:
         return None
-    return {
+    payload: dict[str, object] = {
         "modes": list(profile.agc_readback_modes),
-        "autoMode": profile.agc_auto_mode,
-        "autoSpeedLabels": profile.agc_auto_speed_labels,
     }
+    if (
+        profile.agc_auto_mode is not None
+        and profile.agc_auto_speed_labels is not None
+    ):
+        payload["autoMode"] = profile.agc_auto_mode
+        payload["autoSpeedLabels"] = profile.agc_auto_speed_labels
+    if profile.agc_readback_labels:
+        payload["labels"] = dict(profile.agc_readback_labels)
+    return payload
 
 
 def _serialize_scope_ref_range(profile: "RadioProfile") -> dict[str, object]:

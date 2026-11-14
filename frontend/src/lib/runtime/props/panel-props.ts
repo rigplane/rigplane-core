@@ -13,7 +13,7 @@
 
 import type { ServerState, ReceiverState } from '$lib/types/state';
 import type { Capabilities, FilterModeConfig } from '$lib/types/capabilities';
-import type { BreakInChoice, ControlDomain } from '$lib/types/capabilities';
+import type { AgcReadbackContract, BreakInChoice, ControlDomain } from '$lib/types/capabilities';
 import {
   controlDisplayDomain,
   deriveIfShift,
@@ -567,6 +567,40 @@ export interface AgcProps {
   agcModes: number[];
   agcLabels: Record<string, string>;
   hasAgc: boolean;
+  /** MOR-4436: display label for an observed raw code that is readable
+   *  (contract `labels`, in readback modes) but NOT settable (not in
+   *  `agcModes`) — e.g. panel-selected Medium/Auto. Present only then;
+   *  absent otherwise, so existing golden snapshots are untouched. */
+  agcReadbackLabel?: string;
+}
+
+/** MOR-4436: the panel-props-side mirror of `projectAgcReadback`'s
+ *  readback-label rule (kept inline — `radio-view-model-adapter` imports
+ *  this module, so it cannot be shared without a cycle). Returns the
+ *  label only when `raw` is a declared readback-only code with a
+ *  non-empty contract label; `undefined` otherwise. */
+export function agcReadbackLabelFor(
+  caps: Capabilities | null,
+  raw: number | undefined,
+): string | undefined {
+  if (raw === undefined || !Number.isSafeInteger(raw)) return undefined;
+  const contract = caps?.agcReadback;
+  if (contract === null || contract === undefined || typeof contract !== 'object') {
+    return undefined;
+  }
+  const modes = (contract as AgcReadbackContract).modes;
+  if (!Array.isArray(modes) || !modes.every((mode) => Number.isSafeInteger(mode))) {
+    return undefined;
+  }
+  if (!modes.includes(raw)) return undefined;
+  const settable = caps?.agcModes;
+  if (Array.isArray(settable) && settable.includes(raw)) return undefined;
+  const labels = (contract as AgcReadbackContract).labels;
+  if (labels === null || labels === undefined || typeof labels !== 'object' || Array.isArray(labels)) {
+    return undefined;
+  }
+  const label = (labels as Record<string, unknown>)[String(raw)];
+  return typeof label === 'string' && label.trim() ? label : undefined;
 }
 
 export function toAgcProps(
@@ -579,9 +613,12 @@ export function toAgcProps(
   // field-availability check `hasAgc` already used to gate visibility, so
   // the two can no longer disagree about whether this value is real.
   const agcAvailable = activeFieldAvailable(state, 'agc');
+  const rawAgc = agcAvailable ? rx?.agc : undefined;
+  const readbackLabel = agcReadbackLabelFor(caps, rawAgc);
   return {
     agcMode: agcAvailable ? (rx?.agc ?? Number.NaN) : Number.NaN,
     agcModes: caps?.agcModes ?? [],
+    ...(readbackLabel === undefined ? {} : { agcReadbackLabel: readbackLabel }),
     // MOR-1547: no fabricated IC-7610-shaped FAST/MID/SLOW dict when the
     // profile declares no agcLabels — `{}` lets `buildAgcOptions`
     // (agc-utils.ts) fall back to the honest raw mode number per-entry,

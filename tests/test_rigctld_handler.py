@@ -4838,6 +4838,23 @@ async def test_yaesu_get_func_agc(
 
 
 @pytest.mark.asyncio
+async def test_yaesu_get_func_agc_readable_non_settable_code(
+    yaesu_handler: RigctldHandler, yaesu_radio: AsyncMock
+) -> None:
+    """MOR-4436: a readable-but-not-settable AGC code (e.g. G7250 panel-
+    selected Medium) is a defined answer on ``get_func AGC``, not an error:
+    OFF (0) reads 0, any readable code above 0 reads 1."""
+    yaesu_radio.get_agc.return_value = 2  # readable-only on its own profile
+    resp = await yaesu_handler.execute(get_cmd("get_func", "AGC"))
+    assert resp.ok
+    assert resp.values == ["1"]
+    yaesu_radio.get_agc.return_value = 0
+    resp = await yaesu_handler.execute(get_cmd("get_func", "AGC"))
+    assert resp.ok
+    assert resp.values == ["0"]
+
+
+@pytest.mark.asyncio
 async def test_yaesu_get_func_mon(
     yaesu_handler: RigctldHandler, yaesu_radio: AsyncMock
 ) -> None:

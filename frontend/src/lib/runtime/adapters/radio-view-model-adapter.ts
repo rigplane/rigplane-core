@@ -215,6 +215,11 @@ export type AgcReadbackProjection = {
   indicatorValue?: number | string;
   autoMode?: number;
   autoSpeed?: string;
+  /** MOR-4436: label for an observed raw code that is readable (in the
+   *  contract's `labels`, and in its readback modes) but NOT settable (not
+   *  in `agcModes`) — e.g. panel-selected Medium/Auto. `mode` stays
+   *  `undefined` (no button selected); the state is known, not unknown. */
+  readbackLabel?: string;
 };
 
 export function projectAgcReadback(
@@ -271,6 +276,23 @@ export function projectAgcReadback(
   if (autoMode !== undefined && autoSpeed !== undefined
     && typeof autoLabel === 'string' && autoLabel.trim()) {
     return { mode: autoMode, indicatorValue: autoLabel, autoMode, autoSpeed };
+  }
+  // MOR-4436: readable-but-not-settable code with a contract label — the
+  // radio reports a panel-selected mode the UI cannot command. No button
+  // is selected (`mode` stays `undefined`), but the state is known: the
+  // caller surfaces `readbackLabel` as a non-clickable "(set on radio)"
+  // line instead of the unknown/disabled treatment.
+  const rawReadbackLabels = contract?.labels;
+  const readbackLabels = rawReadbackLabels !== null
+    && typeof rawReadbackLabels === 'object' && !Array.isArray(rawReadbackLabels)
+    ? rawReadbackLabels as Record<string, unknown>
+    : null;
+  const rawReadbackLabel = readbackModes?.includes(rawMode)
+    && !(settableModes ?? []).includes(rawMode)
+    ? readbackLabels?.[String(rawMode)]
+    : undefined;
+  if (typeof rawReadbackLabel === 'string' && rawReadbackLabel.trim()) {
+    return { indicatorValue: rawReadbackLabel, autoMode, readbackLabel: rawReadbackLabel };
   }
   return { autoMode };
 }

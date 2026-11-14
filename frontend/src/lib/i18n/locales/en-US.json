@@ -239,6 +239,7 @@
   "core.modePanel.pendingAnnouncement": "Pending, not yet confirmed",
   "core.modePanel.dataMode.pendingAnnouncement": "Pending, not yet confirmed",
   "core.agcPanel.pendingAnnouncement": "Pending, not yet confirmed",
+  "core.agcPanel.setOnRadio": "{label} (set on radio)",
   "core.rfFrontEnd.att.pendingAnnouncement": "Pending, not yet confirmed",
   "core.dsp.notch.pendingAnnouncement": "Pending, not yet confirmed",
   "core.vfo.groupLabel": "VFOs",
