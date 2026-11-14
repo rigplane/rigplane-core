@@ -1301,6 +1301,7 @@ class CivRuntime:
                 pending_or_token = self._host._civ_request_tracker.register_ack(
                     wait=True,
                     consume_backlog=False,
+                    write_key=request_key,
                 )
                 if isinstance(pending_or_token, int):
                     raise RuntimeError("ACK waiter registration returned sink token")
@@ -1314,6 +1315,22 @@ class CivRuntime:
 
             self.start_pump()
             await self._send_civ_frame_now(civ_frame, owner=owner)
+            # Stamp the send for wire-order attribution and proof, as the
+            # managed path does (MOR-4455). The registration above predates
+            # the pacing gap inside ``_send_civ_frame_now``.
+            sent_at = time.monotonic()
+            if data_transaction is not None:
+                self._host._civ_request_tracker.mark_response_sent(
+                    data_transaction.response, sent_monotonic=sent_at
+                )
+                if data_transaction.nak is not None:
+                    self._host._civ_request_tracker.mark_ack_waiter_sent(
+                        data_transaction.nak, sent_monotonic=sent_at
+                    )
+            elif pending_waiters:
+                self._host._civ_request_tracker.mark_ack_waiter_sent(
+                    pending_waiters[0], sent_monotonic=sent_at
+                )
             done, _ = await asyncio.wait(
                 pending_waiters,
                 timeout=answer_timeout,
@@ -4723,13 +4740,17 @@ class CivRuntime:
         The remaining wait is bounded by its own separate budget
         (``_ACK_SINK_DRAIN_BUDGET_S``), never by each sink's whole answer
         window and never by the next command's answer budget. Sinks whose
-        window closes during the wait expire as before; whatever is still
-        open when the budget is spent is presumed lost — its FB/FA can no
-        longer be told from a later command's — and expired with the same
-        ambiguity recorded. A late answer for a sink retired inside the
-        budget still lands on that sink, so the round-1 attribution holds.
+        window closes during the wait retire to tombstones as before;
+        whatever is still open when the budget is spent is presumed lost
+        and tombstoned too — its late FB/FA still lands on it by send
+        order, not on the new command (MOR-4455). Both budgets stretch
+        with the measured round trip
+        (``CivRequestTracker.scaled_wait_budget``): time only sizes these
+        waits, never the attribution.
         """
         tracker = self._host._civ_request_tracker
+        drain_budget = tracker.scaled_wait_budget(_ACK_SINK_DRAIN_BUDGET_S)
+        answer_window = tracker.scaled_wait_budget(self._host._civ_get_timeout)
 
         def open_sinks() -> int:
             if expects_data:
@@ -4738,11 +4759,9 @@ class CivRuntime:
                 return tracker.ack_sink_count_matching(request_key)
             return tracker.ack_sink_count
 
-        deadline = time.monotonic() + _ACK_SINK_DRAIN_BUDGET_S
+        deadline = time.monotonic() + drain_budget
         while True:
-            expired = tracker.expire_ack_sinks(
-                answer_window=self._host._civ_get_timeout
-            )
+            expired = tracker.expire_ack_sinks(answer_window=answer_window)
             if expired:
                 logger.debug(
                     "Expired %d unanswered ACK sink waiter(s) before blocking command",
@@ -4784,9 +4803,9 @@ class CivRuntime:
         eaten by an older sink) while the earlier fire-and-forget sink stays
         open and the refusal retires that sink instead of this command's
         waiter (MOR-4384). A refusal arriving after the drain budget spent
-        can still settle a later waiter — the residual exposure the
-        blocking write branch and the raw transaction path's
-        ``nak_terminal=True`` default carry as well.
+        lands on the retired sink's tombstone by send order instead of the
+        new waiter (MOR-4455); the raw transaction path's
+        ``nak_terminal=True`` default carries the same cover.
         """
         if self._host._civ_transport is None:
             raise ConnectionError("Not connected to radio")
@@ -4847,12 +4866,15 @@ class CivRuntime:
             # Reads take a sink as well as writes: a refusal is a bare FA that
             # names no command, and ``_drain_ack_sinks_before_blocking`` waits
             # out every sink still owed an answer (MOR-2748, MOR-4384).
+            # Writes also carry their request key so their echo can confirm
+            # the sink on an echo-ack radio (MOR-4455).
             token_or_future = tracker.register_ack(
                 wait=False,
                 response_key=request_key if expects_response else None,
                 refused_read=(
                     read_identity_from_frame(parsed_frame) if expects_response else None
                 ),
+                write_key=request_key if not expects_response else None,
             )
             if isinstance(token_or_future, int):
                 ack_sink_token = token_or_future
@@ -4949,6 +4971,7 @@ class CivRuntime:
                 pending_or_token = tracker.register_ack(
                     wait=True,
                     consume_backlog=False,
+                    write_key=request_key,
                 )
                 if isinstance(pending_or_token, int):
                     raise RuntimeError("ACK waiter registration returned sink token")
@@ -4979,8 +5002,19 @@ class CivRuntime:
                 sent = False
                 raise
             check_current()
-            self._host._last_civ_send_monotonic = time.monotonic()
+            sent_at = time.monotonic()
+            self._host._last_civ_send_monotonic = sent_at
             assert pending is not None
+            # The waiter's place on the wire is here, not at its
+            # registration above (the pacing gap and the drain are this
+            # side's own scheduling): stamp it so bare FB/FA attribution
+            # and the ordered-ingress proof order by send time (MOR-4455).
+            if expects_response:
+                tracker.mark_response_sent(pending, sent_monotonic=sent_at)
+                if nak_pending is not None:
+                    tracker.mark_ack_waiter_sent(nak_pending, sent_monotonic=sent_at)
+            else:
+                tracker.mark_ack_waiter_sent(pending, sent_monotonic=sent_at)
             # The answer window is spent from here, not from method entry:
             # ``_civ_get_timeout`` bounds how long the *radio* may take,
             # while the ``_civ_min_interval`` gap above and
