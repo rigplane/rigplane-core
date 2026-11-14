@@ -29,6 +29,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 RIGS_DIR = REPO_ROOT / "rigs"
 FTX1 = RIGS_DIR / "ftx1.toml"
 IC7610 = RIGS_DIR / "ic7610.toml"
+G7250 = RIGS_DIR / "g7250.toml"
 
 
 def _load(name: str) -> RigConfig:
@@ -138,6 +139,62 @@ def test_civ_list_covers_profile_gets_and_excludes_forbidden() -> None:
     assert "get_vfo" not in names
 
 
+def _protocol_of(config: RigConfig) -> str:
+    return config.protocol_type
+
+
+def _probe_toml_names() -> list[str]:
+    names: list[str] = []
+    for path in sorted(RIGS_DIR.glob("*.toml")):
+        if path.name.startswith("_") or path.name.endswith(".draft.toml"):
+            continue
+        if load_rig(path).protocol_type in ("civ", "yaesu_cat"):
+            names.append(path.stem)
+    return names
+
+
+@pytest.mark.parametrize("toml_name", _probe_toml_names())
+def test_no_probe_body_is_an_ack_nak_echo(toml_name: str) -> None:
+    """No read list entry starts with 0xFA or 0xFB (MOR-4464 PR A).
+
+    Those bare bytes are the radio's own NAK/ACK response codes, not
+    requests: profiles declare them as ``get_command_error_fa`` /
+    ``get_command_ok_fb`` and the probe must never send them.
+    """
+    config = load_rig(RIGS_DIR / f"{toml_name}.toml")
+    bad = [
+        item
+        for item in build_read_list(config, include_private=True)
+        if item.body[:1] in (b"\xfa", b"\xfb")
+    ]
+    assert not bad
+
+
+def test_cmd29_get_freq_only_on_dual_receiver_profiles() -> None:
+    """The unconditional cmd29-wrapped get_freq is dual-receiver only (MOR-4464 PR A)."""
+    g7250 = build_read_list(load_rig(G7250))
+    assert not [
+        item for item in g7250 if item.name.startswith("cmd29:get_freq:")
+    ]
+
+    ic7610 = build_read_list(load_rig(IC7610))
+    wrapped = [
+        (item.name, item.body.hex())
+        for item in ic7610
+        if item.name.startswith("cmd29:get_freq:")
+    ]
+    assert wrapped == [
+        ("cmd29:get_freq:0", "290003"),
+        ("cmd29:get_freq:1", "290103"),
+    ]
+
+
+def test_ic7610_read_list_otherwise_unchanged() -> None:
+    """The IC-7610 list keeps its size: gating drops nothing there (MOR-4464 PR A)."""
+    items = build_read_list(load_rig(IC7610))
+    assert len(items) == 177
+
+
 def test_refused_command_bytes_are_refused_even_when_allowed() -> None:
     hex_bodies = ("1c00", "1c0001", "1800", "07", "07d0", "0e01")
     allowed = frozenset(bytes.fromhex(hex_body) for hex_body in hex_bodies)
@@ -160,20 +217,6 @@ def test_snapshot_names_come_from_the_profile() -> None:
     assert set(names) <= produced
     civ_names = snapshot_names(_load("ic7300"))
     assert "get_freq" in civ_names and "get_mode" in civ_names
-
-
-def _protocol_of(config: RigConfig) -> str:
-    return config.protocol_type
-
-
-def _probe_toml_names() -> list[str]:
-    names: list[str] = []
-    for path in sorted(RIGS_DIR.glob("*.toml")):
-        if path.name.startswith("_") or path.name.endswith(".draft.toml"):
-            continue
-        if load_rig(path).protocol_type in ("civ", "yaesu_cat"):
-            names.append(path.stem)
-    return names
 
 
 @pytest.mark.parametrize("toml_name", _probe_toml_names())
