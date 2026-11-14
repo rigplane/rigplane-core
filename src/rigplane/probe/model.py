@@ -244,7 +244,9 @@ def _tool_info(document: Any) -> ToolInfo:
         if key not in mapping:
             raise _missing(f"tool.{key}")
     return ToolInfo(
-        rigplane_version=_need_str(mapping["rigplane_version"], "tool.rigplane_version"),
+        rigplane_version=_need_str(
+            mapping["rigplane_version"], "tool.rigplane_version"
+        ),
         python=_need_str(mapping["python"], "tool.python"),
         os=_need_str(mapping["os"], "tool.os"),
         created_utc=_need_str(mapping["created_utc"], "tool.created_utc"),
@@ -317,7 +319,9 @@ def _command_row(document: Any, index: int) -> CommandRow:
         name=_need_str(mapping["name"], f"commands[{index}].name"),
         template=_need_str(mapping["template"], f"commands[{index}].template"),
         request_hex=_need_hex(mapping["request_hex"], f"commands[{index}].request_hex"),
-        request_text=_need_str(mapping["request_text"], f"commands[{index}].request_text"),
+        request_text=_need_str(
+            mapping["request_text"], f"commands[{index}].request_text"
+        ),
         reply_hex=reply_hex,
         reply_text=reply_text,
         outcome=outcome,
@@ -372,9 +376,13 @@ def _from_plain(document: Any) -> ProbeFile:
     for label, side in (("before", before), ("after", after)):
         for key, value in side.items():
             if value is not None and not isinstance(value, str):
-                raise ValueError(f"field snapshot.{label}.{key} must be a string or null")
+                raise ValueError(
+                    f"field snapshot.{label}.{key} must be a string or null"
+                )
     changed = snapshot["changed"]
-    if not isinstance(changed, list) or not all(isinstance(key, str) for key in changed):
+    if not isinstance(changed, list) or not all(
+        isinstance(key, str) for key in changed
+    ):
         raise ValueError("field snapshot.changed must be an array of strings")
     return ProbeFile(
         schema=_check_schema(mapping["schema"]),
@@ -389,6 +397,8 @@ def _from_plain(document: Any) -> ProbeFile:
         unsolicited=tuple(
             _unsolicited_row(row, index) for index, row in enumerate(stray)
         ),
-        snapshot=Snapshot(before=dict(before), after=dict(after), changed=list(changed)),
+        snapshot=Snapshot(
+            before=dict(before), after=dict(after), changed=list(changed)
+        ),
         checks=tuple(checks),
     )

@@ -126,9 +126,7 @@ def test_civ_list_covers_profile_gets_and_excludes_forbidden() -> None:
     assert bytes.fromhex("290103") in bodies
 
     # cmd29 wrapping matches the runtime's own builder byte for byte.
-    sub_wrapped = next(
-        item for item in items if item.name == "cmd29:get_preamp:1"
-    )
+    sub_wrapped = next(item for item in items if item.name == "cmd29:get_preamp:1")
     expected = build_cmd29_frame(
         profile.civ_addr, CONTROLLER_ADDR, 0x16, sub=0x02, receiver=1
     )[4:-1]

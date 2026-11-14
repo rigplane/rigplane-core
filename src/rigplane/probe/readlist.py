@@ -186,7 +186,9 @@ def _build_cat_list(config: RigConfig, *, include_private: bool) -> list[ReadReq
     for name, spec in config.commands.items():
         if not isinstance(spec, CatCommandSpec) or not spec.read:
             continue
-        probes.extend(_expand_cat_read(name, spec.read, config, include_private=include_private))
+        probes.extend(
+            _expand_cat_read(name, spec.read, config, include_private=include_private)
+        )
     return probes
 
 
@@ -267,7 +269,9 @@ def _build_civ_list(
     return probes
 
 
-def build_read_list(config: RigConfig, *, include_private: bool = False) -> list[ReadRequest]:
+def build_read_list(
+    config: RigConfig, *, include_private: bool = False
+) -> list[ReadRequest]:
     """Every read of one profile, concretely expanded, in profile order.
 
     The runner sends only these bodies, so this list is the allow-list:
@@ -280,7 +284,9 @@ def build_read_list(config: RigConfig, *, include_private: bool = False) -> list
         return _build_civ_list(
             config, config.to_profile(), include_private=include_private
         )
-    raise ValueError(f"probe supports 'civ' and 'yaesu_cat', not {config.protocol_type!r}")
+    raise ValueError(
+        f"probe supports 'civ' and 'yaesu_cat', not {config.protocol_type!r}"
+    )
 
 
 def build_allowed_bodies(
@@ -363,7 +369,9 @@ def identity_requests(config: RigConfig) -> list[ReadRequest]:
                 )
             )
         return requests
-    raise ValueError(f"probe supports 'civ' and 'yaesu_cat', not {config.protocol_type!r}")
+    raise ValueError(
+        f"probe supports 'civ' and 'yaesu_cat', not {config.protocol_type!r}"
+    )
 
 
 def snapshot_names(config: RigConfig) -> list[str]:
@@ -377,6 +385,8 @@ def snapshot_names(config: RigConfig) -> list[str]:
     elif config.protocol_type == "civ":
         candidates = _CIV_SNAPSHOT_CANDIDATES
     else:
-        raise ValueError(f"probe supports 'civ' and 'yaesu_cat', not {config.protocol_type!r}")
+        raise ValueError(
+            f"probe supports 'civ' and 'yaesu_cat', not {config.protocol_type!r}"
+        )
     produced = {item.name for item in build_read_list(config)}
     return [name for name in candidates if name in produced]

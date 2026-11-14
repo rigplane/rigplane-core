@@ -55,8 +55,7 @@ CIV_TIMEOUT_S = 0.5
 #: Consecutive silences that end the run with a plain message.
 SILENT_LIMIT = 5
 SILENT_ABORT_MESSAGE = (
-    "The radio stopped answering. "
-    "Check it is on, and the port and speed are right."
+    "The radio stopped answering. Check it is on, and the port and speed are right."
 )
 
 #: Refusal and bare-acknowledgement command bytes on CI-V.
@@ -75,9 +74,7 @@ class Exchange(Protocol):
     the transport itself breaks; the run then ends as ``transport_error``.
     """
 
-    async def __call__(
-        self, request: bytes | None, timeout: float
-    ) -> bytes | None: ...
+    async def __call__(self, request: bytes | None, timeout: float) -> bytes | None: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -272,9 +269,7 @@ async def _read_identity(
         raws.append((item.name, raw, parsed))
     if not raws:
         return _Identity("", "", False), None
-    matched = any(
-        _identity_matched(config, name, parsed) for name, _, parsed in raws
-    )
+    matched = any(_identity_matched(config, name, parsed) for name, _, parsed in raws)
     _name, raw, parsed = raws[0]
     return _Identity(raw, parsed, matched), None
 

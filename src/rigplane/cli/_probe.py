@@ -53,9 +53,7 @@ class UnsupportedProtocolError(ValueError):
     """The profile's protocol is not probed yet (USB CI-V and Yaesu CAT only)."""
 
 
-def resolve_config(
-    name: str, rigs: Mapping[str, RigConfig]
-) -> RigConfig:
+def resolve_config(name: str, rigs: Mapping[str, RigConfig]) -> RigConfig:
     """Return the rig profile for a ``rigplane models`` name.
 
     Raises :class:`UnknownProfileError` for an unknown model and

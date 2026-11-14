@@ -84,10 +84,10 @@ def _nak_frame(civ_addr: int) -> bytes:
     return build_civ_frame(civ_addr, CONTROLLER_ADDR, 0xFA)
 
 
-async def _run_yaesu(config: RigConfig, radio: FakeCatRadio, **kwargs) -> runner.ProbeRun:
-    reader, writer = await open_serial_port(
-        radio.device_url, baudrate=YAESU_BAUD
-    )
+async def _run_yaesu(
+    config: RigConfig, radio: FakeCatRadio, **kwargs
+) -> runner.ProbeRun:
+    reader, writer = await open_serial_port(radio.device_url, baudrate=YAESU_BAUD)
     try:
         return await runner.run_probe(
             config,
@@ -225,9 +225,7 @@ async def test_silent_answer_is_recorded_not_fatal() -> None:
     await radio.start()
     try:
         radio.silence(30.0)
-        reader, writer = await open_serial_port(
-            radio.device_url, baudrate=YAESU_BAUD
-        )
+        reader, writer = await open_serial_port(radio.device_url, baudrate=YAESU_BAUD)
         try:
             report = await runner.run_probe(
                 config,
@@ -255,9 +253,7 @@ async def test_five_silent_in_a_row_aborts_with_plain_message() -> None:
     await radio.start()
     try:
         radio.silence(30.0)
-        reader, writer = await open_serial_port(
-            radio.device_url, baudrate=YAESU_BAUD
-        )
+        reader, writer = await open_serial_port(radio.device_url, baudrate=YAESU_BAUD)
         try:
             report = await runner.run_probe(
                 config,
@@ -277,8 +273,7 @@ async def test_five_silent_in_a_row_aborts_with_plain_message() -> None:
     assert len(report.file.commands) == 5
     assert all(row.outcome == "silent" for row in report.file.commands)
     assert report.aborted == (
-        "The radio stopped answering. "
-        "Check it is on, and the port and speed are right."
+        "The radio stopped answering. Check it is on, and the port and speed are right."
     )
 
 
@@ -308,7 +303,9 @@ async def test_unsolicited_push_is_recorded_and_run_continues() -> None:
     # recorded as unsolicited and the run reads the real answer next.
     radio.auto_info_burst_on_next_request("TX")
     try:
-        report = await _run_yaesu(config, radio, items=_subset(config, "get_freq", "get_id"))
+        report = await _run_yaesu(
+            config, radio, items=_subset(config, "get_freq", "get_id")
+        )
     finally:
         await radio.stop()
     assert [row.text for row in report.file.unsolicited] == ["TX0;"]
@@ -508,8 +505,6 @@ async def test_runner_sends_only_what_readlist_produced() -> None:
                 assert any(p.fullmatch(line) for p in read_matchers), line
                 assert not any(p.fullmatch(line) for p in write_matchers), line
         else:
-            allowed = build_allowed_bodies(
-                config.to_profile(), include_private=True
-            )
+            allowed = build_allowed_bodies(config.to_profile(), include_private=True)
             for body in seen:
                 assert not is_forbidden(body, allowed), body.hex()

@@ -53,8 +53,7 @@ def progress_line(done: int, total: int) -> str:
 def silent_stop_message() -> str:
     """The message when the radio stops answering mid-run."""
     return (
-        "The radio stopped answering. "
-        "Check it is on, and the port and speed are right."
+        "The radio stopped answering. Check it is on, and the port and speed are right."
     )
 
 
@@ -100,8 +99,7 @@ def pre_save_summary(
 def closing_line() -> str:
     """The line printed after the file is saved."""
     return (
-        "Done. Nothing was uploaded. "
-        "Send the file to the person who asked you for it."
+        "Done. Nothing was uploaded. Send the file to the person who asked you for it."
     )
 
 
@@ -116,8 +114,7 @@ def not_supported_message(protocol: str) -> str:
 def cannot_open_message(device: str) -> str:
     """The message when the serial port cannot be opened."""
     return (
-        f"Cannot open {device}. "
-        "Check the radio is on and the port and speed are right."
+        f"Cannot open {device}. Check the radio is on and the port and speed are right."
     )
 
 
