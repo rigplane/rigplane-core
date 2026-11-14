@@ -20,7 +20,6 @@ from typing import Any
 
 from rigplane.cli._models import match_rig
 from rigplane.commands import CONTROLLER_ADDR, build_civ_frame, command_carries_sub
-from rigplane.commands.command_spec import CatCommandSpec
 from rigplane.core.serial_open import open_serial_port
 from rigplane.profiles.rig_loader import RigConfig
 from rigplane.probe import render
@@ -139,7 +138,6 @@ async def execute(
     *,
     device_label: str,
     baud: int,
-    address: int | None,
     out: str | None,
     include_private: bool,
     label: str,
@@ -166,7 +164,6 @@ async def execute(
         return 2
 
     items = build_read_list(config, include_private=include_private)
-    radio_addr = address if address is not None else config.civ_addr
     window = timeout_s
     if window is None:
         window = CIV_TIMEOUT_S if config.protocol_type == "civ" else CAT_TIMEOUT_S
@@ -331,7 +328,6 @@ def run(args: argparse.Namespace) -> int:
             toml_bytes,
             device_label=device,
             baud=baud,
-            address=args.address,
             out=args.out,
             include_private=args.include_private,
             label=args.label,

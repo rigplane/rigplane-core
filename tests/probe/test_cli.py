@@ -22,7 +22,7 @@ from rigplane.cli._probe import (
 )
 from rigplane.probe import runner
 from rigplane.probe.model import ProbeFile
-from rigplane.profiles.rig_loader import RigConfig, discover_rigs
+from rigplane.profiles.rig_loader import discover_rigs
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 RIGS = discover_rigs(REPO_ROOT / "rigs")
@@ -95,7 +95,6 @@ async def test_execute_refuses_to_save_without_tty_or_yes(tmp_path) -> None:
         (REPO_ROOT / "rigs" / "ft991a.toml").read_bytes(),
         device_label="COM5 @ 38400",
         baud=38400,
-        address=None,
         out=str(out),
         include_private=False,
         label="",
@@ -122,7 +121,6 @@ async def test_execute_start_decline_runs_nothing(tmp_path) -> None:
         (REPO_ROOT / "rigs" / "ft991a.toml").read_bytes(),
         device_label="COM5 @ 38400",
         baud=38400,
-        address=None,
         out=str(out),
         include_private=False,
         label="",
@@ -146,7 +144,6 @@ async def test_execute_save_decline_writes_nothing(tmp_path) -> None:
         (REPO_ROOT / "rigs" / "ft991a.toml").read_bytes(),
         device_label="COM5 @ 38400",
         baud=38400,
-        address=None,
         out=str(out),
         include_private=False,
         label="",
@@ -170,7 +167,6 @@ async def test_execute_yes_writes_parseable_file(tmp_path) -> None:
         (REPO_ROOT / "rigs" / "ft991a.toml").read_bytes(),
         device_label="COM5 @ 38400",
         baud=38400,
-        address=None,
         out=str(out),
         include_private=False,
         label="bench",
@@ -198,7 +194,6 @@ async def test_execute_cannot_open_is_exit_3(capsys, tmp_path) -> None:
         (REPO_ROOT / "rigs" / "ft991a.toml").read_bytes(),
         device_label="socket://127.0.0.1:1",
         baud=38400,
-        address=None,
         out=str(tmp_path / "probe.json"),
         include_private=False,
         label="",
@@ -220,7 +215,6 @@ async def test_execute_no_answers_is_exit_3_but_file_saved(tmp_path) -> None:
         (REPO_ROOT / "rigs" / "ft991a.toml").read_bytes(),
         device_label="COM5 @ 38400",
         baud=38400,
-        address=None,
         out=str(out),
         include_private=False,
         label="",
@@ -246,7 +240,6 @@ async def test_execute_default_out_path_uses_profile_and_timestamp(
         (REPO_ROOT / "rigs" / "ft991a.toml").read_bytes(),
         device_label="COM5 @ 38400",
         baud=38400,
-        address=None,
         out=None,
         include_private=False,
         label="",
