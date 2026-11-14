@@ -5,11 +5,17 @@
 // clear retargeted the glide backwards (0.5-1.6 kHz here; 10-24 kHz combined
 // with #4565) — the fix centres it on the radio's confirmed frequency.
 //
-// Meaningful on the INTEGRATED tree (#4555 for latency connect, #4565 fix 1);
-// on this branch alone rows above 0.05 s cannot connect, so a row that never
-// reaches scope setup skips at runtime with that reason (server/connect
-// failure) instead of asserting — the monotonic and overlay assertions below
-// are never weakened.
+// Run on the INTEGRATED tree (needs #4555 for connecting under latency and
+// #4565's follow-grant fix):
+//
+//   npx playwright test -c ./playwright.held-key.config.ts
+//
+// It is not part of the per-PR CI sweep on purpose (the journey and panorama
+// configs do not match this directory), same reason as the slow-link spec's
+// header. On a tree without #4555, rows above 0.05 s cannot connect, so a row
+// that never reaches scope setup skips at runtime with that reason
+// (server/connect failure) instead of asserting — the monotonic and overlay
+// assertions below are never weakened.
 import type { Page } from '@playwright/test';
 import { writeFile } from 'node:fs/promises';
 import { expect, test } from '@playwright/test';
@@ -23,9 +29,10 @@ import {
   passbandGaps,
   gateDiff,
   settlePassband,
-} from './panorama-passband-probe';
-import { startJourneyServer } from './server-process';
-import { expectPanoramaSettled, watchPanoramaErrors } from './panorama-guards';
+} from '../journey/panorama-passband-probe';
+import { startJourneyServer } from '../journey/server-process';
+import type { JourneyServerHandle } from '../journey/server-process';
+import { expectPanoramaSettled, watchPanoramaErrors } from '../journey/panorama-guards';
 
 /** One rAF sample of the held-key burst: VFO readout, marker geometry and the rendered view. */
 interface HeldKeySample {
@@ -190,18 +197,19 @@ for (const zoom of ZOOMS) {
       test(`IC-705 held ArrowRight stays monotonic with the passband present (${zoom.name}, ${latency.name}, step ${stepHz}Hz)`, async ({ page }, info) => {
         const seed = 1234;
         const evidence = info.outputPath('radio.jsonl');
-        const server = await startJourneyServer(port, 14_250_000,
-          ['--model', 'IC-705', '--evidence', evidence,
-            '--response-delay', String(latency.delay),
-            '--response-jitter', String(latency.jitter),
-            '--span-hz', '250000',
-            '--seed', String(seed)],
-          'tests/e2e/panorama_web_server.py');
-        const watch = watchPanoramaErrors(page);
         // Rows past the latency this branch can connect at never reach
         // setup: skip at runtime (detected here), never weaken the asserts.
         let setupDone = false;
+        let server: JourneyServerHandle | undefined;
         try {
+          server = await startJourneyServer(port, 14_250_000,
+            ['--model', 'IC-705', '--evidence', evidence,
+              '--response-delay', String(latency.delay),
+              '--response-jitter', String(latency.jitter),
+              '--span-hz', '250000',
+              '--seed', String(seed)],
+            'tests/e2e/panorama_web_server.py');
+          const watch = watchPanoramaErrors(page);
           const sent: Array<ScopeSubscription & { type: string }> = [];
           const grants: Array<{ tWall: number; grant: ScopeGranted }> = [];
           const frames: Array<{ view: number[]; coverage: number[]; receivedAt: number }> = [];
@@ -372,14 +380,13 @@ for (const zoom of ZOOMS) {
         } catch (error) {
           if (!setupDone) {
             test.skip(true,
-              'acceptance for MOR-4451; meaningful on the INTEGRATED tree (#4555 for latency ' +
-              `connect, #4565 fix 1); on this branch alone the ${latency.name} row cannot connect: ` +
-              `${error instanceof Error ? error.message.split('\n')[0] : String(error)}`);
+              `cannot connect at ${latency.name} on this tree: needs #4555 ` +
+              `(${error instanceof Error ? error.message.split('\n')[0] : String(error)})`);
             return;
           }
           throw error;
         } finally {
-          await server.kill();
+          await server?.kill();
         }
       });
     }
