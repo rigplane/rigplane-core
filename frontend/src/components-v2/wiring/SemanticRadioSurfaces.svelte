@@ -1466,6 +1466,7 @@
         demanded: runtime.scope.snapshotHealth(scopeFrameSource === 'audio-fft' ? 'audio_fft' : 'hardware').demanded,
         transport: runtime.scope.snapshotHealth(scopeFrameSource === 'audio-fft' ? 'audio_fft' : 'hardware').transport,
         geometry: scopeGeometry,
+        lastFrameHasPixels: stream.lastFrameHasPixels,
         receipt: stream.geometryReceipt,
       } : null;
     scopePassband = untrack(() => projectScopePassbandDisplay(scopePassband,

@@ -52,6 +52,7 @@ from ..radio_protocol import (
 )
 from ..runtime._state_queries import (
     acquisition_query_resolver_for_profile,
+    scope_fixed_edge_slot,
     wire_parts_for_query,
 )
 from ..runtime._poller_types import CommandQueue
@@ -433,10 +434,18 @@ class RigctldServer:
         if not isinstance(profile, RadioProfile):
             return None
         supports_cmd29 = getattr(profile, "supports_cmd29", None)
+        store = self._state_store
         return civ_acquisition_executor_for_provider(
             scheduler.provider,
             self._send_one_state_query,
-            resolve_query=acquisition_query_resolver_for_profile(profile),
+            resolve_query=acquisition_query_resolver_for_profile(
+                profile,
+                fixed_edge_slot=lambda: (
+                    scope_fixed_edge_slot(profile, store.snapshot())
+                    if store is not None
+                    else None
+                ),
+            ),
             supports_cmd29=supports_cmd29 if callable(supports_cmd29) else None,
         )
 

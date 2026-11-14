@@ -120,6 +120,7 @@ from ..profiles import RadioProfile, resolve_radio_profile
 from ..runtime._dual_rx_runtime import require_receiver_for_profile
 from ..runtime._state_queries import (
     acquisition_query_resolver_for_profile,
+    scope_fixed_edge_slot,
     tx_target_max_age,
     wire_parts_for_query,
 )
@@ -622,7 +623,16 @@ class RadioPoller:
             self._acquisition_executor = civ_acquisition_executor_for_provider(
                 self._acquisition_scheduler.provider,
                 self._send_one_state_query,
-                resolve_query=acquisition_query_resolver_for_profile(self._profile),
+                # MOR-4387: the periodic fixed-edge read addresses the slot
+                # of the scope receiver's CURRENT band and the observed edge,
+                # re-resolved per poll against the live store — never the
+                # 01/01 default that published an unrelated slot's bounds.
+                resolve_query=acquisition_query_resolver_for_profile(
+                    self._profile,
+                    fixed_edge_slot=lambda: scope_fixed_edge_slot(
+                        self._profile, self._state_store.snapshot()
+                    ),
+                ),
                 supports_cmd29=self._profile.supports_cmd29,
             )
         # Set by default — cleared at _run() start, re-set after initial fetch.
