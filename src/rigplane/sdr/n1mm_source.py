@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from typing import Literal
 
 from rigplane.core._optional_deps import _require_numpy
@@ -93,8 +93,8 @@ class N1mmSpectrumReceiver:
         self._arrivals = 0
         self._flush_seen = 0
         self._flush_defers = 0
-        self._start_future: asyncio.Future[None] | None = None
-        self._stop_future: asyncio.Future[None] | None = None
+        self._lifecycle = asyncio.Lock()
+        self._tasks: set[asyncio.Task[None]] = set()
         self._closed_future: asyncio.Future[None] | None = None
         self.rejected_count = 0
         self.filtered_count = 0
@@ -110,61 +110,48 @@ class N1mmSpectrumReceiver:
         return self._port
 
     async def start(self) -> None:
-        if self._transport is not None:
-            return
-        if self._start_future is not None:
-            await asyncio.shield(self._start_future)
-            return
-        loop = asyncio.get_running_loop()
-        future: asyncio.Future[None] = loop.create_future()
-        self._start_future = future
-        try:
-            transport, _ = await loop.create_datagram_endpoint(
-                lambda: _Protocol(self), local_addr=(self._host, self._port)
-            )
-            self._transport = transport
-            self._closed_future = loop.create_future()
-        except BaseException as exc:
-            if not future.done():
-                future.set_exception(exc)
-            raise
-        else:
-            if not future.done():
-                future.set_result(None)
-        finally:
-            self._start_future = None
+        await self._run(self._locked_start)
 
     async def stop(self) -> None:
-        # Let a just-created start task publish its in-flight marker first,
-        # so stop-during-start closes what start opened instead of leaking it.
-        await asyncio.sleep(0)
-        start_future = self._start_future
-        if start_future is not None:
-            try:
-                await asyncio.shield(start_future)
-            except BaseException:
-                pass
-        if self._stop_future is not None:
-            await asyncio.shield(self._stop_future)
-            return
-        closing: asyncio.Future[None] = asyncio.get_running_loop().create_future()
-        self._stop_future = closing
+        await self._run(self._locked_stop)
+
+    async def _run(self, op: Callable[[], Awaitable[None]]) -> None:
+        task = asyncio.ensure_future(op())
+        self._tasks.add(task)
         try:
-            transport = self._transport
-            if transport is not None:
-                transport.close()
-                closed = self._closed_future
-                if closed is not None:
-                    await closed
-                    self._closed_future = None
-            self._transport = None
-            self._flush_scheduled = False
-            self._latest = None
-            self._flush_defers = 0
-            self._flush_seen = self._arrivals
+            await asyncio.shield(task)
         finally:
-            self._stop_future = None
-            closing.set_result(None)
+            self._tasks.discard(task)
+
+    async def _locked_start(self) -> None:
+        async with self._lifecycle:
+            if self._transport is None:
+                await self._do_start()
+
+    async def _locked_stop(self) -> None:
+        async with self._lifecycle:
+            if self._transport is not None:
+                await self._do_stop()
+
+    async def _do_start(self) -> None:
+        loop = asyncio.get_running_loop()
+        transport, _ = await loop.create_datagram_endpoint(
+            lambda: _Protocol(self), local_addr=(self._host, self._port)
+        )
+        self._transport = transport
+        self._closed_future = loop.create_future()
+
+    async def _do_stop(self) -> None:
+        if self._transport is not None:
+            self._transport.close()
+            if self._closed_future is not None:
+                await self._closed_future
+        self._transport = None
+        self._closed_future = None
+        self._flush_scheduled = False
+        self._latest = None
+        self._flush_defers = 0
+        self._flush_seen = self._arrivals
 
     def _connection_lost(self) -> None:
         future, self._closed_future = self._closed_future, None
@@ -247,8 +234,8 @@ class N1mmSpectrumSource:
         self._last_key: tuple[float, float, int] | None = None
         self._last_emit_s: float | None = None
         self._callbacks: list[Callable[[NativeFrame], None]] = []
-        self._start_future: asyncio.Future[None] | None = None
-        self._stop_future: asyncio.Future[None] | None = None
+        self._lifecycle = asyncio.Lock()
+        self._tasks: set[asyncio.Task[None]] = set()
         self._active = False
         self.dropped_nonfinite = 0
 
@@ -296,57 +283,41 @@ class N1mmSpectrumSource:
         return GrantedView(resolved, self.coverage_for(resolved, receiver))
 
     async def start(self) -> None:
-        if self._active:
-            return
-        if self._start_future is not None:
-            await asyncio.shield(self._start_future)
-            return
-        loop = asyncio.get_running_loop()
-        future: asyncio.Future[None] = loop.create_future()
-        self._start_future = future
-        try:
-            receiver = self._receiver_factory(self.handle_packet)
-            self._receiver = receiver
-            try:
-                await receiver.start()
-            except BaseException:
-                self._receiver = None
-                raise
-            self._active = True
-        except BaseException as exc:
-            if not future.done():
-                future.set_exception(exc)
-            raise
-        else:
-            if not future.done():
-                future.set_result(None)
-        finally:
-            self._start_future = None
+        await self._run(self._locked_start)
 
     async def stop(self, *, release: bool = True) -> None:
-        # Same handoff as the receiver: let a just-created start task
-        # publish its in-flight marker before tearing anything down.
-        await asyncio.sleep(0)
-        start_future = self._start_future
-        if start_future is not None:
-            try:
-                await asyncio.shield(start_future)
-            except BaseException:
-                pass
-        if self._stop_future is not None:
-            await asyncio.shield(self._stop_future)
-            return
-        closing: asyncio.Future[None] = asyncio.get_running_loop().create_future()
-        self._stop_future = closing
+        await self._run(self._locked_stop)
+
+    async def _run(self, op: Callable[[], Awaitable[None]]) -> None:
+        task = asyncio.ensure_future(op())
+        self._tasks.add(task)
         try:
-            receiver = self._receiver
-            self._active = False
-            if receiver is not None:
-                await receiver.stop()
-            self._receiver = None
+            await asyncio.shield(task)
         finally:
-            self._stop_future = None
-            closing.set_result(None)
+            self._tasks.discard(task)
+
+    async def _locked_start(self) -> None:
+        async with self._lifecycle:
+            if not self._active:
+                await self._do_start()
+
+    async def _locked_stop(self) -> None:
+        async with self._lifecycle:
+            if self._receiver is not None:
+                await self._do_stop()
+
+    async def _do_start(self) -> None:
+        receiver = self._receiver_factory(self.handle_packet)
+        await receiver.start()
+        self._receiver = receiver
+        self._active = True
+
+    async def _do_stop(self) -> None:
+        receiver = self._receiver
+        if receiver is not None:
+            await receiver.stop()
+        self._receiver = None
+        self._active = False
 
     def on_frame(self, callback: Callable[[NativeFrame], None]) -> Callable[[], None]:
         self._callbacks.append(callback)

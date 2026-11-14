@@ -261,45 +261,73 @@ async def test_cancelled_late_start_keeps_shared_startup(target: str) -> None:
 
 
 @pytest.mark.timeout(30)
-async def test_source_concurrent_and_cancelled_stop_close_fully() -> None:
-    port = _free_port()
-    source = N1mmSpectrumSource(port=port, fps_limit=1000.0)
+async def test_source_start_during_pending_stop_replaces_receiver() -> None:
+    port, gate, made = _free_port(), asyncio.Event(), []
+
+    def factory(cb: Callable[[N1mmSpectrumPacket], None]) -> N1mmSpectrumReceiver:
+        receiver = N1mmSpectrumReceiver(port=port, on_packet=cb)
+        real_stop = receiver.stop
+
+        async def gated_stop() -> None:
+            await gate.wait()
+            await real_stop()
+
+        receiver.stop = gated_stop
+        made.append(receiver)
+        return receiver
+
+    source = N1mmSpectrumSource(factory, fps_limit=1000.0)
     frames: list[NativeFrame] = []
     source.on_frame(frames.append)
     await source.start()
-    first = asyncio.create_task(source.stop())
-    await _turns(1)
-    second = asyncio.create_task(source.stop())
+    stopping = asyncio.create_task(source.stop())
     await _turns(2)
-    assert not second.done()
-    await asyncio.gather(first, second)
-    await source.start()
+    starting = asyncio.create_task(source.start())
+    await _turns(2)
+    assert not starting.done()
+    gate.set()
+    await asyncio.gather(stopping, starting)
+    assert source._active and len(made) == 2 and source._receiver is made[-1]
     _send(port, emit_n1mm_spectrum(_packet()))
-    await await_until(lambda: frames, description="post-restart frame")
-    doomed = asyncio.create_task(source.stop())
-    await _turns(2)
-    doomed.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await doomed
+    await await_until(lambda: frames, description="delivery via new receiver")
     await source.stop()
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
         probe.bind(("127.0.0.1", port))
 
 
+@pytest.mark.parametrize("target", ["receiver", "source"])
 @pytest.mark.timeout(30)
-async def test_source_stop_during_start_no_leak() -> None:
+async def test_cancelled_initiating_stop_still_closes(target: str) -> None:
     port = _free_port()
-    source = N1mmSpectrumSource(port=port, fps_limit=1000.0)
-    task = asyncio.create_task(source.start())
-    await asyncio.sleep(0)
-    await source.stop()
-    try:
-        await task
-    except asyncio.CancelledError:
-        pass
-    assert not source._active
+    seen: list = []
+    if target == "receiver":
+        node = N1mmSpectrumReceiver(port=port, on_packet=seen.append)
+    else:
+        node = N1mmSpectrumSource(port=port, fps_limit=1000.0)
+        node.on_frame(seen.append)
+    await node.start()
+    owned = node if target == "receiver" else node._receiver
+    assert owned is not None
+    real_lost = owned._connection_lost
+    # Swallow the close handshake: stop() pends until the test releases it.
+    owned._connection_lost = lambda: None  # noqa: E731
+    first = asyncio.create_task(node.stop())
+    await _turns(2)
+    second = asyncio.create_task(node.stop())
+    await _turns(2)
+    first.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await first
+    assert not second.done()
+    owned._connection_lost = real_lost
+    real_lost()
+    await second
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
         probe.bind(("127.0.0.1", port))
+    await node.start()
+    _send(port, emit_n1mm_spectrum(_packet()))
+    await await_until(lambda: seen, description="delivery after restart")
+    await node.stop()
 
 
 class _FakeReceiver:
