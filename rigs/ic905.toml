@@ -71,6 +71,11 @@ span_presets_hz = [
     2500, 5000, 10000, 25000, 50000, 100000, 250000, 500000,
     1000000, 2500000, 5000000, 10000000, 25000000,
 ]
+# MOR-4385: those numbers are ±half-widths: the scope display spans
+# center ± value, and the center-mode waveform payload carries that same
+# value (IC-7610 CI-V Reference Guide p.14, "Scope waveform data", quoted
+# in runtime/_civ_rx.py: CivRuntime._publish_scope_span_observation).
+span_preset_semantics = "half_width"
 # 27 19 (p.28): adjustable range -20.0 ~ +20.0 dB in 0.5 dB steps.
 ref_min_db = -20.0
 ref_max_db = 20.0

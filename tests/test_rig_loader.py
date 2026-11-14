@@ -3091,7 +3091,11 @@ class TestScopeSpanPresets:
         assert rig.to_profile().scope_span_presets_hz == ()
 
     def test_parses_declared_presets(self, tmp_path):
-        toml = _MINIMAL_TOML + "\n[scope]\nspan_presets_hz = [2500, 5000, 10000]\n"
+        toml = (
+            _MINIMAL_TOML
+            + "\n[scope]\nspan_presets_hz = [2500, 5000, 10000]\n"
+            + 'span_preset_semantics = "half_width"\n'
+        )
         p = _write_toml(tmp_path, toml)
         rig = load_rig(p)
         assert rig.scope_span_presets_hz == (2500, 5000, 10000)
@@ -3127,6 +3131,68 @@ class TestScopeSpanPresets:
         rig = load_rig(RIGS_DIR / name)
         assert rig.scope_span_presets_hz == _EXPECTED_SPAN_PRESETS_HZ
         assert rig.to_profile().scope_span_presets_hz == _EXPECTED_SPAN_PRESETS_HZ
+
+
+class TestScopeSpanPresetSemantics:
+    """MOR-4385: a profile that declares span presets must also declare
+    what those numbers mean on the radio's own wire — a ±half-width
+    (Icom CI-V ``0x27 0x15``) or a full display width — so the scope
+    pipeline can publish real view widths and grant matching coverage.
+    """
+
+    def test_semantics_is_required_with_presets(self, tmp_path):
+        toml = _MINIMAL_TOML + "\n[scope]\nspan_presets_hz = [2500, 5000]\n"
+        p = _write_toml(tmp_path, toml)
+        with pytest.raises(
+            RigLoadError,
+            match=r"\[scope\]\.span_presets_hz requires span_preset_semantics",
+        ):
+            load_rig(p)
+
+    def test_defaults_to_half_width_without_presets(self, tmp_path):
+        p = _write_toml(tmp_path, _MINIMAL_TOML)
+        rig = load_rig(p)
+        assert rig.to_profile().scope_span_preset_semantics == "half_width"
+
+    @pytest.mark.parametrize("semantics", ["half_width", "full_width"])
+    def test_parses_declared_semantics(self, tmp_path, semantics):
+        toml = (
+            _MINIMAL_TOML
+            + "\n[scope]\nspan_presets_hz = [2500, 5000]\n"
+            + f'span_preset_semantics = "{semantics}"\n'
+        )
+        p = _write_toml(tmp_path, toml)
+        rig = load_rig(p)
+        assert rig.to_profile().scope_span_preset_semantics == semantics
+
+    def test_rejects_unknown_semantics(self, tmp_path):
+        toml = (
+            _MINIMAL_TOML
+            + "\n[scope]\nspan_presets_hz = [2500, 5000]\n"
+            + 'span_preset_semantics = "widest"\n'
+        )
+        p = _write_toml(tmp_path, toml)
+        with pytest.raises(
+            RigLoadError,
+            match=r"\[scope\]\.span_preset_semantics must be half_width or"
+            r" full_width",
+        ):
+            load_rig(p)
+
+    def test_every_shipped_profile_with_presets_declares_half_width(self):
+        """Every shipped profile that declares span presets states the
+        semantics explicitly, and all of them are Icom CI-V half-widths
+        (see each profile's CI-V citation)."""
+        shipped = sorted(
+            path.name
+            for path in RIGS_DIR.glob("*.toml")
+            if "span_presets_hz" in path.read_text()
+        )
+        assert shipped, "expected at least one shipped profile with presets"
+        for name in shipped:
+            profile = load_rig(RIGS_DIR / name).to_profile()
+            assert profile.scope_span_presets_hz
+            assert profile.scope_span_preset_semantics == "half_width", name
 
 
 class TestScopeFixedEdgeRanges:
