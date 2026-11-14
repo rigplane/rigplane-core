@@ -23,7 +23,8 @@ import itertools
 import re
 from dataclasses import dataclass
 
-from rigplane.commands import RECEIVER_MAIN, RECEIVER_SUB, decode_wire_tuple
+from rigplane.commands import RECEIVER_MAIN, RECEIVER_SUB
+from rigplane.commands._frame import decode_wire_tuple
 from rigplane.commands.command_spec import CatCommandSpec
 from rigplane.profiles import RadioProfile
 from rigplane.profiles.rig_loader import RigConfig
