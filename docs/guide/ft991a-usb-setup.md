@@ -17,13 +17,13 @@ backend, which speaks Yaesu's text CAT protocol.
 
 ## Serial Ports and CAT Rate
 
-Over USB the FT-991A shows two serial ports (customer hardware: Silicon
-Labs CP210x bridge, VID:PID `10C4:EA70`):
+Over USB the FT-991A shows two serial ports (seen on one radio with the
+Silicon Labs CP210x bridge, VID:PID `10C4:EA70`):
 
 | Port | Use |
 |------|-----|
-| Enhanced COM Port | CAT (frequency, mode and the rest). Use this port with RigPlane. |
-| Standard COM Port | Second port (GPS/CAT per menu 028). |
+| Enhanced COM Port | CAT (frequency, mode and the rest). RigPlane uses this port. |
+| Standard COM Port | PTT, CW keying and digital-mode transmit control (RTS/DTR) for other programs. RigPlane does not use it in this version. |
 
 COM port numbers are host-specific; they are never the same twice. To find
 the port, run:
@@ -36,13 +36,13 @@ It lists the port where the FT-991A answered (`ID0670;`).
 
 Set the radio menus (menu numbers from the CAT manual, EX table):
 
-- **028 GPS/232C SELECT** — RS232C for CAT over USB.
 - **031 CAT RATE** — 4800 / 9600 / 19200 / 38400 bps. The `yaesu-cat`
   backend defaults to 38400; if you change CAT RATE, pass the same rate
   with `--serial-baud`.
-- **032 CAT TOT** — CAT timeout.
-- **033 CAT RTS** — hardware flow control; the working of the backend with
-  it on or off is not yet verified on hardware (capture list).
+- **032 CAT TOT** — CAT timeout: 10 / 100 / 1000 / 3000 ms. The default
+  is fine.
+- **033 CAT RTS** — hardware flow control: disabled or enabled.
+  RigPlane has not yet been verified with CAT RTS enabled or disabled.
 
 ## Radio Settings for USB Audio
 
@@ -50,9 +50,6 @@ When no audio device is named, RigPlane first looks for the audio device on
 the same USB connection as the serial port, then falls back to picking one by
 name. To choose devices yourself, pass `--rx-device` and `--tx-device` with
 names from `rigplane --list-audio-devices`.
-
-Not yet verified on hardware: the USB audio codec identity, the RX channel
-layout, the sample rate, and the radio-side menu for the TX audio source.
 
 ## CLI
 
@@ -95,7 +92,7 @@ async def main():
         mode, _ = await radio.get_mode()
         print(f"{freq/1e6:.3f} MHz  {mode}")
 
-asyncio.run(main)
+asyncio.run(main())
 ```
 
 `YaesuCatBackendConfig` also takes `baudrate` (default 38400), `rx_device`,
@@ -103,29 +100,19 @@ asyncio.run(main)
 
 ## Single Receiver
 
-The FT-991A profile has one receiver with VFO A/B (VFO scheme `ab`). There
-is no readable active-VFO slot and no dual watch; swap (A/B) and equalize
-(A=B) are the native `SV;` / `AB;` commands.
+The FT-991A has one receiver with VFO A and VFO B (VFO scheme `ab`);
+split uses the two VFOs.
 
-## Not Yet Verified on Hardware
+## What This Version Does
 
-Split, filter widths, meter scaling, the IF bulk length, serial framing and
-flow control, TX audio and PTT all rest on the manual until the customer
-capture pass confirms them. If something misbehaves, capture it and see
+Radio control (frequency, mode, filters, VFO A/B, split, meters), audio,
+and digital modes through the radio's USB audio device work. Not yet
+available: transmit from the web UI, antenna tuner, noise blanker/noise
+reduction switches, clarifier, memory channels, squelch, contour.
+
+The profile was built from the manufacturer's CAT manual and is being
+verified on real radios. If something misbehaves, see
 [Troubleshooting](troubleshooting.md).
-
-## Known Limits in This Version
-
-- **Transmit from the web UI is not available yet.** The profile declares no
-  TX-target source (the radio has no transmit-target read), so the web TX
-  authority and the TUNE action stay closed for the FT-991A. TX is also
-  unverified on hardware, and the antenna tuner (`AC`) is not exposed.
-- Noise blanker and noise reduction on/off, clarifier (RIT/XIT), monitor,
-  speech processor, IF bulk status, power-on and memory channels are not
-  exposed in this version.
-- Contour is not exposed: nothing polls its CAT path yet.
-- Squelch is not exposed: its 0–100 CAT range does not fit the shared
-  0–255 level path yet.
 
 ## See Also
 

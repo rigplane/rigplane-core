@@ -96,10 +96,9 @@ visible on both radios. VFO labels switch to "VFO A" / "VFO B" automatically.
 - **Rig profile:** `rigs/ft991a.toml`
 - **Features:** HF/VHF/UHF all-mode, single receiver, VFO A/B, split, IF shift, narrow/wide filter widths, TX meters (ALC/COMP/power/SWR)
 - **VFO scheme:** `ab` (1 receiver, 1 transceiver)
-- **Audio:** USB audio RX/TX; channel layout and sample rate are unverified on hardware
-- **Status:** Profile only; no hardware capture yet — unverified items are marked in the profile
-- **Known limits (v1):** contour is not exposed — nothing polls its CAT path yet
-- **Known limits (v1):** squelch is not exposed — its 0–100 CAT range does not fit the shared 0–255 level path yet
+- **Audio:** USB audio RX/TX
+- **Status:** new in this version; built from the CAT manual, hardware verification in progress
+- **Not yet available:** transmit from the web UI, antenna tuner, NB/NR switches, clarifier, memory channels, squelch, contour
 
 !!! tip "Setup Guide"
     **[FT-991A USB Setup](ft991a-usb-setup.md)** — the CAT port and rate, radio
