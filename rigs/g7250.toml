@@ -1,7 +1,8 @@
 # Rig Configuration — Xiegu G7250
 #
 # Xiegu G7250 HF/50 MHz transceiver, USB CI-V (subset of standard Icom
-# CI-V, same family personality as the X6200).
+# CI-V, same family personality as the X6200) and LAN control in wfview
+# network mode.
 #
 # Sources of truth, per entry:
 #   1. "LIVE G7250 2026-11-09 (MOR-4352)" — the read-only bench audit of a
@@ -11,6 +12,8 @@
 #   2. "inherited from X6200, not probed on G7250" — copied unchanged from
 #      rigs/x6200.toml (Radioddity "Xiegu X6200 CI-V implementation
 #      V1.0.6" and that profile's own live captures). NOT G7250 evidence.
+#   3. "LIVE G7250 LAN 2026-11-13 (MOR-4436)" — live network probes of a
+#      real G7250 (firmware V1.0.1) in wfview network mode.
 #
 # The audit never keyed the radio: no SET opcode, no PTT, no TX fact below
 # is bench-proven. History: MOR-4352.
@@ -18,23 +21,22 @@
 [radio]
 id = "xiegu_g7250"
 model = "G7250"
-# LIVE G7250 2026-11-09 (MOR-4352): the radio answers ANY CI-V address and
-# echoes the address it was asked as its own (probed at 00, A4, 88, 70, 72,
-# E0; 0x88 answered the full read set in the same audit). 0x88, not the
-# Xiegu family default 0xA4: this file loads before ic705.toml/x6200.toml,
-# and the profiles' address-only table (profiles/__init__.py
-# _by_civ_addr) would otherwise resolve 0xA4 lookups to the G7250,
-# stealing the IC-705's address-only resolution. No shipped profile uses
-# 0x88, so 0xA4 (IC-705) and 0x70 (X6100) keep resolving as before, and
-# unicast sessions still work: the radio answers whatever address it is
-# asked. Discovery names this radio through 0x1D 0x19 at 0x00, never
-# through the address table.
-civ_addr = 0x88
+# LIVE G7250 LAN 2026-11-13 (MOR-4436): over LAN only 0xA0 answers (0x88
+# and 0x94 are silent); the vendor wfview G7250.rig uses CIVAddress=160
+# (0xA0) too, and the reference default 0x94 is the IC-7300's address, not
+# usable here. Over USB serial the radio answers ANY address and echoes
+# it (LIVE 2026-11-09, probed 00/A4/88/70/72/E0). No other shipped profile
+# uses 0xA0, so 0xA4 (IC-705) and 0x70 (X6100) keep resolving as before.
+# Discovery names this radio through 0x1D 0x19 (`72 50`), never through
+# the address table.
+civ_addr = 0xA0
 receiver_count = 1
-# The G7250 "LAN" port is a proprietary IQ stream, not Icom LAN control
-# (MOR-4352); has_wifi has no bench evidence either way and stays false —
-# flip only with evidence.
-has_lan = false
+# Two exclusive network modes share the port numbers: HDSDR = UDP IQ stream
+# (see [iq_lan]) and wfview = Icom-LAN-like control (LIVE G7250 LAN
+# 2026-11-13, MOR-4436, V1.0.1). LAN RX audio flows (48 kHz 16-bit mono,
+# PCM_1CH_16BIT); LAN audio TX is NOT verified. has_wifi has no bench
+# evidence either way and stays false — flip only with evidence.
+has_lan = true
 has_wifi = false
 # LIVE G7250 2026-11-09 (MOR-4352): answers 115200, silent at 19200.
 default_baud = 115200
@@ -49,8 +51,9 @@ xiegu_model_id = 0x7250
 
 [protocol]
 type = "civ"
-address = 0x88
+address = 0xA0
 
+# HDSDR network mode only: in wfview mode these ports carry control/CI-V/audio.
 [iq_lan]
 protocol = "xiegu_udp"
 radio_port = 50002
@@ -86,14 +89,26 @@ codec_preference = ["PCM_1CH_16BIT", "ULAW_1CH"]
 #     0x16 0x44 compressor, 0x16 0x50 dial lock) — the meaning of 0x02 on
 #     this radio is unconfirmed, so no toggle state is declared from them.
 #   - no ``break_in``: 0x16 0x47 NAKs (LIVE).
-#   - no ``tuner``: 0x1C 0x01 NAKs (LIVE) — the G7250 has no ATU.
+#   - no ``tuner``: 0x1C 0x01 NAKed pre-1.0.1 (LIVE) — but the Xiegu G7250
+#     CI-V Reference Rev 1.2 (2026-11-06), Table 1-9 / page 9 documents
+#     1C 01 as a [Real] shared ATU (00 OFF / 01 ON / 02 tune, tune starts
+#     TX). Markers stay absent on the bench evidence; activating them needs
+#     the TX-gated follow-up (audit section B, out of scope here).
 #   - no ``data_mode``: 0x1A 0x06 NAKs (LIVE).
-#   - no ``scope``: 0x27 0x10/0x11/0x14/0x15 got NO reply (LIVE) — no
-#     CI-V scope.
+#   - no ``scope``: 0x27 0x10/0x11/0x14/0x15 got NO reply over USB
+#     serial (LIVE pre-1.0.1; the reference lists 27 as unimplemented on
+#     serial). Over LAN in wfview mode the scope answers (LIVE
+#     2026-11-13) — declaring it is a follow-up step, out of scope here.
 #   - no tone family: 0x16 0x42/0x43 NAK (LIVE).
-#   - no memory channels: 0x1A 0x00 NAKs (LIVE).
-# ``scan`` is inherited from X6200, not probed on G7250 (the X6200 map has
-# no scan GET to read, so the audit could not test it).
+#   - no memory channels: 0x1A 0x00 NAKs (LIVE) — but that opcode is only
+#     the *contents* register, unimplemented per the Xiegu G7250 CI-V
+#     Reference Rev 1.2 (2026-11-06), Table 4-2 / page 13. Memory itself is
+#     real via 08/09/0A/0B, slots 0001-0099 (Table 1-3 / page 3). Markers
+#     stay absent on the bench evidence; wiring them is audit section B,
+#     out of scope here.
+# No ``scan``: 0x0E scan is unimplemented (silent) and the 08 01 00 / 01 01
+# P1/P2 scan edges answer FA — Xiegu G7250 CI-V Reference Rev 1.2
+# (2026-11-06), Table 4-2 / page 13 and Table 1-3 / page 3.
 features = [
     "audio",
     "af_level",
@@ -107,7 +122,6 @@ features = [
     "split",
     "cw",
     "meters",
-    "scan",
     "agc",
     "power_control",
 ]
@@ -205,13 +219,16 @@ freshness_ttl_seconds = 1.0
 adaptive_decay = false
 meter_coalescing_window_seconds = 0.25
 
-# inherited from X6200, not probed on G7250: the audit read mode 0x04 as
-# LSB/FIL1 (LIVE) but never enumerated the dial's full value domain.
+# Xiegu G7250 CI-V Reference Rev 1.2 (2026-11-06), Table 2-1 / page 2:
+# LSB/USB/AM/CW/FM are [Real]. RTTY (04), CW-R (07) and RTTY-R (08) are
+# [Compat]: the written value is stored only, the actual native mode is
+# unchanged — so they are not selectable modes here. WFM has no CI-V mode
+# code. The vendor wfview G7250.rig lists CW-R, but the reference decides.
 # No DIGI in the list: not observed on the G7250 (read-only audit
 # 2026-11-09), and IcomRadio._coerce_mode cannot express it (MOR-1487).
 [modes]
-list = ["USB", "LSB", "CW", "CW-R", "AM", "FM", "RTTY"]
-families = { cw = ["CW", "CW-R"] }
+list = ["USB", "LSB", "CW", "AM", "FM"]
+families = { cw = ["CW"] }
 
 [filters]
 list = ["FIL1", "FIL2", "FIL3"]
@@ -223,10 +240,12 @@ list = ["FIL1", "FIL2", "FIL3"]
 #   LSB FIL1 0x33=2900  FIL2 0x28=2400  FIL3 0x22=1800
 #   CW  FIL1 0x09=500   FIL2 0x05=300   FIL3 0x02=150
 #   AM  FIL1 0x44=9000  FIL2 0x29=6000  FIL3 0x14=3000
-# RTTY/FM widths were NOT measured: do not invent them. RTTY carries the
-# SSB segment table (the shared Xiegu family posture) and FM is fixed —
-# both marked here as not measured, pending a live read. DIGI has no
-# entry at all: not observed on the G7250 (read-only audit 2026-11-09).
+# FM width was NOT measured: do not invent it. FM is fixed — marked here
+# as not measured, pending a live read. RTTY/CW-R/RTTY-R have no width
+# table: per Xiegu G7250 CI-V Reference Rev 1.2 (2026-11-06), Table 2-3 /
+# page 7 their widths are mode shadows (legal index limit 31), stored raw
+# with native filters untouched. DIGI has no entry at all: not observed on
+# the G7250 (read-only audit 2026-11-09).
 encoding = "segmented_bcd_index"
 width_min_hz = 50
 width_max_hz = 9999
@@ -251,17 +270,6 @@ segments = [
     { hz_min = 600, hz_max = 3600, step_hz = 100, index_min = 10 },
 ]
 
-# RTTY: NOT measured on the G7250 — SSB segments re-used per the
-# Xiegu family posture (inherited from X6200, not probed on G7250).
-[filters.width.RTTY]
-min_hz = 50
-max_hz = 3600
-defaults = [2900, 2400, 1800]
-segments = [
-    { hz_min = 50, hz_max = 500, step_hz = 50, index_min = 0 },
-    { hz_min = 600, hz_max = 3600, step_hz = 100, index_min = 10 },
-]
-
 [filters.width.AM]
 min_hz = 200
 max_hz = 10000
@@ -278,23 +286,34 @@ fixed = true
 [vfo]
 scheme = "ab"
 
-# LIVE G7250 2026-11-09 (MOR-4352): 0x11 read back 00 (off). Binary toggle
-# encoding inherited from X6200.
+# Xiegu G7250 CI-V Reference Rev 1.2 (2026-11-06), Table 1-3 / page 3:
+# selected-VFO ATT read 11 A, write only A=00 OFF or 20 ON; any other
+# non-zero value is FA, not a toggle. Same [0, 20] shape as
+# rigs/ic7300.toml (which likewise declares no labels); the pre-1.0.1
+# X6200-inherited [0, 1] would FA on a write of 01.
+# LIVE G7250 2026-11-09 (MOR-4352): 0x11 read back 00 (off).
 [attenuator]
-values = [0, 1]
-labels = { "0" = "OFF", "1" = "ON" }
+values = [0, 20]
 
-# LIVE G7250 2026-11-09 (MOR-4352): 0x16 0x02 read back 00 (off). Binary
-# toggle encoding inherited from X6200.
+# Xiegu G7250 CI-V Reference Rev 1.2 (2026-11-06), Table 1-6 / page 6:
+# 0x16 0x02 [Real] preamp 00 OFF, 01 PRE1, 02 PRE2, selected VFO.
+# LIVE G7250 2026-11-09 (MOR-4352): read back 00 (off).
 [preamp]
-values = [0, 1]
+values = [0, 1, 2]
 
-# LIVE G7250 2026-11-09 (MOR-4352): 0x16 0x12 read back 02. The 0-3
-# OFF/FAST/SLOW/AUTO domain is inherited from X6200, not probed on G7250
-# (which value 02 means was not established).
+# Xiegu G7250 CI-V Reference Rev 1.2 (2026-11-06), Table 1-6 / page 6:
+# 0x16 0x12 [Real] 00 OFF, 01 FAST, 03 SLOW; 02 MID is [Compat] (stored per
+# A/B, never drives hardware). The radio panel has four AGC states: Auto,
+# Slow, Fast, Off (no Medium). Only 00/01/03 are settable over CI-V; panel
+# Auto has no protocol code in V1.0.1. A later firmware that commands AUTO
+# is a data edit here.
+# LIVE G7250 LAN 2026-11-14 (MOR-4436, V1.0.1, at 0xA0): panel AUTO and
+# panel OFF both read back 16 12 00 — indistinguishable over CI-V. Over
+# USB at the same moment, panel AUTO read 16 12 02 (01:34Z).
+# LIVE G7250 2026-11-09 (MOR-4352): read back 02 (a MID shadow, pre-1.0.1).
 [agc]
-modes = [0, 1, 2, 3]
-labels = { "0" = "OFF", "1" = "FAST", "2" = "SLOW", "3" = "AUTO" }
+modes = [0, 1, 3]
+labels = { "0" = "OFF", "1" = "FAST", "3" = "SLOW" }
 
 [controls.attenuator]
 style = "toggle"
@@ -303,6 +322,11 @@ style = "toggle"
 # G7250's level GETs reply TWO BCD data bytes (LIVE 2026-11-09, e.g.
 # rf gain 02 49, mic gain 01 95), the same 0-255 domain the X6200 PDF
 # documents for its one-byte reads.
+# 14 01 means different things per transport (LIVE G7250 2026-11-14,
+# MOR-4436, V1.0.1): over USB it is the radio's speaker volume and tracks
+# the panel knob (knob 5 -> 12, knob 20 -> 51); over LAN in wfview mode it
+# is the level of the network RX audio stream (RMS-measured), does not
+# follow the knob and does not change the speaker.
 [controls.af_level]
 raw_min = 0
 raw_max = 255
@@ -338,27 +362,74 @@ raw_max = 255  # LIVE 2026-11-09: full setting, 14 0A reads 02 55 (100 W rated)
 # target (5 W -> 13), so the exact-readback contract holds.
 write_quantum_w = 1
 
-# Display bands inherited from X6200, not probed on G7250 (the G7250 read
-# live was 00 00 = the bottom of the band; the top end is unconfirmed).
+# Xiegu G7250 CI-V Reference Rev 1.2 (2026-11-06), Table 1-5 / page 5 and
+# Table 2-2 / page 4: CW pitch native 400-1200 Hz in 10 Hz steps; the full
+# protocol range is scaled, x=400+10*round(N*80/255), read N=round(255(x-400)/800).
+# decode_quantum = 10 reproduces that lattice exactly (half-step ties are
+# impossible here: 160*raw is even, 255*(2k+1) is odd). encode is ceil:
+# the radio quantizes on write, so ceil lands on the raw the read formula
+# maps back to the request, and every 400-1200 Hz step-10 value round-trips
+# exactly (410 Hz -> raw 4, stored as 410 Hz, read raw 3, decoded 410 Hz).
+# It matches the reference round-half-up on exact ties (e.g. 480 Hz -> 26).
+# Live-radio caveat: pitch write is not observable on V1.0.1 (LIVE G7250
+# V1.0.1 2026-11-14, USB, also in CW mode — the read-back was 0 for every
+# written raw), so the write/read formula above is unverified there.
+# Over LAN (LIVE G7250 LAN 2026-11-14, MOR-4436) 14 09 is readable and
+# writable and the sidetone follows it across 400-1200 Hz (writes 500/600/
+# 1000/1200 read back 500/601/1002/1200). A USB write does not change the
+# LAN value: CW pitch is LAN-only on V1.0.1.
 [controls.cw_pitch]
 raw_min = 0
 raw_max = 255
 display_min = 400
 display_max = 1200
 display_unit = "Hz"
-decode_quantum = 1
+decode_quantum = 10
 encode_rounding = "ceil"
 
-# Display band inherited from X6200, not probed on G7250 (live read
-# 00 90 = raw 90; which WPM that displays was not established).
+# Xiegu G7250 CI-V Reference Rev 1.2 (2026-11-06), Table 1-4 / page 4 and
+# Table 2-2 / page 4: native 5-50 WPM, write 5+floor(N*45/255), read
+# floor((x-5)*255/45). encode is ceil: the radio floors on write, so ceil
+# lands on the smallest raw whose stored WPM reads back as the request, and
+# every 5-50 WPM value round-trips exactly (25 WPM -> raw 114, stored as
+# 25 WPM, read raw 113, decoded 25 WPM). nearest_half_down misses 15 of the
+# 46 values (7, 10, ..., 49: 25 WPM encodes as 113, stored as 24 WPM).
+# LIVE G7250 V1.0.1 2026-11-14 (USB): floor on write and floor on read
+# exactly as the reference (61 measured write->read points). Key speed is
+# one value shared by USB and LAN (LIVE 2026-11-14, MOR-4436: USB set 30 ->
+# LAN reads 30). V1.0.1 has no electronic keyer (both paddle contacts key
+# like a straight key, no key-type setting), so the value has no effect on
+# hand keying.
 [controls.key_speed]
 raw_min = 0
 raw_max = 255
-display_min = 6
-display_max = 48
+display_min = 5
+display_max = 50
 display_unit = "WPM"
 decode_quantum = 1
-encode_rounding = "nearest_half_down"
+encode_rounding = "ceil"
+
+# Xiegu G7250 CI-V Reference Rev 1.2 (2026-11-06), Table 1-4 / page 4 and
+# Table 2-2 / page 4: MIC gain native 0-30, write floor(N*30/255), read
+# floor(x*255/30). encode is ceil: the radio floors on write, so ceil lands
+# on the smallest raw whose stored gain reads back as the request, and every
+# 0-30 value round-trips exactly (15 -> raw 128, stored as 15, read raw 127,
+# decoded 15). nearest_half_down misses all 15 odd values (1, 3, ..., 29).
+# LIVE G7250 V1.0.1 2026-11-14 (USB): floor on write and floor on read
+# exactly as the reference (46 measured write->read points).
+# Display key names mirror the other display-scaled levels
+# ([controls.cw_pitch] / [controls.key_speed]); no other shipped profile
+# declares a display band on mic_gain. NOTE: the live set/get path
+# (runtime/radio.py set_mic_gain/get_mic_gain) still moves raw 0-255 levels
+# end to end — this band is the profile's display mapping, exercised by the
+# round-trip test, not by the HTTP command path.
+[controls.mic_gain]
+raw_min = 0
+raw_max = 255
+display_min = 0
+display_max = 30
+decode_quantum = 1
+encode_rounding = "ceil"
 
 # LIVE G7250 2026-11-09 (MOR-4352): the 0x02 band-edge read answered RX
 # 0.5 .. 54 MHz — the HF envelope is live; it bounds the receiver at
@@ -449,6 +520,139 @@ max_power_w = 90  # preliminary vendor spec: 90 W ±1 dB on 50 MHz
 [power]
 max_watts = 100
 
+# ── Meter calibration — piecewise-linear lookup, same [meters.<key>] +
+# [[meters.<key>.calibration]] keys as rigs/ic7300.toml ──────────────
+# Anchors: Xiegu G7250 CI-V Reference Rev 1.2 (2026-11-06), Table 1-8 and
+# Table 2-4 / page 8. Every table below interpolates linearly between the
+# reference anchors, exactly the reference's own piecewise formula.
+#
+# Reader coverage: get_s_meter, get_power_meter, get_swr and get_vd_meter
+# are declared above, so s_meter/power/swr/vd calibrate live. get_alc has
+# no profile key and get_id_meter is declared absent below — the alc/id
+# tables have no reader today (decision for the coordinator: flip/add the
+# reader or leave the tables dormant). The loader accepts calibration
+# without a reader; nothing polls what nothing reads.
+
+# S-meter: raw 0/120/241 = -129/-75/-15 dBm. Stored in the dB-relative-S9
+# unit this key expects (ic7300 convention), with S9 = -73 dBm: -56.0 /
+# -2.0 / +58.0. The -75 dBm anchor is NOT S9 (it is S9-2 dB) — stored
+# faithfully as -2.0, not snapped to 0.
+[meters.s_meter]
+redline_raw = 120
+
+[[meters.s_meter.calibration]]
+raw = 0
+actual = -56.0
+label = "-129 dBm"
+
+[[meters.s_meter.calibration]]
+raw = 120
+actual = -2.0
+label = "-75 dBm"
+
+[[meters.s_meter.calibration]]
+raw = 241
+actual = 58.0
+label = "-15 dBm"
+
+# PO: raw 0/143/213 = 0/50/100 W. No 255 clamp: the reference caps input at
+# 100 W (213 is the top of the calibrated scale); do not copy IC-7300's
+# 120 W table.
+[[meters.power.calibration]]
+raw = 0
+actual = 0.0
+label = "0"
+
+[[meters.power.calibration]]
+raw = 143
+actual = 50.0
+label = "50"
+
+[[meters.power.calibration]]
+raw = 213
+actual = 100.0
+label = "100"
+
+# SWR: raw 0/48/80/120/255 = 1/1.5/2/3/25.5.
+[meters.swr]
+redline_raw = 120
+
+[[meters.swr.calibration]]
+raw = 0
+actual = 1.0
+label = "1.0"
+
+[[meters.swr.calibration]]
+raw = 48
+actual = 1.5
+label = "1.5"
+
+[[meters.swr.calibration]]
+raw = 80
+actual = 2.0
+label = "2.0"
+
+[[meters.swr.calibration]]
+raw = 120
+actual = 3.0
+label = "3.0"
+
+[[meters.swr.calibration]]
+raw = 255
+actual = 25.5
+label = "25.5"
+
+# ALC: raw 0..120 = 0..100 %. Percent convention (matches rigs/ic7610.toml's
+# own [meters.alc] table); _civ_rx divides the interpolated value by 100.
+# No reader today (no get_alc key) — see the header note.
+[[meters.alc.calibration]]
+raw = 0
+actual = 0.0
+label = "0"
+
+[[meters.alc.calibration]]
+raw = 120
+actual = 100.0
+label = "100"
+
+# Vd: raw 0/13/241 = 0/10/16 V.
+[[meters.vd.calibration]]
+raw = 0
+actual = 0.0
+label = "0"
+
+[[meters.vd.calibration]]
+raw = 13
+actual = 10.0
+label = "10"
+
+[[meters.vd.calibration]]
+raw = 241
+actual = 16.0
+label = "16"
+
+# Id: raw 0/97/146/241 = 0/10/15/25 A. No reader today (get_id_meter is
+# declared absent below) — see the header note.
+[[meters.id.calibration]]
+raw = 0
+actual = 0.0
+label = "0"
+
+[[meters.id.calibration]]
+raw = 97
+actual = 10.0
+label = "10"
+
+[[meters.id.calibration]]
+raw = 146
+actual = 15.0
+label = "15"
+
+[[meters.id.calibration]]
+raw = 241
+actual = 25.0
+label = "25"
+
 # ── CI-V Commands ────────────────────────────────────────────────
 # Every GET marked LIVE was answered on the bench (read-only audit — no
 # SET was exercised). SET opcodes and every entry without a LIVE mark are
@@ -461,19 +665,29 @@ max_watts = 100
 [commands]
 
 # Frequency / mode
-get_freq         = [0x03]  # LIVE G7250 2026-11-09 (MOR-4352): answered 7.138000 MHz; SET inherited from X6200, not probed
-set_freq         = [0x05]  # inherited from X6200, not probed on G7250 (read-only audit)
+get_freq         = [0x03]  # LIVE G7250 2026-11-09 (MOR-4352): answered 7.138000 MHz
+# LIVE G7250 LAN 2026-11-13 (MOR-4436): 05 + freq is echoed but NOT
+# applied over LAN; 25 00 + freq is applied (read back by 03 and 25 00).
+# Reference Rev 1.2 Table 1-1 / p1 classes 25 00 [Real] on serial too —
+# not bench-verified on serial.
+set_freq         = [0x25, 0x00]
 get_mode         = [0x04]  # LIVE G7250 2026-11-09: answered LSB FIL1; SET inherited
 set_mode         = [0x06]  # inherited from X6200, not probed on G7250 (read-only audit)
 
 # Get receiver frequency range
-# LIVE G7250 2026-11-09: answered RX 0.5 .. 54 MHz.
+# LIVE G7250 2026-11-09: answered RX 0.5 .. 54 MHz on serial. Over LAN in
+# wfview mode 02 is silent (LIVE 2026-11-13) — the GET stays: serial
+# answers it.
 get_band_edge_freq = [0x02]
 
-# VFO selection / swap (0x07). LIVE G7250 2026-11-09: the radio ACKs a
-# bare 0x07 read with FB (07 with no data is Icom "select VFO mode").
-get_vfo          = [0x07]
-set_vfo          = [0x07]  # inherited from X6200, not probed on G7250
+# VFO selection / swap (0x07). There is no get_vfo key on purpose: bare 07
+# is NOT a read — it is "leave memory mode and restore A/B" (a SET), per
+# Xiegu G7250 CI-V Reference Rev 1.2 (2026-11-06), Table 1-3 / page 3
+# (LIVE G7250 2026-11-09: the radio ACKs it with FB, which is the SET
+# acknowledgement, not a read reply). Nothing reads VFO selection through
+# this key: rigctld works from the state store, and the selected-VFO reads
+# are 25 00 / 26 00 below. Never poll bare 07.
+set_vfo          = [0x07]  # 07 00/01/A0/B0 are real sets; inherited from X6200, not probed on G7250
 
 # Split. LIVE G7250 2026-11-09: 0x0F read answered 00 (split off); SET
 # inherited.
@@ -575,12 +789,12 @@ get_command_ok_fb    = [0xFB]
 # ── Live-confirmed absences (read sent, 0xFA NAK answered; LIVE G7250
 # 2026-11-09, MOR-4352) ─────────────────────────────────────────────
 get_band_spectrum_display = { absent = "LIVE G7250 2026-11-09 (MOR-4352): 0x1A 0x01 NAKed on the bench — no CI-V band spectrum display" }
-get_tuner_status          = { absent = "LIVE G7250 2026-11-09 (MOR-4352): 0x1C 0x01 NAKed on the bench — no ATU" }
-set_tuner_status          = { absent = "LIVE G7250 2026-11-09 (MOR-4352): 0x1C 0x01 NAKed on the bench — no ATU" }
+get_tuner_status          = { absent = "LIVE G7250 2026-11-09 (MOR-4352): 0x1C 0x01 NAKed on the bench pre-1.0.1 — the reference (Rev 1.2 Table 1-9 / p9) documents 1C 01 as a [Real] shared ATU; activation needs the TX-gated follow-up" }
+set_tuner_status          = { absent = "LIVE G7250 2026-11-09 (MOR-4352): 0x1C 0x01 NAKed on the bench pre-1.0.1 — the reference (Rev 1.2 Table 1-9 / p9) documents 1C 01 as a [Real] shared ATU; activation needs the TX-gated follow-up" }
 get_data_mode             = { absent = "LIVE G7250 2026-11-09 (MOR-4352): 0x1A 0x06 NAKed on the bench — no CI-V data-mode register" }
 set_data_mode             = { absent = "LIVE G7250 2026-11-09 (MOR-4352): 0x1A 0x06 NAKed on the bench — no CI-V data-mode register" }
-get_memory_contents       = { absent = "LIVE G7250 2026-11-09 (MOR-4352): 0x1A 0x00 NAKed on the bench — no CI-V memory channels" }
-set_memory_contents       = { absent = "LIVE G7250 2026-11-09 (MOR-4352): 0x1A 0x00 NAKed on the bench — no CI-V memory channels" }
+get_memory_contents       = { absent = "LIVE G7250 2026-11-09 (MOR-4352): 0x1A 0x00 NAKed on the bench — no CI-V memory *contents* register (reference Rev 1.2 Table 4-2 / p13 unimplemented); memory itself is real via 08/09/0A/0B (Table 1-3 / p3), wiring is a follow-up" }
+set_memory_contents       = { absent = "LIVE G7250 2026-11-09 (MOR-4352): 0x1A 0x00 NAKed on the bench — no CI-V memory *contents* register (reference Rev 1.2 Table 4-2 / p13 unimplemented); memory itself is real via 08/09/0A/0B (Table 1-3 / p3), wiring is a follow-up" }
 get_break_in              = { absent = "LIVE G7250 2026-11-09 (MOR-4352): 0x16 0x47 NAKed on the bench" }
 set_break_in              = { absent = "LIVE G7250 2026-11-09 (MOR-4352): 0x16 0x47 NAKed on the bench" }
 get_manual_notch          = { absent = "LIVE G7250 2026-11-09 (MOR-4352): 0x16 0x48 NAKed on the bench — no manual notch; the DNF read at 0x16 0x41 answers 0x02, meaning unconfirmed, and is absent above" }
@@ -603,8 +817,10 @@ get_tx_band_edge          = { absent = "LIVE G7250 2026-11-09 (MOR-4352): same 0
 get_bsr                   = { absent = "LIVE G7250 2026-11-09 (MOR-4352): 0x1A 0x01 NAKed on the bench — no band-stacking register" }
 set_bsr                   = { absent = "LIVE G7250 2026-11-09 (MOR-4352): 0x1A 0x01 NAKed on the bench — no band-stacking register" }
 # Memory opcodes 0x08-0x0B were not probed on the G7250; the 0x1A 0x00 NAK
-# (above) closes the same family. Absent per the Xiegu family posture
-# (inherited from X6200, not probed on G7250).
+# (above) closes only the contents register, not this family — the reference
+# (Rev 1.2 Table 1-3 / p3) documents 08/09/0A/0B as [Real], slots 0001-0099.
+# Markers stay absent on the bench evidence; wiring them is audit section B,
+# out of scope here.
 get_memory_mode           = { absent = "inherited from X6200, not probed on G7250 — the X6200 V1.0.6 table documents no 0x08 row; the G7250's 0x1A 0x00 memory NAK (LIVE) closes the family" }
 set_memory_mode           = { absent = "inherited from X6200, not probed on G7250 — the X6200 V1.0.6 table documents no 0x08 row; the G7250's 0x1A 0x00 memory NAK (LIVE) closes the family" }
 memory_write              = { absent = "inherited from X6200, not probed on G7250 — the X6200 V1.0.6 table documents no 0x09 row; the G7250's 0x1A 0x00 memory NAK (LIVE) closes the family" }
@@ -637,8 +853,9 @@ set_dial_lock    = { absent = "LIVE G7250 2026-11-09: read 0x02, meaning unconfi
 #   - 0x16 0x46 (VOX) answers 02; no key — meaning unconfirmed, no
 #     capability declared.
 #   - 0x1A 0x04 (AGC time constant) answers 00; no key.
-# No reply at all (LIVE): 0x21 0x00/0x01/0x02 (RIT/XIT), 0x27 0x10/0x11/
-# 0x14/0x15 (scope), 0x12 (antenna) — no keys, no capabilities.
+# No reply at all on USB serial (LIVE 2026-11-09): 0x21 0x00/0x01/0x02
+# (RIT/XIT), 0x27 0x10/0x11/0x14/0x15 (scope), 0x12 (antenna) — no keys,
+# no capabilities.
 
 [commands.overrides]
 
