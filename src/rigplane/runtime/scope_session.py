@@ -244,22 +244,33 @@ class ScopeSession:
         desired are only recorded: with nothing desired there is
         nothing to re-assert.
         """
-        if (
-            key not in self._uncertain
-            and key in self._desired
-            and self._desired[key] == self._applied.get(key)
-            and self._desired[key] != value
-        ):
-            self._desired[key] = value
-            # MOR-4385 gate round 1 (owner rule «следовать за рацией»):
+        if key in self._uncertain:
+            return
+        applied = self._applied.get(key)
+        if value != applied:
+            # MOR-4385 gate rounds 1-2 (owner rule «следовать за рацией»):
             # an externally superseded setting leaves the restore set —
             # the last unsubscribe must not write Core's stale snapshot
-            # over the radio's own value. Settings still owned by Core
-            # keep their snapshots and are still restored.
+            # over the radio's own value. This holds whether or not the
+            # key is still desired: configure() retires desired keys (a
+            # FIX subscription pops span, a CENTER subscription pops
+            # fixed_edge/edge, a same-slot subscription under another
+            # receiver deletes that desired key) and _put() failure paths
+            # pop desired keys while the snapshot stays behind. An unread
+            # (None) marker stays: a key captured as unread was never
+            # owned. An ambiguous write stays protected via _uncertain
+            # above: an observation during or right after it must not
+            # release ownership as "external".
             if self._previous.get(key) is not None:
                 self._previous.pop(key)
             if key[1] == "fixed_edge" and isinstance(value, ScopeFixedEdge):
                 self._fixed.pop((value.range_index, value.edge), None)
+        if (
+            key in self._desired
+            and self._desired[key] == applied
+            and self._desired[key] != value
+        ):
+            self._desired[key] = value
 
     def observe(self, name: ScopeSetting, value: ScopeValue, receiver: int = 0) -> None:
         if name == "dual":
