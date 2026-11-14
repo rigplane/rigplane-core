@@ -80,6 +80,7 @@ from rigplane.profiles import (
     PowerWriteQuantum,
     RadioProfile,
     RuleSpec,
+    SpanPresetSemantics,
     TxPolicy,
 )
 
@@ -796,6 +797,11 @@ class RigConfig:
     scope_ref_max_db: float | None = None
     scope_ref_step_db: float | None = None
     scope_span_presets_hz: tuple[int, ...] = ()
+    # MOR-4385: meaning of one preset entry on the radio's wire — see
+    # RadioProfile.scope_span_preset_semantics. Required (in the TOML)
+    # whenever span_presets_hz is declared; "half_width" for every
+    # shipped Icom profile.
+    scope_span_preset_semantics: SpanPresetSemantics = "half_width"
     scope_fixed_edge_ranges: tuple[ScopeFixedEdgeRange, ...] = field(
         default=(), kw_only=True
     )
@@ -1060,6 +1066,7 @@ class RigConfig:
             scope_ref_max_db=self.scope_ref_max_db,
             scope_ref_step_db=self.scope_ref_step_db,
             scope_span_presets_hz=self.scope_span_presets_hz,
+            scope_span_preset_semantics=self.scope_span_preset_semantics,
             scope_fixed_edge_ranges=self.scope_fixed_edge_ranges,
             scope_fixed_edge_step_hz=self.scope_fixed_edge_step_hz,
             codec_preference=self.codec_preference,
@@ -3359,6 +3366,7 @@ def load_rig(path: Path) -> RigConfig:
     scope_ref_max_db: float | None = None
     scope_ref_step_db: float | None = None
     scope_span_presets_hz: tuple[int, ...] = ()
+    scope_span_preset_semantics: SpanPresetSemantics = "half_width"
     scope_fixed_edge_ranges: tuple[ScopeFixedEdgeRange, ...] = ()
     scope_fixed_edge_step_hz: int | None = None
     if scope_section:
@@ -3428,6 +3436,21 @@ def load_rig(path: Path) -> RigConfig:
                 raise RigLoadError(
                     f"{filename}: [scope].span_presets_hz must be strictly ascending"
                 )
+            # MOR-4385: presets alone are ambiguous — a number may be a
+            # +/- half-width (Icom CI-V 0x27 0x15) or a full display
+            # width — so the profile must state which one it means.
+            semantics = scope_section.get("span_preset_semantics")
+            if semantics is None:
+                raise RigLoadError(
+                    f"{filename}: [scope].span_presets_hz requires"
+                    " span_preset_semantics (half_width or full_width)"
+                )
+            if semantics not in ("half_width", "full_width"):
+                raise RigLoadError(
+                    f"{filename}: [scope].span_preset_semantics must be"
+                    " half_width or full_width"
+                )
+            scope_span_preset_semantics = semantics
 
     # Parse attenuator/preamp/agc (optional sections)
     att_section = data.get("attenuator", {})
@@ -4091,6 +4114,7 @@ def load_rig(path: Path) -> RigConfig:
         scope_ref_max_db=scope_ref_max_db,
         scope_ref_step_db=scope_ref_step_db,
         scope_span_presets_hz=scope_span_presets_hz,
+        scope_span_preset_semantics=scope_span_preset_semantics,
         scope_fixed_edge_ranges=scope_fixed_edge_ranges,
         scope_fixed_edge_step_hz=scope_fixed_edge_step_hz,
         codec_preference=codec_preference,
