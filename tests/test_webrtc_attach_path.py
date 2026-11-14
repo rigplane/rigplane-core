@@ -577,6 +577,21 @@ def _pcm_tx_frame(samples: int) -> bytes:
     )
 
 
+async def _keepalive_while(peer: _DcAvPeer, done: asyncio.Event) -> None:
+    """Beat a peer every 2 s until ``done`` (real-time pacing).
+
+    Only for bridging a multi-second gap (a second peer's ICE negotiate)
+    that would otherwise outlast the 6 s controller session TTL. Fire and
+    forget: the server refreshes the deadline on receipt; replies just
+    accumulate for the matchers to skip.
+    """
+    while not done.is_set():
+        with contextlib.suppress(Exception):
+            assert peer._control is not None
+            peer._control.send(json.dumps({"type": "controller_heartbeat"}))
+        await asyncio.sleep(2.0)
+
+
 async def _stream_audio(peer: _DcAvPeer, samples: int, frames: int = 10) -> None:
     """Stream a few TX frames from a peer (sends are synchronous)."""
     for _ in range(frames):
@@ -850,6 +865,11 @@ async def test_silent_loss_releases_ptt_within_session_ttl(
 
 
 @_webrtc
+@pytest.mark.realtime(
+    reason="holder keepalive beats are paced in real time across the second "
+    "peer's multi-second ICE negotiate; the 6 s controller session TTL they "
+    "refresh is real-time"
+)
 async def test_only_holders_audio_reaches_radio_over_data_channels(
     tmp_path: Path,
 ) -> None:
@@ -872,10 +892,18 @@ async def test_only_holders_audio_reaches_radio_over_data_channels(
         holder_key = await _acquire_session(stack.web.port)
         await holder.attach_control(holder_key)
         await holder.attach_audio(holder_key)
-        await other.connect(stack.web)
-        other_key = await _acquire_session(stack.web.port)
-        await other.attach_control(other_key)
-        await other.attach_audio(other_key)
+        # The second negotiate takes seconds; keep the holder's session
+        # alive across it or the supervisor aborts its channels on expiry.
+        connected = asyncio.Event()
+        keepalive = asyncio.create_task(_keepalive_while(holder, connected))
+        try:
+            await other.connect(stack.web)
+            other_key = await _acquire_session(stack.web.port)
+            await other.attach_control(other_key)
+            await other.attach_audio(other_key)
+        finally:
+            connected.set()
+            await keepalive
         # Refresh both deadlines: the keying below must meet live sessions,
         # and the other's frames must reach the pin (not die on expiry).
         await holder.heartbeat()
