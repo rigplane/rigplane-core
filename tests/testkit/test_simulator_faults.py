@@ -514,3 +514,80 @@ async def test_token_renew_reply_swaps_endpoint_ids(server, client):
     assert reply[0x15] == 0x05
     assert struct.unpack_from("<I", reply, 0x08)[0] == server.radio_id
     assert struct.unpack_from("<I", reply, 0x0C)[0] == _CLIENT_ID
+
+
+@pytest.mark.realtime(reason="measures a real loop-timer delay on the wire")
+async def test_configured_delay_applies_once_end_to_end(server, client):
+    """One configured CI-V delay, end to end: the reply lands ~delay late.
+
+    The delay is the shared outbound rule's own emission — not a second
+    queue on top of the inherited dispatch delay, which stacked the same
+    configured value twice.
+    """
+    server.lan_civ_echo = False  # time the reply itself, not its echo
+    server.fault_plan = FaultPlan(
+        civ_to_client=FaultRule(delay_s=0.2, preserve_order=True)
+    )
+    started = time.monotonic()
+    client.send(_freq_get(), server.civ_port)
+    reply = await client.recv()
+    elapsed = time.monotonic() - started
+    assert _is_freq_reply(reply)
+    assert elapsed >= 0.2, "the configured delay must apply"
+    assert elapsed < 0.35, f"one delay, not two: {elapsed:.3f}s for delay_s=0.2"
+
+
+@pytest.mark.realtime(reason="measures a real control-port round trip on the wire")
+async def test_civ_delay_leaves_control_traffic_untouched(server, client):
+    """A CI-V outbound delay never slows the control port.
+
+    The old per-harness queue delayed request dispatch for every label, so
+    control traffic paid the CI-V latency too. The shared plan is per
+    (port, direction): control rules stay noop here.
+    """
+    server.fault_plan = FaultPlan(
+        civ_to_client=FaultRule(delay_s=0.3, preserve_order=True)
+    )
+    assert server.fault_plan.is_noop("control", "to_client")
+    assert server.fault_plan.is_noop("control", "from_client")
+    started = time.monotonic()
+    client.send(_ping(), server.control_port)
+    await client.recv()
+    assert time.monotonic() - started < 0.15
+
+
+async def test_delayed_burst_schedules_one_timer_per_packet(server, client):
+    """Bounded scheduled work: jittered delay orders but never multiplies.
+
+    Every delayed packet schedules exactly one loop timer; nothing chains
+    a second pump behind it, and the burst drains in send order with the
+    reorder buffer empty at the end.
+    """
+    server.lan_civ_echo = False  # count replies, not echo+reply pairs
+    rule = FaultRule(delay_s=0.05, jitter_s=0.05, preserve_order=True)
+    server.fault_plan = FaultPlan(civ_to_client=rule, seed=0xC0FFEE)
+    loop = asyncio.get_running_loop()
+    real_call_later = loop.call_later
+    scheduled = 0
+
+    def counting_call_later(delay, callback, *args):
+        nonlocal scheduled
+        if callback == server._deliver_planned:
+            scheduled += 1
+        return real_call_later(delay, callback, *args)
+
+    count = 30
+    loop.call_later = counting_call_later  # type: ignore[method-assign]
+    try:
+        for seq in range(1, count + 1):
+            client.send(_freq_get(seq=seq), server.civ_port)
+        replies = [await client.recv(timeout=5.0) for _ in range(count)]
+    finally:
+        loop.call_later = real_call_later  # type: ignore[method-assign]
+    assert all(_is_freq_reply(reply) for reply in replies)
+    assert [struct.unpack_from("<H", reply, 0x06)[0] for reply in replies] == list(
+        range(1, count + 1)
+    ), "jitter delays but never reorders"
+    assert scheduled == count, f"one timer per delayed packet, got {scheduled}"
+    assert rule.held == 0
+    await client.expect_silence(0.3)

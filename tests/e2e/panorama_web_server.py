@@ -6,9 +6,7 @@ import argparse
 import asyncio
 import json
 import logging
-import random
 import sys
-from collections import deque
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -30,10 +28,8 @@ from rigplane.commands.scope import parse_scope_fixed_edge_response  # noqa: E40
 from rigplane.profiles import resolve_radio_profile  # noqa: E402
 from rigplane.runtime.radio import IcomRadio  # noqa: E402
 from rigplane.web.server import WebConfig, WebServer  # noqa: E402
-from rigplane_testkit.icom.simulator import (  # noqa: E402
-    MockIcomRadio,
-    _MockProtocol,
-)
+from rigplane_testkit.icom.faults import FaultPlan, FaultRule  # noqa: E402
+from rigplane_testkit.icom.simulator import MockIcomRadio  # noqa: E402
 
 
 @dataclass(frozen=True)
@@ -68,17 +64,20 @@ class PanoramaSimulator(MockIcomRadio):
         # MOR-4451 held-key acceptance: realistic CI-V readback latency.
         # EVERY reply or unsolicited frame on the CI-V port leaves
         # ``response_delay + uniform(0, response_jitter)`` seconds late, ORDER
-        # PRESERVED via a per-connection send queue — a real link delays but
-        # does not reorder. Seeded (``seed``) so a latency case replays
-        # exactly. Default 0 keeps today's behaviour byte for byte (the
-        # override below passes through untouched).
-        self.response_delay = response_delay
-        self.response_jitter = response_jitter
-        self._response_rng = random.Random(seed)
-        self._civ_queue: deque[tuple[float, _MockProtocol, bytes, tuple[str, int]]] = (
-            deque()
+        # PRESERVED (``preserve_order``) — a real link delays but does not
+        # reorder. Seeded (``seed``) so a latency case replays exactly.
+        # This is the shared outbound CI-V FaultPlan (the same mechanism
+        # ``simulator.py``'s funnel already serves), never a parallel queue:
+        # the inherited ``response_delay`` stays unset so request dispatch
+        # and control-port traffic are not delayed a second time.
+        self.fault_plan = FaultPlan(
+            civ_to_client=FaultRule(
+                delay_s=response_delay,
+                jitter_s=response_jitter,
+                preserve_order=True,
+            ),
+            seed=seed,
         )
-        self._civ_next_due = 0.0
         if self.profile.expected_identity_ids:
             self.model_id = bytes.fromhex(self.profile.expected_identity_ids[0])
         self.span_index = self.profile.scope_span_presets_hz.index(span_hz)
@@ -93,38 +92,6 @@ class PanoramaSimulator(MockIcomRadio):
         # CI-V 14 07/08 (PBT inner/outer, BCD level 0-255): the passband
         # tuple's shift leg. Both pots parked at center (128 = no shift).
         self._pbt = {0x07: 128, 0x08: 128}
-
-    def _send(
-        self,
-        proto: _MockProtocol,
-        pkt: bytes,
-        addr: tuple[str, int],
-        label: str,
-    ) -> None:
-        if label != "civ" or (self.response_delay <= 0 and self.response_jitter <= 0):
-            super()._send(proto, pkt, addr, label)
-            return
-        delay = self.response_delay + self._response_rng.uniform(
-            0, max(0.0, self.response_jitter)
-        )
-        loop = asyncio.get_running_loop()
-        now = loop.time()
-        # Monotonic due times keep emission order identical to send order no
-        # matter how the jitter draws fall.
-        due = max(now + delay, self._civ_next_due)
-        self._civ_next_due = due
-        self._civ_queue.append((due, proto, pkt, addr))
-        loop.call_later(max(0.0, due - now), self._pump_civ_queue)
-
-    def _pump_civ_queue(self) -> None:
-        loop = asyncio.get_running_loop()
-        now = loop.time()
-        while self._civ_queue and self._civ_queue[0][0] <= now:
-            _, proto, pkt, addr = self._civ_queue.popleft()
-            super()._send(proto, pkt, addr, "civ")
-        if self._civ_queue:
-            head_due = self._civ_queue[0][0]
-            loop.call_later(max(0.0, head_due - now), self._pump_civ_queue)
 
     def _dispatch_filter_width(
         self, rest: bytes, from_addr: int, reply
@@ -305,9 +272,9 @@ async def run() -> None:
         type=float,
         default=0.0,
         help="seconds EVERY CI-V reply/unsolicited frame on the CI-V port "
-        "leaves late (PanoramaSimulator.response_delay) — a readback-latency "
-        "knob: order is preserved via a per-connection send queue, so this "
-        "models a slow link rather than a reordering one",
+        "leaves late (shared outbound CI-V FaultPlan) — a readback-latency "
+        "knob: order is preserved, so this models a slow link rather than "
+        "a reordering one",
     )
     parser.add_argument(
         "--response-jitter",

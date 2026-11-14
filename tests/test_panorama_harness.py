@@ -1,11 +1,15 @@
+import asyncio
 import json
+import time
 from pathlib import Path
 
 import pytest
 
+from _perf_helpers import fast_connect
 from e2e.panorama_web_server import PanoramaSimulator, ScopeWriteReceipt
 from rigplane.commands import parse_civ_frame
 from rigplane.commands.scope import _span_index_for_hz, parse_scope_span_response
+from rigplane.radio import IcomRadio
 from rigplane.scope import ScopeAssembler
 
 
@@ -82,3 +86,67 @@ def test_scope_span_capability_fixture(model: str) -> None:
     caps = server._scope_source_capabilities(server._get_profile())
     fixture = Path(__file__).parent / "fixtures/scope-span-capabilities.json"
     assert caps == json.loads(fixture.read_text())
+
+
+def test_latency_harness_uses_the_shared_civ_plan(tmp_path: Path) -> None:
+    """The latency knobs configure the shared outbound CI-V plan — nothing else.
+
+    The removed per-harness queue doubled the simulator's own mechanisms: it
+    stacked a second delay on top of the inherited ``response_delay``
+    dispatch delay (a configured 100 ms cost ~200 ms on CI-V replies) and
+    delayed control-port traffic too. Now the plan carries the delay once,
+    on CI-V only, and the inherited dispatch delay stays unset.
+    """
+    sim = PanoramaSimulator(
+        "IC-705",
+        tmp_path / "radio.jsonl",
+        response_delay=0.1,
+        response_jitter=0.05,
+        seed=7,
+    )
+    rule = sim.fault_plan.civ_to_client
+    assert (rule.delay_s, rule.jitter_s, rule.preserve_order) == (0.1, 0.05, True)
+    assert sim.fault_plan.seed == 7
+    assert sim.fault_plan.is_noop("control", "to_client")
+    assert sim.fault_plan.is_noop("control", "from_client")
+    assert sim.fault_plan.is_noop("civ", "from_client")
+    assert sim.response_delay == 0.0
+
+
+def test_latency_harness_default_is_passthrough(tmp_path: Path) -> None:
+    """No knobs, no faults: the default harness passes CI-V through untouched."""
+    sim = PanoramaSimulator("IC-705", tmp_path / "radio.jsonl")
+    assert sim.fault_plan.is_noop("civ", "to_client")
+    assert sim.response_delay == 0.0
+
+
+@pytest.mark.realtime(reason="measures a real client round trip against the sim")
+async def test_configured_delay_applies_once_over_the_wire(
+    tmp_path: Path,
+) -> None:
+    """A real client against the latency harness: one delay, not two."""
+    sim = PanoramaSimulator(
+        "IC-705", tmp_path / "radio.jsonl", response_delay=0.2, seed=1
+    )
+    await sim.start()
+    try:
+        client = IcomRadio(
+            host="127.0.0.1",
+            port=sim.control_port,
+            username="testuser",
+            password="testpass",
+            model="IC-705",
+            timeout=5.0,
+        )
+        with fast_connect():
+            await client.connect()
+        try:
+            started = time.monotonic()
+            await asyncio.wait_for(client.get_freq(), 10.0)
+            elapsed = time.monotonic() - started
+        finally:
+            await asyncio.wait_for(client.disconnect(), 10.0)
+    finally:
+        await sim.stop()
+    assert elapsed >= 0.2, "the configured delay must apply"
+    assert elapsed < 0.35, f"one delay, not two: {elapsed:.3f}s for delay 0.2"
