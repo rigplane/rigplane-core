@@ -29,6 +29,7 @@ from rigplane.radio import IcomRadio
 from rigplane.types import CivFrame
 from rigplane.web.radio_poller import RadioPoller, SetMemoryMode
 from rigplane.web.server import WebConfig, WebServer
+from support.command_consumer import run_command_consumer
 from test_memory_commands import TestHandlerMemoryDispatch
 from test_radio import MockTransport
 from test_web_split_writes import _request
@@ -225,14 +226,11 @@ async def recall_web():
     web._server = await asyncio.start_server(web._accept_client, "127.0.0.1", 0)
     entries = []
 
-    async def consume():
-        await web.command_queue.wait(2)
-        entry = web.command_queue.take_entry()
-        assert entry is not None
-        entries.append(entry)
-        await poller._execute_queued_entry(entry)
-
-    consumer = asyncio.create_task(consume())
+    consumer = asyncio.create_task(
+        run_command_consumer(
+            web.command_queue, poller._execute_queued_entry, entries=entries, count=1
+        )
+    )
     try:
         yield web, transport, entries, consumer
     finally:
