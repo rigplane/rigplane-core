@@ -58,6 +58,11 @@ AUDIO_HEADER_SIZE = 0x18
 # 0.0/0.0003/0.0005).
 _AUDIO_BURST_PERIOD_S = 0.020
 _AUDIO_IN_BURST_OFFSETS_S = (0.0, 0.0003, 0.0005)
+# Margin past the first burst's last packet before the wfview-mode ping
+# REQUEST goes out (MOR-4436): the ping is scheduled one burst period
+# plus this margin after the audio AYT, so a timer tie can never reorder
+# it ahead of the burst — still well before the second burst.
+_PING_AFTER_FIRST_BURST_MARGIN_S = 0.002
 
 # Recorded per-burst payload split: 1364 + 1364 + 1112 = 3840 bytes =
 # 20 ms of 48 kHz stereo s16 (the profile's PCM_2CH_16BIT rx codec).
@@ -177,6 +182,11 @@ class AudioPortMixin:
         self._audio_next_burst_at: float = 0.0
         self._audio_rx_seq: int = 0
         self._audio_rx_inner_seq: int = 0
+        # Numbering of radio-originated ping REQUESTS on the audio port
+        # (wfview-mode discovery, MOR-4436); starts at 0 like the recorded
+        # first ping. Separate from the RX stream numbering above, which a
+        # handshake must never consume.
+        self._audio_ping_seq: int = 0
         # audio_port_silence deadline (0.0 = inactive).
         self._audio_silent_until: float = 0.0
         # Observables (names fixed; Lane B tests depend on them).
@@ -424,6 +434,38 @@ class AudioPortMixin:
             return  # audio_port_silence: the port answers nothing
         n = len(data)
 
+        # wfview-mode discovery (MOR-4436): an AYT starts the RX stream
+        # at this client and schedules one radio-originated ping REQUEST
+        # after the first RX burst went out, so the client always sees
+        # data first (recorded G7250 run3, MOR-4436: RX data from t=1.055,
+        # the first ping at t=1.532 — before L1's live confirmation the
+        # ping-first order here was wrong). An AYR is never answered. The
+        # G7250's own sub-stream cadence (pairs of 1388+580 B every
+        # 20 ms, ~100 pkt/s) is NOT modelled: the stream keeps the
+        # recorded IC-7610 cadence (three packets every 20 ms).
+        if self.substream_discovery == "ping":
+            if n == _sim._HEADER_SIZE and ptype == _sim._PT_ARE_YOU_THERE:
+                seq = self._audio_ping_seq
+                self._audio_ping_seq = (seq + 1) & 0xFFFF
+                self._audio_start_rx(addr, sender_id)
+                ping = self._ping_request(sender_id, seq)
+                # One burst period past the burst's last packet, plus a
+                # small margin so a timer tie can never reorder the ping
+                # ahead of the burst's last packet: still well before the
+                # second burst. One ping per AYT.
+                asyncio.get_running_loop().call_later(
+                    _AUDIO_BURST_PERIOD_S
+                    + _AUDIO_IN_BURST_OFFSETS_S[-1]
+                    + _PING_AFTER_FIRST_BURST_MARGIN_S,
+                    self._audio_send_delayed_ping,
+                    ping,
+                    addr,
+                    sender_id,
+                )
+                return
+            if n == _sim._HEADER_SIZE and ptype == _sim._PT_ARE_YOU_READY:
+                return
+
         # Transport handshake: the CI-V port's own replies (same bytes),
         # sent through this port's funnel with its silence gate.
         reply = self._handshake_reply(data, ptype, sender_id)
@@ -511,6 +553,19 @@ class AudioPortMixin:
     # ------------------------------------------------------------------
     # Outbound funnel and RX streamer
     # ------------------------------------------------------------------
+
+    def _audio_send_delayed_ping(
+        self, ping: bytes, addr: tuple[str, int], sender_id: int
+    ) -> None:
+        """Send a ping scheduled at an audio AYT once data is flowing.
+
+        The callback fires one burst period after the AYT, past the
+        first burst's last packet. It still checks the stream is alive
+        and still owned by the same client, so a stop or retarget in
+        between drops the ping instead of spraying a stale client.
+        """
+        if self._audio_client == (addr, sender_id):
+            self._audio_send(ping, addr)
 
     def _audio_send(self, pkt: bytes, addr: tuple[str, int]) -> bool:
         """Single outbound funnel for audio-port datagrams.
