@@ -6,7 +6,8 @@
 // with #4565) — the fix centres it on the radio's confirmed frequency.
 //
 // Run on the INTEGRATED tree (needs #4555 for connecting under latency and
-// #4565's follow-grant fix):
+// #4565's follow-grant fix, which makes the server send the full requested
+// view with a reduced covered part during the lag):
 //
 //   npx playwright test -c ./playwright.held-key.config.ts
 //
@@ -16,7 +17,10 @@
 // name and delay in the skip reason (visible in the report) instead of
 // asserting — the monotonic and overlay assertions below are never weakened.
 // The integrated-tree run must show ZERO skips: any skip there is a failure
-// of this acceptance.
+// of this acceptance. On a tree WITHOUT #4565's fix the transient-seam
+// requirement below FAILS BY DESIGN (the server still clips the view, so
+// the burst observes zero partials) — that failure is the expected red, not
+// a skip and not a reason to weaken the check.
 import type { Page } from '@playwright/test';
 import { writeFile } from 'node:fs/promises';
 import { expect, test } from '@playwright/test';
@@ -38,6 +42,7 @@ import {
   checkAdvanceAndSettle,
   classifyHeldKeyCatch,
   requirePopulatedSeries,
+  requireTransientSeamObserved,
 } from './held-key-analysis';
 
 /** One rAF sample of the held-key burst: VFO readout, marker geometry, the rendered view and the hatch count. */
@@ -388,14 +393,15 @@ for (const zoom of ZOOMS) {
             name: 'centre', values: inWindow.map((s) => ({ t: s.tPerf, v: viewCenterHz(s) })),
             confirmedHz: afterHz, toleranceHz, minimumAdvanceHz: stepHz,
           });
-          // The transient seam: no margin may hatch during the burst while the
-          // native window covers the requested view. Partial coverage is
-          // tracked as evidence (burstPartials, logged below): this simulator
-          // rebuilds its templates from the subscription, so it always serves
-          // full-coverage frames — whole-run partials measured 0 on d0 and
-          // d100ms — and the hatch stays 0 with them. The partially covered
-          // transient itself is pinned by the component regression (accepted
-          // follow grant, delayed intersecting frames, zero hatch).
+          // The transient seam: a lagged burst must POSITIVELY observe
+          // partially covered frames (the lag transient itself), and no margin
+          // may hatch for them while the native window covers the requested
+          // view. requireTransientSeamObserved throws on both a missing
+          // transient (partials 0 with lag — vacuous pass) and a hatched one
+          // (the previous rendering behaviour). Delay-free rows have no lag
+          // transient to observe. The seam is additionally pinned by the
+          // component regression (accepted follow grant, delayed intersecting
+          // frames, zero hatch).
           const burstSamples = inWindow.filter((s) => s.tPerf >= burstStartPerf && s.tPerf <= burstEndPerf);
           const burstPartials = frames.filter((f) => f.tWall >= burstStartWall && f.tWall <= burstEndWall
             && (f.view[1] - f.view[0]) - (f.coverage[1] - f.coverage[0]) > 1);
@@ -440,7 +446,14 @@ for (const zoom of ZOOMS) {
             `before=${beforeHz} after=${afterHz} setFreq=${setFreqCommands.length}`);
 
           // (t) transient seam: no margin may hatch during the burst while the
-          // native window covers the requested view.
+          // native window covers the requested view — and a lagged burst must
+          // have observed the transient at all (unit-pinned in
+          // held-key-analysis.ts; fails by design without #4565's fix).
+          requireTransientSeamObserved({
+            responseDelayS: latency.delay,
+            partialCount: burstPartials.length,
+            hatchedCount: hatchedBurst.length,
+          });
           expect(hatchedBurst,
             `transient margin hatched in ${hatchedBurst.length} burst samples`).toEqual([]);
 
@@ -483,3 +496,136 @@ for (const zoom of ZOOMS) {
     }
   }
 }
+
+// Control row: a genuinely narrower native window MUST hatch. After setup the
+// harness narrows the radio span preset to 25 kHz (a front-panel change — no
+// client message, no new subscription) while the follow view stays 100 kHz;
+// the uncovered margins must hatch once the change settles. One row, no
+// latency matrix. Needs the same integrated tree as the rows above.
+test('IC-705 narrower native span hatches the uncovered margins (control)', async ({ page }, info) => {
+  test.setTimeout(240_000);
+  const port = 21599;
+  const seed = 1234;
+  const evidence = info.outputPath('radio.jsonl');
+  let setupDone = false;
+  let serverReady = false;
+  let server: JourneyServerHandle | undefined;
+  const sent: Array<ScopeSubscription & { type: string }> = [];
+  const grants: Array<{ tWall: number; grant: ScopeGranted }> = [];
+  const frames: Array<{ view: number[]; coverage: number[]; receivedAt: number; tWall: number }> = [];
+  try {
+    server = await startJourneyServer(port, 14_250_000,
+      ['--model', 'IC-705', '--evidence', evidence,
+        '--span-hz', '250000',
+        '--external-span-after-s', '20', '--external-span-hz', '25000',
+        '--seed', String(seed)],
+      'tests/e2e/panorama_web_server.py');
+    serverReady = true;
+    const watch = watchPanoramaErrors(page);
+    page.on('websocket', (socket) => {
+      if (new URL(socket.url()).pathname === '/api/v1/ws') return;
+      if (!socket.url().endsWith('/api/v1/scope')) return;
+      socket.on('framesent', ({ payload }) => {
+        if (typeof payload === 'string') {
+          const message = JSON.parse(payload) as ScopeSubscription & { type: string };
+          if (message.type === 'subscribe') sent.push(message);
+        }
+      });
+      socket.on('framereceived', ({ payload }) => {
+        if (typeof payload === 'string') {
+          const grant = parseScopeGranted(JSON.parse(payload));
+          if (grant) grants.push({ tWall: Date.now(), grant });
+        } else {
+          const buffer = Uint8Array.from(payload).buffer;
+          const parsed = parseCurrentScopeFrame(buffer, { source: 'radio', sourceId: 'radio', epoch: 0 });
+          if (parsed.ok) {
+            frames.push({
+              view: [parsed.frame.viewStartHz, parsed.frame.viewEndHz],
+              coverage: [parsed.frame.coverageStartHz, parsed.frame.coverageEndHz],
+              receivedAt: performance.now(),
+              tWall: Date.now(),
+            });
+          }
+        }
+      });
+    });
+    await installSampler(page);
+    await installHeldKeySampler(page);
+    await page.goto(`http://127.0.0.1:${port}/?ui=v2`);
+    await expect.poll(() => frames.length, { timeout: 30_000 }).toBeGreaterThan(10);
+    const marker = page.locator('.waterfall-content .tune-line');
+    await expect(marker).toBeVisible({ timeout: 30_000 });
+
+    // CTR (CENTER) scope mode, same as the burst rows.
+    const ctr = page.getByRole('radio', { name: 'CTR' }).first();
+    if (!(await ctr.isChecked())) await ctr.click();
+    await expect(ctr).toBeChecked();
+
+    await settlePassband(page, port);
+    await page.waitForTimeout(1000);
+
+    // The follow view comes from the server grant, never hard-coded.
+    await expect.poll(() => grants.length).toBeGreaterThan(0);
+    const grantedView = grants.at(-1)!.grant.view;
+    const grantedWidthHz = grantedView.endHz - grantedView.startHz;
+    setupDone = true;
+
+    // Wait until the external narrowing is visible on the wire: coverage
+    // narrower than the (full, unclipped) view.
+    await expect.poll(() => {
+      const f = frames.at(-1);
+      return f ? (f.view[1] - f.view[0]) - (f.coverage[1] - f.coverage[0]) : 0;
+    }, { timeout: 120_000 }).toBeGreaterThan(1);
+    const narrowWall = Date.now();
+    const narrowPerf = await page.evaluate(() => performance.now());
+    // No new subscription from the client: the follow view still stands.
+    expect(sent.at(-1)?.view).toEqual({ follow: 'vfo', spanHz: grantedWidthHz });
+    await page.waitForTimeout(3000);
+    const settleEndPerf = await page.evaluate(() => performance.now());
+
+    const windowSamples = (await page.evaluate(() => window.heldKeySamples))
+      .filter((s) => s.tPerf >= narrowPerf && s.tPerf <= settleEndPerf);
+    const hatched = windowSamples.filter((s) => s.hatchCount > 0);
+    const lateFrames = frames.filter((f) => f.tWall >= narrowWall);
+    const lateViewWidths = lateFrames.map((f) => f.view[1] - f.view[0]);
+    const lateCovWidths = lateFrames.map((f) => f.coverage[1] - f.coverage[0]);
+    console.log(`[held-key control narrower-native] ` +
+      `samples=${windowSamples.length} hatched=${hatched.length} ` +
+      `view=${Math.min(...lateViewWidths)}..${Math.max(...lateViewWidths)}Hz ` +
+      `coverage=${Math.min(...lateCovWidths)}..${Math.max(...lateCovWidths)}Hz ` +
+      `grantedWidth=${grantedWidthHz}Hz`);
+    await info.attach('held-key-control', {
+      body: JSON.stringify({
+        params: { spanHz: 250_000, externalSpanHz: 25_000, seed },
+        narrowWall, grantedWidthHz,
+        viewWidths: lateViewWidths.slice(-20), coverageWidths: lateCovWidths.slice(-20),
+        samples: windowSamples.length, hatched: hatched.length,
+      }, null, 2),
+      contentType: 'application/json',
+    });
+
+    // Positive evidence the control seam was exercised: the wire still
+    // carries the full follow view with a reduced covered part.
+    expect(lateViewWidths.at(-1)!).toBe(grantedWidthHz);
+    expect(lateCovWidths.at(-1)!).toBeLessThan(grantedWidthHz - 1);
+    // The uncovered margins ARE hatched in every settled sample.
+    expect(windowSamples.length,
+      'too few settled samples to judge the control hatch').toBeGreaterThan(10);
+    expect(hatched.length,
+      `genuinely narrower native hatched only ${hatched.length}/${windowSamples.length} settled samples`).toBe(windowSamples.length);
+
+    expectPanoramaSettled(watch);
+  } catch (error) {
+    const verdict = classifyHeldKeyCatch({
+      setupDone, serverReady, framesObserved: frames.length, error,
+      row: 'narrower-native control (external span 25kHz under a 100kHz follow view)',
+    });
+    if (verdict.disposition === 'skip') {
+      test.skip(true, verdict.reason);
+      return;
+    }
+    throw verdict.error;
+  } finally {
+    await server?.kill();
+  }
+});

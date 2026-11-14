@@ -69,6 +69,40 @@ export function checkAdvanceAndSettle(input: {
   return { advanceHz, settleHz };
 }
 
+export interface HeldKeyTransientInput {
+  /** Configured CI-V response delay in seconds for the row (0 = no lag). */
+  responseDelayS: number;
+  /** Frames in the burst window whose coverage is narrower than the view. */
+  partialCount: number;
+  /** Burst-window rAF samples showing scope hatch. */
+  hatchedCount: number;
+}
+
+/**
+ * Positive proof that the latency seam was exercised: a row with response
+ * lag must have OBSERVED partially covered frames during the burst (the
+ * transient itself), and none of them may hatch. A lagged row with zero
+ * partials never met the transient — it passes vacuously without this
+ * requirement — and any hatch during the transient is the old rendering
+ * behaviour. Throws on both failures; a delay-free row has no transient to
+ * observe and always passes.
+ */
+export function requireTransientSeamObserved(input: HeldKeyTransientInput): void {
+  if (!(input.responseDelayS > 0)) return;
+  if (input.partialCount === 0) {
+    throw new Error(
+      `transient not exercised: response delay ${input.responseDelayS}s but zero ` +
+      `partially covered frames in the burst window — the lag seam was never observed`,
+    );
+  }
+  if (input.hatchedCount > 0) {
+    throw new Error(
+      `transient margin hatched in ${input.hatchedCount} burst samples with ` +
+      `${input.partialCount} partially covered frames — the lag seam must stay unhatched`,
+    );
+  }
+}
+
 export interface HeldKeyCatchInput {
   setupDone: boolean;
   serverReady: boolean;

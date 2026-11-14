@@ -3,6 +3,7 @@ import {
   checkAdvanceAndSettle,
   classifyHeldKeyCatch,
   requirePopulatedSeries,
+  requireTransientSeamObserved,
 } from '../../../../tests/e2e/held-key/held-key-analysis';
 
 const span = (fromHz: number, toHz: number, count: number) =>
@@ -49,6 +50,26 @@ describe('held-key analysis', () => {
       name: 'marker', values: span(14_250_000, 14_252_000, 120),
       confirmedHz: 14_254_000, toleranceHz: 500, minimumAdvanceHz: 1_000,
     })).toThrow(/settle/);
+  });
+  it('fails a lagged row that never observed a partial frame', () => {
+    expect(() => requireTransientSeamObserved({
+      responseDelayS: 0.1, partialCount: 0, hatchedCount: 0,
+    })).toThrow(/transient not exercised/);
+  });
+  it('fails a lagged row whose transient margin hatched', () => {
+    expect(() => requireTransientSeamObserved({
+      responseDelayS: 0.1, partialCount: 7, hatchedCount: 3,
+    })).toThrow(/hatched/);
+  });
+  it('passes a lagged row with observed partials and no hatch', () => {
+    expect(requireTransientSeamObserved({
+      responseDelayS: 0.1, partialCount: 7, hatchedCount: 0,
+    })).toBeUndefined();
+  });
+  it('passes a delay-free row without requiring partials', () => {
+    expect(requireTransientSeamObserved({
+      responseDelayS: 0, partialCount: 0, hatchedCount: 0,
+    })).toBeUndefined();
   });
   it('classifies a server-start failure as a skip carrying the reason', () => {
     const error = new Error('journey server on port 21500 exited with code 1 before it answered');

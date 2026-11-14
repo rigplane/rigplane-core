@@ -298,6 +298,21 @@ async def run() -> None:
         default=0xC0FFEE,
         help="seed for the CI-V response jitter RNG so a latency case replays exactly",
     )
+    parser.add_argument(
+        "--external-span-after-s",
+        type=float,
+        default=None,
+        help="front-panel span change: seconds after simulator start, set the "
+        "radio span preset to --external-span-hz WITHOUT any client message "
+        "(reuses PanoramaSimulator.span_index, never a second mechanism)",
+    )
+    parser.add_argument(
+        "--external-span-hz",
+        type=int,
+        default=None,
+        help="radio scope span preset the external change narrows to — must be "
+        "one of the profile's scope_span_presets_hz",
+    )
     args = parser.parse_args()
     logging.basicConfig(filename=args.evidence.with_suffix(".log"), level=logging.INFO)
     args.evidence.write_text("")
@@ -310,6 +325,21 @@ async def run() -> None:
         seed=args.seed,
     )
     await simulator.start()
+    if args.external_span_after_s is not None:
+        if args.external_span_hz is None:
+            raise SystemExit("--external-span-after-s needs --external-span-hz")
+        presets = simulator.profile.scope_span_presets_hz
+        if args.external_span_hz not in presets:
+            raise SystemExit(
+                f"--external-span-hz {args.external_span_hz} is not one of {list(presets)}"
+            )
+
+        async def _external_span_change() -> None:
+            await asyncio.sleep(args.external_span_after_s)
+            simulator.span_index = presets.index(args.external_span_hz)
+            logging.info("external span change: now %d Hz", args.external_span_hz)
+
+        asyncio.create_task(_external_span_change())
     radio = IcomRadio(
         host="127.0.0.1",
         port=simulator.control_port,
