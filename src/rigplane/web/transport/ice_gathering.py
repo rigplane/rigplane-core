@@ -124,24 +124,18 @@ class IceServer:
             raise ValueError(f"ice server entry needs a non-empty urls list: {value!r}")
         for url in urls_raw:
             if not isinstance(url, str):
-                raise ValueError(
-                    f"ice server urls entries must be strings: {value!r}"
-                )
+                raise ValueError(f"ice server urls entries must be strings: {value!r}")
         username: str | None = None
         raw_username: object = value.get("username")
         if raw_username is not None:
             if not isinstance(raw_username, str):
-                raise ValueError(
-                    f"ice server username must be a string: {value!r}"
-                )
+                raise ValueError(f"ice server username must be a string: {value!r}")
             username = raw_username
         credential: str | None = None
         raw_credential: object = value.get("credential")
         if raw_credential is not None:
             if not isinstance(raw_credential, str):
-                raise ValueError(
-                    f"ice server credential must be a string: {value!r}"
-                )
+                raise ValueError(f"ice server credential must be a string: {value!r}")
             credential = raw_credential
         return cls(urls=list(urls_raw), username=username, credential=credential)
 
@@ -283,9 +277,7 @@ def _read_sysfs_entries(ifname: str) -> dict[str, str | None]:
     for key in ("device", "type", "tun_flags", "bridge", "brif"):
         if os.path.lexists(os.path.join(base, key)):
             try:
-                with open(
-                    os.path.join(base, key), encoding="utf-8"
-                ) as handle:
+                with open(os.path.join(base, key), encoding="utf-8") as handle:
                     entries[key] = handle.read().strip()
             except OSError:
                 # Presence alone classifies everything but the "type"
@@ -341,7 +333,7 @@ def _macos_hardware_ports() -> set[str]:
     ports: set[str] = set()
     for line in completed.stdout.splitlines():
         if line.startswith("Device: "):
-            ports.add(line[len("Device: "):].strip())
+            ports.add(line[len("Device: ") :].strip())
     return ports
 
 
@@ -359,7 +351,7 @@ def _macos_default_route_ifname() -> str:
     for line in completed.stdout.splitlines():
         stripped = line.strip()
         if stripped.startswith("interface:"):
-            return stripped[len("interface:"):].strip()
+            return stripped[len("interface:") :].strip()
     return ""
 
 
@@ -472,4 +464,3 @@ def install_ice_gathering_policy(
     finally:
         aioice_ice.get_host_addresses = original_addresses
         aioice_ice.Connection.get_component_candidates = original_component
-

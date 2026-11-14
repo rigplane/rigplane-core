@@ -1028,7 +1028,9 @@ class WebConfig:
     # backend filling the store leave it off.
     await_initial_state: bool = False
     webrtc_enabled: bool = False  # enable the gated WebRTC transport entrypoint
-    webrtc_include_vpn: bool = False  # admit VPN/tunnel interfaces as ICE host candidates
+    webrtc_include_vpn: bool = (
+        False  # admit VPN/tunnel interfaces as ICE host candidates
+    )
     state_diagnostics: bool = False  # enable behavior-neutral state diagnostics
     # Adaptive per-client egress codec controller (MOR-588, ADR §3.6):
     # PCM16↔Opus switching on detected slow/lossy links. Off (default) =
