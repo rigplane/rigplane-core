@@ -6,7 +6,9 @@ import argparse
 import asyncio
 import json
 import logging
+import random
 import sys
+from collections import deque
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -34,6 +36,7 @@ from rigplane_testkit.icom.simulator import (  # noqa: E402
     _CIV_TERM,
     _CMD_FREQ_GET,
     _CMD_FREQ_SET,
+    _MockProtocol,
     MockIcomRadio,
 )
 
@@ -49,7 +52,16 @@ class ScopeWriteReceipt:
 
 
 class PanoramaSimulator(MockIcomRadio):
-    def __init__(self, model: str, evidence: Path, ack_delay: float = 0.0) -> None:
+    def __init__(
+        self,
+        model: str,
+        evidence: Path,
+        ack_delay: float = 0.0,
+        response_delay: float = 0.0,
+        response_jitter: float = 0.0,
+        span_hz: int = 100_000,
+        seed: int = 0xC0FFEE,
+    ) -> None:
         self.profile = resolve_radio_profile(model=model)
         super().__init__(
             host="127.0.0.1",
@@ -65,9 +77,26 @@ class PanoramaSimulator(MockIcomRadio):
         # command lifecycle is still pending — the owner's IC-705-over-Wi-Fi
         # readback-lag shape.
         self.ack_delay = ack_delay
+        # MOR held-key repro: realistic CI-V readback latency. EVERY reply or
+        # unsolicited frame on the CI-V port leaves
+        # ``response_delay + uniform(0, response_jitter)`` seconds late, ORDER
+        # PRESERVED via a per-connection send queue — a real link delays but
+        # does not reorder. Seeded (``seed``) so a latency case replays
+        # exactly. The base simulator's own knobs do not fit: ``FaultPlan``
+        # delay/jitter schedules each packet on its own ``call_later`` (so
+        # jitter can reorder) and ``response_delay`` delays inbound dispatch,
+        # not outbound replies. Default 0 keeps today's behaviour byte for
+        # byte (the override below passes through untouched).
+        self.response_delay = response_delay
+        self.response_jitter = response_jitter
+        self._response_rng = random.Random(seed)
+        self._civ_queue: deque[tuple[float, _MockProtocol, bytes, tuple[str, int]]] = (
+            deque()
+        )
+        self._civ_next_due = 0.0
         if self.profile.expected_identity_ids:
             self.model_id = bytes.fromhex(self.profile.expected_identity_ids[0])
-        self.span_index = self.profile.scope_span_presets_hz.index(100_000)
+        self.span_index = self.profile.scope_span_presets_hz.index(span_hz)
         self.scope_mode = 0
         self.fixed = (14_200_000, 14_300_000)
         self.set_frequency(14_250_000)
@@ -79,6 +108,38 @@ class PanoramaSimulator(MockIcomRadio):
         # CI-V 14 07/08 (PBT inner/outer, BCD level 0-255): the passband
         # tuple's shift leg. Both pots parked at center (128 = no shift).
         self._pbt = {0x07: 128, 0x08: 128}
+
+    def _send(
+        self,
+        proto: _MockProtocol,
+        pkt: bytes,
+        addr: tuple[str, int],
+        label: str,
+    ) -> None:
+        if label != "civ" or (self.response_delay <= 0 and self.response_jitter <= 0):
+            super()._send(proto, pkt, addr, label)
+            return
+        delay = self.response_delay + self._response_rng.uniform(
+            0, max(0.0, self.response_jitter)
+        )
+        loop = asyncio.get_running_loop()
+        now = loop.time()
+        # Monotonic due times keep emission order identical to send order no
+        # matter how the jitter draws fall.
+        due = max(now + delay, self._civ_next_due)
+        self._civ_next_due = due
+        self._civ_queue.append((due, proto, pkt, addr))
+        loop.call_later(max(0.0, due - now), self._pump_civ_queue)
+
+    def _pump_civ_queue(self) -> None:
+        loop = asyncio.get_running_loop()
+        now = loop.time()
+        while self._civ_queue and self._civ_queue[0][0] <= now:
+            _, proto, pkt, addr = self._civ_queue.popleft()
+            super()._send(proto, pkt, addr, "civ")
+        if self._civ_queue:
+            head_due = self._civ_queue[0][0]
+            loop.call_later(max(0.0, head_due - now), self._pump_civ_queue)
 
     def _dispatch_filter_width(
         self, rest: bytes, from_addr: int, reply
@@ -302,10 +363,49 @@ async def run() -> None:
         "applies instantly and polls carry it while the command lifecycle "
         "is still pending (MOR-4393)",
     )
+    parser.add_argument(
+        "--response-delay",
+        type=float,
+        default=0.0,
+        help="seconds EVERY CI-V reply/unsolicited frame on the CI-V port "
+        "leaves late (PanoramaSimulator.response_delay) — a readback-latency "
+        "knob: order is preserved via a per-connection send queue, so this "
+        "models a slow link rather than a reordering one",
+    )
+    parser.add_argument(
+        "--response-jitter",
+        type=float,
+        default=0.0,
+        help="uniform random extra delay in [0, response_jitter] seconds "
+        "added to every CI-V reply/unsolicited frame on top of "
+        "--response-delay (seeded by --seed; order still preserved)",
+    )
+    parser.add_argument(
+        "--span-hz",
+        type=int,
+        default=100_000,
+        help="radio scope span preset the simulator starts on "
+        "(PanoramaSimulator.span_index) — must be one of the profile's "
+        "scope_span_presets_hz",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=0xC0FFEE,
+        help="seed for the CI-V response jitter RNG so a latency case replays exactly",
+    )
     args = parser.parse_args()
     logging.basicConfig(filename=args.evidence.with_suffix(".log"), level=logging.INFO)
     args.evidence.write_text("")
-    simulator = PanoramaSimulator(args.model, args.evidence, ack_delay=args.ack_delay)
+    simulator = PanoramaSimulator(
+        args.model,
+        args.evidence,
+        ack_delay=args.ack_delay,
+        response_delay=args.response_delay,
+        response_jitter=args.response_jitter,
+        span_hz=args.span_hz,
+        seed=args.seed,
+    )
     await simulator.start()
     radio = IcomRadio(
         host="127.0.0.1",
