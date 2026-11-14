@@ -3277,13 +3277,14 @@ class WebServer:
         # fact is independently valid and is reasserted without touching TX.
         if isinstance(self._radio_poller, RadioPoller):
             self._radio_poller.reset_vfo_session(connection_recovery=True)
+            self._radio_poller.retry_connect_selection_after_silence()
         self._publish_single_receiver_topology()
         # Clear poller readiness so scope waits for refetch to complete
         if self._radio_poller is not None:
             self._radio_poller._initial_fetch_done.clear()
 
     def _on_radio_reconnect(self) -> None:
-        """Called after soft_reconnect — refetch state and re-enable scope."""
+        """Called after soft_reconnect — reacquire web-epoch facts, re-enable scope."""
         self._begin_reconnect_reacquire()
         self._spawn(self._refetch_and_reenable())
 
@@ -3291,12 +3292,13 @@ class WebServer:
         """Complete web start-up after a start-up busy hold is granted.
 
         Runs the late-connect completion: the shared
-        ``_refetch_and_reenable`` (initial-state refetch, VFO-A select,
-        scan seeding and scope re-enable — the same body a late
-        ``connect()`` gets through ``_on_radio_reconnect``) plus the
-        poller's one-time start-up fetches, which ran against the
-        disconnected radio while the hold was pending. Awaited (not
-        spawned) so the caller knows when the station is ready.
+        ``_refetch_and_reenable`` (VFO-A select, scan seeding and scope
+        re-enable — the same body a late ``connect()`` gets through
+        ``_on_radio_reconnect``; the initial-state fetch itself is owned
+        by the radio layer) plus the poller's one-time start-up fetches,
+        which ran against the disconnected radio while the hold was
+        pending. Awaited (not spawned) so the caller knows when the
+        station is ready.
         """
         self._begin_reconnect_reacquire()
         await self._refetch_and_reenable()
@@ -3316,7 +3318,15 @@ class WebServer:
                 logger.debug("radio-poller: MOD-input late fetch failed", exc_info=True)
 
     async def _refetch_and_reenable(self) -> None:
-        """Release TX first, then refetch state, signal readiness and scope."""
+        """Release TX first, then replay the web-epoch reacquire and signal.
+
+        The initial-state fetch is owned by the radio layer (``_complete_connect``
+        for a fresh or late connect, ``_after_reconnect_parts`` for a soft
+        recovery), so this replays only the web-epoch facts — VFO-A select,
+        scan seeding and scope re-enable — and never fetches. Fetching here
+        as well ran the initial fetch twice after a late first CI-V answer
+        (MOR-4382 double fetch).
+        """
         if self._radio_scope_session is not None:
             await self._radio_scope_session.invalidate(
                 connection_epoch=self.command_state_store.provider_generation
@@ -3332,10 +3342,6 @@ class WebServer:
             # cleanup runs first, not that anything is swallowed.
             await self._service_managed_tx_release()
             try:
-                if self._radio is not None and hasattr(
-                    self._radio, "_fetch_initial_state"
-                ):
-                    await self._radio._fetch_initial_state()
                 if isinstance(self._radio_poller, RadioPoller):
                     await self._radio_poller.select_vfo_a_on_connect(
                         read_only=self._config.read_only
