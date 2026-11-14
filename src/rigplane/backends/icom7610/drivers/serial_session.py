@@ -8,6 +8,7 @@ from collections.abc import Callable
 from typing import ClassVar, Protocol
 
 from ....core.exceptions import CommandError
+from ....core.transport import CivIngressTransport
 from ....types import PacketType
 from .contracts import CivLink, SessionDriver
 
@@ -129,7 +130,7 @@ class SerialControlTransport:
         raise asyncio.TimeoutError()
 
 
-class SerialCivTransport:
+class SerialCivTransport(CivIngressTransport):
     """Shared-core transport adapter over a raw serial CI-V link."""
 
     #: A serial line delivers bytes in the order the radio sent them, so a

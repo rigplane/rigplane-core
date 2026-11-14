@@ -503,7 +503,7 @@ async def release_radio(request, monkeypatch):
     script["ptt"] = (lambda: sim.ptt_on) if sim is not None else (lambda: fake.ptt)
     radio._civ_get_timeout = 0.03
     monkeypatch.setattr(CoreRadio, "_PTT_READBACK_SETTLE_S", 0.001)
-    radio._civ_min_interval = radio._civ_ack_sink_grace = 0
+    radio._civ_min_interval = 0
     radio._civ_runtime._ptt_ledger = None
     assert radio.connected
     runtime = radio._civ_runtime
@@ -613,7 +613,7 @@ async def test_two_read_release_matrix(
             ledger._owed[0] is a and a.answered_by is None and ledger.orphan_count == 0
         )
         if prior == "sink":
-            radio._civ_request_tracker.drop_ack_sinks()
+            radio._civ_request_tracker.expire_ack_sinks(answer_window=0.0)
         if prior == "generation":
             runtime.advance_generation("test replacement")
     if prior == "orphan":
@@ -626,7 +626,7 @@ async def test_two_read_release_matrix(
         assert (await radio.read_transmit_state()).value is False
         assert ledger.eligible() and ledger.orphan_count == 0
     if answer in ("stale", "re-emitted"):
-        radio._civ_request_tracker.drop_ack_sinks()
+        radio._civ_request_tracker.expire_ack_sinks(answer_window=0.0)
         await radio.actuate(
             _token(), ActuationOperation.PTT_ON, is_current=lambda: True
         )

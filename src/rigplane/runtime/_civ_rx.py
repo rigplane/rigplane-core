@@ -20,6 +20,7 @@ from rigplane.core.civ import (
     CivEvent,
     CivEventType,
     CivRequestKey,
+    CivRequestTracker,
     OwedReplyEntry,
     PttReplyLedger,
     is_directed_ptt_reply,
@@ -66,7 +67,7 @@ from rigplane.core.exceptions import (
     StaleBeforeWireError,
     TimeoutError,
 )
-from rigplane.core.transport import IcomTransport
+from rigplane.core.transport import CivIngressTransport, IcomTransport
 from rigplane.core.tx_safety import ProviderPttObservation, RadioTx
 from rigplane.core.tx_target import (
     KnownTxTarget,
@@ -700,6 +701,16 @@ _CIV_DATA_WATCHDOG_RETRY = 0.1  # retry interval (wfview: 100ms via startCivData
 # recovery. A port that has gone completely silent gives up much sooner.
 _OPENCLOSE_DEADLINE = 60.0
 _SILENT_OPENCLOSE_DEADLINE = 5.0
+# Separate budget bounding the ACK-sink drain before a blocking command
+# (MOR-4384 round 2). The drain protects a bare-FB/FA answer from being
+# eaten by an older unanswered sink, but that wait must never come out of
+# the next command's own answer budget (rigctld's 2 s command deadline,
+# the 300 ms TX-read deadline, the 5 s connect readiness): it gets this
+# budget of its own. 0.5 s sits comfortably above real link lateness (the
+# round-1 tests pin a late FA at 0.2 s) and an order below answer windows,
+# so expiring sinks keep the round-1 misattribution tests green while a
+# silent radio stops stalling every blocking write.
+_ACK_SINK_DRAIN_BUDGET_S = 0.5
 
 
 class _PttNotQuiescent(CommandError):
@@ -1274,7 +1285,9 @@ class CivRuntime:
             self._host._civ_request_tracker.note_ack_unclaimed()
             return RawCivTransactionResult(status="sent")
 
-        await self._drain_ack_sinks_before_blocking()
+        await self._drain_ack_sinks_before_blocking(
+            expects_data=expect == "data", request_key=request_key
+        )
         dropped_backlog = self._host._civ_request_tracker.drop_ack_backlog()
         if dropped_backlog:
             logger.debug(
@@ -1303,6 +1316,22 @@ class CivRuntime:
 
             self.start_pump()
             await self._send_civ_frame_now(civ_frame, owner=owner)
+            # Stamp the send for wire-order attribution and proof, as the
+            # managed path does (MOR-4455). The registration above predates
+            # the pacing gap inside ``_send_civ_frame_now``.
+            sent_at = time.monotonic()
+            if data_transaction is not None:
+                self._host._civ_request_tracker.mark_response_sent(
+                    data_transaction.response, sent_monotonic=sent_at
+                )
+                if data_transaction.nak is not None:
+                    self._host._civ_request_tracker.mark_ack_waiter_sent(
+                        data_transaction.nak, sent_monotonic=sent_at
+                    )
+            elif pending_waiters:
+                self._host._civ_request_tracker.mark_ack_waiter_sent(
+                    pending_waiters[0], sent_monotonic=sent_at
+                )
             done, _ = await asyncio.wait(
                 pending_waiters,
                 timeout=answer_timeout,
@@ -2179,11 +2208,19 @@ class CivRuntime:
                 self._publish_scope_frame(scope_frame)
             return
 
+        transport_for_echo: CivIngressTransport | None = self._host._civ_transport
         if frame.command not in (
             0xFB,
             0xFA,
         ) and self._host._civ_request_tracker.resolve_write_echo(
-            frame, generation=generation
+            frame,
+            generation=generation,
+            # Same ordered-ingress contract as ``resolve`` below: on an
+            # ordered transport the echo retires older tombstones. The
+            # transport states the contract explicitly
+            # (``CivIngressTransport``), so this reads it directly.
+            ordered_ingress=transport_for_echo is not None
+            and transport_for_echo.ordered_ingress is True,
         ):
             logger.debug(
                 "civ-rx: write confirmed by echo cmd=0x%02X sub=0x%02X",
@@ -2209,12 +2246,13 @@ class CivRuntime:
                 store_provider_generation=store_provider_generation,
             )
         claimed: _CivDataTransaction | None = None
-        transport = self._host._civ_transport
+        transport: CivIngressTransport | None = self._host._civ_transport
         if self._host._civ_request_tracker.resolve(
             event,
             generation=generation,
-            # MOR-4209: the transport's typed ingress-order contract; a test
-            # double without it (e.g. a mock) reads as unordered.
+            # MOR-4209: the transport's typed ingress-order contract
+            # (MOR-4455 round 4: ``CivIngressTransport`` states it
+            # explicitly, so this reads it directly).
             ordered_ingress=transport is not None and transport.ordered_ingress is True,
         ):
             claimed = self._claim_civ_data_transaction(event)
@@ -2787,25 +2825,44 @@ class CivRuntime:
         (``CivRequestTracker.take_refused_reads``). Every declared path whose
         query goes out under that read's request key is refused; the
         scheduler records it as a terminal answer for both polling seats.
+
+        A refusal no installed scheduler — or no declared path — can take
+        is re-queued on the tracker instead of dropped (MOR-4384), so the
+        record of which read the radio refused survives for the owner.
         """
-        refused = self._host._civ_request_tracker.take_refused_reads()
+        tracker = self._host._civ_request_tracker
+        refused = tracker.take_refused_reads()
+        if not refused:
+            return
         scheduler = getattr(self._host, "_acquisition_scheduler", None)
-        if not refused or not isinstance(scheduler, AcquisitionScheduler):
+        if not isinstance(scheduler, AcquisitionScheduler):
+            # No consumer to hand them to: keep the record for the owner
+            # instead of dropping it (MOR-4384). The take above still
+            # ran, so spies on ``take_refused_reads`` keep seeing the
+            # handoff.
+            tracker.restore_refused_reads(refused)
             return
         profile = self._host._profile
         resolve = acquisition_query_resolver_for_profile(profile)
         scope_receiver = self._host._radio_state.scope_controls.receiver
+        refused_set = set(refused)
         paths = []
+        delivered = set()
         for path in scheduler.declared_paths():
             query = resolve(path)
-            if (
-                query is not None
-                and read_identity_for_query(
-                    query, scope_receiver, profile.supports_cmd29
-                )
-                in refused
-            ):
+            identity = (
+                read_identity_for_query(query, scope_receiver, profile.supports_cmd29)
+                if query is not None
+                else None
+            )
+            if identity is not None and identity in refused_set:
                 paths.append(path)
+                delivered.add(identity)
+        unmapped = [key for key in refused if key not in delivered]
+        if unmapped:
+            # A refusal naming no declared path is still the only record
+            # of which read the radio refused: re-queue it (MOR-4384).
+            tracker.restore_refused_reads(unmapped)
         if paths:
             scheduler.record_read_refusal(paths, now=time.monotonic())
             self._record_state_diagnostic(
@@ -4688,23 +4745,77 @@ class CivRuntime:
         return len(frame.data) == 0
 
     async def _drain_ack_sinks_before_blocking(
-        self, *, check_current: Callable[[], None] | None = None
+        self,
+        *,
+        check_current: Callable[[], None] | None = None,
+        expects_data: bool = False,
+        request_key: CivRequestKey | None = None,
     ) -> None:
-        """Give fire-and-forget ACK sinks a short chance to drain."""
-        tracker = self._host._civ_request_tracker
-        if tracker.ack_sink_count == 0:
-            return
+        """Let fire-and-forget ACK sinks drain before a blocking command.
 
-        deadline = time.monotonic() + self._host._civ_ack_sink_grace
-        while tracker.ack_sink_count > 0 and time.monotonic() < deadline:
+        A bare FB/FA names no command, and ``CivRequestTracker.resolve``
+        hands it to the oldest eligible waiter, so a blocking write must
+        not register its waiter while an earlier fire-and-forget sink is
+        still owed an answer: the answer retiring that sink — an FB, or
+        the FA of a refused read — would settle the new waiter instead,
+        and the write's own FB could be eaten by the older sink (MOR-4384).
+
+        A data answer IS attributed by its request key, so a
+        data-expecting command drains only the sinks whose owed answer
+        would match that same key (``CivRequestTracker.ack_sink_count_matching``)
+        and skips the rest. The skip is safe only across keys: two reads of
+        one command share the key, and ``resolve`` consults response
+        waiters before sinks, so a late answer owed to an older identical
+        fire-and-forget read would settle the new read's waiter if it
+        registered now — the PTT-release readback then rejects its own
+        real reply as unverifiable (tests/integration/
+        test_ptt_release_readback_api.py). Draining the identical sink
+        first keeps the late answer on the sink it belongs to.
+
+        The remaining wait is bounded by its own separate budget
+        (``_ACK_SINK_DRAIN_BUDGET_S``), never by each sink's whole answer
+        window and never by the next command's answer budget. Sinks whose
+        window closes during the wait retire to tombstones as before;
+        whatever is still open when the budget is spent is presumed lost
+        and tombstoned too — its late FB/FA still lands on it by send
+        order, not on the new command (MOR-4455). Both budgets stretch
+        with the measured round trip
+        (``CivRequestTracker.scaled_wait_budget``): time only sizes these
+        waits, never the attribution.
+        """
+        tracker: CivRequestTracker = self._host._civ_request_tracker
+        drain_budget = tracker.scaled_wait_budget(_ACK_SINK_DRAIN_BUDGET_S)
+        answer_window = tracker.scaled_wait_budget(self._host._civ_get_timeout)
+
+        def open_sinks() -> int:
+            if expects_data:
+                if request_key is None:
+                    return 0
+                return tracker.ack_sink_count_matching(request_key)
+            return tracker.ack_sink_count
+
+        deadline = time.monotonic() + drain_budget
+        while True:
+            expired = tracker.expire_ack_sinks(answer_window=answer_window)
+            if expired:
+                logger.debug(
+                    "Expired %d unanswered ACK sink waiter(s) before blocking command",
+                    expired,
+                )
+            if open_sinks() == 0:
+                return
+            if time.monotonic() >= deadline:
+                break
             await asyncio.sleep(0.005)
             if check_current is not None:
                 check_current()
-
-        dropped = tracker.drop_ack_sinks()
-        if dropped:
+        presumed = tracker.expire_ack_sinks(
+            answer_window=0.0, only_key=request_key if expects_data else None
+        )
+        if presumed:
             logger.debug(
-                "Dropped %d stale ACK sink waiter(s) before blocking command", dropped
+                "Presumed %d ACK sink waiter(s) lost at the drain budget",
+                presumed,
             )
 
     async def _execute_civ_raw(
@@ -4722,11 +4833,14 @@ class CivRuntime:
         (NAK)`` and raises
         :class:`~rigplane.core.exceptions.CommandRejectedError` instead of
         waiting out ``_civ_get_timeout`` and reporting a timeout. A refusal
-        names no command, so a late ``0xFA`` to an earlier
-        ``wait_response=False`` write whose ACK sink was already dropped can
-        settle this read — the same exposure the write branch
-        (``register_ack(wait=True)``) and the raw transaction path's
-        ``nak_terminal=True`` default already carry.
+        names no command, so a data-expecting read skips
+        ``_drain_ack_sinks_before_blocking`` (its keyed answer cannot be
+        eaten by an older sink) while the earlier fire-and-forget sink stays
+        open and the refusal retires that sink instead of this command's
+        waiter (MOR-4384). A refusal arriving after the drain budget spent
+        lands on the retired sink's tombstone by send order instead of the
+        new waiter (MOR-4455); the raw transaction path's
+        ``nak_terminal=True`` default carries the same cover.
         """
         if self._host._civ_transport is None:
             raise ConnectionError("Not connected to radio")
@@ -4786,7 +4900,9 @@ class CivRuntime:
 
             # Reads take a sink as well as writes: a refusal is a bare FA that
             # names no command, and ``_drain_ack_sinks_before_blocking`` waits
-            # only for answers that a sink is registered for (MOR-2748).
+            # out every sink still owed an answer (MOR-2748, MOR-4384).
+            # Writes also carry their request key so their echo can confirm
+            # the sink on an echo-ack radio (MOR-4455).
             token_or_future = tracker.register_ack(
                 wait=False,
                 response_key=request_key if expects_response else None,
@@ -4837,7 +4953,14 @@ class CivRuntime:
                 # The packet left the wire: stamp before the currency checks
                 # below so a cancel or a stale attempt still paces the next
                 # send from this one.
-                self._host._last_civ_send_monotonic = time.monotonic()
+                sent_at = time.monotonic()
+                self._host._last_civ_send_monotonic = sent_at
+                if ack_sink_token is not None:
+                    # The sink's answer window opens at the send, not at
+                    # registration above (the pacing gap is this side's own
+                    # scheduling) — the same rule the blocking branch
+                    # applies to its ``_civ_get_timeout`` budget (MOR-4384).
+                    tracker.mark_ack_sink_sent(ack_sink_token, sent_monotonic=sent_at)
                 check_current()
             except (Exception, asyncio.CancelledError) as exc:
                 if ack_sink_token is not None:
@@ -4849,7 +4972,9 @@ class CivRuntime:
             return None
 
         await self._drain_ack_sinks_before_blocking(
-            check_current=check_current_pre_wire
+            check_current=check_current_pre_wire,
+            expects_data=expects_response,
+            request_key=request_key,
         )
         check_current(pre_wire=True)
 
@@ -4916,8 +5041,19 @@ class CivRuntime:
                 sent = False
                 raise
             check_current()
-            self._host._last_civ_send_monotonic = time.monotonic()
+            sent_at = time.monotonic()
+            self._host._last_civ_send_monotonic = sent_at
             assert pending is not None
+            # The waiter's place on the wire is here, not at its
+            # registration above (the pacing gap and the drain are this
+            # side's own scheduling): stamp it so bare FB/FA attribution
+            # and the ordered-ingress proof order by send time (MOR-4455).
+            if expects_response:
+                tracker.mark_response_sent(pending, sent_monotonic=sent_at)
+                if nak_pending is not None:
+                    tracker.mark_ack_waiter_sent(nak_pending, sent_monotonic=sent_at)
+            else:
+                tracker.mark_ack_waiter_sent(pending, sent_monotonic=sent_at)
             # The answer window is spent from here, not from method entry:
             # ``_civ_get_timeout`` bounds how long the *radio* may take,
             # while the ``_civ_min_interval`` gap above and

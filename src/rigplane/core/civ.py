@@ -5,15 +5,30 @@ from __future__ import annotations
 import asyncio
 import time
 from collections import deque
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import Literal
 
 from .types import CivFrame
 
 _REQUEST_DATA_PREFIX_COMMANDS = frozenset({0x07, 0x25, 0x26})
 #: CI-V broadcast address: a transceive frame sent to it answers no request.
 _BROADCAST_ADDR = 0x00
+#: Our controller address for bare FB/FA attribution. A bare FB/FA names no
+#: command, so only a frame addressed to us may settle one of our waiters
+#: (MOR-4455). Local copy: canonical ``commands._frame.CONTROLLER_ADDR``,
+#: which core must not import.
+_CONTROLLER_ADDR = 0xE0
+#: How many recent send-to-answer samples size the waiting budgets (MOR-4455).
+_RTT_WINDOW = 32
+#: Budget multiplier over the RTT high quantile. An answer is typically back
+#: within one round trip of the send; three covers the tail without holding
+#: every blocking command for a full window on a slow link.
+_RTT_BUDGET_K = 3.0
+#: Hard ceiling on open tombstones (MOR-4455). Past it the oldest tombstone
+#: is dropped and its ambiguity recorded via :meth:`note_ack_unclaimed`.
+_TOMBSTONE_CAP = 16
 _REQUEST_DATA_PREFIX_LENGTHS: dict[tuple[int, int | None], tuple[int, ...]] = {
     (0x1A, 0x00): (3, 4),
 }
@@ -158,10 +173,28 @@ class _AckWaiter:
     token: int
     created_monotonic: float
     generation: int
+    sent_monotonic: float | None = None
     nak_only: bool = False
     response_key: CivRequestKey | None = None
     refused_read: CivRequestKey | None = None
+    #: MOR-4455: a sink whose answer window closed without its answer,
+    #: kept in the FIFO so a late FB/FA still lands on it by send order.
+    tombstone: bool = False
+    #: The outgoing write's full identity
+    #: (:func:`read_identity_from_frame`): the single echo-confirmation
+    #: mechanism (:meth:`resolve_write_echo`) matches the radio's echo
+    #: against it. A write's only addressed answer is its echo (a bare
+    #: FB/FA names no command); reads match by ``response_key`` instead.
     write_identity: CivRequestKey | None = None
+
+    @property
+    def kind(self) -> Literal["read", "write"]:
+        """Whether this waiter rides on a read or on a write.
+
+        A read's sink carries the ``response_key`` its data answer must
+        match; a write's only answer is a bare FB/FA (or its echo).
+        """
+        return "read" if self.response_key is not None else "write"
 
 
 @dataclass(slots=True)
@@ -170,6 +203,7 @@ class _PendingRequest:
     future: asyncio.Future[CivFrame]
     created_monotonic: float
     generation: int
+    sent_monotonic: float | None = None
 
 
 @dataclass(slots=True)
@@ -213,6 +247,30 @@ def read_identity_from_frame(frame: CivFrame) -> CivRequestKey:
     )
 
 
+def _keys_overlap(a: CivRequestKey, b: CivRequestKey) -> bool:
+    """Whether one inbound frame could match both request keys.
+
+    Mirrors :meth:`CivRequestTracker._matches` on both sides: the frame must
+    share command and sub with both keys, both receivers when both name one,
+    and both data prefixes — possible only when one prefix starts with the
+    other.
+    """
+    if a.command != b.command or a.sub != b.sub:
+        return False
+    if a.receiver is not None and b.receiver is not None and a.receiver != b.receiver:
+        return False
+    if (
+        a.data_prefix
+        and b.data_prefix
+        and not (
+            a.data_prefix.startswith(b.data_prefix)
+            or b.data_prefix.startswith(a.data_prefix)
+        )
+    ):
+        return False
+    return True
+
+
 def iter_civ_frames(payload: bytes) -> Iterator[bytes]:
     """Yield CI-V frames found in an arbitrary payload buffer."""
     idx = 0
@@ -254,11 +312,61 @@ class CivRequestTracker:
         # MOR-4058: reads a refusal (bare FA) retired, oldest first, until
         # ``take_refused_reads`` hands them to the acquisition scheduler.
         self._refused_reads: list[CivRequestKey] = []
+        # MOR-4455: recent send-to-answer delays. Sizes waiting budgets
+        # only; attribution never uses time.
+        self._rtt_samples: deque[float] = deque(maxlen=_RTT_WINDOW)
 
     @property
     def pending_count(self) -> int:
-        """Number of unresolved pending requests."""
-        return len(self._ack_waiters) + len(self._response_waiters)
+        """Number of unresolved pending requests.
+
+        Tombstones are tracked but await nothing: they hold the place of a
+        presumed-lost answer so a late FB/FA still lands in send order.
+        """
+        return sum(1 for w in self._ack_waiters if not w.tombstone) + len(
+            self._response_waiters
+        )
+
+    @property
+    def tombstone_count(self) -> int:
+        """Number of presumed-lost sinks kept for late-answer attribution."""
+        return sum(1 for w in self._ack_waiters if w.tombstone)
+
+    @property
+    def rtt_high_quantile(self) -> float:
+        """High quantile of recent send-to-answer delays, seconds.
+
+        Zero before any answer is observed. Sizes waiting budgets via
+        :meth:`scaled_wait_budget`; attribution never reads it.
+        """
+        if not self._rtt_samples:
+            return 0.0
+        ordered = sorted(self._rtt_samples)
+        return ordered[min(len(ordered) - 1, int(len(ordered) * 0.95))]
+
+    def scaled_wait_budget(self, base: float) -> float:
+        """Size a waiting budget from the measured round trip.
+
+        Returns ``max(base, k * RTT high quantile)``: the constant stands
+        while the link is unmeasured or fast, and the measured tail
+        stretches the drain and answer windows on a slow link. Time only
+        ever sizes these waits — who an answer belongs to is send order.
+        """
+        quantile = self.rtt_high_quantile
+        if quantile <= 0.0:
+            return base
+        return max(base, _RTT_BUDGET_K * quantile)
+
+    def _note_answer_rtt(
+        self,
+        sent_monotonic: float | None,
+        created_monotonic: float,
+        *,
+        now_monotonic: float,
+    ) -> None:
+        """Record one send-to-answer delay for budget sizing."""
+        opened = sent_monotonic if sent_monotonic is not None else created_monotonic
+        self._rtt_samples.append(max(0.0, now_monotonic - opened))
 
     def response_pending_count(
         self,
@@ -288,13 +396,38 @@ class CivRequestTracker:
         ) + sum(
             1
             for waiter in self._ack_waiters
-            if waiter.response_key is not None and waiter.created_monotonic > cutoff
+            if waiter.response_key is not None
+            and not waiter.tombstone
+            and waiter.created_monotonic > cutoff
         )
 
     @property
     def ack_sink_count(self) -> int:
-        """Number of fire-and-forget ACK sink waiters currently tracked."""
-        return sum(1 for w in self._ack_waiters if w.future is None)
+        """Number of fire-and-forget ACK sink waiters currently tracked.
+
+        Tombstones are not sinks: nothing waits on them and the drain
+        must not wait for them either.
+        """
+        return sum(1 for w in self._ack_waiters if w.future is None and not w.tombstone)
+
+    def ack_sink_count_matching(self, key: CivRequestKey) -> int:
+        """Open read sinks whose owed answer would also match ``key``.
+
+        Two reads of one command share a request key, so the answer the
+        radio still owes an older fire-and-forget read would settle a new
+        blocking read's waiter if it registered now (``resolve`` tries
+        response waiters before sinks). A data-expecting command drains
+        only these sinks; sinks of other commands cannot eat its keyed
+        answer and are skipped (MOR-4384 round 2).
+        """
+        return sum(
+            1
+            for waiter in self._ack_waiters
+            if waiter.future is None
+            and not waiter.tombstone
+            and waiter.response_key is not None
+            and _keys_overlap(waiter.response_key, key)
+        )
 
     @property
     def generation(self) -> int:
@@ -317,16 +450,17 @@ class CivRequestTracker:
 
     @property
     def ack_unclaimed_at(self) -> float | None:
-        """Monotonic time a write's ACK/NAK was last left unclaimed, if ever.
+        """Monotonic time a bare FB/FA was last left able to arrive unclaimed.
 
         An ACK/NAK frame names no command and ``resolve`` hands it to the
-        first eligible waiter, so a write whose answer was left unclaimed can
-        still settle a later write's waiter (MOR-2860).
+        first eligible waiter, so an answer whose waiter is gone — a
+        write's FB/FA (MOR-2860) or a read's FA, since a refused read is
+        answered with one — can still settle a later waiter.
         """
         return self._ack_unclaimed_at
 
     def note_ack_unclaimed(self) -> None:
-        """Record that a write's ACK/NAK can still arrive with no waiter."""
+        """Record that a bare FB/FA can still arrive with no waiter."""
         self._ack_unclaimed_at = time.monotonic()
 
     def snapshot_stats(self) -> dict[str, int]:
@@ -339,6 +473,7 @@ class CivRequestTracker:
             "ack_backlog_hits": self._ack_backlog_hits,
             "ack_backlog_drops": self._ack_backlog_drops,
             "ack_orphans": self._ack_orphans,
+            "tombstones": self.tombstone_count,
         }
 
     def register_ack(
@@ -420,6 +555,20 @@ class CivRequestTracker:
         refused, self._refused_reads = tuple(self._refused_reads), []
         return refused
 
+    def restore_refused_reads(self, keys: Iterable[CivRequestKey]) -> None:
+        """Re-queue refused reads no consumer could deliver (MOR-4384).
+
+        :meth:`take_refused_reads` hands refusals to the acquisition
+        scheduler; a refusal naming no declared path — or taken where no
+        scheduler is installed — is information, not garbage. Dropping it
+        erases the only record of which read the radio refused, so
+        undelivered keys queue again for the next taker, deduplicated so
+        a repeatedly refused read keeps one entry per generation.
+        """
+        for key in keys:
+            if key not in self._refused_reads:
+                self._refused_reads.append(key)
+
     def register_response(self, key: CivRequestKey) -> asyncio.Future[CivFrame]:
         """Register a pending request that expects a specific data response."""
         created = time.monotonic()
@@ -449,18 +598,132 @@ class CivRequestTracker:
                 return True
         return False
 
-    def drop_ack_sinks(self) -> int:
-        """Drop all fire-and-forget ACK sinks.
+    def mark_ack_sink_sent(self, token: int, *, sent_monotonic: float) -> None:
+        """Stamp when a fire-and-forget sink's frame left this side.
+
+        The sink's answer window opens at the send, not at registration:
+        the pacing gap between them is this side's own scheduling, the
+        same part of the budget the blocking path spends from the send
+        (MOR-4384).
+        """
+        for waiter in self._ack_waiters:
+            if waiter.token == token and waiter.future is None:
+                waiter.sent_monotonic = sent_monotonic
+                return
+
+    def mark_ack_waiter_sent(
+        self, future: asyncio.Future[CivFrame], *, sent_monotonic: float
+    ) -> None:
+        """Stamp when a blocking ACK waiter's frame left this side.
+
+        A blocking waiter registers before its own pacing gap, so its
+        place in the FIFO is not its place on the wire (MOR-4455): the
+        drain, the budget, and bare FB/FA attribution all order it by
+        this stamp once the frame actually goes out.
+        """
+        for waiter in self._ack_waiters:
+            if waiter.future is future:
+                waiter.sent_monotonic = sent_monotonic
+                return
+
+    def mark_response_sent(
+        self, future: asyncio.Future[CivFrame], *, sent_monotonic: float
+    ) -> None:
+        """Stamp when a blocking data waiter's frame left this side.
+
+        Same wire-order reason as :meth:`mark_ack_waiter_sent`: a data
+        answer to this request proves older tombstones lost on an ordered
+        transport, and the proof must compare send times, not the
+        registration order from before the pacing gap (MOR-4455).
+        """
+        for pending in self._response_waiters:
+            if pending.future is future:
+                pending.sent_monotonic = sent_monotonic
+                return
+
+    def expire_ack_sinks(
+        self,
+        *,
+        answer_window: float,
+        now_monotonic: float | None = None,
+        only_key: CivRequestKey | None = None,
+    ) -> int:
+        """Retire fire-and-forget sinks whose own answer window has closed.
+
+        Each sink is owed its answer for ``answer_window`` from its send
+        (or from registration while the send stamp is still pending); a
+        sink still inside that window is kept claimable, because the
+        bare FB/FA or data answer the radio owes it names no command for
+        ``resolve`` and must land on it, not on a later waiter (MOR-4384).
+
+        ``only_key`` scopes the expiry to sinks whose answer would match
+        that request key (``_keys_overlap``): the data-read drain waits
+        only for those, so at its budget's end it presumes only them lost.
+
+        A sink retired here becomes a tombstone (``_AckWaiter.tombstone``),
+        kept in the FIFO with its send stamp and kind: its answer was only
+        presumed lost by the clock, and if it still arrives late it must
+        land on this sink by send order, not on a later waiter (MOR-4455).
+        Time never decides attribution afterwards — only the send order and
+        the kind rule in :meth:`resolve` do. Tombstones past the hard
+        ceiling are dropped with the ambiguity recorded, as before.
 
         Returns:
-            Number of dropped sink entries.
+            Number of sinks retired to tombstones.
         """
-        before = len(self._ack_waiters)
-        # A sink without ``response_key`` belongs to a write, answered by FB/FA.
-        if any(w.future is None and w.response_key is None for w in self._ack_waiters):
-            self.note_ack_unclaimed()
-        self._ack_waiters = [w for w in self._ack_waiters if w.future is not None]
-        return before - len(self._ack_waiters)
+        now = now_monotonic if now_monotonic is not None else time.monotonic()
+        kept: list[_AckWaiter] = []
+        converted = 0
+        for waiter in self._ack_waiters:
+            if waiter.future is not None:
+                # Blocking waiters run out their own answer window.
+                kept.append(waiter)
+                continue
+            if waiter.tombstone:
+                kept.append(waiter)
+                continue
+            if only_key is not None and not (
+                waiter.response_key is not None
+                and _keys_overlap(waiter.response_key, only_key)
+            ):
+                kept.append(waiter)
+                continue
+            opened_at = (
+                waiter.sent_monotonic
+                if waiter.sent_monotonic is not None
+                else waiter.created_monotonic
+            )
+            if now < opened_at + answer_window:
+                kept.append(waiter)
+                continue
+            waiter.tombstone = True
+            converted += 1
+            kept.append(waiter)
+        self._ack_waiters = kept
+        if converted:
+            self._enforce_tombstone_ceiling()
+        return converted
+
+    def _enforce_tombstone_ceiling(self) -> None:
+        """Drop the oldest tombstones past the hard cap.
+
+        A tombstone dropped here outlived every proof that its answer is
+        merely late, so whatever the radio still sends for it can settle
+        a later waiter: the ambiguity is recorded via
+        :meth:`note_ack_unclaimed`, as a dropped sink did before MOR-4455.
+        """
+        overflow = self.tombstone_count - _TOMBSTONE_CAP
+        if overflow <= 0:
+            return
+        kept: list[_AckWaiter] = []
+        dropped = 0
+        for waiter in self._ack_waiters:
+            if waiter.tombstone and dropped < overflow:
+                dropped += 1
+                self.note_ack_unclaimed()
+                continue
+            kept.append(waiter)
+        self._ack_waiters = kept
 
     def drop_ack_backlog(self) -> int:
         """Drop orphan ACK/NAK backlog without touching active waiters."""
@@ -470,7 +733,13 @@ class CivRequestTracker:
         return dropped
 
     def cleanup_stale(self, *, now_monotonic: float | None = None) -> int:
-        """Drop stale waiters that exceeded the TTL budget."""
+        """Drop stale waiters that exceeded the TTL budget.
+
+        Tombstones age out here too: past the TTL a presumed-lost answer
+        is no longer worth holding the FIFO slot for, and whatever the
+        radio still sends for it can settle a later waiter, so the
+        ambiguity is recorded via :meth:`note_ack_unclaimed` (MOR-4455).
+        """
         now = now_monotonic if now_monotonic is not None else time.monotonic()
         cutoff = now - self._stale_ttl
         cleaned = 0
@@ -481,7 +750,9 @@ class CivRequestTracker:
                 fresh_ack.append(waiter)
                 continue
             cleaned += 1
-            if waiter.future is not None and not waiter.future.done():
+            if waiter.future is None and waiter.tombstone:
+                self.note_ack_unclaimed()
+            elif waiter.future is not None and not waiter.future.done():
                 waiter.future.set_exception(
                     asyncio.TimeoutError("CI-V ACK waiter expired")
                 )
@@ -565,22 +836,55 @@ class CivRequestTracker:
             return False
 
         if event.type in (CivEventType.ACK, CivEventType.NAK):
+            if frame.to_addr != _CONTROLLER_ADDR:
+                # MOR-4455: a bare FB/FA names no command, so only a frame
+                # addressed to our controller may settle one of our
+                # waiters. (The RX path filters too; the tracker must not
+                # trust its caller.)
+                return False
             self._prune_ack_backlog()
+            # MOR-4455: a bare FB/FA goes to the oldest waiter by SEND
+            # time that could legally have produced it. A read is
+            # answered by data or FA, never FB, so a read waiter or
+            # tombstone may take only FA; a write takes FB or FA. A
+            # waiter with no send stamp yet (its frame never left) sorts
+            # last: whatever is arriving now cannot be its answer.
+            best_index: int | None = None
+            best_key = 0.0
             index = 0
             while index < len(self._ack_waiters):
                 waiter = self._ack_waiters[index]
                 if waiter.generation != self._generation:
                     self._ack_waiters.pop(index)
                     continue
-                if waiter.nak_only and event.type != CivEventType.NAK:
+                if waiter.nak_only and event.type is not CivEventType.NAK:
                     index += 1
                     continue
-                self._ack_waiters.pop(index)
+                if event.type is CivEventType.ACK and waiter.response_key is not None:
+                    index += 1
+                    continue
+                key = (
+                    waiter.sent_monotonic
+                    if waiter.sent_monotonic is not None
+                    else float("inf")
+                )
+                if best_index is None or key < best_key:
+                    best_index = index
+                    best_key = key
+                index += 1
+            if best_index is not None:
+                waiter = self._ack_waiters.pop(best_index)
+                self._note_answer_rtt(
+                    waiter.sent_monotonic,
+                    waiter.created_monotonic,
+                    now_monotonic=time.monotonic(),
+                )
                 if waiter.future is not None and not waiter.future.done():
                     waiter.future.set_result(frame)
                     return True
                 elif waiter.future is None:
                     # Successfully sunk an ACK for a fire-and-forget request
+                    # (or a tombstone absorbed its own late answer)
                     if (
                         event.type is CivEventType.NAK
                         and waiter.refused_read is not None
@@ -622,6 +926,24 @@ class CivRequestTracker:
                     continue
                 if self._matches(pending.key, frame):
                     self._response_waiters.pop(i)
+                    answered_at = (
+                        pending.sent_monotonic
+                        if pending.sent_monotonic is not None
+                        else pending.created_monotonic
+                    )
+                    self._note_answer_rtt(
+                        pending.sent_monotonic,
+                        pending.created_monotonic,
+                        now_monotonic=time.monotonic(),
+                    )
+                    if ordered_ingress and frame.to_addr != _BROADCAST_ADDR:
+                        # The radio answers in order, so a directed answer
+                        # to this newer request proves every older sink's
+                        # answer (data, FB or FA) was lost on the wire:
+                        # retire them by evidence instead of waiting out
+                        # their windows (MOR-4384 round 2). A broadcast
+                        # proves nothing: it answers no request.
+                        self._retire_sinks_passed_by(answered_at)
                     if not pending.future.done():
                         pending.future.set_result(frame)
                     return True
@@ -637,28 +959,50 @@ class CivRequestTracker:
                 if waiter.response_key is not None and self._matches(
                     waiter.response_key, frame
                 ):
-                    del self._ack_waiters[index]
+                    answered = self._ack_waiters.pop(index)
+                    self._note_answer_rtt(
+                        answered.sent_monotonic,
+                        answered.created_monotonic,
+                        now_monotonic=time.monotonic(),
+                    )
                     if ordered_ingress:
-                        self._retire_sinks_passed_by(index)
+                        self._retire_sinks_passed_by(
+                            answered.sent_monotonic
+                            if answered.sent_monotonic is not None
+                            else answered.created_monotonic
+                        )
                     return True
             return False
 
         return False
 
     def resolve_write_echo(
-        self, frame: CivFrame, *, generation: int | None = None
+        self,
+        frame: CivFrame,
+        *,
+        generation: int | None = None,
+        ordered_ingress: bool = False,
     ) -> bool:
         """Claim a pending write with the radio's byte-identical echo.
 
         Some radios answer a SET over LAN with the write's own frame
-        (radio to controller) instead of FB. The echo acks the oldest
+        (radio to controller) instead of FB. This is the one
+        echo-confirmation mechanism: the echo acks the oldest-by-send
         current-generation, non-``nak_only`` waiter whose
-        ``write_identity`` it matches exactly; a blocking waiter's
-        future then resolves with a synthesized FB.
+        ``write_identity`` it matches exactly — a blocking waiter, an
+        open sink, or a tombstone whose answer arrived late. A blocking
+        waiter's future then resolves with a synthesized FB; a sink or
+        tombstone is confirmed and removed.
 
         Any pending read wins: when the frame matches a blocking
         response waiter or a sink carrying ``response_key``, it is not
         an echo and this returns False.
+
+        On an ordered transport (``ordered_ingress``) the echo is a
+        self-identifying directed answer like any other: it proves
+        older tombstones' answers were lost, so they retire by evidence
+        via :meth:`_retire_sinks_passed_by` instead of absorbing a
+        later stranger's FB/FA.
         """
         if generation is not None and generation != self._generation:
             return False
@@ -678,6 +1022,8 @@ class CivRequestTracker:
                 and self._matches(waiter.response_key, frame)
             ):
                 return False
+        best_index: int | None = None
+        best_key = 0.0
         for index, waiter in enumerate(self._ack_waiters):
             if waiter.generation != self._generation or waiter.nak_only:
                 continue
@@ -690,20 +1036,40 @@ class CivRequestTracker:
                 and frame.receiver == identity.receiver
                 and frame.data == identity.data_prefix
             ):
-                del self._ack_waiters[index]
-                if waiter.future is not None and not waiter.future.done():
-                    waiter.future.set_result(
-                        CivFrame(
-                            to_addr=frame.to_addr,
-                            from_addr=frame.from_addr,
-                            command=0xFB,
-                        )
-                    )
-                return True
-        return False
+                key = (
+                    waiter.sent_monotonic
+                    if waiter.sent_monotonic is not None
+                    else float("inf")
+                )
+                if best_index is None or key < best_key:
+                    best_index = index
+                    best_key = key
+        if best_index is None:
+            return False
+        answered = self._ack_waiters.pop(best_index)
+        self._note_answer_rtt(
+            answered.sent_monotonic,
+            answered.created_monotonic,
+            now_monotonic=time.monotonic(),
+        )
+        if ordered_ingress:
+            self._retire_sinks_passed_by(
+                answered.sent_monotonic
+                if answered.sent_monotonic is not None
+                else answered.created_monotonic
+            )
+        if answered.future is not None and not answered.future.done():
+            answered.future.set_result(
+                CivFrame(
+                    to_addr=frame.to_addr,
+                    from_addr=frame.from_addr,
+                    command=0xFB,
+                )
+            )
+        return True
 
-    def _retire_sinks_passed_by(self, answered_index: int) -> None:
-        """Drop the sinks older than the one a directed answer just retired.
+    def _retire_sinks_passed_by(self, answered_at: float) -> None:
+        """Drop the sinks and tombstones older than a directed answer.
 
         MOR-4209: sinks are registered by the commander's single worker right
         before their frame goes out, so their order is the wire order, and the
@@ -712,18 +1078,27 @@ class CivRequestTracker:
         means every older sink's answer (data, FB or FA) was lost. Left open,
         the oldest of them took the next bare FA, which then named the wrong
         read as refused (:meth:`take_refused_reads`, MOR-4058) while the read
-        the radio really refused stayed open. Blocking waiters are left alone:
-        a raw transaction registers before its own pacing gap, so its place in
-        this list is not its place on the wire.
+        the radio really refused stayed open. MOR-4455 extends the same proof
+        to tombstones: a self-identifying answer to a request sent after a
+        tombstone proves the tombstone's answer will never arrive, so the
+        tombstone is retired instead of absorbing a later stranger's FB/FA.
+        Blocking waiters are left alone: a raw transaction registers before
+        its own pacing gap, so its place in this list is not its place on
+        the wire.
         """
         kept: list[_AckWaiter] = []
-        for waiter in self._ack_waiters[:answered_index]:
-            if waiter.future is not None:
+        for waiter in self._ack_waiters:
+            opened_at = (
+                waiter.sent_monotonic
+                if waiter.sent_monotonic is not None
+                else waiter.created_monotonic
+            )
+            if opened_at >= answered_at or waiter.future is not None:
                 kept.append(waiter)
             elif waiter.response_key is None:
                 # A write's FB/FA can no longer be told from a later one.
                 self.note_ack_unclaimed()
-        self._ack_waiters[:answered_index] = kept
+        self._ack_waiters = kept
 
     def fail_all(self, exc: Exception) -> None:
         """Fail all pending requests and clear the tracker."""
