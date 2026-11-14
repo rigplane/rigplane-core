@@ -36,6 +36,11 @@ def _load(name: str) -> RigConfig:
     return load_rig(RIGS_DIR / f"{name}.toml")
 
 
+def _subset(config: RigConfig, *names: str) -> list:
+    wanted = set(names)
+    return [item for item in build_read_list(config) if item.name in wanted]
+
+
 async def _yaesu_exchange(reader, writer) -> runner.Exchange:
     async def exchange(request: bytes | None, timeout: float) -> bytes | None:
         if request:
@@ -186,7 +191,7 @@ async def test_refused_and_silent_keep_the_run_going() -> None:
     await radio.start()
     try:
         report = await _run_yaesu(
-            config, radio, only_names=("get_freq", "get_keyer_speed")
+            config, radio, items=_subset(config, "get_freq", "get_keyer_speed")
         )
     finally:
         await radio.stop()
@@ -216,7 +221,7 @@ async def test_silent_answer_is_recorded_not_fatal() -> None:
                 include_private=False,
                 gap_s=GAP,
                 timeout_s=SHORT_TIMEOUT,
-                only_names=("get_freq",),
+                items=_subset(config, "get_freq"),
             )
         finally:
             writer.close()
@@ -265,7 +270,7 @@ async def test_garbled_reply_is_malformed_and_does_not_abort() -> None:
     await radio.start()
     radio.garble_next_reply("FA")
     try:
-        report = await _run_yaesu(config, radio, only_names=("get_freq", "get_id"))
+        report = await _run_yaesu(config, radio, items=_subset(config, "get_freq", "get_id"))
     finally:
         await radio.stop()
     by_name = {row.name: row for row in report.commands}
@@ -282,7 +287,7 @@ async def test_unsolicited_push_is_recorded_and_run_continues() -> None:
     # recorded as unsolicited and the run reads the real answer next.
     radio.auto_info_burst_on_next_request("TX")
     try:
-        report = await _run_yaesu(config, radio, only_names=("get_freq", "get_id"))
+        report = await _run_yaesu(config, radio, items=_subset(config, "get_freq", "get_id"))
     finally:
         await radio.stop()
     assert [row.text for row in report.unsolicited] == ["TX0;"]
@@ -324,7 +329,7 @@ async def test_snapshot_diff_is_reported() -> None:
         include_private=False,
         gap_s=GAP,
         timeout_s=TIMEOUT,
-        only_names=("get_freq",),
+        items=_subset(config, "get_freq"),
     )
     assert report.snapshot.before["get_freq"] == "FA14074000;"
     assert report.snapshot.after["get_freq"] == "FA14075000;"
@@ -368,6 +373,8 @@ async def test_transport_error_ends_the_run() -> None:
     config = _load("ftx1")
 
     async def exchange(request: bytes | None, timeout: float) -> bytes | None:
+        if request == b"ID;":
+            return b"ID0840;"
         raise OSError("device is gone")
 
     report = await runner.run_probe(
@@ -380,7 +387,7 @@ async def test_transport_error_ends_the_run() -> None:
         include_private=False,
         gap_s=GAP,
         timeout_s=TIMEOUT,
-        only_names=("get_freq", "get_id"),
+        items=_subset(config, "get_freq", "get_id"),
     )
     assert [row.outcome for row in report.commands] == ["transport_error"]
     assert report.aborted is not None
@@ -402,7 +409,7 @@ async def test_identity_mismatch_does_not_stop_the_run() -> None:
         include_private=False,
         gap_s=GAP,
         timeout_s=TIMEOUT,
-        only_names=("get_freq",),
+        items=_subset(config, "get_freq"),
     )
     assert report.radio.identity_matches_profile is False
     assert report.commands[0].outcome == "data"
@@ -423,13 +430,22 @@ def _canned_stub(config: RigConfig, seen: list[bytes]) -> runner.Exchange:
 
 
 async def test_runner_sends_only_what_readlist_produced() -> None:
-    """No-TX-ever over the runner: every sent line is a produced read."""
+    """No-TX-ever over the runner: every sent line is a declared read."""
+    from rigplane.commands.command_spec import CatCommandSpec
+    from rigplane.probe.readlist import (
+        build_allowed_bodies,
+        compile_cat_template,
+        identity_requests,
+        is_forbidden,
+    )
+
     for toml_path in sorted(RIGS_DIR.glob("*.toml")):
         config = load_rig(toml_path)
         if config.protocol_type not in ("civ", "yaesu_cat"):
             continue
-        items = build_read_list(config)
+        items = build_read_list(config, include_private=True)
         produced = {item.body for item in items}
+        identity = {item.body for item in identity_requests(config)}
         seen: list[bytes] = []
         report = await runner.run_probe(
             config,
@@ -442,8 +458,29 @@ async def test_runner_sends_only_what_readlist_produced() -> None:
             gap_s=GAP,
             timeout_s=TIMEOUT,
         )
-        allowed = {item.body for item in build_read_list(config)}
-        assert produced == allowed
         assert seen, toml_path.name
-        assert set(seen) <= produced, toml_path.name
+        assert set(seen) <= produced | identity, toml_path.name
         assert report.aborted is None, toml_path.name
+        if config.protocol_type == "yaesu_cat":
+            reads = [
+                spec.read
+                for spec in config.commands.values()
+                if isinstance(spec, CatCommandSpec) and spec.read
+            ]
+            writes = [
+                spec.write
+                for spec in config.commands.values()
+                if isinstance(spec, CatCommandSpec) and spec.write
+            ]
+            read_matchers = [compile_cat_template(t) for t in reads]
+            write_matchers = [compile_cat_template(t) for t in writes]
+            for body in seen:
+                line = body.decode("ascii")
+                assert any(p.fullmatch(line) for p in read_matchers), line
+                assert not any(p.fullmatch(line) for p in write_matchers), line
+        else:
+            allowed = build_allowed_bodies(
+                config.to_profile(), include_private=True
+            )
+            for body in seen:
+                assert not is_forbidden(body, allowed), body.hex()

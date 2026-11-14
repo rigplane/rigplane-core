@@ -200,6 +200,6 @@ def test_no_tx_ever_and_every_line_a_declared_read(toml_name: str) -> None:
             assert any(p.fullmatch(line) for p in read_matchers), line
             assert not any(p.fullmatch(line) for p in write_matchers), line
     else:
-        allowed = build_allowed_bodies(config.to_profile())
+        allowed = build_allowed_bodies(config.to_profile(), include_private=True)
         for item in items:
             assert not is_forbidden(item.body, allowed), item.body.hex()
