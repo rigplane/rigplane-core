@@ -39,6 +39,7 @@ def _packet(index: int = 0, size: int = 4) -> N1mmSpectrumPacket:
 
 def _send(port: int, payload: bytes) -> None:
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 1 << 17)
         sock.sendto(payload, ("127.0.0.1", port))
 
 
@@ -58,6 +59,7 @@ async def _running(node):
 
 def _blast(port: int, packets: list[N1mmSpectrumPacket]) -> None:
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 1 << 17)
         for packet in packets:
             sock.sendto(emit_n1mm_spectrum(packet), ("127.0.0.1", port))
 
@@ -556,6 +558,7 @@ async def test_known_signal_end_to_end(virtual_clock: VirtualClock, size: int) -
     receiver = N1mmSpectrumReceiver(port=0, on_packet=source.handle_packet)
     async with _running(receiver), _running(source):
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 1 << 17)
             sock.sendto(raw, ("127.0.0.1", receiver.port))
         await await_until(lambda: frames, description="known-signal frame")
         assert len(frames) == 1
