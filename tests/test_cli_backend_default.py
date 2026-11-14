@@ -2,9 +2,10 @@
 
 A CI-V radio whose profile has no LAN interface (IC-7300, X6200) must not
 scan the network when no ``--serial-port`` is given; it uses USB discovery.
-LAN-capable profiles (IC-7610, IC-705) keep ``lan``. An explicit ``--host``
-still means LAN. The facts come from the profile (``has_lan``), never from a
-model name.
+LAN-capable profiles (IC-7610, IC-705, G7250 added in MOR-4436) keep ``lan``:
+a bare ``--model`` on a LAN-capable radio scans the LAN, not USB. An explicit
+``--host`` still means LAN. The facts come from the profile (``has_lan``),
+never from a model name. The real fix (USB-first for the G7250) is MOR-4437.
 """
 
 from __future__ import annotations
@@ -43,6 +44,7 @@ def test_the_models_used_below_have_the_profile_facts_the_tests_rely_on() -> Non
     rigs = discover_available_rigs(cli._rigs_dir())
     assert [rigs[m].has_lan for m in ("IC-7300", "X6200")] == [False, False]
     assert [rigs[m].has_lan for m in ("IC-7610", "IC-705")] == [True, True]
+    assert rigs["G7250"].has_lan is True
 
 
 @pytest.mark.asyncio
@@ -59,7 +61,7 @@ async def test_civ_radio_without_lan_defaults_to_serial(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("model", ["IC-7610", "IC-705"])
+@pytest.mark.parametrize("model", ["IC-7610", "IC-705", "G7250"])
 async def test_civ_radio_with_lan_keeps_lan_without_serial_port(
     model: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -75,6 +77,51 @@ async def test_civ_radio_with_lan_keeps_lan_without_serial_port(
     config = await _build_backend_config(args)
     assert isinstance(config, LanBackendConfig)
     assert config.host == "192.168.1.77"
+
+
+@pytest.mark.asyncio
+async def test_g7250_with_explicit_serial_port_uses_serial_without_scanning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """MOR-4436: an explicit --serial-port pins the G7250 to the serial backend."""
+
+    async def _no_lan(**_kwargs: object) -> str:
+        pytest.fail("an explicit --serial-port must not scan the LAN")
+
+    async def _no_serial() -> tuple[str, int | None]:
+        pytest.fail("an explicit --serial-port must not scan serial ports")
+
+    monkeypatch.setattr(cli, "_auto_discover_lan", _no_lan)
+    monkeypatch.setattr(cli, "_auto_discover_serial", _no_serial)
+    args = _build_parser().parse_args(
+        ["--model", "G7250", "--serial-port", "/dev/ttyUSB3", "status"]
+    )
+    config = await _build_backend_config(args)
+    assert isinstance(config, SerialBackendConfig)
+    assert config.device == "/dev/ttyUSB3"
+    assert config.baudrate == 115200
+
+
+@pytest.mark.asyncio
+async def test_g7250_with_explicit_host_uses_lan_without_scanning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """MOR-4436: an explicit --host pins the G7250 to the LAN backend."""
+
+    async def _no_lan(**_kwargs: object) -> str:
+        pytest.fail("an explicit --host must not scan the LAN")
+
+    async def _no_serial() -> tuple[str, int | None]:
+        pytest.fail("an explicit --host must not scan serial ports")
+
+    monkeypatch.setattr(cli, "_auto_discover_lan", _no_lan)
+    monkeypatch.setattr(cli, "_auto_discover_serial", _no_serial)
+    args = _build_parser().parse_args(
+        ["--model", "G7250", "--host", "192.168.55.15", "status"]
+    )
+    config = await _build_backend_config(args)
+    assert isinstance(config, LanBackendConfig)
+    assert config.host == "192.168.55.15"
 
 
 @pytest.mark.asyncio
@@ -120,6 +167,23 @@ async def test_serial_radio_with_no_port_found_gives_a_clear_error(
     err = capsys.readouterr().err
     assert "no radios found on serial ports" in err
     assert "--serial-port" in err
+
+
+@pytest.mark.asyncio
+async def test_auto_discover_lan_with_no_radios_found_points_at_usb(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """MOR-4436: the empty-LAN message must mention the USB path too."""
+    monkeypatch.setattr(
+        "rigplane.discovery.discover_lan_radios", AsyncMock(return_value=[])
+    )
+    with pytest.raises(SystemExit) as excinfo:
+        await cli._auto_discover_lan(timeout=0.1)
+    assert excinfo.value.code == 1
+    err = capsys.readouterr().err
+    assert "no radios found on LAN" in err
+    assert "--serial-port" in err
+    assert "--backend serial" in err
 
 
 # ---------------------------------------------------------------------------
