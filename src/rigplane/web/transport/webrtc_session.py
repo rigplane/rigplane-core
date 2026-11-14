@@ -59,6 +59,7 @@ if TYPE_CHECKING:
 
     from ...radio_protocol import Radio
     from ..server import WebServer  # noqa: TID251
+    from .ice_gathering import IceGatheringPolicy, IceServer  # noqa: TID251
 
 __all__ = [
     "WebRtcSessionError",
@@ -122,14 +123,28 @@ class WebRtcSessionManager:
         radio: "Radio | None",
         server: "WebServer | None",
         radio_model: str,
+        *,
+        gather_policy: "IceGatheringPolicy | None" = None,
     ) -> None:
         self._radio = radio
         self._server = server
         self._radio_model = radio_model
+        self._gather_policy = gather_policy
         self._sessions: dict[str, _Session] = {}
 
-    async def negotiate(self, offer_sdp: str, offer_type: str) -> dict[str, Any]:
+    async def negotiate(
+        self,
+        offer_sdp: str,
+        offer_type: str,
+        ice_servers: list[IceServer] | None = None,
+    ) -> dict[str, Any]:
         """Process an SDP offer and return ``{sessionId, sdp, type}``.
+
+        ``ice_servers`` carries the client's STUN/TURN servers (``None`` or
+        ``[]`` means host-only gathering with an explicit empty
+        configuration). Gathering runs under the manager's gathering policy
+        and is bounded at ``GATHER_TIMEOUT_S`` total: candidates found by
+        then are used and the answer is produced from them.
 
         Raises :class:`WebRtcSessionError` if WebRTC is unavailable or the SDP
         cannot be processed.
@@ -139,13 +154,31 @@ class WebRtcSessionManager:
 
         try:
             from aiortc import (  # type: ignore[import-not-found]
+                RTCConfiguration,
+                RTCIceServer,
                 RTCPeerConnection,
                 RTCSessionDescription,
             )
         except ImportError as exc:  # pragma: no cover - race/broken install
             raise WebRtcSessionError(_INSTALL_HINT) from exc
 
-        pc = RTCPeerConnection()
+        from .ice_gathering import (  # noqa: TID251
+            IceGatheringPolicy,
+            install_ice_gathering_policy,
+        )
+
+        if ice_servers:
+            rtc_servers = [
+                RTCIceServer(
+                    urls=list(server.urls),
+                    username=server.username,
+                    credential=server.credential,
+                )
+                for server in ice_servers
+            ]
+        else:
+            rtc_servers = []
+        pc = RTCPeerConnection(RTCConfiguration(iceServers=rtc_servers))
         session_id = uuid.uuid4().hex
         session = _Session(pc)
         self._sessions[session_id] = session
@@ -162,10 +195,16 @@ class WebRtcSessionManager:
                 await self._drop(session_id)
 
         try:
-            offer = RTCSessionDescription(sdp=offer_sdp, type=offer_type)
-            await pc.setRemoteDescription(offer)
-            answer = await pc.createAnswer()
-            await pc.setLocalDescription(answer)
+            policy = (
+                self._gather_policy
+                if self._gather_policy is not None
+                else IceGatheringPolicy()
+            )
+            with install_ice_gathering_policy(policy):
+                offer = RTCSessionDescription(sdp=offer_sdp, type=offer_type)
+                await pc.setRemoteDescription(offer)
+                answer = await pc.createAnswer()
+                await pc.setLocalDescription(answer)
         except Exception as exc:
             logger.warning("WebRTC session negotiation failed: %s", exc)
             await self._drop(session_id)
