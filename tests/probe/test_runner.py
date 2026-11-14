@@ -455,6 +455,44 @@ def _probe_toml_paths() -> list[Path]:
     ]
 
 
+def _sibling_configs() -> list[RigConfig]:
+    return [load_rig(path) for path in _probe_toml_paths()]
+
+
+async def test_run_records_expected_and_skipped() -> None:
+    """The file marks borrowed reads absent and lists what was not sent."""
+    from rigplane.probe.readlist import build_read_plan
+
+    config = _load("g7250")
+    siblings = _sibling_configs()
+    plan = build_read_plan(config, siblings=siblings)
+    seen: list[bytes] = []
+    report = await runner.run_probe(
+        config,
+        config_toml_sha256="0" * 64,
+        exchange=_canned_stub(config, seen),
+        port_kind="usb",
+        baud=CIV_BAUD,
+        label="",
+        include_private=False,
+        gap_s=GAP,
+        timeout_s=TIMEOUT,
+        siblings=siblings,
+    )
+    assert report.file.skipped == plan.skipped
+    by_name = {row.name: row for row in report.file.commands}
+    assert by_name["get_data_mode"].expected == "absent"
+    assert "bytes from profile(s)" in by_name["get_data_mode"].note
+    assert by_name["get_freq"].expected == "present"
+    assert "get_memory_contents" not in by_name
+    assert {entry.reason for entry in report.file.skipped} >= {
+        "private",
+        "response_code",
+        "unsafe_family",
+        "no_unambiguous_bytes",
+    }
+
+
 async def test_runner_sends_only_what_readlist_produced() -> None:
     """No-TX-ever over the runner: every sent line is a declared read."""
     from rigplane.commands.command_spec import CatCommandSpec

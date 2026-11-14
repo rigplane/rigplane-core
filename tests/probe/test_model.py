@@ -7,10 +7,12 @@ import json
 import pytest
 
 from rigplane.probe.model import (
+    SKIP_REASONS,
     CommandRow,
     IdentityReport,
     ProbeFile,
     RadioInfo,
+    SkippedRead,
     Snapshot,
     ToolInfo,
     UnsolicitedRow,
@@ -49,6 +51,7 @@ def _sample() -> ProbeFile:
                 reply_text="FA14074000;",
                 outcome="data",
                 latency_ms=3.1,
+                expected="present",
                 note="",
             ),
             CommandRow(
@@ -60,7 +63,16 @@ def _sample() -> ProbeFile:
                 reply_text=None,
                 outcome="silent",
                 latency_ms=1000.0,
+                expected="absent",
                 note="",
+            ),
+        ),
+        skipped=(
+            SkippedRead(
+                name="get_memory_contents",
+                request_hex=None,
+                reason="private",
+                detail="stored memory contents need --include-private",
             ),
         ),
         unsolicited=(UnsolicitedRow(t_ms=12.5, hex="41493b", text="AI;"),),
@@ -99,6 +111,16 @@ def test_json_shape_has_hex_and_text_per_row() -> None:
         "after": {"get_freq": "FA14074000;"},
         "changed": [],
     }
+    assert document["commands"][0]["expected"] == "present"
+    assert document["commands"][1]["expected"] == "absent"
+    assert document["skipped"] == [
+        {
+            "name": "get_memory_contents",
+            "request_hex": None,
+            "reason": "private",
+            "detail": "stored memory contents need --include-private",
+        }
+    ]
 
 
 def test_unknown_major_version_is_refused() -> None:
@@ -126,6 +148,30 @@ def test_wrong_command_class_is_refused() -> None:
     document = json.loads(_sample().to_json())
     document["commands"][0]["class"] = "maybe"
     with pytest.raises(ValueError, match="class"):
+        ProbeFile.from_json(json.dumps(document))
+
+
+def test_skip_reasons_are_a_closed_enum() -> None:
+    assert SKIP_REASONS == frozenset(
+        {"unsafe_family", "private", "response_code", "no_unambiguous_bytes"}
+    )
+
+
+def test_unknown_skip_reason_is_refused() -> None:
+    import json
+
+    document = json.loads(_sample().to_json())
+    document["skipped"][0]["reason"] = "maybe-later"
+    with pytest.raises(ValueError, match="reason"):
+        ProbeFile.from_json(json.dumps(document))
+
+
+def test_unknown_expected_is_refused() -> None:
+    import json
+
+    document = json.loads(_sample().to_json())
+    document["commands"][0]["expected"] = "maybe"
+    with pytest.raises(ValueError, match="expected"):
         ProbeFile.from_json(json.dumps(document))
 
 

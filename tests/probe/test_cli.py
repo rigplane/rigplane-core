@@ -185,6 +185,50 @@ async def test_execute_yes_writes_parseable_file(tmp_path) -> None:
     assert document.private_reads_included is False
 
 
+async def test_execute_g7250_file_records_skipped_and_summary(tmp_path) -> None:
+    from rigplane.commands import CONTROLLER_ADDR, build_civ_frame
+
+    config = resolve_config("G7250", RIGS)
+    nak = build_civ_frame(config.civ_addr, CONTROLLER_ADDR, 0xFA)
+    seen: list[bytes] = []
+
+    async def factory() -> runner.Exchange:
+        async def exchange(request: bytes | None, timeout: float) -> bytes | None:
+            assert request is not None
+            seen.append(request)
+            return nak
+
+        return exchange
+
+    lines: list[str] = []
+    out = tmp_path / "probe.json"
+    code = await execute(
+        config,
+        (REPO_ROOT / "rigs" / "g7250.toml").read_bytes(),
+        device_label="COM5 @ 115200",
+        baud=115200,
+        out=str(out),
+        include_private=False,
+        label="",
+        yes=True,
+        is_tty=False,
+        ask=lambda prompt: (_ for _ in ()).throw(AssertionError("no prompt")),
+        exchange_factory=factory,
+        gap_s=GAP,
+        timeout_s=TIMEOUT,
+        emit=lines.append,
+        sibling_configs=list(RIGS.values()),
+    )
+    assert code == 0
+    document = ProbeFile.from_json(out.read_text(encoding="utf-8"))
+    assert document.skipped
+    assert {entry.name for entry in document.skipped} >= {
+        "get_memory_contents",
+        "get_transceiver_status",
+    }
+    assert any("were not sent" in line for line in lines)
+
+
 async def test_execute_cannot_open_is_exit_3(capsys, tmp_path) -> None:
     async def factory() -> runner.Exchange:
         raise OSError("connection refused")

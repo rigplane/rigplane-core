@@ -72,6 +72,51 @@ def test_pre_save_summary_with_private() -> None:
     assert "you did not ask for them" not in text
 
 
+def test_pre_save_summary_with_skipped_and_findings() -> None:
+    text = render.pre_save_summary(
+        path="/tmp/g7250-probe-20261114-173000.json",
+        size_bytes=40960,
+        n_commands=120,
+        identity_text="model code 7250",
+        settings_lines=["frequency 14.074 MHz"],
+        private_reads_included=False,
+        skipped_counts={"unsafe_family": 3, "private": 1},
+        absent_answered=["get_data_mode"],
+        present_missed=["get_freq"],
+    )
+    assert text == (
+        "Ready to save: /tmp/g7250-probe-20261114-173000.json  (40 KB)\n"
+        "It contains:\n"
+        "  - the questions we asked and the radio's exact replies (120 of them)\n"
+        "  - what the radio says it is (model code 7250) and the RigPlane version\n"
+        "  - your radio's current settings as of this moment: frequency 14.074 MHz\n"
+        "  - not included: stored memory contents (you did not ask for them)\n"
+        "  - 4 reads were not sent (3 unsafe_family, 1 private); "
+        "each is listed under 'skipped' in the file with why\n"
+        "  - notable: the radio answered 1 read the profile calls absent: "
+        "get_data_mode\n"
+        "  - notable: the radio did not answer 1 read the profile declares "
+        "present: get_freq\n"
+        "It does NOT contain: your name, IP address, computer name or log files.\n"
+        "Radio settings can show what you use the radio for (frequencies, mode).\n"
+        "Nothing has been sent anywhere. "
+        "To review it: open the file in any text editor.\n"
+        "Save the file? [Y/n] "
+    )
+
+
+def test_finding_names_cap_at_ten() -> None:
+    names = [f"get_item_{index:02d}" for index in range(12)]
+    assert render.present_missed_line(names) == (
+        "  - notable: the radio did not answer 12 reads the profile declares "
+        "present: get_item_00, get_item_01, get_item_02, get_item_03, "
+        "get_item_04, get_item_05, get_item_06, get_item_07, get_item_08, "
+        "get_item_09 and 2 more\n"
+    )
+    assert render.absent_answered_line([]) == ""
+    assert render.skipped_line({}) == ""
+
+
 def test_closing_line() -> None:
     assert render.closing_line() == (
         "Done. Nothing was uploaded. Send the file to the person who asked you for it."
