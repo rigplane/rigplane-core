@@ -210,10 +210,14 @@ def _excluded_from_probes(body: bytes, *, include_private: bool) -> bool:
     out; the 0x1A 0x00 memory-contents pair — a (command, sub) pair
     rather than a whole command byte, because 0x1A carries legal
     scope/control reads — is out unless ``include_private`` is set.
+    The bare 0xFA/0xFB bytes are the radio's NAK/ACK replies, not
+    requests, so they never pass either.
     """
     if not body:
         return True
     if body[0] in _REFUSED_COMMANDS:
+        return True
+    if body[0] in (0xFA, 0xFB):
         return True
     if body[0] == 0x1A and body[1:2] == bytes((_MEMORY_CONTENTS_SUB,)):
         return not include_private
@@ -254,14 +258,16 @@ def _build_civ_list(
 
     if command_map.has("get_freq"):
         freq_body = bytes(command_map.get("get_freq"))
-        for receiver in (RECEIVER_MAIN, RECEIVER_SUB):
-            probes.append(
-                ReadRequest(
-                    f"cmd29:get_freq:{receiver}",
-                    _cmd29_body(freq_body, receiver),
-                    "cmd29",
+        _command, sub, _prefix = decode_wire_tuple(command_map.get("get_freq"))
+        if (_command, sub) not in routes and config.receiver_count >= 2:
+            for receiver in (RECEIVER_MAIN, RECEIVER_SUB):
+                probes.append(
+                    ReadRequest(
+                        f"cmd29:get_freq:{receiver}",
+                        _cmd29_body(freq_body, receiver),
+                        "cmd29",
+                    )
                 )
-            )
 
     for body in _UNKNOWN_BODIES:
         probes.append(ReadRequest(f"unknown:{body.hex()}", body, "unknown"))

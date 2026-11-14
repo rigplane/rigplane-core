@@ -173,9 +173,7 @@ def test_no_probe_body_is_an_ack_nak_echo(toml_name: str) -> None:
 def test_cmd29_get_freq_only_on_dual_receiver_profiles() -> None:
     """The unconditional cmd29-wrapped get_freq is dual-receiver only (MOR-4464 PR A)."""
     g7250 = build_read_list(load_rig(G7250))
-    assert not [
-        item for item in g7250 if item.name.startswith("cmd29:get_freq:")
-    ]
+    assert not [item for item in g7250 if item.name.startswith("cmd29:get_freq:")]
 
     ic7610 = build_read_list(load_rig(IC7610))
     wrapped = [
