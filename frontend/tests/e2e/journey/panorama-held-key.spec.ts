@@ -419,7 +419,7 @@ for (const [latencyIndex, latency] of LATENCIES.entries()) {
 // context in the attached timeline. The round-1 assertions are unchanged.
 // ---------------------------------------------------------------------------
 
-const ROUND2_BASE_PORT = 18980;
+const ROUND2_BASE_PORT = 19080;
 const ROUND2_HOLD_ITERATIONS = 270; // ~9 s at ~30 Hz auto-repeat
 const ROUND2_SETTLE_MS = 3000;
 
