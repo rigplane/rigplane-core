@@ -755,7 +755,7 @@ class CivRuntime:
             tuple[asyncio.Task[None], asyncio.Task[None]] | None
         ) = None
         self._soft_recovery_epoch: int | None = None
-        self._raw_received_frame_bytes: dict[int, bytes] = {}
+        self._raw_received_frame_bytes: dict[int, tuple[CivFrame, bytes]] = {}
         self._ptt_observer: Callable[[ProviderPttObservation], None] | None = None
         self._ptt_observer_provider_generation: int | None = None
         self._ptt_observer_civ_generation: int | None = None
@@ -1289,6 +1289,7 @@ class CivRuntime:
                 pending_or_token = self._host._civ_request_tracker.register_ack(
                     wait=True,
                     consume_backlog=False,
+                    write_identity=read_identity_from_frame(parsed_frame),
                 )
                 if isinstance(pending_or_token, int):
                     raise RuntimeError("ACK waiter registration returned sink token")
@@ -1498,8 +1499,14 @@ class CivRuntime:
     def _remember_raw_received_frame_bytes(
         self, frame: CivFrame, frame_bytes: bytes
     ) -> None:
-        """Keep exact inbound bytes for parsed frames returned through futures."""
-        self._raw_received_frame_bytes[id(frame)] = bytes(frame_bytes)
+        """Keep exact inbound bytes for parsed frames returned through futures.
+
+        The frame is kept, not just its ``id``: ids of freed frames are
+        reused, and a take for a frame that was never remembered (the
+        synthesized FB of an echo-confirmed write) must miss rather than
+        hit a stale entry's bytes.
+        """
+        self._raw_received_frame_bytes[id(frame)] = (frame, bytes(frame_bytes))
         while len(self._raw_received_frame_bytes) > _RAW_RECEIVED_FRAME_BYTES_LIMIT:
             self._raw_received_frame_bytes.pop(
                 next(iter(self._raw_received_frame_bytes))
@@ -1507,7 +1514,8 @@ class CivRuntime:
 
     def _take_raw_received_frame_bytes(self, frame: CivFrame) -> bytes | None:
         """Return exact inbound bytes for a parsed frame when still available."""
-        return self._raw_received_frame_bytes.pop(id(frame), None)
+        taken = self._raw_received_frame_bytes.pop(id(frame), None)
+        return taken[1] if taken is not None else None
 
     def start_worker(self) -> None:
         """Start serialized CI-V commander."""
@@ -2169,6 +2177,24 @@ class CivRuntime:
                     scope_frame, receiver=receiver, frame=frame
                 )
                 self._publish_scope_frame(scope_frame)
+            return
+
+        if frame.command not in (
+            0xFB,
+            0xFA,
+        ) and self._host._civ_request_tracker.resolve_write_echo(
+            frame, generation=generation
+        ):
+            logger.debug(
+                "civ-rx: write confirmed by echo cmd=0x%02X sub=0x%02X",
+                frame.command,
+                frame.sub or 0,
+            )
+            self._update_state_cache_from_frame(
+                frame,
+                source_generation=generation,
+                store_provider_generation=store_provider_generation,
+            )
             return
 
         if frame.command == 0xFB:
@@ -4767,6 +4793,11 @@ class CivRuntime:
                 refused_read=(
                     read_identity_from_frame(parsed_frame) if expects_response else None
                 ),
+                write_identity=(
+                    read_identity_from_frame(parsed_frame)
+                    if not expects_response
+                    else None
+                ),
             )
             if isinstance(token_or_future, int):
                 ack_sink_token = token_or_future
@@ -4854,6 +4885,7 @@ class CivRuntime:
                 pending_or_token = tracker.register_ack(
                     wait=True,
                     consume_backlog=False,
+                    write_identity=read_identity_from_frame(parsed_frame),
                 )
                 if isinstance(pending_or_token, int):
                     raise RuntimeError("ACK waiter registration returned sink token")
