@@ -3835,10 +3835,11 @@ class RadioPoller:
         # method must not become a second writer for it: only a profile
         # that declares the native ``get_tx_target`` source keeps the
         # early return. Any other radio without the selected_unselected
-        # readback (FT-991A/G7250 class) has no tx_target source at all,
-        # so it falls through and publishes ``_compute_tx_target()``'s
-        # sticky ``unsupported`` — never nothing — so the projection can
-        # tell "no source" apart from "not yet read" (MOR-4433).
+        # readback (G7250; Yaesu profiles meet this poller only in tests)
+        # has no tx_target source visible here, so it falls through and
+        # publishes ``_compute_tx_target()``'s sticky ``unsupported`` —
+        # never nothing — so the projection can tell "no source" apart
+        # from "not yet read" (MOR-4433).
         if (
             self._profile.vfo_readback != "selected_unselected"
             and self._profile.supports_command("get_tx_target")

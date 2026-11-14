@@ -1694,7 +1694,8 @@ function deriveCwKeyer(state: ServerState | null, caps: Capabilities | null): Cw
  * permit. Anything other than a positively `'allowed'` permit — denied,
  * ranges-unconfigured, tx-target-unknown — disables break-in, EXCEPT the
  * permit unknown that follows from a sourceless target (MOR-4433:
- * `txTarget` `unsupported` — FT-991A/G7250 class — has no source a wait
+ * `txTarget` `unsupported` — the sourceless class (G7250 and the
+ * sourceless-Yaesu shape) — has no source a wait
  * could resolve, so blocking break-in on it prohibits transmit with no
  * condition to wait out). The unknown permit still disables break-in while
  * a source exists (not-observed/stale/contradiction) and while no band table

@@ -220,7 +220,8 @@ export function keyBlockedReasons(
     if (!reasons.includes(reason)) reasons.push(reason);
   };
   // MOR-4433: a radio with no TX-target source (single transceiver, no
-  // readable target — FT-991A/G7250 class) projects `unsupported`, and an
+  // readable target — the sourceless class: G7250 and the sourceless-Yaesu
+  // shape) projects `unsupported`, and an
   // unresolvable target must not block transmit-adjacent controls: there is
   // no source that a wait could resolve. Any other unknown reason (a source
   // exists but is unobserved, stale, or contradictory) still blocks, as does

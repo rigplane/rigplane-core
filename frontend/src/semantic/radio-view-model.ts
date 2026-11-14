@@ -2567,8 +2567,9 @@ export function validateRadioViewModel(value: unknown): RadioViewModel {
   // `band` invariant above (MOR-1294): a producer cannot ship the permissive
   // half of a TX-adjacent pair while silently dropping the restrictive half.
   // MOR-4433 exception, mirroring `deriveCwKeyerReasons`: a sourceless
-  // target (`txTarget` `unsupported` — FT-991A/G7250 class) has no source a
-  // wait could resolve, so its unknown permit does not disable break-in and
+  // target (`txTarget` `unsupported` — the sourceless class: G7250 and
+  // the sourceless-Yaesu shape) has no source a wait could resolve, so
+  // its unknown permit does not disable break-in and
   // no entry is required for it. A sourced-but-unobserved target still does.
   const targetUnsupported =
     txTarget.status === 'unknown' && txTarget.reason === 'unsupported';
