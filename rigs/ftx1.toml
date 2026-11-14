@@ -880,6 +880,13 @@ table = [16000]
 [vfo]
 scheme = "ab_shared"
 
+# TX function (MOR-4433 PR1): the FT read answers the TX transceiver
+# (0 = MAIN, 1 = SUB) and the set writes the same digits (identity map).
+# The observation adapter maps each answer through this table.
+[vfo.tx_func]
+read_map = { "0" = "MAIN", "1" = "SUB" }
+write_map = { "0" = "0", "1" = "1" }
+
 [attenuator]
 values = [0, 1]
 

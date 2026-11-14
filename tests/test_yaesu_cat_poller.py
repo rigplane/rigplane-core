@@ -931,6 +931,9 @@ def make_radio(
     radio.get_cw_spot = AsyncMock(return_value=False)
     radio.get_rx_func = AsyncMock(return_value=0)
     radio.get_tx_func = AsyncMock(return_value=0)
+    # MOR-4433 PR1: the FT answer map lives on the profile; the mock
+    # stands in for an FTX-1, so it carries the real FTX-1 map.
+    radio.profile.tx_func = get_radio_profile("FTX-1").tx_func
     return radio
 
 

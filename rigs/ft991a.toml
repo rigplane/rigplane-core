@@ -147,13 +147,10 @@ polling_only = [
     "receiver.main.active.freq_mode.freq_hz",
     "receiver.main.active.freq_mode.mode",
     "global.tx_state.ptt",
-    # NOTE: no "global.tx_state.tx_target" in v1 (MOR-4433 R2). The single
-    # transceiver has no TX-function read verb (no ST/FR/get_tx_func), so a
-    # pollable tx_target makes YaesuObservationAdapter._read_tx_target raise
-    # CommandError out of _query — outside its except clauses — and the
-    # whole medium batch (freq, mode, PTT, width) is discarded every cycle
-    # while the slow lane keeps publishing. Shared hardening of that except
-    # chain is a follow-up; the profile must not declare what it cannot read.
+    # The single transceiver HAS a TX-function read verb (MOR-4433 PR1):
+    # the FT; read answers the TX VFO (manual PDF p.10: P2 0 = VFO-A TX,
+    # 1 = VFO-B TX). get_tx_func/set_tx_func are declared below; the
+    # adapter maps each answer through [vfo.tx_func].
     "receiver.main.operator_controls.af_level",
     "receiver.main.operator_controls.rf_gain",
     "receiver.main.operator_controls.att",
@@ -175,6 +172,7 @@ polling_only = [
     "global.operator_controls.mic_gain",
     "global.tx_state.vox_on",
     "global.tx_state.split",
+    "global.tx_state.tx_target",
     "global.tx_state.dial_lock",
     "global.operator_controls.key_speed",
     "global.operator_controls.cw_pitch",
@@ -545,6 +543,14 @@ readback = "absolute"
 write_map = { off = "2", on = "3" }
 read_map = { "0" = "off", "1" = "on" }
 
+# TX function (MOR-4433 PR1): the same FT verb read as the TX VFO (PDF
+# p.10: read P2 0 = VFO-A TX, 1 = VFO-B TX; set P1 2 = VFO-A TX, 3 =
+# VFO-B TX). The single receiver transmits on MAIN with the A/B slot
+# naming which VFO's frequency was read.
+[vfo.tx_func]
+read_map = { "0" = "MAIN:A", "1" = "MAIN:B" }
+write_map = { "0" = "2", "1" = "3" }
+
 [attenuator]
 values = [0, 1]
 
@@ -774,8 +780,8 @@ labels = { "0" = "OFF", "1" = "ON" }
 # deliberately absent, and why:
 # - get/set_vfo_select, get_vfo_slot, set_vfo_slot: no VS verb (PDF p.3-4
 #   command list); slot reads/selections raise NotImplementedError.
-# - get/set_tx_func, get/set_rx_func: no ST/FR verbs; FT carries split via
-#   [vfo.split] and transceiver_count is 1.
+# - get/set_rx_func: no FR verb; the single transceiver has no RX
+#   function. get/set_tx_func ARE declared (FT read/set, PDF p.10).
 # - get_if_status: the IF answer layout (PDF p.11) uses a 3-character
 #   channel where the shared parser's {chan} placeholder is 5 characters
 #   (FTX-1 shape); declaring it would misparse. UNVERIFIED: real IF length
@@ -826,6 +832,12 @@ band_down      = { cat = { write = "BD0;" } }
 # (split on); read answers FT0/FT1. Values come from [vfo.split].
 get_split      = { cat = { read = "FT;", parse = "FT{state};" } }
 set_split      = { cat = { write = "FT{state};" } }
+
+# ── TX function (same FT verb, TX-VFO direction) ──
+# Read P2 0 = VFO-A TX, 1 = VFO-B TX; set P1 2/3 (PDF p.10). Answer
+# meanings come from [vfo.tx_func].
+get_tx_func    = { cat = { read = "FT;", parse = "FT{vfo};" } }
+set_tx_func    = { cat = { write = "FT{vfo};" } }
 
 # ── PTT / TX ──
 get_ptt        = { cat = { read = "TX;", parse = "TX{state};" } }
