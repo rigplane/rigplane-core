@@ -36,7 +36,8 @@ class ClientChannelParams:
     ``controller_key`` is the session key the WebSocket lane reads from
     ``Sec-WebSocket-Protocol`` (``rigplane-controller-v1.<key>``) and the
     data-channel lane reads from its attach frame; ``None`` means the
-    channel names no session (local-mode sessionless capture).
+    channel names no session (local-mode sessionless capture, WebSocket
+    lane only — a data channel always names a session).
     ``controller_role`` is the WebSocket ``controller_role`` query value
     (``"primary"`` default); the shared resolve forces ``"auxiliary"``
     for non-control channels exactly as the WebSocket path always did.
@@ -56,15 +57,17 @@ class ClientChannelParams:
     ) -> Self:
         """Parse WebSocket query + pre-filtered protocol list.
 
-        Exactly the historical upgrade rules: one
-        ``rigplane-controller-v1.*`` protocol is required, the
-        ``controller_role`` query value must be singular on
-        ``/api/v1/ws`` (``"auxiliary"`` is forced everywhere else), and
-        ``?state_delta=2`` selects leaf deltas. Raises
-        :class:`ControllerError` with the same codes the upgrade path
-        always answered with.
+        Exactly the historical upgrade rules: at most one
+        ``rigplane-controller-v1.*`` protocol is accepted (more than one
+        is an ambiguous key), the ``controller_role`` query value must be
+        singular on ``/api/v1/ws`` (``"auxiliary"`` is forced everywhere
+        else), and ``?state_delta=2`` selects leaf deltas. No protocol
+        means the channel names no session; the shared resolver captures
+        the ambient sessionless ticket in local mode and refuses the
+        channel anywhere else. Raises :class:`ControllerError` with the
+        same codes the upgrade path always answered with.
         """
-        if len(protocols) != 1:
+        if len(protocols) > 1:
             raise ControllerError("controller_invalid")
         if path == "/api/v1/ws":
             role = (query or {}).get("controller_role", ["primary"])
@@ -74,7 +77,7 @@ class ClientChannelParams:
         else:
             role_value = "auxiliary"
         return cls(
-            controller_key=protocols[0].split(".", 1)[1],
+            controller_key=protocols[0].split(".", 1)[1] if protocols else None,
             controller_role=role_value,
             state_delta=2 if (query or {}).get("state_delta") == ["2"] else 1,
         )
@@ -83,12 +86,16 @@ class ClientChannelParams:
     def from_attach_frame(cls, payload: bytes) -> Self:
         """Parse a data channel's first-text-frame attach frame.
 
-        The frame is ``{"type": "attach", "controller_key": str | null,
-        "state_delta": 1 | 2, "role": str}``; ``controller_key`` and
-        ``role`` default to ``None``/``"primary"`` when absent, and
-        ``state_delta`` defaults to ``2`` (leaf deltas). Anything else —
-        bad JSON, a non-object, a wrong ``type``, or mistyped fields —
-        raises :class:`ValueError` and the adapter closes the channel.
+        The frame is ``{"type": "attach", "controller_key": str,
+        "state_delta": 1 | 2, "role": str}``; ``role`` defaults to
+        ``"primary"`` when absent, and ``state_delta`` defaults to ``2``
+        (leaf deltas). A data channel admits only keyed (session) peers:
+        a missing or null ``controller_key`` is refused, so the existing
+        controller session TTL and expiry cover every data-channel peer —
+        a keyless peer could otherwise hold TX past a silent loss with no
+        session to expire it. Anything else — bad JSON, a non-object, a
+        wrong ``type``, or mistyped fields — raises :class:`ValueError`
+        and the adapter closes the channel.
         """
         try:
             obj = json.loads(payload.decode("utf-8"))
@@ -97,8 +104,8 @@ class ClientChannelParams:
         if not isinstance(obj, dict) or obj.get("type") != "attach":
             raise ValueError("attach frame must carry {'type': 'attach', ...}")
         key = obj.get("controller_key")
-        if key is not None and type(key) is not str:
-            raise ValueError("attach frame 'controller_key' must be str or null")
+        if type(key) is not str:
+            raise ValueError("attach frame 'controller_key' must be a session key")
         role = obj.get("role", "primary")
         if type(role) is not str:
             raise ValueError("attach frame 'role' must be a string")

@@ -45,7 +45,12 @@ from rigplane.runtime.managed_tx_config import ManagedTxTotConfigStore
 from rigplane.runtime.managed_tx_state import ManagedTxIntentKind
 from rigplane.testing.timing import await_until
 from rigplane.web import server as server_module
-from rigplane.web.protocol import encode_json
+from rigplane.web.protocol import (
+    AUDIO_CODEC_PCM16,
+    AUDIO_HEADER_SIZE,
+    MSG_TYPE_AUDIO_TX,
+    encode_json,
+)
 from rigplane.web.server import WebConfig, WebServer
 from rigplane.web.transport.webrtc import webrtc_available
 from rigplane.web.web_startup import (
@@ -80,14 +85,20 @@ class _Stack:
     rigctld_port: int
 
 
-async def _stand_up_stack(tmp_path: Path, *, tot_seconds: float = 30.0) -> _Stack:
+async def _stand_up_stack(
+    tmp_path: Path, *, tot_seconds: float = 30.0, audio: bool = False
+) -> _Stack:
     """Stand up web + rigctld + managed TX over the LAN fake (hold loss)."""
     config_path = tmp_path / "managed-tx.json"
     ManagedTxTotConfigStore(config_path).set_timeout_seconds(tot_seconds)
+    sim_options: dict[str, Any] = (
+        {"enable_audio": True, "capture_tx_audio": True} if audio else {}
+    )
     sim = ic7610_lan_fake(
         single_owner=True,
         stateful_ptt=True,
         ptt_on_session_loss="hold",
+        **sim_options,
     )
     await sim.start()
     radio = IcomRadio(
@@ -188,8 +199,8 @@ class _DcControlClient:
         self._received: list[Any] = []
         self._closed = asyncio.Event()
 
-    async def connect(self, web: WebServer) -> None:
-        from aiortc import RTCPeerConnection, RTCSessionDescription
+    async def _prepare_pc(self) -> None:
+        from aiortc import RTCPeerConnection
 
         self._pc = RTCPeerConnection()
         self._channel = self._pc.createDataChannel("control", ordered=True)
@@ -202,12 +213,47 @@ class _DcControlClient:
         def _on_close() -> None:
             self._closed.set()
 
+    async def connect(self, web: WebServer) -> None:
+        from aiortc import RTCSessionDescription
+
+        await self._prepare_pc()
+        assert self._pc is not None and self._channel is not None
         offer = await self._pc.createOffer()
         await self._pc.setLocalDescription(offer)
         manager = web._webrtc_session_manager()  # noqa: SLF001
         answer = await manager.negotiate(
             self._pc.localDescription.sdp, self._pc.localDescription.type
         )
+        await self._pc.setRemoteDescription(
+            RTCSessionDescription(sdp=answer["sdp"], type=answer["type"])
+        )
+        await await_until(
+            lambda: self._channel.readyState == "open",
+            timeout=15.0,
+            description="data channel open",
+        )
+
+    async def connect_via_http(self, port: int) -> None:
+        """Signal the offer through the public HTTP endpoint (browser path).
+
+        POSTs the SDP offer to ``/api/v1/transport/webrtc/offer`` instead
+        of calling the session manager directly.
+        """
+        from aiortc import RTCSessionDescription
+
+        await self._prepare_pc()
+        assert self._pc is not None and self._channel is not None
+        offer = await self._pc.createOffer()
+        await self._pc.setLocalDescription(offer)
+        status, answer = await _http_post(
+            port,
+            "/api/v1/transport/webrtc/offer",
+            {
+                "sdp": self._pc.localDescription.sdp,
+                "type": self._pc.localDescription.type,
+            },
+        )
+        assert status == 200, answer
         await self._pc.setRemoteDescription(
             RTCSessionDescription(sdp=answer["sdp"], type=answer["type"])
         )
@@ -385,6 +431,158 @@ class _WsControlClient:
                 await _close_ws(self._writer)
 
 
+class _DcAvPeer:
+    """A control + audio peer over two WebRTC data channels on one pc.
+
+    Mirrors the production browser: the control channel is ordered and
+    reliable, the audio channel is unordered. Each channel carries its
+    session's attach frame; the control channel attaches first because
+    the audio attach is an auxiliary one and needs the primary in place.
+    """
+
+    def __init__(self) -> None:
+        self._pc: Any = None
+        self._control: Any = None
+        self._audio: Any = None
+        self._received: list[Any] = []
+        self._audio_received: list[Any] = []
+
+    async def connect(self, web: WebServer) -> None:
+        from aiortc import RTCPeerConnection, RTCSessionDescription
+
+        self._pc = RTCPeerConnection()
+        self._control = self._pc.createDataChannel("control", ordered=True)
+        self._audio = self._pc.createDataChannel("audio", ordered=False)
+
+        @self._control.on("message")  # type: ignore[misc, no-untyped-call]
+        def _on_control(message: Any) -> None:
+            self._received.append(message)
+
+        @self._audio.on("message")  # type: ignore[misc, no-untyped-call]
+        def _on_audio(message: Any) -> None:
+            self._audio_received.append(message)
+
+        offer = await self._pc.createOffer()
+        await self._pc.setLocalDescription(offer)
+        manager = web._webrtc_session_manager()  # noqa: SLF001
+        answer = await manager.negotiate(
+            self._pc.localDescription.sdp, self._pc.localDescription.type
+        )
+        await self._pc.setRemoteDescription(
+            RTCSessionDescription(sdp=answer["sdp"], type=answer["type"])
+        )
+        await await_until(
+            lambda: self._control.readyState == "open"
+            and self._audio.readyState == "open",
+            timeout=15.0,
+            description="data channels open",
+        )
+
+    async def _until(
+        self, messages: list[Any], matches: Any, timeout: float = 10.0
+    ) -> dict[str, Any]:
+        def _next() -> dict[str, Any] | None:
+            while messages:
+                message = messages.pop(0)
+                if not isinstance(message, str):
+                    continue  # binary RX audio on the audio channel
+                parsed = json.loads(message)
+                if matches(parsed):
+                    return parsed
+            return None
+
+        return await await_until(_next, timeout=timeout, description="frame")
+
+    async def attach_control(self, key: str) -> dict[str, Any]:
+        """Attach the control channel as the session primary; return hello."""
+        assert self._control is not None
+        self._control.send(
+            json.dumps(
+                {
+                    "type": "attach",
+                    "controller_key": key,
+                    "state_delta": 2,
+                    "role": "primary",
+                }
+            )
+        )
+        return await self._until(
+            self._received, lambda m: m.get("type") == "hello", timeout=10.0
+        )
+
+    async def attach_audio(self, key: str) -> dict[str, Any]:
+        """Attach the audio channel, arm TX, return the audio_tx_format."""
+        assert self._audio is not None
+        self._audio.send(
+            json.dumps(
+                {
+                    "type": "attach",
+                    "controller_key": key,
+                    "state_delta": 2,
+                    "role": "primary",
+                }
+            )
+        )
+        self._audio.send(json.dumps({"type": "audio_start", "direction": "tx"}))
+        return await self._until(
+            self._audio_received,
+            lambda m: m.get("type") == "audio_tx_format",
+            timeout=10.0,
+        )
+
+    async def command(
+        self, command_id: str, name: str, params: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        assert self._control is not None
+        self._control.send(
+            json.dumps(
+                {"type": "cmd", "id": command_id, "name": name, "params": params or {}}
+            )
+        )
+        return await self._until(
+            self._received,
+            lambda m: m.get("type") == "response" and m.get("id") == command_id,
+            timeout=10.0,
+        )
+
+    def send_audio(self, frame: bytes) -> None:
+        assert self._audio is not None
+        self._audio.send(frame)
+
+    async def close(self) -> None:
+        if self._pc is not None:
+            with contextlib.suppress(Exception):
+                await self._pc.close()
+
+
+def _pcm_tx_frame(samples: int) -> bytes:
+    """One 20 ms PCM16 TX frame, production layout (cf. path4 in lanes)."""
+    return (
+        bytes([MSG_TYPE_AUDIO_TX, AUDIO_CODEC_PCM16])
+        + b"\x00" * (AUDIO_HEADER_SIZE - 2)
+        + b"\x10\x00" * samples
+    )
+
+
+async def _stream_audio(peer: _DcAvPeer, samples: int, frames: int = 10) -> None:
+    """Stream a few TX frames from a peer, paced like the WS TX tests."""
+    for _ in range(frames):
+        peer.send_audio(_pcm_tx_frame(samples))
+        await asyncio.sleep(0.02)
+    await asyncio.sleep(0.3)
+
+
+async def _wait_air(stack: _Stack) -> None:
+    """Wait until the holder's audio has reached the simulator TX sink."""
+    end = asyncio.get_running_loop().time() + _GATE_TIMEOUT_S
+    while not stack.sim.audio_tx_frames:
+        assert (
+            asyncio.get_running_loop().time() < end
+        ), "the holder's audio never reached the air"
+        await asyncio.sleep(0.05)
+    await asyncio.sleep(0.3)  # the other peer's frames had the same chance
+
+
 # ---------------------------------------------------------------------------
 # Attach-frame parser: typed, ValueError on bad input.
 # ---------------------------------------------------------------------------
@@ -406,13 +604,14 @@ def test_attach_frame_parser_accepts_full_frame() -> None:
     assert params.state_delta == 2
 
 
-def test_attach_frame_parser_defaults_key_and_role() -> None:
+def test_attach_frame_parser_defaults_role_and_delta() -> None:
+    """A keyed frame without role/delta still parses; the key is required."""
     params = server_module.ClientChannelParams.from_attach_frame(
-        json.dumps({"type": "attach", "state_delta": 1}).encode()
+        json.dumps({"type": "attach", "controller_key": "k" * 64}).encode()
     )
-    assert params.controller_key is None
+    assert params.controller_key == "k" * 64
     assert params.controller_role == "primary"
-    assert params.state_delta == 1
+    assert params.state_delta == 2
 
 
 @pytest.mark.parametrize(
@@ -421,6 +620,10 @@ def test_attach_frame_parser_defaults_key_and_role() -> None:
         b"not json",
         b"[1, 2]",
         b'{"type": "hello"}',
+        # A data channel admits only keyed peers: a missing or null key is
+        # refused, so every data-channel peer is covered by its session TTL.
+        b'{"type": "attach"}',
+        b'{"type": "attach", "controller_key": null}',
         b'{"type": "attach", "state_delta": 3}',
         b'{"type": "attach", "state_delta": "2"}',
         b'{"type": "attach", "role": 7}',
@@ -430,6 +633,14 @@ def test_attach_frame_parser_defaults_key_and_role() -> None:
 def test_attach_frame_parser_rejects_bad_input(payload: bytes) -> None:
     with pytest.raises(ValueError):
         server_module.ClientChannelParams.from_attach_frame(payload)
+
+
+def test_attach_frame_parser_rejects_keyless_frame() -> None:
+    """Local mode stays open to keyless WebSockets, never to data channels."""
+    with pytest.raises(ValueError):
+        server_module.ClientChannelParams.from_attach_frame(
+            json.dumps({"type": "attach", "controller_key": None}).encode()
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -447,7 +658,10 @@ async def test_data_channel_leaf_deltas_match_websocket_size(
     ws = _WsControlClient(stack.web.port, None, query="?state_delta=2")
     try:
         await dc.connect(stack.web)
-        hello = await dc.attach(None)
+        # Data channels admit only keyed peers; the WS lane stays
+        # sessionless here, exactly as on origin/main.
+        key = await _acquire_session(stack.web.port)
+        hello = await dc.attach(key)
         assert hello["type"] == "hello"
         await ws.connect()
         # Drive N real state changes through the WS lane.
@@ -506,6 +720,28 @@ async def test_data_channel_without_key_cannot_key_in_remote(
     dc = _DcControlClient()
     try:
         await stack.web._controller.set_mode("remote")  # noqa: SLF001
+        await dc.connect(stack.web)
+        dc._channel.send(  # noqa: SLF001
+            json.dumps({"type": "attach", "controller_key": None})
+        )
+        await dc.wait_closed(timeout=10.0)
+        assert stack.sim.ptt_on is False
+    finally:
+        await dc.close()
+        await _tear_down_stack(stack)
+
+
+@_webrtc
+async def test_data_channel_without_key_refused_in_local(tmp_path: Path) -> None:
+    """Local mode: a keyless data channel is closed before any handler.
+
+    WebSocket keyless behaviour is unchanged (sessionless capture still
+    works there); data channels admit only keyed peers, so a silent loss
+    always has a controller session TTL to expire it.
+    """
+    stack = await _stand_up_stack(tmp_path)
+    dc = _DcControlClient()
+    try:
         await dc.connect(stack.web)
         dc._channel.send(  # noqa: SLF001
             json.dumps({"type": "attach", "controller_key": None})
@@ -598,15 +834,156 @@ async def test_silent_loss_releases_ptt_within_session_ttl(
 
 
 @_webrtc
+async def test_only_holders_audio_reaches_radio_over_data_channels(
+    tmp_path: Path,
+) -> None:
+    """Only the TX holder's audio frames reach the radio over data channels.
+
+    Two controller sessions, each with real control + audio data channels
+    attached through the public entrypoint with its own key; the holder
+    keys, both stream distinguishable TX audio frames, and only the
+    holder's frames land in the simulator TX sink. Teardown releases TX.
+    """
+    stack = await _stand_up_stack(tmp_path, audio=True)
+    holder = _DcAvPeer()
+    other = _DcAvPeer()
+    try:
+        await holder.connect(stack.web)
+        await other.connect(stack.web)
+        # Acquire after the slow ICE negotiate, just before attach: the
+        # controller session TTL would otherwise expire in between.
+        holder_key = await _acquire_session(stack.web.port)
+        other_key = await _acquire_session(stack.web.port)
+        await holder.attach_control(holder_key)
+        await holder.attach_audio(holder_key)
+        await other.attach_control(other_key)
+        await other.attach_audio(other_key)
+        # Nobody holds the transmitter: nothing reaches the air.
+        await _stream_audio(holder, 480)
+        await _stream_audio(other, 200)
+        assert not stack.sim.audio_tx_frames
+        # The holder keys; both stream again with the same chance.
+        keyed = await holder.command("key-1", "ptt_on")
+        assert keyed.get("ok") is True, keyed
+        await await_until(
+            lambda: stack.sim.ptt_on is True, timeout=10.0, description="sim keyed"
+        )
+        await _stream_audio(holder, 480)
+        await _stream_audio(other, 200)
+        await _wait_air(stack)
+        # Distinct frame sizes tell whose audio the sink recorded: only the
+        # holder's 480-sample (960-byte) frames, never the other's 200.
+        assert {frame.payload_len for frame in stack.sim.audio_tx_frames} == {960}
+        # Teardown releases the transmitter without an explicit unkey.
+        await holder.close()
+        await other.close()
+        await await_until(
+            lambda: stack.sim.ptt_on is False,
+            timeout=5.0,
+            description="sim unkeyed on teardown",
+        )
+        state = (await stack.composition.authority.snapshot()).state
+        assert state.intent.kind is ManagedTxIntentKind.RX
+    finally:
+        await holder.close()
+        await other.close()
+        await _tear_down_stack(stack)
+
+
+@_webrtc
+async def test_last_peer_close_resets_session_manager(tmp_path: Path) -> None:
+    """Closing the last peer resets the manager; a new offer is served fresh."""
+    stack = await _stand_up_stack(tmp_path)
+    first = _DcControlClient()
+    second = _DcControlClient()
+    try:
+        await first.connect(stack.web)
+        await second.connect(stack.web)
+        manager = stack.web._webrtc_sessions  # noqa: SLF001
+        assert manager is not None
+        session_ids = manager.active_session_ids
+        assert len(session_ids) == 2
+        # Closing one peer leaves the manager (and the other peer) alive.
+        await manager._sessions[session_ids[0]].pc.close()  # noqa: SLF001
+        await await_until(
+            lambda: manager.active_session_ids == [session_ids[1]],
+            timeout=10.0,
+            description="first peer dropped",
+        )
+        assert stack.web._webrtc_sessions is manager  # noqa: SLF001
+        # Closing the last peer resets the manager on the server.
+        await manager._sessions[session_ids[1]].pc.close()  # noqa: SLF001
+        await await_until(
+            lambda: stack.web._webrtc_sessions is None,  # noqa: SLF001
+            timeout=10.0,
+            description="session manager reset",
+        )
+        # A new offer builds a fresh manager that serves it end to end.
+        fresh = stack.web._webrtc_session_manager()  # noqa: SLF001
+        assert fresh is not manager
+        third = _DcControlClient()
+        await third.connect(stack.web)
+        try:
+            key = await _acquire_session(stack.web.port)
+            hello = await third.attach(key)
+            assert hello["type"] == "hello"
+            keyed = await third.command("key-1", "ptt_on")
+            assert keyed.get("ok") is True, keyed
+            await await_until(
+                lambda: stack.sim.ptt_on is True,
+                timeout=10.0,
+                description="fresh manager keyed",
+            )
+            unkeyed = await third.command("unkey-1", "ptt_off")
+            assert unkeyed.get("ok") is True, unkeyed
+            await await_until(
+                lambda: stack.sim.ptt_on is False,
+                timeout=10.0,
+                description="fresh manager unkeyed",
+            )
+        finally:
+            await third.close()
+    finally:
+        await first.close()
+        await second.close()
+        await _tear_down_stack(stack)
+
+
+@_webrtc
 async def test_remote_mode_admissible_after_webrtc_offer(tmp_path: Path) -> None:
-    """Making a WebRTC offer must not bar remote controller mode."""
+    """Remote admission entirely through the public HTTP API + data channel.
+
+    The browser path: POST the SDP offer to
+    ``/api/v1/transport/webrtc/offer``, switch remote mode through the
+    public ``POST /api/v1/controller/mode`` endpoint, acquire the grant
+    through ``POST /api/v1/controller``, attach the peer, and run a
+    control command verified on the fake radio.
+    """
     stack = await _stand_up_stack(tmp_path)
     dc = _DcControlClient()
     try:
-        await dc.connect(stack.web)
+        await dc.connect_via_http(stack.web.port)
         assert stack.web._webrtc_sessions is not None  # noqa: SLF001
-        await stack.web._controller.set_mode("remote")  # noqa: SLF001
+        status, _ = await _http_post(
+            stack.web.port, "/api/v1/controller/mode", {"mode": "remote"}
+        )
+        assert status == 200, status
         assert stack.web._controller.mode == "remote"  # noqa: SLF001
+        key = await _acquire_session(stack.web.port)
+        hello = await dc.attach(key)
+        assert hello["type"] == "hello"
+        keyed = await dc.command("key-1", "ptt_on")
+        assert keyed.get("ok") is True, keyed
+        await await_until(
+            lambda: stack.sim.ptt_on is True, timeout=10.0, description="sim keyed"
+        )
+        unkeyed = await dc.command("unkey-1", "ptt_off")
+        assert unkeyed.get("ok") is True, unkeyed
+        await await_until(
+            lambda: stack.sim.ptt_on is False,
+            timeout=10.0,
+            description="sim unkeyed",
+        )
     finally:
         await dc.close()
         await _tear_down_stack(stack)

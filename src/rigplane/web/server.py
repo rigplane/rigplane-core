@@ -7838,25 +7838,28 @@ class WebServer:
         refusal stays a JSON error) and the data-channel adapter (a
         refusal closes the channel). Local mode with no key captures the
         ambient sessionless ticket; anywhere else the key attaches
-        exactly as the historical upgrade did, including the
-        ``controller_session_required`` refusal for a sessionless rigctl
-        channel. Raises :class:`ControllerError` on refusal.
+        exactly as the historical upgrade did. The rigctl restriction is
+        applied here after both capture and keyed attachment, so every
+        transport answers today's pre-upgrade JSON 403 for a sessionless
+        rigctl channel. Raises :class:`ControllerError` on refusal.
         """
         if params.controller_key is None:
             if self._controller.mode != "local":
                 raise ControllerError("controller_invalid")
-            return self._controller.capture()
-        ticket = self._controller.attach(
-            params.controller_key,
-            params.controller_role if kind == "control" else "auxiliary",
-            f"controller-{time.monotonic_ns()}",
-        )
+            ticket = self._controller.capture()
+        else:
+            ticket = self._controller.attach(
+                params.controller_key,
+                params.controller_role if kind == "control" else "auxiliary",
+                f"controller-{time.monotonic_ns()}",
+            )
         if kind == "rigctl" and ticket.tx_owner is None:
             # MOR-3536: rigctl lines key as the session the channel
             # joined, so a channel without a multi-client session is
-            # refused. A sessionless rigctld client has the TCP port;
-            # this channel exists to tie a remote client's keying to its
-            # own session's audio.
+            # refused — whether it captured the ambient sessionless ticket
+            # or attached with a key that carries no session. A sessionless
+            # rigctld client has the TCP port; this channel exists to tie
+            # a remote client's keying to its own session's audio.
             self._controller.detach(ticket)
             raise ControllerError("controller_session_required")
         return ticket
@@ -7907,6 +7910,12 @@ class WebServer:
         the existing heartbeat instead: validating the ticket drives
         expiry, and an expired ticket aborts the channel so the handler
         sees EOF and the normal cleanup releases TX.
+
+        This overlaps ``ControllerAuthority._watch_sessions`` on purpose
+        and stays data-channel-only (the WebSocket lane keeps its
+        historical ping/pong exactly as on origin/main): the watch ticks
+        every heartbeat while this polls at half that, and the silent-loss
+        release budget (TTL + 1 s) depends on the finer granularity.
         """
         try:
             interval = self._controller.HEARTBEAT_MS / 2000.0
@@ -8146,45 +8155,22 @@ class WebServer:
             if part.strip().startswith("rigplane-controller-v1.")
         ]
         # Thin adapter: parse the transport framing into ClientChannelParams
-        # (exactly the historical rules), then serve through the one shared
-        # attach path. The ticket decision stays before the 101 response so
-        # a refusal is still a JSON error, never an upgrade.
+        # (exactly the historical rules), then resolve the ticket through
+        # the one shared resolver before the 101 response, so a refusal is
+        # still a JSON error, never an upgrade. An absent key is
+        # represented in the params; the resolver captures the ambient
+        # sessionless ticket in local mode and refuses it anywhere else,
+        # exactly as the historical upgrade did.
         kind = _WS_KIND_FOR_PATH.get(path, "unknown")
-        # Local mode: a channel that names a controller session attaches to
-        # it (MOR-3534); one that names none stays sessionless, as before.
-        ticket = (
-            self._controller.capture()
-            if self._controller.mode == "local" and not protocols
-            else None
-        )
-        selected_protocol = ""
-        if ticket is None:
-            try:
-                params = ClientChannelParams.from_ws(query, protocols, path)
-                ticket = self._resolve_client_ticket(params, kind)
-            except ControllerError as exc:
-                await self._send_json(
-                    writer, exc.status, "Forbidden", {"error": exc.code}
-                )
-                return
-            selected_protocol = protocols[0]
-        else:
-            params = ClientChannelParams(
-                controller_key=None,
-                state_delta=2 if (query or {}).get("state_delta") == ["2"] else 1,
-            )
-        assert ticket is not None
-        if kind == "rigctl" and ticket.tx_owner is None:
-            # MOR-3536: rigctl lines key as the session the channel
-            # joined. This covers the local-mode sessionless capture
-            # above, which bypasses _resolve_client_ticket; the attach
-            # branch was already refused inside _resolve_client_ticket.
-            # The refusal stays before the 101, exactly as on origin/main.
-            self._controller.detach(ticket)
+        try:
+            params = ClientChannelParams.from_ws(query, protocols, path)
+            ticket = self._resolve_client_ticket(params, kind)
+        except ControllerError as exc:
             await self._send_json(
-                writer, 403, "Forbidden", {"error": "controller_session_required"}
+                writer, exc.status, "Forbidden", {"error": exc.code}
             )
             return
+        selected_protocol = protocols[0] if protocols else ""
         # Key check, accept header and 101 response bytes come from the
         # shared lowest-layer implementation (rigplane.ws).
         upgrade = _make_upgrade_response(headers, protocol=selected_protocol)
