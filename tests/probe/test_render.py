@@ -46,7 +46,7 @@ def test_pre_save_summary_without_private() -> None:
         "  - what the radio says it is (model code 0670) and the RigPlane version\n"
         "  - your radio's current settings as of this moment: "
         "frequency 14.074 MHz, mode USB\n"
-        "  - not included: memory channels and keyer memory "
+        "  - not included: stored memory contents "
         "(you did not ask for them)\n"
         "It does NOT contain: your name, IP address, computer name or log files.\n"
         "Radio settings can show what you use the radio for (frequencies, mode).\n"
@@ -66,7 +66,7 @@ def test_pre_save_summary_with_private() -> None:
         private_reads_included=True,
     )
     assert (
-        "  - memory channels and keyer memory: these can contain callsigns "
+        "  - stored memory contents: these can contain callsigns "
         "and stored text. Look through the file before you send it.\n"
     ) in text
     assert "you did not ask for them" not in text

@@ -39,7 +39,7 @@ rigplane probe <profile> --port DEVICE [--baud N] [--address 0xNN] \
 | `--baud N` | Serial speed. Defaults to the profile's own default. |
 | `--address 0xNN` | CI-V radio address. Defaults to the profile's address. |
 | `--out FILE` | Where to write. Defaults to `<profile>-probe-<date>.json` in the current directory. |
-| `--include-private` | Also read stored memory contents and keyer memory. Off by default. |
+| `--include-private` | Also read stored memory contents. Off by default. |
 | `--label TEXT` | A free-text note stored in the file, for example which state the radio was in. |
 | `--yes` | Answer both prompts with yes. Needed when there is no terminal to ask in. |
 
@@ -62,7 +62,7 @@ could not be opened or nothing answered at all.
   during the run.
 
 What never lands in the file: your name, IP address, computer name,
-the port path, or log files. Memory channels and keyer memory are left
+the port path, or log files. Stored memory contents are left
 out unless you pass `--include-private` — they can hold callsigns and
 stored text, so look through the file before you send it if you do.
 

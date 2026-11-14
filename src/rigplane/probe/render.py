@@ -73,12 +73,12 @@ def pre_save_summary(
     settings = ", ".join(settings_lines)
     if private_reads_included:
         memory_line = (
-            "  - memory channels and keyer memory: these can contain callsigns "
+            "  - stored memory contents: these can contain callsigns "
             "and stored text. Look through the file before you send it.\n"
         )
     else:
         memory_line = (
-            "  - not included: memory channels and keyer memory "
+            "  - not included: stored memory contents "
             "(you did not ask for them)\n"
         )
     return (

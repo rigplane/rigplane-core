@@ -89,9 +89,7 @@ def _civ_exchange(reader, writer, radio_addr: int) -> Exchange:
             await writer.drain()
         try:
             while True:
-                raw: bytes = await asyncio.wait_for(
-                    reader.readuntil(b"\xfd"), timeout
-                )
+                raw: bytes = await asyncio.wait_for(reader.readuntil(b"\xfd"), timeout)
                 if sent is not None and raw == sent:
                     continue
                 return raw
