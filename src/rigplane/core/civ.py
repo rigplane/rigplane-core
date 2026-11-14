@@ -161,6 +161,7 @@ class _AckWaiter:
     nak_only: bool = False
     response_key: CivRequestKey | None = None
     refused_read: CivRequestKey | None = None
+    write_identity: CivRequestKey | None = None
 
 
 @dataclass(slots=True)
@@ -348,6 +349,7 @@ class CivRequestTracker:
         nak_only: bool = False,
         response_key: CivRequestKey | None = None,
         refused_read: CivRequestKey | None = None,
+        write_identity: CivRequestKey | None = None,
     ) -> asyncio.Future[CivFrame] | int:
         """Register a pending request that expects an ACK/NAK.
 
@@ -355,6 +357,9 @@ class CivRequestTracker:
         says when a data response retires that sink. ``refused_read`` (sinks
         only, :func:`read_identity_from_frame`) is what
         :meth:`take_refused_reads` reports when a refusal retires the sink.
+        ``write_identity`` (:func:`read_identity_from_frame` of the outgoing
+        write) is what :meth:`resolve_write_echo` matches the radio's echo
+        against; it is stored for blocking waiters and sinks alike.
 
         Returns:
             - Future when ``wait=True`` (caller awaits ACK/NAK)
@@ -384,6 +389,7 @@ class CivRequestTracker:
                     created_monotonic=created,
                     generation=self._generation,
                     nak_only=nak_only,
+                    write_identity=write_identity,
                 )
             )
             return future
@@ -396,6 +402,7 @@ class CivRequestTracker:
                 generation=self._generation,
                 response_key=response_key,
                 refused_read=refused_read,
+                write_identity=write_identity,
             )
         )
         return token
@@ -636,6 +643,63 @@ class CivRequestTracker:
                     return True
             return False
 
+        return False
+
+    def resolve_write_echo(
+        self, frame: CivFrame, *, generation: int | None = None
+    ) -> bool:
+        """Claim a pending write with the radio's byte-identical echo.
+
+        Some radios answer a SET over LAN with the write's own frame
+        (radio to controller) instead of FB. The echo acks the oldest
+        current-generation, non-``nak_only`` waiter whose
+        ``write_identity`` it matches exactly; a blocking waiter's
+        future then resolves with a synthesized FB.
+
+        Any pending read wins: when the frame matches a blocking
+        response waiter or a sink carrying ``response_key``, it is not
+        an echo and this returns False.
+        """
+        if generation is not None and generation != self._generation:
+            return False
+        if frame.command in (0xFB, 0xFA):
+            return False
+        if frame.to_addr == _BROADCAST_ADDR:
+            return False
+        for pending in self._response_waiters:
+            if pending.generation == self._generation and self._matches(
+                pending.key, frame
+            ):
+                return False
+        for waiter in self._ack_waiters:
+            if (
+                waiter.generation == self._generation
+                and waiter.response_key is not None
+                and self._matches(waiter.response_key, frame)
+            ):
+                return False
+        for index, waiter in enumerate(self._ack_waiters):
+            if waiter.generation != self._generation or waiter.nak_only:
+                continue
+            identity = waiter.write_identity
+            if identity is None:
+                continue
+            if (
+                frame.command == identity.command
+                and frame.sub == identity.sub
+                and frame.receiver == identity.receiver
+                and frame.data == identity.data_prefix
+            ):
+                del self._ack_waiters[index]
+                if waiter.future is not None and not waiter.future.done():
+                    waiter.future.set_result(
+                        CivFrame(
+                            to_addr=frame.to_addr,
+                            from_addr=frame.from_addr,
+                            command=0xFB,
+                        )
+                    )
+                return True
         return False
 
     def _retire_sinks_passed_by(self, answered_index: int) -> None:
