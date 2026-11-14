@@ -50,7 +50,7 @@ searches the network.
 ### On the Radio
 
 1. In the radio's network menu, set the network mode to **wfview**. The other
-   mode, **HDSDR**, is a raw IQ stream and is not used for control. The
+   mode, **HDSDR**, is an IQ stream and is not used for control. The
    radio offers one mode at a time. The radio does not report the mode over
    CI-V, so if the connection fails, check it first. Whether a mode change
    needs a power cycle is not verified.
@@ -87,6 +87,7 @@ with network control. Some functions of this firmware are incomplete or
 behave differently over USB and over the network; RigPlane can only
 control what the radio itself implements. For the radio's own functions
 and settings, refer to the manufacturer's documentation and firmware
-release notes.
+release notes. RigPlane's support will be extended as the firmware
+matures.
 
 See [Supported Radios](radios.md#xiegu-g7250) for what has been verified.

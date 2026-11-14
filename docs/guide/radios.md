@@ -135,7 +135,8 @@ broader coverage than maintaining a bespoke backend for each dialect.
     behave differently over USB and over the network; RigPlane can only
     control what the radio itself implements. For the radio's own functions
     and settings, refer to the manufacturer's documentation and firmware
-    release notes.
+    release notes. RigPlane's support will be extended as the firmware
+    matures.
 
 **Verified on firmware V1.0.1:**
 
@@ -157,7 +158,7 @@ later release than network control. <!-- PENDING: scope-PR (alt: "Panorama works
 and a USB audio device; pass `--serial-port` on the command line. Without
 `--serial-port` or `--host`, `--model G7250` searches the network. For network
 control, set the radio's network mode to **wfview** (the other mode, HDSDR, is
-a raw IQ stream, and the radio offers one mode at a time) and set a user name
+an IQ stream, and the radio offers one mode at a time) and set a user name
 and password in its network menu. Network discovery finds the radio but does
 not name the model, so pass `--model G7250`; with several radios on the
 network, give the radio's address with `--host`.
