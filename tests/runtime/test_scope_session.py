@@ -571,3 +571,77 @@ async def test_in_flight_write_blocks_external_release_until_it_lands():
     assert session._previous.get((0, "span")) == 3
     await session.set_demand(ScopeDemand(0, 0))
     assert ("span", 3, 0) in writer.views
+
+
+async def test_reconnect_unchanged_mode_keeps_restore():
+    """Gate round 2 P1 (fix-4565): an unchanged mode report after a
+    connection loss keeps restore ownership — the cleared applied map
+    must not read as an external change."""
+    writer = Writer()
+    writer.state = ScopeState(True, True, 2, 3, 1)
+    session = ScopeSession(writer.read, writer.write, writer.read_fixed)
+    await session.set_inputs(ready=True, tx=False)
+    await session.set_demand(ScopeDemand(1, 1))
+    await session.configure(receiver=0, mode=0)
+    assert session._previous.get((0, "mode")) == 2
+    session.invalidate_now()
+    assert session._applied.get((0, "mode")) is None
+    session.observe("mode", 0)
+    assert session._previous.get((0, "mode")) == 2
+    await session.set_inputs(ready=True, tx=False)
+    await session.set_demand(ScopeDemand(0, 0))
+    assert ("mode", 2, 0) in writer.views
+
+
+async def test_reconnect_unchanged_edge_and_fixed_edge_keep_restore():
+    """Gate round 2 P1 (fix-4565): unchanged edge and fixed-edge reports
+    after a connection loss keep restore ownership, same as span/mode."""
+    writer = Writer()
+    writer.state = ScopeState(True, True, 0, 3, 1)
+    session = ScopeSession(writer.read, writer.write, writer.read_fixed)
+    await session.set_inputs(ready=True, tx=False)
+    await session.set_demand(ScopeDemand(1, 1))
+    await session.configure(receiver=0, edge=2)
+    assert session._previous.get((0, "edge")) == 1
+    session.invalidate_now()
+    session.observe("edge", 2)
+    assert session._previous.get((0, "edge")) == 1
+    await session.set_inputs(ready=True, tx=False)
+    await session.set_demand(ScopeDemand(0, 0))
+    assert ("edge", 1, 0) in writer.views
+
+    fixed_writer = Writer()
+    fixed_writer.state = ScopeState(True, True, 0, 3, 1)
+    fixed = ScopeFixedEdge(6, 1, 14_050_000, 14_150_000)
+    captured = ScopeFixedEdge(6, 1, 14_000_000, 14_350_000)
+    fixed_session = ScopeSession(
+        fixed_writer.read, fixed_writer.write, fixed_writer.read_fixed
+    )
+    await fixed_session.set_inputs(ready=True, tx=False)
+    await fixed_session.set_demand(ScopeDemand(1, 1))
+    await fixed_session.configure(receiver=0, fixed_edge=fixed)
+    assert fixed_session._fixed.get((6, 1)) == captured
+    fixed_session.invalidate_now()
+    fixed_session.observe("fixed_edge", fixed)
+    assert fixed_session._fixed.get((6, 1)) == captured
+    await fixed_session.set_inputs(ready=True, tx=False)
+    await fixed_session.set_demand(ScopeDemand(0, 0))
+    assert ("fixed_edge", captured, 0) in fixed_writer.views
+
+
+async def test_reconnect_unchanged_dual_keeps_restore():
+    """Gate round 2 P1 (fix-4565): an unchanged dual report after a
+    connection loss keeps restore ownership under the radio-global key."""
+    writer = Writer()
+    writer.state = ScopeState(True, True, 0, 3, 1)
+    session = ScopeSession(writer.read, writer.write, writer.read_fixed)
+    await session.set_inputs(ready=True, tx=False)
+    await session.set_demand(ScopeDemand(1, 1))
+    await session.configure(receiver=0, dual=True)
+    assert session._previous.get((0, "dual")) is False
+    session.invalidate_now()
+    session.observe("dual", True)
+    assert session._previous.get((0, "dual")) is False
+    await session.set_inputs(ready=True, tx=False)
+    await session.set_demand(ScopeDemand(0, 0))
+    assert ("dual", False, 0) in writer.views

@@ -1430,6 +1430,95 @@ async def test_native_width_regrant_carries_native_coverage(windowed_sdk):
             assert native_grant.coverage.end_hz > native_grant.view.end_hz
 
 
+async def test_reconnect_without_external_change_keeps_span_restore(windowed_sdk):
+    """Gate round 2 P1 (fix-4565): a follow subscription drives span 3→4
+    (capturing 3); a connection loss invalidates the session; the
+    reconnect reports the unchanged span 4 through the production RX
+    path — closing the last real scope WebSocket must still restore
+    the original span 3 (an unchanged report is not a superseding
+    external change)."""
+    radio, sim = windowed_sdk
+    sim.capture_civ_frames = True
+    sim.set_frequency(14_100_000)
+    radio._radio_state.main.freq = 14_100_000
+    presets = radio._profile.scope_span_presets_hz
+    assert (presets.index(50_000), presets.index(100_000)) == (4, 5)
+    sim.views[0] = (0, 3, 1)
+    async with web(radio) as (_, client, base, protocols, _):
+        async with client.ws_connect(base + "/api/v1/scope", protocols=protocols) as ws:
+            await _subscribe(
+                ws, Subscription("radio", 0, FollowView("vfo", 100_000), 475, 20)
+            )
+            await _frame_with(ws, (14_050_000, 14_150_000))
+            assert sim.views[0][1] == 4
+            session = radio.scope_session()
+            assert session._previous.get((0, "span")) == 3
+            # Connection loss: the server invalidates the session, which
+            # clears the last-applied comparison values.
+            await session.invalidate()
+            assert session._applied.get((0, "span")) is None
+            # Reconnect with NO external change: the initial-state read
+            # (0x27 0x15 report) and the streamed waveform observations
+            # both report the unchanged span 4 through the production
+            # RX path.
+            sim.push_scope_setting(b"\x15\x00" + bcd_encode(50_000))
+            assert await await_until(lambda: session._applied.get((0, "span")) == 4)
+            await _frame_with(ws, (14_050_000, 14_150_000))
+            assert session._previous.get((0, "span")) == 3
+            # Reconnect completion re-arms readiness (the server scope
+            # re-enable); the unchanged span must not drive a rewrite.
+            await session.set_ready(True)
+            span_sets_before_close = len(
+                [w for w in _viewport_writes(sim) if w.sub == 0x15]
+            )
+        assert await await_until(lambda: not radio.scope_session().active)
+        assert sim.views[0][1] == 3
+        restores = [
+            w for w in _viewport_writes(sim)[span_sets_before_close:] if w.sub == 0x15
+        ]
+        assert len(restores) == 1
+
+
+async def test_reconnect_external_change_releases_span_restore(windowed_sdk):
+    """Gate round 2 P1 mirror (fix-4565): same connection loss, but the
+    operator moves the radio to span 5 during the outage — the
+    reconnect report differs from Core's last applied span, so the
+    snapshot is released and closing the last real scope WebSocket
+    writes no stale span 3 over the radio's own span."""
+    radio, sim = windowed_sdk
+    sim.capture_civ_frames = True
+    sim.set_frequency(14_100_000)
+    radio._radio_state.main.freq = 14_100_000
+    presets = radio._profile.scope_span_presets_hz
+    assert (presets.index(50_000), presets.index(100_000)) == (4, 5)
+    sim.views[0] = (0, 3, 1)
+    async with web(radio) as (_, client, base, protocols, _):
+        async with client.ws_connect(base + "/api/v1/scope", protocols=protocols) as ws:
+            await _subscribe(
+                ws, Subscription("radio", 0, FollowView("vfo", 100_000), 475, 20)
+            )
+            await _frame_with(ws, (14_050_000, 14_150_000))
+            assert sim.views[0][1] == 4
+            session = radio.scope_session()
+            assert session._previous.get((0, "span")) == 3
+            await session.invalidate()
+            # External change DURING the outage (front panel): the radio
+            # now carries span 5.
+            sim.views[0] = (0, 5, 1)
+            sim.push_scope_setting(b"\x15\x00" + bcd_encode(100_000))
+            assert await await_until(lambda: session._applied.get((0, "span")) == 5)
+            await session.set_ready(True)
+            span_sets_before_close = len(
+                [w for w in _viewport_writes(sim) if w.sub == 0x15]
+            )
+        assert await await_until(lambda: not radio.scope_session().active)
+        assert sim.views[0][1] == 5
+        assert (
+            len([w for w in _viewport_writes(sim) if w.sub == 0x15])
+            == span_sets_before_close
+        )
+
+
 async def test_native_width_known_at_subscribe_needs_no_regrant(windowed_sdk):
     """The other ordering, deterministically: a receiver-0 frame reaches
     RadioScopeSource.feed_frame BEFORE the subscription grant is computed
