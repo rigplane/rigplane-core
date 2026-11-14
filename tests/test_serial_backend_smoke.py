@@ -318,6 +318,9 @@ async def test_web_server_smoke_with_serial_mock_backend() -> None:
             assert hello["type"] == "hello"
             assert hello["connected"] is True
             assert hello["radio_ready"] is True
+            # The smoke runs from an unstamped source checkout: hello must
+            # carry core_sha as null, not omit or guess it (MOR-4408).
+            assert hello["core_sha"] is None
 
             # Skip initial state_update pushed after hello
             _op, _payload = await _ws_recv_frame(reader)

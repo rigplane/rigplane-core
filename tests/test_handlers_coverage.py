@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import shutil
 import struct
+import subprocess
+import sys
 import time
 from dataclasses import replace
 from pathlib import Path
@@ -2125,6 +2129,170 @@ async def test_control_run_registers_unregisters_and_sends_hello() -> None:
     assert hello["type"] == "hello"
     assert hello["connected"] is True
     assert hello["radio_ready"] is True
+    # A source checkout carries no stamped build-info file, so an unstamped
+    # server reports core_sha null — never a guess (MOR-4408).
+    assert hello["core_sha"] is None
+
+
+async def test_control_hello_reports_stamped_core_sha(monkeypatch) -> None:
+    """hello carries the stamped build provenance when present (MOR-4408)."""
+    from rigplane.core.build_info import BuildInfo
+    from rigplane.web.handlers import ControlHandler
+    from rigplane.web.handlers import control as control_module
+
+    sha = "0123456789abcdef0123456789abcdef01234567"
+    ws = SimpleNamespace(send_text=AsyncMock())
+    radio = SimpleNamespace(connected=True, radio_ready=True)
+    handler = ControlHandler(ws, radio, "9.9.9", "IC-7610")
+    monkeypatch.setattr(
+        control_module,
+        "load_build_info",
+        lambda: BuildInfo(git_sha=sha, requested_ref="main"),
+    )
+    await handler._send_hello()
+    hello = decode_json(ws.send_text.await_args.args[0])
+    assert hello["type"] == "hello"
+    assert hello["core_sha"] == sha
+
+
+_SEAM_SHA = "fedcba9876543210fedcba9876543210fedcba98"
+
+# Runs in a child interpreter whose PYTHONPATH points at a stamped
+# disposable copy of the package (the child is data here, never collected).
+_SEAM_CHILD_SCRIPT = """
+import asyncio
+import json
+
+
+async def _read_hello(host, port):
+    reader, writer = await asyncio.open_connection(host, port)
+    key = "dGhlIHNhbXBsZSBub25jZQ=="
+    request = (
+        f"GET /api/v1/ws HTTP/1.1\\r\\n"
+        f"Host: {host}:{port}\\r\\n"
+        "Upgrade: websocket\\r\\n"
+        "Connection: Upgrade\\r\\n"
+        f"Sec-WebSocket-Key: {key}\\r\\n"
+        "Sec-WebSocket-Version: 13\\r\\n"
+        "\\r\\n"
+    )
+    writer.write(request.encode("ascii"))
+    await writer.drain()
+    response = await asyncio.wait_for(
+        reader.readuntil(b"\\r\\n\\r\\n"), timeout=5.0
+    )
+    assert b"101" in response, response[:64]
+    header = await asyncio.wait_for(reader.readexactly(2), timeout=5.0)
+    assert header[0] & 0x0F == 0x1, header
+    length = header[1] & 0x7F
+    if length == 126:
+        length = int.from_bytes(await reader.readexactly(2), "big")
+    elif length == 127:
+        length = int.from_bytes(await reader.readexactly(8), "big")
+    payload = await asyncio.wait_for(reader.readexactly(length), timeout=5.0)
+    writer.close()
+    try:
+        await writer.wait_closed()
+    except Exception:
+        pass
+    return json.loads(payload.decode("utf-8"))
+
+
+async def _main():
+    from serial_stub import SerialMockRadio
+    from rigplane.web.server import WebConfig, WebServer
+
+    radio = SerialMockRadio()
+    await radio.connect()
+    server = WebServer(
+        radio, WebConfig(host="127.0.0.1", port=0, keepalive_interval=9999.0)
+    )
+    await server.start()
+    try:
+        host, port = server._server.sockets[0].getsockname()
+        hello = await _read_hello(host, port)
+    finally:
+        await server.stop()
+    print(
+        "SEAM-VERDICT "
+        + json.dumps(
+            {
+                "type": hello.get("type"),
+                "core_sha": hello.get("core_sha"),
+                "version": hello.get("version"),
+            }
+        )
+    )
+    return 0
+
+
+raise SystemExit(asyncio.run(_main()))
+"""
+
+
+def test_control_hello_serves_stamped_sha_through_the_real_seam(
+    tmp_path: Path,
+) -> None:
+    """Stamped provenance reaches a real WebSocket client end to end.
+
+    A disposable package checkout is stamped through the real producer (the
+    stamp script, as a subprocess); a child interpreter imports ``rigplane``
+    from that stamped checkout, starts the real WebServer and a raw client
+    reads the real ``hello`` off ``/api/v1/ws``. Nothing is monkeypatched:
+    the production loader must find ``_build_info.json`` through its default
+    file lookup next to the imported module (MOR-4408).
+    """
+    from rigplane import __version__
+
+    repo_root = Path(__file__).resolve().parents[1]
+    package_root = tmp_path / "pkg"
+    copied = package_root / "src" / "rigplane"
+    shutil.copytree(repo_root / "src" / "rigplane", copied)
+    # The wheel force-includes these next to the package (pyproject.toml);
+    # mirror that layout so the copy serves like an installed wheel.
+    shutil.copytree(repo_root / "rigs", copied / "rigs")
+    shutil.copytree(repo_root / "band-plans", copied / "band-plans")
+
+    stamp = subprocess.run(
+        [
+            sys.executable,
+            str(repo_root / "scripts" / "release" / "stamp_build_info.py"),
+            "--sha",
+            _SEAM_SHA,
+            "--requested-ref",
+            "release/3.2",
+            "--root",
+            str(package_root),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert stamp.returncode == 0, stamp.stderr
+
+    child = tmp_path / "seam_child.py"
+    child.write_text(_SEAM_CHILD_SCRIPT, encoding="utf-8")
+    env = dict(os.environ)
+    python_path = [str(package_root / "src"), str(repo_root / "tests")]
+    if env.get("PYTHONPATH"):
+        python_path.append(env["PYTHONPATH"])
+    env["PYTHONPATH"] = os.pathsep.join(python_path)
+    run = subprocess.run(
+        [sys.executable, str(child)],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=120,
+        check=False,
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    verdict_line = next(
+        line for line in run.stdout.splitlines() if line.startswith("SEAM-VERDICT ")
+    )
+    verdict = json.loads(verdict_line[len("SEAM-VERDICT ") :])
+    assert verdict["type"] == "hello"
+    assert verdict["core_sha"] == _SEAM_SHA
+    assert verdict["version"] == __version__
 
 
 @pytest.mark.asyncio

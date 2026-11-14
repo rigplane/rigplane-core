@@ -1,0 +1,361 @@
+name: Core wheel
+
+# One wheel builder for any Core ref (MOR-4408): resolves core_ref to a
+# single commit, checks that commit out into a throwaway directory, stamps
+# build provenance, applies the version rule, builds the frontend + wheel,
+# and uploads one artifact with core-wheel.json metadata. Consumers (Pro,
+# Station, RigDeck CI) call this workflow or install its artifact; Pro does
+# NOT install the wheel — it freezes a sibling source checkout of the same
+# SHA and reuses only the stamp script (docs/internals/core-wheel-workflow.md).
+#
+# Caller independence: in a called workflow github.repository and github.sha
+# belong to the CALLER, so every checkout, CORE_REMOTE and every control
+# script name rigplane/rigplane-core explicitly. Controls (the resolver,
+# version, stamp and manifest scripts) come from job.workflow_sha — the
+# documented job-context identity of the commit of THIS workflow file, i.e.
+# the revision the caller invoked with uses: — never from a caller-chosen
+# input (CodeQL cache-poisoning fix, MOR-4408; see
+# docs/internals/core-wheel-workflow.md, "Controls and the caller").
+
+on:
+  workflow_call:
+    inputs:
+      core_ref:
+        description: Core ref to build - a tag, a branch, or a 40-hex commit SHA
+        required: true
+        type: string
+      artifact_name:
+        description: Exact artifact name (overrides artifact_name_prefix)
+        required: false
+        default: ''
+        type: string
+      artifact_name_prefix:
+        description: Artifact name is <prefix>-<sha12> when artifact_name is empty
+        required: false
+        default: 'core-wheel'
+        type: string
+      retention_days:
+        description: Wheel artifact retention in days (artifact-cleanup.yml sweeps older ones anyway)
+        required: false
+        default: 3
+        type: number
+    outputs:
+      sha:
+        description: The 40-hex commit the wheel was built from
+        value: ${{ jobs.build.outputs.sha }}
+      version:
+        description: Wheel version (tag version, or <pyproject>+g<sha12>)
+        value: ${{ jobs.build.outputs.version }}
+      wheel_name:
+        description: Wheel file name inside the artifact
+        value: ${{ jobs.build.outputs.wheel_name }}
+      wheel_sha256:
+        description: sha256 of the wheel file
+        value: ${{ jobs.build.outputs.wheel_sha256 }}
+      artifact_name:
+        description: Name of the uploaded artifact
+        value: ${{ jobs.build.outputs.artifact_name }}
+  workflow_dispatch:
+    inputs:
+      core_ref:
+        description: Core ref to build - a tag, a branch, or a 40-hex commit SHA
+        required: true
+        type: string
+      artifact_name_prefix:
+        description: Artifact name is <prefix>-<sha12>
+        required: false
+        default: 'core-wheel'
+        type: string
+      retention_days:
+        description: Wheel artifact retention in days
+        required: false
+        default: 3
+        type: number
+
+permissions:
+  contents: read
+
+jobs:
+  resolve:
+    # The light pool: this is one `git ls-remote` plus (for a raw object ID
+    # or a tag name) one exact-SHA fetch that also peels tag objects to
+    # their commit and proves the object is one; no build tools needed.
+    runs-on: [self-hosted, Linux, ARM64, light]
+    timeout-minutes: 5
+    outputs:
+      sha: ${{ steps.resolve.outputs.sha }}
+      sha12: ${{ steps.resolve.outputs.sha12 }}
+      requested_ref: ${{ steps.resolve.outputs.requested_ref }}
+      tags_json: ${{ steps.resolve.outputs.tags_json }}
+    steps:
+      # Controls always come from Core itself, never from the caller: in a
+      # called workflow github.repository/github.sha identify the CALLER
+      # (e.g. a private Pro repo), so the repository is named here, and
+      # the ref is job.workflow_sha — this workflow file's own commit,
+      # which GitHub resolved from the caller's uses:. github.* cannot
+      # express this (github.workflow_sha names the CALLER's workflow
+      # file); job.workflow_sha exists on github.com (not on GHES, which
+      # this repository does not use).
+      - name: Check out reviewed workflow controls
+        uses: actions/checkout@v6
+        with:
+          repository: rigplane/rigplane-core
+          ref: ${{ job.workflow_sha }}
+          persist-credentials: false
+
+      # Light-pool contract (base-controlled-gates-v1.test.js): a job that
+      # runs python3 sets up its interpreter explicitly.
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Resolve core_ref to exactly one commit
+        # A branch is resolved here and never again: the build job checks
+        # out the SHA, not the moving ref. Annotated tags peel to their
+        # commit; anything that does not resolve to exactly one commit
+        # fails loudly.
+        id: resolve
+        shell: bash
+        env:
+          CORE_REF: ${{ inputs.core_ref }}
+          # The Core repository, fixed — never github.repository, which in
+          # a called workflow names the caller.
+          CORE_REMOTE: https://github.com/rigplane/rigplane-core.git
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/resolve_core_ref.py \
+            --ref "$CORE_REF" \
+            --remote "$CORE_REMOTE"
+
+  build:
+    needs: resolve
+    runs-on: [self-hosted, Linux, ARM64, build]
+    # Measured about a minute on the build pool; 15 covers a cold npm ci
+    # plus uv build while a hung build still releases the runner.
+    timeout-minutes: 15
+    env:
+      # Pin uv to the interpreter the smoke venv uses (MOR-590 pattern).
+      UV_PYTHON: "3.13"
+      RESOLVED_SHA: ${{ needs.resolve.outputs.sha }}
+      CORE_REF: ${{ inputs.core_ref }}
+    outputs:
+      sha: ${{ needs.resolve.outputs.sha }}
+      version: ${{ steps.version.outputs.version }}
+      wheel_name: ${{ steps.wheel.outputs.wheel_name }}
+      wheel_sha256: ${{ steps.wheel.outputs.wheel_sha256 }}
+      artifact_name: ${{ steps.artifact.outputs.artifact_name }}
+    steps:
+      # Controls come from Core at job.workflow_sha (this workflow file's
+      # own commit); the built tree comes from the resolved SHA, in a
+      # throwaway directory, exactly like private-core-artifact.yml checks
+      # a target ref next to its controls. Both name Core explicitly:
+      # github.repository in a called workflow is the CALLER's repository.
+      - name: Check out reviewed workflow controls
+        uses: actions/checkout@v6
+        with:
+          repository: rigplane/rigplane-core
+          ref: ${{ job.workflow_sha }}
+          path: control
+          persist-credentials: false
+
+      - name: Check out the resolved Core commit
+        uses: actions/checkout@v6
+        with:
+          repository: rigplane/rigplane-core
+          ref: ${{ needs.resolve.outputs.sha }}
+          path: core
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Install uv
+        # No Actions cache (CodeQL cache-poisoning fix, MOR-4408): this
+        # job runs code from the checked-out target ref, and a shared
+        # cache is a poisoning path in the privileged scheduled context.
+        # Cold installs per build; the cost is accepted.
+        uses: astral-sh/setup-uv@v8.1.0
+        with:
+          enable-cache: false
+
+      - name: Set up Python
+        run: uv python install 3.13
+
+      - name: Set up Node.js
+        # No npm cache, same cache-poisoning reasoning as setup-uv above.
+        uses: actions/setup-node@v6
+        with:
+          node-version: '20'
+
+      - name: Compute and apply the wheel version
+        # Tag rule: exactly one matching v-tag -> clean pyproject version;
+        # otherwise <pyproject>+g<sha12> (a local version PyPI refuses).
+        id: version
+        working-directory: core
+        env:
+          TAGS_JSON: ${{ needs.resolve.outputs.tags_json }}
+        run: |
+          set -euo pipefail
+          version="$(uv run --no-project python ../control/.github/scripts/core_wheel_version.py \
+            --pyproject pyproject.toml \
+            --sha "$RESOLVED_SHA" \
+            --tags-json "$TAGS_JSON" \
+            --write-pyproject pyproject.toml)"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "core wheel version: $version"
+
+      - name: Stamp build provenance
+        # The same producer Pro's CI freezes into a sibling source checkout
+        # (docs/internals/core-wheel-workflow.md, "Stamping a source
+        # checkout"). Written into the throwaway checkout only.
+        run: |
+          set -euo pipefail
+          uv run --no-project python control/scripts/release/stamp_build_info.py \
+            --sha "$RESOLVED_SHA" \
+            --requested-ref "$CORE_REF" \
+            --root core
+
+      - name: Build frontend
+        run: |
+          cd core/frontend
+          npm ci
+          npm run build
+          rm -f ../src/rigplane/web/static
+          mkdir -p ../src/rigplane/web/static
+          cp -r dist/* ../src/rigplane/web/static/
+
+      - name: Build wheel and sdist
+        working-directory: core
+        run: uv build
+
+      - name: Identify the wheel
+        id: wheel
+        working-directory: core
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t wheels < <(find dist -maxdepth 1 -type f -name '*.whl' -print)
+          if [[ "${#wheels[@]}" -ne 1 ]]; then
+            echo "expected exactly one wheel, found ${#wheels[@]}" >&2
+            exit 1
+          fi
+          wheel_name="$(basename "${wheels[0]}")"
+          wheel_sha256="$(sha256sum "dist/$wheel_name" | cut -d ' ' -f 1)"
+          {
+            echo "wheel_name=$wheel_name"
+            echo "wheel_sha256=$wheel_sha256"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Smoke installed radio profiles
+        # Same installed-artifact proof publish.yml has always run, against
+        # the produced wheel, with the resolved SHA as the candidate — but
+        # judged by the TARGET revision's own smoke script: the profile
+        # catalog is revision-specific (v3.1.4 shipped nine radio profiles,
+        # current Core ships eleven), so the controls' current catalog
+        # would reject a valid historical wheel. A target older than the
+        # script is never silently passed: the skip is recorded as
+        # profile_smoke=not_available_for_target in the manifest (through
+        # the step output below) and in the job summary. Provenance
+        # verification stays with the controls and runs for every target.
+        id: smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          smoke_dir="$(mktemp -d)"
+          cp "core/dist/$WHEEL_NAME" "$smoke_dir/$WHEEL_NAME"
+          # The venv also carries the provenance verification below, so it
+          # is built for every target, smoke or not.
+          uv venv --python 3.13 "$smoke_dir/.venv"
+          uv pip install --python "$smoke_dir/.venv/bin/python" "$smoke_dir/$WHEEL_NAME"
+          target_smoke="$GITHUB_WORKSPACE/core/.github/scripts/installed_profile_smoke.py"
+          if [[ -f "$target_smoke" ]]; then
+            echo "profile_smoke=target" >> "$GITHUB_OUTPUT"
+            cp "$target_smoke" "$smoke_dir/"
+            cd "$smoke_dir"
+            UV_OFFLINE=true .venv/bin/python installed_profile_smoke.py \
+              --artifact "$WHEEL_NAME" \
+              --candidate-sha "$RESOLVED_SHA" \
+              --forbid-root "$GITHUB_WORKSPACE" \
+              | tee "$GITHUB_WORKSPACE/installed-profile-smoke.json"
+          else
+            echo "profile_smoke=not_available_for_target" >> "$GITHUB_OUTPUT"
+            echo "Installed-profile smoke: the built revision has no \`installed_profile_smoke.py\`; profile smoke skipped (profile_smoke: not_available_for_target in core-wheel.json)." >> "$GITHUB_STEP_SUMMARY"
+          fi
+          # The wheel must carry its own provenance. The stamped resource
+          # is verified through the CONTROLS' contract reader (the stamp
+          # script loads build_info.py by file path), so any Core ref
+          # passes — refs older than the contract have no
+          # rigplane.core.build_info module of their own.
+          stamped="$(UV_OFFLINE=true "$smoke_dir/.venv/bin/python" -c \
+            'import importlib.resources; print(importlib.resources.files("rigplane.core") / "_build_info.json")')"
+          uv run --no-project python "$GITHUB_WORKSPACE/control/scripts/release/stamp_build_info.py" \
+            --verify-file "$stamped" \
+            --expect-sha "$RESOLVED_SHA"
+          # The runtime reader is exercised only when the target package
+          # has the module at all.
+          if UV_OFFLINE=true "$smoke_dir/.venv/bin/python" -c \
+            'import importlib.util, sys; sys.exit(0 if importlib.util.find_spec("rigplane.core.build_info") else 1)'
+          then
+            core_sha="$(UV_OFFLINE=true "$smoke_dir/.venv/bin/python" -c \
+              'from rigplane.core.build_info import load_build_info; print(load_build_info().git_sha or "")')"
+            if [[ "$core_sha" != "$RESOLVED_SHA" ]]; then
+              echo "installed wheel reports core_sha '$core_sha', expected '$RESOLVED_SHA'" >&2
+              exit 1
+            fi
+          fi
+        env:
+          WHEEL_NAME: ${{ steps.wheel.outputs.wheel_name }}
+
+      - name: Write core-wheel.json and resolve the artifact name
+        # core-wheel.json goes through the typed contract
+        # (core_wheel_manifest.py, a JSON encoder): a legal ref containing
+        # a quote must still produce valid JSON, which shell interpolation
+        # into a heredoc cannot guarantee. Values reach the script through
+        # env-derived argv, never through ${{ }} text substitution.
+        id: artifact
+        working-directory: core
+        shell: bash
+        env:
+          ARTIFACT_NAME_INPUT: ${{ inputs.artifact_name }}
+          ARTIFACT_NAME_PREFIX: ${{ inputs.artifact_name_prefix }}
+          PROFILE_SMOKE: ${{ steps.smoke.outputs.profile_smoke }}
+          WHEEL_NAME: ${{ steps.wheel.outputs.wheel_name }}
+          WHEEL_SHA256: ${{ steps.wheel.outputs.wheel_sha256 }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          if [[ -n "$ARTIFACT_NAME_INPUT" ]]; then
+            artifact_name="$ARTIFACT_NAME_INPUT"
+          else
+            artifact_name="${ARTIFACT_NAME_PREFIX}-${RESOLVED_SHA:0:12}"
+          fi
+          uv run --no-project python ../control/.github/scripts/core_wheel_manifest.py \
+            --sha "$RESOLVED_SHA" \
+            --version "$VERSION" \
+            --requested-ref "$CORE_REF" \
+            --wheel "$WHEEL_NAME" \
+            --wheel-sha256 "$WHEEL_SHA256" \
+            --profile-smoke "$PROFILE_SMOKE" \
+            --output dist/core-wheel.json
+          echo "artifact_name=$artifact_name" >> "$GITHUB_OUTPUT"
+
+      - name: Upload installed-profile smoke evidence
+        # Only when the target revision's own smoke ran; a target without
+        # the script has no evidence to upload — the skip is recorded in
+        # the manifest and the job summary instead.
+        if: steps.smoke.outputs.profile_smoke == 'target'
+        # Derived from the wheel artifact name: two invocations from one
+        # caller (distinct core_refs) must not collide on this name.
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.artifact.outputs.artifact_name }}-installed-profile-smoke
+          path: installed-profile-smoke.json
+          retention-days: 3
+
+      - name: Upload the wheel artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.artifact.outputs.artifact_name }}
+          path: core/dist/
+          if-no-files-found: error
+          retention-days: ${{ inputs.retention_days }}

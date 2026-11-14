@@ -1,0 +1,28 @@
+name: Core wheel nightly
+
+# A wheel from the head of main every night (MOR-4408): exercises the
+# reusable core-wheel.yml against a moving branch ref on a schedule and
+# keeps a fresh installable Core artifact with provenance for wheel
+# consumers (RigDeck, Station) between releases.
+
+on:
+  schedule:
+    # 05:10 UTC daily: clear of full.yml (every 3 h weekdays from 00:00),
+    # publish.yml's untagged rehearsal (06:00 daily), soak-nightly and
+    # stryker-nightly (03:17), bench-nightly and platform-subset (01:30),
+    # and artifact-cleanup (Sundays 04:40).
+    - cron: '10 5 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: core-wheel-nightly
+  cancel-in-progress: false
+
+jobs:
+  core-wheel:
+    uses: ./.github/workflows/core-wheel.yml
+    with:
+      core_ref: main

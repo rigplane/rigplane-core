@@ -79,8 +79,14 @@ def test_publish_uploads_only_from_a_directory_unique_to_the_run_attempt() -> No
     assert publish.count(unique) == 2, (
         "download path and DIST_DIR must both use the per-attempt directory"
     )
-    assert re.search(r'run: uv publish .* "\$DIST_DIR"/\*$', publish, re.M)
-    assert "dist/*" not in publish.replace('"$DIST_DIR"/*', "")
+    # MOR-4408: the dist artifact also carries core-wheel.json, so the upload
+    # names the wheel and sdist explicitly instead of "$DIST_DIR"/*.
+    assert re.search(
+        r'run: uv publish .*"\$DIST_DIR"/\*\.whl "\$DIST_DIR"/\*\.tar\.gz$',
+        publish,
+        re.M,
+    )
+    assert "dist/*" not in publish
 
 
 def test_validate_frontend_step_sets_the_node_heap_svelte_check_needs() -> None:
@@ -183,10 +189,33 @@ def test_the_pypi_upload_step_cannot_be_reached_from_a_non_release_event() -> No
     )
 
 
-def test_build_job_has_a_timeout() -> None:
+def test_build_job_delegates_to_the_core_wheel_workflow() -> None:
+    # MOR-4408: one wheel builder. The build job calls the reusable
+    # core-wheel.yml instead of keeping a second copy of frontend build +
+    # uv build + installed-profile smoke; the reusable workflow's build job
+    # carries the 15-minute timeout (pinned in .github/scripts/
+    # core-wheel.test.py).
     build = _parsed()["jobs"]["build"]
-    assert build.get("timeout-minutes") == 15, (
-        "the build job needs its own timeout: it measures about a minute, "
-        "so 15 minutes covers a cold npm ci + uv build while a hung build "
-        "still releases the self-hosted runner (validate already has 25)"
+    assert build.get("uses") == "./.github/workflows/core-wheel.yml", (
+        "build must call the reusable Core wheel workflow; a second inline "
+        "copy of the build steps is a parallel builder"
+    )
+    assert build.get("needs") == "validate", (
+        "the delegated build must still sit behind validate"
+    )
+    assert not build.get("steps"), (
+        "the build job must not keep build steps of its own next to the call"
+    )
+    with_map = build.get("with") or {}
+    assert with_map.get("core_ref") == "${{ github.sha }}", (
+        "the release build pins the exact triggering commit"
+    )
+    assert "controls_ref" not in with_map, (
+        "controls_ref is no longer an input (MOR-4408 CodeQL fix): "
+        "core-wheel.yml checks the controls out at its own "
+        "job.workflow_sha — the called workflow's commit, which for this "
+        "same-repo call IS the triggering commit"
+    )
+    assert with_map.get("artifact_name") == "dist", (
+        "the publish job downloads the wheel artifact under its historical `dist` name"
     )
