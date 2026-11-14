@@ -486,3 +486,90 @@ async def test_replay_moving_tone_over_noise(virtual_clock: VirtualClock) -> Non
         assert pixels is not None and len(pixels) == size
         assert pixels.index(max(pixels)) == 20 + step * 20
     assert parse_n1mm_spectrum(emit_n1mm_spectrum(packets[-1])) == packets[-1]
+
+
+_LOW_HZ = 7_012_345.0
+_HIGH_HZ = 7_113_579.0
+_CARRIER_A_HZ = 7_040_000.0
+_CARRIER_B_HZ = 7_090_123.0
+
+
+def _expected_index(freq_hz: float, size: int) -> int:
+    return round((freq_hz - _LOW_HZ) / (_HIGH_HZ - _LOW_HZ) * (size - 1))
+
+
+def _known_signal_packet(
+    size: int, carrier_a: int = 6000, carrier_b: int = 4000
+) -> N1mmSpectrumPacket:
+    rng = random.Random(4394)
+    levels = [1000 + rng.randrange(101) for _ in range(size)]
+    levels[_expected_index(_CARRIER_A_HZ, size)] = carrier_a
+    levels[_expected_index(_CARRIER_B_HZ, size)] = carrier_b
+    return N1mmSpectrumPacket("known", "signal", _LOW_HZ, _HIGH_HZ, 0.01, tuple(levels))
+
+
+@pytest.mark.parametrize("size", [475, 1024, 16384])
+@pytest.mark.timeout(60)
+async def test_known_signal_end_to_end(virtual_clock: VirtualClock, size: int) -> None:
+    if size == 16384:
+        pytest.skip(
+            "16384 four-digit levels (~82 kB) exceed the 65507-byte UDP ceiling"
+        )
+    packet = _known_signal_packet(size)
+    source = N1mmSpectrumSource(port=0, fps_limit=1000.0)
+    frames: list[NativeFrame] = []
+    source.on_frame(frames.append)
+    receiver = N1mmSpectrumReceiver(port=0, on_packet=source.handle_packet)
+    await receiver.start()
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.sendto(emit_n1mm_spectrum(packet), ("127.0.0.1", receiver.port))
+        await await_until(lambda: frames, description="known-signal frame")
+        assert len(frames) == 1
+    finally:
+        await receiver.stop()
+        await source.stop()
+    frame = frames[0]
+    assert frame.coverage == Coverage(_LOW_HZ, _HIGH_HZ)
+    pixels = frame.pixels
+    assert pixels is not None and len(pixels) == size == frame.native_width
+    expected_a = _expected_index(_CARRIER_A_HZ, size)
+    expected_b = _expected_index(_CARRIER_B_HZ, size)
+    brightest = sorted(range(size), key=lambda i: pixels[i], reverse=True)[:2]
+    assert brightest == [expected_a, expected_b]
+    others = [v for i, v in enumerate(pixels) if i != expected_a and i != expected_b]
+    assert pixels[expected_a] > pixels[expected_b] > max(others)
+    spacing = (_HIGH_HZ - _LOW_HZ) / (size - 1)
+    assert abs(_LOW_HZ + expected_a * spacing - _CARRIER_A_HZ) <= spacing / 2
+    assert abs(_LOW_HZ + expected_b * spacing - _CARRIER_B_HZ) <= spacing / 2
+
+
+@pytest.mark.timeout(60)
+async def test_known_signal_level_steps(virtual_clock: VirtualClock) -> None:
+    size = 1024
+    stepped_at = _expected_index(_CARRIER_A_HZ, size)
+    steady_at = _expected_index(_CARRIER_B_HZ, size)
+    source = N1mmSpectrumSource(port=0, fps_limit=10.0)
+    frames: list[NativeFrame] = []
+    source.on_frame(frames.append)
+    receiver = N1mmSpectrumReceiver(port=0, on_packet=source.handle_packet)
+    await receiver.start()
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            for step, level in enumerate((1500, 2500, 3500, 4500)):
+                packet = _known_signal_packet(size, carrier_a=level)
+                sock.sendto(emit_n1mm_spectrum(packet), ("127.0.0.1", receiver.port))
+                await await_until(lambda: len(frames) == step + 1, description="step")
+                await virtual_clock.elapse(0.2)
+    finally:
+        await receiver.stop()
+        await source.stop()
+    assert len(frames) == 4
+    stepped = [f.pixels[stepped_at] for f in frames if f.pixels is not None]
+    assert len(stepped) == 4
+    assert all(later > earlier for earlier, later in zip(stepped, stepped[1:]))
+    for frame in frames:
+        pixels = frame.pixels
+        assert pixels is not None
+        noise = [v for i, v in enumerate(pixels) if i != stepped_at and i != steady_at]
+        assert pixels[stepped_at] > max(noise)
