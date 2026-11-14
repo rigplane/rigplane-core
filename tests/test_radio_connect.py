@@ -251,6 +251,7 @@ def _busy_hold_patch_stack(
         )
     )
     stack.enter_context(patch.object(radio, "_fetch_initial_state", new=AsyncMock()))
+    stack.enter_context(patch.object(radio, "_arm_managed_tx", new=AsyncMock()))
     # MOR-3064 seam: the fake CI-V transport runs no rx pump, so the
     # identity read is answered directly with the IC-7610 token 0x98.
     stack.enter_context(
