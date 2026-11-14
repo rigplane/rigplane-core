@@ -207,7 +207,8 @@ async def _auto_discover_lan(timeout: float = _DISCOVER_TIMEOUT) -> str:
         print(
             "Error: no radios found on LAN.\n"
             "  Check: radio powered on? LAN remote enabled? Same subnet?\n"
-            "  Or specify --host <IP> explicitly.",
+            "  Or specify --host <IP> explicitly.\n"
+            "  Connected by USB instead? Use --serial-port <device> (or --backend serial to scan USB ports).",
             file=sys.stderr,
         )
         sys.exit(1)

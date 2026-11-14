@@ -1597,10 +1597,8 @@ def test_transceiver_count_ftx1(radio):
 
 
 def test_transceiver_count_non_ftx1(radio):
-    """Non-FTX-1 Yaesu CAT rigs default to a single transceiver."""
-    # FTX-1 is currently the only Yaesu CAT profile in-tree; simulate a
-    # non-FTX-1 rig by swapping the loaded config id.
-    object.__setattr__(radio._config, "id", "yaesu_other")
+    """The transceiver count comes from the profile field, not the model id."""
+    object.__setattr__(radio._config, "transceiver_count", 1)
     assert radio.transceiver_count == 1
 
 
@@ -4108,10 +4106,12 @@ async def test_set_get_vfo_slot_roundtrip(single_rx_radio):
 
 
 @pytest.mark.asyncio
-async def test_swap_vfo_ab_raises_on_single_rx(single_rx_radio):
-    """Yaesu CAT has no A↔B swap primitive even on single-RX rigs."""
-    with pytest.raises(NotImplementedError, match="no symmetric"):
-        await single_rx_radio.swap_vfo_ab()
+async def test_swap_vfo_ab_writes_profile_command_on_single_rx(single_rx_radio):
+    """A single-RX ``ab`` profile that declares ``vfo_swap`` swaps A/B through
+    it (data-driven, MOR-4427); the profile-less case raises, see FTX-1."""
+    single_rx_radio._transport.write = AsyncMock()
+    await single_rx_radio.swap_vfo_ab()
+    single_rx_radio._transport.write.assert_called_once_with("SV;")
 
 
 @pytest.mark.asyncio

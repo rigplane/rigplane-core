@@ -1612,7 +1612,12 @@ class VfoSlotCapable(Protocol):
         ...
 
     async def equalize_vfo_ab(self, receiver: int = 0) -> None:
-        """Copy the active VFO's state to the inactive VFO on ``receiver``."""
+        """Copy the active VFO to the other VFO on ``receiver``.
+
+        Yaesu single-transceiver profiles: A→B, through the profile's
+        ``vfo_a_to_b`` copy primitive (MOR-4434). A Yaesu ``ab_shared``
+        (dual-receiver) profile has no per-receiver copy and refuses.
+        """
         ...
 
 
