@@ -12,7 +12,18 @@ import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 from collections.abc import Awaitable, Callable
-from typing import Literal, Never, NotRequired, Required, TypedDict, cast
+from typing import (
+    Literal,
+    Never,
+    NotRequired,
+    Required,
+    TypedDict,
+    cast,
+    TYPE_CHECKING,
+)
+
+if TYPE_CHECKING:
+    from rigplane.profiles.rig_loader import TxFuncSpec
 
 from rigplane.commands._codec import (
     bcd_encode_value,
@@ -432,6 +443,12 @@ class RadioProfile:
     # Meaning of selector 01 for split TX on dual-RX radios. This is
     # separate from receiver attribution of transceiver-wide replies.
     split_tx_target: str = "none"
+    # Profile-declared FT (TX function) answer/write map
+    # (``rig_loader.TxFuncSpec``): which receiver (and A/B slot) each
+    # ``get_tx_func`` answer digit names, and which wire digit each
+    # ``set_tx_func`` selector writes. ``None`` when the profile declares
+    # no TX-function commands (single-receiver radios without an FT verb).
+    tx_func: TxFuncSpec | None = None
     has_lan: bool = False
     freq_ranges: tuple[FreqRangeInfo, ...] = ()
     modes: tuple[str, ...] = ()

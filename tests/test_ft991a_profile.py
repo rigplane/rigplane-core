@@ -11,14 +11,16 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, call
 
 import pytest
 
 from rigplane.backends.discovery import _parse_yaesu_id_response
+from rigplane.backends.yaesu_cat.observations import YaesuObservationAdapter
 from rigplane.backends.yaesu_cat.parser import CatParseError
 from rigplane.backends.yaesu_cat.poller import YaesuCatPoller
 from rigplane.backends.yaesu_cat.radio import YaesuCatRadio
+from rigplane.backends.yaesu_cat.transport import CatCommandRejected
 from rigplane.core.exceptions import CommandError
 from rigplane.core.state_pipeline_contracts import (
     FieldPath,
@@ -26,8 +28,9 @@ from rigplane.core.state_pipeline_contracts import (
     SourceMetadata,
 )
 from rigplane.core.state_store import StateStore
+from rigplane.core.tx_target import KnownTxTarget, UnknownTxTarget
 from rigplane.profiles import resolve_radio_profile
-from rigplane.profiles.rig_loader import load_rig
+from rigplane.profiles.rig_loader import RigLoadError, TxFuncTarget, load_rig
 from rigplane.web.handlers.control import ControlHandler
 from rigplane.web.radio_poller import VfoEqualize
 from rigplane.web.runtime_helpers import projected_vfo_capability_tags
@@ -165,18 +168,221 @@ def test_ft991a_reports_its_hamlib_model_through_dump_state():
     assert YaesuRouting(ftx1, 100.0).dump_state()[1] == "2028"
 
 
-def test_ft991a_does_not_poll_tx_target_without_a_tx_func_command():
-    # MOR-4433 R2: the single transceiver has no TX-function read verb (no
-    # ST/FR/get_tx_func), so a pollable tx_target makes
-    # YaesuObservationAdapter._read_tx_target raise CommandError out of
-    # _query — outside its except clauses — discarding the whole medium
-    # batch (freq, mode, PTT, width) every cycle while the slow lane keeps
-    # publishing. The profile must not declare the path pollable.
+def test_ft991a_polls_tx_target_through_ft_tx_func():
+    # MOR-4433 PR1: the v1 "no TX-function read verb" note was wrong. The
+    # FT; read answers the TX VFO (manual p.10: read P2 0 = VFO-A TX,
+    # 1 = VFO-B TX; Hamlib newcat_get_tx_vfo), so the profile declares
+    # get_tx_func/set_tx_func and polls global.tx_state.tx_target.
     acquisition = load_rig(RIG).to_profile().state_acquisition
     assert acquisition is not None
-    assert (
-        FieldPath.global_("tx_state", "tx_target") not in acquisition.pollable_paths()
+    assert FieldPath.global_("tx_state", "tx_target") in acquisition.pollable_paths()
+
+
+def test_ft991a_tx_func_map_names_main_ab_slots():
+    # Profile-declared answer -> (receiver, slot) map and write map. The
+    # loader validates both (answers covered, receivers fit the ab scheme).
+    config = load_rig(RIG)
+    assert config.tx_func is not None
+    assert config.tx_func.read_map == {
+        "0": TxFuncTarget(receiver="MAIN", slot="A"),
+        "1": TxFuncTarget(receiver="MAIN", slot="B"),
+    }
+    assert config.tx_func.write_map == {0: "2", 1: "3"}
+    assert config.to_profile().tx_func == config.tx_func
+
+
+@pytest.mark.asyncio
+async def test_ft991a_tx_func_wire_bytes(radio):
+    # Read answers FT0/FT1 parse to 0/1; sets write FT2;/FT3; (manual p.10:
+    # set P1 2 = VFO-A TX, 3 = VFO-B TX; Hamlib adds +2 for is_ft991).
+    radio._transport.query = AsyncMock(side_effect=["FT0", "FT1"])
+    assert await radio.get_tx_func() == 0
+    assert await radio.get_tx_func() == 1
+    await radio.set_tx_func(0)
+    await radio.set_tx_func(1)
+    assert [c.args[0] for c in radio._transport.write.call_args_list] == [
+        "FT2;",
+        "FT3;",
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("ft", "freq_response", "freq_command", "slot", "frequency"),
+    [
+        ("FT0", "FA014074000", "FA;", "A", 14_074_000),
+        ("FT1", "FB007074000", "FB;", "B", 7_074_000),
+    ],
+)
+async def test_ft991a_tx_target_names_main_ab_slots(
+    ft, freq_response, freq_command, slot, frequency
+):
+    # FT0 -> TX on MAIN/A (freq from FA), FT1 -> TX on MAIN/B (freq from
+    # FB), through the producer's real parser (not a hand-rolled fake).
+    radio = YaesuCatRadio("/dev/null", profile=load_rig(RIG))
+    radio._transport._connected = True
+    radio._transport.query = AsyncMock(side_effect=[ft, freq_response, ft])
+    target = await YaesuObservationAdapter.from_radio(radio)._read_tx_target()
+    assert target == KnownTxTarget(receiver="MAIN", slot=slot, frequency_hz=frequency)
+    assert radio._transport.query.await_args_list == [
+        call("FT;"),
+        call(freq_command),
+        call("FT;"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_absent_tx_func_command_is_unsupported():
+    # No get_tx_func on the profile (command deleted to simulate an absent
+    # verb) makes _query raise CommandError. The adapter must report
+    # unsupported, not raise.
+    radio = YaesuCatRadio("/dev/null", profile=load_rig(RIG))
+    del radio._config.commands["get_tx_func"]
+    radio._transport._connected = True
+    radio._transport.query = AsyncMock()
+    target = await YaesuObservationAdapter.from_radio(radio)._read_tx_target()
+    assert target == UnknownTxTarget(reason="unsupported")
+
+
+@pytest.mark.asyncio
+async def test_refused_ft_read_does_not_abort_the_medium_poll(radio):
+    # The radio refuses the FT; read with ?; (a state, not a link fault):
+    # the medium poll still publishes freq, mode and PTT, with tx_target
+    # unknown instead of the whole batch discarded.
+    answers = {
+        "FA;": "FA014074000",
+        "MD0;": "MD02",
+        "TX;": "TX0",
+        "SH0;": "SH014",
+        "NA0;": "NA00",
+        "BC0;": "BC00",
+    }
+
+    async def query(command, **kwargs):
+        if command == "FT;":
+            raise CatCommandRejected("?;")
+        return answers.get(command, "?;")
+
+    radio._transport.query = query
+    observations = await YaesuObservationAdapter.from_radio(radio).poll_medium()
+    by_path = {str(item.path): item for item in observations}
+    assert by_path["global.tx_state.tx_target"].value == UnknownTxTarget(
+        reason="unsupported"
     )
+    assert by_path["receiver.main.active.freq_mode.freq_hz"].value == 14_074_000
+    assert "global.tx_state.ptt" in by_path
+
+
+@pytest.mark.asyncio
+async def test_ft991a_split_tx_freq_set_writes_fb(radio):
+    # Split TX frequency on the single-receiver ab scheme is the FB slot:
+    # the shared relative-VFO write path drives it (write + FB readback)
+    # with no VS/FR/ST traffic.
+    radio._transport.query = AsyncMock(return_value="FB007074000")
+    assert (
+        await radio.write_relative_vfo_frequency(7_074_000, selected=False) == 7_074_000
+    )
+    assert radio._transport.write.call_args[0][0] == "FB007074000;"
+
+
+@pytest.mark.asyncio
+async def test_ft991a_split_tx_mode_access_refuses(radio):
+    # VFO-B mode is not readable or writable with declared commands (no
+    # MD1 verb; OI is undeclared): both refuse instead of guessing.
+    async def query(command, **kwargs):
+        if command == "FB;":
+            return "FB007074000"
+        raise CommandError(f"unexpected command {command}")
+
+    radio._transport.query = query
+    with pytest.raises(CommandError):
+        await radio.read_relative_vfo(selected=False)
+    with pytest.raises(CommandError):
+        await radio.write_relative_vfo_mode(1, selected=False)
+
+
+@pytest.mark.asyncio
+async def test_ft991a_tx_func_roundtrip_over_cat_sim(monkeypatch):
+    # The simulator serves FT with the same contract (FT0/FT1 answers,
+    # FT2/FT3 sets); the producer's real parser consumes the fake.
+    fake = YaesuCatSerialFake.from_profile(ROOT, SIM_PROFILE, rig_path=RIG)
+
+    async def open_port(*args, **kwargs):
+        return await fake.open_serial_connection()
+
+    monkeypatch.setattr(
+        "rigplane.backends.yaesu_cat.transport.open_serial_port", open_port
+    )
+    radio = YaesuCatRadio("/dev/fixture", profile=load_rig(RIG))
+    await radio._transport.connect()
+    try:
+        assert await radio.get_tx_func() == 0
+        await radio.set_tx_func(1)
+        assert await radio.get_tx_func() == 1
+        assert await radio.get_split() is True
+        await radio.set_tx_func(0)
+        assert await radio.get_split() is False
+        target = await YaesuObservationAdapter.from_radio(radio)._read_tx_target()
+        assert target == KnownTxTarget(
+            receiver="MAIN", slot="A", frequency_hz=14_074_000
+        )
+    finally:
+        await radio._transport.close()
+
+
+def _mutated_991a_toml(tmp_path, old, new):
+    # Sibling data files (CTCSS catalog) resolve next to the TOML, so the
+    # copy carries them along.
+    text = RIG.read_text(encoding="utf-8")
+    assert old in text
+    path = tmp_path / "ft991a.toml"
+    path.write_text(text.replace(old, new), encoding="utf-8")
+    for sibling in ("_ctcss_tables_v1.toml",):
+        (tmp_path / sibling).write_bytes((RIG.parent / sibling).read_bytes())
+    return path
+
+
+def test_tx_func_map_rejects_receiver_mismatch_for_scheme(tmp_path):
+    # "SUB" is not a valid receiver for the ab scheme: the loader refuses.
+    path = _mutated_991a_toml(
+        tmp_path,
+        'read_map = { "0" = "MAIN:A", "1" = "MAIN:B" }',
+        'read_map = { "0" = "MAIN:A", "1" = "SUB" }',
+    )
+    with pytest.raises(RigLoadError, match="tx_func"):
+        load_rig(path)
+
+
+def test_tx_func_map_requires_both_answers(tmp_path):
+    # Every FT answer the backend reads (0 and 1) must be covered.
+    path = _mutated_991a_toml(
+        tmp_path,
+        'read_map = { "0" = "MAIN:A", "1" = "MAIN:B" }',
+        'read_map = { "0" = "MAIN:A" }',
+    )
+    with pytest.raises(RigLoadError, match="tx_func"):
+        load_rig(path)
+
+
+def test_tx_func_commands_require_the_map_and_vice_versa(tmp_path):
+    # get/set_tx_func without [vfo.tx_func] is a load error, and so is a
+    # map with neither command declared (no orphans either way).
+    text = RIG.read_text(encoding="utf-8")
+    block_start = text.index("\n[vfo.tx_func]\n")
+    block_end = text.index("\n[attenuator]")
+    without_table = text[:block_start] + text[block_end:]
+    path = tmp_path / "ft991a.toml"
+    path.write_text(without_table, encoding="utf-8")
+    for sibling in ("_ctcss_tables_v1.toml",):
+        (tmp_path / sibling).write_bytes((RIG.parent / sibling).read_bytes())
+    with pytest.raises(RigLoadError, match="tx_func"):
+        load_rig(path)
+    without_commands = text.replace("get_tx_func    = ", "# gone = ").replace(
+        "set_tx_func    = ", "# gone = "
+    )
+    path.write_text(without_commands, encoding="utf-8")
+    with pytest.raises(RigLoadError, match="tx_func"):
+        load_rig(path)
 
 
 def test_ft991a_omits_nb_nr_tuner_and_sub_mode():

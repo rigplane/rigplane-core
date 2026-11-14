@@ -15,6 +15,7 @@ from rigplane.core.acquisition_scheduler import (
     AcquisitionScheduler,
     resolve_available_when,
 )
+from rigplane.core.exceptions import CommandError
 from rigplane.core.state_acquisition_policy import RadioAcquisitionProfile
 from rigplane.core.state_pipeline_contracts import (
     FieldPath,
@@ -260,6 +261,9 @@ class _SideEffectingYaesuRadio:
             max_watts=100,
             ctcss_tones_centihz=get_radio_profile("FTX-1").ctcss_tones_centihz,
             tone_squelch_types=get_radio_profile("FTX-1").tone_squelch_types,
+            # MOR-4433 PR1: the FT answer map lives on the profile; the
+            # fake carries the real FTX-1 map like the other fields above.
+            tx_func=get_radio_profile("FTX-1").tx_func,
         )
         self.radio_state = RadioState()
         self.radio_state.main.freq = 1
@@ -825,6 +829,13 @@ async def test_invalid_ft_type_or_range_is_contradiction(tx_func: object) -> Non
             UnknownTxTarget(reason="contradiction"),
         ),
         (CatCommandRejected("?;"), UnknownTxTarget(reason="unsupported")),
+        # MOR-4433 PR1: an undeclared/absent command raises CommandError
+        # out of _query (not CatCommandRejected) — it must report
+        # unsupported, not abort the medium poll batch.
+        (
+            CommandError("Command 'get_tx_func' has no read template"),
+            UnknownTxTarget(reason="unsupported"),
+        ),
         (NotImplementedError(), UnknownTxTarget(reason="unsupported")),
         ("missing", UnknownTxTarget(reason="unsupported")),
     ],
