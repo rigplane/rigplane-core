@@ -124,7 +124,7 @@ def test_identity_is_g7250_with_the_live_baud_and_model_id() -> None:
     # See test_address_only_resolution_regression below.
     assert config.civ_addr == 0xA0
     assert config.receiver_count == 1
-    # wfview network mode is Icom-LAN-like control (LIVE 2026-11-13,
+    # wfview network mode is Icom LAN protocol control (LIVE 2026-11-13,
     # V1.0.1); HDSDR mode stays the UDP IQ stream under [iq_lan].
     assert config.has_lan is True
     # LIVE: the radio answers 115200 and stays silent at 19200.
