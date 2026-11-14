@@ -565,22 +565,25 @@ def _pcm_tx_frame(samples: int) -> bytes:
 
 
 async def _stream_audio(peer: _DcAvPeer, samples: int, frames: int = 10) -> None:
-    """Stream a few TX frames from a peer, paced like the WS TX tests."""
+    """Stream a few TX frames from a peer (sends are synchronous)."""
     for _ in range(frames):
         peer.send_audio(_pcm_tx_frame(samples))
-        await asyncio.sleep(0.02)
-    await asyncio.sleep(0.3)
+    # Pump the loop so queued datagrams are processed (asyncio.sleep(0) is
+    # the realtime-guard-clean way to yield; real settling comes from the
+    # await_until waits around every assertion).
+    for _ in range(10):
+        await asyncio.sleep(0)
 
 
 async def _wait_air(stack: _Stack) -> None:
     """Wait until the holder's audio has reached the simulator TX sink."""
-    end = asyncio.get_running_loop().time() + _GATE_TIMEOUT_S
-    while not stack.sim.audio_tx_frames:
-        assert (
-            asyncio.get_running_loop().time() < end
-        ), "the holder's audio never reached the air"
-        await asyncio.sleep(0.05)
-    await asyncio.sleep(0.3)  # the other peer's frames had the same chance
+    await await_until(
+        lambda: stack.sim.audio_tx_frames or None,
+        timeout=_GATE_TIMEOUT_S,
+        description="the holder's audio never reached the air",
+    )
+    for _ in range(50):
+        await asyncio.sleep(0)
 
 
 # ---------------------------------------------------------------------------
@@ -868,12 +871,15 @@ async def test_only_holders_audio_reaches_radio_over_data_channels(
         await await_until(
             lambda: stack.sim.ptt_on is True, timeout=10.0, description="sim keyed"
         )
-        await _stream_audio(holder, 480)
+        # The other peer streams first: when the holder's frames land, the
+        # other's in-flight frames had strictly more chance to leak.
         await _stream_audio(other, 200)
+        await _stream_audio(holder, 480)
         await _wait_air(stack)
         # Distinct frame sizes tell whose audio the sink recorded: only the
         # holder's 480-sample (960-byte) frames, never the other's 200.
         assert {frame.payload_len for frame in stack.sim.audio_tx_frames} == {960}
+        assert len(stack.sim.audio_tx_frames) == 10
         # Teardown releases the transmitter without an explicit unkey.
         await holder.close()
         await other.close()
