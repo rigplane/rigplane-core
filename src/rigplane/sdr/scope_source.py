@@ -114,9 +114,23 @@ class IqFftSource:
         return self._controller is None or self._controller.frequency_in_range
 
     def capabilities(self) -> SourceCapabilities:
+        rate = self._provider.sample_rate_hz
+        usable = self._usable_bandwidth()
+        trim = math.ceil((rate - usable) * self._width / (2 * rate))
         return SourceCapabilities(
-            (None,), ("free",), (), self._width, self._fps, "center ± sample_rate/2"
+            (None,),
+            ("free",),
+            (),
+            max(1, self._width - 2 * trim),
+            self._fps,
+            "center ± sample_rate/2"
+            if usable == rate
+            else "center ± usable_bandwidth/2",
         )
+
+    def _usable_bandwidth(self) -> int:
+        rate = self._provider.sample_rate_hz
+        return min(rate, self._provider.facts.usable_bandwidth_hz or rate)
 
     def resolve_view(self, view: ViewRequest, receiver: int | None = None) -> View:
         if receiver is not None:
@@ -135,7 +149,7 @@ class IqFftSource:
     ) -> Coverage | None:
         resolved = self.resolve_view(view, receiver)
         center = self._provider.center_freq_hz
-        half = self._provider.sample_rate_hz / 2
+        half = self._usable_bandwidth() / 2
         start = max(resolved.start_hz, center - half)
         end = min(resolved.end_hz, center + half)
         return Coverage(start, end) if start < end else None
@@ -243,11 +257,31 @@ class IqFftSource:
         # geometry yet. Wait for a real frame instead of inventing coverage.
         if frame.start_freq_hz >= frame.end_freq_hz:
             return
+        start, end = frame.start_freq_hz, frame.end_freq_hz
+        pixels = frame.pixels or None
+        native_width = None
+        usable = self._usable_bandwidth()
+        if usable < self._provider.sample_rate_hz:
+            span = end - start
+            center = (start + end) / 2
+            if pixels is not None:
+                trim = max(0, math.ceil((span - usable) * len(pixels) / (2 * span)))
+                if 2 * trim < len(pixels):
+                    step = span / len(pixels)
+                    start, end = start + trim * step, end - trim * step
+                    pixels = pixels[trim : len(pixels) - trim]
+                    native_width = len(pixels)
+                else:
+                    pixels = None
+            if pixels is None:
+                start = max(start, center - usable / 2)
+                end = min(end, center + usable / 2)
         native = NativeFrame(
             None,
-            Coverage(frame.start_freq_hz, frame.end_freq_hz),
-            frame.pixels or None,
+            Coverage(start, end),
+            pixels,
             frame.out_of_range or not self.frequency_in_range,
+            native_width=native_width,
         )
         for callback in tuple(self._callbacks):
             callback(native)
