@@ -6892,7 +6892,6 @@ _IC7300_DRAIN_CYCLE_FRAMES: tuple[tuple[int, int | None, bytes], ...] = (
     (0x27, 0x13, b""),
     (0x27, 0x1B, b""),
     (0x27, 0x16, b"\x00"),
-    (0x27, 0x1E, b"\x01\x01"),
     (0x27, 0x17, b"\x00"),
     (0x27, 0x14, b"\x00"),
     (0x27, 0x12, b""),

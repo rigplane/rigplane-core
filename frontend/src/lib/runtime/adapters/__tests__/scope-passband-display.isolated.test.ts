@@ -72,7 +72,7 @@ function receipt(input: ScopePassbandDisplayInput, sequence = 1, overrides: Reco
     mode: typeof overrides.mode === 'number' ? overrides.mode : 0 });
   if (!ingress.ok) throw new Error(`invalid fixture: ${ingress.reason}`);
   input.frame = Object.freeze({ source: 'hardware', receiver, providerGeneration: generation,
-    transportEpoch: 1, demanded: true, transport: 'connected', geometry: ingress.geometry, receipt: sequence });
+    transportEpoch: 1, demanded: true, transport: 'connected', geometry: ingress.geometry, lastFrameHasPixels: ingress.geometry.hasPixels, receipt: sequence });
 
 }
 /**
@@ -272,6 +272,26 @@ describe('confirmed VFO selection recovery (MOR-2441)', () => {
 });
 
 describe('confirmed tuning display continuity (MOR-2437)', () => {
+  it.each([1, 3])('keeps FIX mode %s tuning continuity when native clipping changes the delivered width', mode => {
+    const input = banded();
+    receipt(input, 1, { mode });
+    let result = project(input);
+    expect(result.display.state).toBe('current');
+    tune(input, 14_075_000, 11);
+    receipt(input, 2, { mode, startFreq: 14_025_000, endFreq: 14_100_000 });
+    result = project(input, result);
+    expect(result.display).toMatchObject({ state: 'stale', translated: true,
+      tuple: { frequencyHz: 14_075_000, startHz: 14_025_000, endHz: 14_100_000 } });
+    const floors = result.floors;
+    // Pixels can lead the next control readback while the held shape recovers.
+    receipt(input, 3, { mode, startFreq: 14_026_000, endFreq: 14_100_000 });
+    result = project(input, result);
+    expect(result.display).toMatchObject({ state: 'stale', translated: true,
+      tuple: { frequencyHz: 14_075_000, startHz: 14_026_000, endHz: 14_100_000 } });
+    expect(result.floors).toEqual(floors);
+    renew(input, 20, 4);
+    expect(project(input, result).display.state).toBe('current');
+  });
   it('holds the last qualified tuple through a stale frequency gap and recovers while tuning continues', () => {
     const input = banded();
     let result = project(input);
@@ -723,8 +743,6 @@ describe('coherent RF passband display', () => {
     ['DATA', (i) => { edit(i, (s) => { s.main!.dataMode = 1; }); }],
     ['filter', (i) => { edit(i, (s) => { s.main!.filter = 2; }); }],
     ['frame mode', (i) => receipt(i, 2, { mode: 1 })],
-    ['frame start', (i) => receipt(i, 2, { startFreq: 14_010_000 })],
-    ['frame end', (i) => receipt(i, 2, { endFreq: 14_110_000 })],
   ];
   it.each(transitions)('retires %s until newer geometry AND post-boundary receipt', (name, change) => {
     const input = fixture(); if (name === 'slot') slotted(input);
@@ -740,6 +758,105 @@ describe('coherent RF passband display', () => {
     const nextFrame = input.frame; input.frame = oldFrame;
     expect(project(input, retired).display.state).toBe('unknown');
     input.frame = nextFrame; expect(project(input, retired).display.state).toBe('current');
+  });
+  // MOR-4387 (owner build-4): a ZOOM preset switch re-grants the frame
+  // window while every RF fact the tuple carries (frequency, mode, width,
+  // shift, frame scope mode) stays identical. The tuple's window legs
+  // describe the sample plane the facts were proven against — the overlay
+  // geometry reads only the RF legs — so a window-only change RESEATS the
+  // tuple onto the new window instead of retiring it. Retiring cost a full
+  // geometry re-observation cycle (crossedFloors waits for fresh
+  // filterWidth/PBT markers), which was the owner's ~1 s passband blink.
+  it.each([
+    ['narrower (ZOOM+ preset switch)', { startFreq: 14_049_000, endFreq: 14_099_000 }],
+    ['wider (ZOOM− preset switch)', { startFreq: 13_950_000, endFreq: 14_200_000 }],
+    ['start-only', { startFreq: 14_010_000 }],
+    ['end-only', { endFreq: 14_110_000 }],
+  ])('reseats the tuple when the window changes %s with unchanged RF facts', (_name, window) => {
+    const input = fixture();
+    const current = project(input);
+    expect(current.display.state).toBe('current');
+    receipt(input, 2, window);
+    const reseated = project(input, current);
+    expect(reseated.display).toMatchObject({ state: 'current', tuple: {
+      frequencyHz: 14_074_000, mode: 'USB', widthHz: 2400, shiftHz: 0,
+      startHz: 'startFreq' in window ? window.startFreq : 14_000_000,
+      endHz: 'endFreq' in window ? window.endFreq : 14_100_000,
+    } });
+    // Continuity is re-established on the new window: the next projection
+    // holds without fresh geometry evidence.
+    expect(project(input, reseated).display.state).toBe('current');
+  });
+  it('holds the tuple across the grant placeholder of a regrant (stale, pixel-less geometry)', () => {
+    const input = fixture();
+    const current = project(input);
+    expect(current.display.state).toBe('current');
+    // The regrant beat: scopeGrantedGeometry announces the new window stale
+    // and pixel-less by construction; it is not evidence against the tuple.
+    input.frame = { ...input.frame!, geometry: { ...input.frame!.geometry!, freshness: 'stale', hasPixels: false } };
+    expect(project(input, current)).toBe(current);
+  });
+  it('holds a pixel-less grant even when the health clock marks it fresh', () => {
+    const input = fixture(); const current = project(input);
+    input.frame = { ...input.frame!, geometry: { ...input.frame!.geometry!, freshness: 'fresh', hasPixels: false } };
+    expect(project(input, current).display).toEqual(current.display);
+  });
+  it('holds a grant when an unprojected frame advanced the stream receipt', () => {
+    const input = fixture(); const current = project(input);
+    input.frame = { ...input.frame!, receipt: 2,
+      geometry: { ...input.frame!.geometry!, freshness: 'stale', hasPixels: false } };
+    expect(project(input, current).display).toEqual(current.display);
+  });
+  it.each(['mode', 'width', 'provider'] as const)('does not hold an obsolete tuple across a %s change during a grant', kind => {
+    const input = fixture(); const current = project(input);
+    input.frame = { ...input.frame!, geometry: { ...input.frame!.geometry!, freshness: 'stale', hasPixels: false } };
+    if (kind === 'mode') edit(input, state => { state.main!.mode = 'LSB'; });
+    if (kind === 'width') edit(input, state => { state.main!.filterWidth = 1800; });
+    if (kind === 'provider') {
+      edit(input, state => { state.providerGeneration = 2; });
+      editCapabilities(input, caps => { caps.providerGeneration = 2; });
+    }
+    expect(project(input, current).display.state).toBe('unknown');
+  });
+  it('holds through the full ZOOM preset-switch sequence: placeholder, then the new window', () => {
+    const input = fixture();
+    const current = project(input);
+    expect(current.display.state).toBe('current');
+    input.frame = { ...input.frame!, geometry: { ...input.frame!.geometry!, freshness: 'stale', hasPixels: false } };
+    const held = project(input, current);
+    expect(held).toBe(current);
+    receipt(input, 2, { startFreq: 14_049_000, endFreq: 14_099_000 });
+    const reseated = project(input, held);
+    expect(reseated.display).toMatchObject({ state: 'current', tuple: { startHz: 14_049_000, endHz: 14_099_000 } });
+  });
+  it('still reports the placeholder as frame-unavailable before the first capture', () => {
+    const input = fixture();
+    input.frame = { ...input.frame!, geometry: { ...input.frame!.geometry!, freshness: 'stale', hasPixels: false } };
+    expect(project(input).display).toEqual({ state: 'unknown', reason: 'frame-unavailable' });
+  });
+  it('frame silence (stale WITH the last pixels) is not a placeholder and still retires', () => {
+    const input = fixture();
+    const current = project(input);
+    input.frame = { ...input.frame!, geometry: { ...input.frame!.geometry!, freshness: 'stale' } };
+    expect(project(input, current).display.state).toBe('unknown');
+  });
+  it.each([
+    ['mode', (i: ScopePassbandDisplayInput) => { edit(i, (s) => { s.main!.mode = 'LSB'; }); }],
+    ['DATA', (i: ScopePassbandDisplayInput) => { edit(i, (s) => { s.main!.dataMode = 1; }); }],
+    ['filter width', (i: ScopePassbandDisplayInput) => {
+      edit(i, (s) => { s.main!.filterWidth = 1800; });
+      status(i, 'main.filterWidth', { lastObservedMonotonic: 11 });
+    }],
+    ['frame mode', undefined],
+  ] as const)('still retires when %s changes together with the window', (_name, change) => {
+    const input = fixture();
+    const current = project(input);
+    expect(current.display.state).toBe('current');
+    if (change) change(input);
+    receipt(input, 2, _name === 'frame mode'
+      ? { startFreq: 14_049_000, endFreq: 14_099_000, mode: 1 }
+      : { startFreq: 14_049_000, endFreq: 14_099_000 });
+    expect(project(input, current).display.state).toBe('unknown');
   });
   it('rejects A→B→A replay even with renewed receipt and old geometry markers', () => {
     const input = fixture(); slotted(input); const a = project(input);

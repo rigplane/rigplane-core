@@ -673,6 +673,56 @@ describe('handler guards are pinned independently of `disabled` (MOR-1304 F3)', 
     r.dispose();
   });
 
+  // MOR-4392 (coordinator ruling 2026-11-10): on Icom span is a CENTER-mode
+  // setting — in a fixed-edges mode (FIX/S-F) the window is wire-owned and a
+  // SPAN step writes nothing, so the keys render DISABLED (never silently
+  // inert) while the granted width stays on display.
+  it.each([1, 3])('disables the span keys in scope mode %i (fixed edges), width still displayed', (mode) => {
+    const onSpanChange = vi.fn();
+    const r = render(withSc({ mode: known(mode) }), { onSpanChange });
+    const keys = r.el('scope-span')!.querySelectorAll('button');
+    expect(keys).toHaveLength(2);
+    for (const key of keys) {
+      expect((key as HTMLButtonElement).disabled).toBe(true);
+      bypassClick(key as HTMLElement);
+    }
+    flushSync();
+    expect(r.el('scope-span-value')!.textContent).toBe('±50k');
+    expect(onSpanChange).not.toHaveBeenCalled();
+    r.dispose();
+  });
+
+  // MOR-4387 (owner build-4): a disabled control that says nothing reads as
+  // "SPAN stopped working". The blocked stepper names the reason and offers
+  // the one-tap CTR return through the ordinary mode choice.
+  it.each([1, 3])('names why span is disabled in scope mode %i and offers one-tap CTR, in the row and in More', (mode) => {
+    const onChoiceChange = vi.fn();
+    const r = render(withSc({ mode: known(mode) }), { onChoiceChange });
+    expect(r.el('scope-span')!.title).toBe('SPAN works in CTR');
+    const rowKey = r.el('scope-span-ctr')!;
+    expect(rowKey.textContent).toBe('CTR');
+    expect(rowKey.title).toBe('SPAN works in CTR');
+    expect(rowKey.getAttribute('aria-label')).toBe('Switch to CTR');
+    rowKey.click();
+    flushSync();
+    expect(onChoiceChange).toHaveBeenCalledExactlyOnceWith('mode', 0);
+    r.openMore();
+    const overflow = r.el('scope-overflow-span')!;
+    expect(overflow.title).toBe('SPAN works in CTR');
+    r.el('scope-overflow-span-ctr')!.click();
+    flushSync();
+    expect(onChoiceChange).toHaveBeenCalledTimes(2);
+    expect(onChoiceChange).toHaveBeenLastCalledWith('mode', 0);
+    r.dispose();
+  });
+
+  it.each([0, 2])('no reason and no CTR key while span is usable in scope mode %i', (mode) => {
+    const r = render(withSc({ mode: known(mode) }));
+    expect(r.el('scope-span')!.title).toBe('');
+    expect(r.el('scope-span-ctr')).toBeNull();
+    r.dispose();
+  });
+
   const STALE: Availability = { structural: true, operational: false };
 
   it('refuses a choice click on a KNOWN but operationally-stale field', () => {
