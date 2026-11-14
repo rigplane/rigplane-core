@@ -73,6 +73,14 @@ export interface FilterModeConfig {
   maxHz?: number;
   segments?: FilterSegmentConfig[];
   table?: number[];
+  /** Narrow-state variant of `table` (MOR-4434): the widths the radio's
+   *  SH codes map to while NARROW is on, in the profile's own order.
+   *  Present only when the profile declares `narrow_table` for the mode
+   *  (the server omits it otherwise); absent means the mapping does not
+   *  depend on the narrow state. Consumers must not read it directly —
+   *  `resolveFilterModeConfig` selects the active table for the observed
+   *  narrow state and publishes it as `table`. */
+  narrowTable?: number[];
 }
 
 export interface KeyboardBindingConfig {

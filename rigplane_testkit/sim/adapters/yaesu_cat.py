@@ -35,6 +35,7 @@ import errno
 import json
 import logging
 import math
+import re
 import time
 import weakref
 from collections import deque
@@ -109,10 +110,28 @@ def _build_seeded_model(
         engine,
         identity=rig.expected_identity_ids[0],
         recorded=recorded,
+        direct_vfo_slots=rig.receiver_count == 1 and rig.vfo_scheme == "ab",
+        width_digits=_sh_code_digits(rig),
         on_not_modelled=on_not_modelled,
     )
     seed_from_recording(model, recorded)
     return model
+
+
+def _sh_code_digits(rig: RigConfig) -> int:
+    """Width-code digits from the loaded SH command contract (MOR-4433).
+
+    Reads ``get_filter_width``'s parse template (``SH0{code:02d};`` on the
+    FT-991A, ``SH0{code:03d};`` on the fixture/FTX-1) so the sim echoes the
+    shape the radio under test writes and parses. Unknown or absent
+    contracts keep the historical 3-digit shape.
+    """
+    spec = rig.commands.get("get_filter_width")
+    template = getattr(spec, "parse", "") or ""
+    match = re.search(r"\{code:0(\d+)d\}", template)
+    if match is None:
+        return 3
+    return int(match.group(1))
 
 
 def recorded_divergences(
@@ -254,8 +273,9 @@ class YaesuCatSerialFake:
         *,
         seed: int = 0,
         on_not_modelled: Callable[[str], None] | None = None,
+        rig_path: Path | None = None,
     ) -> YaesuCatSerialFake:
-        """Build the FTX-1 fake from the sim profile under *root*.
+        """Build a CAT fake from the sim profile under *root*.
 
         Loads ``rigplane_testkit/sim/profiles/ftx1.toml`` (or
         *profile_path*) with ``load_sim_profile``, the capability profile
@@ -265,12 +285,20 @@ class YaesuCatSerialFake:
         from the recording. The engine clock is ``time.monotonic``;
         *on_not_modelled* is forwarded to the model as best-effort
         coverage-gap instrumentation.
+
+        ``rig_path`` supplies a capability profile outside the product
+        registry, as in ``tests/test_yaesu_split_vfo_profile.py``. With an
+        explicit profile, recordings are optional.
         """
         root = Path(root)
         path = Path(profile_path) if profile_path is not None else root / _PROFILE_REL
-        profile = load_sim_profile(path, root=root)
-        rig = load_rig(root / _RIG_REL)
-        recorded = _recorded_table(root, profile)
+        profile = load_sim_profile(path, root=root, rig_path=rig_path)
+        rig = load_rig(root / _RIG_REL if rig_path is None else rig_path)
+        recorded = (
+            _recorded_table(root, profile)
+            if profile.answers.recorded or rig_path is None
+            else RecordedCatAnswerTable()
+        )
         model = _build_seeded_model(
             profile,
             rig,

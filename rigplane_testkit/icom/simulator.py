@@ -28,7 +28,7 @@ import random
 import struct
 import time
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import Literal
 
@@ -109,6 +109,33 @@ _SCOPE_RECORDING_RADIO_ADDR = 0x98
 def _retarget_scope_wave(frame: bytes, radio_addr: int) -> bytes:
     """Rewrite a recorded wave's source address byte (index 3) only."""
     return frame[:3] + bytes([radio_addr]) + frame[4:]
+
+
+def _retarget_scope_span_wave(frame: bytes, span_hz: int) -> bytes:
+    """Rewrite a centre-mode 27 00 wave's f2 (span) field (MOR-4436).
+
+    The single header of these single-packet (01/01) templates is
+    ``receiver, seq, seqmax, mode, f1(5 BCD), f2(5 BCD), oor`` after
+    ``FE FE to from 27 00`` — located through the production
+    :func:`rigplane.commands.parse_civ_frame`, then rewritten by
+    byte-surgery (there is no production wave-frame builder; the
+    templates replay recorded bytes). Only centre-mode (mode 0x00) waves
+    are rewritten, to the 5-byte little-endian BCD the recorded IC-7610
+    template carries; any other shape passes through unchanged.
+    """
+    try:
+        parsed = parse_civ_frame(frame)
+    except ValueError:
+        return frame
+    if (
+        parsed.command != 0x27
+        or parsed.sub != 0
+        or len(parsed.data) < 15
+        or parsed.data[1:3] != b"\x01\x01"
+        or parsed.data[3] != 0x00
+    ):
+        return frame
+    return frame[:15] + bcd_encode(span_hz, width=5) + frame[20:]
 
 
 def _load_scope_templates(
@@ -402,6 +429,9 @@ class MockIcomRadio(AudioPortMixin):
             byte-identical before its reply (recorded IC-7610 LAN behaviour).
             Default True (fidelity); fault-injection tests that mangle the
             reply itself set it False so the plan sees one packet, not two.
+        write_confirmation: how the simulated radio confirms a SET:
+            ``"ack"`` answers FB (default, unchanged); ``"echo"`` answers
+            the SET with its own frame, radio to controller, and no FB.
         fault_plan: optional :class:`~rigplane_testkit.icom.faults.FaultPlan`
             applying per-port/per-direction drop/duplicate/delay/reorder/
             corrupt/truncate rules on top of the legacy ``drop_rate`` /
@@ -500,6 +530,77 @@ class MockIcomRadio(AudioPortMixin):
             0x26 SET with a non-zero data byte for a mode outside the set
             is NAKed with no state change, and so is a 0x1A 06 DATA-on SET
             while the current mode is outside the set (MOR-4036).
+        substream_discovery: which discovery the CI-V and audio ports
+            answer (default ``"i_am_here"`` keeps the recorded IC-7610
+            behaviour byte for byte). ``"ping"`` models the Xiegu G7250
+            "wfview" network mode (recorded Xiegu G7250 fw V1.0.1,
+            MOR-4436): on the CI-V port and on the audio port an AYT is
+            answered with one radio-originated ping REQUEST (type 0x07,
+            request byte 0x00, sentid = ``radio_id``, rcvdid = the
+            client's sender id, per-port sequence, monotonic-ms time
+            field) instead of I-Am-Here — one ping per AYT is enough, the
+            client repeats AYT. The radio's continuous ~100 ms pinging is
+            NOT modelled: no existing loop sends radio-originated pings
+            (the 0.1 s ``_civ_gap_loop`` only repeats retransmit requests
+            for an open gap). The CI-V port still answers AYR as today;
+            the audio port never answers AYR: it starts the RX stream at
+            the audio client's first AYT (a later OpenClose(open) from the
+            same client retargets, no second stream) and sends the one
+            ping REQUEST only after the first RX burst went out, so a
+            client always sees data first (recorded G7250 run3, MOR-4436:
+            RX data from t=1.055, the first ping at t=1.532). The G7250's
+            own sub-stream cadence (pairs of 1388+580 B every 20 ms,
+            ~100 pkt/s) is NOT modelled: the stream keeps the recorded
+            IC-7610 cadence (three packets every 20 ms). The control port
+            is unchanged (AYT→0x04, AYR→0x06). Pinned by
+            ``tests/testkit/test_sim_wfview_mode.py``.
+        ignored_civ_commands: (cmd, sub) pairs the simulator confirms
+            exactly as an applied write would be — FB, or the request
+            echo when ``write_confirmation="echo"`` — while running no
+            handler, so no state changes (default empty: everything
+            dispatches as today). Recorded Xiegu G7250 "wfview" mode
+            (MOR-4436): ``05 <freq>`` is confirmed but NOT applied, while
+            ``25 00 <freq>`` is applied (the native 0x25 SET already
+            updates the frequency). Same ``(cmd, sub|None)`` matching as
+            ``refused_civ_commands`` (``(cmd, None)`` matches every frame
+            with that command byte); answered after the refusal hook and
+            before the native handlers in ``_dispatch_civ``. Stored as a
+            set attribute like ``refused_civ_commands``; ``ignored_count``
+            counts the confirmations. Pinned by
+            ``tests/testkit/test_sim_wfview_mode.py``.
+        span_preset_semantics: what the simulator's ``27 15`` span value
+            means — the SAME name and values as the profile field
+            ``[scope].span_preset_semantics`` of
+            ``origin/codex/mor-4385-span-half-width`` (``rigs/_schema.md``:
+            ``"half_width"`` = the preset/``27 15`` value is a
+            ±half-width, the same value the centre-mode wave carries;
+            ``"full_width"`` = the value is the full display width).
+            Default None = ``27 15`` is not modelled (today: falls to
+            ``recorded_answers`` / NAK, unchanged). When set, the state
+            attribute ``scope_span_wire_hz`` (public, tests may set it;
+            initial 192_000 = the recorded G7250 reading
+            ``27 15 00 | 00 20 19 00 00 00``, MOR-4436) backs the value:
+            GET ``27 15 00`` answers ``27 15 00`` + the value in
+            ``scope_span_value_bytes`` BCD bytes (little-endian BCD as
+            Icom frequency fields — the recorded 6 bytes decode to
+            192000); SET ``27 15 00`` + that many BCD bytes updates the
+            state and is confirmed (FB, or the echo when
+            ``write_confirmation="echo"``); any other length NAKs (a 5-byte
+            SET to a 6-byte radio is UNRECORDED); a bare ``27 15`` keeps
+            today's fallthrough. With ``scope_stream``, every emitted
+            centre-mode wave's f2 field is rewritten to
+            ``scope_span_wire_hz // 2`` for ``"full_width"`` and to
+            ``scope_span_wire_hz`` for ``"half_width"``; templates are
+            otherwise unchanged (the G7250's own single-division 475-point
+            shape is not modelled — the production decoder already
+            handles it live). Pinned by
+            ``tests/testkit/test_sim_wfview_mode.py``.
+        scope_span_value_bytes: BCD width of the ``27 15`` value (default
+            5, the Icom CI-V width; 6 recorded on the G7250, MOR-4436).
+            Must be 5 or 6 (the Icom frequency-field widths
+            ``core/types.py`` supports) — anything else raises
+            ``ValueError`` in the constructor. Only read when
+            ``span_preset_semantics`` is set.
     """
 
     #: Release reasons that mean the client ended the session itself: the
@@ -520,6 +621,7 @@ class MockIcomRadio(AudioPortMixin):
         keepalive_hold_s: float = _DEFAULT_KEEPALIVE_HOLD_S,
         drop_rate: float = 0.0,
         lan_civ_echo: bool = True,
+        write_confirmation: Literal["ack", "echo"] = "ack",
         unsolicited_civ: bool = False,
         unsolicited_interval_s: float = 0.1,
         fault_plan: FaultPlan | None = None,
@@ -540,6 +642,10 @@ class MockIcomRadio(AudioPortMixin):
         rx_source: RxSource | None = None,
         require_control_discovery: bool = False,
         data_capable_modes: frozenset[int] | None = None,
+        substream_discovery: Literal["i_am_here", "ping"] = "i_am_here",
+        ignored_civ_commands: Iterable[tuple[int, int | None]] | None = None,
+        span_preset_semantics: Literal["half_width", "full_width"] | None = None,
+        scope_span_value_bytes: int = 5,
     ) -> None:
         self._host = host
         self._ctrl_port_hint = port
@@ -570,6 +676,10 @@ class MockIcomRadio(AudioPortMixin):
         self._civ_client_id: int = 0
         self._ctrl_seq: int = 1
         self._civ_seq: int = 1
+        # Numbering of radio-originated ping REQUESTS on the CI-V port
+        # (wfview-mode discovery; the audio port's lives in
+        # ``_audio_init``). Starts at 0 like the recorded first ping.
+        self._civ_ping_seq = 0
 
         # Radio state (for CI-V responses)
         # MOR-3064: test-data model-id answered to ``19 00`` (identity read),
@@ -633,6 +743,22 @@ class MockIcomRadio(AudioPortMixin):
         self._scope_13: int = 0x01
         self._scope_stream = scope_stream
         self._scope_blank_waves = scope_blank_waves and scope_stream
+        # wfview-mode scope span (MOR-4436): what the ``27 15`` value
+        # means — the same ``"half_width"`` / ``"full_width"`` vocabulary
+        # as the profile ``[scope].span_preset_semantics`` field. None =
+        # ``27 15`` not modelled (today's NAK fallthrough). The wire value
+        # in Hz (public: tests set it directly); initial 192_000 is the
+        # recorded G7250 reading.
+        if scope_span_value_bytes not in (5, 6):
+            raise ValueError(
+                "scope_span_value_bytes must be 5 or 6 "
+                f"(Icom frequency-field widths), got {scope_span_value_bytes}"
+            )
+        self.span_preset_semantics: Literal["half_width", "full_width"] | None = (
+            span_preset_semantics
+        )
+        self.scope_span_value_bytes: int = scope_span_value_bytes
+        self.scope_span_wire_hz: int = 192_000
         self._scope_speed = {0x00: 0x01, 0x01: 0x00}  # MAIN mid, SUB fast in w55
         self._scope_templates = (
             _load_scope_templates(radio_addr, dual_receiver=dual_receiver)
@@ -652,6 +778,11 @@ class MockIcomRadio(AudioPortMixin):
         # (``src/rigplane/runtime/_civ_rx.py``: a frame whose sender is not
         # the radio address never routes), so CI-V routing ignores it.
         self.lan_civ_echo: bool = lan_civ_echo
+        self._write_confirmation: Literal["ack", "echo"] = write_confirmation
+        # wfview-mode discovery (MOR-4436): "i_am_here" answers AYT with
+        # I-Am-Here on the CI-V and audio ports (recorded IC-7610);
+        # "ping" answers one radio-originated ping REQUEST instead.
+        self.substream_discovery: Literal["i_am_here", "ping"] = substream_discovery
 
         # ----------------------------------------------------------------
         # Session-lifecycle modelling (additive; all opt-in)
@@ -731,6 +862,13 @@ class MockIcomRadio(AudioPortMixin):
         # ``sub``. The refused frame's state effect never applies.
         self.refused_civ_commands: set[tuple[int, int | None]] = set()
         self.refused_count: int = 0  # CI-V frames answered NAK by the hook
+        # wfview-mode ignored commands (MOR-4436): (cmd, sub) pairs
+        # confirmed exactly as an applied write would be while running no
+        # handler, so no state changes (see ``_dispatch_civ``).
+        self.ignored_civ_commands: set[tuple[int, int | None]] = set(
+            ignored_civ_commands or ()
+        )
+        self.ignored_count: int = 0  # CI-V frames confirmed by the hook
         # Scheduled events (reboot / keepalive silence / drop_session) —
         # absolute deadlines, 0.0 = inactive.
         self._down_until: float = 0.0  # reboot: radio "powered off" until then
@@ -1901,8 +2039,15 @@ class MockIcomRadio(AudioPortMixin):
     ) -> None:
         n = len(data)
 
-        # Are You There → I Am Here
+        # Are You There → I Am Here — or one radio-originated ping
+        # REQUEST in wfview-mode discovery (recorded G7250, MOR-4436: the
+        # CI-V port never sends I-Am-Here, it starts pinging instead).
         if n == _HEADER_SIZE and ptype == _PT_ARE_YOU_THERE:
+            if self.substream_discovery == "ping":
+                seq = self._civ_ping_seq
+                self._civ_ping_seq = (seq + 1) & 0xFFFF
+                self._send(proto, self._ping_request(sender_id, seq), addr, "civ")
+                return
             reply = self._handshake_reply(data, ptype, sender_id)
             assert reply is not None  # matched above
             self._send(proto, reply, addr, "civ")
@@ -2405,11 +2550,13 @@ class MockIcomRadio(AudioPortMixin):
 
         Answer order: the opt-in refusal hook (:attr:`refused_civ_commands`)
         NAKs first and is never overridden by the recorded table; a native
-        handler's data/ACK answer is kept unless it is a NAK; a native NAK —
-        and a request with no native handler — falls to
-        ``recorded_answers.answer`` with the request frame rebuilt from the
-        parsed parts; a miss (or no table mounted) keeps the NAK. A
-        controller's own ACK/NAK is never answered, table included.
+        ``None`` (a controller's own ACK/NAK frame) is terminal and never
+        answered; a native handler's data/ACK answer is kept unless it is a
+        NAK; a native NAK falls to ``recorded_answers.answer`` with the
+        request frame rebuilt from the parsed parts — except a NAK the span
+        model explicitly rejected (wrong SET length or receiver), which
+        stays NAK so the reply agrees with the unchanged state; a miss (or
+        no table mounted) keeps the NAK.
         """
         to = from_addr  # respond to whoever sent
         frm = self._radio_addr
@@ -2420,16 +2567,47 @@ class MockIcomRadio(AudioPortMixin):
             self.refused_count += 1
             return self._civ_nak(to, frm)
 
-        native = self._dispatch_civ_native(cmd, payload, from_addr)
-        if native is None or native[4] != _CMD_NAK:
-            return native
-        if self.recorded_answers is not None:
-            recorded = self.recorded_answers.answer(
-                self._civ_frame(frm, to, cmd, data=payload)
-            )
-            if recorded is not None:
-                return recorded
-        return native
+        # Ignored-commands hook (MOR-4436): a matched frame is confirmed
+        # exactly as an applied write would be — the FB below flows
+        # through the ``write_confirmation`` choke, so the confirmation
+        # is an echo in ``"echo"`` mode — while no handler runs, so no
+        # state changes.
+        if self.ignored_civ_commands and self._civ_ignored(cmd, payload):
+            self.ignored_count += 1
+            reply: bytes | None = self._civ_ack(to, frm)
+        else:
+            native = self._dispatch_civ_native(cmd, payload, from_addr)
+            if native is None or native[4] != _CMD_NAK:
+                reply = native
+            elif self._span_claims_terminal(cmd, payload):
+                # The span model claimed this request and rejected it
+                # (wrong SET length, wrong receiver): keep its NAK.
+                # Falling through would let the table's writable 27 15
+                # 00 row ACK a SET the state refused, so reply and state
+                # would disagree.
+                reply = native
+            else:
+                reply = None
+                if self.recorded_answers is not None:
+                    reply = self.recorded_answers.answer(
+                        self._civ_frame(frm, to, cmd, data=payload)
+                    )
+                if reply is None:
+                    reply = native
+        if (
+            self._write_confirmation == "echo"
+            and reply is not None
+            and reply[4] == _CMD_ACK
+        ):
+            # Echo-only confirmation: answer the SET with its own frame,
+            # radio to controller; state changes above still apply. (The
+            # LAN echo is a raw bounce that keeps the request's
+            # controller-to-radio addresses, so the client drops it.)
+            # The choice applies after the native-or-recorded reply is
+            # picked, so a recorded-answer FB becomes the addressed echo
+            # of the SET rather than a bare FB.
+            return self._civ_frame(to, frm, cmd, data=payload)
+        return reply
 
     def _dispatch_civ_native(
         self, cmd: int, payload: bytes, from_addr: int
@@ -2767,6 +2945,23 @@ class MockIcomRadio(AudioPortMixin):
         # Unknown command → NAK
         return self._civ_nak(to, frm)
 
+    def _span_claims_terminal(self, cmd: int, payload: bytes) -> bool:
+        """Whether the span model claimed and rejected this request.
+
+        When ``span_preset_semantics`` is set, the ``27 15`` span branch of
+        :meth:`_dispatch_scope` owns every non-bare ``27 15`` form (GET
+        ``27 15 00`` and same-width SETs are answered; anything else NAKs
+        before any mutation). Those NAKs are terminal: they must not fall
+        through to ``recorded_answers``. Only the bare ``27 15`` keeps
+        today's table fallthrough.
+        """
+        return (
+            self.span_preset_semantics is not None
+            and cmd == 0x27
+            and len(payload) > 1
+            and payload[0] == 0x15
+        )
+
     def _dispatch_scope(self, payload: bytes, from_addr: int) -> bytes | None:
         """Handle CI-V 0x27 scope commands per recorded scope_control forms.
 
@@ -2832,6 +3027,30 @@ class MockIcomRadio(AudioPortMixin):
             if rest in (b"\x00", b"\x01"):  # SET → FB, update state
                 self._scope_13 = rest[0]
                 self._scope_retime()
+                return self._civ_ack(to, frm)
+            return self._civ_nak(to, frm)
+
+        # --- Subcommand 15: scope span (opt-in wfview-mode modelling) ---
+        # Recorded Xiegu G7250 (MOR-4436): read ``27 15 00`` answers
+        # ``27 15 00`` + receiver byte 00 + a 6-byte little-endian BCD
+        # value (192000 = the FULL display span); spans are SET with
+        # ``27 15 00`` + the same 6 BCD bytes and read back exactly; a
+        # bare ``27 15`` got silence. On Icom (recorded IC-7610) the value
+        # is 5 BCD bytes and the same half-width the wave carries. Only
+        # receiver 00 is answered; anything else (and any SET length but
+        # the modelled width — a 5-byte SET to a 6-byte radio is
+        # UNRECORDED) NAKs before any mutation.
+        if sub == 0x15 and self.span_preset_semantics is not None:
+            width = self.scope_span_value_bytes
+            if rest == b"\x00":  # GET: receiver + BCD wire value
+                return self._civ_frame(
+                    to,
+                    frm,
+                    0x27,
+                    data=b"\x15\x00" + bcd_encode(self.scope_span_wire_hz, width=width),
+                )
+            if len(rest) == 1 + width and rest[:1] == b"\x00":  # SET
+                self.scope_span_wire_hz = bcd_decode(rest[1:])
                 return self._civ_ack(to, frm)
             return self._civ_nak(to, frm)
 
@@ -2913,6 +3132,15 @@ class MockIcomRadio(AudioPortMixin):
                 frames = self._scope_templates[receiver]
                 index = self._scope_template_index[receiver]
                 frame = frames[index % len(frames)]
+                if self.span_preset_semantics is not None:
+                    # wfview-mode span (MOR-4436): the wave's f2 carries the
+                    # wire span — half the full display width for a
+                    # "full_width" radio, the wire value itself for
+                    # "half_width" (same as the 27 15 value).
+                    span = self.scope_span_wire_hz
+                    if self.span_preset_semantics == "full_width":
+                        span //= 2
+                    frame = _retarget_scope_span_wave(frame, span)
                 if self._scope_blank_waves:
                     frame = _blank_scope_wave(frame)
                 self._scope_template_index[receiver] = index + 1
@@ -3004,6 +3232,21 @@ class MockIcomRadio(AudioPortMixin):
     # CI-V frame builders
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _hook_matches(
+        entries: set[tuple[int, int | None]], cmd: int, payload: bytes
+    ) -> bool:
+        """True when a (cmd, sub) hook set matches this (cmd, payload).
+
+        ``(cmd, None)`` matches every frame with that command byte;
+        ``(cmd, sub)`` matches only frames whose first payload byte is
+        ``sub`` — the sub-command byte for commands that carry one.
+        Shared by the refusal and ignored-commands hooks (MOR-4436).
+        """
+        if (cmd, None) in entries:
+            return True
+        return bool(payload) and (cmd, payload[0]) in entries
+
     def _civ_refused(self, cmd: int, payload: bytes) -> bool:
         """True when the refusal hook matches this (cmd, payload).
 
@@ -3011,9 +3254,15 @@ class MockIcomRadio(AudioPortMixin):
         ``(cmd, sub)`` refuses only frames whose first payload byte is
         ``sub`` — the sub-command byte for commands that carry one.
         """
-        if (cmd, None) in self.refused_civ_commands:
-            return True
-        return bool(payload) and (cmd, payload[0]) in self.refused_civ_commands
+        return self._hook_matches(self.refused_civ_commands, cmd, payload)
+
+    def _civ_ignored(self, cmd: int, payload: bytes) -> bool:
+        """True when the ignored-commands hook matches this (cmd, payload).
+
+        Same ``(cmd, sub|None)`` matching as :meth:`_civ_refused`; a
+        matched frame is confirmed without running any handler (MOR-4436).
+        """
+        return self._hook_matches(self.ignored_civ_commands, cmd, payload)
 
     def _civ_frame(
         self,
@@ -3110,6 +3359,28 @@ class MockIcomRadio(AudioPortMixin):
         struct.pack_into("<I", pkt, 0x0C, client_id)
         pkt[0x10] = 0x01  # reply flag
         pkt[0x11:0x15] = data[0x11:0x15]  # echo timestamp
+        return bytes(pkt)
+
+    def _ping_request(self, client_id: int, seq: int) -> bytes:
+        """Build a radio-originated ping REQUEST (wfview-mode discovery).
+
+        Same 0x15-byte shape as :meth:`_ping_reply` with the request flag
+        (0x00) and the radio's own monotonic-ms time field, mirroring how
+        the production client builds its pings (``core/transport.py``:
+        ``_build_ping``) — the unit matches that builder; the G7250
+        recording it was checked against only shows one 4-byte value
+        (MOR-4436, UNRECORDED unit). The caller numbers it in its port's
+        own ping sequence (``_civ_ping_seq`` / ``_audio_ping_seq``).
+        """
+        pkt = bytearray(_PING_SIZE)
+        struct.pack_into("<I", pkt, 0x00, _PING_SIZE)
+        struct.pack_into("<H", pkt, 0x04, _PT_PING)
+        struct.pack_into("<H", pkt, 0x06, seq)
+        struct.pack_into("<I", pkt, 0x08, self.radio_id)
+        struct.pack_into("<I", pkt, 0x0C, client_id)
+        pkt[0x10] = 0x00  # request flag
+        ms = int(self.clock() * 1000) & 0xFFFFFFFF
+        struct.pack_into("<I", pkt, 0x11, ms)
         return bytes(pkt)
 
     def _login_response(self, data: bytes, sender_id: int) -> bytes:

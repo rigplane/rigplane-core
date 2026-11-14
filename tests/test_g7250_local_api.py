@@ -22,15 +22,22 @@ Harness (reused, not reinvented):
   ``_ANSWER_WINDOW_S`` and the bench ``RecordedAnswerTable``. No parallel
   fake: the shared ``CivSerialFake`` natively answers identity, frequency,
   mode, PTT and S-meter, and the bench table covers the recorded rows; the
-  only addition is a small register overlay for the five operator-control
-  bytes this profile drives (same subclass pattern as that module's
-  ``_G7250QuantizedPowerFake``): a SET with data stores the bytes, the bare
-  GET answers them, everything else falls through to ``super()``. The
-  shared fake does not natively model ``0x11`` / ``0x16`` function /
-  ``0x14`` level registers (unknown unicast reads answer NAK), so without
-  the overlay the drain's readback GETs could not be answered; with it
-  every case below is expressible on the shared fake and no case is
-  dropped.
+  only addition is a small register overlay for the six operator-control
+  registers this profile drives (same subclass pattern as that module's
+  ``_G7250QuantizedPowerFake``). ATT / preamp / AGC echo the written
+  bytes; the key-speed, MIC-gain and CW-pitch registers apply the
+  reference's write/read formulas (MOR-4436 part A gate P1), so a wrong
+  encode serves the quantized value instead of the request. Everything
+  else falls through to ``super()``. The shared fake does not natively
+  model ``0x11`` / ``0x16`` function / ``0x14`` level registers (unknown
+  unicast reads answer NAK), so without the overlay the served readbacks
+  could not be answered; with it every case below is expressible on
+  the shared fake and no case is dropped. No test asserts on a recorded
+  GET reply: the profile declares cw_pitch/key_speed
+  ``command_response_observable`` (on-demand, never polled), so production
+  owes those controls no bare GET, and every served value below is
+  observed through the real local API (``GET /api/v1/state``) exactly like
+  the ATT/PRE/AGC cases.
 
 Readback path: the poller queues a post-write readback as a genuine
 consequence of executing the command; the test dispatches it with one
@@ -53,7 +60,12 @@ import pytest
 
 from rigplane.backends.factory import create_radio
 from rigplane.cli import _build_backend_config, _build_parser
-from rigplane.commands import CONTROLLER_ADDR, build_civ_frame
+from rigplane.commands import (
+    CONTROLLER_ADDR,
+    _level_bcd_decode,
+    _level_bcd_encode,
+    build_civ_frame,
+)
 from rigplane.core import serial_open
 from rigplane.core.types import bcd_decode, bcd_encode
 from rigplane.core.state_pipeline_contracts import (
@@ -75,18 +87,34 @@ from testkit.test_g7250_session_wire import (
 _CIV_ADDR = 0xA0  # G7250 CI-V address (rigs/g7250.toml, MOR-4436)
 
 
+def _half_up(numerator: int, denominator: int) -> int:
+    """Round-to-nearest with exact halves up (the reference's own ``round``)."""
+    quotient, remainder = divmod(numerator, denominator)
+    return quotient + (1 if 2 * remainder >= denominator else 0)
+
+
 class _G7250OperatorFake(CivSerialFake):
     """The G7250 operator-control registers on the shared serial fake.
 
-    The radio stores the last written byte(s) per control and answers the
-    bare GET with them — the echo-consistent minimal model (the same class
-    as the whole-watt register in ``_G7250QuantizedPowerFake``): whatever
-    the backend encoder wrote is what the readback decodes, so the served
-    value can only match when the profile encodes the request correctly.
+    ATT / preamp / AGC keep the echo-consistent minimal model (the same
+    class as the whole-watt register in ``_G7250QuantizedPowerFake``):
+    whatever the backend encoder wrote is what the readback decodes.
     Initial values mirror the bench audit (LIVE G7250 2026-11-09: ATT,
     preamp and NR/NB read ``00``); AGC starts at ``00`` (OFF) rather than
     the bench's MID shadow (``02``), which the new profile deliberately
     leaves uncommandable.
+
+    The key-speed, MIC-gain and CW-pitch registers instead apply the
+    vendor's documented write/read formulas (Xiegu G7250 CI-V Reference
+    Rev 1.2 (2026-11-06), Tables 1-4/1-5/2-2; key speed and MIC gain
+    confirmed floor-on-write/floor-on-read LIVE on G7250 V1.0.1 2026-11-14,
+    CW pitch write not observable there — see ``[controls.cw_pitch]``):
+    a SET stores the NATIVE value the written raw admits, and the bare GET
+    answers the raw that native value reads back as — never an echo of
+    the written bytes. That quantization is what the old echo model hid
+    (a wrong encode still served the request). Initial values equal a
+    raw-0 write, whose GET answers ``00 00`` exactly like the previous
+    echo model.
     """
 
     def __init__(self) -> None:
@@ -103,8 +131,12 @@ class _G7250OperatorFake(CivSerialFake):
         self._att = b"\x00"
         self._preamp = b"\x00"
         self._agc = b"\x00"
-        self._pitch = b"\x00\x00"
-        self._speed = b"\x00\x00"
+        # Native stored values (see the class docstring for the formulas).
+        self._speed_wpm = 5  # write 5+floor(N*45/255), read floor((x-5)*255/45)
+        self._pitch_hz = (
+            400  # write 400+10*round(N*80/255), read round(255*(x-400)/800)
+        )
+        self._mic_native = 0  # write floor(N*30/255), read floor(x*255/30)
 
     def _answer(self, parsed: Any, connection: Any, frame: bytes) -> bytes | None:
         if parsed.receiver is None:
@@ -127,17 +159,29 @@ class _G7250OperatorFake(CivSerialFake):
                     sub=parsed.sub,
                     data=getattr(self, register),
                 )
-            if parsed.command == 0x14 and parsed.sub in (0x09, 0x0C):
-                register = "_pitch" if parsed.sub == 0x09 else "_speed"
+            if parsed.command == 0x14 and parsed.sub in (0x09, 0x0B, 0x0C):
                 if parsed.data:
-                    setattr(self, register, bytes(parsed.data))
+                    raw = _level_bcd_decode(bytes(parsed.data))
+                    if parsed.sub == 0x0C:
+                        self._speed_wpm = 5 + (raw * 45) // 255
+                    elif parsed.sub == 0x0B:
+                        self._mic_native = (raw * 30) // 255
+                    else:
+                        self._pitch_hz = 400 + 10 * _half_up(raw * 80, 255)
                     return self._ack()
+                if parsed.sub == 0x0C:
+                    raw = (self._speed_wpm - 5) * 255 // 45
+                elif parsed.sub == 0x0B:
+                    raw = self._mic_native * 255 // 30
+                else:
+                    raw = _half_up(255 * (self._pitch_hz - 400), 800)
+                data = _level_bcd_encode(raw)
                 return build_civ_frame(
                     CONTROLLER_ADDR,
                     self._civ_addr,
                     0x14,
                     sub=parsed.sub,
-                    data=getattr(self, register),
+                    data=data,
                 )
             # Frequency SET the profile now uses: `25 00` + 5 BCD bytes
             # stores the frequency (the radio applies it and answers FB,
@@ -163,7 +207,7 @@ class _G7250OperatorFake(CivSerialFake):
 async def _station(
     monkeypatch: pytest.MonkeyPatch,
 ) -> AsyncIterator[
-    tuple[WebServer, Any, CivSerialFake, list[Any], asyncio.Event, RadioPoller]
+    tuple[WebServer, Any, _G7250OperatorFake, list[Any], asyncio.Event, RadioPoller]
 ]:
     """The band-4m harness over a G7250: real server socket, real radio on
     the register fake, real poller consumer. Yields the poller as well so
@@ -371,14 +415,20 @@ async def test_agc_slow_writes_03_and_capabilities_serve_slow(
 
 
 @pytest.mark.asyncio
-async def test_cw_pitch_410_encodes_raw_3_and_serves_410(
+async def test_cw_pitch_410_encodes_raw_4_and_serves_410(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """410 Hz encodes to raw 3 (``14 09 00 03``) and reads back as 410 Hz.
+    """410 Hz encodes to raw 4 (``14 09 00 04``) and is served back as 410 Hz.
 
-    Previous profile (``encode_rounding = "ceil"``, quantum 1): 410 Hz
-    encoded to raw 4 (``14 09 00 04``) and decoded back as 413 Hz — so the
-    frame assertion and the served ``cwPitch == 410`` both fail there.
+    The profile declares ``encode_rounding = "ceil"`` (MOR-4436 part A
+    gate P1): 410 Hz -> raw ceil((410-400)*255/800) = 4. The fake stores
+    the reference's 400+10*round(4*80/255) = 410 Hz, so the served
+    readback observed through the real local API is 410 Hz. Previous
+    profile (``nearest_half_down``): 410 Hz encoded to raw 3
+    (``14 09 00 03``) — so the SET frame assertion fails there — and the
+    old echo fake could not tell the two apart. (Live-radio caveat in
+    ``[controls.cw_pitch]``: pitch write is not observable on V1.0.1, so
+    the harness keeps the reference formula unverified.)
     """
     async with _station(monkeypatch) as (web, _radio, fake, entries, executed, poller):
         host, port = _addr(web)
@@ -388,14 +438,84 @@ async def test_cw_pitch_410_encodes_raw_3_and_serves_410(
         await asyncio.wait_for(executed.wait(), 5)
         assert len(entries) == 1
 
-        # FE FE 88 E0 14 09 00 03 FD on the wire.
+        # FE FE 88 E0 14 09 00 04 FD on the wire.
         written = _single_set(fake, 0x14, 0x09)
         assert written.to_addr == _CIV_ADDR
-        assert bytes(written.data) == b"\x00\x03"
+        assert bytes(written.data) == b"\x00\x04"
 
         await poller._send_query()
         state = await _wait_served(host, port, ("cwPitch",), 410)
         assert state["cwPitch"] == 410
+
+
+@pytest.mark.asyncio
+async def test_key_speed_25_wpm_encodes_raw_114_and_serves_25(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """25 WPM encodes to raw 114 (``14 0C 01 14``) and is served back as 25 WPM.
+
+    The profile declares ``encode_rounding = "ceil"`` (MOR-4436 part A
+    gate P1): 25 WPM -> raw ceil((25-5)*255/45) = 114. The fake stores the
+    reference's 5+floor(114*45/255) = 25 WPM, so the served readback
+    observed through the real local API is 25 WPM. Previous profile
+    (``nearest_half_down``): 25 WPM encoded to raw 113
+    (``14 0C 01 13``) — so the SET frame assertion fails there — and the
+    stored speed was 5+floor(113*45/255) = 24 WPM, so the served
+    ``keySpeed == 25`` fails there too.
+    """
+    async with _station(monkeypatch) as (web, _radio, fake, entries, executed, poller):
+        host, port = _addr(web)
+        status, result = await _request(web, "http", "set_key_speed", {"speed": 25})
+        assert status == 200, result
+        assert result["ok"] is True
+        await asyncio.wait_for(executed.wait(), 5)
+        assert len(entries) == 1
+
+        # FE FE 88 E0 14 0C 01 14 FD on the wire.
+        written = _single_set(fake, 0x14, 0x0C)
+        assert written.to_addr == _CIV_ADDR
+        assert bytes(written.data) == b"\x01\x14"
+
+        await poller._send_query()
+        state = await _wait_served(host, port, ("keySpeed",), 25)
+        assert state["keySpeed"] == 25
+
+
+@pytest.mark.asyncio
+async def test_mic_gain_85_raw_round_trips_through_the_reference_formulas(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Raw MIC gain 85 is stored as native 10 and served back as raw 85.
+
+    ``set_mic_gain`` moves raw 0-255 levels end to end (runtime/radio.py,
+    the validation STEP_LEVEL_255 matrix and the frontend all speak raw),
+    so there is no display-driven HTTP form here: the display-band mapping
+    (``[controls.mic_gain]`` 0-30, ``ceil``) is exercised by the loader
+    round-trip test, not by this path. What the HTTP path can pin is the
+    radio's quantization: the fake stores the reference's
+    floor(85*30/255) = 10 and reads back raw floor(10*255/30) =
+    85 (``00 85``) — 85 is a fixed point of the write/read pair, so the
+    served value observed through the real local API equals the request. A
+    non-fixed raw (e.g. 128, stored as native 15, read back as 127) serves
+    the quantized readback, the same posture as every shipped Icom
+    profile's raw levels.
+    """
+    async with _station(monkeypatch) as (web, _radio, fake, entries, executed, poller):
+        host, port = _addr(web)
+        status, result = await _request(web, "http", "set_mic_gain", {"level": 85})
+        assert status == 200, result
+        assert result["ok"] is True
+        await asyncio.wait_for(executed.wait(), 5)
+        assert len(entries) == 1
+
+        # FE FE 88 E0 14 0B 00 85 FD on the wire.
+        written = _single_set(fake, 0x14, 0x0B)
+        assert written.to_addr == _CIV_ADDR
+        assert bytes(written.data) == b"\x00\x85"
+
+        await poller._send_query()
+        state = await _wait_served(host, port, ("micGain",), 85)
+        assert state["micGain"] == 85
 
 
 @pytest.mark.asyncio

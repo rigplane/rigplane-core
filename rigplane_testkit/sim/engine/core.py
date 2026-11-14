@@ -280,6 +280,11 @@ class SimEngine:
     def trace(self) -> tuple[Record, ...]:
         return tuple(self._records)
 
+    @property
+    def frequency_range_hz(self) -> tuple[int, int]:
+        """Valid frequency domain in Hz, inclusive, for CAT writes."""
+        return self._caps.frequency_range_hz
+
     def rng(self, stream: str) -> random.Random:
         """``Random(f"{seed}:{stream}")`` per stream; same name, same object."""
         rng = self._rngs.get(stream)
