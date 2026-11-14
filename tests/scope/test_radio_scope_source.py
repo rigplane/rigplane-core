@@ -729,9 +729,10 @@ async def test_observed_external_fix_mode_is_adopted_never_reasserted():
 @pytest.mark.parametrize("model", ["ic7610", "ic7300"])
 async def test_fix_transitions_reresolve_follow_grant_per_frame(model):
     """MOR-4392 round 2: CTR→FIX→CTR re-resolves the follow grant per
-    frame — the request clipped to the fixed window in FIX, to the
-    native coverage in CENTER — with zero radio writes after the initial
-    CENTER subscribe and no resubscribe for the grant to follow.
+    frame — the requested view kept in FIX (MOR-4451: the fixed window
+    is merely offset, not narrower) with the wire coverage intersected,
+    to the native coverage in CENTER — with zero radio writes after the
+    initial CENTER subscribe and no resubscribe for the grant to follow.
     """
     profile = load_rig(Path("rigs") / f"{model}.toml").to_profile()
     sim = _SimRadio(profile)
@@ -753,12 +754,12 @@ async def test_fix_transitions_reresolve_follow_grant_per_frame(model):
         source.feed_frame(ScopeFrame(0, 1, 14_000_000, 14_100_000, bytes(475), False))
         await sub.receive()
         fixed = encoded[-1]
-        assert (fixed.view_start_hz, fixed.view_end_hz) == (14_050_000, 14_100_000)
+        assert (fixed.view_start_hz, fixed.view_end_hz) == (14_050_000, 14_150_000)
         assert (fixed.coverage_start_hz, fixed.coverage_end_hz) == (
             14_050_000,
             14_100_000,
         )
-        assert sub.granted.view == View(14_050_000, 14_100_000)
+        assert sub.granted.view == View(14_050_000, 14_150_000)
         assert sub.granted.coverage == Coverage(14_000_000, 14_100_000)
         # A follow span gesture inside FIX writes nothing (RED pre-fix:
         # set_view drives set_center and writes 0x14 mode 0).

@@ -160,8 +160,8 @@ class RadioScopeSource:
     def resolve_follow(
         self, view: FollowView, native: Coverage, receiver: int | None = None
     ) -> View:
-        """Granted view for a follow request: the requested window
-        clipped to the live native coverage.
+        """Granted view for a follow request: the requested window,
+        kept at its width and VFO centre while the radio catches up.
 
         MOR-4392: ZOOM asks for a visible width (follow, centred on
         the VFO); the radio is driven to the smallest preset covering
@@ -170,13 +170,23 @@ class RadioScopeSource:
         an external change narrows native below the request, the grant
         is the clipped intersection and nothing is written back
         (MOR-4385 adoption). A disjoint request falls back to native.
+        MOR-4451: a native that is merely OFFSET (same or larger
+        width, shifted — the VFO moved while the radio still streams
+        the older coverage) keeps the requested view unchanged, so
+        the view never narrows off-centre for a few frames; the wire
+        frame still carries the intersected coverage. Only a truly
+        NARROWER native clips.
         """
         requested = self.resolve_view(view, receiver)
         start = max(requested.start_hz, native.start_hz)
         end = min(requested.end_hz, native.end_hz)
-        if start < end:
+        if start >= end:
+            return native
+        if (native.end_hz - native.start_hz) < (
+            requested.end_hz - requested.start_hz
+        ):
             return View(start, end)
-        return native
+        return requested
 
     def coverage_for(self, view: ViewRequest, receiver: int | None = None) -> Coverage:
         resolved = self.resolve_view(view, receiver)
