@@ -25,7 +25,7 @@ Silicon Labs CP210x bridge, VID:PID `10C4:EA70`):
 | Enhanced COM Port | CAT (frequency, mode and the rest). RigPlane uses this port. |
 | Standard COM Port | PTT, CW keying and digital-mode transmit control (RTS/DTR) for other programs. RigPlane does not use it in this version. |
 
-COM port numbers are host-specific; they are never the same twice. To find
+COM port numbers differ from one computer to another. To find
 the port, run:
 
 ```bash
@@ -42,9 +42,9 @@ Set the radio menus (menu numbers from the CAT manual, EX table):
 - **032 CAT TOT** — CAT timeout: 10 / 100 / 1000 / 3000 ms. The default
   is fine.
 - **033 CAT RTS** — hardware flow control: disabled or enabled.
-  RigPlane has not yet been verified with CAT RTS enabled or disabled.
+  Not verified on hardware yet; leave the radio's default.
 
-## Radio Settings for USB Audio
+## USB Audio Device
 
 When no audio device is named, RigPlane first looks for the audio device on
 the same USB connection as the serial port, then falls back to picking one by
@@ -105,12 +105,12 @@ split uses the two VFOs.
 
 ## What This Version Does
 
-Radio control (frequency, mode, filters, VFO A/B, split, meters), transmit
-(PTT from the CLI, web UI, rigctld and Python), audio, and digital modes
-through the radio's USB audio device work. Transmit is implemented but not
-yet verified on a real FT-991A. Not yet available: antenna tuner, noise
-blanker/noise reduction switches, clarifier, memory channels, squelch,
-contour.
+This version provides radio control (frequency, mode, filters, VFO A/B,
+split, meters), audio, and digital modes through the radio's USB audio
+device. Transmit (PTT and digital modes) is implemented through the
+radio's USB CAT port but has not yet been verified on a real FT-991A.
+Not available in this version: sending CW text from RigPlane, antenna tuner, noise blanker/noise
+reduction switches, clarifier, memory channels, squelch, contour.
 
 The profile was built from the manufacturer's CAT manual and is being
 verified on real radios. If something misbehaves, see

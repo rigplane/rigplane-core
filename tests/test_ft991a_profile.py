@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, call
 
 import pytest
 
@@ -304,12 +304,12 @@ async def test_set_filter_width_uses_the_active_table_base(radio):
     # USB wide 2400 Hz is table index 5 from base 09 -> SH014;, not SH06;
     radio._transport.query = AsyncMock(side_effect=["MD02", "NA00"])
     await radio.set_filter_width(2400)
-    radio._transport.write.assert_called_once_with("SH014;")
+    assert radio._transport.write.call_args_list == [call("SH014;")]
     # USB narrow 1500 Hz is table index 6 from base 01 -> SH07;.
     radio._transport.query = AsyncMock(side_effect=["MD02", "NA01"])
     radio._transport.write.reset_mock()
     await radio.set_filter_width(1500)
-    radio._transport.write.assert_called_once_with("SH007;")
+    assert radio._transport.write.call_args_list == [call("SH007;")]
 
 
 @pytest.mark.asyncio
@@ -327,7 +327,7 @@ async def test_cw_wide_table_counts_from_code_10(radio):
     # MD03 reads CW-U: CW wide 2400 Hz is table index 6 from base 10 -> SH16;.
     radio._transport.query = AsyncMock(side_effect=["MD03", "NA00"])
     await radio.set_filter_width(2400, receiver=0)
-    radio._transport.write.assert_called_once_with("SH016;")
+    assert radio._transport.write.call_args_list == [call("SH016;")]
     radio._transport.query = AsyncMock(side_effect=["MD03", "SH016", "NA00"])
     assert await radio.get_filter_width() == 2400
 
@@ -363,7 +363,7 @@ async def test_sh_reset_code_00_reads_radio_default_and_writes_two_digits(
     # Manual PDF p.17: code 00 is the mode-dependent "(Default)". The
     # reset command writes SH000;; a read of SH000; reports the default.
     await radio.reset_filter_width()
-    radio._transport.write.assert_called_once_with("SH000;")
+    assert radio._transport.write.call_args_list == [call("SH000;")]
     radio._transport.query = AsyncMock(side_effect=["MD02", "SH000", "NA00"])
     reading = await radio.read_filter_width_reading()
     assert reading.hz is None
@@ -378,12 +378,12 @@ async def test_if_shift_literal_frames_match_the_manual_table(radio):
     radio._transport.query = AsyncMock(side_effect=["IS0+0200"])
     assert await radio.get_if_shift() == 200
     await radio.set_if_shift(200)
-    radio._transport.write.assert_called_once_with("IS0+0200;")
+    assert radio._transport.write.call_args_list == [call("IS0+0200;")]
     radio._transport.write.reset_mock()
     radio._transport.query = AsyncMock(side_effect=["IS0-0200"])
     assert await radio.get_if_shift() == -200
     await radio.set_if_shift(-200)
-    radio._transport.write.assert_called_once_with("IS0-0200;")
+    assert radio._transport.write.call_args_list == [call("IS0-0200;")]
     radio._transport.query = AsyncMock(side_effect=["IS00+0200"])
     with pytest.raises(CatParseError):
         await radio.get_if_shift()
@@ -422,7 +422,7 @@ async def test_equalize_writes_ab(radio):
     # tests/test_yaesu_split_vfo_profile.py, which keeps the real
     # handler, queue, dispatch and readback active.
     await radio.equalize_vfo_ab(0)
-    radio._transport.write.assert_called_once_with("AB;")
+    assert radio._transport.write.call_args_list == [call("AB;")]
 
 
 @pytest.mark.asyncio
@@ -826,7 +826,7 @@ async def test_preamp_write_fixes_p1_at_zero_with_nonzero_band(radio):
 async def test_preamp_reads_through_fixed_p1(radio):
     radio._transport.query = AsyncMock(return_value="PA01")
     assert await radio.get_preamp() == 1
-    radio._transport.query.assert_called_once_with("PA0;")
+    assert radio._transport.query.call_args_list == [call("PA0;")]
 
 
 # ---------------------------------------------------------------------------
@@ -887,7 +887,7 @@ async def test_ct_toggles_resolve_through_the_ft991a_table(
     radio._transport.write = AsyncMock()
     await getattr(radio, setter)(on)
     radio._transport.query.assert_awaited_once_with("CT0;")
-    radio._transport.write.assert_called_once_with(frame)
+    assert radio._transport.write.call_args_list == [call(frame)]
 
 
 @pytest.mark.asyncio
