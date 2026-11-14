@@ -877,3 +877,55 @@ async def test_follow_resubscribe_writes_only_on_preset_change(model):
     finally:
         for sub in subs:
             await sub.close()
+
+
+@pytest.mark.parametrize("model", ["ic7300", "ic705"])
+async def test_offset_native_keeps_follow_view_width_and_centre(model):
+    """MOR-4451: the VFO moves while the radio still streams the older
+    coverage — a native merely OFFSET (same width, shifted by 6 kHz)
+    keeps the follow view's width AND centre (VFO). Only a truly
+    NARROWER native clips (MOR-4385 adoption).
+    """
+    profile = load_rig(Path("rigs") / f"{model}.toml").to_profile()
+    source = RadioScopeSource(profile, Writer())
+    requested = View(14_075_000, 14_125_000)
+    offset = Coverage(14_081_000, 14_131_000)
+    assert source.resolve_follow(FollowView("vfo", 50_000), offset, 0) == requested
+    narrower = Coverage(14_090_000, 14_110_000)
+    assert source.resolve_follow(
+        FollowView("vfo", 50_000), narrower, 0
+    ) == View(14_090_000, 14_110_000)
+
+
+@pytest.mark.parametrize("model", ["ic7300", "ic705"])
+async def test_offset_frame_wires_requested_view_with_reduced_coverage(model):
+    """MOR-4451 (hub): a frame whose native coverage lags the VFO by
+    6 kHz wires the full requested view with the intersected coverage —
+    the grant keeps the requested width/centre and the truthful native.
+    """
+    profile = load_rig(Path("rigs") / f"{model}.toml").to_profile()
+    sim = _SimRadio(profile)
+    session = _sim_session(sim, profile)
+    source = RadioScopeSource(profile, session)
+    hub, encoded, Subscription = _sim_hub(source)
+    sub = await hub.subscribe(
+        Subscription("radio", 0, FollowView("vfo", 50_000), 475, 20)
+    )
+    try:
+        source.feed_frame(
+            ScopeFrame(0, 0, 14_081_000, 14_131_000, bytes(475), False)
+        )
+        await sub.receive()
+        wired = encoded[-1]
+        assert (wired.view_start_hz, wired.view_end_hz) == (
+            14_075_000,
+            14_125_000,
+        )
+        assert (wired.coverage_start_hz, wired.coverage_end_hz) == (
+            14_081_000,
+            14_125_000,
+        )
+        assert sub.granted.view == View(14_075_000, 14_125_000)
+        assert sub.granted.coverage == Coverage(14_081_000, 14_131_000)
+    finally:
+        await sub.close()
