@@ -71,7 +71,7 @@ from testkit.test_g7250_session_wire import (
     _bench_answer_table,
 )
 
-_CIV_ADDR = 0x88  # G7250 CI-V address (rigs/g7250.toml)
+_CIV_ADDR = 0xA0  # G7250 CI-V address (rigs/g7250.toml, MOR-4436)
 
 
 class _G7250OperatorFake(CivSerialFake):
@@ -92,7 +92,7 @@ class _G7250OperatorFake(CivSerialFake):
         super().__init__(
             model="G7250",
             civ_addr=_CIV_ADDR,
-            model_id=b"\x88",
+            model_id=b"\xa0",
             recorded_answers=_bench_answer_table(),
             frequency_hz=7_138_000,
             mode=0x00,
