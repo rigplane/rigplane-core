@@ -12,10 +12,11 @@ All inbound packets below are built with the PRODUCTION builders
 in ``_handle_ping_packet``) — never hand-typed byte layouts.
 
 Timing (MOR-4075): no test here uses the real clock. Waits for the fake
-transport's state are bounded ``sleep(0)`` yield polls; the cases where a
-timer must actually expire (the ready-handshake grace wait, the discovery
-retries) expire it with ``clock.elapse()`` on the shared ``virtual_clock``
-fixture instead of sleeping for real.
+transport's state use the shared ``await_until`` helper
+(``src/rigplane/testing/timing.py``); the cases where a timer must actually
+expire (the ready-handshake grace wait, the discovery retries) expire it
+with ``clock.elapse()`` on the shared ``virtual_clock`` fixture instead of
+sleeping for real.
 """
 
 import asyncio
@@ -27,7 +28,7 @@ import pytest
 from rigplane.audio.lan_stream import build_audio_packet
 from rigplane.core.exceptions import DiscoveryTimeout
 from rigplane.core.transport import IcomTransport
-from rigplane.testing.timing import VirtualClock
+from rigplane.testing.timing import VirtualClock, await_until
 from rigplane.transport import PING_SIZE
 from rigplane.types import PacketType
 
@@ -58,15 +59,6 @@ def _production_ping_reply(sender_id: int) -> bytes:
     return captured[0]
 
 
-async def _wait_for(pred, attempts: int = 10000) -> None:
-    """Yield until ``pred`` holds; bounded, no clock and no real sleep."""
-    for _ in range(attempts):
-        if pred():
-            return
-        await asyncio.sleep(0)
-    raise AssertionError("timed out waiting for condition")
-
-
 def _ptype_of(pkt: bytes) -> int:
     return struct.unpack_from("<H", pkt, 4)[0]
 
@@ -95,9 +87,12 @@ class _FakeDatagramTransport:
 class _FakeLoop:
     """Fake loop for full connect(): records the endpoint transport.
 
-    ``time()`` delegates to the real running loop captured before the
-    ``get_running_loop`` patch, so deadline math in ``_discover``
-    reads the real (possibly virtual) clock.
+    ``time`` is the real running loop's own ``time`` attribute captured
+    before the ``get_running_loop`` patch, so deadline math in
+    ``_discover`` reads the real (possibly virtual) clock — and so does
+    the virtual-clock branch of the shared ``await_until`` helper, which
+    keys off that attribute. Under the ``virtual_clock`` fixture it is the
+    clock itself; otherwise it is the loop's bound method.
     """
 
     def __init__(
@@ -106,11 +101,8 @@ class _FakeLoop:
         real_loop: asyncio.AbstractEventLoop,
     ) -> None:
         self.sockname = sockname
-        self._real_loop = real_loop
+        self.time = real_loop.time
         self.endpoint: _FakeDatagramTransport | None = None
-
-    def time(self) -> float:
-        return self._real_loop.time()
 
     async def create_datagram_endpoint(
         self,
@@ -140,13 +132,19 @@ async def test_ping_only_discovery_completes_connect() -> None:
 
     with patch("rigplane.transport.asyncio.get_running_loop", return_value=loop):
         task = asyncio.create_task(t.connect("192.168.2.1", 50002))
-        await _wait_for(lambda: loop.endpoint is not None and loop.endpoint.sent)
+        await await_until(
+            lambda: loop.endpoint is not None and loop.endpoint.sent,
+            description="fake endpoint with an Are-You-There send",
+        )
         assert loop.endpoint is not None
         # Control port sends Are-You-There first.
         assert _ptype_of(loop.endpoint.sent[0]) == PacketType.ARE_YOU_THERE
         # Sub-stream never sends 0x04: it pings us instead.
         t._handle_packet(radio._build_ping())
-        await _wait_for(lambda: t.remote_id == RADIO_ID)
+        await await_until(
+            lambda: t.remote_id == RADIO_ID,
+            description="remote_id learned from the ping",
+        )
         # Ready handshake echo arrives on the CI-V stream normally.
         t._handle_packet(radio._build_control(ptype=PacketType.ARE_YOU_READY, seq=0))
         await asyncio.wait_for(task, timeout=5.0)
@@ -170,7 +168,10 @@ async def test_i_am_here_still_wins_without_ping_path() -> None:
     t._raw_send = sent.append
 
     task = asyncio.create_task(t._discover())
-    await _wait_for(lambda: _sent_ptypes(sent, PacketType.ARE_YOU_THERE))
+    await await_until(
+        lambda: _sent_ptypes(sent, PacketType.ARE_YOU_THERE),
+        description="first Are-You-There send",
+    )
     t._handle_packet(radio._build_control(ptype=PacketType.I_AM_HERE, seq=0))
     await asyncio.wait_for(task, timeout=5.0)
 
@@ -192,14 +193,20 @@ async def test_audio_stream_without_ready_reply_proceeds(
 
     with patch("rigplane.transport.asyncio.get_running_loop", return_value=loop):
         task = asyncio.create_task(t.connect("192.168.2.1", 50003))
-        await _wait_for(lambda: loop.endpoint is not None and loop.endpoint.sent)
+        await await_until(
+            lambda: loop.endpoint is not None and loop.endpoint.sent,
+            description="fake endpoint with an Are-You-There send",
+        )
     # The fake loop only fakes endpoint creation; the patch ends
     # here while the connect task keeps running. Its time()
     # delegates to the real loop captured above, so deadline math
     # and clock.elapse() below stay on the same (virtual) clock.
     assert loop.endpoint is not None
     t._handle_packet(radio._build_ping())
-    await _wait_for(lambda: t.remote_id == RADIO_ID)
+    await await_until(
+        lambda: t.remote_id == RADIO_ID,
+        description="remote_id learned from the ping",
+    )
     # No ARE_YOU_READY echo ever arrives (audio-stream case): expire the
     # handshake grace wait on the virtual clock, not in real time.
     await virtual_clock.elapse(0.5)
@@ -217,7 +224,10 @@ async def test_late_ping_does_not_change_remote_id() -> None:
     # Discovered normally via 0x04 from OTHER_ID ...
     other = _radio(OTHER_ID)
     task = asyncio.create_task(t._discover())
-    await _wait_for(lambda: bool(sent))
+    await await_until(
+        lambda: bool(sent),
+        description="first Are-You-There send",
+    )
     t._handle_packet(other._build_control(ptype=PacketType.I_AM_HERE, seq=0))
     await asyncio.wait_for(task, timeout=5.0)
     assert t.remote_id == OTHER_ID
@@ -359,7 +369,10 @@ async def test_audio_flood_without_ping_still_times_out(
     t._raw_send = sent.append
 
     task = asyncio.create_task(t._discover())
-    await _wait_for(lambda: _sent_ptypes(sent, PacketType.ARE_YOU_THERE))
+    await await_until(
+        lambda: _sent_ptypes(sent, PacketType.ARE_YOU_THERE),
+        description="first Are-You-There send",
+    )
     for inner in range(8):  # more than DISCOVERY_RETRIES, still no answer
         t._handle_packet(
             build_audio_packet(bytes(160), sender_id=0, receiver_id=0, send_seq=inner)
@@ -419,3 +432,109 @@ async def test_audio_data_before_ping_still_completes_discovery(
     assert t._discover_ping_event is None
     assert t._packet_queue.qsize() == 0
     assert len(_sent_ptypes(sent, PacketType.ARE_YOU_THERE)) == 1
+
+
+async def test_cancelled_discovery_retires_waiters_and_rediscovers() -> None:
+    """Cancelling discovery retires both waiters; a retry answers at once.
+
+    The queue getter and the ping waiter are cancelled and awaited even
+    when the cancel lands while parked in ``asyncio.wait``: no task is
+    left pending, no getter stays queued on ``_packet_queue``, and a fresh
+    ``_discover`` on the same transport completes on its first response
+    instead of losing it to the abandoned getter.
+    """
+    t = IcomTransport()
+    radio = _radio(RADIO_ID)
+    sent: list[bytes] = []
+    t._raw_send = sent.append
+
+    before = set(asyncio.all_tasks())
+    task = asyncio.create_task(t._discover())
+    await await_until(
+        lambda: _sent_ptypes(sent, PacketType.ARE_YOU_THERE),
+        description="first Are-You-There send",
+    )
+    # The send and the waiter setup run with no await between them, so an
+    # observed send means both waiters exist and discovery is parked in
+    # asyncio.wait: cancel exactly there.
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    current = asyncio.current_task()
+    leftovers = {
+        waiter
+        for waiter in asyncio.all_tasks()
+        if waiter not in before and waiter is not current and not waiter.done()
+    }
+    assert not leftovers
+    assert t._discover_ping_event is None
+    # No abandoned queue getter may be left behind: an item put now stays
+    # queued instead of waking a leaked waiter.
+    t._packet_queue.put_nowait(b"probe")
+    assert t._packet_queue.qsize() == 1
+    assert t._packet_queue.get_nowait() == b"probe"
+
+    # A fresh discovery on the same transport receives its first response
+    # normally: one more Are-You-There, then the I-Am-Here completes it.
+    ayts_before = len(_sent_ptypes(sent, PacketType.ARE_YOU_THERE))
+    retry = asyncio.create_task(t._discover())
+    await await_until(
+        lambda: len(_sent_ptypes(sent, PacketType.ARE_YOU_THERE)) > ayts_before,
+        description="retry Are-You-There send",
+    )
+    t._handle_packet(radio._build_control(ptype=PacketType.I_AM_HERE, seq=0))
+    await asyncio.wait_for(retry, timeout=5.0)
+
+    assert t.remote_id == RADIO_ID
+    assert t._discover_ping_event is None
+    assert len(_sent_ptypes(sent, PacketType.ARE_YOU_THERE)) == ayts_before + 1
+
+
+async def test_cancel_during_discovery_cleanup_stops_connect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A cancel landing in the waiter-retirement await still stops connect().
+
+    I-Am-Here arrives, the wait returns, and discovery retires the ping
+    waiter via gather: cancelling exactly there must propagate out of
+    ``connect()`` instead of letting discovery return and send
+    Are-You-Ready.
+    """
+    t = IcomTransport()
+    radio = _radio(RADIO_ID)
+    real_loop = asyncio.get_running_loop()
+    loop = _FakeLoop(("192.168.2.194", 50004), real_loop)
+
+    retire_started = False
+    release = asyncio.Event()
+    real_gather = asyncio.gather
+
+    async def _spy_gather(*args, **kwargs):
+        nonlocal retire_started
+        if kwargs.get("return_exceptions"):
+            # Hold the retirement await open so the cancel below lands
+            # exactly in it instead of racing discovery's return.
+            retire_started = True
+            await release.wait()
+        return await real_gather(*args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "gather", _spy_gather)
+    with patch("rigplane.transport.asyncio.get_running_loop", return_value=loop):
+        task = asyncio.create_task(t.connect("192.168.2.1", 50004))
+        await await_until(
+            lambda: loop.endpoint is not None and loop.endpoint.sent,
+            description="fake endpoint with an Are-You-There send",
+        )
+        assert loop.endpoint is not None
+        # I-Am-Here ends the wait; discovery then retires the ping waiter
+        # via gather — cancel exactly while it awaits that retirement.
+        t._handle_packet(radio._build_control(ptype=PacketType.I_AM_HERE, seq=0))
+        await await_until(lambda: retire_started, description="waiter retirement")
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    assert loop.endpoint is not None
+    assert t._discover_ping_event is None
+    assert not _sent_ptypes(loop.endpoint.sent, PacketType.ARE_YOU_READY)

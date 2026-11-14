@@ -445,18 +445,27 @@ class IcomTransport:
                         break
                     queue_task = asyncio.create_task(self._packet_queue.get())
                     ping_task = asyncio.create_task(ping_event.wait())
-                    done, pending = await asyncio.wait(
-                        (queue_task, ping_task),
-                        timeout=remaining,
-                        return_when=asyncio.FIRST_COMPLETED,
-                    )
-                    for task in pending:
-                        task.cancel()
-                    for task in pending:
-                        try:
-                            await task
-                        except asyncio.CancelledError:
-                            pass
+                    try:
+                        done, pending = await asyncio.wait(
+                            (queue_task, ping_task),
+                            timeout=remaining,
+                            return_when=asyncio.FIRST_COMPLETED,
+                        )
+                    finally:
+                        # Retire both waiters here, even when this task is
+                        # cancelled while parked in wait(): an abandoned
+                        # queue getter would eat the next I-Am-Here on a
+                        # later connect() with this transport. gather(...,
+                        # return_exceptions=True) retires the children's
+                        # own cancellations without masking a cancellation
+                        # of _discover itself, which propagates once the
+                        # waiters are gone.
+                        for waiter in (queue_task, ping_task):
+                            if not waiter.done():
+                                waiter.cancel()
+                        await asyncio.gather(
+                            queue_task, ping_task, return_exceptions=True
+                        )
                     if queue_task in done:
                         resp = queue_task.result()
                         if len(resp) >= CONTROL_SIZE:
