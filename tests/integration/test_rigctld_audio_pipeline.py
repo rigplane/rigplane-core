@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncGenerator
-from typing import Any
+from typing import Any, ClassVar
 from unittest.mock import AsyncMock
 
 import pytest
+
+from rigplane.core.transport import CivIngressTransport
 
 from rigplane.audio.backend import AudioDeviceId, AudioDeviceInfo, FakeAudioBackend
 from rigplane.audio.lan_stream import AudioStream, TX_IDENT
@@ -49,7 +51,16 @@ class _RecordingAudioTransport:
         raise TimeoutError
 
 
-class _IdleCivTransport:
+class _IdleCivTransport(CivIngressTransport):
+    """Idle CI-V transport: never delivers a reply (always times out).
+
+    MOR-4455 round 4: implements the producer type
+    (``rigplane.core.transport.CivIngressTransport``) with the contract
+    stated explicitly — an idle stub is unordered, never attribute-less.
+    """
+
+    ordered_ingress: ClassVar[bool] = False
+
     async def receive_packet(self, *, timeout: float = 0.2) -> bytes:
         await asyncio.sleep(timeout)
         raise asyncio.TimeoutError

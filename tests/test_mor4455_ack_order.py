@@ -14,9 +14,12 @@ tombstones attributed by send time with the read/write kind rule.
 
 from __future__ import annotations
 
+from typing import ClassVar
+
 import pytest
 
 from rigplane import IC_7610_ADDR
+from rigplane.core.transport import CivIngressTransport
 from rigplane.civ import (
     CivEvent,
     CivEventType,
@@ -298,31 +301,33 @@ async def test_rtt_sizes_wait_budgets_not_attribution(
     assert tracker.scaled_wait_budget(2.0) == 2.0
 
 
-class _NoIngressContractTransport:
-    """CI-V transport without the MOR-4209 ``ordered_ingress`` contract.
+class _UnorderedCivTransport(CivIngressTransport):
+    """CI-V transport with the MOR-4209 contract stated as unordered.
 
-    Mirrors ``_IdleCivTransport`` in
-    ``tests/integration/test_rigctld_audio_pipeline.py``: a bare stub that
-    never delivers a reply, so the PTT re-read answer arrives via direct
-    ``_route_civ_frame`` ingress instead.
+    Round-4 successor to the round-3 ``_NoIngressContractTransport``: the RX
+    path now reads ``ordered_ingress`` directly off ``CivIngressTransport``,
+    so an attribute-less double would crash instead of proving anything.
+    This bare stub never delivers a reply (like ``_IdleCivTransport`` in
+    ``tests/integration/test_rigctld_audio_pipeline.py``), so the PTT
+    re-read answer arrives via direct ``_route_civ_frame`` ingress instead.
     """
+
+    ordered_ingress: ClassVar[bool] = False
 
 
 @pytest.mark.asyncio
-async def test_routing_with_contractless_transport_still_records_ptt() -> None:
-    """A missing ``ordered_ingress`` reads as unordered, never as a crash.
+async def test_routing_with_unordered_transport_still_records_ptt() -> None:
+    """An explicitly unordered transport still records PTT.
 
-    Regression pin for the round-3 TX-path break: ``_route_civ_frame`` read
-    ``transport.ordered_ingress`` directly *before* the state-cache update,
-    so every PTT re-read reply routed with an attribute-less transport
-    raised ``AttributeError``, the ``global.tx_state.ptt`` observation never
-    landed, and both ``test_rigctld_audio_pipeline`` TX tests timed out in
-    ``wait_for_known_rf_state``. A transport naming no ingress contract is
-    unordered (as the MOR-4209 comment already states); the observation path
-    must not depend on the attribute existing.
+    Regression pin for the round-3 TX-path break (kept meaningful in round
+    4): ``_route_civ_frame`` resolves the reply with
+    ``ordered_ingress=False`` from the transport's own
+    ``CivIngressTransport`` contract, then the ``global.tx_state.ptt``
+    observation must still land — the contract only gates tombstone
+    retirement, never the observation path.
     """
     radio = IcomRadio("192.168.1.100", model="IC-7610")
-    radio._civ_transport = _NoIngressContractTransport()  # type: ignore[assignment]
+    radio._civ_transport = _UnorderedCivTransport()
     radio._connected = True
     try:
         frame = CivFrame(

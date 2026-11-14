@@ -14,7 +14,7 @@ from collections import OrderedDict, deque
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import ClassVar
+from typing import ClassVar, Protocol
 
 from rigplane.core._bounded_queue import BoundedQueue
 from rigplane.core._queue_pressure import PRESSURE_THRESHOLD
@@ -25,6 +25,7 @@ from .types import HEADER_SIZE, PacketType
 __all__ = [
     "BUFSIZE",
     "CONTROL_SIZE",
+    "CivIngressTransport",
     "ConnectionState",
     "IcomCivTransport",
     "IcomTransport",
@@ -147,6 +148,23 @@ class _UdpProtocol(asyncio.DatagramProtocol):
         close_event = self._owner._udp_close_event
         if close_event is not None:
             close_event.set()
+
+
+class CivIngressTransport(Protocol):
+    """Structural contract for transports feeding the CI-V RX path.
+
+    ``ordered_ingress`` is the MOR-4209 contract: whether CI-V frames reach
+    the upper layer in the order the radio sent them. The RX path
+    (``runtime/_civ_rx.py``) reads it directly off this protocol, so a
+    transport that drops the declaration is a type error, not a silent
+    unordered read (MOR-4455 round 4). Every production CI-V ingress
+    transport states it explicitly: ``IcomTransport`` (``False`` — UDP may
+    reorder), ``IcomCivTransport`` and ``SerialCivTransport`` (``True``).
+    Test doubles implement this protocol instead of arriving
+    attribute-less.
+    """
+
+    ordered_ingress: ClassVar[bool]
 
 
 class IcomTransport:

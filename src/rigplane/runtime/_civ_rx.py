@@ -66,7 +66,7 @@ from rigplane.core.exceptions import (
     StaleBeforeWireError,
     TimeoutError,
 )
-from rigplane.core.transport import IcomTransport
+from rigplane.core.transport import CivIngressTransport, IcomTransport
 from rigplane.core.tx_safety import ProviderPttObservation, RadioTx
 from rigplane.core.tx_target import (
     KnownTxTarget,
@@ -2207,7 +2207,7 @@ class CivRuntime:
                 self._publish_scope_frame(scope_frame)
             return
 
-        transport_for_echo = self._host._civ_transport
+        transport_for_echo: CivIngressTransport | None = self._host._civ_transport
         if frame.command not in (
             0xFB,
             0xFA,
@@ -2215,10 +2215,11 @@ class CivRuntime:
             frame,
             generation=generation,
             # Same ordered-ingress contract as ``resolve`` below: on an
-            # ordered transport the echo retires older tombstones. A
-            # transport naming no contract is unordered, never a crash.
+            # ordered transport the echo retires older tombstones. The
+            # transport states the contract explicitly
+            # (``CivIngressTransport``), so this reads it directly.
             ordered_ingress=transport_for_echo is not None
-            and getattr(transport_for_echo, "ordered_ingress", False) is True,
+            and transport_for_echo.ordered_ingress is True,
         ):
             logger.debug(
                 "civ-rx: write confirmed by echo cmd=0x%02X sub=0x%02X",
@@ -2244,14 +2245,14 @@ class CivRuntime:
                 store_provider_generation=store_provider_generation,
             )
         claimed: _CivDataTransaction | None = None
-        transport = self._host._civ_transport
+        transport: CivIngressTransport | None = self._host._civ_transport
         if self._host._civ_request_tracker.resolve(
             event,
             generation=generation,
-            # MOR-4209: the transport's typed ingress-order contract; a test
-            # double without it (e.g. a mock) reads as unordered.
-            ordered_ingress=transport is not None
-            and getattr(transport, "ordered_ingress", False) is True,
+            # MOR-4209: the transport's typed ingress-order contract
+            # (MOR-4455 round 4: ``CivIngressTransport`` states it
+            # explicitly, so this reads it directly).
+            ordered_ingress=transport is not None and transport.ordered_ingress is True,
         ):
             claimed = self._claim_civ_data_transaction(event)
         if event.type is CivEventType.NAK:
