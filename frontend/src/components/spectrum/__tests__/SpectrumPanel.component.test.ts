@@ -3251,6 +3251,10 @@ describe('managed scope projection (MOR-2367)', () => {
         startHz: 14_000_000, endHz: 14_100_000 }) }),
       demanded: true, setDemand: () => {},
     });
+    // MOR-4451: the retarget follows the confirmed frequency — the harness
+    // keeps authority and tuple coherent at each stage.
+    authorityHarness.state.current = authority({ frequencyHz: 14_050_000 });
+    refreshSpectrumAuthority();
     emitFrame({ startFreq: 14_010_000, endFreq: 14_110_000 });
     flushSync();
     region.set('value', {
@@ -3259,6 +3263,8 @@ describe('managed scope projection (MOR-2367)', () => {
         startHz: 14_010_000, endHz: 14_110_000 }) }),
       demanded: true, setDemand: () => {},
     });
+    authorityHarness.state.current = authority({ frequencyHz: 14_090_000 });
+    refreshSpectrumAuthority();
     flushSync();
     const shifts = () => spectrumRendererHarness.render.mock.calls.map((call) => call[4]?.panoramaShiftHz ?? 0);
     await vi.waitFor(() => expect(shifts().at(-1)).toBe(14_090_000 - 14_060_000));
@@ -3445,7 +3451,13 @@ describe('managed scope projection (MOR-2367)', () => {
     if (initial.state !== 'stale') throw new Error('stale fixture required');
     const translated = { ...initial, translated: true as const,
       tuple: { ...initial.tuple, frequencyHz: 14_051_000 } };
-    props.set('projection', translated); flushSync();
+    props.set('projection', translated);
+    // MOR-4451: the translated lead is the radio observed ahead — authority
+    // and tuple agree, only the frame lags. The scope-controls mode stays
+    // CTR (0, like the delivered CENTER frames) so the harness stream keeps
+    // the frame mode instead of republishing the fixture default.
+    authorityHarness.state.current = authority({ frequencyHz: 14_051_000, scopeControls: testScopeControls(0) });
+    refreshSpectrumAuthority(); flushSync();
     expect(target.querySelector<HTMLElement>('.tune-line')!.style.left).toBe('50%');
     expect(target.querySelector<HTMLElement>('.passband-overlay')!.style.left).toBe('38%');
     expect(target.querySelector<HTMLElement>('.passband-overlay')!.style.width).toBe('24%');
@@ -4483,6 +4495,13 @@ describe('center panorama motion (MOR-2464)', () => {
   function mountPanorama(initial: ReturnType<typeof panoramaProjection>) {
     const props = new SvelteMap<string, unknown>([['projection', initial], ['demanded', true]]);
     harnessLeases.push(mockRuntime.acquireHardwareScope());
+    // MOR-4451: the follow view centres on the radio's confirmed
+    // (authority) frequency, so the harness keeps the coherent-radio shape
+    // — the authority observes what the tuple proves — and these tests pin
+    // glide, pending and burst mechanics rather than an incidental
+    // tuple/authority gap. Stages that move the tuple realign the
+    // authority alongside (same frequency, same receiver unless stated).
+    authorityHarness.state.current = authority({ frequencyHz: initial.tuple.frequencyHz });
     const target = mountPanel({
       get scopeRegion() {
         return Object.freeze({ passband: props.get('projection'),
@@ -4528,7 +4547,11 @@ describe('center panorama motion (MOR-2464)', () => {
     vi.stubGlobal('performance', { now: () => panoramaNow });
     try {
       const { target, props } = mountPanorama(panoramaProjection());
-      props.set('projection', panoramaProjection(14_050_000, 50_000, 1, 1_000)); flushSync();
+      props.set('projection', panoramaProjection(14_050_000, 50_000, 1, 1_000));
+      // MOR-4451: the translated lead is the radio observed ahead (authority
+      // and tuple agree, as in the held-key shape) — only the frame lags.
+      authorityHarness.state.current = authority({ frequencyHz: 14_051_000 });
+      refreshSpectrumAuthority(); flushSync();
       panoramaNow = 40;
       expect(target.querySelector<HTMLElement>('.tune-line')!.style.left).toBe('50%');
       expect(target.querySelector<HTMLElement>('.passband-overlay')!.style.left).toBe('38%');
@@ -4546,8 +4569,12 @@ describe('center panorama motion (MOR-2464)', () => {
 
   it('retargets a rapid reversal without overshoot and keeps the carrier anchored', async () => {
     const { target, props } = mountPanorama(panoramaProjection());
-    props.set('projection', panoramaProjection(14_050_000, 50_000, 1, 1_000)); flushSync();
-    props.set('projection', panoramaProjection(14_050_000, 50_000, 1, -1_000)); flushSync();
+    props.set('projection', panoramaProjection(14_050_000, 50_000, 1, 1_000));
+    authorityHarness.state.current = authority({ frequencyHz: 14_051_000 });
+    refreshSpectrumAuthority(); flushSync();
+    props.set('projection', panoramaProjection(14_050_000, 50_000, 1, -1_000));
+    authorityHarness.state.current = authority({ frequencyHz: 14_049_000 });
+    refreshSpectrumAuthority(); flushSync();
     await vi.waitFor(() => expect(recordedShifts().at(-1)).toBe(-1_000));
     const shifts = recordedShifts();
     expect(Math.max(...shifts.map(Math.abs))).toBeLessThanOrEqual(1_000);
@@ -4564,7 +4591,9 @@ describe('center panorama motion (MOR-2464)', () => {
     try {
       const { target, props } = mountPanorama(panoramaProjection());
       spectrumRendererHarness.render.mockClear();
-      props.set('projection', panoramaProjection(14_050_000, 50_000, 1, 1_000)); flushSync();
+      props.set('projection', panoramaProjection(14_050_000, 50_000, 1, 1_000));
+      authorityHarness.state.current = authority({ frequencyHz: 14_051_000 });
+      refreshSpectrumAuthority(); flushSync();
       expect(target.querySelector<HTMLElement>('.tune-line')!.style.left).toBe('50%');
       await vi.waitFor(() => expect(spectrumRendererHarness.render).toHaveBeenCalled());
       expect(recordedShifts().every((v) => v === 1_000)).toBe(true);
@@ -4577,7 +4606,9 @@ describe('center panorama motion (MOR-2464)', () => {
   it('maps a settled animated viewport click to its carrier frequency', async () => {
     const { target, props } = mountPanorama(panoramaProjection());
     const { waterfall } = prepareGeometry(target);
-    props.set('projection', panoramaProjection(14_050_000, 50_000, 1, 1_000)); flushSync();
+    props.set('projection', panoramaProjection(14_050_000, 50_000, 1, 1_000));
+    authorityHarness.state.current = authority({ frequencyHz: 14_051_000 });
+    refreshSpectrumAuthority(); flushSync();
     await vi.waitFor(() => expect(recordedShifts().at(-1)).toBe(1_000));
     const canvas = waterfall.querySelector('canvas')!;
     pointer(canvas, 'pointerdown', 95, 100);
@@ -4633,9 +4664,13 @@ describe('center panorama motion (MOR-2464)', () => {
     const clearSpy = vi.spyOn(WaterfallRenderer.prototype, 'clear');
     try {
       const { target, props } = mountPanorama(panoramaProjection());
-      props.set('projection', panoramaProjection(14_050_000, 50_000, 1, 1_000)); flushSync();
+      props.set('projection', panoramaProjection(14_050_000, 50_000, 1, 1_000));
+      authorityHarness.state.current = authority({ frequencyHz: 14_051_000 });
+      refreshSpectrumAuthority(); flushSync();
       await vi.waitFor(() => expect(recordedShifts().some((v) => v > 0)).toBe(true));
-      props.set('projection', panoramaProjection(14_100_000, 100_000, 2)); flushSync();
+      props.set('projection', panoramaProjection(14_100_000, 100_000, 2));
+      authorityHarness.state.current = authority({ frequencyHz: 14_100_000 });
+      refreshSpectrumAuthority(); flushSync();
       await vi.waitFor(() => expect(recordedShifts().at(-1)).toBe(0));
       expect(clearSpy).not.toHaveBeenCalled();
       expect(target.querySelector<HTMLElement>('.tune-line')!.style.left).toBe('50%');
@@ -4649,7 +4684,9 @@ describe('center panorama motion (MOR-2464)', () => {
     const pushSpy = vi.spyOn(WaterfallRenderer.prototype, 'pushRow');
     try {
       const { target, props } = mountPanorama(panoramaProjection());
-      props.set('projection', panoramaProjection(14_051_000, 50_000, 2)); flushSync();
+      props.set('projection', panoramaProjection(14_051_000, 50_000, 2));
+      authorityHarness.state.current = authority({ frequencyHz: 14_051_000 });
+      refreshSpectrumAuthority(); flushSync();
       // MOR-4206: the row is written from the waterfall's rAF paint now.
       await vi.waitFor(() => expect(pushSpy).toHaveBeenCalled());
       const binding = bindingOrders(updateSpy, 14_050_000, 0);
@@ -4679,7 +4716,9 @@ describe('center panorama motion (MOR-2464)', () => {
         props.set('projection', panoramaProjection(14_050_000, 50_000, sequence)); flushSync();
       }
       panoramaNow += 83;
-      props.set('projection', panoramaProjection(14_050_000, 50_000, 6, 1_000)); flushSync();
+      props.set('projection', panoramaProjection(14_050_000, 50_000, 6, 1_000));
+      authorityHarness.state.current = authority({ frequencyHz: 14_051_000 });
+      refreshSpectrumAuthority(); flushSync();
       panoramaNow += 140;
       await vi.waitFor(() => expect(recordedShifts().at(-1)).toBe(1_000));
       updateSpy.mockClear(); pushSpy.mockClear();
@@ -4801,7 +4840,9 @@ describe('center panorama motion (MOR-2464)', () => {
       // Authority switches to SUB: a MAIN-scoped pending must not move it.
       setPendingFrequency(1, null);
       setPendingFrequency(0, 14_052_000);
-      authorityHarness.state.current = authority({ receiver: 1 });
+      // MOR-4451: the switch is receiver-only — the observed frequency stays
+      // put so the confirmed leg (and the viewport) does not move with it.
+      authorityHarness.state.current = authority({ receiver: 1, frequencyHz: 14_050_000 });
       refreshSpectrumAuthority();
       flushSync();
       emitFrame({ receiver: 1 });
@@ -4933,7 +4974,9 @@ describe('center panorama motion (MOR-2464)', () => {
       // burst must not move it...
       setTuningBurstFrequency(1, null);
       setTuningBurstFrequency(0, 14_052_000);
-      authorityHarness.state.current = authority({ receiver: 1 });
+      // MOR-4451: the switch is receiver-only — the observed frequency stays
+      // put so the confirmed leg (and the viewport) does not move with it.
+      authorityHarness.state.current = authority({ receiver: 1, frequencyHz: 14_050_000 });
       refreshSpectrumAuthority();
       flushSync();
       emitFrame({ receiver: 1 });

@@ -25,6 +25,35 @@ export interface ScopeGranted {
 
 export function viewCenterHz(view: View): number { return (view.startHz + view.endHz) / 2; }
 export function viewSpanHz(view: View): number { return view.endHz - view.startHz; }
+
+export interface ConfirmedFollowLegInput {
+  /** FIX scope keeps the fixed window; every other mode follows the VFO. */
+  readonly fixed: boolean;
+  /** The radio's confirmed frequency (the spectrum authority's frequency). */
+  readonly authorityFrequencyHz: number | null | undefined;
+  /** The passband tuple's frequency — fallback while the authority is unobserved. */
+  readonly displayFrequencyHz: number | null | undefined;
+  readonly spanHz: number;
+  readonly geometryView: View;
+  /** A FIX crop or requested view that overrides the follow window. */
+  readonly crop: View | null;
+}
+
+/**
+ * The follow view's confirmed leg (MOR-4451): always centred on the radio's
+ * CONFIRMED frequency — the spectrum authority's frequency, falling back to
+ * the passband tuple's frequency only while the authority is unobserved.
+ * The tuple deliberately holds the last proven frequency (stale/held for
+ * seconds during a burst), so centring the view on it retargets the glide
+ * backwards every time the pending leg clears.
+ */
+export function confirmedFollowLegView(input: ConfirmedFollowLegInput): View {
+  const { fixed, authorityFrequencyHz, displayFrequencyHz, spanHz, geometryView, crop } = input;
+  const confirmedHz = authorityFrequencyHz ?? displayFrequencyHz;
+  return crop ?? (fixed || confirmedHz === null || confirmedHz === undefined
+    ? geometryView
+    : { startHz: confirmedHz - spanHz / 2, endHz: confirmedHz + spanHz / 2 });
+}
 export function panView(view: View, deltaHz: number, bounds?: View): View {
   if (!bounds) return { startHz: view.startHz + deltaHz, endHz: view.endHz + deltaHz };
   const span = Math.min(viewSpanHz(view), viewSpanHz(bounds));

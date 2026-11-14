@@ -41,7 +41,7 @@
   import { projectScopeCoverage, type ScopeCoverageProjection } from '../../lib/runtime/scope-frame';
   import { scopeSlotKey } from '../../lib/runtime/adapters/scope-adapter';
   import {
-    createScopeView, panView, viewCenterHz, zoomView, scopeSubscription, scopeSubscriptionSurface,
+    createScopeView, confirmedFollowLegView, panView, viewCenterHz, zoomView, scopeSubscription, scopeSubscriptionSurface,
     type View, type ScopeGranted,
   } from '../../lib/runtime/scope-view';
   import { ScopeRenderScheduler } from '../../lib/canvas/scope-render-scheduler';
@@ -803,8 +803,16 @@
           // window that is not the one drawn.
           const crop = fixedCrop && confirmedHz !== null && confirmedHz !== undefined
             ? panView(requested!, confirmedHz - viewCenterHz(requested!), geometry.view) : requestedView;
-          scopeView.set('confirmed', crop ?? (fixed || frequency === null || frequency === undefined ? geometry.view
-            : { startHz: frequency - span / 2, endHz: frequency + span / 2 }));
+          // MOR-4451: the follow view's confirmed leg centres on the
+          // radio's CONFIRMED frequency (the spectrum authority), not the
+          // passband tuple's frequency — the tuple deliberately holds the
+          // last proven frequency (stale/held for seconds during a burst),
+          // so centring on it retargets the glide backwards every time the
+          // pending leg clears. Marker/overlay keep using the tuple.
+          scopeView.set('confirmed', confirmedFollowLegView({
+            fixed, authorityFrequencyHz: authority?.frequencyHz, displayFrequencyHz: frequency,
+            spanHz: span, geometryView: geometry.view, crop,
+          }));
         }
         const confirmed = scopeView.confirmed;
         const panFrom = (hz: number | null) => hz === null || confirmed.endHz <= confirmed.startHz
