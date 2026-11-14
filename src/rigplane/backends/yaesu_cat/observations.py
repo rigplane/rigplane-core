@@ -7,13 +7,14 @@ import logging
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Protocol, TypeVar
+from typing import TYPE_CHECKING, Protocol, TypeVar, cast
 
 from rigplane.core.acquisition_scheduler import (
     AcquisitionScheduler,
     DeclaredCommandDefect,
     resolve_available_when,
 )
+from rigplane.core.exceptions import CommandError
 from rigplane.core.observation_adapter import ProviderObservationAdapter
 from rigplane.core.state_acquisition_policy import RadioAcquisitionProfile
 from rigplane.core.state_pipeline_contracts import (
@@ -27,7 +28,13 @@ from rigplane.core.tx_observation import (
     TxStateReading,
     normalize_observed_ptt,
 )
-from rigplane.core.tx_target import KnownTxTarget, TxTarget, UnknownTxTarget
+from rigplane.core.tx_target import (
+    KnownTxTarget,
+    TxReceiver,
+    TxSlot,
+    TxTarget,
+    UnknownTxTarget,
+)
 from rigplane.core.types import ctcss_booleans_for_tone_squelch_type
 from rigplane.runtime.meter_cal import interpolate_meter
 
@@ -692,7 +699,16 @@ class YaesuObservationAdapter:
         # contains it as ``not-observed`` so the medium cycle survives.
         try:
             tx_func = await method()
-        except (AttributeError, NotImplementedError, CatCommandRejected):
+        except (
+            AttributeError,
+            NotImplementedError,
+            CatCommandRejected,
+            CommandError,
+        ):
+            # CommandError is the absent/unsupported-command refusal: _query
+            # raises it before any wire traffic when the profile declares
+            # no get_tx_func. It reports unsupported instead of aborting
+            # the whole medium poll batch.
             return UnknownTxTarget(reason="unsupported")
         except (CatParseError, CatFormatError, ValueError, KeyError):
             return UnknownTxTarget(reason="contradiction")
@@ -752,9 +768,18 @@ class YaesuObservationAdapter:
             if ok and type(raw_frequency) is int and raw_frequency > 0
             else None
         )
+        # The FT answer's meaning is profile-declared ([vfo.tx_func]):
+        # MAIN/SUB on dual-receiver profiles, MAIN with the A/B slot on
+        # single-receiver ab profiles. No hard-coded mapping lives here.
+        spec = self.radio.profile.tx_func
+        if spec is None:
+            return UnknownTxTarget(reason="unsupported")
+        mapping = spec.read_map.get(str(before))
+        if mapping is None:
+            return UnknownTxTarget(reason="contradiction")
         return KnownTxTarget(
-            receiver="MAIN" if before == 0 else "SUB",
-            slot=None,
+            receiver=cast(TxReceiver, mapping.receiver),
+            slot=cast(TxSlot | None, mapping.slot),
             frequency_hz=frequency,
         )
 
