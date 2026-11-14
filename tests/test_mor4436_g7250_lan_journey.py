@@ -8,13 +8,14 @@ knobs on (``radio_addr=0xA0``, ``substream_discovery="ping"``,
 ``write_confirmation="echo"``, ``lan_civ_echo=False``,
 ``ignored_civ_commands={(0x05, None)}``, ``model_id=b"\\xa0"`` — the
 recorded ``19 00`` answer): connect, initial frequency read, frequency
-write, read-back on the client and on the simulator, RX audio frames at
+write (``05`` is ignored by the simulator, so only the profile's ``25 00``
+write can move it), read-back on the client and on the simulator, RX audio frames at
 the client's audio callback, clean disconnect. Bounded entirely by the
 virtual clock; no real sleeps.
 
 Every await that talks to the radio runs through :func:`_bounded`, which
 drives the virtual clock until the step finishes or a virtual deadline
-passes — a missing reply (e.g. pre-L1/L2) fails fast with a clear
+passes — a missing reply fails fast with a clear
 ``AssertionError`` instead of hanging on a frozen clock.
 ``@pytest.mark.timeout`` stays only as a last-resort guard.
 """
@@ -35,12 +36,6 @@ from rigplane.testing.timing import VirtualClock
 from rigplane_testkit.icom import MockIcomRadio
 
 T = TypeVar("T")
-
-_XFAIL_REASON = (
-    "MOR-4436: L2 (SET confirmed by echo) is on main (#4573); still needs "
-    "L1 (sub-stream ping discovery, core/transport.py) and L3 (G7250 LAN "
-    "profile, rigs/g7250.toml); remove this mark when both are on main"
-)
 
 
 async def _bounded(
@@ -90,7 +85,6 @@ async def _bounded(
     raise AssertionError(f"{step} did not finish within {budget_s:g} virtual s")
 
 
-@pytest.mark.xfail(strict=True, reason=_XFAIL_REASON)
 @pytest.mark.timeout(120)
 async def test_g7250_wfview_lan_journey(
     virtual_clock: VirtualClock,
