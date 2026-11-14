@@ -153,7 +153,8 @@ async def _http_post(
     writer.write(
         f"POST {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n"
         f"Content-Length: {len(raw)}\r\nContent-Type: application/json\r\n"
-        "Connection: close\r\n\r\n".encode() + raw
+        "Connection: close\r\n\r\n".encode()
+        + raw
     )
     await writer.drain()
     head = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), timeout=10.0)
@@ -290,8 +291,10 @@ class _DcControlClient:
 
     async def wait_closed(self, timeout: float = 10.0) -> None:
         await await_until(
-            lambda: self._closed.is_set()
-            or (self._channel is not None and self._channel.readyState == "closed"),
+            lambda: (
+                self._closed.is_set()
+                or (self._channel is not None and self._channel.readyState == "closed")
+            ),
             timeout=timeout,
             description="data channel closed",
         )
@@ -453,15 +456,18 @@ async def test_data_channel_leaf_deltas_match_websocket_size(
                 f"freq-{i}", "set_freq", {"freq": 14_074_000 + 1000 * (i % 2)}
             )
             assert response.get("ok") is True, response
-        dc_frames = await dc.state_updates(5)
-        ws_frames = await ws.state_updates(5)
+        dc_frames = await dc.state_updates(6)
+        ws_frames = await ws.state_updates(6)
     finally:
         await dc.close()
         await ws.close()
         await _tear_down_stack(stack)
-    assert all(frame.get("deltaVersion") == 2 for frame in dc_frames)
-    dc_mean = sum(len(json.dumps(f)) for f in dc_frames) / len(dc_frames)
-    ws_mean = sum(len(json.dumps(f)) for f in ws_frames) / len(ws_frames)
+    # The first state_update is the full baseline; the rest are deltas.
+    dc_deltas, ws_deltas = dc_frames[1:], ws_frames[1:]
+    assert dc_deltas and ws_deltas
+    assert all(frame.get("deltaVersion") == 2 for frame in dc_deltas)
+    dc_mean = sum(len(json.dumps(f)) for f in dc_deltas) / len(dc_deltas)
+    ws_mean = sum(len(json.dumps(f)) for f in ws_deltas) / len(ws_deltas)
     assert dc_mean <= 2.0 * ws_mean, (dc_mean, ws_mean)
 
 
@@ -471,8 +477,10 @@ async def test_data_channel_with_key_keys_tx_like_ws(tmp_path: Path) -> None:
     stack = await _stand_up_stack(tmp_path)
     dc = _DcControlClient()
     try:
-        key = await _acquire_session(stack.web.port)
         await dc.connect(stack.web)
+        # Acquire after the slow ICE negotiate, just before attach: the
+        # controller session TTL would otherwise expire in between.
+        key = await _acquire_session(stack.web.port)
         await dc.attach(key)
         keyed = await dc.command("key-1", "ptt_on")
         assert keyed.get("ok") is True, keyed
@@ -532,8 +540,10 @@ async def test_clean_close_while_keyed_releases_ptt_fast(
     stack = await _stand_up_stack(tmp_path)
     dc = _DcControlClient()
     try:
-        key = await _acquire_session(stack.web.port)
         await dc.connect(stack.web)
+        # Acquire after the slow ICE negotiate, just before attach: the
+        # controller session TTL would otherwise expire in between.
+        key = await _acquire_session(stack.web.port)
         await dc.attach(key)
         keyed = await dc.command("key-1", "ptt_on")
         assert keyed.get("ok") is True, keyed
@@ -559,8 +569,10 @@ async def test_silent_loss_releases_ptt_within_session_ttl(
     stack = await _stand_up_stack(tmp_path)
     dc = _DcControlClient()
     try:
-        key = await _acquire_session(stack.web.port)
         await dc.connect(stack.web)
+        # Acquire after the slow ICE negotiate, just before attach: the
+        # controller session TTL would otherwise expire in between.
+        key = await _acquire_session(stack.web.port)
         await dc.attach(key)
         keyed = await dc.command("key-1", "ptt_on")
         assert keyed.get("ok") is True, keyed

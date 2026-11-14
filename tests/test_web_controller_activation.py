@@ -170,7 +170,6 @@ async def test_complete_production_composition_admits_host_remote_and_fences_old
     [
         "read_only",
         "stopping",
-        "webrtc",
         "legacy_bridge",
         "native_inflight",
         "native_open",
@@ -194,14 +193,8 @@ async def test_production_remote_admission_refuses_readiness_inhibitor(
         monkeypatch.setattr(
             server, "_audio_bridge", SimpleNamespace(_drop_queued_tx=lambda: None)
         )
-    elif inhibitor in {"stopping", "webrtc"}:
-        field = {
-            "stopping": "_stopping",
-            "webrtc": "_webrtc_sessions",
-        }[inhibitor]
-        monkeypatch.setattr(
-            server, field, True if inhibitor == "stopping" else object()
-        )
+    elif inhibitor == "stopping":
+        monkeypatch.setattr(server, "_stopping", True)
     elif inhibitor.startswith("native_"):
         pool = server_module.bounded_portaudio_pool
         if inhibitor == "native_inflight":

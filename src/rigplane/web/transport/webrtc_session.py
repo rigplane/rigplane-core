@@ -14,8 +14,10 @@ Negotiation contract (one ``RTCPeerConnection`` per peer):
 * :meth:`WebRtcSessionManager.negotiate` creates the answerer
   ``RTCPeerConnection``, registers an ``on("datachannel")`` callback that wraps
   each inbound channel in :class:`WebRtcDataChannelConnection` (the A2.1 seam)
-  and dispatches it — by label — into the *unchanged* ``ControlHandler`` /
-  ``ScopeHandler`` / ``AudioHandler`` (the A2.1 + A2.2 wiring), then
+  and serves it — by label — through the single shared attach path
+  (``WebServer.attach_client_channel``): the same ticket, handlers, caps,
+  supervision and cleanup the WebSocket lane uses. Each channel's first text
+  frame must be the attach frame; without it the channel closes. Then
   ``setRemoteDescription`` → ``createAnswer`` → ``setLocalDescription`` and
   returns the answer SDP plus a session id.
 * Unlike the scaffold, the peer connection is **kept alive** for the session;
@@ -36,11 +38,14 @@ availability and the HTTP layer degrades to a clean "unavailable" response.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import uuid
-from typing import TYPE_CHECKING, Any, Final
+from typing import TYPE_CHECKING, Any, Final, cast
 
-from ... import __version__
+from ...runtime.controller_authority import ControllerError  # noqa: TID251
+from ...ws import WS_OP_TEXT  # noqa: TID251
+from ..channel_attach import ChannelKind, ClientChannelParams  # noqa: TID251
 from .webrtc import (  # noqa: TID251
     WebRtcDataChannelConnection,
     webrtc_available,
@@ -70,6 +75,9 @@ _CONTROL: Final = "control"
 _SCOPE: Final = "scope"
 _AUDIO: Final = "audio"
 
+# A data channel that never sends its attach frame is closed after this.
+_ATTACH_TIMEOUT_S: Final = 5.0
+
 
 class WebRtcSessionError(RuntimeError):
     """Raised when a session operation fails (bad SDP, unknown session)."""
@@ -81,6 +89,9 @@ class _Session:
     def __init__(self, pc: RTCPeerConnection) -> None:
         self.pc = pc
         self.tasks: list[asyncio.Task[None]] = []
+        # Controller session owners attached through this peer's channels.
+        # A ``disconnected``/``failed`` peer fences these immediately.
+        self.controller_owners: set[str] = set()
 
     async def close(self) -> None:
         for task in self.tasks:
@@ -141,10 +152,12 @@ class WebRtcSessionManager:
 
         @pc.on("datachannel")  # type: ignore[misc, no-untyped-call, untyped-decorator]
         def _on_datachannel(channel: RTCDataChannel) -> None:
-            self._dispatch_channel(session, channel)
+            self._dispatch_channel(session_id, session, channel)
 
         @pc.on("connectionstatechange")  # type: ignore[misc, no-untyped-call, untyped-decorator]
         async def _on_state() -> None:
+            if pc.connectionState in ("disconnected", "failed"):
+                self._fence_peer(session_id)
             if pc.connectionState in ("closed", "failed"):
                 await self._drop(session_id)
 
@@ -225,56 +238,95 @@ class WebRtcSessionManager:
         session = self._sessions.pop(session_id, None)
         if session is not None:
             await session.close()
+        if not self._sessions:
+            # The manager holds the radio/server refs from its creation;
+            # reset it once the last peer is gone so the next offer builds
+            # a fresh one (mirrors the shutdown reset in web_startup).
+            server = self._server
+            if server is not None and server._webrtc_sessions is self:  # noqa: SLF001
+                server._webrtc_sessions = None  # noqa: SLF001
 
-    def _dispatch_channel(self, session: _Session, channel: RTCDataChannel) -> None:
-        """Wrap an inbound channel and spawn its handler by label."""
-        # Local imports keep the module import-light and avoid a hard handler
-        # dependency at module load (mirrors the lazy aiortc import).
-        from ..handlers import (  # noqa: TID251
-            AudioHandler,
-            ControlHandler,
-            ScopeHandler,
-        )
+    def _fence_peer(self, session_id: str) -> None:
+        """Fence the controller sessions attached through this peer, now.
 
-        conn = WebRtcDataChannelConnection(channel, session.pc)
+        A ``disconnected``/``failed`` peer connection must not hold TX
+        until its controller session expires. The sessions end through
+        the existing session-loss path — the same ``_end_session`` the
+        expiry watchdog calls: their channels close and the transmitter
+        they hold is released. Unknown or already-ended owners are a
+        no-op inside ``_end_session``.
+        """
+        session = self._sessions.get(session_id)
+        server = self._server
+        if session is None or server is None:
+            return
+        for owner in tuple(session.controller_owners):
+            try:
+                server._controller._end_session(owner)  # noqa: SLF001
+            except Exception:
+                logger.debug("webrtc: fence failed", exc_info=True)
+
+    def _dispatch_channel(
+        self, session_id: str, session: _Session, channel: RTCDataChannel
+    ) -> None:
+        """Wrap an inbound channel and serve it through the shared attach."""
         label = channel.label
-        handler: Any
-        if label == _CONTROL:
-            handler = ControlHandler(
-                conn,
-                self._radio,
-                __version__,
-                self._radio_model,
-                server=self._server,
-                read_only=(
-                    self._server._config.read_only
-                    if self._server is not None
-                    else False
-                ),
-                managed_tx_authority=(
-                    self._server._managed_tx_authority()  # noqa: SLF001
-                    if self._server is not None
-                    else None
-                ),
-            )
-        elif label == _SCOPE:
-            handler = ScopeHandler(conn, server=self._server)
-        elif label == _AUDIO:
-            broadcaster = (
-                self._server._audio_broadcaster if self._server is not None else None
-            )
-            handler = AudioHandler(
-                conn,
-                self._radio,
-                broadcaster,
-                tx_gate=(
-                    self._server._bridge_tx_gate_open  # noqa: SLF001
-                    if self._server is not None
-                    else None
-                ),
-            )
-        else:
+        if label not in (_CONTROL, _SCOPE, _AUDIO):
             logger.info("WebRTC: ignoring unknown data channel %r", label)
             return
+        session.tasks.append(
+            asyncio.ensure_future(self._attach_and_serve(session_id, session, channel))
+        )
 
-        session.tasks.append(asyncio.ensure_future(handler.run()))
+    async def _attach_and_serve(
+        self, session_id: str, session: _Session, channel: RTCDataChannel
+    ) -> None:
+        """Read the attach frame, then serve the channel through the shared path.
+
+        The FIRST text frame must be the attach frame
+        (``ClientChannelParams.from_attach_frame``); a bad, non-text, or
+        missing frame (5 s) closes the channel before any handler exists.
+        A refused ticket closes it too. Otherwise the channel attaches
+        through ``WebServer.attach_client_channel`` — the same ticket,
+        handlers, caps, supervision and cleanup the WebSocket lane uses.
+        """
+        conn = WebRtcDataChannelConnection(channel, session.pc)
+        # Validated against the three labels by _dispatch_channel.
+        kind = cast(ChannelKind, channel.label)
+        server = self._server
+        if server is None:
+            logger.warning("WebRTC: no server for data channel %r; closing", kind)
+            with contextlib.suppress(Exception):
+                await conn.close(1008, "no server")
+            return
+        try:
+            opcode, payload = await asyncio.wait_for(
+                conn.recv(), timeout=_ATTACH_TIMEOUT_S
+            )
+        except (asyncio.TimeoutError, EOFError):
+            with contextlib.suppress(Exception):
+                await conn.close(1000, "no attach frame")
+            return
+        if opcode != WS_OP_TEXT:
+            with contextlib.suppress(Exception):
+                await conn.close(1003, "attach frame must be text")
+            return
+        try:
+            params = ClientChannelParams.from_attach_frame(payload)
+        except ValueError as exc:
+            logger.info("WebRTC: bad attach frame on %r: %s", kind, exc)
+            with contextlib.suppress(Exception):
+                await conn.close(1008, "bad attach frame")
+            return
+        try:
+            await server.attach_client_channel(
+                conn,
+                kind,
+                params,
+                (session_id, 0),
+                track_owners=session.controller_owners,
+            )
+        except ControllerError as exc:
+            logger.info("WebRTC: data channel %r refused: %s", kind, exc.code)
+            with contextlib.suppress(Exception):
+                await conn.close(1008, "refused")

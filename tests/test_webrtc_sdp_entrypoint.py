@@ -185,6 +185,19 @@ async def test_full_session_negotiates_control_scope_audio() -> None:
         await asyncio.sleep(0.05)
     assert all(c.readyState == "open" for c in client_ch.values())
 
+    # Attach every channel through the shared attach path (first text
+    # frame), then the control channel's handler sends its hello.
+    for label, channel in client_ch.items():
+        channel.send(
+            json.dumps(
+                {
+                    "type": "attach",
+                    "controller_key": None,
+                    "state_delta": 2,
+                    "role": "primary" if label == "control" else "auxiliary",
+                }
+            )
+        )
     # control: ControlHandler.run() sends a hello frame to the browser.
     for _ in range(100):
         if control_hello:
