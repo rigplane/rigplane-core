@@ -686,14 +686,12 @@ class YaesuObservationAdapter:
         method = getattr(self.radio, "get_tx_func", None)
         if not callable(method):
             return UnknownTxTarget(reason="unsupported")
+        # MOR-4433: the ``FT;`` read is the TX target's own read, and the TX
+        # target is not safety-critical — an unanswered read counts toward
+        # nothing. The timeout stays uncaught here; ``_read_tx_target``
+        # contains it as ``not-observed`` so the medium cycle survives.
         try:
             tx_func = await method()
-        except CatTimeoutError as exc:
-            # MOR-2757: the ``FT;`` read is the TX target's own read — an
-            # unanswered one counts toward that critical path, then re-raises
-            # so the poller's reconnect path still fires.
-            self._count_critical_read_timeouts("tx_target", exc, (_TX_TARGET,))
-            raise
         except (AttributeError, NotImplementedError, CatCommandRejected):
             return UnknownTxTarget(reason="unsupported")
         except (CatParseError, CatFormatError, ValueError, KeyError):
@@ -702,11 +700,22 @@ class YaesuObservationAdapter:
             return UnknownTxTarget(reason="not-observed")
         if type(tx_func) is not int or tx_func not in (0, 1):
             return UnknownTxTarget(reason="contradiction")
-        self._note_critical_read_answers((_TX_TARGET,))
         return tx_func
 
     async def _read_tx_target(self) -> TxTarget:
-        """Bracket the selected frequency with stable native FT authority."""
+        """Bracket the selected frequency with stable native FT authority.
+
+        MOR-4433: the TX target is not startup-critical — a timeout of any
+        of its own reads (either ``FT;`` bracket, the bracketed frequency)
+        is contained here as ``not-observed``. The medium cycle then keeps
+        the observations it already accumulated and still reads PTT. A
+        genuinely dead link needs no new counting here: the cycle's earlier
+        critical reads re-raise (and count) their own timeouts through
+        ``_safe_read``, and the transport's own error streak — the one the
+        poller's reconnect reads — is never grown by a lone silent ``FT;``
+        (a timeout only bumps ``timeouts``; every answered read resets the
+        streak), so a silent TX target can neither abort nor wedge startup.
+        """
         if not self._has_runtime_capability("tx"):
             return UnknownTxTarget(reason="unsupported")
         stats = getattr(getattr(self.radio, "_transport", None), "stats", None)
@@ -715,15 +724,18 @@ class YaesuObservationAdapter:
             self.profile.provider,
             reconnects if type(reconnects) is int else 0,
         )
-        before = await self._read_tx_func()
-        if isinstance(before, UnknownTxTarget):
-            return before
-        ok, raw_frequency = await self._safe_read(
-            "tx_target.freq",
-            self.radio.read_freq(before),
-            lambda: self.radio.read_freq(before),
-        )
-        after = await self._read_tx_func()
+        try:
+            before = await self._read_tx_func()
+            if isinstance(before, UnknownTxTarget):
+                return before
+            ok, raw_frequency = await self._safe_read(
+                "tx_target.freq",
+                self.radio.read_freq(before),
+                lambda: self.radio.read_freq(before),
+            )
+            after = await self._read_tx_func()
+        except CatTimeoutError:
+            return UnknownTxTarget(reason="not-observed")
         current_reconnects = getattr(stats, "reconnects", 0)
         current_generation = (
             self.profile.provider,
