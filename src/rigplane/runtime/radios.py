@@ -92,18 +92,18 @@ RADIOS: dict[str, RadioModel] = {
         has_lan=False,
         has_wifi=True,
     ),
-    # Xiegu G7250 (MOR-4352): answers any CI-V address and echoes it, so
-    # discovery names it through the Xiegu 0x1D 0x19 model id (`72 50`),
-    # never through this address row. 0x88 (LIVE G7250 2026-11-09: probed
-    # 00/A4/88/70/72/E0, 0x88 answered the full read set), not the Xiegu
-    # family default 0xA4: the TOML profile loads before ic705.toml, and
-    # the profiles' address-only table would otherwise resolve 0xA4 to the
-    # G7250, stealing the IC-705's resolution. USB CI-V only: the LAN port
-    # is a proprietary IQ stream.
+    # Xiegu G7250 (MOR-4436): 0xA0 is the only address answering over LAN
+    # in wfview mode (LIVE 2026-11-13, V1.0.1; the vendor G7250.rig uses
+    # CIVAddress=160 too). Over USB serial the radio answers any address
+    # and echoes it, so discovery names it through the Xiegu 0x1D 0x19
+    # model id (`72 50`), never through this address row. 0xA0, not the
+    # family default 0xA4: no other shipped profile sits there, so the
+    # IC-705 keeps its address-only resolution. HDSDR mode stays the UDP
+    # IQ stream ([iq_lan] in rigs/g7250.toml).
     "G7250": RadioModel(
         name="G7250",
-        civ_addr=0x88,
-        has_lan=False,
+        civ_addr=0xA0,
+        has_lan=True,
     ),
 }
 

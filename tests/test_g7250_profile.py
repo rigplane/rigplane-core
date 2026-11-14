@@ -18,13 +18,21 @@ import pytest
 from rigplane.backends.config import SerialBackendConfig
 from rigplane.backends.factory import create_radio, supports_serial_model
 from rigplane.backends.ic705.serial import XieguSerialRadio
+from rigplane.commands import CONTROLLER_ADDR, build_civ_frame
 from rigplane.commands._codec import filter_index_to_hz
+
+# The pristine builder, not the ``rigplane.commands`` package attribute:
+# several unrelated test modules wrap that package process-wide with
+# ``bind_default_addr_module(..., to_addr=0x98)`` at import time, so the
+# package attribute may be a partial that rejects an explicit to_addr.
+from rigplane.commands.freq import set_freq as build_set_freq
 from rigplane.profiles import (
     get_radio_profile,
     profile_by_xiegu_model_id,
     resolve_radio_profile,
 )
-from rigplane.profiles.rig_loader import RigConfig, discover_rigs
+from rigplane.profiles.rig_loader import RigConfig, discover_rigs, load_rig
+from rigplane.types import bcd_encode
 from rigplane.runtime.meter_cal import interpolate_meter
 from rigplane.runtime.radios import RADIOS, get_civ_addr
 
@@ -102,16 +110,19 @@ def test_identity_is_g7250_with_the_live_baud_and_model_id() -> None:
 
     assert config.id == "xiegu_g7250"
     assert config.model == "G7250"
-    # The radio answers ANY CI-V address and echoes the address it was
-    # asked as its own (LIVE 2026-11-09, probed 00/A4/88/70/72/E0; 0x88
-    # answered the full read set). 0x88, not the family default 0xA4:
-    # this file loads before ic705.toml and the profiles' address-only
-    # table would otherwise resolve 0xA4 to the G7250 (the IC-705's
-    # address). See test_address_only_resolution_regression below.
-    assert config.civ_addr == 0x88
+    # 0xA0 is the only address answering over LAN in wfview network mode
+    # (LIVE G7250 LAN 2026-11-13, MOR-4436: 0x88 and 0x94 silent, 0xA0
+    # answers; the vendor wfview G7250.rig uses CIVAddress=160 too). Over
+    # USB serial the radio answers ANY address and echoes it (LIVE
+    # 2026-11-09, probed 00/A4/88/70/72/E0). No other shipped profile is
+    # at 0xA0, so address-only resolution is undisturbed, and discovery
+    # still names this radio through 0x1D 0x19, never the address table.
+    # See test_address_only_resolution_regression below.
+    assert config.civ_addr == 0xA0
     assert config.receiver_count == 1
-    # The G7250 "LAN" port is a proprietary IQ stream, not CI-V control.
-    assert config.has_lan is False
+    # wfview network mode is Icom-LAN-like control (LIVE 2026-11-13,
+    # V1.0.1); HDSDR mode stays the UDP IQ stream under [iq_lan].
+    assert config.has_lan is True
     # LIVE: the radio answers 115200 and stays silent at 19200.
     assert config.default_baud == 115200
     # LIVE: 0x1D 0x19 answered `72 50`.
@@ -127,29 +138,33 @@ def test_iq_lan_wire_facts_are_profile_data() -> None:
 
 
 def test_registry_rows_resolve_the_model() -> None:
-    assert RADIOS["G7250"].civ_addr == 0x88
-    assert RADIOS["G7250"].has_lan is False
+    assert RADIOS["G7250"].civ_addr == 0xA0
+    assert RADIOS["G7250"].has_lan is True
     assert RADIOS["G7250"].receivers == 1
-    assert get_civ_addr("g7250") == 0x88
-    assert get_civ_addr("G-7250") == 0x88
+    assert get_civ_addr("g7250") == 0xA0
+    assert get_civ_addr("G-7250") == 0xA0
 
 
 def test_address_only_resolution_regression() -> None:
-    """The 0x88 move must not disturb address-only profile resolution.
+    """The 0xA0 move must not disturb address-only profile resolution.
 
     g7250.toml loads before ic705.toml and x6200.toml, and the profiles'
     ``_by_civ_addr`` table keeps the FIRST profile per address — with the
     G7250 at 0xA4 it stole the IC-705's address-only resolution (the
-    local Codex review's round-1 blocker). 0x88 is used by no other
+    local Codex review's round-1 blocker). 0xA0 is used by no other
     shipped profile, so the pre-G7250 rows are unchanged.
     """
     assert resolve_radio_profile(radio_addr=0xA4).model == "IC-705"
     assert resolve_radio_profile(radio_addr=0x70).model == "X6100"
-    # The G7250 itself resolves by name (or id) to its own 0x88 profile.
+    # The G7250 itself resolves by name (or id) to its own 0xA0 profile.
     by_name = resolve_radio_profile(model="G7250")
     assert by_name.model == "G7250"
-    assert by_name.civ_addr == 0x88
-    assert resolve_radio_profile(radio_addr=0x88).model == "G7250"
+    assert by_name.civ_addr == 0xA0
+    assert resolve_radio_profile(radio_addr=0xA0).model == "G7250"
+    # 0x88 is the old profile address; no shipped profile claims it now,
+    # so an address-only lookup for it refuses instead of naming a radio.
+    with pytest.raises(ValueError, match="Cannot resolve a radio profile"):
+        resolve_radio_profile(radio_addr=0x88)
 
 
 def test_factory_routes_the_shared_xiegu_serial_class() -> None:
@@ -482,3 +497,37 @@ def test_no_get_vfo_key_and_no_bare_07_poll() -> None:
     paths = [str(capability.path) for capability in acquisition.capabilities]
     assert paths, "expected polled/observable acquisition paths"
     assert not [path for path in paths if "vfo" in path.lower()], paths
+
+
+# ---------------------------------------------------------------------------
+# MOR-4436 part B — wfview-mode LAN: address 0xA0, 25 00 frequency SET
+# ---------------------------------------------------------------------------
+
+
+def test_set_freq_is_25_00_and_neighbors_stay_on_05() -> None:
+    """B: the G7250 frequency SET is ``25 00``; IC-7300/IC-705 stay on ``05``.
+
+    LIVE G7250 LAN 2026-11-13 (MOR-4436, V1.0.1, wfview network mode):
+    writing ``05`` + freq is echoed but NOT applied, while ``25 00`` +
+    freq is applied (read back by ``03`` and ``25 00``). The Xiegu G7250
+    CI-V Reference Rev 1.2 (2026-11-06), Table 1-1 / page 1 classes
+    ``25 V=00/01 F[5]`` as [Real] over serial too (not bench-verified on
+    serial), so one command works on both transports. ``get_freq`` stays
+    ``03``.
+    """
+    g7250_map = load_rig(RIGS_DIR / "g7250.toml").to_command_map()
+    frame = build_set_freq(7_280_000, 0xA0, cmd_map=g7250_map)
+    assert frame == build_civ_frame(
+        0xA0, CONTROLLER_ADDR, 0x25, sub=0x00, data=bcd_encode(7_280_000)
+    )
+    assert frame.hex() == "fefea0e025000000280700fd"
+
+    # The neighbors' SETs are byte-identical to before this change.
+    ic7300_map = load_rig(RIGS_DIR / "ic7300.toml").to_command_map()
+    assert build_set_freq(7_280_000, 0x94, cmd_map=ic7300_map) == build_civ_frame(
+        0x94, CONTROLLER_ADDR, 0x05, data=bcd_encode(7_280_000)
+    )
+    ic705_map = load_rig(RIGS_DIR / "ic705.toml").to_command_map()
+    assert build_set_freq(7_280_000, 0xA4, cmd_map=ic705_map) == build_civ_frame(
+        0xA4, CONTROLLER_ADDR, 0x05, data=bcd_encode(7_280_000)
+    )

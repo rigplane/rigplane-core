@@ -537,7 +537,7 @@ class TestProbeXieguModelId:
         # Asked at the Xiegu family default 0xA4 the radio is the 0xA4
         # radio (it answers ANY address and echoes it, LIVE G7250
         # 2026-11-09), so the fake sits at the asked address explicitly —
-        # its default is the profile address 0x88.
+        # its default is the profile address 0xA0.
         radio = CivRadioFake("G7250", civ_addr=0xA4)
         result = await probe_xiegu_model_id(
             "/dev/x",

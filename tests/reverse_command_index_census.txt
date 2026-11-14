@@ -15,7 +15,7 @@
 #   RIGPLANE_REGEN_REVERSE_COMMAND_INDEX_CENSUS=1 uv run pytest tests/test_reverse_command_index.py
 # Regenerate the same way after an intentional profile/command change --
 # do not hand-edit.
-G7250	58	38	40
+G7250	58	37	41
 IC-705	230	119	214
 IC-7300	323	180	282
 IC-7300MK2	333	185	292

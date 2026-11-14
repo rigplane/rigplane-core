@@ -1,7 +1,8 @@
 # Rig Configuration — Xiegu G7250
 #
 # Xiegu G7250 HF/50 MHz transceiver, USB CI-V (subset of standard Icom
-# CI-V, same family personality as the X6200).
+# CI-V, same family personality as the X6200) and LAN control in wfview
+# network mode.
 #
 # Sources of truth, per entry:
 #   1. "LIVE G7250 2026-11-09 (MOR-4352)" — the read-only bench audit of a
@@ -11,6 +12,8 @@
 #   2. "inherited from X6200, not probed on G7250" — copied unchanged from
 #      rigs/x6200.toml (Radioddity "Xiegu X6200 CI-V implementation
 #      V1.0.6" and that profile's own live captures). NOT G7250 evidence.
+#   3. "LIVE G7250 LAN 2026-11-13 (MOR-4436)" — live network probes of a
+#      real G7250 (firmware V1.0.1) in wfview network mode.
 #
 # The audit never keyed the radio: no SET opcode, no PTT, no TX fact below
 # is bench-proven. History: MOR-4352.
@@ -18,23 +21,22 @@
 [radio]
 id = "xiegu_g7250"
 model = "G7250"
-# LIVE G7250 2026-11-09 (MOR-4352): the radio answers ANY CI-V address and
-# echoes the address it was asked as its own (probed at 00, A4, 88, 70, 72,
-# E0; 0x88 answered the full read set in the same audit). 0x88, not the
-# Xiegu family default 0xA4: this file loads before ic705.toml/x6200.toml,
-# and the profiles' address-only table (profiles/__init__.py
-# _by_civ_addr) would otherwise resolve 0xA4 lookups to the G7250,
-# stealing the IC-705's address-only resolution. No shipped profile uses
-# 0x88, so 0xA4 (IC-705) and 0x70 (X6100) keep resolving as before, and
-# unicast sessions still work: the radio answers whatever address it is
-# asked. Discovery names this radio through 0x1D 0x19 at 0x00, never
-# through the address table.
-civ_addr = 0x88
+# LIVE G7250 LAN 2026-11-13 (MOR-4436): over LAN only 0xA0 answers (0x88
+# and 0x94 are silent); the vendor wfview G7250.rig uses CIVAddress=160
+# (0xA0) too, and the reference default 0x94 is the IC-7300's address, not
+# usable here. Over USB serial the radio answers ANY address and echoes
+# it (LIVE 2026-11-09, probed 00/A4/88/70/72/E0). No other shipped profile
+# uses 0xA0, so 0xA4 (IC-705) and 0x70 (X6100) keep resolving as before.
+# Discovery names this radio through 0x1D 0x19 (`72 50`), never through
+# the address table.
+civ_addr = 0xA0
 receiver_count = 1
-# The G7250 "LAN" port is a proprietary IQ stream, not Icom LAN control
-# (MOR-4352); has_wifi has no bench evidence either way and stays false —
-# flip only with evidence.
-has_lan = false
+# Two exclusive network modes share the port numbers: HDSDR = UDP IQ stream
+# (see [iq_lan]) and wfview = Icom-LAN-like control (LIVE G7250 LAN
+# 2026-11-13, MOR-4436, V1.0.1). LAN RX audio flows (48 kHz 16-bit mono,
+# PCM_1CH_16BIT); LAN audio TX is NOT verified. has_wifi has no bench
+# evidence either way and stays false — flip only with evidence.
+has_lan = true
 has_wifi = false
 # LIVE G7250 2026-11-09 (MOR-4352): answers 115200, silent at 19200.
 default_baud = 115200
@@ -49,8 +51,9 @@ xiegu_model_id = 0x7250
 
 [protocol]
 type = "civ"
-address = 0x88
+address = 0xA0
 
+# HDSDR network mode only: in wfview mode these ports carry control/CI-V/audio.
 [iq_lan]
 protocol = "xiegu_udp"
 radio_port = 50002
@@ -92,8 +95,10 @@ codec_preference = ["PCM_1CH_16BIT", "ULAW_1CH"]
 #     TX). Markers stay absent on the bench evidence; activating them needs
 #     the TX-gated follow-up (audit section B, out of scope here).
 #   - no ``data_mode``: 0x1A 0x06 NAKs (LIVE).
-#   - no ``scope``: 0x27 0x10/0x11/0x14/0x15 got NO reply (LIVE) — no
-#     CI-V scope.
+#   - no ``scope``: 0x27 0x10/0x11/0x14/0x15 got NO reply over USB
+#     serial (LIVE pre-1.0.1; the reference lists 27 as unimplemented on
+#     serial). Over LAN in wfview mode the scope answers (LIVE
+#     2026-11-13) — declaring it is a follow-up step, out of scope here.
 #   - no tone family: 0x16 0x42/0x43 NAK (LIVE).
 #   - no memory channels: 0x1A 0x00 NAKs (LIVE) — but that opcode is only
 #     the *contents* register, unimplemented per the Xiegu G7250 CI-V
@@ -629,13 +634,19 @@ label = "25"
 [commands]
 
 # Frequency / mode
-get_freq         = [0x03]  # LIVE G7250 2026-11-09 (MOR-4352): answered 7.138000 MHz; SET inherited from X6200, not probed
-set_freq         = [0x05]  # inherited from X6200, not probed on G7250 (read-only audit)
+get_freq         = [0x03]  # LIVE G7250 2026-11-09 (MOR-4352): answered 7.138000 MHz
+# LIVE G7250 LAN 2026-11-13 (MOR-4436): 05 + freq is echoed but NOT
+# applied over LAN; 25 00 + freq is applied (read back by 03 and 25 00).
+# Reference Rev 1.2 Table 1-1 / p1 classes 25 00 [Real] on serial too —
+# not bench-verified on serial.
+set_freq         = [0x25, 0x00]
 get_mode         = [0x04]  # LIVE G7250 2026-11-09: answered LSB FIL1; SET inherited
 set_mode         = [0x06]  # inherited from X6200, not probed on G7250 (read-only audit)
 
 # Get receiver frequency range
-# LIVE G7250 2026-11-09: answered RX 0.5 .. 54 MHz.
+# LIVE G7250 2026-11-09: answered RX 0.5 .. 54 MHz on serial. Over LAN in
+# wfview mode 02 is silent (LIVE 2026-11-13) — the GET stays: serial
+# answers it.
 get_band_edge_freq = [0x02]
 
 # VFO selection / swap (0x07). There is no get_vfo key on purpose: bare 07
@@ -811,8 +822,9 @@ set_dial_lock    = { absent = "LIVE G7250 2026-11-09: read 0x02, meaning unconfi
 #   - 0x16 0x46 (VOX) answers 02; no key — meaning unconfirmed, no
 #     capability declared.
 #   - 0x1A 0x04 (AGC time constant) answers 00; no key.
-# No reply at all (LIVE): 0x21 0x00/0x01/0x02 (RIT/XIT), 0x27 0x10/0x11/
-# 0x14/0x15 (scope), 0x12 (antenna) — no keys, no capabilities.
+# No reply at all on USB serial (LIVE 2026-11-09): 0x21 0x00/0x01/0x02
+# (RIT/XIT), 0x27 0x10/0x11/0x14/0x15 (scope), 0x12 (antenna) — no keys,
+# no capabilities.
 
 [commands.overrides]
 
