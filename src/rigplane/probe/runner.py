@@ -196,8 +196,10 @@ def _garble_check(protocol: str) -> Callable[[bytes], bool]:
 
 def _cat_template_of(config: RigConfig, name: str, body: bytes) -> str:
     spec = config.commands.get(name)
-    if isinstance(spec, CatCommandSpec) and spec.read:
-        return spec.read
+    if isinstance(spec, CatCommandSpec):
+        read = spec.read
+        if read is not None:
+            return read
     try:
         return body.decode("ascii")
     except UnicodeDecodeError:
