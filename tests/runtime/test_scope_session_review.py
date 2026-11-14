@@ -1048,6 +1048,116 @@ async def test_last_unsubscribe_does_not_restore_over_external_fixed_edge(
         )
 
 
+async def test_follow_fix_external_center_leaves_no_stale_span_restore(
+    windowed_sdk,
+):
+    """Gate round 2 (fix-4565): a follow subscription drives span 3→4
+    (capturing 3); a pinned FIX subscription retires desired span; the
+    operator returns to CENTER with span 5; closing the last real scope
+    WebSocket must NOT restore 3 over 5 (owner rule «следовать за рацией»)."""
+    from rigplane.scope.models import View
+
+    radio, sim = windowed_sdk
+    sim.capture_civ_frames = True
+    sim.set_frequency(14_100_000)
+    radio._radio_state.main.freq = 14_100_000
+    presets = radio._profile.scope_span_presets_hz
+    assert (presets.index(50_000), presets.index(100_000)) == (4, 5)
+    sim.views[0] = (0, 3, 1)
+    async with web(radio) as (_, client, base, protocols, _):
+        async with client.ws_connect(base + "/api/v1/scope", protocols=protocols) as ws:
+            await _subscribe(
+                ws, Subscription("radio", 0, FollowView("vfo", 100_000), 475, 20)
+            )
+            await _frame_with(ws, (14_050_000, 14_150_000))
+            assert sim.views[0][1] == 4
+            await _subscribe(
+                ws, Subscription("radio", 0, View(14_050_000, 14_150_000), 475, 20)
+            )
+            session = radio.scope_session()
+            assert await await_until(lambda: sim.views[0][0] == 1)
+            assert (0, "span") not in session._desired
+            # External return to CENTER with span index 5 (front panel):
+            # the streamed window follows the radio through the production
+            # RX path.
+            sim.views[0] = (0, 5, 1)
+            assert await await_until(
+                lambda: (
+                    session.observed is not None
+                    and session.observed.span == presets.index(100_000)
+                )
+            )
+            span_sets_before_close = len(
+                [w for w in _viewport_writes(sim) if w.sub == 0x15]
+            )
+            assert span_sets_before_close >= 1
+        assert await await_until(lambda: not radio.scope_session().active)
+        assert sim.views[0] == (0, 5, 1)
+        assert (
+            len([w for w in _viewport_writes(sim) if w.sub == 0x15])
+            == span_sets_before_close
+        )
+
+
+async def test_retired_fixed_slot_external_rewrite_leaves_no_stale_restore(
+    windowed_sdk,
+):
+    """Gate round 2 (fix-4565): a FIX subscription writes slot (6, 1); the
+    operator returns the radio to CENTER, then a follow resubscribe runs
+    configure(mode=0, ...) which retires desired fixed_edge/edge; the
+    operator rewrites that slot's edges; closing the last real scope
+    WebSocket writes no fixed edge back over the external value."""
+    from rigplane.scope.models import View
+
+    radio, sim = windowed_sdk
+    sim.capture_civ_frames = True
+    sim.set_frequency(14_100_000)
+    radio._radio_state.main.freq = 14_100_000
+    requested = ScopeFixedEdge(6, 1, 14_050_000, 14_150_000)
+    external = ScopeFixedEdge(6, 1, 14_060_000, 14_160_000)
+    sim.views[0] = (0, 3, 1)
+    async with web(radio) as (_, client, base, protocols, _):
+        async with client.ws_connect(base + "/api/v1/scope", protocols=protocols) as ws:
+            await _subscribe(
+                ws, Subscription("radio", 0, View(14_050_000, 14_150_000), 475, 20)
+            )
+            assert sim.fixed[b"\x06\x01"] == requested
+            # External return to CENTER (front panel): the mode report
+            # arrives through the production RX path.
+            sim.views[0] = (0, 3, 1)
+            sim.push_scope_setting(b"\x14\x00\x00")
+            session = radio.scope_session()
+            assert await await_until(lambda: session._applied.get((0, "mode")) == 0)
+            # A follow subscription now runs configure(mode=0, span) on a
+            # CENTER radio, retiring desired fixed_edge/edge.
+            await _subscribe(
+                ws, Subscription("radio", 0, FollowView("vfo", 100_000), 475, 20)
+            )
+            assert await await_until(lambda: sim.views[0][1] == 4)
+            assert (0, "fixed_edge") not in session._desired
+            assert (0, "edge") not in session._desired
+            # External rewrite of the same slot, reported like a front-panel
+            # change (0x1E report through the production RX path).
+            sim.fixed[b"\x06\x01"] = external
+            sim.push_scope_setting(
+                b"\x1e\x06\x01"
+                + bcd_encode(external.start_hz)
+                + bcd_encode(external.end_hz)
+            )
+            assert await await_until(
+                lambda: session._applied.get((0, "fixed_edge")) == external
+            )
+            fixed_sets_before_close = len(
+                [w for w in _viewport_writes(sim) if w.sub == 0x1E]
+            )
+        assert await await_until(lambda: not radio.scope_session().active)
+        assert sim.fixed[b"\x06\x01"] == external
+        assert (
+            len([w for w in _viewport_writes(sim) if w.sub == 0x1E])
+            == fixed_sets_before_close
+        )
+
+
 async def test_single_scope_sub_fix_follow_acquires_dual_and_streams(windowed_sdk):
     """Pre-review round 1: single-scope output (dual off), MAIN selected,
     SUB in FIX — a SUB follow subscription still acquires dual output so
