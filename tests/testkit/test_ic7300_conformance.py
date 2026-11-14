@@ -69,10 +69,14 @@ _RECORDED_NAKS = frozenset(
 
 
 def _expected_probe_bodies() -> set[bytes]:
-    from rigplane.probe.readlist import build_read_list
+    from rigplane.probe.readlist import build_read_plan
 
-    config = discover_rigs(REPO_ROOT / "rigs")["IC-7300"]
-    return {item.body for item in build_read_list(config)}
+    rigs = discover_rigs(REPO_ROOT / "rigs")
+    config = rigs["IC-7300"]
+    # The fixture records what the bench radio was asked before borrowing
+    # existed, so the expected set stays the native-only plan: no siblings.
+    plan = build_read_plan(config)
+    return {item.body for item in plan.asked}
 
 
 def _rows() -> list[dict]:

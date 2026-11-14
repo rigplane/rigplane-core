@@ -31,6 +31,7 @@ Pretty-printed JSON, one command per block, `jq`-friendly. Top level:
 | `private_reads_included` | boolean | Whether memory-content reads were sent. |
 | `label` | string | The `--label` text, empty when not given. |
 | `commands` | array | One row per sent read, in send order (below). |
+| `skipped` | array | One row per declared read deliberately not sent, with a reason (below). |
 | `unsolicited` | array | `{t_ms, hex, text}` pushes seen outside any answer slot. |
 | `snapshot` | object | `{before, after, changed}` profile state reads around the pass; `changed` lists the names that differ. |
 | `checks` | array | Always empty here; reserved for write checks. |
@@ -47,7 +48,8 @@ One `commands` row:
 | `reply_text` | string or null | CAT reply line; null when nothing arrived or the row is not an answer. |
 | `class` | string | One outcome class (below). |
 | `latency_ms` | number | Time from send to settled answer. |
-| `note` | string | Expansion provenance (for example a defaulted field domain). |
+| `expected` | string | What the profile declares: `present`, or `absent` for a declared-absent read sent with borrowed bytes. |
+| `note` | string | Expansion provenance (for example a defaulted field domain); borrowed reads name their lenders (`bytes from profile(s): X, Y`). |
 
 Outcome classes, shared by both protocols: `data` (the reply parses
 as the answer), `refused` (`?;` / CI-V NAK `0xFA`), `ack_only` (bare
@@ -55,6 +57,23 @@ CI-V ACK `0xFB` with no data), `silent` (nothing arrived),
 `malformed` (unattributable bytes), `unsolicited` (a push in the
 answer slot), `transport_error` (the run ends). Raw bytes are always
 kept; the class is a convenience, never the only record.
+
+One `skipped` row:
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `name` | string | Profile command name (`get_memory_contents`). |
+| `request_hex` | string or null | Withheld bytes, hex; null when no single bytes exist. |
+| `reason` | string | One skip reason (below). |
+| `detail` | string | One short human sentence. |
+
+Skip reasons, a closed enum the parser validates: `unsafe_family` (a
+refused or action-shaped command family is never sent), `private`
+(stored memory contents without `--include-private`), `response_code`
+(the radio's own NAK/ACK reply bytes `0xFA`/`0xFB`, never requests),
+`no_unambiguous_bytes` (a declared-absent read no sibling profile
+lends unanimous bytes for). Every declared read of the profile is
+either asked or skipped; nothing is in both, nothing is missing.
 
 ## Redaction
 

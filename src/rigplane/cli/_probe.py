@@ -2,7 +2,8 @@
 
 Thin CLI over ``rigplane.probe``: argument parsing, prompts, and the USB
 serial transport. Nothing here decides what is sent; the runner sends
-only what ``readlist.build_read_list`` produces.
+only what ``readlist.build_read_plan`` asks, and records the rest as
+skipped with a reason.
 """
 
 from __future__ import annotations
@@ -13,7 +14,7 @@ import hashlib
 import re
 import sys
 import tomllib
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Iterable, Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -24,7 +25,7 @@ from rigplane.core.serial_open import open_serial_port
 from rigplane.profiles.rig_loader import RigConfig
 from rigplane.probe import render
 from rigplane.probe.model import ProbeFile
-from rigplane.probe.readlist import build_read_list
+from rigplane.probe.readlist import build_read_plan
 from rigplane.probe.runner import (
     CIV_TIMEOUT_S,
     CAT_TIMEOUT_S,
@@ -147,6 +148,7 @@ async def execute(
     gap_s: float = 0.15,
     timeout_s: float | None = None,
     emit: Callable[[str], None] = print,
+    sibling_configs: Iterable[RigConfig] | None = None,
 ) -> int:
     """Run the probe end to end; return the process exit code.
 
@@ -162,7 +164,10 @@ async def execute(
         emit("Refusing to save without --yes when stdin is not a terminal.")
         return 2
 
-    items = build_read_list(config, include_private=include_private)
+    plan = build_read_plan(
+        config, include_private=include_private, siblings=sibling_configs
+    )
+    items = list(plan.asked)
     window = timeout_s
     if window is None:
         window = CIV_TIMEOUT_S if config.protocol_type == "civ" else CAT_TIMEOUT_S
@@ -196,6 +201,8 @@ async def execute(
         include_private=include_private,
         gap_s=gap_s,
         timeout_s=window,
+        items=items,
+        siblings=sibling_configs,
         progress=on_progress,
     )
     if report.aborted is not None:
@@ -210,6 +217,21 @@ async def execute(
         for name, value in report.file.snapshot.before.items()
         if value is not None
     ]
+    skipped_counts: dict[str, int] = {}
+    for entry in report.file.skipped:
+        skipped_counts[entry.reason] = skipped_counts.get(entry.reason, 0) + 1
+    absent_answered = [
+        row.name
+        for row in report.file.commands
+        if row.expected == "absent"
+        and row.outcome == "data"
+        and not row.name.startswith("unknown:")
+    ]
+    present_missed = [
+        row.name
+        for row in report.file.commands
+        if row.expected == "present" and row.outcome in ("refused", "silent")
+    ]
     emit(
         render.pre_save_summary(
             path=str(saved_abs),
@@ -220,6 +242,9 @@ async def execute(
             ),
             settings_lines=settings,
             private_reads_included=include_private,
+            skipped_counts=skipped_counts,
+            absent_answered=absent_answered,
+            present_missed=present_missed,
         )
     )
     if not yes and not _is_yes(ask("Save the file? [Y/n] ")):
@@ -335,5 +360,6 @@ def run(args: argparse.Namespace) -> int:
             is_tty=sys.stdin.isatty(),
             ask=lambda prompt: input(prompt),
             exchange_factory=factory,
+            sibling_configs=list(rigs.values()),
         )
     )

@@ -18,7 +18,7 @@ from rigplane.commands import (
 from rigplane.core.serial_open import open_serial_port
 from rigplane.profiles.rig_loader import RigConfig, load_rig
 from rigplane.probe import runner
-from rigplane.probe.readlist import build_read_list
+from rigplane.probe.readlist import build_allowed_bodies, build_read_plan
 from rigplane_testkit.serial import CivSerialFake
 from rigplane_testkit.yaesu import FakeCatRadio
 
@@ -38,7 +38,7 @@ def _load(name: str) -> RigConfig:
 
 def _subset(config: RigConfig, *names: str) -> list:
     wanted = set(names)
-    return [item for item in build_read_list(config) if item.name in wanted]
+    return [item for item in build_read_plan(config).asked if item.name in wanted]
 
 
 async def _yaesu_exchange(reader, writer) -> runner.Exchange:
@@ -130,7 +130,7 @@ async def test_all_data_run_yaesu_ft991a() -> None:
         gap_s=GAP,
         timeout_s=TIMEOUT,
     )
-    items = build_read_list(config)
+    items = list(build_read_plan(config).asked)
     assert seen
     assert len(report.file.commands) == len(items)
     assert report.aborted is None
@@ -148,7 +148,7 @@ async def test_all_data_run_yaesu_ftx1() -> None:
         report = await _run_yaesu(config, radio)
     finally:
         await radio.stop()
-    items = build_read_list(config)
+    items = list(build_read_plan(config).asked)
     assert len(report.file.commands) == len(items)
     assert report.aborted is None
     assert report.file.radio.identity_reported.parsed == "0840"
@@ -494,20 +494,26 @@ async def test_run_records_expected_and_skipped() -> None:
 
 
 async def test_runner_sends_only_what_readlist_produced() -> None:
-    """No-TX-ever over the runner: every sent line is a declared read."""
+    """No-TX-ever over the runner: every sent body is allow-listed.
+
+    Declared-absent reads are asked too (borrowed sibling bytes), so the
+    allow-list carries the borrowed bodies and the refused families stay
+    refused first.
+    """
     from rigplane.commands.command_spec import CatCommandSpec
     from rigplane.probe.readlist import (
-        build_allowed_bodies,
         compile_cat_template,
         identity_requests,
         is_forbidden,
     )
 
+    siblings = _sibling_configs()
     for toml_path in _probe_toml_paths():
         config = load_rig(toml_path)
         if config.protocol_type not in ("civ", "yaesu_cat"):
             continue
-        items = build_read_list(config, include_private=True)
+        plan = build_read_plan(config, include_private=True, siblings=siblings)
+        items = list(plan.asked)
         produced = {item.body for item in items}
         identity = {item.body for item in identity_requests(config)}
         seen: list[bytes] = []
@@ -521,7 +527,9 @@ async def test_runner_sends_only_what_readlist_produced() -> None:
             include_private=True,
             gap_s=GAP,
             timeout_s=TIMEOUT,
+            siblings=siblings,
         )
+        assert report.file.skipped == plan.skipped
         assert seen, toml_path.name
         assert set(seen) <= produced | identity, toml_path.name
         assert report.aborted is None, toml_path.name
@@ -543,6 +551,10 @@ async def test_runner_sends_only_what_readlist_produced() -> None:
                 assert any(p.fullmatch(line) for p in read_matchers), line
                 assert not any(p.fullmatch(line) for p in write_matchers), line
         else:
-            allowed = build_allowed_bodies(config.to_profile(), include_private=True)
+            allowed = build_allowed_bodies(
+                config.to_profile(),
+                include_private=True,
+                borrowed_bodies=[item.body for item in items],
+            )
             for body in seen:
                 assert not is_forbidden(body, allowed), body.hex()

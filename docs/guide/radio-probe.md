@@ -54,12 +54,41 @@ could not be opened or nothing answered at all.
 ## What lands in the file
 
 - The questions asked and the radio's exact replies, one row per read.
+  Each row says what the profile declares (`expected`: `present` for a
+  listed read, `absent` for a declared-absent read the probe asked
+  anyway — those rows name the lending profiles in `note`).
+- The reads that were deliberately not sent, each with a reason
+  (`skipped`: `unsafe_family`, `private`, `response_code`, or
+  `no_unambiguous_bytes`).
 - What the radio says it is (its identity answer) and whether it
   matches the profile — a mismatch never stops the run.
 - Your radio's settings at that moment: frequency, mode, power, and
   the other values the profile reads.
 - A before/after snapshot of those settings, and anything that changed
   during the run.
+
+## What is asked, and what is skipped
+
+A read asks a question; it never changes anything. So reads the
+profile marks absent are asked too: "absent" is our belief from a
+manual, and the point of the tool is to test beliefs against the real
+radio. An answer, a refusal, and silence are all information.
+
+A declared-absent CI-V read borrows its bytes from the other shipped
+profiles of the same protocol: the same-name command of every sibling
+profile, used only when all of them agree on the bytes. Nobody
+invents bytes. Borrowed bytes pass through the same filters as native
+ones (refused families, stored memory contents without
+`--include-private`, the `0xFA`/`0xFB` reply codes), plus one extra
+safeguard: a borrowed read is sent only when its command byte is on a
+positive read-safe list (a frame with no data is an action, not a
+query, for some families such as VFO select, scan, tuner, or speech)
+and every lending profile declares the entry as a `get_*` read.
+Anything else is recorded as skipped with the reason why — including
+native reads the profile lists but the probe never sends (such as the
+power and tuner families, or stored memory contents without the flag).
+Declared-absent CAT reads (none exist today) are skipped
+`no_unambiguous_bytes`: borrowing across CAT profiles is out of scope.
 
 What never lands in the file: your name, IP address, computer name,
 the port path, or log files. Stored memory contents are left

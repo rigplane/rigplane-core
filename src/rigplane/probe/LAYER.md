@@ -3,8 +3,10 @@
 ## Charter
 
 Read-only radio probing (`rigplane probe`): enumerate every read command a
-rig profile declares, send each once over USB serial, and record the
-radio's exact replies into a `rigplane-probe-v1` file. The package owns the
+rig profile declares — listed reads and declared-absent reads alike —
+send each once over USB serial, and record the radio's exact replies
+into a `rigplane-probe-v1` file. Reads deliberately not sent are
+recorded as `skipped` with a closed-enum reason. The package owns the
 file contract (`model.py`), the per-protocol read enumeration and
 allow-list (`readlist.py`), the outcome classes (`classify.py`), the paced
 single-flight runner (`runner.py`), and the customer-facing text
@@ -13,7 +15,7 @@ and the serial transport.
 
 ## Public API
 
-`model.ProbeFile.to_json` / `from_json`, `readlist.build_read_list`,
+`model.ProbeFile.to_json` / `from_json`, `readlist.build_read_plan`,
 `classify.classify_cat` / `classify_civ`, `runner.run_probe`,
 `render.*_message` / `*_screen` / `*_summary` helpers.
 

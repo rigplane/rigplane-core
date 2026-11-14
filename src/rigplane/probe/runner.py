@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 import platform
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Protocol
@@ -40,7 +40,7 @@ from rigplane.probe.model import (
 )
 from rigplane.probe.readlist import (
     ReadRequest,
-    build_read_list,
+    build_read_plan,
     identity_requests,
     snapshot_names,
 )
@@ -314,7 +314,7 @@ async def _read_snapshot(
     protocol = config.protocol_type
     garbled = _garble_check(protocol)
     out: dict[str, str | None] = {}
-    for name in snapshot_names(config):
+    for name in snapshot_names(config, set(full)):
         item = full[name]
         answer = await _ask(
             exchange,
@@ -373,19 +373,23 @@ async def run_probe(
     gap_s: float = DEFAULT_GAP_S,
     timeout_s: float | None = None,
     items: list[ReadRequest] | None = None,
+    siblings: Iterable[RigConfig] | None = None,
     progress: Callable[[int, int], None] | None = None,
 ) -> ProbeRun:
-    """Run one read pass over *items* (default: the whole read list).
+    """Run one read pass over *items* (default: the whole read plan).
 
     Identity reads go first, then the before snapshot, the pass, and the
     after snapshot. Five silent commands in a row stop the pass; a
     transport break stops everything. Identity mismatch never stops.
+    Declared-absent CI-V reads borrow bytes from *siblings*, the other
+    shipped profiles; without them those reads are recorded as skipped.
     """
     protocol = config.protocol_type
     if protocol not in ("civ", "yaesu_cat"):
         raise ValueError(f"probe supports 'civ' and 'yaesu_cat', not {protocol!r}")
     window = timeout_s if timeout_s is not None else _default_timeout(protocol)
-    full = build_read_list(config, include_private=include_private)
+    plan = build_read_plan(config, include_private=include_private, siblings=siblings)
+    full = list(plan.asked)
     allowed = {item.body for item in full} | {
         item.body for item in identity_requests(config)
     }
@@ -449,6 +453,7 @@ async def run_probe(
         private_reads_included=include_private,
         label=label,
         commands=tuple(rows),
+        skipped=plan.skipped,
         unsolicited=tuple(strays.rows),
         snapshot=Snapshot(before=before, after=after, changed=changed),
         checks=(),
@@ -508,6 +513,7 @@ async def _ask_once(
         reply_text=reply_text,
         outcome=outcome,
         latency_ms=answer.latency_ms,
+        expected=item.expected,
         note=item.note,
     )
     return row, outcome == "silent"

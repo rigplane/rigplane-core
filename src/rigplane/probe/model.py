@@ -2,7 +2,9 @@
 
 The probe file is a paired, classified table: one row per read the run
 sent, the radio's exact reply bytes, and a convenience class per row.
-Raw bytes are always kept; the class never replaces them.
+Raw bytes are always kept; the class never replaces them. Reads the
+run deliberately did not send are listed under ``skipped`` with a
+reason from a closed enum, so a silent omission is impossible.
 """
 
 from __future__ import annotations
@@ -14,10 +16,13 @@ from typing import Any
 __all__ = [
     "SCHEMA",
     "OUTCOMES",
+    "EXPECTED",
+    "SKIP_REASONS",
     "ToolInfo",
     "IdentityReport",
     "RadioInfo",
     "CommandRow",
+    "SkippedRead",
     "UnsolicitedRow",
     "Snapshot",
     "ProbeFile",
@@ -40,6 +45,21 @@ OUTCOMES = frozenset(
         "unsolicited",
         "transport_error",
     }
+)
+
+#: What the profile declares about a sent read: the profile lists the
+#: read (``present``) or marks it absent and the run borrowed the bytes
+#: from sibling profiles (``absent``). Deliberately unknown calibration
+#: requests carry ``absent``: the profile declares nothing about them.
+EXPECTED = frozenset({"present", "absent"})
+
+#: Why a declared read was not sent. ``unsafe_family`` is a refused or
+#: action-shaped command family; ``private`` is stored memory contents
+#: without ``--include-private``; ``response_code`` is the radio's own
+#: NAK/ACK reply bytes, never requests; ``no_unambiguous_bytes`` is a
+#: declared-absent read no sibling profile lends unanimous bytes for.
+SKIP_REASONS = frozenset(
+    {"unsafe_family", "private", "response_code", "no_unambiguous_bytes"}
 )
 
 
@@ -80,6 +100,9 @@ class CommandRow:
 
     ``outcome`` is the convenience class; the JSON key is ``class``.
     ``reply_hex``/``reply_text`` are ``None`` when nothing arrived.
+    ``expected`` is what the profile declares: ``present`` for a listed
+    read, ``absent`` for a declared-absent read sent with borrowed bytes
+    (borrowed rows say so in ``note``).
     """
 
     name: str
@@ -90,7 +113,24 @@ class CommandRow:
     reply_text: str | None
     outcome: str
     latency_ms: float
+    expected: str
     note: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class SkippedRead:
+    """One declared read the run deliberately did not send.
+
+    ``request_hex`` is the withheld bytes, or ``None`` when no single
+    bytes exist (no sibling lends unanimous bytes, or several expanded
+    lines were withheld). ``reason`` is one of :data:`SKIP_REASONS`;
+    ``detail`` is one short human sentence.
+    """
+
+    name: str
+    request_hex: str | None
+    reason: str
+    detail: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -121,6 +161,7 @@ class ProbeFile:
     private_reads_included: bool
     label: str
     commands: tuple[CommandRow, ...] = ()
+    skipped: tuple[SkippedRead, ...] = ()
     unsolicited: tuple[UnsolicitedRow, ...] = ()
     snapshot: Snapshot = field(default_factory=lambda: Snapshot({}, {}, []))
     checks: tuple[Any, ...] = ()
@@ -174,9 +215,19 @@ def _to_plain(file: ProbeFile) -> dict[str, Any]:
                 "reply_text": row.reply_text,
                 "class": row.outcome,
                 "latency_ms": row.latency_ms,
+                "expected": row.expected,
                 "note": row.note,
             }
             for row in file.commands
+        ],
+        "skipped": [
+            {
+                "name": row.name,
+                "request_hex": row.request_hex,
+                "reason": row.reason,
+                "detail": row.detail,
+            }
+            for row in file.skipped
         ],
         "unsolicited": [
             {"t_ms": row.t_ms, "hex": row.hex, "text": row.text}
@@ -300,6 +351,7 @@ def _command_row(document: Any, index: int) -> CommandRow:
         "reply_text",
         "class",
         "latency_ms",
+        "expected",
         "note",
     ):
         if key not in mapping:
@@ -308,6 +360,11 @@ def _command_row(document: Any, index: int) -> CommandRow:
     if outcome not in OUTCOMES:
         raise ValueError(
             f"field commands[{index}].class must be one of {sorted(OUTCOMES)}"
+        )
+    expected = _need_str(mapping["expected"], f"commands[{index}].expected")
+    if expected not in EXPECTED:
+        raise ValueError(
+            f"field commands[{index}].expected must be one of {sorted(EXPECTED)}"
         )
     reply_hex = mapping["reply_hex"]
     reply_text = mapping["reply_text"]
@@ -326,7 +383,29 @@ def _command_row(document: Any, index: int) -> CommandRow:
         reply_text=reply_text,
         outcome=outcome,
         latency_ms=_need_float(mapping["latency_ms"], f"commands[{index}].latency_ms"),
+        expected=expected,
         note=_need_str(mapping["note"], f"commands[{index}].note"),
+    )
+
+
+def _skipped_row(document: Any, index: int) -> SkippedRead:
+    mapping = _need_mapping(document, f"skipped[{index}]")
+    for key in ("name", "request_hex", "reason", "detail"):
+        if key not in mapping:
+            raise _missing(f"skipped[{index}].{key}")
+    reason = _need_str(mapping["reason"], f"skipped[{index}].reason")
+    if reason not in SKIP_REASONS:
+        raise ValueError(
+            f"field skipped[{index}].reason must be one of {sorted(SKIP_REASONS)}"
+        )
+    request_hex = mapping["request_hex"]
+    if request_hex is not None:
+        _need_hex(request_hex, f"skipped[{index}].request_hex")
+    return SkippedRead(
+        name=_need_str(mapping["name"], f"skipped[{index}].name"),
+        request_hex=request_hex,
+        reason=reason,
+        detail=_need_str(mapping["detail"], f"skipped[{index}].detail"),
     )
 
 
@@ -352,6 +431,7 @@ def _from_plain(document: Any) -> ProbeFile:
         "private_reads_included",
         "label",
         "commands",
+        "skipped",
         "unsolicited",
         "snapshot",
         "checks",
@@ -361,6 +441,9 @@ def _from_plain(document: Any) -> ProbeFile:
     commands = mapping["commands"]
     if not isinstance(commands, list):
         raise ValueError("field commands must be an array")
+    skipped = mapping["skipped"]
+    if not isinstance(skipped, list):
+        raise ValueError("field skipped must be an array")
     stray = mapping["unsolicited"]
     if not isinstance(stray, list):
         raise ValueError("field unsolicited must be an array")
@@ -394,6 +477,7 @@ def _from_plain(document: Any) -> ProbeFile:
         ),
         label=_need_str(mapping["label"], "label"),
         commands=tuple(_command_row(row, index) for index, row in enumerate(commands)),
+        skipped=tuple(_skipped_row(row, index) for index, row in enumerate(skipped)),
         unsolicited=tuple(
             _unsolicited_row(row, index) for index, row in enumerate(stray)
         ),

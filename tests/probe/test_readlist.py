@@ -1,7 +1,7 @@
-"""Read lists derived from profiles, and the no-TX-ever contract (MOR-4464 PR A).
+"""Read plans derived from profiles, and the no-TX-ever contract (MOR-4464 PR A).
 
-The read list is the allow-list: the runner sends only what
-``build_read_list`` produces, and every produced line must be a declared
+The plan's asked list is the allow-list: the runner sends only what
+``build_read_plan`` asks, and every asked line must be a declared
 profile read and never a write.
 """
 
@@ -17,8 +17,9 @@ from rigplane.commands import build_cmd29_frame
 from rigplane.commands import CONTROLLER_ADDR
 from rigplane.profiles.rig_loader import RigConfig, load_rig
 from rigplane.probe.readlist import (
+    ReadRequest,
     build_allowed_bodies,
-    build_read_list,
+    build_read_plan,
     compile_cat_template,
     identity_requests,
     is_forbidden,
@@ -36,9 +37,14 @@ def _load(name: str) -> RigConfig:
     return load_rig(RIGS_DIR / f"{name}.toml")
 
 
+def _asked(config: RigConfig, include_private: bool = False) -> list[ReadRequest]:
+    """The plan's asked list without sibling borrowing."""
+    return list(build_read_plan(config, include_private=include_private).asked)
+
+
 def test_yaesu_list_is_every_profile_read_expanded() -> None:
     config = _load("ftx1")
-    bodies = [item.body for item in build_read_list(config)]
+    bodies = [item.body for item in _asked(config)]
     assert len(bodies) == len(set(bodies))
     assert b"ID;" in bodies
     assert b"FA;" in bodies
@@ -52,9 +58,9 @@ def test_yaesu_list_is_every_profile_read_expanded() -> None:
 
 def test_yaesu_private_memory_reads_need_the_flag() -> None:
     config = _load("ftx1")
-    default = {item.body for item in build_read_list(config)}
+    default = {item.body for item in _asked(config)}
     assert not [body for body in default if re.match(rb"M[RT]", body)]
-    private = {item.body for item in build_read_list(config, include_private=True)}
+    private = {item.body for item in _asked(config, include_private=True)}
     assert b"MR00001;" in private
     assert b"MT00001;" in private
     assert default < private
@@ -70,7 +76,7 @@ def test_yaesu_every_line_passes_an_independent_read_matcher() -> None:
         if isinstance(spec, CatCommandSpec) and spec.read
     ]
     matchers = [compile_cat_template(template) for template in reads]
-    for item in build_read_list(config, include_private=True):
+    for item in _asked(config, include_private=True):
         line = item.body.decode("ascii")
         assert any(pattern.fullmatch(line) for pattern in matchers), line
 
@@ -80,7 +86,7 @@ def test_civ_list_covers_profile_gets_and_excludes_forbidden() -> None:
     config = load_rig(IC7610)
     profile = config.to_profile()
 
-    items = build_read_list(config)
+    items = _asked(config)
     allowed = build_allowed_bodies(profile)
 
     commands = dict(raw["commands"])
@@ -164,7 +170,7 @@ def test_no_probe_body_is_an_ack_nak_echo(toml_name: str) -> None:
     config = load_rig(RIGS_DIR / f"{toml_name}.toml")
     bad = [
         item
-        for item in build_read_list(config, include_private=True)
+        for item in _asked(config, include_private=True)
         if item.body[:1] in (b"\xfa", b"\xfb")
     ]
     assert not bad
@@ -172,10 +178,10 @@ def test_no_probe_body_is_an_ack_nak_echo(toml_name: str) -> None:
 
 def test_cmd29_get_freq_only_on_dual_receiver_profiles() -> None:
     """The unconditional cmd29-wrapped get_freq is dual-receiver only (MOR-4464 PR A)."""
-    g7250 = build_read_list(load_rig(G7250))
+    g7250 = _asked(load_rig(G7250))
     assert not [item for item in g7250 if item.name.startswith("cmd29:get_freq:")]
 
-    ic7610 = build_read_list(load_rig(IC7610))
+    ic7610 = _asked(load_rig(IC7610))
     wrapped = [
         (item.name, item.body.hex())
         for item in ic7610
@@ -189,7 +195,7 @@ def test_cmd29_get_freq_only_on_dual_receiver_profiles() -> None:
 
 def test_ic7610_read_list_otherwise_unchanged() -> None:
     """The IC-7610 list keeps its size: gating drops nothing there (MOR-4464 PR A)."""
-    items = build_read_list(load_rig(IC7610))
+    items = _asked(load_rig(IC7610))
     assert len(items) == 177
 
 
@@ -209,22 +215,36 @@ def test_identity_requests_per_protocol() -> None:
 
 
 def test_snapshot_names_come_from_the_profile() -> None:
-    names = snapshot_names(_load("ftx1"))
+    produced = {item.name for item in _asked(_load("ftx1"))}
+    names = snapshot_names(_load("ftx1"), produced)
     assert "get_freq" in names and "get_ptt" in names
-    produced = {item.name for item in build_read_list(_load("ftx1"))}
     assert set(names) <= produced
-    civ_names = snapshot_names(_load("ic7300"))
+    civ_produced = {item.name for item in _asked(_load("ic7300"))}
+    civ_names = snapshot_names(_load("ic7300"), civ_produced)
     assert "get_freq" in civ_names and "get_mode" in civ_names
 
 
 @pytest.mark.parametrize("toml_name", _probe_toml_names())
 def test_no_tx_ever_and_every_line_a_declared_read(toml_name: str) -> None:
-    """Contract: no produced line is a write, every one is a declared read."""
+    """Contract: no asked line is a write, every one is allow-listed.
+
+    Declared-absent reads are asked too (borrowed sibling bytes), so the
+    property runs over the full borrowed plan, not just native reads.
+    """
     from rigplane.commands.command_spec import CatCommandSpec
 
     config = load_rig(RIGS_DIR / f"{toml_name}.toml")
-    items = build_read_list(config, include_private=True)
+    siblings = [
+        load_rig(path)
+        for path in sorted(RIGS_DIR.glob("*.toml"))
+        if not path.name.startswith("_") and not path.name.endswith(".draft.toml")
+    ]
+    plan = build_read_plan(config, include_private=True, siblings=siblings)
+    items = list(plan.asked)
     assert items
+    assert {item.name for item in items} & {
+        entry.name for entry in plan.skipped
+    } == set()
     if _protocol_of(config) == "yaesu_cat":
         reads = [
             spec.read
@@ -243,6 +263,10 @@ def test_no_tx_ever_and_every_line_a_declared_read(toml_name: str) -> None:
             assert any(p.fullmatch(line) for p in read_matchers), line
             assert not any(p.fullmatch(line) for p in write_matchers), line
     else:
-        allowed = build_allowed_bodies(config.to_profile(), include_private=True)
+        allowed = build_allowed_bodies(
+            config.to_profile(),
+            include_private=True,
+            borrowed_bodies=[item.body for item in items],
+        )
         for item in items:
             assert not is_forbidden(item.body, allowed), item.body.hex()

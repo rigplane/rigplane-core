@@ -7,16 +7,25 @@ the CLI only wires prompts and ports.
 from __future__ import annotations
 
 __all__ = [
+    "absent_answered_line",
     "closing_line",
     "cannot_open_message",
     "no_answers_message",
     "not_supported_message",
     "pre_save_summary",
+    "present_missed_line",
     "probe_help",
     "progress_line",
     "silent_stop_message",
+    "skipped_line",
     "start_screen",
 ]
+
+#: Skip reasons in the order the summary counts them.
+_REASON_ORDER = ("unsafe_family", "private", "response_code", "no_unambiguous_bytes")
+
+#: How many finding names print before the rest folds into "and N more".
+_MAX_FINDING_NAMES = 10
 
 
 def probe_help() -> str:
@@ -61,6 +70,52 @@ def _format_kb(size_bytes: int) -> str:
     return f"{max(size_bytes, 1024) // 1024} KB"
 
 
+def _short_names(names: list[str]) -> str:
+    """Up to ten names, then ``and N more``."""
+    shown = names[:_MAX_FINDING_NAMES]
+    text = ", ".join(shown)
+    rest = len(names) - len(shown)
+    if rest:
+        text += f" and {rest} more"
+    return text
+
+
+def skipped_line(counts: dict[str, int]) -> str:
+    """The ``N reads were not sent`` line, or ``""`` when nothing was skipped."""
+    total = sum(counts.values())
+    if not total:
+        return ""
+    parts = ", ".join(
+        f"{counts[reason]} {reason}" for reason in _REASON_ORDER if counts.get(reason)
+    )
+    return (
+        f"  - {total} reads were not sent ({parts}); "
+        "each is listed under 'skipped' in the file with why\n"
+    )
+
+
+def absent_answered_line(names: list[str]) -> str:
+    """Reads the profile calls absent that the radio answered with data."""
+    if not names:
+        return ""
+    reads = "read" if len(names) == 1 else "reads"
+    return (
+        f"  - notable: the radio answered {len(names)} {reads} "
+        f"the profile calls absent: {_short_names(names)}\n"
+    )
+
+
+def present_missed_line(names: list[str]) -> str:
+    """Reads the profile declares present that were refused or silent."""
+    if not names:
+        return ""
+    reads = "read" if len(names) == 1 else "reads"
+    return (
+        f"  - notable: the radio did not answer {len(names)} {reads} "
+        f"the profile declares present: {_short_names(names)}\n"
+    )
+
+
 def pre_save_summary(
     path: str,
     size_bytes: int,
@@ -68,6 +123,10 @@ def pre_save_summary(
     identity_text: str,
     settings_lines: list[str],
     private_reads_included: bool,
+    *,
+    skipped_counts: dict[str, int] | None = None,
+    absent_answered: list[str] | None = None,
+    present_missed: list[str] | None = None,
 ) -> str:
     """The summary shown before the file exists on disk."""
     settings = ", ".join(settings_lines)
@@ -87,6 +146,9 @@ def pre_save_summary(
         f"  - what the radio says it is ({identity_text}) and the RigPlane version\n"
         f"  - your radio's current settings as of this moment: {settings}\n"
         f"{memory_line}"
+        f"{skipped_line(skipped_counts or {})}"
+        f"{absent_answered_line(absent_answered or [])}"
+        f"{present_missed_line(present_missed or [])}"
         "It does NOT contain: your name, IP address, computer name or log files.\n"
         "Radio settings can show what you use the radio for (frequencies, mode).\n"
         "Nothing has been sent anywhere. "
