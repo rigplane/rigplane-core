@@ -124,73 +124,44 @@ broader coverage than maintaining a bespoke backend for each dialect.
 
 - **Protocol:** CI-V (Xiegu/Icom-compatible subset), per the Xiegu G7250 CI-V
   Reference Rev 1.2
-- **CI-V Address:** the radio answers any address over USB. Over the network
-  only `0xA0` answers. <!-- PENDING: L3 (profile moves to 0xA0 and has_lan) -->
 - **Connectivity:** USB (CI-V serial + USB audio); network control in the
-  radio's "wfview" mode (firmware V1.0.1 or later) <!-- PENDING: L1+L2+L3 -->
+  radio's "wfview" mode, firmware V1.0.1 or later <!-- PENDING: L1+L2+L3 -->
 - **Rig profile:** `rigs/g7250.toml`
-- **Features:** HF + 6m, single receiver, VFO A/B, frequency, mode, levels,
-  switches and meters
 - **Setup guide:** [G7250 USB and network setup](g7250-setup.md)
 
-**USB.** The radio's USB port shows a serial port for CI-V (115200 baud;
-the radio did not answer at 19200) and a separate USB audio device. RX audio
-uses the audio device. A USB-connected G7250 gets the audio-derived panorama
-only: the radio does not answer the CI-V scope commands over serial, so there
-is no hardware scope. With `--model G7250`, pass `--serial-port` for USB;
-without `--serial-port` or `--host`, RigPlane searches the network instead.
+!!! note "Firmware"
+    Xiegu G7250 support was verified on firmware V1.0.1, the first firmware
+    with network control. Some functions of this firmware are incomplete or
+    behave differently over USB and over the network; RigPlane can only
+    control what the radio itself implements. For the radio's own functions
+    and settings, refer to the manufacturer's documentation and firmware
+    release notes.
 
-**Network.** The radio's network port has two modes, chosen in the radio's
-network menu: **HDSDR** and **wfview**. The menu offers one at a time, so the HDSDR IQ stream is not available while
-the radio is in wfview mode.
+**Verified on firmware V1.0.1:**
 
-| Mode | What the radio sends | RigPlane |
-|------|----------------------|----------|
-| HDSDR | Raw IQ stream over UDP | Not used for control; a G7250 IQ panorama is not shipped ([Radio LAN IQ](sdr-panadapter.md#radio-lan-iq)) |
-| wfview | Icom-style network control: CI-V, audio, scope | Network control <!-- PENDING: L1+L2+L3 --> |
+- **USB:** frequency, mode, levels including volume, meters, and RX audio
+  through the radio's USB audio device.
+- **Network (wfview mode):** connecting with the user name and password set
+  in the radio, frequency, mode, meters, RX audio with its own level control,
+  and CW pitch. <!-- PENDING: L1+L2+L3 (network); CW pitch also waits for the profile PR -->
 
-Network control needs the **wfview** mode and firmware **V1.0.1 or later**.
-In wfview mode the radio uses the Icom network handshake on UDP ports 50001
-(control), 50002 (CI-V) and 50003 (audio), and asks for the user name and
-password set in its network menu.
+**Not verified, not claimed:** TX, PTT and TX audio, over either connection.
+<!-- PENDING: TX-check (alt: replace with the verified result per connection) -->
 
-What works, per connection:
+**Panorama.** A USB-connected G7250 gets the audio-derived panorama only; the
+radio does not answer the CI-V scope commands over serial. In wfview mode the
+radio sends scope data (spans 48, 96, 192 and 384 kHz); showing it ships in a
+later release than network control. <!-- PENDING: scope-PR (alt: "Panorama works over the network, spans 48 to 384 kHz.") -->
 
-| | USB | Network (wfview mode) |
-|---|---|---|
-| Frequency, mode, levels, switches | Yes | Yes <!-- PENDING: L2+L3 --> |
-| Meters (S, power, SWR) | Yes | Yes <!-- PENDING: L3 --> |
-| RX audio | Yes (USB audio device) | Yes <!-- PENDING: L1+L3 (audio sub-stream) --> |
-| Panorama | Audio-derived only | The radio sends scope data (475 points per sweep, spans 48, 96, 192 and 384 kHz); the hardware panorama ships in a later release than network control <!-- PENDING: scope-PR (alt: "Yes, spans 48 to 384 kHz") --> |
-| TX and TX audio | Not verified | Not verified <!-- PENDING: TX-check (alt: replace with the verified result per connection) --> |
-
-TX, PTT and TX audio have not been verified on this radio, over either
-connection. They are not claimed. The radio has a 10 s PTT timer
-(CI-V Reference Rev 1.2). <!-- PENDING: TX-check -->
-
-**Settings on the radio.** For network control: network mode `wfview`, and a
-user name and password in the network menu. The radio does not report its
-network mode over CI-V; if RigPlane cannot connect, check the mode first.
-Whether a mode change needs a power cycle is not verified. Network discovery finds the
-radio, but it does not name the model, so pass `--model G7250`. With several
-radios on the network, give the radio's address with `--host`.
+**Connecting.** Over USB the radio shows a serial port for CI-V (115200 baud)
+and a USB audio device; pass `--serial-port` on the command line. Without
+`--serial-port` or `--host`, `--model G7250` searches the network. For network
+control, set the radio's network mode to **wfview** (the other mode, HDSDR, is
+a raw IQ stream, and the radio offers one mode at a time) and set a user name
+and password in its network menu. Network discovery finds the radio but does
+not name the model, so pass `--model G7250`; with several radios on the
+network, give the radio's address with `--host`.
 <!-- PENDING: L1+L3 (discovery and model choice) -->
-
-**Known limits:**
-
-- AGC (firmware V1.0.1): the radio's panel has Auto, Slow, Fast and Off. Over
-  CI-V only Off, Fast and Slow can be selected. Auto cannot be selected by
-  command and reads back the same as Off, so RigPlane shows "AGC off" while
-  the radio is in Auto. <!-- PENDING: L3 (profile limits AGC choices to Off, Fast, Slow) -->
-- Controls the radio only stores without acting on (the reference marks them
-  as compatibility values) are not offered. Examples: the CW-R and RTTY modes.
-- Band edges, filter widths and the RIT/XIT, VOX, notch and dial-lock
-  controls follow the reference and are being checked on the radio; treat
-  them as unverified. <!-- PENDING: scope-PR (profile data PR; cut if merged and verified) -->
-- Writing a frequency over the network works through the radio's second
-  frequency command; the plain one is echoed but not applied. RigPlane does
-  this itself. <!-- PENDING: L2+L3 -->
-- Hardware reports are welcome.
 
 ### Lab599 TX-500
 

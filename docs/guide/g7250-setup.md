@@ -4,9 +4,8 @@ description: Connect a Xiegu G7250 to RigPlane over USB or, with firmware V1.0.1
 
 # G7250 USB and Network Setup
 
-RigPlane drives the Xiegu G7250 over CI-V. Facts here come from the
-Xiegu G7250 CI-V Reference Rev 1.2 and from tests on a real radio. TX, PTT
-and TX audio have not been verified on this radio.
+RigPlane drives the Xiegu G7250 over CI-V. TX, PTT and TX audio have not
+been verified on this radio.
 
 ## USB
 
@@ -81,11 +80,13 @@ between you and the radio.
 - TX and TX audio over the network are not verified.
   <!-- PENDING: TX-check (alt: verified result) -->
 
-## Limits
+## Firmware
 
-- AGC (firmware V1.0.1): the panel has Auto, Slow, Fast and Off. Only Off,
-  Fast and Slow can be set over CI-V. Auto reads back the same as Off, so
-  RigPlane shows "AGC off" while the radio is in Auto.
-- Controls the radio only stores without acting on are not offered.
+Xiegu G7250 support was verified on firmware V1.0.1, the first firmware
+with network control. Some functions of this firmware are incomplete or
+behave differently over USB and over the network; RigPlane can only
+control what the radio itself implements. For the radio's own functions
+and settings, refer to the manufacturer's documentation and firmware
+release notes.
 
-See [Supported Radios](radios.md#xiegu-g7250) for the full list.
+See [Supported Radios](radios.md#xiegu-g7250) for what has been verified.
