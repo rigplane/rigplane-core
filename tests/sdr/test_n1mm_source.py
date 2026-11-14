@@ -17,7 +17,11 @@ from rigplane.scope.n1mm_spectrum import (
     emit_n1mm_spectrum,
     parse_n1mm_spectrum,
 )
-from rigplane.sdr.n1mm_source import N1mmSpectrumReceiver, N1mmSpectrumSource
+from rigplane.sdr.n1mm_source import (
+    _MAX_COALESCE_TURNS,
+    N1mmSpectrumReceiver,
+    N1mmSpectrumSource,
+)
 from rigplane.testing.timing import VirtualClock, await_until
 
 
@@ -35,6 +39,11 @@ def _packet(index: int = 0, size: int = 4) -> N1mmSpectrumPacket:
 def _send(port: int, payload: bytes) -> None:
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
         sock.sendto(payload, ("127.0.0.1", port))
+
+
+async def _turns(n: int) -> None:
+    for _ in range(n):
+        await asyncio.sleep(0)
 
 
 @pytest.mark.timeout(30)
@@ -92,7 +101,7 @@ async def test_receiver_latest_wins_on_burst() -> None:
             lambda: received and received[-1] == packets[-1],
             description="burst delivery",
         )
-        await asyncio.sleep(0.2)
+        await _turns(_MAX_COALESCE_TURNS * 3)
         assert received == [packets[-1]]
     finally:
         await receiver.stop()
@@ -118,7 +127,7 @@ async def test_source_burst_renders_latest_packet() -> None:
             for packet in packets:
                 sock.sendto(emit_n1mm_spectrum(packet), ("127.0.0.1", receiver.port))
         await await_until(lambda: frames, description="burst frame")
-        await asyncio.sleep(0.2)
+        await _turns(_MAX_COALESCE_TURNS * 3)
         assert len(frames) == 1
         assert frames[0].coverage == Coverage(packets[-1].low_hz, packets[-1].high_hz)
     finally:
@@ -147,7 +156,7 @@ async def test_receiver_sustained_backlog_makes_progress() -> None:
             lambda: received and received[-1] == packets[-1],
             description="backlog drain",
         )
-        await asyncio.sleep(0.2)
+        await _turns(_MAX_COALESCE_TURNS * 3)
         assert 2 <= len(received) < len(packets)
         order = [packets.index(packet) for packet in received]
         assert order == sorted(order) and order[-1] == len(packets) - 1
