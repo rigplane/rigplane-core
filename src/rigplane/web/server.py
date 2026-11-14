@@ -7899,40 +7899,6 @@ class WebServer:
             if track_owners is not None and ticket.tx_owner is not None:
                 track_owners.discard(ticket.tx_owner)
 
-    async def _supervise_data_channel(
-        self, conn: Connection, ticket: ControllerTicket
-    ) -> None:
-        """Application heartbeat for data-channel peers.
-
-        WebSocket channels get ping/pong; data channels get none of
-        that, so without supervision a vanished peer would hold TX until
-        ICE consent noticed the dead peer. The controller session TTL is
-        the existing heartbeat instead: validating the ticket drives
-        expiry, and an expired ticket aborts the channel so the handler
-        sees EOF and the normal cleanup releases TX.
-
-        This overlaps ``ControllerAuthority._watch_sessions`` on purpose
-        and stays data-channel-only (the WebSocket lane keeps its
-        historical ping/pong exactly as on origin/main): the watch ticks
-        every heartbeat while this polls at half that, and the silent-loss
-        release budget (TTL + 1 s) depends on the finer granularity.
-        """
-        try:
-            interval = self._controller.HEARTBEAT_MS / 2000.0
-            while conn.is_alive():
-                await asyncio.sleep(interval)
-                if not conn.is_alive():
-                    return
-                try:
-                    self._controller.validate(ticket)
-                except ControllerError:
-                    conn.abort()
-                    return
-        except asyncio.CancelledError:
-            pass
-        except Exception:
-            pass
-
     async def serve_client_channel(
         self,
         conn: Connection,
@@ -8055,12 +8021,14 @@ class WebServer:
             self._conn_manager.unregister(scope, _ATTACH_PATH_FOR_KIND[kind], conn)
             conn.abort()
             return
+        # WebSocket channels keep their historical ping/pong; data channels
+        # have no keepalive task — the controller session watchdog is the
+        # one expiry mechanism (it aborts the registered channel).
+        keepalive: asyncio.Task[Any] | None = None
         if transport == "ws":
             keepalive = asyncio.create_task(
                 cast(Any, conn).keepalive_loop(self._config.keepalive_interval)
             )
-        else:
-            keepalive = asyncio.create_task(self._supervise_data_channel(conn, ticket))
         if ticket.tx_owner is not None:
             self._controller.add_channel(ticket, conn.abort)
         if ticket.remote:
@@ -8081,11 +8049,12 @@ class WebServer:
         finally:
             self._controller.detach(ticket)
             self._controller_handler_tasks.pop(ticket, None)
-            keepalive.cancel()
-            try:
-                await keepalive
-            except asyncio.CancelledError:
-                pass
+            if keepalive is not None:
+                keepalive.cancel()
+                try:
+                    await keepalive
+                except asyncio.CancelledError:
+                    pass
             self._conn_manager.unregister(scope, _ATTACH_PATH_FOR_KIND[kind], conn)
             logger.info(
                 "%s disconnect: %s %s:%s (active=%d)",

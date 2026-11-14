@@ -63,9 +63,18 @@ _webrtc = pytest.mark.skipif(
 )
 
 # The controller session TTL is the existing heartbeat for data-channel
-# peers: a vanished peer's session expires TTL_MS after its last
-# heartbeat, and the release must follow within one supervision beat.
-_SILENT_LOSS_BUDGET_S = ControllerAuthority.TTL_MS / 1000 + 1.0
+# peers: a vanished peer's session expires TTL_MS after its last heartbeat,
+# and the session watchdog (ControllerAuthority._watch_sessions) notices at
+# most one HEARTBEAT_MS tick later — it sleeps HEARTBEAT_MS between
+# _expire() passes, and _end_session aborts the registered channel so the
+# handler sees EOF and the normal cleanup releases TX. The budget is
+# therefore TTL_MS + HEARTBEAT_MS plus small scheduling slack. This
+# deliberately changes no timeout: touching TTL_MS / HEARTBEAT_MS or the
+# watchdog cadence would change WebSocket/LAN session behaviour, so the
+# faster TX-session timeout stays a separate, later change.
+_SILENT_LOSS_BUDGET_S = (
+    ControllerAuthority.TTL_MS / 1000 + ControllerAuthority.HEARTBEAT_MS / 1000 + 0.5
+)
 
 _GATE_TIMEOUT_S = 20.0
 
@@ -656,10 +665,16 @@ def test_attach_frame_parser_defaults_role_and_delta() -> None:
         # refused, so every data-channel peer is covered by its session TTL.
         b'{"type": "attach"}',
         b'{"type": "attach", "controller_key": null}',
-        b'{"type": "attach", "state_delta": 3}',
-        b'{"type": "attach", "state_delta": "2"}',
-        b'{"type": "attach", "role": 7}',
         b'{"type": "attach", "controller_key": 7}',
+        # state_delta / role cases carry a valid key so they fail on
+        # their own validator, not on the missing-key check.
+        json.dumps(
+            {"type": "attach", "controller_key": "k" * 64, "state_delta": 3}
+        ).encode(),
+        json.dumps(
+            {"type": "attach", "controller_key": "k" * 64, "state_delta": "2"}
+        ).encode(),
+        json.dumps({"type": "attach", "controller_key": "k" * 64, "role": 7}).encode(),
     ],
 )
 def test_attach_frame_parser_rejects_bad_input(payload: bytes) -> None:
@@ -877,6 +892,10 @@ async def test_silent_loss_releases_ptt_within_session_ttl(
             description="sim released after silent loss",
         )
         elapsed = asyncio.get_running_loop().time() - vanished_at
+        print(
+            f"SILENT_LOSS_RELEASE_S elapsed={elapsed:.3f}"
+            f" budget={_SILENT_LOSS_BUDGET_S:.3f}"
+        )
         assert elapsed <= _SILENT_LOSS_BUDGET_S, elapsed
         state = (await stack.composition.authority.snapshot()).state
         assert state.intent.kind is ManagedTxIntentKind.RX
