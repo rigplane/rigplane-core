@@ -111,6 +111,7 @@ nav:
       - Web UI: guide/web-ui.md
       - Operating Away From Home: guide/remote-operation.md
       - Diagnostic Reports: guide/diagnostic-reports.md
+      - Radio Probe: guide/radio-probe.md
       - CI-V Commands: guide/commands.md
       - Troubleshooting: guide/troubleshooting.md
   - Localization:
