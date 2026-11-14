@@ -30,6 +30,7 @@ from rigplane.commands.scope import parse_scope_fixed_edge_response  # noqa: E40
 from rigplane.profiles import resolve_radio_profile  # noqa: E402
 from rigplane.runtime.radio import IcomRadio  # noqa: E402
 from rigplane.web.server import WebConfig, WebServer  # noqa: E402
+from rigplane_testkit.icom.faults import FaultPlan, FaultRule  # noqa: E402
 from rigplane_testkit.icom.simulator import (  # noqa: E402
     _CIV_HEADER_SIZE,
     _CIV_PREAMBLE,
@@ -59,16 +60,30 @@ class PanoramaSimulator(MockIcomRadio):
         ack_delay: float = 0.0,
         response_delay: float = 0.0,
         response_jitter: float = 0.0,
+        response_reorder: float = 0.0,
+        response_duplicate: float = 0.0,
         span_hz: int = 100_000,
         seed: int = 0xC0FFEE,
     ) -> None:
         self.profile = resolve_radio_profile(model=model)
+        # Duplicate is FaultPlan's own knob (civ_to_client duplicate with a
+        # 5 ms copy lag); it slots into the ordered queue's emission funnel
+        # with a no-op rule at P=0. Reorder is implemented below instead:
+        # FaultRule only shuffles a full window (no per-reply swap
+        # probability), while the queue needs a seeded P draw per reply.
         super().__init__(
             host="127.0.0.1",
             radio_addr=self.profile.civ_addr,
             scope_stream=True,
             dual_receiver=self.profile.receiver_count > 1,
             vfo_ab=self.profile.vfo_scheme == "ab",
+            fault_plan=FaultPlan(
+                civ_to_client=FaultRule(
+                    duplicate_probability=response_duplicate,
+                    duplicate_delay_s=0.005,
+                ),
+                seed=seed,
+            ),
         )
         self.evidence = evidence
         # MOR-4393 slow-link knob: seconds the FB/01 ACK of a frequency SET
@@ -89,7 +104,14 @@ class PanoramaSimulator(MockIcomRadio):
         # byte (the override below passes through untouched).
         self.response_delay = response_delay
         self.response_jitter = response_jitter
+        self.response_reorder = response_reorder
+        self.response_duplicate = response_duplicate
         self._response_rng = random.Random(seed)
+        # One-slot adjacent swap for --response-reorder: the held reply
+        # leaves just after the next one. A trailing held reply flushes
+        # after 50 ms so no reply dies in the buffer.
+        self._reorder_held: tuple[_MockProtocol, bytes, tuple[str, int]] | None = None
+        self._reorder_flush_handle: asyncio.TimerHandle | None = None
         self._civ_queue: deque[tuple[float, _MockProtocol, bytes, tuple[str, int]]] = (
             deque()
         )
@@ -116,17 +138,64 @@ class PanoramaSimulator(MockIcomRadio):
         addr: tuple[str, int],
         label: str,
     ) -> None:
-        if label != "civ" or (self.response_delay <= 0 and self.response_jitter <= 0):
+        if label != "civ" or (
+            self.response_delay <= 0
+            and self.response_jitter <= 0
+            and self.response_reorder <= 0
+        ):
             super()._send(proto, pkt, addr, label)
+            return
+        loop = asyncio.get_running_loop()
+        now = loop.time()
+        if self._reorder_held is not None and self.response_reorder > 0:
+            # The previous reply was held for a swap: the newcomer leaves
+            # first, the held one ~1 ms after — one adjacent transposition.
+            held_proto, held_pkt, held_addr = self._reorder_held
+            self._reorder_held = None
+            if self._reorder_flush_handle is not None:
+                self._reorder_flush_handle.cancel()
+                self._reorder_flush_handle = None
+            delay = self.response_delay + self._response_rng.uniform(
+                0, max(0.0, self.response_jitter)
+            )
+            # Monotonic due times keep emission order identical to send
+            # order no matter how the jitter draws fall.
+            due = max(now + delay, self._civ_next_due)
+            self._civ_next_due = due
+            self._civ_queue.append((due, proto, pkt, addr))
+            loop.call_later(max(0.0, due - now), self._pump_civ_queue)
+            due_held = due + 0.001
+            self._civ_next_due = due_held
+            self._civ_queue.append((due_held, held_proto, held_pkt, held_addr))
+            loop.call_later(max(0.0, due_held - now), self._pump_civ_queue)
             return
         delay = self.response_delay + self._response_rng.uniform(
             0, max(0.0, self.response_jitter)
         )
-        loop = asyncio.get_running_loop()
-        now = loop.time()
         # Monotonic due times keep emission order identical to send order no
         # matter how the jitter draws fall.
         due = max(now + delay, self._civ_next_due)
+        if self.response_reorder > 0 and self._response_rng.random() < self.response_reorder:
+            self._reorder_held = (proto, pkt, addr)
+            self._civ_next_due = due
+            self._reorder_flush_handle = loop.call_later(
+                0.050, self._flush_reorder_hold
+            )
+            return
+        self._civ_next_due = due
+        self._civ_queue.append((due, proto, pkt, addr))
+        loop.call_later(max(0.0, due - now), self._pump_civ_queue)
+
+    def _flush_reorder_hold(self) -> None:
+        self._reorder_flush_handle = None
+        held = self._reorder_held
+        self._reorder_held = None
+        if held is None:
+            return
+        proto, pkt, addr = held
+        loop = asyncio.get_running_loop()
+        now = loop.time()
+        due = max(now, self._civ_next_due)
         self._civ_next_due = due
         self._civ_queue.append((due, proto, pkt, addr))
         loop.call_later(max(0.0, due - now), self._pump_civ_queue)
@@ -381,6 +450,22 @@ async def run() -> None:
         "--response-delay (seeded by --seed; order still preserved)",
     )
     parser.add_argument(
+        "--response-reorder",
+        type=float,
+        default=0.0,
+        help="probability a CI-V reply swaps order with the next one "
+        "(PanoramaSimulator.response_reorder) — a LAN-like adjacent "
+        "transposition on top of the ordered queue (seeded by --seed; "
+        "default off)",
+    )
+    parser.add_argument(
+        "--response-duplicate",
+        type=float,
+        default=0.0,
+        help="probability a CI-V reply is sent twice, the copy ~5 ms later "
+        "(FaultPlan civ_to_client duplicate; seeded by --seed; default off)",
+    )
+    parser.add_argument(
         "--span-hz",
         type=int,
         default=100_000,
@@ -403,6 +488,8 @@ async def run() -> None:
         ack_delay=args.ack_delay,
         response_delay=args.response_delay,
         response_jitter=args.response_jitter,
+        response_reorder=args.response_reorder,
+        response_duplicate=args.response_duplicate,
         span_hz=args.span_hz,
         seed=args.seed,
     )
