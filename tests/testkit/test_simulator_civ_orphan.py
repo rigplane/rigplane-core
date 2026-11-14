@@ -331,8 +331,9 @@ async def test_production_client_identity_unanswered_behind_frontier() -> None:
     numbering starts near zero, so its identity read (CI-V 0x19 0x00)
     arrives behind the frontier and goes unanswered — and, the inherited
     tracker never seeing a packet past the frontier, the radio never asks
-    for the gap either. Pinned behaviour: ``connect()`` returns but the
-    radio is not connected (NO_RESPONSE); the session is held and the open
+    for the gap either. Pinned behaviour: ``connect()`` returns with the
+    identity ``NO_RESPONSE`` (information only, nothing is held back); the
+    session is held and the open
     seeded one disarmed inherited tracker; no retransmit request goes out
     while the client keeps retrying behind the frontier, so the frontier
     stays 5001 and the missing set stays 5001-5009: the client stays deaf
@@ -356,9 +357,9 @@ async def test_production_client_identity_unanswered_behind_frontier() -> None:
             model="IC-7610",
         )
         with fast_connect():
-            await radio.connect()  # returns: the identity gate gets no answer
+            await radio.connect()  # returns: the identity read gets no answer
         try:
-            assert radio.connected is False
+            assert radio.connected is True
             identity = radio.connection_identity
             assert identity is not None
             assert identity.status == RadioIdentityStatus.NO_RESPONSE

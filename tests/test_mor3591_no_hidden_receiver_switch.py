@@ -134,7 +134,25 @@ def _radio(model: str) -> tuple[IcomRadio, Wire]:
     radio._send_civ_raw = wire.send  # type: ignore[method-assign]
     radio._radio_state.main.mode = "USB"
     radio._radio_state.sub.mode = "USB"
+    # The Wire answers, so the radio model is "talking". Deliver one benign
+    # answered frame through the real RX path so CI-V liveness
+    # (``last_valid_frame_monotonic``) says so too: a radio that has not
+    # answered since the link came up classifies its refusals as the
+    # retriable RadioNotReadyError, not ReceiverNotSelectedError (MOR-4382
+    # follow-up). The S-meter frame touches no freq/mode/selection path.
+    _radio_answered_once(radio)
     return radio, wire
+
+
+def _radio_answered_once(radio: IcomRadio) -> None:
+    """One benign radio-originated frame: the radio has answered CI-V.
+
+    The dual-watch (``0x07 0xC2``) answer decodes to an observation (so it
+    stamps CI-V liveness) while touching no selection, frequency or mode
+    path: ``0x07 0xD2`` would record a selection, a freq/mode frame would
+    seed ``_observed_freq_mode`` values.
+    """
+    _feed(radio, 0x07, 0xC2, 0x00)
 
 
 def _feed(radio: IcomRadio, *payload: int) -> None:
@@ -451,6 +469,9 @@ class TestSelectionIsFailClosed:
         radio, wire = _radio("IC-9700")
         _observe_selection(radio, 0)
         radio._civ_runtime.advance_generation("reconnect-attempt")
+        # The new generation heard the radio again (but not a selection):
+        # the refusal below is the receiver refusal, not not-ready.
+        _radio_answered_once(radio)
         with pytest.raises(ReceiverNotSelectedError):
             await radio.set_freq(_FREQ, receiver=0)
         assert wire.frames == []
