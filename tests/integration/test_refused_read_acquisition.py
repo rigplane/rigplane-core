@@ -168,6 +168,41 @@ async def test_refused_tx_target_read_no_longer_fails_startup(
         await endpoint.stop()
 
 
+@pytest.mark.parametrize(
+    ("path_name", "command", "sub"),
+    [("ptt", 0x1C, 0x00), ("split", 0x0F, None)],
+)
+async def test_refused_ptt_or_split_read_still_fails_startup(
+    path_name: str, command: int, sub: int | None
+) -> None:
+    """A refused read of a still startup-critical path fails startup (MOR-2749, MOR-4058).
+
+    MOR-4433 left ``tx_state`` with two safety-critical reads — PTT
+    (``1C 00``) and split (``0F``) — while the TX target left the critical
+    set. A radio that NAKs either one still fails startup naming it, counting
+    its refusals as the failed reads. ``refuse_next`` NAKs one request per
+    queued command byte, so the test queues enough to cover the initial fetch
+    plus the re-reads (``0x1C`` also covers the non-critical tuner/TX-target
+    reads sharing the command byte; only the critical path can fail the
+    gate).
+    """
+    fake, endpoint, radio = await _connected("IC-7610")
+    for _ in range(30):
+        fake.refuse_next(command)
+    web = _gated_web(radio, "IC-7610")
+    path = FieldPath.global_("tx_state", path_name)
+    try:
+        with pytest.raises(RuntimeError, match=str(path)):
+            await asyncio.wait_for(web.start(), 30)
+        # Not vacuous: the radio was asked for the refused read.
+        assert any((f.command, f.sub) == (command, sub) for f in fake.commands)
+        assert radio._acquisition_scheduler.consecutive_refusals(path) >= 3
+    finally:
+        await web.stop()
+        await radio.disconnect()
+        await endpoint.stop()
+
+
 @pytest.mark.parametrize("model", sorted(_SERIAL_RADIOS))
 async def test_refused_reads_never_count_as_timeouts_while_writes_stay_fast(
     model: str,
