@@ -6266,7 +6266,7 @@ async def test_start_civ_worker_reuses_existing_commander(radio: IcomRadio) -> N
 
 
 # ---------------------------------------------------------------------------
-# _drain_ack_sinks_before_blocking (lines 759-768)
+# _drain_ack_sinks_before_blocking
 # ---------------------------------------------------------------------------
 
 
@@ -6281,19 +6281,20 @@ async def test_drain_ack_sinks_returns_early_when_no_sinks(radio: IcomRadio) -> 
         await radio._civ_runtime._drain_ack_sinks_before_blocking()
 
 
-async def test_drain_ack_sinks_drains_and_drops(radio: IcomRadio) -> None:
-    """Drains ack sinks and calls drop_ack_sinks if time runs out (lines 759-768)."""
-    # ack_sink_count is a read-only property; must patch via PropertyMock on the class
-    tracker_type = type(radio._civ_request_tracker)
-    radio._civ_request_tracker.drop_ack_sinks = MagicMock(return_value=2)
-    radio._civ_ack_sink_grace = 0.001  # very short grace period
+async def test_drain_expires_sinks_their_window_closed(radio: IcomRadio) -> None:
+    """Waits out each open sink's own answer window, then expires it.
 
-    with patch.object(
-        tracker_type, "ack_sink_count", new_callable=PropertyMock, return_value=2
-    ):
-        await radio._civ_runtime._drain_ack_sinks_before_blocking()
+    MOR-4384: the drain returns only once no open sink is still owed an
+    answer. A never-answered sink (send stamp pending, registration at
+    ~now) is owed its window of ``_civ_get_timeout`` and no longer.
+    """
+    radio._civ_get_timeout = 0.001
+    radio._civ_request_tracker.register_ack(wait=False)
 
-    radio._civ_request_tracker.drop_ack_sinks.assert_called_once()
+    await radio._civ_runtime._drain_ack_sinks_before_blocking()
+
+    assert radio._civ_request_tracker.ack_sink_count == 0
+    assert radio._civ_request_tracker.ack_unclaimed_at is not None
 
 
 # ---------------------------------------------------------------------------
