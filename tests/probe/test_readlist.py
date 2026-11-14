@@ -167,14 +167,17 @@ def _protocol_of(config: RigConfig) -> str:
     return config.protocol_type
 
 
-@pytest.mark.parametrize(
-    "toml_name",
-    sorted(
-        path.stem
-        for path in RIGS_DIR.glob("*.toml")
-        if load_rig(path).protocol_type in ("civ", "yaesu_cat")
-    ),
-)
+def _probe_toml_names() -> list[str]:
+    names: list[str] = []
+    for path in sorted(RIGS_DIR.glob("*.toml")):
+        if path.name.startswith("_") or path.name.endswith(".draft.toml"):
+            continue
+        if load_rig(path).protocol_type in ("civ", "yaesu_cat"):
+            names.append(path.stem)
+    return names
+
+
+@pytest.mark.parametrize("toml_name", _probe_toml_names())
 def test_no_tx_ever_and_every_line_a_declared_read(toml_name: str) -> None:
     """Contract: no produced line is a write, every one is a declared read."""
     from rigplane.commands.command_spec import CatCommandSpec

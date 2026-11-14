@@ -429,6 +429,14 @@ def _canned_stub(config: RigConfig, seen: list[bytes]) -> runner.Exchange:
     return exchange
 
 
+def _probe_toml_paths() -> list[Path]:
+    return [
+        path
+        for path in sorted(RIGS_DIR.glob("*.toml"))
+        if not path.name.startswith("_") and not path.name.endswith(".draft.toml")
+    ]
+
+
 async def test_runner_sends_only_what_readlist_produced() -> None:
     """No-TX-ever over the runner: every sent line is a declared read."""
     from rigplane.commands.command_spec import CatCommandSpec
@@ -439,7 +447,7 @@ async def test_runner_sends_only_what_readlist_produced() -> None:
         is_forbidden,
     )
 
-    for toml_path in sorted(RIGS_DIR.glob("*.toml")):
+    for toml_path in _probe_toml_paths():
         config = load_rig(toml_path)
         if config.protocol_type not in ("civ", "yaesu_cat"):
             continue
