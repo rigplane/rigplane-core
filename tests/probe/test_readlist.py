@@ -83,10 +83,11 @@ def test_civ_list_covers_profile_gets_and_excludes_forbidden() -> None:
     allowed = build_allowed_bodies(profile)
 
     commands = dict(raw["commands"])
-    commands.pop("overrides", {})
+    overrides = commands.pop("overrides", {})
+    effective = {**commands, **overrides}
     eligible = {
         key
-        for key, value in commands.items()
+        for key, value in effective.items()
         if key.startswith("get_")
         and isinstance(value, list)
         and value[0] not in (0x07, 0x1C)

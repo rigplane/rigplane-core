@@ -54,7 +54,7 @@ def _stub_answers(
 
 def _args(**overrides) -> argparse.Namespace:
     params = {
-        "profile": "ft991a",
+        "profile": "FT-991A",
         "port": "socket://127.0.0.1:1",
         "baud": 38400,
         "address": None,
@@ -91,7 +91,7 @@ async def test_execute_refuses_to_save_without_tty_or_yes(tmp_path) -> None:
         raise AssertionError("must not open the port")
 
     code = await execute(
-        resolve_config("ft991a", RIGS),
+        resolve_config("FT-991A", RIGS),
         (REPO_ROOT / "rigs" / "ft991a.toml").read_bytes(),
         device_label="COM5 @ 38400",
         baud=38400,
@@ -118,7 +118,7 @@ async def test_execute_start_decline_runs_nothing(tmp_path) -> None:
         raise AssertionError("must not open the port")
 
     code = await execute(
-        resolve_config("ft991a", RIGS),
+        resolve_config("FT-991A", RIGS),
         (REPO_ROOT / "rigs" / "ft991a.toml").read_bytes(),
         device_label="COM5 @ 38400",
         baud=38400,
@@ -142,7 +142,7 @@ async def test_execute_save_decline_writes_nothing(tmp_path) -> None:
     seen: list[bytes] = []
     answers = iter(["y", "n"])
     code = await execute(
-        resolve_config("ft991a", RIGS),
+        resolve_config("FT-991A", RIGS),
         (REPO_ROOT / "rigs" / "ft991a.toml").read_bytes(),
         device_label="COM5 @ 38400",
         baud=38400,
@@ -166,7 +166,7 @@ async def test_execute_yes_writes_parseable_file(tmp_path) -> None:
     out = tmp_path / "probe.json"
     seen: list[bytes] = []
     code = await execute(
-        resolve_config("ft991a", RIGS),
+        resolve_config("FT-991A", RIGS),
         (REPO_ROOT / "rigs" / "ft991a.toml").read_bytes(),
         device_label="COM5 @ 38400",
         baud=38400,
@@ -194,7 +194,7 @@ async def test_execute_cannot_open_is_exit_3(capsys, tmp_path) -> None:
         raise OSError("connection refused")
 
     code = await execute(
-        resolve_config("ft991a", RIGS),
+        resolve_config("FT-991A", RIGS),
         (REPO_ROOT / "rigs" / "ft991a.toml").read_bytes(),
         device_label="socket://127.0.0.1:1",
         baud=38400,
@@ -216,7 +216,7 @@ async def test_execute_cannot_open_is_exit_3(capsys, tmp_path) -> None:
 async def test_execute_no_answers_is_exit_3_but_file_saved(tmp_path) -> None:
     out = tmp_path / "probe.json"
     code = await execute(
-        resolve_config("ft991a", RIGS),
+        resolve_config("FT-991A", RIGS),
         (REPO_ROOT / "rigs" / "ft991a.toml").read_bytes(),
         device_label="COM5 @ 38400",
         baud=38400,
@@ -242,7 +242,7 @@ async def test_execute_default_out_path_uses_profile_and_timestamp(
 ) -> None:
     monkeypatch.chdir(tmp_path)
     code = await execute(
-        resolve_config("ft991a", RIGS),
+        resolve_config("FT-991A", RIGS),
         (REPO_ROOT / "rigs" / "ft991a.toml").read_bytes(),
         device_label="COM5 @ 38400",
         baud=38400,

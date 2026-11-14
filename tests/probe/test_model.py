@@ -39,7 +39,7 @@ def _sample() -> ProbeFile:
         ),
         private_reads_included=False,
         label="bench",
-        commands=[
+        commands=(
             CommandRow(
                 name="get_freq",
                 template="FA;",
@@ -62,14 +62,14 @@ def _sample() -> ProbeFile:
                 latency_ms=1000.0,
                 note="",
             ),
-        ],
-        unsolicited=[UnsolicitedRow(t_ms=12.5, hex="41493b", text="AI;")],
+        ),
+        unsolicited=(UnsolicitedRow(t_ms=12.5, hex="41493b", text="AI;"),),
         snapshot=Snapshot(
             before={"get_freq": "FA14074000;"},
             after={"get_freq": "FA14074000;"},
             changed=[],
         ),
-        checks=[],
+        checks=(),
     )
 
 

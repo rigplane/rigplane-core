@@ -106,20 +106,38 @@ async def _run_yaesu(config: RigConfig, radio: FakeCatRadio, **kwargs) -> runner
 
 
 async def test_all_data_run_yaesu_ft991a() -> None:
+    # Scripted: FakeCatRadio requires commands the FT-991A profile does
+    # not declare (get_powerstat, get_if_status), so the 991A pass is
+    # covered here and the live-fake pass below stays on the FTX-1.
     config = _load("ft991a")
-    radio = FakeCatRadio(profile="ft991a")
-    await radio.start()
-    try:
-        report = await _run_yaesu(config, radio)
-    finally:
-        await radio.stop()
+    seen: list[bytes] = []
+
+    async def exchange(request: bytes | None, timeout: float) -> bytes | None:
+        assert request is not None
+        seen.append(request)
+        if request == b"ID;":
+            return b"ID0670;"
+        return b"?;"
+
+    report = await runner.run_probe(
+        config,
+        config_toml_sha256="0" * 64,
+        exchange=exchange,
+        port_kind="usb",
+        baud=YAESU_BAUD,
+        label="",
+        include_private=False,
+        gap_s=GAP,
+        timeout_s=TIMEOUT,
+    )
     items = build_read_list(config)
-    assert len(report.commands) == len(items)
+    assert seen
+    assert len(report.file.commands) == len(items)
     assert report.aborted is None
-    assert {row.outcome for row in report.commands} <= {"data", "refused"}
-    assert report.radio.identity_matches_profile is True
-    assert report.radio.identity_reported.parsed == "0670"
-    assert report.unsolicited == []
+    assert {row.outcome for row in report.file.commands} <= {"data", "refused"}
+    assert report.file.radio.identity_matches_profile is True
+    assert report.file.radio.identity_reported.parsed == "0670"
+    assert report.file.unsolicited == []
 
 
 async def test_all_data_run_yaesu_ftx1() -> None:
@@ -131,9 +149,9 @@ async def test_all_data_run_yaesu_ftx1() -> None:
     finally:
         await radio.stop()
     items = build_read_list(config)
-    assert len(report.commands) == len(items)
+    assert len(report.file.commands) == len(items)
     assert report.aborted is None
-    assert report.radio.identity_reported.parsed == "0840"
+    assert report.file.radio.identity_reported.parsed == "0840"
     assert radio.frequency_hz == 7_074_000
 
 
@@ -155,9 +173,9 @@ async def test_all_data_run_civ_ic7300() -> None:
         timeout_s=TIMEOUT,
     )
     assert report.aborted is None
-    assert report.commands
-    assert {row.outcome for row in report.commands} <= {"data", "refused"}
-    assert report.radio.identity_matches_profile is True
+    assert report.file.commands
+    assert {row.outcome for row in report.file.commands} <= {"data", "refused"}
+    assert report.file.radio.identity_matches_profile is True
 
 
 async def test_all_data_run_civ_g7250() -> None:
@@ -180,8 +198,8 @@ async def test_all_data_run_civ_g7250() -> None:
         timeout_s=TIMEOUT,
     )
     assert report.aborted is None
-    assert report.commands
-    assert report.radio.identity_matches_profile is True
+    assert report.file.commands
+    assert report.file.radio.identity_matches_profile is True
 
 
 async def test_refused_and_silent_keep_the_run_going() -> None:
@@ -195,7 +213,7 @@ async def test_refused_and_silent_keep_the_run_going() -> None:
         )
     finally:
         await radio.stop()
-    by_name = {row.name: row for row in report.commands}
+    by_name = {row.name: row for row in report.file.commands}
     assert by_name["get_freq"].outcome == "data"
     assert by_name["get_keyer_speed"].outcome == "refused"
     assert report.aborted is None
@@ -227,7 +245,7 @@ async def test_silent_answer_is_recorded_not_fatal() -> None:
             writer.close()
     finally:
         await radio.stop()
-    assert [row.outcome for row in report.commands] == ["silent"]
+    assert [row.outcome for row in report.file.commands] == ["silent"]
     assert report.aborted is None
 
 
@@ -256,8 +274,8 @@ async def test_five_silent_in_a_row_aborts_with_plain_message() -> None:
             writer.close()
     finally:
         await radio.stop()
-    assert len(report.commands) == 5
-    assert all(row.outcome == "silent" for row in report.commands)
+    assert len(report.file.commands) == 5
+    assert all(row.outcome == "silent" for row in report.file.commands)
     assert report.aborted == (
         "The radio stopped answering. "
         "Check it is on, and the port and speed are right."
@@ -273,7 +291,7 @@ async def test_garbled_reply_is_malformed_and_does_not_abort() -> None:
         report = await _run_yaesu(config, radio, items=_subset(config, "get_freq", "get_id"))
     finally:
         await radio.stop()
-    by_name = {row.name: row for row in report.commands}
+    by_name = {row.name: row for row in report.file.commands}
     assert by_name["get_freq"].outcome == "malformed"
     assert by_name["get_id"].outcome == "data"
     assert report.aborted is None
@@ -290,8 +308,8 @@ async def test_unsolicited_push_is_recorded_and_run_continues() -> None:
         report = await _run_yaesu(config, radio, items=_subset(config, "get_freq", "get_id"))
     finally:
         await radio.stop()
-    assert [row.text for row in report.unsolicited] == ["TX0;"]
-    assert {row.name: row.outcome for row in report.commands} == {
+    assert [row.text for row in report.file.unsolicited] == ["TX0;"]
+    assert {row.name: row.outcome for row in report.file.commands} == {
         "get_freq": "data",
         "get_id": "data",
     }
@@ -331,9 +349,9 @@ async def test_snapshot_diff_is_reported() -> None:
         timeout_s=TIMEOUT,
         items=_subset(config, "get_freq"),
     )
-    assert report.snapshot.before["get_freq"] == "FA14074000;"
-    assert report.snapshot.after["get_freq"] == "FA14075000;"
-    assert report.snapshot.changed == ["get_freq"]
+    assert report.file.snapshot.before["get_freq"] == "FA14074000;"
+    assert report.file.snapshot.after["get_freq"] == "FA14075000;"
+    assert report.file.snapshot.changed == ["get_freq"]
 
 
 async def test_private_reads_not_sent_by_default() -> None:
@@ -347,7 +365,7 @@ async def test_private_reads_not_sent_by_default() -> None:
     sent = list(radio.commands)
     assert sent
     assert not [line for line in sent if line.startswith(("MR", "MT"))]
-    assert report.private_reads_included is False
+    assert report.file.private_reads_included is False
 
 
 async def test_private_reads_sent_with_the_flag() -> None:
@@ -366,7 +384,7 @@ async def test_private_reads_sent_with_the_flag() -> None:
     )
     assert b"MR00001;" in seen
     assert b"MT00001;" in seen
-    assert report.private_reads_included is True
+    assert report.file.private_reads_included is True
 
 
 async def test_transport_error_ends_the_run() -> None:
@@ -389,7 +407,7 @@ async def test_transport_error_ends_the_run() -> None:
         timeout_s=TIMEOUT,
         items=_subset(config, "get_freq", "get_id"),
     )
-    assert [row.outcome for row in report.commands] == ["transport_error"]
+    assert [row.outcome for row in report.file.commands] == ["transport_error"]
     assert report.aborted is not None
 
 
@@ -411,8 +429,8 @@ async def test_identity_mismatch_does_not_stop_the_run() -> None:
         timeout_s=TIMEOUT,
         items=_subset(config, "get_freq"),
     )
-    assert report.radio.identity_matches_profile is False
-    assert report.commands[0].outcome == "data"
+    assert report.file.radio.identity_matches_profile is False
+    assert report.file.commands[0].outcome == "data"
     assert report.aborted is None
 
 
