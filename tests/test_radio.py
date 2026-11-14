@@ -1729,18 +1729,23 @@ class TestAckSinkRobustness:
         # A short window keeps the drain's wait for the missing answer
         # brief without narrowing the set's own answer budget materially.
         radio._civ_get_timeout = 0.25
-        # Fire-and-forget scope enable (ACK intentionally missing)
+        # Fire-and-forget scope enable whose ACK arrives late, past the
+        # drain: under send-order attribution (MOR-4455) that late FB
+        # belongs to the scope-enable tombstone, not to the next write.
         ff = build_civ_frame(
             IC_7610_ADDR, CONTROLLER_ADDR, 0x27, sub=0x10, data=b"\x01"
         )
         await radio._execute_civ_raw(ff, wait_response=False)
 
-        # The set waits for its own ACK, delivered when its frame leaves
-        # (send 2): the missing answer above must not make this waiter
-        # claim anything stale — the drain first waits out (and then
-        # expires) the leftover sink's own answer window.
+        # The set waits for its own ACK. The first FB routed after its
+        # frame leaves (send 2) is the scope-enable's late answer and is
+        # absorbed by that tombstone; the second is the set's own answer
+        # and completes it — the drain first waits out (and then retires)
+        # the leftover sink's own answer window.
+        mock_transport.queue_response_on_send(2, _ack_response())
         mock_transport.queue_response_on_send(2, _ack_response())
         await radio.set_freq(7_074_000)
+        assert radio._civ_request_tracker.tombstone_count == 0
 
     @pytest.mark.asyncio
     async def test_fire_and_forget_send_failure_rolls_back_sink(self) -> None:

@@ -42,9 +42,11 @@ def _fa(*, to_addr: int = _CTRL) -> CivFrame:
     return CivFrame(to_addr=to_addr, from_addr=_RADIO, command=0xFA, sub=None, data=b"")
 
 
-def _response(command: int, data: bytes = b"", *, to_addr: int = _CTRL) -> CivFrame:
+def _response(
+    command: int, data: bytes = b"", *, sub: int | None = None, to_addr: int = _CTRL
+) -> CivFrame:
     return CivFrame(
-        to_addr=to_addr, from_addr=_RADIO, command=command, sub=None, data=data
+        to_addr=to_addr, from_addr=_RADIO, command=command, sub=sub, data=data
     )
 
 
@@ -103,7 +105,7 @@ async def test_tombstone_clears_on_next_data_reply_ordered(
     assert tracker.expire_ack_sinks(answer_window=0.5, now_monotonic=now[0]) == 1
     assert tracker.tombstone_count == 1
 
-    reply = _response(0x15, b"\x00\x40")
+    reply = _response(0x15, b"\x00\x40", sub=0x02)
     assert (
         tracker.resolve(
             CivEvent(type=CivEventType.RESPONSE, frame=reply),

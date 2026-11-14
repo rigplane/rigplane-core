@@ -6282,11 +6282,14 @@ async def test_drain_ack_sinks_returns_early_when_no_sinks(radio: IcomRadio) -> 
 
 
 async def test_drain_expires_sinks_their_window_closed(radio: IcomRadio) -> None:
-    """Waits out each open sink's own answer window, then expires it.
+    """Waits out each open sink's own answer window, then tombstones it.
 
     MOR-4384: the drain returns only once no open sink is still owed an
     answer. A never-answered sink (send stamp pending, registration at
     ~now) is owed its window of ``_civ_get_timeout`` and no longer.
+    MOR-4455: the retired sink stays as a tombstone for send-order
+    attribution, with no ambiguity recorded while its late answer may
+    still arrive.
     """
     radio._civ_get_timeout = 0.001
     radio._civ_request_tracker.register_ack(wait=False)
@@ -6294,7 +6297,8 @@ async def test_drain_expires_sinks_their_window_closed(radio: IcomRadio) -> None
     await radio._civ_runtime._drain_ack_sinks_before_blocking()
 
     assert radio._civ_request_tracker.ack_sink_count == 0
-    assert radio._civ_request_tracker.ack_unclaimed_at is not None
+    assert radio._civ_request_tracker.tombstone_count == 1
+    assert radio._civ_request_tracker.ack_unclaimed_at is None
 
 
 # ---------------------------------------------------------------------------

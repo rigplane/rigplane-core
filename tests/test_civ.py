@@ -455,12 +455,14 @@ async def test_generation_advance_forgets_refused_reads() -> None:
     assert tracker.take_refused_reads() == ()
 
 
-def test_expire_ack_sinks_drops_only_what_each_window_closed() -> None:
-    """MOR-4384: a sink is owed its answer for one window from its send.
+def test_expire_ack_sinks_tombstones_only_what_each_window_closed() -> None:
+    """MOR-4384/MOR-4455: a sink is owed its answer for one window from send.
 
     The write below was sent before the read but both windows open at
     their own send stamps, so at t=96 only the write's window (90 + 5)
-    has closed; the read's (100 + 5) keeps it claimable.
+    has closed; the read's (100 + 5) keeps it claimable. The closed sink
+    becomes a tombstone — kept for send-order attribution, with no
+    ambiguity recorded while its late answer may still arrive.
     """
     tracker = CivRequestTracker()
     read = tracker.register_ack(wait=False, response_key=_TUNER, refused_read=_TUNER)
@@ -469,20 +471,23 @@ def test_expire_ack_sinks_drops_only_what_each_window_closed() -> None:
     tracker.mark_ack_sink_sent(write, sent_monotonic=90.0)
 
     assert tracker.expire_ack_sinks(answer_window=5.0, now_monotonic=96.0) == 1
-    assert tracker.ack_unclaimed_at is not None  # the write's FB can still arrive
+    assert tracker.tombstone_count == 1
+    assert tracker.ack_sink_count == 1  # the read still waits for its answer
+    assert tracker.ack_unclaimed_at is None
 
     assert tracker.expire_ack_sinks(answer_window=5.0, now_monotonic=110.0) == 1
+    assert tracker.tombstone_count == 2
     assert tracker.ack_sink_count == 0
 
 
-def test_an_expired_read_sink_also_flags_an_unclaimed_answer() -> None:
-    """MOR-4384: a refused read is answered with a bare ``FA`` too.
+def test_an_expired_read_sink_becomes_a_tombstone_for_its_late_fa() -> None:
+    """MOR-4384/MOR-4455: a refused read is answered with a bare ``FA`` too.
 
-    An expired sink never got the answer the radio owed it. For a write
-    that answer is a bare FB/FA; for a read it is the data answer, or an
-    ``FA`` when the radio refuses it. Whichever arrives late names no
-    command and can settle a later waiter, so a dropped read sink must
-    record the ambiguity just like a write's.
+    An expired sink never got the answer the radio owed it, but the answer
+    was only presumed lost by the clock: the sink stays as a tombstone so
+    the late FA still retires the read it refused instead of settling a
+    later waiter. No ambiguity is recorded while the late answer may still
+    arrive; the ceiling and the age-out record it instead.
     """
     tracker = CivRequestTracker()
     sink = tracker.register_ack(
@@ -492,8 +497,12 @@ def test_an_expired_read_sink_also_flags_an_unclaimed_answer() -> None:
     assert tracker.ack_unclaimed_at is None
 
     assert tracker.expire_ack_sinks(answer_window=5.0, now_monotonic=105.0) == 1
+    assert tracker.ack_unclaimed_at is None
+    assert tracker.tombstone_count == 1
 
-    assert tracker.ack_unclaimed_at is not None
+    assert tracker.resolve(CivEvent(type=CivEventType.NAK, frame=_nak_frame()))
+    assert tracker.take_refused_reads() == (_S_METER,)
+    assert tracker.tombstone_count == 0
 
 
 @pytest.mark.asyncio

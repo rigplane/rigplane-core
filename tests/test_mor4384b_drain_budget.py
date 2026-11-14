@@ -114,12 +114,13 @@ class TestDrainBudget:
     ) -> None:
         """One unanswered fire-and-forget write must not stall the next write.
 
-        The scope-enable ACK is intentionally missing. The blocking write's
-        own ACK is queued to arrive as soon as its frame leaves. On the
-        round-1 head the drain waits out the sink's whole 2 s window first
-        (this test then takes ~2 s); the fix bounds the drain by its own
-        separate budget, so the write completes promptly — and still on its
-        own ACK, not the missing one.
+        The scope-enable ACK arrives late, past the drain: under send-order
+        attribution (MOR-4455) it belongs to the scope-enable tombstone,
+        not to the blocking write. Both ACKs are queued to arrive as soon
+        as the write's frame leaves. On the round-1 head the drain waits
+        out the sink's whole 2 s window first (this test then takes ~2 s);
+        the fix bounds the drain by its own separate budget, so the write
+        completes promptly — and still on its own ACK, not the late one.
         """
         transport = _MockTransport()
         radio = _make_radio(transport)
@@ -129,6 +130,7 @@ class TestDrainBudget:
                 await runtime._execute_civ_raw(_SCOPE_ENABLE, wait_response=False)
                 is None
             )
+            transport.queue_response_on_send(2, _ack_response())
             transport.queue_response_on_send(2, _ack_response())
             started = time.monotonic()
             await radio.set_freq(7_074_000)
@@ -182,20 +184,30 @@ class TestDrainBudget:
 
 
 class _SilentWriteTransport(SplitIcomTransport):
-    """A peer that answers everything except one fire-and-forget write.
+    """A peer that answers one fire-and-forget write a command late.
 
-    The silenced write models a lost background answer: the sender's ACK
-    sink stays open for its whole window because nothing ever retires it.
+    The delayed write models a slow-link background answer (MOR-4455):
+    nothing retires the sender's ACK sink before the drain tombstones it,
+    so the late FB must land on that tombstone by send order instead of
+    settling the next command — which then settles on its own FB.
     """
 
-    silent: set[tuple[int, int | None]] = {(0x1C, 0x00)}
+    late: set[tuple[int, int | None]] = {(0x1C, 0x00)}
+
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._held: list[bytes] = []
 
     async def send_tracked(self, packet: bytes, **kwargs) -> None:
         from rigplane.commands import parse_civ_frame
 
+        held, self._held = self._held, []
+        for old in held:
+            await super().send_tracked(old, **kwargs)
         request = parse_civ_frame(packet[packet.index(b"\xfe\xfe") :])
-        if (request.command, request.sub) in self.silent and request.data:
+        if (request.command, request.sub) in self.late and request.data:
             self.requests.append((request.command, request.sub, request.data))
+            self._held.append(packet)
             return
         await super().send_tracked(packet, **kwargs)
 
@@ -355,14 +367,17 @@ class TestRigctldDeadline:
     async def test_set_freq_after_lost_background_answer_meets_deadline(
         self,
     ) -> None:
-        """rigctld ``F`` answers RPRT 0 promptly despite an unanswered sink.
+        """rigctld ``F`` answers RPRT 0 promptly despite a presumed-lost sink.
 
-        A background PTT-off write is never answered (its sink stays open),
-        then ``F`` follows 10 ms later and the peer ACKs the setter at once.
-        On the round-1 head the drain waits out the sink's whole 2 s window
-        first, so the 2 s rigctld command deadline fires and the client sees
-        ``RPRT -5`` (ETIMEOUT) although the radio tuned. The fix accounts
-        for the drain separately from the command's own answer budget.
+        A background PTT-off write is answered a command late (its sink is
+        tombstoned by the drain first), then ``F`` follows 10 ms later and
+        the peer ACKs the setter at once. The late background FB lands on
+        the tombstone by send order (MOR-4455) instead of settling the
+        setter, which completes on its own FB. On the round-1 head the
+        drain waits out the sink's whole 2 s window first, so the 2 s
+        rigctld command deadline fires and the client sees ``RPRT -5``
+        (ETIMEOUT) although the radio tuned. The fix accounts for the
+        drain separately from the command's own answer budget.
         """
         transport = _SilentWriteTransport()
         radio = IcomRadio("127.0.0.1", model="IC-7610", timeout=2.0)
