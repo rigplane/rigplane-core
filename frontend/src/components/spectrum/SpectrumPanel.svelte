@@ -884,8 +884,19 @@
   let spectrumGeometryKey = $derived(`${spectrumAuthority?.providerGeneration ?? 'x'}|${displayGeometry?.receiver ?? 'legacy'}|${startFreq}|${endFreq}|${frameGeometry?.width ?? 0}|${audioProjection?.zero ?? 'legacy'}|${audioProjection?.perHz ?? 0}`);
   // MOR-4270: the coverage projection hatches the requested view's
   // uncovered columns with the typed reason — never stretched pixels.
+  // MOR-4451: the native coverage is the truthful one the current grant
+  // carries, when the grant matches the frame's receiver and grants (about)
+  // the displayed width — the same receiver/width match the follow-grant
+  // logic requires. An uncovered column against an as-wide-or-wider native
+  // is a transient lag (plain background, the waterfall's treatment), never
+  // a hatch block; only a truly narrower native hatches.
+  let nativeScopeCoverage = $derived(frameGrant !== null && displayGeometry !== null
+    && frameGrant.receiver === displayGeometry.receiver
+    && Math.abs(frameGrant.view.endHz - frameGrant.view.startHz
+      - (effectiveView.endHz - effectiveView.startHz)) < 1
+    ? frameGrant.coverage : null);
   let coverageProjection = $derived(!audioFft && displayGeometry !== null && scopeDemandOn
-    ? projectScopeCoverage(displayGeometry, effectiveView) : null);
+    ? projectScopeCoverage(displayGeometry, effectiveView, nativeScopeCoverage) : null);
   let coverageHatched = $derived(coverageProjection?.hatched.filter(
     (range) => range.end - range.start > 0.001) ?? []);
   function hatchReasonText(reason: ScopeCoverageProjection['hatched'][number]['reason']): string {
