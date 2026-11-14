@@ -350,7 +350,8 @@ async def test_offer_with_malformed_ice_servers_rejected() -> None:
             assert code == 400, (bad, code, body)
             assert body["code"] == "invalid_ice_servers", (bad, body)
     finally:
-        await server._webrtc_sessions.close_all()  # type: ignore[union-attr]
+        if server._webrtc_sessions is not None:
+            await server._webrtc_sessions.close_all()
 
 
 # --------------------------------------------------------------------------
