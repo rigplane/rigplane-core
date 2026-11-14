@@ -2978,21 +2978,40 @@ class YaesuCatRadio:
         Routes through :meth:`set_tx_func` so the wire digit comes from
         the profile's ``[vfo.tx_func]`` map (one encoding, not two).
 
+        The bank is the profile's declared ``transceiver_count`` — never
+        the model id. On a single-transceiver profile selecting the sole
+        transmitter is a no-op with no wire traffic: the VFO-level TX
+        selection (``FT2``/``FT3`` on an ``ab`` profile) stays reachable
+        only through the split/VFO API, never through this bank API.
+
         Args:
-            xcvr: 0 = MAIN-side transmitter, 1 = SUB-side transmitter.
+            xcvr: 0-based transmitter index below ``transceiver_count``.
         """
-        if xcvr not in (0, 1):
+        count = self.transceiver_count
+        if (
+            isinstance(xcvr, bool)
+            or not isinstance(xcvr, int)
+            or xcvr < 0
+            or xcvr >= count
+        ):
             raise ValueError(
-                f"xcvr must be 0 or 1, got {xcvr!r} "
-                f"(transceiver_count={self.transceiver_count})"
+                f"xcvr {xcvr!r} out of range for transceiver_count={count}"
             )
+        if count <= 1:
+            return
         await self.set_tx_func(xcvr)
 
     async def get_tx_source(self) -> int:
         """Return the 0-based index of the currently active TX transceiver.
 
-        Parses ``FT0;`` / ``FT1;`` from the radio (``FT`` command).
+        Parses ``FT0;`` / ``FT1;`` from the radio (``FT`` command) on a
+        multi-transceiver profile. On a single-transceiver profile the
+        sole transmitter is always active, so this returns ``0`` without
+        touching the wire (reading ``FT;`` there would answer the TX
+        *VFO*, not a transmitter index).
         """
+        if self.transceiver_count <= 1:
+            return 0
         result = await self._query("get_tx_func")
         return int(result["vfo"])
 
