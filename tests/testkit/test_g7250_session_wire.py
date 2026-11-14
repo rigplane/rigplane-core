@@ -42,16 +42,20 @@ _DEVICE = "civ-serial-fake"  # synthetic node name; no real path is opened
 _ANSWER_WINDOW_S = 0.2  # compressed CI-V answer window (production: 2.0 s)
 
 # The literal bench rows (LIVE G7250 2026-11-09, MOR-4352), as civ_pairs:
-# request -> reply at the address the audit asked. The answer table keys on
-# the CI-V body (addresses excluded), so one table serves the session at
-# the profile address 0x88, a probe at any other address, and the X6200
-# coverage row below.
+# request -> reply at the address the audit asked (0x88: over USB serial
+# the radio answers any address). The answer table keys on the CI-V body
+# (addresses excluded), so one table serves the session at the profile
+# address 0xA0, a probe at any other address, and the X6200 coverage row
+# below.
 _BENCH_ROWS = [
     # 0x1D 0x19 asked at the echoed broadcast address 0x00 -> `72 50`.
     {"dir": "c2r", "frame": "fefe00e01d19fd"},
     {"dir": "r2c", "frame": "fefee0001d197250fd"},
-    # Filter width at the session address 0x88: 0x1A 0x03 -> 0x33 (=2900 Hz
-    # through the profile's segmented_bcd_index table).
+    # Filter width asked at the audit address 0x88 (LIVE G7250 2026-11-09),
+    # not the session address 0xA0: 0x1A 0x03 -> 0x33 (=2900 Hz through
+    # the profile's segmented_bcd_index table). The answer table keys on
+    # the CI-V body (addresses excluded), so the row still serves the 0xA0
+    # session below.
     {"dir": "c2r", "frame": "fefe88e01a03fd"},
     {"dir": "r2c", "frame": "fefee0881a0333fd"},
     # NAKed on the bench: the 0x1A 0x01 register (band spectrum / BSR) and
@@ -79,9 +83,11 @@ class _G7250BenchFake(CivSerialFake):
     """The G7250 bench personality on the testkit serial fake.
 
     The shared fake answers identity (``19 00``) from its fixed
-    ``civ_addr`` -- enough for the session at the profile address 0x88,
-    where the real radio echoes the asked address (payload 0x88, LIVE
-    G7250 2026-11-09). The broadcast asks are the one shape the shared
+    ``civ_addr`` -- enough for the session at the profile address 0xA0,
+    where the real radio echoes the asked address (payload 0xA0: over
+    USB serial it answers any address, LIVE G7250 2026-11-09; over LAN
+    in wfview mode only 0xA0 answers, LIVE G7250 LAN 2026-11-13,
+    MOR-4436). The broadcast asks are the one shape the shared
     fake cannot answer: the real radio replies to them as the 0x00 radio
     (identity echoes the broadcast address back with payload 0x00, and
     the Xiegu model-id probe answers ``72 50`` from 0x00 -- the literal
@@ -94,11 +100,11 @@ class _G7250BenchFake(CivSerialFake):
     def __init__(self) -> None:
         super().__init__(
             model="G7250",
-            civ_addr=0x88,
+            civ_addr=0xA0,
             # The constructor refuses a profile without expected_ids; the
-            # bench echo at the session address 0x88 is the cited source.
+            # bench echo at the session address 0xA0 is the cited source.
             # (The broadcast ask below never reaches this value.)
-            model_id=b"\x88",
+            model_id=b"\xa0",
             recorded_answers=_bench_answer_table(),
             # LIVE G7250 2026-11-09: 03 -> 7.138000 MHz, 04 -> LSB FIL1,
             # 15 02 -> 00 63 (BCD of 63), 1C 00 -> 00 (idle).
@@ -288,7 +294,7 @@ async def test_web_session_serves_the_bench_state_over_http(
     ("model", "civ_addr", "model_id"),
     [
         # LIVE G7250 2026-11-09: 16 22 (NB) and 16 40 (NR) read 00 = off.
-        ("G7250", 0x88, b"\x88"),
+        ("G7250", 0xA0, b"\xa0"),
         # The X6200 carries the same toggle pair at its family default
         # address (its 19 00 emulates the IC-705 id, b"\x01\x05") -- the
         # same check on the sibling radio for shared-API coverage.
@@ -358,10 +364,10 @@ class _G7250QuantizedPowerFake(CivSerialFake):
     def __init__(self) -> None:
         super().__init__(
             model="G7250",
-            civ_addr=0x88,
+            civ_addr=0xA0,
             # The constructor refuses a profile without expected_ids; the
-            # bench echo at the session address 0x88 is the cited source.
-            model_id=b"\x88",
+            # bench echo at the session address 0xA0 is the cited source.
+            model_id=b"\xa0",
             recorded_answers=_bench_answer_table(),
             # LIVE G7250 2026-11-09: 03 -> 7.138000 MHz, 04 -> LSB FIL1,
             # 15 02 -> 00 63, 1C 00 -> 00 (idle).
@@ -402,7 +408,7 @@ async def test_set_rf_power_normalized_minimum_lands_on_the_whole_watt_step(
     requires the ``powerLevel`` readback to reach that minimum before it
     keys. The same round trip against the whole-watt bench personality
     (only the serial port faked): the wire SET is
-    ``FE FE 88 E0 14 0A 00 13 FD`` — the smallest raw whose stored watt
+    ``FE FE A0 E0 14 0A 00 13 FD`` — the smallest raw whose stored watt
     (floor(13 * 100 / 255) = 5 W) reads back as the requested minimum —
     and the served state reports the profile minimum.
     """
