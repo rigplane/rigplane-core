@@ -40,11 +40,12 @@ import {
   requirePopulatedSeries,
 } from './held-key-analysis';
 
-/** One rAF sample of the held-key burst: VFO readout, marker geometry and the rendered view. */
+/** One rAF sample of the held-key burst: VFO readout, marker geometry, the rendered view and the hatch count. */
 interface HeldKeySample {
   tPerf: number;
   tWall: number;
   overlay: boolean;
+  hatchCount: number;
   gates: ScopePassbandDiagnostics | null;
   state: string | null;
   vfoText: string | null;
@@ -73,6 +74,7 @@ async function installHeldKeySampler(page: Page): Promise<void> {
         tPerf: performance.now(),
         tWall: Date.now(),
         overlay: overlay instanceof HTMLElement && overlay.getBoundingClientRect().width > 0,
+        hatchCount: panel?.querySelectorAll('.scope-hatch').length ?? 0,
         gates: gatesRaw ? JSON.parse(gatesRaw) as ScopePassbandDiagnostics : null,
         state: panel?.getAttribute('data-passband-state') ?? null,
         vfoText: document.querySelector('.receiver-instrument [data-vfo-freq]')?.textContent ?? null,
@@ -117,7 +119,7 @@ interface HeldKeyTimeline {
   setFreqCommands: Array<{ tWall: number; freqHz: number | null }>;
   grants: Array<{ tWall: number; grant: ScopeGranted }>;
   subscribes: ScopeSubscription[];
-  frames: Array<{ view: number[]; coverage: number[]; receivedAt: number }>;
+  frames: Array<{ view: number[]; coverage: number[]; receivedAt: number; tWall: number }>;
   samples: HeldKeySample[];
 }
 
@@ -222,7 +224,7 @@ for (const zoom of ZOOMS) {
         // must be visible there (a `const` inside the try is not).
         const sent: Array<ScopeSubscription & { type: string }> = [];
         const grants: Array<{ tWall: number; grant: ScopeGranted }> = [];
-        const frames: Array<{ view: number[]; coverage: number[]; receivedAt: number }> = [];
+        const frames: Array<{ view: number[]; coverage: number[]; receivedAt: number; tWall: number }> = [];
         const setFreqCommands: Array<{ tWall: number; freqHz: number | null }> = [];
         try {
           server = await startJourneyServer(port, 14_250_000,
@@ -268,6 +270,7 @@ for (const zoom of ZOOMS) {
                     view: [parsed.frame.viewStartHz, parsed.frame.viewEndHz],
                     coverage: [parsed.frame.coverageStartHz, parsed.frame.coverageEndHz],
                     receivedAt: performance.now(),
+                    tWall: Date.now(),
                   });
                 }
               }
@@ -335,6 +338,7 @@ for (const zoom of ZOOMS) {
 
           // The owner's gesture: hold ArrowRight for 4 s. Repeated down()
           // dispatches keydown with repeat=true while the key stays held.
+          const burstStartWall = Date.now();
           const burstStartPerf = await page.evaluate(() => performance.now());
           await page.keyboard.down('ArrowRight');
           for (let i = 0; i < 120; i++) {
@@ -342,6 +346,7 @@ for (const zoom of ZOOMS) {
             await page.waitForTimeout(33);
           }
           await page.keyboard.up('ArrowRight');
+          const burstEndWall = Date.now();
           const burstEndPerf = await page.evaluate(() => performance.now());
           await page.waitForTimeout(3000);
           const settleEndPerf = await page.evaluate(() => performance.now());
@@ -383,6 +388,18 @@ for (const zoom of ZOOMS) {
             name: 'centre', values: inWindow.map((s) => ({ t: s.tPerf, v: viewCenterHz(s) })),
             confirmedHz: afterHz, toleranceHz, minimumAdvanceHz: stepHz,
           });
+          // The transient seam: no margin may hatch during the burst while the
+          // native window covers the requested view. Partial coverage is
+          // tracked as evidence (burstPartials, logged below): this simulator
+          // rebuilds its templates from the subscription, so it always serves
+          // full-coverage frames — whole-run partials measured 0 on d0 and
+          // d100ms — and the hatch stays 0 with them. The partially covered
+          // transient itself is pinned by the component regression (accepted
+          // follow grant, delayed intersecting frames, zero hatch).
+          const burstSamples = inWindow.filter((s) => s.tPerf >= burstStartPerf && s.tPerf <= burstEndPerf);
+          const burstPartials = frames.filter((f) => f.tWall >= burstStartWall && f.tWall <= burstEndWall
+            && (f.view[1] - f.view[0]) - (f.coverage[1] - f.coverage[0]) > 1);
+          const hatchedBurst = burstSamples.filter((s) => s.hatchCount > 0);
           const gaps = passbandGaps(passbandSamples, burstStartPerf, settleEndPerf);
           const longGaps = gaps.filter((gap) => gap.durationMs > 200).map((gap) => ({
             startRelMs: gap.startMs - burstStartPerf,
@@ -411,12 +428,21 @@ for (const zoom of ZOOMS) {
             contentType: 'application/json',
           });
           await writeFile(info.outputPath('held-key-timeline.json'), JSON.stringify(timeline, null, 2));
+          const burstWallFrames = frames.filter((f) => f.tWall >= burstStartWall && f.tWall <= burstEndWall);
+          const burstCovMin = Math.min(...burstWallFrames.map((f) => f.coverage[1] - f.coverage[0]));
+          const burstViewMin = Math.min(...burstWallFrames.map((f) => f.view[1] - f.view[0]));
           console.log(`[held-key ${zoom.name} ${latency.name} step=${stepHz}] ` +
             `vfo maxBackward=${vfo.maxBackwardHz}Hz marker maxBackward=${markerSeries.maxBackwardHz}Hz ` +
             `center maxBackward=${center.maxBackwardHz}Hz longGaps=${longGaps.length} ` +
             `marker advance=${markerAdvance.advanceHz}Hz settle=${markerAdvance.settleHz}Hz ` +
             `centre advance=${centreAdvance.advanceHz}Hz settle=${centreAdvance.settleHz}Hz ` +
+            `partials=${burstPartials.length} burstCovMin=${burstCovMin}Hz burstViewMin=${burstViewMin}Hz ` +
             `before=${beforeHz} after=${afterHz} setFreq=${setFreqCommands.length}`);
+
+          // (t) transient seam: no margin may hatch during the burst while the
+          // native window covers the requested view.
+          expect(hatchedBurst,
+            `transient margin hatched in ${hatchedBurst.length} burst samples`).toEqual([]);
 
           // (a) monotonic: no series may move backwards by more than half a step.
           expect.soft(vfo.first,
