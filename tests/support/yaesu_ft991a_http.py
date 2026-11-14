@@ -27,6 +27,8 @@ from rigplane.backends.yaesu_cat.radio import YaesuCatRadio
 from rigplane.profiles.rig_loader import load_rig
 from rigplane.web.server import WebConfig, WebServer
 from rigplane_testkit.sim.adapters.yaesu_cat import YaesuCatSerialFake
+from rigplane_testkit.sim.engine import Refused
+from rigplane_testkit.yaesu.replay import REFUSAL
 
 ROOT = Path(__file__).resolve().parents[2]
 RIG = ROOT / "rigs/ft991a.toml"
@@ -51,12 +53,19 @@ class Ft991aHttpStation:
         await self.radio._transport.close()
 
 
-async def serve_ft991a_over_http(monkeypatch: Any) -> Ft991aHttpStation:
+async def serve_ft991a_over_http(
+    monkeypatch: Any,
+    *,
+    refused_lines: frozenset[str] = frozenset(),
+) -> Ft991aHttpStation:
     """Serve the committed FT-991A profile over HTTP on the CAT simulator.
 
     Returns a started :class:`Ft991aHttpStation`; the caller owns
     :meth:`Ft991aHttpStation.aclose`. No patched profile copy is involved:
     the radio and the fake both load ``rigs/ft991a.toml`` unmodified.
+
+    ``refused_lines`` scripts a wire-level fault before the server
+    starts: a refused line answers ``?;``.
     """
     radio = YaesuCatRadio("/dev/fixture", profile=load_rig(RIG))
     fake = YaesuCatSerialFake.from_profile(ROOT, SIM_PROFILE, rig_path=RIG)
@@ -66,6 +75,8 @@ async def serve_ft991a_over_http(monkeypatch: Any) -> Ft991aHttpStation:
 
     def logged(line: str) -> Any:
         wire.append(line)
+        if line in refused_lines:
+            return REFUSAL, Refused("native_refusal")
         return handle(line)
 
     monkeypatch.setattr(fake.model, "handle_with_outcome", logged)
