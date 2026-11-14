@@ -14,6 +14,7 @@
 // end. If nothing reproduces, the spec reports the observed maxima instead
 // of being tuned until it fails.
 import type { Page } from '@playwright/test';
+import { writeFile } from 'node:fs/promises';
 import { expect, test } from '@playwright/test';
 import { parseCurrentScopeFrame, parseScopeGranted } from '../../../src/lib/runtime/scope-frame';
 import type { ScopeGranted, ScopeSubscription } from '../../../src/lib/runtime/scope-view';
@@ -332,6 +333,7 @@ for (const [latencyIndex, latency] of LATENCIES.entries()) {
           body: JSON.stringify(timeline, null, 2),
           contentType: 'application/json',
         });
+        await writeFile(info.outputPath('held-key-timeline.json'), JSON.stringify(timeline, null, 2));
         console.log(`[held-key ${latency.name} step=${stepHz}] ` +
           `vfo maxBackward=${vfo.maxBackwardHz}Hz marker maxBackward=${markerSeries.maxBackwardHz}Hz ` +
           `center maxBackward=${center.maxBackwardHz}Hz longGaps=${longGaps.length} ` +
