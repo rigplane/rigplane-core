@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import random
 from dataclasses import replace
 import socket
@@ -90,7 +92,63 @@ async def test_receiver_latest_wins_on_burst() -> None:
             lambda: received and received[-1] == packets[-1],
             description="burst delivery",
         )
-        assert 1 <= len(received) <= 5
+        await asyncio.sleep(0.2)
+        assert received == [packets[-1]]
+    finally:
+        await receiver.stop()
+
+
+@pytest.mark.timeout(30)
+async def test_source_burst_renders_latest_packet() -> None:
+    source = N1mmSpectrumSource(port=0, fps_limit=1000.0)
+    frames: list[NativeFrame] = []
+    source.on_frame(frames.append)
+    receiver = N1mmSpectrumReceiver(port=0, on_packet=source.handle_packet)
+    await receiver.start()
+    try:
+        packets = [
+            replace(
+                _packet(index),
+                low_hz=14_000_000.0 + index * 10_000.0,
+                high_hz=14_000_000.0 + index * 10_000.0 + 3_000.0,
+            )
+            for index in range(5)
+        ]
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            for packet in packets:
+                sock.sendto(emit_n1mm_spectrum(packet), ("127.0.0.1", receiver.port))
+        await await_until(lambda: frames, description="burst frame")
+        await asyncio.sleep(0.2)
+        assert len(frames) == 1
+        assert frames[0].coverage == Coverage(packets[-1].low_hz, packets[-1].high_hz)
+    finally:
+        await receiver.stop()
+        await source.stop()
+
+
+@pytest.mark.timeout(60)
+async def test_receiver_sustained_backlog_makes_progress() -> None:
+    received: list[N1mmSpectrumPacket] = []
+    receiver = N1mmSpectrumReceiver(port=0, on_packet=received.append)
+    await receiver.start()
+    try:
+        packets = [
+            replace(
+                _packet(index),
+                low_hz=14_000_000.0 + index * 1_000.0,
+                high_hz=14_000_000.0 + index * 1_000.0 + 3_000.0,
+            )
+            for index in range(40)
+        ]
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            for packet in packets:
+                sock.sendto(emit_n1mm_spectrum(packet), ("127.0.0.1", receiver.port))
+        await await_until(
+            lambda: received and received[-1] == packets[-1],
+            description="backlog drain",
+        )
+        await asyncio.sleep(0.2)
+        assert 2 <= len(received) < len(packets)
         order = [packets.index(packet) for packet in received]
         assert order == sorted(order) and order[-1] == len(packets) - 1
     finally:
@@ -126,6 +184,74 @@ async def test_receiver_stop_idempotent_and_port_busy() -> None:
         await first.stop()
     finally:
         await first.stop()
+
+
+def _free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
+@pytest.mark.timeout(30)
+async def test_receiver_restart_same_port_after_stop() -> None:
+    received: list[N1mmSpectrumPacket] = []
+    port = _free_port()
+    receiver = N1mmSpectrumReceiver(port=port, on_packet=received.append)
+    await receiver.start()
+    await receiver.stop()
+    await receiver.start()
+    try:
+        packet = _packet()
+        _send(port, emit_n1mm_spectrum(packet))
+        await await_until(lambda: received, description="post-restart delivery")
+        assert received == [packet]
+    finally:
+        await receiver.stop()
+
+
+@pytest.mark.timeout(30)
+async def test_source_restart_same_port_after_stop() -> None:
+    port = _free_port()
+    source = N1mmSpectrumSource(port=port, fps_limit=1000.0)
+    frames: list[NativeFrame] = []
+    source.on_frame(frames.append)
+    await source.start()
+    await source.stop()
+    await source.start()
+    try:
+        packet = _packet()
+        _send(port, emit_n1mm_spectrum(packet))
+        await await_until(lambda: frames, description="post-restart frame")
+        assert len(frames) == 1
+        assert frames[0].coverage == Coverage(packet.low_hz, packet.high_hz)
+    finally:
+        await source.stop()
+
+
+@pytest.mark.timeout(30)
+async def test_receiver_concurrent_start_single_endpoint() -> None:
+    port = _free_port()
+    receiver = N1mmSpectrumReceiver(port=port, on_packet=lambda packet: None)
+    await asyncio.gather(receiver.start(), receiver.start())
+    await receiver.stop()
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+        probe.bind(("127.0.0.1", port))
+
+
+@pytest.mark.timeout(30)
+async def test_source_stop_during_start_no_leak() -> None:
+    port = _free_port()
+    source = N1mmSpectrumSource(port=port, fps_limit=1000.0)
+    task = asyncio.create_task(source.start())
+    await asyncio.sleep(0)
+    await source.stop()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+    assert not source._active
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+        probe.bind(("127.0.0.1", port))
 
 
 class _FakeReceiver:
@@ -287,6 +413,35 @@ async def test_source_relative_db_tone_not_saturated(
     assert pixels.count(peak) == 1
     below_half = sum(v < peak // 2 for i, v in enumerate(pixels) if i != tone_pos)
     assert below_half >= 3
+
+
+@pytest.mark.timeout(30)
+async def test_source_drops_nonfinite_packet_before_mapper(
+    virtual_clock: VirtualClock, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.DEBUG, logger="rigplane.sdr.n1mm_source")
+    source, _ = _source(fps_limit=1000.0)
+    frames: list[NativeFrame] = []
+    source.on_frame(frames.append)
+    size, tone_pos = 256, 200
+    overflowing = N1mmSpectrumPacket(
+        "app", "name", 14e6, 14e6 + (size - 1) * 1000.0, 1e308, tuple([10] * size)
+    )
+    source.handle_packet(overflowing)
+    await virtual_clock.elapse(0.01)
+    assert frames == []
+    assert source.dropped_nonfinite == 1
+    assert "n1mm.spectrum.nonfinite" in caplog.text
+    levels = [10] * size
+    levels[tone_pos] = 160
+    tone = replace(overflowing, scaling_factor=1.0, levels=tuple(levels))
+    source.handle_packet(tone)
+    await virtual_clock.elapse(0.01)
+    assert len(frames) == 1
+    pixels = frames[0].pixels
+    assert pixels is not None and len(pixels) == size
+    assert pixels.index(max(pixels)) == tone_pos
+    assert pixels.count(max(pixels)) == 1
 
 
 @pytest.mark.timeout(60)

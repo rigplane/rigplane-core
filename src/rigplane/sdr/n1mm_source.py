@@ -38,6 +38,12 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_PORT = 13064
 
+# Latest-wins coalescing bound: while a burst is still being read, _flush
+# defers delivery to let queued datagrams arrive; after this many deferrals
+# it delivers anyway so continuous traffic still makes progress (delivery at
+# least once every _MAX_COALESCE_TURNS + 1 turns).
+_MAX_COALESCE_TURNS = 16
+
 # N1MM levels × ScalingFactor are relative dB with no absolute reference,
 # unlike the dBFS-tuned mapper defaults: open the absolute clamps wide
 # (finite bounds for levels.window()'s min()/max()) and keep every default.
@@ -62,6 +68,9 @@ class _Protocol(asyncio.DatagramProtocol):
     def error_received(self, exc: Exception) -> None:
         logger.debug("n1mm.spectrum.socket_error error=%r", exc)
 
+    def connection_lost(self, exc: Exception | None) -> None:
+        self._receiver._connection_lost()
+
 
 class N1mmSpectrumReceiver:
     """Asyncio UDP endpoint for N1MM+ spectrum datagrams with latest-wins."""
@@ -81,6 +90,11 @@ class N1mmSpectrumReceiver:
         self._transport: asyncio.DatagramTransport | None = None
         self._latest: N1mmSpectrumPacket | None = None
         self._flush_scheduled = False
+        self._arrivals = 0
+        self._flush_seen = 0
+        self._flush_defers = 0
+        self._start_future: asyncio.Future[None] | None = None
+        self._closed_future: asyncio.Future[None] | None = None
         self.rejected_count = 0
         self.filtered_count = 0
         self.last_rejection: N1mmSpectrumRejected | None = None
@@ -97,18 +111,56 @@ class N1mmSpectrumReceiver:
     async def start(self) -> None:
         if self._transport is not None:
             return
+        if self._start_future is not None:
+            await self._start_future
+            return
         loop = asyncio.get_running_loop()
-        transport, _ = await loop.create_datagram_endpoint(
-            lambda: _Protocol(self), local_addr=(self._host, self._port)
-        )
-        self._transport = transport
+        future: asyncio.Future[None] = loop.create_future()
+        self._start_future = future
+        try:
+            transport, _ = await loop.create_datagram_endpoint(
+                lambda: _Protocol(self), local_addr=(self._host, self._port)
+            )
+            self._transport = transport
+            self._closed_future = loop.create_future()
+        except BaseException as exc:
+            if not future.done():
+                future.set_exception(exc)
+            raise
+        else:
+            future.set_result(None)
+        finally:
+            self._start_future = None
 
     async def stop(self) -> None:
+        # Let a just-created start task publish its in-flight marker first,
+        # so stop-during-start closes what start opened instead of leaking it.
+        await asyncio.sleep(0)
+        start_future = self._start_future
+        if start_future is not None:
+            try:
+                await start_future
+            except BaseException:
+                pass
         transport, self._transport = self._transport, None
         self._flush_scheduled = False
         self._latest = None
+        self._flush_defers = 0
+        self._flush_seen = self._arrivals
         if transport is not None:
             transport.close()
+            closed = self._closed_future
+            if closed is not None:
+                try:
+                    await closed
+                except BaseException:
+                    pass
+                self._closed_future = None
+
+    def _connection_lost(self) -> None:
+        future, self._closed_future = self._closed_future, None
+        if future is not None and not future.done():
+            future.set_result(None)
 
     def _datagram(self, data: bytes) -> None:
         parsed = parse_n1mm_spectrum(data)
@@ -124,13 +176,23 @@ class N1mmSpectrumReceiver:
         if self._source_name is not None and parsed.name != self._source_name:
             self.filtered_count += 1
             return
+        self._arrivals += 1
         self._latest = parsed
         if not self._flush_scheduled:
             self._flush_scheduled = True
             asyncio.get_running_loop().call_soon(self._flush)
 
     def _flush(self) -> None:
+        current = self._arrivals
+        if self._flush_defers == 0 or current != self._flush_seen:
+            if self._flush_defers < _MAX_COALESCE_TURNS:
+                self._flush_seen = current
+                self._flush_defers += 1
+                asyncio.get_running_loop().call_soon(self._flush)
+                return
         self._flush_scheduled = False
+        self._flush_defers = 0
+        self._flush_seen = current
         packet, self._latest = self._latest, None
         if packet is None or self._transport is None:
             return
@@ -174,7 +236,9 @@ class N1mmSpectrumSource:
         self._last_key: tuple[float, float, int] | None = None
         self._last_emit_s: float | None = None
         self._callbacks: list[Callable[[NativeFrame], None]] = []
+        self._start_future: asyncio.Future[None] | None = None
         self._active = False
+        self.dropped_nonfinite = 0
 
     def capabilities(self) -> SourceCapabilities:
         return SourceCapabilities(
@@ -222,16 +286,40 @@ class N1mmSpectrumSource:
     async def start(self) -> None:
         if self._active:
             return
-        receiver = self._receiver_factory(self.handle_packet)
-        self._receiver = receiver
+        if self._start_future is not None:
+            await self._start_future
+            return
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future[None] = loop.create_future()
+        self._start_future = future
         try:
-            await receiver.start()
-        except BaseException:
-            self._receiver = None
+            receiver = self._receiver_factory(self.handle_packet)
+            self._receiver = receiver
+            try:
+                await receiver.start()
+            except BaseException:
+                self._receiver = None
+                raise
+            self._active = True
+        except BaseException as exc:
+            if not future.done():
+                future.set_exception(exc)
             raise
-        self._active = True
+        else:
+            future.set_result(None)
+        finally:
+            self._start_future = None
 
     async def stop(self, *, release: bool = True) -> None:
+        # Same handoff as the receiver: let a just-created start task
+        # publish its in-flight marker before tearing anything down.
+        await asyncio.sleep(0)
+        start_future = self._start_future
+        if start_future is not None:
+            try:
+                await start_future
+            except BaseException:
+                pass
         receiver, self._receiver = self._receiver, None
         self._active = False
         if receiver is not None:
@@ -248,6 +336,14 @@ class N1mmSpectrumSource:
 
     def handle_packet(self, packet: N1mmSpectrumPacket) -> None:
         """Receiver callback seam; tests drive packets directly through it."""
+        db = self._np.asarray(packet.levels, dtype=float) * packet.scaling_factor
+        if not bool(self._np.all(self._np.isfinite(db))):
+            self.dropped_nonfinite += 1
+            logger.debug(
+                "n1mm.spectrum.nonfinite scaling_factor=%r",
+                packet.scaling_factor,
+            )
+            return
         key = (packet.low_hz, packet.high_hz, len(packet.levels))
         if key != self._last_key:
             if self._last_key is not None:
@@ -261,7 +357,6 @@ class N1mmSpectrumSource:
         if self._last_emit_s is not None and now - self._last_emit_s < period:
             return
         self._last_emit_s = now
-        db = self._np.asarray(packet.levels, dtype=float) * packet.scaling_factor
         pixels = self._mapper.map(db)
         frame = NativeFrame(
             None,
