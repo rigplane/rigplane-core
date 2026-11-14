@@ -107,9 +107,9 @@ split uses the two VFOs.
 
 This version provides radio control (frequency, mode, filters, VFO A/B,
 split, meters), audio, and digital modes through the radio's USB audio
-device. Transmit (PTT, CW and digital modes) is implemented through the
+device. Transmit (PTT and digital modes) is implemented through the
 radio's USB CAT port but has not yet been verified on a real FT-991A.
-Not available in this version: antenna tuner, noise blanker/noise
+Not available in this version: sending CW text from RigPlane, antenna tuner, noise blanker/noise
 reduction switches, clarifier, memory channels, squelch, contour.
 
 The profile was built from the manufacturer's CAT manual and is being
