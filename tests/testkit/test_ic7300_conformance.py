@@ -18,10 +18,8 @@ missing from the ledger fails, and so does a ledger entry no longer observed.
 from __future__ import annotations
 
 import asyncio
-import importlib.util
 import json
 import statistics
-import sys
 import time
 from pathlib import Path
 
@@ -70,14 +68,11 @@ _RECORDED_NAKS = frozenset(
 )  # fmt: skip
 
 
-def _load_probe_list():
-    path = REPO_ROOT / "scripts" / "ic7610_capture" / "probe_list.py"
-    spec = importlib.util.spec_from_file_location("ic7300_conf_probe_list", path)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
+def _expected_probe_bodies() -> set[bytes]:
+    from rigplane.probe.readlist import build_read_list
+
+    config = discover_rigs(REPO_ROOT / "rigs")["IC-7300"]
+    return {item.body for item in build_read_list(config)}
 
 
 def _rows() -> list[dict]:
@@ -153,11 +148,7 @@ def test_fixture_framing_addressing_and_no_echo() -> None:
 
 
 def test_recorded_request_set_is_the_profile_probe_list() -> None:
-    probe_list = _load_probe_list()
-    profile = discover_rigs(REPO_ROOT / "rigs")["IC-7300"].to_profile()
-    expected = {
-        bytes(probe.frame_body) for probe in probe_list.build_probe_list(profile)
-    }
+    expected = _expected_probe_bodies()
     recorded = {request[4:-1] for request, _ in _pairs(("probe",))}
     assert recorded == expected, (
         "fixture drifted from rigs/ic7300.toml: "

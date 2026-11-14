@@ -2,12 +2,13 @@
 
 Wraps ``rigplane_testkit.serial.recorder.SerialCivRecorder`` with a client
 frame guard, so a client pointed at ``socket://HOST:PORT`` (the Core server,
-``rigplane validate --read-only``, ``probe.py``) can only send the commands
-the capture allows. The allowed set is the IC-7610 capture's allow-list
-(``scripts/ic7610_capture/probe_list.py``: every ``get_*`` body of the rig
-profile, minus the refused command families) plus the exact status/scope reads in ``READ_EXTRA_BODIES`` and the four scope switches
-``27 10 00/01`` (panel) and ``27 11 00/01`` (wave data output), which the
-scope window needs and which the product's own scope session restores.
+``rigplane validate --read-only``, ``rigplane probe``) can only send the
+commands the capture allows. The allowed set is the probe allow-list
+(``rigplane.probe.readlist``: every ``get_*`` body of the rig profile,
+minus the refused command families) plus the exact status/scope reads in
+``READ_EXTRA_BODIES`` and the four scope switches ``27 10 00/01`` (panel)
+and ``27 11 00/01`` (wave data output), which the scope window needs and
+which the product's own scope session restores.
 
 Everything else is dropped before the serial port and written to the
 recording as ``blocked``; the exit summary prints blocked-chunk counts
@@ -25,46 +26,29 @@ import argparse
 import asyncio
 import collections
 import contextlib
-import importlib
 import json
 import signal
 import sys
 from pathlib import Path
-from types import ModuleType
+
+from rigplane.commands import CONTROLLER_ADDR
+from rigplane.probe.readlist import build_allowed_bodies, is_forbidden
+from rigplane.profiles import RadioProfile
+from rigplane.profiles.rig_loader import discover_rigs
+from rigplane_testkit.serial import CivFrameGuard, SerialCivRecorder
 
 
-def _load_siblings(directory: Path, names: tuple[str, ...]) -> dict[str, ModuleType]:
-    """Import top-level script modules from *directory* without leaving a trace.
-
-    The capture scripts of several radios share module names (``probe``,
-    ``probe_list``) and import each other by those bare names, so a plain
-    ``sys.path`` import would collide with another radio's copy when both are
-    loaded in one process (one pytest run). Load ours with the names free,
-    then put whatever was registered before back.
-    """
-    saved = {name: sys.modules.pop(name, None) for name in names}
-    sys.path.insert(0, str(directory))
-    try:
-        return {name: importlib.import_module(name) for name in names}
-    finally:
-        sys.path.remove(str(directory))
-        for name in names:
-            sys.modules.pop(name, None)
-            if saved[name] is not None:
-                sys.modules[name] = saved[name]
-
-
-_IC7610 = _load_siblings(
-    Path(__file__).resolve().parents[1] / "ic7610_capture", ("probe_list", "probe")
-)
-PROBE = _IC7610["probe"]
-PROBE_LIST = _IC7610["probe_list"]
-load_profile = PROBE.load_profile
-build_allowed_bodies = PROBE_LIST.build_allowed_bodies
-is_forbidden = PROBE_LIST.is_forbidden
-
-from rigplane.commands import CONTROLLER_ADDR  # noqa: E402
-from rigplane_testkit.serial import CivFrameGuard, SerialCivRecorder  # noqa: E402
+def load_profile(model: str) -> RadioProfile:
+    """Load the rig profile whose ``[radio].model`` equals *model*."""
+    rigs_dir = Path(__file__).resolve().parents[2] / "rigs"
+    configs = discover_rigs(rigs_dir)
+    config = configs.get(model)
+    if config is None:
+        available = ", ".join(sorted(configs)) or "none"
+        raise SystemExit(
+            f"no rig profile for model {model!r} in {rigs_dir} ({available})"
+        )
+    return config.to_profile()
 
 #: Scope panel / wave-output switches (``27 10 xx``, ``27 11 xx``).
 SCOPE_SWITCH_BODIES = frozenset(
