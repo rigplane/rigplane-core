@@ -16,9 +16,11 @@ from unittest.mock import AsyncMock, call
 import pytest
 
 from rigplane.backends.discovery import _parse_yaesu_id_response
+from rigplane.backends.yaesu_cat.observations import YaesuObservationAdapter
 from rigplane.backends.yaesu_cat.parser import CatParseError
 from rigplane.backends.yaesu_cat.poller import YaesuCatPoller
 from rigplane.backends.yaesu_cat.radio import YaesuCatRadio
+from rigplane.backends.yaesu_cat.transport import CatCommandRejected
 from rigplane.core.exceptions import CommandError
 from rigplane.core.state_pipeline_contracts import (
     FieldPath,
@@ -26,12 +28,20 @@ from rigplane.core.state_pipeline_contracts import (
     SourceMetadata,
 )
 from rigplane.core.state_store import StateStore
+from rigplane.core.tx_target import KnownTxTarget, UnknownTxTarget
 from rigplane.profiles import resolve_radio_profile
-from rigplane.profiles.rig_loader import load_rig
+from rigplane.profiles.rig_loader import RigLoadError, TxFuncTarget, load_rig
 from rigplane.web.handlers.control import ControlHandler
 from rigplane.web.radio_poller import VfoEqualize
 from rigplane.web.runtime_helpers import projected_vfo_capability_tags
-from rigplane.web.server import WebConfig, WebServer, _serialize_filter_config
+from rigplane.web.server import _serialize_filter_config
+from support.yaesu_ft991a_http import (
+    post_command as ft991a_post_command,
+    read_capabilities as ft991a_read_capabilities,
+    read_info as ft991a_read_info,
+    serve_ft991a_over_http,
+    wait_for_state_value as ft991a_wait_for_state_value,
+)
 from rigplane_testkit.sim.adapters.yaesu_cat import YaesuCatSerialFake
 from test_yaesu_split_vfo_profile import _http_post_command, _wait_for_state
 
@@ -165,18 +175,300 @@ def test_ft991a_reports_its_hamlib_model_through_dump_state():
     assert YaesuRouting(ftx1, 100.0).dump_state()[1] == "2028"
 
 
-def test_ft991a_does_not_poll_tx_target_without_a_tx_func_command():
-    # MOR-4433 R2: the single transceiver has no TX-function read verb (no
-    # ST/FR/get_tx_func), so a pollable tx_target makes
-    # YaesuObservationAdapter._read_tx_target raise CommandError out of
-    # _query — outside its except clauses — discarding the whole medium
-    # batch (freq, mode, PTT, width) every cycle while the slow lane keeps
-    # publishing. The profile must not declare the path pollable.
+def test_ft991a_polls_tx_target_through_ft_tx_func():
+    # MOR-4433 PR1: the v1 "no TX-function read verb" note was wrong. The
+    # FT; read answers the TX VFO (manual p.10: read P2 0 = VFO-A TX,
+    # 1 = VFO-B TX; Hamlib newcat_get_tx_vfo), so the profile declares
+    # get_tx_func/set_tx_func and polls global.tx_state.tx_target.
     acquisition = load_rig(RIG).to_profile().state_acquisition
     assert acquisition is not None
-    assert (
-        FieldPath.global_("tx_state", "tx_target") not in acquisition.pollable_paths()
+    assert FieldPath.global_("tx_state", "tx_target") in acquisition.pollable_paths()
+
+
+def test_ft991a_tx_func_map_names_main_ab_slots():
+    # Profile-declared answer -> (receiver, slot) map and write map. The
+    # loader validates both (answers covered, receivers fit the ab scheme).
+    config = load_rig(RIG)
+    assert config.tx_func is not None
+    assert config.tx_func.read_map == {
+        "0": TxFuncTarget(receiver="MAIN", slot="A"),
+        "1": TxFuncTarget(receiver="MAIN", slot="B"),
+    }
+    assert config.tx_func.write_map == {0: "2", 1: "3"}
+    assert config.to_profile().tx_func == config.tx_func
+
+
+@pytest.mark.asyncio
+async def test_ft991a_tx_func_wire_bytes(radio):
+    # Read answers FT0/FT1 parse to 0/1; sets write FT2;/FT3; (manual p.10:
+    # set P1 2 = VFO-A TX, 3 = VFO-B TX; Hamlib adds +2 for is_ft991).
+    radio._transport.query = AsyncMock(side_effect=["FT0", "FT1"])
+    assert await radio.get_tx_func() == 0
+    assert await radio.get_tx_func() == 1
+    await radio.set_tx_func(0)
+    await radio.set_tx_func(1)
+    assert [c.args[0] for c in radio._transport.write.call_args_list] == [
+        "FT2;",
+        "FT3;",
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("ft", "freq_response", "freq_command", "slot", "frequency"),
+    [
+        ("FT0", "FA014074000", "FA;", "A", 14_074_000),
+        ("FT1", "FB007074000", "FB;", "B", 7_074_000),
+    ],
+)
+async def test_ft991a_tx_target_names_main_ab_slots(
+    ft, freq_response, freq_command, slot, frequency
+):
+    # FT0 -> TX on MAIN/A (freq from FA), FT1 -> TX on MAIN/B (freq from
+    # FB), through the producer's real parser (not a hand-rolled fake).
+    radio = YaesuCatRadio("/dev/null", profile=load_rig(RIG))
+    radio._transport._connected = True
+    radio._transport.query = AsyncMock(side_effect=[ft, freq_response, ft])
+    target = await YaesuObservationAdapter.from_radio(radio)._read_tx_target()
+    assert target == KnownTxTarget(receiver="MAIN", slot=slot, frequency_hz=frequency)
+    assert radio._transport.query.await_args_list == [
+        call("FT;"),
+        call(freq_command),
+        call("FT;"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_ft991a_tx_source_zero_is_noop_and_split_survives(radio):
+    # Single-transceiver profile: selecting transmitter 0 is a no-op
+    # (TransceiverBankCapable contract) — in particular it must not send
+    # FT2;, which would drop split and move TX to VFO-A. Split enabled
+    # first still reads back on afterwards, and the getter reports 0
+    # without touching the wire.
+    await radio.set_split(True)
+    await radio.set_tx_source(0)
+    assert [c.args[0] for c in radio._transport.write.call_args_list] == ["FT3;"]
+    assert await radio.get_tx_source() == 0
+    radio._transport.query.assert_not_called()
+    radio._transport.query = AsyncMock(return_value="FT1")
+    assert await radio.read_split() is True
+    assert radio._transport.query.call_args_list == [call("FT;")]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("xcvr", [1, 2, -1])
+async def test_ft991a_tx_source_rejects_outside_the_single_bank(radio, xcvr):
+    # The declared bank holds one transmitter: anything but 0 is rejected
+    # before any wire traffic. Index 1 used to send FT3; — addressing a
+    # nonexistent second transmitter while dropping split.
+    with pytest.raises(ValueError, match="transceiver_count=1"):
+        await radio.set_tx_source(xcvr)
+    radio._transport.write.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("which", [0, "main", "MAIN"])
+async def test_ft991a_select_receiver_zero_is_noop(radio, which):
+    # Single-receiver profile: selecting receiver 0 is a no-op with no
+    # wire traffic (ReceiverBankCapable contract); anything else is out
+    # of the declared bank.
+    await radio.select_receiver(which)
+    assert await radio.get_active_receiver() == 0
+    radio._transport.write.assert_not_called()
+    radio._transport.query.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("which", [1, 2, -1, "sub"])
+async def test_ft991a_select_receiver_rejects_outside_the_single_bank(radio, which):
+    with pytest.raises(ValueError):
+        await radio.select_receiver(which)
+    radio._transport.write.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("pair", [(0, 0), (0, 1), (1, 0)])
+async def test_ft991a_cross_band_split_refuses_on_one_transceiver(radio, pair):
+    # Cross-band split needs two distinct transceivers; a count-1
+    # profile refuses every combination before any wire traffic. The
+    # bank API has no web or rigctld entry point, so the radio object
+    # is the public surface pinned here.
+    with pytest.raises(ValueError):
+        await radio.set_cross_band_split(*pair)
+    radio._transport.write.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_rigctld_split_routes_through_the_vfo_level_api(radio):
+    # The rigctld surface for split (get/set SPLIT) reaches the radio
+    # through the VFO-level split API — never through the
+    # transmitter-bank API: FT3;/FT2; on the wire, FT1/FT0 answers.
+    from rigplane.rigctld.routing import YaesuRouting
+
+    routing = YaesuRouting(radio, 100.0)
+    assert (await routing.set_func("SPLIT", True)).ok
+    assert (await routing.set_func("SPLIT", False)).ok
+    assert [c.args[0] for c in radio._transport.write.call_args_list] == [
+        "FT3;",
+        "FT2;",
+    ]
+    radio._transport.query = AsyncMock(side_effect=["FT1", "FT0"])
+    assert (await routing.get_func("SPLIT")).values == ["1"]
+    assert (await routing.get_func("SPLIT")).values == ["0"]
+
+
+@pytest.mark.asyncio
+async def test_absent_tx_func_command_is_unsupported():
+    # No get_tx_func on the profile (command deleted to simulate an absent
+    # verb) makes _query raise CommandError. The adapter must report
+    # unsupported, not raise.
+    radio = YaesuCatRadio("/dev/null", profile=load_rig(RIG))
+    del radio._config.commands["get_tx_func"]
+    radio._transport._connected = True
+    radio._transport.query = AsyncMock()
+    target = await YaesuObservationAdapter.from_radio(radio)._read_tx_target()
+    assert target == UnknownTxTarget(reason="unsupported")
+
+
+@pytest.mark.asyncio
+async def test_refused_ft_read_does_not_abort_the_medium_poll(radio):
+    # The radio refuses the FT; read with ?; (a state, not a link fault):
+    # the medium poll still publishes freq, mode and PTT, with tx_target
+    # unknown instead of the whole batch discarded.
+    answers = {
+        "FA;": "FA014074000",
+        "MD0;": "MD02",
+        "TX;": "TX0",
+        "SH0;": "SH014",
+        "NA0;": "NA00",
+        "BC0;": "BC00",
+    }
+
+    async def query(command, **kwargs):
+        if command == "FT;":
+            raise CatCommandRejected("?;")
+        return answers.get(command, "?;")
+
+    radio._transport.query = query
+    observations = await YaesuObservationAdapter.from_radio(radio).poll_medium()
+    by_path = {str(item.path): item for item in observations}
+    assert by_path["global.tx_state.tx_target"].value == UnknownTxTarget(
+        reason="unsupported"
     )
+    assert by_path["receiver.main.active.freq_mode.freq_hz"].value == 14_074_000
+    assert "global.tx_state.ptt" in by_path
+
+
+@pytest.mark.asyncio
+async def test_ft991a_split_tx_freq_set_writes_fb(radio):
+    # Split TX frequency on the single-receiver ab scheme is the FB slot:
+    # the shared relative-VFO write path drives it (write + FB readback)
+    # with no VS/FR/ST traffic.
+    radio._transport.query = AsyncMock(return_value="FB007074000")
+    assert (
+        await radio.write_relative_vfo_frequency(7_074_000, selected=False) == 7_074_000
+    )
+    assert radio._transport.write.call_args[0][0] == "FB007074000;"
+
+
+@pytest.mark.asyncio
+async def test_ft991a_split_tx_mode_access_refuses(radio):
+    # VFO-B mode is not readable or writable with declared commands (no
+    # MD1 verb; OI is undeclared): both refuse instead of guessing.
+    async def query(command, **kwargs):
+        if command == "FB;":
+            return "FB007074000"
+        raise CommandError(f"unexpected command {command}")
+
+    radio._transport.query = query
+    with pytest.raises(CommandError):
+        await radio.read_relative_vfo(selected=False)
+    with pytest.raises(CommandError):
+        await radio.write_relative_vfo_mode(1, selected=False)
+
+
+@pytest.mark.asyncio
+async def test_ft991a_tx_func_roundtrip_over_cat_sim(monkeypatch):
+    # The simulator serves FT with the same contract (FT0/FT1 answers,
+    # FT2/FT3 sets); the producer's real parser consumes the fake.
+    fake = YaesuCatSerialFake.from_profile(ROOT, SIM_PROFILE, rig_path=RIG)
+
+    async def open_port(*args, **kwargs):
+        return await fake.open_serial_connection()
+
+    monkeypatch.setattr(
+        "rigplane.backends.yaesu_cat.transport.open_serial_port", open_port
+    )
+    radio = YaesuCatRadio("/dev/fixture", profile=load_rig(RIG))
+    await radio._transport.connect()
+    try:
+        assert await radio.get_tx_func() == 0
+        await radio.set_tx_func(1)
+        assert await radio.get_tx_func() == 1
+        assert await radio.get_split() is True
+        await radio.set_tx_func(0)
+        assert await radio.get_split() is False
+        target = await YaesuObservationAdapter.from_radio(radio)._read_tx_target()
+        assert target == KnownTxTarget(
+            receiver="MAIN", slot="A", frequency_hz=14_074_000
+        )
+    finally:
+        await radio._transport.close()
+
+
+def _mutated_991a_toml(tmp_path, old, new):
+    # Sibling data files (CTCSS catalog) resolve next to the TOML, so the
+    # copy carries them along.
+    text = RIG.read_text(encoding="utf-8")
+    assert old in text
+    path = tmp_path / "ft991a.toml"
+    path.write_text(text.replace(old, new), encoding="utf-8")
+    for sibling in ("_ctcss_tables_v1.toml",):
+        (tmp_path / sibling).write_bytes((RIG.parent / sibling).read_bytes())
+    return path
+
+
+def test_tx_func_map_rejects_receiver_mismatch_for_scheme(tmp_path):
+    # "SUB" is not a valid receiver for the ab scheme: the loader refuses.
+    path = _mutated_991a_toml(
+        tmp_path,
+        'read_map = { "0" = "MAIN:A", "1" = "MAIN:B" }',
+        'read_map = { "0" = "MAIN:A", "1" = "SUB" }',
+    )
+    with pytest.raises(RigLoadError, match="tx_func"):
+        load_rig(path)
+
+
+def test_tx_func_map_requires_both_answers(tmp_path):
+    # Every FT answer the backend reads (0 and 1) must be covered.
+    path = _mutated_991a_toml(
+        tmp_path,
+        'read_map = { "0" = "MAIN:A", "1" = "MAIN:B" }',
+        'read_map = { "0" = "MAIN:A" }',
+    )
+    with pytest.raises(RigLoadError, match="tx_func"):
+        load_rig(path)
+
+
+def test_tx_func_commands_require_the_map_and_vice_versa(tmp_path):
+    # get/set_tx_func without [vfo.tx_func] is a load error, and so is a
+    # map with neither command declared (no orphans either way).
+    text = RIG.read_text(encoding="utf-8")
+    block_start = text.index("\n[vfo.tx_func]\n")
+    block_end = text.index("\n[attenuator]")
+    without_table = text[:block_start] + text[block_end:]
+    path = tmp_path / "ft991a.toml"
+    path.write_text(without_table, encoding="utf-8")
+    for sibling in ("_ctcss_tables_v1.toml",):
+        (tmp_path / sibling).write_bytes((RIG.parent / sibling).read_bytes())
+    with pytest.raises(RigLoadError, match="tx_func"):
+        load_rig(path)
+    without_commands = text.replace("get_tx_func    = ", "# gone = ").replace(
+        "set_tx_func    = ", "# gone = "
+    )
+    path.write_text(without_commands, encoding="utf-8")
+    with pytest.raises(RigLoadError, match="tx_func"):
+        load_rig(path)
 
 
 def test_ft991a_omits_nb_nr_tuner_and_sub_mode():
@@ -677,32 +969,13 @@ async def _serve_ft991a_over_http(monkeypatch):
     mode/narrow/width polling below is the profile's own contract.
 
     Returns ``(radio, wire, host, port, server)`` with the server started;
-    the caller stops the server and closes the transport.
+    the caller stops the server and closes the transport. One thin
+    wrapper over the reusable ``tests/support/yaesu_ft991a_http.py``
+    harness so this module keeps its tuple shape.
     """
-    radio = YaesuCatRadio("/dev/fixture", profile=load_rig(RIG))
-    fake = YaesuCatSerialFake.from_profile(ROOT, SIM_PROFILE, rig_path=RIG)
-    wire: list[str] = []
-    handle = fake.model.handle_with_outcome
-
-    def logged(line):
-        wire.append(line)
-        return handle(line)
-
-    monkeypatch.setattr(fake.model, "handle_with_outcome", logged)
-
-    async def open_port(*args, **kwargs):
-        return await fake.open_serial_connection()
-
-    monkeypatch.setattr(
-        "rigplane.backends.yaesu_cat.transport.open_serial_port", open_port
-    )
-    await radio._transport.connect()
-    server = WebServer(
-        radio,
-        WebConfig(host="127.0.0.1", port=0, keepalive_interval=9999.0),
-    )
-    await server.start()
-    return radio, wire, "127.0.0.1", server.port, server
+    station = await serve_ft991a_over_http(monkeypatch)
+    assert station.server is not None
+    return station.radio, station.wire, station.host, station.port, station.server
 
 
 @pytest.mark.realtime(
@@ -777,6 +1050,149 @@ async def test_narrow_width_end_to_end_over_http_with_cat_sim(monkeypatch):
     finally:
         await server.stop()
         await radio._transport.close()
+
+
+@pytest.mark.realtime(
+    reason="real HTTP socket and the production backend poller/readback path"
+)
+@pytest.mark.asyncio
+async def test_tx_target_end_to_end_over_http_with_cat_sim(monkeypatch):
+    """MOR-4433 PR1 P1-2: TX-target publication through the real local HTTP API.
+
+    VFO A and B sit on distinct frequencies; split toggles through POST
+    ``/api/v1/commands``; GET ``/api/v1/state`` publishes the global TX
+    target ``MAIN/A`` (split off) and ``MAIN/B`` (split on) with the
+    matching frequencies. Real handler, real queue, real backend-poller
+    dispatch, real store and projection throughout — losing the A/B slot
+    or the frequency between polling and public-state delivery fails
+    this test. Against the pre-fix hard-coded 0/1 -> MAIN/SUB mapping
+    this publishes ``MAIN``/``SUB`` with no slot, so the waits time out.
+    """
+    station = await serve_ft991a_over_http(monkeypatch)
+    try:
+        host, port = station.host, station.port
+        await station.radio.set_freq(14_074_000)
+        await station.radio.set_freq(7_074_000, receiver=1)
+        want_a = {
+            "status": "known",
+            "receiver": "MAIN",
+            "slot": "A",
+            "frequencyHz": 14_074_000,
+        }
+        want_b = {
+            "status": "known",
+            "receiver": "MAIN",
+            "slot": "B",
+            "frequencyHz": 7_074_000,
+        }
+
+        # The observation path is live before split is touched: TX rides
+        # VFO-A while split is off.
+        assert await ft991a_wait_for_state_value(host, port, "txTarget", want_a)
+
+        await ft991a_post_command(host, port, "set_split", {"on": True})
+        assert "FT3;" in station.wire
+
+        # Split on: TX rides VFO-B at its own frequency.
+        assert await ft991a_wait_for_state_value(host, port, "txTarget", want_b)
+
+        await ft991a_post_command(host, port, "set_split", {"on": False})
+        assert "FT2;" in station.wire
+
+        # Split off again: TX is back on VFO-A.
+        assert await ft991a_wait_for_state_value(host, port, "txTarget", want_a)
+    finally:
+        await station.aclose()
+
+
+@pytest.mark.realtime(
+    reason="real HTTP socket and the production backend poller/readback path"
+)
+@pytest.mark.asyncio
+async def test_cross_band_split_tx_target_end_to_end_over_http(monkeypatch):
+    """MOR-4433: cross-band split TX-target seam through the real local HTTP API.
+
+    VFO-A sits on 40m (7.074 MHz) and VFO-B on 2m (145.000 MHz): split ON
+    publishes the global TX target ``MAIN/B`` at 145 MHz, split OFF publishes
+    ``MAIN/A`` at 7.074 MHz, each through the real handler, queue,
+    backend-poller dispatch, store and projection. The wire log records our
+    side of it: ``set_freq`` on VFO-B writes ``FB145000000;``, split writes
+    ``FT3;``, and the TX-slot frequency write (``write_relative_vfo_frequency``
+    with selected=False -- the ``set_split_freq`` backend -- writes ``FB`` on
+    the single-receiver ab scheme) lands after ``FT3;``.
+
+    What the public endpoints report TODAY (asserted, not invented): the power
+    range is the profile scalar (``[power].max_watts = 100`` -> ``maxPowerW``
+    100 in info/capabilities); the tuner capability is absent (no ``tuner``
+    tag, ``hasTuner`` false in info, ``tuner`` not in the capabilities list).
+
+    Band-change note: our code does nothing special when VFO-A changes band
+    while split is on -- set_freq writes only FA/FB and set_split only
+    FT2;/FT3;, with no automatic FT2;BS..;FA..;FT3 sequence of the kind
+    Hamlib newcat.c:1356-1362 performs (cf. Hamlib ft991.c:419-521 for split
+    freq) -- UNVERIFIED without hardware, so deliberately not implemented.
+    """
+    station = await serve_ft991a_over_http(monkeypatch)
+    try:
+        host, port = station.host, station.port
+        await station.radio.set_freq(7_074_000)
+        await station.radio.set_freq(145_000_000, receiver=1)
+        want_a = {
+            "status": "known",
+            "receiver": "MAIN",
+            "slot": "A",
+            "frequencyHz": 7_074_000,
+        }
+        want_b = {
+            "status": "known",
+            "receiver": "MAIN",
+            "slot": "B",
+            "frequencyHz": 145_000_000,
+        }
+
+        # The observation path is live before split is touched: TX rides
+        # VFO-A while split is off. The VFO-B tune above already went out
+        # as the FB frame (the set_freq-on-VFO-B leg across bands).
+        assert await ft991a_wait_for_state_value(host, port, "txTarget", want_a)
+        assert "FB145000000;" in station.wire
+
+        station.wire.clear()
+        await ft991a_post_command(host, port, "set_split", {"on": True})
+        assert "FT3;" in station.wire
+
+        # Split on: TX rides VFO-B on 2m.
+        assert await ft991a_wait_for_state_value(host, port, "txTarget", want_b)
+
+        # TX-slot frequency leg across bands: the set_split_freq backend
+        # (write_relative_vfo_frequency with selected=False) writes the FB
+        # frame. Driven at the radio level: the HTTP set_split_freq
+        # descriptor is not admitted on this profile today (409
+        # unsupported_command -- admission needs vfo_readback
+        # selected_unselected, the profile declares absolute), so this is
+        # the same FB frame without the HTTP gate.
+        await station.radio.write_relative_vfo_frequency(145_000_000, selected=False)
+        assert "FB145000000;" in station.wire
+        ft3_at = station.wire.index("FT3;")
+        fb_at = station.wire.index("FB145000000;")
+        assert ft3_at < fb_at
+
+        # Power range and tuner availability TODAY, from the public
+        # endpoints: scalar max, no tuner tag.
+        info = await ft991a_read_info(host, port)
+        assert info["capabilities"]["maxPowerW"] == 100
+        assert info["capabilities"]["hasTuner"] is False
+        assert "tuner" not in info["capabilities"]["tags"]
+        capabilities = await ft991a_read_capabilities(host, port)
+        assert capabilities["maxPowerW"] == 100
+        assert "tuner" not in capabilities["capabilities"]
+
+        await ft991a_post_command(host, port, "set_split", {"on": False})
+        assert "FT2;" in station.wire
+
+        # Split off again: TX is back on VFO-A on 40m.
+        assert await ft991a_wait_for_state_value(host, port, "txTarget", want_a)
+    finally:
+        await station.aclose()
 
 
 # ---------------------------------------------------------------------------

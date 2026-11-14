@@ -1416,8 +1416,13 @@ class _Ftx1CriticalRadio:
     @property
     def profile(self) -> SimpleNamespace:
         # What ``YaesuObservationAdapter.from_radio`` reads: the radio
-        # profile's state-acquisition block.
-        return SimpleNamespace(state_acquisition=self._acquisition_scheduler._profile)
+        # profile's state-acquisition block, plus the FT answer map from
+        # the real FTX-1 profile contract (``RadioProfile.tx_func``), which
+        # ``_read_tx_target`` reads directly to interpret the ``FT;`` digit.
+        return SimpleNamespace(
+            state_acquisition=self._acquisition_scheduler._profile,
+            tx_func=get_radio_profile("yaesu_ftx1").tx_func,
+        )
 
     @property
     def state_store(self) -> StateStore:
