@@ -917,10 +917,15 @@ class IcomTransport:
             reply[0x11:0x15] = data[0x11:0x15]  # echo time
             self._raw_send(bytes(reply))
             # Sub-stream discovery (MOR-4436): a ping REQUEST arriving
-            # while _discover() is still waiting (remote_id == 0) ends the
-            # are-you-there phase — some sub-streams never send I-Am-Here.
-            # The reply above is unchanged; only the first sender is kept.
-            if self.remote_id == 0 and self._discovery_ping_sender is None:
+            # while _discover() is still waiting ends the are-you-there
+            # phase — some sub-streams never send I-Am-Here. The audio
+            # sub-stream's RX DATA arrives first and already learns
+            # remote_id through the data path, so the guard must not
+            # require remote_id == 0 — only that a discovery is active
+            # (the event exists solely inside _discover()) and no sender
+            # was recorded yet. The reply above is unchanged; only the
+            # first sender is kept.
+            if self._discovery_ping_sender is None:
                 ping_event = self._discover_ping_event
                 if ping_event is not None:
                     self._discovery_ping_sender = sender_id

@@ -319,10 +319,9 @@ async def test_audio_flood_then_ping_completes_discovery(
 
     def _rx_audio(inner_seq: int) -> bytes:
         # Production RX audio layout with no connection ID established yet
-        # (sentid 0): like the live flood it must not decide remote_id ahead
-        # of the ping — a nonzero sender would be learned by
-        # ``_route_data_packet`` and the ping guard (``remote_id == 0``)
-        # would then ignore the ping by design.
+        # (sentid 0): the data path learns nothing from it, so remote_id
+        # stays 0 until the ping arrives (the nonzero-sender case is pinned
+        # by ``test_audio_data_before_ping_still_completes_discovery``).
         return build_audio_packet(
             bytes(160), sender_id=0, receiver_id=0, send_seq=inner_seq
         )
@@ -371,3 +370,52 @@ async def test_audio_flood_without_ping_still_times_out(
 
     assert t.remote_id == 0
     assert len(_sent_ptypes(sent, PacketType.ARE_YOU_THERE)) == 3
+
+
+async def test_audio_data_before_ping_still_completes_discovery(
+    monkeypatch: pytest.MonkeyPatch,
+    virtual_clock: VirtualClock,
+) -> None:
+    """RX DATA from the radio id must not block the ping signal (MOR-4436).
+
+    On the live audio sub-stream the radio's first datagrams are RX audio
+    DATA carrying the radio id, so the shared data path learns remote_id
+    before the radio's ping REQUEST arrives. The ping handler still signals
+    the waiter whenever a discovery is active and no sender was recorded
+    yet, so discovery completes via the ping. Against the old
+    ``remote_id == 0`` guard the ping is dropped and ``_discover`` raises
+    ``DiscoveryTimeout`` after the full retries.
+    """
+    monkeypatch.setattr("rigplane.core.transport.DISCOVERY_RETRIES", 3)
+    monkeypatch.setattr("rigplane.core.transport.DISCOVERY_TIMEOUT", 0.5)
+    t = IcomTransport()
+    sent: list[bytes] = []
+    t._raw_send = sent.append
+    radio = _radio(RADIO_ID)
+
+    def _rx_audio(inner_seq: int) -> bytes:
+        # Live layout: RX audio DATA already stamped with the radio id.
+        return build_audio_packet(
+            bytes(160), sender_id=RADIO_ID, receiver_id=0, send_seq=inner_seq
+        )
+
+    async def _data_then_ping() -> None:
+        for inner in range(3):
+            t._handle_packet(_rx_audio(inner))
+        assert t.remote_id == RADIO_ID  # learned by the data path first
+        await asyncio.sleep(0.1)  # the radio's ping lands ~100 ms later
+        t._handle_packet(radio._build_ping())
+
+    task = asyncio.create_task(t._discover())
+    responder = asyncio.create_task(_data_then_ping())
+    try:
+        await virtual_clock.elapse(0.5)
+        await asyncio.wait_for(task, timeout=10.0)
+    finally:
+        await responder
+
+    assert t.remote_id == RADIO_ID
+    assert t._discovery_ping_sender == RADIO_ID
+    assert t._discover_ping_event is None
+    assert t._packet_queue.qsize() == 0
+    assert len(_sent_ptypes(sent, PacketType.ARE_YOU_THERE)) == 1
