@@ -197,7 +197,9 @@ def _garble_check(protocol: str) -> Callable[[bytes], bool]:
 def _cat_template_of(config: RigConfig, name: str, body: bytes) -> str:
     spec = config.commands.get(name)
     if isinstance(spec, CatCommandSpec):
-        read = spec.read
+        # Declared local: the loader types stay precise even where
+        # follow_imports=skip leaves cross-module attributes as Any.
+        read: str | None = spec.read
         if read is not None:
             return read
     try:
