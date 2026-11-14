@@ -855,11 +855,13 @@ async def test_ctr_fix_ctr_transitions_keep_one_follow_subscription_quiet(
             assert sim.views[0][1] == presets.index(50_000)
             baseline = len(_viewport_writes(sim))
             assert baseline > 0
-            # External FIX entry (front panel): the follow grant clips to the
-            # fixed window, no radio write leaves Core.
+            # External FIX entry (front panel): the follow grant keeps the
+            # requested view over the fixed window (MOR-4451: same width,
+            # merely offset — only narrower clips), no radio write leaves
+            # Core.
             sim.windows[0] = (14_075_000, 14_175_000)
             sim.views[0] = (1, 4, 1)
-            clipped = await _frame_with(ws, (14_075_000, 14_150_000))
+            clipped = await _frame_with(ws, (14_050_000, 14_150_000))
             assert (clipped.coverage_start_hz, clipped.coverage_end_hz) == (
                 14_075_000,
                 14_150_000,
