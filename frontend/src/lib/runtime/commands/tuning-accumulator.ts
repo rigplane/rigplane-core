@@ -47,6 +47,15 @@ interface PendingTuning {
   lastObservationMarker: number;
   lastObservedFrequency: number;
   anchor: BurstAnchor;
+  /**
+   * Every frequency this burst handed to `emit`, in send order (MOR-4393).
+   * A readback that equals a previously SENT target is our own late echo —
+   * even while its command lifecycle is still pending and lifecycle
+   * association cannot see it — so it rebases the burst instead of resetting
+   * it. A changed value matching neither our sends nor an associated target
+   * is still a foreign change (MOR-1864 fail-closed stays).
+   */
+  sentTargets: number[];
 }
 
 export interface TuningAccumulatorOptions {
@@ -178,6 +187,7 @@ export function createTuningAccumulator(options: TuningAccumulatorOptions): Tuni
     state.flushTimer = null;
     state.lastEmitAt = t;
     state.lastLifecycle = emit(receiver, state.target) ?? null;
+    state.sentTargets.push(state.target);
     // The publication must judge liveness by the FRESHEST emitted
     // lifecycle, not stay tied to the one captured at the last input: a
     // terminal failure of the just-flushed target invalidates the
@@ -227,6 +237,7 @@ export function createTuningAccumulator(options: TuningAccumulatorOptions): Tuni
         id: typeof lifecycle?.id === 'string' ? lifecycle.id : null,
         createdAt: typeof lifecycle?.createdAt === 'number' ? lifecycle.createdAt : t,
       },
+      sentTargets: [requestedFreq],
     });
   }
 
@@ -238,13 +249,19 @@ export function createTuningAccumulator(options: TuningAccumulatorOptions): Tuni
   ): boolean {
     if (!validMarker(marker) || marker < state.lastObservationMarker) return false;
     if (marker === state.lastObservationMarker) return frequency === state.lastObservedFrequency;
+    // MOR-4393: lifecycle association first (the stronger causal claim when
+    // the command is already acknowledged), our own send ledger second — a
+    // late echo of an older, still-pending send continues the burst instead
+    // of cold-resetting it and wiping unsent steps. Every changed value still
+    // queries the association; MOR-1864 stays: matching neither source is a
+    // foreign change.
     if (frequency !== state.lastObservedFrequency && !acceptedTarget({
       receiver,
       context: state.context,
       frequency,
       observationMarker: marker,
       anchor: state.anchor,
-    })) return false;
+    }) && !state.sentTargets.includes(frequency)) return false;
     state.lastObservationMarker = marker;
     state.lastObservedFrequency = frequency;
     return true;
@@ -272,9 +289,11 @@ export function createTuningAccumulator(options: TuningAccumulatorOptions): Tuni
       const state = pending.get(receiver);
       if (!state || !stillLive(receiver, state, now()) || !validMarker(observationMarker)
         || observationMarker < state.lastObservationMarker) return false;
+      // MOR-4393: same two-source association as the step path, so a late
+      // echo of our own still-pending send still reads as burst observation.
       return frequency === state.lastObservedFrequency || acceptedTarget({
         receiver, context: state.context, frequency, observationMarker, anchor: state.anchor,
-      });
+      }) || state.sentTargets.includes(frequency);
     },
     jump(receiver, freq, confirmedFreq, observationMarker = null, paced = false) {
       const state = pending.get(receiver);
