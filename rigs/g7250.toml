@@ -307,6 +307,9 @@ values = [0, 1, 2]
 # AUTO exists on the radio panel and cannot be selected over CI-V in V1.0.1;
 # CI-V code 02 (MID) is a compat-only stored value per the vendor reference.
 # A later firmware that commands AUTO is a data edit here.
+# LIVE G7250 LAN 2026-11-14 (MOR-4436, V1.0.1): with the panel on AUTO,
+# 16 12 reads back 00 (twice, at 0xA0); whether that differs from OFF is
+# still being checked.
 # LIVE G7250 2026-11-09 (MOR-4352): read back 02 (a MID shadow, pre-1.0.1).
 [agc]
 modes = [0, 1, 3]
