@@ -452,7 +452,10 @@ class _DcAvPeer:
 
         self._pc = RTCPeerConnection()
         self._control = self._pc.createDataChannel("control", ordered=True)
-        self._audio = self._pc.createDataChannel("audio", ordered=False)
+        # Ordered here (production uses lossy): attach_audio sends the
+        # attach frame and audio_start back to back, and the server reads
+        # the FIRST frame as the attach — order must be deterministic.
+        self._audio = self._pc.createDataChannel("audio", ordered=True)
 
         @self._control.on("message")  # type: ignore[misc, no-untyped-call]
         def _on_control(message: Any) -> None:
@@ -542,6 +545,16 @@ class _DcAvPeer:
         return await self._until(
             self._received,
             lambda m: m.get("type") == "response" and m.get("id") == command_id,
+            timeout=10.0,
+        )
+
+    async def heartbeat(self) -> None:
+        """Refresh the session deadline (the TTL would otherwise expire)."""
+        assert self._control is not None
+        self._control.send(json.dumps({"type": "controller_heartbeat"}))
+        await self._until(
+            self._received,
+            lambda m: m.get("type") == "controller_heartbeat",
             timeout=10.0,
         )
 
@@ -851,16 +864,22 @@ async def test_only_holders_audio_reaches_radio_over_data_channels(
     holder = _DcAvPeer()
     other = _DcAvPeer()
     try:
+        # Attach each peer right after its own ICE negotiate: the server
+        # closes a channel that sends no attach frame within 5 s, so a
+        # second slow negotiate must not come between connect and attach.
+        # Acquire just before attach for the same reason (6 s session TTL).
         await holder.connect(stack.web)
-        await other.connect(stack.web)
-        # Acquire after the slow ICE negotiate, just before attach: the
-        # controller session TTL would otherwise expire in between.
         holder_key = await _acquire_session(stack.web.port)
-        other_key = await _acquire_session(stack.web.port)
         await holder.attach_control(holder_key)
         await holder.attach_audio(holder_key)
+        await other.connect(stack.web)
+        other_key = await _acquire_session(stack.web.port)
         await other.attach_control(other_key)
         await other.attach_audio(other_key)
+        # Refresh both deadlines: the keying below must meet live sessions,
+        # and the other's frames must reach the pin (not die on expiry).
+        await holder.heartbeat()
+        await other.heartbeat()
         # Nobody holds the transmitter: nothing reaches the air.
         await _stream_audio(holder, 480)
         await _stream_audio(other, 200)
@@ -903,8 +922,14 @@ async def test_last_peer_close_resets_session_manager(tmp_path: Path) -> None:
     first = _DcControlClient()
     second = _DcControlClient()
     try:
+        # Attach each peer right after its own ICE negotiate: the server
+        # closes a channel with no attach frame within 5 s (which would
+        # drop the peer before the assertion below), so the second slow
+        # negotiate must not come between connect and attach.
         await first.connect(stack.web)
+        await first.attach(await _acquire_session(stack.web.port))
         await second.connect(stack.web)
+        await second.attach(await _acquire_session(stack.web.port))
         manager = stack.web._webrtc_sessions  # noqa: SLF001
         assert manager is not None
         session_ids = manager.active_session_ids
