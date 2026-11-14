@@ -463,6 +463,21 @@ class YaesuObservationAdapter:
                     native_id="get_tx_func",
                 )
             )
+        else:
+            # No pollable tx_target source declared (FT-991A class: the
+            # profile carries no TX-function read verb, so a pollable
+            # target would make _read_tx_target raise out of _query and
+            # discard the whole medium batch — see rigs/ft991a.toml).
+            # Publish the sticky ``unsupported`` fact through this same
+            # path, with no CAT I/O here, so downstream gates read "no
+            # source exists" instead of "not yet read" (MOR-4433).
+            observations.append(
+                adapter.observation(
+                    _TX_TARGET,
+                    UnknownTxTarget(reason="unsupported"),
+                    native_id="get_tx_func",
+                )
+            )
         if self._can_poll(_PTT):
 
             def publish_ptt_error() -> None:

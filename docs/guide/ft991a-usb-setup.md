@@ -105,10 +105,12 @@ split uses the two VFOs.
 
 ## What This Version Does
 
-Radio control (frequency, mode, filters, VFO A/B, split, meters), audio,
-and digital modes through the radio's USB audio device work. Not yet
-available: transmit from the web UI, antenna tuner, noise blanker/noise
-reduction switches, clarifier, memory channels, squelch, contour.
+Radio control (frequency, mode, filters, VFO A/B, split, meters), transmit
+(PTT from the CLI, web UI, rigctld and Python), audio, and digital modes
+through the radio's USB audio device work. Transmit is implemented but not
+yet verified on a real FT-991A. Not yet available: antenna tuner, noise
+blanker/noise reduction switches, clarifier, memory channels, squelch,
+contour.
 
 The profile was built from the manufacturer's CAT manual and is being
 verified on real radios. If something misbehaves, see
