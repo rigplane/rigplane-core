@@ -2,8 +2,9 @@
  * MOR-4433 follow-up: an unobservable TX target must not block
  * transmit-adjacent controls.
  *
- * Radios with one transceiver and no readable TX target (FT-991A, Xiegu
- * G7250) project `txTarget: { status: 'unknown', reason: 'unsupported' }` —
+ * Radios with one transceiver and no readable TX target (Xiegu G7250
+ * and the sourceless single-receiver Yaesu shape) project
+ * `txTarget: { status: 'unknown', reason: 'unsupported' }` —
  * "no source exists", not "a source exists but is unobserved". The shared
  * gates must read that reason: `keyBlockedReasons`, the break-in
  * `disabledReasons` entry, and the `txPermit` entry stop blocking, while
@@ -117,7 +118,8 @@ describe('unsupported TX target does not block', () => {
 });
 
 describe('adapter projects the unsupported target without blocking', () => {
-  /** Minimal `ab` capabilities with TX bands configured (FT-991A shape). */
+  /** Minimal `ab` capabilities with TX bands configured (single-receiver
+   *  ab shape — the FT-991A topology with no TX-target source). */
   const caps: Capabilities = {
     model: 'FT-991A',
     scope: false,

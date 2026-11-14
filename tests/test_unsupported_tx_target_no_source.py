@@ -1,28 +1,39 @@
 """MOR-4433 follow-up: a radio with no TX-target source reports "unsupported".
 
 Owner decision: "remove the prohibition, transmit must work" for radios with
-one transceiver and no readable TX target (FT-991A, Xiegu G7250). One shared
-mechanism for all radios and both backends: the backend publishes the sticky
+one transceiver and no readable TX target (Xiegu G7250 on Icom CI-V, and the
+sourceless single-receiver Yaesu shape). One shared mechanism for all radios
+and both backends: the backend publishes the sticky
 ``UnknownTxTarget(reason="unsupported")`` fact through the existing
 publication path, so the projection — and every TX-adjacent gate on it — can
 tell "no source exists" apart from "a source exists but is unobserved". No
 per-radio branch, no new guard, no second authority.
 
+Adaptation note (MOR-4433, after #4584): FT-991A gained a real TX-target
+source (``get_tx_func``/``set_tx_func`` + ``[vfo.tx_func]``), so it no
+longer belongs to the sourceless set — its real-target coverage lives in
+``test_ft991a_profile.py`` and ``test_startup_state_gate.py``. The
+sourceless-Yaesu cases here run on a synthetic profile built from the
+committed FT-991A config with the source removed (both TX verbs,
+``tx_func``, the ``tx_target`` polling path), through the producer's own
+loader output — never a raw dict. G7250 keeps covering the Icom CI-V side.
+
 Failing-first: the ``unsupported`` publication tests (Yaesu medium lane for
-FT-991A, CI-V poller for G7250, HTTP state projection for both) fail on the
-base commit — nothing publishes the field, so the projection falls back to
-``not-observed``. The IC-7300/IC-7610 cases and the PTT/TUNE pins pass before
-and after: transmit was never gated on ``tx_target`` and must stay that way.
+the synthetic profile, CI-V poller for G7250, HTTP state projection for
+both) fail on the base commit — nothing publishes the field, so the
+projection falls back to ``not-observed``. The IC-7300/IC-7610 cases and
+the PTT/TUNE pins pass before and after: transmit was never gated on
+``tx_target`` and must stay that way.
 
 Harness limits, stated plainly: the Yaesu/CIV fakes only speak the FTX-1 and
-IC-7300 wire shapes, so FT-991A/G7250 run as loaded profiles over
-``SerialMockRadio`` (deterministic stub, real profile data) rather than over a
-wire simulator. The WS managed-key path needs the production managed-TX port
-(``web_startup`` assembly) and is orthogonal to this change — the backend
-never gates PTT on ``tx_target`` — so PTT is pinned here at the layers that
-run without it: rigctld ``T 1`` / ``T 0`` over a real TCP socket, the SDK
-``set_ptt`` call, and the real HTTP command/state surface. Existing managed
-suites own the WS key path.
+IC-7300 wire shapes, so G7250 and the synthetic profile run as loaded
+profiles over ``SerialMockRadio`` (deterministic stub, real profile data)
+rather than over a wire simulator. The WS managed-key path needs the
+production managed-TX port (``web_startup`` assembly) and is orthogonal to
+this change — the backend never gates PTT on ``tx_target`` — so PTT is
+pinned here at the layers that run without it: rigctld ``T 1`` / ``T 0``
+over a real TCP socket, the SDK ``set_ptt`` call, and the real HTTP
+command/state surface. Existing managed suites own the WS key path.
 """
 
 from __future__ import annotations
@@ -48,7 +59,8 @@ from rigplane.core.state_pipeline_contracts import (
 from rigplane.core.state_store import StateStore
 from rigplane.core.tx_observation import TxStateReading
 from rigplane.core.tx_target import KnownTxTarget, UnknownTxTarget
-from rigplane.profiles import get_radio_profile, resolve_radio_profile
+from rigplane.profiles import RadioProfile, resolve_radio_profile
+from rigplane.profiles.rig_loader import RigConfig, load_rig
 from rigplane.rigctld.contract import RigctldConfig
 from rigplane.rigctld.server import RigctldServer
 from rigplane.runtime.managed_tx_composition import (
@@ -76,6 +88,13 @@ from test_web_server import (
 )
 
 
+ROOT = Path(__file__).resolve().parents[1]
+FT991A_RIG = ROOT / "rigs" / "ft991a.toml"
+
+#: Model name stamped on the synthetic sourceless profile, so refusal
+#: messages name it instead of the real FT-991A it is derived from.
+_SYNTHETIC_MODEL = "FT-991A-NO-TX-SRC"
+
 _FIXED_NOW = 1_000_000.0
 
 
@@ -89,43 +108,127 @@ _TX_TARGET_PATH = FieldPath.global_("tx_state", "tx_target")
 # ── profile premise: which radios declare a tx_target source ──────────────
 
 
+def _sourceless_yaesu_config() -> RigConfig:
+    """A sourceless Yaesu profile built from the committed FT-991A config.
+
+    FT-991A gained a real TX-target source (#4584), so the sourceless
+    set keeps a Yaesu member through this synthetic: the same loaded
+    config with the source removed through the producer's own loader
+    output — both TX verbs deleted from ``commands``, ``tx_func``
+    cleared, and the ``tx_target`` polling capability (plus its field
+    policy) dropped from the acquisition profile via
+    ``dataclasses.replace`` (which rebuilds the path index in
+    ``__post_init__``). A fresh ``load_rig`` per call, so no test mutates
+    a shared config; the model is renamed so refusal messages name the
+    synthetic, not the real FT-991A.
+    """
+    from dataclasses import replace
+
+    # RigConfig is frozen: derive a modified copy through the producer's
+    # own dataclass constructor rather than assigning into the loaded
+    # one (a fresh ``load_rig`` per call, so no test mutates shared
+    # loader output either way).
+    loaded = load_rig(FT991A_RIG)
+    acquisition = loaded.state_acquisition
+    assert acquisition is not None
+    dropped = FieldPath.global_("tx_state", "tx_target")
+    return replace(
+        loaded,
+        commands={
+            verb: spec
+            for verb, spec in loaded.commands.items()
+            if verb not in ("get_tx_func", "set_tx_func")
+        },
+        tx_func=None,
+        model=_SYNTHETIC_MODEL,
+        state_acquisition=replace(
+            acquisition,
+            capabilities=tuple(
+                capability
+                for capability in acquisition.capabilities
+                if capability.path != dropped
+            ),
+            field_policies={
+                path: policy
+                for path, policy in acquisition.field_policies.items()
+                if path != dropped
+            },
+        ),
+    )
+
+
+def _profile_for(name: str) -> RadioProfile:
+    """Registry profile by model, or the synthetic sourceless Yaesu one."""
+    if name == _SYNTHETIC_MODEL:
+        return _sourceless_yaesu_config().to_profile()
+    return resolve_radio_profile(model=name)
+
+
+def test_synthetic_sourceless_profile_declares_no_tx_source() -> None:
+    """Premise the sourceless-Yaesu cases below stand on: the synthetic
+    carries no TX verb, no answer map, and no polled ``tx_target``."""
+    config = _sourceless_yaesu_config()
+    assert "get_tx_func" not in config.commands
+    assert "set_tx_func" not in config.commands
+    assert config.tx_func is None
+    profile = config.to_profile()
+    assert profile.model == _SYNTHETIC_MODEL
+    assert not profile.supports_command("get_tx_func")
+    assert not profile.supports_command("set_tx_func")
+    assert not profile.supports_command("get_tx_target")
+    assert profile.state_acquisition is not None
+    assert FieldPath.global_("tx_state", "tx_target") not in (
+        profile.state_acquisition.pollable_paths()
+    )
+
+
 @pytest.mark.parametrize(
-    ("model", "declares_source"),
+    ("model", "source_command"),
     (
-        ("FT-991A", False),
-        ("G7250", False),
-        ("IC-7300", False),  # derivation radio: no native read, derives instead
-        ("IC-7610", True),  # native CI-V 1C 03 read (get_tx_target)
+        ("FT-991A", "get_tx_func"),  # sourced since #4584: FT read + [vfo.tx_func]
+        ("G7250", None),
+        ("IC-7300", None),  # derivation radio: no native read, derives instead
+        ("IC-7610", "get_tx_target"),  # native CI-V 1C 03 read (get_tx_target)
     ),
 )
-def test_tx_target_source_declaration_matrix(model: str, declares_source: bool) -> None:
-    """Pin the discriminator the fix keys off: only IC-7610 declares a
-    native ``tx_target`` source command. FT-991A/G7250 declare none — no
-    ``get_tx_target``/``get_tx_func`` — and IC-7300 derives instead."""
+def test_tx_target_source_declaration_matrix(
+    model: str, source_command: str | None
+) -> None:
+    """Pin the discriminator the fix keys off: the command each profile's
+    ``tx_target`` source (or its absence) hangs on. FT-991A sources
+    through ``get_tx_func``, IC-7610 through the native ``get_tx_target``;
+    G7250 declares neither verb, and IC-7300 derives instead of reading."""
     profile = resolve_radio_profile(model=model)
-    assert profile.supports_command("get_tx_target") is declares_source
+    if source_command is None:
+        assert not profile.supports_command("get_tx_target")
+        assert not profile.supports_command("get_tx_func")
+    else:
+        assert profile.supports_command(source_command)
     acquisition = profile.state_acquisition
     declared_paths = (
         {str(capability.path) for capability in acquisition.capabilities}
         if acquisition is not None
         else set()
     )
-    assert ("global.tx_state.tx_target" in declared_paths) is declares_source
+    assert ("global.tx_state.tx_target" in declared_paths) is (
+        source_command is not None
+    )
 
 
-# ── Yaesu backend: FT-991A publishes unsupported through the medium lane ───
+# ── Yaesu backend: sourceless profile publishes unsupported ────────────────
 
 
-def _ft991a_observation_radio() -> MagicMock:
-    """Duck-typed Yaesu radio carrying the real FT-991A profile.
+def _sourceless_observation_radio() -> MagicMock:
+    """Duck-typed Yaesu radio carrying the synthetic sourceless profile.
 
     Mirrors the ``_make_radio`` double in
-    ``test_yaesu_cat_observation_adapter.py`` but with the FT-991A profile —
-    which declares no ``get_tx_func`` verb, so the attribute stays absent
-    exactly as on the real radio object.
+    ``test_yaesu_cat_observation_adapter.py`` but with the synthetic
+    profile — which declares no ``get_tx_func`` verb, so the attribute
+    stays absent exactly as on the real radio object. FT-991A itself is
+    sourced since #4584; this double keeps the no-source branch covered.
     """
-    profile = get_radio_profile("FT-991A")
-    radio = MagicMock(name="ft991a-radio")
+    profile = _sourceless_yaesu_config().to_profile()
+    radio = MagicMock(name="sourceless-yaesu-radio")
     radio.profile = profile
     radio.capabilities = set(profile.capabilities)
     radio.read_freq = AsyncMock(return_value=14_074_000)
@@ -138,9 +241,10 @@ def _ft991a_observation_radio() -> MagicMock:
         return_value=FilterWidthReading(500, False)
     )
     radio.read_narrow = AsyncMock(return_value=True)
-    # The FT-991A profile declares no TX-function read verb: the attribute
-    # stays absent (a bare MagicMock would auto-create it, which would hide
-    # the exact no-verb branch the production radio takes).
+    # The synthetic profile declares no TX-function read verb: the
+    # attribute stays absent (a bare MagicMock would auto-create it,
+    # which would hide the exact no-verb branch the production radio
+    # takes).
     radio.get_tx_func = None
     assert getattr(radio, "get_tx_func", None) is None
     return radio
@@ -148,11 +252,11 @@ def _ft991a_observation_radio() -> MagicMock:
 
 @pytest.mark.asyncio
 async def test_yaesu_medium_lane_publishes_unsupported_without_source() -> None:
-    """FAILING FIRST (MOR-4433): the FT-991A medium lane must carry the
-    sticky ``unsupported`` tx_target observation. On the base commit the
-    ``_can_poll`` gate withholds the field entirely, so the projection can
-    only read it as ``not-observed``."""
-    radio = _ft991a_observation_radio()
+    """FAILING FIRST (MOR-4433): the sourceless-Yaesu medium lane must
+    carry the sticky ``unsupported`` tx_target observation. On the base
+    commit the ``_can_poll`` gate withholds the field entirely, so the
+    projection can only read it as ``not-observed``."""
+    radio = _sourceless_observation_radio()
     adapter = YaesuObservationAdapter.from_radio(radio, clock=_clock)
 
     observations = await adapter.poll_medium()
@@ -289,8 +393,11 @@ async def _station(
     with a queue consumer executing each submitted command (the role the
     running poller loop plays in production). Mirrors ``_station`` in
     ``test_band_4m.py`` minus the band-plan overlay this file does not need.
+
+    ``model`` is a registry model or the synthetic sourceless name, which
+    resolves to the synthetic Yaesu profile.
     """
-    radio = SerialMockRadio(model=model)
+    radio = SerialMockRadio(profile=_profile_for(model), model=None)
     await radio.connect()
     web = WebServer(radio, WebConfig(host="127.0.0.1", port=0))
     poller = RadioPoller(
@@ -355,11 +462,12 @@ async def _rigctld_exchange(host: str, port: int, line: bytes) -> bytes:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("model", ("FT-991A", "G7250"))
+@pytest.mark.parametrize("model", ("G7250", _SYNTHETIC_MODEL))
 async def test_http_state_projects_unsupported_tx_target(model: str) -> None:
     """FAILING FIRST (MOR-4433): the HTTP state projection must carry the
     ``unsupported`` reason for a sourceless profile — not an absent field
-    read back as ``not-observed``."""
+    read back as ``not-observed``. FT-991A left this set when it gained a
+    real source; the synthetic keeps the Yaesu side covered."""
     async with _station(model) as (web, _radio, poller):
         poller._publish_tx_target()  # noqa: SLF001
 
@@ -416,11 +524,13 @@ def _record_ptt(radio: SerialMockRadio) -> list[bool]:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("model", ("FT-991A", "G7250", "IC-7300"))
+@pytest.mark.parametrize("model", ("FT-991A", "G7250", _SYNTHETIC_MODEL, "IC-7300"))
 async def test_rigctld_key_unkey_stays_open(model: str) -> None:
     """No regression, and the point of the change: rigctld ``T 1`` / ``T 0``
     key and unkey the radio over a real TCP socket on profiles with and
-    without a TX-target source. Transmit was never gated on ``tx_target``."""
+    without a TX-target source — FT-991A is sourced since #4584, G7250 and
+    the synthetic stay sourceless. Transmit was never gated on
+    ``tx_target``."""
     async with _station(model) as (_web, radio, _poller):
         ptt_calls = _record_ptt(radio)
         server = RigctldServer(
@@ -442,11 +552,11 @@ async def test_rigctld_key_unkey_stays_open(model: str) -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("model", ("FT-991A", "G7250", "IC-7300"))
+@pytest.mark.parametrize("model", ("FT-991A", "G7250", _SYNTHETIC_MODEL, "IC-7300"))
 async def test_sdk_ptt_stays_open(model: str) -> None:
     """The Python ``set_ptt`` path stays open on every profile — it never
     consults ``tx_target``."""
-    radio = SerialMockRadio(model=model)
+    radio = SerialMockRadio(profile=_profile_for(model), model=None)
     await radio.connect()
     try:
         ptt_calls = _record_ptt(radio)
@@ -461,14 +571,20 @@ async def test_sdk_ptt_stays_open(model: str) -> None:
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("model", "has_tuner"),
-    (("FT-991A", False), ("G7250", False), ("IC-7300", True)),
+    (
+        ("FT-991A", False),
+        ("G7250", False),
+        (_SYNTHETIC_MODEL, False),
+        ("IC-7300", True),
+    ),
 )
 async def test_tune_present_only_where_declared(model: str, has_tuner: bool) -> None:
     """TUNE is a tuner-capability question, not a TX-target question: the
-    IC-7300 declares a tuner, FT-991A/G7250 declare none — so tune is
-    *absent* there, never *blocked*. Pinned at the profile and at the real
-    HTTP capabilities payload the frontend's TUNE affordance keys off."""
-    profile = resolve_radio_profile(model=model)
+    IC-7300 declares a tuner, FT-991A/G7250/the synthetic declare none —
+    so tune is *absent* there, never *blocked*. Pinned at the profile and
+    at the real HTTP capabilities payload the frontend's TUNE affordance
+    keys off."""
+    profile = _profile_for(model)
     assert ("tuner" in set(profile.capabilities)) is has_tuner
 
     async with _station(model) as (web, _radio, _poller):
@@ -552,9 +668,10 @@ async def _managed_station(
     mock's ``set_ptt`` through ``_MockStationActuator``, the poller
     carries the real authority for the managed currency seat, and the
     queue consumer drains submissions exactly like the running poller
-    loop does in production.
+    loop does in production. ``model`` is a registry model or the
+    synthetic sourceless name.
     """
-    radio = _StrictMockRadio(model=model)
+    radio = _StrictMockRadio(profile=_profile_for(model), model=None)
     await radio.connect()
     # A stable connection identity: the managed currency seat refuses a
     # queue entry whose captured generation is missing (None).
@@ -654,17 +771,20 @@ async def _http_post(
 
 @pytest.mark.realtime(reason="real WebSocket socket and managed-TX settlement")
 @pytest.mark.asyncio
-@pytest.mark.parametrize("model", ("FT-991A", "G7250", "IC-7300"))
+@pytest.mark.parametrize("model", ("FT-991A", "G7250", _SYNTHETIC_MODEL, "IC-7300"))
 async def test_ws_managed_key_unkey_per_model(model: str, tmp_path: Path) -> None:
     """Owner point (MOR-4433): transmit works with no TX-target source.
 
     A real ``ManagedTxAuthority`` (production ``ManagedTxComposition``
     assembly) wired to the mock station: WS ``cmd ptt`` on/off answers
-    ``ok: true``, keys/unkeys the radio's ``set_ptt`` in order, and the
-    HTTP state still projects ``txTarget`` ``unsupported`` where no
-    source exists. Not red-first: the backend never gated PTT on
-    ``tx_target`` — this pins the point end to end, like the rigctld/SDK
-    pins above.
+    ``ok: true`` and keys/unkeys the radio's ``set_ptt`` in order on
+    every profile — FT-991A is sourced since #4584, G7250 and the
+    synthetic stay sourceless. The HTTP state still projects ``txTarget``
+    ``unsupported`` where no source exists (the two sourceless profiles;
+    FT-991A's real target is pinned in ``test_ft991a_profile.py`` and
+    ``test_startup_state_gate.py``). Not red-first: the backend never
+    gated PTT on ``tx_target`` — this pins the point end to end, like the
+    rigctld/SDK pins above.
     """
     async with _managed_station(model, tmp_path) as (
         web,
@@ -694,7 +814,7 @@ async def test_ws_managed_key_unkey_per_model(model: str, tmp_path: Path) -> Non
 
         assert calls == [True, False]
 
-        if model != "IC-7300":
+        if model in ("G7250", _SYNTHETIC_MODEL):
             poller._publish_tx_target()  # noqa: SLF001
             state = await _state_over_http(web)
             assert state["txTarget"] == {"status": "unknown", "reason": "unsupported"}
@@ -704,7 +824,12 @@ async def test_ws_managed_key_unkey_per_model(model: str, tmp_path: Path) -> Non
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("model", "refused"),
-    (("FT-991A", True), ("G7250", True), ("IC-7300", False)),
+    (
+        ("FT-991A", True),
+        ("G7250", True),
+        (_SYNTHETIC_MODEL, True),
+        ("IC-7300", False),
+    ),
 )
 async def test_http_tuner_refused_unsupported_where_undeclared(
     model: str, refused: bool, tmp_path: Path
@@ -713,7 +838,7 @@ async def test_http_tuner_refused_unsupported_where_undeclared(
 
     The strict double speaks only its profile's declared commands, so
     the observation is the production refusal: POSTing
-    ``set_tuner_status`` on FT-991A/G7250 answers 409
+    ``set_tuner_status`` on FT-991A/G7250/the synthetic answers 409
     ``unsupported_command`` naming the profile — never a tx-target
     reason — while the IC-7300 executes the write. Red first: against
     the lax ``SerialMockRadio`` (no ``supports_command``) the same POST
