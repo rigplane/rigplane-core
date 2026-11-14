@@ -37,6 +37,8 @@ from rigplane.web.runtime_helpers import projected_vfo_capability_tags
 from rigplane.web.server import _serialize_filter_config
 from support.yaesu_ft991a_http import (
     post_command as ft991a_post_command,
+    read_capabilities as ft991a_read_capabilities,
+    read_info as ft991a_read_info,
     serve_ft991a_over_http,
     wait_for_state_value as ft991a_wait_for_state_value,
 )
@@ -1098,6 +1100,96 @@ async def test_tx_target_end_to_end_over_http_with_cat_sim(monkeypatch):
         assert "FT2;" in station.wire
 
         # Split off again: TX is back on VFO-A.
+        assert await ft991a_wait_for_state_value(host, port, "txTarget", want_a)
+    finally:
+        await station.aclose()
+
+
+@pytest.mark.realtime(
+    reason="real HTTP socket and the production backend poller/readback path"
+)
+@pytest.mark.asyncio
+async def test_cross_band_split_tx_target_end_to_end_over_http(monkeypatch):
+    """MOR-4433: cross-band split TX-target seam through the real local HTTP API.
+
+    VFO-A sits on 40m (7.074 MHz) and VFO-B on 2m (145.000 MHz): split ON
+    publishes the global TX target ``MAIN/B`` at 145 MHz, split OFF publishes
+    ``MAIN/A`` at 7.074 MHz, each through the real handler, queue,
+    backend-poller dispatch, store and projection. The wire log records our
+    side of it: ``set_freq`` on VFO-B writes ``FB145000000;``, split writes
+    ``FT3;``, and the TX-slot frequency write (``write_relative_vfo_frequency``
+    with selected=False -- the ``set_split_freq`` backend -- writes ``FB`` on
+    the single-receiver ab scheme) lands after ``FT3;``.
+
+    What the public endpoints report TODAY (asserted, not invented): the power
+    range is the profile scalar (``[power].max_watts = 100`` -> ``maxPowerW``
+    100 in info/capabilities); the tuner capability is absent (no ``tuner``
+    tag, ``hasTuner`` false in info, ``tuner`` not in the capabilities list).
+
+    Band-change note: our code does nothing special when VFO-A changes band
+    while split is on -- set_freq writes only FA/FB and set_split only
+    FT2;/FT3;, with no automatic FT2;BS..;FA..;FT3 sequence of the kind
+    Hamlib newcat.c:1356-1362 performs (cf. Hamlib ft991.c:419-521 for split
+    freq) -- UNVERIFIED without hardware, so deliberately not implemented.
+    """
+    station = await serve_ft991a_over_http(monkeypatch)
+    try:
+        host, port = station.host, station.port
+        await station.radio.set_freq(7_074_000)
+        await station.radio.set_freq(145_000_000, receiver=1)
+        want_a = {
+            "status": "known",
+            "receiver": "MAIN",
+            "slot": "A",
+            "frequencyHz": 7_074_000,
+        }
+        want_b = {
+            "status": "known",
+            "receiver": "MAIN",
+            "slot": "B",
+            "frequencyHz": 145_000_000,
+        }
+
+        # The observation path is live before split is touched: TX rides
+        # VFO-A while split is off. The VFO-B tune above already went out
+        # as the FB frame (the set_freq-on-VFO-B leg across bands).
+        assert await ft991a_wait_for_state_value(host, port, "txTarget", want_a)
+        assert "FB145000000;" in station.wire
+
+        station.wire.clear()
+        await ft991a_post_command(host, port, "set_split", {"on": True})
+        assert "FT3;" in station.wire
+
+        # Split on: TX rides VFO-B on 2m.
+        assert await ft991a_wait_for_state_value(host, port, "txTarget", want_b)
+
+        # TX-slot frequency leg across bands: the set_split_freq backend
+        # (write_relative_vfo_frequency with selected=False) writes the FB
+        # frame. Driven at the radio level: the HTTP set_split_freq
+        # descriptor is not admitted on this profile today (409
+        # unsupported_command -- admission needs vfo_readback
+        # selected_unselected, the profile declares absolute), so this is
+        # the same FB frame without the HTTP gate.
+        await station.radio.write_relative_vfo_frequency(145_000_000, selected=False)
+        assert "FB145000000;" in station.wire
+        ft3_at = station.wire.index("FT3;")
+        fb_at = station.wire.index("FB145000000;")
+        assert ft3_at < fb_at
+
+        # Power range and tuner availability TODAY, from the public
+        # endpoints: scalar max, no tuner tag.
+        info = await ft991a_read_info(host, port)
+        assert info["capabilities"]["maxPowerW"] == 100
+        assert info["capabilities"]["hasTuner"] is False
+        assert "tuner" not in info["capabilities"]["tags"]
+        capabilities = await ft991a_read_capabilities(host, port)
+        assert capabilities["maxPowerW"] == 100
+        assert "tuner" not in capabilities["capabilities"]
+
+        await ft991a_post_command(host, port, "set_split", {"on": False})
+        assert "FT2;" in station.wire
+
+        # Split off again: TX is back on VFO-A on 40m.
         assert await ft991a_wait_for_state_value(host, port, "txTarget", want_a)
     finally:
         await station.aclose()

@@ -134,6 +134,46 @@ async def post_command(
     return response
 
 
+async def read_info(host: str, port: int) -> dict[str, Any]:
+    """GET the public ``/api/v1/info`` over a real socket."""
+    reader, writer = await asyncio.open_connection(host, port)
+    try:
+        writer.write(
+            (
+                "GET /api/v1/info HTTP/1.1\r\n"
+                f"Host: {host}:{port}\r\n"
+                "Connection: close\r\n\r\n"
+            ).encode()
+        )
+        await writer.drain()
+        status, _, body = await asyncio.wait_for(_read_http_response(reader), 10)
+    finally:
+        writer.close()
+        await writer.wait_closed()
+    assert status == 200
+    return json.loads(body)
+
+
+async def read_capabilities(host: str, port: int) -> dict[str, Any]:
+    """GET the public ``/api/v1/capabilities`` over a real socket."""
+    reader, writer = await asyncio.open_connection(host, port)
+    try:
+        writer.write(
+            (
+                "GET /api/v1/capabilities HTTP/1.1\r\n"
+                f"Host: {host}:{port}\r\n"
+                "Connection: close\r\n\r\n"
+            ).encode()
+        )
+        await writer.drain()
+        status, _, body = await asyncio.wait_for(_read_http_response(reader), 10)
+    finally:
+        writer.close()
+        await writer.wait_closed()
+    assert status == 200
+    return json.loads(body)
+
+
 async def read_state(host: str, port: int) -> dict[str, Any]:
     """GET the user-visible ``/api/v1/state`` over a real socket."""
     reader, writer = await asyncio.open_connection(host, port)
