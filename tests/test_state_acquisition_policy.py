@@ -824,6 +824,7 @@ def test_field_policies_obey_their_cadence_class_not_their_rig() -> None:
 
     assert not failures, f"field_policies entries outside their class: {failures}"
     assert checked == {
+        "FT-991A",
         "FTX-1",
         "G7250",
         "IC-705",
@@ -930,6 +931,7 @@ def test_every_capability_path_of_every_profile_has_a_registry_class() -> None:
 
     assert not failures, f"capability paths without a registry class: {failures}"
     assert checked == {
+        "FT-991A",
         "FTX-1",
         "G7250",
         "IC-705",
@@ -2159,6 +2161,17 @@ def test_available_when_is_declared_only_where_a_probe_established_it() -> None:
         ("FTX-1", "receiver.sub.active.freq_mode.filter_width"),
         ("FTX-1", "receiver.sub.active.freq_mode.filter_width_radio_default"),
         ("FTX-1", "receiver.sub.operator_controls.manual_notch_freq"),
+        # FT-991A: the four TX meters take the FTX-1 tx_only PTT gate as
+        # profile policy. No probe ran on one (fidelity-C sim profile, no
+        # hardware capture yet), but the gate is structural, not probed:
+        # the shared YaesuCatPoller TX-meter lane is the only source of
+        # these paths and only runs under a truthy PTT observation, and
+        # the RM codes (ALC 4, COMP 3, PO 5, SWR 6) all come from the same
+        # manual table (PDF p.16). Scaling stays UNVERIFIED like the rest.
+        ("FT-991A", "global.meters.alc"),
+        ("FT-991A", "global.meters.comp"),
+        ("FT-991A", "global.meters.power"),
+        ("FT-991A", "global.meters.swr"),
         ("IC-705", "global.meters.alc"),
         ("IC-705", "global.meters.comp"),
         ("IC-705", "global.meters.power"),
@@ -2390,6 +2403,13 @@ _TX_TARGET_UNSUPPORTED: dict[str, str] = {
         "Xiegu-dialect CI-V profile: no transmit-frequency read is declared, "
         "and the RadioPoller derivation requires vfo_readback "
         '"selected_unselected", which this profile does not carry'
+    ),
+    "FT-991A": (
+        "MOR-4433: single-receiver Yaesu CAT profile with no get_tx_func; its "
+        "FT; read answers the TX VFO (A/B, i.e. split state), not a "
+        "transceiver target, and TX is unverified on hardware in v1, so no "
+        "TX-target source is declared (polling it without the command "
+        "aborted the whole medium poll batch)"
     ),
     "G7250": (
         "Xiegu-dialect CI-V profile (MOR-4352): same shape as the X6200 — "

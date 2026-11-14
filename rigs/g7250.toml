@@ -32,7 +32,7 @@ model = "G7250"
 civ_addr = 0xA0
 receiver_count = 1
 # Two exclusive network modes share the port numbers: HDSDR = UDP IQ stream
-# (see [iq_lan]) and wfview = Icom-LAN-like control (LIVE G7250 LAN
+# (see [iq_lan]) and wfview = Icom LAN protocol control (LIVE G7250 LAN
 # 2026-11-13, MOR-4436, V1.0.1). LAN RX audio flows (48 kHz 16-bit mono,
 # PCM_1CH_16BIT); LAN audio TX is NOT verified. has_wifi has no bench
 # evidence either way and stays false — flip only with evidence.

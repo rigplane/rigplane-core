@@ -22,7 +22,7 @@ from ...commands import hz_to_table_index, table_index_to_hz
 from ...core.priority_exchange import ExchangeTier
 from ...core.radio_protocol import RadioIdentity, RadioIdentityStatus, RelativeVfoState
 from ...core.tx_observation import TxStateReading
-from ...core.types import MemoryEntry
+from ...core.types import MemoryEntry, ToneSquelchType
 from ...exceptions import (
     AudioFormatError,
     CommandError,
@@ -2275,10 +2275,15 @@ class YaesuCatRadio:
         Routes through the ``get_meter`` profile entry (parameterised read
         template, e.g. ``"RM{type};"``) rather than a hardcoded command —
         a malformed or short reply fails the parse template and raises
-        :class:`~.parser.CatParseError` (a ``ValueError`` subclass).
+        :class:`~.parser.CatParseError` (a ``ValueError`` subclass). A
+        single-value answer (single-receiver profiles such as the FT-991A,
+        whose ``RM`` reply carries no SUB group) reads back as (main, main):
+        the shape comes from the profile's parse template, not from a
+        per-radio branch.
         """
         result = await self._query("get_meter", type=meter_type)
-        return result["main"], result["sub"]
+        main = result["main"]
+        return main, result.get("sub", main)
 
     async def read_comp_meter(self) -> int:
         """Read COMP (compression) meter without mutating legacy state."""
@@ -3226,10 +3231,15 @@ class YaesuCatRadio:
         Returns:
             Tuple of (head: int, watts: int).  This is the configured
             (SET) power level via the ``PC`` command — the watt setpoint,
-            distinct from the measured ``RM5`` power meter.
+            distinct from the measured ``RM5`` power meter.  A headless
+            ``PC`` answer (profiles such as the FT-991A whose ``PC`` reply
+            carries no head digit) reads back head 0 — no head selection;
+            only watts is consumed downstream.  The shape comes from the
+            profile's parse template, not from a per-radio branch.
         """
         result = await self._query("get_power")
-        return int(result["head"]), result["watts"]
+        head = result.get("head")
+        return (int(head) if head is not None else 0), result["watts"]
 
     async def get_power(self) -> tuple[int, int]:
         """Get TX power setting.
@@ -3656,85 +3666,133 @@ class YaesuCatRadio:
     async def get_repeater_tone(self, receiver: int = 0) -> bool:
         """Get repeater tone (CTCSS ENC) on/off state, derived from ``CT``.
 
-        Codes 1 and 2 carry CTCSS encode (MOR-2130). Codes 3/4/5 (DCS /
-        PR FREQ / REV TONE) have no two-boolean representation, so the read
-        refuses loudly with ``ValueError`` — the same refusal the setters
-        make — instead of inventing ``False`` (MOR-2572).
+        The current code's meaning comes from the profile's
+        ``[tone_squelch_types]`` table: ``tone`` and ``tsql`` both carry
+        encode, ``off`` carries neither. A code the table maps to any
+        other type (DCS and friends) has no two-boolean representation,
+        so the read refuses loudly with ``ValueError`` — the same refusal
+        the setters make — instead of inventing ``False`` (MOR-2572).
         """
         code = await self.read_sql_type(receiver)
-        if code not in (0, 1, 2):
-            raise ValueError(
-                f"cannot express a CTCSS tone pair over CT code {code} "
-                "(DCS/PR FREQ/REV TONE)"
-            )
-        return code in (1, 2)
+        neutral = (self.profile.tone_squelch_types or {}).get(code)
+        if neutral in (ToneSquelchType.TONE, ToneSquelchType.TSQL):
+            return True
+        if neutral == ToneSquelchType.OFF:
+            return False
+        raise ValueError(
+            f"cannot express a CTCSS tone pair over CT code {code} "
+            "(DCS/PR FREQ/REV TONE)" + ("" if neutral is not None else " [unmapped]")
+        )
 
     async def set_repeater_tone(self, on: bool, receiver: int = 0) -> None:
         """Set repeater tone (CTCSS ENC) on/off (CT command, read-modify-write).
 
-        Reads the current ``CT`` code first. When it is 3, 4 or 5 (DCS /
-        PR FREQ / REV TONE) the write is refused loudly and nothing is sent:
-        the two-boolean vocabulary cannot express that state, and overwriting
-        it would destroy the radio's configuration. ``tone=False`` while tone
-        squelch is on ((False, True)) is likewise refused as not
-        representable.
+        Reads the current ``CT`` code first and resolves it through the
+        profile's ``[tone_squelch_types]`` table. A current code mapped to
+        anything but ``off``/``tone``/``tsql`` (DCS and friends) is refused
+        loudly and nothing is sent: the two-boolean vocabulary cannot
+        express that state, and overwriting it would destroy the radio's
+        configuration. ``tone=False`` while tone squelch is on
+        ((False, True)) is likewise refused as not representable.
         """
         receiver = self._validate_receiver(receiver)
+        table = dict(self.profile.tone_squelch_types or {})
         current = await self.read_sql_type(receiver)
-        if current not in (0, 1, 2):
+        neutral = table.get(current)
+        if neutral not in (
+            ToneSquelchType.OFF,
+            ToneSquelchType.TONE,
+            ToneSquelchType.TSQL,
+        ):
             raise ValueError(
                 f"cannot express a CTCSS toggle over CT code {current} "
                 "(DCS/PR FREQ/REV TONE); refusing to overwrite it"
+                + ("" if neutral is not None else " [unmapped]")
             )
         tone = bool(on)
-        tsql = current == 2
+        tsql = neutral == ToneSquelchType.TSQL
         if not tone and tsql:
             raise ValueError(
                 "tone squelch cannot stay on while the repeater tone is off "
                 "(CT has no code for encode-off/decode-on)"
             )
-        await self.set_sql_type(2 if tsql else (1 if tone else 0), receiver)
+        target = (
+            ToneSquelchType.TSQL
+            if tsql
+            else (ToneSquelchType.TONE if tone else ToneSquelchType.OFF)
+        )
+        code = next((c for c, n in table.items() if n == target), None)
+        if code is None:
+            raise ValueError(
+                f"profile {self.profile.model!r} has no CT code for "
+                f"{target.value}; refusing to invent one"
+            )
+        await self.set_sql_type(code, receiver)
 
     async def get_repeater_tsql(self, receiver: int = 0) -> bool:
         """Get tone squelch (CTCSS ENC+DEC) on/off state, derived from ``CT``.
 
-        Only code 2 carries decode (MOR-2130). Codes 3/4/5 (DCS / PR FREQ /
-        REV TONE) have no two-boolean representation, so the read refuses
-        loudly with ``ValueError`` — the same refusal the setters make —
-        instead of inventing ``False`` (MOR-2572).
+        The current code's meaning comes from the profile's
+        ``[tone_squelch_types]`` table: only ``tsql`` carries decode. A
+        code the table maps to any other type (DCS and friends) has no
+        two-boolean representation, so the read refuses loudly with
+        ``ValueError`` — the same refusal the setters make — instead of
+        inventing ``False`` (MOR-2572).
         """
         code = await self.read_sql_type(receiver)
-        if code not in (0, 1, 2):
-            raise ValueError(
-                f"cannot express a CTCSS tone pair over CT code {code} "
-                "(DCS/PR FREQ/REV TONE)"
-            )
-        return code == 2
+        neutral = (self.profile.tone_squelch_types or {}).get(code)
+        if neutral == ToneSquelchType.TSQL:
+            return True
+        if neutral in (ToneSquelchType.OFF, ToneSquelchType.TONE):
+            return False
+        raise ValueError(
+            f"cannot express a CTCSS tone pair over CT code {code} "
+            "(DCS/PR FREQ/REV TONE)" + ("" if neutral is not None else " [unmapped]")
+        )
 
     async def set_repeater_tsql(self, on: bool, receiver: int = 0) -> None:
         """Set tone squelch (CTCSS ENC+DEC) on/off (CT command, read-modify-write).
 
-        Reads the current ``CT`` code first. When it is 3, 4 or 5 (DCS /
-        PR FREQ / REV TONE) the write is refused loudly and nothing is sent.
-        Turning tone squelch on while CTCSS encode is off ((False, True)) is
-        refused as not representable: ``CT`` expresses decode only together
-        with encode.
+        Reads the current ``CT`` code first and resolves it through the
+        profile's ``[tone_squelch_types]`` table. A current code mapped to
+        anything but ``off``/``tone``/``tsql`` (DCS and friends) is refused
+        loudly and nothing is sent. Turning tone squelch on while CTCSS
+        encode is off ((False, True)) is refused as not representable:
+        ``CT`` expresses decode only together with encode.
         """
         receiver = self._validate_receiver(receiver)
+        table = dict(self.profile.tone_squelch_types or {})
         current = await self.read_sql_type(receiver)
-        if current not in (0, 1, 2):
+        neutral = table.get(current)
+        if neutral not in (
+            ToneSquelchType.OFF,
+            ToneSquelchType.TONE,
+            ToneSquelchType.TSQL,
+        ):
             raise ValueError(
                 f"cannot express a CTCSS toggle over CT code {current} "
                 "(DCS/PR FREQ/REV TONE); refusing to overwrite it"
+                + ("" if neutral is not None else " [unmapped]")
             )
-        tone = current in (1, 2)
+        tone = neutral in (ToneSquelchType.TONE, ToneSquelchType.TSQL)
         tsql = bool(on)
         if not tone and tsql:
             raise ValueError(
                 "tone squelch cannot be on while the repeater tone is off "
                 "(CT has no code for encode-off/decode-on)"
             )
-        await self.set_sql_type(2 if tsql else (1 if tone else 0), receiver)
+        target = (
+            ToneSquelchType.TSQL
+            if tsql
+            else (ToneSquelchType.TONE if tone else ToneSquelchType.OFF)
+        )
+        code = next((c for c, n in table.items() if n == target), None)
+        if code is None:
+            raise ValueError(
+                f"profile {self.profile.model!r} has no CT code for "
+                f"{target.value}; refusing to invent one"
+            )
+        await self.set_sql_type(code, receiver)
 
     async def read_repeater_shift(self, receiver: int = 0) -> int:
         """Read one receiver's repeater shift direction — pure read.
