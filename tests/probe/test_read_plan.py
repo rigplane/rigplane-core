@@ -116,17 +116,13 @@ def test_g7250_skipped_reasons() -> None:
 
 
 def test_g7250_memory_contents_asked_with_private_flag() -> None:
-    plan = build_read_plan(
-        _load("g7250"), include_private=True, siblings=_siblings()
-    )
+    plan = build_read_plan(_load("g7250"), include_private=True, siblings=_siblings())
     by_name = {item.name: item for item in plan.asked}
     assert by_name["get_memory_contents"].expected == "absent"
 
 
 def test_ic7300_memory_contents_asked_with_private_flag() -> None:
-    plan = build_read_plan(
-        _load("ic7300"), include_private=True, siblings=_siblings()
-    )
+    plan = build_read_plan(_load("ic7300"), include_private=True, siblings=_siblings())
     by_name = {item.name: item for item in plan.asked}
     assert by_name["get_memory_contents"].expected == "present"
 
@@ -139,11 +135,15 @@ def test_ic705_disagreeing_siblings_are_skipped_without_bytes() -> None:
 
 
 def _synthetic_target(base: RigConfig, commands: dict) -> RigConfig:
-    return dataclasses.replace(base, id="syn-target", model="SYN-TARGET", commands=commands)
+    return dataclasses.replace(
+        base, id="syn-target", model="SYN-TARGET", commands=commands
+    )
 
 
 def _synthetic_lender(base: RigConfig, commands: dict) -> RigConfig:
-    return dataclasses.replace(base, id="syn-lender", model="SYN-LENDER", commands=commands)
+    return dataclasses.replace(
+        base, id="syn-lender", model="SYN-LENDER", commands=commands
+    )
 
 
 def test_borrowed_action_shaped_entry_is_skipped_unsafe_family() -> None:
