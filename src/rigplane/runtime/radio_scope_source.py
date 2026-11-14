@@ -182,9 +182,7 @@ class RadioScopeSource:
         end = min(requested.end_hz, native.end_hz)
         if start >= end:
             return native
-        if (native.end_hz - native.start_hz) < (
-            requested.end_hz - requested.start_hz
-        ):
+        if (native.end_hz - native.start_hz) < (requested.end_hz - requested.start_hz):
             return View(start, end)
         return requested
 

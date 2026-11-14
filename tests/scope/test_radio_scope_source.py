@@ -893,9 +893,9 @@ async def test_offset_native_keeps_follow_view_width_and_centre(model):
     offset = Coverage(14_081_000, 14_131_000)
     assert source.resolve_follow(FollowView("vfo", 50_000), offset, 0) == requested
     narrower = Coverage(14_090_000, 14_110_000)
-    assert source.resolve_follow(
-        FollowView("vfo", 50_000), narrower, 0
-    ) == View(14_090_000, 14_110_000)
+    assert source.resolve_follow(FollowView("vfo", 50_000), narrower, 0) == View(
+        14_090_000, 14_110_000
+    )
 
 
 @pytest.mark.parametrize("model", ["ic7300", "ic705"])
@@ -913,9 +913,7 @@ async def test_offset_frame_wires_requested_view_with_reduced_coverage(model):
         Subscription("radio", 0, FollowView("vfo", 50_000), 475, 20)
     )
     try:
-        source.feed_frame(
-            ScopeFrame(0, 0, 14_081_000, 14_131_000, bytes(475), False)
-        )
+        source.feed_frame(ScopeFrame(0, 0, 14_081_000, 14_131_000, bytes(475), False))
         await sub.receive()
         wired = encoded[-1]
         assert (wired.view_start_hz, wired.view_end_hz) == (
