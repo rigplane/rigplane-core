@@ -11,7 +11,8 @@ from __future__ import annotations
 import pytest
 
 from rigplane import IC_7610_ADDR
-from rigplane.commands import CONTROLLER_ADDR, build_civ_frame
+from rigplane.commands import CONTROLLER_ADDR, build_civ_frame, parse_ack_nak
+from rigplane.profiles import get_radio_profile
 from rigplane.radio import IcomRadio
 from rigplane.testing.timing import await_until
 from rigplane_testkit.icom import MockIcomRadio
@@ -27,14 +28,14 @@ def _bcd2(value: int) -> bytes:
     )
 
 
-async def _connect(sim: MockIcomRadio) -> IcomRadio:
+async def _connect(sim: MockIcomRadio, model: str = "IC-7610") -> IcomRadio:
     radio = IcomRadio(
         "127.0.0.1",
         port=sim.control_port,
         username="testuser",
         password="testpass",
         timeout=2.0,
-        model="IC-7610",
+        model=model,
     )
     with fast_connect():
         await radio.connect()
@@ -59,6 +60,38 @@ async def test_blocking_write_succeeds_against_echo_radio() -> None:
     # The synthesized FB was never on the wire: its bytes are the
     # canonical rebuild, never another frame's remembered bytes.
     assert result.frame_bytes == build_civ_frame(CONTROLLER_ADDR, IC_7610_ADDR, 0xFB)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model", ["IC-7610", "G7250"])
+async def test_blocking_write_via_send_civ_succeeds_against_echo_radio(
+    model: str,
+) -> None:
+    """The commander's blocking write path resolves an echo-confirmed SET.
+
+    ``send_civ`` with ``wait_response=True`` registers the write identity on
+    the commander's ACK waiter (``_execute_civ_raw``); the radio's
+    byte-identical echo resolves it, the returned frame parses as an ACK,
+    and a readback shows the applied value. Parametrized over the IC-7610
+    and G7250 CI-V addresses from the loaded profiles: the mechanism is
+    address-agnostic.
+    """
+    profile = get_radio_profile(model)
+    sim = MockIcomRadio(write_confirmation="echo", radio_addr=profile.civ_addr)
+    await sim.start()
+    try:
+        radio = await _connect(sim, model=model)
+        try:
+            result = await radio.send_civ(
+                0x14, 0x0A, data=_bcd2(200), wait_response=True
+            )
+            assert result is not None
+            assert parse_ack_nak(result) is True
+            assert await radio.get_rf_power() == 200
+        finally:
+            await radio.disconnect()
+    finally:
+        await sim.stop()
 
 
 @pytest.mark.asyncio
