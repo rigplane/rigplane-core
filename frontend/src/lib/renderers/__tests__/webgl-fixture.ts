@@ -15,7 +15,11 @@ export function webglFixture(width = 100, height = 50) {
     get(target, key: string) {
       if (key in target) return target[key as keyof typeof target];
       return (...args: unknown[]) => {
-        calls.push({ name: key, args });
+        // Snapshot typed-array arguments at call time: the renderer reuses
+        // its upload buffers, so a stored reference would alias the final
+        // contents by the time an assertion reads it.
+        calls.push({ name: key, args: args.map(arg =>
+          ArrayBuffer.isView(arg) ? (arg as Uint8Array).slice() : arg) });
         if (key === 'getShaderParameter' || key === 'getProgramParameter') return true;
         if (key === 'getParameter') return args[0] === values.MAX_UNIFORM_BLOCK_SIZE ? 16384
           : args[0] === values.MAX_FRAGMENT_UNIFORM_BLOCKS ? 12 : 16384;

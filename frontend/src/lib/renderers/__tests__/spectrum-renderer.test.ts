@@ -411,34 +411,38 @@ describe('panorama viewport shift (MOR-2464)', () => {
     expect(log.moveTo.filter(([x]) => x === WIDTH / 2)).toHaveLength(2);
   });
 
-  it('renders the resting profile with the established nearest-bin mapping', () => {
-    // width 40 over 20 samples: bin spans two screen columns.
+  it('renders the resting profile with bin-centre interpolation (MOR-4383)', () => {
+    // width 40 over 20 samples: every column samples the bin-space position
+    // of its centre, (x + 0.5) * n / W - 0.5, and linearly interpolates the
+    // adjacent bins. The impulse at bin 10 becomes a symmetric tent (columns
+    // 19-22 sample 20/60/60/20) instead of two hard columns.
     const data = new Uint8Array(20).fill(0);
     data[10] = 80;
     const { ctx, log } = createMockCtx();
     renderSpectrum(ctx, data, 40, 200, opts({ spanHz: 40, centerHz: 20, scopeMode: 0 }));
+    const tent = (amplitude: number) => 200 * (1 - Math.sqrt(amplitude / 80));
     expect(yAt(log, 18)).toContain(200);
-    expect(yAt(log, 19)).toContain(200);
-    expect(yAt(log, 20)).toContain(0);
-    expect(yAt(log, 21)).toContain(0);
-    expect(yAt(log, 22)).toContain(200);
+    expect(yAt(log, 19).some((y) => Math.abs(y - tent(20)) < 1e-6)).toBe(true);
+    expect(yAt(log, 20).some((y) => Math.abs(y - tent(60)) < 1e-6)).toBe(true);
+    expect(yAt(log, 21).some((y) => Math.abs(y - tent(60)) < 1e-6)).toBe(true);
+    expect(yAt(log, 22).some((y) => Math.abs(y - tent(20)) < 1e-6)).toBe(true);
+    expect(yAt(log, 23)).toContain(200);
     // Full-run fill closes at the pre-MOR-2464 right-bottom corner.
     expect(log.lineTo).toContainEqual([40, 200]);
   });
 
-  it('interpolates the translated screen profile, not native bins, on fractional shifts', () => {
-    const data = new Uint8Array(20).fill(0);
-    data[10] = 80;
+  it('interpolates adjacent bins in bin space for stretched views (MOR-4383)', () => {
+    // width 100 over 50 samples, resting: pos = (x + 0.5) * 50 / 100 - 0.5
+    // = x/2 - 0.25, so the fractional part alternates 0.25/0.75 and the
+    // impulse at bin 25 ramps 20/60/60/20 around its centre x = 50.5.
+    const data = new Uint8Array(50).fill(0);
+    data[25] = 80;
     const { ctx, log } = createMockCtx();
-    renderSpectrum(ctx, data, 40, 200, opts({
-      spanHz: 40, centerHz: 20, scopeMode: 0, panoramaShiftHz: 0.5,
-    }));
-    // Column 18 is inside the data[9] step; the edge at 19/20 blends
-    // screen columns only (a native-bin mix would lift column 18).
-    expect(yAt(log, 18)).toContain(200);
-    const blended = 200 * (1 - Math.sqrt(40 / 80));
-    expect(yAt(log, 19).some((y) => Math.abs(y - blended) < 1e-6)).toBe(true);
-    expect(yAt(log, 20)).toContain(0);
+    renderSpectrum(ctx, data, 100, 200, opts({ spanHz: 100, centerHz: 50, scopeMode: 0 }));
+    const amp = (y: number) => 80 * (1 - y / 200) ** 2;
+    for (const [x, expected] of [[49, 20], [50, 60], [51, 60], [52, 20]] as const) {
+      expect(yAt(log, x).some((y) => Math.abs(amp(y) - expected) < 1e-6)).toBe(true);
+    }
   });
 
   it('keeps the FIX carrier marker proportional and unaffected by shift semantics', () => {
