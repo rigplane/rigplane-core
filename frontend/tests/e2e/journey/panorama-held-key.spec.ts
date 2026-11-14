@@ -223,7 +223,7 @@ const STEPS = [1_000, 100] as const;
 for (const [latencyIndex, latency] of LATENCIES.entries()) {
   for (const [stepIndex, stepHz] of STEPS.entries()) {
     test(`IC-705: held ArrowRight stays monotonic with the passband present (${latency.name}, step ${stepHz}Hz)`, async ({ page }, info) => {
-      test.skip(process.env.HELD_KEY_ROUND1 === '1',
+      test.skip(process.env.HELD_KEY_ROUND1 !== '1',
         'round-1 matrix (4 s hold); set HELD_KEY_ROUND1=1 to run');
       const port = 18960 + latencyIndex * STEPS.length + stepIndex;
       const seed = 1234;
@@ -659,8 +659,12 @@ async function runRound2Case(page: Page, info: TestInfo, def: Round2CaseDef, por
     await expect.poll(() => sent.at(-1)?.view).toEqual({ follow: 'vfo', spanHz: view.spanHz });
     await expect(page.getByTestId('scope-span-value').first()).toHaveText(view.spanText);
     await expect.poll(() => frames.at(-1)?.view).toEqual([...view.frameView]);
-    // The radio span stays 250000 (500 kHz native coverage around the VFO).
-    await expect.poll(() => frames.at(-1)?.coverage).toEqual([14_000_000, 14_500_000]);
+    // The radio span stays 250000: the grant carries the truthful native
+    // coverage (the wire frame's coverage is clipped to the granted view).
+    await expect.poll(() => {
+      const c = grants.at(-1)?.grant.coverage ?? null;
+      return c === null ? c : [c.startHz, c.endHz];
+    }).toEqual([14_000_000, 14_500_000]);
 
     // Tuning step: 1 kHz is the LSB auto default; smaller steps cycle down.
     if (stepHz !== 1_000) {
@@ -674,7 +678,10 @@ async function runRound2Case(page: Page, info: TestInfo, def: Round2CaseDef, por
     // Arrow keys belong to tuning only after leaving any editor.
     await page.evaluate(() => { if (document.activeElement instanceof HTMLElement) document.activeElement.blur(); });
     await page.waitForTimeout(1000);
-    const coverageBefore = frames.at(-1)?.coverage ?? null;
+    const grantCoverageBefore = grants.at(-1)?.grant.coverage ?? null;
+    const coverageBefore = grantCoverageBefore === null
+      ? null
+      : [grantCoverageBefore.startHz, grantCoverageBefore.endHz];
     const beforeHz = await radioFrequency(page, port);
 
     // The owner's gesture, extended: hold ArrowRight for ~9 s. Repeated
