@@ -105,17 +105,40 @@ def _build_seeded_model(
     """A fresh engine + model seeded from the recording's own replies."""
     if not rig.expected_identity_ids:
         raise ValueError(f"{rig.model!r}: [identity].expected_ids is empty")
-    engine = build_ftx1_engine(profile, rig, clock=clock, seed=seed)
+    squelch_max = _squelch_top_for(rig)
+    engine = build_ftx1_engine(
+        profile, rig, clock=clock, seed=seed, squelch_max=squelch_max
+    )
     model = YaesuCatModel(
         engine,
         identity=rig.expected_identity_ids[0],
         recorded=recorded,
         direct_vfo_slots=rig.receiver_count == 1 and rig.vfo_scheme == "ab",
         width_digits=_sh_code_digits(rig),
+        squelch_max=squelch_max,
+        support_if="get_if_status" in (rig.commands or {}),
         on_not_modelled=on_not_modelled,
     )
     seed_from_recording(model, recorded)
     return model
+
+
+def _squelch_top_for(rig: RigConfig) -> int | None:
+    """SQ top from the loaded capability profile (MOR-4433).
+
+    ``None`` when the profile declares no squelch read (FT-991A v1): the
+    sim leaves ``SQ`` unanswered. Otherwise the published
+    ``[controls.squelch]`` top (255 on the FTX-1); an unpublished or
+    malformed top keeps the historical 255.
+    """
+    if "get_squelch" not in (rig.commands or {}):
+        return None
+    controls = rig.controls or {}
+    entry = controls.get("squelch")
+    raw_max = entry.get("raw_max") if isinstance(entry, dict) else None
+    if type(raw_max) is not int or raw_max < 0:
+        return 255
+    return raw_max
 
 
 def _sh_code_digits(rig: RigConfig) -> int:
