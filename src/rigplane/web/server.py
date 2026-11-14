@@ -8166,9 +8166,7 @@ class WebServer:
             params = ClientChannelParams.from_ws(query, protocols, path)
             ticket = self._resolve_client_ticket(params, kind)
         except ControllerError as exc:
-            await self._send_json(
-                writer, exc.status, "Forbidden", {"error": exc.code}
-            )
+            await self._send_json(writer, exc.status, "Forbidden", {"error": exc.code})
             return
         selected_protocol = protocols[0] if protocols else ""
         # Key check, accept header and 101 response bytes come from the

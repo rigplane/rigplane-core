@@ -475,8 +475,9 @@ class _DcAvPeer:
             RTCSessionDescription(sdp=answer["sdp"], type=answer["type"])
         )
         await await_until(
-            lambda: self._control.readyState == "open"
-            and self._audio.readyState == "open",
+            lambda: (
+                self._control.readyState == "open" and self._audio.readyState == "open"
+            ),
             timeout=15.0,
             description="data channels open",
         )
