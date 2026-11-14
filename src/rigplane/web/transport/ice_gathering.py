@@ -13,8 +13,9 @@ Operating-system signals (one per OS, read where the kernel exposes them):
   ``tun_flags`` entry means a tunnel device; a ``bridge`` or ``brif`` entry
   means a bridge. The default route is read from ``/proc/net/route``.
 * macOS: the ``IFF_POINTOPOINT`` (``0x10``) flag from ``SIOCGIFFLAGS`` means
-  a point-to-point (tunnel/VPN) interface; otherwise an interface listed by
-  ``networksetup -listallhardwareports`` is physical.
+  a point-to-point (tunnel/VPN) interface; an interface named ``bridge<N>``
+  (the Darwin ``if_bridge(4)`` naming convention) is a bridge; otherwise an
+  interface listed by ``networksetup -listallhardwareports`` is physical.
 * Windows: the interface-type code (RFC 2863, as reported by the IP_ADAPTER
   table): 6/71 are physical Ethernet/Wi-Fi, 131/53 are tunnel/prop-virtual.
 
@@ -171,16 +172,31 @@ def classify_linux_interface(name: str, sysfs: Mapping[str, str | None]) -> IfKi
     return IfKind.UNKNOWN
 
 
+def _is_macos_bridge_name(name: str) -> bool:
+    """Whether ``name`` follows the Darwin bridge-interface convention.
+
+    Bridge interfaces on macOS are named ``bridge<N>`` (see ``if_bridge(4)``);
+    ``networksetup`` even lists ``bridge0`` ("Thunderbolt Bridge") as a
+    hardware port, so the name has to win over the hardware-port list.
+    """
+    suffix = name.removeprefix("bridge")
+    return suffix != name and suffix.isdigit()
+
+
 def classify_macos_interface(
     name: str, iff_flags: int, hardware_ports: Container[str]
 ) -> IfKind:
-    """Classify a macOS interface from its ``SIOCGIFFLAGS`` flags.
+    """Classify a macOS interface from flags, name, and hardware ports.
 
-    A set ``IFF_POINTOPOINT`` bit means a tunnel/VPN interface; otherwise
-    membership in the ``networksetup`` hardware-port list means physical.
+    A set ``IFF_POINTOPOINT`` bit means a tunnel/VPN interface; a
+    ``bridge<N>`` name means a bridge (checked before the hardware-port
+    list, which contains ``bridge0``); otherwise membership in the
+    ``networksetup`` hardware-port list means physical.
     """
     if iff_flags & IFF_POINTOPOINT:
         return IfKind.TUNNEL
+    if _is_macos_bridge_name(name):
+        return IfKind.BRIDGE
     if name in hardware_ports:
         return IfKind.PHYSICAL
     return IfKind.UNKNOWN
