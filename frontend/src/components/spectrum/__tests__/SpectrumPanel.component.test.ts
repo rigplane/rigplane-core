@@ -1595,6 +1595,41 @@ describe('SpectrumPanel component', () => {
     expect(overlay.style.width).toBe('30%');
   });
 
+  it('floors repeated FIX ZOOM+ at a few bins and lets ZOOM− widen with no radio write (MOR-4451)', async () => {
+    runtimeHarness.state.currentCaps = validateCapabilities({ ...IC7300_CAPABILITIES, ...spanCapabilities, model: 'IC-705' });
+    authorityHarness.state.current = authority({ frequencyHz: 14_050_000, scopeControls: testScopeControls(1) });
+    const target = mountPanel();
+    emitFrame({ mode: 1 }); await flushWaterfallPaint();
+    const read = () => JSON.parse(target.querySelector('.spectrum-panel')!.getAttribute('data-scope-subscription')!);
+    const subscribes = () => (harnessChannels.scope.sendRaw as unknown as Mock).mock.calls
+      .map(([message]) => message as { type?: unknown })
+      .filter((message) => message?.type === 'subscribe');
+    // The floor is a few native bins of the narrowest span choice (475-bin
+    // frames) — far below any preset, the crop never stalls at a preset.
+    const floor = 4 * (Math.min(...spanCapabilities.span_choices_hz) / 475);
+    const zoomIn = target.querySelector<HTMLButtonElement>('[data-testid="scope-zoom-in"]')!;
+    const zoomOut = target.querySelector<HTMLButtonElement>('[data-testid="scope-zoom-out"]')!;
+    scopeCommandHarness.dispatch.mockClear();
+    const subBefore = JSON.stringify(read());
+    const sentBefore = subscribes().length;
+    for (let i = 0; i < 24; i++) { zoomIn.click(); flushSync(); }
+    await flushWaterfallPaint();
+    expect(spectrumRendererHarness.lastOptions.spanHz).toBeCloseTo(floor, 1);
+    // The floor is an exact no-op: another ZOOM+ changes nothing at all —
+    // no narrower crop, no subscription, no radio write.
+    zoomIn.click(); flushSync(); await flushWaterfallPaint();
+    expect(spectrumRendererHarness.lastOptions.spanHz).toBeCloseTo(floor, 1);
+    expect(JSON.stringify(read())).toBe(subBefore);
+    expect(subscribes()).toHaveLength(sentBefore);
+    expect(scopeCommandHarness.dispatch).not.toHaveBeenCalled();
+    // ZOOM− still widens afterwards — client-side only, still no radio write.
+    zoomOut.click(); flushSync(); await flushWaterfallPaint();
+    expect(spectrumRendererHarness.lastOptions.spanHz).toBeCloseTo(2 * floor, 1);
+    expect(JSON.stringify(read())).toBe(subBefore);
+    expect(subscribes()).toHaveLength(sentBefore);
+    expect(scopeCommandHarness.dispatch).not.toHaveBeenCalled();
+  });
+
   it('explains a ZOOM− no-op at the fixed edges and offers one-tap CTR (MOR-4387 owner b4)', async () => {
     radio.current = structuredClone(IC7300_STATE);
     expect(setCapabilities(structuredClone(IC7300_CAPABILITIES))).toBe(true);

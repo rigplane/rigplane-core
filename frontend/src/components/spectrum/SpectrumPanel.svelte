@@ -1031,6 +1031,21 @@
     zoomFixedHintTimer = setTimeout(() => { zoomFixedHint = false; zoomFixedHintTimer = null; }, 6000);
   }
 
+  // MOR-4451: the declared zoom floor in Hz — a few bins of the NARROWEST
+  // span choice. Below it the radio cannot deliver more bins, and the wire
+  // view may already be the clipped crop (never the native coverage) on
+  // either grant contract, so the narrowest published choice is the honest
+  // source. Shared by the CENTER and FIX zoom branches; 0 while unknown.
+  function zoomFloorHz(): number {
+    const geometry = frameGeometry;
+    const choices = runtime.caps?.span_choices_hz;
+    const narrowestHz = choices?.length ? Math.min(...choices)
+      : (geometry !== null ? geometry.view.endHz - geometry.view.startHz : 0);
+    const binHz = geometry !== null && geometry.width > 0 && narrowestHz > 0
+      ? narrowestHz / geometry.width : 0;
+    return binHz > 0 ? ZOOM_FLOOR_BINS * binHz : 0;
+  }
+
   function nudgeScopeZoom(factor: number): void {
     if (effectiveView.endHz <= effectiveView.startHz) return;
     if (isFixedScope) {
@@ -1043,11 +1058,27 @@
       const zoomed = zoomView(effectiveView, factor);
       const frequency = spectrumAuthority?.frequencyHz ?? displayFrequencyHz ?? viewCenterHz(effectiveView);
       const clipped = panView(zoomed, frequency - viewCenterHz(zoomed), geometry.view);
-      const coversWindow = clipped.startHz <= geometry.view.startHz && clipped.endHz >= geometry.view.endHz;
+      // MOR-4451: the declared floor binds FIX crops too — a crop narrower
+      // than the floor recentres a floor-wide window on the same centre
+      // (still clipped to the fixed edges). Reaching the floor is an exact
+      // no-op: without it repeated ZOOM+ collapses the crop until float
+      // rounding equalises both edges and ZOOM− sticks.
+      let crop = clipped;
+      const floorHz = zoomFloorHz();
+      if (floorHz > 0 && clipped.endHz - clipped.startHz < floorHz) {
+        const centerHz = viewCenterHz(clipped);
+        crop = panView({ startHz: centerHz - floorHz / 2, endHz: centerHz + floorHz / 2 }, 0, geometry.view);
+      }
+      const coversWindow = crop.startHz <= geometry.view.startHz && crop.endHz >= geometry.view.endHz;
       // MOR-4387 (owner build-4): ZOOM− already AT the fixed edges changes
-      // nothing — say so instead of reading as "ZOOM stopped working".
+      // nothing — say so instead of reading as "ZOOM stopped working". The
+      // hint fires before the exact no-op return below: it is the press's
+      // only observable effect on a settled window.
       if (factor > 1 && coversWindow && requestedView === null) showZoomFixedHint();
-      requestedView = coversWindow && explicitView === null ? null : clipped;
+      const nextCrop = coversWindow && explicitView === null ? null : crop;
+      if (nextCrop === null ? requestedView === null : requestedView !== null
+        && nextCrop.startHz === requestedView.startHz && nextCrop.endHz === requestedView.endHz) return;
+      requestedView = nextCrop;
       // Preserve the negotiated preset (if any); only its display crop moves.
       scopeView.set('gesture', null);
       return;
@@ -1062,17 +1093,10 @@
       : followSpanHz ?? (effectiveView.endHz - effectiveView.startHz);
     let next = current * factor;
     if (factor < 1) {
-      // The floor is a few bins of the NARROWEST span choice: below it the
-      // radio cannot deliver more bins, and the wire view may already be
-      // the clipped crop (never the native coverage) on either grant
-      // contract, so the narrowest published choice is the honest source.
-      const geometry = frameGeometry;
-      const choices = runtime.caps?.span_choices_hz;
-      const narrowestHz = choices?.length ? Math.min(...choices)
-        : (geometry !== null ? geometry.view.endHz - geometry.view.startHz : 0);
-      const binHz = geometry !== null && geometry.width > 0 && narrowestHz > 0
-        ? narrowestHz / geometry.width : 0;
-      if (binHz > 0) next = Math.max(next, ZOOM_FLOOR_BINS * binHz);
+      // The floor is a few bins of the NARROWEST span choice (see
+      // zoomFloorHz above).
+      const floorHz = zoomFloorHz();
+      if (floorHz > 0) next = Math.max(next, floorHz);
     } else {
       const choices = runtime.caps?.span_choices_hz;
       if (choices?.length) next = Math.min(next, Math.max(...choices));
