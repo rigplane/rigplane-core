@@ -402,6 +402,9 @@ class MockIcomRadio(AudioPortMixin):
             byte-identical before its reply (recorded IC-7610 LAN behaviour).
             Default True (fidelity); fault-injection tests that mangle the
             reply itself set it False so the plan sees one packet, not two.
+        write_confirmation: how the simulated radio confirms a SET:
+            ``"ack"`` answers FB (default, unchanged); ``"echo"`` answers
+            the SET with its own frame, radio to controller, and no FB.
         fault_plan: optional :class:`~rigplane_testkit.icom.faults.FaultPlan`
             applying per-port/per-direction drop/duplicate/delay/reorder/
             corrupt/truncate rules on top of the legacy ``drop_rate`` /
@@ -520,6 +523,7 @@ class MockIcomRadio(AudioPortMixin):
         keepalive_hold_s: float = _DEFAULT_KEEPALIVE_HOLD_S,
         drop_rate: float = 0.0,
         lan_civ_echo: bool = True,
+        write_confirmation: Literal["ack", "echo"] = "ack",
         unsolicited_civ: bool = False,
         unsolicited_interval_s: float = 0.1,
         fault_plan: FaultPlan | None = None,
@@ -652,6 +656,7 @@ class MockIcomRadio(AudioPortMixin):
         # (``src/rigplane/runtime/_civ_rx.py``: a frame whose sender is not
         # the radio address never routes), so CI-V routing ignores it.
         self.lan_civ_echo: bool = lan_civ_echo
+        self._write_confirmation: Literal["ack", "echo"] = write_confirmation
 
         # ----------------------------------------------------------------
         # Session-lifecycle modelling (additive; all opt-in)
@@ -2421,6 +2426,16 @@ class MockIcomRadio(AudioPortMixin):
             return self._civ_nak(to, frm)
 
         native = self._dispatch_civ_native(cmd, payload, from_addr)
+        if (
+            self._write_confirmation == "echo"
+            and native is not None
+            and native[4] == _CMD_ACK
+        ):
+            # Echo-only confirmation: answer the SET with its own frame,
+            # radio to controller; state changes above still apply. (The
+            # LAN echo is a raw bounce that keeps the request's
+            # controller-to-radio addresses, so the client drops it.)
+            return self._civ_frame(to, frm, cmd, data=payload)
         if native is None or native[4] != _CMD_NAK:
             return native
         if self.recorded_answers is not None:
