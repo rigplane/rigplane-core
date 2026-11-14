@@ -2566,8 +2566,14 @@ export function validateRadioViewModel(value: unknown): RadioViewModel {
   // must ALSO record that the affordance is disabled. Same shape as the
   // `band` invariant above (MOR-1294): a producer cannot ship the permissive
   // half of a TX-adjacent pair while silently dropping the restrictive half.
+  // MOR-4433 exception, mirroring `deriveCwKeyerReasons`: a sourceless
+  // target (`txTarget` `unsupported` — FT-991A/G7250 class) has no source a
+  // wait could resolve, so its unknown permit does not disable break-in and
+  // no entry is required for it. A sourced-but-unobserved target still does.
+  const targetUnsupported =
+    txTarget.status === 'unknown' && txTarget.reason === 'unsupported';
   if (cwKeyer !== undefined && cwKeyer.breakIn.availability.structural
-    && txPermit.status !== 'allowed'
+    && txPermit.status !== 'allowed' && !targetUnsupported
     && !disabledReasons.some((r) => r.field === 'cwKeyer.breakIn')) {
     invalid('$.disabledReasons', "a 'cwKeyer.breakIn' entry whenever txPermit is not 'allowed' (fail-open otherwise)");
   }

@@ -3830,11 +3830,19 @@ class RadioPoller:
         the just-read snapshot with no ``await`` in between, so it always
         stamps the store's current provider generation.
         """
-        # Radios without the selected_unselected readback never derive
-        # here: IC-7610 publishes the radio's own 1C 03 answer through the
-        # CI-V observation path instead (MOR-2540), and this method must
-        # not become a second writer for the field.
-        if self._profile.vfo_readback != "selected_unselected":
+        # The native-read profile (IC-7610's own 1C 03 answer, MOR-2540)
+        # publishes through the CI-V observation path instead, and this
+        # method must not become a second writer for it: only a profile
+        # that declares the native ``get_tx_target`` source keeps the
+        # early return. Any other radio without the selected_unselected
+        # readback (FT-991A/G7250 class) has no tx_target source at all,
+        # so it falls through and publishes ``_compute_tx_target()``'s
+        # sticky ``unsupported`` — never nothing — so the projection can
+        # tell "no source" apart from "not yet read" (MOR-4433).
+        if (
+            self._profile.vfo_readback != "selected_unselected"
+            and self._profile.supports_command("get_tx_target")
+        ):
             return
 
         target = self._compute_tx_target()
