@@ -17,6 +17,12 @@ name: Rebrand grep gate
 #   commit; without this trigger the queue would stall until its timeout.
 # No push trigger: the merge group tested the exact tree that lands on main
 # (MOR-3878).
+#
+# merge_group run 43649024650 (PR 4584, 2026-11-14): checkout fetch hung on a
+# busy light runner; the job timeout-minutes: 2 cancelled the required check
+# and ejected the PR from the queue (not concurrency — merge_group refs are
+# unique). Job timeout raised, checkout gets its own budget plus one retry,
+# and cancel-in-progress is off for merge_group so queue runs are not aborted.
 
 on:
   pull_request:
@@ -28,7 +34,7 @@ on:
 
 concurrency:
   group: rebrand-gate-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name != 'merge_group' }}
 
 jobs:
   grep-gate:
@@ -36,10 +42,22 @@ jobs:
     # light runners, off the build pool, so protected-branch merges are not
     # blocked when the self-hosted build runners are offline or occupied.
     runs-on: [self-hosted, Linux, ARM64, light]
-    timeout-minutes: 2
+    timeout-minutes: 10
 
     steps:
-      - uses: actions/checkout@v6
+      - name: Check out repository
+        id: checkout
+        timeout-minutes: 4
+        continue-on-error: true
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - name: Check out repository (retry)
+        if: failure() && steps.checkout.conclusion == 'failure'
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
 
       - name: Wave 2 rebrand grep gate
         run: .github/scripts/check-rebrand-allowlist.sh
