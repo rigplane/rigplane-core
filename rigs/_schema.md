@@ -509,6 +509,26 @@ fixed = true
 defaults = [15000, 10000, 7000]
 ```
 
+A `table_index` mode rule may carry a narrow-state variant (MOR-4428): while
+the radio's NARROW is on, the same SH code maps through `narrow_table`
+instead of `table`. The backend reads the narrow state before mapping SH
+in both the width read and the width write, but only for modes whose rule
+declares the variant — modes without one issue no extra narrow query.
+
+```toml
+[filters.width.SSB]
+defaults = [2400, 1800, 500]
+table = [2400, 2600, 3000, 3200, 4000]
+narrow_table = [1500, 1800, 2000]
+```
+
+Loader rules (`rig_loader.py: _validate_filter_narrow_variant`): a narrow
+variant is rejected unless `[filters].encoding` is `"table_index"`, the rule
+is not `fixed`, the rule has a non-empty `table`, `narrow_table` is
+non-empty and strictly increasing, and the profile
+declares the narrow read (`[commands].get_narrow`, plus `get_narrow_sub` on
+a multi-receiver profile). Absent narrow data keeps today's behavior.
+
 ## `[vfo]` — VFO Configuration
 
 | Field             | Type   | Required    | Description                                                  |

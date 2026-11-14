@@ -2670,19 +2670,43 @@ class YaesuCatRadio:
 
     # -- D4: Filters --------------------------------------------------------
 
-    def _filter_width_table(self, mode: str | None) -> tuple[int, ...] | None:
+    def _filter_width_table(
+        self, mode: str | None, *, narrow: bool = False
+    ) -> tuple[int, ...] | None:
         """Return the filter-width table for a mode, or None.
 
         Returns None for non-``table_index`` encodings and for modes
         without a table row; the caller supplies the radio's live mode
-        (``read_filter_width`` resolves it via ``read_mode``).
+        (``read_filter_width`` resolves it via ``read_mode``). When
+        ``narrow`` is true and the mode's rule declares a narrow variant
+        (MOR-4428), the narrow table is returned instead of the wide one.
         """
         if self.profile.filter_width_encoding != "table_index":
             return None
         rule = self.profile.resolve_filter_rule(mode)
-        if rule and rule.table:
+        if rule is None:
+            return None
+        if narrow and rule.narrow_table:
+            return rule.narrow_table
+        if rule.table:
             return rule.table
         return None
+
+    async def _resolve_width_narrow(self, mode: str | None, receiver: int) -> bool:
+        """Whether the SH mapping uses the mode's narrow table (MOR-4428).
+
+        Reads the radio's narrow state (``get_narrow``/``get_narrow_sub``)
+        only when the live mode's rule declares a narrow variant; every
+        other mode keeps today's single-table behavior with no extra CAT
+        query. Fixed-width modes never reach here with narrow data (the
+        loader rejects that combination).
+        """
+        if self.profile.filter_width_encoding != "table_index":
+            return False
+        rule = self.profile.resolve_filter_rule(mode)
+        if rule is None or not rule.narrow_table:
+            return False
+        return await self.read_narrow(receiver)
 
     async def read_filter_width_reading(
         self, receiver: int = 0, mode: str | None = None
@@ -2695,7 +2719,9 @@ class YaesuCatRadio:
         from the live mode, not the legacy ``self._state`` mirror — the
         observation adapter never writes that mirror, so during polling it is
         stale and would select the wrong table, leaking the raw SH code as the
-        "Hz" value (MOR-507).
+        "Hz" value (MOR-507). When the mode's rule declares a narrow variant
+        (MOR-4428), the narrow state is read first and selects the narrow
+        table instead of the wide one.
 
         A code-00 "(Default)" answer carries no Hz value (bench: ``MD0C;
         SH0000;`` in DATA-U, ``MD03; SH0000;`` in CW-U) and reads back as
@@ -2724,10 +2750,15 @@ class YaesuCatRadio:
         )
         if rule and rule.fixed and rule.defaults:
             return FilterWidthReading(hz=int(rule.defaults[0]), radio_default=False)
+        # MOR-4428: the narrow state selects the SH table, so it is read
+        # before the SH answer is mapped -- but only for modes whose rule
+        # declares a narrow variant. Every other mode keeps today's wire
+        # log (no extra NA query).
+        narrow = await self._resolve_width_narrow(mode, receiver)
         default_code = self.profile.filter_width_radio_default_code
         if default_code is not None and code == default_code:
             return FilterWidthReading(hz=None, radio_default=True)
-        table = self._filter_width_table(mode)
+        table = self._filter_width_table(mode, narrow=narrow)
         if table is None:
             return FilterWidthReading(hz=None, radio_default=False)
         try:
@@ -2804,8 +2835,18 @@ class YaesuCatRadio:
             raise CommandError(
                 f"set_filter_width is unsupported for mode {mode} without a width table"
             )
+        # MOR-4428: map through the narrow table while NARROW is on —
+        # read before the write, only for modes with a narrow variant.
+        # A Hz value the active table cannot spell lands on the nearest
+        # entry, exactly as the wide table always has.
+        narrow = await self._resolve_width_narrow(mode, receiver)
+        table = self._filter_width_table(mode, narrow=narrow)
+        if table is None:  # pragma: no cover - loader pairs the tables
+            raise CommandError(
+                f"set_filter_width is unsupported for mode {mode} without a width table"
+            )
         index = (
-            hz_to_table_index(width_hz, table=rule.table)
+            hz_to_table_index(width_hz, table=table)
             + self.profile.filter_width_first_code
         )
         await self._write(cmd, code=index)

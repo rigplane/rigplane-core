@@ -282,6 +282,32 @@ default = 0
 "420-1000MHz" = [0, 7, 10, 13, 16, 19, 22, 25, 31, 34]
 ```
 
+### Narrow-state filter-width variant (MOR-4428)
+
+On `table_index` radios (Yaesu SH), the same width code can map to a
+different Hz value depending on the NARROW state. A per-mode rule may
+declare the narrow variant alongside the wide table:
+
+```toml
+[filters.width.SSB]
+defaults = [2400, 1800, 500]
+table = [2400, 2600, 3000, 3200, 4000]
+narrow_table = [1500, 1800, 2000]
+```
+
+While NARROW is on, an SH code maps through `narrow_table` instead of
+`table`. The backend reads the narrow state
+(`get_narrow`/`get_narrow_sub`) before mapping SH in both the width read
+and the width write — but only for modes whose rule declares the
+variant; modes without one issue no extra narrow query.
+
+Loader rules (`rig_loader.py: _validate_filter_narrow_variant`): a narrow
+variant is rejected unless `[filters].encoding` is `"table_index"`, the
+rule is not `fixed`, the rule has a non-empty `table`, `narrow_table` is
+non-empty and strictly increasing, and the profile declares the narrow read (`[commands].get_narrow`, plus
+`get_narrow_sub` on a multi-receiver profile). Absent narrow data keeps
+today's single-table behavior.
+
 ### RF power write quantum
 
 `[controls.rf_power]` may declare `write_quantum_w` — the fixed watt lattice
