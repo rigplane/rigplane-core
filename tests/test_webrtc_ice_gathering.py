@@ -413,6 +413,7 @@ class _StunResponder(asyncio.DatagramProtocol):
 
 
 @_webrtc
+@pytest.mark.realtime(reason="measures real ICE/STUN wall-clock time against live sockets")
 async def test_multihomed_answer_fast_with_stun() -> None:
     """A responsive STUN server yields srflx candidates well within the bound."""
     if not _has_non_loopback_ipv4():
@@ -444,6 +445,7 @@ async def test_multihomed_answer_fast_with_stun() -> None:
 
 
 @_webrtc
+@pytest.mark.realtime(reason="measures real ICE/STUN wall-clock time against live sockets")
 async def test_blackhole_stun_answer_within_bound() -> None:
     """An unresponsive STUN server still yields a host-only answer in time."""
     from rigplane.web.transport.webrtc_session import WebRtcSessionManager
