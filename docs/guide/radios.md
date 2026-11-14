@@ -98,7 +98,8 @@ visible on both radios. VFO labels switch to "VFO A" / "VFO B" automatically.
 - **VFO scheme:** `ab` (1 receiver, 1 transceiver)
 - **Audio:** USB audio RX/TX
 - **Status:** new in this version; built from the CAT manual, hardware verification in progress
-- **Not yet available:** transmit from the web UI, antenna tuner, NB/NR switches, clarifier, memory channels, squelch, contour
+- **Not yet verified on hardware:** transmit (PTT, CW, digital modes)
+- **Not available:** antenna tuner, NB/NR switches, clarifier, memory channels, squelch, contour
 
 !!! tip "Setup Guide"
     **[FT-991A USB Setup](ft991a-usb-setup.md)** — the CAT port and rate, radio
