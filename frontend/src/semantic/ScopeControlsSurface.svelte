@@ -177,6 +177,12 @@
     reading: spanHz === null ? { status: 'unknown' as const } : { status: 'known' as const, value: spanHz },
   } : undefined);
   let spanText = $derived(modeKnown !== undefined && spanHz !== null ? formatSpanHz(spanHz) : '');
+  // MOR-4387 (owner build-4): in FIX/S-F the window is wire-owned and the
+  // span keys are disabled by design (MOR-4392). A disabled control that
+  // says nothing reads as "SPAN stopped working", so the blocked stepper
+  // names the reason and offers the one-tap return to CTR through the
+  // ordinary mode choice — no new command path.
+  let spanFixedBlocked = $derived(modeKnown !== undefined && !isSpanApplicable(modeKnown));
 
   /** The [MORE ▾] More panel — UI-local open flag (never radio state).
    *  MOR-2545 PR3: the label comes from the i18n system
@@ -203,9 +209,12 @@
     return bindActionInstrument(() => {
       const field = spanField;
       // MOR-2565: unread mode ⇒ the keys stay inert even with a read span.
+      // MOR-4392 (coordinator ruling 2026-11-10): span is a CENTER-mode
+      // setting — in a fixed-edges mode (FIX/S-F) the window is wire-owned,
+      // so the keys render DISABLED rather than stepping into a no-op.
       return {
         field,
-        blocked: modeKnown === undefined,
+        blocked: modeKnown === undefined || !isSpanApplicable(modeKnown),
         invoke: () => onSpanChange?.(delta),
       };
     });
@@ -383,7 +392,8 @@
         {#if spanApplicable && sc.span.availability.structural}
           {@const spanDown = spanInstrument(-1)}
           {@const spanUp = spanInstrument(1)}
-          <span class="scope-stepper" class:scope-capsule={hosted} data-overflow="span" data-testid="scope-span">
+          <span class="scope-stepper" class:scope-capsule={hosted} data-overflow="span" data-testid="scope-span"
+            title={spanFixedBlocked ? t('core.scope.spanWorksInCtr') : undefined}>
             <span class="scope-name">SPAN</span>
             <button type="button" class="scope-step-key" aria-label="Decrease scope span"
               disabled={!spanDown.available} onclick={() => spanDown.invoke()}>&#8249;</button>
@@ -391,6 +401,12 @@
             <button type="button" class="scope-step-key" aria-label="Increase scope span"
               disabled={!spanUp.available} onclick={() => spanUp.invoke()}>&#8250;</button>
           </span>
+          {#if spanFixedBlocked}
+            <button type="button" class="scope-step-key" data-testid="scope-span-ctr"
+              title={t('core.scope.spanWorksInCtr')}
+              aria-label={t('core.overlay.scopeSwitchToCtr')}
+              onclick={() => onChoiceChange?.('mode', 0)}>CTR</button>
+          {/if}
         {/if}
 
         {#if sc.refDb.availability.structural}
@@ -585,11 +601,18 @@
                   {/if}
                   {#if spanApplicable && sc.span.availability.structural}
                     {@const overflowSpanDown = spanInstrument(-1)}{@const overflowSpanUp = spanInstrument(1)}
-                    <div class="scope-more-row scope-stepper" class:scope-capsule={hosted} data-overflow="span" data-testid="scope-overflow-span">
+                    <div class="scope-more-row scope-stepper" class:scope-capsule={hosted} data-overflow="span" data-testid="scope-overflow-span"
+                      title={spanFixedBlocked ? t('core.scope.spanWorksInCtr') : undefined}>
                       <span class="scope-name">SPAN</span>
                       <button type="button" class="scope-step-key" aria-label="Decrease scope span" disabled={!overflowSpanDown.available} onclick={() => overflowSpanDown.invoke()}>&#8249;</button>
                       <output class="scope-step-value" data-testid="scope-overflow-span-value">{spanText}</output>
                       <button type="button" class="scope-step-key" aria-label="Increase scope span" disabled={!overflowSpanUp.available} onclick={() => overflowSpanUp.invoke()}>&#8250;</button>
+                      {#if spanFixedBlocked}
+                        <button type="button" class="scope-step-key" data-testid="scope-overflow-span-ctr"
+                          title={t('core.scope.spanWorksInCtr')}
+                          aria-label={t('core.overlay.scopeSwitchToCtr')}
+                          onclick={() => onChoiceChange?.('mode', 0)}>CTR</button>
+                      {/if}
                     </div>
                   {/if}
                 </div>

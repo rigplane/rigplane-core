@@ -244,7 +244,12 @@
   // A subscription grant keeps SPAN visible in FIXED modes too. Without
   // a grant, preserve the legacy mode slot, unlit while mode is unread.
   let spanApplicable = $derived(scopeSpan !== null || scopeMode === null || isSpanApplicable(scopeMode));
-  let spanUsable = $derived(scopeMode !== null && scopeSpan !== null);
+  let spanText = $derived(scopeMode !== null && scopeSpan !== null ? formatSpanHz(scopeSpan) : '');
+  // MOR-4392 (coordinator ruling 2026-11-10): span is a CENTER-mode setting —
+  // in a fixed-edges mode (FIX/S-F) the window is wire-owned and a step
+  // writes nothing, so the keys DISABLE on the observed mode (never silently
+  // inert) while the granted width stays on display.
+  let spanUsable = $derived(scopeMode !== null && scopeSpan !== null && isSpanApplicable(scopeMode));
   let edgeApplicable = $derived(scopeMode !== null && isEdgeApplicable(scopeMode));
 
   function selectMode(mode: number) {
@@ -542,7 +547,7 @@
           <button class="toolbar-btn small step-arrow" disabled={!spanUsable} onclick={() => cycleSpan(-1)} title="Decrease span">◀</button>
           <button class="toolbar-btn step-control" disabled={!spanUsable} onclick={() => cycleSpan(1)} title="Scope span">
             <span class="toolbar-label">SPAN</span>
-            <span class="toolbar-value">{spanUsable && scopeSpan !== null ? formatSpanHz(scopeSpan) : ''}</span>
+            <span class="toolbar-value">{spanText}</span>
           </button>
           <button class="toolbar-btn small step-arrow" disabled={!spanUsable} onclick={() => cycleSpan(1)} title="Increase span">▶</button>
         </div>

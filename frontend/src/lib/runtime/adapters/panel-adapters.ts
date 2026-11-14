@@ -300,6 +300,14 @@ export function getActiveFrequencyHz(): number | null {
 const readRuntimeState = (): ServerState | null => runtime.state;
 const lifecycleSuperseded: SupersededPredicate = (command) => isCommandLifecycleSuperseded(command);
 
+/** Mode readback can lag native FIX coverage; do not reinterpret that as a span change. */
+export function hasPendingScopeModeChange(providerGeneration: number, sessionEpoch: number): boolean {
+  return getCommandLifecycles().some(command => command.name === 'set_scope_mode'
+    && command.originalEpoch === sessionEpoch && command.providerGeneration === providerGeneration
+    && (command.status === 'pending' || command.status === 'acknowledged')
+    && !isCommandLifecycleSuperseded(command));
+}
+
 // ── Pending frequency target (MOR-1441, MOR-1478) ──
 /**
  * The freshest still-in-flight `set_freq` target for `receiver` (`0` =

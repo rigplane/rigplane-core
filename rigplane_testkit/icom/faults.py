@@ -40,6 +40,16 @@ _DEFAULT_SEED = 0xC0FFEE
 # One planned emission: (delay in seconds before sending, payload to send).
 Emission = tuple[float, bytes]
 
+# Spacing that keeps ``preserve_order`` due times strictly increasing. Equal
+# due times are not enough: the loop schedules each emission with its own
+# timer, and same-instant timers fire in heap order, not FIFO — a burst of
+# clamped packets would still arrive shuffled. The spacing must also beat the
+# scheduling noise between the decision clock-read and the loop's own
+# timer-stamp a few straight-line calls later (a microsecond-scale epsilon
+# still shuffles adjacent packets). One hundred microseconds per clamped
+# packet is far below any observable latency and only accrues while clamping.
+_PRESERVE_ORDER_EPSILON_S = 1e-4
+
 
 @dataclass
 class FaultRule:
@@ -57,6 +67,10 @@ class FaultRule:
         duplicate_delay_s: extra delay of the second copy.
         delay_s: fixed delay added to every matched packet.
         jitter_s: uniform random extra delay in [0, jitter_s].
+        preserve_order: shift delay-only emissions so per-packet due times
+            stay monotonic — jitter then delays but never reorders. An
+            explicit ``reorder_window`` still shuffles by design; do not
+            combine the two.
         reorder_window: buffer N emissions, shuffle, then flush (0/1 = off).
         reorder_flush_s: a held emission is released after at most this long
             even if the window never fills (the simulator drives this on
@@ -76,6 +90,7 @@ class FaultRule:
     duplicate_delay_s: float = 0.01
     delay_s: float = 0.0
     jitter_s: float = 0.0
+    preserve_order: bool = False
     reorder_window: int = 0
     reorder_flush_s: float = 0.05
     corrupt_probability: float = 0.0
@@ -93,6 +108,7 @@ class FaultRule:
         default_factory=list, init=False, compare=False
     )
     _reorder_since: float | None = field(default=None, init=False, compare=False)
+    _last_due: float | None = field(default=None, init=False, compare=False)
 
     def is_noop(self) -> bool:
         """True when no fault knob is set — the fast path for the simulator."""
@@ -179,6 +195,16 @@ class FaultRule:
         delay = self.delay_s
         if self.jitter_s > 0.0:
             delay += rng.uniform(0.0, self.jitter_s)
+        if self.preserve_order and self.reorder_window <= 1:
+            # Monotonic due times keep emission order identical to send
+            # order no matter how the jitter draws fall — a real link
+            # delays but does not reorder. The explicit reorder window
+            # shuffles by design and is exempt.
+            due = now + delay
+            if self._last_due is not None:
+                due = max(due, self._last_due + _PRESERVE_ORDER_EPSILON_S)
+            self._last_due = due
+            delay = due - now
 
         emissions: list[Emission] = [(delay, payload)]
 
