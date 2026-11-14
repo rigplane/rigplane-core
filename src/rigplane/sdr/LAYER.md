@@ -47,6 +47,8 @@ composes acquisition and TX policy for the shared scope hub;
 - `sdr.runtime` (not re-exported) — `default_source_factory`,
   `register_source_kind` / `build_source` for the source-kind registry,
   `resolve_sdr_config` and the remote-only GPL guard (MOR-3157).
+- `sdr/n1mm_source.py` — N1MM+ spectrum UDP receiver plus passive scope
+  source (MOR-4394); not registered in the hub yet, follow-up piece.
 
 ## Allowed dependencies
 

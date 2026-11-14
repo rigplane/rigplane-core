@@ -27,19 +27,6 @@ EXAMPLE = (
 )
 
 
-def _packet(**overrides: object) -> N1mmSpectrumPacket:
-    fields: dict[str, object] = {
-        "app": "Thetis",
-        "name": "Thetis_1",
-        "low_hz": 14_000_000.0,
-        "high_hz": 14_055_000.0,
-        "scaling_factor": 1.0,
-        "levels": (10, 20, 30, 40),
-    }
-    fields.update(overrides)
-    return N1mmSpectrumPacket(**fields)  # type: ignore[arg-type]
-
-
 def _without_tag(xml: bytes, tag: str) -> bytes:
     return re.sub(rf"<{tag}>.*?</{tag}>".encode(), b"", xml, count=1)
 
@@ -98,7 +85,7 @@ def test_whitespace_around_commas_is_allowed() -> None:
 REJECTIONS: list[tuple[str, bytes, str]] = [
     ("too_large", b"x" * (MAX_DATAGRAM_BYTES + 1), "too_large"),
     ("malformed", b"<Spectrum><app>", "malformed_xml"),
-    ("truncated_tail", EXAMPLE[:60], "malformed_xml"),
+    ("bad_freq", EXAMPLE.replace(b"14000.000", b"abc", 1), "bad_number"),
     ("non_utf8", b"\xff\xfe<Spectrum/>", "malformed_xml"),
     (
         "laughs",
@@ -150,6 +137,11 @@ REJECTIONS: list[tuple[str, bytes, str]] = [
         "bad_number",
     ),
     (
+        "inf_scale",
+        EXAMPLE.replace(b"<ScalingFactor>1<", b"<ScalingFactor>1e999<", 1),
+        "bad_number",
+    ),
+    (
         "overlong_app",
         EXAMPLE.replace(b"Thetis</app>", b"T" * 65 + b"</app>", 1),
         "too_long",
@@ -183,7 +175,8 @@ def test_missing_each_required_field(tag: str) -> None:
 
 
 def test_single_point_is_rejected() -> None:
-    result = parse_n1mm_spectrum(emit_n1mm_spectrum(_packet(levels=(7,))))
+    tiny = N1mmSpectrumPacket("Thetis", "T", 14_000_000.0, 14_001_000.0, 1.0, (7,))
+    result = parse_n1mm_spectrum(emit_n1mm_spectrum(tiny))
     assert isinstance(result, N1mmSpectrumRejected)
     assert result.reason == "count_mismatch"
 

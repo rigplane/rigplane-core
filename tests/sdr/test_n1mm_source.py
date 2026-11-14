@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import random
+from dataclasses import replace
 import socket
 from collections.abc import Callable
 
@@ -58,15 +59,7 @@ async def test_receiver_name_filter_and_rejection_counts() -> None:
     )
     await receiver.start()
     try:
-        other = _packet()
-        other = N1mmSpectrumPacket(
-            other.app,
-            "Other",
-            other.low_hz,
-            other.high_hz,
-            other.scaling_factor,
-            other.levels,
-        )
+        other = replace(_packet(), name="Other")
         _send(receiver.port, emit_n1mm_spectrum(other))
         _send(receiver.port, b"not xml at all")
         await await_until(
@@ -133,9 +126,7 @@ class _FakeReceiver:
         self.stops += 1
 
 
-def _source(
-    fps_limit: float = 10.0,
-) -> tuple[N1mmSpectrumSource, list[_FakeReceiver]]:
+def _source(fps_limit: float = 10.0) -> tuple[N1mmSpectrumSource, list[_FakeReceiver]]:
     fakes: list[_FakeReceiver] = []
 
     def factory(on_packet: Callable[[N1mmSpectrumPacket], None]) -> _FakeReceiver:
@@ -187,24 +178,10 @@ async def test_source_epoch_tracks_geometry_only(
     base = _packet(size=475)
     source.handle_packet(base)
     await virtual_clock.elapse(0.01)
-    narrower = N1mmSpectrumPacket(
-        base.app,
-        base.name,
-        base.low_hz,
-        base.high_hz,
-        base.scaling_factor,
-        base.levels[:256],
-    )
+    narrower = replace(base, levels=base.levels[:256])
     source.handle_packet(narrower)
     await virtual_clock.elapse(0.01)
-    shifted = N1mmSpectrumPacket(
-        base.app,
-        base.name,
-        base.low_hz + 1000.0,
-        base.high_hz + 1000.0,
-        base.scaling_factor,
-        base.levels[:256],
-    )
+    shifted = replace(narrower, low_hz=base.low_hz + 1e3, high_hz=base.high_hz + 1e3)
     source.handle_packet(shifted)
     await virtual_clock.elapse(0.01)
     source.handle_packet(shifted)
@@ -281,11 +258,10 @@ async def test_replay_moving_tone_over_noise(virtual_clock: VirtualClock) -> Non
         levels = [10 + rng.randrange(20) for _ in range(size)]
         tone = 20 + step * 20
         levels[tone] = 160
-        packets.append(
-            N1mmSpectrumPacket(
-                "replay", "tone", 14_000_000.0, 14_511_000.0, 1.0, tuple(levels)
-            )
+        pkt = N1mmSpectrumPacket(
+            "replay", "tone", 14e6, 14_511_000.0, 1.0, tuple(levels)
         )
+        packets.append(pkt)
     source = N1mmSpectrumSource(port=0, fps_limit=10.0)
     frames: list[NativeFrame] = []
     source.on_frame(frames.append)
@@ -295,10 +271,7 @@ async def test_replay_moving_tone_over_noise(virtual_clock: VirtualClock) -> Non
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
             for index, packet in enumerate(packets):
                 sock.sendto(emit_n1mm_spectrum(packet), ("127.0.0.1", receiver.port))
-                await await_until(
-                    lambda: len(frames) == index + 1,
-                    description=f"replay frame {index}",
-                )
+                await await_until(lambda: len(frames) == index + 1, description="frame")
                 await virtual_clock.elapse(0.2)
     finally:
         await receiver.stop()
