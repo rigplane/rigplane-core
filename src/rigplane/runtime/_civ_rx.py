@@ -2215,9 +2215,10 @@ class CivRuntime:
             frame,
             generation=generation,
             # Same ordered-ingress contract as ``resolve`` below: on an
-            # ordered transport the echo retires older tombstones.
+            # ordered transport the echo retires older tombstones. A
+            # transport naming no contract is unordered, never a crash.
             ordered_ingress=transport_for_echo is not None
-            and transport_for_echo.ordered_ingress is True,
+            and getattr(transport_for_echo, "ordered_ingress", False) is True,
         ):
             logger.debug(
                 "civ-rx: write confirmed by echo cmd=0x%02X sub=0x%02X",
@@ -2249,7 +2250,8 @@ class CivRuntime:
             generation=generation,
             # MOR-4209: the transport's typed ingress-order contract; a test
             # double without it (e.g. a mock) reads as unordered.
-            ordered_ingress=transport is not None and transport.ordered_ingress is True,
+            ordered_ingress=transport is not None
+            and getattr(transport, "ordered_ingress", False) is True,
         ):
             claimed = self._claim_civ_data_transaction(event)
         if event.type is CivEventType.NAK:

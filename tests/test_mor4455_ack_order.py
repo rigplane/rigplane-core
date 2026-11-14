@@ -16,12 +16,15 @@ from __future__ import annotations
 
 import pytest
 
+from rigplane import IC_7610_ADDR
 from rigplane.civ import (
     CivEvent,
     CivEventType,
     CivRequestKey,
     CivRequestTracker,
 )
+from rigplane.commands import CONTROLLER_ADDR
+from rigplane.radio import IcomRadio
 from rigplane.types import CivFrame
 
 _CTRL = 0xE0
@@ -293,3 +296,49 @@ async def test_rtt_sizes_wait_budgets_not_attribution(
     assert tracker.rtt_high_quantile == pytest.approx(0.3)
     assert tracker.scaled_wait_budget(0.5) == pytest.approx(0.9)
     assert tracker.scaled_wait_budget(2.0) == 2.0
+
+
+class _NoIngressContractTransport:
+    """CI-V transport without the MOR-4209 ``ordered_ingress`` contract.
+
+    Mirrors ``_IdleCivTransport`` in
+    ``tests/integration/test_rigctld_audio_pipeline.py``: a bare stub that
+    never delivers a reply, so the PTT re-read answer arrives via direct
+    ``_route_civ_frame`` ingress instead.
+    """
+
+
+@pytest.mark.asyncio
+async def test_routing_with_contractless_transport_still_records_ptt() -> None:
+    """A missing ``ordered_ingress`` reads as unordered, never as a crash.
+
+    Regression pin for the round-3 TX-path break: ``_route_civ_frame`` read
+    ``transport.ordered_ingress`` directly *before* the state-cache update,
+    so every PTT re-read reply routed with an attribute-less transport
+    raised ``AttributeError``, the ``global.tx_state.ptt`` observation never
+    landed, and both ``test_rigctld_audio_pipeline`` TX tests timed out in
+    ``wait_for_known_rf_state``. A transport naming no ingress contract is
+    unordered (as the MOR-4209 comment already states); the observation path
+    must not depend on the attribute existing.
+    """
+    radio = IcomRadio("192.168.1.100", model="IC-7610")
+    radio._civ_transport = _NoIngressContractTransport()  # type: ignore[assignment]
+    radio._connected = True
+    try:
+        frame = CivFrame(
+            to_addr=CONTROLLER_ADDR,
+            from_addr=IC_7610_ADDR,
+            command=0x1C,
+            sub=0x00,
+            data=b"\x01",
+            receiver=None,
+        )
+        await radio._civ_runtime._route_civ_frame(  # noqa: SLF001
+            frame,
+            generation=radio._civ_epoch,  # noqa: SLF001
+        )
+    finally:
+        radio._connected = False
+
+    snapshot = radio._state_store.snapshot()  # noqa: SLF001
+    assert snapshot.field("global.tx_state.ptt").value is True
