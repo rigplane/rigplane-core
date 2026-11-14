@@ -301,10 +301,10 @@ class _PacingScheduler(AcquisitionScheduler):
 _PACING_GAP = 0.125  # exact in binary, so the asserted instants are exact
 
 
-def _critical_wait_profile() -> RadioAcquisitionProfile:
-    """One cadence-owned, safety-critical path: ``global.tx_state.ptt``."""
+def _critical_wait_profile(path_name: str = "ptt") -> RadioAcquisitionProfile:
+    """One cadence-owned, safety-critical path: ``global.tx_state.<name>``."""
 
-    path = FieldPath.global_("tx_state", "ptt")
+    path = FieldPath.global_("tx_state", path_name)
     return RadioAcquisitionProfile(
         provider="test_provider",
         capabilities=(FieldCapability(path=path, polling=True),),
@@ -1303,7 +1303,7 @@ async def test_rigctld_operator_disconnect_is_not_undone_by_the_poller() -> None
 
 
 def _yaesu_critical_profile() -> RadioAcquisitionProfile:
-    """The four safety-critical paths a fake FTX-1 must answer to open."""
+    """The four startup paths a fake FTX-1 answers (three critical)."""
 
     from rigplane.backends.yaesu_cat.observations import (
         _MAIN_FREQ,
@@ -1323,6 +1323,45 @@ def _yaesu_critical_profile() -> RadioAcquisitionProfile:
         field_policies={
             path: AcquisitionPolicy(cadence_seconds=1.0, freshness_ttl_seconds=15.0)
             for path in (_MAIN_FREQ, _MAIN_MODE, _PTT, _TX_TARGET)
+        },
+    )
+
+
+def _yaesu_tx_target_gate_profile(model: str = "FTX-1") -> RadioAcquisitionProfile:
+    """Safety-critical paths plus the TX-target path of a shipped profile.
+
+    MOR-4433: ``tx_target`` is no longer safety-critical, so a Yaesu whose
+    ``FT;`` stays silent must still open. Derived from the shipped ``model``
+    (``FTX-1`` on main — the Yaesu profile declaring a TX-target source via
+    ``get_tx_func``), keeping every safety-critical path and the TX-target
+    path, so the test follows any Yaesu profile declaring such a source.
+    """
+
+    from rigplane.backends.yaesu_cat.observations import _TX_TARGET
+
+    acquisition = get_radio_profile(model).state_acquisition
+    assert acquisition is not None
+    outstanding = AcquisitionScheduler(profile=acquisition).unobserved_startup_paths(())
+    assert _TX_TARGET in outstanding, f"{model}: no TX-target startup path to pin"
+    keep = tuple(
+        path
+        for path in outstanding
+        if startup_critical_path(path) or path == _TX_TARGET
+    )
+    assert any(startup_critical_path(path) for path in keep), (
+        f"{model}: no safety-critical path left to answer"
+    )
+    return replace(
+        acquisition,
+        capabilities=tuple(
+            capability
+            for capability in acquisition.capabilities
+            if capability.path in keep
+        ),
+        field_policies={
+            path: policy
+            for path, policy in acquisition.field_policies.items()
+            if path in keep
         },
     )
 
@@ -1391,11 +1430,16 @@ class _Ftx1CriticalRadio:
     capabilities = {"tx"}
     connected = control_connected = radio_ready = True
 
-    def __init__(self, *, never_answers: str | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        never_answers: str | None = None,
+        profile: RadioAcquisitionProfile | None = None,
+    ) -> None:
         self.radio_state = RadioState()
         self._state_store = StateStore()
         self._acquisition_scheduler = AcquisitionScheduler(
-            profile=_yaesu_critical_profile()
+            profile=profile if profile is not None else _yaesu_critical_profile()
         )
         self._poll_warned_fields: set[str] = set()
         self._critical_read_timeouts: dict[FieldPath, int] = {}
@@ -1407,7 +1451,7 @@ class _Ftx1CriticalRadio:
     def profile(self) -> SimpleNamespace:
         # What ``YaesuObservationAdapter.from_radio`` reads: the radio
         # profile's state-acquisition block.
-        return SimpleNamespace(state_acquisition=_yaesu_critical_profile())
+        return SimpleNamespace(state_acquisition=self._acquisition_scheduler._profile)
 
     @property
     def state_store(self) -> StateStore:
@@ -1422,6 +1466,10 @@ class _Ftx1CriticalRadio:
     async def read_transmit_state(self) -> object:
         from rigplane.core.tx_observation import TxStateReading
 
+        if self._never_answers == "ptt":
+            # What the transport reports when the PTT read stays silent:
+            # the adapter builds its own ``CatTimeoutError`` from this tag.
+            return TxStateReading(value=None, failure="timeout")
         return TxStateReading(
             value=False,
             verified_readback=True,
@@ -1467,18 +1515,77 @@ class _Ftx1CriticalRadio:
 
 
 @pytest.mark.asyncio
-async def test_yaesu_unanswered_critical_read_fails_startup_after_three_attempts() -> (
-    None
-):
-    """MOR-2757 (a): a fake FTX-1 that never answers ``FT;`` ends startup.
+async def test_yaesu_silent_tx_func_still_opens_with_tx_target_unknown() -> None:
+    """MOR-4433: a fake FTX-1 that never answers ``FT;`` still opens.
 
-    The ``FT;`` read is the TX target's own read. Three medium cycles with
-    no answer reach the owner's attempt limit (MOR-2749, 2026-09-27), and
-    the same declared-command defect record a refused read leaves on the
-    scheduler refuses the bind — naming the field and the command. Before
-    MOR-2757 nothing counted these reads, so the gate waited forever.
+    ``tx_target`` left the safety-critical set, so the silent TX-target
+    read no longer ends startup: one real medium cycle proves ``FT;``
+    stays silent while the rest answers, the gate then completes at the
+    non-critical deadline with ``tx_target`` still unobserved, no defect
+    is recorded, and the served state reports it unknown. Replaces the
+    MOR-2757 abort assertion on this same fake.
     """
-    radio = _Ftx1CriticalRadio(never_answers="FT;")
+    from rigplane.backends.yaesu_cat.observations import (
+        _TX_TARGET,
+        YaesuObservationAdapter,
+    )
+    from rigplane.backends.yaesu_cat.transport import CatTimeoutError
+    from rigplane.web.runtime_helpers import build_public_state_payload_from_snapshot
+
+    radio = _Ftx1CriticalRadio(
+        never_answers="FT;", profile=_yaesu_tx_target_gate_profile()
+    )
+    server = WebServer(radio, _gated_config())
+    scheduler = radio._acquisition_scheduler
+
+    # Not vacuous: the real adapter attempts the read and the transport
+    # timeout surfaces — ``FT;`` is silent, not merely unasked.
+    adapter = YaesuObservationAdapter(radio, profile=scheduler._profile)
+    with pytest.raises(CatTimeoutError):
+        await adapter.poll_medium()
+    assert radio.tx_func_reads >= 1
+
+    # ``tx_target`` is answered by nothing here: excluded explicitly (not
+    # via ``startup_critical_path``) so the test also pins the pre-fix
+    # behaviour — on the old code it stays outstanding and blocks the gate.
+    critical = tuple(
+        path
+        for path in scheduler.unobserved_startup_paths(())
+        if startup_critical_path(path) and path != _TX_TARGET
+    )
+    assert critical, "no safety-critical path left to answer"
+    for path in critical:
+        server.command_state_store.apply(
+            _observation(path, _critical_startup_value(path), at=0.0)
+        )
+    assert _TX_TARGET in scheduler.unobserved_startup_paths(
+        _observed_paths(server, scheduler)
+    )
+
+    clock = _GateClock(stop_at=11.0)
+    with _fake_gate_clock(clock):
+        await _await_initial_state_acquisition(server, sweep=False)
+
+    assert clock.now >= 10.0
+    assert _TX_TARGET not in _observed_paths(server, scheduler)
+    assert scheduler.startup_defect is None
+    payload = build_public_state_payload_from_snapshot(
+        server.command_state_store.snapshot(), radio=None, receiver_count=2
+    )
+    assert payload["txTarget"] == {"status": "unknown", "reason": "not-observed"}
+
+
+@pytest.mark.asyncio
+async def test_yaesu_unanswered_ptt_read_still_fails_startup() -> None:
+    """MOR-4433 control: PTT silence still ends startup on the Yaesu path.
+
+    ``ptt`` stays safety-critical: three medium cycles with no PTT answer
+    reach the owner's attempt limit (MOR-2749, 2026-09-27), and the
+    declared-command defect the adapter records refuses the bind — naming
+    the field. The TX-target read answers here, so only the PTT silence
+    can be the cause.
+    """
+    radio = _Ftx1CriticalRadio(never_answers="ptt")
     server = WebServer(radio, _gated_config())
     scheduler = radio._acquisition_scheduler
     binds: list[str] = []
@@ -1496,13 +1603,9 @@ async def test_yaesu_unanswered_critical_read_fails_startup_after_three_attempts
     message = str(caught.value)
     assert message.startswith("web startup aborted: ")
     assert message.endswith("Refusing to start a half-working server.")
-    assert "global.tx_state.tx_target" in message
-    assert "FT;" in message
+    assert "global.tx_state.ptt" in message
+    assert "global.tx_state.tx_target" not in message
     assert scheduler.startup_defect is not None
-    # >= 3 pins "not sooner": an abort on the first attempt would stop the
-    # reads at 1. The poller keeps cycling until the gate's next poll sees
-    # the defect, so a 4th read can land first — that is fine.
-    assert radio.tx_func_reads >= 3
 
 
 @pytest.mark.asyncio
@@ -1951,18 +2054,112 @@ async def test_ic7610_opens_by_the_deadline_while_refusing_mains_filter_shape_re
     assert "after 10s" in warnings[0]
 
 
+class _TxTargetAdverseWire(_Ic7610Wire):
+    """Answers every initial read except the native TX-target read (``1C 03``).
+
+    ``fate="silent"`` drops that read (the radio stays silent);
+    ``fate="nak"`` answers it with the bare NG the bench produces.
+    """
+
+    def __init__(self, radio: IcomRadio, *, fate: str) -> None:
+        super().__init__(radio, {})
+        assert fate in ("silent", "nak")
+        self._fate = fate
+        self.tx_target_reads = 0
+
+    async def send_civ(
+        self,
+        command: int,
+        sub: int | None = None,
+        data: bytes | None = None,
+        **kwargs: object,
+    ) -> None:
+        request = build_civ_frame(
+            self._radio._radio_addr, CONTROLLER_ADDR, command, sub=sub, data=data
+        )
+        parsed = parse_civ_frame(request)
+        if (parsed.command, parsed.sub) == (0x1C, 0x03):
+            self.sent.append(request)
+            self.tx_target_reads += 1
+            if self._fate == "nak":
+                await self._radio._civ_runtime._route_civ_frame(
+                    parse_civ_frame(_BARE_NG),
+                    generation=self._radio._civ_epoch,
+                )
+            return
+        await super().send_civ(command, sub=sub, data=data, **kwargs)
+
+
+@pytest.mark.parametrize("fate", ["silent", "nak"])
+@pytest.mark.asyncio
+async def test_ic7610_unanswered_tx_target_still_opens_with_tx_target_unknown(
+    fate: str,
+) -> None:
+    """MOR-4433: IC-7610 opens while the native TX-target read never answers.
+
+    The ``1C 03`` transmit-frequency read stays silent (or is NAKed with a
+    bare NG) while every other initial read answers; the gate must still
+    complete with ``tx_target`` unobserved, no defect recorded, and the
+    served state reporting it unknown.
+    """
+    from rigplane.web.runtime_helpers import build_public_state_payload_from_snapshot
+
+    TX_TARGET = FieldPath.global_("tx_state", "tx_target")
+
+    radio = IcomRadio("192.168.1.100", model="IC-7610")
+    server = WebServer(radio, _gated_config())
+    scheduler = _acquisition_scheduler(server)
+    assert scheduler is not None
+    assert TX_TARGET in scheduler.unobserved_startup_paths(())
+    # The generation advance runtime/_control_phase.py makes on connect.
+    radio._civ_runtime.advance_generation("connect")
+    wire = _TxTargetAdverseWire(radio, fate=fate)
+    radio.send_civ = wire.send_civ  # type: ignore[method-assign]
+    radio._INITIAL_STATE_GAP_LAN = radio._INITIAL_STATE_GAP_SERIAL = 0.0
+
+    await fetch_initial_state(radio)
+
+    # Not vacuous: the fetch attempted the TX-target read and answered
+    # the live tuning pair.
+    assert wire.tx_target_reads >= 1
+    observed = _observed_paths(server, scheduler)
+    assert TX_TARGET not in observed
+    assert any(path.name == "freq_hz" for path in observed), (
+        "the rest of the initial fetch must answer"
+    )
+
+    clock = _GateClock(stop_at=12.0)
+    with _fake_gate_clock(clock):
+        try:
+            await _await_initial_state_acquisition(server, sweep=False)
+        except _GateWindowClosed:
+            outstanding = scheduler.unobserved_startup_paths(
+                _observed_paths(server, scheduler)
+            )
+            pytest.fail(
+                f"startup still waiting after {clock.now:.0f}s on {outstanding}"
+            )
+
+    assert TX_TARGET not in _observed_paths(server, scheduler)
+    assert scheduler.startup_defect is None
+    payload = build_public_state_payload_from_snapshot(
+        server.command_state_store.snapshot(),
+        radio=None,
+        receiver_count=radio._profile.receiver_count,
+    )
+    assert payload["txTarget"] == {"status": "unknown", "reason": "not-observed"}
+
+
 RIGS_DIR = Path(__file__).resolve().parents[1] / "rigs"
 
 
 def _critical_startup_value(path: FieldPath) -> object:
-    from rigplane.core.tx_target import KnownTxTarget
-
+    # MOR-4433: ``tx_target`` is no longer safety-critical, so no caller
+    # answers it up front anymore — only the still-critical paths land here.
     if path.name == "freq_hz":
         return 14_074_000
     if path.name == "mode":
         return "LSB"
-    if path.name == "tx_target":
-        return KnownTxTarget(receiver="MAIN", slot=None, frequency_hz=14_074_000)
     return False  # ptt, split
 
 
@@ -2077,6 +2274,59 @@ async def test_never_answered_critical_path_fails_startup_after_three_attempts()
     assert message.endswith("Refusing to start a half-working server.")
     assert "global.tx_state.ptt" in message
     assert "1C 00" in message
+    assert "still unanswered after 3 failed reads of its request group" in message
+    assert scheduler.startup_defect is not None
+
+
+@pytest.mark.asyncio
+async def test_never_answered_split_path_fails_startup_after_three_attempts() -> None:
+    """MOR-4433 control: ``split`` is still safety-critical.
+
+    Same shape as the PTT case above with the split path alone: the
+    initial fetch plus two re-reads that time out for real reach three
+    attempts, and the gate fails through the declared-command defect
+    record, naming the field.
+    """
+
+    from rigplane.core.acquisition_scheduler import AcquisitionPriority
+
+    SPLIT = FieldPath.global_("tx_state", "split")
+    radio = IcomRadio("192.168.1.100", model="IC-7300")
+    server = WebServer(radio, _gated_config())
+    scheduler = AcquisitionScheduler(profile=_critical_wait_profile("split"))
+    radio._acquisition_scheduler = scheduler
+    radio._INITIAL_STATE_GAP_LAN = radio._INITIAL_STATE_GAP_SERIAL = 0.05
+    assert scheduler.unobserved_startup_paths(()) == (SPLIT,)
+
+    def _re_read_without_answer(now: float) -> None:
+        # What the drain does with a cadence group that never answers: it
+        # re-reads on cadence, and each answer window that closes without a
+        # reply is a real timeout (MOR-874's grace aside).
+        scheduler.ensure_fresh(
+            (SPLIT,),
+            max_age=1e-9,
+            priority=AcquisitionPriority.BACKGROUND,
+            reason="startup-gate",
+        )
+        for request in scheduler.pending_requests():
+            scheduler.record_acquisition_failure(
+                request,
+                reason="acquisition_request_timeout",
+                failed_paths=request.paths,
+                now=now,
+                link_healthy=False,
+            )
+
+    clock = _GateClock(stop_at=6.0)
+    clock.on_tick = _re_read_without_answer
+    with _fake_gate_clock(clock):
+        with pytest.raises(RuntimeError) as caught:
+            await _await_initial_state_acquisition(server, sweep=True)
+
+    message = str(caught.value)
+    assert message.startswith("web startup aborted: ")
+    assert message.endswith("Refusing to start a half-working server.")
+    assert "global.tx_state.split" in message
     assert "still unanswered after 3 failed reads of its request group" in message
     assert scheduler.startup_defect is not None
 

@@ -136,23 +136,31 @@ async def test_ic705_refused_tuner_read_does_not_hold_the_startup_gate(
         await endpoint.stop()
 
 
-async def test_refused_safety_critical_read_still_fails_startup(
+async def test_refused_tx_target_read_no_longer_fails_startup(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """The IC-7610 USB recording has no ``1C 03`` (TX target) answer, so its
-    fake refuses it. A refused safety-critical read is not served around: the
-    gate still fails startup naming it (MOR-2749), now counting its refusals
-    as the failed reads."""
+    fake refuses it. MOR-4433: the TX target is not safety-critical, so a
+    refused TX-target read no longer fails startup — the gate opens with it
+    unobserved, and the refusal is still counted, not dropped."""
     fake, endpoint, radio = await _connected("IC-7610")
     web = _gated_web(radio, "IC-7610")
     try:
-        with pytest.raises(RuntimeError, match="tx_target"):
+        with caplog.at_level(logging.INFO):
             await asyncio.wait_for(web.start(), 30)
+        # Not vacuous: the radio was asked for the TX target.
+        assert any((f.command, f.sub) == (0x1C, 0x03) for f in fake.commands)
+        messages = [record.getMessage() for record in caplog.records]
+        assert any(
+            "refused" in m and "global.tx_state.tx_target" in m
+            for m in messages
+            if m.startswith("acquisition:")
+        ), "the refused path is named once at INFO"
         assert (
             radio._acquisition_scheduler.consecutive_refusals(
                 FieldPath.global_("tx_state", "tx_target")
             )
-            >= 3
+            > 0
         )
     finally:
         await web.stop()

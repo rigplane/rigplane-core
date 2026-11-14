@@ -686,14 +686,12 @@ class YaesuObservationAdapter:
         method = getattr(self.radio, "get_tx_func", None)
         if not callable(method):
             return UnknownTxTarget(reason="unsupported")
+        # MOR-4433: the ``FT;`` read is the TX target's own read, and the TX
+        # target is not safety-critical — an unanswered read counts toward
+        # nothing and propagates like any transport error, so the poller's
+        # reconnect path still fires.
         try:
             tx_func = await method()
-        except CatTimeoutError as exc:
-            # MOR-2757: the ``FT;`` read is the TX target's own read — an
-            # unanswered one counts toward that critical path, then re-raises
-            # so the poller's reconnect path still fires.
-            self._count_critical_read_timeouts("tx_target", exc, (_TX_TARGET,))
-            raise
         except (AttributeError, NotImplementedError, CatCommandRejected):
             return UnknownTxTarget(reason="unsupported")
         except (CatParseError, CatFormatError, ValueError, KeyError):
@@ -702,7 +700,6 @@ class YaesuObservationAdapter:
             return UnknownTxTarget(reason="not-observed")
         if type(tx_func) is not int or tx_func not in (0, 1):
             return UnknownTxTarget(reason="contradiction")
-        self._note_critical_read_answers((_TX_TARGET,))
         return tx_func
 
     async def _read_tx_target(self) -> TxTarget:
