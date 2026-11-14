@@ -78,8 +78,7 @@ def pre_save_summary(
         )
     else:
         memory_line = (
-            "  - not included: stored memory contents "
-            "(you did not ask for them)\n"
+            "  - not included: stored memory contents (you did not ask for them)\n"
         )
     return (
         f"Ready to save: {path}  ({_format_kb(size_bytes)})\n"
