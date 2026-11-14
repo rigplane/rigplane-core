@@ -277,7 +277,9 @@ async def _station(
         radio, web.command_queue, state_store=web.command_state_store, clock=_clock
     )
     web._server = await asyncio.start_server(  # noqa: SLF001
-        web._accept_client, "127.0.0.1", 0  # noqa: SLF001
+        web._accept_client,
+        "127.0.0.1",
+        0,  # noqa: SLF001
     )
     entries: list[Any] = []
     executed = asyncio.Event()
