@@ -118,10 +118,8 @@ class N1mmSpectrumReceiver:
     async def _run(self, op: Callable[[], Awaitable[None]]) -> None:
         task = asyncio.ensure_future(op())
         self._tasks.add(task)
-        try:
-            await asyncio.shield(task)
-        finally:
-            self._tasks.discard(task)
+        task.add_done_callback(self._tasks.discard)
+        await asyncio.shield(task)
 
     async def _locked_start(self) -> None:
         async with self._lifecycle:
@@ -291,10 +289,8 @@ class N1mmSpectrumSource:
     async def _run(self, op: Callable[[], Awaitable[None]]) -> None:
         task = asyncio.ensure_future(op())
         self._tasks.add(task)
-        try:
-            await asyncio.shield(task)
-        finally:
-            self._tasks.discard(task)
+        task.add_done_callback(self._tasks.discard)
+        await asyncio.shield(task)
 
     async def _locked_start(self) -> None:
         async with self._lifecycle:
