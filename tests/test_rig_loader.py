@@ -9,6 +9,7 @@ import json
 import re
 import textwrap
 import tomllib
+from dataclasses import astuple
 from decimal import Decimal
 from hashlib import sha256
 from pathlib import Path
@@ -141,6 +142,20 @@ set_freq = [0x05]
 """
 
 
+_IQ_LAN_TOML = """\
+[iq_lan]
+protocol = "xiegu_udp"
+radio_port = 50002
+receive_port = 50001
+sample_rate_hz = 48000
+samples_per_datagram = 192
+center_offset_hz = 8000
+usable_bandwidth_hz = 40000
+tune_min_hz = 100000
+tune_max_hz = 54000000
+"""
+
+
 # ── RigConfig loading ────────────────────────────────────────────
 
 
@@ -159,6 +174,70 @@ class TestLoadRig:
         p = _write_toml(tmp_path, _MINIMAL_TOML)
         rig = load_rig(p)
         assert rig.model == "IC-7300"
+
+    def test_iq_lan_loads_as_optional_typed_profile_data(self, tmp_path):
+        rig = load_rig(_write_toml(tmp_path, _MINIMAL_TOML + _IQ_LAN_TOML))
+
+        expected = ("xiegu_udp", 50002, 50001, 48000, 192)
+        expected += (8000, 40000, 100000, 54000000)
+        assert astuple(rig.iq_lan) == expected
+        assert rig.to_profile().iq_lan == rig.iq_lan
+
+    def test_iq_lan_accepts_largest_ipv4_datagram(self, tmp_path):
+        section = _IQ_LAN_TOML.replace(
+            "samples_per_datagram = 192", "samples_per_datagram = 16376"
+        )
+
+        rig = load_rig(_write_toml(tmp_path, _MINIMAL_TOML + section))
+
+        assert rig.iq_lan.samples_per_datagram == 16_376
+
+    def test_profile_without_iq_lan_has_none(self, tmp_path):
+        rig = load_rig(_write_toml(tmp_path, _MINIMAL_TOML))
+
+        assert rig.iq_lan is None
+        assert rig.to_profile().iq_lan is None
+
+    def test_iq_lan_accepts_zero_tune_min(self, tmp_path):
+        section = _IQ_LAN_TOML.replace("tune_min_hz = 100000", "tune_min_hz = 0")
+        rig = load_rig(_write_toml(tmp_path, _MINIMAL_TOML + section))
+        assert rig.iq_lan.tune_min_hz == 0
+
+    @pytest.mark.parametrize(
+        ("old", "new", "key"),
+        [
+            (
+                'protocol = "xiegu_udp"',
+                'protocol = "xiegu_udp"\nunexpected = 1',
+                "unexpected",
+            ),
+            ("receive_port = 50001\n", "", "receive_port"),
+            ('protocol = "xiegu_udp"', 'protocol = "other"', "protocol"),
+            ("sample_rate_hz = 48000", 'sample_rate_hz = "48000"', "sample_rate_hz"),
+            ("tune_min_hz = 100000", "tune_min_hz = -1", "tune_min_hz"),
+            (
+                "tune_max_hz = 54000000",
+                "tune_max_hz = 18446744073709551616",
+                "tune_max_hz",
+            ),
+            (
+                "samples_per_datagram = 192",
+                "samples_per_datagram = 16377",
+                "samples_per_datagram",
+            ),
+        ],
+    )
+    def test_iq_lan_rejects_invalid_sections_naming_the_key(
+        self, tmp_path, old, new, key
+    ):
+        section = _IQ_LAN_TOML.replace(old, new)
+
+        with pytest.raises(RigLoadError, match=key):
+            load_rig(_write_toml(tmp_path, _MINIMAL_TOML + section))
+
+    @pytest.mark.parametrize("model", ["IC-7300", "IC-7610", "X6200"])
+    def test_other_shipped_profiles_have_no_iq_lan(self, model):
+        assert get_radio_profile(model).iq_lan is None
 
     def test_modes_codes_load_parallel_to_list(self, tmp_path):
         """MOR-2518: [modes].codes loads as a parallel single-character code
@@ -3003,7 +3082,11 @@ class TestScopeSpanPresets:
         assert rig.to_profile().scope_span_presets_hz == ()
 
     def test_parses_declared_presets(self, tmp_path):
-        toml = _MINIMAL_TOML + "\n[scope]\nspan_presets_hz = [2500, 5000, 10000]\n"
+        toml = (
+            _MINIMAL_TOML
+            + "\n[scope]\nspan_presets_hz = [2500, 5000, 10000]\n"
+            + 'span_preset_semantics = "half_width"\n'
+        )
         p = _write_toml(tmp_path, toml)
         rig = load_rig(p)
         assert rig.scope_span_presets_hz == (2500, 5000, 10000)
@@ -3039,6 +3122,68 @@ class TestScopeSpanPresets:
         rig = load_rig(RIGS_DIR / name)
         assert rig.scope_span_presets_hz == _EXPECTED_SPAN_PRESETS_HZ
         assert rig.to_profile().scope_span_presets_hz == _EXPECTED_SPAN_PRESETS_HZ
+
+
+class TestScopeSpanPresetSemantics:
+    """MOR-4385: a profile that declares span presets must also declare
+    what those numbers mean on the radio's own wire — a ±half-width
+    (Icom CI-V ``0x27 0x15``) or a full display width — so the scope
+    pipeline can publish real view widths and grant matching coverage.
+    """
+
+    def test_semantics_is_required_with_presets(self, tmp_path):
+        toml = _MINIMAL_TOML + "\n[scope]\nspan_presets_hz = [2500, 5000]\n"
+        p = _write_toml(tmp_path, toml)
+        with pytest.raises(
+            RigLoadError,
+            match=r"\[scope\]\.span_presets_hz requires span_preset_semantics",
+        ):
+            load_rig(p)
+
+    def test_defaults_to_half_width_without_presets(self, tmp_path):
+        p = _write_toml(tmp_path, _MINIMAL_TOML)
+        rig = load_rig(p)
+        assert rig.to_profile().scope_span_preset_semantics == "half_width"
+
+    @pytest.mark.parametrize("semantics", ["half_width", "full_width"])
+    def test_parses_declared_semantics(self, tmp_path, semantics):
+        toml = (
+            _MINIMAL_TOML
+            + "\n[scope]\nspan_presets_hz = [2500, 5000]\n"
+            + f'span_preset_semantics = "{semantics}"\n'
+        )
+        p = _write_toml(tmp_path, toml)
+        rig = load_rig(p)
+        assert rig.to_profile().scope_span_preset_semantics == semantics
+
+    def test_rejects_unknown_semantics(self, tmp_path):
+        toml = (
+            _MINIMAL_TOML
+            + "\n[scope]\nspan_presets_hz = [2500, 5000]\n"
+            + 'span_preset_semantics = "widest"\n'
+        )
+        p = _write_toml(tmp_path, toml)
+        with pytest.raises(
+            RigLoadError,
+            match=r"\[scope\]\.span_preset_semantics must be half_width or"
+            r" full_width",
+        ):
+            load_rig(p)
+
+    def test_every_shipped_profile_with_presets_declares_half_width(self):
+        """Every shipped profile that declares span presets states the
+        semantics explicitly, and all of them are Icom CI-V half-widths
+        (see each profile's CI-V citation)."""
+        shipped = sorted(
+            path.name
+            for path in RIGS_DIR.glob("*.toml")
+            if "span_presets_hz" in path.read_text()
+        )
+        assert shipped, "expected at least one shipped profile with presets"
+        for name in shipped:
+            profile = load_rig(RIGS_DIR / name).to_profile()
+            assert profile.scope_span_presets_hz
+            assert profile.scope_span_preset_semantics == "half_width", name
 
 
 class TestScopeFixedEdgeRanges:

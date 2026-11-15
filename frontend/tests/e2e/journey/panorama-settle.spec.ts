@@ -136,19 +136,23 @@ for (const [index, [model, zoomMode]] of ([['IC-705', 0], ['IC-7300', 0], ['IC-7
             await expect(spanValue).toHaveText('±50k');
             await expect.poll(() => frames.at(-1)?.view).toEqual(fixed);
           } else {
-            const widths = [50000, 100000, 250000];
-            await expect(page.getByTestId('scope-span-value').first()).toHaveText('±50k');
-            for (const [step, action] of ['Decrease scope span', 'Increase scope span', ']'].entries()) {
-              const width = widths[step]!;
-              const mark = frames.length;
-              if (action === ']') await page.keyboard.press(action);
-              else await page.getByRole('button', { name: action, exact: true }).first().click();
-              const bounds = [14_250_000 - width / 2, 14_250_000 + width / 2];
-              await expect.poll(() => grants.at(-1)?.view).toEqual({ startHz: bounds[0], endHz: bounds[1] });
-              await expect.poll(() => frames.slice(mark).some(frame => frame.pixels && frame.view.every((hz, i) => hz === bounds[i])
-                && frame.coverage.every((hz, i) => hz === bounds[i]))).toBe(true);
-              await expect(page.getByTestId('scope-span-value').first()).toHaveText(`±${width / 2000}k`);
-            }
+          // MOR-4385: span choices are real view widths (twice the Icom
+          // ±half-width preset), so the steps read like the radio's own
+          // span table and each 0x15 write lands on the width/2 preset.
+          const widths = [50000, 100000, 200000];
+          await expect(page.getByTestId('scope-span-value').first()).toHaveText('±50k');
+          for (const [step, action] of ['Decrease scope span', 'Increase scope span', ']'].entries()) {
+            const width = widths[step]!;
+            const mark = frames.length;
+            if (action === ']') await page.keyboard.press(action);
+            else await page.getByRole('button', { name: action, exact: true }).first().click();
+            const bounds = [14_250_000 - width / 2, 14_250_000 + width / 2];
+            await expect.poll(() => grants.at(-1)?.view).toEqual({ startHz: bounds[0], endHz: bounds[1] });
+            await expect.poll(() => frames.slice(mark).some(frame => frame.pixels && frame.view.every((hz, i) => hz === bounds[i])
+              && frame.coverage.every((hz, i) => hz === bounds[i]))).toBe(true);
+            await expect(page.getByTestId('scope-span-value').first()).toHaveText(`±${width / 2000}k`);
+            expect((await writes()).filter(receipt => receipt.sub === 0x15).at(-1)?.span).toBe(width / 2);
+          }
           }
         } else {
         await page.mouse.move(box!.x + box!.width * (zoom ? 0.9 : 0.6), box!.y + box!.height * 0.3);
@@ -169,9 +173,9 @@ for (const [index, [model, zoomMode]] of ([['IC-705', 0], ['IC-7300', 0], ['IC-7
         // MOR-4387: a zoomed view follows the VFO (span preserved); only a
         // preset pin may hold a fixed window. MOR-4392 round 2: the FIX span
         // variant never steps (keys disabled) so the window stays the fixed
-        // edges.
+        // edges. MOR-4385: the CTR span variant ends at the 200 kHz width.
         const view = zoom === 'span'
-          ? (zoomMode === 1 ? [14_200_000, 14_300_000] : [14_125_000, 14_375_000])
+          ? (zoomMode === 1 ? [14_200_000, 14_300_000] : [14_150_000, 14_350_000])
           : zoom ? [finalHz - 25_000, finalHz + 25_000] : [finalHz - 50_000, finalHz + 50_000];
         if (zoom === true) await expect(marker).toBeVisible();
         const live = frames.slice(quietStart.frames, quietEnd.frames);

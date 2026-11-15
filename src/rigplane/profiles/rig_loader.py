@@ -71,6 +71,7 @@ from rigplane.profiles import (
     FilterWidthRule,
     FilterWidthSegment,
     FreqRangeInfo,
+    IqLanSpec,
     KeyboardBinding,
     KeyboardConfig,
     MemoryProfile,
@@ -78,6 +79,7 @@ from rigplane.profiles import (
     PowerWriteQuantum,
     RadioProfile,
     RuleSpec,
+    SpanPresetSemantics,
     TxPolicy,
 )
 
@@ -750,6 +752,11 @@ class RigConfig:
     scope_ref_max_db: float | None = None
     scope_ref_step_db: float | None = None
     scope_span_presets_hz: tuple[int, ...] = ()
+    # MOR-4385: meaning of one preset entry on the radio's wire — see
+    # RadioProfile.scope_span_preset_semantics. Required (in the TOML)
+    # whenever span_presets_hz is declared; "half_width" for every
+    # shipped Icom profile.
+    scope_span_preset_semantics: SpanPresetSemantics = "half_width"
     scope_fixed_edge_ranges: tuple[ScopeFixedEdgeRange, ...] = field(
         default=(), kw_only=True
     )
@@ -796,6 +803,7 @@ class RigConfig:
     # integer (``0x7250`` = reply bytes ``72 50``). ``None`` on every
     # non-Xiegu profile. Keyword-only so no positional argument shifts.
     xiegu_model_id: int | None = field(default=None, kw_only=True)
+    iq_lan: IqLanSpec | None = field(default=None, kw_only=True)
 
     def to_profile(self) -> RadioProfile:
         """Build a ``RadioProfile`` from this config."""
@@ -1012,6 +1020,7 @@ class RigConfig:
             scope_ref_max_db=self.scope_ref_max_db,
             scope_ref_step_db=self.scope_ref_step_db,
             scope_span_presets_hz=self.scope_span_presets_hz,
+            scope_span_preset_semantics=self.scope_span_preset_semantics,
             scope_fixed_edge_ranges=self.scope_fixed_edge_ranges,
             scope_fixed_edge_step_hz=self.scope_fixed_edge_step_hz,
             codec_preference=self.codec_preference,
@@ -1030,6 +1039,7 @@ class RigConfig:
             cw_text=self.cw_text,
             usb_identity=self.usb_identity,
             xiegu_model_id=self.xiegu_model_id,
+            iq_lan=self.iq_lan,
         )
 
     def to_command_map(self) -> CommandMap:
@@ -2627,6 +2637,69 @@ def _parse_cw_text(
     )
 
 
+_IQ_LAN_PROTOCOL = "xiegu_udp"
+_IQ_LAN_INT_KEYS = (
+    "radio_port",
+    "receive_port",
+    "sample_rate_hz",
+    "samples_per_datagram",
+    "center_offset_hz",
+    "usable_bandwidth_hz",
+    "tune_min_hz",
+    "tune_max_hz",
+)
+_IQ_LAN_KEYS = frozenset({"protocol", *_IQ_LAN_INT_KEYS})
+
+
+def _parse_iq_lan(filename: str, raw: Any) -> IqLanSpec | None:
+    """Parse optional radio-LAN IQ wire facts without importing ``sdr``."""
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise RigLoadError(f"{filename}: [iq_lan] must be a table")
+    _reject_unknown_keys(filename, "[iq_lan]", raw, _IQ_LAN_KEYS)
+    missing = sorted(_IQ_LAN_KEYS - set(raw))
+    if missing:
+        raise RigLoadError(f"{filename}: [iq_lan] missing required key(s): {missing!r}")
+    protocol = raw["protocol"]
+    if protocol != _IQ_LAN_PROTOCOL:
+        raise RigLoadError(
+            f"{filename}: [iq_lan].protocol must be {_IQ_LAN_PROTOCOL!r}, "
+            f"got {protocol!r}"
+        )
+    values: dict[str, int] = {}
+    for key in _IQ_LAN_INT_KEYS:
+        value = raw[key]
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise RigLoadError(f"{filename}: [iq_lan].{key} must be an integer")
+        values[key] = value
+    for key in ("radio_port", "receive_port"):
+        if not 1 <= values[key] <= 65_535:
+            raise RigLoadError(f"{filename}: [iq_lan].{key} must be in 1..65535")
+    for key in ("sample_rate_hz", "samples_per_datagram", "usable_bandwidth_hz"):
+        if values[key] <= 0:
+            raise RigLoadError(f"{filename}: [iq_lan].{key} must be positive")
+    if values["samples_per_datagram"] * 4 > 65_507:
+        raise RigLoadError(
+            f"{filename}: [iq_lan].samples_per_datagram * 4 must be <= 65507"
+        )
+    if values["usable_bandwidth_hz"] > values["sample_rate_hz"]:
+        raise RigLoadError(
+            f"{filename}: [iq_lan].usable_bandwidth_hz must not exceed sample_rate_hz"
+        )
+    if values["tune_min_hz"] < 0:
+        raise RigLoadError(f"{filename}: [iq_lan].tune_min_hz must be non-negative")
+    if values["tune_max_hz"] > 2**64 - 1:
+        raise RigLoadError(
+            f"{filename}: [iq_lan].tune_max_hz must fit an unsigned 64-bit integer"
+        )
+    if values["tune_min_hz"] >= values["tune_max_hz"]:
+        raise RigLoadError(
+            f"{filename}: [iq_lan].tune_min_hz must be less than tune_max_hz"
+        )
+    return IqLanSpec(protocol=protocol, **values)
+
+
 def _parse_identity(filename: str, raw: Any) -> tuple[str, ...]:
     """Parse the optional top-level ``[identity]`` section (MOR-3064).
 
@@ -3108,6 +3181,7 @@ def load_rig(path: Path) -> RigConfig:
     scope_ref_max_db: float | None = None
     scope_ref_step_db: float | None = None
     scope_span_presets_hz: tuple[int, ...] = ()
+    scope_span_preset_semantics: SpanPresetSemantics = "half_width"
     scope_fixed_edge_ranges: tuple[ScopeFixedEdgeRange, ...] = ()
     scope_fixed_edge_step_hz: int | None = None
     if scope_section:
@@ -3177,6 +3251,21 @@ def load_rig(path: Path) -> RigConfig:
                 raise RigLoadError(
                     f"{filename}: [scope].span_presets_hz must be strictly ascending"
                 )
+            # MOR-4385: presets alone are ambiguous — a number may be a
+            # +/- half-width (Icom CI-V 0x27 0x15) or a full display
+            # width — so the profile must state which one it means.
+            semantics = scope_section.get("span_preset_semantics")
+            if semantics is None:
+                raise RigLoadError(
+                    f"{filename}: [scope].span_presets_hz requires"
+                    " span_preset_semantics (half_width or full_width)"
+                )
+            if semantics not in ("half_width", "full_width"):
+                raise RigLoadError(
+                    f"{filename}: [scope].span_preset_semantics must be"
+                    " half_width or full_width"
+                )
+            scope_span_preset_semantics = semantics
 
     # Parse attenuator/preamp/agc (optional sections)
     att_section = data.get("attenuator", {})
@@ -3718,6 +3807,7 @@ def load_rig(path: Path) -> RigConfig:
         data.get("state_acquisition"),
     )
     tx_policy = _parse_tx_policy(filename, data.get("tx_policy"))
+    iq_lan = _parse_iq_lan(filename, data.get("iq_lan"))
     expected_identity_ids = _parse_identity(filename, data.get("identity"))
     memory = _parse_memory(filename, data.get("memory"), ctcss_tones_centihz)
     cw_text = _parse_cw_text(
@@ -3825,6 +3915,7 @@ def load_rig(path: Path) -> RigConfig:
         scope_ref_max_db=scope_ref_max_db,
         scope_ref_step_db=scope_ref_step_db,
         scope_span_presets_hz=scope_span_presets_hz,
+        scope_span_preset_semantics=scope_span_preset_semantics,
         scope_fixed_edge_ranges=scope_fixed_edge_ranges,
         scope_fixed_edge_step_hz=scope_fixed_edge_step_hz,
         codec_preference=codec_preference,
@@ -3843,6 +3934,7 @@ def load_rig(path: Path) -> RigConfig:
         memory=memory,
         cw_text=cw_text,
         usb_identity=usb_identity,
+        iq_lan=iq_lan,
     )
 
 

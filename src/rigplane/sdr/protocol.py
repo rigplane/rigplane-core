@@ -11,7 +11,7 @@ from typing import Callable, Protocol, runtime_checkable
 
 from rigplane.scope import ScopeFrame
 
-from .types import IqBlock
+from .types import IqBlock, IqSourceFacts
 
 __all__ = ["IqSource", "IqScopeSink"]
 
@@ -38,8 +38,19 @@ class IqSource(Protocol):
         """Whether the source is open."""
         ...
 
+    @property
+    def facts(self) -> IqSourceFacts:
+        """Tuning ownership and usable-window facts for this source."""
+        ...
+
     def set_center_freq(self, hz: int) -> None:
-        """Retune the hardware center frequency."""
+        """Set the source window centre.
+
+        For a slaved source, record the physical centre computed by the
+        controller from radio state. Centre ``0`` means the frequency is
+        unknown: drop samples and send no radio tune command until a real
+        centre is recorded.
+        """
         ...
 
     @property

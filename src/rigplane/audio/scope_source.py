@@ -91,6 +91,19 @@ class AudioFftSource:
             return View(center - view.span_hz / 2, center + view.span_hz / 2)
         return view
 
+    def resolve_follow(
+        self, view: FollowView, native: Coverage, receiver: int | None = None
+    ) -> View:
+        """Granted view for a follow request: the requested crop.
+
+        MOR-4385: the audio passband is fixed — following never moves
+        it — so the grant keeps the requested width even when the
+        native coverage is wider; the granted coverage carries the
+        truthful native coverage (MOR-4392 gate round 1), while the
+        binary frame's coverage stays the in-view intersection.
+        """
+        return self.resolve_view(view, receiver)
+
     def coverage_for(
         self, view: ViewRequest, receiver: int | None = None
     ) -> Coverage | None:
