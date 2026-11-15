@@ -659,8 +659,9 @@ async def test_external_narrowing_clips_follow_view_without_writes(model):
 async def test_follow_span_gesture_in_observed_fix_writes_nothing(model):
     """MOR-4392 round 2: the radio is in FIX (observed mode 1) — a
     follow zoom/span gesture is a client crop (MOR-4387), never a mode
-    change. Zero 0x14/0x15 writes; the grant keeps the requested window
-    and the hub re-resolves it per frame against the live fixed window.
+    change. Zero 0x14/0x15 writes; the grant IS the fixed window
+    (MOR-4451: the panorama stands still) and the hub regrants it per
+    frame against the live fixed window.
     """
     profile = load_rig(Path("rigs") / f"{model}.toml").to_profile()
     sim = _SimRadio(profile)
@@ -682,13 +683,14 @@ async def test_follow_span_gesture_in_observed_fix_writes_nothing(model):
         assert sim.writes == []
         assert session.observed is not None and session.observed.mode == 1
         # The FIX window streams before the gesture, so the grant is
-        # already clipped to it at subscribe time (no stale wide grant).
+        # already the fixed window at subscribe time (no stale wide grant).
         source.feed_frame(ScopeFrame(0, 1, 14_050_000, 14_200_000, bytes(475), False))
         await sub.receive()
-        assert sub.granted.view == View(14_050_000, 14_150_000)
-        # A follow span gesture inside FIX writes nothing at all.
+        assert sub.granted.view == View(14_050_000, 14_200_000)
+        # A follow span gesture inside FIX writes nothing at all and
+        # grants the same fixed window (set_view fixed branch agrees).
         grant = await source.set_view(FollowView("vfo", 50_000), 0)
-        assert grant.view == View(14_075_000, 14_125_000)
+        assert grant.view == View(14_050_000, 14_200_000)
         assert grant.coverage == Coverage(14_050_000, 14_200_000)
         assert sim.writes == []
         # ...and a hub resubscribe (the real gesture path) is equally quiet.
@@ -697,7 +699,7 @@ async def test_follow_span_gesture_in_observed_fix_writes_nothing(model):
         )
         try:
             assert sim.writes == []
-            assert gesture.granted.view == View(14_075_000, 14_125_000)
+            assert gesture.granted.view == View(14_050_000, 14_200_000)
             # Gate round 1: the granted coverage is the truthful native
             # (fixed) window, matching every per-frame regrant.
             assert gesture.granted.coverage == Coverage(14_050_000, 14_200_000)

@@ -176,7 +176,19 @@ class RadioScopeSource:
         the view never narrows off-centre for a few frames; the wire
         frame still carries the intersected coverage. Only a truly
         NARROWER native clips.
+        MOR-4451 FIX: in a fixed-family scope mode (FIX, SCROLL-F)
+        the panorama stands still — the grant's view IS the native
+        fixed window, unchanged, independent of the VFO and of the
+        requested follow width. The mode is the one ``feed_frame``
+        already remembered in ``_native_coverages`` (stored before
+        the hub regrants); the ``set_view`` fixed branch passes that
+        same remembered window, so both paths agree. SCROLL-F moves
+        its own edges on the radio; the view is whatever window the
+        frames report. CENTER keeps the rule above.
         """
+        remembered = self._native_coverages.get(self._receiver(receiver))
+        if remembered is not None and remembered[0] in _FIXED_SCOPE_MODES:
+            return View(native.start_hz, native.end_hz)
         requested = self.resolve_view(view, receiver)
         start = max(requested.start_hz, native.start_hz)
         end = min(requested.end_hz, native.end_hz)
