@@ -1132,3 +1132,41 @@ async def test_after_snapshot_transport_failure_names_the_phase() -> None:
     assert report.file.termination.status == "transport_error"
     assert "snapshot" in report.file.termination.detail
     assert seen.count(b"FA;") == 3
+
+
+async def test_eof_partial_bytes_land_in_unsolicited() -> None:
+    # P2: bytes received before the disconnect are retained in the
+    # file, and the row reads transport_error rather than silence.
+    import asyncio
+
+    from rigplane.probe.readlist import build_read_plan
+
+    config = _load("ic7300")
+    addr = config.civ_addr
+    (item,) = [
+        entry
+        for entry in build_read_plan(config).asked
+        if entry.name == "unknown:7f"
+    ]
+    partial = bytes.fromhex("fefefe94e00301")
+    nak = _nak_frame(addr)
+
+    async def exchange(request: bytes | None, timeout: float) -> bytes | None:
+        if request == item.body:
+            raise asyncio.IncompleteReadError(partial, 64)
+        return nak
+
+    report = await runner.run_probe(
+        config,
+        config_toml_sha256="0" * 64,
+        exchange=exchange,
+        port_kind="usb",
+        baud=CIV_BAUD,
+        label="",
+        include_private=False,
+        gap_s=GAP,
+        timeout_s=SHORT_TIMEOUT,
+        items=[item],
+    )
+    assert [row.outcome for row in report.file.commands] == ["transport_error"]
+    assert partial.hex() in [row.hex for row in report.file.unsolicited]
