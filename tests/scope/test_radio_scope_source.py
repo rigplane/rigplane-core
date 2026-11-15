@@ -1120,3 +1120,63 @@ async def test_scroll_f_follows_radio_reported_window_per_frame(model):
         assert sim.writes == []
     finally:
         await sub.close()
+
+
+@pytest.mark.parametrize("model", ["ic705", "ic7610"])
+@pytest.mark.parametrize("family_mode", [1, 2, 3])
+async def test_follow_span_gesture_in_family_mode_writes_span_only_in_scroll_c(
+    model, family_mode
+):
+    """MOR-4451/#4565: SPAN applies in Center and SCROLL-C (CI-V 27 15),
+    EDGE number in Fixed and SCROLL-F (27 16). A follow span gesture in
+    a radio-owned-window mode therefore writes ONLY the covering span
+    preset in SCROLL-C — no 0x14 mode write (the radio stays in
+    SCROLL-C), no 27 1E edge write — and nothing at all in FIX and
+    SCROLL-F. The grant stays the reported window either way; the
+    radio's next frames carry the new edges.
+    """
+    profile = load_rig(Path("rigs") / f"{model}.toml").to_profile()
+    presets = profile.scope_span_presets_hz
+    sim = _SimRadio(profile)
+    session = _sim_session(sim, profile)
+    source = RadioScopeSource(profile, session)
+    hub, encoded, Subscription = _sim_hub(source)
+    sub = await hub.subscribe(
+        Subscription("radio", 0, FollowView("vfo", 100_000), 475, 20)
+    )
+    try:
+        source.feed_frame(ScopeFrame(0, 0, 14_050_000, 14_150_000, bytes(475), False))
+        await sub.receive()
+        sim.writes.clear()
+        # External entry into the family mode behind our back: adopted,
+        # nothing written back.
+        sim.mode = family_mode
+        session.observe("mode", family_mode, 0)
+        await session.reconcile()
+        assert sim.writes == []
+        window = Coverage(14_000_000, 14_100_000)
+        source.feed_frame(
+            ScopeFrame(
+                0, family_mode, window.start_hz, window.end_hz, bytes(475), False
+            )
+        )
+        await sub.receive()
+        assert sub.granted.view == View(window.start_hz, window.end_hz)
+        # Wider then narrower than the subscribed 100 kHz: the covering
+        # preset ladder is the CENTER one (smallest preset containing
+        # the requested follow width), the write is span-only in
+        # SCROLL-C and absent in FIX/SCROLL-F.
+        for follow_width, expected_preset in (
+            (500_000, 250_000),
+            (20_000, 10_000),
+        ):
+            sim.writes.clear()
+            grant = await source.set_view(FollowView("vfo", follow_width), 0)
+            assert grant.view == View(window.start_hz, window.end_hz)
+            assert grant.coverage == window
+            if family_mode == 2:
+                assert sim.writes == [("span", presets.index(expected_preset), 0)]
+            else:
+                assert sim.writes == []
+    finally:
+        await sub.close()

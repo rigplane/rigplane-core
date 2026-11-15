@@ -1221,6 +1221,42 @@ async def test_fix_follow_reopen_forgets_the_stopped_stream_window(windowed_sdk)
             await _frame_with(ws, (14_080_000, 14_120_000))
 
 
+@pytest.mark.parametrize("windowed_sdk", ["IC-7610", "IC-705"], indirect=True)
+async def test_scroll_c_span_step_writes_only_span_preset_over_ws(windowed_sdk):
+    """#4565 journey: the MORE-menu S-C button's set_scope_mode(2), then a
+    follow SPAN+ resubscribe — exactly one 27 15 receipt with the covering
+    preset, zero 0x14 receipts after the S-C switch. The radio stays in
+    SCROLL-C and the grant stays the reported window.
+    """
+    radio, sim = windowed_sdk
+    sim.capture_civ_frames = True
+    sim.set_frequency(14_100_000)
+    radio._radio_state.main.freq = 14_100_000
+    presets = radio._profile.scope_span_presets_hz
+    async with web(radio) as (_, client, base, protocols, _):
+        async with client.ws_connect(base + "/api/v1/scope", protocols=protocols) as ws:
+            await _subscribe(
+                ws, Subscription("radio", 0, FollowView("vfo", 100_000), 475, 20)
+            )
+            # The S-C button: an explicit mode command (its own 0x14 is
+            # expected) — the session owns mode 2 from here on.
+            await radio.set_scope_mode(2)
+            assert sim.views[0][0] == 2
+            sim.windows[0] = (14_000_000, 14_100_000)
+            await _frame_with(ws, sim.windows[0])
+            sim.civ_frames_received.clear()
+            # SPAN+: a wider follow resubscribe must write only the
+            # covering span preset, never a mode write.
+            granted = await _subscribe(
+                ws, Subscription("radio", 0, FollowView("vfo", 500_000), 475, 20)
+            )
+            assert (granted.view.start_hz, granted.view.end_hz) == sim.windows[0]
+            receipts = _viewport_writes(sim)
+            assert len([w for w in receipts if w.sub == 0x15]) == 1
+            assert [w for w in receipts if w.sub == 0x14] == []
+            assert sim.views[0] == (2, presets.index(250_000), 1)
+
+
 async def test_restore_skips_span_adopted_during_teardown(windowed_sdk, monkeypatch):
     """Pre-review round 1 (P2): an external span change landing BETWEEN two
     restore writes leaves the restore set in time — the copied restore
