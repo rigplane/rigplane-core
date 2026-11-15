@@ -4345,9 +4345,7 @@ async def test_managed_key_refused_while_ptt_unobserved_controller_not_ready(
 
     from rigplane.runtime.tx_interlock import RfState, resolve_rf_state
 
-    _actuator, composition, server = await _joined_web_runtime(
-        tmp_path, _IcomActuator
-    )
+    _actuator, composition, server = await _joined_web_runtime(tmp_path, _IcomActuator)
     try:
         store = server.command_state_store
         assert resolve_rf_state(store.snapshot()) is RfState.UNKNOWN
