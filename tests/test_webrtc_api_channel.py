@@ -794,7 +794,11 @@ async def test_api_body_chunks_retained_by_bytes() -> None:
     handler._on_body(1, b"y")
     assert 1 not in handler._requests
     assert handler._in_flight == 0
-    await asyncio.sleep(0.2)
+    await await_until(
+        lambda: any(req_id == 1 for req_id, _err in _terminal_errors()),
+        timeout=10.0,
+        description="too_large ERROR sent",
+    )
     assert (1, {"code": "too_large", "message": "request body too large"}) in [
         (req_id, {"code": err["code"], "message": err["message"]})
         for req_id, err in _terminal_errors()
