@@ -61,11 +61,14 @@ class RadioScopeWriter(Protocol):
         """
 
 
-_FIXED_SCOPE_MODES = (1, 3)
-"""CI-V scope modes whose window is radio-held: FIX and SCROLL-F.
+RADIO_OWNED_WINDOW_SCOPE_MODES = (1, 2, 3)
+"""CI-V scope modes whose window is radio-held: FIX, SCROLL-C, SCROLL-F.
 
-A follow gesture in either is a client crop, never a mode change — the
-same family the frontend's fixed-mode presentation (FIX/S-F) uses.
+A follow gesture in any of them is a client crop, never a mode change —
+the grant IS the window the frames report, zero writes by us. In the
+scroll modes the radio moves its own edges ("follow the radio" = view =
+the reported window). Shared fact with the frontend: see
+contracts/scope-mode-families.json and its contract tests.
 """
 
 
@@ -176,18 +179,18 @@ class RadioScopeSource:
         the view never narrows off-centre for a few frames; the wire
         frame still carries the intersected coverage. Only a truly
         NARROWER native clips.
-        MOR-4451 FIX: in a fixed-family scope mode (FIX, SCROLL-F)
-        the panorama stands still — the grant's view IS the native
-        fixed window, unchanged, independent of the VFO and of the
-        requested follow width. The mode is the one ``feed_frame``
+        MOR-4451 radio-owned window: in a family mode (FIX, SCROLL-C,
+        SCROLL-F) the panorama stands still — the grant's view IS the
+        native reported window, unchanged, independent of the VFO and of
+        the requested follow width. The mode is the one ``feed_frame``
         already remembered in ``_native_coverages`` (stored before
         the hub regrants); the ``set_view`` fixed branch passes that
-        same remembered window, so both paths agree. SCROLL-F moves
-        its own edges on the radio; the view is whatever window the
-        frames report. CENTER keeps the rule above.
+        same remembered window, so both paths agree. The scroll modes
+        move their own edges on the radio; the view is whatever window
+        the frames report. CENTER keeps the rule above.
         """
         remembered = self._native_coverages.get(self._receiver(receiver))
-        if remembered is not None and remembered[0] in _FIXED_SCOPE_MODES:
+        if remembered is not None and remembered[0] in RADIO_OWNED_WINDOW_SCOPE_MODES:
             return View(native.start_hz, native.end_hz)
         requested = self.resolve_view(view, receiver)
         start = max(requested.start_hz, native.start_hz)
@@ -231,21 +234,25 @@ class RadioScopeSource:
         )
         if isinstance(view, FollowView) and selected:
             await self._writer.set_dual(True, selected)
-        if observed_mode in _FIXED_SCOPE_MODES:
+        if observed_mode in RADIO_OWNED_WINDOW_SCOPE_MODES:
             # MOR-4392 round 2, gate round 1: the REQUESTED receiver is in
-            # a fixed-family mode (FIX or SCROLL-F) — a follow zoom/span
-            # gesture is a client crop (MOR-4387), never a mode change, so
-            # nothing is written: no 0x14 mode flip, no span, no
-            # fixed-edge rewrite. The grant is the requested window
-            # clipped to the last streamed fixed window (the same
-            # resolve_follow rule the hub applies per frame), so the
-            # browser never holds a stale wide grant; with no fixed-mode
-            # frame seen yet the coverage stays unknown and the first
-            # frame resolves it. Back in CENTER the hub branch re-resolves
-            # against the native coverage. The FIX/CTR gestures themselves
-            # are explicit mode commands outside this path and still write.
+            # a radio-owned-window mode (FIX, SCROLL-C or SCROLL-F) — a
+            # follow zoom/span gesture is a client crop (MOR-4387), never
+            # a mode change, so nothing is written: no 0x14 mode flip, no
+            # span, no fixed-edge rewrite. (SPAN applies in SCROLL-C and
+            # EDGE number in SCROLL-F per the manual, but a follow gesture
+            # selects neither — it only crops the reported window, so the
+            # span/edge split needs no branch here.) The grant is the
+            # requested window clipped to the last streamed reported
+            # window (the same resolve_follow rule the hub applies per
+            # frame), so the browser never holds a stale wide grant; with
+            # no family-mode frame seen yet the coverage stays unknown
+            # and the first frame resolves it. Back in CENTER the hub
+            # branch re-resolves against the native coverage. The FIX/CTR
+            # gestures themselves are explicit mode commands outside this
+            # path and still write.
             remembered = self._native_coverages.get(selected)
-            if remembered is not None and remembered[0] in _FIXED_SCOPE_MODES:
+            if remembered is not None and remembered[0] in RADIO_OWNED_WINDOW_SCOPE_MODES:
                 native = remembered[1]
                 return GrantedView(self.resolve_follow(view, native, selected), native)
             return GrantedView(resolved, None)
