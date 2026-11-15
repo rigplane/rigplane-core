@@ -263,19 +263,19 @@ async def test_silent_tx_target_read_does_not_hold_the_startup_gate() -> None:
     ("path_name", "command", "sub"),
     [("ptt", 0x1C, 0x00), ("split", 0x0F, None)],
 )
-async def test_refused_ptt_or_split_read_still_fails_startup(
-    path_name: str, command: int, sub: int | None
+async def test_refused_ptt_or_split_read_opens_with_tx_unknown(
+    caplog: pytest.LogCaptureFixture, path_name: str, command: int, sub: int | None
 ) -> None:
-    """A refused read of a still startup-critical path fails startup (MOR-2749, MOR-4058).
+    """MOR-4456: a refused PTT/split read is unavailable, not fatal.
 
-    MOR-4433 left ``tx_state`` with two safety-critical reads — PTT
-    (``1C 00``) and split (``0F``) — while the TX target left the critical
-    set. A radio that NAKs either one still fails startup naming it, counting
-    its refusals as the failed reads. ``refuse_next`` NAKs one request per
-    queued command byte, so the test queues enough to cover the initial fetch
-    plus the re-reads (``0x1C`` also covers the non-critical tuner/TX-target
-    reads sharing the command byte; only the critical path can fail the
-    gate).
+    PTT (``1C 00``) and split (``0F``) left the critical set with the TX
+    target: a radio that NAKs either one still opens — the refused path is
+    recorded as answered-but-unavailable at INFO (the MOR-4058 seat), no
+    defect is recorded, and the served state reports TX unknown. No gate
+    WARNING names it: an unavailable path leaves the outstanding set at
+    once instead of lapsing at the deadline. ``refuse_next`` NAKs one
+    request per queued command byte, so the test queues enough to cover
+    the initial fetch plus the re-reads.
     """
     fake, endpoint, radio = await _connected("IC-7610")
     for _ in range(30):
@@ -283,11 +283,32 @@ async def test_refused_ptt_or_split_read_still_fails_startup(
     web = _gated_web(radio, "IC-7610")
     path = FieldPath.global_("tx_state", path_name)
     try:
-        with pytest.raises(RuntimeError, match=str(path)):
+        with caplog.at_level(logging.INFO):
             await asyncio.wait_for(web.start(), 30)
         # Not vacuous: the radio was asked for the refused read.
         assert any((f.command, f.sub) == (command, sub) for f in fake.commands)
-        assert radio._acquisition_scheduler.consecutive_refusals(path) >= 3
+        assert radio._acquisition_scheduler.consecutive_refusals(path) > 0
+        assert radio._acquisition_scheduler.startup_defect is None
+        messages = [record.getMessage() for record in caplog.records]
+        assert any(
+            "refused" in message and str(path) in message
+            for message in messages
+            if message.startswith("acquisition:")
+        ), "the refused path is named once at INFO"
+        assert not [
+            record
+            for record in caplog.records
+            if record.levelno >= logging.WARNING and str(path) in record.getMessage()
+        ], "an unavailable path lapses no deadline WARNING"
+        status, body = await _http_get_json(
+            int(web._server.sockets[0].getsockname()[1]),  # noqa: SL001
+            "/api/v1/state",
+        )
+        assert status == 200
+        # The public leaf stays present but null while its fieldStatus
+        # entry reads unobserved (the MOR-2425 nulling rule).
+        assert body[path_name] is None
+        assert body["fieldStatus"][path_name]["observed"] is False
     finally:
         await web.stop()
         await radio.disconnect()

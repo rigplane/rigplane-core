@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -27,6 +28,8 @@ from rigplane.backends.yaesu_cat.radio import YaesuCatRadio
 from rigplane.profiles.rig_loader import load_rig
 from rigplane.web.server import WebConfig, WebServer
 from rigplane_testkit.sim.adapters.yaesu_cat import YaesuCatSerialFake
+from rigplane_testkit.sim.engine import Ok, Refused
+from rigplane_testkit.yaesu.replay import REFUSAL
 
 ROOT = Path(__file__).resolve().parents[2]
 RIG = ROOT / "rigs/ft991a.toml"
@@ -51,12 +54,52 @@ class Ft991aHttpStation:
         await self.radio._transport.close()
 
 
-async def serve_ft991a_over_http(monkeypatch: Any) -> Ft991aHttpStation:
+#: A CAT-line hook for :func:`serve_ft991a_over_http`: called with each
+#: request line before the simulator answers; return ``(reply, outcome)``
+#: to shadow the sim, or ``None`` to let it answer. ``silent_on`` shadows
+#: with ``(None, Ok())`` (the radio stays silent); ``refused_by`` shadows
+#: with ``(REFUSAL, Refused(...))`` (the radio answers ``?;``).
+CommandHook = Callable[[str], tuple[str | None, Any] | None]
+
+
+def silent_on(*verbs: str) -> CommandHook:
+    """Shadow *verbs* (``"TX;"``, ``"FT;"``) with radio silence."""
+
+    def hook(line: str) -> tuple[str | None, Any] | None:
+        if line in verbs:
+            return (None, Ok())
+        return None
+
+    return hook
+
+
+def refused_by(*verbs: str, reason: str = "native_refusal") -> CommandHook:
+    """Shadow *verbs* (``"TX;"``, ``"FT;"``) with a ``?;`` refusal."""
+
+    def hook(line: str) -> tuple[str | None, Any] | None:
+        if line in verbs:
+            return (REFUSAL, Refused(reason))
+        return None
+
+    return hook
+
+
+async def serve_ft991a_over_http(
+    monkeypatch: Any,
+    *,
+    web_config: WebConfig | None = None,
+    command_hook: CommandHook | None = None,
+) -> Ft991aHttpStation:
     """Serve the committed FT-991A profile over HTTP on the CAT simulator.
 
     Returns a started :class:`Ft991aHttpStation`; the caller owns
     :meth:`Ft991aHttpStation.aclose`. No patched profile copy is involved:
     the radio and the fake both load ``rigs/ft991a.toml`` unmodified.
+
+    ``web_config`` replaces the default listener config (for example to
+    enable ``await_initial_state`` for the startup gate); ``command_hook``
+    shadows simulator answers per line (see :func:`silent_on` and
+    :func:`refused_by`).
     """
     radio = YaesuCatRadio("/dev/fixture", profile=load_rig(RIG))
     fake = YaesuCatSerialFake.from_profile(ROOT, SIM_PROFILE, rig_path=RIG)
@@ -66,6 +109,10 @@ async def serve_ft991a_over_http(monkeypatch: Any) -> Ft991aHttpStation:
 
     def logged(line: str) -> Any:
         wire.append(line)
+        if command_hook is not None:
+            override = command_hook(line)
+            if override is not None:
+                return override
         return handle(line)
 
     monkeypatch.setattr(fake.model, "handle_with_outcome", logged)
@@ -79,7 +126,9 @@ async def serve_ft991a_over_http(monkeypatch: Any) -> Ft991aHttpStation:
     await radio._transport.connect()
     server = WebServer(
         radio,
-        WebConfig(host="127.0.0.1", port=0, keepalive_interval=9999.0),
+        web_config
+        if web_config is not None
+        else WebConfig(host="127.0.0.1", port=0, keepalive_interval=9999.0),
     )
     await server.start()
     station.server = server
