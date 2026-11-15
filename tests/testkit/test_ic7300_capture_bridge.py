@@ -38,6 +38,12 @@ def test_reads_the_profile_declares_pass() -> None:
         assert guard(frame(read)), read
 
 
+def test_borrowed_sibling_reads_pass_the_guard() -> None:
+    # MOR-4464 finding 1: IC-7300 borrows get_scope_rbw (27 1f) from the
+    # IC-7610, so the guard built from the complete read plan admits it.
+    assert guard(frame("271f"))
+
+
 def test_status_reads_pass_but_their_write_forms_do_not() -> None:
     for read in ("1c00", "1c01", "271400", "271500", "271a00", "271e0101"):
         assert guard(frame(read)), read
@@ -109,10 +115,11 @@ async def test_probe_driver_through_the_guarded_bridge_is_never_blocked(
     profile lists reaches the radio; a blocked frame here would mean
     the bench session silently loses requests.
     """
-    from rigplane.profiles.rig_loader import load_rig
+    from rigplane.profiles.rig_loader import discover_rigs
     from rigplane_testkit.serial import CivSerialFake, SerialCivRecorder
 
-    config = load_rig(REPO_ROOT / "rigs" / "ic7300.toml")
+    rigs = discover_rigs(REPO_ROOT / "rigs")
+    config = rigs["IC-7300"]
     fake = CivSerialFake(echo=False)
     out = tmp_path / "rec.jsonl"
     rec = SerialCivRecorder(
@@ -137,6 +144,7 @@ async def test_probe_driver_through_the_guarded_bridge_is_never_blocked(
                 include_private=False,
                 gap_s=0.0,
                 timeout_s=0.5,
+                siblings=list(rigs.values()),
             )
         finally:
             writer.close()
@@ -148,3 +156,13 @@ async def test_probe_driver_through_the_guarded_bridge_is_never_blocked(
         "refused",
         "ack_only",
     }
+    import json
+
+    through = set()
+    for line in out.read_text().splitlines():
+        row = json.loads(line)
+        if row["dir"] == "c2r":
+            raw = bytes.fromhex(row["hex"])
+            through.add(raw[4:-1].hex())
+    # The borrowed scope RBW read reaches the fake instead of being blocked.
+    assert "271f" in through
