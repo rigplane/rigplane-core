@@ -1230,15 +1230,22 @@ async def test_restore_skips_span_adopted_during_teardown(windowed_sdk, monkeypa
     sim.set_frequency(14_100_000)
     radio._radio_state.main.freq = 14_100_000
     presets = radio._profile.scope_span_presets_hz
-    # SCROLL-C start: the follow subscribe's set_center captures mode AND
-    # span for restoration, so the restore loop's mode write (held below)
-    # leaves a window for the external span change to land mid-restore.
+    # SCROLL-C start: the follow subscribe writes nothing (MOR-4451 —
+    # the grant is the radio-reported window), so an explicit CENTER
+    # switch captures mode AND span for restoration, and the restore
+    # loop's mode write (held below) leaves a window for the external
+    # span change to land mid-restore.
     sim.views[0] = (2, 3, 1)
     async with web(radio) as (_, client, base, protocols, _):
         ws = await client.ws_connect(base + "/api/v1/scope", protocols=protocols)
         await _subscribe(
             ws, Subscription("radio", 0, FollowView("vfo", 100_000), 475, 20)
         )
+        await _frame_with(ws, (14_000_000, 14_350_000))
+        assert sim.views[0] == (2, 3, 1)
+        assert _viewport_writes(sim) == []
+        await radio.set_scope_mode(0)
+        await radio.set_scope_span(presets.index(50_000))
         await _frame_with(ws, (14_050_000, 14_150_000))
         assert sim.views[0] == (0, presets.index(50_000), 1)
         # Hold the restore's first write (mode) in flight so the external
@@ -1268,7 +1275,7 @@ async def test_restore_skips_span_adopted_during_teardown(windowed_sdk, monkeypa
         assert sim.views[0] == (2, presets.index(100_000), 1)
         assert (
             len([w for w in _viewport_writes(sim) if w.sub == 0x15]) == 1
-        )  # only the subscribe's own span write
+        )  # only the explicit CENTER switch's span write
 
 
 def _dual_writes(sim) -> list:
