@@ -1760,6 +1760,86 @@ async def test_api_tx_start_single_command_refused(tmp_path: Path) -> None:
 
 
 @_webrtc
+async def test_api_no_registry_command_keys_the_transmitter(tmp_path: Path) -> None:
+    """Every keying name the command registry accepts is refused over api.
+
+    Sweeps ``ControlHandler._COMMANDS``: names the shared ``starts_transmission``
+    classifier marks (with their keying params) answer 403; the managed PTT
+    names (``ptt`` state true, ``ptt_on``) answer the HTTP dispatch's 409
+    (managed momentary PTT is websocket-only), single and batch; names that do
+    not exist (``set_ptt``/``set_tx``/``set_mox``/``tune``) are not keying
+    commands at all. After every request the simulated radio is still unkeyed.
+    The control channel keeps keying (``test_data_channel_with_key_keys_tx_like_ws``).
+    """
+    from rigplane.web.handlers.control import ControlHandler, starts_transmission
+    from test_webrtc_attach_path import (  # noqa: E402
+        _stand_up_stack,
+        _tear_down_stack,
+    )
+
+    keying_params: dict[str, dict[str, object]] = {
+        "send_cw_text": {"text": "TEST"},
+        "set_vox": {"on": True},
+        "set_tuner_status": {"value": 2},
+        "set_break_in": {"mode": 1},
+        "send_civ": {"data": "1c0001"},
+    }
+    classified = sorted(
+        name
+        for name in ControlHandler._COMMANDS  # noqa: SLF001
+        if starts_transmission(name, keying_params.get(name, {}))
+    )
+    # The classifier marks exactly the keying names this sweep exercises.
+    assert set(classified) == set(keying_params), classified
+    managed_ptt = [("ptt", {"state": True}), ("ptt_on", {})]
+    assert {name for name, _ in managed_ptt} <= set(ControlHandler._COMMANDS)  # noqa: SLF001
+    for absent in ("set_ptt", "set_tx", "set_mox", "tune"):
+        assert absent not in ControlHandler._COMMANDS  # noqa: SLF001
+
+    stack = await _stand_up_stack(tmp_path)
+    client = _ApiClient()
+    request_id = 0
+    try:
+        await client.connect(stack.web.port)
+        await client.attach(None)
+
+        async def _post(path: str, body: object) -> Any:
+            nonlocal request_id
+            request_id += 1
+            return await client.request(
+                request_id,
+                "POST",
+                path,
+                headers={"content-type": "application/json"},
+                body=json.dumps(body).encode(),
+            )
+
+        for name in classified:
+            step = {"name": name, "params": keying_params[name]}
+            resp = await _post("/api/v1/commands", step)
+            assert resp.status == 403, (name, resp.status, resp.body[:200])
+            resp = await _post("/api/v1/commands/batch", {"steps": [step]})
+            assert resp.status == 403, (name, resp.status, resp.body[:200])
+            assert stack.sim.ptt_on is False, name
+        for name, params in managed_ptt:
+            step = {"name": name, "params": params}
+            resp = await _post("/api/v1/commands", step)
+            assert resp.status == 409, (name, resp.status, resp.body[:200])
+            resp = await _post("/api/v1/commands/batch", {"steps": [step]})
+            # The batch envelope answers 200 with the step refused by the
+            # dispatch (momentary PTT needs a stable WebSocket owner).
+            assert resp.status == 200, (name, resp.status, resp.body[:200])
+            envelope = json.loads(resp.body.decode())
+            assert envelope["ok"] is False, envelope
+            assert envelope["results"][0]["ok"] is False, envelope
+            assert envelope["results"][0]["error"] == "unsupported_command", envelope
+            assert stack.sim.ptt_on is False, name
+    finally:
+        await client.close()
+        await _tear_down_stack(stack)
+
+
+@_webrtc
 async def test_api_tx_start_cw_send_refused(tmp_path: Path) -> None:
     """CW send over api: 403 controller_tx_unsupported, radio not keyed."""
     from test_webrtc_attach_path import (  # noqa: E402
