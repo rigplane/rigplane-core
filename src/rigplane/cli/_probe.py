@@ -249,6 +249,7 @@ async def execute(
             skipped_counts=skipped_counts,
             absent_answered=absent_answered,
             present_missed=present_missed,
+            termination=report.file.termination,
         )
     )
     if not yes and not _is_yes(ask("Save the file? [Y/n] ")):

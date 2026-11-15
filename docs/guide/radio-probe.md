@@ -14,9 +14,12 @@ JSON file. You review the file, then decide whether to send it.
 - **Read-only.** The probe only READS. It does not change any setting,
   does not transmit, does not start the tuner, and does not write to
   radio memory.
-- **Nothing is uploaded.** There is no upload step and no network code
-  in the probe. The file stays where you saved it until you send it
-  yourself.
+- **Nothing is uploaded.** There is no upload step: the probe only
+  talks to the port you name with `--port` and never connects
+  anywhere else on its own. The file stays where you saved it until
+  you send it yourself. (The bench testing bridge in
+  `scripts/ic7300_capture/` is a separate tool that relays a socket
+  to the radio.)
 - **USB serial only.** Pass the serial device with `--port`. LAN
   support is planned and not in this version.
 
@@ -58,8 +61,11 @@ could not be opened or nothing answered at all.
   listed read, `absent` for a declared-absent read the probe asked
   anyway — those rows name the lending profiles in `note`).
 - The reads that were deliberately not sent, each with a reason
-  (`skipped`: `unsafe_family`, `private`, `response_code`, or
-  `no_unambiguous_bytes`).
+  (`skipped`: `unsafe_family`, `private`, `response_code`,
+  `no_unambiguous_bytes`, or `run_aborted` when the run stopped
+  before attempting them).
+- How the run ended (`termination`: `completed`, `silence_stop`, or
+  `transport_error`, with the reason in plain words).
 - What the radio says it is (its identity answer) and whether it
   matches the profile — a mismatch never stops the run.
 - Your radio's settings at that moment: frequency, mode, power, and
@@ -99,7 +105,10 @@ stored text, so look through the file before you send it if you do.
 
 After five unanswered questions in a row the probe stops and says so —
 usually the radio is off or the port and speed are wrong. The rows
-collected so far are still offered for saving.
+collected so far are still offered for saving, and the summary says
+in plain words that the run stopped early. Reads never attempted are
+listed under `skipped` with the reason `run_aborted`, so every
+declared read still appears exactly once — asked or skipped.
 
 ## Reference
 

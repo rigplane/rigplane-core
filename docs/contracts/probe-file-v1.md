@@ -34,6 +34,7 @@ Pretty-printed JSON, one command per block, `jq`-friendly. Top level:
 | `skipped` | array | One row per declared read deliberately not sent, with a reason (below). |
 | `unsolicited` | array | `{t_ms, hex, text}` pushes seen outside any answer slot. |
 | `snapshot` | object | `{before, after, changed}` profile state reads around the pass; `changed` lists the names that differ. |
+| `termination` | object | `{status, detail}` how the run ended (below). |
 | `checks` | array | Always empty here; reserved for write checks. |
 
 One `commands` row:
@@ -42,7 +43,7 @@ One `commands` row:
 | --- | --- | --- |
 | `name` | string | Profile command name (`get_freq`, `cmd29:get_preamp:1`, `unknown:7f`). |
 | `template` | string | The profile-declared form (CAT read template, or CI-V body hex). |
-| `request_hex` | string | Exact sent bytes, hex. |
+| `request_hex` | string | The read body the run sent, hex: the CAT line, or the CI-V frame body without address bytes or framing. |
 | `request_text` | string | CAT line, or empty when the protocol has no text form. |
 | `reply_hex` | string or null | Exact reply bytes, hex; null when nothing arrived. |
 | `reply_text` | string or null | CAT reply line; null when nothing arrived or the row is not an answer. |
@@ -72,8 +73,19 @@ refused or action-shaped command family is never sent), `private`
 (stored memory contents without `--include-private`), `response_code`
 (the radio's own NAK/ACK reply bytes `0xFA`/`0xFB`, never requests),
 `no_unambiguous_bytes` (a declared-absent read no sibling profile
-lends unanimous bytes for). Every declared read of the profile is
-either asked or skipped; nothing is in both, nothing is missing.
+lends unanimous bytes for), `run_aborted` (a read the run never
+attempted because an earlier silence or transport break stopped it).
+Every declared read of the profile is either asked or skipped;
+nothing is in both, nothing is missing. A stopped run keeps that
+promise: reads after the stop are listed as `run_aborted` with the
+stop reason in `detail`.
+
+Termination, an object the parser validates: `status` is one of
+`completed` (every planned read was sent), `silence_stop` (five
+unanswered reads in a row), `transport_error` (the serial link
+broke); `detail` is the plain-words reason shown to the customer
+(the silence message, or the phase and error for a transport break).
+Files written before this key existed parse as `completed`.
 
 ## Redaction
 

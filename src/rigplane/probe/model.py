@@ -18,11 +18,13 @@ __all__ = [
     "OUTCOMES",
     "EXPECTED",
     "SKIP_REASONS",
+    "TERMINATION_STATUSES",
     "ToolInfo",
     "IdentityReport",
     "RadioInfo",
     "CommandRow",
     "SkippedRead",
+    "TerminationInfo",
     "UnsolicitedRow",
     "Snapshot",
     "ProbeFile",
@@ -57,10 +59,23 @@ EXPECTED = frozenset({"present", "absent"})
 #: action-shaped command family; ``private`` is stored memory contents
 #: without ``--include-private``; ``response_code`` is the radio's own
 #: NAK/ACK reply bytes, never requests; ``no_unambiguous_bytes`` is a
-#: declared-absent read no sibling profile lends unanimous bytes for.
+#: declared-absent read no sibling profile lends unanimous bytes for;
+#: ``run_aborted`` is a read the run never attempted because an earlier
+#: silence or transport break stopped it.
 SKIP_REASONS = frozenset(
-    {"unsafe_family", "private", "response_code", "no_unambiguous_bytes"}
+    {
+        "unsafe_family",
+        "private",
+        "response_code",
+        "no_unambiguous_bytes",
+        "run_aborted",
+    }
 )
+
+#: How a run ended. ``completed`` sent every planned read; ``silence_stop``
+#: is five unanswered reads in a row; ``transport_error`` is a broken
+#: serial link. The parser refuses any other status.
+TERMINATION_STATUSES = frozenset({"completed", "silence_stop", "transport_error"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -152,6 +167,19 @@ class Snapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class TerminationInfo:
+    """How the run ended: one of :data:`TERMINATION_STATUSES` plus why.
+
+    ``completed`` sent every planned read; ``silence_stop`` is five
+    unanswered reads in a row; ``transport_error`` is a broken serial
+    link, with the phase and the error in ``detail``.
+    """
+
+    status: str
+    detail: str = ""
+
+
+@dataclass(frozen=True, slots=True)
 class ProbeFile:
     """One ``rigplane-probe-v1`` document. ``checks`` stays empty in PR A."""
 
@@ -164,6 +192,9 @@ class ProbeFile:
     skipped: tuple[SkippedRead, ...] = ()
     unsolicited: tuple[UnsolicitedRow, ...] = ()
     snapshot: Snapshot = field(default_factory=lambda: Snapshot({}, {}, []))
+    termination: TerminationInfo = field(
+        default_factory=lambda: TerminationInfo("completed")
+    )
     checks: tuple[Any, ...] = ()
     schema: str = SCHEMA
 
@@ -237,6 +268,10 @@ def _to_plain(file: ProbeFile) -> dict[str, Any]:
             "before": dict(file.snapshot.before),
             "after": dict(file.snapshot.after),
             "changed": list(file.snapshot.changed),
+        },
+        "termination": {
+            "status": file.termination.status,
+            "detail": file.termination.detail,
         },
         "checks": list(file.checks),
     }
@@ -409,6 +444,24 @@ def _skipped_row(document: Any, index: int) -> SkippedRead:
     )
 
 
+def _termination_info(document: Any) -> TerminationInfo:
+    """The run's end state; files predating the key count as completed."""
+    if document is None:
+        return TerminationInfo("completed")
+    mapping = _need_mapping(document, "termination")
+    for key in ("status", "detail"):
+        if key not in mapping:
+            raise _missing(f"termination.{key}")
+    status = _need_str(mapping["status"], "termination.status")
+    if status not in TERMINATION_STATUSES:
+        raise ValueError(
+            f"field termination.status must be one of {sorted(TERMINATION_STATUSES)}"
+        )
+    return TerminationInfo(
+        status=status, detail=_need_str(mapping["detail"], "termination.detail")
+    )
+
+
 def _unsolicited_row(document: Any, index: int) -> UnsolicitedRow:
     mapping = _need_mapping(document, f"unsolicited[{index}]")
     for key in ("t_ms", "hex", "text"):
@@ -467,6 +520,7 @@ def _from_plain(document: Any) -> ProbeFile:
         isinstance(key, str) for key in changed
     ):
         raise ValueError("field snapshot.changed must be an array of strings")
+    termination = _termination_info(mapping.get("termination"))
     return ProbeFile(
         schema=_check_schema(mapping["schema"]),
         tool=_tool_info(mapping["tool"]),
@@ -484,5 +538,6 @@ def _from_plain(document: Any) -> ProbeFile:
         snapshot=Snapshot(
             before=dict(before), after=dict(after), changed=list(changed)
         ),
+        termination=termination,
         checks=tuple(checks),
     )

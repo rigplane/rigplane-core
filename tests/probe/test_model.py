@@ -153,7 +153,13 @@ def test_wrong_command_class_is_refused() -> None:
 
 def test_skip_reasons_are_a_closed_enum() -> None:
     assert SKIP_REASONS == frozenset(
-        {"unsafe_family", "private", "response_code", "no_unambiguous_bytes"}
+        {
+            "unsafe_family",
+            "private",
+            "response_code",
+            "no_unambiguous_bytes",
+            "run_aborted",
+        }
     )
 
 
@@ -163,6 +169,29 @@ def test_unknown_skip_reason_is_refused() -> None:
     document = json.loads(_sample().to_json())
     document["skipped"][0]["reason"] = "maybe-later"
     with pytest.raises(ValueError, match="reason"):
+        ProbeFile.from_json(json.dumps(document))
+
+
+def test_termination_round_trips_and_validates() -> None:
+    import json
+
+    from rigplane.probe.model import TERMINATION_STATUSES, TerminationInfo
+
+    assert TERMINATION_STATUSES == frozenset(
+        {"completed", "silence_stop", "transport_error"}
+    )
+    assert _sample().termination == TerminationInfo("completed")
+    document = json.loads(_sample().to_json())
+    assert document["termination"] == {"status": "completed", "detail": ""}
+    document["termination"] = {
+        "status": "silence_stop",
+        "detail": "The radio stopped answering.",
+    }
+    assert ProbeFile.from_json(json.dumps(document)).termination == (
+        TerminationInfo(status="silence_stop", detail="The radio stopped answering.")
+    )
+    document["termination"] = {"status": "gave-up", "detail": ""}
+    with pytest.raises(ValueError, match="termination.status"):
         ProbeFile.from_json(json.dumps(document))
 
 

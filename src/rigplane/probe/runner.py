@@ -34,7 +34,9 @@ from rigplane.probe.model import (
     IdentityReport,
     ProbeFile,
     RadioInfo,
+    SkippedRead,
     Snapshot,
+    TerminationInfo,
     ToolInfo,
     UnsolicitedRow,
 )
@@ -107,19 +109,25 @@ class _SendGate:
         self.gap_s = gap_s
         self.silent_run = 0
         self.stopped = False
-        self.detail = ""
+        self.stop_status = "completed"
+        self.stop_detail = ""
 
-    def stop(self, detail: str) -> None:
+    def stop(self, status: str, detail: str) -> None:
         """Stop the run; the first stop wins and names the file's reason."""
         if not self.stopped:
             self.stopped = True
-            self.detail = detail
+            self.stop_status = status
+            self.stop_detail = detail
+
+    def stop_transport(self, phase: str, error: BaseException) -> None:
+        """Stop the run on a broken exchange, naming the phase and error."""
+        self.stop("transport_error", f"Transport error in {phase}: {error}")
 
     def note_silent(self) -> None:
         """Count one unanswered read; five in a row stops the run."""
         self.silent_run += 1
         if self.silent_run >= SILENT_LIMIT:
-            self.stop(SILENT_ABORT_MESSAGE)
+            self.stop("silence_stop", SILENT_ABORT_MESSAGE)
 
     def note_answered(self) -> None:
         """Any answer, even a refusal, breaks the silence run."""
@@ -350,7 +358,7 @@ async def _read_identity(
         if answer is None:
             break
         if answer.broken is not None:
-            gate.stop(f"Transport error: {answer.broken}")
+            gate.stop_transport("identity", answer.broken)
             break
         for stray in answer.strays:
             strays.add(stray, protocol)
@@ -407,7 +415,7 @@ async def _read_snapshot(
             out[name] = None
             continue
         if answer.broken is not None:
-            gate.stop(f"Transport error: {answer.broken}")
+            gate.stop_transport("snapshot", answer.broken)
             out[name] = None
             continue
         for stray in answer.strays:
@@ -516,7 +524,16 @@ async def run_probe(
             gate,
             strays,
         )
-    aborted = gate.detail or None
+    aborted = gate.stop_detail or None
+    if gate.stopped:
+        unattempted = [
+            SkippedRead(
+                item.name, item.body.hex(), "run_aborted", gate.stop_detail
+            )
+            for item in watch[len(rows):]
+        ]
+    else:
+        unattempted = []
 
     changed = sorted(name for name in before if before[name] != after.get(name))
     file = ProbeFile(
@@ -539,9 +556,12 @@ async def run_probe(
         private_reads_included=include_private,
         label=label,
         commands=tuple(rows),
-        skipped=plan.skipped,
+        skipped=plan.skipped + tuple(unattempted),
         unsolicited=tuple(strays.rows),
         snapshot=Snapshot(before=before, after=after, changed=changed),
+        termination=TerminationInfo(
+            status=gate.stop_status, detail=gate.stop_detail
+        ),
         checks=(),
     )
     return ProbeRun(file=file, aborted=aborted)
@@ -578,7 +598,7 @@ async def _ask_once(
     if outcome == "silent":
         gate.note_silent()
     elif outcome == "transport_error":
-        gate.stop(f"Transport error: {item.name}: {answer.broken}")
+        gate.stop_transport(f"main pass ({item.name})", answer.broken)
     else:
         gate.note_answered()
     if protocol == "yaesu_cat":

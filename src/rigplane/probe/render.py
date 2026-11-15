@@ -10,6 +10,14 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 from rigplane.commands import parse_civ_frame
+from rigplane.probe.model import TerminationInfo
+
+
+def termination_line(termination: TerminationInfo | None) -> str:
+    """The plain-words stop line, or ``""`` when the run completed."""
+    if termination is None or termination.status == "completed":
+        return ""
+    return f"  - stopped early: {termination.detail}\n"
 
 __all__ = [
     "AbsentAnswer",
@@ -25,10 +33,17 @@ __all__ = [
     "silent_stop_message",
     "skipped_line",
     "start_screen",
+    "termination_line",
 ]
 
 #: Skip reasons in the order the summary counts them.
-_REASON_ORDER = ("unsafe_family", "private", "response_code", "no_unambiguous_bytes")
+_REASON_ORDER = (
+    "unsafe_family",
+    "private",
+    "response_code",
+    "no_unambiguous_bytes",
+    "run_aborted",
+)
 
 #: How many finding names print before the rest folds into "and N more".
 _MAX_FINDING_NAMES = 10
@@ -181,6 +196,7 @@ def pre_save_summary(
     skipped_counts: dict[str, int] | None = None,
     absent_answered: Sequence[AbsentAnswer] | None = None,
     present_missed: list[str] | None = None,
+    termination: TerminationInfo | None = None,
 ) -> str:
     """The summary shown before the file exists on disk."""
     settings = ", ".join(settings_lines)
@@ -203,6 +219,7 @@ def pre_save_summary(
         f"{skipped_line(skipped_counts or {})}"
         f"{absent_answered_line(absent_answered or [])}"
         f"{present_missed_line(present_missed or [])}"
+        f"{termination_line(termination)}"
         "It does NOT contain: your name, IP address, computer name or log files.\n"
         "Radio settings can show what you use the radio for (frequencies, mode).\n"
         "Nothing has been sent anywhere. "
