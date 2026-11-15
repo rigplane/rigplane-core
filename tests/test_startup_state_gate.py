@@ -1040,6 +1040,7 @@ class _TcpRigctldServer:
         self.silent = silent
         self.drop = drop
         self.refuse = refuse
+        self.f_requests = 0
         self.t_requests = 0
         self.t_commands = 0
         self.t_connection_ids: set[int] = set()
@@ -1071,6 +1072,8 @@ class _TcpRigctldServer:
                 if not line:
                     return
                 command = line.decode("ascii").rstrip("\r\n")
+                if command == "f":
+                    self.f_requests += 1
                 if command == "t":
                     self.t_commands += 1
                 if command == self.silent:
@@ -1136,6 +1139,8 @@ async def test_rigctld_unanswered_ptt_opens_after_the_non_critical_deadline(
     the store even on cycles where ``t`` times out; the gate opens at the
     non-critical deadline with the existing WARNING naming
     ``global.tx_state.ptt``, PTT stays unknown, and no defect is recorded.
+    The first timeout also demotes the poll-cycle ``t`` read (pinned by
+    the demotion test below), so ``t_requests`` stops at one here too.
     """
     PTT = FieldPath.global_("tx_state", "ptt")
     fake = _TcpRigctldServer(silent="t")
@@ -1183,10 +1188,100 @@ async def test_rigctld_unanswered_ptt_opens_after_the_non_critical_deadline(
         record.getMessage()
         for record in caplog.records
         if record.levelno == logging.WARNING
+        and record.name == "rigplane.web.web_startup"
         and "global.tx_state.ptt" in record.getMessage()
     ]
+    # The poller's own demotion WARNING lives on the backend logger and is
+    # pinned by the demotion test below; this one is the gate deadline.
     assert warnings, "the deadline WARNING must name the unanswered path"
     assert "after 10s" in warnings[0]
+
+
+@pytest.mark.asyncio
+async def test_rigctld_silent_t_demotes_after_one_reconnect_and_serves_receive_state(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """MOR-4456 B3: the first unanswered ``t`` reconnects once, then ``t`` stays unasked.
+
+    Full production path — the real TCP fake stays silent on ``t`` only,
+    the real poller runs inside ``WebServer.start()``, and the real HTTP
+    API serves state. Exactly one reconnect follows the first timeout
+    (``fake.connections`` stays 2), ``t`` is asked exactly once, and three
+    successive receive cycles each serve frequency/mode over HTTP. The
+    demotion logs its single named warning once. A fresh radio object asks
+    ``t`` again — the demotion dies with the client that earned it.
+    """
+    from rigplane.backends.rigctld_client.radio import (
+        RigctldClientObservationPoller,
+    )
+
+    fake = _TcpRigctldServer(silent="t")
+    await fake.start()
+    radio = _real_rigctld_radio(fake)
+    await radio.connect()
+    server = WebServer(radio, _gated_config())
+    try:
+        with caplog.at_level(logging.WARNING):
+            await asyncio.wait_for(server.start(), timeout=60.0)
+        assert fake.connections == 2
+        assert fake.t_requests == 1
+        port = int(server._server.sockets[0].getsockname()[1])  # noqa: SLF001
+        base_f = fake.f_requests
+        for _ in range(3):
+            await await_until(
+                lambda: fake.f_requests >= base_f + 1,
+                timeout=30.0,
+                description="another receive cycle with t demoted",
+            )
+            base_f = fake.f_requests
+            status, body = await _http_get_json(port, "/api/v1/state")
+            assert status == 200
+            assert body["main"]["freqHz"] == 14074000
+            assert body["main"]["mode"] == "USB"
+            snapshot = server.command_state_store.snapshot()
+            assert snapshot.field(FREQ).value == 14074000
+            assert snapshot.field(MODE).value == "USB"
+        assert fake.t_requests == 1
+        assert fake.connections == 2
+        demotions = [
+            record.getMessage()
+            for record in caplog.records
+            if record.levelno == logging.WARNING
+            and "transmit-state read demoted" in record.getMessage()
+        ]
+        assert len(demotions) == 1, [record.getMessage() for record in caplog.records]
+        assert "global.tx_state.ptt" in demotions[0]
+        assert "command t" in demotions[0]
+        assert "timed out" in demotions[0]
+        # A fresh radio object asks ``t`` again: the demotion dies with the
+        # client that earned it (server restart, explicit reconnect).
+        fake.silent = None
+        fresh = _real_rigctld_radio(fake)
+        await fresh.connect()
+        try:
+            answered: list = []
+            fresh_poller = RigctldClientObservationPoller(
+                fresh,
+                lambda batch: answered.extend(batch),
+                medium_interval=0.05,
+                slow_interval=1.0,
+            )
+            await fresh_poller._poll_medium()  # noqa: SLF001
+        finally:
+            await fresh.disconnect()
+        # Answered reads bump ``t_commands`` (``t_requests`` counts only the
+        # silent ones, still exactly one).
+        assert fake.t_requests == 1
+        assert fake.t_commands == 2
+        assert any(
+            str(item.path) == "global.tx_state.ptt" and item.value is False
+            for item in answered
+        )
+    finally:
+        with suppress(Exception):
+            await server.stop()
+        await radio.disconnect()
+        await fake.stop()
 
 
 @pytest.mark.asyncio
