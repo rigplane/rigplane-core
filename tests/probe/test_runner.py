@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from unittest.mock import patch
 
 from rigplane.commands import (
     CONTROLLER_ADDR,
@@ -546,6 +547,118 @@ async def test_transport_error_ends_the_run() -> None:
     )
     assert [row.outcome for row in report.file.commands] == ["transport_error"]
     assert report.aborted is not None
+
+
+async def _paced_run(config, exchange, *, gap_s: float, **kwargs):
+    """Run the probe with the sleep calls recorded; returns (report, delays)."""
+    delays: list[float] = []
+
+    async def fake_sleep(delay: float) -> None:
+        delays.append(delay)
+
+    with patch("asyncio.sleep", side_effect=fake_sleep):
+        report = await runner.run_probe(
+            config,
+            config_toml_sha256="0" * 64,
+            exchange=exchange,
+            port_kind="usb",
+            baud=YAESU_BAUD,
+            label="",
+            include_private=False,
+            gap_s=gap_s,
+            timeout_s=SHORT_TIMEOUT,
+            **kwargs,
+        )
+    return report, delays
+
+
+async def test_fully_silent_radio_sends_exactly_five_requests() -> None:
+    # MOR-4464 finding 5: identity plus snapshot reads count toward the
+    # five-silence stop, and nothing more is sent afterwards.
+    config = _load("ftx1")
+    seen: list[bytes] = []
+
+    async def exchange(request: bytes | None, timeout: float) -> bytes | None:
+        if request is not None:
+            seen.append(request)
+        return None
+
+    report, delays = await _paced_run(config, exchange, gap_s=0.25)
+    assert seen == [b"ID;", b"IF;", b"FA;", b"MD0;", b"ST;"]
+    assert delays == [0.25] * 5
+    assert report.aborted == runner.SILENT_ABORT_MESSAGE
+    assert [row.outcome for row in report.file.commands] == []
+
+
+async def test_answering_radio_paces_every_send() -> None:
+    # MOR-4464 finding 5: one gap before every transmitted read: identity,
+    # before snapshot, main pass and after snapshot alike.
+    from rigplane.probe.readlist import build_read_plan
+
+    config = _load("ftx1")
+    seen: list[bytes] = []
+
+    async def exchange(request: bytes | None, timeout: float) -> bytes | None:
+        assert request is not None
+        seen.append(request)
+        if request == b"ID;":
+            return b"ID0840;"
+        return request[:-1] + b"0;"
+
+    report, delays = await _paced_run(config, exchange, gap_s=0.25)
+    asked = len(build_read_plan(config).asked)
+    assert report.aborted is None
+    assert seen == (
+        [b"ID;", b"IF;", b"FA;", b"MD0;", b"ST;", b"TX;", b"PS;", b"AI;"]
+        + [item.body for item in build_read_plan(config).asked]
+        + [b"IF;", b"FA;", b"MD0;", b"ST;", b"TX;", b"PS;", b"AI;"]
+    )
+    assert len(seen) == 1 + 7 + asked + 7
+    assert delays == [0.25] * len(seen)
+
+
+async def test_silence_mid_pass_stops_before_the_after_snapshot() -> None:
+    # MOR-4464 finding 5: silence starting in the middle of the main pass
+    # stops the run; the after snapshot is never sent.
+    config = _load("ftx1")
+    seen: list[bytes] = []
+
+    async def exchange(request: bytes | None, timeout: float) -> bytes | None:
+        assert request is not None
+        seen.append(request)
+        if request == b"ID;":
+            return b"ID0840;"
+        if request == b"FA;":
+            return b"FA14074000;"
+        if request == b"MD0;":
+            return b"?;"
+        if request == b"KS;":
+            return None
+        if request in {b"ST;", b"TX;", b"PS;", b"AI;"} and seen.count(request) > 1:
+            # The snapshot answers stand; the main pass below goes silent.
+            return None
+        return request[:-1] + b"0;"
+
+    items = _subset(
+        config,
+        "get_freq",
+        "get_keyer_speed",
+        "get_mode",
+        "get_split",
+        "get_ptt",
+        "get_powerstat",
+        "get_auto_info",
+    )
+    report, delays = await _paced_run(config, exchange, gap_s=0.25, items=items)
+    assert seen == [
+        b"ID;", b"IF;", b"FA;", b"MD0;", b"ST;", b"TX;", b"PS;", b"AI;",
+        b"FA;", b"MD0;", b"ST;", b"TX;", b"KS;", b"PS;", b"AI;",
+    ]
+    assert delays == [0.25] * len(seen)
+    assert report.aborted == runner.SILENT_ABORT_MESSAGE
+    assert [row.outcome for row in report.file.commands] == [
+        "data", "refused", "silent", "silent", "silent", "silent", "silent",
+    ]
 
 
 async def test_identity_reports_the_answer_that_matched() -> None:
