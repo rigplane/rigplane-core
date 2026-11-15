@@ -656,6 +656,152 @@ def test_api_wire_definition_is_typed_and_json_stable() -> None:
             "send_high_water_bytes": 256 * 1024,
             "send_low_water_bytes": 64 * 1024,
         },
+        # The payload contracts (value-pinned here like the rest, as the
+        # independent mirror the producer definition must match).
+        "payloads": {
+            "request_head": {
+                "version": 1,
+                "carried_by": "REQ_HEAD frame payload (UTF-8 JSON object)",
+                "fields": [
+                    {
+                        "name": "method",
+                        "type": "string",
+                        "required": True,
+                        "note": "non-empty HTTP method",
+                    },
+                    {
+                        "name": "path",
+                        "type": "string",
+                        "required": True,
+                        "note": "origin-form path: starts with '/', carries no query",
+                    },
+                    {
+                        "name": "query",
+                        "type": "object: name -> array of strings",
+                        "required": False,
+                        "note": "absent means no query",
+                    },
+                    {
+                        "name": "headers",
+                        "type": "object: name -> value, both strings",
+                        "required": False,
+                        "note": "absent means no headers",
+                    },
+                ],
+                "codes": [],
+            },
+            "response_head": {
+                "version": 1,
+                "carried_by": "RES_HEAD frame payload (UTF-8 JSON object)",
+                "fields": [
+                    {
+                        "name": "status",
+                        "type": "integer",
+                        "required": True,
+                        "note": "HTTP status code",
+                    },
+                    {
+                        "name": "headers",
+                        "type": "object: name -> value",
+                        "required": True,
+                        "note": "answer headers",
+                    },
+                ],
+                "codes": [],
+            },
+            "error": {
+                "version": 1,
+                "carried_by": "ERROR frame payload (UTF-8 JSON object)",
+                "fields": [
+                    {
+                        "name": "code",
+                        "type": "string",
+                        "required": True,
+                        "note": "one of the codes below",
+                    },
+                    {
+                        "name": "message",
+                        "type": "string",
+                        "required": True,
+                        "note": "human-readable detail",
+                    },
+                ],
+                "codes": [
+                    "bad_version",
+                    "malformed",
+                    "stale_id",
+                    "too_large",
+                    "busy",
+                    "timeout",
+                    "internal",
+                ],
+            },
+            "attach_frame": {
+                "version": 1,
+                "carried_by": (
+                    "first text frame on a client data channel (UTF-8 JSON object)"
+                ),
+                "fields": [
+                    {
+                        "name": "type",
+                        "type": '"attach"',
+                        "required": True,
+                        "note": "the attach discriminator",
+                    },
+                    {
+                        "name": "controller_key",
+                        "type": "string",
+                        "required": True,
+                        "note": (
+                            "the session key from POST /api/v1/controller; "
+                            'null is admitted only on the "api" label '
+                            "(its keyless acquire path)"
+                        ),
+                    },
+                    {
+                        "name": "state_delta",
+                        "type": "integer 1 | 2",
+                        "required": False,
+                        "note": "2 (leaf deltas) when absent",
+                    },
+                    {
+                        "name": "role",
+                        "type": "string",
+                        "required": False,
+                        "note": '"primary" when absent',
+                    },
+                ],
+                "codes": [],
+            },
+            "attach_ack": {
+                "version": 1,
+                "carried_by": (
+                    "first text frame the server sends on a scope/audio "
+                    "data channel after attach"
+                ),
+                "fields": [
+                    {
+                        "name": "type",
+                        "type": '"attached"',
+                        "required": True,
+                        "note": "the ack discriminator",
+                    },
+                    {
+                        "name": "v",
+                        "type": "integer",
+                        "required": True,
+                        "note": "ack version, currently 1",
+                    },
+                    {
+                        "name": "channel",
+                        "type": '"scope" | "audio"',
+                        "required": True,
+                        "note": "the acked label",
+                    },
+                ],
+                "codes": [],
+            },
+        },
     }
 
 
