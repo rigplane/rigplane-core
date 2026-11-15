@@ -994,7 +994,8 @@ class GoldenFrame:
 
 @dataclass(frozen=True, slots=True)
 class GoldenTextDocument:
-    """One text-frame document: an attach frame or its ack."""
+    """One text-frame document: an attach frame, its ack, or another
+    server text frame the golden replay pins (the audio TX-format ack)."""
 
     direction: str
     summary: str
@@ -1178,6 +1179,36 @@ def _golden_ack_document(kind: str) -> GoldenTextDocument:
     )
 
 
+def _golden_audio_tx_format_document(
+    opus_decode: bool, sample_rate: int
+) -> GoldenTextDocument:
+    """The audio TX-format ack (server -> client), from the audio
+    handler's own typed producer and encoded exactly as its ``_send_json``
+    sends it (:func:`rigplane.web.protocol.encode_json`: compact
+    separators, the producer's key order). ``sample_rate`` is what the
+    golden replay stack really negotiates — the IC-7610 LAN profile's TX
+    leg, 48 kHz — and the replay test pins the live reply to this
+    document in full."""
+    from .handlers.audio import audio_tx_format_message  # noqa: TID251
+    from .protocol import encode_json  # noqa: TID251
+
+    text = encode_json(audio_tx_format_message(opus_decode, sample_rate))
+    return GoldenTextDocument(
+        direction="server->client",
+        summary=(
+            "the audio TX-format ack when Opus TX is decodable "
+            "(the reply to audio_start direction=tx)"
+        ),
+        text=text,
+        decoded=json.loads(text),
+        template=None,
+        outcome=(
+            "the client arms TX capture in the advertised codec "
+            "at the advertised sample rate"
+        ),
+    )
+
+
 def _request_head(
     method: str, path: str, request_id: int, headers: dict[str, str] | None = None
 ) -> GoldenFrame:
@@ -1292,6 +1323,9 @@ async def api_channel_golden_documents() -> GoldenDocuments:
             f"attach_ack_{kind}": _golden_ack_document(kind)
             for kind in ("scope", "audio")
         }
+    )
+    documents["audio_tx_format_opus"] = _golden_audio_tx_format_document(
+        opus_decode=True, sample_rate=48000
     )
     fixtures = {"api_ok": ok_b64, "api_chunked": chunked_b64}
     for name, (rid, summary, outcome, head, trailing, reply) in exchanges.items():

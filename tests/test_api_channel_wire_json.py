@@ -34,6 +34,7 @@ from rigplane.web.channel_attach import (
     ChannelAttachedAck,
     ClientChannelParams,
 )
+from rigplane.web.handlers.audio import audio_tx_format_message
 
 _WIRE_JSON = (
     Path(__file__).resolve().parents[1]
@@ -139,6 +140,15 @@ def test_committed_golden_documents_validate_against_payload_contracts() -> None
                 _conform("attach_frame", doc.decoded)
             case GoldenTextDocument(decoded={"type": "attached"}):
                 _conform("attach_ack", doc.decoded)
+            case GoldenTextDocument(decoded={"type": "audio_tx_format"}):
+                # Not an api-channel payload: the audio channel's TX
+                # format ack, pinned to the audio handler's own typed
+                # producer — the codec follows opus_decode, and no key
+                # may appear or disappear beside the producer's own.
+                assert type(doc.decoded["sample_rate"]) is int, (name, doc.decoded)
+                assert doc.decoded == audio_tx_format_message(
+                    doc.decoded["opus_decode"], doc.decoded["sample_rate"]
+                ), (name, doc.decoded)
             case GoldenTextDocument():
                 raise AssertionError(f"{name}: unknown text document {doc.decoded!r}")
             case GoldenErrorsDocument():

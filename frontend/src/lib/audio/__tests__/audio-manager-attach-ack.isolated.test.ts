@@ -10,9 +10,10 @@
  * the way audio-manager.isolated.test.ts does (FakeWebSocket through the
  * real WebSocketTransport text/binary split).
  *
- * Producer contracts: the ack frame is sent verbatim from the committed
- * api-channel golden documents (built by the server producer and replayed
- * through the real handlers by tests/test_api_channel_golden.py), and every
+ * Producer contracts: the ack frame and the audio TX-format ack are
+ * sent verbatim from the committed api-channel golden documents (built
+ * by the server producer and replayed through the real handlers by
+ * tests/test_api_channel_golden.py), and every
  * module double implements the Pick of its producer class that
  * AudioManager consumes, so a changed member fails svelte-check here.
  */
@@ -31,6 +32,8 @@ const attachAckAudio = apiChannelGolden.documents.attach_ack_audio;
 const wireAttachAckType = JSON.parse(String(
   apiChannelWire.payloads.attach_ack.fields.find(([name]) => name === 'type')?.[1] ?? 'null',
 ));
+/** The producer-built golden document for the audio TX-format ack. */
+const txFormatAudio = apiChannelGolden.documents.audio_tx_format_opus;
 
 const rxStart = vi.fn();
 const rxStop = vi.fn();
@@ -164,10 +167,6 @@ describe('audio channel attach acknowledgement compatibility (MOR-4478)', () => 
     vi.unstubAllEnvs(); vi.unstubAllGlobals(); vi.useRealTimers();
   });
 
-  function serverText(socket: FakeWebSocket, message: Record<string, unknown>) {
-    socket.onmessage?.({ data: JSON.stringify(message) });
-  }
-
   async function rig() {
     const { audioManager } = await import('../audio-manager');
     const audio = await import('../../stores/audio.svelte');
@@ -208,14 +207,23 @@ describe('audio channel attach acknowledgement compatibility (MOR-4478)', () => 
     expect(socket.sent).toEqual(sentBefore);
     expect(rxFed).not.toHaveBeenCalled();
 
-    // Normal handling afterwards: the TX format ack resolves the pending
-    // start. No producer type owns this frame on the frontend — the only
-    // contract is the unexported parse shape inside
-    // AudioManager._handleServerMessage — so the literal stays typed as
-    // the consumer's parser input (JSON text).
-    serverText(socket, { type: 'audio_tx_format', codec: 'opus', sample_rate: 48000 });
+    // Normal handling afterwards: the golden TX-format ack — the exact
+    // bytes the audio handler's own typed producer sends (built by the
+    // server, replayed through the real stack by
+    // tests/test_api_channel_golden.py) — resolves the pending start.
+    // A golden file that stops describing a server-to-client text frame
+    // whose type is the audio TX-format discriminator fails loudly
+    // here; codec and sample rate are read from the document, never
+    // re-typed as literals.
+    expect(txFormatAudio.variant).toBe('text');
+    expect(txFormatAudio.direction).toBe('server->client');
+    const txFormatFrame = JSON.parse(txFormatAudio.text) as Record<string, unknown>;
+    expect(txFormatFrame.type).toBe('audio_tx_format');
+    socket.onmessage?.({ data: txFormatAudio.text });
     expect(await starting).toBeNull();
-    expect(txApplyServerCodec).toHaveBeenCalledWith('opus', 48000);
+    expect(txApplyServerCodec).toHaveBeenCalledWith(
+      txFormatFrame.codec, txFormatFrame.sample_rate,
+    );
     expect(audioManager.txCodecFallback).toBe(false);
 
     // And an RX binary audio frame reaches the player untouched.
