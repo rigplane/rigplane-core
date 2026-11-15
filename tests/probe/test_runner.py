@@ -553,6 +553,117 @@ async def test_transport_error_ends_the_run() -> None:
     assert report.aborted is not None
 
 
+def _name_counts(names) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for name in names:
+        counts[name] = counts.get(name, 0) + 1
+    return counts
+
+
+async def test_silence_aborted_file_names_every_declared_read_once() -> None:
+    # MOR-4464 finding 6: reads never attempted go to skipped with the
+    # run_aborted reason, and the file carries silence_stop termination.
+    from rigplane.probe.model import ProbeFile
+
+    config = _load("ftx1")
+    plan = build_read_plan(config)
+    seen: list[bytes] = []
+
+    async def exchange(request: bytes | None, timeout: float) -> bytes | None:
+        if request is not None:
+            seen.append(request)
+        return None
+
+    report = await runner.run_probe(
+        config,
+        config_toml_sha256="0" * 64,
+        exchange=exchange,
+        port_kind="usb",
+        baud=YAESU_BAUD,
+        label="",
+        include_private=False,
+        gap_s=GAP,
+        timeout_s=SHORT_TIMEOUT,
+    )
+    assert report.aborted == runner.SILENT_ABORT_MESSAGE
+    file = ProbeFile.from_json(report.file.to_json())
+    assert file.termination.status == "silence_stop"
+    assert file.termination.detail == runner.SILENT_ABORT_MESSAGE
+    assert _name_counts(
+        [row.name for row in file.commands]
+        + [entry.name for entry in file.skipped]
+    ) == _name_counts(
+        [item.name for item in plan.asked]
+        + [entry.name for entry in plan.skipped]
+    )
+    aborted = [entry for entry in file.skipped if entry.reason == "run_aborted"]
+    assert aborted
+    assert all(entry.detail for entry in aborted)
+    assert all(entry.request_hex for entry in aborted)
+
+
+async def test_transport_aborted_file_names_every_declared_read_once() -> None:
+    # MOR-4464 finding 6: a break in the main pass records the
+    # transport_error row, skips the rest as run_aborted, and carries
+    # transport_error termination.
+    from rigplane.probe.model import ProbeFile
+    from rigplane.probe.readlist import snapshot_names
+
+    config = _load("g7250")
+    siblings = _sibling_configs()
+    plan = build_read_plan(config, siblings=siblings)
+    produced = {item.name for item in plan.asked}
+    snap = set(snapshot_names(config, produced))
+    target = next(item for item in plan.asked if item.name not in snap)
+    addr = config.civ_addr
+    addr_echo = build_civ_frame(
+        CONTROLLER_ADDR, addr, 0x19, sub=0x00, data=bytes((addr,))
+    )
+    model_frame = build_civ_frame(
+        CONTROLLER_ADDR, addr, 0x1D, data=bytes.fromhex("197250")
+    )
+    nak = _nak_frame(addr)
+    seen: list[bytes] = []
+
+    async def exchange(request: bytes | None, timeout: float) -> bytes | None:
+        assert request is not None
+        seen.append(request)
+        if request == target.body:
+            raise OSError("device is gone")
+        if request == b"\x19\x00":
+            return addr_echo
+        if request == b"\x1d\x19":
+            return model_frame
+        return nak
+
+    report = await runner.run_probe(
+        config,
+        config_toml_sha256="0" * 64,
+        exchange=exchange,
+        port_kind="usb",
+        baud=CIV_BAUD,
+        label="",
+        include_private=False,
+        gap_s=GAP,
+        timeout_s=SHORT_TIMEOUT,
+        siblings=siblings,
+    )
+    assert report.aborted is not None and "Transport error" in report.aborted
+    file = ProbeFile.from_json(report.file.to_json())
+    assert file.termination.status == "transport_error"
+    assert file.termination.detail == report.aborted
+    assert _name_counts(
+        [row.name for row in file.commands]
+        + [entry.name for entry in file.skipped]
+    ) == _name_counts(
+        [item.name for item in plan.asked]
+        + [entry.name for entry in plan.skipped]
+    )
+    broken = [row for row in file.commands if row.outcome == "transport_error"]
+    assert len(broken) == 1 and broken[0].name == target.name
+    assert any(entry.reason == "run_aborted" for entry in file.skipped)
+
+
 async def _paced_run(config, exchange, *, gap_s: float, **kwargs):
     """Run the probe with the sleep calls recorded; returns (report, delays)."""
     delays: list[float] = []

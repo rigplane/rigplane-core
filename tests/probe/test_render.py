@@ -205,3 +205,40 @@ def test_probe_help_mentions_read_only() -> None:
     assert "does not transmit" in text
     assert "Nothing is uploaded" in text
     assert "--include-private" in text
+
+
+def test_pre_save_summary_marks_an_aborted_run() -> None:
+    from rigplane.probe.model import TerminationInfo
+
+    text = render.pre_save_summary(
+        path="/tmp/ft991a-probe-20261114-173000.json",
+        size_bytes=38912,
+        n_commands=3,
+        identity_text="unknown model",
+        settings_lines=[],
+        private_reads_included=False,
+        termination=TerminationInfo(
+            status="silence_stop",
+            detail=(
+                "The radio stopped answering. Check it is on, and the port "
+                "and speed are right."
+            ),
+        ),
+    )
+    assert "stopped early" in text
+    assert "The radio stopped answering" in text
+
+
+def test_pre_save_summary_hides_the_stop_line_on_a_completed_run() -> None:
+    from rigplane.probe.model import TerminationInfo
+
+    text = render.pre_save_summary(
+        path="/tmp/ft991a-probe-20261114-173000.json",
+        size_bytes=38912,
+        n_commands=3,
+        identity_text="unknown model",
+        settings_lines=[],
+        private_reads_included=False,
+        termination=TerminationInfo(status="completed", detail=""),
+    )
+    assert "stopped early" not in text

@@ -314,6 +314,7 @@ async def test_execute_cannot_open_is_exit_3(capsys, tmp_path) -> None:
 
 async def test_execute_no_answers_is_exit_3_but_file_saved(tmp_path) -> None:
     out = tmp_path / "probe.json"
+    lines: list[str] = []
     code = await execute(
         resolve_config("FT-991A", RIGS),
         (REPO_ROOT / "rigs" / "ft991a.toml").read_bytes(),
@@ -328,11 +329,13 @@ async def test_execute_no_answers_is_exit_3_but_file_saved(tmp_path) -> None:
         exchange_factory=_stub_answers([], silent=True),
         gap_s=GAP,
         timeout_s=TIMEOUT,
+        emit=lines.append,
     )
     assert code == 3
     assert json.loads(out.read_text(encoding="utf-8"))["schema"] == (
         "rigplane-probe-v1"
     )
+    assert any("stopped early" in line for line in lines)
 
 
 async def test_execute_default_out_path_uses_profile_and_timestamp(
