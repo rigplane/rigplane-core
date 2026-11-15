@@ -73,8 +73,8 @@ import contextlib
 import json
 import logging
 import struct
-from collections.abc import Coroutine
-from dataclasses import dataclass
+from collections.abc import Coroutine, Mapping
+from dataclasses import MISSING, dataclass, fields
 from enum import IntEnum
 from typing import TYPE_CHECKING, Any, Final, Protocol, cast, runtime_checkable
 
@@ -220,40 +220,90 @@ class ApiWirePayload:
     codes: tuple[str, ...] = ()
 
 
-def _api_channel_payload_contracts() -> dict[str, ApiWirePayload]:
-    """The payload contracts, owned by their producer types: every field
-    mirrors what the producer accepts or emits; the golden replay test
-    pins the bytes against the real handlers.
+#: How a producer annotation reads as a JSON value on the wire. An
+#: unmapped annotation fails the contract build, so a producer type
+#: change cannot drift past its exported contract.
+_WIRE_FIELD_TYPES: Final[Mapping[str, str]] = {
+    "str": "string",
+    "str | None": "string | null",
+    "int": "integer",
+    "dict[str, str]": "object: name -> value",
+    "dict[str, list[str]]": "object: name -> [values]",
+}
+
+
+def _payload_contract(
+    producer: type,
+    carried_by: str,
+    *,
+    constant: tuple[str, str, str] | None = None,
+    optional: frozenset[str] = frozenset(),
+    required: frozenset[str] = frozenset(),
+    rename: Mapping[str, str] | None = None,
+    notes: Mapping[str, str] | None = None,
+    codes: tuple[str, ...] = (),
+) -> ApiWirePayload:
+    """Derive one payload contract from the producer that owns it.
+
+    Field names, order, wire types and required-ness come from the
+    producer dataclass and its defaults; only the notes, a leading
+    constant discriminator, and the renames and ``optional``/
+    ``required`` escapes — where the JSON shape differs from the
+    dataclass default — are declared by the caller. The wire-json tests
+    conform the result to the real parsers and encoders.
     """
-    from .channel_attach import ATTACH_ACK_VERSION  # noqa: TID251
+    rows: list[tuple[str, str, bool, str]] = (
+        [(constant[0], constant[1], True, constant[2])] if constant else []
+    )
+    for field in fields(producer):
+        name = (rename or {}).get(field.name, field.name)
+        defaulted = field.default is not MISSING or field.default_factory is not MISSING
+        rows.append(
+            (
+                name,
+                _WIRE_FIELD_TYPES[cast("str", field.type)],
+                field.name in required
+                or (field.name not in optional and not defaulted),
+                (notes or {}).get(name, ""),
+            )
+        )
+    return ApiWirePayload(1, carried_by, tuple(rows), codes)
+
+
+def _api_channel_payload_contracts() -> dict[str, ApiWirePayload]:
+    """The payload contracts, derived from their producer types; the
+    wire-json tests conform every row to the real parsers/encoders."""
+    from .channel_attach import (  # noqa: TID251
+        ATTACH_ACK_VERSION,
+        ChannelAttachedAck,
+        ClientChannelParams,
+    )
 
     return {
-        "request_head": ApiWirePayload(
-            1,
+        "request_head": _payload_contract(
+            ApiRequestHead,
             "REQ_HEAD frame payload (UTF-8 JSON object)",
-            (
-                ("method", "string", True, "non-empty HTTP method"),
-                ("path", "string", True, "origin-form, no query"),
-                ("query", "object: name -> [values]", False, "absent means none"),
-                ("headers", "object: name -> value", False, "absent means none"),
-            ),
+            optional=frozenset({"query", "headers"}),
+            notes={
+                "method": "non-empty HTTP method",
+                "path": "origin-form, no query",
+                "query": "absent means none",
+                "headers": "absent means none",
+            },
         ),
-        "response_head": ApiWirePayload(
-            1,
+        "response_head": _payload_contract(
+            ApiResponseHead,
             "RES_HEAD frame payload (UTF-8 JSON object)",
-            (
-                ("status", "integer", True, "HTTP status code"),
-                ("headers", "object: name -> value", True, "answer headers"),
-            ),
+            notes={"status": "HTTP status code", "headers": "answer headers"},
         ),
-        "error": ApiWirePayload(
-            1,
+        "error": _payload_contract(
+            ApiErrorFrame,
             "ERROR frame payload (UTF-8 JSON object)",
-            (
-                ("code", "string", True, "one of the codes below"),
-                ("message", "string", True, "human-readable detail"),
-            ),
-            (
+            notes={
+                "code": "one of the codes below",
+                "message": "human-readable detail",
+            },
+            codes=(
                 _BAD_VERSION,
                 _MALFORMED,
                 _STALE_ID,
@@ -263,24 +313,29 @@ def _api_channel_payload_contracts() -> dict[str, ApiWirePayload]:
                 _INTERNAL,
             ),
         ),
-        "attach_frame": ApiWirePayload(
-            1,
+        "attach_frame": _payload_contract(
+            ClientChannelParams,
             "first text frame on a client data channel",
-            (
-                ("type", '"attach"', True, "the attach discriminator"),
-                ("controller_key", "string", True, 'session key; null only on "api"'),
-                ("state_delta", "integer 1 | 2", False, "2 (leaf deltas) when absent"),
-                ("role", "string", False, '"primary" when absent'),
-            ),
+            constant=("type", '"attach"', "the attach discriminator"),
+            rename={"controller_role": "role"},
+            optional=frozenset({"controller_key"}),
+            notes={
+                "controller_key": "non-null session key on control/scope/audio; "
+                'null or absent only on the keyless "api" channel',
+                "role": '"primary" when absent',
+                "state_delta": "1 | 2; 2 (leaf deltas) when absent",
+            },
         ),
-        "attach_ack": ApiWirePayload(
-            1,
+        "attach_ack": _payload_contract(
+            ChannelAttachedAck,
             "first server text frame on a scope/audio channel",
-            (
-                ("type", '"attached"', True, "the ack discriminator"),
-                ("v", "integer", True, f"ack version, currently {ATTACH_ACK_VERSION}"),
-                ("channel", '"scope" | "audio"', True, "the acked label"),
-            ),
+            constant=("type", '"attached"', "the ack discriminator"),
+            rename={"version": "v"},
+            required=frozenset({"channel", "version"}),
+            notes={
+                "channel": 'the acked label: "scope" | "audio"',
+                "version": f"ack version, currently {ATTACH_ACK_VERSION}",
+            },
         ),
     }
 
