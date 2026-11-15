@@ -89,3 +89,12 @@ main commit (#2838), so the pin resolves in a plain clone.
   itself (the live side, correctly located), `set_vfo` post-MOR-1986, the
   Yaesu backend arms, `BoundCommands`, and the identically-named-but-unrelated
   WebSocket intent `"vfo_swap"`.
+
+## 2026-09-02 — Shutdown fence/provider-arrival tract (revision `cebbae4d`)
+
+- [2026-09-02-mechanism-audit-shutdown-fence.md](2026-09-02-mechanism-audit-shutdown-fence.md)
+  — real-lane Mini characterization separates lane entry, fence epoch
+  advancement, actuator entry, and cancellation-callback completion. No
+  deletion or production consolidation is warranted by the measured result;
+  the stronger completion barrier remains an owner decision, not an implied
+  ADR requirement. MOR-2230 records the in-flight investigation.
