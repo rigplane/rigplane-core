@@ -142,7 +142,8 @@ describe('createApiChannelFetch', () => {
     const { ch, api } = openApiChannel();
     const ctrl = new AbortController();
     const pending = api('/api/v1/info', { signal: ctrl.signal });
-    await vi.advanceTimersByTimeAsync(0);
+    // One microtask later: the HEAD has left, the END has not.
+    await Promise.resolve();
     ctrl.abort();
     await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
     // The golden document's trailing END is server tolerance; the settled
