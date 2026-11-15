@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import Toast from '../../../components/shared/Toast.svelte';
+import type { ControllerRole } from '../../transport/controller-client';
 import { setLocale } from '$lib/i18n';
 import { _resetLocale } from '$lib/i18n/store.svelte';
 import { validateCapabilities } from '$lib/types/capabilities';
@@ -509,7 +510,7 @@ describe('RX refusal reason routing (MOR-3823)', () => {
     epoch: () => 1,
     current: () => true,
     protocols: () => [] as string[],
-    role: () => 'primary',
+    role: (): ControllerRole => 'primary',
   });
 
   /** Set the page hostname, start RX (the user's RX action) against a fresh

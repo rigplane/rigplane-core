@@ -294,7 +294,7 @@ describe('DataChannelTransport', () => {
     // The required `role` makes a roleless attach unrepresentable in TS;
     // the runtime guard still fails closed for untyped callers, so the
     // test builds the unsound attach on purpose.
-    t.open('ignored://', { protocols: [token] } as TransportAttach);
+    t.open('ignored://', { protocols: [token] } as unknown as TransportAttach);
     await vi.advanceTimersByTimeAsync(0);
     expect(ch.sent).toEqual([]); // nothing on the wire
     expect(errors).toHaveLength(1);

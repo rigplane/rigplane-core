@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ManagedTxController } from '../../runtime/tx-controller/managed-controller';
+import type { ControllerRole } from '../../transport/controller-client';
 import type { RxAudioFocus, RxPlaybackDiagnostics, RxPlayer } from '../rx-player';
 import { validateCapabilities } from '$lib/types/capabilities';
 import stateWireGoldens from '$lib/transport/__tests__/fixtures/state-wire-goldens.json';
@@ -237,7 +238,7 @@ describe('AudioManager controller currency', () => {
       remote: () => true, ready: current, epoch: () => 7,
       current: (epoch: number) => epoch === 7 && current(),
       protocols: () => [`rigplane-controller-v1.${'a'.repeat(64)}`],
-      role: () => 'primary',
+      role: (): ControllerRole => 'primary',
     };
   }
 
@@ -1166,7 +1167,7 @@ describe('local controller session audio', () => {
       epoch: () => 7,
       current: (epoch: number) => epoch === 7 && state.current,
       protocols: () => (state.ready ? [`rigplane-controller-v1.${sessionKey}`] : []),
-      role: () => 'primary',
+      role: (): ControllerRole => 'primary',
     };
   }
 
