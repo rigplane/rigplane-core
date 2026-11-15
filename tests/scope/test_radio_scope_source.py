@@ -659,8 +659,9 @@ async def test_external_narrowing_clips_follow_view_without_writes(model):
 async def test_follow_span_gesture_in_observed_fix_writes_nothing(model):
     """MOR-4392 round 2: the radio is in FIX (observed mode 1) — a
     follow zoom/span gesture is a client crop (MOR-4387), never a mode
-    change. Zero 0x14/0x15 writes; the grant keeps the requested window
-    and the hub re-resolves it per frame against the live fixed window.
+    change. Zero 0x14/0x15 writes; the grant IS the fixed window
+    (MOR-4451: the panorama stands still) and the hub regrants it per
+    frame against the live fixed window.
     """
     profile = load_rig(Path("rigs") / f"{model}.toml").to_profile()
     sim = _SimRadio(profile)
@@ -682,13 +683,14 @@ async def test_follow_span_gesture_in_observed_fix_writes_nothing(model):
         assert sim.writes == []
         assert session.observed is not None and session.observed.mode == 1
         # The FIX window streams before the gesture, so the grant is
-        # already clipped to it at subscribe time (no stale wide grant).
+        # already the fixed window at subscribe time (no stale wide grant).
         source.feed_frame(ScopeFrame(0, 1, 14_050_000, 14_200_000, bytes(475), False))
         await sub.receive()
-        assert sub.granted.view == View(14_050_000, 14_150_000)
-        # A follow span gesture inside FIX writes nothing at all.
+        assert sub.granted.view == View(14_050_000, 14_200_000)
+        # A follow span gesture inside FIX writes nothing at all and
+        # grants the same fixed window (set_view fixed branch agrees).
         grant = await source.set_view(FollowView("vfo", 50_000), 0)
-        assert grant.view == View(14_075_000, 14_125_000)
+        assert grant.view == View(14_050_000, 14_200_000)
         assert grant.coverage == Coverage(14_050_000, 14_200_000)
         assert sim.writes == []
         # ...and a hub resubscribe (the real gesture path) is equally quiet.
@@ -697,7 +699,7 @@ async def test_follow_span_gesture_in_observed_fix_writes_nothing(model):
         )
         try:
             assert sim.writes == []
-            assert gesture.granted.view == View(14_075_000, 14_125_000)
+            assert gesture.granted.view == View(14_050_000, 14_200_000)
             # Gate round 1: the granted coverage is the truthful native
             # (fixed) window, matching every per-frame regrant.
             assert gesture.granted.coverage == Coverage(14_050_000, 14_200_000)
@@ -729,10 +731,18 @@ async def test_observed_external_fix_mode_is_adopted_never_reasserted():
 @pytest.mark.parametrize("model", ["ic7610", "ic7300"])
 async def test_fix_transitions_reresolve_follow_grant_per_frame(model):
     """MOR-4392 round 2: CTR→FIX→CTR re-resolves the follow grant per
-    frame — the requested view kept in FIX (MOR-4451: the fixed window
-    is merely offset, not narrower) with the wire coverage intersected,
-    to the native coverage in CENTER — with zero radio writes after the
-    initial CENTER subscribe and no resubscribe for the grant to follow.
+    frame — the fixed window itself in FIX (MOR-4451: the panorama
+    stands still), the requested view in CENTER — with zero radio
+    writes after the initial CENTER subscribe and no resubscribe for
+    the grant to follow.
+
+    WHY the FIX leg grants the fixed window rather than the
+    VFO-centred request: in a radio-owned-window mode the radio, not
+    the VFO, defines the view. ce63874ad granted 14_050_000–14_150_000
+    while the fixed window was 14_000_000–14_100_000 — past the
+    streamed window, over bins the radio never sent — so the panorama
+    moved with the VFO in FIX (owner build 7, real IC-705). A later fix
+    must not flip this back to the requested view.
     """
     profile = load_rig(Path("rigs") / f"{model}.toml").to_profile()
     sim = _SimRadio(profile)
@@ -754,20 +764,22 @@ async def test_fix_transitions_reresolve_follow_grant_per_frame(model):
         source.feed_frame(ScopeFrame(0, 1, 14_000_000, 14_100_000, bytes(475), False))
         await sub.receive()
         fixed = encoded[-1]
-        assert (fixed.view_start_hz, fixed.view_end_hz) == (14_050_000, 14_150_000)
+        assert (fixed.view_start_hz, fixed.view_end_hz) == (14_000_000, 14_100_000)
         assert (fixed.coverage_start_hz, fixed.coverage_end_hz) == (
-            14_050_000,
+            14_000_000,
             14_100_000,
         )
-        assert sub.granted.view == View(14_050_000, 14_150_000)
+        assert sub.granted.view == View(14_000_000, 14_100_000)
         assert sub.granted.coverage == Coverage(14_000_000, 14_100_000)
-        # A follow span gesture inside FIX writes nothing (RED pre-fix:
-        # set_view drives set_center and writes 0x14 mode 0).
+        # A follow span gesture inside FIX writes nothing and the
+        # set_view fixed branch grants the same fixed window.
         gesture = await hub.subscribe(
             Subscription("radio", 0, FollowView("vfo", 50_000), 475, 20)
         )
         try:
             assert sim.writes == []
+            assert gesture.granted.view == View(14_000_000, 14_100_000)
+            assert gesture.granted.coverage == Coverage(14_000_000, 14_100_000)
         finally:
             await gesture.close()
         # FIX → CTR behind our back: the same subscription follows.
@@ -926,5 +938,246 @@ async def test_offset_frame_wires_requested_view_with_reduced_coverage(model):
         )
         assert sub.granted.view == View(14_075_000, 14_125_000)
         assert sub.granted.coverage == Coverage(14_081_000, 14_131_000)
+    finally:
+        await sub.close()
+
+
+@pytest.mark.parametrize("model", ["ic705", "ic7610"])
+async def test_fix_follow_grant_is_the_fixed_window_at_any_vfo(model):
+    """MOR-4451: in FIX the panorama stands still — the hub's per-frame
+    follow regrant IS the radio's fixed window at every VFO position
+    (mid-window and near its edges), the wire frame carries the fixed
+    window, and Core writes nothing back.
+    """
+    profile = load_rig(Path("rigs") / f"{model}.toml").to_profile()
+    sim = _SimRadio(profile)
+    session = _sim_session(sim, profile)
+    source = RadioScopeSource(profile, session)
+    hub, encoded, Subscription = _sim_hub(source)
+    sub = await hub.subscribe(
+        Subscription("radio", 0, FollowView("vfo", 100_000), 475, 20)
+    )
+    try:
+        fixed = Coverage(14_200_000, 14_300_000)
+        source.feed_frame(ScopeFrame(0, 0, 14_150_000, 14_250_000, bytes(475), False))
+        await sub.receive()
+        sim.writes.clear()
+        # CTR → FIX behind our back: adopt, then stream the fixed window
+        # while the VFO walks across it (ArrowRight holds).
+        sim.mode = 1
+        session.observe("mode", 1, 0)
+        for vfo in (14_200_000, 14_231_000, 14_299_000):
+            sim.frequency = vfo
+            source.feed_frame(
+                ScopeFrame(0, 1, fixed.start_hz, fixed.end_hz, bytes(475), False)
+            )
+            await sub.receive()
+            frame = encoded[-1]
+            assert (frame.view_start_hz, frame.view_end_hz) == (
+                fixed.start_hz,
+                fixed.end_hz,
+            )
+            assert (frame.coverage_start_hz, frame.coverage_end_hz) == (
+                fixed.start_hz,
+                fixed.end_hz,
+            )
+            assert sub.granted.view == View(fixed.start_hz, fixed.end_hz)
+            assert sub.granted.coverage == fixed
+        await session.reconcile()
+        assert sim.writes == []
+    finally:
+        await sub.close()
+
+
+@pytest.mark.parametrize("model", ["ic705", "ic7610"])
+async def test_scroll_c_follows_radio_scrolled_window_per_frame(model):
+    """MOR-4451: in SCROLL-C the radio moves its own edges — the hub's
+    per-frame follow regrant IS the window the frames report, across a
+    radio edge shift.
+
+    Frames report window A while the VFO sits at its edge; the VFO moves
+    out and the radio scrolls, so frames report shifted window B: the
+    grant is A then B, the coverage is the truthful window each time.
+    A follow span gesture inside SCROLL-C writes ONLY the covering span
+    preset (#4565: SPAN applies in SCROLL-C) — the grant stays the
+    reported window either way.
+    """
+    profile = load_rig(Path("rigs") / f"{model}.toml").to_profile()
+    sim = _SimRadio(profile)
+    session = _sim_session(sim, profile)
+    source = RadioScopeSource(profile, session)
+    hub, encoded, Subscription = _sim_hub(source)
+    sub = await hub.subscribe(
+        Subscription("radio", 0, FollowView("vfo", 100_000), 475, 20)
+    )
+    try:
+        source.feed_frame(ScopeFrame(0, 0, 14_050_000, 14_150_000, bytes(475), False))
+        await sub.receive()
+        sim.writes.clear()
+        # CTR → SCROLL-C behind our back: adopt, then stream the
+        # radio-owned window (VFO at its right edge, NOT centred, so a
+        # VFO-centred regrant would visibly differ).
+        sim.mode = 2
+        session.observe("mode", 2, 0)
+        await session.reconcile()
+        assert sim.writes == []
+        window_a = Coverage(14_000_000, 14_100_000)
+        source.feed_frame(
+            ScopeFrame(0, 2, window_a.start_hz, window_a.end_hz, bytes(475), False)
+        )
+        await sub.receive()
+        assert sub.granted.view == View(window_a.start_hz, window_a.end_hz)
+        assert sub.granted.coverage == window_a
+        # The VFO leaves the window; the radio scrolls its edges and
+        # frames report shifted window B (VFO inside, not centred).
+        sim.frequency = 14_200_000
+        window_b = Coverage(14_130_000, 14_230_000)
+        source.feed_frame(
+            ScopeFrame(0, 2, window_b.start_hz, window_b.end_hz, bytes(475), False)
+        )
+        await sub.receive()
+        shifted = encoded[-1]
+        assert (shifted.view_start_hz, shifted.view_end_hz) == (
+            window_b.start_hz,
+            window_b.end_hz,
+        )
+        assert (shifted.coverage_start_hz, shifted.coverage_end_hz) == (
+            window_b.start_hz,
+            window_b.end_hz,
+        )
+        assert sub.granted.view == View(window_b.start_hz, window_b.end_hz)
+        assert sub.granted.coverage == window_b
+        # A follow span gesture inside SCROLL-C writes ONLY the covering
+        # span preset (#4565) and grants the same scrolled window
+        # (set_view family branch agrees).
+        grant = await source.set_view(FollowView("vfo", 50_000), 0)
+        assert grant.view == View(window_b.start_hz, window_b.end_hz)
+        assert grant.coverage == window_b
+        assert sim.writes == [("span", profile.scope_span_presets_hz.index(25_000), 0)]
+    finally:
+        await sub.close()
+
+
+@pytest.mark.parametrize("model", ["ic705", "ic7610"])
+async def test_scroll_f_follows_radio_reported_window_per_frame(model):
+    """MOR-4451: in SCROLL-F the window is the selected EDGE pair — the
+    hub's per-frame follow regrant IS the window the frames report,
+    across an external edge shift, with zero writes by us.
+
+    Frames report window A; the EDGE selection moves behind our back so
+    frames report window B while the VFO sits inside neither centre: the
+    grant is A then B and the coverage is the truthful window each time.
+    """
+    profile = load_rig(Path("rigs") / f"{model}.toml").to_profile()
+    sim = _SimRadio(profile)
+    session = _sim_session(sim, profile)
+    source = RadioScopeSource(profile, session)
+    hub, encoded, Subscription = _sim_hub(source)
+    sub = await hub.subscribe(
+        Subscription("radio", 0, FollowView("vfo", 100_000), 475, 20)
+    )
+    try:
+        source.feed_frame(ScopeFrame(0, 0, 14_050_000, 14_150_000, bytes(475), False))
+        await sub.receive()
+        sim.writes.clear()
+        # CTR → SCROLL-F behind our back: adopt, then stream the
+        # radio-owned window.
+        sim.mode = 3
+        session.observe("mode", 3, 0)
+        await session.reconcile()
+        assert sim.writes == []
+        window_a = Coverage(14_000_000, 14_100_000)
+        source.feed_frame(
+            ScopeFrame(0, 3, window_a.start_hz, window_a.end_hz, bytes(475), False)
+        )
+        await sub.receive()
+        assert sub.granted.view == View(window_a.start_hz, window_a.end_hz)
+        assert sub.granted.coverage == window_a
+        # The EDGE selection moves behind our back; the VFO moves too, to
+        # prove the grant tracks the reported window, not the VFO.
+        sim.frequency = 14_200_000
+        window_b = Coverage(14_100_000, 14_200_000)
+        source.feed_frame(
+            ScopeFrame(0, 3, window_b.start_hz, window_b.end_hz, bytes(475), False)
+        )
+        await sub.receive()
+        shifted = encoded[-1]
+        assert (shifted.view_start_hz, shifted.view_end_hz) == (
+            window_b.start_hz,
+            window_b.end_hz,
+        )
+        assert (shifted.coverage_start_hz, shifted.coverage_end_hz) == (
+            window_b.start_hz,
+            window_b.end_hz,
+        )
+        assert sub.granted.view == View(window_b.start_hz, window_b.end_hz)
+        assert sub.granted.coverage == window_b
+        # A follow span gesture inside SCROLL-F writes nothing and grants
+        # the same reported window (set_view fixed branch agrees).
+        grant = await source.set_view(FollowView("vfo", 50_000), 0)
+        assert grant.view == View(window_b.start_hz, window_b.end_hz)
+        assert grant.coverage == window_b
+        await session.reconcile()
+        assert sim.writes == []
+    finally:
+        await sub.close()
+
+
+@pytest.mark.parametrize("model", ["ic705", "ic7610"])
+@pytest.mark.parametrize("family_mode", [1, 2, 3])
+async def test_follow_span_gesture_in_family_mode_writes_span_only_in_scroll_c(
+    model, family_mode
+):
+    """MOR-4451/#4565: SPAN applies in Center and SCROLL-C (CI-V 27 15),
+    EDGE number in Fixed and SCROLL-F (27 16). A follow span gesture in
+    a radio-owned-window mode therefore writes ONLY the covering span
+    preset in SCROLL-C — no 0x14 mode write (the radio stays in
+    SCROLL-C), no 27 1E edge write — and nothing at all in FIX and
+    SCROLL-F. The grant stays the reported window either way; the
+    radio's next frames carry the new edges.
+    """
+    profile = load_rig(Path("rigs") / f"{model}.toml").to_profile()
+    presets = profile.scope_span_presets_hz
+    sim = _SimRadio(profile)
+    session = _sim_session(sim, profile)
+    source = RadioScopeSource(profile, session)
+    hub, encoded, Subscription = _sim_hub(source)
+    sub = await hub.subscribe(
+        Subscription("radio", 0, FollowView("vfo", 100_000), 475, 20)
+    )
+    try:
+        source.feed_frame(ScopeFrame(0, 0, 14_050_000, 14_150_000, bytes(475), False))
+        await sub.receive()
+        sim.writes.clear()
+        # External entry into the family mode behind our back: adopted,
+        # nothing written back.
+        sim.mode = family_mode
+        session.observe("mode", family_mode, 0)
+        await session.reconcile()
+        assert sim.writes == []
+        window = Coverage(14_000_000, 14_100_000)
+        source.feed_frame(
+            ScopeFrame(
+                0, family_mode, window.start_hz, window.end_hz, bytes(475), False
+            )
+        )
+        await sub.receive()
+        assert sub.granted.view == View(window.start_hz, window.end_hz)
+        # Wider then narrower than the subscribed 100 kHz: the covering
+        # preset ladder is the CENTER one (smallest preset containing
+        # the requested follow width), the write is span-only in
+        # SCROLL-C and absent in FIX/SCROLL-F.
+        for follow_width, expected_preset in (
+            (500_000, 250_000),
+            (20_000, 10_000),
+        ):
+            sim.writes.clear()
+            grant = await source.set_view(FollowView("vfo", follow_width), 0)
+            assert grant.view == View(window.start_hz, window.end_hz)
+            assert grant.coverage == window
+            if family_mode == 2:
+                assert sim.writes == [("span", presets.index(expected_preset), 0)]
+            else:
+                assert sim.writes == []
     finally:
         await sub.close()

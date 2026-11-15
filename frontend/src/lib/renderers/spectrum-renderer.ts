@@ -3,6 +3,7 @@
 // SpectrumRenderer class adds stateful averaging and peak hold on top.
 
 import { getPassbandGeometry } from '../../components/spectrum/passband-geometry';
+import { isRadioOwnedWindowScope } from '../../components/spectrum/spectrum-logic';
 
 /**
  * The colour vocabulary a host may restyle. `renderSpectrum` paints every
@@ -378,9 +379,9 @@ function drawSpectrumOverlay(ctx: CanvasRenderingContext2D, width: number, heigh
   // Tuning indicator + passband overlay
   if (options.showRfOverlays !== false && spanHz > 0) {
     // scopeMode: 0=CTR, 1=FIX, 2=SCROLL-C, 3=SCROLL-F
-    const isFixedScope = options.scopeMode === 1 || options.scopeMode === 3;
+    const radioOwnedWindow = isRadioOwnedWindowScope(options.scopeMode);
     const startHz = centerHz - spanHz / 2;
-    const tunePx = (isFixedScope && tuneHz > 0)
+    const tunePx = (radioOwnedWindow && tuneHz > 0)
       ? clamp(((tuneHz - startHz) / spanHz) * width, 0, width)
       : width / 2;
 

@@ -28,7 +28,21 @@ export function getDragInterval(speed: number): number {
 }
 
 // --- Scope mode helpers ---
-export function isFixedScope(mode: number): boolean {
+/**
+ * CI-V wave-data modes where the radio owns the displayed window:
+ * 1=FIX, 2=SCROLL-C, 3=SCROLL-F. The single client spelling of the
+ * shared server fact RADIO_OWNED_WINDOW_SCOPE_MODES — see
+ * contracts/scope-mode-families.json.
+ */
+export function isRadioOwnedWindowScope(mode: number | undefined): boolean {
+  return mode === 1 || mode === 2 || mode === 3;
+}
+/**
+ * Modes where the SPAN control is disabled and the EDGE number selects
+ * the window instead: 1=FIX, 3=SCROLL-F. SPAN applies in 0=CTR and
+ * 2=SCROLL-C (see isSpanApplicable in spectrum-toolbar-logic.ts).
+ */
+export function isSpanDisabledScope(mode: number | undefined): boolean {
   return mode === 1 || mode === 3;
 }
 

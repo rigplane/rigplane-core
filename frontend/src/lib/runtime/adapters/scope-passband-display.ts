@@ -9,6 +9,7 @@ import type { ScopeGeometry } from '$lib/runtime/scope-frame';
 import { qualifyDisplayObservation, qualifyRadioDisplayObservation } from './display-observation';
 import { derivePresentationCapabilities, type ReceiverId } from './presentation-capabilities';
 import { toSpectrumAuthority } from './scope-adapter';
+import { isRadioOwnedWindowScope } from '../../../components/spectrum/spectrum-logic';
 
 type Scalar = number | string | boolean;
 type Observation = Readonly<{ value: Scalar; marker: number }>;
@@ -456,7 +457,7 @@ export function projectScopePassbandDisplay(
   const crossedFloors = !floors || (floors.domain === next.domain && next.receipt > floors.receipt
     && next.geometryPaths.every((path) => next.observations[path]
       && next.observations[path].marker > (floors.geometry[path] ?? -1)));
-  const axisAligned = candidate && (candidate.tuple.frameMode === 1 || candidate.tuple.frameMode === 3
+  const axisAligned = candidate && (isRadioOwnedWindowScope(candidate.tuple.frameMode)
     || candidate.tuple.frequencyHz === (candidate.tuple.startHz + candidate.tuple.endHz) / 2);
   const canRetain = hasTuple && !selectionRecovery && !retire && !invalid && !translating;
   const canCapture = !next.placeholder && candidate && !candidate.stale && candidate.strict && !regression
