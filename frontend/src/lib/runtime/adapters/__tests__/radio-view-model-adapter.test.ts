@@ -1993,6 +1993,29 @@ describe('MOR-4433 — validator under an unsupported target', () => {
     };
     expect(() => validateRadioViewModel(enabled)).toThrow();
   });
+
+  /* MOR-4433 RED (gate round 1, P2-2): the validator exempts EVERY permit
+   * whenever the target is unsupported (`!targetUnsupported`), while the
+   * adapter exempts only the narrow case (permit unknown FOR the
+   * unsupported target). A model pairing an unsupported target with an
+   * unconfigured or denied permit must still reject an enabled break-in.
+   * Fails before the validator adopts the shared predicate, passes after.
+   */
+  it.each([
+    ['unconfigured', { status: 'unknown', reason: 'ranges-unconfigured' }],
+    ['denied', { status: 'denied', reason: 'outside-configured-ranges' }],
+  ] as const)('RED: rejects an enabled break-in for an unsupported target with a %s permit', (
+    _label, txPermit,
+  ) => {
+    const keyed = withCwKeyer(unsupportedTargetView());
+    const model: RadioViewModel = {
+      ...keyed,
+      txPermit,
+      vfos: keyed.vfos.map((vfo) => ({ ...vfo, isTxTarget: false })),
+      disabledReasons: keyed.disabledReasons.filter((r) => r.field !== 'cwKeyer.breakIn'),
+    };
+    expect(() => validateRadioViewModel(model)).toThrow(/cwKeyer\.breakIn/);
+  });
 });
 
 describe('MOR-4433 — antenna switching is not gated on the target', () => {
