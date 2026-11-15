@@ -278,20 +278,31 @@ class RigctldClientObservationPoller:
                 )
 
         ptt: Observation | None = None
-        try:
-            ptt = await adapter.read_ptt()
-        except (asyncio.TimeoutError, RadioTimeoutError, RadioConnectionError):
+        if self._radio._ptt_read_demoted:  # noqa: SLF001
+            # MOR-4456: the transmit-state read demoted itself after its
+            # first timeout — publish unknown without asking ``t``, so a
+            # silent ``t`` reconnects exactly once for the life of this
+            # radio object. A refused ``t`` never demotes (below).
             _publish_unknown_ptt()
-            raise
-        except CommandError:
-            # MOR-4456: a refused (or malformed) `t` is an answer, not a
-            # link failure — publish unknown for this cycle and keep the
-            # cycle: the VFO and web-command readbacks still run and
-            # publish below. Only timeouts and transport errors raise, as
-            # before (a `t` timeout still closes the connection and still
-            # reconnects; PTT left the critical set, so it no longer
-            # counts in `_critical_read_timeouts`).
-            _publish_unknown_ptt()
+        else:
+            try:
+                ptt = await adapter.read_ptt()
+            except (asyncio.TimeoutError, RadioTimeoutError):
+                self._radio._demote_ptt_read_after_timeout()  # noqa: SLF001
+                _publish_unknown_ptt()
+                raise
+            except RadioConnectionError:
+                _publish_unknown_ptt()
+                raise
+            except CommandError:
+                # MOR-4456: a refused (or malformed) `t` is an answer, not a
+                # link failure — publish unknown for this cycle and keep the
+                # cycle: the VFO and web-command readbacks still run and
+                # publish below. Only timeouts and transport errors raise, as
+                # before (a `t` timeout still closes the connection and still
+                # reconnects; PTT left the critical set, so it no longer
+                # counts in `_critical_read_timeouts`).
+                _publish_unknown_ptt()
         if ptt is not None and self._provider_generation_is_current(
             provider_generation
         ):
@@ -768,6 +779,15 @@ class RigctldClientRadio:
         # backend's tally. On the 3rd unanswered read the adapter records
         # the declared-command defect that ends startup.
         self._critical_read_timeouts: dict[FieldPath, int] = {}
+        # MOR-4456: the medium-lane transmit-state read demotes itself
+        # after its first timeout — a radio that never answers ``t`` must
+        # not take the receive state down with it every cycle. The flag
+        # lives here (not on the per-cycle adapter or poller) so it
+        # survives the reconnect the first timeout causes; only a fresh
+        # radio object (server restart, explicit reconnect/reconfigure)
+        # asks ``t`` again. A refused ``t`` never demotes: ``RPRT``
+        # answers keep being asked every cycle.
+        self._ptt_read_demoted = False
         # The same intentional-disconnect idiom as IcomRadio: set by
         # disconnect(), cleared by connect(), checked by the poller's
         # reconnect so an operator's disconnect is never undone.
@@ -973,6 +993,26 @@ class RigctldClientRadio:
             raise CommandError(
                 "External rigctld backend does not support RigPlane data mode."
             )
+
+    def _demote_ptt_read_after_timeout(self) -> None:
+        """Latch the medium-lane transmit-state read off (MOR-4456).
+
+        Called once, on the first unanswered ``t``: further medium cycles
+        publish PTT as unknown without sending ``t``. Idempotent, so the
+        single named warning below fires exactly once per radio object.
+        Solicited reads (:meth:`get_ptt`, the managed-TX unkey readback)
+        are unaffected — only the poll cycle stops asking.
+        """
+        if self._ptt_read_demoted:
+            return
+        self._ptt_read_demoted = True
+        logger.warning(
+            "rigctld-client transmit-state read demoted: field %s command %s "
+            "cause %s; further 't' reads are skipped for the life of this client",
+            FieldPath.global_("tx_state", "ptt"),
+            "t",
+            "timed out",
+        )
 
     async def get_ptt(self) -> bool:
         ptt = await self._read_ptt()
