@@ -98,7 +98,7 @@ describe('DataChannelTransport', () => {
     const api = new DataChannelTransport(apiCh);
     api.open('ignored://'); // keyless: the api acquire path offers no token
     apiCh.simulateOpen();
-    expect(apiCh.sent.map((f) => JSON.parse(f))).toEqual([goldenDocs.attach_api.decoded]);
+    expect(apiCh.sent.map((f) => JSON.parse(f as string))).toEqual([goldenDocs.attach_api.decoded]);
     expect(api.state).toBe('open'); // reliable delivery: nothing to wait for
     expect(api.attachedProtocol).toBe('');
     vi.advanceTimersByTime(ATTACH_RESEND_MS * 4);

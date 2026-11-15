@@ -199,7 +199,9 @@ export class DataChannelTransport implements MessageTransport {
     if (this.state !== 'open') {
       throw new Error('DataChannelTransport: send on a closed transport');
     }
-    this.channel.send(data);
+    // Narrow per call: the native send overloads take one payload kind each.
+    if (typeof data === 'string') this.channel.send(data);
+    else this.channel.send(data);
   }
   close(): void {
     this.finish({ code: 1000, reason: '', wasClean: true });

@@ -24,10 +24,12 @@ export class FakeDataChannel implements DataChannelLike {
   readonly label: string;
   bufferedAmount = 0;
   sent: Array<string | ArrayBuffer> = [];
-  onopen: ((this: RTCDataChannel, ev: Event) => unknown) | null = null;
-  onmessage: ((this: RTCDataChannel, ev: MessageEvent) => unknown) | null = null;
-  onclose: ((this: RTCDataChannel, ev: Event) => unknown) | null = null;
-  onerror: ((this: RTCDataChannel, ev: Event) => unknown) | null = null;
+  // This-less callbacks: assignable to the DOM handler types (a function
+  // without a this parameter fits any this), and callable on the fake.
+  onopen: ((ev: Event) => unknown) | null = null;
+  onmessage: ((ev: MessageEvent) => unknown) | null = null;
+  onclose: ((ev: Event) => unknown) | null = null;
+  onerror: ((ev: Event) => unknown) | null = null;
   constructor(label = 'control') {
     this.label = label;
   }
