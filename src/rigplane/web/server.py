@@ -157,6 +157,7 @@ from .channel_attach import (  # noqa: TID251
     ChannelAttachedAck,
     ChannelKind,
     ClientChannelParams,
+    ReAckingConnection,
     TransportKind,
 )
 from .discovery import DiscoveryResponder  # noqa: TID251
@@ -7954,7 +7955,11 @@ class WebServer:
             track_owners.add(ticket.tx_owner)
         if transport == "datachannel" and kind in ATTACH_ACK_KINDS:
             # The ack, before the first handler byte; a dead send must not
-            # kill the attach — the channel's own EOF handles that.
+            # kill the attach — the channel's own EOF handles that. The
+            # wrapper re-acknowledges a REPEATED attach frame (the ack was
+            # lost): the retry never reaches the handler, and no new
+            # ticket or handler is ever built for it.
+            conn = ReAckingConnection(conn, kind)
             try:
                 await conn.send_text(ChannelAttachedAck(kind).encode())
             except Exception:

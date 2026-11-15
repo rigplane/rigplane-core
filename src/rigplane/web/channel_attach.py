@@ -11,11 +11,16 @@ construction, caps, keepalive and cleanup never diverge again.
 
 from __future__ import annotations
 
+import contextlib
 import json
 from dataclasses import dataclass
-from typing import Final, Literal, Self
+from typing import TYPE_CHECKING, Any, Final, Literal, Self
 
 from ..runtime.controller_authority import ControllerError
+from ..ws import WS_OP_TEXT  # noqa: TID251
+
+if TYPE_CHECKING:
+    from .transport.connection import Connection  # noqa: TID251
 
 __all__ = [
     "ATTACH_ACK_KINDS",
@@ -23,6 +28,7 @@ __all__ = [
     "ChannelAttachedAck",
     "ChannelKind",
     "ClientChannelParams",
+    "ReAckingConnection",
     "TransportKind",
 ]
 
@@ -54,6 +60,65 @@ class ChannelAttachedAck:
         return json.dumps(
             {"type": "attached", "v": self.version, "channel": self.channel}
         )
+
+
+def _is_attach_frame(payload: bytes) -> bool:
+    """True when *payload* is a JSON ``{"type": "attach", ...}`` text frame."""
+    try:
+        obj = json.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError, RecursionError):
+        return False
+    return isinstance(obj, dict) and obj.get("type") == "attach"
+
+
+class ReAckingConnection:
+    """Re-acknowledge a repeated attach frame on a lossy data channel.
+
+    Wraps the connection of an ALREADY-attached scope/audio channel: a
+    resent attach frame (its ack was lost in transit) is answered with
+    the same :class:`ChannelAttachedAck` and never reaches the handler —
+    no new ticket, no new handler — while every other frame passes
+    through untouched. A dead re-ack send must not kill the channel; its
+    own EOF handles a dead transport. Anything beyond the
+    :class:`~rigplane.web.transport.connection.Connection` surface
+    (transport-specific extras such as aiortc backpressure queries)
+    stays reachable through ``__getattr__``.
+    """
+
+    __slots__ = ("_ack_text", "_conn")
+
+    def __init__(self, conn: Connection, kind: str) -> None:
+        self._conn = conn
+        self._ack_text = ChannelAttachedAck(kind).encode()
+
+    async def recv(self) -> tuple[int, bytes]:
+        while True:
+            opcode, payload = await self._conn.recv()
+            if opcode == WS_OP_TEXT and _is_attach_frame(payload):
+                with contextlib.suppress(Exception):
+                    await self._conn.send_text(self._ack_text)
+                continue
+            return opcode, payload
+
+    async def send_text(self, text: str) -> None:
+        await self._conn.send_text(text)
+
+    async def send_binary(self, data: bytes) -> None:
+        await self._conn.send_binary(data)
+
+    async def close(self, code: int = 1000, reason: str = "") -> None:
+        await self._conn.close(code, reason)
+
+    def abort(self) -> None:
+        self._conn.abort()
+
+    def is_alive(self) -> bool:
+        return self._conn.is_alive()
+
+    def __getattr__(self, name: str) -> Any:
+        if name in ("_conn", "_ack_text"):
+            raise AttributeError(name)  # never set: not a wrapper question
+        return getattr(self._conn, name)
 
 
 #: Per-transport tag carried explicitly from the adapter into the shared
