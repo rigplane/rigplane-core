@@ -611,6 +611,9 @@ def test_enumeration_failure_keeps_every_address(
 
 
 @_webrtc
+@pytest.mark.realtime(
+    reason="measures real negotiation wall-clock time against live sockets"
+)
 async def test_negotiate_answers_within_bound_when_enumeration_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
