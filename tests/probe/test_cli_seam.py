@@ -113,6 +113,14 @@ def test_end_to_end_civ_ic7300_through_real_cli(tmp_path, monkeypatch) -> None:
         return await real_open(device, baudrate=baudrate, opener=fake.opener)
 
     monkeypatch.setattr(probe_cli, "open_serial_port", fake_open)
+    # The CI-V path must not open any network connection: the opener is
+    # faked and every other step is local files and prints.
+    import socket
+
+    def _refuse_network(*args, **kwargs):
+        raise AssertionError("probe must not open network connections here")
+
+    monkeypatch.setattr(socket, "create_connection", _refuse_network)
     monkeypatch.setattr(
         "sys.argv",
         [
