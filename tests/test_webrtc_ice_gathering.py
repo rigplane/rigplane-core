@@ -132,6 +132,28 @@ def test_classify_windows_physical_tunnel_unknown() -> None:
     assert classify_windows_interface(62) == IfKind.UNKNOWN
 
 
+def test_classify_windows_hardware_flag_table() -> None:
+    """GTR7 host (Windows 11 x64): the hardware flag decides, IfType alone
+    does not — Hyper-V/VMware virtual adapters report IfType 6 like real
+    Ethernet, so non-hardware ones are bridges (skipped by default)."""
+    # Intel I225 physical Ethernet: hardware, IfType 6.
+    assert classify_windows_interface(6, True) == IfKind.PHYSICAL
+    assert classify_windows_interface(71, True) == IfKind.PHYSICAL
+    # vEthernet (Default Switch / WSL), VMnet1/VMnet8, vSwitch (LAN
+    # Bridge), WAN Miniport: IfType 6 but not hardware.
+    for iftype in (6, 71):
+        assert classify_windows_interface(iftype, False) == IfKind.BRIDGE
+    # Teredo (131) and Tailscale (53) are tunnels.
+    assert classify_windows_interface(131, False) == IfKind.TUNNEL
+    assert classify_windows_interface(53, False) == IfKind.TUNNEL
+    assert classify_windows_interface(131, None) == IfKind.TUNNEL
+    assert classify_windows_interface(53, None) == IfKind.TUNNEL
+    # Failed per-adapter GetIfEntry2 (no hardware signal) falls back to
+    # IfType alone, as before.
+    assert classify_windows_interface(6, None) == IfKind.PHYSICAL
+    assert classify_windows_interface(24, None) == IfKind.UNKNOWN
+
+
 def test_classifier_module_consts_match_contract() -> None:
     """Pin the iftype/flag constants the classifiers are built on."""
     assert IFF_POINTOPOINT == 0x10
@@ -189,6 +211,31 @@ def test_policy_select_include_vpn_keeps_tunnels() -> None:
         "192.168.1.3",
         "10.8.0.3",
     ]
+
+
+def test_policy_select_keeps_default_route_on_virtual_switch() -> None:
+    """LAN bound to a Hyper-V external switch: the vEthernet adapter
+    carrying the LAN IP classifies BRIDGE, but the default-route address
+    is always kept while the other bridge addresses are skipped."""
+    candidates = [
+        AddressInfo(
+            ip="192.168.1.20",
+            ifname="vEthernet (LAN Bridge)",
+            kind=IfKind.BRIDGE,
+            is_default_route=True,
+        ),
+        AddressInfo(
+            ip="192.168.1.21",
+            ifname="vEthernet (LAN Bridge)",
+            kind=IfKind.BRIDGE,
+        ),
+        AddressInfo(
+            ip="10.8.0.2",
+            ifname="Tailscale",
+            kind=IfKind.TUNNEL,
+        ),
+    ]
+    assert IceGatheringPolicy().select(candidates) == ["192.168.1.20"]
 
 
 # --------------------------------------------------------------------------
@@ -539,6 +586,57 @@ async def test_installer_is_idempotent() -> None:
 
 
 @_webrtc
+def test_enumeration_failure_keeps_every_address(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A raising enumerator degrades fail-open: the hook keeps aioice's
+    full address list instead of dropping everything."""
+    import aioice.ice
+
+    from rigplane.web.transport import ice_gathering as ice_gathering
+
+    ice_gathering.install_ice_gathering_policy()
+    token = ice_gathering._active_policy.set(None)
+    try:
+        full = aioice.ice.get_host_addresses(True, True)
+    finally:
+        ice_gathering._active_policy.reset(token)
+
+    def _raise() -> list[AddressInfo]:
+        raise RuntimeError("simulated GetAdaptersAddresses failure")
+
+    monkeypatch.setattr(ice_gathering, "_enumerate_local_addresses", _raise)
+    with ice_gathering.apply_ice_gathering_policy(ice_gathering.IceGatheringPolicy()):
+        assert aioice.ice.get_host_addresses(True, True) == full
+
+
+@_webrtc
+async def test_negotiate_answers_within_bound_when_enumeration_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A raising enumerator must not break negotiation: the answer still
+    carries host candidates and still lands within the gathering bound."""
+    from rigplane.web.transport import ice_gathering as ice_gathering
+    from rigplane.web.transport.webrtc_session import WebRtcSessionManager
+
+    def _raise() -> list[AddressInfo]:
+        raise RuntimeError("simulated GetAdaptersAddresses failure")
+
+    monkeypatch.setattr(ice_gathering, "_enumerate_local_addresses", _raise)
+    manager = WebRtcSessionManager(None, None, "test")
+    try:
+        sdp, offer_type = await _offer_sdp()
+        start = time.monotonic()
+        result = await manager.negotiate(sdp, offer_type)
+        elapsed = time.monotonic() - start
+    finally:
+        await manager.close_all()
+    assert elapsed <= GATHER_TIMEOUT_S + 1.0, elapsed
+    lines = _answer_candidate_lines(result["sdp"])
+    assert any("typ host" in ln for ln in lines), lines
+
+
+@_webrtc
 @pytest.mark.realtime(
     reason="measures real ICE/STUN wall-clock time against live sockets"
 )
@@ -578,3 +676,32 @@ async def test_blackhole_stun_answer_within_bound() -> None:
     assert elapsed <= GATHER_TIMEOUT_S + 1.0, elapsed
     lines = _answer_candidate_lines(result["sdp"])
     assert any("typ host" in ln for ln in lines), lines
+
+
+def test_real_enumeration_table() -> None:
+    """Real enumeration on this host: at least one address, every entry
+    classified, the default-route address present and kept by the policy.
+
+    Prints the ``ifname ip kind kept`` table so it shows with ``pytest -s``.
+    """
+    from rigplane.web.transport import ice_gathering as ice_gathering
+
+    infos = ice_gathering._enumerate_local_addresses()
+    assert infos, "expected at least one local address"
+    for info in infos:
+        assert info.ip
+        assert isinstance(info.kind, IfKind)
+    kept = set(ice_gathering.IceGatheringPolicy().select(infos))
+    print("\nifname ip kind kept")
+    for info in infos:
+        print(f"{info.ifname} {info.ip} {info.kind.value} {info.ip in kept}")
+
+    default_ip = ""
+    with contextlib.suppress(Exception):
+        probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        with probe:
+            probe.connect(("8.8.8.8", 53))
+            default_ip = str(probe.getsockname()[0])
+    if default_ip and not default_ip.startswith("127."):
+        assert any(info.ip == default_ip for info in infos), default_ip
+        assert default_ip in kept, default_ip

@@ -16,8 +16,17 @@ Operating-system signals (one per OS, read where the kernel exposes them):
   a point-to-point (tunnel/VPN) interface; an interface named ``bridge<N>``
   (the Darwin ``if_bridge(4)`` naming convention) is a bridge; otherwise an
   interface listed by ``networksetup -listallhardwareports`` is physical.
-* Windows: the interface-type code (RFC 2863, as reported by the IP_ADAPTER
-  table): 6/71 are physical Ethernet/Wi-Fi, 131/53 are tunnel/prop-virtual.
+* Windows: ``GetAdaptersAddresses`` (``iphlpapi``) yields each adapter's
+  ``IfType`` (RFC 2863 / IANA ifType), ``FriendlyName``, ``OperStatus`` and
+  unicast addresses; ``GetIfEntry2`` on ``MIB_IF_ROW2`` yields ``Type`` and
+  ``InterfaceAndOperStatusFlags.HardwareInterface``. ``IfType`` alone cannot
+  separate physical from virtual: Hyper-V/VMware virtual adapters report 6
+  like real Ethernet — the OS-provided signal is ``HardwareInterface``.
+  Hardware adapters are physical; tunnel/prop-virtual IfTypes (131/53) are
+  tunnels; non-hardware adapters with a hardware IfType are virtual-switch
+  ports (bridges, skipped by default); a failed per-adapter query degrades
+  to unknown. The default-route source address is always kept, which is
+  what keeps a LAN bound to a Hyper-V external switch.
 
 When classification is unknown — the signal is missing, unreadable, or the
 platform offers no source for it — the address is kept (treated like
@@ -44,6 +53,7 @@ from __future__ import annotations
 
 import contextlib
 import contextvars
+import ctypes
 import enum
 import importlib
 import os
@@ -210,12 +220,27 @@ def classify_macos_interface(
     return IfKind.UNKNOWN
 
 
-def classify_windows_interface(iftype: int) -> IfKind:
-    """Classify a Windows interface from its RFC 2863 interface-type code."""
-    if iftype in (IF_TYPE_ETHERNET_CSMACD, IF_TYPE_IEEE80211):
+def classify_windows_interface(
+    iftype: int, hardware_interface: bool | None = None
+) -> IfKind:
+    """Classify a Windows interface from its IfType and hardware flag.
+
+    ``hardware_interface`` is ``MIB_IF_ROW2.InterfaceAndOperStatusFlags``
+    ``HardwareInterface`` for the adapter (``None`` when ``GetIfEntry2``
+    failed for it). A hardware adapter is physical; tunnel/prop-virtual
+    IfTypes (131/53) are tunnels even without the flag; a non-hardware
+    adapter is a virtual-switch port (bridge) — Hyper-V/VMware virtual
+    adapters report IfType 6 like real Ethernet. With no hardware signal
+    the IfType alone decides, as before: 6/71 physical, 131/53 tunnel.
+    """
+    if hardware_interface is True:
         return IfKind.PHYSICAL
     if iftype in (IF_TYPE_TUNNEL, IF_TYPE_PROPVIRTUAL):
         return IfKind.TUNNEL
+    if hardware_interface is False:
+        return IfKind.BRIDGE
+    if iftype in (IF_TYPE_ETHERNET_CSMACD, IF_TYPE_IEEE80211):
+        return IfKind.PHYSICAL
     return IfKind.UNKNOWN
 
 
@@ -416,17 +441,345 @@ def _enumerate_macos() -> list[AddressInfo]:
     return infos
 
 
-def _enumerate_windows() -> list[AddressInfo]:
-    """Enumerate local addresses without an IfType source (all UNKNOWN).
+#: ``GetAdaptersAddresses`` family selector: all unicast-capable families.
+_AF_UNSPEC: Final = 0
+#: ``GetAdaptersAddresses`` flag: skip anycast addresses (all ``NULL``).
+_GAA_FLAG_SKIP_ANYCAST: Final = 0x2
+#: ``GetAdaptersAddresses`` flag: skip multicast addresses (all ``NULL``).
+_GAA_FLAG_SKIP_MULTICAST: Final = 0x4
+#: ``GetAdaptersAddresses`` flag: skip DNS server addresses (all ``NULL``).
+_GAA_FLAG_SKIP_DNS_SERVER: Final = 0x8
+#: ``GetAdaptersAddresses`` success status.
+_NO_ERROR: Final = 0
+#: ``GetAdaptersAddresses`` "grow the buffer and retry" status.
+_ERROR_BUFFER_OVERFLOW: Final = 111
+#: ``IF_OPER_STATUS`` value for an operational interface (``ifdef.h``).
+_IF_OPER_STATUS_UP: Final = 1
 
-    The classifier's Windows signal is the RFC 2863 interface-type code;
-    this host offers no scriptable source for it, so every address is
-    UNKNOWN — and UNKNOWN addresses are kept by the policy.
+#: ``MIB_IF_ROW2.InterfaceAndOperStatusFlags`` bit masks. MSVC assigns C
+#: bitfields from the least-significant bit, so the first field declared in
+#: ``netioapi.h`` (``HardwareInterface``) is bit 0; the order below follows
+#: the ``MIB_IF_ROW2`` member docs on Microsoft Learn (``netioapi.h``).
+_HARDWARE_INTERFACE_FLAG: Final = 0x01
+_FILTER_INTERFACE_FLAG: Final = 0x02
+_CONNECTOR_PRESENT_FLAG: Final = 0x04
+_NOT_AUTHENTICATED_FLAG: Final = 0x08
+_NOT_MEDIA_CONNECTED_FLAG: Final = 0x10
+_PAUSED_FLAG: Final = 0x20
+_LOW_POWER_FLAG: Final = 0x40
+_END_POINT_INTERFACE_FLAG: Final = 0x80
+
+
+class _WinSocketAddress(ctypes.Structure):
+    """``SOCKET_ADDRESS``: pointer + length only (family read from bytes)."""
+
+    _fields_ = [
+        ("lpSockaddr", ctypes.c_void_p),
+        ("iSockaddrLength", ctypes.c_int32),
+    ]
+
+
+class _WinSockaddrIn(ctypes.Structure):
+    """``sockaddr_in`` (IPv4) — same layout ``ifaddr._shared`` decodes."""
+
+    _fields_ = [
+        ("sin_family", ctypes.c_uint16),
+        ("sin_port", ctypes.c_uint16),
+        ("sin_addr", ctypes.c_uint8 * 4),
+        ("sin_zero", ctypes.c_uint8 * 8),
+    ]
+
+
+class _WinSockaddrIn6(ctypes.Structure):
+    """``sockaddr_in6`` (IPv6) — same layout ``ifaddr._shared`` decodes."""
+
+    _fields_ = [
+        ("sin6_family", ctypes.c_uint16),
+        ("sin6_port", ctypes.c_uint16),
+        ("sin6_flowinfo", ctypes.c_uint32),
+        ("sin6_addr", ctypes.c_uint8 * 16),
+        ("sin6_scope_id", ctypes.c_uint32),
+    ]
+
+
+class _WinUnicastAddress(ctypes.Structure):
+    """``IP_ADAPTER_UNICAST_ADDRESS`` prefix: only what the walk reads.
+
+    ``Next`` is a void pointer (pointer-sized on 32- and 64-bit) to avoid a
+    self-referential ``ctypes`` declaration; it is cast back on the walk.
     """
+
+    _fields_ = [
+        ("Length", ctypes.c_uint32),
+        ("Flags", ctypes.c_uint32),
+        ("Next", ctypes.c_void_p),
+        ("Address", _WinSocketAddress),
+    ]
+
+
+class _WinAdapterAddresses(ctypes.Structure):
+    """``IP_ADAPTER_ADDRESSES`` through ``InterfaceLuid``.
+
+    Field order and sizes follow ``ifaddr._win32`` (an aioice dependency)
+    for the XP prefix and ``iptypes.h`` after it; every integer uses an
+    explicitly-sized ``ctypes`` type so the layout is correct on 64-bit and
+    32-bit, and every unread pointer is a void pointer. ``ZoneIndices``
+    through ``InterfaceLuid`` exist only to reach the LUID — the
+    authoritative key for ``GetIfEntry2`` (``IfIndex``/``Ipv6IfIndex`` can
+    differ per family, the LUID cannot).
+    """
+
+    _fields_ = [
+        ("Length", ctypes.c_uint32),
+        ("IfIndex", ctypes.c_uint32),
+        ("Next", ctypes.c_void_p),
+        ("AdapterName", ctypes.c_char_p),
+        ("FirstUnicastAddress", ctypes.POINTER(_WinUnicastAddress)),
+        ("FirstAnycastAddress", ctypes.c_void_p),
+        ("FirstMulticastAddress", ctypes.c_void_p),
+        ("FirstDnsServerAddress", ctypes.c_void_p),
+        ("DnsSuffix", ctypes.c_void_p),
+        ("Description", ctypes.c_void_p),
+        ("FriendlyName", ctypes.c_wchar_p),
+        ("PhysicalAddress", ctypes.c_uint8 * 8),
+        ("PhysicalAddressLength", ctypes.c_uint32),
+        ("Flags", ctypes.c_uint32),
+        ("Mtu", ctypes.c_uint32),
+        ("IfType", ctypes.c_uint32),
+        ("OperStatus", ctypes.c_int32),
+        ("Ipv6IfIndex", ctypes.c_uint32),
+        ("ZoneIndices", ctypes.c_uint32 * 16),
+        ("FirstPrefix", ctypes.c_void_p),
+        ("TransmitLinkSpeed", ctypes.c_uint64),
+        ("ReceiveLinkSpeed", ctypes.c_uint64),
+        ("FirstWinsServerAddress", ctypes.c_void_p),
+        ("FirstGatewayAddress", ctypes.c_void_p),
+        ("Ipv4Metric", ctypes.c_uint32),
+        ("Ipv6Metric", ctypes.c_uint32),
+        ("InterfaceLuid", ctypes.c_uint64),
+    ]
+
+
+class _MibIfRow2(ctypes.Structure):
+    """Full ``MIB_IF_ROW2`` (``netioapi.h``).
+
+    ``GetIfEntry2`` fills the whole row, so the declaration must span the
+    whole struct — a prefix would leave the API writing past the buffer.
+    Unread enums use ``c_uint32``: only their offsets matter here. String
+    arrays use ``c_uint16`` (``WCHAR`` is 2 bytes on both 32- and 64-bit
+    Windows) so the layout also computes correctly off Windows.
+    """
+
+    _fields_ = [
+        ("InterfaceLuid", ctypes.c_uint64),
+        ("InterfaceIndex", ctypes.c_uint32),
+        ("InterfaceGuid", ctypes.c_uint8 * 16),
+        ("Alias", ctypes.c_uint16 * 257),
+        ("Description", ctypes.c_uint16 * 257),
+        ("PhysicalAddressLength", ctypes.c_uint32),
+        ("PhysicalAddress", ctypes.c_uint8 * 32),
+        ("PermanentPhysicalAddress", ctypes.c_uint8 * 32),
+        ("Mtu", ctypes.c_uint32),
+        ("Type", ctypes.c_uint32),
+        ("TunnelType", ctypes.c_uint32),
+        ("MediaType", ctypes.c_uint32),
+        ("PhysicalMediumType", ctypes.c_uint32),
+        ("AccessType", ctypes.c_uint32),
+        ("DirectionType", ctypes.c_uint32),
+        ("InterfaceAndOperStatusFlags", ctypes.c_uint8),
+        ("OperStatus", ctypes.c_int32),
+        ("AdminStatus", ctypes.c_int32),
+        ("MediaConnectState", ctypes.c_int32),
+        ("NetworkGuid", ctypes.c_uint8 * 16),
+        ("ConnectionType", ctypes.c_int32),
+        ("TransmitLinkSpeed", ctypes.c_uint64),
+        ("ReceiveLinkSpeed", ctypes.c_uint64),
+        ("InOctets", ctypes.c_uint64),
+        ("InUcastPkts", ctypes.c_uint64),
+        ("InNUcastPkts", ctypes.c_uint64),
+        ("InDiscards", ctypes.c_uint64),
+        ("InErrors", ctypes.c_uint64),
+        ("InUnknownProtos", ctypes.c_uint64),
+        ("InUcastOctets", ctypes.c_uint64),
+        ("InMulticastOctets", ctypes.c_uint64),
+        ("InBroadcastOctets", ctypes.c_uint64),
+        ("OutOctets", ctypes.c_uint64),
+        ("OutUcastPkts", ctypes.c_uint64),
+        ("OutNUcastPkts", ctypes.c_uint64),
+        ("OutDiscards", ctypes.c_uint64),
+        ("OutErrors", ctypes.c_uint64),
+        ("OutUcastOctets", ctypes.c_uint64),
+        ("OutMulticastOctets", ctypes.c_uint64),
+        ("OutBroadcastOctets", ctypes.c_uint64),
+        ("OutQLen", ctypes.c_uint64),
+    ]
+
+
+@dataclass
+class _WindowsAdapter:
+    """One adapter row from ``GetAdaptersAddresses``, decoded to values."""
+
+    friendly_name: str
+    if_type: int
+    oper_status: int
+    luid: int
+    if_index: int
+    ips: list[str]
+
+
+def _load_iphlpapi() -> Any:
+    """Load ``iphlpapi.dll`` with stdcall convention (32-bit safe).
+
+    ``ctypes.WinDLL`` exists only on Windows, so it is resolved via
+    ``getattr``: the module must import on every OS and mypy must stay
+    clean where the attribute does not exist.
+    """
+    win_dll = getattr(ctypes, "WinDLL", None)
+    if win_dll is None:  # pragma: no cover - non-Windows hosts never call
+        raise OSError("Windows IP Helper API is available on win32 only")
+    return win_dll("iphlpapi.dll")
+
+
+def _windows_sockaddr_to_str(sockaddr: int | None) -> str | None:
+    """Decode a ``SOCKADDR`` pointer to text via ``socket.inet_ntop``."""
+    if not sockaddr:
+        return None
+    family = int(ctypes.cast(sockaddr, ctypes.POINTER(ctypes.c_uint16)).contents.value)
+    if family == socket.AF_INET:
+        sin = ctypes.cast(sockaddr, ctypes.POINTER(_WinSockaddrIn)).contents
+        return socket.inet_ntop(socket.AF_INET, bytes(sin.sin_addr))
+    if family == socket.AF_INET6:
+        sin6 = ctypes.cast(sockaddr, ctypes.POINTER(_WinSockaddrIn6)).contents
+        return socket.inet_ntop(socket.AF_INET6, bytes(sin6.sin6_addr))
+    return None
+
+
+def _windows_adapter_entries(iphlpapi: Any) -> list[_WindowsAdapter]:
+    """Read every adapter via ``GetAdaptersAddresses`` (grow-and-retry).
+
+    Raises on failure: the gathering hook treats a failed enumeration as
+    "classify nothing" and keeps every address.
+    """
+    size = ctypes.c_uint32(15 * 1024)
+    status = _ERROR_BUFFER_OVERFLOW
+    buffer = ctypes.create_string_buffer(size.value)
+    while status == _ERROR_BUFFER_OVERFLOW:
+        buffer = ctypes.create_string_buffer(size.value)
+        status = int(
+            iphlpapi.GetAdaptersAddresses(
+                _AF_UNSPEC,
+                _GAA_FLAG_SKIP_ANYCAST
+                | _GAA_FLAG_SKIP_MULTICAST
+                | _GAA_FLAG_SKIP_DNS_SERVER,
+                None,
+                buffer,
+                ctypes.byref(size),
+            )
+        )
+    if status != _NO_ERROR:
+        raise OSError(f"GetAdaptersAddresses failed with status {status}")
+    entries: list[_WindowsAdapter] = []
+    current: _WinAdapterAddresses | None = _WinAdapterAddresses.from_buffer(buffer)
+    while current is not None:
+        ips: list[str] = []
+        unicast = current.FirstUnicastAddress
+        while unicast:
+            try:
+                ip = _windows_sockaddr_to_str(unicast.contents.Address.lpSockaddr)
+            except (OSError, ValueError):
+                ip = None
+            if ip is not None and ip not in ips:
+                ips.append(ip)
+            next_ptr = unicast.contents.Next
+            unicast = (
+                ctypes.cast(next_ptr, ctypes.POINTER(_WinUnicastAddress))
+                if next_ptr
+                else None
+            )
+        friendly = current.FriendlyName or ""
+        if not friendly and current.AdapterName:
+            friendly = current.AdapterName.decode("ascii", "replace")
+        entries.append(
+            _WindowsAdapter(
+                friendly_name=friendly,
+                if_type=int(current.IfType),
+                oper_status=int(current.OperStatus),
+                luid=int(current.InterfaceLuid),
+                if_index=int(current.IfIndex),
+                ips=ips,
+            )
+        )
+        next_adapter = current.Next
+        current = (
+            ctypes.cast(next_adapter, ctypes.POINTER(_WinAdapterAddresses)).contents
+            if next_adapter
+            else None
+        )
+    return entries
+
+
+def _windows_hardware_interface(iphlpapi: Any, luid: int, if_index: int) -> bool | None:
+    """Read ``HardwareInterface`` for one adapter via ``GetIfEntry2``.
+
+    Returns ``None`` when the query fails: that adapter degrades to
+    IfType-only classification (kept by the policy).
+    """
+    row = _MibIfRow2()
+    if luid:
+        row.InterfaceLuid = luid
+    elif if_index:
+        row.InterfaceIndex = if_index
+    else:
+        return None
+    try:
+        status = int(iphlpapi.GetIfEntry2(ctypes.byref(row)))
+    except Exception:
+        return None
+    if status != _NO_ERROR:
+        return None
+    return bool(int(row.InterfaceAndOperStatusFlags) & _HARDWARE_INTERFACE_FLAG)
+
+
+def _windows_default_route_source_ip() -> str:
+    """Source IP of the default route (a UDP connect sends no packets)."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+            probe.connect(("8.8.8.8", 53))
+            return str(probe.getsockname()[0])
+    except OSError:
+        return ""
+
+
+def _enumerate_windows() -> list[AddressInfo]:
+    """Enumerate local addresses with IfType + hardware-flag signals.
+
+    ``GetAdaptersAddresses`` yields ``IfIndex``/``Ipv6IfIndex`` (or the
+    LUID), ``FriendlyName``, ``OperStatus`` and unicast addresses; each Up
+    adapter then gets a ``GetIfEntry2`` query for ``MIB_IF_ROW2.Type`` and
+    ``InterfaceAndOperStatusFlags``. A failed per-adapter query degrades
+    that adapter to IfType-only classification (kept); a failed whole
+    enumeration propagates and the hook keeps every address.
+    """
+    iphlpapi = _load_iphlpapi()
+    default_ip = _windows_default_route_source_ip()
     infos: list[AddressInfo] = []
-    for ifname, ips in _adapter_addresses():
-        for ip in ips:
-            infos.append(AddressInfo(ip=ip, ifname=ifname))
+    for entry in _windows_adapter_entries(iphlpapi):
+        if entry.oper_status == _IF_OPER_STATUS_UP:
+            hardware: bool | None = _windows_hardware_interface(
+                iphlpapi, entry.luid, entry.if_index
+            )
+        else:
+            hardware = None
+        kind = classify_windows_interface(entry.if_type, hardware)
+        for ip in entry.ips:
+            infos.append(
+                AddressInfo(
+                    ip=ip,
+                    ifname=entry.friendly_name,
+                    kind=kind,
+                    is_default_route=bool(default_ip) and ip == default_ip,
+                )
+            )
     return infos
 
 
