@@ -155,7 +155,8 @@ async def execute(
     0 ok, 2 bad usage (unknown profile, unsupported protocol, refusing to
     save without ``--yes`` outside a TTY), 3 the port cannot be opened or
     nothing answered at all. The file is written only after the save
-    answer, and never contains the port path, host, or user.
+    answer. The tool itself records no port path, host, or user — only
+    what you type in ``--label``, plus the radio's answers.
     """
     if config.protocol_type not in _SUPPORTED:
         emit(render.not_supported_message(config.protocol_type))

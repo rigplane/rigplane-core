@@ -96,10 +96,14 @@ power and tuner families, or stored memory contents without the flag).
 Declared-absent CAT reads (none exist today) are skipped
 `no_unambiguous_bytes`: borrowing across CAT profiles is out of scope.
 
-What never lands in the file: your name, IP address, computer name,
-the port path, or log files. Stored memory contents are left
-out unless you pass `--include-private` — they can hold callsigns and
-stored text, so look through the file before you send it if you do.
+What the tool itself never adds to the file: your name, computer
+name, internet address, any file from your computer, the port path,
+or log files. Two things you control can still identify you: the
+`--label` text is saved exactly as you typed it, and stored memory
+contents (only with `--include-private`) can hold callsigns and
+stored text. Stored memory contents stay out unless you pass
+`--include-private` — look through the file before you send it
+either way.
 
 ## If the radio stays silent
 

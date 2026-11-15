@@ -98,7 +98,12 @@ class IdentityReport:
 
 @dataclass(frozen=True, slots=True)
 class RadioInfo:
-    """Which radio the run talked to. Never a port path, host, or user."""
+    """Which radio the run talked to.
+
+    The tool records no port path, host, or user here — only profile,
+    protocol, port kind, baud, and the radio's identity answer.
+    Free text typed in ``--label`` is saved verbatim elsewhere.
+    """
 
     profile: str
     profile_sha256: str
