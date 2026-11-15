@@ -1106,12 +1106,17 @@ async def test_api_transmission_end_stays_served(tmp_path: Path) -> None:
                 body=json.dumps(payload).encode(),
             )
 
+        # Under managed TX authority the dispatch itself refuses raw
+        # TX-family transactions (even END frames) with its own code — the
+        # point is the refusal passes them through (not 403
+        # controller_tx_unsupported) and the dispatch answers as over HTTP.
         resp = await _post(
             2,
             "/api/v1/civ/transaction",
             {"command": 28, "sub": 0, "data": "00", "expect": "none"},
         )
-        assert resp.status == 200, (resp.status, resp.body[:200])
+        assert resp.status == 403, (resp.status, resp.body[:200])
+        assert json.loads(resp.body.decode())["error"] == "managed_tx_refused"
         end_civ = {"name": "send_civ", "params": {"command": 28, "sub": 0, "data": "00"}}
         resp = await _post(3, "/api/v1/commands", end_civ)
         assert resp.status == 200, (resp.status, resp.body[:200])
