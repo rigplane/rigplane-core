@@ -1700,8 +1700,35 @@ async def test_ft991a_silent_tx_func_leaves_cycle_alive_with_tx_target_unknown(
             == unknown
         )
         # Not vacuous: the production poller asked for the TX function on
-        # the wire — the read is silent, not merely unasked.
-        assert "FT;" in station.wire
+        # the wire — the read is silent, not merely unasked. The split
+        # read shares the ``FT;`` line, so wait for the poller to get to
+        # it instead of assuming it is already there: under load the
+        # unknown projection above can be served before the cycle's first
+        # split read lands in the log.
+        server = station.server
+        assert server is not None
+
+        def _cycle_survived() -> bool:
+            if "FT;" not in station.wire:
+                return False
+            observed = _observed_paths(server, station.radio._acquisition_scheduler)
+            for path in (_MAIN_FREQ, _MAIN_MODE, _PTT, _SPLIT):
+                if path not in observed:
+                    return False
+            try:
+                field = server.command_state_store.snapshot().field(_TX_TARGET)
+            except KeyError:
+                return False
+            return (
+                isinstance(field.value, UnknownTxTarget)
+                and field.value.reason == "not-observed"
+            )
+
+        await await_until(
+            _cycle_survived,
+            timeout=60.0,
+            description="FT; on the wire with the cycle observed",
+        )
 
         # …while the cycle survived past it: freq, mode, PTT and split
         # are observed in the store, with the TX target contained there
