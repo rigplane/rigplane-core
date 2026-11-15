@@ -29,6 +29,7 @@ from rigplane.web.transport.ice_gathering import (
     IceGatheringPolicy,
     IceServer,
     IfKind,
+    WindowsAdapterFacts,
     classify_linux_interface,
     classify_macos_interface,
     classify_windows_interface,
@@ -122,14 +123,29 @@ def test_classify_macos_tunnel_physical_unknown() -> None:
     assert classify_macos_interface("utun9", 0x0, frozenset({"en0"})) == IfKind.UNKNOWN
 
 
+def _wf(
+    if_type: int,
+    hardware: bool | None = None,
+    oper_up: bool = True,
+    name: str = "Ethernet",
+) -> WindowsAdapterFacts:
+    """Build classifier input the way ``_enumerate_windows`` does."""
+    return WindowsAdapterFacts(
+        if_type=if_type,
+        hardware_interface=hardware,
+        oper_up=oper_up,
+        friendly_name=name,
+    )
+
+
 def test_classify_windows_physical_tunnel_unknown() -> None:
     """Ethernet/Wi-Fi are physical; tunnel/prop-virtual are tunnels."""
-    assert classify_windows_interface(6) == IfKind.PHYSICAL
-    assert classify_windows_interface(71) == IfKind.PHYSICAL
-    assert classify_windows_interface(131) == IfKind.TUNNEL
-    assert classify_windows_interface(53) == IfKind.TUNNEL
-    assert classify_windows_interface(24) == IfKind.UNKNOWN
-    assert classify_windows_interface(62) == IfKind.UNKNOWN
+    assert classify_windows_interface(_wf(6)) == IfKind.PHYSICAL
+    assert classify_windows_interface(_wf(71)) == IfKind.PHYSICAL
+    assert classify_windows_interface(_wf(131)) == IfKind.TUNNEL
+    assert classify_windows_interface(_wf(53)) == IfKind.TUNNEL
+    assert classify_windows_interface(_wf(24)) == IfKind.UNKNOWN
+    assert classify_windows_interface(_wf(62)) == IfKind.UNKNOWN
 
 
 def test_classify_windows_hardware_flag_table() -> None:
@@ -137,21 +153,21 @@ def test_classify_windows_hardware_flag_table() -> None:
     does not — Hyper-V/VMware virtual adapters report IfType 6 like real
     Ethernet, so non-hardware ones are bridges (skipped by default)."""
     # Intel I225 physical Ethernet: hardware, IfType 6.
-    assert classify_windows_interface(6, True) == IfKind.PHYSICAL
-    assert classify_windows_interface(71, True) == IfKind.PHYSICAL
+    assert classify_windows_interface(_wf(6, True)) == IfKind.PHYSICAL
+    assert classify_windows_interface(_wf(71, True)) == IfKind.PHYSICAL
     # vEthernet (Default Switch / WSL), VMnet1/VMnet8, vSwitch (LAN
     # Bridge), WAN Miniport: IfType 6 but not hardware.
     for iftype in (6, 71):
-        assert classify_windows_interface(iftype, False) == IfKind.BRIDGE
+        assert classify_windows_interface(_wf(iftype, False)) == IfKind.BRIDGE
     # Teredo (131) and Tailscale (53) are tunnels.
-    assert classify_windows_interface(131, False) == IfKind.TUNNEL
-    assert classify_windows_interface(53, False) == IfKind.TUNNEL
-    assert classify_windows_interface(131, None) == IfKind.TUNNEL
-    assert classify_windows_interface(53, None) == IfKind.TUNNEL
+    assert classify_windows_interface(_wf(131, False)) == IfKind.TUNNEL
+    assert classify_windows_interface(_wf(53, False)) == IfKind.TUNNEL
+    assert classify_windows_interface(_wf(131)) == IfKind.TUNNEL
+    assert classify_windows_interface(_wf(53)) == IfKind.TUNNEL
     # Failed per-adapter GetIfEntry2 (no hardware signal) falls back to
     # IfType alone, as before.
-    assert classify_windows_interface(6, None) == IfKind.PHYSICAL
-    assert classify_windows_interface(24, None) == IfKind.UNKNOWN
+    assert classify_windows_interface(_wf(6)) == IfKind.PHYSICAL
+    assert classify_windows_interface(_wf(24)) == IfKind.UNKNOWN
 
 
 def test_classifier_module_consts_match_contract() -> None:
@@ -193,24 +209,95 @@ def _mixed_candidates() -> list[AddressInfo]:
 
 
 def test_policy_select_default_excludes_bridge_and_tunnel() -> None:
-    """Default policy: physical + unknown + default-route entries, in order."""
+    """Default policy: physical + unknown + default-route entries, in order.
+
+    The ``169.254.1.2`` link-local address is dropped even though it
+    classifies UNKNOWN: link-local addresses are never routable.
+    """
     assert IceGatheringPolicy().select(_mixed_candidates()) == [
         "10.0.0.2",
-        "169.254.1.2",
         "192.168.1.3",
         "10.8.0.3",
     ]
 
 
 def test_policy_select_include_vpn_keeps_tunnels() -> None:
-    """include_vpn admits non-default-route tunnels; bridges stay out."""
+    """include_vpn admits non-default-route tunnels; bridges stay out.
+
+    ``include_vpn`` does not re-admit link-local addresses.
+    """
     assert IceGatheringPolicy(include_vpn=True).select(_mixed_candidates()) == [
         "10.0.0.2",
         "10.8.0.2",
-        "169.254.1.2",
         "192.168.1.3",
         "10.8.0.3",
     ]
+
+
+def _gtr7_candidates() -> list[AddressInfo]:
+    """GTR7 host (Windows 11 x64) address table, reduced to the policy inputs.
+
+    Ethernet ``192.168.55.132`` is the default-route source; Wi-Fi
+    ``192.168.55.137`` is the second LAN path. The ``169.254.x.x`` APIPA
+    addresses sit on Bluetooth PAN, the Wi-Fi Direct virtual adapters
+    ("Local Area Connection* 1/2") and a Hyper-V bridge without DHCP:
+    hardware-backed but RFC 3927 link-local, hence unroutable.
+    """
+    return [
+        AddressInfo(
+            ip="192.168.55.132",
+            ifname="Ethernet",
+            kind=IfKind.PHYSICAL,
+            is_default_route=True,
+        ),
+        AddressInfo(ip="192.168.55.137", ifname="Wi-Fi", kind=IfKind.PHYSICAL),
+        AddressInfo(
+            ip="169.254.12.34",
+            ifname="Bluetooth Network Connection",
+            kind=IfKind.UNKNOWN,
+        ),
+        AddressInfo(
+            ip="169.254.45.67",
+            ifname="Local Area Connection* 1",
+            kind=IfKind.BRIDGE,
+        ),
+        AddressInfo(
+            ip="169.254.89.12",
+            ifname="Local Area Connection* 2",
+            kind=IfKind.BRIDGE,
+        ),
+        AddressInfo(
+            ip="169.254.200.11",
+            ifname="vEthernet (Hyper-V bridge, no DHCP)",
+            kind=IfKind.BRIDGE,
+        ),
+    ]
+
+
+def test_policy_select_drops_gtr7_apipa_link_locals() -> None:
+    """GTR7 table: APIPA addresses are out whatever their kind, LAN stays."""
+    assert IceGatheringPolicy().select(_gtr7_candidates()) == [
+        "192.168.55.132",
+        "192.168.55.137",
+    ]
+    assert IceGatheringPolicy(include_vpn=True).select(_gtr7_candidates()) == [
+        "192.168.55.132",
+        "192.168.55.137",
+    ]
+
+
+def test_policy_select_keeps_lone_apipa_default_route() -> None:
+    """A host whose ONLY address is APIPA keeps it via the default route."""
+    assert IceGatheringPolicy().select(
+        [
+            AddressInfo(
+                ip="169.254.7.77",
+                ifname="Ethernet",
+                kind=IfKind.PHYSICAL,
+                is_default_route=True,
+            ),
+        ]
+    ) == ["169.254.7.77"]
 
 
 def test_policy_select_keeps_default_route_on_virtual_switch() -> None:
@@ -391,42 +478,6 @@ async def test_offer_with_malformed_ice_servers_rejected() -> None:
 # --------------------------------------------------------------------------
 
 
-def _has_non_loopback_ipv4() -> bool:
-    """True when the host exposes an IPv4 address beyond 127/8.
-
-    Enumerates real interface addresses instead of resolving the
-    hostname: ``socket.gethostname()`` is not in DNS on some hosts
-    (e.g. ``Sergeys-Mini-2.msmsoft.net``), which made the old guard
-    report loopback-only on a multi-homed machine and skip the test
-    this guards. Uses only stdlib + the optional ``ifaddr`` package,
-    never the implementation under test, so the skip decision stays
-    non-circular.
-    """
-    # Stdlib first: UDP "connect" sends no packets; it asks the routing
-    # table for the source address of the default route.
-    with contextlib.suppress(Exception):
-        probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        try:
-            probe.connect(("8.8.8.8", 53))
-            ip = probe.getsockname()[0]
-            if ip and not ip.startswith("127."):
-                return True
-        finally:
-            probe.close()
-    # Fallback: true interface enumeration. ``ifaddr`` ships with
-    # ``aioice`` (an aiortc dependency), so it is present wherever the
-    # aiortc-gated tests below can run; the import stays defensive.
-    with contextlib.suppress(Exception):
-        import ifaddr
-
-        for adapter in ifaddr.get_adapters():
-            for ipinfo in adapter.ips:
-                ip = ipinfo.ip
-                if ipinfo.is_IPv4 and isinstance(ip, str) and not ip.startswith("127."):
-                    return True
-    return False
-
-
 class _StunResponder(asyncio.DatagramProtocol):
     """Minimal STUN Binding responder: answers requests with MAPPED-ADDRESS."""
 
@@ -463,20 +514,44 @@ class _StunResponder(asyncio.DatagramProtocol):
             self.transport.sendto(header + attrs, addr)
 
 
+def _default_route_ipv4() -> str:
+    """Source IPv4 address of the default route (a UDP connect sends nothing).
+
+    A STUN responder bound to loopback is unreachable from a LAN source
+    address on Windows, so the responder below binds here instead.
+    """
+    with contextlib.suppress(Exception):
+        probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            probe.connect(("8.8.8.8", 53))
+            ip = probe.getsockname()[0]
+            if ip and not ip.startswith("127."):
+                return ip
+        finally:
+            probe.close()
+    return ""
+
+
 @_webrtc
 @pytest.mark.realtime(
     reason="measures real ICE/STUN wall-clock time against live sockets"
 )
 async def test_multihomed_answer_fast_with_stun() -> None:
-    """A responsive STUN server yields srflx candidates well within the bound."""
-    if not _has_non_loopback_ipv4():
+    """A responsive STUN server yields srflx candidates well within the bound.
+
+    The responder binds the default-route IPv4 address (not loopback): a
+    LAN host address cannot reach a 127.0.0.1 responder on Windows, which
+    made this test wait out the srflx timeout there.
+    """
+    stun_host = _default_route_ipv4()
+    if not stun_host:
         pytest.skip("host exposes only loopback addresses")
 
     from rigplane.web.transport.webrtc_session import WebRtcSessionManager
 
     loop = asyncio.get_running_loop()
     transport, _ = await loop.create_datagram_endpoint(
-        _StunResponder, local_addr=("127.0.0.1", 0)
+        _StunResponder, local_addr=(stun_host, 0)
     )
     port = transport.get_extra_info("sockname")[1]
     manager = WebRtcSessionManager(None, None, "test")
@@ -486,7 +561,7 @@ async def test_multihomed_answer_fast_with_stun() -> None:
         result = await manager.negotiate(
             sdp,
             offer_type,
-            ice_servers=[IceServer(urls=[f"stun:127.0.0.1:{port}"])],
+            ice_servers=[IceServer(urls=[f"stun:{stun_host}:{port}"])],
         )
         elapsed = time.monotonic() - start
     finally:

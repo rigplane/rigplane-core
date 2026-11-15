@@ -22,11 +22,24 @@ Operating-system signals (one per OS, read where the kernel exposes them):
   ``InterfaceAndOperStatusFlags.HardwareInterface``. ``IfType`` alone cannot
   separate physical from virtual: Hyper-V/VMware virtual adapters report 6
   like real Ethernet — the OS-provided signal is ``HardwareInterface``.
+  This is the general Windows rule, not a host special case: USB tethering
+  and Wi-Fi adapters report hardware and are kept; virtual-switch ports and
+  VPN adapters report non-hardware and are skipped (bridges) or tunnelled.
   Hardware adapters are physical; tunnel/prop-virtual IfTypes (131/53) are
   tunnels; non-hardware adapters with a hardware IfType are virtual-switch
   ports (bridges, skipped by default); a failed per-adapter query degrades
   to unknown. The default-route source address is always kept, which is
   what keeps a LAN bound to a Hyper-V external switch.
+
+Link-local addresses (RFC 3927 ``169.254.0.0/16`` over IPv4, ``fe80::/10``
+over IPv6) are never routable, so they are dropped from host-candidate
+selection unless they are the default-route address (the lone-APIPA-host
+case). The check is address-based — ``ipaddress.ip_address(ip).is_link_local``
+— never a name list, so it applies on every OS. IPv6 handling stays
+consistent with ``aioice`` 0.10.2's ``get_host_addresses``, which already
+excludes scoped link-local addresses (it keeps only IPv6 entries whose
+scope id is 0 and drops ``::1``); our own rule additionally drops any
+``fe80::`` address the enumerator reports, unless it is the default route.
 
 When classification is unknown — the signal is missing, unreadable, or the
 platform offers no source for it — the address is kept (treated like
@@ -56,6 +69,7 @@ import contextvars
 import ctypes
 import enum
 import importlib
+import ipaddress
 import os
 import socket
 import struct
@@ -76,6 +90,7 @@ __all__ = [
     "IceGatheringPolicy",
     "IceServer",
     "IfKind",
+    "WindowsAdapterFacts",
     "apply_ice_gathering_policy",
     "classify_linux_interface",
     "classify_macos_interface",
@@ -220,28 +235,59 @@ def classify_macos_interface(
     return IfKind.UNKNOWN
 
 
-def classify_windows_interface(
-    iftype: int, hardware_interface: bool | None = None
-) -> IfKind:
-    """Classify a Windows interface from its IfType and hardware flag.
+@dataclass(frozen=True)
+class WindowsAdapterFacts:
+    """Typed input for :func:`classify_windows_interface`.
 
-    ``hardware_interface`` is ``MIB_IF_ROW2.InterfaceAndOperStatusFlags``
-    ``HardwareInterface`` for the adapter (``None`` when ``GetIfEntry2``
-    failed for it). A hardware adapter is physical; tunnel/prop-virtual
-    IfTypes (131/53) are tunnels even without the flag; a non-hardware
-    adapter is a virtual-switch port (bridge) — Hyper-V/VMware virtual
-    adapters report IfType 6 like real Ethernet. With no hardware signal
-    the IfType alone decides, as before: 6/71 physical, 131/53 tunnel.
+    Built by :func:`_enumerate_windows` from the two OS calls:
+    ``GetAdaptersAddresses`` (``if_type``, ``oper_up``, ``friendly_name``)
+    and ``GetIfEntry2`` (``hardware_interface``).
     """
-    if hardware_interface is True:
+
+    if_type: int
+    hardware_interface: bool | None
+    oper_up: bool
+    friendly_name: str
+
+
+def classify_windows_interface(facts: WindowsAdapterFacts) -> IfKind:
+    """Classify a Windows interface from its adapter facts.
+
+    The deciding signal is the general Windows rule
+    ``MIB_IF_ROW2.InterfaceAndOperStatusFlags.HardwareInterface`` — not a
+    host special case: USB-tethered and Wi-Fi adapters report hardware and
+    are kept (physical), while Hyper-V/VMware virtual-switch ports and VPN
+    adapters report non-hardware and are skipped (bridges) or tunnelled.
+    ``hardware_interface`` is ``None`` when ``GetIfEntry2`` failed for the
+    adapter. A hardware adapter is physical; tunnel/prop-virtual IfTypes
+    (131/53) are tunnels even without the flag; a non-hardware adapter is
+    a virtual-switch port (bridge) — Hyper-V/VMware virtual adapters
+    report IfType 6 like real Ethernet. With no hardware signal the IfType
+    alone decides, as before: 6/71 physical, 131/53 tunnel.
+    ``oper_up``/``friendly_name`` travel with the facts for future rules;
+    classification today does not read them.
+    """
+    if facts.hardware_interface is True:
         return IfKind.PHYSICAL
-    if iftype in (IF_TYPE_TUNNEL, IF_TYPE_PROPVIRTUAL):
+    if facts.if_type in (IF_TYPE_TUNNEL, IF_TYPE_PROPVIRTUAL):
         return IfKind.TUNNEL
-    if hardware_interface is False:
+    if facts.hardware_interface is False:
         return IfKind.BRIDGE
-    if iftype in (IF_TYPE_ETHERNET_CSMACD, IF_TYPE_IEEE80211):
+    if facts.if_type in (IF_TYPE_ETHERNET_CSMACD, IF_TYPE_IEEE80211):
         return IfKind.PHYSICAL
     return IfKind.UNKNOWN
+
+
+def _is_link_local(ip: str) -> bool:
+    """Whether ``ip`` is a link-local address (v4 ``169.254/16``/v6 ``fe80``).
+
+    Unparseable strings are not link-local: they keep the pre-existing
+    fail-open posture instead of being silently dropped.
+    """
+    try:
+        return ipaddress.ip_address(ip).is_link_local
+    except ValueError:
+        return False
 
 
 @dataclass
@@ -249,9 +295,13 @@ class IceGatheringPolicy:
     """Which local addresses may become host candidates.
 
     Default is host-only: tunnels are excluded unless ``include_vpn`` is
-    set, bridges are always excluded, and physical/unclassifiable addresses
-    are kept. The default route's addresses are always kept regardless of
-    kind. Selection preserves input order and deduplicates IPs.
+    set, bridges are always excluded, link-local addresses (RFC 3927
+    ``169.254.0.0/16``, ``fe80::/10`` — never routable, e.g. APIPA
+    Bluetooth/Wi-Fi-Direct/virtual-switch addresses) are always excluded,
+    and physical/unclassifiable addresses are kept. The default route's
+    addresses are always kept regardless of kind or link-locality, so a
+    host whose only address is APIPA still keeps it. Selection preserves
+    input order and deduplicates IPs.
     """
 
     include_vpn: bool = False
@@ -264,6 +314,8 @@ class IceGatheringPolicy:
                 continue
             if candidate.is_default_route:
                 allowed.append(candidate.ip)
+                continue
+            if _is_link_local(candidate.ip):
                 continue
             if candidate.kind is IfKind.TUNNEL and not self.include_vpn:
                 continue
@@ -764,13 +816,20 @@ def _enumerate_windows() -> list[AddressInfo]:
     default_ip = _windows_default_route_source_ip()
     infos: list[AddressInfo] = []
     for entry in _windows_adapter_entries(iphlpapi):
-        if entry.oper_status == _IF_OPER_STATUS_UP:
+        oper_up = entry.oper_status == _IF_OPER_STATUS_UP
+        if oper_up:
             hardware: bool | None = _windows_hardware_interface(
                 iphlpapi, entry.luid, entry.if_index
             )
         else:
             hardware = None
-        kind = classify_windows_interface(entry.if_type, hardware)
+        facts = WindowsAdapterFacts(
+            if_type=entry.if_type,
+            hardware_interface=hardware,
+            oper_up=oper_up,
+            friendly_name=entry.friendly_name,
+        )
+        kind = classify_windows_interface(facts)
         for ip in entry.ips:
             infos.append(
                 AddressInfo(
