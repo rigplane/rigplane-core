@@ -869,3 +869,450 @@ async def test_api_send_waits_while_buffer_full() -> None:
     assert len(conn.sent) == 3  # RES_HEAD + RES_BODY + END
     assert conn.sent[-1][1] == 5  # END type byte
     assert all(frame[0] == 1 for frame in conn.sent)  # wire version
+
+
+# ---------------------------------------------------------------------------
+# P0: TX-capable REST over api is refused 403 before touching the radio.
+# ---------------------------------------------------------------------------
+
+
+def _tx_refusal_body(resp: _Response) -> Any:
+    assert resp.status == 403, (resp.status, resp.body[:200])
+    obj = json.loads(resp.body.decode())
+    assert obj["error"] == "controller_tx_unsupported", obj
+    return obj
+
+
+@_webrtc
+async def test_api_tx_start_single_command_refused(tmp_path: Path) -> None:
+    """Tuner start over api: 403 controller_tx_unsupported, radio not keyed."""
+    from test_webrtc_attach_path import (  # noqa: E402
+        _stand_up_stack,
+        _tear_down_stack,
+    )
+
+    stack = await _stand_up_stack(tmp_path)
+    client = _ApiClient()
+    try:
+        await client.connect(stack.web.port)
+        await client.attach(None)
+        resp = await client.request(
+            1,
+            "POST",
+            "/api/v1/commands",
+            headers={"content-type": "application/json"},
+            body=json.dumps(
+                {"name": "set_tuner_status", "params": {"value": 2}}
+            ).encode(),
+        )
+        _tx_refusal_body(resp)
+        assert stack.sim.ptt_on is False
+        # And the channel still serves afterwards.
+        resp = await client.request(2, "GET", "/api/v1/info")
+        assert resp.status == 200, (resp.status, resp.body[:200])
+    finally:
+        await client.close()
+        await _tear_down_stack(stack)
+
+
+@_webrtc
+async def test_api_tx_start_cw_send_refused(tmp_path: Path) -> None:
+    """CW send over api: 403 controller_tx_unsupported, radio not keyed."""
+    from test_webrtc_attach_path import (  # noqa: E402
+        _stand_up_stack,
+        _tear_down_stack,
+    )
+
+    stack = await _stand_up_stack(tmp_path)
+    client = _ApiClient()
+    try:
+        await client.connect(stack.web.port)
+        await client.attach(None)
+        resp = await client.request(
+            1,
+            "POST",
+            "/api/v1/radio/cw/send",
+            headers={"content-type": "application/json"},
+            body=json.dumps({"text": "TEST"}).encode(),
+        )
+        _tx_refusal_body(resp)
+        assert stack.sim.ptt_on is False
+    finally:
+        await client.close()
+        await _tear_down_stack(stack)
+
+
+@_webrtc
+async def test_api_tx_start_raw_transaction_refused(tmp_path: Path) -> None:
+    """A non-END raw CI-V transaction over api: 403, radio not keyed."""
+    from test_webrtc_attach_path import (  # noqa: E402
+        _stand_up_stack,
+        _tear_down_stack,
+    )
+
+    stack = await _stand_up_stack(tmp_path)
+    client = _ApiClient()
+    try:
+        await client.connect(stack.web.port)
+        await client.attach(None)
+        # A harmless read frame is still transmit-capable (only an exact
+        # transmission-end frame is exempt, like the control path).
+        resp = await client.request(
+            1,
+            "POST",
+            "/api/v1/civ/transaction",
+            headers={"content-type": "application/json"},
+            body=json.dumps({"command": 3, "expect": "data"}).encode(),
+        )
+        _tx_refusal_body(resp)
+        assert stack.sim.ptt_on is False
+    finally:
+        await client.close()
+        await _tear_down_stack(stack)
+
+
+@_webrtc
+async def test_api_tx_start_batch_steps_refused(tmp_path: Path) -> None:
+    """Any TX-start batch step over api refuses the whole batch: 403."""
+    from test_webrtc_attach_path import (  # noqa: E402
+        _stand_up_stack,
+        _tear_down_stack,
+    )
+
+    stack = await _stand_up_stack(tmp_path)
+    client = _ApiClient()
+    try:
+        await client.connect(stack.web.port)
+        await client.attach(None)
+        resp = await client.request(
+            1,
+            "POST",
+            "/api/v1/commands/batch",
+            headers={"content-type": "application/json"},
+            body=json.dumps(
+                {"steps": [{"name": "set_tuner_status", "params": {"value": 2}}]}
+            ).encode(),
+        )
+        _tx_refusal_body(resp)
+        resp = await client.request(
+            2,
+            "POST",
+            "/api/v1/commands/batch",
+            headers={"content-type": "application/json"},
+            body=json.dumps(
+                {
+                    "steps": [
+                        {
+                            "type": "raw_civ_transaction",
+                            "command": 3,
+                            "expect": "data",
+                        }
+                    ]
+                }
+            ).encode(),
+        )
+        _tx_refusal_body(resp)
+        assert stack.sim.ptt_on is False
+    finally:
+        await client.close()
+        await _tear_down_stack(stack)
+
+
+@_webrtc
+async def test_api_tx_start_managed_transmit_refused(tmp_path: Path) -> None:
+    """managed transmit_on over api: 403, while force_off stays served."""
+    from test_webrtc_attach_path import (  # noqa: E402
+        _stand_up_stack,
+        _tear_down_stack,
+    )
+
+    stack = await _stand_up_stack(tmp_path)
+    client = _ApiClient()
+    try:
+        await client.connect(stack.web.port)
+        await client.attach(None)
+        resp = await client.request(
+            1,
+            "POST",
+            "/api/v1/managed-transmit/command",
+            headers={"content-type": "application/json"},
+            body=json.dumps({"operation": "transmit_on"}).encode(),
+        )
+        _tx_refusal_body(resp)
+        assert stack.sim.ptt_on is False
+        resp = await client.request(
+            2,
+            "POST",
+            "/api/v1/managed-transmit/command",
+            headers={"content-type": "application/json"},
+            body=json.dumps({"operation": "force_off"}).encode(),
+        )
+        assert resp.status in (202, 409), (resp.status, resp.body[:200])
+        assert stack.sim.ptt_on is False
+    finally:
+        await client.close()
+        await _tear_down_stack(stack)
+
+
+@_webrtc
+async def test_api_transmission_end_stays_served(tmp_path: Path) -> None:
+    """TX-end bodies over api are served: typed, raw, batch, CW stop."""
+    from test_webrtc_attach_path import (  # noqa: E402
+        _stand_up_stack,
+        _tear_down_stack,
+    )
+
+    stack = await _stand_up_stack(tmp_path)
+    client = _ApiClient()
+    try:
+        await client.connect(stack.web.port)
+        await client.attach(None)
+
+        async def _post(
+            req_id: int, path: str, payload: dict[str, Any]
+        ) -> _Response:
+            return await client.request(
+                req_id,
+                "POST",
+                path,
+                headers={"content-type": "application/json"},
+                body=json.dumps(payload).encode(),
+            )
+
+        resp = await _post(1, "/api/v1/commands", {"name": "ptt_off", "params": {}})
+        assert resp.status == 200, (resp.status, resp.body[:200])
+        resp = await _post(
+            2,
+            "/api/v1/civ/transaction",
+            {"command": 28, "sub": 0, "data": "00", "expect": "none"},
+        )
+        assert resp.status == 200, (resp.status, resp.body[:200])
+        resp = await _post(
+            3,
+            "/api/v1/commands",
+            {
+                "name": "send_civ",
+                "params": {"command": 28, "sub": 0, "data": "00"},
+            },
+        )
+        assert resp.status == 200, (resp.status, resp.body[:200])
+        resp = await _post(
+            4,
+            "/api/v1/commands/batch",
+            {"steps": [{"name": "ptt_off", "params": {}}]},
+        )
+        assert resp.status == 200, (resp.status, resp.body[:200])
+        resp = await _post(5, "/api/v1/radio/cw/stop", {})
+        assert resp.status == 200, (resp.status, resp.body[:200])
+        assert stack.sim.ptt_on is False
+    finally:
+        await client.close()
+        await _tear_down_stack(stack)
+
+
+def test_api_tx_classification_sweeps_route_table() -> None:
+    """Every route table entry stays reachable; TX bodies classify by content.
+
+    The sweep pins the P0 rule: routing reachability follows the router's
+    own ``API_ROUTE_TABLE`` (no blanket exclusions), while transmit-capable
+    bodies — single commands, every batch step, CW send, raw transactions,
+    managed transmit_on — refuse with the controller code. Transmission-end
+    bodies and neutral requests pass through to the shared dispatch.
+    """
+    from rigplane.web import api_channel as api_mod
+    from rigplane.web import web_routing
+    from rigplane.web.web_routing import api_channel_tx_refusal
+
+    for route in web_routing.API_ROUTE_TABLE:
+        methods = (
+            route.methods
+            if route.methods is not None
+            else ("GET", "HEAD", "POST", "PUT", "PATCH", "DELETE")
+        )
+        for method in methods:
+            assert api_mod.api_path_allowed(method, route.path), (method, route.path)
+    assert not api_mod.api_path_allowed("POST", "/api/v1/nonexistent")
+
+    tx = "controller_tx_unsupported"
+    # Single commands.
+    assert (
+        api_channel_tx_refusal(
+            "POST",
+            "/api/v1/commands",
+            {"name": "send_cw_text", "params": {"text": "hi"}},
+        )
+        == tx
+    )
+    assert (
+        api_channel_tx_refusal(
+            "POST",
+            "/api/v1/commands",
+            {"name": "set_tuner_status", "params": {"value": 2}},
+        )
+        == tx
+    )
+    assert (
+        api_channel_tx_refusal(
+            "POST",
+            "/api/v1/commands",
+            {"name": "set_vox", "params": {"on": True}},
+        )
+        == tx
+    )
+    assert (
+        api_channel_tx_refusal(
+            "POST", "/api/v1/commands", {"name": "transmit_on", "params": {}}
+        )
+        == tx
+    )
+    assert (
+        api_channel_tx_refusal(
+            "POST",
+            "/api/v1/commands",
+            {"name": "send_civ", "params": {"command": 3}},
+        )
+        == tx
+    )
+    # Transmission ends pass through.
+    assert (
+        api_channel_tx_refusal(
+            "POST", "/api/v1/commands", {"name": "ptt_off", "params": {}}
+        )
+        is None
+    )
+    assert (
+        api_channel_tx_refusal(
+            "POST", "/api/v1/commands", {"name": "ptt", "params": {"state": False}}
+        )
+        is None
+    )
+    assert (
+        api_channel_tx_refusal(
+            "POST",
+            "/api/v1/commands",
+            {"name": "send_civ", "params": {"command": 28, "sub": 0, "data": "00"}},
+        )
+        is None
+    )
+    # Neutral and malformed bodies pass through to the shared dispatch.
+    assert (
+        api_channel_tx_refusal(
+            "POST", "/api/v1/commands", {"name": "set_af_level", "params": {}}
+        )
+        is None
+    )
+    assert (
+        api_channel_tx_refusal("POST", "/api/v1/commands", {"name": "nope"})
+        is None
+    )
+    assert api_channel_tx_refusal("POST", "/api/v1/commands", None) is None
+    # Batch: any TX-start step refuses the whole batch.
+    assert (
+        api_channel_tx_refusal(
+            "POST",
+            "/api/v1/commands/batch",
+            {"steps": [{"name": "ptt_off", "params": {}}]},
+        )
+        is None
+    )
+    assert (
+        api_channel_tx_refusal(
+            "POST",
+            "/api/v1/commands/batch",
+            {"steps": [{"name": "set_tuner_status", "params": {"value": 2}}]},
+        )
+        == tx
+    )
+    assert (
+        api_channel_tx_refusal(
+            "POST",
+            "/api/v1/commands/batch",
+            {
+                "steps": [
+                    {"name": "ptt_off", "params": {}},
+                    {"name": "send_cw_text", "params": {"text": "hi"}},
+                ]
+            },
+        )
+        == tx
+    )
+    assert (
+        api_channel_tx_refusal(
+            "POST",
+            "/api/v1/commands/batch",
+            {
+                "steps": [
+                    {
+                        "type": "raw_civ_transaction",
+                        "command": 3,
+                        "expect": "data",
+                    }
+                ]
+            },
+        )
+        == tx
+    )
+    assert (
+        api_channel_tx_refusal(
+            "POST",
+            "/api/v1/commands/batch",
+            {
+                "steps": [
+                    {
+                        "type": "raw_civ_transaction",
+                        "command": 28,
+                        "sub": 0,
+                        "data": "00",
+                        "expect": "none",
+                    }
+                ]
+            },
+        )
+        is None
+    )
+    assert api_channel_tx_refusal("POST", "/api/v1/commands/batch", None) is None
+    # CW send keys; CW stop ends.
+    assert (
+        api_channel_tx_refusal(
+            "POST", "/api/v1/radio/cw/send", {"text": "hi"}
+        )
+        == tx
+    )
+    assert (
+        api_channel_tx_refusal("POST", "/api/v1/radio/cw/stop", {}) is None
+    )
+    assert api_channel_tx_refusal("POST", "/api/v1/radio/cw/send", None) is None
+    # Raw transactions: only exact transmission-end frames pass.
+    assert (
+        api_channel_tx_refusal(
+            "POST",
+            "/api/v1/civ/transaction",
+            {"command": 3, "expect": "data"},
+        )
+        == tx
+    )
+    assert (
+        api_channel_tx_refusal(
+            "POST",
+            "/api/v1/civ/transaction",
+            {"command": 28, "sub": 0, "data": "00", "expect": "none"},
+        )
+        is None
+    )
+    assert api_channel_tx_refusal("POST", "/api/v1/civ/transaction", None) is None
+    # Managed transmit: transmit_on keys, force_off ends.
+    assert (
+        api_channel_tx_refusal(
+            "POST", "/api/v1/managed-transmit/command", {"operation": "transmit_on"}
+        )
+        == tx
+    )
+    assert (
+        api_channel_tx_refusal(
+            "POST", "/api/v1/managed-transmit/command", {"operation": "force_off"}
+        )
+        is None
+    )
+    # Non-TX routes never classify.
+    assert api_channel_tx_refusal("GET", "/api/v1/info", None) is None
+    assert api_channel_tx_refusal("POST", "/api/v1/controller", None) is None
