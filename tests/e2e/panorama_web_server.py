@@ -357,6 +357,9 @@ async def run() -> None:
         span_hz=args.span_hz,
         seed=args.seed,
     )
+    # --freq was parsed but never applied: every row ran at the hardcoded
+    # 14.25 MHz. Rows that pin a band preset need the VFO inside that band.
+    simulator.set_frequency(args.freq)
     await simulator.start()
     if args.external_span_after_s is not None:
         if args.external_span_hz is None:

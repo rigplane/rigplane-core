@@ -19,36 +19,58 @@
 // The integrated-tree run must show ZERO skips: any skip there is a failure
 // of this acceptance.
 //
-// The matrix rows below assert the monotonic and passband shape plus zero
-// transient hatch, WITHOUT requiring partially covered frames: no held-key
-// burst against the real handler observes the lag transient at all. The
-// response delay postpones the waves and the frequency readback equally, so
-// the wire view (re-resolved per frame on the observed frequency) and the
-// wave coverage stay concentric however fast the VFO moves — measured on the
-// integrated tree: 3125 Hz view at 1 kHz/d300ms, 1562.5 Hz view at 1 kHz/
-// d300ms, and 3125 Hz view at 5 kHz/d300ms (a 605 kHz burst) ALL show
-// burstCovMin == burstViewMin to the hertz with partials=0. Requiring
-// partials here would red forever on correct behaviour, so no row requires
-// them: the seam contract (offset coverage never hatches; a truly narrower
-// native always hatches) stays pinned where offsets ARE synthesizable — the
-// requireTransientSeamObserved/shouldHatchCoverageGap/projectScopeCoverage
-// unit suites (synthetic offsets, red-then-green in 06e0ef9be..abb2b09ed).
+// Latency model: a real LAN/Wi-Fi link delays both directions. The journey
+// server takes one one-way knob per direction — --uplink-delay holds every
+// inbound request in the simulator's response_delay dispatch delay, and
+// --response-delay/--response-jitter hold every CI-V reply in the shared
+// outbound CI-V FaultPlan — so the round-trip time is uplink + downlink,
+// each applied once (pinned by tests/test_panorama_harness.py).
 //
-// There is deliberately NO narrower-native control row in this file: it
-// cannot pass on this tree. An external span narrowing is converged before
-// any narrowed wave renders — the client adopts the observed narrowing and
-// the server writes the radio back to the covering preset (radio.jsonl in a
-// control run shows the 25 kHz switch followed by a 50 kHz write-back), all
-// faster than one wave period — so no wire or rendered gap ever exists, and
-// every form of the control (settled-gap and transient-gap) times out. That
-// adoption+write-back loop is product behaviour outside this test-only
-// change; whether the write-back should override a front-panel span is a
-// product question for the MOR-4451/4385 owners, flagged in the gate report.
+// The matrix rows below stay downlink-only (no --uplink-delay) and assert
+// the monotonic and passband shape plus zero transient hatch, WITHOUT
+// requiring partially covered frames: no held-key burst against the real
+// handler observes the lag transient at all. The response delay postpones
+// the waves and the frequency readback equally, so the wire view
+// (re-resolved per frame on the observed frequency) and the wave coverage
+// stay concentric however fast the VFO moves — measured on the integrated
+// tree: 3125 Hz view at 1 kHz/d300ms, 1562.5 Hz view at 1 kHz/d300ms, and
+// 3125 Hz view at 5 kHz/d300ms (a 605 kHz burst) ALL show burstCovMin ==
+// burstViewMin to the hertz with partials=0. Requiring partials here would
+// red forever on correct behaviour, so no matrix row requires them — and
+// there is deliberately NO dedicated partials row in this file: partials
+// are structurally absent after fixes 1+3, so chasing them reds forever on
+// correct behaviour. The seam contract (offset coverage never hatches; a
+// truly narrower native always hatches) stays pinned where offsets ARE
+// synthesizable — the requireTransientSeamObserved unit suite (synthetic
+// offsets, red-then-green in 06e0ef9be..abb2b09ed).
+//
+// The control row is the owner rule of 2026-11-14: the radio span preset
+// narrows to 25 kHz from the front panel
+// (--external-span-after-s/--external-span-hz) AFTER setup, with no zoom
+// presses after it. It asserts NO radio span write after the external
+// change (zero new 0x15 span-set receipts in radio.jsonl past the
+// setup snapshot), that the displayed view ADOPTS the narrowed native
+// (frames carry view width == coverage width == the narrowed native —
+// 50 kHz for the 25 kHz preset — and the span readout shows ±25k), and NO
+// .scope-hatch in the adopted state. Measured on the integrated tree:
+// before view=100000/cov=100000, after view=50000/cov=50000, span text
+// ±25k, span writes 0, hatch 0.
+//
+// The must-hatch row pins an explicit NON-follow window wider than the
+// radio's widest preset coverage — the 10 m band preset (28.0–29.7 MHz,
+// 1.7 MHz) against the 500000 widest span preset (1 MHz full width) — so
+// the uncovered margins hatch with reason "view wider than coverage". It
+// asserts hatchCount > 0 on the rAF samples and that the wire frames show
+// view (1 700 000 Hz) wider than coverage (1 000 000 Hz). The server
+// legitimately re-picks the covering preset on the explicit subscribe
+// (MOR-4452); even at the widest preset the view stays uncovered, so the
+// hatch is stable, never a transient.
 import type { Page } from '@playwright/test';
-import { writeFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import { expect, test } from '@playwright/test';
 import { parseCurrentScopeFrame, parseScopeGranted } from '../../../src/lib/runtime/scope-frame';
 import type { ScopeGranted, ScopeSubscription } from '../../../src/lib/runtime/scope-view';
+import { parseScopeWriteReceipt } from '../journey/panorama-receipt';
 import type { WsCommand } from '../../../src/lib/types/protocol';
 import type { ScopePassbandDiagnostics } from '../../../src/lib/runtime/adapters/scope-passband-display';
 import type { ServerState } from '../../../src/lib/types/state';
@@ -507,3 +529,328 @@ for (const zoom of ZOOMS) {
     }
   }
 }
+
+// Must-hatch row: an explicit NON-follow window wider than the radio's
+// widest preset coverage MUST hatch. The VFO starts at 28.5 MHz and the
+// 10 m band preset pins the 28.0–29.7 MHz window (1.7 MHz); the server
+// legitimately re-picks the covering preset on the explicit subscribe
+// (MOR-4452), but even the widest 500000 preset only covers 1 MHz, so the
+// uncovered margins keep hatching with reason "view wider than coverage".
+// Asserts hatchCount > 0 on the rAF samples and that the wire frames show
+// view (1 700 000 Hz) wider than coverage (1 000 000 Hz). Needs the same
+// integrated tree as the rows above.
+test('IC-705 pinned 10m band preset wider than any native stays hatched', async ({ page }, info) => {
+  test.setTimeout(180_000);
+  const port = 21598;
+  const seed = 1234;
+  const freqHz = 28_500_000;
+  const bandView = { startHz: 28_000_000, endHz: 29_700_000 };
+  const evidence = info.outputPath('radio.jsonl');
+  let setupDone = false;
+  let serverReady = false;
+  let server: JourneyServerHandle | undefined;
+  const sent: Array<ScopeSubscription & { type: string }> = [];
+  const grants: Array<{ tWall: number; grant: ScopeGranted }> = [];
+  const frames: Array<{ view: number[]; coverage: number[]; receivedAt: number; tWall: number }> = [];
+  try {
+    server = await startJourneyServer(port, freqHz,
+      ['--model', 'IC-705', '--evidence', evidence,
+        '--seed', String(seed)],
+      'tests/e2e/panorama_web_server.py');
+    serverReady = true;
+    const watch = watchPanoramaErrors(page);
+    page.on('websocket', (socket) => {
+      if (new URL(socket.url()).pathname === '/api/v1/ws') return;
+      if (!socket.url().endsWith('/api/v1/scope')) return;
+      socket.on('framesent', ({ payload }) => {
+        if (typeof payload === 'string') {
+          const message = JSON.parse(payload) as ScopeSubscription & { type: string };
+          if (message.type === 'subscribe') sent.push(message);
+        }
+      });
+      socket.on('framereceived', ({ payload }) => {
+        if (typeof payload === 'string') {
+          const grant = parseScopeGranted(JSON.parse(payload));
+          if (grant) grants.push({ tWall: Date.now(), grant });
+        } else {
+          const buffer = Uint8Array.from(payload).buffer;
+          const parsed = parseCurrentScopeFrame(buffer, { source: 'radio', sourceId: 'radio', epoch: 0 });
+          if (parsed.ok) {
+            frames.push({
+              view: [parsed.frame.viewStartHz, parsed.frame.viewEndHz],
+              coverage: [parsed.frame.coverageStartHz, parsed.frame.coverageEndHz],
+              receivedAt: performance.now(),
+              tWall: Date.now(),
+            });
+          }
+        }
+      });
+    });
+    await installHeldKeySampler(page);
+    await page.goto(`http://127.0.0.1:${port}/?ui=v2`);
+    await expect.poll(() => frames.length, { timeout: 30_000 }).toBeGreaterThan(10);
+    const marker = page.locator('.waterfall-content .tune-line');
+    await expect(marker).toBeVisible({ timeout: 30_000 });
+
+    // CTR (CENTER) scope mode, same as the matrix rows.
+    const ctr = page.getByRole('radio', { name: 'CTR' }).first();
+    if (!(await ctr.isChecked())) await ctr.click();
+    await expect(ctr).toBeChecked();
+
+    // Pin the 10 m band preset: the first preset option after the
+    // placeholder. The VFO (28.5 MHz) stays inside the pinned window, so
+    // the pin holds (MOR-4387: the pin retires on position, and no tuning
+    // happens in this row).
+    await page.getByRole('button', { name: 'More scope controls' }).first().click();
+    await page.locator('[data-testid="scope-more-panel"] [data-testid="scope-preset-select"]')
+      .selectOption({ index: 1 });
+    await page.keyboard.press('Escape');
+    await expect.poll(() => sent.at(-1)?.view, { timeout: 30_000 }).toEqual(bandView);
+    setupDone = true;
+
+    // Wait until the wire shows the pinned view wider than the delivered
+    // coverage: the explicit subscribe re-picks the covering preset, but
+    // even the widest 500000 preset only covers 1 MHz of the 1.7 MHz view.
+    await expect.poll(() => {
+      const latest = frames.at(-1);
+      if (!latest) return null;
+      return [latest.view[1] - latest.view[0], latest.coverage[1] - latest.coverage[0]];
+    }, { timeout: 120_000 }).toEqual([bandView.endHz - bandView.startHz, 1_000_000]);
+    const stableWall = Date.now();
+    await page.waitForTimeout(2000);
+
+    // The stable gapped state above proves the wire side; the hatch must be
+    // visible on the rendered samples too.
+    const samples = await page.evaluate(() => window.heldKeySamples);
+    const stableSamples = samples.filter((s) => s.tWall >= stableWall);
+    const hatched = stableSamples.filter((s) => s.hatchCount > 0);
+    const latest = frames.at(-1)!;
+    const latestViewHz = latest.view[1] - latest.view[0];
+    const latestCovHz = latest.coverage[1] - latest.coverage[0];
+    console.log(`[held-key must-hatch band-10m] ` +
+      `samples=${stableSamples.length} hatched=${hatched.length} ` +
+      `view=${latestViewHz}Hz cov=${latestCovHz}Hz`);
+    await info.attach('held-key-must-hatch', {
+      body: JSON.stringify({
+        params: { freqHz, bandView, seed },
+        latestView: latest.view, latestCoverage: latest.coverage,
+        grants: grants.length, subscribes: sent.length,
+        samples: stableSamples.length, hatched: hatched.length,
+      }, null, 2),
+      contentType: 'application/json',
+    });
+
+    // Positive proof the seam was exercised: the wire shows the pinned
+    // 1.7 MHz view with only the 1 MHz widest-native coverage.
+    expect(latestViewHz, 'pinned band view lost its width').toBe(bandView.endHz - bandView.startHz);
+    expect(latestCovHz, 'coverage is not the widest preset coverage').toBe(1_000_000);
+    expect(latestViewHz - latestCovHz,
+      'wire shows no uncovered margin under the pinned view').toBeGreaterThan(1);
+    // The uncovered margins ARE hatched, with the wider-than-coverage
+    // reason — never plain background, never a transient.
+    expect(stableSamples.length,
+      'too few stable samples to judge the must-hatch').toBeGreaterThan(10);
+    expect(hatched.length,
+      `explicit view wider than coverage hatched only ${hatched.length}/${stableSamples.length} stable samples`).toBeGreaterThan(0);
+    const hatch = page.locator('.spectrum-panel .scope-hatch').first();
+    await expect(hatch).toBeVisible();
+    await expect(hatch).toHaveAttribute('title', 'View wider than the delivered scope coverage');
+
+    expectPanoramaSettled(watch);
+  } catch (error) {
+    const verdict = classifyHeldKeyCatch({
+      setupDone, serverReady, framesObserved: frames.length, error,
+      row: 'must-hatch (pinned 10m band view wider than the widest native)',
+    });
+    if (verdict.disposition === 'skip') {
+      test.skip(true, verdict.reason);
+      return;
+    }
+    throw verdict.error;
+  } finally {
+    await server?.kill();
+  }
+});
+
+// Control row: the owner rule of 2026-11-14. The radio starts on the 50000
+// preset (100 kHz native, the default follow width) and the harness narrows
+// the span preset to 25 kHz from the front panel
+// (--external-span-after-s/--external-span-hz) AFTER setup, with no zoom
+// presses after it. The row asserts NO radio span write after the change
+// (MOR-4385 adoption: the grant clips, nothing is written back), that the
+// displayed view ADOPTS the narrowed native (frames carry view width ==
+// coverage width == 50 kHz and the span readout shows ±25k), and NO
+// .scope-hatch in the adopted state. One row, no latency matrix. Needs the
+// same integrated tree as the rows above.
+test('IC-705 external span narrowing adopts without a write and without hatch (control)', async ({ page }, info) => {
+  test.setTimeout(240_000);
+  const port = 21599;
+  const seed = 1234;
+  const externalAfterS = 90;
+  const evidence = info.outputPath('radio.jsonl');
+  let setupDone = false;
+  let serverReady = false;
+  let server: JourneyServerHandle | undefined;
+  const sent: Array<ScopeSubscription & { type: string }> = [];
+  const grants: Array<{ tWall: number; grant: ScopeGranted }> = [];
+  const frames: Array<{ view: number[]; coverage: number[]; receivedAt: number; tWall: number }> = [];
+  // Span-set receipts in the evidence file: 0x15 scope writes whose data
+  // carries the 6-byte span value (a 1-byte 0x15 is a span read, not a
+  // write). The simulator appends one line per write, same machine clock.
+  const spanSetCount = async (): Promise<number> => {
+    const lines = (await readFile(evidence, 'utf8')).split('\n').filter(Boolean);
+    return lines.map(parseScopeWriteReceipt)
+      .filter((receipt) => receipt.sub === 0x15 && receipt.data.length === 6).length;
+  };
+  // Total receipts, for the counter-liveness guard below: the initial
+  // subscribe may legitimately write no span-set at all (the radio is
+  // already on the covering preset), so spanSetsBefore == 0 is a valid
+  // baseline — but an empty evidence file would make the no-new-writes
+  // assertion below pass vacuously.
+  const receiptCount = async (): Promise<number> =>
+    (await readFile(evidence, 'utf8')).split('\n').filter(Boolean).length;
+  const startedWall = Date.now();
+  try {
+    server = await startJourneyServer(port, 14_250_000,
+      ['--model', 'IC-705', '--evidence', evidence,
+        '--span-hz', '50000',
+        // Fires after setup so the snapshot below predates the change and
+        // the adoption poll starts waiting BEFORE the switch.
+        '--external-span-after-s', String(externalAfterS), '--external-span-hz', '25000',
+        '--seed', String(seed)],
+      'tests/e2e/panorama_web_server.py');
+    serverReady = true;
+    const watch = watchPanoramaErrors(page);
+    page.on('websocket', (socket) => {
+      if (new URL(socket.url()).pathname === '/api/v1/ws') return;
+      if (!socket.url().endsWith('/api/v1/scope')) return;
+      socket.on('framesent', ({ payload }) => {
+        if (typeof payload === 'string') {
+          const message = JSON.parse(payload) as ScopeSubscription & { type: string };
+          if (message.type === 'subscribe') sent.push(message);
+        }
+      });
+      socket.on('framereceived', ({ payload }) => {
+        if (typeof payload === 'string') {
+          const grant = parseScopeGranted(JSON.parse(payload));
+          if (grant) grants.push({ tWall: Date.now(), grant });
+        } else {
+          const buffer = Uint8Array.from(payload).buffer;
+          const parsed = parseCurrentScopeFrame(buffer, { source: 'radio', sourceId: 'radio', epoch: 0 });
+          if (parsed.ok) {
+            frames.push({
+              view: [parsed.frame.viewStartHz, parsed.frame.viewEndHz],
+              coverage: [parsed.frame.coverageStartHz, parsed.frame.coverageEndHz],
+              receivedAt: performance.now(),
+              tWall: Date.now(),
+            });
+          }
+        }
+      });
+    });
+    await installSampler(page);
+    await installHeldKeySampler(page);
+    await page.goto(`http://127.0.0.1:${port}/?ui=v2`);
+    await expect.poll(() => frames.length, { timeout: 30_000 }).toBeGreaterThan(10);
+    const marker = page.locator('.waterfall-content .tune-line');
+    await expect(marker).toBeVisible({ timeout: 30_000 });
+
+    // CTR (CENTER) scope mode, same as the burst rows.
+    const ctr = page.getByRole('radio', { name: 'CTR' }).first();
+    if (!(await ctr.isChecked())) await ctr.click();
+    await expect(ctr).toBeChecked();
+
+    await settlePassband(page, port);
+    await page.waitForTimeout(1000);
+
+    // The follow view comes from the server grant, never hard-coded: the
+    // default 100 kHz follow against the 50000 preset's 100 kHz full width.
+    await expect.poll(() => grants.length).toBeGreaterThan(0);
+    const grantedView = grants.at(-1)!.grant.view;
+    const grantedWidthHz = grantedView.endHz - grantedView.startHz;
+    expect(grantedWidthHz, 'control row must start on the 100 kHz full width of the 50000 preset')
+      .toBe(100_000);
+    const expectedView = [BASE_FREQ_HZ - grantedWidthHz / 2, BASE_FREQ_HZ + grantedWidthHz / 2];
+    await expect.poll(() => frames.at(-1)?.view).toEqual(expectedView);
+    setupDone = true;
+
+    // Snapshot the span-set receipts BEFORE the external change can fire:
+    // setup must finish well inside the change delay, or the "no write
+    // after the change" assertion below would compare against a
+    // post-change baseline and pass vacuously.
+    const setupElapsedS = (Date.now() - startedWall) / 1000;
+    expect(setupElapsedS,
+      `setup took ${setupElapsedS.toFixed(0)}s; the external change fires at ${externalAfterS}s`).toBeLessThan(externalAfterS - 15);
+    // Every pre-change frame shows the full 100 kHz view covered: no zoom
+    // presses happened and the change has not fired yet.
+    expect(frames.length, 'no scope frames arrived during setup').toBeGreaterThan(0);
+    expect(frames.every((f) => f.view[1] - f.view[0] === 100_000 && f.coverage[1] - f.coverage[0] === 100_000),
+      'pre-change frames do not all show view=100000/cov=100000').toBe(true);
+    const spanSetsBefore = await spanSetCount();
+    expect(await receiptCount(),
+      'evidence file is empty — the no-new-writes assertion would pass vacuously').toBeGreaterThan(0);
+
+    // Wait until the displayed view adopts the narrowed native: frames
+    // carry view width == coverage width == the 25 kHz preset's 50 kHz
+    // full width, and the span readout follows.
+    await expect.poll(() => {
+      const latest = frames.at(-1);
+      if (!latest) return null;
+      return [latest.view[1] - latest.view[0], latest.coverage[1] - latest.coverage[0]];
+    }, { timeout: 120_000 }).toEqual([50_000, 50_000]);
+    const adoptedWall = Date.now();
+    await expect(page.getByTestId('scope-span-value').first()).toHaveText('±25k');
+    await page.waitForTimeout(2500);
+
+    const adoptedSamples = (await page.evaluate(() => window.heldKeySamples))
+      .filter((s) => s.tWall >= adoptedWall);
+    const hatchedAdopted = adoptedSamples.filter((s) => s.hatchCount > 0);
+    const latest = frames.at(-1)!;
+    const latestViewHz = latest.view[1] - latest.view[0];
+    const latestCovHz = latest.coverage[1] - latest.coverage[0];
+    const spanSetsAfter = await spanSetCount();
+    console.log(`[held-key control owner-rule] ` +
+      `samples=${adoptedSamples.length} hatched=${hatchedAdopted.length} ` +
+      `view=${latestViewHz}Hz cov=${latestCovHz}Hz ` +
+      `spanSetsBefore=${spanSetsBefore} spanSetsAfter=${spanSetsAfter}`);
+    await info.attach('held-key-control', {
+      body: JSON.stringify({
+        params: { spanHz: 50_000, externalSpanHz: 25_000, seed },
+        grantedWidthHz, adoptedWall,
+        latestView: latest.view, latestCoverage: latest.coverage,
+        spanSetsBefore, spanSetsAfter,
+        samples: adoptedSamples.length, hatched: hatchedAdopted.length,
+      }, null, 2),
+      contentType: 'application/json',
+    });
+
+    // (1) NO radio span write after the external change: the setup
+    // snapshot predates the change and no gesture follows it, so any new
+    // span-set receipt is a write-back.
+    expect(spanSetsAfter,
+      `radio span written ${spanSetsAfter - spanSetsBefore}x after the external change`).toBe(spanSetsBefore);
+    // (2) the displayed view adopted the narrowed native.
+    expect(latestViewHz, 'adopted view is not the narrowed native width').toBe(50_000);
+    expect(latestCovHz, 'adopted coverage is not the narrowed native width').toBe(50_000);
+    // (3) NO hatch in the adopted state: a fully covered view never
+    // hatches, even right after an external narrowing.
+    expect(adoptedSamples.length,
+      'too few adopted-state samples to judge the control hatch').toBeGreaterThan(10);
+    expect(hatchedAdopted,
+      `adopted fully-covered view hatched in ${hatchedAdopted.length} samples`).toEqual([]);
+
+    expectPanoramaSettled(watch);
+  } catch (error) {
+    const verdict = classifyHeldKeyCatch({
+      setupDone, serverReady, framesObserved: frames.length, error,
+      row: 'owner-rule control (external span 25kHz under a 100kHz follow view)',
+    });
+    if (verdict.disposition === 'skip') {
+      test.skip(true, verdict.reason);
+      return;
+    }
+    throw verdict.error;
+  } finally {
+    await server?.kill();
+  }
+});
