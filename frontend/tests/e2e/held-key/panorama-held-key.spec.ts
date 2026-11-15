@@ -32,8 +32,18 @@
 // them: the seam contract (offset coverage never hatches; a truly narrower
 // native always hatches) stays pinned where offsets ARE synthesizable — the
 // requireTransientSeamObserved/shouldHatchCoverageGap/projectScopeCoverage
-// unit suites (synthetic offsets, red-then-green in 06e0ef9be..abb2b09ed)
-// and the narrower-native control row at the bottom of this file.
+// unit suites (synthetic offsets, red-then-green in 06e0ef9be..abb2b09ed).
+//
+// There is deliberately NO narrower-native control row in this file: it
+// cannot pass on this tree. An external span narrowing is converged before
+// any narrowed wave renders — the client adopts the observed narrowing and
+// the server writes the radio back to the covering preset (radio.jsonl in a
+// control run shows the 25 kHz switch followed by a 50 kHz write-back), all
+// faster than one wave period — so no wire or rendered gap ever exists, and
+// every form of the control (settled-gap and transient-gap) times out. That
+// adoption+write-back loop is product behaviour outside this test-only
+// change; whether the write-back should override a front-panel span is a
+// product question for the MOR-4451/4385 owners, flagged in the gate report.
 import type { Page } from '@playwright/test';
 import { writeFile } from 'node:fs/promises';
 import { expect, test } from '@playwright/test';
@@ -454,7 +464,7 @@ for (const zoom of ZOOMS) {
           // native window covers the requested view. Partial coverage is NOT
           // required here (see the header: bursts stay concentric, so zero
           // partials are legitimate) — the seam contract stays pinned by the
-          // unit suites and the narrower-native control row below.
+          // unit suites (see the header).
           expect(hatchedBurst,
             `transient margin hatched in ${hatchedBurst.length} burst samples`).toEqual([]);
 
@@ -497,147 +507,3 @@ for (const zoom of ZOOMS) {
     }
   }
 }
-
-// Control row: a genuinely narrower native window MUST hatch. The harness
-// narrows the radio span preset to 25 kHz (a front-panel change — no client
-// message) AFTER setup, so the poll below catches the transient gap: view
-// still 100 kHz against a 50 kHz wave. The uncovered margins must hatch
-// while the gap lasts. The gap then converges by design (the client adopts
-// the observed narrowing and the server drives the covering preset), so only
-// the transient gap and hatch-during-gap are asserted — never a settled
-// uncovered state. One row, no latency matrix. Needs the same integrated
-// tree as the rows above.
-test('IC-705 narrower native span hatches the uncovered margins (control)', async ({ page }, info) => {
-  test.setTimeout(240_000);
-  const port = 21599;
-  const seed = 1234;
-  const evidence = info.outputPath('radio.jsonl');
-  let setupDone = false;
-  let serverReady = false;
-  let server: JourneyServerHandle | undefined;
-  const sent: Array<ScopeSubscription & { type: string }> = [];
-  const grants: Array<{ tWall: number; grant: ScopeGranted }> = [];
-  const frames: Array<{ view: number[]; coverage: number[]; receivedAt: number; tWall: number }> = [];
-  try {
-    server = await startJourneyServer(port, 14_250_000,
-      ['--model', 'IC-705', '--evidence', evidence,
-        '--span-hz', '250000',
-        // Fires after setup (~20 s) so the gap poll below starts waiting
-        // BEFORE the switch and catches the transient gap deterministically.
-        '--external-span-after-s', '90', '--external-span-hz', '25000',
-        '--seed', String(seed)],
-      'tests/e2e/panorama_web_server.py');
-    serverReady = true;
-    const watch = watchPanoramaErrors(page);
-    page.on('websocket', (socket) => {
-      if (new URL(socket.url()).pathname === '/api/v1/ws') return;
-      if (!socket.url().endsWith('/api/v1/scope')) return;
-      socket.on('framesent', ({ payload }) => {
-        if (typeof payload === 'string') {
-          const message = JSON.parse(payload) as ScopeSubscription & { type: string };
-          if (message.type === 'subscribe') sent.push(message);
-        }
-      });
-      socket.on('framereceived', ({ payload }) => {
-        if (typeof payload === 'string') {
-          const grant = parseScopeGranted(JSON.parse(payload));
-          if (grant) grants.push({ tWall: Date.now(), grant });
-        } else {
-          const buffer = Uint8Array.from(payload).buffer;
-          const parsed = parseCurrentScopeFrame(buffer, { source: 'radio', sourceId: 'radio', epoch: 0 });
-          if (parsed.ok) {
-            frames.push({
-              view: [parsed.frame.viewStartHz, parsed.frame.viewEndHz],
-              coverage: [parsed.frame.coverageStartHz, parsed.frame.coverageEndHz],
-              receivedAt: performance.now(),
-              tWall: Date.now(),
-            });
-          }
-        }
-      });
-    });
-    await installSampler(page);
-    await installHeldKeySampler(page);
-    await page.goto(`http://127.0.0.1:${port}/?ui=v2`);
-    await expect.poll(() => frames.length, { timeout: 30_000 }).toBeGreaterThan(10);
-    const marker = page.locator('.waterfall-content .tune-line');
-    await expect(marker).toBeVisible({ timeout: 30_000 });
-
-    // CTR (CENTER) scope mode, same as the burst rows.
-    const ctr = page.getByRole('radio', { name: 'CTR' }).first();
-    if (!(await ctr.isChecked())) await ctr.click();
-    await expect(ctr).toBeChecked();
-
-    await settlePassband(page, port);
-    await page.waitForTimeout(1000);
-
-    // The follow view comes from the server grant, never hard-coded.
-    await expect.poll(() => grants.length).toBeGreaterThan(0);
-    const grantedView = grants.at(-1)!.grant.view;
-    const grantedWidthHz = grantedView.endHz - grantedView.startHz;
-    setupDone = true;
-
-    // Wait until the external narrowing is visible on the wire: coverage
-    // narrower than the (full, unclipped) view. The switch fires after
-    // setup, so this poll is already waiting when the transient gap opens;
-    // follow adoption converges the gap within a few waves by design, so the
-    // poll scans ALL frames (append-only: a gapped frame latches the
-    // predicate permanently) instead of only the latest, which is converged
-    // again by the time any fixed-interval sample lands after the switch.
-    await expect.poll(() => frames.some((f) =>
-      (f.view[1] - f.view[0]) - (f.coverage[1] - f.coverage[0]) > 1,
-    ), { timeout: 120_000 }).toBe(true);
-    const narrowWall = Date.now();
-    // Let the converged post-gap frames arrive for the record, then anchor
-    // the hatch window to the FIRST gapped frame's own timestamp (same
-    // machine clock on both sides) — never to the poll-fire time, which can
-    // lag the gap start by a whole poll interval.
-    await page.waitForTimeout(1500);
-
-    const gapFrames = frames.filter((f) =>
-      (f.view[1] - f.view[0]) - (f.coverage[1] - f.coverage[0]) > 1);
-    const gapWidths = gapFrames.map((f) => (f.view[1] - f.view[0]) - (f.coverage[1] - f.coverage[0]));
-    const firstGapWall = gapFrames[0]?.tWall ?? narrowWall;
-    const windowSamples = (await page.evaluate(() => window.heldKeySamples))
-      .filter((s) => s.tWall >= firstGapWall && s.tWall <= firstGapWall + 1500);
-    const hatched = windowSamples.filter((s) => s.hatchCount > 0);
-    console.log(`[held-key control narrower-native] ` +
-      `samples=${windowSamples.length} hatched=${hatched.length} ` +
-      `maxGap=${Math.max(...gapWidths)}Hz grantedWidth=${grantedWidthHz}Hz`);
-    await info.attach('held-key-control', {
-      body: JSON.stringify({
-        params: { spanHz: 250_000, externalSpanHz: 25_000, seed },
-        narrowWall, grantedWidthHz,
-        gapWidths: gapWidths.slice(0, 20),
-        samples: windowSamples.length, hatched: hatched.length,
-      }, null, 2),
-      contentType: 'application/json',
-    });
-
-    // Positive evidence the control seam was exercised: the wire showed the
-    // full follow view with a reduced covered part during the transient.
-    expect(gapWidths.length,
-      'no wire frames in the transient gap window').toBeGreaterThan(0);
-    expect(Math.max(...gapWidths),
-      'wire never showed a narrower native under the full follow view').toBeGreaterThan(1);
-    // The uncovered margins ARE hatched while the gap lasts.
-    expect(windowSamples.length,
-      'too few transient samples to judge the control hatch').toBeGreaterThan(10);
-    expect(hatched.length,
-      `genuinely narrower native hatched only ${hatched.length}/${windowSamples.length} transient samples`).toBeGreaterThan(0);
-
-    expectPanoramaSettled(watch);
-  } catch (error) {
-    const verdict = classifyHeldKeyCatch({
-      setupDone, serverReady, framesObserved: frames.length, error,
-      row: 'narrower-native control (external span 25kHz under a 100kHz follow view)',
-    });
-    if (verdict.disposition === 'skip') {
-      test.skip(true, verdict.reason);
-      return;
-    }
-    throw verdict.error;
-  } finally {
-    await server?.kill();
-  }
-});
