@@ -1129,8 +1129,8 @@ async def test_api_transmission_end_stays_served(tmp_path: Path) -> None:
         )
         assert resp.status == 200, (resp.status, resp.body[:200])
         batch_obj = json.loads(resp.body.decode())
-        assert batch_obj["steps"][0]["ok"] is False, batch_obj
-        assert batch_obj["steps"][0]["error"] == "managed_tx_refused", batch_obj
+        assert batch_obj["results"][0]["ok"] is False, batch_obj
+        assert batch_obj["results"][0]["error"] == "managed_tx_refused", batch_obj
         resp = await _post(5, "/api/v1/radio/cw/stop", {})
         assert resp.status == 200, (resp.status, resp.body[:200])
         # Managed momentary PTT never serves over HTTP (409): the point is
