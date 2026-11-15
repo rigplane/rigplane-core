@@ -34,7 +34,7 @@ def _fixture_datagrams() -> list[bytes]:
     return datagrams
 
 
-def _spec(radio_port: int, receive_port: int, host="127.0.0.1") -> UdpIqSourceSpec:
+def _spec(radio_port: int, receive_port: int = 0, host="127.0.0.1") -> UdpIqSourceSpec:
     return UdpIqSourceSpec(
         host=host,
         radio_port=radio_port,
@@ -48,19 +48,18 @@ def _spec(radio_port: int, receive_port: int, host="127.0.0.1") -> UdpIqSourceSp
     )
 
 
-def _free_udp_port() -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
-        sock.bind(("127.0.0.1", 0))
-        return int(sock.getsockname()[1])
-
-
 @dataclass
 class _Harness:
     source: XieguUdpIqSource
     radio: socket.socket
-    receive_port: int
     clock: ManualClock
     blocks: list[IqBlock]
+
+    @property
+    def receive_port(self) -> int:
+        port = self.source.bound_receive_port
+        assert port is not None, "source must be open to know the bound port"
+        return port
 
     def send(self, payload: bytes, *, count: int = 1) -> None:
         for _ in range(count):
@@ -91,10 +90,9 @@ def _source(
 ) -> Iterator[_Harness]:
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as radio:
         radio.bind(("127.0.0.1", 0))
-        receive_port = _free_udp_port()
         clock = ManualClock()
         source = XieguUdpIqSource(
-            _spec(int(radio.getsockname()[1]), receive_port, host),
+            _spec(int(radio.getsockname()[1]), host=host),
             clock=clock,
             start_grace_s=start_grace_s,
             start_settle_s=start_settle_s,
@@ -108,7 +106,7 @@ def _source(
         if opened:
             source.open()
         try:
-            yield _Harness(source, radio, receive_port, clock, blocks)
+            yield _Harness(source, radio, clock, blocks)
         finally:
             source.close()
 
@@ -127,6 +125,7 @@ def test_facts_and_protocol_are_slaved_without_opening() -> None:
         assert source.sample_rate_hz == 48_000
         assert source.frequency_range_hz() == (100_000, 54_000_000)
         assert source.center_freq_hz == 0
+        assert source.bound_receive_port is None
 
 
 def test_fixture_replay_emits_scaled_complex64_blocks_at_recorded_centre() -> None:
@@ -168,29 +167,35 @@ def test_bad_length_and_other_sender_are_dropped_without_samples() -> None:
 def test_receive_port_is_exclusive_and_reusable_after_close() -> None:
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as radio:
         radio.bind(("127.0.0.1", 0))
-        receive_port = _free_udp_port()
-        spec = _spec(int(radio.getsockname()[1]), receive_port)
-        first = XieguUdpIqSource(spec, start_grace_s=100.0)
-        second = XieguUdpIqSource(spec, start_grace_s=100.0)
+        first = XieguUdpIqSource(_spec(int(radio.getsockname()[1])), start_grace_s=100.0)
         blocks: list[IqBlock] = []
         first.on_block(blocks.append)
         first.set_center_freq(7_183_000)
         try:
             first.open()
-            with pytest.raises(OSError, match=str(receive_port)):
+            port = first.bound_receive_port
+            assert port is not None
+            second = XieguUdpIqSource(
+                _spec(int(radio.getsockname()[1]), port), start_grace_s=100.0
+            )
+            try:
+                with pytest.raises(OSError, match=str(port)):
+                    second.open()
+
+                for _ in range(10):
+                    radio.sendto(bytes(768), ("127.0.0.1", port))
+                wait_until(lambda: len(blocks) >= 1)
+                assert first.is_open is True
+
+                first.close()
+                assert first.bound_receive_port is None
                 second.open()
-
-            for _ in range(10):
-                radio.sendto(bytes(768), ("127.0.0.1", receive_port))
-            wait_until(lambda: len(blocks) >= 1)
-            assert first.is_open is True
-
-            first.close()
-            first.open()
-            assert first.is_open is True
+                assert second.is_open is True
+                assert second.bound_receive_port == port
+            finally:
+                second.close()
         finally:
             first.close()
-            second.close()
 
 
 def test_already_flowing_stream_never_causes_a_tune_command() -> None:
