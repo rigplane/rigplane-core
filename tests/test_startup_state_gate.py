@@ -4320,3 +4320,58 @@ async def test_no_port_start_runs_the_real_deferred_bridge_once_connected(
             assert len(bridge_backend.rx_streams) == 1
             assert bridge_backend.rx_streams[0].running
             assert driver.rx_running
+
+
+async def test_managed_key_admitted_while_ptt_unobserved_after_start_without_ptt(
+    tmp_path: Path,
+) -> None:
+    """MOR-4456 authority evidence: start + warning only, no interlock.
+
+    A station built exactly like production startup except PTT/split were
+    never observed (the MOR-4456 gate releases on the non-critical
+    deadline with one WARNING instead of failing): the managed key through
+    the real attach/controller session is ADMITTED by the existing
+    authority — ``radio_tx_refusal_nowait`` only refuses a radio-reported
+    TX, and nothing else gates on the unobserved PTT — so the key reaches
+    the wire. Coordinator decision MOR-4456(B): no new interlock is
+    added; the product change is start + the gate WARNING.
+    """
+
+    from test_managed_tx_production_fake_wire import (
+        _IcomActuator,
+        _joined_web_runtime,
+    )
+    from test_web_controller import request
+
+    from rigplane.runtime.managed_tx_state import ManagedTxOutcome
+    from rigplane.runtime.tx_interlock import RfState, resolve_rf_state
+
+    actuator, composition, server = await _joined_web_runtime(
+        tmp_path, _IcomActuator
+    )
+    try:
+        store = server.command_state_store
+        assert resolve_rf_state(store.snapshot()) is RfState.UNKNOWN
+        assert composition.authority.radio_tx_refusal_nowait() is None
+        controller = server._controller  # noqa: SLF001
+        armed = await request(
+            server, "POST", "/api/v1/controller/mode", {"mode": "remote"}
+        )
+        assert armed.status == 200
+        acquired = await request(server, "POST", "/api/v1/controller", {"kind": "pro"})
+        assert acquired.status == 201
+        primary = controller.attach(
+            acquired.payload["controller_key"], "primary", "memory-primary"
+        )
+        controller.register_control(primary)
+        with controller.bind(primary):
+            pressed = await composition.authority.submit_ptt(True, "memory-primary")
+        assert pressed.outcome is ManagedTxOutcome.ACCEPTED
+        await pressed.wait_settlement()
+        assert True in actuator.wire
+        released = await composition.authority.submit_force_off()
+        await released.wait_settlement()
+    finally:
+        server._controller.revoke()  # noqa: SLF001
+        await server._controller.settle()  # noqa: SLF001
+        await composition.shutdown(asyncio.Event())
