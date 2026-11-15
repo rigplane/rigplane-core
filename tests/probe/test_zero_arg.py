@@ -344,6 +344,81 @@ def test_default_save_never_overwrites_adds_suffix(tmp_path, monkeypatch) -> Non
     assert document.schema == "rigplane-probe-v1"
 
 
+def test_default_save_continues_when_documents_resolver_fails(
+    tmp_path, monkeypatch
+) -> None:
+    # P2-2: a failing Documents resolver must not fail the run while
+    # home is usable; each location is tried only when reached.
+    monkeypatch.chdir(tmp_path)
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+
+    def no_documents() -> Path:
+        raise OSError("Documents unavailable")
+
+    lines: list[str] = []
+    code = asyncio.run(
+        execute(
+            resolve_config("FT-991A", RIGS),
+            (REPO_ROOT / "rigs" / "ft991a.toml").read_bytes(),
+            device_label="COM5 @ 38400",
+            baud=38400,
+            out=None,
+            include_private=False,
+            label="",
+            yes=True,
+            is_tty=False,
+            ask=lambda prompt: "y",
+            exchange_factory=_stub_answers([]),
+            gap_s=GAP,
+            timeout_s=TIMEOUT,
+            emit=lines.append,
+            documents_dir=no_documents,
+        )
+    )
+    assert code == 0
+    assert list(home.glob("FT-991A-radio-probe-*.json"))
+
+
+def test_default_save_uses_documents_when_cwd_is_gone(
+    tmp_path, monkeypatch
+) -> None:
+    # P2-2: a removed current directory must not fail the run while
+    # Documents is fine.
+    docs = tmp_path / "Documents"
+    docs.mkdir()
+    gone = tmp_path / "gone"
+    gone.mkdir()
+    monkeypatch.chdir(gone)
+    gone.rmdir()
+    lines: list[str] = []
+    code = asyncio.run(
+        execute(
+            resolve_config("FT-991A", RIGS),
+            (REPO_ROOT / "rigs" / "ft991a.toml").read_bytes(),
+            device_label="COM5 @ 38400",
+            baud=38400,
+            out=None,
+            include_private=False,
+            label="",
+            yes=True,
+            is_tty=False,
+            ask=lambda prompt: "y",
+            exchange_factory=_stub_answers([]),
+            gap_s=GAP,
+            timeout_s=TIMEOUT,
+            emit=lines.append,
+            documents_dir=lambda: docs,
+        )
+    )
+    assert code == 0
+    from datetime import datetime, timezone
+
+    stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    assert list(docs.glob(f"FT-991A-radio-probe-{stamp}.json"))
+
+
 def test_default_save_falls_back_when_documents_missing(tmp_path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
     missing = tmp_path / "no-such-documents"

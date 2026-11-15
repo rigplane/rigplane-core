@@ -580,3 +580,106 @@ async def test_execute_closes_writer_on_cancellation(tmp_path) -> None:
     with pytest.raises(asyncio.CancelledError):
         await task
     assert stub.closed is True
+
+
+async def test_execute_default_save_uses_exclusive_create_on_late_collision(
+    tmp_path,
+) -> None:
+    # P1-1: a capture that appears between filename selection and the
+    # save answer must not be truncated. The late file survives, the new
+    # capture takes the next suffix, and the closing line names the real
+    # path (the pre-save summary may still show the candidate).
+    from datetime import datetime, timezone
+
+    docs = tmp_path / "Documents"
+    docs.mkdir()
+    stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    base_name = f"FT-991A-radio-probe-{stamp}.json"
+
+    def ask(prompt: str) -> str:
+        if prompt.startswith("Save the file?"):
+            # Another run's capture lands after the pre-save summary
+            # showed the base name but before this run answers.
+            (docs / base_name).write_text('{"other": "run"}', encoding="utf-8")
+            return "y"
+        return "y"
+
+    lines: list[str] = []
+    code = await execute(
+        resolve_config("FT-991A", RIGS),
+        (REPO_ROOT / "rigs" / "ft991a.toml").read_bytes(),
+        device_label="COM5 @ 38400",
+        baud=38400,
+        out=None,
+        include_private=False,
+        label="",
+        yes=False,
+        is_tty=True,
+        ask=ask,
+        exchange_factory=_stub_answers([]),
+        gap_s=GAP,
+        timeout_s=TIMEOUT,
+        emit=lines.append,
+        documents_dir=lambda: docs,
+        open_folder=lambda path: None,
+    )
+    assert code == 0
+    first = docs / base_name
+    assert first.read_text(encoding="utf-8") == '{"other": "run"}'
+    second = docs / f"FT-991A-radio-probe-{stamp}-2.json"
+    document = ProbeFile.from_json(second.read_text(encoding="utf-8"))
+    assert document.schema == "rigplane-probe-v1"
+    closing = [line for line in lines if line.startswith("Saved to")]
+    assert len(closing) == 1
+    assert str(second.resolve()) in closing[0]
+    assert str(first.resolve()) not in closing[0]
+
+
+async def test_execute_folder_opener_launches_without_waiting(
+    tmp_path, monkeypatch
+) -> None:
+    # P2-3: the folder opener must not wait on the desktop process. A
+    # persistent opener cannot hold the run, and the writer still closes.
+    import shutil
+    import subprocess
+    import sys
+
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/xdg-open")
+    launched: list[list[str]] = []
+
+    def fake_popen(argv: list[str], **kwargs: object) -> object:
+        launched.append(list(argv))
+        return object()
+
+    def no_wait(*args: object, **kwargs: object) -> object:
+        raise AssertionError("the folder opener must not wait")
+
+    monkeypatch.setattr(subprocess, "run", no_wait)
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    stub = _ClosableStubExchange()
+    answers = iter(["y", "y"])
+
+    async def factory() -> runner.Exchange:
+        return stub  # type: ignore[return-value]
+
+    lines: list[str] = []
+    code = await execute(
+        resolve_config("FT-991A", RIGS),
+        (REPO_ROOT / "rigs" / "ft991a.toml").read_bytes(),
+        device_label="COM5 @ 38400",
+        baud=38400,
+        out=str(tmp_path / "probe.json"),
+        include_private=False,
+        label="",
+        yes=False,
+        is_tty=True,
+        ask=lambda prompt: next(answers),
+        exchange_factory=factory,
+        gap_s=GAP,
+        timeout_s=TIMEOUT,
+        emit=lines.append,
+    )
+    assert code == 0
+    assert launched == [["xdg-open", str(tmp_path)]]
+    assert stub.closed is True
