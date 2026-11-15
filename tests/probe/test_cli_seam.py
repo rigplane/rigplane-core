@@ -60,14 +60,14 @@ def test_main_dispatches_probe_to_the_probe_runner(monkeypatch) -> None:
     assert calls[0].profile == "FTX-1"
 
 
-def test_end_to_end_cat_ftx1_through_real_cli(tmp_path, monkeypatch) -> None:
+async def test_end_to_end_cat_ftx1_through_real_cli(tmp_path, monkeypatch) -> None:
     import asyncio
 
     from rigplane_testkit.yaesu import FakeCatRadio
 
     out = tmp_path / "ftx1-probe.json"
     radio = FakeCatRadio(profile="ftx1", frequency_hz=7_074_000)
-    asyncio.run(radio.start())
+    await radio.start()
     try:
         monkeypatch.setattr(
             "sys.argv",
@@ -84,10 +84,13 @@ def test_end_to_end_cat_ftx1_through_real_cli(tmp_path, monkeypatch) -> None:
                 "seam-cat",
             ],
         )
+        # The fake's socket server is bound to this test's event loop,
+        # while main() runs its own asyncio.run: execute main() in a
+        # worker thread so the server loop keeps answering.
         with pytest.raises(SystemExit) as exc_info:
-            main()
+            await asyncio.to_thread(main)
     finally:
-        asyncio.run(radio.stop())
+        await radio.stop()
     assert exc_info.value.code == 0
     document = ProbeFile.from_json(out.read_text(encoding="utf-8"))
     assert document.schema == "rigplane-probe-v1"
