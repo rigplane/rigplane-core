@@ -10,6 +10,7 @@ from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Sequence
 
 from ...exceptions import CommandError
+from ...exceptions import ConnectionError as RadioConnectionError
 from ...exceptions import TimeoutError as RadioTimeoutError
 from ...core.command_dispatch import ManagedWriteAdmission, execute_command_intent
 from ...core.radio_protocol import (
@@ -245,11 +246,10 @@ class RigctldClientObservationPoller:
         observations: list["Observation"] = list(
             await adapter.read_freq_mode_controls()
         )
-        # MOR-4456: a ``t`` timeout closes the transport, fencing the
-        # generation and discarding anything still unpublished — publish
-        # the answered reads first (annotated, exactly once — the final
-        # batch below carries only what this one did not); the PTT
-        # outcome follows on its own publication.
+        # MOR-4456: the answered reads publish first (annotated, exactly
+        # once — the final batch below carries only what this one did
+        # not); the PTT outcome follows on its own publication, before the
+        # VFO read. The order is pinned by the adapter tests.
         published_count = 0
         if self._provider_generation_is_current(provider_generation):
             self._callback(
@@ -258,41 +258,43 @@ class RigctldClientObservationPoller:
                 )
             )
             published_count = len(observations)
-        try:
-            ptt = await adapter.read_ptt()
-        except Exception:
-            # Best-effort: after a timeout the fence moved on and this is
-            # skipped, while a fenceless failure still lands the unknown
-            # (annotated like every other publication — one code path).
-            # Re-raise either way for the reconnect path (as MOR-4433).
-            if self._provider_generation_is_current(provider_generation):
-                unknown = adapter.observed_ptt_observation(None)
-                try:
+        # MOR-4456: the transmit-state read is optional — a radio that
+        # never answers ``t`` must not take the receive state down with it
+        # every cycle. The first unanswered ``t`` still raises (one
+        # reconnect through ``_run_loop``), then ``t`` stays unasked for
+        # the life of this radio object. A refused ``t`` (``RPRT``) never
+        # closed the transport, so it stays in-cycle: unknown for this
+        # cycle, asked again on the next.
+        raw_ptt: Observation | None = None
+        if self._radio._ptt_read_demoted:  # noqa: SLF001
+            observations.append(adapter.observed_ptt_observation(None))
+        else:
+            try:
+                raw_ptt = await adapter.read_ptt()
+            except (asyncio.TimeoutError, RadioTimeoutError):
+                self._radio._demote_ptt_read_after_timeout()  # noqa: SLF001
+                raise
+            except RadioConnectionError:
+                raise
+            except CommandError:
+                observations.append(adapter.observed_ptt_observation(None))
+            else:
+                if self._provider_generation_is_current(provider_generation):
                     self._callback(
                         self._annotate_readback_observations(
                             self._stamp_provider_generation(
-                                (unknown,), provider_generation
+                                (
+                                    adapter.observed_ptt_observation(
+                                        raw_ptt.value,
+                                        timestamp_monotonic=raw_ptt.timestamp_monotonic,
+                                    ),
+                                ),
+                                provider_generation,
                             )
                         )
                     )
-                except Exception:
-                    logger.warning(
-                        "rigctld-client PTT error observation publication failed",
-                        exc_info=True,
-                    )
-            raise
-        if self._provider_generation_is_current(provider_generation):
-            observed_ptt = adapter.observed_ptt_observation(
-                ptt.value, timestamp_monotonic=ptt.timestamp_monotonic
-            )
-            self._callback(
-                self._annotate_readback_observations(
-                    self._stamp_provider_generation(
-                        (observed_ptt,), provider_generation
-                    )
-                )
-            )
-        observations.append(ptt)
+        if raw_ptt is not None:
+            observations.append(raw_ptt)
         active_vfo = await adapter.read_active_vfo()
         if active_vfo is not None:
             observations.append(active_vfo)
@@ -303,9 +305,9 @@ class RigctldClientObservationPoller:
             self._finish_readbacks(self._pending_readback_entries, "provider_lost")
             return
         # MOR-4456: the early batch above already published (and
-        # reconciled) the freq/mode/control reads — the final batch
-        # carries only the tail (PTT, VFO, drained slow-control
-        # readbacks), so no observation is published twice.
+        # reconciled) the freq/mode/control reads, and the PTT outcome has
+        # its own publication — the final batch carries only the tail, so
+        # no observation is published twice.
         self._callback(
             self._annotate_readback_observations(
                 self._stamp_provider_generation(
@@ -764,6 +766,15 @@ class RigctldClientRadio:
         # backend's tally. On the 3rd unanswered read the adapter records
         # the declared-command defect that ends startup.
         self._critical_read_timeouts: dict[FieldPath, int] = {}
+        # MOR-4456: the medium-lane transmit-state read demotes itself
+        # after its first timeout — a radio that never answers ``t`` must
+        # not take the receive state down with it every cycle. The flag
+        # lives here (not on the per-cycle adapter or poller) so it
+        # survives the reconnect the first timeout causes; only a fresh
+        # radio object (server restart, explicit reconnect/reconfigure)
+        # asks ``t`` again. A refused ``t`` never demotes: ``RPRT``
+        # answers keep being asked every cycle.
+        self._ptt_read_demoted = False
         # The same intentional-disconnect idiom as IcomRadio: set by
         # disconnect(), cleared by connect(), checked by the poller's
         # reconnect so an operator's disconnect is never undone.
@@ -969,6 +980,26 @@ class RigctldClientRadio:
             raise CommandError(
                 "External rigctld backend does not support RigPlane data mode."
             )
+
+    def _demote_ptt_read_after_timeout(self) -> None:
+        """Latch the medium-lane transmit-state read off (MOR-4456).
+
+        Called once, on the first unanswered ``t``: further medium cycles
+        publish PTT as unknown without sending ``t``. Idempotent, so the
+        single named warning below fires exactly once per radio object.
+        Solicited reads (:meth:`get_ptt`, the managed-TX unkey readback)
+        are unaffected — only the poll cycle stops asking.
+        """
+        if self._ptt_read_demoted:
+            return
+        self._ptt_read_demoted = True
+        logger.warning(
+            "rigctld-client transmit-state read demoted: field %s command %s "
+            "cause %s; further 't' reads are skipped for the life of this client",
+            FieldPath.global_("tx_state", "ptt"),
+            "t",
+            "timed out",
+        )
 
     async def get_ptt(self) -> bool:
         ptt = await self._read_ptt()
