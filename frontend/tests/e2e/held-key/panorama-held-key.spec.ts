@@ -704,21 +704,36 @@ test('IC-705 pinned 10m band preset wider than any native stays hatched', async 
   }
 });
 
-// Control rows: the owner rule of 2026-11-14 in BOTH event orders. The
+// Control rows: the equal-width adoption race in BOTH event orders. The
 // radio starts on the 50000 preset (100 kHz native, the default follow
-// width) and the harness narrows the span preset to 25 kHz from the front
-// panel (--external-span-after-s/--external-span-hz) AFTER setup, with no
-// zoom presses after it. --external-span-skew-s staggers the two legs of
-// that change deterministically: a negative skew switches the span readback
-// first (the order the old code happened to survive), a positive skew
-// switches the streamed wave first (the order that exposed MOR-4451: the
-// clipped frames arrive before the span-index readback). Each row asserts
-// NO radio span write after the change (MOR-4385 adoption: the grant
-// clips, nothing is written back), that the displayed view TRACKS the
-// narrowed native (frames carry view width == coverage width == 50 kHz
-// and the span readout shows ±25k — with no zoom intent the view follows
-// the wire, so there is no follow width to adopt), and NO .scope-hatch
-// in the adopted state. No latency matrix.
+// width); setup pins that width as an explicit follow (one ZOOM− to
+// 200 kHz and back, so the follow request is a real 100 kHz intent with
+// no net zoom) and the harness then narrows the span preset to 25 kHz
+// from the front panel (--external-span-after-s/--external-span-hz).
+// --external-span-skew-s staggers the two legs of that change
+// deterministically: a negative skew switches the span readback first
+// (the order the old code happened to survive), a positive skew switches
+// the streamed wave first (the order that exposed MOR-4451: the clipped
+// frames arrive before the span-index readback).
+//
+// The old adoption rule demanded the frame view width equal the follow
+// width, so it can only adopt while the wire still shows the old width:
+// in readback-first order the readback arrives while the frames still
+// carry 100 kHz, the old guard holds, and the row passes on the old rule
+// too. In frames-first order the frames already carry 50 kHz when the
+// readback arrives, the old guard never holds, and the row must RED on
+// the old rule (the subscription never moves to 50 kHz and the stuck
+// 100 kHz request hatches against the 50 kHz native). The new rule
+// compares the grant's requested width instead of the clipped frame, so
+// both orders adopt: each row asserts NO radio span write after the
+// change (MOR-4385 adoption: nothing is written back), that the follow
+// subscription ADOPTS the narrowed native (50 kHz), that frames carry
+// view width == coverage width == 50 kHz with the span readout at ±25k,
+// and NO .scope-hatch in the adopted state. The row also prints the
+// client-observed leg order — first clipped frame vs the adoption (the
+// new-rule readback arrival) or first hatch (old rule, never adopting)
+// — so a broken stagger would fail the order assertion instead of
+// passing vacuously. No latency matrix.
 // Needs the same integrated tree as the rows above.
 for (const { order, skew, port } of [
   { order: 'readback-first', skew: -20, port: 21594 },
@@ -732,7 +747,10 @@ test(`IC-705 external span narrowing adopts without a write and without hatch (c
   let setupDone = false;
   let serverReady = false;
   let server: JourneyServerHandle | undefined;
-  const sent: Array<ScopeSubscription & { type: string }> = [];
+  // Subscribe sends carry the client send time: the adoption (the follow
+  // request moving to the narrowed width) is the client-observable
+  // readback arrival on an adopting tree.
+  const sent: Array<ScopeSubscription & { type: string; tWall: number }> = [];
   const grants: Array<{ tWall: number; grant: ScopeGranted }> = [];
   const frames: Array<{ view: number[]; coverage: number[]; receivedAt: number; tWall: number }> = [];
   // Span-set receipts in the evidence file: 0x15 scope writes whose data
@@ -768,7 +786,7 @@ test(`IC-705 external span narrowing adopts without a write and without hatch (c
       socket.on('framesent', ({ payload }) => {
         if (typeof payload === 'string') {
           const message = JSON.parse(payload) as ScopeSubscription & { type: string };
-          if (message.type === 'subscribe') sent.push(message);
+          if (message.type === 'subscribe') sent.push({ ...message, tWall: Date.now() });
         }
       });
       socket.on('framereceived', ({ payload }) => {
@@ -813,6 +831,25 @@ test(`IC-705 external span narrowing adopts without a write and without hatch (c
       .toBe(100_000);
     const expectedView = [BASE_FREQ_HZ - grantedWidthHz / 2, BASE_FREQ_HZ + grantedWidthHz / 2];
     await expect.poll(() => frames.at(-1)?.view).toEqual(expectedView);
+
+    // Pin the 100 kHz width as an explicit follow intent: one ZOOM− step
+    // to 200 kHz and back, so the follow request is a real 100 kHz width
+    // with no net zoom. The adoption guard needs a non-null follow width
+    // to bite — the untouched default follow carries none, and a row with
+    // no follow intent cannot distinguish the old rule from the new one
+    // (defect 2). The covering-preset radio writes of both steps land
+    // BEFORE the receipt snapshot below.
+    await page.getByRole('button', { name: 'More scope controls' }).first().click();
+    await page.getByTestId('scope-zoom-out').first().click();
+    await expect.poll(() => sent.at(-1)?.view).toEqual({ follow: 'vfo', spanHz: 200_000 });
+    await expect.poll(() => frames.at(-1)?.view).toEqual(
+      [BASE_FREQ_HZ - 100_000, BASE_FREQ_HZ + 100_000]);
+    await page.getByTestId('scope-zoom-in').first().click();
+    await expect.poll(() => sent.at(-1)?.view).toEqual({ follow: 'vfo', spanHz: 100_000 });
+    await expect.poll(() => frames.at(-1)?.view).toEqual(expectedView);
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(1500);
+    const postZoomFrameIdx = frames.length;
     setupDone = true;
 
     // Snapshot the span-set receipts BEFORE the external change can fire:
@@ -822,45 +859,71 @@ test(`IC-705 external span narrowing adopts without a write and without hatch (c
     const setupElapsedS = (Date.now() - startedWall) / 1000;
     expect(setupElapsedS,
       `setup took ${setupElapsedS.toFixed(0)}s; the external change fires at ${externalAfterS}s`).toBeLessThan(externalAfterS - 15);
-    // Every pre-change frame shows the full 100 kHz view covered: no zoom
-    // presses happened and the change has not fired yet.
-    expect(frames.length, 'no scope frames arrived during setup').toBeGreaterThan(0);
-    expect(frames.every((f) => f.view[1] - f.view[0] === 100_000 && f.coverage[1] - f.coverage[0] === 100_000),
+    // Every post-zoom pre-change frame shows the full 100 kHz view
+    // covered: the change has not fired yet.
+    expect(frames.length, 'no scope frames arrived during setup').toBeGreaterThan(postZoomFrameIdx);
+    expect(frames.slice(postZoomFrameIdx).every((f) => f.view[1] - f.view[0] === 100_000 && f.coverage[1] - f.coverage[0] === 100_000),
       'pre-change frames do not all show view=100000/cov=100000').toBe(true);
     const spanSetsBefore = await spanSetCount();
     expect(await receiptCount(),
       'evidence file is empty — the no-new-writes assertion would pass vacuously').toBeGreaterThan(0);
+    const setupEndWall = Date.now();
 
-    // Wait until the displayed view adopts the narrowed native: frames
-    // carry view width == coverage width == the 25 kHz preset's 50 kHz
-    // full width, and the span readout follows.
+    // Wait until the narrowed native reaches the wire: frames carry view
+    // width == coverage width == the 25 kHz preset's 50 kHz full width.
+    // The wire clips on either rule — the follow-subscription assertion
+    // below is the one that reds on the old rule in frames-first order.
     await expect.poll(() => {
       const latest = frames.at(-1);
       if (!latest) return null;
       return [latest.view[1] - latest.view[0], latest.coverage[1] - latest.coverage[0]];
     }, { timeout: 120_000 }).toEqual([50_000, 50_000]);
-    const adoptedWall = Date.now();
-    // The readout only changes once the lagging readback leg arrives and
-    // the client adopts — up to |skew| after the wire narrowed — so the
-    // budget must cover the stagger, not just the render.
+    // The adoption may never come (old rule, frames-first): record the
+    // outcome instead of throwing, so the order timeline below prints on
+    // the red path too. On an adopting tree this returns at once when the
+    // readback already arrived (readback-first) or up to ~60 s after the
+    // clip (frames-first, waiting for the lagging readback leg).
+    let adopted = false;
+    try {
+      await expect.poll(() => sent.at(-1)?.view, { timeout: 60_000 })
+        .toEqual({ follow: 'vfo', spanHz: 50_000 });
+      adopted = true;
+    } catch { adopted = false; }
+    // The readout follows the frame width (not the adoption), so it only
+    // needs the render budget past the clip.
     await expect(page.getByTestId('scope-span-value').first()).toHaveText('±25k', { timeout: 60_000 });
     await page.waitForTimeout(2500);
 
-    const adoptedSamples = (await page.evaluate(() => window.heldKeySamples))
-      .filter((s) => s.tWall >= adoptedWall);
+    // Client-observed leg order. The wave leg is the first clipped frame;
+    // the readback leg is the adoption (the follow request moving to
+    // 50 kHz) on an adopting tree, or the first hatched sample on a tree
+    // that never adopts (the stuck 100 kHz request hatches against the
+    // 50 kHz native from the readback on). Times are wall ms after setup.
+    const firstClipT = frames.find((f) => f.view[1] - f.view[0] === 50_000)?.tWall ?? null;
+    const adoptionT = sent.find((s) => 'spanHz' in s.view && s.view.spanHz === 50_000)?.tWall ?? null;
+    const allSamples = await page.evaluate(() => window.heldKeySamples);
+    const postSetupSamples = allSamples.filter((s) => s.tWall >= setupEndWall);
+    const firstHatchT = postSetupSamples.find((s) => s.hatchCount > 0)?.tWall ?? null;
+    const rel = (t: number | null) => t === null ? 'none' : `+${Math.round(t - setupEndWall)}ms`;
+    const adoptedWall = adoptionT ?? Date.now();
+    const adoptedSamples = allSamples.filter((s) => s.tWall >= adoptedWall);
     const hatchedAdopted = adoptedSamples.filter((s) => s.hatchCount > 0);
     const latest = frames.at(-1)!;
     const latestViewHz = latest.view[1] - latest.view[0];
     const latestCovHz = latest.coverage[1] - latest.coverage[0];
     const spanSetsAfter = await spanSetCount();
     console.log(`[held-key control ${order} owner-rule] ` +
+      `clipT=${rel(firstClipT)} adoptionT=${rel(adoptionT)} firstHatchT=${rel(firstHatchT)} ` +
       `samples=${adoptedSamples.length} hatched=${hatchedAdopted.length} ` +
       `view=${latestViewHz}Hz cov=${latestCovHz}Hz ` +
       `spanSetsBefore=${spanSetsBefore} spanSetsAfter=${spanSetsAfter}`);
     await info.attach(`held-key-control-${order}`, {
       body: JSON.stringify({
         params: { spanHz: 50_000, externalSpanHz: 25_000, seed, order, skew },
-        grantedWidthHz, adoptedWall,
+        grantedWidthHz, setupEndWall, firstClipT: firstClipT === null ? null : firstClipT - setupEndWall,
+        adoptionT: adoptionT === null ? null : adoptionT - setupEndWall,
+        firstHatchT: firstHatchT === null ? null : firstHatchT - setupEndWall,
+        subscribes: sent.map((s) => ({ tRelMs: s.tWall - setupEndWall, view: s.view })),
         latestView: latest.view, latestCoverage: latest.coverage,
         spanSetsBefore, spanSetsAfter,
         samples: adoptedSamples.length, hatched: hatchedAdopted.length,
@@ -868,18 +931,32 @@ test(`IC-705 external span narrowing adopts without a write and without hatch (c
       contentType: 'application/json',
     });
 
+    // (0) the stagger produced the expected client-observed leg order:
+    // the clipped frame comes first in frames-first order, the adoption
+    // (readback arrival) first in readback-first order. A broken knob
+    // (both legs together) fails here instead of passing vacuously. On
+    // the old rule in frames-first order there is no adoption at all,
+    // which is exactly the red proof defect 2 requires.
+    if (order === 'frames-first') {
+      expect(adopted && firstClipT !== null && adoptionT !== null && firstClipT < adoptionT,
+        `frames-first order broken (clipT=${rel(firstClipT)} adoptionT=${rel(adoptionT)} ` +
+        `firstHatchT=${rel(firstHatchT)}): the old rule never adopts here`).toBe(true);
+    } else {
+      expect(adopted && firstClipT !== null && adoptionT !== null && adoptionT < firstClipT,
+        `readback-first order broken (clipT=${rel(firstClipT)} adoptionT=${rel(adoptionT)} ` +
+        `firstHatchT=${rel(firstHatchT)})`).toBe(true);
+    }
     // (1) NO radio span write after the external change: the setup
-    // snapshot predates the change and no gesture follows it, so any new
-    // span-set receipt is a write-back.
+    // snapshot predates the change and no gesture follows the zoom pin,
+    // so any new span-set receipt is a write-back.
     expect(spanSetsAfter,
       `radio span written ${spanSetsAfter - spanSetsBefore}x after the external change`).toBe(spanSetsBefore);
-    // (2) the displayed view tracks the narrowed native: the wire frames
-    // carry view width == coverage width == that width, while the follow
-    // request itself is untouched by the external change (with no zoom
-    // intent there is no follow width to adopt — the zoomed row below
-    // pins the follow-subscription adoption).
+    // (2) the pinned 100 kHz follow adopted the narrowed native: the
+    // follow subscription itself moved to the 50 kHz native
+    // (pinned by the adoption poll above), and the wire frames carry view
+    // width == coverage width == that width.
     expect(sent.at(-1)?.view,
-      `follow request disturbed by the external change (${order})`).toEqual({ follow: 'vfo', spanHz: 100_000 });
+      `pinned follow subscription did not adopt the narrowed native (${order})`).toEqual({ follow: 'vfo', spanHz: 50_000 });
     expect(latestViewHz, 'adopted view is not the narrowed native width').toBe(50_000);
     expect(latestCovHz, 'adopted coverage is not the narrowed native width').toBe(50_000);
     // (3) NO hatch in the adopted state: a fully covered view never
