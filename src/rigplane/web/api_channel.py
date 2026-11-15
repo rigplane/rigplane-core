@@ -475,21 +475,24 @@ def _split_response(raw: bytes) -> tuple[int, dict[str, str], bytes]:
 
 
 class _RequestState:
-    """One request from an accepted REQ_HEAD to its terminal frame."""
+    """One request from an accepted REQ_HEAD to its terminal frame.
+
+    The retained body is one bytearray bounded by bytes: every chunk —
+    empty or 1 byte — is accounted by its length, so no sequence of
+    chunks can retain more than ``MAX_REQUEST_BODY_BYTES``.
+    """
 
     __slots__ = (
+        "buf",
         "cancelled",
-        "chunks",
         "dispatched",
         "end_event",
         "head",
-        "size",
         "task",
     )
 
     head: ApiRequestHead
-    chunks: list[bytes]
-    size: int
+    buf: bytearray
     end_event: asyncio.Event
     cancelled: bool
     dispatched: bool
@@ -497,8 +500,7 @@ class _RequestState:
 
     def __init__(self, head: ApiRequestHead) -> None:
         self.head = head
-        self.chunks: list[bytes] = []
-        self.size = 0
+        self.buf = bytearray()
         self.end_event = asyncio.Event()
         self.cancelled = False
         self.dispatched = False
@@ -610,13 +612,15 @@ class ApiChannelHandler:
         state.task = asyncio.ensure_future(self._serve_request(request_id, state))
 
     def _on_body(self, request_id: int, payload: bytes) -> None:
-        """Append one body chunk; past 1 MB the request fails ``too_large``."""
+        """Append one body chunk; past 1 MB the request fails ``too_large``.
+
+        Accounting is by bytes on the one buffer, so empty chunks retain
+        nothing and 1-byte chunks trip the same cap as whole bodies.
+        """
         state = self._requests.get(request_id)
         if state is None or state.dispatched:
             return
-        state.chunks.append(payload)
-        state.size += len(payload)
-        if state.size > MAX_REQUEST_BODY_BYTES:
+        if len(state.buf) + len(payload) > MAX_REQUEST_BODY_BYTES:
             state.dispatched = True
             assert state.task is not None
             state.task.cancel()
@@ -624,6 +628,8 @@ class ApiChannelHandler:
             asyncio.ensure_future(
                 self._send_error(request_id, _TOO_LARGE, "request body too large")
             )
+            return
+        state.buf += payload
 
     def _on_end(self, request_id: int) -> None:
         """Mark a request complete: its task now runs the HTTP dispatch."""
@@ -655,8 +661,7 @@ class ApiChannelHandler:
                 await state.end_event.wait()
                 if state.cancelled:
                     return
-                body = b"".join(state.chunks)
-                state.chunks.clear()
+                body = bytes(state.buf)
                 status, headers, resp_body = await self._dispatch(state.head, body)
                 if state.cancelled:
                     return
