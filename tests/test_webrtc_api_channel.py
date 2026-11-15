@@ -1448,12 +1448,22 @@ async def test_api_preview_deadline_cleans_abandoned_bundle() -> None:
 
     server = await _stand_up_light()
     client = _ApiClient()
+    request_tasks: list[asyncio.Task[None]] = []
+    orig_serve = api_mod.ApiChannelHandler._serve_request
+
+    async def _spy(self: Any, req_id: int, state: Any) -> None:
+        task = asyncio.current_task()
+        assert task is not None
+        request_tasks.append(task)
+        await orig_serve(self, req_id, state)
+
     try:
         await client.connect(server.port)
         await client.attach(None)
         with (
             patch.object(api_mod, "REQUEST_DEADLINE_S", 0.5),
             patch.object(diag_mod, "build_bundle", _blocked_build),
+            patch.object(api_mod.ApiChannelHandler, "_serve_request", _spy),
         ):
             client.send_raw(
                 _frame(
@@ -1473,10 +1483,18 @@ async def test_api_preview_deadline_cleans_abandoned_bundle() -> None:
                 timeout=10.0,
                 description="bundle build started",
             )
-            await client.expect_error(1, "timeout", timeout=10.0)
-            # The deadline cancelled the request; release the worker and
-            # require its abandoned staging directory to be removed.
+            assert request_tasks, "preview request task never started"
+            # The deadline fires while the worker is blocked: the request is
+            # cancelled, but the handler keeps ownership until the worker
+            # finishes, so the timeout ERROR only goes out after release.
+            await await_until(
+                lambda: request_tasks[0].cancelling() > 0
+                or request_tasks[0].done(),
+                timeout=10.0,
+                description="preview request cancelled by the deadline",
+            )
             release.set()
+            await client.expect_error(1, "timeout", timeout=10.0)
             await await_until(
                 lambda: seen and not seen[0].exists(),
                 timeout=10.0,
