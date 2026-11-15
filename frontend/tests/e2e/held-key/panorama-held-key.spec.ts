@@ -916,9 +916,12 @@ test(`IC-705 external span narrowing adopts without a write and without hatch (c
 // 400 kHz and hatches. The row asserts the adopted state: the follow
 // subscription moved to 200 kHz, frames carry view width == coverage width
 // == 200 kHz, the span readout shows ±100k, zero span writes after the
-// change, zero .scope-hatch in the adopted rAF samples, and zero canvas
-// hatch on both edge strips (the panel's hatch decision reaches the canvas
-// with no ranges). Needs the same integrated tree as the rows above.
+// change, and zero .scope-hatch in the adopted rAF samples. The canvas
+// half of the panel's hatch decision (the ranges handed to the canvas
+// renderer) is pinned by the SpectrumPanel component adoption tests, where
+// the adopted paint is deterministic — a pixel probe here would also see
+// the live trace slope on the fully covered edge strips. Needs the same
+// integrated tree as the rows above.
 test('IC-705 zoomed follow adopts a front-panel narrowing without a write and without hatch', async ({ page }, info) => {
   test.setTimeout(300_000);
   const port = 21598;
@@ -1038,11 +1041,15 @@ test('IC-705 zoomed follow adopts a front-panel narrowing without a write and wi
       if (!latest) return null;
       return [latest.view[1] - latest.view[0], latest.coverage[1] - latest.coverage[0]];
     }, { timeout: 180_000 }).toEqual([200_000, 200_000]);
+    // Adoption is the follow subscription moving to the narrowed width:
+    // only from here is the view adopted. (The readout already shows
+    // ±100k from the clipped frame width, on either tree — it is not the
+    // adoption signal. On the unfixed tree this poll never fires: that
+    // timeout is the red proof.)
+    await expect.poll(() => sent.at(-1)?.view, { timeout: 60_000 })
+      .toEqual({ follow: 'vfo', spanHz: 200_000 });
     const adoptedWall = Date.now();
-    // The readout only changes once the lagging readback leg arrives and
-    // the client adopts — 20 s after the wire narrowed here — so the
-    // budget must cover the stagger, not just the render.
-    await expect(page.getByTestId('scope-span-value').first()).toHaveText('±100k', { timeout: 60_000 });
+    await expect(page.getByTestId('scope-span-value').first()).toHaveText('±100k');
     await page.waitForTimeout(2500);
 
     const adoptedSamples = (await page.evaluate(() => window.heldKeySamples))
@@ -1051,12 +1058,9 @@ test('IC-705 zoomed follow adopts a front-panel narrowing without a write and wi
     const latest = frames.at(-1)!;
     const latestViewHz = latest.view[1] - latest.view[0];
     const latestCovHz = latest.coverage[1] - latest.coverage[0];
-    const hotLeft = await canvasEdgeHotColumns(page, 'left');
-    const hotRight = await canvasEdgeHotColumns(page, 'right');
     const spanSetsAfter = await spanSetCount();
     console.log(`[held-key zoomed adoption] ` +
       `samples=${adoptedSamples.length} hatched=${hatchedAdopted.length} ` +
-      `hotLeft=${hotLeft} hotRight=${hotRight} ` +
       `view=${latestViewHz}Hz cov=${latestCovHz}Hz ` +
       `spanSetsBefore=${spanSetsBefore} spanSetsAfter=${spanSetsAfter}`);
     await info.attach('held-key-zoomed-adoption', {
@@ -1065,7 +1069,6 @@ test('IC-705 zoomed follow adopts a front-panel narrowing without a write and wi
         latestView: latest.view, latestCoverage: latest.coverage,
         spanSetsBefore, spanSetsAfter,
         samples: adoptedSamples.length, hatched: hatchedAdopted.length,
-        hotLeft, hotRight,
       }, null, 2),
       contentType: 'application/json',
     });
@@ -1076,20 +1079,22 @@ test('IC-705 zoomed follow adopts a front-panel narrowing without a write and wi
     expect(spanSetsAfter,
       `radio span written ${spanSetsAfter - spanSetsBefore}x after the external change`).toBe(spanSetsBefore);
     // (2) the zoomed follow view adopted the narrowed native: the follow
-    // subscription itself moved from 400 kHz to the 200 kHz native.
+    // subscription itself moved from 400 kHz to the 200 kHz native (pinned
+    // by the adoption poll above), and the wire frames carry view width
+    // == coverage width == that width.
     expect(sent.at(-1)?.view,
       'zoomed follow subscription did not adopt the narrowed native').toEqual({ follow: 'vfo', spanHz: 200_000 });
     expect(latestViewHz, 'adopted view is not the narrowed native width').toBe(200_000);
     expect(latestCovHz, 'adopted coverage is not the narrowed native width').toBe(200_000);
     // (3) NO hatch in the adopted state: a fully covered view never
-    // hatches — neither the DOM blocks nor the canvas pattern, which both
-    // come from the panel's hatch decision.
+    // hatches. The canvas half of the panel's hatch decision (the ranges
+    // handed to the canvas renderer) is pinned at the component level,
+    // where it is deterministic: a pixel probe here would also see the
+    // live trace slope on the fully covered edge strips.
     expect(adoptedSamples.length,
       'too few adopted-state samples to judge the zoomed adoption hatch').toBeGreaterThan(10);
     expect(hatchedAdopted,
       `adopted fully-covered view hatched in ${hatchedAdopted.length} samples`).toEqual([]);
-    expect(hotLeft, 'canvas left edge shows the hatch pattern on a fully covered view').toBe(0);
-    expect(hotRight, 'canvas right edge shows the hatch pattern on a fully covered view').toBe(0);
 
     expectPanoramaSettled(watch);
   } catch (error) {

@@ -1659,11 +1659,18 @@ describe('SpectrumPanel component', () => {
       // that the already-clipped frame view equal the follow width.
       narrowReadback();
       expect(read().view).toEqual({ follow: 'vfo', spanHz: 200_000 });
+      // One more narrowed frame after the adoption, so the paint below
+      // reflects the adopted state.
+      emitFrame({ startFreq: 13_950_000, endFreq: 14_150_000,
+        coverageStartHz: 13_950_000, coverageEndHz: 14_150_000, sequence: 4 }); flushSync();
     }
     await flushWaterfallPaint();
     expect(subscribes()).toHaveLength(sentBefore + 1);
     expect(subscribes().at(-1)).toMatchObject({ type: 'subscribe', view: { follow: 'vfo', spanHz: 200_000 } });
     expect(target.querySelectorAll('.scope-hatch')).toHaveLength(0);
+    // The panel's hatch decision reaches the canvas with no ranges: the
+    // adopted view is fully covered, so nothing hatches anywhere.
+    expect(spectrumRendererHarness.lastOptions.hatchRanges).toBeNull();
   });
 
   it('hatches a genuinely narrower observed native even when the grant coverage is as wide as the view (MOR-4451)', async () => {
