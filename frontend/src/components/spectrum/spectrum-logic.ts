@@ -32,6 +32,29 @@ export function isFixedScope(mode: number): boolean {
   return mode === 1 || mode === 3;
 }
 
+// --- Native width helpers (MOR-4451) ---
+/**
+ * The radio's native scope width in Hz for an observed scope-span index.
+ *
+ * `span_choices_hz` already states FULL view widths (CENTER: 2 × the radio's
+ * ±half-width preset — the server publishes view widths since #4565), so the
+ * published value is returned unchanged: no client ×2. Null unless the span
+ * reading is a known integer index into a non-empty choices list naming a
+ * finite positive width.
+ */
+export function nativeWidthFromSpanChoice(
+  choices: readonly number[] | undefined | null,
+  reading: { status: string; value?: unknown } | undefined | null,
+): number | null {
+  if (reading?.status === 'known' && Number.isInteger(reading.value)
+    && choices && (reading.value as number) >= 0
+    && (reading.value as number) < choices.length) {
+    const widthHz = choices[reading.value as number];
+    if (Number.isFinite(widthHz) && widthHz > 0) return widthHz;
+  }
+  return null;
+}
+
 // --- Click-to-tune helpers ---
 export function freqFromPixel(
   clientX: number,

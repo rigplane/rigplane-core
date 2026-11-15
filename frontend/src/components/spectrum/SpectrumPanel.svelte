@@ -66,6 +66,7 @@
     formatFreqOffset,
     deriveFreqTicks,
     isFixedScope as isFixedScopeFn,
+    nativeWidthFromSpanChoice,
   } from './spectrum-logic';
   import { PanoramaViewportCenter } from './panorama-motion';
   import { hasCommandModifier } from '../../components-v2/layout/keyboard-map';
@@ -726,22 +727,19 @@
     return stop;
   });
   // MOR-4451: one source of truth for the radio's NATIVE width in Hz, shared
-  // by the follow adoption below and the hatch input. The observed scope-span
-  // index in the state store names a CENTER half-width preset, so the full
-  // native width is 2 × span_choices_hz[i]. The cached grant coverage is only
-  // a subscription-time intersection the server republishes on pixel-width
-  // changes — after a front-panel span reduction it still claims the old
-  // width — so it is the fallback only while the observed span is unknown.
-  // Unknown both ways keeps today's hatch, as before.
+  // by the follow adoption below and the hatch input. span_choices_hz[i] is
+  // already the FULL view width (CENTER: 2 × the radio's ±half-width
+  // preset — the server publishes view widths since #4565), so the observed
+  // scope-span index names the native width with no client ×2. The cached
+  // grant coverage is only a subscription-time intersection the server
+  // republishes on pixel-width changes — after a front-panel span reduction
+  // it still claims the old width — so it is the fallback only while the
+  // observed span is unknown. Unknown both ways keeps today's hatch, as before.
   let nativeScopeWidthHz = $derived.by(() => {
     if (!audioFft && !sdrSource) {
-      const reading = spectrumAuthority?.scopeControls?.span.reading;
-      const choices = runtime.caps?.span_choices_hz;
-      if (reading?.status === 'known' && Number.isInteger(reading.value)
-        && choices && reading.value >= 0 && reading.value < choices.length) {
-        const halfHz = choices[reading.value];
-        if (Number.isFinite(halfHz) && halfHz > 0) return 2 * halfHz;
-      }
+      const widthHz = nativeWidthFromSpanChoice(
+        runtime.caps?.span_choices_hz, spectrumAuthority?.scopeControls?.span.reading);
+      if (widthHz !== null) return widthHz;
     }
     if (frameGrant !== null && displayGeometry !== null
       && frameGrant.receiver === displayGeometry.receiver
