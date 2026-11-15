@@ -32,14 +32,18 @@ import sys
 from pathlib import Path
 
 from rigplane.commands import CONTROLLER_ADDR
-from rigplane.probe.readlist import build_allowed_bodies, is_forbidden
-from rigplane.profiles import RadioProfile
-from rigplane.profiles.rig_loader import discover_rigs
+from rigplane.probe.readlist import build_read_plan, identity_requests, is_forbidden
+from rigplane.profiles.rig_loader import RigConfig, discover_rigs
 from rigplane_testkit.serial import CivFrameGuard, SerialCivRecorder
 
 
-def load_profile(model: str) -> RadioProfile:
-    """Load the rig profile whose ``[radio].model`` equals *model*."""
+def load_config(model: str) -> tuple[RigConfig, list[RigConfig]]:
+    """The rig config for *model* plus its sibling configs.
+
+    Siblings are the other shipped profiles: the probe borrows
+    declared-absent reads from them, so the guard must admit the same
+    complete read plan the CLI sends.
+    """
     rigs_dir = Path(__file__).resolve().parents[2] / "rigs"
     configs = discover_rigs(rigs_dir)
     config = configs.get(model)
@@ -48,7 +52,8 @@ def load_profile(model: str) -> RadioProfile:
         raise SystemExit(
             f"no rig profile for model {model!r} in {rigs_dir} ({available})"
         )
-    return config.to_profile()
+    siblings = [other for name, other in configs.items() if name != model]
+    return config, siblings
 
 
 #: Scope panel / wave-output switches (``27 10 xx``, ``27 11 xx``).
@@ -73,8 +78,18 @@ READ_EXTRA_BODIES = frozenset(
 
 
 def make_guard(model: str, radio_addr: int) -> CivFrameGuard:
-    """The frame guard for ``SerialCivRecorder(client_filter=guard.new_filter)``."""
-    allowed = build_allowed_bodies(load_profile(model))
+    """The frame guard for ``SerialCivRecorder(client_filter=guard.new_filter)``.
+
+    The allowed bodies come from the probe's complete read plan for the
+    model — native reads, sibling-borrowed reads, and calibration
+    requests — plus the scope switches and server status reads below.
+    The refusal families stay refused via :func:`is_forbidden`.
+    """
+    config, siblings = load_config(model)
+    plan = build_read_plan(config, include_private=True, siblings=siblings)
+    allowed = frozenset(item.body for item in plan.asked) | frozenset(
+        item.body for item in identity_requests(config)
+    )
 
     def guard(frame: bytes) -> bool:
         if len(frame) < 6 or frame[2] != radio_addr or frame[3] != CONTROLLER_ADDR:
