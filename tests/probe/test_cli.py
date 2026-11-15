@@ -474,6 +474,7 @@ class _ClosableStubExchange:
         break_now: bool = False,
     ) -> None:
         self.script = script if script is not None else {}
+        self.seen: list[bytes] = []
         self.block: asyncio.Event | None = block
         self.break_now = break_now
         self.closed = False
@@ -481,6 +482,8 @@ class _ClosableStubExchange:
     async def __call__(
         self, request: bytes | None, timeout: float
     ) -> bytes | None:
+        if request is not None:
+            self.seen.append(request)
         if self.break_now:
             raise OSError("device is gone")
         if self.block is not None:
@@ -564,7 +567,11 @@ async def test_execute_closes_writer_on_cancellation(tmp_path) -> None:
     task = asyncio.ensure_future(
         _run_with_closable(stub, tmp_path, out=str(tmp_path / "cancel.json"))
     )
-    await asyncio.sleep(0.05)
+    for _ in range(1000):
+        if stub.seen:
+            break
+        await asyncio.sleep(0)
+    assert stub.seen, "the run never reached the exchange"
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
