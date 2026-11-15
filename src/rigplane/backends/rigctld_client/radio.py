@@ -246,6 +246,22 @@ class RigctldClientObservationPoller:
         observations: list["Observation"] = list(
             await adapter.read_freq_mode_controls()
         )
+        # MOR-4456: publish the answered critical reads BEFORE asking `t` —
+        # a `t` timeout retires the transport and the raise below would
+        # discard these unpublished observations, starving the startup
+        # gate of the freq/mode answers it still blocks on. The batch
+        # below then carries only what is read after `t`; every
+        # observation keeps its single annotated publication and its
+        # correlation id.
+        if self._provider_generation_is_current(provider_generation):
+            self._callback(
+                self._annotate_readback_observations(
+                    self._stamp_provider_generation(
+                        tuple(observations), provider_generation
+                    )
+                )
+            )
+        observations = []
 
         def _publish_unknown_ptt() -> None:
             if not self._provider_generation_is_current(provider_generation):
@@ -272,8 +288,9 @@ class RigctldClientObservationPoller:
             # link failure — publish unknown for this cycle and keep the
             # cycle: the VFO and web-command readbacks still run and
             # publish below. Only timeouts and transport errors raise, as
-            # before (a `t` timeout still closes the connection, still
-            # reconnects, and still counts in `_critical_read_timeouts`).
+            # before (a `t` timeout still closes the connection and still
+            # reconnects; PTT left the critical set, so it no longer
+            # counts in `_critical_read_timeouts`).
             _publish_unknown_ptt()
         if ptt is not None and self._provider_generation_is_current(
             provider_generation
