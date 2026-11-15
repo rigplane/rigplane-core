@@ -950,6 +950,24 @@ async def test_api_two_channels_share_one_key() -> None:
                 for session in controller._sessions.values()  # noqa: SLF001
             )
 
+        async def _expect_no_response(client: _ApiClient, req_id: int) -> None:
+            """The channel is dead server-side: send fails or no frame comes.
+
+            The server abort closes its side of the data channel; whether
+            the SCTP close has reached this peer already decides between
+            an ``InvalidStateError`` send failure and a response timeout —
+            both prove the request can never be answered.
+            """
+            from aiortc.exceptions import InvalidStateError  # noqa: E402
+
+            try:
+                client.send_raw(_frame(_REQ_HEAD, req_id, _head("GET", "/api/v1/info")))
+                client.send_raw(_frame(_END, req_id, b""))
+            except InvalidStateError:
+                return
+            with pytest.raises(asyncio.TimeoutError):
+                await client._next_for(req_id, timeout=2.0)
+
         key = await _grant()
         _bump_deadlines(120.0)
         first = await _keyed(key)
@@ -984,10 +1002,7 @@ async def test_api_two_channels_share_one_key() -> None:
             timeout=10.0,
             description="expired session cleaned up",
         )
-        second.send_raw(_frame(_REQ_HEAD, 3, _head("GET", "/api/v1/info")))
-        second.send_raw(_frame(_END, 3, b""))
-        with pytest.raises(asyncio.TimeoutError):
-            await second._next_for(3, timeout=2.0)
+        await _expect_no_response(second, 3)
 
         # A fresh session: closing the second-attached channel first, then
         # release, closes everything and invalidates the key.
@@ -1017,10 +1032,7 @@ async def test_api_two_channels_share_one_key() -> None:
             timeout=10.0,
             description="released session cleaned up",
         )
-        third.send_raw(_frame(_REQ_HEAD, 3, _head("GET", "/api/v1/info")))
-        third.send_raw(_frame(_END, 3, b""))
-        with pytest.raises(asyncio.TimeoutError):
-            await third._next_for(3, timeout=2.0)
+        await _expect_no_response(third, 3)
         with pytest.raises(ControllerError):
             controller.credential(key2)
         # The dead key is refused at attach too.
