@@ -1289,6 +1289,127 @@ async def test_rigctld_silent_t_demotes_after_one_reconnect_and_serves_receive_s
         await fake.stop()
 
 
+async def _http_post_json(port: int, path: str) -> tuple[int, Any]:
+    """POST *path* with an empty body to the test listener, parsed as JSON."""
+    reader, writer = await asyncio.open_connection("127.0.0.1", port)
+    try:
+        writer.write(
+            f"POST {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n"
+            "Content-Length: 0\r\nConnection: close\r\n\r\n".encode()
+        )
+        await writer.drain()
+        raw = await asyncio.wait_for(reader.read(-1), 5.0)
+    finally:
+        writer.close()
+        with suppress(Exception):
+            await writer.wait_closed()
+    head, _, body = raw.partition(b"\r\n\r\n")
+    status = int(head.split(b" ", 2)[1])
+    return status, json.loads(body)
+
+
+@pytest.mark.asyncio
+async def test_rigctld_http_reconnect_resets_the_ptt_demotions() -> None:
+    """MOR-4456 P2: an explicit HTTP disconnect/connect asks ``t`` again.
+
+    The startup probe demotes the poll-cycle ``t`` read (one ``t``, two
+    connections); with ``t`` answering again, the operator's
+    ``/api/v1/radio/disconnect`` + ``/api/v1/radio/connect`` clears the
+    latch through the real HTTP endpoints, the next poll cycle re-asks
+    ``t``, and PTT is observed (release value ``False``) in the store.
+    """
+    PTT = FieldPath.global_("tx_state", "ptt")
+    fake = _TcpRigctldServer(silent="t")
+    await fake.start()
+    radio = _real_rigctld_radio(fake)
+    await radio.connect()
+    server = WebServer(radio, _gated_config())
+    scheduler = radio._acquisition_scheduler
+    try:
+        await asyncio.wait_for(server.start(), timeout=60.0)
+        assert fake.connections == 2
+        assert fake.t_requests == 1
+        assert radio._ptt_read_demoted  # noqa: SLF001
+        port = int(server._server.sockets[0].getsockname()[1])  # noqa: SLF001
+        # The radio answers again from here: the operator reconnect must
+        # re-ask the transmit-state read the demotion had retired.
+        fake.silent = None
+        status, _ = await _http_post_json(port, "/api/v1/radio/disconnect")
+        assert status == 200
+        status, _ = await _http_post_json(port, "/api/v1/radio/connect")
+        assert status == 200
+        await await_until(
+            lambda: fake.t_commands >= 2,
+            timeout=30.0,
+            description="the reconnected poll cycle asking t again",
+        )
+        await await_until(
+            lambda: PTT in _observed_paths(server, scheduler),
+            timeout=30.0,
+            description="ptt observed again after the operator reconnect",
+        )
+        await server.stop()
+    finally:
+        with suppress(Exception):
+            await server.stop()
+        await radio.disconnect()
+        await fake.stop()
+
+
+@pytest.mark.asyncio
+async def test_rigctld_client_recovery_reconnect_keeps_ptt_demotions() -> None:
+    """MOR-4456 P2: the client's own recovery reconnect never clears the latch.
+
+    The solicited probe demotes the poll-cycle ``t`` read; a transport drop
+    healed by the poller's own ``_reconnect_transport`` (not ``connect()``)
+    keeps the latch, so the next medium cycle serves receive state without
+    asking ``t`` again — one silent ``t`` in total, three connections.
+    """
+    from rigplane.backends.rigctld_client.observations import (
+        _FREQ as _RIG_FREQ,
+    )
+    from rigplane.backends.rigctld_client.radio import (
+        RigctldClientObservationPoller,
+    )
+
+    fake = _TcpRigctldServer(silent="t")
+    await fake.start()
+    radio = _real_rigctld_radio(fake)
+    await radio.connect()
+    try:
+        reading = await radio.read_transmit_state()
+        assert reading.value is None
+        assert radio._ptt_read_demoted  # noqa: SLF001
+        assert fake.t_requests == 1
+        # The probe-timeout reopen is an async server-side accept: wait for
+        # it instead of asserting the count on the same tick.
+        await await_until(
+            lambda: fake.connections == 2,
+            timeout=30.0,
+            description="the probe-timeout reopen reaching the fake",
+        )
+        await radio._transport.close()  # noqa: SLF001
+        observed: list = []
+        poller = RigctldClientObservationPoller(
+            radio,
+            lambda batch: observed.extend(batch),
+            medium_interval=0.05,
+            slow_interval=1.0,
+        )
+        await poller._reconnect_transport()  # noqa: SLF001
+        assert radio._ptt_read_demoted  # noqa: SLF001
+        await poller._poll_medium()  # noqa: SLF001
+        assert fake.t_requests == 1
+        assert fake.connections == 3
+        assert any(
+            str(item.path) == str(_RIG_FREQ) and item.value == 14074000
+            for item in observed
+        )
+    finally:
+        await radio.disconnect()
+        await fake.stop()
+
+
 @pytest.mark.asyncio
 async def test_rigctld_gate_is_unchanged_when_the_server_answers_everything() -> None:
     """MOR-2757: a rigctld server that answers everything opens as before.

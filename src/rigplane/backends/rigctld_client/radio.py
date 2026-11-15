@@ -820,6 +820,13 @@ class RigctldClientRadio:
     async def connect(self) -> None:
         await self._transport.connect()
         self._intentional_disconnect = False
+        # MOR-4456 P2: an explicit (re)connect — the operator's HTTP
+        # disconnect/connect, power-on, or a fresh ``__aenter__`` — retires
+        # the transmit-state demotion, so the next poll cycle asks ``t``
+        # again. The client's own recovery (``_reconnect_transport``) and
+        # the probe-timeout reopen (``read_transmit_state``) reuse
+        # ``transport.connect()`` and never touch this latch.
+        self._ptt_read_demoted = False
         await self._probe_vfo_support()
 
     async def disconnect(self) -> None:
