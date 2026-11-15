@@ -1292,7 +1292,10 @@ async def test_scope_attach_retry_after_lost_ack_is_reacknowledged(
         )
         assert hello is not None and hello["type"] == "hello", hello
         peer.send_attach("scope", key)
-        await asyncio.sleep(0.3)  # the client's retransmit gap
+        # Yield pump (realtime-guard-clean): the server answers the first
+        # attach with its ack, which the interceptor drops for the client.
+        for _ in range(10):
+            await asyncio.sleep(0)
         peer.send_attach("scope", key)  # retry: the first ack was lost
         ack = await await_until(
             lambda: peer.take("scope", drop_first_ack=True),
@@ -1332,7 +1335,10 @@ async def test_audio_attach_retry_after_lost_ack_is_reacknowledged(
         )
         assert hello is not None and hello["type"] == "hello", hello
         peer.send_attach("audio", key)
-        await asyncio.sleep(0.3)  # the client's retransmit gap
+        # Yield pump (realtime-guard-clean): the server answers the first
+        # attach with its ack, which the interceptor drops for the client.
+        for _ in range(10):
+            await asyncio.sleep(0)
         peer.send_attach("audio", key)  # retry: the first ack was lost
         ack = await await_until(
             lambda: peer.take("audio", drop_first_ack=True),
