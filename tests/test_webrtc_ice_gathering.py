@@ -634,10 +634,12 @@ async def test_unreachable_second_interface_does_not_stall_gather(
         ],
     )
 
+    # Bind the STUN fake to the default-route address: on Windows a LAN
+    # source address cannot reach a server on 127.0.0.1.
     loop = asyncio.get_running_loop()
     transport, _ = await loop.create_datagram_endpoint(
         lambda: _SelectiveStunResponder({lan}),
-        local_addr=("127.0.0.1", 0),
+        local_addr=(lan, 0),
     )
     port = transport.get_extra_info("sockname")[1]
     manager = WebRtcSessionManager(None, None, "test")
@@ -647,7 +649,7 @@ async def test_unreachable_second_interface_does_not_stall_gather(
         result = await manager.negotiate(
             sdp,
             offer_type,
-            ice_servers=[IceServer(urls=[f"stun:127.0.0.1:{port}"])],
+            ice_servers=[IceServer(urls=[f"stun:{lan}:{port}"])],
         )
         elapsed = time.monotonic() - start
         # The host sockets of BOTH addresses belong to the real connection
@@ -697,9 +699,11 @@ async def test_no_default_route_falls_back_to_all_kept_querying_stun(
         infos.append(AddressInfo(ip=lan, ifname="en0", kind=IfKind.PHYSICAL))
     monkeypatch.setattr(ice_gathering, "_enumerate_local_addresses", lambda: infos)
 
+    # Bind the STUN fake to the default-route address: on Windows a LAN
+    # source address cannot reach a server on 127.0.0.1.
     loop = asyncio.get_running_loop()
     transport, _ = await loop.create_datagram_endpoint(
-        _StunResponder, local_addr=("127.0.0.1", 0)
+        _StunResponder, local_addr=(lan, 0)
     )
     port = transport.get_extra_info("sockname")[1]
     manager = WebRtcSessionManager(None, None, "test")
@@ -709,7 +713,7 @@ async def test_no_default_route_falls_back_to_all_kept_querying_stun(
         result = await manager.negotiate(
             sdp,
             offer_type,
-            ice_servers=[IceServer(urls=[f"stun:127.0.0.1:{port}"])],
+            ice_servers=[IceServer(urls=[f"stun:{lan}:{port}"])],
         )
         elapsed = time.monotonic() - start
     finally:
