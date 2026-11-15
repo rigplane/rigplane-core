@@ -1168,7 +1168,7 @@ async def test_api_transmission_end_stays_served(tmp_path: Path) -> None:
             stack.web.port, "/api/v1/radio/cw/stop", {}, key
         )
         assert resp.status == http_status, (resp.status, resp.body[:200])
-        assert json.loads(resp.body.decode()) == json.loads(http_body.decode())
+        assert json.loads(resp.body.decode()) == json.loads(http_body)
         # Managed momentary PTT never serves over HTTP (409): the point is
         # the refusal passes it to the dispatch (not 403) and the dispatch
         # answers exactly as it would over HTTP.
