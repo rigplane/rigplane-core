@@ -298,9 +298,19 @@ async def _read_identity(
         raws.append((item.name, raw, parsed))
     if not raws:
         return _Identity("", "", False), None
-    matched = any(_identity_matched(config, name, parsed) for name, _, parsed in raws)
-    _name, raw, parsed = raws[0]
-    return _Identity(raw, parsed, matched), None
+    hit = next(
+        (
+            index
+            for index, (name, _, parsed) in enumerate(raws)
+            if _identity_matched(config, name, parsed)
+        ),
+        None,
+    )
+    if hit is None:
+        _name, raw, parsed = raws[0]
+        return _Identity(raw, parsed, False), None
+    _name, raw, parsed = raws[hit]
+    return _Identity(raw, parsed, True), None
 
 
 async def _read_snapshot(
