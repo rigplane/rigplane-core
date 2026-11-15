@@ -932,10 +932,12 @@ test(`IC-705 external span narrowing adopts without a write and without hatch (c
     const spanSetsAfter = receiptsAfter.length;
     const postChangeSets = receiptsAfter.slice(receiptsBefore.length);
     console.log(`[held-key control ${order} owner-rule] ` +
-      `clipT=${rel(firstClipT)} adoptionT=${rel(adoptionT)} firstHatchT=${rel(firstHatchT)} ` +
+      `setupS=${setupElapsedS.toFixed(0)} clipT=${rel(firstClipT)} adoptionT=${rel(adoptionT)} firstHatchT=${rel(firstHatchT)} ` +
       `samples=${adoptedSamples.length} hatched=${hatchedAdopted.length} ` +
       `view=${latestViewHz}Hz cov=${latestCovHz}Hz ` +
-      `spanSetsBefore=${spanSetsBefore} spanSetsAfter=${spanSetsAfter}`);
+      `spanSetsBefore=${spanSetsBefore} spanSetsAfter=${spanSetsAfter} ` +
+      `subscribes=${JSON.stringify(sent.map((s) => `${Math.round(s.tWall - setupEndWall)}:${'spanHz' in s.view ? s.view.spanHz : `${s.view.startHz}-${s.view.endHz}`}`))} ` +
+      `grants=${JSON.stringify(grants.map((g) => `${Math.round(g.tWall - setupEndWall)}:${g.grant.view.endHz - g.grant.view.startHz}`))}`);
     await info.attach(`held-key-control-${order}`, {
       body: JSON.stringify({
         params: { spanHz: 50_000, externalSpanHz: 25_000, seed, order, skew },
