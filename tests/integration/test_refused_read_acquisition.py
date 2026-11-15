@@ -270,9 +270,9 @@ async def test_refused_ptt_or_split_read_opens_with_tx_unknown(
 
     PTT (``1C 00``) and split (``0F``) left the critical set: a NAKed read
     still opens — the path is answered-but-unavailable at INFO, no defect
-    is recorded, TX is served unknown, and no gate WARNING names it. The
-    test queues enough ``refuse_next`` NAKs for the initial fetch plus
-    the re-reads.
+    is recorded, TX is served unknown, and one gate WARNING names it with
+    the refusal cause. The test queues enough ``refuse_next`` NAKs for the
+    initial fetch plus the re-reads.
     """
     fake, endpoint, radio = await _connected("IC-7610")
     for _ in range(30):
@@ -292,10 +292,15 @@ async def test_refused_ptt_or_split_read_opens_with_tx_unknown(
             for message in messages
             if message.startswith("acquisition:")
         ), "the refused path is named once at INFO"
-        assert not any(
-            record.levelno >= logging.WARNING and str(path) in record.getMessage()
+        warnings = [
+            record.getMessage()
             for record in caplog.records
-        ), "an unavailable path lapses no deadline WARNING"
+            if record.levelno >= logging.WARNING and str(path) in record.getMessage()
+        ]
+        assert warnings, "a refused PTT/split path gets one named WARNING at release"
+        assert any("refused" in message for message in warnings), (
+            "the release WARNING names the refusal cause"
+        )
         status, body = await _http_get_json(
             int(web._server.sockets[0].getsockname()[1]),  # noqa: SL001
             "/api/v1/state",
