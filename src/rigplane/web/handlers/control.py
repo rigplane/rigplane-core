@@ -708,6 +708,33 @@ def is_typed_transmission_end_command(name: str, params: Mapping[str, Any]) -> b
     )
 
 
+def starts_transmission(name: str, params: Mapping[str, Any]) -> bool:
+    """True when a typed command can key the transmitter, never just end one.
+
+    The single shared classifier for "this command starts TX": a command
+    that only ends a transmission (see
+    :func:`is_typed_transmission_end_command`) never starts one; a raw
+    ``send_civ`` or ``transmit_on`` is transmit-capable (the remote control
+    seat refuses both); otherwise the managed-TX admission set — CW text,
+    VOX enable, tuner start, break-in enable. The control seat uses it for
+    its remote refusal, and the ``api`` data channel uses it (via
+    :func:`rigplane.web.web_routing.api_channel_tx_refusal`) to refuse
+    TX-capable REST before dispatch.
+    """
+    if is_typed_transmission_end_command(name, params):
+        return False
+    if name in ("send_civ", "transmit_on"):
+        return True
+    return (
+        name == "send_cw_text"
+        or (
+            name == "set_vox" and params.get("on", params.get("value")) is not False
+        )
+        or (name == "set_tuner_status" and params.get("value") == 2)
+        or (name == "set_break_in" and params.get("mode") != 0)
+    )
+
+
 def _strict_memory_address(
     params: Mapping[str, Any], memory: MemoryProfile
 ) -> tuple[int, int]:
@@ -1801,6 +1828,10 @@ class ControlHandler:
             return None
         ticket = controller.capture()
         # Break-in arms CW keying (MOR-3537), so enabling it is a TX start.
+        # The remote refusal uses the shared classifier (identical verdict:
+        # none of the admission names below ever ends a transmission, and
+        # a transmission end returns above); the managed-TX admission below
+        # keeps its own four-case set — send_civ/transmit_on never enter it.
         starts_tx = (
             name == "send_cw_text"
             or (
@@ -1809,7 +1840,7 @@ class ControlHandler:
             or (name == "set_tuner_status" and params.get("value") == 2)
             or (name == "set_break_in" and params.get("mode") != 0)
         )
-        if ticket.remote and (name in {"send_civ", "transmit_on"} or starts_tx):
+        if ticket.remote and starts_transmission(name, params):
             raise ControllerError("controller_tx_unsupported")
         # MOR-3534: while one owner holds the transmitter, CW text, VOX,
         # TUNE and break-in from any other owner are refused like the remote

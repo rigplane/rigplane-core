@@ -286,13 +286,14 @@ async def _tear_down(server: WebServer, *clients: _ApiClient) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Happy paths: keyless attach, byte-identical bodies, acquire -> control.
+# Happy paths: keyless attach, parsed-JSON and byte-identical parity,
+# acquire -> control.
 # ---------------------------------------------------------------------------
 
 
 @_webrtc
-async def test_api_info_matches_http() -> None:
-    """GET /info over api matches HTTP field for field."""
+async def test_api_info_matches_http_parsed_json() -> None:
+    """GET /info over api matches HTTP as parsed JSON (wsClients masked)."""
     server = await _stand_up_light()
     client = _ApiClient()
     try:
@@ -468,32 +469,38 @@ async def test_api_unknown_path_is_404() -> None:
 
 
 @_webrtc
-async def test_api_excluded_tx_paths_are_404() -> None:
-    """TX-capable REST stays off the channel: 404 even though HTTP serves it.
+async def test_api_tx_bodies_refused_before_dispatch() -> None:
+    """TX-capable bodies are refused 403 before dispatch, on the light stack.
 
     POST /managed-transmit/command and POST /civ/transaction key the
     transmitter; over a data channel the UI keys PTT through the control
-    channel command instead, fenced by the controller session. The
-    allow-list is the routing for this transport, so excluded paths read
-    exactly like unknown ones: 404, indistinguishable by design.
+    channel command instead, fenced by the controller session. Reachability
+    follows routing (every table entry answers), but transmit-capable
+    bodies never reach the shared dispatch: they answer 403
+    ``controller_tx_unsupported``. A malformed body still passes through
+    to the dispatch, which answers with its own error.
     """
     server = await _stand_up_light()
     client = _ApiClient()
     try:
         await client.connect(server.port)
         await client.attach(None)
-        for req_id, method, path in (
-            (1, "POST", "/api/v1/managed-transmit/command"),
-            (2, "POST", "/api/v1/civ/transaction"),
-        ):
+        refused = (
+            (1, "/api/v1/managed-transmit/command", {"operation": "transmit_on"}),
+            (2, "/api/v1/civ/transaction", {"command": 3, "expect": "data"}),
+        )
+        for req_id, path, payload in refused:
             resp = await client.request(
                 req_id,
-                method,
+                "POST",
                 path,
                 headers={"content-type": "application/json"},
-                body=b"{}",
+                body=json.dumps(payload).encode(),
             )
-            assert resp.status == 404, (path, resp.status, resp.body[:200])
+            assert resp.status == 403, (path, resp.status, resp.body[:200])
+            assert json.loads(resp.body.decode()) == {
+                "error": "controller_tx_unsupported"
+            }, resp.body[:200]
         # And the channel still serves afterwards.
         resp = await client.request(3, "GET", "/api/v1/info")
         assert resp.status == 200
@@ -509,7 +516,7 @@ async def test_api_new_table_route_reachable_without_channel_change(
 
     The test-only route lands as one ``API_ROUTE_TABLE`` entry (the way a
     real route lands); ``api_channel.py`` is untouched and still serves it,
-    while the TX exclusions keep refusing on the same channel.
+    while per-body TX refusal keeps refusing on the same channel.
     """
     from rigplane.web import api_channel as api_mod
     from rigplane.web import server as server_module
@@ -549,14 +556,14 @@ async def test_api_new_table_route_reachable_without_channel_change(
         resp = await client.request(1, "GET", "/api/v1/_test/ping")
         assert resp.status == 200, (resp.status, resp.body[:200])
         assert json.loads(resp.body.decode()) == {"pong": True}
-        excluded = await client.request(
+        refused = await client.request(
             2,
             "POST",
             "/api/v1/managed-transmit/command",
             headers={"content-type": "application/json"},
-            body=b"{}",
+            body=json.dumps({"operation": "transmit_on"}).encode(),
         )
-        assert excluded.status == 404, (excluded.status, excluded.body[:200])
+        assert refused.status == 403, (refused.status, refused.body[:200])
     finally:
         await _tear_down(server, client)
 

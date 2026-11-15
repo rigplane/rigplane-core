@@ -16,22 +16,25 @@ adapter. There is no second router and no URL is ever proxied: the
 adapter builds a ``StreamReader`` over the request body plus a capturing
 writer, runs the shared dispatch, and splits the captured HTTP bytes
 back into status/headers/body. What this transport serves is derived
-from the router's own ``API_ROUTE_TABLE`` — the rule is "every
-``/api/v1/*`` route in that table, minus the TX exclusions" — so adding
-a route to the router is the only place to change. The router has no
-notion of "routes the UI needs", so there is no per-route api flag;
-reachability follows routing. Anything else (an unknown path, an
-excluded TX path, or a routed path under the wrong method) answers 404
+from the router's own ``API_ROUTE_TABLE`` — every ``/api/v1/*`` entry is
+reachable — so adding a route to the router is the only place to
+change. The router has no notion of "routes the UI needs", so there is
+no per-route api flag; reachability follows routing. Anything else (an
+unknown path or a routed path under the wrong method) answers 404
 without touching controller state.
 
-TX-capable REST is excluded even where HTTP serves it (see
-``API_CHANNEL_TX_EXCLUSIONS`` for the pair and the reason): both key
+TX-capable REST bodies are refused even where HTTP serves them: they key
 the transmitter, and over a data channel the UI keys PTT through the
 control channel command instead, which is fenced by the controller
-session. A data-channel REST path must not become a second, unfenced TX
-keying mechanism beside it, so excluded paths read exactly like unknown
-ones (404, indistinguishable by design) even with a valid controller
-key.
+session. A data-channel REST request must not become a second, unfenced
+TX keying mechanism beside it, so before dispatch the channel refuses
+transmit-capable bodies — single commands, every batch step, CW send,
+raw CI-V transactions, managed transmit_on — with 403
+``controller_tx_unsupported`` (see
+:func:`rigplane.web.web_routing.api_channel_tx_refusal` for the
+body-by-body rule, shared with the control seat's own classifier).
+Transmission ends pass through to the shared dispatch, like the control
+and remote HTTP route gates.
 
 Wire format (typed, versioned): every message is a binary header
 ``[u8 version=1][u8 type][u32 request_id BE][u8 flags]`` plus payload.
@@ -155,8 +158,9 @@ def api_channel_wire_definition() -> dict[str, Any]:
 
     The one machine-readable copy of the header layout, message types,
     version, chunk size, and limits, built from the module constants above
-    for the browser side (the frontend consumes and checks this instead of
-    re-listing values). Every value round-trips through ``json`` unchanged.
+    for the browser side (the browser transport will consume and check
+    this instead of re-listing values). Every value round-trips through
+    ``json`` unchanged.
     """
     return {
         "version": API_CHANNEL_VERSION,
@@ -284,19 +288,14 @@ def _encode_frame(msg_type: int, request_id: int, payload: bytes) -> bytes:
 def api_path_allowed(method: str, path: str) -> bool:
     """True when the api channel routes ``(method, path)``.
 
-    Derived from the router's own ``API_ROUTE_TABLE`` (see the module
-    docstring for the rule): every ``/api/v1/*`` entry except the TX
-    exclusions. Anything else (an unknown path, an excluded TX path, or a
-    routed path under the wrong method) answers 404 without touching
-    controller state.
+    Derived from the router's own ``API_ROUTE_TABLE``: every ``/api/v1/*``
+    entry is reachable. Anything else (an unknown path or a routed path
+    under the wrong method) answers 404 without touching controller state.
+    Transmit-capable *bodies* on reachable routes are refused later, before
+    dispatch, with 403 (see :func:`_dispatch`).
     """
-    from .web_routing import (  # noqa: TID251
-        API_CHANNEL_TX_EXCLUSIONS,
-        api_route_for_path,
-    )
+    from .web_routing import api_route_for_path  # noqa: TID251
 
-    if (method, path) in API_CHANNEL_TX_EXCLUSIONS:
-        return False
     route = api_route_for_path(path)
     if route is None:
         return False
@@ -617,9 +616,28 @@ class ApiChannelHandler:
     async def _dispatch(
         self, head: ApiRequestHead, body: bytes
     ) -> tuple[int, dict[str, str], bytes]:
-        """Answer one assembled request: 404 off-list, else shared HTTP."""
+        """Answer one assembled request: 404 off-list, else shared HTTP.
+
+        Transmit-capable bodies on reachable routes are refused here, before
+        the shared dispatch runs, with 403 ``controller_tx_unsupported``
+        (the same code and ``{"error": code}`` shape the control seat
+        raises); transmission ends pass through to the shared dispatch.
+        """
         if not api_path_allowed(head.method, head.path):
             return 404, {}, b"404 Not Found"
+        from .web_routing import api_channel_tx_refusal  # noqa: TID251
+
+        try:
+            payload = json.loads(body) if body else None
+        except (ValueError, RecursionError):
+            payload = None
+        refusal = api_channel_tx_refusal(head.method, head.path, payload)
+        if refusal is not None:
+            return (
+                403,
+                {"Content-Type": "application/json"},
+                json.dumps({"error": refusal}, separators=(",", ":")).encode(),
+            )
         return await _serve_one_http(
             self._server,
             head.method,
