@@ -252,7 +252,10 @@ class RadioScopeSource:
             # gestures themselves are explicit mode commands outside this
             # path and still write.
             remembered = self._native_coverages.get(selected)
-            if remembered is not None and remembered[0] in RADIO_OWNED_WINDOW_SCOPE_MODES:
+            if (
+                remembered is not None
+                and remembered[0] in RADIO_OWNED_WINDOW_SCOPE_MODES
+            ):
                 native = remembered[1]
                 return GrantedView(self.resolve_follow(view, native, selected), native)
             return GrantedView(resolved, None)
