@@ -600,10 +600,10 @@ async def _ask_once(
     for stray in answer.strays:
         strays.add(stray.chunk, protocol, at=stray.arrived)
     outcome = _outcome(protocol, item, answer)
-    if outcome == "silent":
-        gate.note_silent()
-    elif outcome == "transport_error":
+    if answer.broken is not None:
         gate.stop_transport(f"main pass ({item.name})", answer.broken)
+    elif outcome == "silent":
+        gate.note_silent()
     else:
         gate.note_answered()
     if protocol == "yaesu_cat":

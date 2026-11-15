@@ -108,8 +108,8 @@ def civ_reply_matches_request(body: bytes, reply: bytes) -> bool:
     if frame.command in (_NAK, _ACK):
         return True
     request = _request_frame_for_body(body)
-    return civ_response_matches(
-        request_key_from_frame(request), frame
+    return bool(
+        civ_response_matches(request_key_from_frame(request), frame)
     ) and frame.data.startswith(request.data)
 
 
