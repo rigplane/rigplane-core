@@ -276,7 +276,7 @@ async def _tear_down(server: WebServer, *clients: _ApiClient) -> None:
 
 @_webrtc
 async def test_api_info_matches_http() -> None:
-    """GET /info over api returns a byte-identical body to HTTP."""
+    """GET /info over api matches HTTP field for field."""
     server = await _stand_up_light()
     client = _ApiClient()
     try:
@@ -286,7 +286,16 @@ async def test_api_info_matches_http() -> None:
         assert resp.status == 200, resp.body[:200]
         http_status, http_body = await _http_raw(server.port, "GET", "/api/v1/info")
         assert http_status == 200, http_status
-        assert resp.body == http_body
+        api_obj = json.loads(resp.body.decode())
+        http_obj = json.loads(http_body.decode())
+        # `connection.wsClients` counts live TCP-connection tasks: the HTTP
+        # probe always sees its own connection while the data-channel
+        # request holds none. It varies HTTP-vs-HTTP too, so it is masked
+        # here, not a fidelity gap; everything else must match exactly.
+        for obj in (api_obj, http_obj):
+            assert isinstance(obj["connection"]["wsClients"], int)
+            obj["connection"]["wsClients"] = -1
+        assert api_obj == http_obj
     finally:
         await _tear_down(server, client)
 
