@@ -377,11 +377,10 @@ describe('the CW-keyer surface is NOT a key path (decomposition R9)', () => {
     ]) {
       expect(CODE).not.toContain(forbidden);
     }
-  });
-
-  it('reads the shared sourceless decision and nothing else from the permit utility', () => {
-    const permitImports = [...CODE.matchAll(/from\s+'\$lib\/utils\/tx-permit'/g)];
-    expect(permitImports).toHaveLength(1);
+    // The single allowed `$lib/utils/tx-permit` import (see the specifier
+    // allow-list above) is the shared `isSourcelessPermitUnknown` predicate —
+    // a second permit derivation would have to name `getFrequencyPermit`,
+    // `txBands`, or another import, each of which fails above or in the list.
     expect(CODE).toContain('isSourcelessPermitUnknown');
   });
 

@@ -16,13 +16,15 @@ export type FrequencyPermit =
  * with an unsupported target the sourceless exception downstream suppresses
  * exactly the `tx-target-unknown` unknown, so a frequency-first order would
  * wrongly enable transmit-adjacent controls over an unavailable table.
- * `null` ranges are unknown; an explicit empty list is deny-all.
+ * `null` ranges are unknown; an explicit empty list is deny-all. `undefined`
+ * (older servers omit the table) reads as unconfigured — fail closed, never
+ * a crash on `.length`.
  */
 export function getFrequencyPermit(
   freqHz: number | null,
-  txBands: readonly TxBand[] | null,
+  txBands: readonly TxBand[] | null | undefined,
 ): FrequencyPermit {
-  if (txBands === null) {
+  if (txBands === null || txBands === undefined) {
     return { status: 'unknown', reason: 'ranges-unconfigured' };
   }
   if (txBands.length === 0) {
