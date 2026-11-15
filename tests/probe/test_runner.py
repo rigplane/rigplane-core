@@ -85,25 +85,36 @@ def _nak_frame(civ_addr: int) -> bytes:
     return build_civ_frame(civ_addr, CONTROLLER_ADDR, 0xFA)
 
 
-def _queued_civ(
-    seen: list[bytes], chunks: list[bytes | None]
+def _nak_except(
+    seen: list[bytes],
+    special: dict[bytes, list[bytes | None]],
+    *,
+    addr: int,
 ) -> runner.Exchange:
-    """Scripted CI-V exchange: every call takes the next queued chunk."""
+    """Scripted CI-V exchange: NAK everything except queued *special* reads.
+
+    Identity and snapshot phases consume from the same exchange, so every
+    non-targeted read gets an immediate NAK (fast, and a settled row);
+    targeted reads drain their queue across the request and its
+    continuations, then fall silent.
+    """
+    nak = build_civ_frame(CONTROLLER_ADDR, addr, 0xFA)
+    pending: list[bytes | None] = []
 
     async def exchange(request: bytes | None, timeout: float) -> bytes | None:
+        nonlocal pending
         if request is not None:
             seen.append(request)
-        if chunks:
-            return chunks.pop(0)
+            pending = list(special.get(request, []))
+            if pending:
+                chunk = pending.pop(0)
+                return chunk
+            return nak
+        if pending:
+            return pending.pop(0)
         return None
 
     return exchange
-
-
-def _identity_frame(config) -> bytes:
-    """A matching identity answer, consumed by the runner's identity phase."""
-    addr = config.civ_addr
-    return build_civ_frame(CONTROLLER_ADDR, addr, 0x19, sub=0x00, data=b"")
 
 
 async def test_stale_menu_reply_is_not_taken_as_the_answer() -> None:
@@ -121,13 +132,15 @@ async def test_stale_menu_reply_is_not_taken_as_the_answer() -> None:
     report = await runner.run_probe(
         config,
         config_toml_sha256="0" * 64,
-        exchange=_queued_civ(seen, [_identity_frame(config), stale, correct]),
+        exchange=_nak_except(
+            seen, {bytes.fromhex("1a050002"): [stale, correct]}, addr=addr
+        ),
         port_kind="usb",
         baud=CIV_BAUD,
         label="",
         include_private=False,
         gap_s=GAP,
-        timeout_s=TIMEOUT,
+        timeout_s=SHORT_TIMEOUT,
         items=_subset(config, "get_ssb_rx_bass"),
     )
     assert [row.outcome for row in report.file.commands] == ["data"]
@@ -157,13 +170,15 @@ async def test_wrong_receiver_reply_is_not_taken_as_the_answer() -> None:
     report = await runner.run_probe(
         config,
         config_toml_sha256="0" * 64,
-        exchange=_queued_civ(seen, [_identity_frame(config), main_reply, sub_reply]),
+        exchange=_nak_except(
+            seen, {bytes.fromhex("29011401"): [main_reply, sub_reply]}, addr=addr
+        ),
         port_kind="usb",
         baud=CIV_BAUD,
         label="",
         include_private=False,
         gap_s=GAP,
-        timeout_s=TIMEOUT,
+        timeout_s=SHORT_TIMEOUT,
         items=items,
     )
     assert [row.outcome for row in report.file.commands] == ["data"]
@@ -190,7 +205,9 @@ async def test_plain_reply_to_wrapped_request_is_left_unsolicited() -> None:
     report = await runner.run_probe(
         config,
         config_toml_sha256="0" * 64,
-        exchange=_queued_civ(seen, [_identity_frame(config), plain]),
+        exchange=_nak_except(
+            seen, {bytes.fromhex("29001401"): [plain]}, addr=addr
+        ),
         port_kind="usb",
         baud=CIV_BAUD,
         label="",

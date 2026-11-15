@@ -50,8 +50,12 @@ def test_civ_reply_to_another_command_is_malformed() -> None:
     assert classify_civ(bytes((0x03,)), _MODE_DATA) == "malformed"
 
 
-def test_civ_cmd29_wrapper_matches_plain_reply() -> None:
-    assert classify_civ(bytes((0x29, 0x00, 0x03)), _FREQ_DATA) == "data"
+def test_civ_cmd29_wrapper_matches_wrapped_reply() -> None:
+    wrapped = build_cmd29_frame(
+        CONTROLLER_ADDR, 0x94, 0x03, data=bytes.fromhex("0014250700"),
+        receiver=0x00,
+    )
+    assert classify_civ(bytes((0x29, 0x00, 0x03)), wrapped) == "data"
 
 
 def test_civ_unknown_request_accepts_data() -> None:
