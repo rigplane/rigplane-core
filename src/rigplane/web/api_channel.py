@@ -286,7 +286,10 @@ class ApiRequestHead:
         """
         try:
             obj = json.loads(payload.decode("utf-8"))
-        except (UnicodeDecodeError, ValueError) as exc:
+        except (UnicodeDecodeError, ValueError, RecursionError) as exc:
+            # A deeply nested head raises RecursionError (not ValueError);
+            # normalise it into the same malformed ERROR instead of letting
+            # it escape and kill the receive loop.
             raise ValueError(f"api request head is not JSON: {exc}") from exc
         if not isinstance(obj, dict):
             raise ValueError("api request head must be a JSON object")
