@@ -7936,14 +7936,11 @@ class WebServer:
         the WebSocket upgrade calls :meth:`_resolve_client_ticket` and
         :meth:`serve_client_channel` with ``transport="ws"`` around the
         101 handshake, which must stay between the refusal decision and
-        the first handler byte. A lossy data-channel attach (``scope`` /
-        ``audio``, the only channels that can lose the attach frame) is
-        acknowledged there: one ``ChannelAttachedAck`` text frame. The
-        ``control`` and ``api`` channels never get one — control's
-        ``hello`` already proves the attach, and the api wire is binary —
-        and the WebSocket lane never sends one. When ``track_owners`` is given, the
-        attached session owner is recorded in it for the channel's
-        lifetime, so a transport-loss signal can fence that session
+        the first handler byte. A lossy data-channel attach (scope/audio,
+        the only channels that can lose the attach frame) is acknowledged
+        there with one ``ChannelAttachedAck`` text frame; control/api and
+        the WebSocket lane never send one. When ``track_owners`` is given,
+        the attached session owner is recorded in it for the channel's        lifetime, so a transport-loss signal can fence that session
         through the existing session-loss path. A keyless ``api`` attach
         resolves to no ticket (``None``): nothing is tracked and the
         channel holds no session.
@@ -7956,12 +7953,13 @@ class WebServer:
         ):
             track_owners.add(ticket.tx_owner)
         if transport == "datachannel" and kind in ATTACH_ACK_KINDS:
-            # The ack (before the first handler byte). A dead send must
-            # not kill the attach — the channel's own EOF handles that.
+            # The ack, before the first handler byte; a dead send must not
+            # kill the attach — the channel's own EOF handles that.
             try:
                 await conn.send_text(ChannelAttachedAck(kind).encode())
             except Exception:
                 logger.debug("attach ack send failed on %r", kind, exc_info=True)
+
         try:
             await self.serve_client_channel(
                 conn, kind, ticket, params, peer, transport=transport

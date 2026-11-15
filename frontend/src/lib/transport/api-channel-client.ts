@@ -1,11 +1,10 @@
 /**
  * `api` data-channel client (C5a): the C3 wire format over one attached
- * `api` channel, as a `fetch`-compatible function `apiFetch` can be
- * pointed at later (boot wiring is C5b). Every wire value comes from
- * the committed single source `api-channel-wire.json`; one fetch per
- * channel, ids are per-client. A terminal ERROR frame resolves as an
- * error Response (502, code in `X-RigPlane-Api-Error`); abort and the
- * deadline reject; sends wait above the JSON high-water mark.
+ * `api` channel, as a `fetch`-compatible function. Every wire value
+ * comes from the committed single source `api-channel-wire.json`; one
+ * fetch per channel, ids are per-client. A terminal ERROR frame resolves
+ * as an error Response (502, code in `X-RigPlane-Api-Error`); abort and
+ * the deadline reject; sends wait above the JSON high-water mark.
  */
 import wire from './api-channel-wire.json';
 import type { DataChannelTransport } from './datachannel-transport';

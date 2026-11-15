@@ -66,7 +66,7 @@ function respond(ch: FakeDataChannel, id: number, status: number, body: Uint8Arr
 describe('createApiChannelFetch', () => {
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());
-  it('sends one REQ_HEAD + END and reassembles a small response', async () => {
+  it('sends REQ_HEAD + END, reassembles chunked responses, ids increase', async () => {
     const { ch, api } = openApiChannel();
     const pending = api('/api/v1/info?a=1&b=2&b=3', {
       headers: { 'X-RigPlane-Controller': 'k' },
@@ -83,6 +83,25 @@ describe('createApiChannelFetch', () => {
     const res = await pending;
     expect(res.status).toBe(200);
     expect(await res.text()).toBe('{"ok":true}');
+    const body = new Uint8Array(40 * 1024);
+    for (let i = 0; i < body.length; i++) body[i] = i % 251;
+    const second = api('/api/v1/info');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(
+      frames(ch)
+        .filter((f) => f.type === REQ_HEAD)
+        .map((f) => f.id)
+    ).toEqual([1, 2]);
+    respond(ch, 2, 200, body);
+    expect(new Uint8Array(await (await second).arrayBuffer())).toEqual(body);
+    // Third request: a terminal ERROR frame resolves as an error Response.
+    const third = api('/api/v1/info');
+    await vi.advanceTimersByTimeAsync(0);
+    reply(ch, ERROR, 3, utf8.encode(JSON.stringify({ code: 'timeout', message: 'nope' })));
+    const errored = await third;
+    expect(errored.status).toBe(502);
+    expect(errored.headers.get('X-RigPlane-Api-Error')).toBe('timeout');
+    expect(await errored.json()).toEqual({ error: 'timeout', message: 'nope' });
   });
   it('chunks a request body at the wire chunk size', async () => {
     const { ch, api } = openApiChannel();
@@ -97,26 +116,6 @@ describe('createApiChannelFetch', () => {
     expect(new Uint8Array(bodies.flatMap((f) => [...f.payload]))).toEqual(body);
     respond(ch, 1, 204, new Uint8Array(0));
     expect((await pending).status).toBe(204);
-  });
-  it('reassembles a 40 KB response from 16 KB chunks', async () => {
-    const { ch, api } = openApiChannel();
-    const body = new Uint8Array(40 * 1024);
-    for (let i = 0; i < body.length; i++) body[i] = i % 251;
-    const pending = api('/api/v1/info');
-    await vi.advanceTimersByTimeAsync(0);
-    respond(ch, 1, 200, body);
-    const res = await pending;
-    expect(new Uint8Array(await res.arrayBuffer())).toEqual(body);
-  });
-  it('maps a terminal ERROR frame to an error Response', async () => {
-    const { ch, api } = openApiChannel();
-    const pending = api('/api/v1/info');
-    await vi.advanceTimersByTimeAsync(0);
-    reply(ch, ERROR, 1, utf8.encode(JSON.stringify({ code: 'timeout', message: 'nope' })));
-    const res = await pending;
-    expect(res.status).toBe(502);
-    expect(res.headers.get('X-RigPlane-Api-Error')).toBe('timeout');
-    expect(await res.json()).toEqual({ error: 'timeout', message: 'nope' });
   });
   it('sends CANCEL and rejects with AbortError on AbortSignal', async () => {
     const { ch, api } = openApiChannel();
@@ -147,18 +146,5 @@ describe('createApiChannelFetch', () => {
     ch.bufferedAmount = 0;
     await vi.advanceTimersByTimeAsync(1000);
     expect(frames(ch)[0]?.type).toBe(REQ_HEAD);
-  });
-  it('uses strictly increasing request ids across requests', async () => {
-    const { ch, api } = openApiChannel();
-    const first = api('/api/v1/info');
-    await vi.advanceTimersByTimeAsync(0);
-    respond(ch, 1, 200, utf8.encode('"first"'));
-    await first;
-    const second = api('/api/v1/info');
-    await vi.advanceTimersByTimeAsync(0);
-    const ids = frames(ch).filter((f) => f.type === REQ_HEAD).map((f) => f.id);
-    expect(ids).toEqual([1, 2]);
-    respond(ch, 2, 200, utf8.encode('"second"'));
-    expect(await second).toMatchObject({ status: 200 });
   });
 });

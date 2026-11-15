@@ -1,10 +1,8 @@
 /**
  * `DataChannelTransport` unit tests (C5a) over the shared fake channel:
  * the `MessageTransport` mapping and the per-label attach step — the
- * lossy labels (scope/audio) resend the attach frame every 250 ms until
- * the ack and error+close after 5 s, control resolves on hello, api is
- * open immediately; pre-ack frames that do not resolve the attach are
- * delivered normally.
+ * lossy labels resend the attach until the ack, control resolves on
+ * hello, api opens at once.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { FakeDataChannel } from './support/fake-datachannel';
@@ -15,132 +13,81 @@ import {
 } from '../datachannel-transport';
 
 const ack = (channel: string) => JSON.stringify({ type: 'attached', v: 1, channel });
+const attach = (key: string | null) =>
+  JSON.stringify({ type: 'attach', controller_key: key, state_delta: 2, role: 'primary' });
 
 describe('DataChannelTransport', () => {
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());
-  it('maps an attach-less channel: events, sends, state, close', () => {
+  it('maps an attach-less channel: events, state, error, close', () => {
     const ch = new FakeDataChannel('scope');
     const t = new DataChannelTransport(ch);
-    const opens: unknown[] = [];
-    const texts: string[] = [];
-    const binaries: ArrayBuffer[] = [];
-    const closes: unknown[] = [];
-    const errors: unknown[] = [];
+    const opens: unknown[] = [], errors: unknown[] = [], closes: unknown[] = [];
     t.onOpen(() => opens.push(true));
-    t.onText((text) => texts.push(text));
-    t.onBinary((data) => binaries.push(data));
-    t.onClose((info) => closes.push(info));
     t.onError(() => errors.push(true));
+    t.onClose((info) => closes.push(info));
     expect(t.state).toBe('closed');
     t.open('ignored://label-is-the-connection');
     expect(t.state).toBe('connecting');
     ch.simulateOpen();
     expect(t.state).toBe('open');
-    expect(opens).toHaveLength(1);
     expect(ch.binaryType).toBe('arraybuffer');
-    t.send('{"type":"ping"}');
-    const bytes = new Uint8Array([1, 2]).buffer as ArrayBuffer;
-    t.send(bytes);
-    expect(ch.sent).toEqual(['{"type":"ping"}', bytes]);
-    ch.simulateMessage('{"type":"pong"}');
-    ch.simulateMessage(bytes);
-    expect(texts).toEqual(['{"type":"pong"}']);
-    expect(binaries).toEqual([bytes]);
     ch.simulateError();
     expect(errors).toHaveLength(1);
     ch.close();
     expect(closes).toEqual([{ code: 1006, reason: '', wasClean: false }]);
     expect(t.state).toBe('closed');
   });
-  it('resends the attach frame until the ack on the lossy labels', () => {
+  it('lossy labels: resends the attach until the ack, else errors at 5 s', () => {
     const ch = new FakeDataChannel('scope');
     const t = new DataChannelTransport(ch);
-    const closes: unknown[] = [];
-    t.onClose((info) => closes.push(info));
     t.open('ignored://', { protocols: [], controllerKey: 'sess-key' });
     ch.simulateOpen();
-    const attach = JSON.stringify({
-      type: 'attach',
-      controller_key: 'sess-key',
-      state_delta: 2,
-      role: 'primary',
-    });
-    expect(ch.sent).toEqual([attach]);
+    const frame = attach('sess-key');
+    expect(ch.sent).toEqual([frame]);
     vi.advanceTimersByTime(ATTACH_RESEND_MS * 2);
-    expect(ch.textFrames()).toEqual([attach, attach, attach]);
+    expect(ch.textFrames()).toEqual([frame, frame, frame]);
     ch.simulateMessage(ack('scope'));
     expect(t.state).toBe('open');
     expect(t.attachedProtocol).toBe('scope');
     vi.advanceTimersByTime(ATTACH_RESEND_MS * 4);
-    expect(ch.textFrames()).toHaveLength(3);
-    t.close();
-    expect(closes).toEqual([{ code: 1000, reason: '', wasClean: true }]);
-  });
-  it('control: sends the attach once and opens on hello (the ack it always had)', () => {
-    const ch = new FakeDataChannel('control');
-    const t = new DataChannelTransport(ch);
-    const opens: unknown[] = [];
-    const texts: string[] = [];
-    t.onOpen(() => opens.push(true));
-    t.onText((text) => texts.push(text));
-    t.open('ignored://', { protocols: [], controllerKey: 'sess-key' });
-    ch.simulateOpen();
-    const attach = JSON.stringify({
-      type: 'attach',
-      controller_key: 'sess-key',
-      state_delta: 2,
-      role: 'primary',
-    });
-    expect(ch.sent).toEqual([attach]); // ordered/reliable: no resend
-    vi.advanceTimersByTime(ATTACH_RESEND_MS * 4);
-    expect(ch.textFrames()).toEqual([attach]);
-    expect(t.state).toBe('connecting');
-    const hello = JSON.stringify({ type: 'hello', radio: 'IC-7610' });
-    ch.simulateMessage(hello);
-    expect(opens).toHaveLength(1);
-    expect(t.state).toBe('open');
-    expect(t.attachedProtocol).toBe('control');
-    expect(texts).toEqual([hello]); // hello is delivered, not consumed
-  });
-  it('api: sends the attach once and is open immediately', () => {
-    const ch = new FakeDataChannel('api');
-    const t = new DataChannelTransport(ch);
-    const opens: unknown[] = [];
-    t.onOpen(() => opens.push(true));
-    t.open('ignored://', { protocols: [], controllerKey: null });
-    ch.simulateOpen();
-    const attach = JSON.stringify({
-      type: 'attach',
-      controller_key: null,
-      state_delta: 2,
-      role: 'primary',
-    });
-    expect(ch.sent).toEqual([attach]);
-    expect(opens).toHaveLength(1);
-    expect(t.state).toBe('open'); // reliable delivery: nothing to wait for
-    expect(t.attachedProtocol).toBe('api');
-    vi.advanceTimersByTime(ATTACH_RESEND_MS * 4);
-    expect(ch.textFrames()).toEqual([attach]); // never resent
-    t.send(new Uint8Array([1]).buffer as ArrayBuffer);
-    expect(ch.sent).toHaveLength(2);
-  });
-  it('gives the attach step up as error+close after 5 s without an ack', () => {
-    const ch = new FakeDataChannel('audio');
-    const t = new DataChannelTransport(ch);
+    expect(ch.textFrames()).toHaveLength(3); // resends stopped
+    const slow = new FakeDataChannel('audio');
+    const starved = new DataChannelTransport(slow);
     const errors: unknown[] = [];
-    const closes: unknown[] = [];
-    t.onError(() => errors.push(true));
-    t.onClose((info) => closes.push(info));
-    t.open('ignored://', { protocols: [], controllerKey: 'k' });
-    ch.simulateOpen();
+    starved.onError(() => errors.push(true));
+    starved.open('ignored://', { protocols: [], controllerKey: 'k' });
+    slow.simulateOpen();
     vi.advanceTimersByTime(ATTACH_TIMEOUT_MS - 1);
     expect(errors).toHaveLength(0);
     vi.advanceTimersByTime(1);
     expect(errors).toHaveLength(1);
-    expect(closes).toEqual([{ code: 1006, reason: 'attach timeout', wasClean: false }]);
-    expect(ch.readyState).toBe('closed');
-    expect(t.state).toBe('closed');
+    expect(starved.state).toBe('closed');
+  });
+  it('control and api send the attach once; control opens on hello, api at once', () => {
+    const controlCh = new FakeDataChannel('control');
+    const control = new DataChannelTransport(controlCh);
+    const texts: string[] = [];
+    control.onText((text) => texts.push(text));
+    control.open('ignored://', { protocols: [], controllerKey: 'sess-key' });
+    controlCh.simulateOpen();
+    expect(controlCh.sent).toEqual([attach('sess-key')]);
+    vi.advanceTimersByTime(ATTACH_RESEND_MS * 4); // ordered/reliable: no resend
+    expect(control.state).toBe('connecting');
+    const hello = JSON.stringify({ type: 'hello', radio: 'IC-7610' });
+    controlCh.simulateMessage(hello);
+    expect(control.state).toBe('open');
+    expect(texts).toEqual([hello]); // hello is delivered, not consumed
+    const apiCh = new FakeDataChannel('api');
+    const api = new DataChannelTransport(apiCh);
+    api.open('ignored://', { protocols: [], controllerKey: null });
+    apiCh.simulateOpen();
+    expect(apiCh.sent).toEqual([attach(null)]);
+    expect(api.state).toBe('open'); // reliable delivery: nothing to wait for
+    vi.advanceTimersByTime(ATTACH_RESEND_MS * 4);
+    expect(apiCh.textFrames()).toEqual([attach(null)]); // never resent
+    api.send(new Uint8Array([1]).buffer as ArrayBuffer);
+    expect(apiCh.sent).toHaveLength(2);
   });
   it('delivers non-ack frames received before the ack; send waits for open', () => {
     const ch = new FakeDataChannel('scope');

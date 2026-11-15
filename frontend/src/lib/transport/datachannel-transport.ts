@@ -1,17 +1,9 @@
 /**
  * `DataChannelTransport`: the `MessageTransport` over one injected
- * `RTCDataChannel`-like channel (C5a). No `RTCPeerConnection` is created
- * here; the URL is unused. The attach step is resolved per channel
- * label, matching what the server acks: the first text frame sent is
- * the attach frame. On the lossy labels (scope/audio — unordered,
- * maxRetransmits=0, the only channels that can LOSE the attach) it is
- * RESENT every 250 ms until the server's
- * `{"type":"attached","v":1,"channel":...}` ack arrives; with no ack
- * within 5 s the transport errors and closes. `control` (ordered,
- * reliable) sends the attach once and resolves on the handler's
- * `hello` — the ack clients always had. `api` (ordered, reliable,
- * binary) sends once and is open immediately. Frames received before
- * the attach resolves that do not resolve it are delivered normally.
+ * `RTCDataChannel`-like channel (C5a). The first text frame sent is the
+ * attach frame, resolved per label: lossy labels (scope/audio) resend
+ * until the ack or error+close after 5 s, control resolves on the
+ * handler's `hello`, api opens at once.
  */
 import type {
   MessageTransport,
@@ -27,18 +19,6 @@ import type {
 
 export const ATTACH_RESEND_MS = 250; // resend until the ack arrives
 export const ATTACH_TIMEOUT_MS = 5000; // give-up bound for the attach step
-
-/** How the attach step resolves, by channel label. */
-type AttachMode =
-  | { kind: 'ack' } // lossy: resend until the 'attached' frame
-  | { kind: 'hello' } // control: the handler's hello is the ack
-  | { kind: 'immediate' }; // api: reliable delivery needs no ack
-
-function attachModeFor(label: string): AttachMode {
-  if (label === 'control') return { kind: 'hello' };
-  if (label === 'api') return { kind: 'immediate' };
-  return { kind: 'ack' };
-}
 
 /** The `RTCDataChannel` surface this transport needs (test-injectable). */
 export interface DataChannelLike {
@@ -60,7 +40,6 @@ export class DataChannelTransport implements MessageTransport {
   private readonly binaryHandlers = new Set<TransportBinaryHandler>();
   private readonly closeHandlers = new Set<TransportCloseHandler>();
   private readonly errorHandlers = new Set<TransportErrorHandler>();
-  private readonly attachMode: AttachMode;
   private attachFrame: string | null = null;
   private awaitingAck = false;
   private acked = false;
@@ -68,9 +47,7 @@ export class DataChannelTransport implements MessageTransport {
   private resendTimer: ReturnType<typeof setInterval> | null = null;
   private deadlineTimer: ReturnType<typeof setTimeout> | null = null;
   private live = false;
-  constructor(private readonly channel: DataChannelLike) {
-    this.attachMode = attachModeFor(channel.label);
-  }
+  constructor(private readonly channel: DataChannelLike) {}
   get state(): MessageTransportState {
     if (!this.live) return 'closed';
     const ready = this.channel.readyState;
@@ -104,8 +81,6 @@ export class DataChannelTransport implements MessageTransport {
     this.channel.onopen = () => this.onChannelOpen();
     this.channel.onmessage = (event) => this.onChannelMessage(event.data);
     this.channel.onclose = () => this.finish({ code: 1006, reason: '', wasClean: false });
-    // A channel error is surfaced; the close event that follows carries
-    // the outcome, exactly like the WS wiring closed on error.
     this.channel.onerror = () => {
       for (const handler of [...this.errorHandlers]) handler();
     };
@@ -145,21 +120,21 @@ export class DataChannelTransport implements MessageTransport {
       return;
     }
     this.channel.send(this.attachFrame);
-    if (this.attachMode.kind === 'immediate') {
-      // api: reliable delivery cannot lose the attach frame.
-      this.resolveAttach(this.channel.label);
+    if (this.channel.label === 'api') {
+      this.resolveAttach(this.channel.label); // reliable: nothing to lose
       return;
     }
     this.awaitingAck = true;
-    if (this.attachMode.kind === 'ack') {
+    if (this.channel.label !== 'control') {
+      // Lossy labels only: a silent control/api channel is closed by the peer.
       this.resendTimer = setInterval(() => {
         if (this.awaitingAck) this.channel.send(this.attachFrame as string);
       }, ATTACH_RESEND_MS);
+      this.deadlineTimer = setTimeout(() => {
+        for (const handler of [...this.errorHandlers]) handler();
+        this.finish({ code: 1006, reason: 'attach timeout', wasClean: false });
+      }, ATTACH_TIMEOUT_MS);
     }
-    this.deadlineTimer = setTimeout(() => {
-      for (const handler of [...this.errorHandlers]) handler();
-      this.finish({ code: 1006, reason: 'attach timeout', wasClean: false });
-    }, ATTACH_TIMEOUT_MS);
   }
   private resolveAttach(ackChannel: string | null): void {
     this.awaitingAck = false;
@@ -176,18 +151,12 @@ export class DataChannelTransport implements MessageTransport {
       } catch {
         frame = null;
       }
-      if (
-        this.attachMode.kind === 'ack' &&
-        frame?.type === 'attached' &&
-        frame.v === 1
-      ) {
+      if (frame?.type === 'attached' && frame.v === 1 && this.channel.label !== 'control') {
         this.resolveAttach(typeof frame.channel === 'string' ? frame.channel : '');
         return; // the ack is transport-level; clients never see it
       }
-      if (this.attachMode.kind === 'hello' && frame?.type === 'hello') {
-        // control: hello is the ack, and the frame itself is real
-        // payload — resolve, then deliver it below like any frame.
-        this.resolveAttach(this.channel.label);
+      if (frame?.type === 'hello' && this.channel.label === 'control') {
+        this.resolveAttach(this.channel.label); // hello is still delivered below
       }
     }
     if (typeof data === 'string') {

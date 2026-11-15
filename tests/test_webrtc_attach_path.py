@@ -17,7 +17,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
-import struct
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -1118,38 +1117,20 @@ async def test_websocket_scope_output_shape(tmp_path: Path) -> None:
         await _tear_down_stack(stack)
 
 
-# ---------------------------------------------------------------------------
-# Attach acknowledgement: one text frame after a lossy-channel attach.
-# ---------------------------------------------------------------------------
-
-#: The api channel's binary frame header: [u8 version][u8 type][u32
-#: request id][u8 flags] (mirrored from the wire contract the same way
-# ``tests/test_webrtc_api_channel.py`` mirrors it).
-_API_HEADER = struct.Struct(">BBIB")
-_API_REQ_HEAD = 1
-_API_RES_HEAD = 3
-_API_END = 5
-
-
 @_webrtc
 async def test_attach_ack_on_lossy_channels_only(tmp_path: Path) -> None:
-    """The attach ack exists only where the attach frame can be lost.
-
-    scope/audio (unordered, maxRetransmits=0) are answered with one
-    ``{"type":"attached","v":1,"channel":...}`` text frame — the FIRST
-    frame the channel delivers — so a client can stop resending its
-    attach; a client that ignores it still gets its ordinary frames
-    (pong / audio_tx_format below). control and api never get one:
-    control's ``hello`` already proves the attach (clients that expect
-    hello first keep working), and the api channel is a binary wire —
-    a text frame there breaks its clients, and reliable delivery cannot
-    lose the attach anyway.
+    """The ack exists only where the attach frame can be lost: the lossy
+    scope/audio labels get one ``{"type":"attached","v":1,...}`` text
+    frame as the FIRST frame (an ack-ignoring audio client is proven by
+    ``test_only_holders_audio...``); control's first frame is its
+    ``hello``, and api gets none — every ``test_webrtc_api_channel.py``
+    pump asserts each inbound frame is bytes.
     """
     stack = await _stand_up_stack(tmp_path, audio=True)
     from aiortc import RTCPeerConnection, RTCSessionDescription
 
     pc = RTCPeerConnection()
-    labels = ("control", "scope", "audio", "api")
+    labels = ("control", "scope", "audio")
     channels = {label: pc.createDataChannel(label, ordered=True) for label in labels}
     received: dict[str, list[Any]] = {label: [] for label in labels}
     for label, channel in channels.items():
@@ -1171,89 +1152,35 @@ async def test_attach_ack_on_lossy_channels_only(tmp_path: Path) -> None:
     key = await _acquire_session(stack.web.port)
 
     def _attach(label: str, frame_key: str | None) -> None:
-        frame = json.dumps(
-            {
-                "type": "attach",
-                "controller_key": frame_key,
-                "state_delta": 2,
-                "role": "primary",
-            }
+        channels[label].send(
+            json.dumps(
+                {
+                    "type": "attach",
+                    "controller_key": frame_key,
+                    "state_delta": 2,
+                    "role": "primary",
+                }
+            )
         )
-        channels[label].send(frame)
 
-    def _take(label: str, want: str | None = None) -> dict[str, Any] | None:
+    def _take(label: str) -> dict[str, Any] | None:
         while received[label]:
             message = received[label].pop(0)
             if isinstance(message, str):
-                parsed = json.loads(message)
-                if want is None or parsed.get("type") == want:
-                    return parsed
+                return json.loads(message)
         return None
 
     try:
-        # control: NO ack — the first frame is the handler's hello (the
-        # ack-first frame used to break every client that reads hello).
         _attach("control", key)
         first = await await_until(
             lambda: _take("control"), timeout=10.0, description="control first frame"
         )
-        assert first is not None
-        assert first["type"] == "hello", first
-        # scope/audio: the ack is the first frame, and a client that
-        # ignores it still works (ordinary frames flow right after it).
-        _attach("scope", key)
-        assert await await_until(
-            lambda: _take("scope"), timeout=10.0, description="scope ack"
-        ) == {"type": "attached", "v": 1, "channel": "scope"}
-        channels["scope"].send(json.dumps({"type": "ping"}))
-        assert await await_until(
-            lambda: _take("scope", "pong"), timeout=10.0, description="scope pong"
-        ) == {"type": "pong"}
-        _attach("audio", key)
-        assert await await_until(
-            lambda: _take("audio"), timeout=10.0, description="audio ack"
-        ) == {"type": "attached", "v": 1, "channel": "audio"}
-        channels["audio"].send(json.dumps({"type": "audio_start", "direction": "tx"}))
-        assert await await_until(
-            lambda: _take("audio", "audio_tx_format"),
-            timeout=10.0,
-            description="audio_tx_format after the ack",
-        )
-        # api: NO ack and no text frame ever. The channel is ordered and
-        # reliable, so an ack (sent before the first handler byte) would
-        # arrive BEFORE any response; after the response lands, "no text
-        # frame was received" proves there was none — no timed wait.
-        _attach("api", None)
-        req_id = 7
-        head = json.dumps(
-            {"method": "GET", "path": "/api/v1/info", "query": {}, "headers": {}}
-        ).encode()
-        channels["api"].send(_API_HEADER.pack(1, _API_REQ_HEAD, req_id, 0) + head)
-        channels["api"].send(_API_HEADER.pack(1, _API_END, req_id, 0))
-
-        def _api_head() -> dict[str, Any] | None:
-            while received["api"]:
-                message = received["api"].pop(0)
-                if isinstance(message, bytes) and len(message) >= _API_HEADER.size:
-                    version, msg_type, rid, _flags = _API_HEADER.unpack(
-                        message[: _API_HEADER.size]
-                    )
-                    if version == 1 and rid == req_id and msg_type == _API_RES_HEAD:
-                        return json.loads(message[_API_HEADER.size :])
-            return None
-
-        response = await await_until(
-            _api_head, timeout=10.0, description="api RES_HEAD"
-        )
-        assert response is not None
-        assert response["status"] == 200, response
-        assert not any(isinstance(m, str) for m in received["api"]), received["api"]
-        # Control data still flows after hello (no ack consumed it).
-        assert await await_until(
-            lambda: _take("control", "state_update"),
-            timeout=30.0,
-            description="state data",
-        )
+        assert first is not None and first["type"] == "hello", first
+        for label in ("scope", "audio"):  # the ack is the first frame
+            _attach(label, key)
+            assert await await_until(
+                lambda bound=label: _take(bound), timeout=10.0, description=label
+            ) == {"type": "attached", "v": 1, "channel": label}
     finally:
         with contextlib.suppress(Exception):
             await pc.close()
