@@ -88,9 +88,15 @@ class ProbeRun:
 
 
 @dataclass(frozen=True, slots=True)
+class _Stray:
+    chunk: bytes
+    arrived: float  # time.monotonic() when the chunk was observed
+
+
+@dataclass(frozen=True, slots=True)
 class _Answer:
     reply: bytes | None
-    strays: tuple[bytes, ...]
+    strays: tuple[_Stray, ...]
     latency_ms: float
     broken: BaseException | None
     garbled: bool
@@ -173,18 +179,21 @@ async def _ask(
     and the row is ``malformed``.
     """
     started = time.monotonic()
-    strays: list[bytes] = []
+    strays: list[_Stray] = []
     try:
         chunk = await exchange(body, timeout)
         while chunk is not None and not attribute(chunk) and not garbled(chunk):
-            strays.append(chunk)
+            strays.append(_Stray(chunk, time.monotonic()))
             remaining = timeout - (time.monotonic() - started)
             if remaining <= 0 or len(strays) >= _MAX_STRAYS:
                 chunk = None
                 break
             chunk = await exchange(None, remaining)
     except (OSError, asyncio.IncompleteReadError) as error:
-        return _Answer(None, tuple(strays), _elapsed_ms(started), error, False)
+        kept = list(strays)
+        if isinstance(error, asyncio.IncompleteReadError) and error.partial:
+            kept.append(_Stray(bytes(error.partial), time.monotonic()))
+        return _Answer(None, tuple(kept), _elapsed_ms(started), error, False)
     if chunk is not None and garbled(chunk):
         return _Answer(chunk, tuple(strays), _elapsed_ms(started), None, True)
     if chunk is not None and attribute(chunk):
@@ -315,16 +324,17 @@ class _Strays:
         self._run_started = run_started
         self.rows: list[UnsolicitedRow] = []
 
-    def add(self, chunk: bytes, protocol: str) -> None:
+    def add(self, chunk: bytes, protocol: str, *, at: float | None = None) -> None:
         try:
             text = chunk.decode("ascii")
         except UnicodeDecodeError:
             text = ""
         if protocol == "civ":
             text = ""
+        observed = time.monotonic() if at is None else at
         self.rows.append(
             UnsolicitedRow(
-                t_ms=round((time.monotonic() - self._run_started) * 1000.0, 1),
+                t_ms=round((observed - self._run_started) * 1000.0, 1),
                 hex=chunk.hex(),
                 text=text,
             )
@@ -361,7 +371,7 @@ async def _read_identity(
             gate.stop_transport("identity", answer.broken)
             break
         for stray in answer.strays:
-            strays.add(stray, protocol)
+            strays.add(stray.chunk, protocol, at=stray.arrived)
         if answer.reply is None:
             gate.note_silent()
         else:
@@ -419,7 +429,7 @@ async def _read_snapshot(
             out[name] = None
             continue
         for stray in answer.strays:
-            strays.add(stray, protocol)
+            strays.add(stray.chunk, protocol, at=stray.arrived)
         if answer.reply is None:
             gate.note_silent()
             out[name] = None
@@ -593,7 +603,7 @@ async def _ask_once(
     if answer is None:
         return None
     for stray in answer.strays:
-        strays.add(stray, protocol)
+        strays.add(stray.chunk, protocol, at=stray.arrived)
     outcome = _outcome(protocol, item, answer)
     if outcome == "silent":
         gate.note_silent()
