@@ -1774,18 +1774,29 @@ class YaesuObservationAdapter:
         # ``"split" in caps`` gate. MOR-4456: split left the
         # startup-critical set — a refused or malformed split read is
         # served unknown (the gate's deadline path names it), so it is
-        # given no paths for ``_safe_read`` to record a defect for.
+        # given no paths for ``_safe_read`` to record a defect for. An
+        # unanswered split read is contained the same way (the PTT-lane
+        # and MOR-4433 ``_read_tx_target`` shape): the lane keeps what it
+        # accumulated instead of discarding the batch on the raise.
         if self._has_runtime_capability("split") and self._can_poll(_SPLIT):
-            ok, value = await self._safe_read(
-                "split",
-                self.radio.read_split(),
-                lambda: self.radio.read_split(),
-                paths=(),
-            )
-            if ok:
-                observations.append(
-                    adapter.observation(_SPLIT, value, native_id="read_split")
+            try:
+                ok, value = await self._safe_read(
+                    "split",
+                    self.radio.read_split(),
+                    lambda: self.radio.read_split(),
+                    paths=(),
                 )
+            except CatTimeoutError as exc:
+                self._log_field_skip(
+                    "split",
+                    "Skipping field %s — no answer (timeout): %s",
+                    exc,
+                )
+            else:
+                if ok:
+                    observations.append(
+                        adapter.observation(_SPLIT, value, native_id="read_split")
+                    )
         # Clarifier RIT/XIT (MOR-454) — GLOBAL slow-changing operator/TX
         # controls (CAT ``CF000``/``CF001``). The status read is shared when
         # either capability is declared; each flag is emitted only for its
