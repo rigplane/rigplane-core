@@ -14,7 +14,7 @@ import { SAMPLE_RATE, TX_PCM_SAMPLE_RATES } from './constants';
 import { setAudioConnected } from '../stores/connection.svelte';
 import { setRxEnabled, setTxEnabled, setTxCodecFallback, setRxError, setTxError } from '../stores/audio.svelte';
 import { authenticatedWsUrl } from '../transport/ws-url';
-import type { ControllerRole } from '../transport/controller-client';
+import type { ControllerRole } from '../transport/message-transport';
 import type { MessageTransport } from '../transport/message-transport';
 import { createMessageTransport } from '../transport/transport-factory';
 import { getCapabilities, subscribeCapabilities } from '$lib/stores/capabilities.svelte';

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import Toast from '../../../components/shared/Toast.svelte';
-import type { ControllerRole } from '../../transport/controller-client';
+import type { ControllerRole } from '../../transport/message-transport';
 import { setLocale } from '$lib/i18n';
 import { _resetLocale } from '$lib/i18n/store.svelte';
 import { validateCapabilities } from '$lib/types/capabilities';

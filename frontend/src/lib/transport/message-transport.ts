@@ -18,9 +18,15 @@
  * seam so a second transport is a drop-in later.
  */
 
-import type { ControllerRole } from './controller-client';
+import type { ControllerClient } from './controller-client';
 
 export type MessageTransportState = 'connecting' | 'open' | 'closed';
+
+/**
+ * The controller-session role, typed from the producer's own getter so this
+ * stays the one definition source.
+ */
+export type ControllerRole = ControllerClient['role'];
 
 /**
  * Controller-session attachment, transport-neutral.
