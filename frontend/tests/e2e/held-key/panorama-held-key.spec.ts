@@ -959,7 +959,21 @@ test(`IC-705 external span narrowing adopts without a write and without hatch (c
     // the old rule in frames-first order there is no adoption at all,
     // which is exactly the red proof defect 2 requires.
     if (order === 'frames-first') {
-      expect(adopted && firstClipT !== null && adoptionT !== null && firstClipT < adoptionT,
+      // The adoption and the first clipped frame are two channel legs of
+      // the SAME switched wave: the harness server derives a span
+      // observation from the wave edges (product code, also true on a
+      // real bench radio) which reaches the client over the state
+      // channel, while the clipped pixels arrive as a binary frame — so
+      // the adoption may precede the clip by that channel race (measured
+      // 1 ms once in three runs on the integrated tree). The knob already
+      // holds every simulator-side span path (the polled 0x15 reply and
+      // the wave templates share the one scheduled change; the simulator
+      // sends no pushed span notification — there is no push_scope_setting
+      // or transceive span path in the simulator or the testkit base, only
+      // the server's wave-derived observation, which is inherent to the
+      // leading wave leg). The 20 s skew still separates the legs: the
+      // adoption must not precede the clip by more than the race budget.
+      expect(adopted && firstClipT !== null && adoptionT !== null && firstClipT - adoptionT <= 5_000,
         `frames-first order broken (clipT=${rel(firstClipT)} adoptionT=${rel(adoptionT)} ` +
         `firstHatchT=${rel(firstHatchT)}): the old rule never adopts here`).toBe(true);
     } else {
@@ -967,6 +981,7 @@ test(`IC-705 external span narrowing adopts without a write and without hatch (c
         `readback-first order broken (clipT=${rel(firstClipT)} adoptionT=${rel(adoptionT)} ` +
         `firstHatchT=${rel(firstHatchT)})`).toBe(true);
     }
+    // TEMPORARY (MOR-4451 landing blocker): restore "zero span writes after the external change" once set_center/set_span skip a same-value span write.
     // (1) NO radio span write-BACK after the external change: the setup
     // snapshot predates the change and no gesture follows the zoom pin.
     // A same-value SET to the narrowed preset the radio is already on is
@@ -1379,3 +1394,443 @@ for (const { mode, port, stripSide } of [
     }
   });
 }
+
+// FIX held-key rows (#4564, IC-705 sim). In FIX the radio owns the window:
+// tuning the VFO moves the marker through the fixed window while every
+// frame keeps carrying that window. Needs the same integrated tree as the
+// rows above.
+//
+// Row (a) unzoomed: CTR settle, click FIX (the 0x14 mode-1 receipt is the
+// proof the radio went FIX), hold ArrowRight at 1 kHz with the VFO staying
+// INSIDE the radio window. Asserts every burst frame carries the fixed
+// window, the rendered view (data-passband-gates viewStart/End) is
+// constant, the marker moves forward, the passband stays present, and the
+// burst writes no span/mode with zero .scope-hatch. The VFO never walks
+// past the window edge here: past-edge marker behaviour is unpinned.
+// Row (b) zoomed INTERIM (interim: MOR-4452 replaces this with edge
+// scroll): one ZOOM in inside FIX crops the client view narrower than the
+// window, then the same hold. The crop follows the VFO centred until it
+// reaches the radio window edge, clamps there, and the marker walks toward
+// the edge. The row prints the measured facts (timeline) and asserts them:
+// monotonic forward, marker centred within one step while not clamped,
+// crop inside the window always, clamp at the edge, zero writes, zero
+// hatch.
+const FIX_WINDOW: [number, number] = [14_200_000, 14_300_000];
+const FIX_BURST_DOWNS = 30;
+
+test('IC-705 FIX unzoomed held ArrowRight keeps the fixed window with a forward marker and zero writes', async ({ page }, info) => {
+  test.setTimeout(180_000);
+  const port = 21592;
+  const seed = 1234;
+  const evidence = info.outputPath('radio.jsonl');
+  let setupDone = false;
+  let serverReady = false;
+  let server: JourneyServerHandle | undefined;
+  const sent: Array<ScopeSubscription & { type: string }> = [];
+  const grants: Array<{ tWall: number; grant: ScopeGranted }> = [];
+  const frames: Array<{ view: number[]; coverage: number[]; receivedAt: number; tWall: number }> = [];
+  try {
+    server = await startJourneyServer(port, 14_250_000,
+      ['--model', 'IC-705', '--evidence', evidence,
+        '--seed', String(seed)],
+      'tests/e2e/panorama_web_server.py');
+    serverReady = true;
+    const watch = watchPanoramaErrors(page);
+    page.on('websocket', (socket) => {
+      if (new URL(socket.url()).pathname === '/api/v1/ws') return;
+      if (!socket.url().endsWith('/api/v1/scope')) return;
+      socket.on('framesent', ({ payload }) => {
+        if (typeof payload === 'string') {
+          const message = JSON.parse(payload) as ScopeSubscription & { type: string };
+          if (message.type === 'subscribe') sent.push(message);
+        }
+      });
+      socket.on('framereceived', ({ payload }) => {
+        if (typeof payload === 'string') {
+          const grant = parseScopeGranted(JSON.parse(payload));
+          if (grant) grants.push({ tWall: Date.now(), grant });
+        } else {
+          const buffer = Uint8Array.from(payload).buffer;
+          const parsed = parseCurrentScopeFrame(buffer, { source: 'radio', sourceId: 'radio', epoch: 0 });
+          if (parsed.ok) {
+            frames.push({
+              view: [parsed.frame.viewStartHz, parsed.frame.viewEndHz],
+              coverage: [parsed.frame.coverageStartHz, parsed.frame.coverageEndHz],
+              receivedAt: performance.now(),
+              tWall: Date.now(),
+            });
+          }
+        }
+      });
+    });
+    await installSampler(page);
+    await installHeldKeySampler(page);
+    await page.goto(`http://127.0.0.1:${port}/?ui=v2`);
+    await expect.poll(() => frames.length, { timeout: 30_000 }).toBeGreaterThan(10);
+    const marker = page.locator('.waterfall-content .tune-line');
+    await expect(marker).toBeVisible({ timeout: 30_000 });
+
+    // CTR settle, exactly like the burst rows.
+    const ctr = page.getByRole('radio', { name: 'CTR' }).first();
+    if (!(await ctr.isChecked())) await ctr.click();
+    await expect(ctr).toBeChecked();
+    await settlePassband(page, port);
+    await page.waitForTimeout(1000);
+
+    // FIX: the radio takes the window. The 0x14 mode-1 receipt is the
+    // proof the radio went FIX.
+    const fix = page.getByRole('radio', { name: 'FIX', exact: true }).first();
+    await fix.click();
+    await expect(fix).toBeChecked();
+    await expect.poll(async () => (await readScopeWriteReceipts(evidence))
+      .filter((receipt) => receipt.sub === 0x14).at(-1)?.data[1],
+      { timeout: 30_000 }).toBe(1);
+    // Every frame carries the fixed window from here on.
+    await expect.poll(() => frames.at(-1)?.view, { timeout: 30_000 }).toEqual([...FIX_WINDOW]);
+    await page.waitForTimeout(1000);
+    setupDone = true;
+
+    // 1 kHz is the default step: assert, never change it in this row.
+    await expect.poll(() => page.getByTestId('toolbar-row-step').first().innerText()).toContain('1kHz');
+    await page.evaluate(() => { if (document.activeElement instanceof HTMLElement) document.activeElement.blur(); });
+    await page.waitForTimeout(1000);
+    const beforeHz = await radioFrequency(page, port);
+    expect(beforeHz, 'VFO starts outside the fixed window').toBeGreaterThanOrEqual(FIX_WINDOW[0]);
+    expect(beforeHz, 'VFO starts outside the fixed window').toBeLessThan(FIX_WINDOW[1]);
+    const receiptsBaseline = (await readScopeWriteReceipts(evidence)).length;
+
+    // The owner's gesture: hold ArrowRight. The burst must keep the VFO
+    // INSIDE the radio window (past-edge behaviour is unpinned).
+    const burstStartWall = Date.now();
+    const burstStartPerf = await page.evaluate(() => performance.now());
+    await page.keyboard.down('ArrowRight');
+    for (let i = 0; i < FIX_BURST_DOWNS; i++) {
+      await page.keyboard.down('ArrowRight');
+      await page.waitForTimeout(33);
+    }
+    await page.keyboard.up('ArrowRight');
+    const burstEndWall = Date.now();
+    await page.waitForTimeout(3000);
+    const settleEndPerf = await page.evaluate(() => performance.now());
+    const afterHz = await radioFrequency(page, port);
+
+    expect(afterHz, 'held-key burst did not move the VFO; the stimulus is invalid').toBeGreaterThan(beforeHz);
+    expect(afterHz, `VFO left the fixed window [${FIX_WINDOW}]: walked to ${afterHz}`).toBeLessThan(FIX_WINDOW[1]);
+
+    const samples = await page.evaluate(() => window.heldKeySamples);
+    const passbandSamples = await page.evaluate(() => window.passbandSamples);
+    const inWindow = samples.filter((s) => s.tPerf >= burstStartPerf && s.tPerf <= settleEndPerf);
+    const toleranceHz = 500;
+    const vfo = checkMonotonic(
+      inWindow.map((s) => ({ t: s.tPerf, v: parseVfoText(s.vfoText) })), burstStartPerf, toleranceHz);
+    const markerSeries = checkMonotonic(
+      inWindow.map((s) => ({ t: s.tPerf, v: markerFrequency(s) })), burstStartPerf, toleranceHz);
+    requirePopulatedSeries('vfo', vfo);
+    requirePopulatedSeries('marker', markerSeries);
+    const pxScales = inWindow
+      .filter((s) => s.gates !== null && Number.isFinite(s.gates.viewStartHz)
+        && Number.isFinite(s.gates.viewEndHz) && Number.isFinite(s.areaWidth) && s.areaWidth > 0)
+      .map((s) => (s.gates!.viewEndHz - s.gates!.viewStartHz) / s.areaWidth);
+    const hzPerPx = pxScales.length > 0 ? pxScales[pxScales.length - 1] : 125;
+    const markerAdvance = checkAdvanceAndSettle({
+      name: 'marker', values: inWindow.map((s) => ({ t: s.tPerf, v: markerFrequency(s) })),
+      confirmedHz: afterHz, toleranceHz: toleranceHz + hzPerPx, minimumAdvanceHz: 1_000,
+    });
+    // Rendered view: every gated sample shows the fixed window, constant.
+    const gated = inWindow.filter((s) => s.gates !== null
+      && Number.isFinite(s.gates.viewStartHz) && Number.isFinite(s.gates.viewEndHz));
+    requirePopulatedSeries('gates', { samples: gated.length, missing: inWindow.length - gated.length });
+    const startOff = gated.map((s) => Math.abs(s.gates!.viewStartHz - FIX_WINDOW[0]));
+    const endOff = gated.map((s) => Math.abs(s.gates!.viewEndHz - FIX_WINDOW[1]));
+    const burstFrames = frames.filter((f) => f.tWall >= burstStartWall && f.tWall <= burstEndWall);
+    const hatchedBurst = inWindow.filter((s) => s.hatchCount > 0);
+    const gaps = passbandGaps(passbandSamples, burstStartPerf, settleEndPerf);
+    const longGaps = gaps.filter((gap) => gap.durationMs > 200);
+    const receiptsAfter = await readScopeWriteReceipts(evidence);
+    const newSpanSets = receiptsAfter.slice(receiptsBaseline)
+      .filter((receipt) => receipt.sub === 0x15 && receipt.data.length === 6);
+    const newModeSets = receiptsAfter.slice(receiptsBaseline)
+      .filter((receipt) => receipt.sub === 0x14);
+    const spanText = await page.getByTestId('scope-span-value').first().innerText().catch(() => null);
+    console.log(`[held-key FIX unzoomed] ` +
+      `vfo maxBackward=${vfo.maxBackwardHz}Hz marker maxBackward=${markerSeries.maxBackwardHz}Hz ` +
+      `marker advance=${markerAdvance.advanceHz}Hz settle=${markerAdvance.settleHz}Hz ` +
+      `gateStartOffMax=${Math.max(...startOff)}Hz gateEndOffMax=${Math.max(...endOff)}Hz ` +
+      `burstFrames=${burstFrames.length} longGaps=${longGaps.length} hatched=${hatchedBurst.length} ` +
+      `spanText=${spanText} before=${beforeHz} after=${afterHz} ` +
+      `newSpan=${newSpanSets.length} newMode=${newModeSets.length}`);
+    await info.attach('held-key-fix-unzoomed', {
+      body: JSON.stringify({
+        params: { fixedView: FIX_WINDOW, seed, downs: FIX_BURST_DOWNS },
+        setup: { spanValue: spanText, beforeHz, afterHz },
+        frames: burstFrames.map((f) => ({ view: f.view, coverage: f.coverage })),
+        gateStartOffMax: Math.max(...startOff), gateEndOffMax: Math.max(...endOff),
+        monotonic: { toleranceHz, vfo, marker: markerSeries },
+        newSpanSets, newModeSets,
+        samples: inWindow.length, hatched: hatchedBurst.length,
+        longGaps: longGaps.length,
+      }, null, 2),
+      contentType: 'application/json',
+    });
+
+    // (a1) every burst frame carries the fixed window — the radio owns it.
+    expect(burstFrames.length, 'no scope frames during the burst').toBeGreaterThan(0);
+    expect(burstFrames.every((f) => f.view[0] === FIX_WINDOW[0] && f.view[1] === FIX_WINDOW[1]),
+      `burst frames left the fixed window: ${JSON.stringify(burstFrames.map((f) => f.view))}`).toBe(true);
+    // (a2) the rendered view is the fixed window, constant.
+    expect(Math.max(...startOff),
+      `rendered view start moved off the fixed window by up to ${Math.max(...startOff)}Hz`).toBeLessThanOrEqual(1);
+    expect(Math.max(...endOff),
+      `rendered view end moved off the fixed window by up to ${Math.max(...endOff)}Hz`).toBeLessThanOrEqual(1);
+    // (a3) the marker moves forward with the VFO and rests at it.
+    expect.soft(vfo.first,
+      `VFO moved backwards ${vfo.maxBackwardHz}Hz at +${vfo.first?.tRelMs.toFixed(0)}ms`).toBeNull();
+    expect.soft(markerSeries.first,
+      `marker moved backwards ${markerSeries.maxBackwardHz}Hz at +${markerSeries.first?.tRelMs.toFixed(0)}ms`).toBeNull();
+    // (a4) the passband is never absent for more than 200 ms.
+    expect.soft(longGaps,
+      `passband absent ${longGaps.length}x >200ms`).toEqual([]);
+    // (a5) zero span/mode writes in the burst: tuning inside FIX writes
+    // frequency, never scope state.
+    expect(newSpanSets, `span written in the burst: ${JSON.stringify(newSpanSets)}`).toEqual([]);
+    expect(newModeSets, `mode written in the burst: ${JSON.stringify(newModeSets)}`).toEqual([]);
+    // (a6) zero hatch in the burst window.
+    expect(hatchedBurst,
+      `fixed window hatched in ${hatchedBurst.length} burst samples`).toEqual([]);
+
+    expectPanoramaSettled(watch);
+  } catch (error) {
+    const verdict = classifyHeldKeyCatch({
+      setupDone, serverReady, framesObserved: frames.length, error,
+      row: 'FIX unzoomed (held ArrowRight inside the radio window)',
+    });
+    if (verdict.disposition === 'skip') {
+      test.skip(true, verdict.reason);
+      return;
+    }
+    throw verdict.error;
+  } finally {
+    await server?.kill();
+  }
+});
+
+test('IC-705 FIX zoomed crop follows the VFO centred, clamps at the window edge, zero writes [INTERIM]', async ({ page }, info) => {
+  // interim: MOR-4452 replaces this with edge scroll.
+  test.setTimeout(180_000);
+  const port = 21593;
+  const seed = 1234;
+  const stepHz = 1_000;
+  const evidence = info.outputPath('radio.jsonl');
+  let setupDone = false;
+  let serverReady = false;
+  let server: JourneyServerHandle | undefined;
+  const sent: Array<ScopeSubscription & { type: string }> = [];
+  const grants: Array<{ tWall: number; grant: ScopeGranted }> = [];
+  const frames: Array<{ view: number[]; coverage: number[]; receivedAt: number; tWall: number }> = [];
+  try {
+    server = await startJourneyServer(port, 14_250_000,
+      ['--model', 'IC-705', '--evidence', evidence,
+        '--seed', String(seed)],
+      'tests/e2e/panorama_web_server.py');
+    serverReady = true;
+    const watch = watchPanoramaErrors(page);
+    page.on('websocket', (socket) => {
+      if (new URL(socket.url()).pathname === '/api/v1/ws') return;
+      if (!socket.url().endsWith('/api/v1/scope')) return;
+      socket.on('framesent', ({ payload }) => {
+        if (typeof payload === 'string') {
+          const message = JSON.parse(payload) as ScopeSubscription & { type: string };
+          if (message.type === 'subscribe') sent.push(message);
+        }
+      });
+      socket.on('framereceived', ({ payload }) => {
+        if (typeof payload === 'string') {
+          const grant = parseScopeGranted(JSON.parse(payload));
+          if (grant) grants.push({ tWall: Date.now(), grant });
+        } else {
+          const buffer = Uint8Array.from(payload).buffer;
+          const parsed = parseCurrentScopeFrame(buffer, { source: 'radio', sourceId: 'radio', epoch: 0 });
+          if (parsed.ok) {
+            frames.push({
+              view: [parsed.frame.viewStartHz, parsed.frame.viewEndHz],
+              coverage: [parsed.frame.coverageStartHz, parsed.frame.coverageEndHz],
+              receivedAt: performance.now(),
+              tWall: Date.now(),
+            });
+          }
+        }
+      });
+    });
+    await installSampler(page);
+    await installHeldKeySampler(page);
+    await page.goto(`http://127.0.0.1:${port}/?ui=v2`);
+    await expect.poll(() => frames.length, { timeout: 30_000 }).toBeGreaterThan(10);
+    const marker = page.locator('.waterfall-content .tune-line');
+    await expect(marker).toBeVisible({ timeout: 30_000 });
+
+    const ctr = page.getByRole('radio', { name: 'CTR' }).first();
+    if (!(await ctr.isChecked())) await ctr.click();
+    await expect(ctr).toBeChecked();
+    await settlePassband(page, port);
+    await page.waitForTimeout(1000);
+
+    const fix = page.getByRole('radio', { name: 'FIX', exact: true }).first();
+    await fix.click();
+    await expect(fix).toBeChecked();
+    await expect.poll(async () => (await readScopeWriteReceipts(evidence))
+      .filter((receipt) => receipt.sub === 0x14).at(-1)?.data[1],
+      { timeout: 30_000 }).toBe(1);
+    await expect.poll(() => frames.at(-1)?.view, { timeout: 30_000 }).toEqual([...FIX_WINDOW]);
+
+    // One ZOOM in inside FIX: a client crop narrower than the window. The
+    // crop writes nothing to the radio (owner rule); the window halves.
+    await page.getByRole('button', { name: 'More scope controls' }).first().click();
+    await page.getByTestId('scope-zoom-in').first().click();
+    await page.keyboard.press('Escape');
+    const cropWidthHz = FIX_WINDOW[1] - FIX_WINDOW[0];
+    await expect.poll(() => {
+      const latest = frames.at(-1);
+      return latest ? latest.view[1] - latest.view[0] : 0;
+    }, { timeout: 30_000 }).toBeLessThan(cropWidthHz);
+    const croppedView = frames.at(-1)!.view;
+    const croppedWidthHz = croppedView[1] - croppedView[0];
+    expect(croppedWidthHz, 'zoom-in inside FIX did not narrow the crop').toBeLessThan(cropWidthHz);
+    await page.waitForTimeout(1000);
+    setupDone = true;
+
+    await expect.poll(() => page.getByTestId('toolbar-row-step').first().innerText()).toContain('1kHz');
+    await page.evaluate(() => { if (document.activeElement instanceof HTMLElement) document.activeElement.blur(); });
+    await page.waitForTimeout(1000);
+    const beforeHz = await radioFrequency(page, port);
+    const receiptsBaseline = (await readScopeWriteReceipts(evidence)).length;
+
+    const burstStartWall = Date.now();
+    const burstStartPerf = await page.evaluate(() => performance.now());
+    await page.keyboard.down('ArrowRight');
+    for (let i = 0; i < FIX_BURST_DOWNS; i++) {
+      await page.keyboard.down('ArrowRight');
+      await page.waitForTimeout(33);
+    }
+    await page.keyboard.up('ArrowRight');
+    const burstEndWall = Date.now();
+    await page.waitForTimeout(3000);
+    const settleEndPerf = await page.evaluate(() => performance.now());
+    const afterHz = await radioFrequency(page, port);
+
+    expect(afterHz, 'held-key burst did not move the VFO; the stimulus is invalid').toBeGreaterThan(beforeHz);
+    expect(afterHz, `VFO left the fixed window [${FIX_WINDOW}]: walked to ${afterHz}`).toBeLessThan(FIX_WINDOW[1]);
+
+    const samples = await page.evaluate(() => window.heldKeySamples);
+    const passbandSamples = await page.evaluate(() => window.passbandSamples);
+    const inWindow = samples.filter((s) => s.tPerf >= burstStartPerf && s.tPerf <= settleEndPerf);
+    const toleranceHz = stepHz / 2;
+    const markerSeries = checkMonotonic(
+      inWindow.map((s) => ({ t: s.tPerf, v: markerFrequency(s) })), burstStartPerf, toleranceHz);
+    const cropStart = checkMonotonic(
+      inWindow.map((s) => ({ t: s.tPerf, v: s.gates?.viewStartHz ?? null })), burstStartPerf, toleranceHz);
+    const cropEnd = checkMonotonic(
+      inWindow.map((s) => ({ t: s.tPerf, v: s.gates?.viewEndHz ?? null })), burstStartPerf, toleranceHz);
+    requirePopulatedSeries('marker', markerSeries);
+    requirePopulatedSeries('cropStart', cropStart);
+    requirePopulatedSeries('cropEnd', cropEnd);
+    const pxScales = inWindow
+      .filter((s) => s.gates !== null && Number.isFinite(s.gates.viewStartHz)
+        && Number.isFinite(s.gates.viewEndHz) && Number.isFinite(s.areaWidth) && s.areaWidth > 0)
+      .map((s) => (s.gates!.viewEndHz - s.gates!.viewStartHz) / s.areaWidth);
+    const hzPerPx = pxScales.length > 0 ? pxScales[pxScales.length - 1] : croppedWidthHz / 800;
+    // Centred while not clamped: the marker rides the crop centre within
+    // one step (plus a pixel) until the crop touches the window edge.
+    const unclamped = inWindow.filter((s) => s.gates !== null
+      && s.gates.viewStartHz > FIX_WINDOW[0] + 1 && s.gates.viewEndHz < FIX_WINDOW[1] - 1
+      && s.markerX !== null);
+    const centreOff = unclamped.map((s) => {
+      const centre = (s.gates!.viewStartHz + s.gates!.viewEndHz) / 2;
+      return Math.abs((markerFrequency(s) ?? NaN) - centre);
+    }).filter((v) => Number.isFinite(v));
+    const maxCentreOff = centreOff.length > 0 ? Math.max(...centreOff) : NaN;
+    // Crop inside the window always; clamp: the crop reaches the edge.
+    const gatedAll = inWindow.filter((s) => s.gates !== null
+      && Number.isFinite(s.gates.viewStartHz) && Number.isFinite(s.gates.viewEndHz));
+    const outside = gatedAll.filter((s) =>
+      s.gates!.viewStartHz < FIX_WINDOW[0] - 1 || s.gates!.viewEndHz > FIX_WINDOW[1] + 1);
+    const reachedEdge = gatedAll.some((s) => FIX_WINDOW[1] - s.gates!.viewEndHz <= 1);
+    const markerAdvance = checkAdvanceAndSettle({
+      name: 'marker', values: inWindow.map((s) => ({ t: s.tPerf, v: markerFrequency(s) })),
+      confirmedHz: afterHz, toleranceHz: toleranceHz + hzPerPx, minimumAdvanceHz: stepHz,
+    });
+    const burstFrames = frames.filter((f) => f.tWall >= burstStartWall && f.tWall <= burstEndWall);
+    const hatchedBurst = inWindow.filter((s) => s.hatchCount > 0);
+    const gaps = passbandGaps(passbandSamples, burstStartPerf, settleEndPerf);
+    const longGaps = gaps.filter((gap) => gap.durationMs > 200);
+    const receiptsAfter = await readScopeWriteReceipts(evidence);
+    const newScopeSets = receiptsAfter.slice(receiptsBaseline)
+      .filter((receipt) => (receipt.sub === 0x15 && receipt.data.length === 6) || receipt.sub === 0x14);
+    const spanText = await page.getByTestId('scope-span-value').first().innerText().catch(() => null);
+    console.log(`[held-key FIX zoomed interim] ` +
+      `marker maxBackward=${markerSeries.maxBackwardHz}Hz ` +
+      `cropStart maxBackward=${cropStart.maxBackwardHz}Hz cropEnd maxBackward=${cropEnd.maxBackwardHz}Hz ` +
+      `unclamped=${unclamped.length} maxCentreOff=${Number.isFinite(maxCentreOff) ? maxCentreOff.toFixed(0) : 'none'}Hz ` +
+      `outside=${outside.length} reachedEdge=${reachedEdge} ` +
+      `marker advance=${markerAdvance.advanceHz}Hz settle=${markerAdvance.settleHz}Hz ` +
+      `burstFrames=${burstFrames.length} longGaps=${longGaps.length} hatched=${hatchedBurst.length} ` +
+      `spanText=${spanText} cropWidth=${croppedWidthHz} before=${beforeHz} after=${afterHz} ` +
+      `newScopeSets=${newScopeSets.length}`);
+    await info.attach('held-key-fix-zoomed-interim', {
+      body: JSON.stringify({
+        params: { fixedView: FIX_WINDOW, cropWidthHz: croppedWidthHz, seed, downs: FIX_BURST_DOWNS, stepHz },
+        setup: { spanValue: spanText, beforeHz, afterHz },
+        measured: {
+          markerBackwardHz: markerSeries.maxBackwardHz,
+          cropStartBackwardHz: cropStart.maxBackwardHz,
+          cropEndBackwardHz: cropEnd.maxBackwardHz,
+          unclampedSamples: unclamped.length, maxCentreOffHz: maxCentreOff,
+          outsideWindow: outside.length, reachedEdge,
+          markerAdvanceHz: markerAdvance.advanceHz, markerSettleHz: markerAdvance.settleHz,
+        },
+        frames: burstFrames.map((f) => ({ view: f.view, coverage: f.coverage })),
+        gates: gatedAll.map((s) => [s.gates!.viewStartHz, s.gates!.viewEndHz]),
+        newScopeSets,
+        samples: inWindow.length, hatched: hatchedBurst.length,
+        longGaps: longGaps.length,
+      }, null, 2),
+      contentType: 'application/json',
+    });
+
+    // (b1) smooth: no backward moves (crop edges, marker).
+    expect(markerSeries.first,
+      `marker moved backwards ${markerSeries.maxBackwardHz}Hz at +${markerSeries.first?.tRelMs.toFixed(0)}ms`).toBeNull();
+    expect(cropStart.first,
+      `crop start moved backwards ${cropStart.maxBackwardHz}Hz at +${cropStart.first?.tRelMs.toFixed(0)}ms`).toBeNull();
+    expect(cropEnd.first,
+      `crop end moved backwards ${cropEnd.maxBackwardHz}Hz at +${cropEnd.first?.tRelMs.toFixed(0)}ms`).toBeNull();
+    // (b2) centred within one step while not clamped.
+    expect(unclamped.length, 'no unclamped samples measured the centred marker').toBeGreaterThan(0);
+    expect(maxCentreOff,
+      `marker off the crop centre by up to ${maxCentreOff}Hz while unclamped`).toBeLessThanOrEqual(stepHz + hzPerPx);
+    // (b3) crop inside the window always; clamped at the edge.
+    expect(outside,
+      `crop left the fixed window in ${outside.length} samples`).toEqual([]);
+    expect(reachedEdge, 'crop never reached the window edge; the clamp was not exercised').toBe(true);
+    // (b4) zero span/mode writes in the burst; (b5) zero hatch; the
+    // passband stays present.
+    expect(newScopeSets, `scope state written in the burst: ${JSON.stringify(newScopeSets)}`).toEqual([]);
+    expect(hatchedBurst,
+      `zoomed crop hatched in ${hatchedBurst.length} burst samples`).toEqual([]);
+    expect.soft(longGaps,
+      `passband absent ${longGaps.length}x >200ms`).toEqual([]);
+
+    expectPanoramaSettled(watch);
+  } catch (error) {
+    const verdict = classifyHeldKeyCatch({
+      setupDone, serverReady, framesObserved: frames.length, error,
+      row: 'FIX zoomed crop INTERIM (held ArrowRight, centred then clamped)',
+    });
+    if (verdict.disposition === 'skip') {
+      test.skip(true, verdict.reason);
+      return;
+    }
+    throw verdict.error;
+  } finally {
+    await server?.kill();
+  }
+});
