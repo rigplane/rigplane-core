@@ -493,12 +493,12 @@ class YaesuObservationAdapter:
                 KeyError,
                 CatCommandRejected,
             ) as exc:
-                # Same rule as ``_safe_read``: only a critical path records
-                # the defect the startup gate reads (MOR-4456: PTT left the
-                # set, so a refused or malformed PTT read is served unknown
-                # instead). Skip this field either way, keep the cycle.
-                if startup_critical_path(_PTT):
-                    self._record_declared_defect("ptt", exc, (_PTT,))
+                # MOR-4456: PTT left the startup-critical set — a refused
+                # or malformed PTT read is served unknown instead of
+                # recording the defect the startup gate reads (``_safe_read``
+                # records only for critical paths; the gate names a lapsed
+                # path on its deadline WARNING). Skip this field, keep the
+                # cycle.
                 self._log_field_skip(
                     "ptt",
                     "Skipping field %s — declared read refused or malformed: %s",
@@ -1773,17 +1773,14 @@ class YaesuObservationAdapter:
         # ``split`` runtime capability, mirroring the legacy poller's
         # ``"split" in caps`` gate. MOR-4456: split left the
         # startup-critical set — a refused or malformed split read is
-        # served unknown (the gate's deadline path names it; transmit
-        # stays refused through the TX interlock), so it records no
-        # abort defect. The shared ``startup_critical_path`` contract
-        # decides, so a re-promotion re-arms recording here with no
-        # change; the skip and the deadline WARNING stay either way.
+        # served unknown (the gate's deadline path names it), so it is
+        # given no paths for ``_safe_read`` to record a defect for.
         if self._has_runtime_capability("split") and self._can_poll(_SPLIT):
             ok, value = await self._safe_read(
                 "split",
                 self.radio.read_split(),
                 lambda: self.radio.read_split(),
-                paths=(_SPLIT,) if startup_critical_path(_SPLIT) else (),
+                paths=(),
             )
             if ok:
                 observations.append(
