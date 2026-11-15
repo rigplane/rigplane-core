@@ -2,9 +2,13 @@
  * `DataChannelTransport`: the `MessageTransport` over one injected native
  * `RTCDataChannel` (C5a). The first text frame sent is the attach frame,
  * built from the committed wire contract: keyed labels take their key from
- * the offered `rigplane-controller-v1.<key>` token, the api label is the
- * keyless acquire path. Lossy labels resend until the ack or error+close
- * after 5 s; control resolves on hello; `attachedProtocol` is the token.
+ * the offered `rigplane-controller-v1.<key>` token and their role from the
+ * caller's attach (a keyed attach without a role is refused, never
+ * defaulted); the api label is the keyless acquire path. The transport
+ * opens only once the attach is acknowledged (scope/audio: the
+ * `attach_ack`; control: hello; api: on send — reliable), so no client
+ * frame can precede the attach on the wire; lossy labels resend until the
+ * ack or error+close after 5 s; `attachedProtocol` is the token.
  */
 import wire from './api-channel-wire.json';
 import type {
@@ -99,9 +103,10 @@ export class DataChannelTransport implements MessageTransport {
   get state(): MessageTransportState {
     const ready = this.channel.readyState;
     if (!this.live || ready === 'closing' || ready === 'closed') return 'closed';
-    if (this.acked) return 'open';
-    if (this.awaitingAck) return 'connecting';
-    return ready === 'open' ? 'open' : 'connecting';
+    // Open only after the attach step is acknowledged, never on the native
+    // channel's readyState: a client frame sent earlier would precede the
+    // attach on the wire.
+    return this.acked ? 'open' : 'connecting';
   }
   get attachedProtocol(): string { return this.acked ? this.acceptedToken : ''; }
   get bufferedAmount(): number { return this.channel.bufferedAmount; }
@@ -115,16 +120,21 @@ export class DataChannelTransport implements MessageTransport {
     if (attach !== undefined && key === null && this.channel.label !== 'api') {
       // Keyless attach is only the api label's acquire path; the server
       // refuses a null key on a keyed label.
-      queueMicrotask(() => {
-        for (const handler of [...this.errorHandlers]) handler();
-        this.finish({ code: 1006, reason: 'keyless attach refused', wasClean: false });
-      });
+      this.refuseAttach('keyless attach refused');
+      return;
+    }
+    // A keyed attach carries the caller's controller role; the transport
+    // never defaults one (a defaulted primary would steal the session).
+    // The keyless api acquire names primary: the committed keyless shape.
+    const role = attach !== undefined && key !== null ? attach.role : 'primary';
+    if (role !== 'primary' && role !== 'auxiliary') {
+      this.refuseAttach('roleless attach refused');
       return;
     }
     this.attachFrame =
       attach === undefined && this.channel.label !== 'api'
         ? null // attach-less channel: no attach step
-        : buildContractPayload(wire.payloads.attach_frame, { type: 'attach', controller_key: key, role: 'primary', state_delta: 2 });
+        : buildContractPayload(wire.payloads.attach_frame, { type: 'attach', controller_key: key, role, state_delta: 2 });
     this.channel.binaryType = 'arraybuffer';
     this.channel.onopen = () => this.onChannelOpen();
     this.channel.onmessage = (event) => this.onChannelMessage(event.data);
@@ -140,7 +150,7 @@ export class DataChannelTransport implements MessageTransport {
     }
   }
   send(data: string | ArrayBuffer): void {
-    if (this.state !== 'open') throw new Error('DataChannelTransport: send on a closed transport');
+    if (this.state !== 'open') throw new Error('DataChannelTransport: send while not open');
     // Narrow per call: the native send overloads take one payload kind each.
     if (typeof data === 'string') this.channel.send(data);
     else this.channel.send(data);
@@ -155,6 +165,13 @@ export class DataChannelTransport implements MessageTransport {
   onBinary(handler: TransportBinaryHandler): () => void { return this.subscribe(this.binaryHandlers, handler); }
   onClose(handler: TransportCloseHandler): () => void { return this.subscribe(this.closeHandlers, handler); }
   onError(handler: TransportErrorHandler): () => void { return this.subscribe(this.errorHandlers, handler); }
+  /** Fail the attach before anything reaches the wire: error, then close. */
+  private refuseAttach(reason: string): void {
+    queueMicrotask(() => {
+      for (const handler of [...this.errorHandlers]) handler();
+      this.finish({ code: 1006, reason, wasClean: false });
+    });
+  }
   private onChannelOpen(): void {
     if (this.attachFrame === null) {
       this.resolveAttach();
@@ -195,9 +212,14 @@ export class DataChannelTransport implements MessageTransport {
         }
         // hello proves the attach and is still delivered below
         if (hello instanceof Object && (hello as Record<string, unknown>).type === 'hello') this.resolveAttach();
-      } else if (decodeContractPayload<AttachAck>(wire.payloads.attach_ack, data) !== null) {
-        this.resolveAttach();
-        return; // the ack is transport-level; clients never see it
+      } else {
+        const ack = decodeContractPayload<AttachAck>(wire.payloads.attach_ack, data);
+        // Only the committed attach_ack version completes the attach; any
+        // other frame stays an ordinary text frame.
+        if (ack !== null && ack.v === wire.payloads.attach_ack.version) {
+          this.resolveAttach();
+          return; // the ack is transport-level; clients never see it
+        }
       }
     }
     if (typeof data === 'string') {
