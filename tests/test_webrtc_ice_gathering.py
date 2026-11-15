@@ -451,6 +451,94 @@ async def test_multihomed_answer_fast_with_stun() -> None:
 
 
 @_webrtc
+async def test_concurrent_negotiations_keep_their_own_policies() -> None:
+    """Two concurrent negotiate() calls filter with their own policy each.
+
+    Regression test for the patch/restore race: the old installer saved and
+    restored process-wide aioice hooks around an ``await``, so two
+    overlapping negotiations leaked one negotiation's patches over the
+    other's. The hooks are now installed once per process and read the
+    policy from a ContextVar set per negotiation; each answer must reflect
+    only its own policy, and the enumerator hook must observe each policy
+    in its own context (proving the context var is visible inside the task
+    that awaits ``setLocalDescription``).
+    """
+    import aioice.ice
+
+    from rigplane.web.transport import ice_gathering as ice_gathering
+    from rigplane.web.transport.webrtc_session import WebRtcSessionManager
+
+    addrs = aioice.ice.get_host_addresses(True, True)
+    ipv4 = [addr for addr in addrs if "." in addr]
+    if not ipv4:
+        pytest.skip("no IPv4 host address to filter on")
+    target = ipv4[0]
+
+    exclude = IceGatheringPolicy()
+    include = IceGatheringPolicy(include_vpn=True)
+
+    seen: list[object] = []
+    real_enumerate = ice_gathering._enumerate_local_addresses
+
+    def _fake_enumerate() -> list[AddressInfo]:
+        # Runs inside the gather path: record which policy is active in
+        # this task's context, and classify the (real, bindable) target
+        # address as a tunnel so the two policies disagree on it.
+        seen.append(ice_gathering._active_policy.get())
+        return [AddressInfo(ip=target, ifname="tun0", kind=IfKind.TUNNEL)]
+
+    ice_gathering._enumerate_local_addresses = _fake_enumerate
+    manager_exclude = WebRtcSessionManager(None, None, "test", gather_policy=exclude)
+    manager_include = WebRtcSessionManager(None, None, "test", gather_policy=include)
+    try:
+        sdp_a, type_a = await _offer_sdp()
+        sdp_b, type_b = await _offer_sdp()
+        answer_exclude, answer_include = await asyncio.gather(
+            manager_exclude.negotiate(sdp_a, type_a),
+            manager_include.negotiate(sdp_b, type_b),
+        )
+    finally:
+        await manager_exclude.close_all()
+        await manager_include.close_all()
+        ice_gathering._enumerate_local_addresses = real_enumerate
+
+    exclude_cands = _answer_candidate_lines(answer_exclude["sdp"])
+    include_cands = _answer_candidate_lines(answer_include["sdp"])
+    exclude_hosts = [ln for ln in exclude_cands if "typ host" in ln]
+    include_hosts = [ln for ln in include_cands if "typ host" in ln]
+    assert exclude_hosts, "answer without host candidates proves nothing"
+    assert include_hosts, "answer without host candidates proves nothing"
+    assert not any(target in ln for ln in exclude_hosts), exclude_hosts
+    assert any(target in ln for ln in include_hosts), include_hosts
+
+    # The gather path observed each negotiation's own policy in its context.
+    assert exclude in seen, seen
+    assert include in seen, seen
+
+    # No policy leaks out of negotiate(): the context is reset afterwards,
+    # and a plain aioice gather outside any negotiate context is unfiltered.
+    assert ice_gathering._active_policy.get() is None
+    assert target in aioice.ice.get_host_addresses(True, True)
+
+
+@_webrtc
+async def test_installer_is_idempotent() -> None:
+    """Calling the installer twice does not wrap the aioice hooks twice."""
+    import aioice.ice
+
+    from rigplane.web.transport import ice_gathering as ice_gathering
+
+    ice_gathering.install_ice_gathering_policy()
+    first_host = aioice.ice.get_host_addresses
+    first_component = aioice.ice.Connection.get_component_candidates
+    ice_gathering.install_ice_gathering_policy()
+    ice_gathering.install_ice_gathering_policy()
+    assert aioice.ice.get_host_addresses is first_host
+    assert aioice.ice.Connection.get_component_candidates is first_component
+    assert ice_gathering._installed is True
+
+
+@_webrtc
 @pytest.mark.realtime(
     reason="measures real ICE/STUN wall-clock time against live sockets"
 )

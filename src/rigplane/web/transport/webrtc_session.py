@@ -131,6 +131,11 @@ class WebRtcSessionManager:
         self._radio_model = radio_model
         self._gather_policy = gather_policy
         self._sessions: dict[str, _Session] = {}
+        # Process-wide, installed once: the hooks read each negotiation's
+        # policy from a ContextVar, so concurrent negotiations stay separate.
+        from .ice_gathering import install_ice_gathering_policy  # noqa: TID251
+
+        install_ice_gathering_policy()
 
     async def negotiate(
         self,
@@ -164,7 +169,7 @@ class WebRtcSessionManager:
 
         from .ice_gathering import (  # noqa: TID251
             IceGatheringPolicy,
-            install_ice_gathering_policy,
+            apply_ice_gathering_policy,
         )
 
         if ice_servers:
@@ -200,7 +205,7 @@ class WebRtcSessionManager:
                 if self._gather_policy is not None
                 else IceGatheringPolicy()
             )
-            with install_ice_gathering_policy(policy):
+            with apply_ice_gathering_policy(policy):
                 offer = RTCSessionDescription(sdp=offer_sdp, type=offer_type)
                 await pc.setRemoteDescription(offer)
                 answer = await pc.createAnswer()

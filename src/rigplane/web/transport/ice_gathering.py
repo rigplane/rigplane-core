@@ -25,18 +25,25 @@ platform offers no source for it — the address is kept (treated like
 working host path. Addresses on the default route are always kept regardless
 of kind, so the answer never loses the interface that reaches the peer.
 
-The policy reaches aioice through the single installer
-:func:`install_ice_gathering_policy`, which patches
-``aioice.ice.get_host_addresses`` (address allow-list) and caps
+The policy reaches aioice through :func:`install_ice_gathering_policy`,
+which installs the two hooks ONCE per process (idempotent; a module-level
+flag guards double install; they are never uninstalled): a patched
+``aioice.ice.get_host_addresses`` (address allow-list) and a cap on
 ``Connection.get_component_candidates``' STUN/TURN wait at
-``GATHER_TIMEOUT_S``. If aioice ever gains an upstream address-filter
-parameter, this monkey-patching installer should be replaced by that
-parameter.
+``GATHER_TIMEOUT_S``. The hooks read the active policy from a
+``contextvars.ContextVar`` that each ``negotiate()`` sets for the duration
+of its gathering (token reset in ``finally``), so concurrent negotiations
+keep their own policies. When no policy is set in the current context
+(e.g. some other aioice user in the process), the hooks behave exactly
+like the originals: no filtering and aioice's own timeout. If aioice ever
+gains an upstream address-filter parameter, this monkey-patching installer
+should be replaced by that parameter.
 """
 
 from __future__ import annotations
 
 import contextlib
+import contextvars
 import enum
 import importlib
 import os
@@ -59,6 +66,7 @@ __all__ = [
     "IceGatheringPolicy",
     "IceServer",
     "IfKind",
+    "apply_ice_gathering_policy",
     "classify_linux_interface",
     "classify_macos_interface",
     "classify_windows_interface",
@@ -437,19 +445,41 @@ def _enumerate_local_addresses() -> list[AddressInfo]:
     ]
 
 
-@contextlib.contextmanager
-def install_ice_gathering_policy(
-    policy: IceGatheringPolicy | None = None,
-) -> Iterator[None]:
-    """Apply ``policy`` to aioice for the enclosed gathering, then undo it.
+#: The gathering policy for the current negotiation, or ``None`` outside
+#: one. Each ``negotiate()`` sets its own policy for the duration of its
+#: gathering; concurrent negotiations are separate tasks, so each keeps its
+#: own value. ``None`` means "some other aioice user": the hooks behave
+#: exactly like the originals.
+_active_policy: contextvars.ContextVar[IceGatheringPolicy | None] = (
+    contextvars.ContextVar("rigplane_ice_gathering_policy", default=None)
+)
 
-    Patches ``aioice.ice.get_host_addresses`` to drop policy-excluded
-    addresses and caps ``Connection.get_component_candidates``' STUN/TURN
-    wait at ``GATHER_TIMEOUT_S`` so one unresponsive server cannot stall the
-    answer past the total bound. Both patches are restored afterwards.
+#: Whether the aioice hooks are installed. Set once, never cleared: the
+#: hooks are process-wide and stay installed for the process lifetime.
+_installed: bool = False
+
+
+def install_ice_gathering_policy() -> None:
+    """Install the two aioice hooks ONCE per process (idempotent).
+
+    Patches ``aioice.ice.get_host_addresses`` to drop addresses excluded by
+    the current context's policy and caps
+    ``Connection.get_component_candidates``' STUN/TURN wait at
+    ``GATHER_TIMEOUT_S`` so one unresponsive server cannot stall the answer
+    past the total bound. A second call changes nothing (it never wraps
+    twice). The hooks are never uninstalled during normal operation:
+    uninstalling around an ``await`` is what let two concurrent
+    negotiations interleave patch/restore and leak one negotiation's
+    patches over the other's. A no-op when the ``[webrtc]`` extra is
+    missing (``negotiate()`` reports that itself).
     """
-    active = policy if policy is not None else IceGatheringPolicy()
-    aioice_ice: Any = importlib.import_module("aioice.ice")
+    global _installed
+    if _installed:
+        return
+    try:
+        aioice_ice: Any = importlib.import_module("aioice.ice")
+    except ImportError:
+        return
     original_addresses = aioice_ice.get_host_addresses
     original_component = aioice_ice.Connection.get_component_candidates
 
@@ -457,6 +487,9 @@ def install_ice_gathering_policy(
         use_ipv4: bool = True, use_ipv6: bool = True
     ) -> list[str]:
         addresses: list[str] = original_addresses(use_ipv4, use_ipv6)
+        active = _active_policy.get()
+        if active is None:
+            return addresses
         try:
             infos = _enumerate_local_addresses()
         except Exception:
@@ -470,13 +503,28 @@ def install_ice_gathering_policy(
     async def _bounded_component_candidates(
         self: Any, component: int, addresses: list[str], timeout: int = 5
     ) -> Any:
+        active = _active_policy.get()
+        if active is None:
+            return await original_component(self, component, addresses, timeout=timeout)
         bound = min(float(timeout), GATHER_TIMEOUT_S)
         return await original_component(self, component, addresses, timeout=bound)
 
     aioice_ice.get_host_addresses = _filtered_host_addresses
     aioice_ice.Connection.get_component_candidates = _bounded_component_candidates
+    _installed = True
+
+
+@contextlib.contextmanager
+def apply_ice_gathering_policy(
+    policy: IceGatheringPolicy | None = None,
+) -> Iterator[None]:
+    """Set the gathering ``policy`` for the current context, then reset it.
+
+    ``None`` selects the default policy. Only the matching ``negotiate()``
+    task sees the value; concurrent negotiations keep their own.
+    """
+    token = _active_policy.set(policy if policy is not None else IceGatheringPolicy())
     try:
         yield
     finally:
-        aioice_ice.get_host_addresses = original_addresses
-        aioice_ice.Connection.get_component_candidates = original_component
+        _active_policy.reset(token)
