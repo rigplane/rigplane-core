@@ -1112,16 +1112,24 @@ def _real_rigctld_radio(fake: _TcpRigctldServer) -> "RigctldClientRadio":  # noq
 
 
 @pytest.mark.asyncio
-async def test_rigctld_unanswered_ptt_ends_startup_after_exactly_three_reads() -> None:
-    """MOR-2757 (a): a rigctld that never answers ``t`` ends startup after 3 reads.
+async def test_rigctld_unanswered_ptt_releases_the_gate_with_a_warning(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """MOR-4456: a rigctld that never answers ``t`` still opens the listener.
 
-    The ``t`` read is the PTT path's own read, through the real transport
-    against a real TCP server. A read timeout closes the connection, so
-    the poller must reconnect before the next cycle: exactly three real
-    requests for ``t`` reach rigctld — each on its own connection — and
-    the third records the declared-command defect that refuses the bind,
-    naming the field and the command.
+    PTT left the startup-critical set: the silent ``t`` read — the PTT
+    path's own read, through the real transport against a real TCP
+    server — no longer counts toward the MOR-2749 attempt limit, records
+    no defect, and the listener binds with one WARNING naming the field,
+    the ``t`` command, and the silent cause. The key path refuses on the
+    live store with the existing unknown-RF-state reason; a late ``t``
+    answer clears the unknown and the key path allows again — without
+    ever keying the radio. The old exactly-three-reads abort (and its
+    reconnect pin) is gone with the attempt limit it pinned.
     """
+    from rigplane._poller_types import PttOn
+    from rigplane.runtime.tx_interlock import evaluate_tx_interlock, resolve_rf_state
+
     fake = _TcpRigctldServer(silent="t")
     await fake.start()
     radio = _real_rigctld_radio(fake)
@@ -1134,31 +1142,54 @@ async def test_rigctld_unanswered_ptt_ends_startup_after_exactly_three_reads() -
         binds.append("bind")
         return _FakeAsyncServer()
 
+    ptt = FieldPath.global_("tx_state", "ptt")
+
+    def _ptt_value() -> object:
+        try:
+            return server.command_state_store.snapshot().field(ptt).value
+        except KeyError:
+            return None
+
     try:
-        with patch("rigplane.web.web_startup.asyncio.start_server", new=_bind):
-            with pytest.raises(RuntimeError) as caught:
-                await asyncio.wait_for(server.start(), timeout=15.0)
-            await server.stop()
+        with (
+            patch("rigplane.web.web_startup.asyncio.start_server", new=_bind),
+            caplog.at_level(logging.WARNING, logger="rigplane.web.web_startup"),
+        ):
+            await asyncio.wait_for(server.start(), timeout=60.0)
+        assert binds == ["bind"]
+        assert scheduler.startup_defect is None
+        # Not vacuous: the radio was asked for the PTT read — and stayed
+        # silent, so the request timed out instead of being refused.
+        assert fake.t_requests > 0
+        warnings = [
+            record.getMessage()
+            for record in caplog.records
+            if record.levelno == logging.WARNING
+            and "global.tx_state.ptt" in record.getMessage()
+        ]
+        assert len(warnings) == 1, [record.getMessage() for record in caplog.records]
+        assert "command 't'" in warnings[0] or "'t'" in warnings[0], warnings[0]
+        # The poller asked for real: the unknown-RF-state refusal is
+        # evaluated on the live store the production poller fills, and a
+        # late ``t`` answer clears it. Flipping the fake's silence off
+        # needs no fake change: ``silent`` is read per request.
+        assert not evaluate_tx_interlock(
+            PttOn(), rf_state=resolve_rf_state(server.command_state_store.snapshot())
+        ).allowed
+        fake.silent = None
+        await await_until(
+            lambda: _ptt_value() is False,
+            timeout=30.0,
+            description="late t answer observed",
+        )
+        assert evaluate_tx_interlock(
+            PttOn(), rf_state=resolve_rf_state(server.command_state_store.snapshot())
+        ).allowed
     finally:
+        with suppress(Exception):
+            await server.stop()
         await radio.disconnect()
         await fake.stop()
-
-    assert binds == []
-    message = str(caught.value)
-    assert message.startswith("web startup aborted: ")
-    assert message.endswith("Refusing to start a half-working server.")
-    assert "global.tx_state.ptt" in message
-    assert "command 't'" in message
-    assert scheduler.startup_defect is not None
-    assert scheduler.startup_defect.command == "t"
-    # Exactly three real requests for ``t`` reached the server — no more:
-    # the limit is pinned, not merely reached. Connection drops in between
-    # (a timeout closes the connection) never count as unanswered reads.
-    assert fake.t_requests == 3
-    # Each ``t`` arrived on its own connection: the poller reconnected the
-    # transport between attempts, so three counts mean three asks of the
-    # radio (MOR-2757 review, reconnect pin).
-    assert len(fake.t_connection_ids) == 3
 
 
 @pytest.mark.asyncio

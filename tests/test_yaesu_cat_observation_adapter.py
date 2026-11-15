@@ -3006,7 +3006,6 @@ _DEFECT_ROWS: tuple[tuple[str, str, int | None, str, tuple[str, ...]], ...] = (
         ("global.operator_controls.compressor_level",),
     ),
     ("vox", "read_vox", None, "poll_tx_controls", ("global.tx_state.vox_on",)),
-    ("split", "read_split", None, "poll_tx_controls", ("global.tx_state.split",)),
     (
         "clarifier",
         "read_clarifier",
@@ -3116,6 +3115,34 @@ async def test_defective_read_names_every_declared_path_it_feeds(
     assert emitted.isdisjoint(expected)
     # Nothing is released: the gate's outstanding set is exactly what it was.
     assert scheduler.unobserved_startup_paths(()) == before
+
+
+@pytest.mark.parametrize("failure", ["parse", "reject"])
+@pytest.mark.asyncio
+async def test_broken_split_read_records_no_defect(failure: str) -> None:
+    """MOR-4456: a refused or wrong-shape split read is served unknown.
+
+    Split left the startup-critical set with PTT: the broken read still
+    skips only its own field (MOR-2578 — no invented value leaks into
+    the store and the lane keeps publishing), but it records no startup
+    defect, so the gate releases on the non-critical deadline path
+    instead of aborting. The wire command the radio never answered is
+    named by the gate's deadline WARNING, not here.
+    """
+    profile = _profile_state_acquisition()
+    scheduler = AcquisitionScheduler(profile=profile)
+    radio = _gate_radio()
+    radio._acquisition_scheduler = scheduler
+    _break_read(radio, "read_split", None, failure=failure)
+
+    observations = await YaesuObservationAdapter(
+        radio, profile=profile, clock=_clock
+    ).poll_tx_controls()
+
+    assert isinstance(observations, tuple)
+    assert scheduler.startup_defect is None
+    emitted = {str(item.path) for item in observations}
+    assert "global.tx_state.split" not in emitted
 
 
 @pytest.mark.asyncio

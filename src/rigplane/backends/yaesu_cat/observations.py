@@ -1772,13 +1772,19 @@ class YaesuObservationAdapter:
                 )
         # split (MOR-446) — GLOBAL tx_state bool (CAT ``ST``), gated on the
         # ``split`` runtime capability, mirroring the legacy poller's
-        # ``"split" in caps`` gate.
+        # ``"split" in caps`` gate. MOR-4456: split left the
+        # startup-critical set — a refused or malformed split read is
+        # served unknown (the gate's deadline path names it; transmit
+        # stays refused through the TX interlock), so it records no
+        # abort defect. The shared ``startup_critical_path`` contract
+        # decides, so a re-promotion re-arms recording here with no
+        # change; the skip and the deadline WARNING stay either way.
         if self._has_runtime_capability("split") and self._can_poll(_SPLIT):
             ok, value = await self._safe_read(
                 "split",
                 self.radio.read_split(),
                 lambda: self.radio.read_split(),
-                paths=(_SPLIT,),
+                paths=(_SPLIT,) if startup_critical_path(_SPLIT) else (),
             )
             if ok:
                 observations.append(
