@@ -889,8 +889,9 @@ test('IC-705 external span narrowing adopts without a write and without hatch (c
 // LSB with scope center type 0): idle CTR with the simulator's scope center
 // type at Filter Center (--scope-center-type 0), LSB and USB. The streamed
 // wave centres on the passband centre (3000 Hz filter ⇒ 1500 Hz off the
-// VFO), so the wire frames show coverage offset from the follow view at
-// EQUAL width. An offset-but-equal-width native is a transient lag, never a
+// VFO), so the radio native stays at the requested width while the wire
+// frames carry the offset intersection (1500 Hz narrower on one side). An
+// offset-but-equal-width native is a transient lag, never a
 // hatch: the rows assert no hatch in the DOM (.scope-hatch = 0) AND none on
 // the canvas (pixel-sampled edge strip, see canvasEdgeHotColumns). Needs the
 // same integrated tree as the rows above.
@@ -978,8 +979,10 @@ for (const { mode, port, stripSide } of [
       const expectedView = [BASE_FREQ_HZ - grantedWidthHz / 2, BASE_FREQ_HZ + grantedWidthHz / 2];
       await expect.poll(() => frames.at(-1)?.view).toEqual(expectedView);
 
-      // The seam is exercised: coverage offset from the view at EQUAL
-      // width. LSB uncovers the right strip, USB the left strip.
+      // The seam is exercised: the radio native stays 100 kHz wide (equal
+      // to the requested view) while the delivered wire coverage is the
+      // offset intersection — 1500 Hz narrower on the uncovered side. LSB
+      // uncovers the right strip, USB the left strip.
       await expect.poll(() => {
         const latest = frames.at(-1);
         if (!latest) return null;
@@ -989,7 +992,7 @@ for (const { mode, port, stripSide } of [
           ? latest.view[1] - latest.coverage[1]
           : latest.coverage[0] - latest.view[0];
         return [viewHz, covHz, Math.round(stripHz)];
-      }, { timeout: 120_000 }).toEqual([100_000, 100_000, 1500]);
+      }, { timeout: 120_000 }).toEqual([100_000, 98_500, 1500]);
       const stableWall = Date.now();
       await page.waitForTimeout(2000);
 
