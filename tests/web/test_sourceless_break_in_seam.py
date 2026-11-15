@@ -19,13 +19,24 @@ drives the committed envelope through the REAL handler entry
 (``_handle_text``: envelope parse, routing, capability gate, enqueue) over a
 REAL ``Ic7300SerialRadio`` on the testkit ``CivSerialFake`` (bench
 ``tests/fixtures/ic7300/civ_pairs.jsonl`` recording), executes the queued
-command the way the poller loop does, reads back through the REAL backend
-getter, applies the production readback observation, and asserts the reply ok
-plus the PUBLIC ``breakIn`` through ``ServerStatePublic``. One stated limit:
-the fake serves the bench-recorded FULL readback statically (it models no
-0x16/0x47 register; the CI-V SET is fire-and-forget), so this proves the
-handler accepts, enqueues, emits the wire SET and publishes the radio's
-reported state — not that the fake applied the SET.
+command through ``poller._execute_queued_entry`` the way the consumer loop
+does, and asserts the reply ok plus the PUBLIC ``breakIn`` through
+``ServerStatePublic``. The break-in state arrives through the PRODUCTION
+publication plumbing only: ``_station`` attaches the profile's real
+``AcquisitionScheduler`` to the radio exactly like
+``WebServer._bootstrap_state_acquisition`` (so the ``SetBreakIn`` arm's
+``_request_post_write_readback`` queues a real USER readback instead of
+no-opping), the command store IS the radio's own store, adopted exactly
+like ``WebServer`` adopts it (a post-connect swap would orphan the pump's
+bound generation), the seam pumps the production send seam (``_send_scheduler_requests`` — the call
+the poller ``_run`` loop makes), and the bench fake's FULL-readback answer
+is decoded and applied by the production ``runtime/_civ_rx.py`` 0x47 branch.
+No hand-written observation, no direct getter read: if post-write
+acquisition or publication breaks, the payload has no ``breakIn``. One stated
+limit: the fake serves the bench-recorded FULL readback statically (it
+models no 0x16/0x47 register; the CI-V SET is fire-and-forget), so this
+proves the handler accepts, enqueues, emits the wire SET and publishes the
+radio's reported state — not that the fake applied the SET.
 """
 
 from __future__ import annotations
@@ -40,6 +51,11 @@ from typing import Any
 
 from rigplane.backends.ic7300 import Ic7300SerialRadio
 from rigplane.backends.icom7610.drivers.serial_civ_link import SerialCivLink
+from rigplane.core.acquisition_scheduler import (
+    AcquisitionPriority,
+    AcquisitionScheduler,
+)
+from rigplane.core.state_pipeline_contracts import FieldPath
 from rigplane.core.state_store import StateStore
 from rigplane.core.tx_target import UnknownTxTarget
 from rigplane.profiles.rig_loader import load_rig
@@ -59,6 +75,8 @@ SEAM_PATH = (
 _RENDER_COMMAND = "see tests/web/test_sourceless_break_in_seam.py::render_seam_document"
 
 _ENVELOPE_ID = "sourceless-break-in-1"
+
+_BREAK_IN_PATH = FieldPath.global_("operator_controls", "break_in")
 
 
 def _synthetic_profile():
@@ -90,8 +108,22 @@ async def _station():
         profile=profile,
         _enumerate_serial_ports_fn=lambda: [],
     )
+    # Production acquisition plumbing, mirroring ``WebServer``: the server
+    # adopts the radio's own store as the command store (it never swaps in
+    # a fresh one after connect — the RX pump binds the store generation at
+    # ``connect()``) and ``_bootstrap_state_acquisition`` rides the
+    # profile's real scheduler on the radio, so the ``SetBreakIn`` arm's
+    # ``_request_post_write_readback`` queues a genuine USER readback.
+    store = radio.state_store
+    assert isinstance(store, StateStore)
+    acquisition_profile = profile.state_acquisition
+    assert acquisition_profile is not None, "synthetic profile lost state_acquisition"
+    radio._acquisition_scheduler = AcquisitionScheduler(  # noqa: SLF001
+        profile=acquisition_profile
+    )
+    scheduler = radio._acquisition_scheduler
+    assert isinstance(scheduler, AcquisitionScheduler)
     await radio.connect()
-    store = StateStore()
     queue: CommandQueue = CommandQueue()
     poller = RadioPoller(radio, queue, state_store=store)
     ws = _FrameRecorder()
@@ -115,6 +147,7 @@ async def _station():
             radio=radio,
             store=store,
             poller=poller,
+            scheduler=scheduler,
             ws=ws,
             handler=handler,
             entries=entries,
@@ -124,6 +157,15 @@ async def _station():
         consumer.cancel()
         await asyncio.gather(consumer, return_exceptions=True)
         await radio.disconnect()
+
+
+def _published_break_in(store: StateStore) -> int | None:
+    """The store's break-in value, or None while production unpublished it."""
+    try:
+        value = store.snapshot().field(_BREAK_IN_PATH).value
+    except KeyError:
+        return None
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
 def _set_wire_hex(fake: CivSerialFake) -> str:
@@ -163,11 +205,29 @@ async def _run_seam() -> dict[str, Any]:
         queued = [entry.command for entry in station.entries]
         assert SetBreakIn(mode=2) in queued, f"set_break_in dropped: {queued!r}"
         wire = _set_wire_hex(station.fake)
-        mode = await station.radio.get_break_in()
-        station.poller._apply_global_control_observation(  # noqa: SLF001
-            "break_in",
-            int(mode),
-            provider_generation=station.store.provider_generation,
+        # The SET arm's production post-write readback: the scheduler must
+        # hold a USER readback for exactly the break-in path — queued by
+        # ``_request_post_write_readback``, never by this test. If the arm
+        # stops requesting it, this fails here, before any publication wait.
+        readbacks = [
+            request
+            for request in station.scheduler.pending_requests()
+            if request.reason == "post_write_readback"
+        ]
+        assert [request.paths for request in readbacks] == [(_BREAK_IN_PATH,)]
+        assert {request.priority for request in readbacks} == {AcquisitionPriority.USER}
+        # The production send seam — the call the poller ``_run`` loop makes
+        # every pass. The executor resolves the path through the profile's
+        # own query map (``get_break_in``), transmits over the real link, and
+        # the bench fake answers with the recorded FULL readback.
+        await station.poller._send_scheduler_requests()  # noqa: SLF001
+        # The production CI-V RX path (``runtime/_civ_rx.py`` 0x47 branch)
+        # decodes that answer into the shared command store. No observation
+        # is written by hand: a broken readback or publication times out
+        # here instead of being papered over.
+        await await_until(
+            lambda: _published_break_in(station.store) == 2,
+            description="production break-in publication",
         )
         payload = build_public_state_payload_from_snapshot(
             station.store.snapshot(),
