@@ -1227,6 +1227,64 @@ async def test_attach_ack_on_lossy_channels_only(tmp_path: Path) -> None:
         await _tear_down_stack(stack)
 
 
+@_webrtc
+async def test_resent_attach_after_lost_ack_is_reacknowledged_and_channel_works(
+    tmp_path: Path,
+) -> None:
+    """The lossy-channel retry: the first ack is dropped in transit, the
+    client resends its attach, and the ONE attach path re-acknowledges it
+    (the retry never builds a new ticket or handler) — then both lossy
+    channels keep working: ping/pong on scope, the audio format on audio.
+    """
+    stack = await _stand_up_stack(tmp_path, audio=True)
+    peer = _LossyAckPeer()
+    try:  # peer setup, negotiation and acquisition are in cleanup scope
+        await peer.connect(stack.web, ("control", "scope", "audio"))
+        key = await _acquire_session(stack.web.port)
+
+        def _attach(label: str) -> None:
+            peer.send_text(
+                label,
+                json.dumps(
+                    {
+                        "type": "attach",
+                        "controller_key": key,
+                        "state_delta": 2,
+                        "role": "primary",
+                    }
+                ),
+            )
+
+        _attach("control")
+        hello = await await_until(
+            lambda: peer.take("control"), timeout=10.0, description="control hello"
+        )
+        assert hello is not None and hello["type"] == "hello", hello
+        for label in ("scope", "audio"):
+            _attach(label)  # its ack is lost in transit (dropped below)
+            _attach(label)  # the ackless client resends its attach
+            ack = await await_until(
+                lambda bound=label: peer.take(bound, drop_first_ack=True),
+                timeout=5.0,
+                description=f"re-acknowledged {label} attach",
+            )
+            assert ack == {"type": "attached", "v": 1, "channel": label}, ack
+        # Both channels still work after the re-acknowledged retry.
+        peer.send_text("scope", json.dumps({"type": "ping"}))
+        pong = await await_until(
+            lambda: peer.take("scope"), timeout=10.0, description="scope pong"
+        )
+        assert pong == {"type": "pong"}, pong
+        peer.send_text("audio", json.dumps({"type": "audio_start", "direction": "tx"}))
+        fmt = await await_until(
+            lambda: peer.take("audio"), timeout=10.0, description="audio format"
+        )
+        assert fmt is not None and fmt["type"] == "audio_tx_format", fmt
+    finally:
+        await peer.close()
+        await _tear_down_stack(stack)
+
+
 async def test_websocket_clients_receive_no_attach_ack(tmp_path: Path) -> None:
     """The ack is lossy-data-channel only: the first WS control frame is hello."""
     stack = await _stand_up_stack(tmp_path)
