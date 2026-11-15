@@ -6,7 +6,8 @@
  * keyless api acquire included, takes its role from the caller's attach
  * (no attach or no role is refused, never defaulted). The transport
  * opens only once the attach is acknowledged (scope/audio: the
- * `attach_ack`; control: hello; api: on send — reliable), so no client
+ * `attach_ack`; control: the contract-validated `control_hello`; api: on
+ * send — reliable), so no client
  * frame can precede the attach on the wire; lossy labels resend until the
  * ack or error+close after 5 s; `attachedProtocol` is the token.
  */
@@ -41,6 +42,8 @@ function fieldOk(kind: string, value: unknown): boolean {
     typeof value === 'object' && value !== null && !Array.isArray(value) && Object.values(value).every(check);
   if (kind === 'string') return typeof value === 'string';
   if (kind === 'integer') return typeof value === 'number' && Number.isInteger(value);
+  if (kind === 'boolean') return typeof value === 'boolean';
+  if (kind === 'array of strings') return Array.isArray(value) && value.every((x) => typeof x === 'string');
   if (kind === 'string | null') return value === null || typeof value === 'string';
   if (kind === 'object: name -> [values]') return map((v) => Array.isArray(v) && v.every((x) => typeof x === 'string'));
   if (kind === 'object: name -> value') return map((v) => typeof v === 'string');
@@ -198,14 +201,10 @@ export class DataChannelTransport implements MessageTransport {
   private onChannelMessage(data: unknown): void {
     if (this.awaitingAck && typeof data === 'string') {
       if (this.channel.label === 'control') {
-        let hello: unknown = null;
-        try {
-          hello = JSON.parse(data);
-        } catch {
-          /* not JSON */
-        }
-        // hello proves the attach and is still delivered below
-        if (hello instanceof Object && (hello as Record<string, unknown>).type === 'hello') this.resolveAttach();
+        // Only a text frame that passes the committed control_hello contract
+        // proves the attach; one that says hello but violates the contract is
+        // delivered below like any other frame and the attach times out.
+        if (decodeContractPayload(wire.payloads.control_hello, data) !== null) this.resolveAttach();
       } else {
         const ack = decodeContractPayload<AttachAck>(wire.payloads.attach_ack, data);
         // Only the committed attach_ack version completes the attach; any
