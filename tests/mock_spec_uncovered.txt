@@ -49,7 +49,6 @@ test_security_headers.py
 test_startup_state_gate.py
 test_sync_coverage.py
 test_tx_authority_characterisation.py
-test_unsupported_tx_target_no_source.py
 test_vox_tone_state.py
 test_web_audio_streaming_profile.py
 test_web_command_batch_http.py
