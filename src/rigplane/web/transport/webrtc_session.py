@@ -71,9 +71,12 @@ logger = logging.getLogger(__name__)
 _INSTALL_HINT: Final = "WebRTC backend unavailable; install rigplane[webrtc]."
 
 # Labels we dispatch into handlers; any other channel is ignored (logged).
+# ``api`` is ordered + reliable like ``control`` (REST multiplexes
+# independent requests); ``scope`` / ``audio`` stay unordered and lossy.
 _CONTROL: Final = "control"
 _SCOPE: Final = "scope"
 _AUDIO: Final = "audio"
+_API: Final = "api"
 
 # A data channel that never sends its attach frame is closed after this.
 _ATTACH_TIMEOUT_S: Final = 5.0
@@ -271,7 +274,7 @@ class WebRtcSessionManager:
     ) -> None:
         """Wrap an inbound channel and serve it through the shared attach."""
         label = channel.label
-        if label not in (_CONTROL, _SCOPE, _AUDIO):
+        if label not in (_CONTROL, _SCOPE, _AUDIO, _API):
             logger.info("WebRTC: ignoring unknown data channel %r", label)
             return
         session.tasks.append(
@@ -289,9 +292,12 @@ class WebRtcSessionManager:
         A refused ticket closes it too. Otherwise the channel attaches
         through ``WebServer.attach_client_channel`` — the same ticket,
         handlers, caps, supervision and cleanup the WebSocket lane uses.
+        The ``api`` label alone admits a keyless attach (it is how a
+        browser acquires its first key); every other label still
+        requires a session key.
         """
         conn = WebRtcDataChannelConnection(channel, session.pc)
-        # Validated against the three labels by _dispatch_channel.
+        # Validated against the four labels by _dispatch_channel.
         kind = cast(ChannelKind, channel.label)
         server = self._server
         if server is None:
@@ -312,7 +318,9 @@ class WebRtcSessionManager:
                 await conn.close(1003, "attach frame must be text")
             return
         try:
-            params = ClientChannelParams.from_attach_frame(payload)
+            params = ClientChannelParams.from_attach_frame(
+                payload, require_key=kind != "api"
+            )
         except ValueError as exc:
             logger.info("WebRTC: bad attach frame on %r: %s", kind, exc)
             with contextlib.suppress(Exception):

@@ -240,7 +240,7 @@ class _ApiClient:
     async def close(self) -> None:
         if self._pump_task is not None:
             self._pump_task.cancel()
-            with contextlib.suppress(Exception):
+            with contextlib.suppress(asyncio.CancelledError, Exception):
                 await self._pump_task
         if self._channel is not None:
             with contextlib.suppress(Exception):
@@ -641,3 +641,57 @@ async def test_api_deadline_errors_slow_request() -> None:
             assert resp.status == 200
         finally:
             await _tear_down(server, client)
+
+
+class _StubConn:
+    """In-memory connection with a controllable send buffer (no aiortc)."""
+
+    def __init__(self) -> None:
+        self.sent: list[bytes] = []
+        self.buffered = 0
+        self.watermark: int | None = None
+
+    async def recv(self) -> tuple[int, bytes]:
+        raise EOFError
+
+    async def send_text(self, text: str) -> None:
+        raise AssertionError("api channel never sends text")
+
+    async def send_binary(self, data: bytes) -> None:
+        self.sent.append(bytes(data))
+
+    async def close(self, code: int = 1000, reason: str = "") -> None:
+        pass
+
+    def abort(self) -> None:
+        pass
+
+    def is_alive(self) -> bool:
+        return True
+
+    def buffered_bytes(self) -> int:
+        return self.buffered
+
+    def set_buffer_low_watermark(self, value: int) -> None:
+        self.watermark = value
+
+
+async def test_api_send_waits_while_buffer_full() -> None:
+    """Sends stall past 256 KB buffered and resume intact on drain."""
+    from rigplane.web import api_channel as api_mod
+
+    conn = _StubConn()
+    conn.buffered = 300 * 1024
+    server = WebServer(None, WebConfig())
+    handler = api_mod.ApiChannelHandler(conn, server, ("stub", 0))
+    assert conn.watermark == 64 * 1024
+    task: asyncio.Task[None] = asyncio.ensure_future(
+        handler._send_response(7, 200, {"Content-Type": "application/json"},
+                               b'{"ok":true}'))
+    await asyncio.sleep(0.2)
+    assert conn.sent == [], "send must wait while the buffer is full"
+    conn.buffered = 0
+    await asyncio.wait_for(task, timeout=5.0)
+    assert len(conn.sent) == 3  # RES_HEAD + RES_BODY + END
+    assert conn.sent[-1][1] == 5  # END type byte
+    assert all(frame[0] == 1 for frame in conn.sent)  # wire version

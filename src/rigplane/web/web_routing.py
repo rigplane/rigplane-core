@@ -37,7 +37,7 @@ from rigplane.core.host_guard import (  # noqa: TID251
 if TYPE_CHECKING:
     from .server import WebServer  # noqa: TID251
 
-__all__ = ["dispatch_http_request"]
+__all__ = ["dispatch_http_request", "dispatch_http_with_controller_gate"]
 
 logger = logging.getLogger(__name__)
 
@@ -394,6 +394,31 @@ async def _dispatch_http_request(
             )
             return
 
+    await dispatch_http_with_controller_gate(
+        server, writer, method, path, headers, reader, query
+    )
+
+
+async def dispatch_http_with_controller_gate(
+    server: WebServer,
+    writer: asyncio.StreamWriter,
+    method: str,
+    path: str,
+    headers: dict[str, str] | None = None,
+    reader: asyncio.StreamReader | None = None,
+    query: dict[str, list[str]] | None = None,
+) -> None:
+    """Controller currency gate + route table, shared by HTTP and the api channel.
+
+    This is the second half of :func:`_dispatch_http_request` (everything
+    after the Host/Origin transport gates): controller acquisition,
+    remote-mode credential rules, transmission-end exemptions, and the
+    call into :func:`_dispatch_http_routes`. The ``api`` data channel
+    runs each request through exactly this function with a synthetic
+    request/response adapter, so every route applies its existing HTTP
+    controller rules per request; the Host/Origin gates stay HTTP-only
+    (a data channel has neither header).
+    """
     if path in ("/api/v1/controller", "/api/v1/controller/mode"):
         await server._handle_http_controller(method, path, writer, headers, reader)
         return

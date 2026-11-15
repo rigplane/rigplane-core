@@ -20,8 +20,8 @@ from ..runtime.controller_authority import ControllerError
 __all__ = ["ChannelKind", "ClientChannelParams", "TransportKind"]
 
 #: Client channel kinds. ``rigctl`` exists only on the WebSocket lane;
-#: data channels carry ``control`` / ``scope`` / ``audio`` labels.
-ChannelKind = Literal["control", "scope", "audio", "rigctl"]
+#: data channels carry ``control`` / ``scope`` / ``audio`` / ``api`` labels.
+ChannelKind = Literal["control", "scope", "audio", "api", "rigctl"]
 
 #: Per-transport tag carried explicitly from the adapter into the shared
 #: attach path. The shared serve never branches on the connection's
@@ -83,17 +83,21 @@ class ClientChannelParams:
         )
 
     @classmethod
-    def from_attach_frame(cls, payload: bytes) -> Self:
+    def from_attach_frame(cls, payload: bytes, *, require_key: bool = True) -> Self:
         """Parse a data channel's first-text-frame attach frame.
 
         The frame is ``{"type": "attach", "controller_key": str,
         "state_delta": 1 | 2, "role": str}``; ``role`` defaults to
         ``"primary"`` when absent, and ``state_delta`` defaults to ``2``
-        (leaf deltas). A data channel admits only keyed (session) peers:
-        a missing or null ``controller_key`` is refused, so the existing
-        controller session TTL and expiry cover every data-channel peer —
-        a keyless peer could otherwise hold TX past a silent loss with no
-        session to expire it. Anything else — bad JSON, a non-object, a
+        (leaf deltas). Control/scope/audio data channels admit only
+        keyed (session) peers: a missing or null ``controller_key`` is
+        refused, so the existing controller session TTL and expiry cover
+        every data-channel peer — a keyless peer could otherwise hold TX
+        past a silent loss with no session to expire it. The ``api``
+        channel passes ``require_key=False``: it is how a browser
+        acquires its first key (``POST /api/v1/controller``), every
+        request it carries names its own key the way HTTP does, and it
+        holds no transmitter. Anything else — bad JSON, a non-object, a
         wrong ``type``, or mistyped fields — raises :class:`ValueError`
         and the adapter closes the channel.
         """
@@ -104,7 +108,7 @@ class ClientChannelParams:
         if not isinstance(obj, dict) or obj.get("type") != "attach":
             raise ValueError("attach frame must carry {'type': 'attach', ...}")
         key = obj.get("controller_key")
-        if type(key) is not str:
+        if type(key) is not str and (key is not None or require_key):
             raise ValueError("attach frame 'controller_key' must be a session key")
         role = obj.get("role", "primary")
         if type(role) is not str:
