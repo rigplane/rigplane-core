@@ -1307,12 +1307,8 @@ async def test_restore_keeps_span_adopted_after_span_rewrite(windowed_sdk, monke
         # The span rewrite (pre-subscribe snapshot) lands first — wait
         # for it, so the external change deterministically lands BETWEEN
         # the two restore writes.
-        assert await await_until(
-            lambda: sim.views[0] == (0, presets.index(25_000), 1)
-        )
-        n15_before_push = len(
-            [w for w in _viewport_writes(sim) if w.sub == 0x15]
-        )
+        assert await await_until(lambda: sim.views[0] == (0, presets.index(25_000), 1))
+        n15_before_push = len([w for w in _viewport_writes(sim) if w.sub == 0x15])
         sim.views[0] = (0, presets.index(100_000), 1)
         sim.push_scope_setting(b"\x15\x00" + bcd_encode(100_000))
         assert await await_until(lambda: not session.active)
