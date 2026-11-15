@@ -286,7 +286,8 @@ async def _tear_down(server: WebServer, *clients: _ApiClient) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Happy paths: keyless attach, parsed-JSON and byte-identical parity,
+# Happy paths: keyless attach, parsed-JSON info parity (wsClients
+# normalised, not byte-identical), byte-identical capabilities parity,
 # acquire -> control.
 # ---------------------------------------------------------------------------
 
@@ -403,20 +404,29 @@ async def test_api_large_response_arrives_in_chunks() -> None:
     "parallel requests do not head-of-line block behind it"
 )
 async def test_api_concurrent_requests_do_not_block() -> None:
-    """10 parallel requests: 9 fast finish before 1 deliberately slow one."""
+    """Slow-first: 9 fast requests finish while the slow one stays blocked.
+
+    The slow request goes out first and its handler blocks on an event;
+    all 9 fast requests must complete BEFORE the event is released, so a
+    sequential dispatcher (which would hold the fast ones behind the slow
+    one) fails this test.
+    """
     from unittest.mock import patch
 
     from rigplane.web import server as server_module
 
     server = await _stand_up_light()
     client = _ApiClient()
+    entered = asyncio.Event()
+    release = asyncio.Event()
     try:
         await client.connect(server.port)
         await client.attach(None)
 
         async def _slow_caps(self: WebServer, writer: Any, headers: Any = None) -> None:
             # Canned: /capabilities needs a radio the light stack lacks.
-            await asyncio.sleep(3.0)
+            entered.set()
+            await release.wait()
             await server_module._send_response(
                 writer,
                 200,
@@ -429,23 +439,25 @@ async def test_api_concurrent_requests_do_not_block() -> None:
             return await client.request(req_id, "GET", path)
 
         with patch.object(WebServer, "_serve_capabilities", _slow_caps):
-            tasks = [
-                asyncio.ensure_future(_one(i, "/api/v1/info")) for i in range(1, 10)
+            slow = asyncio.ensure_future(_one(1, "/api/v1/capabilities"))
+            await await_until(
+                entered.is_set,
+                timeout=10.0,
+                description="slow handler blocked on the gate",
+            )
+            fast = [
+                asyncio.ensure_future(_one(i, "/api/v1/info")) for i in range(2, 11)
             ]
-            tasks.append(asyncio.ensure_future(_one(10, "/api/v1/capabilities")))
-            done_order: list[int] = []
-            pending = set(tasks)
-            while pending:
-                finished, pending = await asyncio.wait(
-                    pending, return_when=asyncio.FIRST_COMPLETED
-                )
-                for task in finished:
-                    done_order.append(tasks.index(task) + 1)
-            results = [t.result() for t in tasks]
-        assert all(r.status == 200 for r in results)
-        # The slow capabilities request (id 10) finishes last: no HOL block.
-        assert done_order[-1] == 10, done_order
+            results = await asyncio.wait_for(asyncio.gather(*fast), timeout=10.0)
+            assert all(r.status == 200 for r in results)
+            # The slow request is still gated: nothing answered it while
+            # the fast ones completed (no head-of-line blocking).
+            assert not slow.done(), "slow request answered before release"
+            release.set()
+            slow_resp = await asyncio.wait_for(slow, timeout=10.0)
+            assert slow_resp.status == 200, slow_resp.body[:200]
     finally:
+        release.set()
         await _tear_down(server, client)
 
 
@@ -699,6 +711,30 @@ async def test_api_malformed_frames_error_without_closing() -> None:
         # The channel still serves afterwards, with fresh ids.
         resp = await client.request(3, "GET", "/api/v1/info")
         assert resp.status == 200
+    finally:
+        await _tear_down(server, client)
+
+
+@_webrtc
+async def test_api_deeply_nested_head_is_malformed_not_fatal() -> None:
+    """A deeply nested head answers ERROR malformed, not a dead channel.
+
+    ``json.loads`` raises ``RecursionError`` (not ``ValueError``) past ~10k
+    nesting levels; the head parser must normalise it into the existing
+    ``malformed`` ERROR instead of letting it escape and kill the receive
+    loop. A valid request on the same channel still works afterwards.
+    """
+    server = await _stand_up_light()
+    client = _ApiClient()
+    try:
+        await client.connect(server.port)
+        await client.attach(None)
+        nested = ("[" * 20_000 + "]" * 20_000).encode()
+        client.send_raw(_frame(_REQ_HEAD, 1, nested))
+        await client.expect_error(1, "malformed")
+        # The receive loop survived: a fresh id is served on this channel.
+        resp = await client.request(2, "GET", "/api/v1/info")
+        assert resp.status == 200, resp.body[:200]
     finally:
         await _tear_down(server, client)
 
@@ -1283,6 +1319,176 @@ async def test_api_deadline_errors_slow_request() -> None:
             assert resp.status == 200
         finally:
             await _tear_down(server, client)
+
+
+@_webrtc
+@pytest.mark.realtime(
+    reason="channel loss must cancel a bundle build that stays blocked "
+    "in real time until the test releases it"
+)
+async def test_api_preview_channel_loss_cleans_abandoned_bundle() -> None:
+    """Losing the channel during a preview build orphans no staging dir.
+
+    ``build_bundle`` runs in a worker thread, so cancelling the api
+    request task does not stop it: the handler must keep ownership until
+    the worker finishes, then remove the abandoned staging directory.
+    """
+    import threading
+    import zipfile
+    from unittest.mock import patch
+
+    from rigplane.web import api_channel as api_mod
+    from rigplane.web.handlers import diagnostics as diag_mod
+
+    entered = threading.Event()
+    release = threading.Event()
+    seen: list[Path] = []
+
+    def _blocked_build(ctx: Any, bundle_path: Any) -> None:
+        seen.append(Path(bundle_path).parent)
+        entered.set()
+        assert release.wait(timeout=30.0), "bundle gate never released"
+        with zipfile.ZipFile(bundle_path, "w") as zf:
+            zf.writestr("manifest.json", "{}")
+
+    server = await _stand_up_light()
+    client = _ApiClient()
+    request_tasks: list[asyncio.Task[None]] = []
+    orig_serve = api_mod.ApiChannelHandler._serve_request
+
+    async def _spy(self: Any, req_id: int, state: Any) -> None:
+        task = asyncio.current_task()
+        assert task is not None
+        request_tasks.append(task)
+        await orig_serve(self, req_id, state)
+
+    try:
+        await client.connect(server.port)
+        await client.attach(None)
+        with (
+            patch.object(diag_mod, "build_bundle", _blocked_build),
+            patch.object(api_mod.ApiChannelHandler, "_serve_request", _spy),
+        ):
+            client.send_raw(
+                _frame(
+                    _REQ_HEAD,
+                    1,
+                    _head(
+                        "POST",
+                        "/api/v1/diagnose/preview",
+                        headers={"content-type": "application/json"},
+                    ),
+                )
+            )
+            client.send_raw(_frame(_REQ_BODY, 1, b"{}"))
+            client.send_raw(_frame(_END, 1, b""))
+            await await_until(
+                entered.is_set,
+                timeout=10.0,
+                description="bundle build started",
+            )
+            assert request_tasks, "preview request task never started"
+            # Lose the channel: teardown cancels the dispatched request.
+            await client.close()
+            await await_until(
+                lambda: request_tasks[0].cancelling() > 0
+                or request_tasks[0].done(),
+                timeout=10.0,
+                description="abandoned preview request cancelled",
+            )
+            # Let the worker thread finish; the handler must own it to the
+            # end and remove the abandoned staging directory.
+            release.set()
+            await await_until(
+                request_tasks[0].done,
+                timeout=10.0,
+                description="abandoned preview request finished",
+            )
+            await await_until(
+                lambda: seen and not seen[0].exists(),
+                timeout=10.0,
+                description="abandoned staging directory removed",
+            )
+            assert server._diagnostics._sessions == {}  # noqa: SLF001
+    finally:
+        release.set()
+        await _tear_down(server, client)
+
+
+@_webrtc
+@pytest.mark.realtime(
+    reason="the request deadline must fire while a bundle build stays "
+    "blocked in real time until the test releases it"
+)
+async def test_api_preview_deadline_cleans_abandoned_bundle() -> None:
+    """A deadline during a preview build orphans no staging directory.
+
+    Same abandoned-worker ownership as channel loss, but the cancel comes
+    from the per-request deadline: the ERROR timeout is observed first
+    (so cancellation is certain), then the worker is released and the
+    staging directory must vanish.
+    """
+    import threading
+    import zipfile
+    from unittest.mock import patch
+
+    from rigplane.web import api_channel as api_mod
+    from rigplane.web.handlers import diagnostics as diag_mod
+
+    entered = threading.Event()
+    release = threading.Event()
+    seen: list[Path] = []
+
+    def _blocked_build(ctx: Any, bundle_path: Any) -> None:
+        seen.append(Path(bundle_path).parent)
+        entered.set()
+        assert release.wait(timeout=30.0), "bundle gate never released"
+        with zipfile.ZipFile(bundle_path, "w") as zf:
+            zf.writestr("manifest.json", "{}")
+
+    server = await _stand_up_light()
+    client = _ApiClient()
+    try:
+        await client.connect(server.port)
+        await client.attach(None)
+        with (
+            patch.object(api_mod, "REQUEST_DEADLINE_S", 0.5),
+            patch.object(diag_mod, "build_bundle", _blocked_build),
+        ):
+            client.send_raw(
+                _frame(
+                    _REQ_HEAD,
+                    1,
+                    _head(
+                        "POST",
+                        "/api/v1/diagnose/preview",
+                        headers={"content-type": "application/json"},
+                    ),
+                )
+            )
+            client.send_raw(_frame(_REQ_BODY, 1, b"{}"))
+            client.send_raw(_frame(_END, 1, b""))
+            await await_until(
+                entered.is_set,
+                timeout=10.0,
+                description="bundle build started",
+            )
+            await client.expect_error(1, "timeout", timeout=10.0)
+            # The deadline cancelled the request; release the worker and
+            # require its abandoned staging directory to be removed.
+            release.set()
+            await await_until(
+                lambda: seen and not seen[0].exists(),
+                timeout=10.0,
+                description="abandoned staging directory removed",
+            )
+            assert server._diagnostics._sessions == {}  # noqa: SLF001
+            # The channel stays usable after the abandoned build.
+            resp = await client.request(2, "GET", "/api/v1/info")
+            assert resp.status == 200
+    finally:
+        release.set()
+        await _tear_down(server, client)
 
 
 class _StubConn:
