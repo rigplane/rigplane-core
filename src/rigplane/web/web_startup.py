@@ -447,6 +447,26 @@ def _startup_path_command(server: WebServer, path: FieldPath) -> str:
     return " ".join(parts)
 
 
+def _startup_lapse_cause(scheduler: AcquisitionScheduler, path: FieldPath) -> str:
+    """Name why a lapsed non-critical path never answered (MOR-4456).
+
+    A refused read is terminal and answered-as-unavailable, so a refused
+    path normally leaves the gate's outstanding set at once; a path that
+    still lapses the deadline was met with radio silence (answer-window
+    timeouts) or was never asked at all.
+    """
+
+    refusals = scheduler.consecutive_refusals(path)
+    timeouts = scheduler.consecutive_request_timeouts(path)
+    if refusals and timeouts:
+        return f"refused {refusals}x, timed out {timeouts}x"
+    if refusals:
+        return f"refused {refusals}x"
+    if timeouts:
+        return f"timed out {timeouts}x"
+    return "never answered"
+
+
 def _record_critical_startup_defect(
     server: WebServer,
     scheduler: AcquisitionScheduler,
@@ -489,8 +509,11 @@ async def _await_initial_state_acquisition(
     * a path that is not safety-critical
       (:func:`..core.state_pipeline_contracts.startup_critical_path`)
       stops blocking :data:`_STARTUP_GATE_NON_CRITICAL_DEADLINE_SECONDS`
-      after the initial fetch — one WARNING names the paths, their
-      controls stay unread (dimmed), and polling continues; and
+      after the initial fetch — one WARNING names the paths with the wire
+      command each never answered and why (refused vs silent, MOR-4456),
+      their controls stay unread (dimmed), and polling continues, so a
+      late answer clears the served-unknown with no durable mark to lift;
+      and
     * a safety-critical path whose request group reaches
       :data:`_STARTUP_GATE_CRITICAL_ATTEMPTS` failed reads (the initial
       fetch plus consecutive answer-window timeouts recorded by the
@@ -591,9 +614,15 @@ async def _await_initial_state_acquisition(
                 expired.update(lapsed)
                 logger.warning(
                     "initial state acquisition: no answer for %s after %.0fs; "
-                    "serving without them",
+                    "serving without them (%s)",
                     ", ".join(str(path) for path in lapsed),
                     _STARTUP_GATE_NON_CRITICAL_DEADLINE_SECONDS,
+                    "; ".join(
+                        f"{path}: "
+                        f"{_startup_path_command(server, path) or 'no declared read'}; "
+                        f"{_startup_lapse_cause(scheduler, path)}"
+                        for path in lapsed
+                    ),
                 )
         blocking = tuple(path for path in outstanding if path not in expired)
         if not blocking:
