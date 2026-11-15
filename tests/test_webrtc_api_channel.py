@@ -890,6 +890,28 @@ def _tx_refusal_body(resp: _Response) -> Any:
     return obj
 
 
+async def _http_post_keyed(
+    port: int, path: str, payload: dict[str, Any], key: str
+) -> tuple[int, str]:
+    """Minimal keyed HTTP POST: status plus decoded body text."""
+    reader, writer = await asyncio.open_connection("127.0.0.1", port)
+    try:
+        raw = json.dumps(payload).encode()
+        writer.write(
+            f"POST {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n"
+            f"Content-Length: {len(raw)}\r\nContent-Type: application/json\r\n"
+            f"X-RigPlane-Controller: {key}\r\n"
+            "Connection: close\r\n\r\n".encode() + raw
+        )
+        await writer.drain()
+        head = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), timeout=10.0)
+        status = int(head.split(b" ", 2)[1])
+        body = await asyncio.wait_for(reader.read(), timeout=10.0)
+        return status, body.decode()
+    finally:
+        writer.close()
+
+
 @_webrtc
 async def test_api_tx_start_single_command_refused(tmp_path: Path) -> None:
     """Tuner start over api: 403 controller_tx_unsupported, radio not keyed."""
@@ -1131,16 +1153,30 @@ async def test_api_transmission_end_stays_served(tmp_path: Path) -> None:
         batch_obj = json.loads(resp.body.decode())
         assert batch_obj["results"][0]["ok"] is False, batch_obj
         assert batch_obj["results"][0]["error"] == "managed_tx_refused", batch_obj
-        resp = await _post(5, "/api/v1/radio/cw/stop", {})
+        # A neutral typed command executes: tuner off is served 200.
+        resp = await _post(
+            5,
+            "/api/v1/commands",
+            {"name": "set_tuner_status", "params": {"value": 0}},
+        )
         assert resp.status == 200, (resp.status, resp.body[:200])
+        # CW stop with nothing playing is rejected by the radio itself —
+        # over HTTP identically. Parity with the HTTP lane proves the
+        # refusal passed it through instead of deciding.
+        resp = await _post(6, "/api/v1/radio/cw/stop", {})
+        http_status, http_body = await _http_post_keyed(
+            stack.web.port, "/api/v1/radio/cw/stop", {}, key
+        )
+        assert resp.status == http_status, (resp.status, resp.body[:200])
+        assert json.loads(resp.body.decode()) == json.loads(http_body.decode())
         # Managed momentary PTT never serves over HTTP (409): the point is
         # the refusal passes it to the dispatch (not 403) and the dispatch
         # answers exactly as it would over HTTP.
-        resp = await _post(6, "/api/v1/commands", {"name": "ptt_off", "params": {}})
+        resp = await _post(7, "/api/v1/commands", {"name": "ptt_off", "params": {}})
         assert resp.status == 409, (resp.status, resp.body[:200])
         assert json.loads(resp.body.decode())["error"] != "controller_tx_unsupported"
         resp = await _post(
-            7,
+            8,
             "/api/v1/commands/batch",
             {"steps": [{"name": "ptt_off", "params": {}}]},
         )
