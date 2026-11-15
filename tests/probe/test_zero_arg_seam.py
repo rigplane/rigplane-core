@@ -369,9 +369,7 @@ def test_default_save_cat_run_without_out(tmp_path, monkeypatch) -> None:
         answers=["", "y", "y"],
         tty=True,
         no_out=True,
-        opener=partial(
-            _checked_cat_openers, device="fake-cat-nbaud", baud=57600
-        ),
+        opener=partial(_checked_cat_openers, device="fake-cat-nbaud", baud=57600),
         wire=wire,
     )
     assert code == 0

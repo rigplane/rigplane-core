@@ -381,9 +381,7 @@ def test_default_save_continues_when_documents_resolver_fails(
     assert list(home.glob("FT-991A-radio-probe-*.json"))
 
 
-def test_default_save_uses_documents_when_cwd_is_gone(
-    tmp_path, monkeypatch
-) -> None:
+def test_default_save_uses_documents_when_cwd_is_gone(tmp_path, monkeypatch) -> None:
     # P2-2: a removed current directory must not fail the run while
     # Documents is fine.
     docs = tmp_path / "Documents"
