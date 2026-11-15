@@ -1032,7 +1032,7 @@ async def test_unsolicited_timestamps_are_captured_at_arrival() -> None:
             if request == b"FA;":
                 freq_calls += 1
                 if freq_calls == 2:
-                    pending.extend([b"ID0840;", b"MR123;", b"FA07074000;"])
+                    pending.extend([b"ID0840;", b"ID0841;", b"FA07074000;"])
                     return pending.pop(0)
                 return b"FA07074000;"
             return b"?;"
@@ -1050,15 +1050,17 @@ async def test_unsolicited_timestamps_are_captured_at_arrival() -> None:
             label="",
             include_private=False,
             gap_s=GAP,
-            timeout_s=SHORT_TIMEOUT,
+            # Longer than the scripted clock advances: the answer wait
+            # must survive all three exchange calls.
+            timeout_s=TIMEOUT,
             items=[item],
         )
     stray_rows = [
         row
         for row in report.file.unsolicited
-        if row.hex in (b"ID0840;".hex(), b"MR123;".hex())
+        if row.hex in (b"ID0840;".hex(), b"ID0841;".hex())
     ]
-    assert [row.hex for row in stray_rows] == [b"ID0840;".hex(), b"MR123;".hex()]
+    assert [row.hex for row in stray_rows] == [b"ID0840;".hex(), b"ID0841;".hex()]
     assert stray_rows[1].t_ms - stray_rows[0].t_ms == pytest.approx(200.0)
 
 
