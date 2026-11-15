@@ -1066,6 +1066,17 @@ class RigctldClientRadio:
             # A narrower catch here silently reported every real timeout as
             # ``failure="read-error"`` instead -- the same pattern already
             # caught and fixed in ``runtime/radio.py``'s Icom primitive.
+            # MOR-4456: the timeout retired the transport and nothing reopens it
+            # before the web/station readiness check (managed startup probes
+            # PTT in ``bind_state_store``): heal the link with the poller's own
+            # ``_reconnect_transport`` idiom; PTT stays unobserved.
+            if not self._intentional_disconnect and not self._transport.connected:
+                try:
+                    await self._transport.connect()
+                except Exception:
+                    logger.warning(
+                        "rigctld-client transport reconnect failed", exc_info=True
+                    )
             return TxStateReading(value=None, failure="timeout")
         except Exception:
             return TxStateReading(value=None, failure="read-error")
