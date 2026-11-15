@@ -610,11 +610,12 @@ _DEMOTION_MAP: Final[dict[AcquisitionClass, AcquisitionClass]] = {
 #: the TX target left this set — it never was an input to PTT and is
 #: served unknown when unanswered, so a field of that weight must not
 #: stop the product from starting. MOR-4456: PTT and split left it too —
-#: they are served unknown when unanswered, and transmit stays refused
-#: while PTT is unobserved through the TX interlock's unknown-RF-state
-#: refusal, so holding the whole server for them only strands a working
-#: receiver. The owner's list is derived here once, from field paths,
-#: next to the class membership it complements.
+#: they are served unknown when unanswered, and the managed key stays
+#: admitted while PTT is unobserved (the authority reports no radio-TX
+#: refusal) — only remote controller arming is refused with
+#: controller_not_ready — so holding the whole server for them only
+#: strands a working receiver. The owner's list is derived here once,
+#: from field paths, next to the class membership it complements.
 _STARTUP_CRITICAL_FREQ_MODE_NAMES: Final[frozenset[str]] = frozenset(
     _LIVE_TUNING_FIELD_NAMES
 )
@@ -632,8 +633,9 @@ def startup_critical_path(path: FieldPath) -> bool:
     is served unread. Frequency and mode are the ``freq_mode`` live
     tuning pair (MOR-4433: the TX target is not startup-critical — it is
     served unknown when unanswered; MOR-4456: PTT and split are not
-    either — they are served unknown, and transmit stays refused while
-    PTT is unobserved through the TX interlock). A ``scope_controls``
+    either — they are served unknown, and the managed key stays admitted
+    while PTT is unobserved; only remote arming is refused with
+    controller_not_ready). A ``scope_controls``
     ``mode`` (the scope's own mode setting) is not the operating mode
     and is not critical.
     """
