@@ -246,14 +246,12 @@ def _payload_contract(
     notes: Mapping[str, str] | None = None,
     codes: tuple[str, ...] = (),
 ) -> ApiWirePayload:
-    """Derive one payload contract from the producer that owns it.
-
-    Field names, order, wire types and required-ness come from the
-    producer dataclass and its defaults; only the notes, a leading
-    constant discriminator, and the renames and ``optional``/
-    ``required`` escapes — where the JSON shape differs from the
-    dataclass default — are declared by the caller. The wire-json tests
-    conform the result to the real parsers and encoders.
+    """Derive one payload contract from the producer that owns it:
+    names, order, types and required-ness come from the dataclass and
+    its defaults; notes, a leading constant, renames and the
+    optional/required escapes (where the JSON shape differs from the
+    dataclass) are declared by the caller. The wire-json tests conform
+    the result to the real parsers and encoders.
     """
     rows: list[tuple[str, str, bool, str]] = (
         [(constant[0], constant[1], True, constant[2])] if constant else []
@@ -287,12 +285,7 @@ def _api_channel_payload_contracts() -> dict[str, ApiWirePayload]:
             ApiRequestHead,
             "REQ_HEAD frame payload (UTF-8 JSON object)",
             optional=frozenset({"query", "headers"}),
-            notes={
-                "method": "non-empty HTTP method",
-                "path": "origin-form, no query",
-                "query": "absent means none",
-                "headers": "absent means none",
-            },
+            notes={"method": "non-empty HTTP method", "path": "origin-form, no query"},
         ),
         "response_head": _payload_contract(
             ApiResponseHead,
@@ -302,10 +295,6 @@ def _api_channel_payload_contracts() -> dict[str, ApiWirePayload]:
         "error": _payload_contract(
             ApiErrorFrame,
             "ERROR frame payload (UTF-8 JSON object)",
-            notes={
-                "code": "one of the codes below",
-                "message": "human-readable detail",
-            },
             codes=(
                 _BAD_VERSION,
                 _MALFORMED,
@@ -967,7 +956,7 @@ class ApiChannelHandler:
 
 
 # Golden documents: the concrete frames the browser must handle,
-# generated from the server's own encoders.
+# generated from the server's own encoders, as one typed contract.
 
 #: The test that replays every committed golden document for real.
 _API_GOLDEN_TESTED_BY: Final = "tests/test_api_channel_golden.py::test_golden_documents_replay_through_real_handlers"
@@ -1087,11 +1076,10 @@ def _golden_object(obj: Any, cls: type, what: str) -> dict[str, Any]:
 
 
 def api_channel_golden_documents_from_json(data: Any) -> GoldenDocuments:
-    """Load committed golden JSON into the typed contract.
-
-    Every key set is validated against the shape the producer types
-    declare, so a stale or hand-edited file fails loudly instead of
-    replaying half-read frames. Raises :class:`ValueError` on mismatch.
+    """Load committed golden JSON into the typed contract, validating
+    every key against the shape the producer types declare (a stale or
+    hand-edited file fails loudly instead of replaying half-read
+    frames). Raises :class:`ValueError` on mismatch.
     """
 
     def _frame(obj: Any) -> GoldenFrame:
@@ -1202,9 +1190,8 @@ def _request_head(
 
 async def api_channel_golden_documents() -> GoldenDocuments:
     """Every concrete frame sequence the browser must handle, from the
-    server's own encoders, as one typed contract; committed to
-    ``api-channel-golden.json`` and replayed for real by the test named
-    in ``tested_by``. Regenerate (from the repo root):
+    server's own encoders; committed to ``api-channel-golden.json``,
+    replayed for real by ``tested_by``. Regenerate (repo root):
 
         uv run python -c "import asyncio, dataclasses, json; from rigplane.web.api_channel import api_channel_golden_documents as d; print(json.dumps(dataclasses.asdict(asyncio.run(d()))))" > frontend/src/lib/transport/api-channel-golden.json
     """
@@ -1364,9 +1351,9 @@ async def api_channel_golden_documents() -> GoldenDocuments:
     return GoldenDocuments(
         version=1,
         tested_by=_API_GOLDEN_TESTED_BY,
-        formats="text-frame documents carry the exact UTF-8 text; binary frames "
-        "carry whole-frame hex with the decoded meaning; every document names "
-        "its variant, and shape lists each variant's fields",
+        formats="text-frame documents carry the exact UTF-8 text; binary "
+        "frames carry whole-frame hex plus decoded meaning; every document "
+        "names its variant, and shape lists each variant's fields",
         shape=_golden_shape(),
         documents=documents,
     )

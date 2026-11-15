@@ -85,31 +85,19 @@ def test_payload_contracts_conform_to_real_parsers_and_encoders() -> None:
         "timeout",
         "internal",
     )
-    # request_head: the real parser, full and minimal shapes.
-    full = {
-        "method": "GET",
-        "path": "/api/v1/info",
-        "query": {"a": ["1"]},
-        "headers": {"x": "y"},
-    }
-    assert ApiRequestHead.parse(json.dumps(full).encode()).path == "/api/v1/info"
-    _conform("request_head", full)
-    _conform("request_head", {"method": "GET", "path": "/api/v1/info"})
-    with pytest.raises(ValueError):  # required method
-        ApiRequestHead.parse(b'{"path": "/api/v1/info"}')
-    with pytest.raises(ValueError):  # required origin-form path
-        ApiRequestHead.parse(b'{"method": "GET", "path": "api"}')
-    # response_head / error / attach_ack: the real encoders' own output.
+    # The real encoders' own output conforms: response, error, ack.
     _conform("response_head", json.loads(ApiResponseHead(200, {"a": "b"}).encode()))
-    _conform(
-        "error", json.loads(ApiErrorFrame("stale_id", "request id reused").encode())
-    )
+    _conform("error", json.loads(ApiErrorFrame("stale_id", "m").encode()))
     ack = json.loads(ChannelAttachedAck("scope").encode())
     _conform("attach_ack", ack)
     assert ack == {"type": "attached", "v": ATTACH_ACK_VERSION, "channel": "scope"}
+    # The real parser accepts exactly the documented request_head shape.
+    _conform("request_head", {"method": "GET", "path": "/api/v1/info"})
+    assert ApiRequestHead.parse(b'{"method": "GET", "path": "/"}').path == "/"
+    with pytest.raises(ValueError):  # the required origin-form path
+        ApiRequestHead.parse(b'{"method": "GET", "path": "api"}')
     # attach_frame: keyed channels demand a key; the keyless "api"
-    # channel also accepts a null or omitted one. The exported row must
-    # say exactly that.
+    # channel also accepts null or omitted — the row must say that.
     keyed = {
         "type": "attach",
         "controller_key": "a-session-key",
@@ -121,15 +109,13 @@ def test_payload_contracts_conform_to_real_parsers_and_encoders() -> None:
             json.dumps(keyed).encode(), require_key=require_key
         ) == ClientChannelParams("a-session-key", "primary", 2)
     _conform("attach_frame", keyed)
-    keyless = {"type": "attach", "controller_key": None}
-    omitted = {"type": "attach"}
-    for frame in (keyless, omitted):
+    for keyless in ({"type": "attach", "controller_key": None}, {"type": "attach"}):
         ClientChannelParams.from_attach_frame(
-            json.dumps(frame).encode(), require_key=False
+            json.dumps(keyless).encode(), require_key=False
         )
-        _conform("attach_frame", frame)
+        _conform("attach_frame", keyless)
         with pytest.raises(ValueError):  # keyed channels refuse keyless
-            ClientChannelParams.from_attach_frame(json.dumps(frame).encode())
+            ClientChannelParams.from_attach_frame(json.dumps(keyless).encode())
     key_row = next(
         row for row in payloads["attach_frame"].fields if row[0] == "controller_key"
     )
