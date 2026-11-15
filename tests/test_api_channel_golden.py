@@ -1,11 +1,12 @@
 """Golden api-channel documents: producer-built, replayed for real.
 
 The committed JSON pins the frames the browser must handle, from the
-server's own encoders; this file fails when it drifts and replays EVERY
-document through the real stack — real aiortc data channels, the real
-attach path (lost-ack retry included), the api channel's real request
-handling — asserting the documented outcome, so browser tests reading
-the same file are pinned to what the server really does."""
+server's own encoders, as ONE typed contract: this file fails when it
+drifts, round-trips it through the producer's own loader, and replays
+EVERY document through the real stack — real aiortc data channels, the
+real attach path (lost-ack retry included), the api channel's real
+request handling — asserting the documented outcome, so browser tests
+reading the same file are pinned to what the server really does."""
 
 from __future__ import annotations
 
@@ -14,11 +15,17 @@ import base64
 import contextlib
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 import pytest
 
 from rigplane.testing.timing import await_until
+from rigplane.web.api_channel import (
+    ApiMessageType,
+    GoldenDocuments,
+    GoldenFrame,
+    api_channel_golden_documents_from_json,
+)
 from rigplane.web.server import WebServer
 from rigplane.web.transport.webrtc import webrtc_available
 
@@ -36,23 +43,21 @@ _GOLDEN_JSON = (
 _REPLAYER = "tests/test_api_channel_golden.py::test_golden_documents_replay_through_real_handlers"
 
 
-def _golden() -> dict[str, Any]:
-    return json.loads(_GOLDEN_JSON.read_text(encoding="utf-8"))
+def _golden() -> GoldenDocuments:
+    """The committed golden file, through the producer's own loader."""
+    return api_channel_golden_documents_from_json(
+        json.loads(_GOLDEN_JSON.read_text(encoding="utf-8"))
+    )
 
 
-def _raw(frame: dict[str, Any]) -> bytes:
-    hex_ = frame.get("hex")
-    return bytes.fromhex(hex_) if hex_ else base64.b64decode(frame["b64"])
-
-
-def _seq(frames: list[dict[str, Any]]) -> list[tuple[int, int, bytes]]:
-    """(type, request_id, payload): with version 1 and flag 0 this pins
-    every byte of the committed frames."""
-    out = []
+def _seq(frames: Iterable[GoldenFrame]) -> list[tuple[int, int, bytes]]:
+    """(type, request_id, payload) for committed frames — pinning
+    version 1, flags 0, and every payload byte of the committed hex."""
+    out: list[tuple[int, int, bytes]] = []
     for frame in frames:
-        raw = _raw(frame)
+        raw = bytes.fromhex(frame.hex)
         assert raw[0] == 1 and raw[6] == 0, raw[:8]
-        out.append((raw[1], int.from_bytes(raw[2:6], "big"), raw[7:]))
+        out.append((int(ApiMessageType[frame.type]), frame.request_id, raw[7:]))
     return out
 
 
@@ -120,34 +125,22 @@ class _LossyAckPeer:
 
 
 def test_committed_golden_json_is_one_typed_contract() -> None:
-    """The committed file is the producer's serialised typed contract:
-    one binary-frame encoding (whole-frame hex, never a hex/b64 guess),
-    a variant discriminator on every document, an envelope ``shape``
-    map for the browser side, and a producer-owned loader that
-    round-trips build -> serialise -> load."""
+    """The committed file is the producer's serialised typed contract —
+    whole-frame hex (never a hex/b64 guess), a variant discriminator on
+    every document, an envelope ``shape`` map for the browser side — and
+    the producer-owned loader round-trips build -> serialise -> load."""
     import dataclasses
 
-    from rigplane.web.api_channel import (  # noqa: TID251
-        api_channel_golden_documents,
-        api_channel_golden_documents_from_json,
-    )
+    from rigplane.web.api_channel import api_channel_golden_documents
 
     golden = _golden()
-    assert set(golden) == {"version", "tested_by", "formats", "shape", "documents"}
-    assert golden["tested_by"] == _REPLAYER
-    assert len(golden["documents"]) == 13, sorted(golden["documents"])
-    frame_keys = {"hex", "type", "request_id", "payload", "payload_bytes", "variant"}
-    for doc in golden["documents"].values():
-        assert doc["variant"] in golden["shape"], doc.get("variant")
-        for frame in (
-            doc.get("request", []) + doc.get("reply", []) + doc.get("frames", [])
-        ):
-            assert set(frame) == frame_keys, sorted(frame)
+    assert golden.tested_by == _REPLAYER
+    assert len(golden.documents) == 13, sorted(golden.documents)
     built = asyncio.run(api_channel_golden_documents())
-    assert golden == json.loads(json.dumps(dataclasses.asdict(built))), (
-        "api-channel-golden.json drifted; regenerate it"
-    )
-    assert api_channel_golden_documents_from_json(golden) == built
+    assert _GOLDEN_JSON.read_text(encoding="utf-8").rstrip("\n") == json.dumps(
+        dataclasses.asdict(built)
+    ), "api-channel-golden.json drifted; regenerate it"
+    assert golden == built, "the loader must round-trip the built contract"
 
 
 @_webrtc
@@ -158,7 +151,7 @@ def test_committed_golden_json_is_one_typed_contract() -> None:
 async def test_golden_documents_replay_through_real_handlers(
     tmp_path: Path,
 ) -> None:
-    docs = _golden()["documents"]
+    docs = _golden().documents
     stack = await _stand_up_stack(tmp_path, audio=True)
     peer = _LossyAckPeer()
     api = _ApiClient()
@@ -168,7 +161,7 @@ async def test_golden_documents_replay_through_real_handlers(
         key = await _acquire_session(stack.web.port)
 
         def _attach_text(label: str) -> str:
-            return docs[f"attach_{label}"]["text"].replace("<SESSION-KEY>", key)
+            return docs[f"attach_{label}"].text.replace("<SESSION-KEY>", key)
 
         for label in ("control", "scope", "audio"):
             peer.send_text(label, _attach_text(label))
@@ -186,7 +179,7 @@ async def test_golden_documents_replay_through_real_handlers(
                 timeout=5.0,
                 description=f"re-acknowledged {label} attach",
             )
-            assert ack == json.loads(docs[f"attach_ack_{label}"]["text"]), ack
+            assert ack == json.loads(docs[f"attach_ack_{label}"].text), ack
         peer.send_text("scope", json.dumps({"type": "ping"}))
         pong = await await_until(
             lambda: peer.take("scope"), timeout=10.0, description="scope pong"
@@ -200,7 +193,7 @@ async def test_golden_documents_replay_through_real_handlers(
 
         # -- api documents on a real api channel, exact committed bytes --
         await api.connect(stack.web.port)
-        api._channel.send(docs["attach_api"]["text"])  # noqa: SLF001
+        api._channel.send(docs["attach_api"].text)  # noqa: SLF001
         await api.start_pump()
 
         async def _replies(request_id: int) -> list[tuple[int, bytes]]:
@@ -213,7 +206,7 @@ async def test_golden_documents_replay_through_real_handlers(
 
         def _check(name: str, got: list[tuple[int, bytes]]) -> None:
             assert [(t, p) for t, p in got] == [
-                (t, p) for t, _i, p in _seq(docs[name]["reply"])
+                (t, p) for t, _i, p in _seq(docs[name].reply)
             ], (name, got)
 
         from unittest.mock import patch
@@ -222,15 +215,15 @@ async def test_golden_documents_replay_through_real_handlers(
 
         for name in ("api_tx_refused", "api_not_found"):
             doc = docs[name]
-            for frame in (_raw(f) for f in doc["request"]):
-                api.send_raw(frame)
-            _check(name, await _replies(_seq(doc["request"])[0][1]))
+            for frame in doc.request:
+                api.send_raw(bytes.fromhex(frame.hex))
+            _check(name, await _replies(_seq(doc.request)[0][1]))
         # The replayed exchange IS observed processing: the keyless api
         # attach was consumed and the channel stayed open.
         assert not api._closed.is_set(), "keyless api attach refused"  # noqa: SLF001
         for name in ("api_ok", "api_chunked"):
             doc = docs[name]
-            body = base64.b64decode(doc["response_body_b64"])
+            body = base64.b64decode(doc.response_body_b64)
 
             async def _route(writer: Any, _body: bytes = body) -> None:
                 await server_module._send_response(
@@ -242,15 +235,15 @@ async def test_golden_documents_replay_through_real_handlers(
                 "_serve_band_plan_layers",
                 lambda self, writer: _route(writer),
             ):
-                for frame in (_raw(f) for f in doc["request"]):
-                    api.send_raw(frame)
-                _check(name, await _replies(_seq(doc["request"])[0][1]))
+                for frame in doc.request:
+                    api.send_raw(bytes.fromhex(frame.hex))
+                _check(name, await _replies(_seq(doc.request)[0][1]))
 
         # -- failure shapes --
         async def _expect_error(code: str) -> None:
             want = next(
                 f
-                for f in _seq(docs["api_errors"]["frames"])
+                for f in _seq(docs["api_errors"].frames)
                 if f[2] and json.loads(f[2])["code"] == code
             )
             with pytest.raises(_ApiError) as caught:
@@ -305,19 +298,19 @@ async def test_golden_documents_replay_through_real_handlers(
         # observable response) and a frame-answering handler answers the
         # unknown id.
         silent_ids = {
-            _seq([frame])[0][1]
+            frame.request_id
             for name in ("api_cancel", "api_unknown_id_ignored")
-            for frame in docs[name]["request"]
+            for frame in docs[name].request
         }
         assert silent_ids == {41, 9999}, silent_ids
-        assert [t for t, _r, _p in _seq(docs["api_cancel"]["request"])] == [
+        assert [t for t, _r, _p in _seq(docs["api_cancel"].request)] == [
             1,
             7,
             5,
         ], "api_cancel must send HEAD, CANCEL, then END"
         for name in ("api_cancel", "api_unknown_id_ignored"):
-            for frame in (_raw(f) for f in docs[name]["request"]):
-                api.send_raw(frame)
+            for frame in docs[name].request:
+                api.send_raw(bytes.fromhex(frame.hex))
         # Request 42's completed response IS observed processing: the
         # ordered channel served every earlier frame before it.
         assert (await api.request(42, "GET", "/api/v1/info")).status == 200

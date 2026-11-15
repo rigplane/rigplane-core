@@ -151,13 +151,12 @@ def test_committed_golden_documents_validate_against_payload_contracts() -> None
                     api_channel_wire_definition().payloads["error"].codes
                 ), code
             for frame in doc["frames"]:
-                _conform("error", frame["decoded"]["payload"])
+                _conform("error", frame["payload"])
         else:
             for frame in doc["request"] + doc["reply"]:
-                decoded = frame["decoded"]
-                if decoded["type"] == "REQ_HEAD":
-                    _conform("request_head", decoded["payload"])
-                elif decoded["type"] == "RES_HEAD":
-                    _conform("response_head", decoded["payload"])
+                if frame["type"] == "REQ_HEAD":
+                    _conform("request_head", frame["payload"])
+                elif frame["type"] == "RES_HEAD":
+                    _conform("response_head", frame["payload"])
         if "text" in doc:
             assert doc["decoded"] == json.loads(doc["text"]), name

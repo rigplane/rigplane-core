@@ -101,7 +101,10 @@ __all__ = [
     "ApiWireLimits",
     "ApiWireMessageTypes",
     "ApiWirePayload",
+    "GoldenDocument",
+    "GoldenDocuments",
     "api_channel_golden_documents",
+    "api_channel_golden_documents_from_json",
     "api_channel_wire_definition",
     "api_path_allowed",
     "api_response_messages",
@@ -987,105 +990,251 @@ def api_response_messages(
     return messages
 
 
-def _golden_frame(
-    msg_type: ApiMessageType, request_id: int, payload: bytes
-) -> dict[str, Any]:
-    """One wire frame as a committed golden entry: bytes plus meaning."""
-    frame = _encode_frame(int(msg_type), request_id, payload)
-    decoded: dict[str, Any] = {"type": msg_type.name, "request_id": request_id}
-    if payload:
-        try:
-            decoded["payload"] = json.loads(payload.decode("utf-8"))
-        except (UnicodeDecodeError, ValueError, RecursionError):
-            decoded["payload_bytes"] = len(payload)
-    if len(frame) <= 512:
-        return {"hex": frame.hex(), "decoded": decoded}
-    return {"b64": base64.b64encode(frame).decode("ascii"), "decoded": decoded}
+@dataclass(frozen=True, slots=True)
+class GoldenFrame:
+    """One committed binary frame: whole-frame hex plus its decoded
+    meaning (``payload_bytes`` names a non-JSON payload's length)."""
+
+    hex: str
+    type: str
+    request_id: int
+    payload: Any = None
+    payload_bytes: int | None = None
+    variant: str = "binary"
 
 
-def _golden_attach_document(label: str) -> dict[str, Any]:
-    """The attach frame for one data-channel label (client -> server)."""
-    keyless = label == "api"
-    text = json.dumps(
-        {
-            "type": "attach",
-            "controller_key": None if keyless else _GOLDEN_KEY_PLACEHOLDER,
-            "state_delta": 2,
-            "role": "primary",
-        }
-    )
-    outcome = (
-        "silent until the first request (the keyless acquire path)"
-        if keyless
-        else "answered by the attach ack; a resent frame is re-acknowledged"
-    )
+@dataclass(frozen=True, slots=True)
+class GoldenTextDocument:
+    """One text-frame document: an attach frame or its ack."""
+
+    direction: str
+    summary: str
+    text: str
+    decoded: Any
+    template: str | None
+    outcome: str
+    variant: str = "text"
+
+
+@dataclass(frozen=True, slots=True)
+class GoldenExchangeDocument:
+    """One request/reply exchange of binary frames (with the fixture
+    body the reply was built from, when the route serves one)."""
+
+    direction: str
+    summary: str
+    request: tuple[GoldenFrame, ...]
+    reply: tuple[GoldenFrame, ...]
+    outcome: str
+    route: str | None = None
+    response_body_b64: str | None = None
+    variant: str = "exchange"
+
+
+@dataclass(frozen=True, slots=True)
+class GoldenErrorsDocument:
+    """Every terminal ERROR frame, each with its trigger."""
+
+    direction: str
+    summary: str
+    triggers: dict[str, str]
+    frames: tuple[GoldenFrame, ...]
+    variant: str = "errors"
+
+
+#: Every golden document variant, keyed by its serialised discriminator.
+_GOLDEN_DOCUMENT_VARIANTS: Final[dict[str, type]] = {
+    "text": GoldenTextDocument,
+    "exchange": GoldenExchangeDocument,
+    "errors": GoldenErrorsDocument,
+}
+
+#: Any one golden document.
+GoldenDocument = GoldenTextDocument | GoldenExchangeDocument | GoldenErrorsDocument
+
+
+@dataclass(frozen=True, slots=True)
+class GoldenDocuments:
+    """The committed golden file as one typed contract, produced by the
+    server's own encoders and consumed through
+    :func:`api_channel_golden_documents_from_json`; ``shape`` is the
+    file's own field map, derived from these types."""
+
+    version: int
+    tested_by: str
+    formats: str
+    shape: dict[str, tuple[str, ...]]
+    documents: dict[str, GoldenDocument]
+
+
+def _golden_shape() -> dict[str, tuple[str, ...]]:
+    """The serialised shape of every golden type, from its own fields."""
     return {
-        "direction": "client->server",
-        "summary": f'the "{label}" attach frame (the first text frame)',
-        "text": text,
-        "decoded": json.loads(text),
-        "template": f"substitute a live controller_key for {_GOLDEN_KEY_PLACEHOLDER}",
-        "outcome": outcome,
+        name: tuple(field.name for field in fields(cls))
+        for name, cls in {
+            "envelope": GoldenDocuments,
+            "frame": GoldenFrame,
+            **_GOLDEN_DOCUMENT_VARIANTS,
+        }.items()
     }
 
 
-def _golden_ack_document(kind: str) -> dict[str, Any]:
+def _golden_object(obj: Any, cls: type, what: str) -> dict[str, Any]:
+    """Validate one decoded golden object against its shape, or raise."""
+    if not isinstance(obj, dict) or set(obj) != {field.name for field in fields(cls)}:
+        raise ValueError(f"{what} does not match the {cls.__name__} golden shape")
+    return obj
+
+
+def api_channel_golden_documents_from_json(data: Any) -> GoldenDocuments:
+    """Load committed golden JSON into the typed contract.
+
+    Every key set is validated against the shape the producer types
+    declare, so a stale or hand-edited file fails loudly instead of
+    replaying half-read frames. Raises :class:`ValueError` on mismatch.
+    """
+
+    def _frame(obj: Any) -> GoldenFrame:
+        return GoldenFrame(**_golden_object(obj, GoldenFrame, "golden frame"))
+
+    def _document(name: str, obj: Any) -> GoldenDocument:
+        variant: str | None = obj.get("variant") if isinstance(obj, dict) else None
+        cls: type | None = (
+            _GOLDEN_DOCUMENT_VARIANTS.get(variant) if variant is not None else None
+        )
+        if cls is None:
+            raise ValueError(f"golden document {name!r} has variant {variant!r}")
+        doc = _golden_object(obj, cls, f"golden document {name!r}")
+        if cls is GoldenExchangeDocument:
+            return GoldenExchangeDocument(
+                **{
+                    **doc,
+                    "request": tuple(map(_frame, doc["request"])),
+                    "reply": tuple(map(_frame, doc["reply"])),
+                }
+            )
+        if cls is GoldenErrorsDocument:
+            return GoldenErrorsDocument(
+                **{**doc, "frames": tuple(map(_frame, doc["frames"]))}
+            )
+        return GoldenTextDocument(**doc)
+
+    envelope = _golden_object(data, GoldenDocuments, "golden envelope")
+    return GoldenDocuments(
+        version=envelope["version"],
+        tested_by=envelope["tested_by"],
+        formats=envelope["formats"],
+        shape={key: tuple(value) for key, value in envelope["shape"].items()},
+        documents={
+            name: _document(name, doc) for name, doc in envelope["documents"].items()
+        },
+    )
+
+
+def _golden_frame(
+    msg_type: ApiMessageType, request_id: int, payload: bytes
+) -> GoldenFrame:
+    """One wire frame as a committed golden entry: bytes plus meaning."""
+    decoded: Any = None
+    if payload:
+        try:
+            decoded = json.loads(payload.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError, RecursionError):
+            decoded = None
+    return GoldenFrame(
+        hex=_encode_frame(int(msg_type), request_id, payload).hex(),
+        type=msg_type.name,
+        request_id=request_id,
+        payload=decoded,
+        payload_bytes=None if (decoded is not None or not payload) else len(payload),
+    )
+
+
+def _golden_attach_document(label: str) -> GoldenTextDocument:
+    """The attach frame for one data-channel label (client -> server)."""
+    keyless = label == "api"
+    decoded = {
+        "type": "attach",
+        "controller_key": None if keyless else _GOLDEN_KEY_PLACEHOLDER,
+        "state_delta": 2,
+        "role": "primary",
+    }
+    return GoldenTextDocument(
+        direction="client->server",
+        summary=f'the "{label}" attach frame (the first text frame)',
+        text=json.dumps(decoded),
+        decoded=decoded,
+        template=None
+        if keyless
+        else f"substitute a live controller_key for {_GOLDEN_KEY_PLACEHOLDER}",
+        outcome=(
+            "silent until the first request (the keyless acquire path)"
+            if keyless
+            else "answered by the attach ack; a resent frame is re-acknowledged"
+        ),
+    )
+
+
+def _golden_ack_document(kind: str) -> GoldenTextDocument:
     """The attach ack for one lossy label (server -> client)."""
     from .channel_attach import ChannelAttachedAck  # noqa: TID251
 
     text = ChannelAttachedAck(kind).encode()
-    return {
-        "direction": "server->client",
-        "summary": f"the {kind} attach ack (the first server text frame)",
-        "text": text,
-        "decoded": json.loads(text),
-        "outcome": "the client stops resending its attach",
-    }
+    return GoldenTextDocument(
+        direction="server->client",
+        summary=f"the {kind} attach ack (the first server text frame)",
+        text=text,
+        decoded=json.loads(text),
+        template=None,
+        outcome="the client stops resending its attach",
+    )
 
 
 def _request_head(
     method: str, path: str, request_id: int, headers: dict[str, str] | None = None
-) -> dict[str, Any]:
+) -> GoldenFrame:
+    """A REQ_HEAD golden frame."""
     payload = json.dumps(
         {"method": method, "path": path, "query": {}, "headers": headers or {}}
     ).encode()
     return _golden_frame(ApiMessageType.REQ_HEAD, request_id, payload)
 
 
-async def api_channel_golden_documents() -> dict[str, Any]:
+async def api_channel_golden_documents() -> GoldenDocuments:
     """Every concrete frame sequence the browser must handle, from the
-    server's own encoders; committed to ``api-channel-golden.json`` and
-    replayed for real by the test named in ``_tested_by``. Regenerate:
+    server's own encoders, as one typed contract; committed to
+    ``api-channel-golden.json`` and replayed for real by the test named
+    in ``tested_by``. Regenerate (from the repo root):
 
-        uv run python -c "import asyncio, json; from rigplane.web.api_channel import api_channel_golden_documents as d; print(json.dumps(asyncio.run(d())))" > frontend/src/lib/transport/api-channel-golden.json
+        uv run python -c "import asyncio, dataclasses, json; from rigplane.web.api_channel import api_channel_golden_documents as d; print(json.dumps(dataclasses.asdict(asyncio.run(d()))))" > frontend/src/lib/transport/api-channel-golden.json
     """
     from .server import _send_response  # noqa: TID251
 
     gf = _golden_frame
+    Head = tuple[str, str, int, dict[str, str] | None]
+    Msgs = list[tuple[ApiMessageType, bytes]]
+    Exchange = tuple[int, str, str, Head | None, Msgs, Msgs]
 
-    async def _route_frames(body: bytes) -> tuple[dict[str, Any], list[Any]]:
+    async def _route_frames(body: bytes) -> tuple[str, Msgs]:
         writer: Any = _ChannelHttpWriter(("golden", 0))
         await _send_response(
             writer, 200, "OK", body, {"Content-Type": "application/json"}
         )
         status, headers, captured = _split_response(bytes(writer._buf))  # noqa: SLF001
-        return {
-            "route": "GET /api/v1/band-plan/layers",
-            "response_body_b64": base64.b64encode(body).decode("ascii"),
-        }, api_response_messages(status, headers, captured)
+        return (
+            base64.b64encode(body).decode("ascii"),
+            api_response_messages(status, headers, captured),
+        )
 
     refusal_body = json.dumps(
         {"error": "controller_tx_unsupported"}, separators=(",", ":")
     ).encode()
-    ok_fixture, ok_reply = await _route_frames(b'{"golden": true}')
-    chunked_fixture, chunked_reply = await _route_frames(
-        b"A" * RESPONSE_CHUNK_BYTES + b"B"
-    )
+    ok_b64, ok_reply = await _route_frames(b'{"golden": true}')
+    chunked_b64, chunked_reply = await _route_frames(b"A" * RESPONSE_CHUNK_BYTES + b"B")
     end = (ApiMessageType.END, b"")
-    Head = tuple[str, str, int, dict[str, str] | None]
-    Msgs = list[tuple[ApiMessageType, bytes]]
-    exchanges: dict[str, tuple[str, str, Head | None, Msgs, Msgs]] = {
+    exchanges: dict[str, Exchange] = {
         "api_tx_refused": (
+            1,
             "a request with a body and its 403, id 1",
             "a TX-capable body is refused before the shared dispatch",
             (
@@ -1106,6 +1255,7 @@ async def api_channel_golden_documents() -> dict[str, Any]:
             ),
         ),
         "api_not_found": (
+            2,
             "a request for an unknown path and its 404, id 2",
             "only /api/v1/* table entries are routed",
             ("GET", "/api/v1/nonexistent", 2, None),
@@ -1113,6 +1263,7 @@ async def api_channel_golden_documents() -> dict[str, Any]:
             api_response_messages(404, {}, b"404 Not Found"),
         ),
         "api_ok": (
+            3,
             "a plain GET and its normal 200 response, id 3",
             "RES_HEAD, one RES_BODY per <= 16 KB of body, then END",
             ("GET", "/api/v1/band-plan/layers", 3, None),
@@ -1120,6 +1271,7 @@ async def api_channel_golden_documents() -> dict[str, Any]:
             ok_reply,
         ),
         "api_chunked": (
+            4,
             "a chunked multi-message body (> 16 KB), id 4",
             "RES_HEAD, 16384-byte + 1-byte RES_BODYs, END; concatenated body",
             ("GET", "/api/v1/band-plan/layers", 4, None),
@@ -1127,13 +1279,16 @@ async def api_channel_golden_documents() -> dict[str, Any]:
             chunked_reply,
         ),
         "api_cancel": (
+            41,
             "CANCEL drops request 41 before it answers",
-            "no frame is ever sent for id 41; the channel keeps serving",
+            "no frame is ever sent for id 41; the trailing END is a no-op "
+            "(a cancel that failed would answer it); the channel keeps serving",
             ("GET", "/api/v1/info", 41, None),
-            [(ApiMessageType.CANCEL, b"")],
+            [(ApiMessageType.CANCEL, b""), end],
             [],
         ),
         "api_unknown_id_ignored": (
+            9999,
             "frames for an unknown id are a no-op, id 9999",
             "no ERROR, no answer; the channel keeps serving",
             None,
@@ -1141,7 +1296,7 @@ async def api_channel_golden_documents() -> dict[str, Any]:
             [],
         ),
     }
-    documents: dict[str, Any] = {
+    documents: dict[str, GoldenDocument] = {
         f"attach_{label}": _golden_attach_document(label)
         for label in ("control", "scope", "audio", "api")
     }
@@ -1151,20 +1306,22 @@ async def api_channel_golden_documents() -> dict[str, Any]:
             for kind in ("scope", "audio")
         }
     )
-    for name, (summary, outcome, head, trailing, reply) in exchanges.items():
-        rid = (head or (None, None, 0))[2]
-        documents[name] = {
-            "direction": "client->server then server->client",
-            "summary": summary,
-            "request": [
-                *([] if head is None else [_request_head(*head)]),
-                *(gf(t, rid, p) for t, p in trailing),
-            ],
-            "reply": [gf(m, rid, p) for m, p in reply],
-            "outcome": outcome,
-        }
-    documents["api_ok"].update(ok_fixture)
-    documents["api_chunked"].update(chunked_fixture)
+    fixtures = {"api_ok": ok_b64, "api_chunked": chunked_b64}
+    for name, (rid, summary, outcome, head, trailing, reply) in exchanges.items():
+        documents[name] = GoldenExchangeDocument(
+            direction="client->server then server->client",
+            summary=summary,
+            request=tuple(
+                [
+                    *([] if head is None else [_request_head(*head)]),
+                    *(gf(t, rid, p) for t, p in trailing),
+                ]
+            ),
+            reply=tuple(gf(m, rid, p) for m, p in reply),
+            outcome=outcome,
+            route="GET /api/v1/band-plan/layers" if name in fixtures else None,
+            response_body_b64=fixtures.get(name),
+        )
     errors = {  # code: (request_id, message, trigger)
         "stale_id": (
             5,
@@ -1195,19 +1352,21 @@ async def api_channel_golden_documents() -> dict[str, Any]:
             "any frame shorter than the 7-byte header (the bytes 01 02 00 00)",
         ),
     }
-    documents["api_errors"] = {
-        "direction": "server->client",
-        "summary": "every terminal ERROR frame, with its trigger",
-        "triggers": {code: spec[2] for code, spec in errors.items()},
-        "frames": [
+    documents["api_errors"] = GoldenErrorsDocument(
+        direction="server->client",
+        summary="every terminal ERROR frame, with its trigger",
+        triggers={code: spec[2] for code, spec in errors.items()},
+        frames=tuple(
             gf(ApiMessageType.ERROR, rid, ApiErrorFrame(code, message).encode())
             for code, (rid, message, _trigger) in errors.items()
-        ],
-    }
-    return {
-        "version": 1,
-        "_tested_by": _API_GOLDEN_TESTED_BY,
-        "formats": "text frames carry the exact UTF-8 text; binary frames "
-        "carry whole-frame hex (base64 when > 512 bytes), decoded alongside",
-        "documents": documents,
-    }
+        ),
+    )
+    return GoldenDocuments(
+        version=1,
+        tested_by=_API_GOLDEN_TESTED_BY,
+        formats="text-frame documents carry the exact UTF-8 text; binary frames "
+        "carry whole-frame hex with the decoded meaning; every document names "
+        "its variant, and shape lists each variant's fields",
+        shape=_golden_shape(),
+        documents=documents,
+    )
