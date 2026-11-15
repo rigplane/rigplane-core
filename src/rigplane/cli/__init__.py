@@ -1725,6 +1725,13 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Enable the gated WebRTC transport entrypoint (requires the [webrtc] extra)",
     )
     web_p.add_argument(
+        "--webrtc-include-vpn",
+        dest="webrtc_include_vpn",
+        action="store_true",
+        default=False,
+        help="Admit VPN/tunnel interfaces as WebRTC ICE host candidates (default host-only excludes them)",
+    )
+    web_p.add_argument(
         "--allowed-host",
         dest="allowed_hosts",
         action="append",
@@ -4854,6 +4861,7 @@ async def _cmd_web(
 
     config_kwargs["discovery"] = getattr(args, "web_discovery", True)
     config_kwargs["webrtc_enabled"] = getattr(args, "webrtc_enabled", False)
+    config_kwargs["webrtc_include_vpn"] = getattr(args, "webrtc_include_vpn", False)
     allowed_hosts = getattr(args, "allowed_hosts", None)
     if allowed_hosts:
         config_kwargs["allowed_hosts"] = tuple(allowed_hosts)
