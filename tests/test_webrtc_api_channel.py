@@ -63,11 +63,14 @@ def _frame(msg_type: int, req_id: int, payload: bytes, version: int = 1) -> byte
     return _HEADER.pack(version, msg_type, req_id, 0) + payload
 
 
-def _head(method: str, path: str, query: dict[str, list[str]] | None = None,
-          headers: dict[str, str] | None = None) -> bytes:
+def _head(
+    method: str,
+    path: str,
+    query: dict[str, list[str]] | None = None,
+    headers: dict[str, str] | None = None,
+) -> bytes:
     return json.dumps(
-        {"method": method, "path": path,
-         "query": query or {}, "headers": headers or {}}
+        {"method": method, "path": path, "query": query or {}, "headers": headers or {}}
     ).encode()
 
 
@@ -78,8 +81,9 @@ class _Response:
     body: bytes
 
 
-async def _http_raw(port: int, method: str, path: str,
-                    body: bytes = b"") -> tuple[int, bytes]:
+async def _http_raw(
+    port: int, method: str, path: str, body: bytes = b""
+) -> tuple[int, bytes]:
     """Minimal raw HTTP helper: returns (status, raw body bytes)."""
     reader, writer = await asyncio.open_connection("127.0.0.1", port)
     try:
@@ -129,19 +133,21 @@ class _ApiClient:
         reader, writer = await asyncio.open_connection("127.0.0.1", port)
         try:
             payload = json.dumps(
-                {"sdp": self._pc.localDescription.sdp,
-                 "type": self._pc.localDescription.type}
+                {
+                    "sdp": self._pc.localDescription.sdp,
+                    "type": self._pc.localDescription.type,
+                }
             ).encode()
             writer.write(
                 f"POST /api/v1/transport/webrtc/offer HTTP/1.1\r\n"
                 f"Host: 127.0.0.1:{port}\r\n"
                 f"Content-Length: {len(payload)}\r\n"
                 "Content-Type: application/json\r\n"
-                "Connection: close\r\n\r\n".encode() + payload
+                "Connection: close\r\n\r\n".encode()
+                + payload
             )
             await writer.drain()
-            head = await asyncio.wait_for(
-                reader.readuntil(b"\r\n\r\n"), timeout=10.0)
+            head = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), timeout=10.0)
             assert head.split(b" ", 2)[1] == b"200", head[:200]
             answer = json.loads(await asyncio.wait_for(reader.read(), timeout=10.0))
         finally:
@@ -158,9 +164,16 @@ class _ApiClient:
     async def attach(self, key: str | None) -> None:
         """Send the attach frame; the api channel answers with no hello."""
         assert self._channel is not None
-        self._channel.send(json.dumps(
-            {"type": "attach", "controller_key": key,
-             "state_delta": 2, "role": "primary"}))
+        self._channel.send(
+            json.dumps(
+                {
+                    "type": "attach",
+                    "controller_key": key,
+                    "state_delta": 2,
+                    "role": "primary",
+                }
+            )
+        )
         # No hello is defined for the api channel; give the server a
         # moment to refuse (a refusal closes the channel).
         await asyncio.sleep(0.5)
@@ -181,10 +194,9 @@ class _ApiClient:
             message = await self._received.get()
             assert isinstance(message, bytes), message
             assert len(message) >= _HEADER.size, message
-            version, msg_type, req_id, _flags = _HEADER.unpack(
-                message[: _HEADER.size])
+            version, msg_type, req_id, _flags = _HEADER.unpack(message[: _HEADER.size])
             assert version == _API_VERSION, (version, message[:8])
-            payload = message[_HEADER.size:]
+            payload = message[_HEADER.size :]
             queue = self._queues.setdefault(req_id, asyncio.Queue())
             if msg_type == _ERROR:
                 obj = json.loads(payload.decode())
@@ -192,24 +204,29 @@ class _ApiClient:
             else:
                 queue.put_nowait((msg_type, payload))
 
-    async def _next_for(self, req_id: int,
-                        timeout: float = 10.0) -> tuple[int, bytes]:
+    async def _next_for(self, req_id: int, timeout: float = 10.0) -> tuple[int, bytes]:
         """Next frame for one request id; a server ERROR raises _ApiError."""
         item = await asyncio.wait_for(
-            self._queues.setdefault(req_id, asyncio.Queue()).get(), timeout)
+            self._queues.setdefault(req_id, asyncio.Queue()).get(), timeout
+        )
         if isinstance(item, _ApiError):
             raise item
         return item
 
-    async def request(self, req_id: int, method: str, path: str,
-                      query: dict[str, list[str]] | None =None,
-                      headers: dict[str, str] | None = None,
-                      body: bytes = b"") -> _Response:
+    async def request(
+        self,
+        req_id: int,
+        method: str,
+        path: str,
+        query: dict[str, list[str]] | None = None,
+        headers: dict[str, str] | None = None,
+        body: bytes = b"",
+    ) -> _Response:
         """One full request: HEAD [+BODY chunks] + END, collect to END."""
         assert self._pump_task is not None, "start_pump first"
         self.send_raw(_frame(_REQ_HEAD, req_id, _head(method, path, query, headers)))
         for off in range(0, len(body), _CHUNK):
-            self.send_raw(_frame(_REQ_BODY, req_id, body[off: off + _CHUNK]))
+            self.send_raw(_frame(_REQ_BODY, req_id, body[off : off + _CHUNK]))
         self.send_raw(_frame(_END, req_id, b""))
         status = 0
         resp_headers: dict[str, Any] = {}
@@ -227,8 +244,7 @@ class _ApiClient:
             else:  # pragma: no cover - server must not emit anything else here
                 raise AssertionError(f"unexpected frame type {msg_type}")
 
-    async def expect_error(self, req_id: int, code: str,
-                           timeout: float = 10.0) -> str:
+    async def expect_error(self, req_id: int, code: str, timeout: float = 10.0) -> str:
         """The next frame for req_id must be ERROR with this code."""
         try:
             await self._next_for(req_id, timeout)
@@ -321,7 +337,9 @@ async def test_api_acquire_grant_keys_control_channel(tmp_path: Path) -> None:
         # attach frame follow back to back.
         await dc.connect(stack.web)
         resp = await api.request(
-            1, "POST", "/api/v1/controller",
+            1,
+            "POST",
+            "/api/v1/controller",
             headers={"content-type": "application/json"},
             body=json.dumps({"kind": "pro"}).encode(),
         )
@@ -334,7 +352,8 @@ async def test_api_acquire_grant_keys_control_channel(tmp_path: Path) -> None:
         resp = await api.request(2, "GET", "/api/v1/capabilities")
         assert resp.status == 200, (resp.status, resp.body[:200])
         http_status, http_body = await _http_raw(
-            stack.web.port, "GET", "/api/v1/capabilities")
+            stack.web.port, "GET", "/api/v1/capabilities"
+        )
         assert http_status == 200, http_status
         assert resp.body == http_body
     finally:
@@ -356,7 +375,8 @@ async def test_api_large_response_arrives_in_chunks() -> None:
 
     async def _big_layers(writer: Any) -> None:
         await server_module._send_response(
-            writer, 200, "OK", raw, {"Content-Type": "application/json"})
+            writer, 200, "OK", raw, {"Content-Type": "application/json"}
+        )
 
     server = await _stand_up_light()
     client = _ApiClient()
@@ -364,7 +384,8 @@ async def test_api_large_response_arrives_in_chunks() -> None:
         await client.connect(server.port)
         await client.attach(None)
         with patch.object(
-            WebServer, "_serve_band_plan_layers",
+            WebServer,
+            "_serve_band_plan_layers",
             lambda self, writer: _big_layers(writer),
         ):
             resp = await client.request(1, "GET", "/api/v1/band-plan/layers")
@@ -392,26 +413,31 @@ async def test_api_concurrent_requests_do_not_block() -> None:
         await client.connect(server.port)
         await client.attach(None)
 
-        async def _slow_caps(self: WebServer, writer: Any,
-                             headers: Any = None) -> None:
+        async def _slow_caps(self: WebServer, writer: Any, headers: Any = None) -> None:
             # Canned: /capabilities needs a radio the light stack lacks.
             await asyncio.sleep(3.0)
             await server_module._send_response(
-                writer, 200, "OK", b'{"slow":true}',
-                {"Content-Type": "application/json"})
+                writer,
+                200,
+                "OK",
+                b'{"slow":true}',
+                {"Content-Type": "application/json"},
+            )
 
         async def _one(req_id: int, path: str) -> _Response:
             return await client.request(req_id, "GET", path)
 
         with patch.object(WebServer, "_serve_capabilities", _slow_caps):
-            tasks = [asyncio.ensure_future(_one(i, "/api/v1/info"))
-                     for i in range(1, 10)]
+            tasks = [
+                asyncio.ensure_future(_one(i, "/api/v1/info")) for i in range(1, 10)
+            ]
             tasks.append(asyncio.ensure_future(_one(10, "/api/v1/capabilities")))
             done_order: list[int] = []
             pending = set(tasks)
             while pending:
                 finished, pending = await asyncio.wait(
-                    pending, return_when=asyncio.FIRST_COMPLETED)
+                    pending, return_when=asyncio.FIRST_COMPLETED
+                )
                 for task in finished:
                     done_order.append(tasks.index(task) + 1)
             results = [t.result() for t in tasks]
@@ -461,7 +487,9 @@ async def test_api_excluded_tx_paths_are_404() -> None:
             (2, "POST", "/api/v1/civ/transaction"),
         ):
             resp = await client.request(
-                req_id, method, path,
+                req_id,
+                method,
+                path,
                 headers={"content-type": "application/json"},
                 body=b"{}",
             )
@@ -481,8 +509,7 @@ async def test_api_bad_version_errors_and_closes() -> None:
     try:
         await client.connect(server.port)
         await client.attach(None)
-        client.send_raw(_frame(_REQ_HEAD, 1, _head("GET", "/api/v1/info"),
-                               version=99))
+        client.send_raw(_frame(_REQ_HEAD, 1, _head("GET", "/api/v1/info"), version=99))
         try:
             await client._next_for(1)
         except _ApiError as exc:
@@ -490,9 +517,13 @@ async def test_api_bad_version_errors_and_closes() -> None:
         else:  # pragma: no cover
             raise AssertionError("expected ERROR bad_version")
         await await_until(
-            lambda: client._closed.is_set()
-            or (client._channel is not None
-                and client._channel.readyState == "closed"),
+            lambda: (
+                client._closed.is_set()
+                or (
+                    client._channel is not None
+                    and client._channel.readyState == "closed"
+                )
+            ),
             timeout=10.0,
             description="api channel closed after bad version",
         )
@@ -515,8 +546,9 @@ async def test_api_malformed_frames_error_without_closing() -> None:
         client.send_raw(_frame(_REQ_HEAD, 1, b"{nope"))
         await client.expect_error(1, "malformed")
         # A head naming a wrong-typed field.
-        client.send_raw(_frame(
-            _REQ_HEAD, 2, json.dumps({"method": "GET", "path": 42}).encode()))
+        client.send_raw(
+            _frame(_REQ_HEAD, 2, json.dumps({"method": "GET", "path": 42}).encode())
+        )
         await client.expect_error(2, "malformed")
         # The channel still serves afterwards, with fresh ids.
         resp = await client.request(3, "GET", "/api/v1/info")
@@ -555,12 +587,20 @@ async def test_api_body_over_1mb_is_rejected() -> None:
     try:
         await client.connect(server.port)
         await client.attach(None)
-        client.send_raw(_frame(_REQ_HEAD, 1, _head(
-            "POST", "/api/v1/eibi/fetch",
-            headers={"content-type": "application/json"})))
+        client.send_raw(
+            _frame(
+                _REQ_HEAD,
+                1,
+                _head(
+                    "POST",
+                    "/api/v1/eibi/fetch",
+                    headers={"content-type": "application/json"},
+                ),
+            )
+        )
         big = b"x" * (1024 * 1024 + 1)
         for off in range(0, len(big), _CHUNK):
-            client.send_raw(_frame(_REQ_BODY, 1, big[off: off + _CHUNK]))
+            client.send_raw(_frame(_REQ_BODY, 1, big[off : off + _CHUNK]))
         await client.expect_error(1, "too_large")
         # The next id is still accepted: the rejected request holds no slot.
         resp = await client.request(2, "GET", "/api/v1/info")
@@ -581,23 +621,23 @@ async def test_api_33rd_in_flight_is_busy() -> None:
     gate = asyncio.Event()
     started = 0
 
-    async def _gated_caps(self: WebServer, writer: Any,
-                          headers: Any = None) -> None:
+    async def _gated_caps(self: WebServer, writer: Any, headers: Any = None) -> None:
         nonlocal started
         started += 1
         await gate.wait()
         # Canned: /capabilities needs a radio the light stack lacks.
         await server_module._send_response(
-            writer, 200, "OK", b'{"gated":true}',
-            {"Content-Type": "application/json"})
+            writer, 200, "OK", b'{"gated":true}', {"Content-Type": "application/json"}
+        )
 
     try:
         await client.connect(server.port)
         await client.attach(None)
         with patch.object(WebServer, "_serve_capabilities", _gated_caps):
             for req_id in range(1, 33):
-                client.send_raw(_frame(
-                    _REQ_HEAD, req_id, _head("GET", "/api/v1/capabilities")))
+                client.send_raw(
+                    _frame(_REQ_HEAD, req_id, _head("GET", "/api/v1/capabilities"))
+                )
                 client.send_raw(_frame(_END, req_id, b""))
             # Every dispatched request parks on the gate holding its slot;
             # only then is the 33rd HEAD guaranteed to see a full house.
@@ -606,8 +646,7 @@ async def test_api_33rd_in_flight_is_busy() -> None:
                 timeout=10.0,
                 description="32 api requests in flight",
             )
-            client.send_raw(_frame(
-                _REQ_HEAD, 33, _head("GET", "/api/v1/capabilities")))
+            client.send_raw(_frame(_REQ_HEAD, 33, _head("GET", "/api/v1/capabilities")))
             client.send_raw(_frame(_END, 33, b""))
             await client.expect_error(33, "busy")
             gate.set()
@@ -656,8 +695,7 @@ async def test_api_deadline_errors_slow_request() -> None:
     server = await _stand_up_light()
     real_caps = WebServer._serve_capabilities
 
-    async def _slow_caps(self: WebServer, writer: Any,
-                         headers: Any = None) -> None:
+    async def _slow_caps(self: WebServer, writer: Any, headers: Any = None) -> None:
         await asyncio.sleep(30.0)
         await real_caps(self, writer, headers)
 
@@ -667,8 +705,9 @@ async def test_api_deadline_errors_slow_request() -> None:
             await client.connect(server.port)
             await client.attach(None)
             with patch.object(WebServer, "_serve_capabilities", _slow_caps):
-                client.send_raw(_frame(
-                    _REQ_HEAD, 1, _head("GET", "/api/v1/capabilities")))
+                client.send_raw(
+                    _frame(_REQ_HEAD, 1, _head("GET", "/api/v1/capabilities"))
+                )
                 client.send_raw(_frame(_END, 1, b""))
                 await client.expect_error(1, "timeout", timeout=10.0)
             # The channel stays usable after a timeout.
@@ -725,8 +764,10 @@ async def test_api_send_waits_while_buffer_full() -> None:
     handler = api_mod.ApiChannelHandler(conn, server, ("stub", 0))
     assert conn.watermark == 64 * 1024
     task: asyncio.Task[None] = asyncio.ensure_future(
-        handler._send_response(7, 200, {"Content-Type": "application/json"},
-                               b'{"ok":true}'))
+        handler._send_response(
+            7, 200, {"Content-Type": "application/json"}, b'{"ok":true}'
+        )
+    )
     await asyncio.sleep(0.2)
     assert conn.sent == [], "send must wait while the buffer is full"
     conn.buffered = 0

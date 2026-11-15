@@ -212,9 +212,9 @@ class ApiResponseHead:
 
     def encode(self) -> bytes:
         """Encode as the JSON payload of a RES_HEAD frame."""
-        return json.dumps(
-            {"status": self.status, "headers": self.headers}
-        ).encode("utf-8")
+        return json.dumps({"status": self.status, "headers": self.headers}).encode(
+            "utf-8"
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -226,9 +226,7 @@ class ApiErrorFrame:
 
     def encode(self) -> bytes:
         """Encode as the JSON payload of an ERROR frame."""
-        return json.dumps(
-            {"code": self.code, "message": self.message}
-        ).encode("utf-8")
+        return json.dumps({"code": self.code, "message": self.message}).encode("utf-8")
 
 
 def _encode_frame(msg_type: int, request_id: int, payload: bytes) -> bytes:
@@ -538,8 +536,9 @@ class ApiChannelHandler:
             assert state.task is not None
             state.task.cancel()
             self._finish(request_id)
-            asyncio.ensure_future(self._send_error(
-                request_id, _TOO_LARGE, "request body too large"))
+            asyncio.ensure_future(
+                self._send_error(request_id, _TOO_LARGE, "request body too large")
+            )
 
     def _on_end(self, request_id: int) -> None:
         """Mark a request complete: its task now runs the HTTP dispatch."""

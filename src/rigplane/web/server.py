@@ -7908,7 +7908,11 @@ class WebServer:
         channel holds no session.
         """
         ticket = self._resolve_client_ticket(params, kind)
-        if track_owners is not None and ticket is not None and ticket.tx_owner is not None:
+        if (
+            track_owners is not None
+            and ticket is not None
+            and ticket.tx_owner is not None
+        ):
             track_owners.add(ticket.tx_owner)
         try:
             await self.serve_client_channel(
@@ -8056,9 +8060,7 @@ class WebServer:
                 self._controller.validate(ticket)
             except ControllerError:
                 self._controller.detach(ticket)
-                self._conn_manager.unregister(
-                    scope, _ATTACH_PATH_FOR_KIND[kind], conn
-                )
+                self._conn_manager.unregister(scope, _ATTACH_PATH_FOR_KIND[kind], conn)
                 conn.abort()
                 return
         # WebSocket channels keep their historical ping/pong; data channels
