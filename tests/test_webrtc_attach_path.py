@@ -1115,3 +1115,89 @@ async def test_websocket_scope_output_shape(tmp_path: Path) -> None:
                 await _close_ws(writer)
     finally:
         await _tear_down_stack(stack)
+
+
+@_webrtc
+async def test_attach_ack_on_lossy_channels_only(tmp_path: Path) -> None:
+    """The ack exists only where the attach frame can be lost: the lossy
+    scope/audio labels get one ``{"type":"attached","v":1,...}`` text
+    frame as the FIRST frame (an ack-ignoring audio client is proven by
+    ``test_only_holders_audio...``); control's first frame is its
+    ``hello``, and api gets none — every ``test_webrtc_api_channel.py``
+    pump asserts each inbound frame is bytes.
+    """
+    stack = await _stand_up_stack(tmp_path, audio=True)
+    from aiortc import RTCPeerConnection, RTCSessionDescription
+
+    pc = RTCPeerConnection()
+    labels = ("control", "scope", "audio")
+    channels = {label: pc.createDataChannel(label, ordered=True) for label in labels}
+    received: dict[str, list[Any]] = {label: [] for label in labels}
+    for label, channel in channels.items():
+
+        @channel.on("message")  # type: ignore[misc, no-untyped-call]
+        def _on_message(message: Any, _label: str = label) -> None:
+            received[_label].append(message)
+
+    offer = await pc.createOffer()
+    await pc.setLocalDescription(offer)
+    manager = stack.web._webrtc_session_manager()  # noqa: SLF001
+    answer = await manager.negotiate(pc.localDescription.sdp, pc.localDescription.type)
+    await pc.setRemoteDescription(
+        RTCSessionDescription(sdp=answer["sdp"], type=answer["type"])
+    )
+    await await_until(
+        lambda: all(c.readyState == "open" for c in channels.values()), timeout=15.0
+    )
+    key = await _acquire_session(stack.web.port)
+
+    def _attach(label: str, frame_key: str | None) -> None:
+        channels[label].send(
+            json.dumps(
+                {
+                    "type": "attach",
+                    "controller_key": frame_key,
+                    "state_delta": 2,
+                    "role": "primary",
+                }
+            )
+        )
+
+    def _take(label: str) -> dict[str, Any] | None:
+        while received[label]:
+            message = received[label].pop(0)
+            if isinstance(message, str):
+                return json.loads(message)
+        return None
+
+    try:
+        _attach("control", key)
+        first = await await_until(
+            lambda: _take("control"), timeout=10.0, description="control first frame"
+        )
+        assert first is not None and first["type"] == "hello", first
+        for label in ("scope", "audio"):  # the ack is the first frame
+            _attach(label, key)
+            assert await await_until(
+                lambda bound=label: _take(bound), timeout=10.0, description=label
+            ) == {"type": "attached", "v": 1, "channel": label}
+    finally:
+        with contextlib.suppress(Exception):
+            await pc.close()
+        await _tear_down_stack(stack)
+
+
+async def test_websocket_clients_receive_no_attach_ack(tmp_path: Path) -> None:
+    """The ack is lossy-data-channel only: the first WS control frame is hello."""
+    stack = await _stand_up_stack(tmp_path)
+    try:
+        reader, writer, _ = await _ws_connect("127.0.0.1", stack.web.port, "/api/v1/ws")
+        try:
+            opcode, payload = await _ws_recv_frame(reader, timeout=10.0)
+            assert opcode == 0x1
+            assert json.loads(payload).get("type") == "hello"
+        finally:
+            with contextlib.suppress(Exception):
+                await _close_ws(writer)
+    finally:
+        await _tear_down_stack(stack)
