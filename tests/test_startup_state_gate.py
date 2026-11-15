@@ -1488,12 +1488,12 @@ async def test_managed_startup_with_silent_t_probes_once_and_keeps_local_ptt(
 
     Production CLI startup runs ``ManagedTxComposition.bind_state_store``
     -> ``_record_startup_release`` -> ``radio.read_transmit_state`` BEFORE
-    the first poll cycle. On a silent ``t`` that probe times out and
-    reopens the transport — but without latching the demotion flag, so the
-    first poll cycle asks ``t`` again: a second unanswered request, a third
-    connection, and the second timeout advances the bound store generation,
-    which clears the active provider without republishing it. Receive
-    polling recovers but local managed PTT stays unavailable.
+    the first poll cycle. On a silent ``t`` that probe times out, reopens
+    the transport and latches the demotion flag — so the first poll cycle
+    never asks ``t`` again: no second unanswered request, no third
+    connection, no second timeout advancing the bound store generation
+    (which would clear the active provider without republishing it and
+    strand local managed PTT).
 
     Through the full production managed composition on the real TCP fake
     (silent ``t`` only): exactly one ``t`` request in total, exactly two
@@ -1560,16 +1560,21 @@ async def test_managed_startup_with_silent_t_probes_once_and_keeps_local_ptt(
             assert pressed.outcome is ManagedTxOutcome.ACCEPTED
             await pressed.wait_settlement()
             assert "T 1" in fake.tx_commands
-            # The unkey is issued but never CONFIRMED on a silent ``t``:
-            # the release readback times out, so the authority keeps the
-            # release owed and retries by design (fail-closed MOR-2862).
-            # Await the wire effect, not the confirmation.
+            # Answer ``t`` again before the unkey: the release readback must
+            # confirm, or its timeout retires the transport, advances the
+            # bound store generation and poisons the active provider without
+            # republishing it — the owed release then never drains and the
+            # shutdown below waits forever (production's escape hatch is
+            # the termination event; this test has none). Every silent-``t``
+            # count above is already pinned.
+            fake.silent = None
             released = await composition.authority.submit_force_off()
             await await_until(
                 lambda: "T 0" in fake.tx_commands,
                 timeout=30.0,
                 description="the unkey reaching the rig",
             )
+            await released.wait_settlement()
             assert released.outcome is ManagedTxOutcome.ACCEPTED
             await server.stop()
         finally:
