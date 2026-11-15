@@ -24,6 +24,7 @@ from rigplane.web.transport.ice_gathering import (
     IFF_POINTOPOINT,
     IF_TYPE_ETHERNET_CSMACD,
     IF_TYPE_IEEE80211,
+    IF_TYPE_PPP,
     IF_TYPE_PROPVIRTUAL,
     IF_TYPE_TUNNEL,
     AddressInfo,
@@ -165,6 +166,10 @@ def test_classify_windows_hardware_flag_table() -> None:
     assert classify_windows_interface(_wf(53, False)) == IfKind.TUNNEL
     assert classify_windows_interface(_wf(131)) == IfKind.TUNNEL
     assert classify_windows_interface(_wf(53)) == IfKind.TUNNEL
+    # Windows VPN over PPP (RAS, IfType 23, non-hardware): a tunnel, so
+    # the --webrtc-include-vpn opt-in keeps it (was BRIDGE before).
+    assert classify_windows_interface(_wf(23)) == IfKind.TUNNEL
+    assert classify_windows_interface(_wf(23, False)) == IfKind.TUNNEL
     # Failed per-adapter GetIfEntry2 (no hardware signal) falls back to
     # IfType alone, as before.
     assert classify_windows_interface(_wf(6)) == IfKind.PHYSICAL
@@ -178,6 +183,7 @@ def test_classifier_module_consts_match_contract() -> None:
     assert IF_TYPE_IEEE80211 == 71
     assert IF_TYPE_TUNNEL == 131
     assert IF_TYPE_PROPVIRTUAL == 53
+    assert IF_TYPE_PPP == 23
 
 
 # --------------------------------------------------------------------------
@@ -232,6 +238,27 @@ def test_policy_select_include_vpn_keeps_tunnels() -> None:
         "10.8.0.2",
         "192.168.1.3",
         "10.8.0.3",
+    ]
+
+
+def test_policy_select_ppp_vpn_opt_in() -> None:
+    """A PPP VPN address is excluded by default, kept with include_vpn.
+
+    Pins the IfType-23 classifier output through the real ``select()``:
+    the default policy drops it like any tunnel; the opt-in keeps it,
+    while bridges stay out either way.
+    """
+    ppp_kind = classify_windows_interface(_wf(23, False, name="VPN (PPP)"))
+    assert ppp_kind is IfKind.TUNNEL
+    candidates = [
+        AddressInfo(ip="10.0.0.2", ifname="eth0", kind=IfKind.PHYSICAL),
+        AddressInfo(ip="10.9.0.5", ifname="VPN (PPP)", kind=ppp_kind),
+        AddressInfo(ip="192.168.1.2", ifname="br0", kind=IfKind.BRIDGE),
+    ]
+    assert IceGatheringPolicy().select(candidates) == ["10.0.0.2"]
+    assert IceGatheringPolicy(include_vpn=True).select(candidates) == [
+        "10.0.0.2",
+        "10.9.0.5",
     ]
 
 

@@ -132,6 +132,8 @@ IF_TYPE_IEEE80211: Final = 71
 IF_TYPE_TUNNEL: Final = 131
 #: Proprietary virtual (RFC 2863): treated as a tunnel on Windows.
 IF_TYPE_PROPVIRTUAL: Final = 53
+#: PPP (RFC 2863, ``IF_TYPE_PPP``): a VPN/tunnel interface on Windows.
+IF_TYPE_PPP: Final = 23
 
 
 class IfKind(enum.Enum):
@@ -277,17 +279,17 @@ def classify_windows_interface(facts: WindowsAdapterFacts) -> IfKind:
     are kept (physical), while Hyper-V/VMware virtual-switch ports and VPN
     adapters report non-hardware and are skipped (bridges) or tunnelled.
     ``hardware_interface`` is ``None`` when ``GetIfEntry2`` failed for the
-    adapter. A hardware adapter is physical; tunnel/prop-virtual IfTypes
-    (131/53) are tunnels even without the flag; a non-hardware adapter is
-    a virtual-switch port (bridge) — Hyper-V/VMware virtual adapters
-    report IfType 6 like real Ethernet. With no hardware signal the IfType
-    alone decides, as before: 6/71 physical, 131/53 tunnel.
+    adapter. A hardware adapter is physical; tunnel/prop-virtual/PPP
+    IfTypes (131/53/23) are tunnels even without the flag; a non-hardware
+    adapter is a virtual-switch port (bridge) — Hyper-V/VMware virtual
+    adapters report IfType 6 like real Ethernet. With no hardware signal
+    the IfType alone decides, as before: 6/71 physical, 131/53/23 tunnel.
     ``oper_up``/``friendly_name`` travel with the facts for future rules;
     classification today does not read them.
     """
     if facts.hardware_interface is True:
         return IfKind.PHYSICAL
-    if facts.if_type in (IF_TYPE_TUNNEL, IF_TYPE_PROPVIRTUAL):
+    if facts.if_type in (IF_TYPE_TUNNEL, IF_TYPE_PROPVIRTUAL, IF_TYPE_PPP):
         return IfKind.TUNNEL
     if facts.hardware_interface is False:
         return IfKind.BRIDGE
