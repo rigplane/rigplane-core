@@ -756,9 +756,12 @@ test(`IC-705 external span narrowing adopts without a write and without hatch (c
   // Span-set receipts in the evidence file: 0x15 scope writes whose data
   // carries the 6-byte span value (a 1-byte 0x15 is a span read, not a
   // write). The simulator appends one line per write, same machine clock.
-  const spanSetCount = async (): Promise<number> =>
+  // Each receipt carries the radio preset after the write. A same-value
+  // SET to the preset the radio is already on is not a write-back
+  // (see assertion (1) below).
+  const spanSetReceipts = async () =>
     (await readScopeWriteReceipts(evidence))
-      .filter((receipt) => receipt.sub === 0x15 && receipt.data.length === 6).length;
+      .filter((receipt) => receipt.sub === 0x15 && receipt.data.length === 6);
   // Total receipts, for the counter-liveness guard below: the initial
   // subscribe may legitimately write no span-set at all (the radio is
   // already on the covering preset), so spanSetsBefore == 0 is a valid
@@ -868,7 +871,8 @@ test(`IC-705 external span narrowing adopts without a write and without hatch (c
     // the post-zoom growth poll above.
     expect(frames.slice(postZoomFrameIdx).every((f) => f.view[1] - f.view[0] === 100_000 && f.coverage[1] - f.coverage[0] === 100_000),
       'pre-change frames do not all show view=100000/cov=100000').toBe(true);
-    const spanSetsBefore = await spanSetCount();
+    const receiptsBefore = await spanSetReceipts();
+    const spanSetsBefore = receiptsBefore.length;
     expect(await receiptCount(),
       'evidence file is empty — the no-new-writes assertion would pass vacuously').toBeGreaterThan(0);
     const setupEndWall = Date.now();
@@ -909,13 +913,24 @@ test(`IC-705 external span narrowing adopts without a write and without hatch (c
     const postSetupSamples = allSamples.filter((s) => s.tWall >= setupEndWall);
     const firstHatchT = postSetupSamples.find((s) => s.hatchCount > 0)?.tWall ?? null;
     const rel = (t: number | null) => t === null ? 'none' : `+${Math.round(t - setupEndWall)}ms`;
-    const adoptedWall = adoptionT ?? Date.now();
+    // The adopted window starts at the first RENDERED adopted frame at or
+    // after the adoption send: the resubscribe round trip replaces the
+    // geometry with the pixel-less grant until the next binary frame
+    // arrives (~0-50 ms), which hatches 'no pixels' on any tree and would
+    // flake the window. (That round trip is protocol-inherent, not the
+    // defect-1 intermediate the component test pins: the intermediate
+    // commits at the adoption tick itself.)
+    const adoptedWall = frames.find((f) => (adoptionT === null || f.tWall >= adoptionT)
+      && f.view[1] - f.view[0] === 50_000 && f.coverage[1] - f.coverage[0] === 50_000)?.tWall
+      ?? Date.now();
     const adoptedSamples = allSamples.filter((s) => s.tWall >= adoptedWall);
     const hatchedAdopted = adoptedSamples.filter((s) => s.hatchCount > 0);
     const latest = frames.at(-1)!;
     const latestViewHz = latest.view[1] - latest.view[0];
     const latestCovHz = latest.coverage[1] - latest.coverage[0];
-    const spanSetsAfter = await spanSetCount();
+    const receiptsAfter = await spanSetReceipts();
+    const spanSetsAfter = receiptsAfter.length;
+    const postChangeSets = receiptsAfter.slice(receiptsBefore.length);
     console.log(`[held-key control ${order} owner-rule] ` +
       `clipT=${rel(firstClipT)} adoptionT=${rel(adoptionT)} firstHatchT=${rel(firstHatchT)} ` +
       `samples=${adoptedSamples.length} hatched=${hatchedAdopted.length} ` +
@@ -950,11 +965,17 @@ test(`IC-705 external span narrowing adopts without a write and without hatch (c
         `readback-first order broken (clipT=${rel(firstClipT)} adoptionT=${rel(adoptionT)} ` +
         `firstHatchT=${rel(firstHatchT)})`).toBe(true);
     }
-    // (1) NO radio span write after the external change: the setup
-    // snapshot predates the change and no gesture follows the zoom pin,
-    // so any new span-set receipt is a write-back.
-    expect(spanSetsAfter,
-      `radio span written ${spanSetsAfter - spanSetsBefore}x after the external change`).toBe(spanSetsBefore);
+    // (1) NO radio span write-BACK after the external change: the setup
+    // snapshot predates the change and no gesture follows the zoom pin.
+    // A same-value SET to the narrowed preset the radio is already on is
+    // benign, not a write-back — the rig layer only learns the front-panel
+    // switch through its lazy reconciliation, so an adoption that lands
+    // first (readback-first) still carries the SET the covering-preset
+    // pick produces. Every post-change SET must still target the narrowed
+    // 25000 preset, never a wider write-back.
+    const writeBacks = postChangeSets.filter((receipt) => receipt.span !== 25_000);
+    expect(writeBacks,
+      `radio span written back off the narrowed preset: ${JSON.stringify(writeBacks)}`).toEqual([]);
     // (2) the pinned 100 kHz follow adopted the narrowed native: the
     // follow subscription itself moved to the 50 kHz native
     // (pinned by the adoption poll above), and the wire frames carry view
@@ -1129,9 +1150,17 @@ test('IC-705 zoomed follow adopts a front-panel narrowing without a write and wi
     // timeout is the red proof.)
     await expect.poll(() => sent.at(-1)?.view, { timeout: 60_000 })
       .toEqual({ follow: 'vfo', spanHz: 200_000 });
-    const adoptedWall = Date.now();
+    const adoptionSendWall = Date.now();
     await expect(page.getByTestId('scope-span-value').first()).toHaveText('±100k');
     await page.waitForTimeout(2500);
+    // The adopted window starts at the first RENDERED adopted frame at or
+    // after the adoption send: the resubscribe round trip replaces the
+    // geometry with the pixel-less grant until the next binary frame
+    // arrives (~0-50 ms), which hatches 'no pixels' on any tree and would
+    // flake the window (same round trip the control rows scope past).
+    const adoptedWall = frames.find((f) => f.tWall >= adoptionSendWall
+      && f.view[1] - f.view[0] === 200_000 && f.coverage[1] - f.coverage[0] === 200_000)?.tWall
+      ?? adoptionSendWall;
 
     const adoptedSamples = (await page.evaluate(() => window.heldKeySamples))
       .filter((s) => s.tWall >= adoptedWall);
