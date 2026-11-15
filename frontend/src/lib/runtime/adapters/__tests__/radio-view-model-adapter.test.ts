@@ -21,7 +21,13 @@ import type { FieldStatus, ServerState } from '$lib/types/state';
 import {
   validateRadioViewModel, type RadioViewModel,
 } from '../../../../semantic/radio-view-model';
-import { topologyFixtures } from '../../../../semantic/fixtures/topologies';
+import {
+  keyBlockedReasons, type TxAuthoritySnapshot,
+} from '../../../../semantic/rx-tx-surface';
+import { antennaSwitchBlocks } from '../../../../semantic/AntennaSurface.svelte';
+import {
+  topologyFixtures, withAntenna, withCwKeyer,
+} from '../../../../semantic/fixtures/topologies';
 import { resolveFilterModeConfig, toMemoryPanelProps } from '../../props/panel-props';
 import {
   toRadioViewModel, type MetersTxAuthority,
@@ -1769,5 +1775,183 @@ describe('MOR-2374 shared DATA and filter configuration', () => {
   ])('withholds malformed filter configuration %#', (bad) => {
     const c = dataCaps({ filterConfig: { USB: bad } } as unknown as Partial<Capabilities>);
     expect(toRadioViewModel(state(), c)!.modeFilter!.activeFilterConfiguration).toBeNull();
+  });
+});
+
+/* ── MOR-4433 — sourceless TX target through the real adapter ──────────────
+ * Folded from `semantic/__tests__/unsupported-tx-target.test.ts` (gate round
+ * 1 file ceiling). A single-receiver `ab` radio with no TX-target source
+ * (the sourceless class: G7250 and the sourceless-Yaesu shape) projects
+ * `txTarget: { status: 'unknown', reason: 'unsupported' }` — "no source
+ * exists", not "a source exists but is unobserved". The break-in gate, the
+ * `txPermit` entry and the validator read that reason.
+ *
+ * The fixture below is a COMPLETE, compiler-checked `ServerState` — every
+ * required top-level field, both receivers, a `ConnectionPublic` with its
+ * three required booleans, and `fieldStatus` entries that each carry the
+ * required `storePath`. No `as` cast of any kind: if a required field is
+ * dropped, `svelte-check`/`tsc` fails. The `ConnectionPublic` / field-status
+ * shapes come straight from the producer contracts (`$lib/types/state`),
+ * never re-typed here.
+ */
+describe('MOR-4433 — sourceless TX target through the real adapter', () => {
+  /** Single-receiver `ab` capabilities with TX bands configured — the
+   *  FT-991A topology with no TX-target source. The `audioConfig`/`webrtc`
+   *  entries are the producer's required fields (`Capabilities` in
+   *  `$lib/types/capabilities`), not adornments. */
+  const sourcelessCaps: Capabilities = {
+    model: 'FT-991A',
+    scope: false,
+    audio: true,
+    tx: true,
+    capabilities: ['tx', 'audio', 'cw', 'break_in'],
+    receivers: 1,
+    vfoScheme: 'ab',
+    freqRanges: [],
+    txBands: [{ name: '20m', start: 14_000_000, end: 14_350_000 }],
+    modes: ['USB'],
+    filters: ['NARROW'],
+    audioConfig: { sampleRate: 48_000, channels: 1, codecs: ['pcm16'] },
+    webrtc: { available: false, enabled: false },
+  };
+
+  const observedLeaf = (storePath: string): FieldStatus => ({
+    storePath, observed: true, freshness: 'fresh', availability: 'available',
+  });
+  /** A receiver carrying only what this scenario reads (frequency/mode on
+   *  MAIN); every other required leaf is an explicit honest `null`. */
+  const receiver = (freqHz: number | null, mode: string | null): ServerState['main'] => ({
+    freqHz, mode, filter: null, dataMode: null,
+    att: null, preamp: null, nb: null, nr: null,
+    afLevel: null, rfGain: null, squelch: null, sMeter: null,
+  });
+  /** Server state carrying the backend's `unsupported` projection, observed. */
+  const sourcelessState = (
+    reason: 'unsupported' | 'not-observed',
+  ): ServerState => ({
+    revision: 1, stateRevision: 1, freshnessRevision: 1, observationSeq: 1,
+    updatedAt: '2026-08-08T00:00:00Z',
+    active: 'MAIN', ptt: false, split: false, dualWatch: false, tunerStatus: null,
+    txTarget: { status: 'unknown', reason },
+    main: receiver(14_074_000, 'USB'),
+    sub: receiver(null, null),
+    connection: { rigConnected: true, radioReady: true, controlConnected: true },
+    fieldStatus: {
+      active: observedLeaf('active'),
+      split: observedLeaf('split'),
+      dualWatch: observedLeaf('dualWatch'),
+      txTarget: observedLeaf('txTarget'),
+    },
+  });
+
+  it('toRadioViewModel keeps the reason and records no break-in disable', () => {
+    // End to end through the real adapter: the view model carries the
+    // backend's `unsupported` reason, the permit stays honestly unknown,
+    // and no `cwKeyer.breakIn` disabled reason blocks the keyer — and the
+    // whole model validates.
+    const view = toRadioViewModel(sourcelessState('unsupported'), sourcelessCaps);
+    if (view === null) throw new Error('fixture precondition: model is null');
+    expect(view.txTarget).toEqual({ status: 'unknown', reason: 'unsupported' });
+    expect(view.txPermit).toEqual({ status: 'unknown', reason: 'tx-target-unknown' });
+    expect(
+      view.disabledReasons.some((r) => r.field === 'cwKeyer.breakIn'),
+    ).toBe(false);
+    expect(() => validateRadioViewModel(view)).not.toThrow();
+  });
+
+  it('toRadioViewModel still records the break-in disable for not-observed target', () => {
+    const view = toRadioViewModel(sourcelessState('not-observed'), sourcelessCaps);
+    if (view === null) throw new Error('fixture precondition: model is null');
+    expect(
+      view.disabledReasons.some((r) => r.field === 'cwKeyer.breakIn'),
+    ).toBe(true);
+  });
+});
+
+/* Folded from `semantic/__tests__/unsupported-tx-target.test.ts` (gate round 1
+ * file ceiling): the fixture-dependent halves of the sourceless-class pins
+ * live here, next to the adapter describe above, instead of in their topical
+ * homes (`rx-tx-surface.component.test.ts`, `cw-keyer.test.ts`,
+ * `AntennaSurface.test.ts`). One file, same assertions. */
+
+const IDLE_RX: TxAuthoritySnapshot = {
+  phase: 'idle', intent: null, radioTx: 'off', txRisk: 'none', fault: null,
+};
+
+/** The `1/ab` view as a sourceless radio projects it: target `unsupported`,
+ *  permit unknown for that reason, bands configured. */
+const unsupportedTargetView = (): RadioViewModel => ({
+  ...topologyFixtures['1/ab'],
+  txTarget: { status: 'unknown', reason: 'unsupported' },
+});
+
+describe('MOR-4433 — keyBlockedReasons under an unsupported target', () => {
+  it('is empty for unsupported target on an idle RX radio', () => {
+    // Kill-mutation: `view.txTarget.status !== 'known'` without the
+    // `unsupported` exception — the prohibition this change removes.
+    expect(keyBlockedReasons(unsupportedTargetView(), IDLE_RX)).toEqual([]);
+  });
+
+  it('still blocks not-observed / stale / contradiction', () => {
+    const base = topologyFixtures['1/ab'];
+    expect(keyBlockedReasons(base, IDLE_RX)).toContain('tx-target-unknown');
+    for (const reason of ['not-observed', 'stale', 'contradiction'] as const) {
+      const view: RadioViewModel = {
+        ...base, txTarget: { status: 'unknown', reason },
+      };
+      expect(keyBlockedReasons(view, IDLE_RX)).toContain('tx-target-unknown');
+    }
+  });
+
+  it('still blocks an unconfigured band table under unsupported target', () => {
+    // The exception is scoped to "permit unknown because the target is
+    // sourceless" — `ranges-unconfigured` (no TX bands at all) still blocks.
+    const view: RadioViewModel = {
+      ...unsupportedTargetView(),
+      txPermit: { status: 'unknown', reason: 'ranges-unconfigured' },
+    };
+    const reasons = keyBlockedReasons(view, IDLE_RX);
+    expect(reasons).not.toContain('tx-target-unknown');
+    expect(reasons).toContain('tx-permit-unknown');
+  });
+});
+
+describe('MOR-4433 — validator under an unsupported target', () => {
+  // The adapter stops recording the `cwKeyer.breakIn` disable for a
+  // sourceless target (break-in stays usable); the validator — the
+  // fail-closed half of "no second permit" — accepts the model without
+  // that entry. Kill-mutation: drop the `unsupported` exception in either
+  // `deriveCwKeyerReasons` or `validateRadioViewModel`.
+  it('accepts an armed break-in under an unsupported target with no disabled reason', () => {
+    const keyed = withCwKeyer(unsupportedTargetView());
+    const enabled: RadioViewModel = {
+      ...keyed,
+      disabledReasons: keyed.disabledReasons.filter((r) => r.field !== 'cwKeyer.breakIn'),
+    };
+    expect(() => validateRadioViewModel(enabled)).not.toThrow();
+    expect(
+      enabled.disabledReasons.some((r) => r.field === 'cwKeyer.breakIn'),
+    ).toBe(false);
+  });
+
+  it('still rejects an enabled break-in for a not-observed target', () => {
+    // The exception above is scoped to `unsupported`: a source that exists
+    // but has not been read still fails closed.
+    const keyed = withCwKeyer(topologyFixtures['1/ab']);
+    const enabled: RadioViewModel = {
+      ...keyed,
+      disabledReasons: keyed.disabledReasons.filter((r) => r.field !== 'cwKeyer.breakIn'),
+    };
+    expect(() => validateRadioViewModel(enabled)).toThrow();
+  });
+});
+
+describe('MOR-4433 — antenna switching is not gated on the target', () => {
+  it('with or without a source', () => {
+    // `antennaSwitchBlocks` only keeps the RF-idle subset; the target
+    // reasons never reached the relay. Pinned both ways so a future
+    // widening of the filter cannot silently re-block sourceless radios.
+    expect(antennaSwitchBlocks(withAntenna(unsupportedTargetView()), IDLE_RX)).toEqual([]);
+    expect(antennaSwitchBlocks(withAntenna(topologyFixtures['1/ab']), IDLE_RX)).toEqual([]);
   });
 });
