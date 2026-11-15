@@ -1,0 +1,4 @@
+{
+  "description": "CI-V wave-data scope modes where the radio owns the displayed window: FIX (1), SCROLL-C (2), SCROLL-F (3). In these modes 'follow the radio' means the view IS the window the frames report — zero writes by us (Center sends centre+span; 1/2/3 send lower/higher edges; SPAN applies in 0/2, EDGE number in 1/3). Hand-maintained: change with src/rigplane/runtime/radio_scope_source.py RADIO_OWNED_WINDOW_SCOPE_MODES and frontend/src/components/spectrum/spectrum-logic.ts isRadioOwnedWindowScope; tests/test_scope_mode_families_contract.py pins the server side, spectrum-panel-logic.test.ts pins the client side.",
+  "radio_owned_window_scope_modes": [1, 2, 3]
+}

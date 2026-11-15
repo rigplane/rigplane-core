@@ -406,11 +406,11 @@ describe('confirmed tuning display continuity (MOR-2437)', () => {
     receipt(input, 3); result = project(input, result); expect(result.display.state).toBe('unknown');
     renew(input, 16, 4); expect(project(input, result).display.state).toBe('current');
   });
-  it.each([0, 1, 2, 3])('waits for matching CENTER axis but allows observed frequency within fixed mode %s', (mode) => {
+  it.each([0, 1, 2, 3])('waits for matching CENTER axis but allows observed frequency within radio-owned window mode %s', (mode) => {
     const input = banded(); receipt(input, 1, { mode, startFreq: 14_024_000, endFreq: 14_124_000 });
     let result = project(input); tune(input, 14_075_000, 11); result = project(input, result);
     renew(input, 16, 2); result = project(input, result);
-    expect(result.display.state).toBe(mode === 1 || mode === 3 ? 'current' : 'stale');
+    expect(result.display.state).toBe(mode === 0 ? 'stale' : 'current');
     if (mode === 0 || mode === 2) {
       receipt(input, 3, { mode, startFreq: 14_025_000, endFreq: 14_125_000 });
       result = project(input, result); expect(result.display.state).toBe('current');
