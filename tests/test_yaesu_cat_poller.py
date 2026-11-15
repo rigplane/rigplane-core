@@ -4204,6 +4204,71 @@ async def test_reset_filter_width_confirms_when_readback_is_code_00() -> None:
     assert service.lifecycle_events()[-1].state == "reconciled"
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("field", ["ptt", "split"])
+@pytest.mark.parametrize("failure", ["timeout", "refused"])
+async def test_canonical_tx_state_failure_keeps_its_lane(
+    monkeypatch: pytest.MonkeyPatch, field: str, failure: str
+) -> None:
+    """MOR-4456 P1-3: an unanswered or refused PTT/split read stays in its field.
+
+    Through the production poller: the lane's other observations — and the
+    controls after the failing field — still reach the store, the failing
+    field is served unknown (PTT) or absent (split), and a lone timeout of
+    PTT/split never reconnects.
+    """
+    radio, poller, store, _, emitted = _canonical_ptt_path(monkeypatch)
+    acquisition = radio.profile.state_acquisition
+    assert acquisition is not None
+    extra = (
+        FieldPath.global_("tx_state", "split"),
+        FieldPath.global_("operator_controls", "tuner_status"),
+        FieldPath.receiver("main", "operator_controls", "af_level"),
+        FieldPath.active("main", "freq_mode", "freq_hz"),
+        FieldPath.active("main", "freq_mode", "mode"),
+    )
+    radio._profile_cache = replace(  # noqa: SLF001
+        radio.profile,
+        state_acquisition=replace(
+            acquisition,
+            capabilities=acquisition.capabilities
+            + tuple(FieldCapability(path=path, polling=True) for path in extra),
+        ),
+    )
+    radio.read_freq = AsyncMock(return_value=14_074_000)
+    radio.read_mode = AsyncMock(return_value=("USB", None))
+    radio.read_af_level = AsyncMock(return_value=128)
+    radio.get_tuner_status = AsyncMock(return_value=2)
+    command = "TX;" if field == "ptt" else "ST;"
+    if failure == "timeout":
+        error: Exception = CatTimeoutError(command, command=command)
+    else:
+        error = CatCommandRejected("?;", command=command)
+    if field == "ptt":
+        radio._transport.query.side_effect = error  # noqa: SLF001
+    else:
+        radio.read_split = AsyncMock(side_effect=error)
+    poller._try_reconnect = AsyncMock()  # noqa: SLF001
+    if field == "ptt":
+        assert await poller._emit_medium_observations() is True  # noqa: SLF001
+    else:
+        assert await poller._emit_slow_control_observations() is True  # noqa: SLF001
+    poller._try_reconnect.assert_not_awaited()  # noqa: SLF001
+    assert radio._transport.stats.reconnects == 0  # noqa: SLF001
+    by_path = {str(item.path): item.value for item in emitted}
+    if field == "ptt":
+        assert by_path["receiver.main.active.freq_mode.freq_hz"] == 14_074_000
+        assert by_path["receiver.main.active.freq_mode.mode"] == "USB"
+        assert by_path[str(OBSERVED_PTT_PATH)] is ObservedPtt.UNKNOWN
+        assert store.snapshot().field(OBSERVED_PTT_PATH).value is ObservedPtt.UNKNOWN
+    else:
+        assert "global.tx_state.split" not in by_path
+        assert by_path["global.operator_controls.tuner_status"] == 2
+        assert "receiver.main.operator_controls.af_level" in by_path
+        tuner_path = FieldPath.global_("operator_controls", "tuner_status")
+        assert store.snapshot().field(tuner_path).value == 2
+
+
 def test_slow_group_interval_matches_the_profile_slow_control_cadence() -> None:
     """The FTX-1 profile's slow tier must name the interval that re-reads it.
 
