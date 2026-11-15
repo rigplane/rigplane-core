@@ -7936,9 +7936,8 @@ class WebServer:
         :meth:`serve_client_channel` with ``transport="ws"`` around the
         101 handshake, which must stay between the refusal decision and
         the first handler byte. A data-channel attach is acknowledged
-        there too: one ``ChannelAttachedAck`` text frame before the
-        first handler byte, never sent on the WebSocket lane. When
-        ``track_owners`` is given, the
+        there: one ``ChannelAttachedAck`` text frame, never sent on the
+        WebSocket lane. When ``track_owners`` is given, the
         attached session owner is recorded in it for the channel's
         lifetime, so a transport-loss signal can fence that session
         through the existing session-loss path. A keyless ``api`` attach
@@ -7953,11 +7952,8 @@ class WebServer:
         ):
             track_owners.add(ticket.tx_owner)
         if transport == "datachannel":
-            # One attach acknowledgement (the only data-channel addition
-            # here): sent after the attach succeeds and before the first
-            # handler byte, so a lossy channel can stop resending its
-            # attach frame. A dead send must not kill the attach — the
-            # channel's own EOF handles a gone peer.
+            # The ack (before the first handler byte). A dead send must
+            # not kill the attach — the channel's own EOF handles that.
             try:
                 await conn.send_text(ChannelAttachedAck(kind).encode())
             except Exception:

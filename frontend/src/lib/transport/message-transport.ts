@@ -26,18 +26,9 @@ export type MessageTransportState = 'connecting' | 'open' | 'closed';
  * `protocols` are the session subprotocol tokens to offer (empty when
  * sessionless). The peer echoes the accepted one, visible as
  * `attachedProtocol` once open.
- *
- * The data-channel fields carry the same session the WebSocket lane
- * offers as a subprotocol: `controllerKey` is the session key (`null`
- * for the keyless `api` attach that acquires one), `stateDelta` the
- * delta encoding (default 2, leaf deltas), `role` the attach role
- * (default `'primary'`). Only `DataChannelTransport` reads them.
  */
 export interface TransportAttach {
   readonly protocols: readonly string[];
-  readonly controllerKey?: string | null;
-  readonly stateDelta?: 1 | 2;
-  readonly role?: string;
 }
 
 export interface TransportCloseInfo {

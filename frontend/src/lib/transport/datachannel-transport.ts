@@ -1,17 +1,11 @@
 /**
- * `DataChannelTransport`: the `MessageTransport` over one
- * `RTCDataChannel`-like channel (C5a).
- *
- * The channel is injected already tied to its peer — no
- * `RTCPeerConnection` is created here. The channel's attach step is the
- * data-channel one: the first text frame sent is the attach frame
- * (`{"type":"attach","controller_key":...,"state_delta":...,"role":...}`),
- * RESENT every 250 ms until the server's
- * `{"type":"attached","v":1,"channel":...}` acknowledgement arrives,
- * because the scope/audio channels are lossy and may drop it; with no
- * ack within 5 s the transport errors and closes. Text/binary frames
- * that arrive before the ack and are not the ack are delivered
- * normally (an unordered channel can overtake the ack with data).
+ * `DataChannelTransport`: the `MessageTransport` over one injected
+ * `RTCDataChannel`-like channel (C5a). No `RTCPeerConnection` is created
+ * here; the URL is unused. The attach step: the first text frame sent is
+ * the attach frame, RESENT every 250 ms until the server's
+ * `{"type":"attached","v":1,"channel":...}` ack arrives (scope/audio are
+ * lossy); with no ack within 5 s the transport errors and closes. Frames
+ * received before the ack that are not the ack are delivered normally.
  */
 import type {
   MessageTransport,
@@ -25,15 +19,12 @@ import type {
   TransportTextHandler,
 } from './message-transport';
 
-/** Attach-frame resend interval (the ack may be lost on a lossy channel). */
-export const ATTACH_RESEND_MS = 250;
-/** Give-up bound for the attach step, counted from the first send. */
-export const ATTACH_TIMEOUT_MS = 5000;
+export const ATTACH_RESEND_MS = 250; // resend until the ack arrives
+export const ATTACH_TIMEOUT_MS = 5000; // give-up bound for the attach step
 
 /** The `RTCDataChannel` surface this transport needs (test-injectable). */
 export interface DataChannelLike {
   readonly readyState: 'connecting' | 'open' | 'closing' | 'closed';
-  readonly label: string;
   readonly bufferedAmount: number;
   binaryType: string;
   onopen: (() => void) | null;
@@ -44,14 +35,7 @@ export interface DataChannelLike {
   close(): void;
 }
 
-interface AckFrame {
-  readonly type: 'attached';
-  readonly v?: number;
-  readonly channel?: unknown;
-}
-
 export class DataChannelTransport implements MessageTransport {
-  private readonly channel: DataChannelLike;
   private readonly openHandlers = new Set<TransportOpenHandler>();
   private readonly textHandlers = new Set<TransportTextHandler>();
   private readonly binaryHandlers = new Set<TransportBinaryHandler>();
@@ -64,11 +48,7 @@ export class DataChannelTransport implements MessageTransport {
   private resendTimer: ReturnType<typeof setInterval> | null = null;
   private deadlineTimer: ReturnType<typeof setTimeout> | null = null;
   private live = false;
-
-  constructor(channel: DataChannelLike) {
-    this.channel = channel;
-  }
-
+  constructor(private readonly channel: DataChannelLike) {}
   get state(): MessageTransportState {
     if (!this.live) return 'closed';
     const ready = this.channel.readyState;
@@ -77,21 +57,17 @@ export class DataChannelTransport implements MessageTransport {
     if (this.awaitingAck) return 'connecting';
     return ready === 'open' ? 'open' : 'connecting';
   }
-
   get attachedProtocol(): string {
     return this.ackedChannel ?? '';
   }
-
-  /** Unsent bytes buffered by the channel (send backpressure source). */
   get bufferedAmount(): number {
     return this.channel.bufferedAmount;
   }
-
-  open(url: string, attach?: TransportAttach): void {
-    // The URL is ignored: the injected channel already names its peer.
-    // A previous wiring, if any, is abandoned untouched, like
-    // WebSocketTransport.open.
-    void url;
+  open(
+    url: string,
+    attach?: TransportAttach & { controllerKey?: string | null; stateDelta?: 1 | 2; role?: string }
+  ): void {
+    void url; // unused: the injected channel already names its peer
     this.attachFrame =
       attach === undefined
         ? null
@@ -105,51 +81,42 @@ export class DataChannelTransport implements MessageTransport {
     this.channel.binaryType = 'arraybuffer';
     this.channel.onopen = () => this.onChannelOpen();
     this.channel.onmessage = (event) => this.onChannelMessage(event.data);
-    this.channel.onclose = () =>
-      this.finish({ code: 1006, reason: '', wasClean: false });
+    this.channel.onclose = () => this.finish({ code: 1006, reason: '', wasClean: false });
+    // A channel error is surfaced; the close event that follows carries
+    // the outcome, exactly like the WS wiring closed on error.
     this.channel.onerror = () => {
-      // The close event that follows a channel error carries the outcome.
       for (const handler of [...this.errorHandlers]) handler();
     };
     if (this.channel.readyState === 'open') this.onChannelOpen();
   }
-
   send(data: string | ArrayBuffer): void {
     if (this.state !== 'open') {
       throw new Error('DataChannelTransport: send on a closed transport');
     }
     this.channel.send(data);
   }
-
   close(): void {
     this.finish({ code: 1000, reason: '', wasClean: true });
   }
-
+  private subscribe<T>(handlers: Set<T>, handler: T): () => void {
+    handlers.add(handler);
+    return () => handlers.delete(handler);
+  }
   onOpen(handler: TransportOpenHandler): () => void {
-    this.openHandlers.add(handler);
-    return () => this.openHandlers.delete(handler);
+    return this.subscribe(this.openHandlers, handler);
   }
-
   onText(handler: TransportTextHandler): () => void {
-    this.textHandlers.add(handler);
-    return () => this.textHandlers.delete(handler);
+    return this.subscribe(this.textHandlers, handler);
   }
-
   onBinary(handler: TransportBinaryHandler): () => void {
-    this.binaryHandlers.add(handler);
-    return () => this.binaryHandlers.delete(handler);
+    return this.subscribe(this.binaryHandlers, handler);
   }
-
   onClose(handler: TransportCloseHandler): () => void {
-    this.closeHandlers.add(handler);
-    return () => this.closeHandlers.delete(handler);
+    return this.subscribe(this.closeHandlers, handler);
   }
-
   onError(handler: TransportErrorHandler): () => void {
-    this.errorHandlers.add(handler);
-    return () => this.errorHandlers.delete(handler);
+    return this.subscribe(this.errorHandlers, handler);
   }
-
   private onChannelOpen(): void {
     if (this.attachFrame === null) {
       this.acked = true;
@@ -166,16 +133,15 @@ export class DataChannelTransport implements MessageTransport {
       this.finish({ code: 1006, reason: 'attach timeout', wasClean: false });
     }, ATTACH_TIMEOUT_MS);
   }
-
   private onChannelMessage(data: unknown): void {
     if (this.awaitingAck && typeof data === 'string') {
-      let frame: AckFrame | null = null;
+      let frame: { type?: unknown; v?: unknown; channel?: unknown } | null = null;
       try {
-        frame = JSON.parse(data) as AckFrame;
+        frame = JSON.parse(data);
       } catch {
         frame = null;
       }
-      if (frame !== null && frame.type === 'attached' && frame.v === 1) {
+      if (frame?.type === 'attached' && frame.v === 1) {
         this.awaitingAck = false;
         this.clearAttachTimers();
         this.acked = true;
@@ -190,7 +156,6 @@ export class DataChannelTransport implements MessageTransport {
       for (const handler of [...this.binaryHandlers]) handler(data);
     }
   }
-
   private clearAttachTimers(): void {
     if (this.resendTimer !== null) {
       clearInterval(this.resendTimer);
@@ -201,15 +166,12 @@ export class DataChannelTransport implements MessageTransport {
       this.deadlineTimer = null;
     }
   }
-
-  /** Tear everything down exactly once and report one close event. */
   private finish(info: TransportCloseInfo): void {
     this.clearAttachTimers();
-    const wasLive = this.live;
-    const channel = this.channel;
+    if (!this.live) return;
     this.live = false;
     this.awaitingAck = false;
-    if (!wasLive) return;
+    const { channel } = this;
     channel.onopen = null;
     channel.onmessage = null;
     channel.onclose = null;

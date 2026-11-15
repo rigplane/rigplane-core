@@ -35,26 +35,18 @@ ATTACH_ACK_VERSION: Final = 1
 
 @dataclass(frozen=True, slots=True)
 class ChannelAttachedAck:
-    """The data-channel attach acknowledgement: one text frame.
-
-    ``{"type": "attached", "v": 1, "channel": "<label>"}``, sent once
+    """The data-channel attach acknowledgement: one text frame, sent
     after a data-channel attach succeeds and before the channel's first
-    handler byte, so a client on a lossy channel (scope/audio) can stop
-    resending its attach frame on arrival. A client that ignores it
-    keeps working; the WebSocket lane never sends one.
-    """
+    handler byte, so a lossy channel can stop resending its attach
+    frame. A client that ignores it keeps working; the WebSocket lane
+    never sends one."""
 
     channel: str
     version: int = ATTACH_ACK_VERSION
 
     def encode(self) -> str:
-        """Encode as the attach acknowledgement text frame."""
         return json.dumps(
-            {
-                "type": "attached",
-                "v": self.version,
-                "channel": self.channel,
-            }
+            {"type": "attached", "v": self.version, "channel": self.channel}
         )
 
 
