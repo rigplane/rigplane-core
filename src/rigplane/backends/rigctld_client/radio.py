@@ -1007,8 +1007,11 @@ class RigctldClientRadio:
         Called once, on the first unanswered ``t``: further medium cycles
         publish PTT as unknown without sending ``t``. Idempotent, so the
         single named warning below fires exactly once per radio object.
-        Solicited reads (:meth:`get_ptt`, the managed-TX unkey readback)
-        are unaffected — only the poll cycle stops asking.
+        Solicited reads (:meth:`get_ptt`, :meth:`read_transmit_state`)
+        still ask — only the poll cycle stops asking — with one B3
+        exception: the managed-TX unkey verification read
+        (:meth:`actuate`) is skipped while demoted and settles from the
+        ``T 0`` answer instead.
         """
         if self._ptt_read_demoted:
             return
@@ -1085,7 +1088,20 @@ class RigctldClientRadio:
         # or a raised read is UNCERTAIN, which keeps the release owed
         # (``managed_tx_state.py: _settle``). A refused write keeps
         # propagating for the lane to normalize, as today.
+        # MOR-4456 B3: while the transmit-state read is demoted (the
+        # first unanswered ``t`` latched ``_ptt_read_demoted``), this
+        # solicited verification read is NOT sent — on a rigctld whose
+        # ``t`` is silent it would time out, retire the transport,
+        # advance the provider generation and strand the owed release.
+        # The release settles from the radio's own answer to the unkey
+        # command instead: the ``RPRT 0`` above already confirmed the
+        # unkey reached the daemon. A failed or unanswered ``T 0`` keeps
+        # today's path (the write raises before this line, the lane
+        # normalizes to UNCERTAIN, the release stays owed) — never a
+        # silent success.
         await self._set_ptt(False, is_current=is_current, urgent=True)
+        if self._ptt_read_demoted:
+            return ActuationResult.ACCEPTED
         try:
             transmitting = await self._read_ptt(is_current=is_current, urgent=True)
         except Exception:
@@ -1120,8 +1136,9 @@ class RigctldClientRadio:
             # The probe timeout also latches the medium-lane demotion, so
             # the first poll cycle does not ask ``t`` again (a second
             # unanswered request whose timeout would retire the provider
-            # the probe just published). Solicited reads are unaffected:
-            # only the poll cycle stops asking.
+            # the probe just published). This solicited read itself still
+            # asks; only the poll cycle and (B3) the managed-TX unkey
+            # verification stop asking while demoted.
             if not self._intentional_disconnect and not self._transport.connected:
                 try:
                     await self._transport.connect()
