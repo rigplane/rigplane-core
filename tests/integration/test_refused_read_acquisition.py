@@ -268,14 +268,11 @@ async def test_refused_ptt_or_split_read_opens_with_tx_unknown(
 ) -> None:
     """MOR-4456: a refused PTT/split read is unavailable, not fatal.
 
-    PTT (``1C 00``) and split (``0F``) left the critical set with the TX
-    target: a radio that NAKs either one still opens — the refused path is
-    recorded as answered-but-unavailable at INFO (the MOR-4058 seat), no
-    defect is recorded, and the served state reports TX unknown. No gate
-    WARNING names it: an unavailable path leaves the outstanding set at
-    once instead of lapsing at the deadline. ``refuse_next`` NAKs one
-    request per queued command byte, so the test queues enough to cover
-    the initial fetch plus the re-reads.
+    PTT (``1C 00``) and split (``0F``) left the critical set: a NAKed read
+    still opens — the path is answered-but-unavailable at INFO, no defect
+    is recorded, TX is served unknown, and no gate WARNING names it. The
+    test queues enough ``refuse_next`` NAKs for the initial fetch plus
+    the re-reads.
     """
     fake, endpoint, radio = await _connected("IC-7610")
     for _ in range(30):
@@ -295,18 +292,16 @@ async def test_refused_ptt_or_split_read_opens_with_tx_unknown(
             for message in messages
             if message.startswith("acquisition:")
         ), "the refused path is named once at INFO"
-        assert not [
-            record
+        assert not any(
+            record.levelno >= logging.WARNING and str(path) in record.getMessage()
             for record in caplog.records
-            if record.levelno >= logging.WARNING and str(path) in record.getMessage()
-        ], "an unavailable path lapses no deadline WARNING"
+        ), "an unavailable path lapses no deadline WARNING"
         status, body = await _http_get_json(
             int(web._server.sockets[0].getsockname()[1]),  # noqa: SL001
             "/api/v1/state",
         )
         assert status == 200
-        # The public leaf stays present but null while its fieldStatus
-        # entry reads unobserved (the MOR-2425 nulling rule).
+        # Null leaf + unobserved fieldStatus (the MOR-2425 nulling rule).
         assert body[path_name] is None
         assert body["fieldStatus"][path_name]["observed"] is False
     finally:

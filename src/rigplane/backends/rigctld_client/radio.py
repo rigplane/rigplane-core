@@ -245,14 +245,26 @@ class RigctldClientObservationPoller:
         observations: list["Observation"] = list(
             await adapter.read_freq_mode_controls()
         )
+        # MOR-4456: a ``t`` timeout closes the transport, fencing the
+        # generation and discarding anything still unpublished — publish
+        # the answered reads first; the PTT outcome follows on its own.
+        if self._provider_generation_is_current(provider_generation):
+            self._callback(
+                self._stamp_provider_generation(observations, provider_generation)
+            )
         try:
             ptt = await adapter.read_ptt()
         except Exception:
+            # Best-effort: after a timeout the fence moved on and this is
+            # skipped, while a fenceless failure still lands the unknown.
+            # Re-raise either way for the reconnect path (as MOR-4433).
             if self._provider_generation_is_current(provider_generation):
                 unknown = adapter.observed_ptt_observation(None)
                 try:
                     self._callback(
-                        self._stamp_provider_generation((unknown,), provider_generation)
+                        self._stamp_provider_generation(
+                            (*observations, unknown), provider_generation
+                        )
                     )
                 except Exception:
                     logger.warning(

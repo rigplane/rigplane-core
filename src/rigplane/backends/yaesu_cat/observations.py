@@ -493,9 +493,12 @@ class YaesuObservationAdapter:
                 KeyError,
                 CatCommandRejected,
             ) as exc:
-                # Same rule as ``_safe_read``: record the defect (what the
-                # startup gate reads), skip this field, keep the cycle.
-                self._record_declared_defect("ptt", exc, (_PTT,))
+                # Same rule as ``_safe_read``: only a critical path records
+                # the defect the startup gate reads (MOR-4456: PTT left the
+                # set, so a refused or malformed PTT read is served unknown
+                # instead). Skip this field either way, keep the cycle.
+                if startup_critical_path(_PTT):
+                    self._record_declared_defect("ptt", exc, (_PTT,))
                 self._log_field_skip(
                     "ptt",
                     "Skipping field %s — declared read refused or malformed: %s",
@@ -508,15 +511,11 @@ class YaesuObservationAdapter:
             else:
                 if reading.failure is not None:
                     publish_ptt_error()
-                    if reading.failure == "timeout":
-                        # MOR-2757: ``read_transmit_state`` reports the
-                        # transport timeout as a failure tag; the raised
-                        # ``CatTimeoutError`` below is built here, so the
-                        # count is taken here. The tag does not carry the
-                        # wire command, so this defect names the field only.
-                        exc = CatTimeoutError("PTT read failed: timeout")
-                        self._count_critical_read_timeouts("ptt", exc, (_PTT,))
-                        raise exc
+                    # MOR-4456: PTT left the startup-critical set — a silent
+                    # read is served unknown above and the cycle continues
+                    # with what it accumulated (the MOR-4433 containment,
+                    # one lane over). Only a transport failure still raises:
+                    # link quality keeps the reconnect path.
                     if reading.failure == "transport":
                         raise CatTransportError("PTT read failed: transport")
                 else:

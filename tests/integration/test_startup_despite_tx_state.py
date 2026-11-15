@@ -1,23 +1,13 @@
 """MOR-4456: the server starts while PTT/split stay unanswered.
 
-Real startup through the production poller + fake hardware, both vendors:
-
-* Yaesu FTX-1 (bench CAT recording behind the real ``YaesuCatRadio``) and
-  FT-991A (CAT simulator + served HTTP): the PTT verb (``TX;``) — and, on
-  the FT-991A, the split verb (``FT;``) — stays silent or answers ``?;``
-  while the rest answers;
-* Icom IC-7300/IC-7610 (serial fakes on a PTY behind the production serial
-  backend, poller and web gate): the PTT read (``1C 00``) and the split
-  read (``0F``) stay silent or are NAKed while the rest answers.
-
-Every case asserts the same contract: the server starts, the answering
-criticals (frequency, mode) arrive, HTTP and WS report TX unknown, the key
-is refused with the existing unknown-RF-state reason, and exactly one gate
-WARNING names the path. A late answer then clears the warning and the key
-path allows again — without ever keying the radio.
-
-No radio transmits here: fakes only, and the key path is proven by the
-interlock verdict on live poller state, never by executing a key.
+Real startup through the production poller + fake hardware: Yaesu FTX-1
+(bench CAT recording) and FT-991A (CAT simulator + served HTTP) with
+``TX;`` (and FT-991A ``FT;``) silent or ``?;``; Icom IC-7300/IC-7610
+(serial PTY fakes) with ``1C 00``/``0F`` silent or NAKed — while the rest
+answers. Every case: the server starts, the answering criticals arrive,
+HTTP/WS report TX unknown, the key is refused with the existing
+unknown-RF-state reason, and one gate WARNING names the path; a late
+answer clears it and the key path allows again — without ever keying.
 """
 
 from __future__ import annotations
@@ -93,17 +83,16 @@ async def _ws_state_data(port: int) -> dict[str, Any]:
         await _close_ws(writer)
 
 
-# ---------------------------------------------------------------------------
 # Yaesu: FTX-1 bench recording and FT-991A simulator, real backend + gate
-# ---------------------------------------------------------------------------
 
 
-def _ftx1_table_adverse_on_tx(fate: str):
-    """Bench FTX-1 recording with every ``TX;`` answer dropped or refused.
+def _ftx1_table(fate: str | None):
+    """Bench FTX-1 recording; ``fate`` drops/refuses every ``TX;`` answer.
 
-    Mirrors the ``FT;`` surgery ``test_startup_state_gate`` pins: silence
-    drops the recorded ``TX0;`` replies so the replay never answers the PTT
-    read; refusal rewrites them to ``?;``.
+    ``"silent"`` swallows the recorded ``TX0;`` replies so the replay never
+    answers PTT; ``"refused"`` rewrites them to ``?;``; ``None`` returns the
+    recording unmodified (the late-answer phase). Mirrors the ``FT;``
+    surgery ``test_startup_state_gate`` pins.
     """
     import json as _json
 
@@ -116,6 +105,8 @@ def _ftx1_table_adverse_on_tx(fate: str):
         / "cat_pairs.jsonl"
     )
     rows = [_json.loads(line) for line in pairs.read_text().splitlines() if line]
+    if fate is None:
+        return RecordedCatAnswerTable.from_cat_pairs(rows)
     kept: list[dict[str, object]] = []
     pending: str | None = None
     for row in rows:
@@ -125,14 +116,14 @@ def _ftx1_table_adverse_on_tx(fate: str):
         elif pending == "TX;" and reply_closes(pending, str(row["line"])):
             pending = None
             if fate == "silent":
-                continue  # swallow the TX0; reply: TX; stays silent
+                continue
             kept.append({**row, "line": "?;"})
         else:
             pending = None
             kept.append(row)
     table = RecordedCatAnswerTable.from_cat_pairs(kept)
     tx_answer = table.lookup("TX;")
-    assert tx_answer is not None, "bench recording must contain a TX; answer to drop"
+    assert tx_answer is not None, "bench recording must contain a TX; answer"
     if fate == "silent":
         assert tx_answer.kind == "silence"
     else:
@@ -150,29 +141,6 @@ def _gated_web_config() -> WebConfig:
     )
 
 
-async def _serve_ft991a_gated(monkeypatch: pytest.MonkeyPatch, hook: Any) -> Any:
-    """The shared FT-991A harness with the startup gate engaged."""
-    return await serve_ft991a_over_http(
-        monkeypatch, web_config=_gated_web_config(), command_hook=hook
-    )
-
-
-def _ftx1_table_full():
-    """The bench FTX-1 recording unmodified: every read answers."""
-    import json as _json
-
-    from rigplane_testkit.yaesu.replay import RecordedCatAnswerTable
-
-    pairs = (
-        __import__("pathlib").Path(__file__).resolve().parents[1]
-        / "fixtures"
-        / "ftx1"
-        / "cat_pairs.jsonl"
-    )
-    rows = [_json.loads(line) for line in pairs.read_text().splitlines() if line]
-    return RecordedCatAnswerTable.from_cat_pairs(rows)
-
-
 async def _assert_served_unknown(host: str, port: int, leaf: str) -> dict[str, Any]:
     """The served state reports *leaf* unknown (null + unobserved)."""
     body = await ft991a_read_state(host, port)
@@ -182,11 +150,7 @@ async def _assert_served_unknown(host: str, port: int, leaf: str) -> dict[str, A
 
 
 async def _assert_yaesu_key_refused(station: Any) -> None:
-    """The production Yaesu poller refuses a key on unknown RF state.
-
-    The verdict is the seat both pollers call; the executed refusal proves
-    the wiring. Neither reaches the wire.
-    """
+    """The production Yaesu poller refuses a key on unknown RF state."""
     from rigplane.web.radio_poller import PttOn
 
     poller = station.server._state_poller  # noqa: SLF001
@@ -218,14 +182,12 @@ async def test_yaesu_unanswered_ptt_still_serves_with_tx_unknown(
 ) -> None:
     """MOR-4456 (Yaesu PTT): a PTT read that never answers still serves.
 
-    ``TX;`` stays silent (or answers ``?;``) while the rest answers, through
-    the real backend, its real observation poller and ``WebServer.start()``
-    with the startup gate on — on the FT-991A simulator and on the FTX-1
-    bench recording. The server starts, the answering criticals arrive, the
-    served state reports PTT unknown over HTTP and WS, the key is refused
-    with the existing unknown-RF-state reason, and one gate WARNING names
-    the path with its cause; a late PTT answer clears it and the key path
-    allows again.
+    ``TX;`` stays silent (or answers ``?;``) while the rest answers, on the
+    FT-991A simulator and the FTX-1 bench recording, through the real
+    backend and gated ``WebServer.start()``. The server starts, PTT is
+    served unknown over HTTP/WS, the key is refused for unknown RF state,
+    and one gate WARNING names the path; a late answer clears it and the
+    key path allows again.
     """
     from rigplane_testkit.sim.engine import Ok, Refused
     from rigplane_testkit.yaesu.replay import REFUSAL
@@ -249,19 +211,13 @@ async def test_yaesu_unanswered_ptt_still_serves_with_tx_unknown(
             )
         stop = station.aclose
         host, port = station.host, station.port
-
-        def wire_has_tx() -> bool:
-            return "TX;" in station.wire
-
-        def count_tx() -> int:
-            return station.wire.count("TX;")
     else:
         from rigplane.backends.yaesu_cat.radio import YaesuCatRadio
         from rigplane_testkit.yaesu import FakeCatRadio
         from support.yaesu_ft991a_http import Ft991aHttpStation
 
-        full_table = _ftx1_table_full()
-        fake = FakeCatRadio(recorded_answers=_ftx1_table_adverse_on_tx(fate))
+        full_table = _ftx1_table(None)
+        fake = FakeCatRadio(recorded_answers=_ftx1_table(fate))
         await fake.start()
         radio = YaesuCatRadio(device=fake.device_url, profile="ftx1")
         await asyncio.wait_for(radio.connect(), 30)
@@ -279,6 +235,7 @@ async def test_yaesu_unanswered_ptt_still_serves_with_tx_unknown(
         station = Ft991aHttpStation(radio=radio)
         station.server = server
         station.port = server.port
+        station.wire = fake.commands
 
         async def stop() -> None:  # noqa: F811
             await server.stop()
@@ -287,15 +244,13 @@ async def test_yaesu_unanswered_ptt_still_serves_with_tx_unknown(
 
         host, port = "127.0.0.1", server.port
 
-        def wire_has_tx() -> bool:
-            return "TX;" in fake.commands
-
-        def count_tx() -> int:
-            return sum(1 for line in fake.commands if line == "TX;")
-
     try:
         # Not vacuous: the production poller asked for the PTT read.
-        await await_until(wire_has_tx, timeout=20.0, description="poller asks TX;")
+        await await_until(
+            lambda: "TX;" in station.wire,
+            timeout=20.0,
+            description="poller asks TX;",
+        )
         # The answering criticals arrive through the real poller.
         if profile == "ft991a":
             assert await ft991a_wait_for_state_value(host, port, "mode", "USB")
@@ -311,20 +266,17 @@ async def test_yaesu_unanswered_ptt_still_serves_with_tx_unknown(
         await _assert_yaesu_key_refused(station)
         warnings = _gate_warnings(caplog, PTT)
         assert len(warnings) == 1, [r.getMessage() for r in caplog.records]
-        # No resolvable profile read for the CAT verb; the silent cause is
-        # what the observation path counts (nothing) — "never answered".
         assert "no declared read" in warnings[0], warnings[0]
         assert "never answered" in warnings[0], warnings[0]
         # The poller keeps asking while the gate has released.
-        tx_before = count_tx()
+        tx_before = station.wire.count("TX;")
         await await_until(
-            lambda: count_tx() > tx_before,
+            lambda: station.wire.count("TX;") > tx_before,
             timeout=15.0,
             description="poller keeps asking TX; after release",
         )
-        # Phase 2 — the radio answers: the warning clears (no second
-        # WARNING names the path), the served state reports PTT, and the
-        # key path allows again. Nothing is keyed to prove it.
+        # Phase 2 — the radio answers: the served state reports PTT and
+        # the key path allows again (no second WARNING names the path).
         if profile == "ft991a":
             shadow["on"] = False
         else:
@@ -355,9 +307,7 @@ async def test_yaesu_unanswered_ptt_still_serves_with_tx_unknown(
         await stop()
 
 
-# ---------------------------------------------------------------------------
 # Icom: IC-7610 / IC-7300 serial fakes, real backend + poller + web gate
-# ---------------------------------------------------------------------------
 
 _ICOM_RADIOS = {
     "IC-7610": (ic7610_usb_fake, Icom7610SerialRadio),
@@ -371,7 +321,6 @@ _ICOM_COMMANDS = {
 
 
 async def _connected_icom(model: str):
-    """The Icom serial fake behind the production backend, connected."""
     make_fake, radio_cls = _ICOM_RADIOS[model]
     fake = make_fake()
     endpoint = PtyEndpoint(fake)
@@ -386,7 +335,6 @@ async def _connected_icom(model: str):
 
 
 def _icom_gated_web(radio, model: str) -> WebServer:
-    """The web listener with the production startup gate engaged."""
     return WebServer(
         radio,
         WebConfig(
@@ -430,12 +378,7 @@ def _ptt_actuations(fake) -> list:
 
 
 async def _assert_icom_key_refused_unknown_rf(web: WebServer, fake) -> None:
-    """The production web poller refuses a key on unknown RF state.
-
-    The verdict is the seat every command passes through
-    (``_enforce_tx_interlock``); the raised refusal proves the wiring.
-    Neither reaches the wire.
-    """
+    """The production web poller refuses a key on unknown RF state."""
     poller = web._radio_poller  # noqa: SLF001
     decision = evaluate_tx_interlock(PttOn(), rf_state=poller._current_rf_state())  # noqa: SLF001
     assert not decision.allowed
@@ -460,17 +403,12 @@ async def test_icom_unanswered_tx_state_still_serves_with_tx_unknown(
 ) -> None:
     """MOR-4456 (Icom): a PTT/split read that never answers still serves.
 
-    The ``1C 00`` (PTT) or ``0F`` (split) read stays silent (no reply at
-    all, while the rest answers) or is NAKed on every attempt, through
-    the production serial backend, its commander and CI-V request
-    tracker, the shared acquisition scheduler, and ``WebServer.start()``
-    with the startup gate on — on the IC-7610 and IC-7300 bench
-    recordings. The server starts, the answering paths arrive, HTTP
-    reports the transmit state unknown (null plus unobserved), and one
-    gate record names the path: a WARNING with the wire command and the
-    silent cause for a silent read, the INFO refused record with no
-    WARNING for a NAKed one. A late answer clears the unknown and — for
-    PTT — the key path allows again, without ever keying the radio.
+    ``1C 00``/``0F`` stays silent or NAKed while the rest answers, on the
+    IC-7610/IC-7300 serial fakes through the production backend and gated
+    ``WebServer.start()``. The server starts, HTTP reports TX unknown, and
+    one gate record names the path (a WARNING for silence, an INFO refused
+    record with no WARNING for a NAK); a late answer clears the unknown
+    and — for PTT — the key path allows again.
     """
     from rigplane_testkit.serial.civ_serial import CivSerialFake
 
@@ -502,11 +440,7 @@ async def test_icom_unanswered_tx_state_still_serves_with_tx_unknown(
 
         # Not vacuous: the radio was asked for the adverse read.
         def asked() -> list:
-            return [
-                frame
-                for frame in fake.commands
-                if (frame.command, frame.sub) == (command, sub)
-            ]
+            return [f for f in fake.commands if (f.command, f.sub) == (command, sub)]
 
         assert asked(), "the poller asked for the adverse read"
         # The answering paths arrive through the real poller.
@@ -546,10 +480,9 @@ async def test_icom_unanswered_tx_state_still_serves_with_tx_unknown(
                 and str(path) in record.getMessage()
             ], "an unavailable path lapses no deadline WARNING"
         if path_name == "ptt":
-            # Split-unknown never gates the key: only PTT feeds RF state.
             await _assert_icom_key_refused_unknown_rf(web, fake)
         # Phase 2 — the radio answers: the served unknown clears and, for
-        # PTT, the key path allows again. Nothing is keyed to prove it.
+        # PTT, the key path allows again.
         fault["on"] = False
         await await_until(
             lambda: _tx_observed(web, path),

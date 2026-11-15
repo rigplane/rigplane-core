@@ -28,8 +28,6 @@ from rigplane.backends.yaesu_cat.radio import YaesuCatRadio
 from rigplane.profiles.rig_loader import load_rig
 from rigplane.web.server import WebConfig, WebServer
 from rigplane_testkit.sim.adapters.yaesu_cat import YaesuCatSerialFake
-from rigplane_testkit.sim.engine import Ok, Refused
-from rigplane_testkit.yaesu.replay import REFUSAL
 
 ROOT = Path(__file__).resolve().parents[2]
 RIG = ROOT / "rigs/ft991a.toml"
@@ -56,32 +54,8 @@ class Ft991aHttpStation:
 
 #: A CAT-line hook for :func:`serve_ft991a_over_http`: called with each
 #: request line before the simulator answers; return ``(reply, outcome)``
-#: to shadow the sim, or ``None`` to let it answer. ``silent_on`` shadows
-#: with ``(None, Ok())`` (the radio stays silent); ``refused_by`` shadows
-#: with ``(REFUSAL, Refused(...))`` (the radio answers ``?;``).
+#: to shadow the sim, or ``None`` to let it answer.
 CommandHook = Callable[[str], tuple[str | None, Any] | None]
-
-
-def silent_on(*verbs: str) -> CommandHook:
-    """Shadow *verbs* (``"TX;"``, ``"FT;"``) with radio silence."""
-
-    def hook(line: str) -> tuple[str | None, Any] | None:
-        if line in verbs:
-            return (None, Ok())
-        return None
-
-    return hook
-
-
-def refused_by(*verbs: str, reason: str = "native_refusal") -> CommandHook:
-    """Shadow *verbs* (``"TX;"``, ``"FT;"``) with a ``?;`` refusal."""
-
-    def hook(line: str) -> tuple[str | None, Any] | None:
-        if line in verbs:
-            return (REFUSAL, Refused(reason))
-        return None
-
-    return hook
 
 
 async def serve_ft991a_over_http(
@@ -98,8 +72,7 @@ async def serve_ft991a_over_http(
 
     ``web_config`` replaces the default listener config (for example to
     enable ``await_initial_state`` for the startup gate); ``command_hook``
-    shadows simulator answers per line (see :func:`silent_on` and
-    :func:`refused_by`).
+    shadows simulator answers per line.
     """
     radio = YaesuCatRadio("/dev/fixture", profile=load_rig(RIG))
     fake = YaesuCatSerialFake.from_profile(ROOT, SIM_PROFILE, rig_path=RIG)
