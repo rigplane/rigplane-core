@@ -896,6 +896,10 @@ async def test_api_cancel_drops_request() -> None:
 
 
 @_webrtc
+@pytest.mark.realtime(
+    reason="waits for real channel close/timeout signals (webrtc ICE plus "
+    "2 s no-response timeouts) that the virtual clock cannot produce"
+)
 async def test_api_two_channels_share_one_key() -> None:
     """Two api channels on one key: independent lifecycle, full cleanup.
 
