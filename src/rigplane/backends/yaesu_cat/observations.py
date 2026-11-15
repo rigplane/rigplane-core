@@ -470,6 +470,21 @@ class YaesuObservationAdapter:
                     native_id="get_tx_func",
                 )
             )
+        else:
+            # No pollable tx_target source declared (sourceless-Yaesu
+            # class: the profile carries no TX-function read verb, so a
+            # pollable target would make _read_tx_target raise out of
+            # _query and discard the whole medium batch). Publish the
+            # sticky ``unsupported`` fact through this same path, with no
+            # CAT I/O here, so downstream gates read "no source exists"
+            # instead of "not yet read" (MOR-4433).
+            observations.append(
+                adapter.observation(
+                    _TX_TARGET,
+                    UnknownTxTarget(reason="unsupported"),
+                    native_id="get_tx_func",
+                )
+            )
         if self._can_poll(_PTT):
 
             def publish_ptt_error() -> None:
@@ -699,10 +714,17 @@ class YaesuObservationAdapter:
         # contains it as ``not-observed`` so the medium cycle survives.
         try:
             tx_func = await method()
+        except CatCommandRejected:
+            # Gate P2 (MOR-4433): the profile declares the source and the
+            # radio refused the read (?;), so the source exists and only
+            # the answer is missing. It reports not-observed — never
+            # unsupported, which is reserved for a source that does not
+            # exist at all — instead of aborting the whole medium poll
+            # batch.
+            return UnknownTxTarget(reason="not-observed")
         except (
             AttributeError,
             NotImplementedError,
-            CatCommandRejected,
             CommandError,
         ):
             # CommandError is the absent/unsupported-command refusal: _query
