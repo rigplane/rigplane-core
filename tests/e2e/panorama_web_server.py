@@ -9,7 +9,13 @@ delays the UPLINK only: every inbound request waits in the simulator's
 inherited ``response_delay`` dispatch delay (applied in ``_receive``) before
 it is parsed. Round-trip time is the sum of the two legs, each applied
 exactly once — never doubled.
+
+Adoption-order knob (MOR-4451): ``--external-span-skew-s`` staggers the two
+observable legs of the front-panel ``--external-span-after-s`` change — the
+streamed wave and the 0x15 span readback — so the client sees one order
+deterministically (positive skew: frames first; negative: readback first).
 """
+
 
 from __future__ import annotations
 
@@ -18,6 +24,7 @@ import asyncio
 import json
 import logging
 import sys
+import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -120,6 +127,12 @@ class PanoramaSimulator(MockIcomRadio):
             )
         self._scope_center_type = scope_center_type
         self.span_index = self.profile.scope_span_presets_hz.index(span_hz)
+        # MOR-4451 adoption-order knob: the lagging leg of a front-panel
+        # external span change keeps reporting the old preset until its
+        # switch time — (leg, old preset, switch at monotonic s). The
+        # leading leg switches span_index at once; both legs stay views
+        # of the same scheduled change, never a second mechanism.
+        self._external_hold: tuple[str, int, float] | None = None
         self.scope_mode = 0
         self.fixed = (14_200_000, 14_300_000)
         self.set_frequency(14_250_000)
@@ -226,6 +239,19 @@ class PanoramaSimulator(MockIcomRadio):
                 )
         return reply
 
+    def _external_leg_span_hz(self, leg: str) -> int:
+        """Preset the given leg (``readback`` or ``wave``) reports right now.
+
+        While the external change's lagging leg has not reached its switch
+        time it keeps the old preset; every other case (no change, leading
+        leg, expired hold) reports ``span_index`` — the single source of
+        truth the client span writes also update.
+        """
+        hold = self._external_hold
+        if hold is not None and hold[0] == leg and time.monotonic() < hold[2]:
+            return hold[1]
+        return self.profile.scope_span_presets_hz[self.span_index]
+
     def _dispatch_scope_reply(self, payload: bytes, from_addr: int) -> bytes | None:
         if payload and payload[0] == 0x1E and len(payload) == 3:
             return self._civ_frame(
@@ -254,7 +280,7 @@ class PanoramaSimulator(MockIcomRadio):
                 value = (
                     bytes([self.scope_mode])
                     if sub == 0x14
-                    else bcd_encode(self.profile.scope_span_presets_hz[self.span_index])
+                    else bcd_encode(self._external_leg_span_hz("readback"))
                 )
                 if len(rest) == 1:
                     return self._civ_frame(
@@ -312,7 +338,7 @@ class PanoramaSimulator(MockIcomRadio):
     def pump_scope_stream(self) -> int:
         if self.evidence.with_suffix(".pause").exists():
             return 0
-        span = self.profile.scope_span_presets_hz[self.span_index]
+        span = self._external_leg_span_hz("wave")
         first, last = (
             self.fixed if self.scope_mode == 1 else (self._scope_wave_center_hz(), span)
         )
@@ -408,6 +434,20 @@ async def run() -> None:
         help="radio scope span preset the external change narrows to — must be "
         "one of the profile's scope_span_presets_hz",
     )
+    parser.add_argument(
+        "--external-span-skew-s",
+        type=float,
+        default=0.0,
+        help="MOR-4451 adoption-order knob: staggers the two observable legs "
+        "of the --external-span-after-s change so the arrival order at the "
+        "client is deterministic. Positive: the streamed wave switches "
+        "first and the span readback (0x15) keeps the old preset that many "
+        "seconds longer (frames-first order). Negative: the span readback "
+        "switches first and the wave keeps the old width |skew| seconds "
+        "longer (readback-first order). Zero: both switch together (the "
+        "previous behaviour). One scheduled change, two switch times — "
+        "never a second mechanism.",
+    )
     args = parser.parse_args()
     logging.basicConfig(filename=args.evidence.with_suffix(".log"), level=logging.INFO)
     args.evidence.write_text("")
@@ -436,8 +476,17 @@ async def run() -> None:
 
         async def _external_span_change() -> None:
             await asyncio.sleep(args.external_span_after_s)
+            old_preset = simulator.profile.scope_span_presets_hz[simulator.span_index]
             simulator.span_index = presets.index(args.external_span_hz)
-            logging.info("external span change: now %d Hz", args.external_span_hz)
+            skew = args.external_span_skew_s
+            if skew > 0:
+                simulator._external_hold = ("readback", old_preset, time.monotonic() + skew)
+            elif skew < 0:
+                simulator._external_hold = ("wave", old_preset, time.monotonic() - skew)
+            logging.info(
+                "external span change: now %d Hz (skew %.1f s)",
+                args.external_span_hz, skew,
+            )
 
         asyncio.create_task(_external_span_change())
     radio = IcomRadio(

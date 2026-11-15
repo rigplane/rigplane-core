@@ -1607,6 +1607,65 @@ describe('SpectrumPanel component', () => {
     expect(subscribes().at(-1)).toMatchObject({ type: 'subscribe', view: { follow: 'vfo', spanHz: 100_000 } });
   });
 
+  it.each(['readback-first', 'frames-first'] as const)('adopts a zoomed follow narrowing when the %s leg arrives first (MOR-4451)', async (order) => {
+    runtimeHarness.state.currentCaps = validateCapabilities({ ...IC7300_CAPABILITIES, ...spanCapabilities, model: 'IC-705' });
+    // Observed span index 6 names the 500 kHz published view width.
+    authorityHarness.state.current = authority({ frequencyHz: 14_050_000, scopeControls: testScopeControls(2, 6) });
+    const target = mountPanel(); emitFrame(); await flushWaterfallPaint();
+    const read = () => JSON.parse(target.querySelector('.spectrum-panel')!.getAttribute('data-scope-subscription')!);
+    // Two ZOOM− steps from the 100 kHz default follow width: 400 kHz.
+    target.querySelector<HTMLButtonElement>('[data-testid="scope-zoom-out"]')!.click(); flushSync();
+    target.querySelector<HTMLButtonElement>('[data-testid="scope-zoom-out"]')!.click(); flushSync();
+    expect(read().view).toEqual({ follow: 'vfo', spanHz: 400_000 });
+    // The grant answers the current 400 kHz follow request at full width.
+    const stream = scopeControllerHarness.stream('hardware');
+    stream.handleMessage({ type: 'granted', ...stream.subscription!,
+      view: { startHz: 13_850_000, endHz: 14_250_000 },
+      coverage: { startHz: 13_850_000, endHz: 14_250_000 }, fps: 20 });
+    flushSync();
+    emitFrame({ startFreq: 13_850_000, endFreq: 14_250_000,
+      coverageStartHz: 13_850_000, coverageEndHz: 14_250_000, sequence: 2 }); flushSync();
+    expect(read().view).toEqual({ follow: 'vfo', spanHz: 400_000 });
+    const subscribes = () => (harnessChannels.scope.sendRaw as unknown as Mock).mock.calls
+      .map(([message]) => message as { type?: unknown })
+      .filter((message) => message?.type === 'subscribe');
+    const sentBefore = subscribes().length;
+    const narrowReadback = () => {
+      authorityHarness.state.current = authority({ frequencyHz: 14_050_000, scopeControls: testScopeControls(2, 5) });
+      refreshSpectrumAuthority(); flushSync();
+    };
+    const clippedFrames = () => {
+      emitFrame({ startFreq: 13_950_000, endFreq: 14_150_000,
+        coverageStartHz: 13_950_000, coverageEndHz: 14_150_000, sequence: 3 }); flushSync();
+    };
+    if (order === 'readback-first') {
+      // The span-index readback narrows 500 kHz → 200 kHz while the
+      // frames still carry the full 400 kHz view: adoption fires at once.
+      narrowReadback();
+      expect(read().view).toEqual({ follow: 'vfo', spanHz: 200_000 });
+      // The clipped frames arriving next change nothing: the view is
+      // already the narrowed native, fully covered, never hatched.
+      clippedFrames();
+    } else {
+      // The clipped 200 kHz frames arrive BEFORE the span-index
+      // readback: the observed native is still the old 500 kHz, so
+      // nothing adopts yet — a narrowing that never happened must not
+      // clamp the follow width.
+      clippedFrames();
+      expect(read().view).toEqual({ follow: 'vfo', spanHz: 400_000 });
+      // The readback follows: the grant still answers the current
+      // 400 kHz follow request, so the observed 500 kHz → 200 kHz
+      // narrowing below the follow width adopts — with no requirement
+      // that the already-clipped frame view equal the follow width.
+      narrowReadback();
+      expect(read().view).toEqual({ follow: 'vfo', spanHz: 200_000 });
+    }
+    await flushWaterfallPaint();
+    expect(subscribes()).toHaveLength(sentBefore + 1);
+    expect(subscribes().at(-1)).toMatchObject({ type: 'subscribe', view: { follow: 'vfo', spanHz: 200_000 } });
+    expect(target.querySelectorAll('.scope-hatch')).toHaveLength(0);
+  });
+
   it('hatches a genuinely narrower observed native even when the grant coverage is as wide as the view (MOR-4451)', async () => {
     runtimeHarness.state.currentCaps = validateCapabilities({ ...IC7300_CAPABILITIES, ...spanCapabilities, model: 'IC-705' });
     // Observed span index 3 names the 50 kHz published view width: the

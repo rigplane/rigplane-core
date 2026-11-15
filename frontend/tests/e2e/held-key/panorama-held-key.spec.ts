@@ -704,19 +704,27 @@ test('IC-705 pinned 10m band preset wider than any native stays hatched', async 
   }
 });
 
-// Control row: the owner rule of 2026-11-14. The radio starts on the 50000
-// preset (100 kHz native, the default follow width) and the harness narrows
-// the span preset to 25 kHz from the front panel
-// (--external-span-after-s/--external-span-hz) AFTER setup, with no zoom
-// presses after it. The row asserts NO radio span write after the change
-// (MOR-4385 adoption: the grant clips, nothing is written back), that the
-// displayed view ADOPTS the narrowed native (frames carry view width ==
-// coverage width == 50 kHz and the span readout shows ±25k), and NO
-// .scope-hatch in the adopted state. One row, no latency matrix. Needs the
-// same integrated tree as the rows above.
-test('IC-705 external span narrowing adopts without a write and without hatch (control)', async ({ page }, info) => {
+// Control rows: the owner rule of 2026-11-14 in BOTH event orders. The
+// radio starts on the 50000 preset (100 kHz native, the default follow
+// width) and the harness narrows the span preset to 25 kHz from the front
+// panel (--external-span-after-s/--external-span-hz) AFTER setup, with no
+// zoom presses after it. --external-span-skew-s staggers the two legs of
+// that change deterministically: a negative skew switches the span readback
+// first (the order the old code happened to survive), a positive skew
+// switches the streamed wave first (the order that exposed MOR-4451: the
+// clipped frames arrive before the span-index readback). Each row asserts
+// NO radio span write after the change (MOR-4385 adoption: the grant
+// clips, nothing is written back), that the displayed view ADOPTS the
+// narrowed native (the follow subscription moves to the narrowed width,
+// frames carry view width == coverage width == 50 kHz and the span readout
+// shows ±25k), and NO .scope-hatch in the adopted state. No latency matrix.
+// Needs the same integrated tree as the rows above.
+for (const { order, skew, port } of [
+  { order: 'readback-first', skew: -20, port: 21594 },
+  { order: 'frames-first', skew: 20, port: 21595 },
+] as const) {
+test(`IC-705 external span narrowing adopts without a write and without hatch (control, ${order})`, async ({ page }, info) => {
   test.setTimeout(240_000);
-  const port = 21599;
   const seed = 1234;
   const externalAfterS = 90;
   const evidence = info.outputPath('radio.jsonl');
@@ -745,8 +753,10 @@ test('IC-705 external span narrowing adopts without a write and without hatch (c
       ['--model', 'IC-705', '--evidence', evidence,
         '--span-hz', '50000',
         // Fires after setup so the snapshot below predates the change and
-        // the adoption poll starts waiting BEFORE the switch.
+        // the adoption poll starts waiting BEFORE the switch. The skew
+        // makes the readback/wave arrival order deterministic (see above).
         '--external-span-after-s', String(externalAfterS), '--external-span-hz', '25000',
+        '--external-span-skew-s', String(skew),
         '--seed', String(seed)],
       'tests/e2e/panorama_web_server.py');
     serverReady = true;
@@ -829,7 +839,10 @@ test('IC-705 external span narrowing adopts without a write and without hatch (c
       return [latest.view[1] - latest.view[0], latest.coverage[1] - latest.coverage[0]];
     }, { timeout: 120_000 }).toEqual([50_000, 50_000]);
     const adoptedWall = Date.now();
-    await expect(page.getByTestId('scope-span-value').first()).toHaveText('±25k');
+    // The readout only changes once the lagging readback leg arrives and
+    // the client adopts — up to |skew| after the wire narrowed — so the
+    // budget must cover the stagger, not just the render.
+    await expect(page.getByTestId('scope-span-value').first()).toHaveText('±25k', { timeout: 60_000 });
     await page.waitForTimeout(2500);
 
     const adoptedSamples = (await page.evaluate(() => window.heldKeySamples))
@@ -839,13 +852,13 @@ test('IC-705 external span narrowing adopts without a write and without hatch (c
     const latestViewHz = latest.view[1] - latest.view[0];
     const latestCovHz = latest.coverage[1] - latest.coverage[0];
     const spanSetsAfter = await spanSetCount();
-    console.log(`[held-key control owner-rule] ` +
+    console.log(`[held-key control ${order} owner-rule] ` +
       `samples=${adoptedSamples.length} hatched=${hatchedAdopted.length} ` +
       `view=${latestViewHz}Hz cov=${latestCovHz}Hz ` +
       `spanSetsBefore=${spanSetsBefore} spanSetsAfter=${spanSetsAfter}`);
-    await info.attach('held-key-control', {
+    await info.attach(`held-key-control-${order}`, {
       body: JSON.stringify({
-        params: { spanHz: 50_000, externalSpanHz: 25_000, seed },
+        params: { spanHz: 50_000, externalSpanHz: 25_000, seed, order, skew },
         grantedWidthHz, adoptedWall,
         latestView: latest.view, latestCoverage: latest.coverage,
         spanSetsBefore, spanSetsAfter,
@@ -859,7 +872,11 @@ test('IC-705 external span narrowing adopts without a write and without hatch (c
     // span-set receipt is a write-back.
     expect(spanSetsAfter,
       `radio span written ${spanSetsAfter - spanSetsBefore}x after the external change`).toBe(spanSetsBefore);
-    // (2) the displayed view adopted the narrowed native.
+    // (2) the displayed view adopted the narrowed native: the follow
+    // subscription itself moved to the narrowed width, and the wire
+    // frames carry view width == coverage width == that width.
+    expect(sent.at(-1)?.view,
+      `follow subscription did not adopt the narrowed native (${order})`).toEqual({ follow: 'vfo', spanHz: 50_000 });
     expect(latestViewHz, 'adopted view is not the narrowed native width').toBe(50_000);
     expect(latestCovHz, 'adopted coverage is not the narrowed native width').toBe(50_000);
     // (3) NO hatch in the adopted state: a fully covered view never
@@ -873,7 +890,206 @@ test('IC-705 external span narrowing adopts without a write and without hatch (c
   } catch (error) {
     const verdict = classifyHeldKeyCatch({
       setupDone, serverReady, framesObserved: frames.length, error,
-      row: 'owner-rule control (external span 25kHz under a 100kHz follow view)',
+      row: `owner-rule control ${order} (external span 25kHz under a 100kHz follow view)`,
+    });
+    if (verdict.disposition === 'skip') {
+      test.skip(true, verdict.reason);
+      return;
+    }
+    throw verdict.error;
+  } finally {
+    await server?.kill();
+  }
+});
+} // control order loop
+
+// Zoomed adoption row (MOR-4451): the follow view is zoomed out twice to
+// 400 kHz on the ±250k preset (span text ±200k) and the front panel narrows
+// the span to ±100k AFTER setup, with no presses after it. The server clips
+// the follow frames to the narrowed 200 kHz native first (resolve_follow)
+// and the span-index readback follows 20 s later (frames-first skew), so on
+// the unfixed tree the adoption guard — which demanded the frame view width
+// to equal the follow width — misses the narrowing forever: the view stays
+// 400 kHz and hatches. The row asserts the adopted state: the follow
+// subscription moved to 200 kHz, frames carry view width == coverage width
+// == 200 kHz, the span readout shows ±100k, zero span writes after the
+// change, zero .scope-hatch in the adopted rAF samples, and zero canvas
+// hatch on both edge strips (the panel's hatch decision reaches the canvas
+// with no ranges). Needs the same integrated tree as the rows above.
+test('IC-705 zoomed follow adopts a front-panel narrowing without a write and without hatch', async ({ page }, info) => {
+  test.setTimeout(300_000);
+  const port = 21598;
+  const seed = 1234;
+  const externalAfterS = 100;
+  const evidence = info.outputPath('radio.jsonl');
+  let setupDone = false;
+  let serverReady = false;
+  let server: JourneyServerHandle | undefined;
+  const sent: Array<ScopeSubscription & { type: string }> = [];
+  const grants: Array<{ tWall: number; grant: ScopeGranted }> = [];
+  const frames: Array<{ view: number[]; coverage: number[]; receivedAt: number; tWall: number }> = [];
+  const spanSetCount = async (): Promise<number> =>
+    (await readScopeWriteReceipts(evidence))
+      .filter((receipt) => receipt.sub === 0x15 && receipt.data.length === 6).length;
+  const receiptCount = async (): Promise<number> =>
+    (await readScopeWriteReceipts(evidence)).length;
+  const startedWall = Date.now();
+  try {
+    server = await startJourneyServer(port, 14_250_000,
+      ['--model', 'IC-705', '--evidence', evidence,
+        '--span-hz', '250000',
+        // Frames-first order: the clipped wave arrives at the switch and
+        // the span readback follows 20 s later — the order that reds on
+        // the unfixed tree.
+        '--external-span-after-s', String(externalAfterS), '--external-span-hz', '100000',
+        '--external-span-skew-s', '20',
+        '--seed', String(seed)],
+      'tests/e2e/panorama_web_server.py');
+    serverReady = true;
+    const watch = watchPanoramaErrors(page);
+    page.on('websocket', (socket) => {
+      if (new URL(socket.url()).pathname === '/api/v1/ws') return;
+      if (!socket.url().endsWith('/api/v1/scope')) return;
+      socket.on('framesent', ({ payload }) => {
+        if (typeof payload === 'string') {
+          const message = JSON.parse(payload) as ScopeSubscription & { type: string };
+          if (message.type === 'subscribe') sent.push(message);
+        }
+      });
+      socket.on('framereceived', ({ payload }) => {
+        if (typeof payload === 'string') {
+          const grant = parseScopeGranted(JSON.parse(payload));
+          if (grant) grants.push({ tWall: Date.now(), grant });
+        } else {
+          const buffer = Uint8Array.from(payload).buffer;
+          const parsed = parseCurrentScopeFrame(buffer, { source: 'radio', sourceId: 'radio', epoch: 0 });
+          if (parsed.ok) {
+            frames.push({
+              view: [parsed.frame.viewStartHz, parsed.frame.viewEndHz],
+              coverage: [parsed.frame.coverageStartHz, parsed.frame.coverageEndHz],
+              receivedAt: performance.now(),
+              tWall: Date.now(),
+            });
+          }
+        }
+      });
+    });
+    await installSampler(page);
+    await installHeldKeySampler(page);
+    await page.goto(`http://127.0.0.1:${port}/?ui=v2`);
+    await expect.poll(() => frames.length, { timeout: 30_000 }).toBeGreaterThan(10);
+    const marker = page.locator('.waterfall-content .tune-line');
+    await expect(marker).toBeVisible({ timeout: 30_000 });
+
+    // CTR (CENTER) scope mode, same as the burst rows.
+    const ctr = page.getByRole('radio', { name: 'CTR' }).first();
+    if (!(await ctr.isChecked())) await ctr.click();
+    await expect(ctr).toBeChecked();
+
+    await settlePassband(page, port);
+    await page.waitForTimeout(1000);
+
+    // View zoomed to ±200 kHz: two ZOOM− steps from the 100 kHz default
+    // follow width. The smallest covering radio preset stays 250000, so
+    // this is a pure client crop with no span write of its own.
+    await page.getByRole('button', { name: 'More scope controls' }).first().click();
+    await page.getByTestId('scope-zoom-out').first().click();
+    await page.getByTestId('scope-zoom-out').first().click();
+    await page.keyboard.press('Escape');
+    await expect.poll(() => sent.at(-1)?.view).toEqual({ follow: 'vfo', spanHz: 400_000 });
+    await expect(page.getByTestId('scope-span-value').first()).toHaveText('±200k');
+    await expect.poll(() => {
+      const grant = grants.at(-1)?.grant;
+      return grant ? grant.view.endHz - grant.view.startHz : 0;
+    }).toBe(400_000);
+    const zoomedView = [BASE_FREQ_HZ - 200_000, BASE_FREQ_HZ + 200_000];
+    await expect.poll(() => frames.at(-1)?.view).toEqual(zoomedView);
+    // Frames before the zoom settled carry the narrower pre-zoom views —
+    // the pre-change check below only covers frames from here on.
+    const zoomedFrameIdx = frames.length;
+    setupDone = true;
+
+    // Snapshot the span-set receipts BEFORE the external change can fire:
+    // setup must finish well inside the change delay, or the "no write
+    // after the change" assertion below would compare against a
+    // post-change baseline and pass vacuously.
+    const setupElapsedS = (Date.now() - startedWall) / 1000;
+    expect(setupElapsedS,
+      `setup took ${setupElapsedS.toFixed(0)}s; the external change fires at ${externalAfterS}s`).toBeLessThan(externalAfterS - 15);
+    expect(frames.length, 'no scope frames arrived during setup').toBeGreaterThan(zoomedFrameIdx);
+    expect(frames.slice(zoomedFrameIdx).every((f) => f.view[1] - f.view[0] === 400_000 && f.coverage[1] - f.coverage[0] === 400_000),
+      'pre-change frames do not all show view=400000/cov=400000').toBe(true);
+    const spanSetsBefore = await spanSetCount();
+    expect(await receiptCount(),
+      'evidence file is empty — the no-new-writes assertion would pass vacuously').toBeGreaterThan(0);
+
+    // Wait until the narrowed native reaches the wire: the server clips
+    // the follow frames to the 200 kHz native (view == coverage == 200k).
+    // On the unfixed tree the follow width never follows — the span
+    // readout below is the assertion that reds there.
+    await expect.poll(() => {
+      const latest = frames.at(-1);
+      if (!latest) return null;
+      return [latest.view[1] - latest.view[0], latest.coverage[1] - latest.coverage[0]];
+    }, { timeout: 180_000 }).toEqual([200_000, 200_000]);
+    const adoptedWall = Date.now();
+    // The readout only changes once the lagging readback leg arrives and
+    // the client adopts — 20 s after the wire narrowed here — so the
+    // budget must cover the stagger, not just the render.
+    await expect(page.getByTestId('scope-span-value').first()).toHaveText('±100k', { timeout: 60_000 });
+    await page.waitForTimeout(2500);
+
+    const adoptedSamples = (await page.evaluate(() => window.heldKeySamples))
+      .filter((s) => s.tWall >= adoptedWall);
+    const hatchedAdopted = adoptedSamples.filter((s) => s.hatchCount > 0);
+    const latest = frames.at(-1)!;
+    const latestViewHz = latest.view[1] - latest.view[0];
+    const latestCovHz = latest.coverage[1] - latest.coverage[0];
+    const hotLeft = await canvasEdgeHotColumns(page, 'left');
+    const hotRight = await canvasEdgeHotColumns(page, 'right');
+    const spanSetsAfter = await spanSetCount();
+    console.log(`[held-key zoomed adoption] ` +
+      `samples=${adoptedSamples.length} hatched=${hatchedAdopted.length} ` +
+      `hotLeft=${hotLeft} hotRight=${hotRight} ` +
+      `view=${latestViewHz}Hz cov=${latestCovHz}Hz ` +
+      `spanSetsBefore=${spanSetsBefore} spanSetsAfter=${spanSetsAfter}`);
+    await info.attach('held-key-zoomed-adoption', {
+      body: JSON.stringify({
+        params: { spanHz: 250_000, externalSpanHz: 100_000, skew: 20, seed },
+        latestView: latest.view, latestCoverage: latest.coverage,
+        spanSetsBefore, spanSetsAfter,
+        samples: adoptedSamples.length, hatched: hatchedAdopted.length,
+        hotLeft, hotRight,
+      }, null, 2),
+      contentType: 'application/json',
+    });
+
+    // (1) NO radio span write after the external change: the setup
+    // snapshot predates the change and no gesture follows it, so any new
+    // span-set receipt is a write-back.
+    expect(spanSetsAfter,
+      `radio span written ${spanSetsAfter - spanSetsBefore}x after the external change`).toBe(spanSetsBefore);
+    // (2) the zoomed follow view adopted the narrowed native: the follow
+    // subscription itself moved from 400 kHz to the 200 kHz native.
+    expect(sent.at(-1)?.view,
+      'zoomed follow subscription did not adopt the narrowed native').toEqual({ follow: 'vfo', spanHz: 200_000 });
+    expect(latestViewHz, 'adopted view is not the narrowed native width').toBe(200_000);
+    expect(latestCovHz, 'adopted coverage is not the narrowed native width').toBe(200_000);
+    // (3) NO hatch in the adopted state: a fully covered view never
+    // hatches — neither the DOM blocks nor the canvas pattern, which both
+    // come from the panel's hatch decision.
+    expect(adoptedSamples.length,
+      'too few adopted-state samples to judge the zoomed adoption hatch').toBeGreaterThan(10);
+    expect(hatchedAdopted,
+      `adopted fully-covered view hatched in ${hatchedAdopted.length} samples`).toEqual([]);
+    expect(hotLeft, 'canvas left edge shows the hatch pattern on a fully covered view').toBe(0);
+    expect(hotRight, 'canvas right edge shows the hatch pattern on a fully covered view').toBe(0);
+
+    expectPanoramaSettled(watch);
+  } catch (error) {
+    const verdict = classifyHeldKeyCatch({
+      setupDone, serverReady, framesObserved: frames.length, error,
+      row: 'zoomed adoption (external span 100kHz under a 400kHz follow view)',
     });
     if (verdict.disposition === 'skip') {
       test.skip(true, verdict.reason);
