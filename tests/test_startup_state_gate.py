@@ -4443,3 +4443,56 @@ async def test_managed_key_refused_while_ptt_unobserved_controller_not_ready(
         server._controller.revoke()  # noqa: SLF001
         await server._controller.settle()  # noqa: SLF001
         await composition.shutdown(asyncio.Event())
+
+
+async def test_managed_key_admitted_while_ptt_unobserved_after_start_without_ptt(
+    tmp_path: Path,
+) -> None:
+    """MOR-4456 authority evidence: the managed key is admitted, remote is not.
+
+    A station built exactly like production startup except PTT/split were
+    never observed (the MOR-4456 gate releases on the non-critical
+    deadline with one WARNING instead of failing): RF state resolves
+    UNKNOWN with no radio-TX refusal, so the managed key submitted to the
+    existing authority (local mode, no controller ticket) is ADMITTED and
+    reaches the wire — while arming the remote controller session is
+    refused with the existing ``controller_not_ready`` reason (HTTP 503).
+    Restored from 57d563ea1, which 13d586eba renamed into the refusal-only
+    sibling: the admission half holds in local mode, where no remote
+    readiness applies.
+    """
+
+    from test_managed_tx_production_fake_wire import (
+        _IcomActuator,
+        _joined_web_runtime,
+    )
+    from test_web_controller import request
+
+    from rigplane.runtime.managed_tx_state import ManagedTxOutcome
+    from rigplane.runtime.tx_interlock import RfState, resolve_rf_state
+
+    actuator, composition, server = await _joined_web_runtime(tmp_path, _IcomActuator)
+    try:
+        store = server.command_state_store
+        assert resolve_rf_state(store.snapshot()) is RfState.UNKNOWN
+        assert composition.authority.radio_tx_refusal_nowait() is None
+        armed = await request(
+            server, "POST", "/api/v1/controller/mode", {"mode": "remote"}
+        )
+        assert armed.status == 503
+        assert armed.payload == {"error": "controller_not_ready"}
+        acquired = await request(server, "POST", "/api/v1/controller", {"kind": "pro"})
+        assert acquired.status == 201
+        # Local mode needs no controller ticket: the bound local ticket
+        # would carry its session owner, while an unbound submission is
+        # validated as a local key-down and reaches the authority.
+        pressed = await composition.authority.submit_ptt(True, "memory-primary")
+        assert pressed.outcome is ManagedTxOutcome.ACCEPTED
+        await pressed.wait_settlement()
+        assert True in actuator.wire
+        released = await composition.authority.submit_force_off()
+        await released.wait_settlement()
+    finally:
+        server._controller.revoke()  # noqa: SLF001
+        await server._controller.settle()  # noqa: SLF001
+        await composition.shutdown(asyncio.Event())
