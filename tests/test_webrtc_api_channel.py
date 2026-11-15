@@ -896,6 +896,130 @@ async def test_api_cancel_drops_request() -> None:
 
 
 @_webrtc
+async def test_api_requests_do_not_inherit_attachment_ticket(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Api requests carry their own credential, like HTTP: no ambient ticket.
+
+    A keyed api attach must not leak its ticket into request tasks. A
+    probe route reports the ticket the request runs as: without a header
+    the api lane must act sessionless (HTTP parity), with another
+    session's header it must act as that session (HTTP parity), and both
+    parities hold after the named session ends.
+    """
+    from rigplane.web import server as server_module
+    from rigplane.web.web_routing import ApiRoute
+    from rigplane.web import web_routing
+    from rigplane.runtime.controller_authority import ControllerError
+
+    async def _probe_ambient(
+        server: WebServer,
+        writer: asyncio.StreamWriter,
+        method: str,
+        path: str,
+        headers: dict[str, str] | None,
+        reader: asyncio.StreamReader | None,
+        query: dict[str, list[str]] | None,
+    ) -> None:
+        try:
+            ticket = server._controller.capture()  # noqa: SLF001
+            body = json.dumps({"tx_owner": ticket.tx_owner}).encode()
+        except ControllerError as exc:
+            body = json.dumps({"refused": exc.code}).encode()
+        await server_module._send_response(
+            writer, 200, "OK", body, {"Content-Type": "application/json"}
+        )
+
+    monkeypatch.setattr(
+        web_routing,
+        "API_ROUTE_TABLE",
+        web_routing.API_ROUTE_TABLE
+        + (ApiRoute(("GET",), "/api/v1/_test/ambient", _probe_ambient),),
+    )
+
+    server = await _stand_up_light()
+    client = _ApiClient()
+    try:
+        await client.connect(server.port)
+        await client.attach(None)
+
+        async def _api_grant(req_id: int) -> str:
+            grant = await client.request(
+                req_id,
+                "POST",
+                "/api/v1/controller",
+                headers={"content-type": "application/json"},
+                body=json.dumps({"kind": "pro"}).encode(),
+            )
+            assert grant.status == 201, (grant.status, grant.body[:200])
+            return str(json.loads(grant.body.decode())["controller_key"])
+
+        key_a = await _api_grant(1)
+        key_b = await _api_grant(2)
+
+        keyed = _ApiClient()
+        await keyed.connect(server.port)
+        await keyed.attach(key_a)
+        try:
+
+            async def _keyed_probe(
+                req_id: int, key: str | None
+            ) -> tuple[int, dict[str, Any]]:
+                headers: dict[str, str] = {}
+                if key is not None:
+                    headers["x-rigplane-controller"] = key
+                resp = await keyed.request(req_id, "GET", "/api/v1/_test/ambient",
+                                           headers=headers)
+                return resp.status, json.loads(resp.body.decode())
+
+            async def _http_probe(key: str | None) -> tuple[int, dict[str, Any]]:
+                headers: dict[str, str] = {}
+                if key is not None:
+                    headers["X-RigPlane-Controller"] = key
+                status, body = await _http_request(
+                    server.port, "GET", "/api/v1/_test/ambient", headers=headers
+                )
+                return status, json.loads(body.decode())
+
+            # Alive: omitted header acts sessionless, other key acts as it.
+            status, api_owner = await _keyed_probe(1, None)
+            http_status, http_owner = await _http_probe(None)
+            assert (status, api_owner) == (http_status, http_owner) == (
+                200, {"tx_owner": None},
+            )
+            status, api_owner = await _keyed_probe(2, key_b)
+            http_status, http_owner = await _http_probe(key_b)
+            assert status == http_status == 200
+            assert api_owner == http_owner
+            assert api_owner["tx_owner"] is not None
+
+            # After the other session expires, its header refuses on both
+            # lanes with the same code; the omitted header stays sessionless.
+            controller = server._controller  # noqa: SLF001
+            for session in controller._sessions.values():  # noqa: SLF001
+                if session.key == key_b:
+                    session.deadline = 0.0
+            with pytest.raises(ControllerError):
+                controller.credential(key_b)
+            status, api_refused = await _keyed_probe(3, key_b)
+            http_status, http_refused = await _http_probe(key_b)
+            assert (status, api_refused) == (http_status, http_refused)
+            assert status == 403, (status, api_refused)
+            status, api_owner = await _keyed_probe(4, None)
+            http_status, http_owner = await _http_probe(None)
+            assert (status, api_owner) == (http_status, http_owner) == (
+                200, {"tx_owner": None},
+            )
+        finally:
+            with contextlib.suppress(Exception):
+                await keyed.close()
+    finally:
+        with contextlib.suppress(Exception):
+            await client.close()
+        await _tear_down(server)
+
+
+@_webrtc
 @pytest.mark.realtime(
     reason="waits for real channel close/timeout signals (webrtc ICE plus "
     "2 s no-response timeouts) that the virtual clock cannot produce"
@@ -1310,6 +1434,34 @@ def _tx_refusal_body(resp: _Response) -> Any:
     obj = json.loads(resp.body.decode())
     assert obj["error"] == "controller_tx_unsupported", obj
     return obj
+
+
+async def _http_request(
+    port: int,
+    method: str,
+    path: str,
+    payload: bytes = b"",
+    headers: dict[str, str] | None = None,
+) -> tuple[int, bytes]:
+    """Minimal raw HTTP helper with caller-supplied headers."""
+    reader, writer = await asyncio.open_connection("127.0.0.1", port)
+    try:
+        head_lines = [
+            f"{method} {path} HTTP/1.1",
+            f"Host: 127.0.0.1:{port}",
+            f"Content-Length: {len(payload)}",
+            "Connection: close",
+        ]
+        for name, value in (headers or {}).items():
+            head_lines.append(f"{name}: {value}")
+        writer.write(("\r\n".join(head_lines) + "\r\n\r\n").encode() + payload)
+        await writer.drain()
+        head = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), timeout=10.0)
+        status = int(head.split(b" ", 2)[1])
+        body = await asyncio.wait_for(reader.read(), timeout=10.0)
+        return status, body
+    finally:
+        writer.close()
 
 
 async def _http_post_keyed(
