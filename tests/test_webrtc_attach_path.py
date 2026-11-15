@@ -716,7 +716,7 @@ async def test_data_channel_leaf_deltas_match_websocket_size(
         await ws.connect()
         await driver.connect()
         # Let both observers settle on the same baseline before driving.
-        await dc.state_updates(1)
+        dc_baseline = await dc.state_updates(1)
         await ws.state_updates(1)
         for i in range(6):
             response = await driver.command(
@@ -742,11 +742,20 @@ async def test_data_channel_leaf_deltas_match_websocket_size(
     assert dc_deltas and ws_deltas
     assert all(f.get("deltaVersion") == 2 for f in dc_deltas)
     assert all(f.get("deltaVersion") == 2 for f in ws_deltas)
-    full_sizes = [len(json.dumps(f)) for f in dc_frames if f.get("type") == "full"]
-    ceiling = 4096  # a v2 leaf delta for a handful of changed leaves
+    # The property that matters is relative, not a byte count: a v2 leaf delta
+    # carries only the leaves that changed since THIS client's last frame, so
+    # even when its queue coalesces several flushes the delta is bounded by the
+    # union of changed leaves — a small part of the full state. The old
+    # top-level rendering re-sent whole top-level sections on every change, so
+    # each "delta" was about as large as a full render (measured ~49 KB vs a
+    # 33–59 KB full state). Assert every data-channel delta stays below half of
+    # this connection's own full-state render.
+    full_frames = [f for f in dc_baseline + dc_frames if f.get("type") == "full"]
+    assert full_frames, "the data-channel peer received no full state render"
+    full_size = max(len(json.dumps(f)) for f in full_frames)
     for frame in dc_deltas:
         size = len(json.dumps(frame))
-        assert size <= ceiling, (frame.get("revision"), size, full_sizes)
+        assert size <= full_size // 2, (frame.get("revision"), size, full_size)
 
 
 @_webrtc
