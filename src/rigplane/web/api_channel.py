@@ -932,7 +932,9 @@ def api_response_messages(
     return messages
 
 
-def _golden_frame(msg_type: ApiMessageType, request_id: int, payload: bytes) -> dict:
+def _golden_frame(
+    msg_type: ApiMessageType, request_id: int, payload: bytes
+) -> dict[str, Any]:
     """One wire frame as a committed golden entry: bytes plus meaning."""
     frame = _encode_frame(int(msg_type), request_id, payload)
     decoded: dict[str, Any] = {"type": msg_type.name, "request_id": request_id}
@@ -1006,8 +1008,8 @@ async def api_channel_golden_documents() -> dict[str, Any]:
 
     gf = _golden_frame
 
-    async def _route_frames(body: bytes, request_id: int) -> tuple[dict, list[dict]]:
-        writer = _ChannelHttpWriter(("golden", 0))
+    async def _route_frames(body: bytes) -> tuple[dict[str, Any], list[Any]]:
+        writer: Any = _ChannelHttpWriter(("golden", 0))
         await _send_response(
             writer, 200, "OK", body, {"Content-Type": "application/json"}
         )
@@ -1020,13 +1022,14 @@ async def api_channel_golden_documents() -> dict[str, Any]:
     refusal_body = json.dumps(
         {"error": "controller_tx_unsupported"}, separators=(",", ":")
     ).encode()
-    ok_fixture, ok_reply = await _route_frames(b'{"golden": true}', 3)
+    ok_fixture, ok_reply = await _route_frames(b'{"golden": true}')
     chunked_fixture, chunked_reply = await _route_frames(
-        b"A" * RESPONSE_CHUNK_BYTES + b"B", 4
+        b"A" * RESPONSE_CHUNK_BYTES + b"B"
     )
     end = (ApiMessageType.END, b"")
-    head404 = ("GET", "/api/v1/nonexistent", 2, None)
-    exchanges = {  # name: (summary, outcome, head, trailing, reply)
+    Head = tuple[str, str, int, dict[str, str] | None]
+    Msgs = list[tuple[ApiMessageType, bytes]]
+    exchanges: dict[str, tuple[str, str, Head | None, Msgs, Msgs]] = {
         "api_tx_refused": (
             "a request with a body and its 403, id 1",
             "a TX-capable body is refused before the shared dispatch",
@@ -1050,7 +1053,7 @@ async def api_channel_golden_documents() -> dict[str, Any]:
         "api_not_found": (
             "a request for an unknown path and its 404, id 2",
             "only /api/v1/* table entries are routed",
-            head404,
+            ("GET", "/api/v1/nonexistent", 2, None),
             [end],
             api_response_messages(404, {}, b"404 Not Found"),
         ),
