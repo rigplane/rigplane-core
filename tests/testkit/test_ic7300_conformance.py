@@ -76,7 +76,12 @@ def _expected_probe_bodies() -> set[bytes]:
     # The fixture records what the bench radio was asked before borrowing
     # existed, so the expected set stays the native-only plan: no siblings.
     plan = build_read_plan(config)
-    return {item.body for item in plan.asked}
+    native = {item.body for item in plan.asked}
+    # The retired scripts/ic7610_capture probe also sent cmd29 get_freq for
+    # both receivers on this single-receiver radio; the recording keeps
+    # those two requests, the promoted probe no longer asks them.
+    retired_cmd29_freq = {bytes((0x29, receiver, 0x03)) for receiver in (0x00, 0x01)}
+    return native | retired_cmd29_freq
 
 
 def _rows() -> list[dict]:
