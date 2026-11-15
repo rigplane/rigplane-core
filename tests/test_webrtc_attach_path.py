@@ -1115,3 +1115,125 @@ async def test_websocket_scope_output_shape(tmp_path: Path) -> None:
                 await _close_ws(writer)
     finally:
         await _tear_down_stack(stack)
+
+
+# ---------------------------------------------------------------------------
+# Attach acknowledgement: one text frame after a data-channel attach.
+# ---------------------------------------------------------------------------
+
+
+@_webrtc
+async def test_data_channel_attach_ack_on_each_label(tmp_path: Path) -> None:
+    """After a data-channel attach succeeds, the server acks each label.
+
+    The ack is the FIRST frame the channel delivers, so a resent attach
+    frame (scope/audio are lossy) can be stopped on arrival — and a
+    client that ignores it still works, as the other tests in this file
+    (which never read it) show.
+    """
+    stack = await _stand_up_stack(tmp_path, audio=True)
+    from aiortc import RTCPeerConnection, RTCSessionDescription
+
+    pc = RTCPeerConnection()
+    labels = ("control", "scope", "audio", "api")
+    channels = {
+        label: pc.createDataChannel(label, ordered=True) for label in labels
+    }
+    received: dict[str, list[Any]] = {label: [] for label in labels}
+    for label, channel in channels.items():
+
+        @channel.on("message")  # type: ignore[misc, no-untyped-call]
+        def _on_message(message: Any, _label: str = label) -> None:
+            received[_label].append(message)
+
+    offer = await pc.createOffer()
+    await pc.setLocalDescription(offer)
+    manager = stack.web._webrtc_session_manager()  # noqa: SLF001
+    answer = await manager.negotiate(
+        pc.localDescription.sdp, pc.localDescription.type
+    )
+    await pc.setRemoteDescription(
+        RTCSessionDescription(sdp=answer["sdp"], type=answer["type"])
+    )
+    await await_until(
+        lambda: all(c.readyState == "open" for c in channels.values()),
+        timeout=15.0,
+        description="data channels open",
+    )
+    key = await _acquire_session(stack.web.port)
+
+    def _attach(label: str, frame_key: str | None) -> None:
+        channels[label].send(
+            json.dumps(
+                {
+                    "type": "attach",
+                    "controller_key": frame_key,
+                    "state_delta": 2,
+                    "role": "primary",
+                }
+            )
+        )
+
+    def _first(label: str) -> dict[str, Any] | None:
+        while received[label]:
+            message = received[label].pop(0)
+            if isinstance(message, str):
+                return json.loads(message)
+        return None
+
+    try:
+        # Control attaches first (primary in place before the auxiliary
+        # scope/audio attaches), and its FIRST frame is the ack, not hello.
+        _attach("control", key)
+        assert await await_until(
+            lambda: _first("control"), timeout=10.0, description="control ack"
+        ) == {"type": "attached", "v": 1, "channel": "control"}
+        for label in ("scope", "audio", "api"):
+            _attach(label, key if label != "api" else None)
+        for label in ("scope", "audio", "api"):
+            ack = await await_until(
+                lambda l=label: _first(l), timeout=10.0, description=f"{l} ack"
+            )
+            assert ack == {"type": "attached", "v": 1, "channel": label}
+    finally:
+        with contextlib.suppress(Exception):
+            await pc.close()
+        await _tear_down_stack(stack)
+
+
+@_webrtc
+async def test_attach_ack_then_hello_and_data_for_ack_ignoring_client(
+    tmp_path: Path,
+) -> None:
+    """A client that never reads the ack still gets hello and state data."""
+    stack = await _stand_up_stack(tmp_path)
+    dc = _DcControlClient()
+    try:
+        await dc.connect(stack.web)
+        key = await _acquire_session(stack.web.port)
+        hello = await dc.attach(key)
+        assert hello["type"] == "hello"
+        frames = await dc.state_updates(1)
+        assert frames, "no state data after attach"
+    finally:
+        await dc.close()
+        await _tear_down_stack(stack)
+
+
+async def test_websocket_clients_receive_no_attach_ack(tmp_path: Path) -> None:
+    """The ack is data-channel only: the first WS control frame is hello."""
+    stack = await _stand_up_stack(tmp_path)
+    try:
+        reader, writer, _ = await _ws_connect(
+            "127.0.0.1", stack.web.port, "/api/v1/ws"
+        )
+        try:
+            opcode, payload = await _ws_recv_frame(reader, timeout=10.0)
+            assert opcode == 0x1
+            first = json.loads(payload)
+            assert first.get("type") == "hello", first
+        finally:
+            with contextlib.suppress(Exception):
+                await _close_ws(writer)
+    finally:
+        await _tear_down_stack(stack)
