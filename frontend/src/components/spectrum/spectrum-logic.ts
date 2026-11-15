@@ -44,7 +44,7 @@ export function isFixedScope(mode: number): boolean {
  */
 export function nativeWidthFromSpanChoice(
   choices: readonly number[] | undefined | null,
-  reading: { status: string; value: unknown } | undefined | null,
+  reading: { status: string; value?: unknown } | undefined | null,
 ): number | null {
   if (reading?.status === 'known' && Number.isInteger(reading.value)
     && choices && (reading.value as number) >= 0
