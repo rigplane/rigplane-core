@@ -11,6 +11,9 @@ import asyncio
 from pathlib import Path
 from unittest.mock import patch
 
+# The production serial exchanges: the runner tests exercise the same
+# implementations the CLI wires to the port, not private copies.
+from rigplane.cli._probe import _civ_exchange, _yaesu_exchange
 from rigplane.commands import (
     CONTROLLER_ADDR,
     build_civ_frame,
@@ -41,45 +44,6 @@ def _load(name: str) -> RigConfig:
 def _subset(config: RigConfig, *names: str) -> list:
     wanted = set(names)
     return [item for item in build_read_plan(config).asked if item.name in wanted]
-
-
-async def _yaesu_exchange(reader, writer) -> runner.Exchange:
-    async def exchange(request: bytes | None, timeout: float) -> bytes | None:
-        if request:
-            writer.write(request)
-            await writer.drain()
-        try:
-            return await asyncio.wait_for(reader.readuntil(b";"), timeout)
-        except (asyncio.TimeoutError, asyncio.IncompleteReadError):
-            return None
-
-    return exchange
-
-
-def _civ_exchange(reader, writer, radio_addr: int) -> runner.Exchange:
-    async def exchange(request: bytes | None, timeout: float) -> bytes | None:
-        sent: bytes | None = None
-        if request:
-            command, rest = request[0], request[1:]
-            if command_carries_sub(command) and rest:
-                sub, data = rest[0], rest[1:]
-            else:
-                sub, data = None, rest
-            sent = build_civ_frame(
-                radio_addr, CONTROLLER_ADDR, command, sub=sub, data=data or None
-            )
-            writer.write(sent)
-            await writer.drain()
-        try:
-            while True:
-                frame = await asyncio.wait_for(reader.readuntil(b"\xfd"), timeout)
-                if sent is not None and frame == sent:
-                    continue  # USB echo of our own frame, not the answer
-                return frame
-        except (asyncio.TimeoutError, asyncio.IncompleteReadError):
-            return None
-
-    return exchange
 
 
 def _nak_frame(civ_addr: int) -> bytes:
@@ -302,7 +266,7 @@ async def test_all_data_run_civ_ic7300() -> None:
     report = await runner.run_probe(
         config,
         config_toml_sha256="0" * 64,
-        exchange=_civ_exchange(reader, writer, config.civ_addr),
+        exchange=await _civ_exchange(reader, writer, config.civ_addr),
         port_kind="usb",
         baud=CIV_BAUD,
         label="",
@@ -327,7 +291,7 @@ async def test_all_data_run_civ_g7250() -> None:
     report = await runner.run_probe(
         config,
         config_toml_sha256="0" * 64,
-        exchange=_civ_exchange(reader, writer, config.civ_addr),
+        exchange=await _civ_exchange(reader, writer, config.civ_addr),
         port_kind="usb",
         baud=CIV_BAUD,
         label="",
@@ -859,7 +823,7 @@ async def test_identity_mismatch_does_not_stop_the_run() -> None:
     report = await runner.run_probe(
         config,
         config_toml_sha256="0" * 64,
-        exchange=_civ_exchange(reader, writer, config.civ_addr),
+        exchange=await _civ_exchange(reader, writer, config.civ_addr),
         port_kind="usb",
         baud=CIV_BAUD,
         label="",

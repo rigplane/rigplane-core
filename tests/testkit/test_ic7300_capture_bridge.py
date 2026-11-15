@@ -2,15 +2,15 @@
 
 from __future__ import annotations
 
-import asyncio
 import importlib.util
 import sys
 from pathlib import Path
 
-from rigplane.commands import CONTROLLER_ADDR, build_civ_frame, command_carries_sub
+# The production CI-V exchange under test: the same implementation the
+# CLI wires to the port, not a private copy.
+from rigplane.cli._probe import _civ_exchange
 from rigplane.core.serial_open import open_serial_port
 from rigplane.probe import runner
-from rigplane.probe.runner import Exchange
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -79,32 +79,6 @@ def test_wrong_addresses_and_junk_are_refused() -> None:
     assert not guard(b"\xfe\xfe\xfd")
 
 
-def _civ_exchange(reader, writer, radio_addr: int) -> Exchange:
-    async def exchange(request: bytes | None, timeout: float) -> bytes | None:
-        sent: bytes | None = None
-        if request:
-            command, rest = request[0], request[1:]
-            if command_carries_sub(command) and rest:
-                sub, data = rest[0], rest[1:]
-            else:
-                sub, data = None, rest
-            sent = build_civ_frame(
-                radio_addr, CONTROLLER_ADDR, command, sub=sub, data=data or None
-            )
-            writer.write(sent)
-            await writer.drain()
-        try:
-            while True:
-                raw: bytes = await asyncio.wait_for(reader.readuntil(b"\xfd"), timeout)
-                if sent is not None and raw == sent:
-                    continue
-                return raw
-        except (asyncio.TimeoutError, asyncio.IncompleteReadError):
-            return None
-
-    return exchange
-
-
 async def test_probe_driver_through_the_guarded_bridge_is_never_blocked(
     tmp_path,
 ) -> None:
@@ -137,7 +111,7 @@ async def test_probe_driver_through_the_guarded_bridge_is_never_blocked(
             report = await runner.run_probe(
                 config,
                 "0" * 64,
-                exchange=_civ_exchange(reader, writer, 0x94),
+                exchange=await _civ_exchange(reader, writer, 0x94),
                 port_kind="usb",
                 baud=115200,
                 label="",
