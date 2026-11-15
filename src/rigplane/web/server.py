@@ -151,6 +151,7 @@ from .api_contract import (  # noqa: TID251
     ConnectionSessionRecord,
     ManagedTransmitDocument,
 )
+from .api_channel import ApiChannelHandler  # noqa: TID251
 from .channel_attach import (  # noqa: TID251
     ChannelKind,
     ClientChannelParams,
@@ -1182,6 +1183,9 @@ _ATTACH_PATH_FOR_KIND: dict[str, str] = {
     "scope": "/api/v1/scope",
     "audio": "/api/v1/audio",
     "rigctl": "/api/v1/rigctl",
+    # The api channel has no WebSocket path; this label only scopes its
+    # connection-bucket registration, eviction, and logging.
+    "api": "/api/v1/api",
 }
 
 # WebSocket path to channel kind for the upgrade adapter; anything else
@@ -7864,7 +7868,7 @@ class WebServer:
 
     def _resolve_client_ticket(
         self, params: ClientChannelParams, kind: str
-    ) -> ControllerTicket:
+    ) -> ControllerTicket | None:
         """Capture or attach the controller ticket for a channel.
 
         Shared by the WebSocket upgrade (before the 101 response, so a
@@ -7875,7 +7879,21 @@ class WebServer:
         applied here after both capture and keyed attachment, so every
         transport answers today's pre-upgrade JSON 403 for a sessionless
         rigctl channel. Raises :class:`ControllerError` on refusal.
+
+        The ``api`` channel is the exception: a keyless attach is
+        admitted in every mode (it returns ``None`` — the channel holds
+        no ticket and every request runs the shared HTTP controller gate
+        with its own key), because it is how a browser acquires its
+        first key. A keyed ``api`` attach mints one distinct
+        non-primary channel ticket per channel with ``channel_ticket``
+        — liveness only, no primary/auxiliary side effects — so two
+        channels on one key stay independent while session end and peer
+        loss fence each like the other channels.
         """
+        if kind == "api":
+            if params.controller_key is None:
+                return None
+            return self._controller.channel_ticket(params.controller_key)
         if params.controller_key is None:
             if self._controller.mode != "local":
                 raise ControllerError("controller_invalid")
@@ -7919,24 +7937,34 @@ class WebServer:
         the first handler byte. When ``track_owners`` is given, the
         attached session owner is recorded in it for the channel's
         lifetime, so a transport-loss signal can fence that session
-        through the existing session-loss path.
+        through the existing session-loss path. A keyless ``api`` attach
+        resolves to no ticket (``None``): nothing is tracked and the
+        channel holds no session.
         """
         ticket = self._resolve_client_ticket(params, kind)
-        if track_owners is not None and ticket.tx_owner is not None:
+        if (
+            track_owners is not None
+            and ticket is not None
+            and ticket.tx_owner is not None
+        ):
             track_owners.add(ticket.tx_owner)
         try:
             await self.serve_client_channel(
                 conn, kind, ticket, params, peer, transport=transport
             )
         finally:
-            if track_owners is not None and ticket.tx_owner is not None:
+            if (
+                track_owners is not None
+                and ticket is not None
+                and ticket.tx_owner is not None
+            ):
                 track_owners.discard(ticket.tx_owner)
 
     async def serve_client_channel(
         self,
         conn: Connection,
         kind: str,
-        ticket: ControllerTicket,
+        ticket: ControllerTicket | None,
         params: ClientChannelParams,
         peer: tuple[str, int],
         *,
@@ -7945,25 +7973,35 @@ class WebServer:
         """Serve one attached channel: handlers, caps, keepalive, cleanup.
 
         The one mechanism every transport shares. ``kind`` is
-        ``control`` / ``scope`` / ``audio`` (``rigctl`` and anything
-        else arrive only from the WebSocket lane and keep their
-        historical early close). ``peer`` is the ``(host, port)`` pair
-        the WebSocket lane passes to connection tracking; a data-channel
-        peer passes its WebRTC session id so each peer scopes its own
-        connection bucket. ``transport`` is the adapter-declared
-        ``"ws"`` / ``"datachannel"`` tag used for logging and keepalive
-        selection; the shared path never branches on the connection's
-        concrete type.
+        ``control`` / ``scope`` / ``audio`` / ``api`` (``rigctl`` and
+        anything else arrive only from the WebSocket lane and keep their
+        historical early close). ``ticket`` is ``None`` only for a
+        keyless ``api`` attach: that channel holds no session, so it
+        skips ticket validation, session abort registration, and the
+        ambient bind (every request carries and validates its own key
+        through the shared HTTP controller gate instead). ``peer`` is
+        the ``(host, port)`` pair the WebSocket lane passes to
+        connection tracking; a data-channel peer passes its WebRTC
+        session id so each peer scopes its own connection bucket.
+        ``transport`` is the adapter-declared ``"ws"`` /
+        ``"datachannel"`` tag used for logging and keepalive selection;
+        the shared path never branches on the connection's concrete
+        type.
         """
         raw_model = (
             getattr(self._radio, "model", None) if self._radio is not None else None
         )
         model = raw_model if isinstance(raw_model, str) else self._config.radio_model
 
-        if kind == "control":
+        handler: Any
+        if ticket is None:
+            # Only a keyless api attach resolves to no ticket.
+            assert kind == "api"
+            handler = ApiChannelHandler(conn, self, peer)
+        elif kind == "control":
             if ticket.remote:
                 self._controller.register_control(ticket)
-            handler: Any = ControlHandler(
+            handler = ControlHandler(
                 conn,
                 self._radio,
                 __version__,
@@ -7975,6 +8013,8 @@ class WebServer:
                 tx_owner=ticket.tx_owner,
                 leaf_state_deltas=params.state_delta == 2,
             )
+        elif kind == "api":
+            handler = ApiChannelHandler(conn, self, peer)
         elif kind == "scope":
             handler = ScopeHandler(conn, server=self)
         elif kind == "audio":
@@ -8016,13 +8056,15 @@ class WebServer:
         # MOR-3534: a session-attached channel counts against its session, not
         # the shared IP. The holder session's channels, and the control channel
         # of a sessionless socket that keyed PTT, are never evicted.
-        scope = ip if ticket.tx_owner is None else ticket.tx_owner
+        # A keyless api channel holds no session: it counts against its peer.
+        scope = ip if ticket is None or ticket.tx_owner is None else ticket.tx_owner
         managed = self._managed_tx_authority()
         evicted = self._conn_manager.register(
             scope,
             _ATTACH_PATH_FOR_KIND[kind],
             conn,
-            owner=ticket.tx_owner or getattr(handler, "_tx_owner", None),
+            owner=(ticket.tx_owner if ticket is not None else None)
+            or getattr(handler, "_tx_owner", None),
             holder=managed.tx_holder_nowait()
             if isinstance(managed, ManagedTxAuthority)
             else None,
@@ -8047,13 +8089,14 @@ class WebServer:
             peer[1],
             len(self._client_tasks),
         )
-        try:
-            self._controller.validate(ticket)
-        except ControllerError:
-            self._controller.detach(ticket)
-            self._conn_manager.unregister(scope, _ATTACH_PATH_FOR_KIND[kind], conn)
-            conn.abort()
-            return
+        if ticket is not None:
+            try:
+                self._controller.validate(ticket)
+            except ControllerError:
+                self._controller.detach(ticket)
+                self._conn_manager.unregister(scope, _ATTACH_PATH_FOR_KIND[kind], conn)
+                conn.abort()
+                return
         # WebSocket channels keep their historical ping/pong; data channels
         # have no keepalive task — the controller session watchdog is the
         # one expiry mechanism (it aborts the registered channel).
@@ -8062,16 +8105,25 @@ class WebServer:
             keepalive = asyncio.create_task(
                 cast(Any, conn).keepalive_loop(self._config.keepalive_interval)
             )
-        if ticket.tx_owner is not None:
-            self._controller.add_channel(ticket, conn.abort)
-        if ticket.remote:
-            self._controller.add_channel(ticket, conn.abort)
-            task = asyncio.current_task()
-            assert task is not None
-            self._controller_handler_tasks[ticket] = task
+        if ticket is not None:
+            if ticket.tx_owner is not None:
+                self._controller.add_channel(ticket, conn.abort)
+            if ticket.remote:
+                self._controller.add_channel(ticket, conn.abort)
+                task = asyncio.current_task()
+                assert task is not None
+                self._controller_handler_tasks[ticket] = task
         try:
-            with self._controller.bind(ticket):
+            if ticket is None or kind == "api":
+                # No ambient session on the api channel — keyless or keyed:
+                # every request carries and validates its own key through
+                # the shared HTTP gate (the per-request credential, or the
+                # ordinary sessionless ticket, exactly like HTTP), so
+                # request tasks never inherit the attachment ticket.
                 await handler.run()
+            else:
+                with self._controller.bind(ticket):
+                    await handler.run()
         except Exception as exc:
             logger.debug(
                 "%s handler error on %s: %s",
@@ -8080,8 +8132,9 @@ class WebServer:
                 exc,
             )
         finally:
-            self._controller.detach(ticket)
-            self._controller_handler_tasks.pop(ticket, None)
+            if ticket is not None:
+                self._controller.detach(ticket)
+                self._controller_handler_tasks.pop(ticket, None)
             if keepalive is not None:
                 keepalive.cancel()
                 try:
