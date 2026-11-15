@@ -12,28 +12,22 @@ per-radio branch, no new guard, no second authority.
 Adaptation note (MOR-4433, after #4584): FT-991A gained a real TX-target
 source (``get_tx_func``/``set_tx_func`` + ``[vfo.tx_func]``), so it no
 longer belongs to the sourceless set — its real-target coverage lives in
-``test_ft991a_profile.py`` and ``test_startup_state_gate.py``. The
-sourceless-Yaesu cases here run on a synthetic profile built from the
-committed FT-991A config with the source removed (both TX verbs,
-``tx_func``, the ``tx_target`` polling path), through the producer's own
-loader output — never a raw dict. G7250 keeps covering the Icom CI-V side.
+``test_ft991a_profile.py``. The sourceless-Yaesu cases here run on a
+synthetic profile built from the committed FT-991A config with the source
+removed (both TX verbs, ``tx_func``, the ``tx_target`` polling path),
+through the producer's own loader output — never a raw dict. G7250 keeps
+covering the Icom CI-V side.
 
 Failing-first: the ``unsupported`` publication tests (Yaesu medium lane for
 the synthetic profile, CI-V poller for G7250, HTTP state projection for
 both) fail on the base commit — nothing publishes the field, so the
 projection falls back to ``not-observed``. The IC-7300/IC-7610 cases and
-the PTT/TUNE pins pass before and after: transmit was never gated on
+the rigctld PTT pin pass before and after: transmit was never gated on
 ``tx_target`` and must stay that way.
 
-Harness limits, stated plainly: the Yaesu/CIV fakes only speak the FTX-1 and
-IC-7300 wire shapes, so G7250 and the synthetic profile run as loaded
-profiles over ``SerialMockRadio`` (deterministic stub, real profile data)
-rather than over a wire simulator. The WS managed-key path needs the
-production managed-TX port (``web_startup`` assembly) and is orthogonal to
-this change — the backend never gates PTT on ``tx_target`` — so PTT is
-pinned here at the layers that run without it: rigctld ``T 1`` / ``T 0``
-over a real TCP socket, the SDK ``set_ptt`` call, and the real HTTP
-command/state surface. Existing managed suites own the WS key path.
+Scope note (gate round 1 split): the managed-station WS key/unkey pins, the
+TUNE pins and the SDK PTT pin moved to follow-up PR B (Linear MOR-4472);
+their text is saved in the coordinator scratchpad, not here.
 """
 
 from __future__ import annotations
@@ -41,7 +35,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -51,7 +45,6 @@ import pytest
 
 from rigplane.backends.yaesu_cat.observations import YaesuObservationAdapter
 from rigplane.backends.yaesu_cat.radio import FilterWidthReading
-from rigplane.core.command_dispatch import CommandUnsupportedError
 from rigplane.core.state_pipeline_contracts import (
     FieldPath,
     Observation,
@@ -64,32 +57,11 @@ from rigplane.profiles import RadioProfile, resolve_radio_profile
 from rigplane.profiles.rig_loader import RigConfig, load_rig
 from rigplane.rigctld.contract import RigctldConfig
 from rigplane.rigctld.server import RigctldServer
-from rigplane.runtime.managed_tx_composition import (
-    ManagedTxComposition,
-    install_managed_tx_composition,
-)
-from rigplane.runtime.managed_tx_state import (
-    ActuationOperation,
-    ActuationResult,
-    EffectToken,
-)
 from rigplane.web.radio_poller import CommandQueue, RadioPoller
 from rigplane.web.server import WebConfig, WebServer
-from rigplane.web.web_startup import (
-    _validate_managed_tx,
-    attach_managed_tx_composition,
-)
 from serial_stub import SerialMockRadio
 from support.command_consumer import run_command_consumer
-from test_web_server import (
-    _addr,
-    _close_ws,
-    _http_get,
-    _read_http_response,
-    _ws_connect,
-    _ws_recv_cmd_response,
-    _ws_send_text,
-)
+from test_web_server import _addr, _http_get
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -459,13 +431,6 @@ async def _state_over_http(web: WebServer) -> dict[str, Any]:
     return json.loads(body)
 
 
-async def _capabilities_over_http(web: WebServer) -> dict[str, Any]:
-    host, port = _addr(web)
-    status, _, body = await _http_get(host, port, "/api/v1/capabilities")
-    assert status == 200, f"GET /api/v1/capabilities: HTTP {status}"
-    return json.loads(body)
-
-
 async def _rigctld_exchange(host: str, port: int, line: bytes) -> bytes:
     """One rigctld command over a real TCP socket; returns the first reply line."""
     reader, writer = await asyncio.open_connection(host, port)
@@ -572,331 +537,3 @@ async def test_rigctld_key_unkey_stays_open(model: str) -> None:
             await server.stop()
 
     assert ptt_calls == [True, False]
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("model", ("FT-991A", "G7250", _SYNTHETIC_MODEL, "IC-7300"))
-async def test_sdk_ptt_stays_open(model: str) -> None:
-    """The Python ``set_ptt`` path stays open on every profile — it never
-    consults ``tx_target``."""
-    radio = SerialMockRadio(profile=_profile_for(model), model=None)
-    await radio.connect()
-    try:
-        ptt_calls = _record_ptt(radio)
-        await radio.set_ptt(True)
-        await radio.set_ptt(False)
-    finally:
-        await radio.disconnect()
-
-    assert ptt_calls == [True, False]
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("model", "has_tuner"),
-    (
-        ("FT-991A", False),
-        ("G7250", False),
-        (_SYNTHETIC_MODEL, False),
-        ("IC-7300", True),
-    ),
-)
-async def test_tune_present_only_where_declared(model: str, has_tuner: bool) -> None:
-    """TUNE is a tuner-capability question, not a TX-target question: the
-    IC-7300 declares a tuner, FT-991A/G7250/the synthetic declare none —
-    so tune is *absent* there, never *blocked*. Pinned at the profile and
-    at the real HTTP capabilities payload the frontend's TUNE affordance
-    keys off."""
-    profile = _profile_for(model)
-    assert ("tuner" in set(profile.capabilities)) is has_tuner
-
-    async with _station(model) as (web, _radio, _poller):
-        capabilities = await _capabilities_over_http(web)
-
-    # The /api/v1/capabilities payload carries the tag list the frontend
-    # TUNE affordance keys off under the top-level "capabilities" key.
-    assert ("tuner" in capabilities["capabilities"]) is has_tuner
-
-
-# ── managed station: real authority, real WS/HTTP, mock radio ───────────────
-
-
-class _StrictMockRadio(SerialMockRadio):
-    """Mock station radio speaking only its profile's declared commands.
-
-    Production parity for the intent path: ``prepare_command_intent``
-    asks ``radio.supports_command`` before executing, but the lax
-    ``SerialMockRadio`` answers every setter. The double reads support
-    from the real loaded profile and refuses the rest, so a refusal the
-    test observes is the profile's answer, not the double's generosity.
-    """
-
-    def supports_command(self, command_name: str, receiver: int = 0) -> bool:
-        del receiver
-        return self._profile.supports_command(command_name)
-
-    async def set_tuner_status(self, value: int) -> None:
-        if not self._profile.supports_command("set_tuner_status"):
-            raise CommandUnsupportedError(
-                "command 'set_tuner_status' is not supported by active profile "
-                f"{self._profile.model}"
-            )
-        await super().set_tuner_status(value)
-
-
-class _MockStationActuator:
-    """Managed-TX actuator driving the mock station's recorded PTT writes.
-
-    The production effect lane's only radio seam is ``actuate``; the
-    double maps the semantic TX operations onto the mock's real
-    ``set_ptt`` (captured before ``install_managed_tx_composition``
-    guards it) so the key/unkey order is observable without a wire
-    simulator.
-    """
-
-    def __init__(
-        self,
-        set_ptt: Callable[[bool], Awaitable[None]],
-        calls: list[bool],
-    ) -> None:
-        self._set_ptt = set_ptt
-        self._calls = calls
-
-    async def actuate(
-        self,
-        token: EffectToken,
-        operation: ActuationOperation,
-        *,
-        is_current: Callable[[], bool],
-    ) -> ActuationResult:
-        del token, is_current
-        on = operation in (ActuationOperation.PTT_ON, ActuationOperation.TRANSMIT_ON)
-        self._calls.append(on)
-        await self._set_ptt(on)
-        return ActuationResult.ACCEPTED
-
-
-@asynccontextmanager
-async def _managed_station(
-    model: str, tmp_path: Path
-) -> AsyncIterator[
-    tuple[WebServer, _StrictMockRadio, ManagedTxComposition, RadioPoller, list[bool]]
-]:
-    """Loaded-profile station with the production managed-TX port attached.
-
-    The ``ManagedTxComposition`` + ``install`` + ``bind`` + ``attach``
-    assembly mirrors ``joined_station`` in
-    ``test_web_controller_activation.py`` (the nearest existing harness
-    for the ``web_startup`` managed-TX port); the effect lane drives the
-    mock's ``set_ptt`` through ``_MockStationActuator``, the poller
-    carries the real authority for the managed currency seat, and the
-    queue consumer drains submissions exactly like the running poller
-    loop does in production. ``model`` is a registry model or the
-    synthetic sourceless name.
-    """
-    radio = _StrictMockRadio(profile=_profile_for(model), model=None)
-    await radio.connect()
-    # A stable connection identity: the managed currency seat refuses a
-    # queue entry whose captured generation is missing (None).
-    radio._civ_epoch = 1  # type: ignore[attr-defined]
-    calls: list[bool] = []
-    actuator = _MockStationActuator(radio.set_ptt, calls)
-    composition = ManagedTxComposition(
-        actuator,  # type: ignore[arg-type]
-        config_path=tmp_path / f"managed-tx-{model}.json",
-    )
-    install_managed_tx_composition(radio, composition)
-    web = WebServer(radio, WebConfig(host="127.0.0.1", port=0))  # type: ignore[arg-type]
-    await composition.transport_ready(radio)
-    await composition.bind_state_store(web.command_state_store)
-    attach_managed_tx_composition(web, composition)
-    # Deterministic construction: the managed authority must own a current
-    # provider before the first key. The production validator proves the
-    # wiring identity and provider currency here — or fails fast — instead
-    # of letting a half-assembled station refuse the key later with
-    # "managed transmit authority unavailable" for no product reason.
-    assert _validate_managed_tx(web) is composition
-    poller = RadioPoller(
-        radio,  # type: ignore[arg-type]
-        web.command_queue,
-        state_store=web.command_state_store,
-        clock=_clock,
-        managed_tx_authority=composition.authority,
-    )
-    web._server = await asyncio.start_server(  # noqa: SLF001
-        web._accept_client,
-        "127.0.0.1",
-        0,  # noqa: SLF001
-    )
-    entries: list[Any] = []
-    executed = asyncio.Event()
-    consumer = asyncio.create_task(
-        run_command_consumer(
-            web.command_queue,
-            poller._execute_queued_entry,  # noqa: SLF001
-            entries=entries,
-            executed=executed,
-        )
-    )
-    try:
-        yield web, radio, composition, poller, calls
-    finally:
-        web._server.close()
-        await web._server.wait_closed()
-        web._server = None
-        tasks = (consumer, *tuple(web._client_tasks))
-        for task in tasks:
-            if not task.done():
-                task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
-        await composition.shutdown(asyncio.Event())
-        await radio.disconnect()
-
-
-async def _ws_ptt(
-    reader: asyncio.StreamReader,
-    writer: asyncio.StreamWriter,
-    cmd_id: str,
-    state: bool,
-) -> dict[str, Any]:
-    """Send one WS ``cmd ptt`` frame; return the matching response envelope."""
-    await _ws_send_text(
-        writer,
-        json.dumps(
-            {"type": "cmd", "name": "ptt", "id": cmd_id, "params": {"state": state}}
-        ),
-    )
-    return await _ws_recv_cmd_response(reader)
-
-
-async def _http_post(
-    web: WebServer, path: str, payload: dict[str, Any]
-) -> tuple[int, dict[str, Any]]:
-    """POST one JSON body to the station over a real socket."""
-    host, port = _addr(web)
-    body = json.dumps(payload).encode()
-    reader, writer = await asyncio.open_connection(host, port)
-    try:
-        writer.write(
-            (
-                f"POST {path} HTTP/1.1\r\nHost: {host}:{port}\r\n"
-                "Connection: close\r\nContent-Type: application/json\r\n"
-                f"Content-Length: {len(body)}\r\n\r\n"
-            ).encode()
-            + body
-        )
-        await writer.drain()
-        status, _, raw = await asyncio.wait_for(
-            _read_http_response(reader), timeout=10.0
-        )
-    finally:
-        writer.close()
-        try:
-            await writer.wait_closed()
-        except Exception:
-            pass
-    return status, json.loads(raw)
-
-
-@pytest.mark.realtime(reason="real WebSocket socket and managed-TX settlement")
-@pytest.mark.asyncio
-@pytest.mark.parametrize("model", ("FT-991A", "G7250", _SYNTHETIC_MODEL, "IC-7300"))
-async def test_ws_managed_key_unkey_per_model(model: str, tmp_path: Path) -> None:
-    """Owner point (MOR-4433): transmit works with no TX-target source.
-
-    A real ``ManagedTxAuthority`` (production ``ManagedTxComposition``
-    assembly) wired to the mock station: WS ``cmd ptt`` on/off answers
-    ``ok: true`` and keys/unkeys the radio's ``set_ptt`` in order on
-    every profile — FT-991A is sourced since #4584, G7250 and the
-    synthetic stay sourceless. The HTTP state still projects ``txTarget``
-    ``unsupported`` where no source exists (the two sourceless profiles;
-    FT-991A's real target is pinned in ``test_ft991a_profile.py`` and
-    ``test_startup_state_gate.py``). Not red-first: the backend never
-    gated PTT on ``tx_target`` — this pins the point end to end, like the
-    rigctld/SDK pins above.
-    """
-    async with _managed_station(model, tmp_path) as (
-        web,
-        _radio,
-        _composition,
-        poller,
-        calls,
-    ):
-        host, port = _addr(web)
-        reader, writer, _accept = await _ws_connect(host, port, "/api/v1/ws")
-        try:
-            keyed = await _ws_ptt(reader, writer, "key-1", True)
-            assert keyed["ok"] is True, f"key refused: {keyed}"
-            assert keyed["id"] == "key-1"
-            assert keyed["result"] == {"state": True}
-            unkeyed = await _ws_ptt(reader, writer, "key-2", False)
-            assert unkeyed["ok"] is True, f"unkey refused: {unkeyed}"
-            assert unkeyed["id"] == "key-2"
-            assert unkeyed["result"] == {"state": False}
-        finally:
-            await _close_ws(writer)
-            writer.close()
-            try:
-                await writer.wait_closed()
-            except Exception:
-                pass
-
-        assert calls == [True, False]
-
-        if model in ("G7250", _SYNTHETIC_MODEL):
-            poller._publish_tx_target()  # noqa: SLF001
-            state = await _state_over_http(web)
-            assert state["txTarget"] == {"status": "unknown", "reason": "unsupported"}
-
-
-@pytest.mark.realtime(reason="real HTTP socket and intent execution to the mock")
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("model", "refused"),
-    (
-        ("FT-991A", True),
-        ("G7250", True),
-        (_SYNTHETIC_MODEL, True),
-        ("IC-7300", False),
-    ),
-)
-async def test_http_tuner_refused_unsupported_where_undeclared(
-    model: str, refused: bool, tmp_path: Path
-) -> None:
-    """TUNE is absent, never TX-target-blocked, at the execution level.
-
-    The strict double speaks only its profile's declared commands, so
-    the observation is the production refusal: POSTing
-    ``set_tuner_status`` on FT-991A/G7250/the synthetic answers 409
-    ``unsupported_command`` naming the profile — never a tx-target
-    reason — while the IC-7300 executes the write. Red first: against
-    the lax ``SerialMockRadio`` (no ``supports_command``) the same POST
-    collapses to a 500 ``command_failed`` instead of the 409.
-    """
-    async with _managed_station(model, tmp_path) as (
-        web,
-        radio,
-        _composition,
-        _poller,
-        _calls,
-    ):
-        status, body = await _http_post(
-            web,
-            "/api/v1/commands",
-            {"name": "set_tuner_status", "params": {"value": 1}, "id": "tune-1"},
-        )
-
-        if refused:
-            assert status == 409, f"expected 409, got {status}: {body}"
-            assert body["ok"] is False
-            assert body["error"] == "unsupported_command"
-            assert "not supported by active profile" in body["message"]
-            for key in ("tx_target", "tx-target", "txTarget"):
-                assert key not in body["message"], (
-                    f"tuner refusal must never name the TX target: {body['message']}"
-                )
-            assert radio._tuner_status == 0  # type: ignore[attr-defined]
-        else:
-            assert status == 200, f"expected 200, got {status}: {body}"
-            assert body["ok"] is True
-            assert radio._tuner_status == 1  # type: ignore[attr-defined]
