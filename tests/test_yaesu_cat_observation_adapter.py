@@ -3303,9 +3303,7 @@ async def test_defective_read_names_every_declared_path_it_feeds(
 #: MOR-4456: PTT and split left the startup-critical set, so a refused or
 #: wrong-shape read records no startup defect — the gate serves them
 #: unknown after the non-critical deadline.
-_NO_DEFECT_TX_ROWS: tuple[
-    tuple[str, str, int | None, str, tuple[str, ...]], ...
-] = (
+_NO_DEFECT_TX_ROWS: tuple[tuple[str, str, int | None, str, tuple[str, ...]], ...] = (
     ("ptt", "read_transmit_state", None, "poll_medium", ("global.tx_state.ptt",)),
     ("split", "read_split", None, "poll_tx_controls", ("global.tx_state.split",)),
 )

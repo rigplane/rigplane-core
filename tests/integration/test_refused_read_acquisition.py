@@ -292,9 +292,9 @@ async def test_refused_ptt_or_split_read_opens_with_tx_unknown(
         # The refused path leaves the unobserved set at once: the
         # deadline WARNING — driven by unrelated never-answering SUB
         # paths on this recording — must not name it.
-        assert not [
-            m for m in messages if "no answer for" in m and str(path) in m
-        ], messages
+        assert not [m for m in messages if "no answer for" in m and str(path) in m], (
+            messages
+        )
         assert any(
             "refused" in m and str(path) in m
             for m in messages
