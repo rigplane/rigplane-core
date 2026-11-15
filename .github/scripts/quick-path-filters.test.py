@@ -968,5 +968,46 @@ new AsyncFunction('github', 'context', 'core', script)(github, context, core)
         self.assertNotIn("\n  push:", on_block)
         self.assertIn("\n  grep-gate:\n", rebrand)
 
+    def test_rebrand_gate_merge_queue_checkout_recovery_contract(self) -> None:
+        # merge_group run 43649024650: hung checkout + short job timeout ejected a
+        # PR from the queue. The gate pins job/checkout timeouts, merge_queue
+        # concurrency, checkout retry keyed on outcome (not conclusion — a step
+        # with continue-on-error keeps conclusion success on failure), and a grep
+        # step that cannot run without a successful checkout attempt.
+        rebrand = REBRAND_YML.read_text(encoding="utf-8")
+        full = (ROOT / ".github" / "workflows" / "full.yml").read_text(encoding="utf-8")
+
+        self.assertIn("    timeout-minutes: 10\n", rebrand)
+        self.assertIn(
+            "concurrency:\n"
+            "  group: rebrand-gate-${{ github.workflow }}-${{ github.ref }}\n"
+            "  cancel-in-progress: ${{ github.event_name != 'merge_group' }}\n",
+            rebrand,
+        )
+        grep_job = rebrand.split("\n  grep-gate:\n", 1)[1]
+        self.assertIn("        id: checkout\n", grep_job)
+        self.assertIn("        timeout-minutes: 4\n", grep_job)
+        self.assertIn("        continue-on-error: true\n", grep_job)
+        self.assertIn("        id: checkout_retry\n", grep_job)
+        self.assertIn("        if: steps.checkout.outcome == 'failure'\n", grep_job)
+        self.assertNotIn("steps.checkout.conclusion", grep_job)
+        self.assertNotIn("failure() && steps.checkout", grep_job)
+        self.assertIn(
+            "      - name: Wave 2 rebrand grep gate\n"
+            "        if: >-\n"
+            "          steps.checkout.outcome == 'success' ||\n"
+            "          steps.checkout_retry.outcome == 'success'\n"
+            "        run: .github/scripts/check-rebrand-allowlist.sh",
+            rebrand,
+        )
+        self.assertIn(
+            "  rebrand-gate:\n"
+            "    needs: fresh\n"
+            "    if: needs.fresh.outputs.run == 'true'\n"
+            "    uses: ./.github/workflows/rebrand-gate.yml\n",
+            full,
+        )
+        self.assertNotIn("cancel-in-progress", full[full.index("rebrand-gate:") :])
+
 if __name__ == "__main__":
     unittest.main()
