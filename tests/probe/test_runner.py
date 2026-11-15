@@ -11,6 +11,8 @@ import asyncio
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 # The production serial exchanges: the runner tests exercise the same
 # implementations the CLI wires to the port, not private copies.
 from rigplane.cli._probe import _civ_exchange, _yaesu_exchange
@@ -961,3 +963,172 @@ async def test_runner_sends_only_what_readlist_produced() -> None:
             )
             for body in seen:
                 assert not is_forbidden(body, allowed), body.hex()
+
+
+# --- P2 batch ---
+
+
+async def test_unknown_request_answer_is_data_not_unsolicited() -> None:
+    # P2: unknown:7f answered by a valid frequency frame is data; the
+    # unknown-request policy applies during attribution, not just in
+    # the classifier.
+    from rigplane.probe.readlist import build_read_plan
+
+    config = _load("ic7300")
+    addr = config.civ_addr
+    (item,) = [
+        entry
+        for entry in build_read_plan(config).asked
+        if entry.name == "unknown:7f"
+    ]
+    answer = build_civ_frame(
+        CONTROLLER_ADDR, addr, 0x03, data=bytes.fromhex("0000601234")
+    )
+    nak = _nak_frame(addr)
+
+    async def exchange(request: bytes | None, timeout: float) -> bytes | None:
+        if request == item.body:
+            return answer
+        return nak
+
+    report = await runner.run_probe(
+        config,
+        config_toml_sha256="0" * 64,
+        exchange=exchange,
+        port_kind="usb",
+        baud=CIV_BAUD,
+        label="",
+        include_private=False,
+        gap_s=GAP,
+        timeout_s=SHORT_TIMEOUT,
+        items=[item],
+    )
+    assert [row.outcome for row in report.file.commands] == ["data"]
+    assert report.file.commands[0].name == "unknown:7f"
+    assert report.file.commands[0].reply_hex == answer.hex()
+    assert report.file.unsolicited == ()
+
+
+async def test_unsolicited_timestamps_are_captured_at_arrival() -> None:
+    # P2: pushes are timestamped when observed, not when the answer wait
+    # ends. The fake clock advances on every exchange call; the two
+    # strays must land 200 ms apart, not share one end-of-wait time.
+    from unittest.mock import patch
+
+    config = _load("ftx1")
+    (item,) = [
+        entry for entry in build_read_plan(config).asked if entry.name == "get_freq"
+    ]
+    now = [1000.0]
+    pending: list[bytes | None] = []
+    freq_calls = 0
+
+    async def exchange(request: bytes | None, timeout: float) -> bytes | None:
+        nonlocal freq_calls
+        now[0] += 0.2
+        if request is not None:
+            if request == b"ID;":
+                return b"ID0840;"
+            if request == b"FA;":
+                freq_calls += 1
+                if freq_calls == 2:
+                    pending.extend([b"ID0840;", b"MR123;", b"FA07074000;"])
+                    return pending.pop(0)
+                return b"FA07074000;"
+            return b"?;"
+        if pending:
+            return pending.pop(0)
+        return None
+
+    with patch("time.monotonic", side_effect=lambda: now[0]):
+        report = await runner.run_probe(
+            config,
+            config_toml_sha256="0" * 64,
+            exchange=exchange,
+            port_kind="usb",
+            baud=YAESU_BAUD,
+            label="",
+            include_private=False,
+            gap_s=GAP,
+            timeout_s=SHORT_TIMEOUT,
+            items=[item],
+        )
+    stray_rows = [
+        row
+        for row in report.file.unsolicited
+        if row.hex in (b"ID0840;".hex(), b"MR123;".hex())
+    ]
+    assert [row.hex for row in stray_rows] == [b"ID0840;".hex(), b"MR123;".hex()]
+    assert stray_rows[1].t_ms - stray_rows[0].t_ms == pytest.approx(200.0)
+
+
+async def test_identity_transport_failure_sends_nothing_after() -> None:
+    # P2: when identity reading breaks the transport, the before
+    # snapshot and the main pass send nothing more.
+    config = _load("ftx1")
+    seen: list[bytes] = []
+
+    async def exchange(request: bytes | None, timeout: float) -> bytes | None:
+        assert request is not None
+        seen.append(request)
+        raise OSError("device is gone")
+
+    report = await runner.run_probe(
+        config,
+        config_toml_sha256="0" * 64,
+        exchange=exchange,
+        port_kind="usb",
+        baud=YAESU_BAUD,
+        label="",
+        include_private=False,
+        gap_s=GAP,
+        timeout_s=TIMEOUT,
+    )
+    assert seen == [b"ID;"]
+    assert report.file.termination.status == "transport_error"
+    assert "identity" in report.file.termination.detail
+
+
+async def test_after_snapshot_transport_failure_names_the_phase() -> None:
+    # P2: a break in the final snapshot stops the run with the
+    # transport_error termination; nothing is sent afterwards.
+    from rigplane.probe.readlist import snapshot_names
+
+    config = _load("ftx1")
+    plan = build_read_plan(config)
+    assert b"FA;" in {
+        item.body
+        for item in plan.asked
+        if item.name in snapshot_names(config, {i.name for i in plan.asked})
+    }
+    seen: list[bytes] = []
+    freq_calls = 0
+
+    async def exchange(request: bytes | None, timeout: float) -> bytes | None:
+        nonlocal freq_calls
+        assert request is not None
+        seen.append(request)
+        if request == b"FA;":
+            freq_calls += 1
+            if freq_calls == 3:
+                raise OSError("device is gone")
+            return b"FA07074000;"
+        if request == b"ID;":
+            return b"ID0840;"
+        return b"?;"
+
+    report = await runner.run_probe(
+        config,
+        config_toml_sha256="0" * 64,
+        exchange=exchange,
+        port_kind="usb",
+        baud=YAESU_BAUD,
+        label="",
+        include_private=False,
+        gap_s=GAP,
+        timeout_s=TIMEOUT,
+    )
+    assert freq_calls == 3
+    assert report.file.termination.status == "transport_error"
+    assert "snapshot" in report.file.termination.detail
+    assert seen.count(b"FA;") == 3

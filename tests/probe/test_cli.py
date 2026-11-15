@@ -392,3 +392,180 @@ async def test_execute_default_out_path_uses_profile_and_timestamp(
     assert code == 0
     matches = list(tmp_path.glob("ft991a-probe-*.json"))
     assert len(matches) == 1
+
+
+# --- P2 batch ---
+
+
+def _parse_probe(argv: list[str]) -> argparse.Namespace:
+    from rigplane.cli import _build_parser
+
+    return _build_parser().parse_args(["probe", *argv])
+
+
+def test_parser_rejects_address_above_byte_range() -> None:
+    with pytest.raises(SystemExit) as exc_info:
+        _parse_probe(["FTX-1", "--port", "x", "--address", "0x100"])
+    assert exc_info.value.code == 2
+
+
+def test_parser_rejects_non_numeric_address() -> None:
+    with pytest.raises(SystemExit) as exc_info:
+        _parse_probe(["FTX-1", "--port", "x", "--address", "nope"])
+    assert exc_info.value.code == 2
+
+
+def test_parser_rejects_negative_baud() -> None:
+    with pytest.raises(SystemExit) as exc_info:
+        _parse_probe(["FTX-1", "--port", "x", "--baud", "-1"])
+    assert exc_info.value.code == 2
+
+
+def test_parser_rejects_zero_baud() -> None:
+    with pytest.raises(SystemExit) as exc_info:
+        _parse_probe(["FTX-1", "--port", "x", "--baud", "0"])
+    assert exc_info.value.code == 2
+
+
+def test_parser_accepts_valid_address_and_baud() -> None:
+    args = _parse_probe(
+        ["IC-7300", "--port", "x", "--address", "0x94", "--baud", "115200"]
+    )
+    assert args.address == 0x94
+    assert args.baud == 115200
+
+
+async def test_execute_save_failure_reports_path_without_traceback(
+    tmp_path,
+) -> None:
+    # P2: an unwritable output path is a clean nonzero exit naming the
+    # path, not a traceback and no "Done.".
+    out = tmp_path / "missing-dir" / "probe.json"
+    lines: list[str] = []
+    code = await execute(
+        resolve_config("FT-991A", RIGS),
+        (REPO_ROOT / "rigs" / "ft991a.toml").read_bytes(),
+        device_label="COM5 @ 38400",
+        baud=38400,
+        out=str(out),
+        include_private=False,
+        label="",
+        yes=True,
+        is_tty=False,
+        ask=lambda prompt: (_ for _ in ()).throw(AssertionError("no prompt")),
+        exchange_factory=_stub_answers([]),
+        gap_s=GAP,
+        timeout_s=TIMEOUT,
+        emit=lines.append,
+    )
+    assert code != 0
+    assert "Done." not in lines
+    assert str(out) in "\n".join(lines)
+
+
+class _ClosableStubExchange:
+    """Exchange double that records closure (P2: the runner owns the port)."""
+
+    def __init__(
+        self,
+        *,
+        script: dict[bytes, bytes] | None = None,
+        block: "asyncio.Event | None" = None,
+        break_now: bool = False,
+    ) -> None:
+        self.script = script if script is not None else {}
+        self.block: asyncio.Event | None = block
+        self.break_now = break_now
+        self.closed = False
+
+    async def __call__(
+        self, request: bytes | None, timeout: float
+    ) -> bytes | None:
+        if self.break_now:
+            raise OSError("device is gone")
+        if self.block is not None:
+            await self.block.wait()
+            return None
+        assert request is not None
+        if request == b"ID;":
+            return b"ID0840;"
+        return self.script.get(request, b"?;")
+
+    def close(self) -> None:
+        self.closed = True
+
+
+async def _run_with_closable(
+    stub: _ClosableStubExchange, tmp_path, **overrides
+) -> tuple[int, list[str]]:
+    import asyncio
+
+    params = {
+        "config": resolve_config("FT-991A", RIGS),
+        "profile_toml_bytes": (REPO_ROOT / "rigs" / "ft991a.toml").read_bytes(),
+        "device_label": "COM5 @ 38400",
+        "baud": 38400,
+        "out": str(tmp_path / "probe.json"),
+        "include_private": False,
+        "label": "",
+        "yes": True,
+        "is_tty": False,
+        "ask": lambda prompt: (_ for _ in ()).throw(AssertionError("no prompt")),
+        "gap_s": GAP,
+        "timeout_s": TIMEOUT,
+    }
+    params.update(overrides)
+
+    async def factory() -> runner.Exchange:
+        await asyncio.sleep(0)
+        return stub  # type: ignore[return-value]
+
+    params["exchange_factory"] = factory
+    lines: list[str] = []
+    code = await execute(emit=lines.append, **params)  # type: ignore[arg-type]
+    return code, lines
+
+
+async def test_execute_closes_writer_on_completion(tmp_path) -> None:
+    stub = _ClosableStubExchange()
+    code, _lines = await _run_with_closable(stub, tmp_path)
+    assert code == 0
+    assert (tmp_path / "probe.json").exists()
+    assert stub.closed is True
+
+
+async def test_execute_closes_writer_on_save_decline(tmp_path) -> None:
+    stub = _ClosableStubExchange()
+    answers = iter(["y", "n"])
+    code, _lines = await _run_with_closable(
+        stub,
+        tmp_path,
+        yes=False,
+        is_tty=True,
+        ask=lambda prompt: next(answers),
+    )
+    assert code == 0
+    assert not (tmp_path / "probe.json").exists()
+    assert stub.closed is True
+
+
+async def test_execute_closes_writer_on_transport_error(tmp_path) -> None:
+    stub = _ClosableStubExchange(break_now=True)
+    code, _lines = await _run_with_closable(stub, tmp_path)
+    assert code != 0
+    assert stub.closed is True
+
+
+async def test_execute_closes_writer_on_cancellation(tmp_path) -> None:
+    import asyncio
+
+    block = asyncio.Event()
+    stub = _ClosableStubExchange(block=block)
+    task = asyncio.ensure_future(
+        _run_with_closable(stub, tmp_path, out=str(tmp_path / "cancel.json"))
+    )
+    await asyncio.sleep(0.05)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert stub.closed is True
