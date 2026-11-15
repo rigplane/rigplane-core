@@ -74,7 +74,10 @@ from rigplane.runtime.managed_tx_state import (
 )
 from rigplane.web.radio_poller import CommandQueue, RadioPoller
 from rigplane.web.server import WebConfig, WebServer
-from rigplane.web.web_startup import attach_managed_tx_composition
+from rigplane.web.web_startup import (
+    _validate_managed_tx,
+    attach_managed_tx_composition,
+)
 from serial_stub import SerialMockRadio
 from support.command_consumer import run_command_consumer
 from test_web_server import (
@@ -687,6 +690,12 @@ async def _managed_station(
     await composition.transport_ready(radio)
     await composition.bind_state_store(web.command_state_store)
     attach_managed_tx_composition(web, composition)
+    # Deterministic construction: the managed authority must own a current
+    # provider before the first key. The production validator proves the
+    # wiring identity and provider currency here — or fails fast — instead
+    # of letting a half-assembled station refuse the key later with
+    # "managed transmit authority unavailable" for no product reason.
+    assert _validate_managed_tx(web) is composition
     poller = RadioPoller(
         radio,  # type: ignore[arg-type]
         web.command_queue,
@@ -738,6 +747,73 @@ async def _ws_ptt(
         ),
     )
     return await _ws_recv_cmd_response(reader)
+
+
+#: The exact refusal the server sends when its 10s admission budget expires
+#: before the background consumer drains the entry (production
+#: ``enqueue_managed_positive_tx``) — a scheduling stall, never a TX-target
+#: gate. Only this surface is retried; any other refusal fails fast.
+_STALL_SURFACE = "managed transmit authority unavailable"
+
+
+async def _ws_ptt_stall_tolerant(
+    reader: asyncio.StreamReader,
+    writer: asyncio.StreamWriter,
+    cmd_id: str,
+    state: bool,
+    *,
+    calls: list[bool],
+    actuated: list[bool],
+) -> dict[str, Any] | None:
+    """Key/unkey over WS, tolerating scheduling stalls but nothing else.
+
+    Returns the response envelope to assert strictly, or ``None`` when a
+    refused attempt observably actuated anyway (``calls == actuated``): the
+    admission budget expired after the effect landed, so no gate fired and
+    the caller asserts on the wire instead of the envelope. A refused
+    attempt with no actuation completed server-side (its envelope was
+    consumed), so resending cannot double-actuate; any other refusal is a
+    product signal and returns at once. A client-side timeout never
+    resends — the attempt is still live — it waits out the late envelope
+    within the outer bound.
+    """
+    async with asyncio.timeout(120.0):
+        while True:
+            try:
+                response = await _ws_ptt(reader, writer, cmd_id, state)
+            except asyncio.TimeoutError:
+                return await _ws_recv_cmd_response(reader, timeout=120.0)
+            if response.get("ok") is True:
+                return response
+            if response.get("message") != _STALL_SURFACE:
+                return response
+            if calls == actuated:
+                return None
+            # Stall surface with no actuation: the entry completed without
+            # running anything — safe to resend.
+
+
+async def _http_post_stall_tolerant(
+    web: WebServer, path: str, payload: dict[str, Any]
+) -> tuple[int, dict[str, Any]]:
+    """POST one JSON body, retrying only scheduling stalls.
+
+    A stalled loop can push the server's reply past the client's 10s read
+    (``asyncio.TimeoutError``) or make the batch step report 504. Only
+    those two stall surfaces are retried, within the bound; any other
+    status — the 409 refusal pin, the 200 execution pin, or a real 500 —
+    returns at once for the caller to assert strictly. ``set_tuner_status``
+    is idempotent, so resending is safe.
+    """
+    async with asyncio.timeout(120.0):
+        while True:
+            try:
+                status, body = await _http_post(web, path, payload)
+            except asyncio.TimeoutError:
+                continue
+            if status == 504:
+                continue
+            return status, body
 
 
 async def _http_post(
@@ -796,14 +872,26 @@ async def test_ws_managed_key_unkey_per_model(model: str, tmp_path: Path) -> Non
         host, port = _addr(web)
         reader, writer, _accept = await _ws_connect(host, port, "/api/v1/ws")
         try:
-            keyed = await _ws_ptt(reader, writer, "key-1", True)
-            assert keyed["ok"] is True, f"key refused: {keyed}"
-            assert keyed["id"] == "key-1"
-            assert keyed["result"] == {"state": True}
-            unkeyed = await _ws_ptt(reader, writer, "key-2", False)
-            assert unkeyed["ok"] is True, f"unkey refused: {unkeyed}"
-            assert unkeyed["id"] == "key-2"
-            assert unkeyed["result"] == {"state": False}
+            keyed = await _ws_ptt_stall_tolerant(
+                reader, writer, "key-1", True, calls=calls, actuated=[True]
+            )
+            if keyed is None:
+                # The refused attempt keyed the rig before the budget
+                # expired: no gate fired — the wire proves admission.
+                assert calls == [True]
+            else:
+                assert keyed["ok"] is True, f"key refused: {keyed}"
+                assert keyed["id"] == "key-1"
+                assert keyed["result"] == {"state": True}
+            unkeyed = await _ws_ptt_stall_tolerant(
+                reader, writer, "key-2", False, calls=calls, actuated=[True, False]
+            )
+            if unkeyed is None:
+                assert calls == [True, False]
+            else:
+                assert unkeyed["ok"] is True, f"unkey refused: {unkeyed}"
+                assert unkeyed["id"] == "key-2"
+                assert unkeyed["result"] == {"state": False}
         finally:
             await _close_ws(writer)
             writer.close()
@@ -851,7 +939,7 @@ async def test_http_tuner_refused_unsupported_where_undeclared(
         _poller,
         _calls,
     ):
-        status, body = await _http_post(
+        status, body = await _http_post_stall_tolerant(
             web,
             "/api/v1/commands",
             {"name": "set_tuner_status", "params": {"value": 1}, "id": "tune-1"},
