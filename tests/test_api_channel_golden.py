@@ -28,6 +28,7 @@ from rigplane.web.api_channel import (
 from rigplane.web.server import WebServer
 from rigplane.web.transport.webrtc import webrtc_available
 
+from test_api_channel_wire_json import _conform
 from test_webrtc_api_channel import _ApiClient, _ApiError, _frame, _head
 from test_webrtc_attach_path import (
     _LossyAckPeer,
@@ -76,7 +77,7 @@ def test_committed_golden_json_is_one_typed_contract() -> None:
 
     golden = _golden()
     assert golden.tested_by == _REPLAYER
-    assert len(golden.documents) == 14, sorted(golden.documents)
+    assert len(golden.documents) == 15, sorted(golden.documents)
     built = asyncio.run(api_channel_golden_documents())
     assert _GOLDEN_JSON.read_text(encoding="utf-8").rstrip("\n") == json.dumps(
         dataclasses.asdict(built)
@@ -110,6 +111,14 @@ async def test_golden_documents_replay_through_real_handlers(
             lambda: peer.take("control"), timeout=10.0, description="control hello"
         )
         assert hello is not None and hello["type"] == "hello", hello
+        # The whole key set in the golden document's order: the hello is
+        # built by the control handler's own typed producer, so its
+        # shape is the committed contract (MOR-4489). version, radio and
+        # capabilities follow the live server and radio, so their values
+        # are not pinned here — the conformance check is.
+        hello_doc = docs["control_hello"]
+        assert list(hello) == list(hello_doc.decoded), hello
+        _conform("control_hello", hello)
         for label in ("scope", "audio"):
             # The lossy-channel retry: the interceptor drops the first
             # ack, the client resends the attach, and the ONE attach
