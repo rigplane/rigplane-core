@@ -176,7 +176,6 @@ def test_zero_arg_single_radio_confirm_with_enter(tmp_path, monkeypatch) -> None
 def test_zero_arg_single_radio_decline_sends_nothing(
     tmp_path, monkeypatch, capsys
 ) -> None:
-    seen: list[bytes] = []
     docs = tmp_path / "Documents"
     docs.mkdir(exist_ok=True)
     monkeypatch.setattr(platformdirs, "user_documents_dir", lambda *a: str(docs))
@@ -285,7 +284,6 @@ def test_yes_takes_single_radio_without_tty(tmp_path, monkeypatch) -> None:
 def test_several_radios_without_tty_is_exit_2_listing(
     tmp_path, monkeypatch
 ) -> None:
-    seen: list[bytes] = []
     docs = tmp_path / "Documents"
     docs.mkdir(exist_ok=True)
     monkeypatch.setattr(platformdirs, "user_documents_dir", lambda *a: str(docs))
