@@ -284,15 +284,17 @@ async def test_refused_ptt_or_split_read_opens_with_tx_unknown(
     web = _gated_web(radio, "IC-7610")
     path = FieldPath.global_("tx_state", path_name)
     try:
-        started = time.monotonic()
         with caplog.at_level(logging.INFO):
             await asyncio.wait_for(web.start(), 30)
-        opened_after = time.monotonic() - started
         # Not vacuous: the radio was asked for the refused read.
         assert any((f.command, f.sub) == (command, sub) for f in fake.commands)
         messages = [record.getMessage() for record in caplog.records]
-        assert not [m for m in messages if "no answer for" in m], messages
-        assert opened_after < 5.0, f"listener opened after {opened_after:.1f}s"
+        # The refused path leaves the unobserved set at once: the
+        # deadline WARNING — driven by unrelated never-answering SUB
+        # paths on this recording — must not name it.
+        assert not [
+            m for m in messages if "no answer for" in m and str(path) in m
+        ], messages
         assert any(
             "refused" in m and str(path) in m
             for m in messages

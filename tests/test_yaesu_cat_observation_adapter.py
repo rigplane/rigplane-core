@@ -2734,13 +2734,13 @@ def _split_containment_radio(
 
 
 @pytest.mark.asyncio
-async def test_split_timeout_is_contained_and_counted_to_the_gate_threshold() -> None:
+async def test_split_timeout_is_contained_and_uncounted() -> None:
     """MOR-4456: an unanswered split read is served absent within its field.
 
-    Three medium cycles with a silent ``ST;`` complete normally — the
-    fields after split (clarifier, tuner) still reach the store — while the
-    critical-path accounting is kept: the third unanswered read records
-    the declared-command defect the startup gate reads.
+    Three TX-control cycles with a silent ``ST;`` complete normally — the
+    fields after split (clarifier, tuner) still reach the store — while
+    no timeout tally accrues and no defect is recorded: split left the
+    critical set, so the counting switched off with it.
     """
     from rigplane.backends.yaesu_cat.observations import _RIT_ON, _SPLIT
 
@@ -2750,7 +2750,7 @@ async def test_split_timeout_is_contained_and_counted_to_the_gate_threshold() ->
         scheduler,
         AsyncMock(side_effect=CatTimeoutError("ST timeout", command="ST;")),
     )
-    for cycle in range(1, 4):
+    for _ in range(3):
         observations = await YaesuObservationAdapter(
             radio,
             profile=profile,
@@ -2759,20 +2759,18 @@ async def test_split_timeout_is_contained_and_counted_to_the_gate_threshold() ->
         paths = {item.path for item in observations}
         assert _SPLIT not in paths
         assert _RIT_ON in paths, "the reads after split must still reach the store"
-        assert radio._critical_read_timeouts == {_SPLIT: cycle}
+        assert radio._critical_read_timeouts == {}
     assert radio.read_split.await_count == 3
-    defect = scheduler.startup_defect
-    assert defect is not None
-    assert defect.paths == (_SPLIT,)
-    assert defect.command == "ST;"
+    assert scheduler.startup_defect is None
 
 
 @pytest.mark.asyncio
-async def test_split_refusal_records_defect_and_stays_in_cycle() -> None:
-    """MOR-4456: a twice-refused split records the defect without raising.
+async def test_split_refusal_records_no_defect_and_stays_in_cycle() -> None:
+    """MOR-4456: a twice-refused split records no defect without raising.
 
     The refusal is re-issued once (MOR-2584) without touching the timeout
-    tally; the cycle completes and the fields after split still publish.
+    tally; the cycle completes, the fields after split still publish, and
+    — split left the critical set — no startup defect is recorded.
     """
     from rigplane.backends.yaesu_cat.observations import _RIT_ON, _SPLIT
 
@@ -2792,10 +2790,7 @@ async def test_split_refusal_records_defect_and_stays_in_cycle() -> None:
     assert _SPLIT not in paths
     assert _RIT_ON in paths, "the reads after split must still reach the store"
     assert radio._critical_read_timeouts == {}
-    defect = scheduler.startup_defect
-    assert defect is not None
-    assert defect.paths == (_SPLIT,)
-    assert defect.command == "ST;"
+    assert scheduler.startup_defect is None
 
 
 @pytest.mark.asyncio
@@ -2956,7 +2951,6 @@ _DEFECT_ROWS: tuple[tuple[str, str, int | None, str, tuple[str, ...]], ...] = (
         "poll_medium",
         ("receiver.sub.active.freq_mode.mode",),
     ),
-    ("ptt", "read_transmit_state", None, "poll_medium", ("global.tx_state.ptt",)),
     (
         "main.filter_width",
         "read_filter_width_reading",
@@ -3195,7 +3189,6 @@ _DEFECT_ROWS: tuple[tuple[str, str, int | None, str, tuple[str, ...]], ...] = (
         ("global.operator_controls.compressor_level",),
     ),
     ("vox", "read_vox", None, "poll_tx_controls", ("global.tx_state.vox_on",)),
-    ("split", "read_split", None, "poll_tx_controls", ("global.tx_state.split",)),
     (
         "clarifier",
         "read_clarifier",
@@ -3307,6 +3300,56 @@ async def test_defective_read_names_every_declared_path_it_feeds(
     assert scheduler.unobserved_startup_paths(()) == before
 
 
+#: MOR-4456: PTT and split left the startup-critical set, so a refused or
+#: wrong-shape read records no startup defect — the gate serves them
+#: unknown after the non-critical deadline.
+_NO_DEFECT_TX_ROWS: tuple[
+    tuple[str, str, int | None, str, tuple[str, ...]], ...
+] = (
+    ("ptt", "read_transmit_state", None, "poll_medium", ("global.tx_state.ptt",)),
+    ("split", "read_split", None, "poll_tx_controls", ("global.tx_state.split",)),
+)
+
+
+@pytest.mark.parametrize("failure", ["parse", "reject"])
+@pytest.mark.parametrize(
+    ("method", "receiver", "poll", "expected"),
+    [row[1:] for row in _NO_DEFECT_TX_ROWS],
+    ids=[row[0] for row in _NO_DEFECT_TX_ROWS],
+)
+@pytest.mark.asyncio
+async def test_noncritical_defective_read_records_no_defect(
+    method: str,
+    receiver: int | None,
+    poll: str,
+    expected: tuple[str, ...],
+    failure: str,
+) -> None:
+    """A refused or wrong-shape PTT/split read is skipped with no defect.
+
+    Same shape as ``test_defective_read_names_every_declared_path_it_feeds``
+    with the MOR-4456 outcome inverted: the read skips only its own field
+    (nothing invented leaks into the store), the scheduler records no
+    startup defect, and the path stays outstanding — the gate (not the
+    lane) releases it at the non-critical deadline with its WARNING.
+    """
+    profile = _profile_state_acquisition()
+    scheduler = AcquisitionScheduler(profile=profile)
+    radio = _gate_radio()
+    radio._acquisition_scheduler = scheduler
+    before = scheduler.unobserved_startup_paths(())
+    _break_read(radio, method, receiver, failure=failure)
+
+    adapter = YaesuObservationAdapter(radio, profile=profile, clock=_clock)
+    observations = await getattr(adapter, poll)()
+
+    assert isinstance(observations, tuple)
+    assert scheduler.startup_defect is None
+    emitted = {str(item.path) for item in observations}
+    assert emitted.isdisjoint(expected)
+    assert scheduler.unobserved_startup_paths(()) == before
+
+
 @pytest.mark.asyncio
 async def test_refused_read_mid_cycle_still_emits_later_slow_fields() -> None:
     """MOR-2578: a refused declared read skips its own field, not the cycle.
@@ -3350,13 +3393,14 @@ async def test_refused_read_mid_cycle_still_emits_later_slow_fields() -> None:
 
 @pytest.mark.asyncio
 async def test_refused_declared_ptt_read_skips_ptt_and_publishes_unknown() -> None:
-    """MOR-2578: a refused declared PTT read skips PTT, not the medium lane.
+    """MOR-2578/MOR-4456: a refused declared PTT read skips PTT, not the lane.
 
     The PTT branch of ``poll_medium`` is a direct call, not ``_safe_read``:
-    on a refusal it must record the defect, publish the observed PTT as
-    UNKNOWN (neither ON nor OFF — no invented False), keep
-    ``global.tx_state.ptt`` absent from the observations, and let the
-    lane's remaining reads (filter_width) still publish.
+    on a refusal it must record no defect (MOR-4456: PTT left the critical
+    set), publish the observed PTT as UNKNOWN (neither ON nor OFF — no
+    invented False), keep ``global.tx_state.ptt`` absent from the
+    observations, and let the lane's remaining reads (filter_width) still
+    publish.
     """
     profile = _profile_state_acquisition()
     scheduler = AcquisitionScheduler(profile=profile)
@@ -3368,9 +3412,7 @@ async def test_refused_declared_ptt_read_skips_ptt_and_publishes_unknown() -> No
         radio, profile=profile, clock=_clock
     ).poll_medium()
 
-    defect = scheduler.startup_defect
-    assert defect is not None
-    assert [str(path) for path in defect.paths] == ["global.tx_state.ptt"]
+    assert scheduler.startup_defect is None
     paths = {str(item.path) for item in observations}
     # The raw PTT path is skipped — no invented False leaks into the store.
     assert "global.tx_state.ptt" not in paths
