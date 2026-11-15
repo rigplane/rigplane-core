@@ -1,28 +1,22 @@
 /**
- * `DataChannelTransport` unit tests (C5a) over the shared fake channel:
- * the `MessageTransport` mapping and the per-label attach step, driven by
- * the committed attach documents (`api-channel-golden.json`) — replayed
- * through the real handlers by the Python counterpart
+ * `DataChannelTransport` unit tests (C5a) over the shared fake channel: the
+ * `MessageTransport` mapping and the per-label attach step, driven by the
+ * committed attach documents (`api-channel-golden.json`) — replayed through
+ * the real handlers by the Python counterpart
  * `tests/test_api_channel_golden.py::test_golden_documents_replay_through_real_handlers`.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { MessageTransport } from '../message-transport';
 import { FakeDataChannel, goldenDocs, goldenAttachText } from './support/fake-datachannel';
-import {
-  DataChannelTransport,
-  ATTACH_RESEND_MS,
-  ATTACH_TIMEOUT_MS,
-} from '../datachannel-transport';
+import { DataChannelTransport, ATTACH_RESEND_MS, ATTACH_TIMEOUT_MS } from '../datachannel-transport';
 
-// Compile-time check (never called): a native RTCDataChannel is exactly
-// the channel surface the constructor takes.
-const nativeChannelAccepted: (channel: RTCDataChannel) => DataChannelTransport = (channel) =>
+// Compile-time check (never called): a native RTCDataChannel is exactly the
+// channel surface the constructor takes.
+export const nativeChannelAccepted: (channel: RTCDataChannel) => DataChannelTransport = (channel) =>
   new DataChannelTransport(channel);
-void nativeChannelAccepted;
 
 const KEY = 'a'.repeat(64); // a session-key-shaped stand-in
 const token = `rigplane-controller-v1.${KEY}`;
-
 describe('DataChannelTransport', () => {
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());
@@ -44,13 +38,12 @@ describe('DataChannelTransport', () => {
     expect(closes).toEqual([{ code: 1006, reason: '', wasClean: false }]);
     expect(t.state).toBe('closed');
   });
-  it('scope: resends the golden attach until the golden ack, then exposes the token', () => {
+  it('scope: resends the golden attach until the golden ack; audio times out without one', () => {
     const ch = new FakeDataChannel('scope');
     const t = new DataChannelTransport(ch);
     t.open('ignored://', { protocols: [token] });
     ch.simulateOpen();
-    // The attach frame's shape is the golden document's (JSON spacing is
-    // not part of the contract); a resend repeats it byte for byte.
+    // The shape is the golden document's (JSON spacing is not contractual).
     const frame = goldenAttachText('attach_scope', KEY);
     expect(ch.sent.map((f) => JSON.parse(f as string))).toEqual([JSON.parse(frame)]);
     vi.advanceTimersByTime(ATTACH_RESEND_MS * 2);
@@ -60,19 +53,17 @@ describe('DataChannelTransport', () => {
     expect(t.attachedProtocol).toBe(token);
     vi.advanceTimersByTime(ATTACH_RESEND_MS * 4);
     expect(ch.textFrames()).toHaveLength(3); // resends stopped
-  });
-  it('audio: the attach times out into error + close without an ack', () => {
-    const ch = new FakeDataChannel('audio');
-    const t = new DataChannelTransport(ch);
+    const slow = new FakeDataChannel('audio');
+    const starved = new DataChannelTransport(slow);
     const errors: unknown[] = [];
-    t.onError(() => errors.push(true));
-    t.open('ignored://', { protocols: [token] });
-    ch.simulateOpen();
+    starved.onError(() => errors.push(true));
+    starved.open('ignored://', { protocols: [token] });
+    slow.simulateOpen();
     vi.advanceTimersByTime(ATTACH_TIMEOUT_MS - 1);
     expect(errors).toHaveLength(0);
     vi.advanceTimersByTime(1);
     expect(errors).toHaveLength(1);
-    expect(t.state).toBe('closed');
+    expect(starved.state).toBe('closed');
   });
   it('control opens on hello, audio on its ack; api sends the keyless golden attach', () => {
     const controlCh = new FakeDataChannel('control');
@@ -111,8 +102,7 @@ describe('DataChannelTransport', () => {
     let attached = false;
     ws.open('wss://rigplane.local/api/v1/ws', protocols.length > 0 ? { protocols } : undefined);
     ws.onOpen(() => {
-      // exactly the ws-client.ts / audio-manager.ts guard
-      if (ws.attachedProtocol !== protocols[0]) ws.close();
+      if (ws.attachedProtocol !== protocols[0]) ws.close(); // the ws-client.ts guard
       else attached = true;
     });
     ch.simulateOpen();
@@ -140,11 +130,11 @@ describe('DataChannelTransport', () => {
     const opens: unknown[] = [];
     t.open('ignored://');
     t.onOpen(() => opens.push(true));
-    expect(opens).toEqual([]); // deferred: open(); onOpen(...) still sees the event
+    expect(opens).toEqual([]); // deferred: open(); onOpen(...) still sees it
     await vi.advanceTimersByTimeAsync(0);
     expect(opens).toHaveLength(1);
     expect(t.state).toBe('open');
-    expect(ch.textFrames().map((f) => JSON.parse(f))).toEqual([goldenDocs.attach_api.decoded]);
+    expect(ch.textFrames().map((f) => JSON.parse(f as string))).toEqual([goldenDocs.attach_api.decoded]);
   });
   it('delivers non-ack frames received before the ack; send waits for open', () => {
     const ch = new FakeDataChannel('scope');
