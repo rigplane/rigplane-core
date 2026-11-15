@@ -729,10 +729,10 @@ async def test_observed_external_fix_mode_is_adopted_never_reasserted():
 @pytest.mark.parametrize("model", ["ic7610", "ic7300"])
 async def test_fix_transitions_reresolve_follow_grant_per_frame(model):
     """MOR-4392 round 2: CTR→FIX→CTR re-resolves the follow grant per
-    frame — the requested view kept in FIX (MOR-4451: the fixed window
-    is merely offset, not narrower) with the wire coverage intersected,
-    to the native coverage in CENTER — with zero radio writes after the
-    initial CENTER subscribe and no resubscribe for the grant to follow.
+    frame — the fixed window itself in FIX (MOR-4451: the panorama
+    stands still), the requested view in CENTER — with zero radio
+    writes after the initial CENTER subscribe and no resubscribe for
+    the grant to follow.
     """
     profile = load_rig(Path("rigs") / f"{model}.toml").to_profile()
     sim = _SimRadio(profile)
@@ -754,20 +754,22 @@ async def test_fix_transitions_reresolve_follow_grant_per_frame(model):
         source.feed_frame(ScopeFrame(0, 1, 14_000_000, 14_100_000, bytes(475), False))
         await sub.receive()
         fixed = encoded[-1]
-        assert (fixed.view_start_hz, fixed.view_end_hz) == (14_050_000, 14_150_000)
+        assert (fixed.view_start_hz, fixed.view_end_hz) == (14_000_000, 14_100_000)
         assert (fixed.coverage_start_hz, fixed.coverage_end_hz) == (
-            14_050_000,
+            14_000_000,
             14_100_000,
         )
-        assert sub.granted.view == View(14_050_000, 14_150_000)
+        assert sub.granted.view == View(14_000_000, 14_100_000)
         assert sub.granted.coverage == Coverage(14_000_000, 14_100_000)
-        # A follow span gesture inside FIX writes nothing (RED pre-fix:
-        # set_view drives set_center and writes 0x14 mode 0).
+        # A follow span gesture inside FIX writes nothing and the
+        # set_view fixed branch grants the same fixed window.
         gesture = await hub.subscribe(
             Subscription("radio", 0, FollowView("vfo", 50_000), 475, 20)
         )
         try:
             assert sim.writes == []
+            assert gesture.granted.view == View(14_000_000, 14_100_000)
+            assert gesture.granted.coverage == Coverage(14_000_000, 14_100_000)
         finally:
             await gesture.close()
         # FIX → CTR behind our back: the same subscription follows.
@@ -926,5 +928,52 @@ async def test_offset_frame_wires_requested_view_with_reduced_coverage(model):
         )
         assert sub.granted.view == View(14_075_000, 14_125_000)
         assert sub.granted.coverage == Coverage(14_081_000, 14_131_000)
+    finally:
+        await sub.close()
+
+
+@pytest.mark.parametrize("model", ["ic705", "ic7610"])
+async def test_fix_follow_grant_is_the_fixed_window_at_any_vfo(model):
+    """MOR-4451: in FIX the panorama stands still — the hub's per-frame
+    follow regrant IS the radio's fixed window at every VFO position
+    (mid-window and near its edges), the wire frame carries the fixed
+    window, and Core writes nothing back.
+    """
+    profile = load_rig(Path("rigs") / f"{model}.toml").to_profile()
+    sim = _SimRadio(profile)
+    session = _sim_session(sim, profile)
+    source = RadioScopeSource(profile, session)
+    hub, encoded, Subscription = _sim_hub(source)
+    sub = await hub.subscribe(
+        Subscription("radio", 0, FollowView("vfo", 100_000), 475, 20)
+    )
+    try:
+        fixed = Coverage(14_200_000, 14_300_000)
+        source.feed_frame(ScopeFrame(0, 0, 14_150_000, 14_250_000, bytes(475), False))
+        await sub.receive()
+        sim.writes.clear()
+        # CTR → FIX behind our back: adopt, then stream the fixed window
+        # while the VFO walks across it (ArrowRight holds).
+        sim.mode = 1
+        session.observe("mode", 1, 0)
+        for vfo in (14_200_000, 14_231_000, 14_299_000):
+            sim.frequency = vfo
+            source.feed_frame(
+                ScopeFrame(0, 1, fixed.start_hz, fixed.end_hz, bytes(475), False)
+            )
+            await sub.receive()
+            frame = encoded[-1]
+            assert (frame.view_start_hz, frame.view_end_hz) == (
+                fixed.start_hz,
+                fixed.end_hz,
+            )
+            assert (frame.coverage_start_hz, frame.coverage_end_hz) == (
+                fixed.start_hz,
+                fixed.end_hz,
+            )
+            assert sub.granted.view == View(fixed.start_hz, fixed.end_hz)
+            assert sub.granted.coverage == fixed
+        await session.reconcile()
+        assert sim.writes == []
     finally:
         await sub.close()
