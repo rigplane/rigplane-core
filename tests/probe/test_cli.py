@@ -240,9 +240,7 @@ async def test_execute_g7250_reports_matched_identity(tmp_path) -> None:
     addr_echo = build_civ_frame(
         CONTROLLER_ADDR, addr, 0x19, sub=0x00, data=bytes((addr,))
     )
-    model = build_civ_frame(
-        CONTROLLER_ADDR, addr, 0x1D, data=bytes.fromhex("197250")
-    )
+    model = build_civ_frame(CONTROLLER_ADDR, addr, 0x1D, data=bytes.fromhex("197250"))
     queues: dict[bytes, list[bytes | None]] = {
         b"\x19\x00": [addr_echo],
         b"\x1d\x19": [model],
@@ -480,9 +478,7 @@ class _ClosableStubExchange:
         self.break_now = break_now
         self.closed = False
 
-    async def __call__(
-        self, request: bytes | None, timeout: float
-    ) -> bytes | None:
+    async def __call__(self, request: bytes | None, timeout: float) -> bytes | None:
         if request is not None:
             self.seen.append(request)
         if self.break_now:

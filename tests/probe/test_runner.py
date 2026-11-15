@@ -119,11 +119,19 @@ async def test_wrong_receiver_reply_is_not_taken_as_the_answer() -> None:
     config = _load("ic7610")
     addr = config.civ_addr
     main_reply = build_cmd29_frame(
-        CONTROLLER_ADDR, addr, 0x14, sub=0x01, data=bytes.fromhex("0010"),
+        CONTROLLER_ADDR,
+        addr,
+        0x14,
+        sub=0x01,
+        data=bytes.fromhex("0010"),
         receiver=0x00,
     )
     sub_reply = build_cmd29_frame(
-        CONTROLLER_ADDR, addr, 0x14, sub=0x01, data=bytes.fromhex("0010"),
+        CONTROLLER_ADDR,
+        addr,
+        0x14,
+        sub=0x01,
+        data=bytes.fromhex("0010"),
         receiver=0x01,
     )
     items = [
@@ -171,9 +179,7 @@ async def test_plain_reply_to_wrapped_request_is_left_unsolicited() -> None:
     report = await runner.run_probe(
         config,
         config_toml_sha256="0" * 64,
-        exchange=_nak_except(
-            seen, {bytes.fromhex("29001401"): [plain]}, addr=addr
-        ),
+        exchange=_nak_except(seen, {bytes.fromhex("29001401"): [plain]}, addr=addr),
         port_kind="usb",
         baud=CIV_BAUD,
         label="",
@@ -555,11 +561,9 @@ async def test_silence_aborted_file_names_every_declared_read_once() -> None:
     assert file.termination.status == "silence_stop"
     assert file.termination.detail == runner.SILENT_ABORT_MESSAGE
     assert _name_counts(
-        [row.name for row in file.commands]
-        + [entry.name for entry in file.skipped]
+        [row.name for row in file.commands] + [entry.name for entry in file.skipped]
     ) == _name_counts(
-        [item.name for item in plan.asked]
-        + [entry.name for entry in plan.skipped]
+        [item.name for item in plan.asked] + [entry.name for entry in plan.skipped]
     )
     aborted = [entry for entry in file.skipped if entry.reason == "run_aborted"]
     assert aborted
@@ -618,11 +622,9 @@ async def test_transport_aborted_file_names_every_declared_read_once() -> None:
     assert file.termination.status == "transport_error"
     assert file.termination.detail == report.aborted
     assert _name_counts(
-        [row.name for row in file.commands]
-        + [entry.name for entry in file.skipped]
+        [row.name for row in file.commands] + [entry.name for entry in file.skipped]
     ) == _name_counts(
-        [item.name for item in plan.asked]
-        + [entry.name for entry in plan.skipped]
+        [item.name for item in plan.asked] + [entry.name for entry in plan.skipped]
     )
     broken = [row for row in file.commands if row.outcome == "transport_error"]
     assert len(broken) == 1 and broken[0].name == target.name
@@ -731,13 +733,32 @@ async def test_silence_mid_pass_stops_before_the_after_snapshot() -> None:
     )
     report, delays = await _paced_run(config, exchange, gap_s=0.25, items=items)
     assert seen == [
-        b"ID;", b"IF;", b"FA;", b"MD0;", b"ST;", b"TX;", b"PS;", b"AI;",
-        b"FA;", b"MD0;", b"ST;", b"TX;", b"KS;", b"PS;", b"AI;",
+        b"ID;",
+        b"IF;",
+        b"FA;",
+        b"MD0;",
+        b"ST;",
+        b"TX;",
+        b"PS;",
+        b"AI;",
+        b"FA;",
+        b"MD0;",
+        b"ST;",
+        b"TX;",
+        b"KS;",
+        b"PS;",
+        b"AI;",
     ]
     assert delays == [0.25] * len(seen)
     assert report.aborted == runner.SILENT_ABORT_MESSAGE
     assert [row.outcome for row in report.file.commands] == [
-        "data", "refused", "silent", "silent", "silent", "silent", "silent",
+        "data",
+        "refused",
+        "silent",
+        "silent",
+        "silent",
+        "silent",
+        "silent",
     ]
 
 
@@ -750,9 +771,7 @@ async def test_identity_reports_the_answer_that_matched() -> None:
     addr_echo = build_civ_frame(
         CONTROLLER_ADDR, addr, 0x19, sub=0x00, data=bytes((addr,))
     )
-    model = build_civ_frame(
-        CONTROLLER_ADDR, addr, 0x1D, data=bytes.fromhex("197250")
-    )
+    model = build_civ_frame(CONTROLLER_ADDR, addr, 0x1D, data=bytes.fromhex("197250"))
     seen: list[bytes] = []
     report = await runner.run_probe(
         config,
@@ -976,9 +995,7 @@ async def test_unknown_request_answer_is_data_not_unsolicited() -> None:
     config = _load("ic7300")
     addr = config.civ_addr
     (item,) = [
-        entry
-        for entry in build_read_plan(config).asked
-        if entry.name == "unknown:7f"
+        entry for entry in build_read_plan(config).asked if entry.name == "unknown:7f"
     ]
     answer = build_civ_frame(
         CONTROLLER_ADDR, addr, 0x03, data=bytes.fromhex("0000601234")
@@ -1141,9 +1158,7 @@ async def test_eof_partial_bytes_land_in_unsolicited() -> None:
     config = _load("ic7300")
     addr = config.civ_addr
     (item,) = [
-        entry
-        for entry in build_read_plan(config).asked
-        if entry.name == "unknown:7f"
+        entry for entry in build_read_plan(config).asked if entry.name == "unknown:7f"
     ]
     partial = bytes.fromhex("fefefe94e00301")
     nak = _nak_frame(addr)

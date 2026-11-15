@@ -19,6 +19,7 @@ def termination_line(termination: TerminationInfo | None) -> str:
         return ""
     return f"  - stopped early: {termination.detail}\n"
 
+
 __all__ = [
     "AbsentAnswer",
     "absent_answered_line",

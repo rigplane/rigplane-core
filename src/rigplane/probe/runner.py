@@ -158,9 +158,7 @@ async def _gated_ask(
         return None
     if gate.gap_s:
         await asyncio.sleep(gate.gap_s)
-    return await _ask(
-        exchange, body, window, attribute=attribute, garbled=garbled
-    )
+    return await _ask(exchange, body, window, attribute=attribute, garbled=garbled)
 
 
 def _elapsed_ms(started: float) -> float:
@@ -538,10 +536,8 @@ async def run_probe(
     aborted = gate.stop_detail or None
     if gate.stopped:
         unattempted = [
-            SkippedRead(
-                item.name, item.body.hex(), "run_aborted", gate.stop_detail
-            )
-            for item in watch[len(rows):]
+            SkippedRead(item.name, item.body.hex(), "run_aborted", gate.stop_detail)
+            for item in watch[len(rows) :]
         ]
     else:
         unattempted = []
@@ -570,9 +566,7 @@ async def run_probe(
         skipped=plan.skipped + tuple(unattempted),
         unsolicited=tuple(strays.rows),
         snapshot=Snapshot(before=before, after=after, changed=changed),
-        termination=TerminationInfo(
-            status=gate.stop_status, detail=gate.stop_detail
-        ),
+        termination=TerminationInfo(status=gate.stop_status, detail=gate.stop_detail),
         checks=(),
     )
     return ProbeRun(file=file, aborted=aborted)

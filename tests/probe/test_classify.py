@@ -52,7 +52,10 @@ def test_civ_reply_to_another_command_is_malformed() -> None:
 
 def test_civ_cmd29_wrapper_matches_wrapped_reply() -> None:
     wrapped = build_cmd29_frame(
-        CONTROLLER_ADDR, 0x94, 0x03, data=bytes.fromhex("0014250700"),
+        CONTROLLER_ADDR,
+        0x94,
+        0x03,
+        data=bytes.fromhex("0014250700"),
         receiver=0x00,
     )
     assert classify_civ(bytes((0x29, 0x00, 0x03)), wrapped) == "data"
@@ -75,7 +78,11 @@ def test_civ_stale_selector_is_malformed() -> None:
 def test_civ_wrong_receiver_is_malformed() -> None:
     # MOR-4464 finding 3: a wrapped MAIN reply is not a SUB read's answer.
     main_reply = build_cmd29_frame(
-        CONTROLLER_ADDR, 0x98, 0x14, sub=0x01, data=bytes.fromhex("0010"),
+        CONTROLLER_ADDR,
+        0x98,
+        0x14,
+        sub=0x01,
+        data=bytes.fromhex("0010"),
         receiver=0x00,
     )
     assert classify_civ(bytes.fromhex("29011401"), main_reply) == "malformed"
