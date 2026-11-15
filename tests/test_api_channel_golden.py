@@ -119,15 +119,35 @@ class _LossyAckPeer:
                 await self._pc.close()
 
 
-def test_committed_golden_json_matches_producer_documents() -> None:
-    from rigplane.web.api_channel import api_channel_golden_documents
+def test_committed_golden_json_is_one_typed_contract() -> None:
+    """The committed file is the producer's serialised typed contract:
+    one binary-frame encoding (whole-frame hex, never a hex/b64 guess),
+    a variant discriminator on every document, an envelope ``shape``
+    map for the browser side, and a producer-owned loader that
+    round-trips build -> serialise -> load."""
+    import dataclasses
+
+    from rigplane.web.api_channel import (  # noqa: TID251
+        api_channel_golden_documents,
+        api_channel_golden_documents_from_json,
+    )
 
     golden = _golden()
-    assert golden["_tested_by"] == _REPLAYER
+    assert set(golden) == {"version", "tested_by", "formats", "shape", "documents"}
+    assert golden["tested_by"] == _REPLAYER
     assert len(golden["documents"]) == 13, sorted(golden["documents"])
-    assert (
-        golden["documents"] == asyncio.run(api_channel_golden_documents())["documents"]
-    ), "api-channel-golden.json drifted; regenerate it"
+    frame_keys = {"hex", "type", "request_id", "payload", "payload_bytes", "variant"}
+    for doc in golden["documents"].values():
+        assert doc["variant"] in golden["shape"], doc.get("variant")
+        for frame in (
+            doc.get("request", []) + doc.get("reply", []) + doc.get("frames", [])
+        ):
+            assert set(frame) == frame_keys, sorted(frame)
+    built = asyncio.run(api_channel_golden_documents())
+    assert golden == json.loads(json.dumps(dataclasses.asdict(built))), (
+        "api-channel-golden.json drifted; regenerate it"
+    )
+    assert api_channel_golden_documents_from_json(golden) == built
 
 
 @_webrtc
@@ -181,9 +201,6 @@ async def test_golden_documents_replay_through_real_handlers(
         # -- api documents on a real api channel, exact committed bytes --
         await api.connect(stack.web.port)
         api._channel.send(docs["attach_api"]["text"])  # noqa: SLF001
-        for _ in range(20):
-            await asyncio.sleep(0)
-        assert not api._closed.is_set(), "keyless api attach refused"
         await api.start_pump()
 
         async def _replies(request_id: int) -> list[tuple[int, bytes]]:
@@ -208,6 +225,9 @@ async def test_golden_documents_replay_through_real_handlers(
             for frame in (_raw(f) for f in doc["request"]):
                 api.send_raw(frame)
             _check(name, await _replies(_seq(doc["request"])[0][1]))
+        # The replayed exchange IS observed processing: the keyless api
+        # attach was consumed and the channel stayed open.
+        assert not api._closed.is_set(), "keyless api attach refused"  # noqa: SLF001
         for name in ("api_ok", "api_chunked"):
             doc = docs[name]
             body = base64.b64decode(doc["response_body_b64"])
@@ -279,15 +299,30 @@ async def test_golden_documents_replay_through_real_handlers(
         api.send_raw(b"\x01\x02\x00\x00")  # shorter than the 7-byte header
         await _expect_error("malformed")
 
+        # Cancelled and unknown ids stay silent while the channel keeps
+        # serving. The checked ids are derived from the committed frames
+        # themselves; a failed cancel answers the trailing END (an
+        # observable response) and a frame-answering handler answers the
+        # unknown id.
+        silent_ids = {
+            _seq([frame])[0][1]
+            for name in ("api_cancel", "api_unknown_id_ignored")
+            for frame in docs[name]["request"]
+        }
+        assert silent_ids == {41, 9999}, silent_ids
+        assert [t for t, _r, _p in _seq(docs["api_cancel"]["request"])] == [
+            1,
+            7,
+            5,
+        ], "api_cancel must send HEAD, CANCEL, then END"
         for name in ("api_cancel", "api_unknown_id_ignored"):
             for frame in (_raw(f) for f in docs[name]["request"]):
                 api.send_raw(frame)
-        for _ in range(20):
-            await asyncio.sleep(0)
-        # Cancelled/unknown ids stay silent; the channel still serves.
-        for request_id in (41, 9999):
-            assert api._queues.get(request_id, asyncio.Queue()).empty()  # noqa: SLF001
+        # Request 42's completed response IS observed processing: the
+        # ordered channel served every earlier frame before it.
         assert (await api.request(42, "GET", "/api/v1/info")).status == 200
+        for request_id in silent_ids:
+            assert request_id not in api._queues, request_id  # noqa: SLF001
     finally:
         await api.close()
         await peer.close()
