@@ -1,7 +1,7 @@
 /**
  * Compatibility tests for the data-channel attach acknowledgement
  * (MOR-4478): the server under review will send one extra text frame
- * `{"type":"attached","v":1,"channel":"audio"}` as the first frame on the
+ * `{"type": "attached", "v": 1, "channel": "audio"}` as the first frame on the
  * audio channel. Today's shipped frontend must ignore it: no state change,
  * no error, no reconnect, and normal handling of the following audio
  * format acknowledgement and RX audio frames.
@@ -9,9 +9,28 @@
  * Drives the real audio-socket message path in audio-manager.ts exactly
  * the way audio-manager.isolated.test.ts does (FakeWebSocket through the
  * real WebSocketTransport text/binary split).
+ *
+ * Producer contracts: the ack frame is sent verbatim from the committed
+ * api-channel golden documents (built by the server producer and replayed
+ * through the real handlers by tests/test_api_channel_golden.py), and every
+ * module double implements the Pick of its producer class that
+ * AudioManager consumes, so a changed member fails svelte-check here.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { RxPlaybackDiagnostics, RxPlayer } from '../rx-player';
+import type { RxAudioFocus, RxPlaybackDiagnostics, RxPlayer } from '../rx-player';
+import type { TxCodec, TxCodecSwitch, TxMic } from '../tx-mic';
+import type * as audioStore from '../../stores/audio.svelte';
+import type * as connectionStore from '../../stores/connection.svelte';
+import type * as capabilitiesStore from '$lib/stores/capabilities.svelte';
+import apiChannelGolden from '../../transport/api-channel-golden.json';
+import apiChannelWire from '../../transport/api-channel-wire.json';
+
+/** The producer-built golden document for this channel's attach ack. */
+const attachAckAudio = apiChannelGolden.documents.attach_ack_audio;
+/** The committed wire contract's own `type` row for the attach ack. */
+const wireAttachAckType = JSON.parse(String(
+  apiChannelWire.payloads.attach_ack.fields.find(([name]) => name === 'type')?.[1] ?? 'null',
+));
 
 const rxStart = vi.fn();
 const rxStop = vi.fn();
@@ -35,12 +54,26 @@ const playback: RxPlaybackDiagnostics = {
 const rxStats = vi.fn((): ReturnType<RxPlayer['stats']> => ({
   underruns: 0, bufferDepthMs: 0, droppedFrames: 0, playback,
 }));
-const txStart = vi.fn().mockResolvedValue(null);
+const txStart = vi.fn((): Promise<string | null> => Promise.resolve(null));
 const txStop = vi.fn();
-const txApplyServerCodec = vi.fn(() => ({ switched: false, error: null }));
+const txApplyServerCodec = vi.fn(
+  (_codec: TxCodec, _sampleRate: number): TxCodecSwitch => ({ switched: false, error: null }),
+);
+
+// The members AudioManager consumes, taken from the producer's own classes
+// so a changed member fails type checking here (same binding as
+// audio-manager.isolated.test.ts, review round 1).
+type ConsumedRxPlayer = Pick<RxPlayer,
+  'start' | 'stop' | 'flush' | 'feed' | 'setJitterBounds' | 'stats' | 'diagnosticSnapshot'
+  | 'setFocus' | 'setSplitStereo' | 'setChannelGainDb'
+  | 'focus' | 'splitStereo' | 'mainGainDb' | 'subGainDb' | 'volume'>;
+type ConsumedTxMic = Pick<TxMic,
+  'start' | 'stop' | 'active' | 'captureEpoch' | 'codec' | 'lastCaptureFailureCategory'
+  | 'applyServerCodec'>;
 
 vi.mock('../rx-player', () => ({
-  RxPlayer: class {
+  RxPlayer: class implements ConsumedRxPlayer {
+    constructor(enabled: boolean) { rxConstruct(enabled); }
     start = rxStart;
     stop = rxStop;
     flush = rxFlush;
@@ -48,35 +81,51 @@ vi.mock('../rx-player', () => ({
     setJitterBounds = rxSetJitterBounds;
     stats = rxStats;
     diagnosticSnapshot = rxDiagnosticSnapshot;
+    setFocus = vi.fn((_focus: RxAudioFocus) => {});
+    setSplitStereo = vi.fn((_on: boolean) => {});
+    setChannelGainDb = vi.fn((_channel: 'main' | 'sub', _db: number) => {});
+    get focus(): RxAudioFocus { return 'both'; }
+    get splitStereo() { return false; }
+    get mainGainDb() { return 0; }
+    get subGainDb() { return 0; }
+    get volume() { return 1; }
+    set volume(_value: number) {}
   },
 }));
 
 vi.mock('../tx-mic', () => ({
-  TxMic: class {
+  TxMic: class implements ConsumedTxMic {
     start = txStart;
     stop = txStop;
     applyServerCodec = txApplyServerCodec;
     get active() { return true; }
+    get codec(): TxCodec | null { return 'opus'; }
+    get captureEpoch(): number { return 0; }
+    get lastCaptureFailureCategory(): string | null { return null; }
     static supported() { return true; }
   },
 }));
 
-vi.mock('../../stores/connection.svelte', () => ({
-  setAudioConnected: vi.fn(),
-}));
+// Store doubles typed against the producer modules' own exported surface.
+const audioStoreDouble = {
+  setRxEnabled: vi.fn((_v: boolean) => {}),
+  setTxEnabled: vi.fn((_v: boolean) => {}),
+  setTxCodecFallback: vi.fn((_v: boolean) => {}),
+  setRxError: vi.fn((_v: boolean) => {}),
+  setTxError: vi.fn((_v: boolean) => {}),
+} satisfies Pick<typeof audioStore,
+  'setRxEnabled' | 'setTxEnabled' | 'setTxCodecFallback' | 'setRxError' | 'setTxError'>;
+const connectionStoreDouble = {
+  setAudioConnected: vi.fn((_v: boolean) => {}),
+} satisfies Pick<typeof connectionStore, 'setAudioConnected'>;
+const capabilitiesStoreDouble = {
+  getCapabilities: vi.fn((): null => null),
+  subscribeCapabilities: vi.fn((): (() => void) => () => {}),
+} satisfies Pick<typeof capabilitiesStore, 'getCapabilities' | 'subscribeCapabilities'>;
 
-vi.mock('../../stores/audio.svelte', () => ({
-  setRxEnabled: vi.fn(),
-  setTxEnabled: vi.fn(),
-  setTxCodecFallback: vi.fn(),
-  setRxError: vi.fn(),
-  setTxError: vi.fn(),
-}));
-
-vi.mock('$lib/stores/capabilities.svelte', () => ({
-  getCapabilities: vi.fn(() => null),
-  subscribeCapabilities: vi.fn(() => () => {}),
-}));
+vi.mock('../../stores/connection.svelte', () => connectionStoreDouble);
+vi.mock('../../stores/audio.svelte', () => audioStoreDouble);
+vi.mock('$lib/stores/capabilities.svelte', () => capabilitiesStoreDouble);
 
 class FakeWebSocket {
   static OPEN = 1;
@@ -129,7 +178,7 @@ describe('audio channel attach acknowledgement compatibility (MOR-4478)', () => 
     return { audioManager, setRxError: vi.mocked(audio.setRxError) };
   }
 
-  it('ignores {"type":"attached"} then feeds the format ack and RX frames normally', async () => {
+  it('ignores the golden {"type":"attached"} frame then feeds the format ack and RX frames normally', async () => {
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     const { audioManager, setRxError } = await rig();
     const starting = audioManager.startTx();
@@ -139,8 +188,17 @@ describe('audio channel attach acknowledgement compatibility (MOR-4478)', () => 
     socket.open();
     const sentBefore = [...socket.sent];
 
-    // The attach ack is the first frame the changed server sends.
-    serverText(socket, { type: 'attached', v: 1, channel: 'audio' });
+    // The attach ack is the first frame the changed server sends: the
+    // golden document's text verbatim, exactly the bytes the producer
+    // emits. A golden file that stops describing a server-to-client text
+    // frame whose type is the wire contract's attach-ack discriminator
+    // fails loudly here.
+    expect(attachAckAudio.variant).toBe('text');
+    expect(attachAckAudio.direction).toBe('server->client');
+    const ackFrame = JSON.parse(attachAckAudio.text) as Record<string, unknown>;
+    expect(ackFrame.type).toBe(wireAttachAckType);
+    expect(ackFrame.channel).toBe('audio');
+    socket.onmessage?.({ data: attachAckAudio.text });
     expect(audioManager.rxEnabled).toBe(true);
     expect(audioManager.txEnabled).toBe(true);
     expect(audioManager.txCodecFallback).toBe(false);
@@ -150,7 +208,11 @@ describe('audio channel attach acknowledgement compatibility (MOR-4478)', () => 
     expect(socket.sent).toEqual(sentBefore);
     expect(rxFed).not.toHaveBeenCalled();
 
-    // Normal handling afterwards: the TX format ack resolves the pending start.
+    // Normal handling afterwards: the TX format ack resolves the pending
+    // start. No producer type owns this frame on the frontend — the only
+    // contract is the unexported parse shape inside
+    // AudioManager._handleServerMessage — so the literal stays typed as
+    // the consumer's parser input (JSON text).
     serverText(socket, { type: 'audio_tx_format', codec: 'opus', sample_rate: 48000 });
     expect(await starting).toBeNull();
     expect(txApplyServerCodec).toHaveBeenCalledWith('opus', 48000);
