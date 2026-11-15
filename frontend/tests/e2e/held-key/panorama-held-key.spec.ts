@@ -66,11 +66,11 @@
 // (MOR-4452); even at the widest preset the view stays uncovered, so the
 // hatch is stable, never a transient.
 import type { Page } from '@playwright/test';
-import { readFile, writeFile } from 'node:fs/promises';
+import { writeFile } from 'node:fs/promises';
 import { expect, test } from '@playwright/test';
 import { parseCurrentScopeFrame, parseScopeGranted } from '../../../src/lib/runtime/scope-frame';
 import type { ScopeGranted, ScopeSubscription } from '../../../src/lib/runtime/scope-view';
-import { parseScopeWriteReceipt } from '../journey/panorama-receipt';
+import { readScopeWriteReceipts } from '../journey/panorama-receipt';
 import type { WsCommand } from '../../../src/lib/types/protocol';
 import type { ScopePassbandDiagnostics } from '../../../src/lib/runtime/adapters/scope-passband-display';
 import type { ServerState } from '../../../src/lib/types/state';
@@ -697,18 +697,16 @@ test('IC-705 external span narrowing adopts without a write and without hatch (c
   // Span-set receipts in the evidence file: 0x15 scope writes whose data
   // carries the 6-byte span value (a 1-byte 0x15 is a span read, not a
   // write). The simulator appends one line per write, same machine clock.
-  const spanSetCount = async (): Promise<number> => {
-    const lines = (await readFile(evidence, 'utf8')).split('\n').filter(Boolean);
-    return lines.map(parseScopeWriteReceipt)
+  const spanSetCount = async (): Promise<number> =>
+    (await readScopeWriteReceipts(evidence))
       .filter((receipt) => receipt.sub === 0x15 && receipt.data.length === 6).length;
-  };
   // Total receipts, for the counter-liveness guard below: the initial
   // subscribe may legitimately write no span-set at all (the radio is
   // already on the covering preset), so spanSetsBefore == 0 is a valid
   // baseline — but an empty evidence file would make the no-new-writes
   // assertion below pass vacuously.
   const receiptCount = async (): Promise<number> =>
-    (await readFile(evidence, 'utf8')).split('\n').filter(Boolean).length;
+    (await readScopeWriteReceipts(evidence)).length;
   const startedWall = Date.now();
   try {
     server = await startJourneyServer(port, 14_250_000,
