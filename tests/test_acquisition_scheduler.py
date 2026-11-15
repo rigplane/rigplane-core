@@ -50,6 +50,7 @@ from rigplane.core.state_pipeline_contracts import (
     Observation,
     SourceMetadata,
     acquisition_class_for_path,
+    startup_critical_path,
 )
 from rigplane.core.state_store import (
     FreshnessClock,
@@ -270,13 +271,20 @@ def test_refusal_before_the_send_does_not_complete_the_request() -> None:
 
 
 def test_refused_path_leaves_the_startup_set_unless_safety_critical() -> None:
+    # MOR-4456: PTT and split are served unknown when unanswered, so they
+    # are not startup-critical; frequency (the live tuning pair) still is.
+    freq = FieldPath.active("main", "freq_mode", "freq_hz")
+    ptt = FieldPath.global_("tx_state", "ptt")
     split = FieldPath.global_("tx_state", "split")
-    scheduler = _refusal_scheduler(FreshnessClock(start=0.0), _TUNER, split)
-    assert set(scheduler.unobserved_startup_paths(())) == {_TUNER, split}
+    assert startup_critical_path(freq)
+    assert not startup_critical_path(ptt)
+    assert not startup_critical_path(split)
+    scheduler = _refusal_scheduler(FreshnessClock(start=0.0), _TUNER, freq)
+    assert set(scheduler.unobserved_startup_paths(())) == {_TUNER, freq}
 
-    scheduler.record_read_refusal((_TUNER, split), now=1.0)
+    scheduler.record_read_refusal((_TUNER, freq), now=1.0)
 
-    assert scheduler.unobserved_startup_paths(()) == (split,)
+    assert scheduler.unobserved_startup_paths(()) == (freq,)
 
 
 def test_refused_lone_group_is_asked_again_at_its_idle_ceiling() -> None:

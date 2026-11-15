@@ -549,6 +549,27 @@ class _ReadRefusal:
 
     count: int
     retry_at: float
+    # MOR-4456: the wire command the refusing read used, verbatim
+    # (``ST;``, ``t``) — the startup gate names it instead of reporting
+    # ``no declared read`` for backends without a CI-V profile.
+    command: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class StartupReadNote:
+    """A direct-read lane's non-critical outcome for the startup gate (MOR-4456).
+
+    Constructed by the provider lane that just used ``command`` on the wire
+    — no raw dict guessing: the lane builds this typed note and the
+    scheduler files its fields into its existing per-path records (the
+    refusal record for ``refused``, the consecutive-timeout accounting for
+    ``timed out``), which the startup gate reads for the real command and
+    cause. ``command`` is the wire form just used (``TX;``, ``ST;``,
+    ``t``); ``cause`` is how the radio met that read.
+    """
+
+    command: str
+    cause: Literal["refused", "timed out"]
 
 
 class AcquisitionScheduler:
@@ -576,6 +597,7 @@ class AcquisitionScheduler:
         "_next_id",
         "_demoted_queue_envelope",
         "_pending_cadence_by_key",
+        "_poll_timeout_commands",
         "_prime_cursor",
         "_profile",
         "_refused_paths",
@@ -606,6 +628,15 @@ class AcquisitionScheduler:
         # MOR-4058: paths whose read the radio refused (NAK); any answer for
         # the path drops it.
         self._refused_paths: dict[FieldPath, _ReadRefusal] = {}
+        # MOR-4456: wire commands of direct-read-lane timeouts per path, so
+        # the startup gate names the real command for a path the timeout
+        # counters (``_consecutive_timeout_by_key``) only count. Direct
+        # lanes never dispatch scheduler requests, so nothing resets these
+        # notes on an answer — unlike scheduler-driven keys, they are
+        # cumulative, not consecutive. That is contained: the startup gate
+        # is their only reader and it consults them solely for paths still
+        # unobserved, which an answered path is not.
+        self._poll_timeout_commands: dict[FieldPath, str] = {}
         self._claims_by_request_id: dict[str, _AcquisitionClaim] = {}
         # request id -> per-path timestamp of the drain pass that sent it,
         # dropped where the request is removed from ``_requests_by_key``.
@@ -1823,6 +1854,7 @@ class AcquisitionScheduler:
         paths: Iterable[FieldPath],
         *,
         now: float,
+        command: str = "",
     ) -> None:
         """The radio answered a read of *paths* with a refusal (MOR-4058).
 
@@ -1835,6 +1867,11 @@ class AcquisitionScheduler:
         again only once per :meth:`_refusal_retry_seconds` (their policy's
         idle ceiling), whatever the cadence of the siblings in their poll
         group. An answer ends the refusal (:meth:`end_refusals`).
+
+        ``command`` is the wire form the refusing read used, verbatim
+        (MOR-4456): direct-read lanes pass ``TX;``/``ST;``/``t`` so the
+        startup gate names the real command for backends without a CI-V
+        profile. Scheduler-driven callers leave it empty.
         """
 
         refused = frozenset(paths)
@@ -1847,6 +1884,7 @@ class AcquisitionScheduler:
             self._refused_paths[path] = _ReadRefusal(
                 count=self.consecutive_refusals(path) + 1,
                 retry_at=now + self._refusal_retry_seconds(path),
+                command=command,
             )
         if newly:
             logger.info(
@@ -1867,6 +1905,72 @@ class AcquisitionScheduler:
                     now=now,
                     link_healthy=False,
                 )
+
+    def record_direct_read_outcome(
+        self,
+        paths: Iterable[FieldPath],
+        note: StartupReadNote,
+        *,
+        now: float | None = None,
+    ) -> None:
+        """File one direct-read lane's non-critical outcome (MOR-4456).
+
+        The single typed entry point for backends that read the radio
+        without dispatching scheduler requests (Yaesu CAT, rigctld client):
+        the lane builds a :class:`StartupReadNote` from the wire command it
+        just used and this files it into the existing per-path records —
+        the refusal record for ``refused``, the consecutive-timeout
+        accounting (:meth:`consecutive_request_timeouts`) for ``timed
+        out`` — which the startup gate reads for the real command and
+        cause. A refusal keeps its MOR-4058 meaning (the paths leave the
+        gate's outstanding set); a timeout only counts, so a silent
+        non-critical path still blocks until the gate's own deadline.
+        ``now`` defaults to the scheduler's own clock, so lanes never mix
+        a foreign clock into the refusal's retry delay.
+        """
+
+        outcomes = tuple(paths)
+        if not outcomes:
+            return
+        timestamp = self._clock.now() if now is None else now
+        if note.cause == "refused":
+            self.record_read_refusal(outcomes, now=timestamp, command=note.command)
+            return
+        for path in outcomes:
+            self._note_poll_timeout(path, command=note.command)
+
+    def _note_poll_timeout(self, path: FieldPath, *, command: str = "") -> None:
+        """Count one unanswered direct-read poll of *path* (MOR-4456).
+
+        Writes the same :meth:`consecutive_request_timeouts` accounting a
+        scheduler-driven timeout would, keyed the same way, but without
+        touching cadence or pending queues — direct-read lanes own neither.
+        """
+
+        key = _request_key(
+            path,
+            acquisition_method="poll",
+            policy=self._profile.policy_for(path),
+        )
+        self._consecutive_timeout_by_key[key] = (
+            self._consecutive_timeout_by_key.get(key, 0) + 1
+        )
+        if command:
+            self._poll_timeout_commands[path] = command
+
+    def startup_read_command(self, path: FieldPath) -> str:
+        """Return the wire command of *path*'s latest non-critical outcome.
+
+        The refusal record's command wins (a refused path's terminal answer
+        supersedes later silence); otherwise the direct-lane timeout note;
+        ``""`` when neither exists and the caller falls back to the
+        profile-derived form. Read by the startup gate's WARNING only.
+        """
+
+        refusal = self._refused_paths.get(path)
+        if refusal is not None and refusal.command:
+            return refusal.command
+        return self._poll_timeout_commands.get(path, "")
 
     def _refusal_retry_seconds(self, path: FieldPath) -> float:
         """How long a refused path waits before its next read (MOR-4058).

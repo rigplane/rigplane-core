@@ -606,17 +606,23 @@ _DEMOTION_MAP: Final[dict[AcquisitionClass, AcquisitionClass]] = {
 
 #: MOR-2749 (owner decision, 2026-09-27 14:20 EDT): the fields whose
 #: absence must still refuse startup once the web gate's non-critical
-#: deadline passes — frequency and mode (the live tuning pair), PTT and
-#: split. MOR-4433: the TX target left this set — it never was an input
-#: to PTT and is served unknown when unanswered, so a field of that
-#: weight must not stop the product from starting. The acquisition
-#: classes do not separate the remaining members (``split`` shares
-#: CONTROL with ``filter_width``), so the owner's list is derived here
-#: once, from field paths, next to the class membership it complements.
+#: deadline passes — frequency and mode (the live tuning pair). MOR-4433:
+#: the TX target left this set — it never was an input to PTT and is
+#: served unknown when unanswered, so a field of that weight must not
+#: stop the product from starting. MOR-4456: PTT and split left it too —
+#: they are served unknown when unanswered, and the managed key stays
+#: admitted while PTT is unobserved (the authority reports no radio-TX
+#: refusal) — only remote controller arming is refused with
+#: controller_not_ready — so holding the whole server for them only
+#: strands a working receiver. The owner's list is derived here once,
+#: from field paths, next to the class membership it complements.
 _STARTUP_CRITICAL_FREQ_MODE_NAMES: Final[frozenset[str]] = frozenset(
     _LIVE_TUNING_FIELD_NAMES
 )
-_STARTUP_CRITICAL_TX_STATE_NAMES: Final[frozenset[str]] = frozenset({"ptt", "split"})
+#: MOR-4456: no ``tx_state`` name is startup-critical anymore. The set
+#: stays — so ``startup_critical_path`` and its readers keep their shape —
+#: while matching nothing.
+_STARTUP_CRITICAL_TX_STATE_NAMES: Final[frozenset[str]] = frozenset()
 
 
 def startup_critical_path(path: FieldPath) -> bool:
@@ -625,10 +631,13 @@ def startup_critical_path(path: FieldPath) -> bool:
     MOR-2749: only these paths keep blocking the web gate after its
     non-critical deadline; every other unanswered path stops blocking and
     is served unread. Frequency and mode are the ``freq_mode`` live
-    tuning pair; PTT and split are the safety-critical ``tx_state`` facts
-    (MOR-4433: the TX target is not — it is served unknown when
-    unanswered). A ``scope_controls`` ``mode`` (the scope's own mode
-    setting) is not the operating mode and is not critical.
+    tuning pair (MOR-4433: the TX target is not startup-critical — it is
+    served unknown when unanswered; MOR-4456: PTT and split are not
+    either — they are served unknown, and the managed key stays admitted
+    while PTT is unobserved; only remote arming is refused with
+    controller_not_ready). A ``scope_controls``
+    ``mode`` (the scope's own mode setting) is not the operating mode
+    and is not critical.
     """
 
     if path.family is FieldFamily.FREQ_MODE:
