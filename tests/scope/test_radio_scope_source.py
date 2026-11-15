@@ -993,13 +993,14 @@ async def test_fix_follow_grant_is_the_fixed_window_at_any_vfo(model):
 async def test_scroll_c_follows_radio_scrolled_window_per_frame(model):
     """MOR-4451: in SCROLL-C the radio moves its own edges — the hub's
     per-frame follow regrant IS the window the frames report, across a
-    radio edge shift, with zero writes by us.
+    radio edge shift.
 
     Frames report window A while the VFO sits at its edge; the VFO moves
     out and the radio scrolls, so frames report shifted window B: the
-    grant is A then B, the coverage is the truthful window each time,
-    and a follow span gesture inside SCROLL-C is a client crop (zero
-    0x14/0x15 writes), like FIX.
+    grant is A then B, the coverage is the truthful window each time.
+    A follow span gesture inside SCROLL-C writes ONLY the covering span
+    preset (#4565: SPAN applies in SCROLL-C) — the grant stays the
+    reported window either way.
     """
     profile = load_rig(Path("rigs") / f"{model}.toml").to_profile()
     sim = _SimRadio(profile)
@@ -1046,13 +1047,13 @@ async def test_scroll_c_follows_radio_scrolled_window_per_frame(model):
         )
         assert sub.granted.view == View(window_b.start_hz, window_b.end_hz)
         assert sub.granted.coverage == window_b
-        # A follow span gesture inside SCROLL-C writes nothing and grants
-        # the same scrolled window (set_view fixed branch agrees).
+        # A follow span gesture inside SCROLL-C writes ONLY the covering
+        # span preset (#4565) and grants the same scrolled window
+        # (set_view family branch agrees).
         grant = await source.set_view(FollowView("vfo", 50_000), 0)
         assert grant.view == View(window_b.start_hz, window_b.end_hz)
         assert grant.coverage == window_b
-        await session.reconcile()
-        assert sim.writes == []
+        assert sim.writes == [("span", profile.scope_span_presets_hz.index(25_000), 0)]
     finally:
         await sub.close()
 

@@ -51,6 +51,17 @@ class RadioScopeWriter(Protocol):
         mode/span/edge write.
         """
 
+    async def set_span(self, span_hz: float, receiver: int) -> None:
+        """Write only the scope span preset (no mode/centre/edge write).
+
+        ``span_hz`` is the profile preset value (an entry of
+        ``RadioProfile.scope_span_presets_hz``), like ``set_center``'s —
+        on Icom CI-V it is the ±half-width the 0x27 0x15 span code
+        selects (MOR-4385). For a span-applicable radio-owned mode
+        (SCROLL-C), where the radio keeps its own window and a mode
+        write would flip it away.
+        """
+
     async def set_center(self, center_hz: float, span_hz: float, receiver: int) -> None:
         """Tune the center-mode viewport.
 
@@ -65,10 +76,21 @@ RADIO_OWNED_WINDOW_SCOPE_MODES = (1, 2, 3)
 """CI-V scope modes whose window is radio-held: FIX, SCROLL-C, SCROLL-F.
 
 A follow gesture in any of them is a client crop, never a mode change —
-the grant IS the window the frames report, zero writes by us. In the
-scroll modes the radio moves its own edges ("follow the radio" = view =
-the reported window). Shared fact with the frontend: see
+the grant IS the window the frames report. In the scroll modes the
+radio moves its own edges ("follow the radio" = view = the reported
+window). Shared fact with the frontend: see
 contracts/scope-mode-families.json and its contract tests.
+"""
+
+SPAN_APPLICABLE_SCOPE_MODES = (0, 2)
+"""CI-V scope modes where SPAN (0x27 0x15) selects the window width.
+
+Center and SCROLL-C (the Icom manual's SPAN pair; EDGE number 0x27 0x16
+selects the window in FIX and SCROLL-F instead). The client's
+``isSpanApplicable``/``isSpanDisabledScope`` split is the same fact —
+see contracts/scope-mode-families.json and its contract tests. Used
+inside the radio-owned family branch above: SCROLL-C is the one family
+mode a follow span gesture drives, span-only.
 """
 
 
@@ -238,19 +260,27 @@ class RadioScopeSource:
             # MOR-4392 round 2, gate round 1: the REQUESTED receiver is in
             # a radio-owned-window mode (FIX, SCROLL-C or SCROLL-F) — a
             # follow zoom/span gesture is a client crop (MOR-4387), never
-            # a mode change, so nothing is written: no 0x14 mode flip, no
-            # span, no fixed-edge rewrite. (SPAN applies in SCROLL-C and
-            # EDGE number in SCROLL-F per the manual, but a follow gesture
-            # selects neither — it only crops the reported window, so the
-            # span/edge split needs no branch here.) The grant is the
-            # requested window clipped to the last streamed reported
-            # window (the same resolve_follow rule the hub applies per
-            # frame), so the browser never holds a stale wide grant; with
-            # no family-mode frame seen yet the coverage stays unknown
-            # and the first frame resolves it. Back in CENTER the hub
-            # branch re-resolves against the native coverage. The FIX/CTR
+            # a mode change. In the span-applicable family mode (SCROLL-C)
+            # the gesture DOES select the span: SPAN (27 15) applies in
+            # Center and SCROLL-C per the manual, EDGE number (27 16) in
+            # FIX and SCROLL-F — so SCROLL-C writes ONLY the smallest
+            # preset covering the requested follow width (the CENTER
+            # ladder, no 0x14 mode flip, no centre/edge write), while FIX
+            # and SCROLL-F write nothing at all. The grant stays the
+            # reported window (the same resolve_follow rule the hub
+            # applies per frame), so the browser never holds a stale wide
+            # grant; the radio's next frames carry the new edges. With no
+            # family-mode frame seen yet the coverage stays unknown and
+            # the first frame resolves it. Back in CENTER the hub branch
+            # re-resolves against the native coverage. The FIX/CTR
             # gestures themselves are explicit mode commands outside this
             # path and still write.
+            if observed_mode in SPAN_APPLICABLE_SCOPE_MODES:
+                _, preset = self._center_span(view, selected)
+                try:
+                    await self._writer.set_span(preset, selected)
+                except (CommandError, TimeoutError, asyncio.TimeoutError):
+                    pass
             remembered = self._native_coverages.get(selected)
             if (
                 remembered is not None

@@ -1257,16 +1257,18 @@ async def test_scroll_c_span_step_writes_only_span_preset_over_ws(windowed_sdk):
             assert sim.views[0] == (2, presets.index(250_000), 1)
 
 
-async def test_restore_skips_span_adopted_during_teardown(windowed_sdk, monkeypatch):
+async def test_restore_keeps_span_adopted_after_span_rewrite(windowed_sdk, monkeypatch):
     """Pre-review round 1 (P2): an external span change landing BETWEEN two
-    restore writes leaves the restore set in time — the copied restore
-    loop must not write the stale span over the adopted value."""
+    restore writes (after the span rewrite, before the held mode write)
+    survives — the restore loop must not write the stale span over the
+    adopted value once the adoption has landed."""
     radio, sim = windowed_sdk
     sim.capture_civ_frames = True
     sim.set_frequency(14_100_000)
     radio._radio_state.main.freq = 14_100_000
     presets = radio._profile.scope_span_presets_hz
-    # SCROLL-C start: the follow subscribe writes nothing (MOR-4451 —
+    # SCROLL-C start: the follow subscribe writes ONLY the covering span
+    # preset (#4565 — no 0x14 mode flip, the radio stays in SCROLL-C and
     # the grant is the radio-reported window), so an explicit CENTER
     # switch captures mode AND span for restoration, and the restore
     # loop's mode write (held below) leaves a window for the external
@@ -1278,8 +1280,8 @@ async def test_restore_skips_span_adopted_during_teardown(windowed_sdk, monkeypa
             ws, Subscription("radio", 0, FollowView("vfo", 100_000), 475, 20)
         )
         await _frame_with(ws, (14_000_000, 14_350_000))
-        assert sim.views[0] == (2, 3, 1)
-        assert _viewport_writes(sim) == []
+        assert sim.views[0] == (2, presets.index(50_000), 1)
+        assert [w.sub for w in _viewport_writes(sim)] == [0x15]
         await radio.set_scope_mode(0)
         await radio.set_scope_span(presets.index(50_000))
         await _frame_with(ws, (14_050_000, 14_150_000))
@@ -1302,16 +1304,25 @@ async def test_restore_skips_span_adopted_during_teardown(windowed_sdk, monkeypa
         await ws.close()
         session = radio.scope_session()
         assert await await_until(lambda: session.restoring)
-        await asyncio.sleep(0.05)
+        # The span rewrite (pre-subscribe snapshot) lands first — wait
+        # for it, so the external change deterministically lands BETWEEN
+        # the two restore writes.
+        assert await await_until(
+            lambda: sim.views[0] == (0, presets.index(25_000), 1)
+        )
+        n15_before_push = len(
+            [w for w in _viewport_writes(sim) if w.sub == 0x15]
+        )
         sim.views[0] = (0, presets.index(100_000), 1)
         sim.push_scope_setting(b"\x15\x00" + bcd_encode(100_000))
         assert await await_until(lambda: not session.active)
-        # The adopted span survives; restore wrote only mode (its owned
-        # setting, back to the pre-subscribe SCROLL-C) — no stale 0x15.
+        # The adopted span survives; restore wrote span (its pre-subscribe
+        # value, before the adoption) then mode (back to SCROLL-C) — and
+        # no stale 0x15 lands after the adoption point.
         assert sim.views[0] == (2, presets.index(100_000), 1)
-        assert (
-            len([w for w in _viewport_writes(sim) if w.sub == 0x15]) == 1
-        )  # only the explicit CENTER switch's span write
+        writes = [w for w in _viewport_writes(sim) if w.sub == 0x15]
+        assert len(writes) == 2  # the S-C subscribe's + the early restore's
+        assert writes[n15_before_push:] == []
 
 
 def _dual_writes(sim) -> list:
