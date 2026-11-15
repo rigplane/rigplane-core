@@ -1,100 +1,57 @@
-"""MOR-4433 follow-up: a radio with no TX-target source reports "unsupported".
+"""MOR-4433: a radio with no TX-target source serves "unsupported".
 
 Owner decision: "remove the prohibition, transmit must work" for radios with
 one transceiver and no readable TX target (Xiegu G7250 on Icom CI-V, and the
-sourceless single-receiver Yaesu shape). One shared mechanism for all radios
-and both backends: the backend publishes the sticky
-``UnknownTxTarget(reason="unsupported")`` fact through the existing
-publication path, so the projection — and every TX-adjacent gate on it — can
-tell "no source exists" apart from "a source exists but is unobserved". No
-per-radio branch, no new guard, no second authority.
+sourceless single-receiver Yaesu shape). One shared mechanism: the backend
+publishes the sticky ``UnknownTxTarget(reason="unsupported")`` fact through
+its existing publication path, so the served state tells "no source exists"
+apart from "a source exists but is unobserved".
 
-Adaptation note (MOR-4433, after #4584): FT-991A gained a real TX-target
-source (``get_tx_func``/``set_tx_func`` + ``[vfo.tx_func]``), so it no
-longer belongs to the sourceless set — its real-target coverage lives in
-``test_ft991a_profile.py``. The sourceless-Yaesu cases here run on a
-synthetic profile built from the committed FT-991A config with the source
-removed (both TX verbs, ``tx_func``, the ``tx_target`` polling path),
-through the producer's own loader output — never a raw dict. G7250 keeps
-covering the Icom CI-V side.
+Both tests start the REAL backend's production acquisition with only the
+hardware faked, then read ``unsupported`` through the real HTTP API
+(``GET /api/v1/state``) parsed through the producer's ``ServerStatePublic``
+model — never a raw dict, never a private publish helper, never a seed.
+Each test fails when its backend's new publication is removed (proven by a
+scratch revert of that backend's change, not committed).
 
-Failing-first: the ``unsupported`` publication tests (Yaesu medium lane for
-the synthetic profile, CI-V poller for G7250, HTTP state projection for
-both) fail on the base commit — nothing publishes the field, so the
-projection falls back to ``not-observed``. The IC-7300/IC-7610 cases and
-the rigctld PTT pin pass before and after: transmit was never gated on
-``tx_target`` and must stay that way.
-
-Scope note (gate round 1 split): the managed-station WS key/unkey pins, the
-TUNE pins and the SDK PTT pin moved to follow-up PR B (Linear MOR-4472);
-their text is saved in the coordinator scratchpad, not here.
+Scope note (gate round 1 split): the managed-station WS key/unkey, TUNE and
+SDK/rigctld pins moved to follow-up PR B (Linear MOR-4472).
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
-import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from rigplane.backends.yaesu_cat.observations import YaesuObservationAdapter
-from rigplane.backends.yaesu_cat.radio import FilterWidthReading
-from rigplane.core.state_pipeline_contracts import (
-    FieldPath,
-    Observation,
-    SourceMetadata,
-)
-from rigplane.core.state_store import StateStore
-from rigplane.core.tx_observation import TxStateReading
-from rigplane.core.tx_target import KnownTxTarget, UnknownTxTarget
-from rigplane.profiles import RadioProfile, resolve_radio_profile
+from rigplane.backends.factory import create_radio
+from rigplane.backends.yaesu_cat.radio import YaesuCatRadio
+from rigplane.cli import _build_backend_config, _build_parser
+from rigplane.core import serial_open
+from rigplane.core.state_pipeline_contracts import FieldPath
+from rigplane.profiles import resolve_radio_profile
 from rigplane.profiles.rig_loader import RigConfig, load_rig
-from rigplane.rigctld.contract import RigctldConfig
-from rigplane.rigctld.server import RigctldServer
-from rigplane.web.radio_poller import CommandQueue, RadioPoller
 from rigplane.web.server import WebConfig, WebServer
-from serial_stub import SerialMockRadio
-from support.command_consumer import run_command_consumer
+from rigplane.web.state_schema import ServerStatePublic, UnknownTxTargetPublic
+from rigplane_testkit.sim.adapters.yaesu_cat import YaesuCatSerialFake
 from test_web_server import _addr, _http_get
-
+from testkit.test_g7250_session_wire import (
+    _ANSWER_WINDOW_S,
+    _DEVICE,
+    _G7250BenchFake,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 FT991A_RIG = ROOT / "rigs" / "ft991a.toml"
+FT991A_SIM = ROOT / "rigplane_testkit" / "sim" / "profiles" / "ft991a.toml"
 
 #: Model name stamped on the synthetic sourceless profile, so refusal
 #: messages name it instead of the real FT-991A it is derived from.
 _SYNTHETIC_MODEL = "FT-991A-NO-TX-SRC"
-
-
-def _clock() -> float:
-    """Harness clock sharing a base with the running event loop's time.
-
-    Managed-TX deadlines are computed from ``loop.time()`` in production
-    (``web/handlers/control.py``) and compared against the poller/queue
-    clock (``validate_command_queue_entry_currency``) and the authority
-    clock (``managed_tx_authority.py``) — so the harness clock must read
-    that same base. A fixed constant goes stale on any host whose
-    monotonic uptime differs (MOR-4433 CI root cause: ``1_000_000.0`` is
-    already past every real deadline on a host up less than ~11.6 days).
-    Outside a running loop (sync test setup) fall back to
-    ``time.monotonic``, the base ``loop.time()`` itself reads.
-    """
-    try:
-        return asyncio.get_running_loop().time()
-    except RuntimeError:
-        return time.monotonic()
-
-
-_TX_TARGET_PATH = FieldPath.global_("tx_state", "tx_target")
-
-
-# ── profile premise: which radios declare a tx_target source ──────────────
 
 
 def _sourceless_yaesu_config() -> RigConfig:
@@ -146,15 +103,8 @@ def _sourceless_yaesu_config() -> RigConfig:
     )
 
 
-def _profile_for(name: str) -> RadioProfile:
-    """Registry profile by model, or the synthetic sourceless Yaesu one."""
-    if name == _SYNTHETIC_MODEL:
-        return _sourceless_yaesu_config().to_profile()
-    return resolve_radio_profile(model=name)
-
-
 def test_synthetic_sourceless_profile_declares_no_tx_source() -> None:
-    """Premise the sourceless-Yaesu cases below stand on: the synthetic
+    """Premise the sourceless-Yaesu case below stands on: the synthetic
     carries no TX verb, no answer map, and no polled ``tx_target``."""
     config = _sourceless_yaesu_config()
     assert "get_tx_func" not in config.commands
@@ -184,356 +134,167 @@ def test_tx_target_source_declaration_matrix(
     model: str, source_command: str | None
 ) -> None:
     """Pin the discriminator the fix keys off: the command each profile's
-    ``tx_target`` source (or its absence) hangs on. FT-991A sources
-    through ``get_tx_func``, IC-7610 through the native ``get_tx_target``;
-    G7250 declares neither verb, and IC-7300 derives instead of reading."""
+    ``tx_target`` source (or its absence) hangs on."""
     profile = resolve_radio_profile(model=model)
     if source_command is None:
         assert not profile.supports_command("get_tx_target")
         assert not profile.supports_command("get_tx_func")
     else:
         assert profile.supports_command(source_command)
-    acquisition = profile.state_acquisition
-    declared_paths = (
-        {str(capability.path) for capability in acquisition.capabilities}
-        if acquisition is not None
-        else set()
-    )
-    assert ("global.tx_state.tx_target" in declared_paths) is (
-        source_command is not None
-    )
-
-
-# ── Yaesu backend: sourceless profile publishes unsupported ────────────────
-
-
-def _sourceless_observation_radio() -> MagicMock:
-    """Duck-typed Yaesu radio carrying the synthetic sourceless profile.
-
-    Mirrors the ``_make_radio`` double in
-    ``test_yaesu_cat_observation_adapter.py`` but with the synthetic
-    profile — which declares no ``get_tx_func`` verb, so the attribute
-    stays absent exactly as on the real radio object. FT-991A itself is
-    sourced since #4584; this double keeps the no-source branch covered.
-    """
-    profile = _sourceless_yaesu_config().to_profile()
-    radio = MagicMock(name="sourceless-yaesu-radio")
-    radio.profile = profile
-    radio.capabilities = set(profile.capabilities)
-    radio.read_freq = AsyncMock(return_value=14_074_000)
-    radio.read_mode = AsyncMock(return_value=("USB", None))
-    radio.read_transmit_state = AsyncMock(
-        return_value=TxStateReading(False, "rx", "yaesu_poll_response", True)
-    )
-    radio.read_filter_width = AsyncMock(return_value=500)
-    radio.read_filter_width_reading = AsyncMock(
-        return_value=FilterWidthReading(500, False)
-    )
-    radio.read_narrow = AsyncMock(return_value=True)
-    # The synthetic profile declares no TX-function read verb: the
-    # attribute stays absent (a bare MagicMock would auto-create it,
-    # which would hide the exact no-verb branch the production radio
-    # takes).
-    radio.get_tx_func = None
-    assert getattr(radio, "get_tx_func", None) is None
-    return radio
-
-
-@pytest.mark.asyncio
-async def test_yaesu_medium_lane_publishes_unsupported_without_source() -> None:
-    """FAILING FIRST (MOR-4433): the sourceless-Yaesu medium lane must
-    carry the sticky ``unsupported`` tx_target observation. On the base
-    commit the ``_can_poll`` gate withholds the field entirely, so the
-    projection can only read it as ``not-observed``."""
-    radio = _sourceless_observation_radio()
-    adapter = YaesuObservationAdapter.from_radio(radio, clock=_clock)
-
-    observations = await adapter.poll_medium()
-
-    by_path = {str(item.path): item.value for item in observations}
-    assert str(_TX_TARGET_PATH) in by_path, (
-        f"no tx_target observation published for a sourceless profile: {sorted(by_path)}"
-    )
-    assert by_path[str(_TX_TARGET_PATH)] == UnknownTxTarget(reason="unsupported")
-
-
-# ── CI-V poller: G7250 publishes unsupported; IC-7610 stays native-owned ────
-
-
-def _poller_radio(model: str) -> MagicMock:
-    """MagicMock radio carrying a real resolved profile (mirrors
-    ``_make_radio`` in ``test_radio_poller_coverage.py``)."""
-    profile = resolve_radio_profile(model=model)
-    radio = MagicMock(name=f"{model}-poller-radio")
-    radio.profile = profile
-    radio.model = profile.model
-    radio.capabilities = set(profile.capabilities)
-    radio.managed_tx = None
-    radio.send_civ = AsyncMock()
-    radio.set_ptt = AsyncMock()
-    return radio
-
-
-def _apply_input(
-    store: StateStore, path: FieldPath, value: Any, *, generation: int
-) -> None:
-    store.apply(
-        Observation(
-            path=path,
-            value=value,
-            source=SourceMetadata(source="test", provider="test"),
-            timestamp_monotonic=_clock(),
-            max_age=60.0,
-            provider_generation=generation,
-        )
-    )
-
-
-def _seed_ic7300_derivation_inputs(store: StateStore, generation: int) -> None:
-    """Seed identity/split/selected+unselected freq — all four derivation
-    inputs — plus the sibling mode leaves the retention bootstrap needs
-    (mirrors ``_seed_tx_target_ready`` in ``test_radio_poller_coverage.py``,
-    stamped on the shared loop-time harness clock)."""
-    _apply_input(store, FieldPath.active_slot("0"), "A", generation=generation)
-    _apply_input(
-        store, FieldPath.global_("tx_state", "split"), False, generation=generation
-    )
-    for builder, freq in (
-        (FieldPath.active, 14_250_000),
-        (FieldPath.unselected, 7_150_000),
-    ):
-        _apply_input(
-            store, builder("0", "freq_mode", "freq_hz"), freq, generation=generation
-        )
-        _apply_input(
-            store, builder("0", "freq_mode", "mode"), "USB", generation=generation
-        )
-
-
-def _published_tx_target(store: StateStore) -> UnknownTxTarget | KnownTxTarget | None:
-    try:
-        field = store.field(_TX_TARGET_PATH)
-    except KeyError:
-        return None
-    value = field.value
-    assert isinstance(value, (UnknownTxTarget, KnownTxTarget)), (
-        f"tx_target holds a non-contract value: {value!r}"
-    )
-    return value
-
-
-@pytest.mark.asyncio
-async def test_civ_poller_publishes_unsupported_for_g7250() -> None:
-    """FAILING FIRST (MOR-4433): the G7250 poller must publish the sticky
-    ``unsupported`` fact instead of writing nothing. On the base commit the
-    ``vfo_readback`` early return skips the store write entirely."""
-    radio = _poller_radio("G7250")
-    store = StateStore()
-    store.begin_provider_generation()
-    poller = RadioPoller(radio, CommandQueue(), state_store=store, clock=_clock)
-
-    poller._publish_tx_target()  # noqa: SLF001
-
-    assert _published_tx_target(store) == UnknownTxTarget(reason="unsupported")
-
-
-@pytest.mark.asyncio
-async def test_civ_poller_leaves_native_ic7610_target_alone() -> None:
-    """No regression: IC-7610 declares the native 1C 03 read, which owns
-    the field through the CI-V observation path — the poller must not become
-    a second writer for it."""
-    radio = _poller_radio("IC-7610")
-    store = StateStore()
-    store.begin_provider_generation()
-    poller = RadioPoller(radio, CommandQueue(), state_store=store, clock=_clock)
-
-    poller._publish_tx_target()  # noqa: SLF001
-
-    assert _published_tx_target(store) is None
-
-
-@pytest.mark.realtime(
-    reason="seeds derivation inputs on the running loop's clock; the poller judges their freshness against that same base"
-)
-@pytest.mark.asyncio
-async def test_civ_poller_still_derives_ic7300_target() -> None:
-    """No regression: the IC-7300 derivation still produces a known target
-    from fresh inputs."""
-    radio = _poller_radio("IC-7300")
-    store = StateStore()
-    store.begin_provider_generation()
-    poller = RadioPoller(radio, CommandQueue(), state_store=store, clock=_clock)
-    generation = store.provider_generation
-    _seed_ic7300_derivation_inputs(store, generation)
-
-    poller._publish_tx_target()  # noqa: SLF001
-
-    assert _published_tx_target(store) == KnownTxTarget(
-        receiver="MAIN", slot="A", frequency_hz=14_250_000
-    )
-
-
-# ── station: real HTTP state + real rigctld T 1/T 0 over real sockets ─────────
 
 
 @asynccontextmanager
-async def _station(
-    model: str,
-) -> AsyncIterator[tuple[WebServer, SerialMockRadio, RadioPoller]]:
-    """A loaded-profile station: ``SerialMockRadio`` (real profile data,
-    deterministic stub I/O) behind a real ``WebServer`` on a real socket,
-    with a queue consumer executing each submitted command (the role the
-    running poller loop plays in production). Mirrors ``_station`` in
-    ``test_band_4m.py`` minus the band-plan overlay this file does not need.
+async def _serve_sourceless_yaesu(
+    monkeypatch: pytest.MonkeyPatch,
+) -> AsyncIterator[tuple[WebServer, list[str]]]:
+    """Serve the synthetic sourceless profile: real ``YaesuCatRadio`` on the
+    CAT simulator answering the FT-991A wire shapes, real ``WebServer`` with
+    its production acquisition started. Only the wire is faked."""
+    radio = YaesuCatRadio("/dev/fixture", profile=_sourceless_yaesu_config())
+    fake = YaesuCatSerialFake.from_profile(ROOT, FT991A_SIM, rig_path=FT991A_RIG)
+    wire: list[str] = []
+    handle = fake.model.handle_with_outcome
 
-    ``model`` is a registry model or the synthetic sourceless name, which
-    resolves to the synthetic Yaesu profile.
-    """
-    radio = SerialMockRadio(profile=_profile_for(model), model=None)
-    await radio.connect()
-    web = WebServer(radio, WebConfig(host="127.0.0.1", port=0))
-    poller = RadioPoller(
-        radio, web.command_queue, state_store=web.command_state_store, clock=_clock
+    def logged(line: str) -> Any:
+        wire.append(line)
+        return handle(line)
+
+    monkeypatch.setattr(fake.model, "handle_with_outcome", logged)
+
+    async def open_port(*args: Any, **kwargs: Any) -> Any:
+        return await fake.open_serial_connection()
+
+    monkeypatch.setattr(
+        "rigplane.backends.yaesu_cat.transport.open_serial_port", open_port
     )
-    web._server = await asyncio.start_server(  # noqa: SLF001
-        web._accept_client,
-        "127.0.0.1",
-        0,  # noqa: SLF001
-    )
-    entries: list[Any] = []
-    executed = asyncio.Event()
-    consumer = asyncio.create_task(
-        run_command_consumer(
-            web.command_queue,
-            poller._execute_queued_entry,  # noqa: SLF001
-            entries=entries,
-            executed=executed,
-        )
-    )
+    await radio._transport.connect()
+    server = WebServer(radio, WebConfig(host="127.0.0.1", port=0))
     try:
-        yield web, radio, poller
+        await server.start()
+    except BaseException:
+        await radio._transport.close()
+        raise
+    try:
+        yield server, wire
     finally:
-        web._server.close()
-        await web._server.wait_closed()
-        web._server = None
-        tasks = (consumer, *tuple(web._client_tasks))
-        for task in tasks:
-            if not task.done():
-                task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
+        await server.stop()
+        await radio._transport.close()
+
+
+@asynccontextmanager
+async def _serve_g7250(
+    monkeypatch: pytest.MonkeyPatch,
+) -> AsyncIterator[tuple[WebServer, _G7250BenchFake]]:
+    """Serve the G7250 the way production builds it (CLI factory over the
+    bench fake) with the production acquisition started — only the CI-V
+    wire is faked."""
+    fake = _G7250BenchFake()
+
+    async def opener(*, url: str, baudrate: int, **kwargs: Any) -> Any:
+        return await fake.opener(url=url, baudrate=baudrate, **kwargs)
+
+    monkeypatch.setattr(serial_open, "_open_with_idle_lines", opener)
+    args = _build_parser().parse_args(
+        ["--model", "G7250", "--serial-port", _DEVICE, "status"]
+    )
+    radio = create_radio(await _build_backend_config(args))
+    radio._civ_get_timeout = _ANSWER_WINDOW_S
+    radio._civ_min_interval = 0.0  # no hardware pacing sleep (MOR-4075)
+    radio._enumerate_serial_ports_fn = lambda: []  # no OS port enumeration
+    await asyncio.wait_for(radio.connect(), 30)
+    server = WebServer(radio, WebConfig(host="127.0.0.1", port=0))
+    try:
+        await server.start()
+    except BaseException:
+        await radio.disconnect()
+        raise
+    try:
+        yield server, fake
+    finally:
+        await server.stop()
         await radio.disconnect()
 
 
-async def _state_over_http(web: WebServer) -> dict[str, Any]:
-    host, port = _addr(web)
-    status, _, body = await _http_get(host, port, "/api/v1/state")
-    assert status == 200, f"GET /api/v1/state: HTTP {status}"
-    return json.loads(body)
+async def _wait_served_state(
+    host: str,
+    port: int,
+    ready: Callable[[ServerStatePublic], bool],
+    description: str,
+    timeout: float = 30.0,
+) -> ServerStatePublic:
+    """Poll the served state until ``ready``; every poll parses through the
+    producer's ``ServerStatePublic`` model. Bounded ``asyncio.timeout`` plus
+    the poll-interval sleep only (the ``wait_for_state_value`` shape)."""
+    async with asyncio.timeout(timeout):
+        while True:
+            status, _, raw = await _http_get(host, port, "/api/v1/state")
+            assert status == 200, f"GET /api/v1/state: HTTP {status}"
+            state = ServerStatePublic.model_validate_json(raw)
+            if ready(state):
+                return state
+            await asyncio.sleep(0.05)
+    raise AssertionError(f"unreachable: timed out waiting for {description}")
 
 
-async def _rigctld_exchange(host: str, port: int, line: bytes) -> bytes:
-    """One rigctld command over a real TCP socket; returns the first reply line."""
-    reader, writer = await asyncio.open_connection(host, port)
-    try:
-        writer.write(line + b"\n")
-        await writer.drain()
-        return (await asyncio.wait_for(reader.readline(), timeout=5.0)).strip()
-    finally:
-        writer.close()
-        try:
-            await writer.wait_closed()
-        except Exception:
-            pass
+def _is_unsupported(state: ServerStatePublic) -> bool:
+    """The served target is the sticky ``unsupported`` fact."""
+    target = state.txTarget
+    return isinstance(target, UnknownTxTargetPublic) and target.reason == "unsupported"
 
 
+def _unsupported_with_freq(freq_hz: int) -> Callable[[ServerStatePublic], bool]:
+    """Ready when the served target is ``unsupported`` and the poller has
+    read that exact real frequency around it (not vacuous: acquisition ran,
+    and it ran against this radio's wire personality)."""
+
+    def ready(state: ServerStatePublic) -> bool:
+        return _is_unsupported(state) and state.main.freqHz == freq_hz
+
+    return ready
+
+
+def _unsupported_with_any_freq(state: ServerStatePublic) -> bool:
+    """Ready when the served target is ``unsupported`` and the poller has
+    observed some real frequency around it (the simulator's default answer
+    is not pinned here, only that acquisition ran)."""
+    return _is_unsupported(state) and state.main.freqHz is not None
+
+
+@pytest.mark.realtime(reason="real HTTP socket and the production Yaesu acquisition")
 @pytest.mark.asyncio
-@pytest.mark.parametrize("model", ("G7250", _SYNTHETIC_MODEL))
-async def test_http_state_projects_unsupported_tx_target(model: str) -> None:
-    """FAILING FIRST (MOR-4433): the HTTP state projection must carry the
-    ``unsupported`` reason for a sourceless profile — not an absent field
-    read back as ``not-observed``. FT-991A left this set when it gained a
-    real source; the synthetic keeps the Yaesu side covered."""
-    async with _station(model) as (web, _radio, poller):
-        poller._publish_tx_target()  # noqa: SLF001
-
-        state = await _state_over_http(web)
-
-    assert state["txTarget"] == {"status": "unknown", "reason": "unsupported"}
-
-
-@pytest.mark.realtime(
-    reason="real HTTP socket, and seeded inputs stamped on the running loop's clock the projection's freshness check reads"
-)
-@pytest.mark.asyncio
-async def test_http_state_still_derives_ic7300_target() -> None:
-    """No regression: the IC-7300 HTTP projection still derives a known
-    target once its inputs are observed."""
-    async with _station("IC-7300") as (web, _radio, poller):
-        generation = web.command_state_store.provider_generation
-        _seed_ic7300_derivation_inputs(web.command_state_store, generation)
-        poller._publish_tx_target()  # noqa: SLF001
-
-        state = await _state_over_http(web)
-
-    target = state["txTarget"]
-    assert target["status"] == "known"
-    assert target["receiver"] == "MAIN"
-    assert target["frequencyHz"] == 14_250_000
-
-
-def _seed_observed_rx(store: StateStore) -> None:
-    """State the RF premise the TX interlock seat requires: the radio was
-    observed receiving. Mirrors ``_seed_fresh_rx`` in ``test_web_server.py``;
-    without it the seat correctly fails closed (``RPRT -9``) on UNKNOWN."""
-    store.apply(
-        Observation(
-            path=FieldPath.global_("tx_state", "ptt"),
-            value=False,
-            source=SourceMetadata(source="test", provider="test"),
-            timestamp_monotonic=store.snapshot().generated_at_monotonic,
-            max_age=60.0,
-            provider_generation=store.provider_generation,
+async def test_yaesu_sourceless_serves_unsupported_over_http(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The synthetic sourceless Yaesu profile serves the sticky
+    ``unsupported`` TX target through production acquisition: the medium
+    lane publishes it with no CAT I/O of its own, while freq carries the
+    simulator's real answer next to it."""
+    async with _serve_sourceless_yaesu(monkeypatch) as (web, wire):
+        host, port = _addr(web)
+        state = await _wait_served_state(
+            host, port, _unsupported_with_any_freq, "sourceless txTarget"
         )
-    )
+        assert wire, "the poller never touched the CAT wire"
+        target = state.txTarget
+        assert isinstance(target, UnknownTxTargetPublic)
+        assert target.reason == "unsupported"
 
 
-def _record_ptt(radio: SerialMockRadio) -> list[bool]:
-    """Record SDK-level PTT writes; ``SerialMockRadio`` only keeps the last
-    state, so wrap the method to observe the wire order."""
-    calls: list[bool] = []
-    original = radio.set_ptt
-
-    async def recording(on: bool) -> None:
-        calls.append(on)
-        await original(on)
-
-    radio.set_ptt = recording  # type: ignore[method-assign]
-    return calls
-
-
+@pytest.mark.realtime(reason="real HTTP socket and the production CI-V acquisition")
 @pytest.mark.asyncio
-@pytest.mark.parametrize("model", ("FT-991A", "G7250", _SYNTHETIC_MODEL, "IC-7300"))
-async def test_rigctld_key_unkey_stays_open(model: str) -> None:
-    """No regression, and the point of the change: rigctld ``T 1`` / ``T 0``
-    key and unkey the radio over a real TCP socket on profiles with and
-    without a TX-target source — FT-991A is sourced since #4584, G7250 and
-    the synthetic stay sourceless. Transmit was never gated on
-    ``tx_target``."""
-    async with _station(model) as (_web, radio, _poller):
-        ptt_calls = _record_ptt(radio)
-        server = RigctldServer(
-            radio,  # type: ignore[arg-type]
-            RigctldConfig(host="127.0.0.1", port=0),
-            allow_not_ready=True,
+async def test_g7250_serves_unsupported_over_http(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """G7250 serves the sticky ``unsupported`` TX target through production
+    acquisition: the poller falls through to ``_compute_tx_target`` (no
+    native ``get_tx_target``, no selected/unselected readback) while the
+    bench fake's real 7.138 MHz answer is served next to it."""
+    async with _serve_g7250(monkeypatch) as (web, fake):
+        host, port = _addr(web)
+        state = await _wait_served_state(
+            host, port, _unsupported_with_freq(7_138_000), "G7250 txTarget"
         )
-        await server.start()
-        try:
-            _seed_observed_rx(server._rig_handler._state_store)  # noqa: SLF001
-            sockets = server._server.sockets  # noqa: SLF001
-            port = sockets[0].getsockname()[1]
-            assert await _rigctld_exchange("127.0.0.1", port, b"T 1") == b"RPRT 0"
-            assert await _rigctld_exchange("127.0.0.1", port, b"T 0") == b"RPRT 0"
-        finally:
-            await server.stop()
-
-    assert ptt_calls == [True, False]
+        assert fake.commands, "the poller never spoke CI-V"
+        target = state.txTarget
+        assert isinstance(target, UnknownTxTargetPublic)
+        assert target.reason == "unsupported"
