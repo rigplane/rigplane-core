@@ -11,10 +11,12 @@ is a convenience, never the only record.
 from __future__ import annotations
 
 from rigplane.commands import command_carries_sub, parse_civ_frame
+from rigplane.core.civ import civ_response_matches, request_key_from_frame
+from rigplane.core.types import CivFrame
 
 __all__ = [
     "cat_reply_closes",
-    "civ_requested_command",
+    "civ_reply_matches_request",
     "classify_cat",
     "classify_civ",
 ]
@@ -65,23 +67,60 @@ def classify_cat(line: str, reply: str | None) -> str:
     return "malformed"
 
 
-def civ_requested_command(body: bytes) -> tuple[int, int | None]:
-    """The ``(command, sub)`` pair one CI-V probe body asks about."""
-    inner = body[2:] if body[:1] == bytes((_CMD29,)) and len(body) >= 3 else body
+def _request_frame_for_body(body: bytes) -> CivFrame:
+    """The outgoing frame one CI-V probe body (without addresses) describes."""
+    inner = body
+    receiver: int | None = None
+    if len(body) >= 3 and body[0] == _CMD29:
+        receiver = body[1]
+        inner = body[2:]
     command = inner[0]
     sub: int | None = None
+    data = bytes(inner[1:])
     if len(inner) > 1 and command_carries_sub(command):
         sub = inner[1]
-    return command, sub
+        data = bytes(inner[2:])
+    return CivFrame(
+        to_addr=0xE0,
+        from_addr=0xE0,
+        command=command,
+        sub=sub,
+        data=data,
+        receiver=receiver,
+    )
+
+
+def civ_reply_matches_request(body: bytes, reply: bytes) -> bool:
+    """Single-flight attribution for one CI-V read body and reply chunk.
+
+    The shared core predicate (:func:`civ_response_matches` over a key
+    built with :func:`request_key_from_frame`) plus the full selector
+    echo: the reply data must start with the request's own data bytes.
+    A delayed reply to another menu item, or a reply for the other
+    receiver, therefore never answers this read; a NAK/ACK answers any
+    read it follows. Both runner attribution and classification use this,
+    so there is exactly one CI-V matching implementation in the probe.
+    """
+    try:
+        frame = parse_civ_frame(reply)
+    except ValueError:
+        return False
+    if frame.command in (_NAK, _ACK):
+        return True
+    request = _request_frame_for_body(body)
+    return civ_response_matches(
+        request_key_from_frame(request), frame
+    ) and frame.data.startswith(request.data)
 
 
 def classify_civ(body: bytes, reply: bytes | None, *, kind: str = "get") -> str:
     """Classify one CI-V answer: data / refused / ack_only / silent / malformed.
 
-    A data reply must carry the requested ``(command, sub)`` pair after
-    unwrapping one leading ``0x29`` prefix; anything else parseable is a
-    reply to another command. ``kind="unknown"`` probes accept any
-    parseable non-refusal as data: the point is what the radio does.
+    A data reply must attribute to the request via
+    :func:`civ_reply_matches_request` (shared with runner attribution);
+    anything else parseable is a reply to another command.
+    ``kind="unknown"`` probes accept any parseable non-refusal as data:
+    the point is what the radio does.
     """
     if reply is None:
         return "silent"
@@ -93,6 +132,6 @@ def classify_civ(body: bytes, reply: bytes | None, *, kind: str = "get") -> str:
         return "refused"
     if frame.command == _ACK:
         return "ack_only"
-    if kind == "unknown" or (frame.command, frame.sub) == civ_requested_command(body):
+    if kind == "unknown" or civ_reply_matches_request(body, reply):
         return "data"
     return "malformed"

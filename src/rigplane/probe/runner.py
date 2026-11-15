@@ -25,7 +25,7 @@ from rigplane.profiles.rig_loader import RigConfig
 
 from rigplane.probe.classify import (
     cat_reply_closes,
-    civ_requested_command,
+    civ_reply_matches_request,
     classify_cat,
     classify_civ,
 )
@@ -150,14 +150,14 @@ def _garbled_cat(chunk: bytes) -> bool:
     return any(ord(char) < 0x20 or ord(char) > 0x7E for char in text)
 
 
-def _match_civ(body: bytes, chunk: bytes) -> bool:
-    try:
-        frame = parse_civ_frame(chunk)
-    except ValueError:
-        return False
-    if frame.command in (_NAK, _ACK):
+def _match_civ(item: ReadRequest, chunk: bytes) -> bool:
+    if item.kind == "unknown":
+        try:
+            parse_civ_frame(chunk)
+        except ValueError:
+            return False
         return True
-    return (frame.command, frame.sub) == civ_requested_command(body)
+    return civ_reply_matches_request(item.body, chunk)
 
 
 def _garbled_civ(chunk: bytes) -> bool:
@@ -168,10 +168,10 @@ def _garbled_civ(chunk: bytes) -> bool:
     return False
 
 
-def _attribute(protocol: str, body: bytes, chunk: bytes) -> bool:
+def _attribute(protocol: str, item: ReadRequest, chunk: bytes) -> bool:
     if protocol == "yaesu_cat":
-        return _match_cat(body, chunk)
-    return _match_civ(body, chunk)
+        return _match_cat(item.body, chunk)
+    return _match_civ(item, chunk)
 
 
 def _is_garbled(protocol: str, chunk: bytes) -> bool:
@@ -180,9 +180,9 @@ def _is_garbled(protocol: str, chunk: bytes) -> bool:
     return _garbled_civ(chunk)
 
 
-def _matcher(protocol: str, body: bytes) -> Callable[[bytes], bool]:
+def _matcher(protocol: str, item: ReadRequest) -> Callable[[bytes], bool]:
     def attribute(chunk: bytes) -> bool:
-        return _attribute(protocol, body, chunk)
+        return _attribute(protocol, item, chunk)
 
     return attribute
 
@@ -287,7 +287,7 @@ async def _read_identity(
             exchange,
             item.body,
             window,
-            attribute=_matcher(protocol, item.body),
+            attribute=_matcher(protocol, item),
             garbled=garbled,
         )
         if answer.broken is not None:
@@ -320,7 +320,7 @@ async def _read_snapshot(
             exchange,
             item.body,
             window,
-            attribute=_matcher(protocol, item.body),
+            attribute=_matcher(protocol, item),
             garbled=garbled,
         )
         if answer.broken is not None:
@@ -479,7 +479,7 @@ async def _ask_once(
         exchange,
         item.body,
         window,
-        attribute=_matcher(protocol, item.body),
+        attribute=_matcher(protocol, item),
         garbled=garbled,
     )
     for stray in answer.strays:
