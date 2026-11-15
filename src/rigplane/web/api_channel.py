@@ -68,6 +68,7 @@ proxying.
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
 import json
 import logging
@@ -102,8 +103,11 @@ __all__ = [
     "ApiWirePayload",
     "ApiWirePayloadField",
     "ApiWirePayloads",
+    "api_channel_golden_documents",
+    "api_channel_golden_json_text",
     "api_channel_wire_definition",
     "api_path_allowed",
+    "api_response_messages",
 ]
 
 logger = logging.getLogger(__name__)
@@ -906,18 +910,8 @@ class ApiChannelHandler:
         self, request_id: int, status: int, headers: dict[str, str], body: bytes
     ) -> None:
         """Stream RES_HEAD + <=16 KB RES_BODY chunks + END, with backpressure."""
-        await self._send_frame(
-            ApiMessageType.RES_HEAD,
-            request_id,
-            ApiResponseHead(status, headers).encode(),
-        )
-        for offset in range(0, len(body), RESPONSE_CHUNK_BYTES):
-            await self._send_frame(
-                ApiMessageType.RES_BODY,
-                request_id,
-                body[offset : offset + RESPONSE_CHUNK_BYTES],
-            )
-        await self._send_frame(ApiMessageType.END, request_id, b"")
+        for msg_type, payload in api_response_messages(status, headers, body):
+            await self._send_frame(msg_type, request_id, payload)
 
     async def _send_error(self, request_id: int, code: str, message: str) -> None:
         """Send one terminal ERROR, never raising (the channel may be dead).
@@ -980,3 +974,376 @@ class ApiChannelHandler:
                 await self._abort_unwritable("send buffer stayed full")
                 raise
         await self._conn.send_binary(_encode_frame(msg_type, request_id, payload))
+
+
+# ------------------------------------------------------------------
+# Golden documents: the concrete frames the browser must handle,
+# generated from the server's own encoders.
+# ------------------------------------------------------------------
+
+#: The named Python test that replays every committed golden document
+#: through the real handlers (named in the committed JSON's header).
+_API_GOLDEN_TESTED_BY: Final = "tests/test_api_channel_golden.py::test_golden_documents_replay_through_real_handlers"
+
+#: Where a live session key goes when replaying a committed attach frame.
+_GOLDEN_KEY_PLACEHOLDER: Final = "<SESSION-KEY>"
+
+
+def api_response_messages(
+    status: int, headers: dict[str, str], body: bytes
+) -> list[tuple[ApiMessageType, bytes]]:
+    """The messages one response becomes: RES_HEAD, <=16 KB RES_BODYs, END.
+
+    The one chunking definition: the handler streams exactly these
+    messages and the golden documents encode exactly these frames.
+    """
+    messages = [(ApiMessageType.RES_HEAD, ApiResponseHead(status, headers).encode())]
+    messages.extend(
+        (ApiMessageType.RES_BODY, bytes(body[off : off + RESPONSE_CHUNK_BYTES]))
+        for off in range(0, len(body), RESPONSE_CHUNK_BYTES)
+    )
+    messages.append((ApiMessageType.END, b""))
+    return messages
+
+
+def _golden_frame(msg_type: ApiMessageType, request_id: int, payload: bytes) -> dict:
+    """One wire frame as a committed golden entry: bytes plus meaning."""
+    frame = _encode_frame(int(msg_type), request_id, payload)
+    decoded: dict[str, Any] = {"type": msg_type.name, "request_id": request_id}
+    if payload:
+        try:
+            decoded["payload"] = json.loads(payload.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError, RecursionError):
+            decoded.update(
+                payload_bytes=len(payload),
+                payload_head_hex=payload[:8].hex(),
+                payload_tail_hex=payload[-8:].hex(),
+            )
+    if len(frame) <= 512:
+        return {"hex": frame.hex(), "decoded": decoded}
+    return {"b64": base64.b64encode(frame).decode("ascii"), "decoded": decoded}
+
+
+def _golden_attach_document(label: str) -> dict[str, Any]:
+    """The attach frame for one data-channel label (client -> server)."""
+    from .channel_attach import ClientChannelParams  # noqa: TID251
+
+    keyless = label == "api"
+    text = json.dumps(
+        {
+            "type": "attach",
+            "controller_key": None if keyless else _GOLDEN_KEY_PLACEHOLDER,
+            "state_delta": 2,
+            "role": "primary",
+        }
+    )
+    if not keyless:  # producer self-check: the documented frame parses
+        ClientChannelParams.from_attach_frame(
+            text.replace(_GOLDEN_KEY_PLACEHOLDER, "k" * 64).encode()
+        )
+    doc: dict[str, Any] = {
+        "direction": "client->server",
+        "summary": f'the "{label}" data-channel attach frame '
+        "(the first text frame on the channel)",
+        "text": text,
+        "decoded": json.loads(text),
+        "outcome": "answered by the attach ack; a resent frame "
+        "(the ack was lost) is re-acknowledged with the same ack",
+    }
+    if keyless:
+        doc["outcome"] = (
+            "no ack and no hello: the channel stays silent until its "
+            "first request (this is how a browser acquires its first key)"
+        )
+    else:
+        doc["template"] = (
+            "substitute a live controller_key from POST /api/v1/controller "
+            f"for {_GOLDEN_KEY_PLACEHOLDER} to replay"
+        )
+    return doc
+
+
+def _golden_ack_document(kind: str) -> dict[str, Any]:
+    """The attach ack for one lossy label (server -> client)."""
+    from .channel_attach import ChannelAttachedAck  # noqa: TID251
+
+    text = ChannelAttachedAck(kind).encode()
+    return {
+        "direction": "server->client",
+        "summary": f"the {kind} attach ack (the first text frame the server sends)",
+        "text": text,
+        "decoded": json.loads(text),
+        "outcome": "the client stops resending its attach; control and api "
+        "channels never send one",
+    }
+
+
+def _golden_error_document(
+    request_id: int,
+    code: str,
+    message: str,
+    summary: str,
+    trigger: str,
+) -> dict[str, Any]:
+    return {
+        "direction": "server->client",
+        "summary": summary,
+        "trigger": trigger,
+        "frames": [
+            _golden_frame(
+                ApiMessageType.ERROR,
+                request_id,
+                ApiErrorFrame(code, message).encode(),
+            )
+        ],
+    }
+
+
+async def api_channel_golden_documents() -> dict[str, Any]:
+    """Every concrete frame sequence the browser must handle.
+
+    Built from the server's own encoders (``ApiResponseHead``,
+    ``ApiErrorFrame``, ``ChannelAttachedAck``, ``api_response_messages``,
+    the real HTTP writer + response splitter for 200-class bodies); the
+    committed copy is ``frontend/src/lib/transport/api-channel-golden.json``,
+    replayed through the real handlers by the test named in
+    ``_tested_by``. Regenerate from the repo root:
+
+        uv run python -c "import asyncio; from rigplane.web.api_channel import api_channel_golden_documents as d, api_channel_golden_json_text as t; print(t(asyncio.run(d())), end='')" \\
+          > frontend/src/lib/transport/api-channel-golden.json
+    """
+    from .server import _send_response  # noqa: TID251
+
+    async def _route_response_frames(
+        body: bytes, request_id: int
+    ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        writer = _ChannelHttpWriter(("golden", 0))
+        await _send_response(
+            writer, 200, "OK", body, {"Content-Type": "application/json"}
+        )
+        status, headers, captured = _split_response(bytes(writer._buf))  # noqa: SLF001
+        assert captured == body
+        return {
+            "route": "GET /api/v1/band-plan/layers",
+            "response_body_b64": base64.b64encode(body).decode("ascii"),
+        }, [
+            _golden_frame(m, request_id, p)
+            for m, p in api_response_messages(status, headers, captured)
+        ]
+
+    def _request_head(
+        method: str,
+        path: str,
+        request_id: int,
+        headers: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        return _golden_frame(
+            ApiMessageType.REQ_HEAD,
+            request_id,
+            json.dumps(
+                {"method": method, "path": path, "query": {}, "headers": headers or {}}
+            ).encode(),
+        )
+
+    def _client_doc(
+        summary: str, frames: list[dict[str, Any]], outcome: str, **extra: Any
+    ) -> dict[str, Any]:
+        doc = {
+            "direction": "client->server",
+            "summary": summary,
+            "frames": frames,
+            "outcome": outcome,
+        }
+        doc.update(extra)
+        return doc
+
+    def _server_doc(
+        summary: str, frames: list[dict[str, Any]], outcome: str, **extra: Any
+    ) -> dict[str, Any]:
+        doc = {
+            "direction": "server->client",
+            "summary": summary,
+            "frames": frames,
+            "outcome": outcome,
+        }
+        doc.update(extra)
+        return doc
+
+    refusal_body = json.dumps(
+        {"error": "controller_tx_unsupported"}, separators=(",", ":")
+    ).encode()
+    refusal_frames = [
+        _golden_frame(m, 1, p)
+        for m, p in api_response_messages(
+            403, {"Content-Type": "application/json"}, refusal_body
+        )
+    ]
+    not_found_frames = [
+        _golden_frame(m, 2, p)
+        for m, p in api_response_messages(404, {}, b"404 Not Found")
+    ]
+    ok_body = b'{"golden": true}'
+    ok_fixture, ok_frames = await _route_response_frames(ok_body, 3)
+    chunked_body = b"A" * RESPONSE_CHUNK_BYTES + b"B"
+    chunked_fixture, chunked_frames = await _route_response_frames(chunked_body, 4)
+    civ_body = json.dumps({"command": 3, "expect": "data"}).encode()
+
+    documents: dict[str, Any] = {
+        "attach_control": _golden_attach_document("control"),
+        "attach_scope": _golden_attach_document("scope"),
+        "attach_audio": _golden_attach_document("audio"),
+        "attach_api": _golden_attach_document("api"),
+        "attach_ack_scope": _golden_ack_document("scope"),
+        "attach_ack_audio": _golden_ack_document("audio"),
+        "api_request_tx_refused": _client_doc(
+            "an api request with a body: POST /api/v1/civ/transaction, id 1",
+            [
+                _request_head(
+                    "POST",
+                    "/api/v1/civ/transaction",
+                    1,
+                    {"content-type": "application/json"},
+                ),
+                _golden_frame(ApiMessageType.REQ_BODY, 1, civ_body),
+                _golden_frame(ApiMessageType.END, 1, b""),
+            ],
+            "one REQ_HEAD, body chunks (<= 16 KB each), then END; the body "
+            "is transmit-capable, so the answer is api_response_tx_refused",
+        ),
+        "api_response_tx_refused": _server_doc(
+            "the 403 for a transmit-capable body, id 1",
+            refusal_frames,
+            "the shared dispatch is never reached: RES_HEAD 403, one "
+            'RES_BODY {"error":"controller_tx_unsupported"}, END',
+        ),
+        "api_request_not_found": _client_doc(
+            "a request for an unknown path, id 2",
+            [
+                _request_head("GET", "/api/v1/nonexistent", 2),
+                _golden_frame(ApiMessageType.END, 2, b""),
+            ],
+            "the channel routes only /api/v1/* table entries; the answer "
+            "is api_response_not_found",
+        ),
+        "api_response_not_found": _server_doc(
+            "the 404 for an unknown path, id 2",
+            not_found_frames,
+            "RES_HEAD 404 with no headers, RES_BODY '404 Not Found', END",
+        ),
+        "api_request_ok": _client_doc(
+            "a plain GET, id 3",
+            [
+                _request_head("GET", "/api/v1/band-plan/layers", 3),
+                _golden_frame(ApiMessageType.END, 3, b""),
+            ],
+            "a request with no body is REQ_HEAD + END; the answer is api_response_ok",
+        ),
+        "api_response_ok": _server_doc(
+            "a normal 200 response, id 3",
+            ok_frames,
+            "RES_HEAD {status, headers}, one RES_BODY per <= 16 KB of body, then END",
+            **ok_fixture,
+        ),
+        "api_request_chunked": _client_doc(
+            "a request whose answer is chunked, id 4",
+            [
+                _request_head("GET", "/api/v1/band-plan/layers", 4),
+                _golden_frame(ApiMessageType.END, 4, b""),
+            ],
+            "the answer body exceeds response_chunk_bytes, so the RES_BODY "
+            "arrives as several messages: see api_response_chunked",
+        ),
+        "api_response_chunked": _server_doc(
+            "a chunked multi-message body (> 16 KB), id 4",
+            chunked_frames,
+            "RES_HEAD, then one RES_BODY per 16384-byte chunk (here 16384 "
+            "+ 1 bytes), then END; the body is the concatenation of the "
+            "chunks in order",
+            **chunked_fixture,
+        ),
+        "api_error_stale_id": _golden_error_document(
+            5,
+            _STALE_ID,
+            "request id reused",
+            "the ERROR for a reused request id, id 5",
+            "send the head of api_request_not_found with id 5 twice: the "
+            "first is served, the resend answers ERROR stale_id (a "
+            "rejected head never consumes its id, so it may be retried)",
+        ),
+        "api_error_timeout": _golden_error_document(
+            6,
+            _TIMEOUT,
+            "request timed out",
+            "the ERROR for a request past the deadline, id 6",
+            "a request whose reassembly or dispatch outlasts "
+            "request_deadline_s answers ERROR timeout and the channel "
+            "keeps serving",
+        ),
+        "api_error_too_large": _golden_error_document(
+            7,
+            _TOO_LARGE,
+            "request body too large",
+            "the ERROR for an oversized body, id 7",
+            "REQ_HEAD id 7 then REQ_BODY frames of 16384 'x' bytes each: "
+            "the frame that pushes the assembled body past "
+            "max_request_body_bytes answers ERROR too_large and never "
+            "dispatches",
+        ),
+        "api_error_busy": _golden_error_document(
+            40,
+            _BUSY,
+            "too many requests",
+            "the ERROR for the 33rd in-flight request, id 40",
+            "33 REQ_HEADs with no END: ids 8..39 are accepted (the 32 "
+            "in-flight slots); the 33rd head answers ERROR busy",
+        ),
+        "api_error_malformed": _golden_error_document(
+            0,
+            _MALFORMED,
+            "frame too short",
+            "the ERROR for a malformed frame, id 0",
+            "any binary frame shorter than the 7-byte header (the four "
+            "bytes 01 02 00 00) or a text frame answers ERROR malformed "
+            "on id 0 and the channel stays open",
+        ),
+        "api_cancel": _client_doc(
+            "CANCEL drops request 41 before it answers",
+            [
+                _request_head("GET", "/api/v1/info", 41),
+                _golden_frame(ApiMessageType.CANCEL, 41, b""),
+            ],
+            "the server drops request 41: no frame is ever sent for it, "
+            "and the channel keeps serving",
+        ),
+        "api_unknown_id_ignored": _client_doc(
+            "frames for an unknown request id are a no-op, id 9999",
+            [
+                _golden_frame(ApiMessageType.REQ_BODY, 9999, b"x"),
+                _golden_frame(ApiMessageType.END, 9999, b""),
+                _golden_frame(ApiMessageType.CANCEL, 9999, b""),
+            ],
+            "silently ignored: no ERROR, no answer; the channel keeps serving",
+        ),
+    }
+    return {
+        "version": 1,
+        "_tested_by": _API_GOLDEN_TESTED_BY,
+        "wire": "frontend/src/lib/transport/api-channel-wire.json",
+        "formats": {
+            "text_frames": "the exact UTF-8 text of a data-channel text frame",
+            "binary_frames": "hex of the whole wire frame (7-byte header + payload)",
+            "large_binary_frames": "base64 of the whole frame when longer than 512 bytes",
+            "decoded": "each frame carries its decoded meaning alongside",
+        },
+        "documents": documents,
+    }
+
+
+def api_channel_golden_json_text(documents: dict[str, Any]) -> str:
+    """The committed layout: one top-level key per line, values compact."""
+    lines = ["{"]
+    for index, (key, value) in enumerate(documents.items()):
+        comma = "," if index < len(documents) - 1 else ""
+        lines.append(f"  {json.dumps(key)}: {json.dumps(value)}{comma}")
+    lines.append("}")
+    return "\n".join(lines) + "\n"
