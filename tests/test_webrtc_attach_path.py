@@ -1136,9 +1136,7 @@ async def test_data_channel_attach_ack_on_each_label(tmp_path: Path) -> None:
 
     pc = RTCPeerConnection()
     labels = ("control", "scope", "audio", "api")
-    channels = {
-        label: pc.createDataChannel(label, ordered=True) for label in labels
-    }
+    channels = {label: pc.createDataChannel(label, ordered=True) for label in labels}
     received: dict[str, list[Any]] = {label: [] for label in labels}
     for label, channel in channels.items():
 
@@ -1149,9 +1147,7 @@ async def test_data_channel_attach_ack_on_each_label(tmp_path: Path) -> None:
     offer = await pc.createOffer()
     await pc.setLocalDescription(offer)
     manager = stack.web._webrtc_session_manager()  # noqa: SLF001
-    answer = await manager.negotiate(
-        pc.localDescription.sdp, pc.localDescription.type
-    )
+    answer = await manager.negotiate(pc.localDescription.sdp, pc.localDescription.type)
     await pc.setRemoteDescription(
         RTCSessionDescription(sdp=answer["sdp"], type=answer["type"])
     )
@@ -1192,7 +1188,9 @@ async def test_data_channel_attach_ack_on_each_label(tmp_path: Path) -> None:
             _attach(label, key if label != "api" else None)
         for label in ("scope", "audio", "api"):
             ack = await await_until(
-                lambda l=label: _first(l), timeout=10.0, description=f"{l} ack"
+                lambda bound=label: _first(bound),
+                timeout=10.0,
+                description=f"{label} ack",
             )
             assert ack == {"type": "attached", "v": 1, "channel": label}
     finally:
@@ -1224,9 +1222,7 @@ async def test_websocket_clients_receive_no_attach_ack(tmp_path: Path) -> None:
     """The ack is data-channel only: the first WS control frame is hello."""
     stack = await _stand_up_stack(tmp_path)
     try:
-        reader, writer, _ = await _ws_connect(
-            "127.0.0.1", stack.web.port, "/api/v1/ws"
-        )
+        reader, writer, _ = await _ws_connect("127.0.0.1", stack.web.port, "/api/v1/ws")
         try:
             opcode, payload = await _ws_recv_frame(reader, timeout=10.0)
             assert opcode == 0x1

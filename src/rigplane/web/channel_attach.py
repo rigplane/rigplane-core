@@ -13,15 +13,50 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import Literal, Self
+from typing import Final, Literal, Self
 
 from ..runtime.controller_authority import ControllerError
 
-__all__ = ["ChannelKind", "ClientChannelParams", "TransportKind"]
+__all__ = [
+    "ATTACH_ACK_VERSION",
+    "ChannelAttachedAck",
+    "ChannelKind",
+    "ClientChannelParams",
+    "TransportKind",
+]
 
 #: Client channel kinds. ``rigctl`` exists only on the WebSocket lane;
 #: data channels carry ``control`` / ``scope`` / ``audio`` / ``api`` labels.
 ChannelKind = Literal["control", "scope", "audio", "api", "rigctl"]
+
+#: Version of the attach acknowledgement frame (a versioned wire change).
+ATTACH_ACK_VERSION: Final = 1
+
+
+@dataclass(frozen=True, slots=True)
+class ChannelAttachedAck:
+    """The data-channel attach acknowledgement: one text frame.
+
+    ``{"type": "attached", "v": 1, "channel": "<label>"}``, sent once
+    after a data-channel attach succeeds and before the channel's first
+    handler byte, so a client on a lossy channel (scope/audio) can stop
+    resending its attach frame on arrival. A client that ignores it
+    keeps working; the WebSocket lane never sends one.
+    """
+
+    channel: str
+    version: int = ATTACH_ACK_VERSION
+
+    def encode(self) -> str:
+        """Encode as the attach acknowledgement text frame."""
+        return json.dumps(
+            {
+                "type": "attached",
+                "v": self.version,
+                "channel": self.channel,
+            }
+        )
+
 
 #: Per-transport tag carried explicitly from the adapter into the shared
 #: attach path. The shared serve never branches on the connection's
