@@ -172,13 +172,17 @@ async def test_observation_poller_drains_web_commands_before_readback() -> None:
 
             assert all(future.done() and not future.cancelled() for future in futures)
             assert all(future.result() is None for future in futures)
+            # MOR-4456: the medium lane publishes the answered
+            # freq/mode/control reads before the PTT read (a PTT timeout
+            # fences the generation and discards anything unpublished),
+            # so observed_ptt follows the reads it once preceded.
             assert [str(item.path) for item in observations] == [
-                "global.tx_state.observed_ptt",
                 "receiver.main.active.freq_mode.freq_hz",
                 "receiver.main.active.freq_mode.mode",
                 "receiver.main.active.freq_mode.filter_width",
                 "receiver.main.operator_controls.rf_gain",
                 "receiver.main.operator_controls.af_level",
+                "global.tx_state.observed_ptt",
                 "global.tx_state.ptt",
                 "receiver.main.vfo.active_slot",
                 "receiver.main.operator_controls.preamp",
@@ -193,12 +197,12 @@ async def test_observation_poller_drains_web_commands_before_readback() -> None:
                 "receiver.main.operator_toggles.nr",
             ]
             assert [item.value for item in observations] == [
-                ObservedPtt.ON,
                 7_050_000,
                 "LSB",
                 1800,
                 pytest.approx(200 / 255),
                 pytest.approx(51 / 255),
+                ObservedPtt.ON,
                 True,
                 "A",
                 2,
@@ -231,6 +235,10 @@ async def test_refused_ptt_cycle_completes_with_write_reconciled() -> None:
         await radio.connect()
         try:
             server.behavior.unsupported_commands.add("t")
+            radio._acquisition_scheduler = AcquisitionScheduler(  # noqa: SLF001
+                profile=build_external_rigctld_acquisition_profile(vfo_supported=True),
+                clock=FreshnessClock(start=0.0),
+            )
             queue = CommandQueue()
             loop = asyncio.get_running_loop()
             future: asyncio.Future[None] = loop.create_future()
@@ -260,6 +268,13 @@ async def test_refused_ptt_cycle_completes_with_write_reconciled() -> None:
             assert [
                 item.value for item in observations if str(item.path).endswith("preamp")
             ] == [2]
+            # MOR-4456: each refused ``t`` files its non-critical outcome
+            # with the real wire command for the startup gate.
+            ptt = FieldPath.global_("tx_state", "ptt")
+            scheduler = radio._acquisition_scheduler  # noqa: SLF001
+            assert scheduler.consecutive_refusals(ptt) == 3
+            assert scheduler.startup_read_command(ptt) == "t"
+            assert scheduler.startup_defect is None
         finally:
             await radio.disconnect()
 
@@ -889,23 +904,27 @@ async def test_radio_observation_poller_emits_adapter_covered_reads() -> None:
 
             await poller._poll_medium()  # noqa: SLF001
 
+            # MOR-4456: the medium lane publishes the answered
+            # freq/mode/control reads before the PTT read (a PTT timeout
+            # fences the generation and discards anything unpublished),
+            # so observed_ptt follows the reads it once preceded.
             assert [str(item.path) for item in observations] == [
-                "global.tx_state.observed_ptt",
                 "receiver.main.active.freq_mode.freq_hz",
                 "receiver.main.active.freq_mode.mode",
                 "receiver.main.active.freq_mode.filter_width",
                 "receiver.main.operator_controls.rf_gain",
                 "receiver.main.operator_controls.af_level",
+                "global.tx_state.observed_ptt",
                 "global.tx_state.ptt",
                 "receiver.main.vfo.active_slot",
             ]
             assert [item.value for item in observations] == [
-                ObservedPtt.OFF,
                 14_074_000,
                 "USB",
                 2400,
                 pytest.approx(128 / 255),
                 pytest.approx(76 / 255),
+                ObservedPtt.OFF,
                 False,
                 "A",
             ]

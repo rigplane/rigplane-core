@@ -307,7 +307,7 @@ _PACING_GAP = 0.125  # exact in binary, so the asserted instants are exact
 
 
 def _critical_wait_profile(path_name: str = "ptt") -> RadioAcquisitionProfile:
-    """One cadence-owned, safety-critical path: ``global.tx_state.<name>``."""
+    """One cadence-owned ``global.tx_state.<name>`` path (MOR-4456: demoted)."""
 
     path = FieldPath.global_("tx_state", path_name)
     return RadioAcquisitionProfile(
@@ -315,6 +315,18 @@ def _critical_wait_profile(path_name: str = "ptt") -> RadioAcquisitionProfile:
         capabilities=(FieldCapability(path=path, polling=True),),
         field_policies={
             path: AcquisitionPolicy(cadence_seconds=1.0, freshness_ttl_seconds=15.0),
+        },
+    )
+
+
+def _critical_freq_profile() -> RadioAcquisitionProfile:
+    """One cadence-owned, still-critical path: the live tuning frequency."""
+
+    return RadioAcquisitionProfile(
+        provider="test_provider",
+        capabilities=(FieldCapability(path=FREQ, polling=True),),
+        field_policies={
+            FREQ: AcquisitionPolicy(cadence_seconds=1.0, freshness_ttl_seconds=15.0),
         },
     )
 
@@ -377,11 +389,12 @@ async def test_outstanding_paths_are_logged_then_warned_when_nothing_arrives(
     """The wait-log cadence itself, on a critical path (MOR-2749).
 
     A non-critical path no longer waits past the 10 s deadline, so the
-    5 s / 60 s log cadence is pinned on ``global.tx_state.ptt`` — a
-    safety-critical path the sweep-less gate still waits on indefinitely.
+    5 s / 60 s log cadence is pinned on the live tuning frequency — a
+    safety-critical path the sweep-less gate still waits on indefinitely
+    (MOR-4456 demoted PTT/split, so they no longer pin this cadence).
     """
     clock = _GateClock(stop_at=65.0 + _PACING_GAP)
-    scheduler = AcquisitionScheduler(profile=_critical_wait_profile())
+    scheduler = AcquisitionScheduler(profile=_critical_freq_profile())
     server = _pacing_server(scheduler)
     (outstanding,) = scheduler.unobserved_startup_paths(())
 
@@ -1113,15 +1126,16 @@ def _real_rigctld_radio(fake: _TcpRigctldServer) -> "RigctldClientRadio":  # noq
 
 
 @pytest.mark.asyncio
-async def test_rigctld_unanswered_ptt_ends_startup_after_exactly_three_reads() -> None:
-    """MOR-2757 (a): a rigctld that never answers ``t`` ends startup after 3 reads.
+async def test_rigctld_unanswered_ptt_releases_the_gate_with_a_warning(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """MOR-4456: a rigctld that never answers ``t`` still opens the listener.
 
-    The ``t`` read is the PTT path's own read, through the real transport
-    against a real TCP server. A read timeout closes the connection, so
-    the poller must reconnect before the next cycle: exactly three real
-    requests for ``t`` reach rigctld — each on its own connection — and
-    the third records the declared-command defect that refuses the bind,
-    naming the field and the command.
+    PTT left the startup-critical set: the silent ``t`` read keeps its
+    existing timeout behaviour (each timeout closes the connection and the
+    poller reconnects for the next cycle — no beta1 demote) and the
+    listener binds once the non-critical deadline passes, with one WARNING
+    naming the field, the real wire command and the recorded cause.
     """
     fake = _TcpRigctldServer(silent="t")
     await fake.start()
@@ -1136,30 +1150,36 @@ async def test_rigctld_unanswered_ptt_ends_startup_after_exactly_three_reads() -
         return _FakeAsyncServer()
 
     try:
-        with patch("rigplane.web.web_startup.asyncio.start_server", new=_bind):
-            with pytest.raises(RuntimeError) as caught:
-                await asyncio.wait_for(server.start(), timeout=15.0)
-            await server.stop()
+        with (
+            patch("rigplane.web.web_startup.asyncio.start_server", new=_bind),
+            caplog.at_level(logging.WARNING, logger="rigplane.web.web_startup"),
+        ):
+            await asyncio.wait_for(server.start(), timeout=60.0)
+        assert binds == ["bind"]
+        assert scheduler.startup_defect is None
+        # Not vacuous: ``t`` was asked repeatedly — every timeout still
+        # reconnects, so several silent asks reached it, each on its own
+        # connection.
+        assert fake.t_requests >= 3
+        assert len(fake.t_connection_ids) >= 3
+        ptt = FieldPath.global_("tx_state", "ptt")
+        assert scheduler.consecutive_request_timeouts(ptt) > 0
+        assert scheduler.startup_read_command(ptt) == "t"
+        warnings = [
+            record.getMessage()
+            for record in caplog.records
+            if record.levelno == logging.WARNING
+            and record.name == "rigplane.web.web_startup"
+            and "global.tx_state.ptt" in record.getMessage()
+        ]
+        assert len(warnings) == 1, [record.getMessage() for record in caplog.records]
+        # The lane files its non-critical outcome into the scheduler: the
+        # real ``t`` command and the recorded timeout cause.
+        assert "global.tx_state.ptt: t; timed out" in warnings[0], warnings[0]
+        await server.stop()
     finally:
         await radio.disconnect()
         await fake.stop()
-
-    assert binds == []
-    message = str(caught.value)
-    assert message.startswith("web startup aborted: ")
-    assert message.endswith("Refusing to start a half-working server.")
-    assert "global.tx_state.ptt" in message
-    assert "command 't'" in message
-    assert scheduler.startup_defect is not None
-    assert scheduler.startup_defect.command == "t"
-    # Exactly three real requests for ``t`` reached the server — no more:
-    # the limit is pinned, not merely reached. Connection drops in between
-    # (a timeout closes the connection) never count as unanswered reads.
-    assert fake.t_requests == 3
-    # Each ``t`` arrived on its own connection: the poller reconnected the
-    # transport between attempts, so three counts mean three asks of the
-    # radio (MOR-2757 review, reconnect pin).
-    assert len(fake.t_connection_ids) == 3
 
 
 @pytest.mark.asyncio
@@ -1202,21 +1222,18 @@ async def test_rigctld_gate_is_unchanged_when_the_server_answers_everything() ->
 
 
 @pytest.mark.asyncio
-async def test_rigctld_refused_ptt_keeps_the_gate_waiting_without_a_tally() -> None:
-    """MOR-4456 STOP-cell: a refused `t` records no gate failure tally.
+async def test_rigctld_refused_ptt_opens_with_tx_unknown(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """MOR-4456: a refused ``t`` is an answer, not a wedge (closes the STOP-cell).
 
     The fake refuses `t` with ``RPRT 1`` while answering everything else.
-    The UNCHANGED gate neither binds nor aborts: PTT stays outstanding
-    with no defect, no refusal count and no timeout count — the gate has
-    no failure tally for a refused direct read. The refused cycles keep
-    running (several `t` refusals reach the fake) on the still-open
-    connection. This holds identically with containment (cycles complete)
-    and on main (cycles raised): the gate's view is unchanged. The abort
-    half of this cell needs the beta typed startup notes — do not hack
-    the gate here.
+    PTT left the startup-critical set, so the filed refusal drops PTT from
+    the outstanding set at once: the gate releases (no deadline wait, no
+    abort) with one WARNING naming the field, the real ``t`` command and
+    the refusal cause. The refused cycles keep running on the still-open
+    connection — a refusal never closes the transport.
     """
-    from rigplane.core.state_pipeline_contracts import FieldPath
-
     PTT = FieldPath.global_("tx_state", "ptt")
     fake = _TcpRigctldServer(refuse="t")
     await fake.start()
@@ -1231,22 +1248,37 @@ async def test_rigctld_refused_ptt_keeps_the_gate_waiting_without_a_tally() -> N
         return _FakeAsyncServer()
 
     try:
-        with patch("rigplane.web.web_startup.asyncio.start_server", new=_bind):
-            with pytest.raises(TimeoutError):
-                await asyncio.wait_for(server.start(), timeout=10.0)
-            await server.stop()
+        with (
+            patch("rigplane.web.web_startup.asyncio.start_server", new=_bind),
+            caplog.at_level(logging.WARNING, logger="rigplane.web.web_startup"),
+        ):
+            await asyncio.wait_for(server.start(), timeout=30.0)
+        assert binds == ["bind"]
+        # Not vacuous: the refused `t` was asked on the still-open connection.
+        assert fake.refused_requests >= 1
+        assert fake.connections == 1
+        assert scheduler.startup_defect is None
+        assert scheduler.consecutive_refusals(PTT) >= 1
+        assert scheduler.consecutive_request_timeouts(PTT) == 0
+        assert scheduler.startup_read_command(PTT) == "t"
+        assert PTT not in scheduler.unobserved_startup_paths(
+            _observed_paths(server, scheduler)
+        )
+        warnings = [
+            record.getMessage()
+            for record in caplog.records
+            if record.levelno == logging.WARNING
+            and record.name == "rigplane.web.web_startup"
+            and "global.tx_state.ptt" in record.getMessage()
+        ]
+        assert len(warnings) == 1, [record.getMessage() for record in caplog.records]
+        # The lane files the refused outcome into the scheduler: the real
+        # ``t`` command and the recorded refusal cause.
+        assert "global.tx_state.ptt: t; refused" in warnings[0], warnings[0]
+        await server.stop()
     finally:
         await radio.disconnect()
         await fake.stop()
-
-    assert binds == []
-    # Not vacuous: the refused `t` was asked repeatedly on one connection.
-    assert fake.refused_requests >= 3
-    assert fake.connections == 1
-    assert scheduler.startup_defect is None
-    assert scheduler.consecutive_refusals(PTT) == 0
-    assert scheduler.consecutive_request_timeouts(PTT) == 0
-    assert PTT in scheduler.unobserved_startup_paths(_observed_paths(server, scheduler))
 
 
 @pytest.mark.asyncio
@@ -1371,18 +1403,12 @@ async def test_rigctld_operator_disconnect_is_not_undone_by_the_poller() -> None
 
 
 def _yaesu_critical_profile() -> RadioAcquisitionProfile:
-    """The startup paths a fake FTX-1 answers (four critical).
-
-    Split joined the critical set for MOR-4456: the double answers it by
-    default, so the two pre-existing tests using this profile are
-    unaffected.
-    """
+    """The four startup paths a fake FTX-1 answers (two critical)."""
 
     from rigplane.backends.yaesu_cat.observations import (
         _MAIN_FREQ,
         _MAIN_MODE,
         _PTT,
-        _SPLIT,
         _TX_TARGET,
     )
 
@@ -1393,22 +1419,20 @@ def _yaesu_critical_profile() -> RadioAcquisitionProfile:
             FieldCapability(path=_MAIN_MODE, polling=True),
             FieldCapability(path=_PTT, polling=True),
             FieldCapability(path=_TX_TARGET, polling=True),
-            FieldCapability(path=_SPLIT, polling=True),
         ),
         field_policies={
             path: AcquisitionPolicy(cadence_seconds=1.0, freshness_ttl_seconds=15.0)
-            for path in (_MAIN_FREQ, _MAIN_MODE, _PTT, _TX_TARGET, _SPLIT)
+            for path in (_MAIN_FREQ, _MAIN_MODE, _PTT, _TX_TARGET)
         },
     )
 
 
 class _YaesuCriticalPoller:
-    """Drives the real Yaesu adapter's medium and TX-control lanes.
+    """Drives the real Yaesu adapter's medium lane, like ``YaesuCatPoller``.
 
-    One cycle reads every critical field (split lives in the TX-control
-    lane, like ``YaesuCatPoller._poll_slow`` drives it); a cycle-level
-    failure (a transport timeout re-raised by the adapter) is retried on
-    the next interval — what ``YaesuCatPoller._run_poll_cycle`` does with it.
+    One cycle reads every critical field; a cycle-level failure (a
+    transport timeout re-raised by the adapter) is retried on the next
+    interval — what ``YaesuCatPoller._run_poll_cycle`` does with it.
     """
 
     def __init__(
@@ -1430,7 +1454,6 @@ class _YaesuCriticalPoller:
             )
             try:
                 observations = await adapter.poll_medium()
-                observations += await adapter.poll_tx_controls()
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -1465,7 +1488,7 @@ class _Ftx1CriticalRadio:
     # Unresolvable model: WebServer must keep the scheduler this fake
     # attaches, not bootstrap its own.
     model = "FAKE-FTX1"
-    capabilities = {"tx", "split"}
+    capabilities = {"tx"}
     connected = control_connected = radio_ready = True
 
     def __init__(
@@ -1507,38 +1530,18 @@ class _Ftx1CriticalRadio:
         return "USB", None
 
     async def read_transmit_state(self) -> object:
-        from rigplane.backends.yaesu_cat.transport import CatCommandRejected
         from rigplane.core.tx_observation import TxStateReading
 
         if self._never_answers == "ptt":
             # What the transport reports when the PTT read stays silent:
             # the adapter builds its own ``CatTimeoutError`` from this tag.
             return TxStateReading(value=None, failure="timeout")
-        if self._never_answers == "ptt-refused":
-            # MOR-4456: the token read itself refuses the command.
-            raise CatCommandRejected("?;", command="TX;")
         return TxStateReading(
             value=False,
             verified_readback=True,
             source="yaesu_poll_response",
             attributed="rx",
         )
-
-    async def read_split(self) -> bool:
-        from rigplane.backends.yaesu_cat.transport import (
-            CatCommandRejected,
-            CatTimeoutError,
-        )
-
-        if self._never_answers == "split-timeout":
-            # MOR-4456: what the transport raises when ``ST;`` stays silent.
-            raise CatTimeoutError(
-                "Read timeout (0.1s) waiting for ';' terminator", command="ST;"
-            )
-        if self._never_answers == "split-refused":
-            # MOR-4456: the radio answers the split read with ``?;``.
-            raise CatCommandRejected("?;", command="ST;")
-        return False
 
     async def get_tx_func(self) -> int:
         from rigplane.backends.yaesu_cat.transport import CatTimeoutError
@@ -1726,14 +1729,14 @@ async def test_yaesu_silent_tx_func_still_opens_with_tx_target_unknown() -> None
 
 
 @pytest.mark.asyncio
-async def test_yaesu_unanswered_ptt_read_still_fails_startup() -> None:
-    """MOR-4433 control: PTT silence still ends startup on the Yaesu path.
+async def test_yaesu_unanswered_ptt_read_opens_with_tx_unknown(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """MOR-4456: PTT silence no longer ends startup on the Yaesu path.
 
-    ``ptt`` stays safety-critical: three medium cycles with no PTT answer
-    reach the owner's attempt limit (MOR-2749, 2026-09-27), and the
-    declared-command defect the adapter records refuses the bind — naming
-    the field. The TX-target read answers here, so only the PTT silence
-    can be the cause.
+    ``ptt`` left the safety-critical set: cycles with no PTT answer record
+    no defect and the listener binds with one WARNING naming the field,
+    the real ``TX;`` wire command and the recorded timeout cause.
     """
     radio = _Ftx1CriticalRadio(never_answers="ptt")
     server = WebServer(radio, _gated_config())
@@ -1744,62 +1747,34 @@ async def test_yaesu_unanswered_ptt_read_still_fails_startup() -> None:
         binds.append("bind")
         return _FakeAsyncServer()
 
-    with patch("rigplane.web.web_startup.asyncio.start_server", new=_bind):
-        with pytest.raises(RuntimeError) as caught:
-            await asyncio.wait_for(server.start(), timeout=10.0)
+    with (
+        patch("rigplane.web.web_startup.asyncio.start_server", new=_bind),
+        caplog.at_level(logging.WARNING, logger="rigplane.web.web_startup"),
+    ):
+        await asyncio.wait_for(server.start(), timeout=60.0)
         await server.stop()
 
-    assert binds == []
-    message = str(caught.value)
-    assert message.startswith("web startup aborted: ")
-    assert message.endswith("Refusing to start a half-working server.")
-    assert "global.tx_state.ptt" in message
-    assert "global.tx_state.tx_target" not in message
-    assert scheduler.startup_defect is not None
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("never_answers", "failed_path", "healthy_path"),
-    [
-        ("ptt-refused", "global.tx_state.ptt", "global.tx_state.split"),
-        ("split-timeout", "global.tx_state.split", "global.tx_state.ptt"),
-        ("split-refused", "global.tx_state.split", "global.tx_state.ptt"),
-    ],
-)
-async def test_yaesu_contained_tx_state_failure_still_fails_startup(
-    never_answers: str, failed_path: str, healthy_path: str
-) -> None:
-    """MOR-4456: contained PTT/split failures still end startup on the Yaesu path.
-
-    The lane no longer raises for a refused PTT, a silent split, or a
-    refused split — but the defect/count accounting is kept, so the
-    UNCHANGED gate still refuses the bind naming the field. The TX-target
-    read answers here, so only the contained failure can be the cause.
-    """
-    radio = _Ftx1CriticalRadio(never_answers=never_answers)
-    server = WebServer(radio, _gated_config())
-    scheduler = radio._acquisition_scheduler
-    binds: list[str] = []
-
-    async def _bind(*_args: object, **_kwargs: object) -> _FakeAsyncServer:
-        binds.append("bind")
-        return _FakeAsyncServer()
-
-    with patch("rigplane.web.web_startup.asyncio.start_server", new=_bind):
-        with pytest.raises(RuntimeError) as caught:
-            await asyncio.wait_for(server.start(), timeout=10.0)
-        await server.stop()
-
-    assert binds == []
-    message = str(caught.value)
-    assert message.startswith("web startup aborted: ")
-    assert message.endswith("Refusing to start a half-working server.")
-    assert failed_path in message
-    assert healthy_path not in message
-    assert "global.tx_state.tx_target" not in message
-    assert scheduler.startup_defect is not None
-    assert [str(path) for path in scheduler.startup_defect.paths] == [failed_path]
+    assert binds == ["bind"]
+    assert scheduler.startup_defect is None
+    # Not vacuous: everything else answered — only PTT is still outstanding.
+    assert scheduler.unobserved_startup_paths(_observed_paths(server, scheduler)) == (
+        FieldPath.global_("tx_state", "ptt"),
+    )
+    warnings = [
+        record.getMessage()
+        for record in caplog.records
+        if record.levelno == logging.WARNING
+        and "global.tx_state.ptt" in record.getMessage()
+    ]
+    assert len(warnings) == 1, [record.getMessage() for record in caplog.records]
+    # The lane files its non-critical outcome into the scheduler: the real
+    # ``TX;`` command and the recorded timeout cause (the count itself is
+    # the fake clock's many medium cycles, so only the cause prefix is
+    # pinned here).
+    assert "global.tx_state.ptt: TX; timed out" in warnings[0], warnings[0]
+    ptt = FieldPath.global_("tx_state", "ptt")
+    assert scheduler.consecutive_request_timeouts(ptt) > 0
+    assert scheduler.startup_read_command(ptt) == "TX;"
 
 
 @pytest.mark.asyncio
@@ -2456,8 +2431,9 @@ async def test_never_answered_critical_path_fails_startup_after_three_attempts()
 ):
     """MOR-2749 (c): three failed attempts on a critical path end startup.
 
-    ``global.tx_state.ptt`` is cadence-owned and never answered: the initial
-    fetch plus two re-reads that time out for real (the MOR-2614
+    MOR-4456 demoted PTT/split, so the live tuning frequency stands in for
+    the still-critical abort: it is cadence-owned and never answered, the
+    initial fetch plus two re-reads that time out for real (the MOR-2614
     consecutive-timeout accounting) reach three attempts, and the gate
     fails through the declared-command defect record, naming the field and
     the CI-V command the radio never answered.
@@ -2465,20 +2441,19 @@ async def test_never_answered_critical_path_fails_startup_after_three_attempts()
 
     from rigplane.core.acquisition_scheduler import AcquisitionPriority
 
-    PTT = FieldPath.global_("tx_state", "ptt")
     radio = IcomRadio("192.168.1.100", model="IC-7300")
     server = WebServer(radio, _gated_config())
-    scheduler = AcquisitionScheduler(profile=_critical_wait_profile())
+    scheduler = AcquisitionScheduler(profile=_critical_freq_profile())
     radio._acquisition_scheduler = scheduler
     radio._INITIAL_STATE_GAP_LAN = radio._INITIAL_STATE_GAP_SERIAL = 0.05
-    assert scheduler.unobserved_startup_paths(()) == (PTT,)
+    assert scheduler.unobserved_startup_paths(()) == (FREQ,)
 
     def _re_read_without_answer(now: float) -> None:
         # What the drain does with a cadence group that never answers: it
         # re-reads on cadence, and each answer window that closes without a
         # reply is a real timeout (MOR-874's grace aside).
         scheduler.ensure_fresh(
-            (PTT,),
+            (FREQ,),
             max_age=1e-9,
             priority=AcquisitionPriority.BACKGROUND,
             reason="startup-gate",
@@ -2501,20 +2476,23 @@ async def test_never_answered_critical_path_fails_startup_after_three_attempts()
     message = str(caught.value)
     assert message.startswith("web startup aborted: ")
     assert message.endswith("Refusing to start a half-working server.")
-    assert "global.tx_state.ptt" in message
-    assert "1C 00" in message
+    assert str(FREQ) in message
+    assert "25 00" in message
     assert "still unanswered after 3 failed reads of its request group" in message
     assert scheduler.startup_defect is not None
+    assert [str(path) for path in scheduler.startup_defect.paths] == [str(FREQ)]
 
 
 @pytest.mark.asyncio
-async def test_never_answered_split_path_fails_startup_after_three_attempts() -> None:
-    """MOR-4433 control: ``split`` is still safety-critical.
+async def test_never_answered_split_path_releases_the_gate_with_a_warning(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """MOR-4456: ``split`` left the safety-critical set with PTT.
 
-    Same shape as the PTT case above with the split path alone: the
-    initial fetch plus two re-reads that time out for real reach three
-    attempts, and the gate fails through the declared-command defect
-    record, naming the field.
+    Same shape as the freq case above, with the split path alone:
+    timed-out re-reads release the gate with one WARNING naming the
+    field, the CI-V command, and the "timed out Nx" cause — no MOR-2749
+    defect.
     """
 
     from rigplane.core.acquisition_scheduler import AcquisitionPriority
@@ -2546,18 +2524,30 @@ async def test_never_answered_split_path_fails_startup_after_three_attempts() ->
                 link_healthy=False,
             )
 
-    clock = _GateClock(stop_at=6.0)
+    clock = _GateClock(stop_at=12.0)
     clock.on_tick = _re_read_without_answer
-    with _fake_gate_clock(clock):
-        with pytest.raises(RuntimeError) as caught:
-            await _await_initial_state_acquisition(server, sweep=True)
+    with (
+        caplog.at_level(logging.WARNING, logger="rigplane.web.web_startup"),
+        _fake_gate_clock(clock),
+    ):
+        # Releases before the window ends (no RuntimeError/abort).
+        await _await_initial_state_acquisition(server, sweep=True)
 
-    message = str(caught.value)
-    assert message.startswith("web startup aborted: ")
-    assert message.endswith("Refusing to start a half-working server.")
-    assert "global.tx_state.split" in message
-    assert "still unanswered after 3 failed reads of its request group" in message
-    assert scheduler.startup_defect is not None
+    assert scheduler.startup_defect is None
+    assert scheduler.unobserved_startup_paths(_observed_paths(server, scheduler)) == (
+        SPLIT,
+    )
+    warnings = [
+        record.getMessage()
+        for record in caplog.records
+        if record.levelno == logging.WARNING
+        and "global.tx_state.split" in record.getMessage()
+    ]
+    assert len(warnings) == 1, [record.getMessage() for record in caplog.records]
+    assert "0F" in warnings[0]
+    # The re-reads time out for real and the scheduler counts them, so the
+    # deadline cause is "timed out Nx".
+    assert "timed out" in warnings[0], warnings[0]
 
 
 @pytest.mark.asyncio
@@ -2584,7 +2574,7 @@ async def test_gate_is_unchanged_when_every_declared_path_answers() -> None:
 
 # ---------------------------------------------------------------------------
 # MOR-2841: a radio that answers NOTHING serves; a radio that answers some
-# reads but not a critical one still fails (unchanged, above)
+# reads but not PTT/split serves with a TX-unknown warning (MOR-4456, above)
 # ---------------------------------------------------------------------------
 
 
@@ -2594,8 +2584,8 @@ def _silent_link_radio(server: WebServer, scheduler: AcquisitionScheduler) -> Ic
     The backend's serial watchdog (``_declare_serial_link_down``) forces
     the connection state to ``RECONNECTING`` on consecutive CI-V timeouts —
     the state a powered-off IC-7300 on an open serial port produces. The
-    scheduler is attached after ``WebServer`` construction, mirroring
-    ``test_never_answered_critical_path_fails_startup_after_three_attempts``.
+    scheduler is attached after ``WebServer`` construction, mirroring the
+    still-critical abort above.
     """
 
     from rigplane.runtime._connection_state import RadioConnectionState
@@ -2609,13 +2599,13 @@ def _silent_link_radio(server: WebServer, scheduler: AcquisitionScheduler) -> Ic
 
 
 def _re_read_without_answer(
-    scheduler: AcquisitionScheduler, PTT: FieldPath
+    scheduler: AcquisitionScheduler, path: FieldPath
 ) -> Callable[[float], None]:
     from rigplane.core.acquisition_scheduler import AcquisitionPriority
 
     def _tick(now: float) -> None:
         scheduler.ensure_fresh(
-            (PTT,),
+            (path,),
             max_age=1e-9,
             priority=AcquisitionPriority.BACKGROUND,
             reason="startup-gate",
@@ -2638,23 +2628,23 @@ async def test_silent_link_serves_instead_of_failing_startup(
 ) -> None:
     """MOR-2841 (a): zero fields observed + link down = powered-off radio.
 
-    The same three failed reads that end startup through the named defect
-    (see ``test_never_answered_critical_path_fails_startup_after_three_attempts``,
-    unchanged) release the gate instead when the link answers NOTHING: one
-    WARNING names the radio-not-answering state, no defect is recorded, and
-    the wait returns so the listener binds.
+    Three failed reads of a still-critical path release the gate through
+    the silent-link branch when the link answers NOTHING (MOR-4456: PTT
+    left the critical set, so the profile holds the live tuning frequency
+    instead — the path identity is incidental, nothing answers): one
+    WARNING names the radio-not-answering state, no defect is recorded,
+    and the wait returns so the listener binds.
     """
 
     import logging
 
-    PTT = FieldPath.global_("tx_state", "ptt")
-    scheduler = AcquisitionScheduler(profile=_critical_wait_profile())
+    scheduler = AcquisitionScheduler(profile=_critical_freq_profile())
     server = WebServer(IcomRadio("192.168.1.100", model="IC-7300"), _gated_config())
     _silent_link_radio(server, scheduler)
-    assert scheduler.unobserved_startup_paths(()) == (PTT,)
+    assert scheduler.unobserved_startup_paths(()) == (FREQ,)
 
     clock = _GateClock(stop_at=6.0)
-    clock.on_tick = _re_read_without_answer(scheduler, PTT)
+    clock.on_tick = _re_read_without_answer(scheduler, FREQ)
     with caplog.at_level(logging.WARNING, logger="rigplane.web.web_startup"):
         with _fake_gate_clock(clock):
             # Returns instead of raising: no RuntimeError, and no
@@ -2757,15 +2747,16 @@ async def test_silent_link_serves_even_after_the_reconnect_reopens_the_port(
     # Phase B — the gate decides three failed critical reads in, exactly
     # as at 11:35:34 on the stand: connection state CONNECTED, zero radio
     # observations, link-down having fired earlier in the same startup.
-    PTT = FieldPath.global_("tx_state", "ptt")
-    scheduler = AcquisitionScheduler(profile=_critical_wait_profile())
+    # MOR-4456: PTT left the critical set, so the profile holds the live
+    # tuning frequency — the path identity is incidental, nothing answers.
+    scheduler = AcquisitionScheduler(profile=_critical_freq_profile())
     server = WebServer(radio, _gated_config())
     radio._acquisition_scheduler = scheduler
     radio._INITIAL_STATE_GAP_LAN = radio._INITIAL_STATE_GAP_SERIAL = 0.05
-    assert scheduler.unobserved_startup_paths(()) == (PTT,)
+    assert scheduler.unobserved_startup_paths(()) == (FREQ,)
 
     clock = _GateClock(stop_at=6.0)
-    clock.on_tick = _re_read_without_answer(scheduler, PTT)
+    clock.on_tick = _re_read_without_answer(scheduler, FREQ)
     with caplog.at_level(logging.WARNING, logger="rigplane.web.web_startup"):
         with _fake_gate_clock(clock):
             # Returns instead of raising: no RuntimeError, no
@@ -2789,13 +2780,15 @@ async def _served_silent_server_with_reopened_port() -> tuple[WebServer, IcomRad
     ``radio_ready``) say connected/ready again while the radio has still
     answered nothing (the 2026-09-28 pty check on mini .77)."""
 
-    PTT = FieldPath.global_("tx_state", "ptt")
-    scheduler = AcquisitionScheduler(profile=_critical_wait_profile())
+    # MOR-4456: the silent-link branch decides three failed *critical*
+    # reads in — PTT left that set, so the profile holds the live tuning
+    # frequency instead (the path identity is incidental, nothing answers).
+    scheduler = AcquisitionScheduler(profile=_critical_freq_profile())
     server = WebServer(IcomRadio("192.168.1.100", model="IC-7300"), _gated_config())
     radio = _silent_link_radio(server, scheduler)
 
     clock = _GateClock(stop_at=6.0)
-    clock.on_tick = _re_read_without_answer(scheduler, PTT)
+    clock.on_tick = _re_read_without_answer(scheduler, FREQ)
     with _fake_gate_clock(clock):
         await _await_initial_state_acquisition(server, sweep=True)
 
@@ -2860,7 +2853,7 @@ async def test_silent_link_then_radio_answers_completes_acquisition() -> None:
     """MOR-2841: Power ON mid-wait — acquisition completes normally.
 
     The radio answers nothing at first, then starts answering (the shape
-    after Power ON): the critical observation lands, the link recovers, and
+    after Power ON): the missing observation lands, the link recovers, and
     the gate completes with its normal completion line — not the silent
     release, not the named defect.
     """
@@ -2894,8 +2887,8 @@ async def test_silent_link_tx_refused_while_provider_not_ready() -> None:
     """MOR-2841: transmit stays refused while the radio answers nothing.
 
     Reuses the managed TX authority's own refusal — no new refusal code.
-    The arming PTT probe (``0x1C 00``, the same safety-critical read the
-    gate waits on) never answers on a silent link, so the provider stays
+    The arming PTT probe (``0x1C 00``, the same read the gate waits on)
+    never answers on a silent link, so the provider stays
     not-ready and every key answers ``NOT_READY``
     (``core/tx_safety.py: request_on``; the full wiring is pinned by
     ``test_a_rig_that_never_answers_ptt_stays_managed_and_refuses_tx``).
@@ -4372,3 +4365,56 @@ async def test_no_port_start_runs_the_real_deferred_bridge_once_connected(
             assert len(bridge_backend.rx_streams) == 1
             assert bridge_backend.rx_streams[0].running
             assert driver.rx_running
+
+
+async def test_managed_key_admitted_while_ptt_unobserved_after_start_without_ptt(
+    tmp_path: Path,
+) -> None:
+    """MOR-4456 authority evidence: the managed key is admitted, remote is not.
+
+    A station built exactly like production startup except PTT/split were
+    never observed (the MOR-4456 gate releases on the non-critical
+    deadline with one WARNING instead of failing): RF state resolves
+    UNKNOWN with no radio-TX refusal, so the managed key submitted to the
+    existing authority (local mode, no controller ticket) is ADMITTED and
+    reaches the wire — while arming the remote controller session is
+    refused with the existing ``controller_not_ready`` reason (HTTP 503).
+    Restored from 57d563ea1, which 13d586eba renamed into the refusal-only
+    sibling: the admission half holds in local mode, where no remote
+    readiness applies.
+    """
+
+    from test_managed_tx_production_fake_wire import (
+        _IcomActuator,
+        _joined_web_runtime,
+    )
+    from test_web_controller import request
+
+    from rigplane.runtime.managed_tx_state import ManagedTxOutcome
+    from rigplane.runtime.tx_interlock import RfState, resolve_rf_state
+
+    actuator, composition, server = await _joined_web_runtime(tmp_path, _IcomActuator)
+    try:
+        store = server.command_state_store
+        assert resolve_rf_state(store.snapshot()) is RfState.UNKNOWN
+        assert composition.authority.radio_tx_refusal_nowait() is None
+        armed = await request(
+            server, "POST", "/api/v1/controller/mode", {"mode": "remote"}
+        )
+        assert armed.status == 503
+        assert armed.payload == {"error": "controller_not_ready"}
+        acquired = await request(server, "POST", "/api/v1/controller", {"kind": "pro"})
+        assert acquired.status == 201
+        # Local mode needs no controller ticket: the bound local ticket
+        # would carry its session owner, while an unbound submission is
+        # validated as a local key-down and reaches the authority.
+        pressed = await composition.authority.submit_ptt(True, "memory-primary")
+        assert pressed.outcome is ManagedTxOutcome.ACCEPTED
+        await pressed.wait_settlement()
+        assert True in actuator.wire
+        released = await composition.authority.submit_force_off()
+        await released.wait_settlement()
+    finally:
+        server._controller.revoke()  # noqa: SLF001
+        await server._controller.settle()  # noqa: SLF001
+        await composition.shutdown(asyncio.Event())
