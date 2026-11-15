@@ -524,14 +524,17 @@ class YaesuObservationAdapter:
                 if reading.failure is not None:
                     publish_ptt_error()
                     if reading.failure == "timeout":
-                        # MOR-2757: ``read_transmit_state`` reports the
-                        # transport timeout as a failure tag; the raised
-                        # ``CatTimeoutError`` below is built here, so the
-                        # count is taken here. The tag does not carry the
-                        # wire command, so this defect names the field only.
+                        # MOR-4456: a PTT-only timeout is contained in the
+                        # lane — unknown is already published above and the
+                        # cycle continues — but the critical-path COUNT is
+                        # kept, so the unchanged gate still ends startup
+                        # after the three reads. Only transport failures
+                        # still raise below. (MOR-2757: the count is taken
+                        # here because the raised ``CatTimeoutError`` used
+                        # to be built here; the tag carries no wire
+                        # command, so the defect names the field only.)
                         exc = CatTimeoutError("PTT read failed: timeout")
                         self._count_critical_read_timeouts("ptt", exc, (_PTT,))
-                        raise exc
                     if reading.failure == "transport":
                         raise CatTransportError("PTT read failed: transport")
                 else:
@@ -1794,13 +1797,19 @@ class YaesuObservationAdapter:
                 )
         # split (MOR-446) — GLOBAL tx_state bool (CAT ``ST``), gated on the
         # ``split`` runtime capability, mirroring the legacy poller's
-        # ``"split" in caps`` gate.
+        # ``"split" in caps`` gate. MOR-4456: an unanswered split read is
+        # contained as an absent observation within its field (the
+        # MOR-4433 ``_read_tx_target`` containment shape) — the completed
+        # fields and the reads after split still reach the store — with
+        # its critical-path accounting kept, so the unchanged gate still
+        # ends startup after three attempts.
         if self._has_runtime_capability("split") and self._can_poll(_SPLIT):
             ok, value = await self._safe_read(
                 "split",
                 self.radio.read_split(),
                 lambda: self.radio.read_split(),
                 paths=(_SPLIT,),
+                contain_timeout=True,
             )
             if ok:
                 observations.append(
@@ -1969,6 +1978,7 @@ class YaesuObservationAdapter:
         remake: Callable[[], Awaitable[_T]],
         *,
         paths: tuple[FieldPath, ...] = (),
+        contain_timeout: bool = False,
     ) -> tuple[bool, _T | None]:
         """Await one field read, classifying a FIELD-level CAT failure.
 
@@ -2006,11 +2016,21 @@ class YaesuObservationAdapter:
         toward that path's consecutive-unread tally (any answer resets it),
         so the 3rd unanswered read records the declared-command defect that
         ends startup. The re-raise keeps the reconnect path unchanged.
+
+        MOR-4456: ``contain_timeout`` serves a contained lane's unanswered
+        read as absent for the cycle — completed fields still reach the
+        store and the reads after this one still run — while the
+        critical-path accounting above is kept, so the unchanged gate
+        still ends startup after three attempts. Only timeouts are
+        contained; a refused or malformed read keeps the defect record
+        below, and transport failures still raise untouched.
         """
         try:
             value = await read
         except CatTimeoutError as exc:
             self._count_critical_read_timeouts(label, exc, paths)
+            if contain_timeout:
+                return False, None
             raise
         except (CatParseError, CatFormatError, ValueError, KeyError) as exc:
             # ValueError covers _read_meter / int() malformed-frame failures;
