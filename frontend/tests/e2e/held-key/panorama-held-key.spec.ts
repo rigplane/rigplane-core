@@ -199,6 +199,38 @@ function viewCenterHz(sample: HeldKeySample): number | null {
   return (gates.viewStartHz + gates.viewEndHz) / 2;
 }
 
+/**
+ * Hot columns between two adjacent spectrum-canvas rows inside one view
+ * edge strip. MOR-4451 canvas-hatch probe: the canvas hatch is a diagonal
+ * line pattern (a 1px stroke every 8px at slope 1), so consecutive rows
+ * differ at every line crossing; plain background, grid lines, labels and
+ * the (absent, gapped) trace are all identical across two adjacent rows.
+ * Returns -1 when the canvas is missing or unsized. Pixel sampling is the
+ * robust read here because it observes the rendered output itself: it works
+ * unchanged on the unfixed tree (where the panel exposes no hatch decision)
+ * and after the fix, with no dependence on DOM the fix may reshape.
+ */
+async function canvasEdgeHotColumns(page: Page, side: 'left' | 'right'): Promise<number> {
+  return await page.evaluate((edge) => {
+    const canvas = document.querySelector('.spectrum-area canvas');
+    if (!(canvas instanceof HTMLCanvasElement)) return -1;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return -1;
+    const w = canvas.width, h = canvas.height;
+    if (w < 40 || h < 20) return -1;
+    const n = Math.max(8, Math.floor(w * 0.012));
+    const x = edge === 'right' ? w - n - 2 : 2;
+    const y = Math.floor(h * 0.47);
+    const a = ctx.getImageData(x, y, n, 1).data;
+    const b = ctx.getImageData(x, y + 1, n, 1).data;
+    let hot = 0;
+    for (let i = 0; i < a.length; i += 4) {
+      if (Math.abs(a[i] - b[i]) + Math.abs(a[i + 1] - b[i + 1]) + Math.abs(a[i + 2] - b[i + 2]) > 24) hot++;
+    }
+    return hot;
+  }, side);
+}
+
 /** Running-max check: no value may fall below an earlier one by more than tolHz. */
 function checkMonotonic(
   values: Array<{ t: number; v: number | null }>,
@@ -852,3 +884,156 @@ test('IC-705 external span narrowing adopts without a write and without hatch (c
     await server?.kill();
   }
 });
+
+// MOR-4451 Filter Center rows (the owner's build-7 defect, real IC-705 in
+// LSB with scope center type 0): idle CTR with the simulator's scope center
+// type at Filter Center (--scope-center-type 0), LSB and USB. The streamed
+// wave centres on the passband centre (3000 Hz filter ⇒ 1500 Hz off the
+// VFO), so the wire frames show coverage offset from the follow view at
+// EQUAL width. An offset-but-equal-width native is a transient lag, never a
+// hatch: the rows assert no hatch in the DOM (.scope-hatch = 0) AND none on
+// the canvas (pixel-sampled edge strip, see canvasEdgeHotColumns). Needs the
+// same integrated tree as the rows above.
+for (const { mode, port, stripSide } of [
+  { mode: 'LSB', port: 21596, stripSide: 'right' },
+  { mode: 'USB', port: 21597, stripSide: 'left' },
+] as const) {
+  test(`IC-705 Filter Center ${mode} idle CTR shows offset coverage at equal width with no hatch`, async ({ page }, info) => {
+    test.setTimeout(180_000);
+    const seed = 1234;
+    const evidence = info.outputPath('radio.jsonl');
+    let setupDone = false;
+    let serverReady = false;
+    let server: JourneyServerHandle | undefined;
+    const sent: Array<ScopeSubscription & { type: string }> = [];
+    const grants: Array<{ tWall: number; grant: ScopeGranted }> = [];
+    const frames: Array<{ view: number[]; coverage: number[]; receivedAt: number; tWall: number }> = [];
+    try {
+      server = await startJourneyServer(port, 14_250_000,
+        ['--model', 'IC-705', '--evidence', evidence,
+          '--span-hz', '50000',
+          '--scope-center-type', '0',
+          '--seed', String(seed)],
+        'tests/e2e/panorama_web_server.py');
+      serverReady = true;
+      const watch = watchPanoramaErrors(page);
+      page.on('websocket', (socket) => {
+        if (new URL(socket.url()).pathname === '/api/v1/ws') return;
+        if (!socket.url().endsWith('/api/v1/scope')) return;
+        socket.on('framesent', ({ payload }) => {
+          if (typeof payload === 'string') {
+            const message = JSON.parse(payload) as ScopeSubscription & { type: string };
+            if (message.type === 'subscribe') sent.push(message);
+          }
+        });
+        socket.on('framereceived', ({ payload }) => {
+          if (typeof payload === 'string') {
+            const grant = parseScopeGranted(JSON.parse(payload));
+            if (grant) grants.push({ tWall: Date.now(), grant });
+          } else {
+            const buffer = Uint8Array.from(payload).buffer;
+            const parsed = parseCurrentScopeFrame(buffer, { source: 'radio', sourceId: 'radio', epoch: 0 });
+            if (parsed.ok) {
+              frames.push({
+                view: [parsed.frame.viewStartHz, parsed.frame.viewEndHz],
+                coverage: [parsed.frame.coverageStartHz, parsed.frame.coverageEndHz],
+                receivedAt: performance.now(),
+                tWall: Date.now(),
+              });
+            }
+          }
+        });
+      });
+      await installHeldKeySampler(page);
+      await page.goto(`http://127.0.0.1:${port}/?ui=v2`);
+      await expect.poll(() => frames.length, { timeout: 30_000 }).toBeGreaterThan(10);
+      const marker = page.locator('.waterfall-content .tune-line');
+      await expect(marker).toBeVisible({ timeout: 30_000 });
+
+      // CTR (CENTER) scope mode — the owner's failing shape.
+      const ctr = page.getByRole('radio', { name: 'CTR' }).first();
+      if (!(await ctr.isChecked())) await ctr.click();
+      await expect(ctr).toBeChecked();
+
+      // Sideband + 3000 Hz filter: the passband centre sits 1500 Hz off the
+      // VFO, so Filter Center streams the wave 1500 Hz off at equal width.
+      const serverState = async () => (await (await page.request.get(`http://127.0.0.1:${port}/api/v1/state`)).json()) as {
+        main?: { freqHz?: number; mode?: string; filterWidth?: number };
+      };
+      await expect.poll(async () => (await serverState()).main?.filterWidth, { timeout: 30_000 }).toBe(2400);
+      await page.locator(`[data-testid="standard-mode-${mode}"]`).getByRole('radio').click();
+      await page.locator('[data-testid="filter-width"] input[type=range]').fill('3000');
+      await expect.poll(serverState).toMatchObject({ main: { mode, filterWidth: 3000 } });
+      await expect(page.locator('.waterfall-content .passband-overlay')).toBeVisible({ timeout: 30_000 });
+      setupDone = true;
+
+      // The follow view comes from the server grant, never hard-coded: the
+      // default 100 kHz follow against the 50000 preset's 100 kHz full
+      // width. Frames must carry exactly that view.
+      await expect.poll(() => grants.length).toBeGreaterThan(0);
+      const grantedView = grants.at(-1)!.grant.view;
+      const grantedWidthHz = grantedView.endHz - grantedView.startHz;
+      expect(grantedWidthHz, 'Filter Center row must run on the 100 kHz full width of the 50000 preset')
+        .toBe(100_000);
+      const expectedView = [BASE_FREQ_HZ - grantedWidthHz / 2, BASE_FREQ_HZ + grantedWidthHz / 2];
+      await expect.poll(() => frames.at(-1)?.view).toEqual(expectedView);
+
+      // The seam is exercised: coverage offset from the view at EQUAL
+      // width. LSB uncovers the right strip, USB the left strip.
+      await expect.poll(() => {
+        const latest = frames.at(-1);
+        if (!latest) return null;
+        const viewHz = latest.view[1] - latest.view[0];
+        const covHz = latest.coverage[1] - latest.coverage[0];
+        const stripHz = stripSide === 'right'
+          ? latest.view[1] - latest.coverage[1]
+          : latest.coverage[0] - latest.view[0];
+        return [viewHz, covHz, Math.round(stripHz)];
+      }, { timeout: 120_000 }).toEqual([100_000, 100_000, 1500]);
+      const stableWall = Date.now();
+      await page.waitForTimeout(2000);
+
+      // (1) No DOM hatch: the offset-but-equal-width native never hatches.
+      const stableSamples = (await page.evaluate(() => window.heldKeySamples))
+        .filter((s) => s.tWall >= stableWall);
+      const hatchedStable = stableSamples.filter((s) => s.hatchCount > 0);
+      const latest = frames.at(-1)!;
+      const hot = await canvasEdgeHotColumns(page, stripSide);
+      console.log(`[held-key filter-center ${mode}] ` +
+        `samples=${stableSamples.length} hatched=${hatchedStable.length} hot=${hot} ` +
+        `view=[${latest.view}] cov=[${latest.coverage}]`);
+      await info.attach(`held-key-filter-center-${mode}`, {
+        body: JSON.stringify({
+          params: { mode, spanHz: 50_000, scopeCenterType: 0, seed },
+          latestView: latest.view, latestCoverage: latest.coverage,
+          grants: grants.length, subscribes: sent.length,
+          samples: stableSamples.length, hatched: hatchedStable.length, hot,
+        }, null, 2),
+        contentType: 'application/json',
+      });
+      expect(stableSamples.length,
+        'too few stable samples to judge the Filter Center hatch').toBeGreaterThan(10);
+      expect(hatchedStable,
+        `offset coverage at equal width hatched the DOM in ${hatchedStable.length} samples`).toEqual([]);
+      // (2) No canvas hatch on the uncovered edge strip: plain background,
+      // the waterfall's treatment of the same transient lag.
+      expect(hot,
+        `canvas edge strip shows the hatch pattern (hot columns: ${hot}); ` +
+        `the uncovered ${stripSide} strip must stay plain background`).toBe(0);
+
+      expectPanoramaSettled(watch);
+    } catch (error) {
+      const verdict = classifyHeldKeyCatch({
+        setupDone, serverReady, framesObserved: frames.length, error,
+        row: `Filter Center ${mode} idle CTR (offset coverage at equal width, no hatch)`,
+      });
+      if (verdict.disposition === 'skip') {
+        test.skip(true, verdict.reason);
+        return;
+      }
+      throw verdict.error;
+    } finally {
+      await server?.kill();
+    }
+  });
+}

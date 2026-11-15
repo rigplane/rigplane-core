@@ -8,6 +8,7 @@ import pytest
 from _perf_helpers import fast_connect
 from e2e.panorama_web_server import PanoramaSimulator, ScopeWriteReceipt
 from rigplane.commands import parse_civ_frame
+from rigplane.commands._codec import filter_index_to_hz
 from rigplane.commands.scope import _span_index_for_hz, parse_scope_span_response
 from rigplane.radio import IcomRadio
 from rigplane.scope import ScopeAssembler
@@ -38,6 +39,42 @@ def test_panorama_waveform_and_control_span_agree(model: str, tmp_path: Path) ->
                     sim.profile.scope_span_presets_hz,
                 )
                 == index
+            )
+            return
+    pytest.fail("simulator produced no complete waveform")
+
+
+@pytest.mark.parametrize("mode,sign", [(0x00, -1), (0x01, +1)], ids=["LSB", "USB"])
+def test_filter_center_offsets_wave_by_passband_centre(
+    mode: int, sign: int, tmp_path: Path
+) -> None:
+    """MOR-4451: Filter Center (27 1C = 0) streams the CENTER wave centred on
+    the passband centre — LSB negative, USB positive, by half the current
+    filter width decoded from the profile segments. Carrier Point Center
+    (the default) keeps the wave centred on the VFO."""
+    sim = PanoramaSimulator(
+        "IC-705", tmp_path / "radio.jsonl", scope_center_type=0
+    )
+    sim.set_mode(mode)
+    sim.pump_scope_stream()
+    mode_name = "LSB" if mode == 0x00 else "USB"
+    width_hz = filter_index_to_hz(
+        28, segments=sim.profile.filter_config[mode_name].segments
+    )
+    # The default 1A 03 byte 0x28 is BCD slot 28: profile data pins 2400 Hz
+    # SSB, so the passband centre sits 1200 Hz off the carrier.
+    assert width_hz == 2400
+    assembler = ScopeAssembler()
+    for raw in sim._scope_templates[0]:
+        civ = parse_civ_frame(raw)
+        frame = assembler.feed(civ.data[1:], civ.data[0])
+        if frame is not None:
+            span = sim.profile.scope_span_presets_hz[
+                sim.profile.scope_span_presets_hz.index(100_000)
+            ]
+            assert (frame.start_freq_hz, frame.end_freq_hz) == (
+                14_250_000 + sign * (width_hz // 2) - span,
+                14_250_000 + sign * (width_hz // 2) + span,
             )
             return
     pytest.fail("simulator produced no complete waveform")

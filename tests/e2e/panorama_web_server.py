@@ -24,7 +24,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from rigplane.core.types import bcd_decode, bcd_encode  # noqa: E402
-from rigplane.commands._codec import bcd_encode_value  # noqa: E402
+from rigplane.commands._codec import bcd_encode_value, filter_index_to_hz  # noqa: E402
+from rigplane.core.types import Mode  # noqa: E402
 
 
 def _bcd_level_decode(data: bytes) -> int:
@@ -41,6 +42,13 @@ from rigplane.runtime.radio import IcomRadio  # noqa: E402
 from rigplane.web.server import WebConfig, WebServer  # noqa: E402
 from rigplane_testkit.icom.faults import FaultPlan, FaultRule  # noqa: E402
 from rigplane_testkit.icom.simulator import MockIcomRadio  # noqa: E402
+
+
+# CI-V 27 1C scope center type (MOR-4451): Filter Center (0) streams the
+# CENTER wave centred on the passband centre, not the carrier. Only SSB has
+# a carrier-offset passband — LSB below, USB above the carrier (CI-V mode
+# bytes match rigplane.core.types.Mode: LSB 0x00, USB 0x01).
+_SCOPE_CENTER_PASSBAND_SIGN = {Mode.LSB: -1, Mode.USB: +1}
 
 
 @dataclass(frozen=True)
@@ -63,6 +71,7 @@ class PanoramaSimulator(MockIcomRadio):
         uplink_delay: float = 0.0,
         span_hz: int = 100_000,
         seed: int = 0xC0FFEE,
+        scope_center_type: int = 1,
     ) -> None:
         self.profile = resolve_radio_profile(model=model)
         super().__init__(
@@ -100,6 +109,16 @@ class PanoramaSimulator(MockIcomRadio):
         self.response_delay = uplink_delay
         if self.profile.expected_identity_ids:
             self.model_id = bytes.fromhex(self.profile.expected_identity_ids[0])
+        # CI-V 27 1C scope center type (MOR-4451): Carrier Point Center (1,
+        # the default) streams centred on the VFO, so the default keeps every
+        # existing row's wave geometry byte-identical. Filter Center (0)
+        # offsets the CENTER wave to the passband centre (see
+        # _scope_wave_center_hz).
+        if scope_center_type not in (0, 1):
+            raise ValueError(
+                f"scope_center_type must be 0 (Filter Center) or 1 (Carrier Point Center), got {scope_center_type}"
+            )
+        self._scope_center_type = scope_center_type
         self.span_index = self.profile.scope_span_presets_hz.index(span_hz)
         self.scope_mode = 0
         self.fixed = (14_200_000, 14_300_000)
@@ -259,11 +278,42 @@ class PanoramaSimulator(MockIcomRadio):
             return reply
         return super()._dispatch_scope(payload, from_addr)
 
+    def _scope_wave_center_hz(self) -> int:
+        """CENTER-mode wave centre under the modeled scope center type.
+
+        Filter Center (27 1C = 0) centres the streamed wave on the passband
+        centre: the current mode's filter width decoded from the profile
+        segments (the stored 1A 03 byte is BCD-encoded on the wire, so it is
+        BCD-decoded first — 0x28 is slot 28, 2400 Hz SSB), halved, signed by
+        sideband (LSB negative, USB positive). Carrier Point Center (= 1),
+        any non-SSB mode, or an undecodable width streams centred on the VFO.
+        """
+        if self._scope_center_type != 0:
+            return self._frequency
+        try:
+            mode = Mode(self._mode)
+        except ValueError:
+            return self._frequency
+        sign = _SCOPE_CENTER_PASSBAND_SIGN.get(mode)
+        if sign is None:
+            return self._frequency
+        rule = self.profile.resolve_filter_rule(mode.name)
+        if rule is None or not rule.segments:
+            return self._frequency
+        try:
+            width_hz = filter_index_to_hz(
+                _bcd_level_decode(bytes([self._filter_width_index])),
+                segments=rule.segments,
+            )
+        except ValueError:
+            return self._frequency
+        return self._frequency + sign * (width_hz // 2)
+
     def pump_scope_stream(self) -> int:
         if self.evidence.with_suffix(".pause").exists():
             return 0
         span = self.profile.scope_span_presets_hz[self.span_index]
-        first, last = self.fixed if self.scope_mode == 1 else (self._frequency, span)
+        first, last = self.fixed if self.scope_mode == 1 else (self._scope_wave_center_hz(), span)
         for receiver, templates in self._scope_templates.items():
             shaped = []
             for template in templates:
@@ -331,6 +381,17 @@ async def run() -> None:
         help="seed for the CI-V response jitter RNG so a latency case replays exactly",
     )
     parser.add_argument(
+        "--scope-center-type",
+        type=int,
+        choices=(0, 1),
+        default=1,
+        help="simulated CI-V 27 1C scope center type: 0 Filter Center streams "
+        "the CENTER wave centred on the passband centre (LSB negative / USB "
+        "positive by half the current filter width, from profile/filter "
+        "data); 1 Carrier Point Center (default) streams centred on the VFO "
+        "— the default keeps every existing row's geometry byte-identical",
+    )
+    parser.add_argument(
         "--external-span-after-s",
         type=float,
         default=None,
@@ -356,6 +417,7 @@ async def run() -> None:
         uplink_delay=args.uplink_delay,
         span_hz=args.span_hz,
         seed=args.seed,
+        scope_center_type=args.scope_center_type,
     )
     # --freq was parsed but never applied: every row ran at the hardcoded
     # 14.25 MHz. Rows that pin a band preset need the VFO inside that band.
