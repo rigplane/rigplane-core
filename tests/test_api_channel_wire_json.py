@@ -159,9 +159,7 @@ def test_payload_contracts_conform_to_real_parsers_and_encoders() -> None:
     assert hello["type"] == "hello" and hello["proto"] == 1
     assert hello["server"] == "rigplane"
     with pytest.raises(AssertionError):
-        _conform(
-            "control_hello", {k: v for k, v in hello.items() if k != "version"}
-        )
+        _conform("control_hello", {k: v for k, v in hello.items() if k != "version"})
 
 
 def test_committed_golden_documents_validate_against_payload_contracts() -> None:
