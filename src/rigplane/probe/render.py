@@ -334,9 +334,7 @@ def bad_choice_message() -> str:
     return "That is not one of the numbers above."
 
 
-def no_radio_found_message(
-    profile: str | None, prog: str = DEFAULT_PROBE_PROG
-) -> str:
+def no_radio_found_message(profile: str | None, prog: str = DEFAULT_PROBE_PROG) -> str:
     """The checklist when discovery found no usable radio (exit 3)."""
     header = f"No {profile} found." if profile else "No radio found."
     hand = profile if profile else "<model>"
@@ -361,9 +359,7 @@ def port_without_profile_message(prog: str = DEFAULT_PROBE_PROG) -> str:
     )
 
 
-def single_no_tty_message(
-    model: str, port: str, prog: str = DEFAULT_PROBE_PROG
-) -> str:
+def single_no_tty_message(model: str, port: str, prog: str = DEFAULT_PROBE_PROG) -> str:
     """The sentence for one radio with no terminal to confirm in (exit 2)."""
     return (
         f"Found {model} on {port}, but there is no terminal to confirm in. "
