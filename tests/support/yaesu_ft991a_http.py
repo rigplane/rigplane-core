@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -52,27 +51,12 @@ class Ft991aHttpStation:
         await self.radio._transport.close()
 
 
-#: A CAT-line hook for :func:`serve_ft991a_over_http`: called with each
-#: request line before the simulator answers; return ``(reply, outcome)``
-#: to shadow the sim, or ``None`` to let it answer.
-CommandHook = Callable[[str], tuple[str | None, Any] | None]
-
-
-async def serve_ft991a_over_http(
-    monkeypatch: Any,
-    *,
-    web_config: WebConfig | None = None,
-    command_hook: CommandHook | None = None,
-) -> Ft991aHttpStation:
+async def serve_ft991a_over_http(monkeypatch: Any) -> Ft991aHttpStation:
     """Serve the committed FT-991A profile over HTTP on the CAT simulator.
 
     Returns a started :class:`Ft991aHttpStation`; the caller owns
     :meth:`Ft991aHttpStation.aclose`. No patched profile copy is involved:
     the radio and the fake both load ``rigs/ft991a.toml`` unmodified.
-
-    ``web_config`` replaces the default listener config (for example to
-    enable ``await_initial_state`` for the startup gate); ``command_hook``
-    shadows simulator answers per line.
     """
     radio = YaesuCatRadio("/dev/fixture", profile=load_rig(RIG))
     fake = YaesuCatSerialFake.from_profile(ROOT, SIM_PROFILE, rig_path=RIG)
@@ -82,10 +66,6 @@ async def serve_ft991a_over_http(
 
     def logged(line: str) -> Any:
         wire.append(line)
-        if command_hook is not None:
-            override = command_hook(line)
-            if override is not None:
-                return override
         return handle(line)
 
     monkeypatch.setattr(fake.model, "handle_with_outcome", logged)
@@ -99,9 +79,7 @@ async def serve_ft991a_over_http(
     await radio._transport.connect()
     server = WebServer(
         radio,
-        web_config
-        if web_config is not None
-        else WebConfig(host="127.0.0.1", port=0, keepalive_interval=9999.0),
+        WebConfig(host="127.0.0.1", port=0, keepalive_interval=9999.0),
     )
     await server.start()
     station.server = server
