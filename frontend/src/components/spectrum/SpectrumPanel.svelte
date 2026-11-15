@@ -811,10 +811,15 @@
           // adoption — our own zoom/step gestures ask the server for a
           // covering preset, never for less than requested.
           const nativeWidthHz = nativeScopeWidthHz;
-          // A late response to an earlier zoom cannot adopt over newer intent.
+          // A late response to an earlier zoom cannot adopt over newer
+          // intent: the grant still answers the current follow request
+          // when its width matches the requested follow width. The frame
+          // view is NOT part of the guard — the server clips follow
+          // frames to a narrowed native before the span-index readback
+          // arrives, so demanding frame width == follow width misses
+          // the adoption forever (MOR-4451).
           const currentGrant = follow !== null && grant !== null && geometry.receiver === grant.receiver
-            && Math.abs(grant.view.endHz - grant.view.startHz - follow) < 1
-            && Math.abs(geometry.view.endHz - geometry.view.startHz - follow) < 1;
+            && Math.abs(grant.view.endHz - grant.view.startHz - follow) < 1;
           // The 1 Hz epsilon keeps the clamp from firing on wire/view
           // reconstruction jitter (a freq±span/2 window rebuilds 1 ulp off
           // the requested width); real adoptions are thousands of times

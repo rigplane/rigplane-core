@@ -16,7 +16,6 @@ streamed wave and the 0x15 span readback — so the client sees one order
 deterministically (positive skew: frames first; negative: readback first).
 """
 
-
 from __future__ import annotations
 
 import argparse
@@ -480,12 +479,17 @@ async def run() -> None:
             simulator.span_index = presets.index(args.external_span_hz)
             skew = args.external_span_skew_s
             if skew > 0:
-                simulator._external_hold = ("readback", old_preset, time.monotonic() + skew)
+                simulator._external_hold = (
+                    "readback",
+                    old_preset,
+                    time.monotonic() + skew,
+                )
             elif skew < 0:
                 simulator._external_hold = ("wave", old_preset, time.monotonic() - skew)
             logging.info(
                 "external span change: now %d Hz (skew %.1f s)",
-                args.external_span_hz, skew,
+                args.external_span_hz,
+                skew,
             )
 
         asyncio.create_task(_external_span_change())

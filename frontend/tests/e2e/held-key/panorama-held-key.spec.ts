@@ -714,10 +714,11 @@ test('IC-705 pinned 10m band preset wider than any native stays hatched', async 
 // switches the streamed wave first (the order that exposed MOR-4451: the
 // clipped frames arrive before the span-index readback). Each row asserts
 // NO radio span write after the change (MOR-4385 adoption: the grant
-// clips, nothing is written back), that the displayed view ADOPTS the
-// narrowed native (the follow subscription moves to the narrowed width,
-// frames carry view width == coverage width == 50 kHz and the span readout
-// shows ±25k), and NO .scope-hatch in the adopted state. No latency matrix.
+// clips, nothing is written back), that the displayed view TRACKS the
+// narrowed native (frames carry view width == coverage width == 50 kHz
+// and the span readout shows ±25k — with no zoom intent the view follows
+// the wire, so there is no follow width to adopt), and NO .scope-hatch
+// in the adopted state. No latency matrix.
 // Needs the same integrated tree as the rows above.
 for (const { order, skew, port } of [
   { order: 'readback-first', skew: -20, port: 21594 },
@@ -872,11 +873,13 @@ test(`IC-705 external span narrowing adopts without a write and without hatch (c
     // span-set receipt is a write-back.
     expect(spanSetsAfter,
       `radio span written ${spanSetsAfter - spanSetsBefore}x after the external change`).toBe(spanSetsBefore);
-    // (2) the displayed view adopted the narrowed native: the follow
-    // subscription itself moved to the narrowed width, and the wire
-    // frames carry view width == coverage width == that width.
+    // (2) the displayed view tracks the narrowed native: the wire frames
+    // carry view width == coverage width == that width, while the follow
+    // request itself is untouched by the external change (with no zoom
+    // intent there is no follow width to adopt — the zoomed row below
+    // pins the follow-subscription adoption).
     expect(sent.at(-1)?.view,
-      `follow subscription did not adopt the narrowed native (${order})`).toEqual({ follow: 'vfo', spanHz: 50_000 });
+      `follow request disturbed by the external change (${order})`).toEqual({ follow: 'vfo', spanHz: 100_000 });
     expect(latestViewHz, 'adopted view is not the narrowed native width').toBe(50_000);
     expect(latestCovHz, 'adopted coverage is not the narrowed native width').toBe(50_000);
     // (3) NO hatch in the adopted state: a fully covered view never
@@ -1005,8 +1008,11 @@ test('IC-705 zoomed follow adopts a front-panel narrowing without a write and wi
     const zoomedView = [BASE_FREQ_HZ - 200_000, BASE_FREQ_HZ + 200_000];
     await expect.poll(() => frames.at(-1)?.view).toEqual(zoomedView);
     // Frames before the zoom settled carry the narrower pre-zoom views —
-    // the pre-change check below only covers frames from here on.
+    // the pre-change check below only covers frames from here on. Wait
+    // for at least one post-zoom frame so the slice below is never
+    // vacuously empty.
     const zoomedFrameIdx = frames.length;
+    await expect.poll(() => frames.length, { timeout: 30_000 }).toBeGreaterThan(zoomedFrameIdx);
     setupDone = true;
 
     // Snapshot the span-set receipts BEFORE the external change can fire:
@@ -1025,8 +1031,8 @@ test('IC-705 zoomed follow adopts a front-panel narrowing without a write and wi
 
     // Wait until the narrowed native reaches the wire: the server clips
     // the follow frames to the 200 kHz native (view == coverage == 200k).
-    // On the unfixed tree the follow width never follows — the span
-    // readout below is the assertion that reds there.
+    // The wire clips on the unfixed tree too — the follow-subscription
+    // assertion below is the one that reds there.
     await expect.poll(() => {
       const latest = frames.at(-1);
       if (!latest) return null;
