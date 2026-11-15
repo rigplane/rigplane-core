@@ -1063,7 +1063,13 @@ async def test_api_tx_start_managed_transmit_refused(tmp_path: Path) -> None:
 
 @_webrtc
 async def test_api_transmission_end_stays_served(tmp_path: Path) -> None:
-    """TX-end bodies over api are served: typed, raw, batch, CW stop."""
+    """TX-end bodies over api pass the refusal and reach shared dispatch.
+
+    Servable ends (raw END frame, ``send_civ`` END single and batch, CW
+    stop) answer 200. Managed momentary PTT (``ptt_off``) is websocket-only
+    by design — over HTTP it answers 409 — so here it must answer the
+    dispatch's 409, proving the refusal let it through instead of 403ing.
+    """
     from test_webrtc_attach_path import (  # noqa: E402
         _stand_up_stack,
         _tear_down_stack,
@@ -1074,6 +1080,17 @@ async def test_api_transmission_end_stays_served(tmp_path: Path) -> None:
     try:
         await client.connect(stack.web.port)
         await client.attach(None)
+        # TX-end execution mirrors HTTP: it acts as the controller session,
+        # so acquire one first (like a browser would) and present it.
+        grant = await client.request(
+            1,
+            "POST",
+            "/api/v1/controller",
+            headers={"content-type": "application/json"},
+            body=json.dumps({"kind": "pro"}).encode(),
+        )
+        assert grant.status == 201, (grant.status, grant.body[:200])
+        key = json.loads(grant.body.decode())["controller_key"]
 
         async def _post(
             req_id: int, path: str, payload: dict[str, Any]
@@ -1082,35 +1099,40 @@ async def test_api_transmission_end_stays_served(tmp_path: Path) -> None:
                 req_id,
                 "POST",
                 path,
-                headers={"content-type": "application/json"},
+                headers={
+                    "content-type": "application/json",
+                    "x-rigplane-controller": key,
+                },
                 body=json.dumps(payload).encode(),
             )
 
-        resp = await _post(1, "/api/v1/commands", {"name": "ptt_off", "params": {}})
-        assert resp.status == 200, (resp.status, resp.body[:200])
         resp = await _post(
             2,
             "/api/v1/civ/transaction",
             {"command": 28, "sub": 0, "data": "00", "expect": "none"},
         )
         assert resp.status == 200, (resp.status, resp.body[:200])
-        resp = await _post(
-            3,
-            "/api/v1/commands",
-            {
-                "name": "send_civ",
-                "params": {"command": 28, "sub": 0, "data": "00"},
-            },
-        )
+        end_civ = {"name": "send_civ", "params": {"command": 28, "sub": 0, "data": "00"}}
+        resp = await _post(3, "/api/v1/commands", end_civ)
         assert resp.status == 200, (resp.status, resp.body[:200])
         resp = await _post(
-            4,
-            "/api/v1/commands/batch",
-            {"steps": [{"name": "ptt_off", "params": {}}]},
+            4, "/api/v1/commands/batch", {"steps": [end_civ]}
         )
         assert resp.status == 200, (resp.status, resp.body[:200])
         resp = await _post(5, "/api/v1/radio/cw/stop", {})
         assert resp.status == 200, (resp.status, resp.body[:200])
+        # Managed momentary PTT never serves over HTTP (409): the point is
+        # the refusal passes it to the dispatch (not 403) and the dispatch
+        # answers exactly as it would over HTTP.
+        resp = await _post(6, "/api/v1/commands", {"name": "ptt_off", "params": {}})
+        assert resp.status == 409, (resp.status, resp.body[:200])
+        assert json.loads(resp.body.decode())["error"] != "controller_tx_unsupported"
+        resp = await _post(
+            7,
+            "/api/v1/commands/batch",
+            {"steps": [{"name": "ptt_off", "params": {}}]},
+        )
+        assert resp.status != 403, (resp.status, resp.body[:200])
         assert stack.sim.ptt_on is False
     finally:
         await client.close()
