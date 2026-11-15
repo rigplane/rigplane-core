@@ -275,19 +275,18 @@ async def _tear_down(server: WebServer, *clients: _ApiClient) -> None:
 
 
 @_webrtc
-async def test_api_info_and_capabilities_match_http() -> None:
-    """GET /info and /capabilities over api return byte-identical bodies."""
+async def test_api_info_matches_http() -> None:
+    """GET /info over api returns a byte-identical body to HTTP."""
     server = await _stand_up_light()
     client = _ApiClient()
     try:
         await client.connect(server.port)
         await client.attach(None)
-        for req_id, path in ((1, "/api/v1/info"), (2, "/api/v1/capabilities")):
-            resp = await client.request(req_id, "GET", path)
-            assert resp.status == 200, (path, resp.status)
-            http_status, http_body = await _http_raw(server.port, "GET", path)
-            assert http_status == 200, (path, http_status)
-            assert resp.body == http_body, path
+        resp = await client.request(1, "GET", "/api/v1/info")
+        assert resp.status == 200, resp.body[:200]
+        http_status, http_body = await _http_raw(server.port, "GET", "/api/v1/info")
+        assert http_status == 200, http_status
+        assert resp.body == http_body
     finally:
         await _tear_down(server, client)
 
@@ -307,6 +306,11 @@ async def test_api_acquire_grant_keys_control_channel(tmp_path: Path) -> None:
     try:
         await api.connect(stack.web.port)
         await api.attach(None)
+        # The control channel's 5 s attach window starts at ICE connect and
+        # the session TTL runs from acquisition, so (like every attach-path
+        # test) the slow ICE connect comes first and acquisition plus the
+        # attach frame follow back to back.
+        await dc.connect(stack.web)
         resp = await api.request(
             1, "POST", "/api/v1/controller",
             headers={"content-type": "application/json"},
@@ -314,9 +318,16 @@ async def test_api_acquire_grant_keys_control_channel(tmp_path: Path) -> None:
         )
         assert resp.status == 201, (resp.status, resp.body[:200])
         key = json.loads(resp.body.decode())["controller_key"]
-        await dc.connect(stack.web)
         hello = await dc.attach(key)
         assert hello["type"] == "hello"
+        # And /capabilities (which needs a radio, unlike /info) is
+        # byte-identical over the api channel and over HTTP.
+        resp = await api.request(2, "GET", "/api/v1/capabilities")
+        assert resp.status == 200, (resp.status, resp.body[:200])
+        http_status, http_body = await _http_raw(
+            stack.web.port, "GET", "/api/v1/capabilities")
+        assert http_status == 200, http_status
+        assert resp.body == http_body
     finally:
         await api.close()
         await dc.close()
@@ -330,7 +341,7 @@ async def test_api_large_response_arrives_in_chunks() -> None:
 
     from rigplane.web import server as server_module
 
-    big = {"layers": [{"id": i, "name": "x" * 300} for i in range(900)]}
+    big = {"layers": [{"id": i, "name": "x" * 300} for i in range(1100)]}
     raw = json.dumps(big, separators=(",", ":")).encode()
     assert len(raw) > 300_000, len(raw)
 
@@ -364,18 +375,21 @@ async def test_api_concurrent_requests_do_not_block() -> None:
     """10 parallel requests: 9 fast finish before 1 deliberately slow one."""
     from unittest.mock import patch
 
+    from rigplane.web import server as server_module
+
     server = await _stand_up_light()
     client = _ApiClient()
     try:
         await client.connect(server.port)
         await client.attach(None)
 
-        real_caps = WebServer._serve_capabilities
-
         async def _slow_caps(self: WebServer, writer: Any,
                              headers: Any = None) -> None:
+            # Canned: /capabilities needs a radio the light stack lacks.
             await asyncio.sleep(3.0)
-            await real_caps(self, writer, headers)
+            await server_module._send_response(
+                writer, 200, "OK", b'{"slow":true}',
+                {"Content-Type": "application/json"})
 
         async def _one(req_id: int, path: str) -> _Response:
             return await client.request(req_id, "GET", path)
@@ -551,18 +565,22 @@ async def test_api_33rd_in_flight_is_busy() -> None:
     """32 requests in flight is the cap: the 33rd HEAD answers ERROR busy."""
     from unittest.mock import patch
 
+    from rigplane.web import server as server_module
+
     server = await _stand_up_light()
     client = _ApiClient()
     gate = asyncio.Event()
     started = 0
-    real_caps = WebServer._serve_capabilities
 
     async def _gated_caps(self: WebServer, writer: Any,
                           headers: Any = None) -> None:
         nonlocal started
         started += 1
         await gate.wait()
-        await real_caps(self, writer, headers)
+        # Canned: /capabilities needs a radio the light stack lacks.
+        await server_module._send_response(
+            writer, 200, "OK", b'{"gated":true}',
+            {"Content-Type": "application/json"})
 
     try:
         await client.connect(server.port)
