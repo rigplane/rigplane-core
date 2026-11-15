@@ -1,17 +1,31 @@
 /**
  * `api` data-channel client (C5a): the C3 wire format over one attached
  * `api` channel, as a `fetch`-compatible function. Every wire value
- * comes from the committed single source `api-channel-wire.json`; one
- * fetch per channel, ids are per-client. A terminal ERROR frame resolves
- * as an error Response (502, code in `X-RigPlane-Api-Error`); abort and
- * the deadline reject; sends wait above the JSON high-water mark.
+ * comes from the committed single source `api-channel-wire.json`; frame
+ * payloads are built and validated against its `payloads` contracts (a
+ * violating payload is a protocol error), one fetch per channel. A wire
+ * id is allocated when the HEAD is emitted, so ids leave in increasing
+ * order under backpressure; drain waits end when the request settles, so
+ * a cancelled or timed-out request sends nothing further. A terminal
+ * ERROR frame resolves as an error Response (502, code in
+ * `X-RigPlane-Api-Error`); abort and the deadline reject.
  */
 import wire from './api-channel-wire.json';
-import type { DataChannelTransport } from './datachannel-transport';
+import {
+  buildContractPayload,
+  payloadMatchesContract,
+  type DataChannelTransport,
+  type PayloadContract,
+} from './datachannel-transport';
 
 const HEADER_SIZE = wire.header.size_bytes;
 const TYPES = wire.message_types;
 const LIMITS = wire.limits;
+const REQUEST_HEAD_CONTRACT: PayloadContract = wire.payloads.request_head;
+const RESPONSE_HEAD_CONTRACT: PayloadContract = wire.payloads.response_head;
+const ERROR_CONTRACT: PayloadContract = wire.payloads.error;
+const ERROR_CODES = new Set<string>(wire.payloads.error.codes);
+const DRAIN_POLL_MS = 10;
 const FIELD_WIDTHS: Record<string, number> = { u8: 1, u32be: 4 };
 const OFFSETS: Record<string, number> = (() => {
   const offsets: Record<string, number> = {};
@@ -28,8 +42,20 @@ const OFFSETS: Record<string, number> = (() => {
 
 export type ApiChannelFetch = (path: string, init?: RequestInit) => Promise<Response>;
 
+/** The `payloads.response_head` contract's frame payload. */
+export interface ApiResponseHead {
+  readonly status: number;
+  readonly headers: Record<string, string>;
+}
+/** The `payloads.error` contract's frame payload. */
+export interface ApiErrorFrame {
+  readonly code: string;
+  readonly message: string;
+}
+
 interface PendingRequest {
-  id: number;
+  id: number | null; // the wire id, allocated when the HEAD is emitted
+  settled: boolean;
   status: number | null;
   headers: Record<string, string>;
   chunks: Uint8Array[];
@@ -41,6 +67,37 @@ interface PendingRequest {
 
 const utf8 = new TextEncoder();
 const decoder = new TextDecoder();
+
+function parseJson(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+/** A parsed payload checked against its contract — throws on violation. */
+function contractPayload(contract: PayloadContract, text: string): Record<string, unknown> {
+  const value = parseJson(text);
+  if (!payloadMatchesContract(contract, value)) {
+    throw new Error('api channel: payload violates its wire contract');
+  }
+  return value as Record<string, unknown>;
+}
+
+function decodeResponseHead(text: string): ApiResponseHead {
+  const value = contractPayload(RESPONSE_HEAD_CONTRACT, text);
+  return { status: value.status as number, headers: value.headers as Record<string, string> };
+}
+
+function decodeErrorFrame(text: string): ApiErrorFrame {
+  const value = contractPayload(ERROR_CONTRACT, text);
+  const frame: ApiErrorFrame = { code: value.code as string, message: value.message as string };
+  if (!ERROR_CODES.has(frame.code)) {
+    throw new Error(`api channel: error code ${frame.code} outside the wire contract`);
+  }
+  return frame;
+}
 
 function encodeFrame(type: number, id: number, payload: Uint8Array): ArrayBuffer {
   const frame = new Uint8Array(HEADER_SIZE + payload.length);
@@ -85,7 +142,8 @@ export function createApiChannelFetch(
   const pending = new Map<number, PendingRequest>();
   let nextId = 0;
   const cleanup = (request: PendingRequest): void => {
-    pending.delete(request.id);
+    request.settled = true;
+    if (request.id !== null) pending.delete(request.id);
     clearTimeout(request.deadline);
     request.onAbort?.();
   };
@@ -98,26 +156,34 @@ export function createApiChannelFetch(
     cleanup(request);
   };
   const send = (r: PendingRequest, type: number, payload: Uint8Array): void => {
-    transport.send(encodeFrame(type, r.id, payload));
+    transport.send(encodeFrame(type, r.id as number, payload));
   };
   const cancel = (r: PendingRequest): void => {
+    if (r.id === null) return; // the HEAD never left: the server has nothing to drop
     try {
       send(r, TYPES.CANCEL, new Uint8Array(0));
     } catch {
       /* channel gone; the failure already settled the request */
     }
   };
+  /** Wait for the send buffer, but end as soon as the request settles.
+   * False means: stop sending — the request is no longer live. */
+  const waitForDrain = async (request: PendingRequest): Promise<boolean> => {
+    if (transport.bufferedAmount <= LIMITS.send_high_water_bytes) return !request.settled;
+    while (transport.bufferedAmount > LIMITS.send_low_water_bytes) {
+      if (request.settled) return false;
+      await new Promise((resolve) => setTimeout(resolve, DRAIN_POLL_MS));
+    }
+    return !request.settled;
+  };
   const routeFrame = (request: PendingRequest, frame: Uint8Array): void => {
     const view = new DataView(frame.buffer, frame.byteOffset, frame.byteLength);
     const payload = frame.slice(HEADER_SIZE);
     switch (view.getUint8(OFFSETS.type)) {
       case TYPES.RES_HEAD: {
-        const head = JSON.parse(decoder.decode(payload)) as Record<string, unknown>;
-        request.status = typeof head.status === 'number' ? head.status : 0;
-        request.headers =
-          head.headers && typeof head.headers === 'object'
-            ? (head.headers as Record<string, string>)
-            : {};
+        const head = decodeResponseHead(decoder.decode(payload));
+        request.status = head.status;
+        request.headers = head.headers;
         return;
       }
       case TYPES.RES_BODY:
@@ -135,14 +201,8 @@ export function createApiChannelFetch(
         return;
       }
       case TYPES.ERROR: {
-        const error = JSON.parse(decoder.decode(payload)) as Record<string, unknown>;
-        settleWith(
-          request,
-          errorResponse(
-            typeof error.code === 'string' ? error.code : 'internal',
-            typeof error.message === 'string' ? error.message : 'api channel error'
-          )
-        );
+        const error = decodeErrorFrame(decoder.decode(payload));
+        settleWith(request, errorResponse(error.code, error.message));
         return;
       }
     }
@@ -152,22 +212,15 @@ export function createApiChannelFetch(
     if (frame.length < HEADER_SIZE) return;
     const view = new DataView(frame.buffer, frame.byteOffset, frame.byteLength);
     const request = pending.get(view.getUint32(OFFSETS.request_id, false));
-    if (request === undefined) return;
+    if (request === undefined) return; // an unknown id is a no-op
     try {
       routeFrame(request, frame);
     } catch {
       settleWith(request, errorResponse('malformed', 'undecodable api channel frame'));
     }
   });
-  const waitForDrain = async (): Promise<void> => {
-    if (transport.bufferedAmount <= LIMITS.send_high_water_bytes) return;
-    while (transport.bufferedAmount > LIMITS.send_low_water_bytes) {
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
-  };
   return (path, init) =>
     new Promise<Response>((resolve, reject) => {
-      const id = ++nextId;
       const url = new URL(path, 'http://rigplane.api.channel');
       const query: Record<string, string[]> = {};
       for (const key of url.searchParams.keys()) query[key] = url.searchParams.getAll(key);
@@ -176,7 +229,7 @@ export function createApiChannelFetch(
         headers[key] = value;
       });
       const head = utf8.encode(
-        JSON.stringify({
+        buildContractPayload(REQUEST_HEAD_CONTRACT, {
           method: (init?.method ?? 'GET').toUpperCase(),
           path: url.pathname,
           query,
@@ -185,7 +238,8 @@ export function createApiChannelFetch(
       );
       const body = bodyBytes(init?.body);
       const request: PendingRequest = {
-        id,
+        id: null,
+        settled: false,
         status: null,
         headers: {},
         chunks: [],
@@ -213,21 +267,21 @@ export function createApiChannelFetch(
         }
         signal.addEventListener('abort', onAbortEvent);
       }
-      pending.set(id, request);
       void (async () => {
         try {
-          await waitForDrain();
+          if (!(await waitForDrain(request))) return;
+          request.id = ++nextId; // allocated at emission: ids leave in order
+          pending.set(request.id, request);
           send(request, TYPES.REQ_HEAD, head);
           const chunkSize = LIMITS.response_chunk_bytes;
           for (let offset = 0; offset < body.length; offset += chunkSize) {
-            await waitForDrain();
-            if (!pending.has(id)) return; // aborted or timed out mid-body
+            if (!(await waitForDrain(request))) return; // aborted or timed out mid-body
             send(request, TYPES.REQ_BODY, body.slice(offset, offset + chunkSize));
           }
-          await waitForDrain();
+          if (!(await waitForDrain(request))) return;
           send(request, TYPES.END, new Uint8Array(0));
         } catch (error) {
-          fail(request, error instanceof Error ? error : new Error('send failed'));
+          if (!request.settled) fail(request, error instanceof Error ? error : new Error('send failed'));
         }
       })();
     });
