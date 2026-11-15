@@ -212,6 +212,7 @@ class TestLoadRig:
                 "unexpected",
             ),
             ("receive_port = 50001\n", "", "receive_port"),
+            ("receive_port = 50001", "receive_port = 0", "receive_port"),
             ('protocol = "xiegu_udp"', 'protocol = "other"', "protocol"),
             ("sample_rate_hz = 48000", 'sample_rate_hz = "48000"', "sample_rate_hz"),
             ("tune_min_hz = 100000", "tune_min_hz = -1", "tune_min_hz"),

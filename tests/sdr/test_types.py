@@ -73,6 +73,15 @@ def test_udp_source_spec_kind_and_optional_bandwidth() -> None:
     assert spec.usable_bandwidth_hz is None
 
 
+def test_udp_source_spec_accepts_os_picked_receive_port() -> None:
+    values = _udp_spec_kwargs()
+    values["receive_port"] = 0
+
+    spec = UdpIqSourceSpec(**values)  # type: ignore[arg-type]
+
+    assert spec.receive_port == 0
+
+
 def test_udp_source_spec_accepts_largest_ipv4_datagram() -> None:
     values = _udp_spec_kwargs()
     values["samples_per_datagram"] = 16_376
@@ -105,7 +114,7 @@ def test_udp_source_spec_rejects_bool_for_integer_fields(field: str) -> None:
         ({"host": 123}, "host"),
         ({"radio_port": 0}, "radio_port"),
         ({"radio_port": 65_536}, "radio_port"),
-        ({"receive_port": 0}, "receive_port"),
+        ({"receive_port": -1}, "receive_port"),
         ({"receive_port": 65_536}, "receive_port"),
         ({"sample_rate_hz": 0}, "sample_rate_hz"),
         ({"sample_rate_hz": 48_000.0}, "sample_rate_hz"),
