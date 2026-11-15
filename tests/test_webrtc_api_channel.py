@@ -896,6 +896,60 @@ async def test_api_cancel_drops_request() -> None:
 
 
 @_webrtc
+async def test_api_cancel_after_end_drops_dispatched_request() -> None:
+    """CANCEL after END cancels the dispatched task and releases its slot.
+
+    The slow request is parked inside its handler when CANCEL arrives;
+    after the release it must answer nothing, while fast requests served
+    meanwhile and afterwards prove the slot was released.
+    """
+    from unittest.mock import patch
+
+    from rigplane.web import server as server_module
+
+    server = await _stand_up_light()
+    client = _ApiClient()
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def _gated_caps(self: WebServer, writer: Any, headers: Any = None) -> None:
+        entered.set()
+        await release.wait()
+        # Canned: /capabilities needs a radio the light stack lacks.
+        await server_module._send_response(
+            writer, 200, "OK", b'{"gated":true}', {"Content-Type": "application/json"}
+        )
+
+    try:
+        await client.connect(server.port)
+        await client.attach(None)
+        with patch.object(WebServer, "_serve_capabilities", _gated_caps):
+            client.send_raw(
+                _frame(_REQ_HEAD, 1, _head("GET", "/api/v1/capabilities"))
+            )
+            client.send_raw(_frame(_END, 1, b""))
+            await await_until(
+                lambda: entered.is_set(),
+                timeout=10.0,
+                description="slow api request inside handler",
+            )
+            client.send_raw(_frame(_CANCEL, 1, b""))
+            # A fast request completes while the slow one is parked.
+            resp = await client.request(2, "GET", "/api/v1/info")
+            assert resp.status == 200, (resp.status, resp.body[:200])
+            release.set()
+            # The cancelled request answers nothing.
+            with pytest.raises(asyncio.TimeoutError):
+                await client._next_for(1, timeout=1.0)
+            # Its slot is released: a fresh request works.
+            resp = await client.request(3, "GET", "/api/v1/info")
+            assert resp.status == 200, (resp.status, resp.body[:200])
+    finally:
+        release.set()
+        await _tear_down(server, client)
+
+
+@_webrtc
 @pytest.mark.realtime(
     reason="the slow handler outlasts the (test-shortened) request deadline "
     "in real time, proving the server answers ERROR timeout"
