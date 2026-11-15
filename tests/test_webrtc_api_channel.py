@@ -356,6 +356,10 @@ async def test_api_large_response_arrives_in_chunks() -> None:
 
 
 @_webrtc
+@pytest.mark.realtime(
+    reason="a deliberately slow (3 s) request proves in real time that "
+    "parallel requests do not head-of-line block behind it"
+)
 async def test_api_concurrent_requests_do_not_block() -> None:
     """10 parallel requests: 9 fast finish before 1 deliberately slow one."""
     from unittest.mock import patch
@@ -612,6 +616,10 @@ async def test_api_cancel_drops_request() -> None:
 
 
 @_webrtc
+@pytest.mark.realtime(
+    reason="the slow handler outlasts the (test-shortened) request deadline "
+    "in real time, proving the server answers ERROR timeout"
+)
 async def test_api_deadline_errors_slow_request() -> None:
     """Past the per-request deadline the server answers ERROR timeout."""
     from unittest.mock import patch
@@ -676,6 +684,10 @@ class _StubConn:
         self.watermark = value
 
 
+@pytest.mark.realtime(
+    reason="proves a stalled transport buffer actually stalls the send in "
+    "real time before the drain resumes it"
+)
 async def test_api_send_waits_while_buffer_full() -> None:
     """Sends stall past 256 KB buffered and resume intact on drain."""
     from rigplane.web import api_channel as api_mod
