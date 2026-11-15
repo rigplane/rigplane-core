@@ -76,7 +76,7 @@ def test_committed_golden_json_is_one_typed_contract() -> None:
 
     golden = _golden()
     assert golden.tested_by == _REPLAYER
-    assert len(golden.documents) == 13, sorted(golden.documents)
+    assert len(golden.documents) == 14, sorted(golden.documents)
     built = asyncio.run(api_channel_golden_documents())
     assert _GOLDEN_JSON.read_text(encoding="utf-8").rstrip("\n") == json.dumps(
         dataclasses.asdict(built)
@@ -130,7 +130,12 @@ async def test_golden_documents_replay_through_real_handlers(
         fmt = await await_until(
             lambda: peer.take("audio"), timeout=10.0, description="audio format"
         )
-        assert fmt is not None and fmt["type"] == "audio_tx_format", fmt
+        # The whole producer reply, not just its discriminator: the
+        # golden document is built by the audio handler's own typed
+        # producer, so codec, opus_decode and sample_rate are all pinned
+        # to what the server really sends (MOR-4478).
+        tx_format_doc = docs["audio_tx_format_opus"]
+        assert fmt is not None and fmt == tx_format_doc.decoded, fmt
 
         # -- api documents on a real api channel, exact committed bytes --
         await api.connect(stack.web.port)
