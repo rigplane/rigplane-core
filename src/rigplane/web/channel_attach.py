@@ -18,6 +18,7 @@ from typing import Final, Literal, Self
 from ..runtime.controller_authority import ControllerError
 
 __all__ = [
+    "ATTACH_ACK_KINDS",
     "ATTACH_ACK_VERSION",
     "ChannelAttachedAck",
     "ChannelKind",
@@ -32,14 +33,25 @@ ChannelKind = Literal["control", "scope", "audio", "api", "rigctl"]
 #: Version of the attach acknowledgement frame (a versioned wire change).
 ATTACH_ACK_VERSION: Final = 1
 
+#: The only channel kinds that get an attach ack: ``scope`` and ``audio``
+#: are unordered with ``maxRetransmits=0`` — the only channels whose
+#: attach frame can be LOST, which is the one case the ack exists for
+#: (the client keeps resending until it arrives). ``control`` is
+#: ordered/reliable and its handler's ``hello`` already proves the
+#: attach, and ``api`` is ordered/reliable on a binary wire that must
+#: never see a stray text frame — clients that never read an ack keep
+#: working on every label.
+ATTACH_ACK_KINDS: Final = frozenset({"scope", "audio"})
+
 
 @dataclass(frozen=True, slots=True)
 class ChannelAttachedAck:
     """The data-channel attach acknowledgement: one text frame, sent
-    after a data-channel attach succeeds and before the channel's first
-    handler byte, so a lossy channel can stop resending its attach
-    frame. A client that ignores it keeps working; the WebSocket lane
-    never sends one."""
+    after a lossy-channel attach (scope/audio only, see
+    :data:`ATTACH_ACK_KINDS`) succeeds and before the channel's first
+    handler byte, so the client can stop resending its attach frame. A
+    client that ignores it keeps working; control and api channels never
+    send one; the WebSocket lane never sends one."""
 
     channel: str
     version: int = ATTACH_ACK_VERSION
