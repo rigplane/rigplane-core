@@ -1,4 +1,15 @@
-"""Loopback simulator with writable CENTER geometry for the panorama journey."""
+"""Loopback simulator with writable CENTER geometry for the panorama journey.
+
+Latency knobs (MOR-4451): a real LAN/Wi-Fi link delays both directions, so
+the harness models each leg with its own one-way knob. ``--response-delay``
+/ ``--response-jitter`` delay the DOWNLINK only: every CI-V reply or
+unsolicited frame on the CI-V port leaves late through the shared outbound
+CI-V FaultPlan (``civ_to_client``), order preserved. ``--uplink-delay``
+delays the UPLINK only: every inbound request waits in the simulator's
+inherited ``response_delay`` dispatch delay (applied in ``_receive``) before
+it is parsed. Round-trip time is the sum of the two legs, each applied
+exactly once — never doubled.
+"""
 
 from __future__ import annotations
 
@@ -49,6 +60,7 @@ class PanoramaSimulator(MockIcomRadio):
         evidence: Path,
         response_delay: float = 0.0,
         response_jitter: float = 0.0,
+        uplink_delay: float = 0.0,
         span_hz: int = 100_000,
         seed: int = 0xC0FFEE,
     ) -> None:
@@ -68,8 +80,8 @@ class PanoramaSimulator(MockIcomRadio):
         # reorder. Seeded (``seed``) so a latency case replays exactly.
         # This is the shared outbound CI-V FaultPlan (the same mechanism
         # ``simulator.py``'s funnel already serves), never a parallel queue:
-        # the inherited ``response_delay`` stays unset so request dispatch
-        # and control-port traffic are not delayed a second time.
+        # the inherited ``response_delay`` carries only the uplink knob
+        # (``uplink_delay`` below), never a second copy of this downlink delay.
         self.fault_plan = FaultPlan(
             civ_to_client=FaultRule(
                 delay_s=response_delay,
@@ -78,6 +90,14 @@ class PanoramaSimulator(MockIcomRadio):
             ),
             seed=seed,
         )
+        # MOR-4451 one-way UPLINK latency: the inherited ``response_delay``
+        # dispatch delay (applied in ``_receive``) holds every inbound
+        # datagram before parsing — the request leg. That mechanism has no
+        # per-port scoping (one float for every label), so this also holds
+        # control-port session traffic, not just CI-V requests; the panorama
+        # path only depends on the CI-V request leg. Kept as is — no second
+        # mechanism beside it.
+        self.response_delay = uplink_delay
         if self.profile.expected_identity_ids:
             self.model_id = bytes.fromhex(self.profile.expected_identity_ids[0])
         self.span_index = self.profile.scope_span_presets_hz.index(span_hz)
@@ -271,10 +291,22 @@ async def run() -> None:
         "--response-delay",
         type=float,
         default=0.0,
-        help="seconds EVERY CI-V reply/unsolicited frame on the CI-V port "
-        "leaves late (shared outbound CI-V FaultPlan) — a readback-latency "
-        "knob: order is preserved, so this models a slow link rather than "
-        "a reordering one",
+        help="one-way DOWNLINK seconds: EVERY CI-V reply/unsolicited frame "
+        "on the CI-V port leaves late (shared outbound CI-V FaultPlan) — a "
+        "readback-latency knob: order is preserved, so this models a slow "
+        "link rather than a reordering one; round-trip time is "
+        "--uplink-delay + --response-delay, each applied once",
+    )
+    parser.add_argument(
+        "--uplink-delay",
+        type=float,
+        default=0.0,
+        help="one-way UPLINK seconds: EVERY inbound request waits this long "
+        "in the simulator's inherited response_delay dispatch delay "
+        "(applied in _receive) before it is parsed — a request-leg latency "
+        "knob. The inherited mechanism has no per-port scoping, so this "
+        "also holds control-port session traffic, never a second mechanism; "
+        "round-trip time is --uplink-delay + --response-delay, each once",
     )
     parser.add_argument(
         "--response-jitter",
@@ -321,6 +353,7 @@ async def run() -> None:
         args.evidence,
         response_delay=args.response_delay,
         response_jitter=args.response_jitter,
+        uplink_delay=args.uplink_delay,
         span_hz=args.span_hz,
         seed=args.seed,
     )

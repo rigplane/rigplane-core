@@ -140,6 +140,99 @@ def test_latency_harness_default_is_passthrough(tmp_path: Path) -> None:
     assert sim.response_delay == 0.0
 
 
+async def _round_trip_legs(sim: PanoramaSimulator) -> tuple[float, float, float]:
+    """One real-client get_freq: (request-leg s, reply-leg s, RTT s).
+
+    The request leg ends when the simulator dispatches the request
+    (``civ_frames_received`` grows — after the uplink dispatch delay, before
+    any downlink delay); the reply leg ends when the client's reply arrives.
+    Starts and stops the simulator around the round trip.
+    """
+    sim.capture_civ_frames = True
+    await sim.start()
+    try:
+        client = IcomRadio(
+            host="127.0.0.1",
+            port=sim.control_port,
+            username="testuser",
+            password="testpass",
+            model="IC-705",
+            timeout=5.0,
+        )
+        with fast_connect():
+            await client.connect()
+        try:
+            baseline = len(sim.civ_frames_received)
+            started = time.monotonic()
+            pending = asyncio.ensure_future(client.get_freq())
+
+            async def _wait_dispatch() -> None:
+                while len(sim.civ_frames_received) == baseline:
+                    await asyncio.sleep(0.005)
+
+            await asyncio.wait_for(_wait_dispatch(), 10.0)
+            dispatched = time.monotonic()
+            await asyncio.wait_for(pending, 10.0)
+            finished = time.monotonic()
+        finally:
+            await asyncio.wait_for(client.disconnect(), 10.0)
+    finally:
+        await sim.stop()
+    return dispatched - started, finished - dispatched, finished - started
+
+
+@pytest.mark.realtime(reason="measures the uplink leg against the sim")
+async def test_uplink_delay_applies_once_on_request_leg(tmp_path: Path) -> None:
+    """Uplink only: one delay on the request leg, a fast reply leg."""
+    sim = PanoramaSimulator(
+        "IC-705", tmp_path / "radio.jsonl", uplink_delay=0.2, seed=1
+    )
+    assert sim.response_delay == 0.2
+    assert sim.fault_plan.is_noop("civ", "to_client")
+    request_leg, reply_leg, rtt = await _round_trip_legs(sim)
+    assert request_leg >= 0.15, (
+        f"the uplink delay must hold the request: {request_leg:.3f}s"
+    )
+    assert reply_leg < 0.1, f"the reply leg must stay fast: {reply_leg:.3f}s"
+    assert rtt >= 0.2, "the configured delay must apply"
+    assert rtt < 0.35, f"one delay, not two: {rtt:.3f}s for uplink 0.2"
+
+
+@pytest.mark.realtime(reason="measures the downlink leg against the sim")
+async def test_downlink_delay_applies_once_on_reply_leg(tmp_path: Path) -> None:
+    """Downlink only: a fast request leg, one delay on the reply leg."""
+    sim = PanoramaSimulator(
+        "IC-705", tmp_path / "radio.jsonl", response_delay=0.2, seed=1
+    )
+    assert sim.response_delay == 0.0
+    request_leg, reply_leg, rtt = await _round_trip_legs(sim)
+    assert request_leg < 0.1, f"the request leg must stay fast: {request_leg:.3f}s"
+    assert reply_leg >= 0.15, (
+        f"the downlink delay must hold the reply: {reply_leg:.3f}s"
+    )
+    assert rtt >= 0.2, "the configured delay must apply"
+    assert rtt < 0.35, f"one delay, not two: {rtt:.3f}s for downlink 0.2"
+
+
+@pytest.mark.realtime(reason="measures the summed round trip against the sim")
+async def test_uplink_plus_downlink_sum_to_rtt_never_doubled(
+    tmp_path: Path,
+) -> None:
+    """Both legs: RTT is uplink + downlink, never doubled."""
+    sim = PanoramaSimulator(
+        "IC-705",
+        tmp_path / "radio.jsonl",
+        uplink_delay=0.15,
+        response_delay=0.15,
+        seed=1,
+    )
+    request_leg, reply_leg, rtt = await _round_trip_legs(sim)
+    assert request_leg >= 0.1, f"uplink 0.15 must hold the request: {request_leg:.3f}s"
+    assert reply_leg >= 0.1, f"downlink 0.15 must hold the reply: {reply_leg:.3f}s"
+    assert rtt >= 0.25, f"both legs must apply: {rtt:.3f}s for 0.15 + 0.15"
+    assert rtt < 0.5, f"sum, never doubled: {rtt:.3f}s for 0.15 + 0.15"
+
+
 @pytest.mark.realtime(reason="measures a real client round trip against the sim")
 async def test_configured_delay_applies_once_over_the_wire(
     tmp_path: Path,
