@@ -218,6 +218,53 @@ async def test_observation_poller_drains_web_commands_before_readback() -> None:
 
 
 @pytest.mark.asyncio
+async def test_refused_ptt_cycle_completes_with_write_reconciled() -> None:
+    """MOR-4456: a refused `t` stays in-cycle across consecutive reads.
+
+    Three medium cycles against a rigctld that refuses `t`: no raise, no
+    reconnect (the transport stays connected), `t` is asked once per cycle,
+    PTT publishes unknown each cycle without the raw PTT path, the VFO
+    still arrives, and a queued control write is still reconciled.
+    """
+    async with FakeRigctldServer() as server:
+        radio = RigctldClientRadio(host=server.host, port=server.port)
+        await radio.connect()
+        try:
+            server.behavior.unsupported_commands.add("t")
+            queue = CommandQueue()
+            loop = asyncio.get_running_loop()
+            future: asyncio.Future[None] = loop.create_future()
+            queue.put_ordered(future=future, cmd=SetPreamp(2))
+            observations = []
+            poller = radio.create_observation_poller(
+                callback=observations.extend,
+                command_queue=queue,
+            )
+            for _ in range(3):
+                await poller._poll_medium()  # noqa: SLF001
+            assert future.done() and future.result() is None
+            assert server.commands_seen.count("t") == 3
+            assert radio._transport.connected  # noqa: SLF001
+            assert radio._critical_read_timeouts == {}  # noqa: SLF001
+            by_path = [str(item.path) for item in observations]
+            assert "global.tx_state.ptt" not in by_path
+            assert by_path.count("global.tx_state.observed_ptt") == 3
+            assert [
+                item.value
+                for item in observations
+                if str(item.path).endswith("observed_ptt")
+            ] == [ObservedPtt.UNKNOWN] * 3
+            assert by_path.count("receiver.main.vfo.active_slot") == 3
+            # The queued write drains on the first cycle and its readback
+            # reconciles there; later cycles have an empty queue.
+            assert [
+                item.value for item in observations if str(item.path).endswith("preamp")
+            ] == [2]
+        finally:
+            await radio.disconnect()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("terminal", (False, True))
 async def test_newer_physical_dispatch_supersedes_older_readback(
     terminal: bool,
@@ -1276,11 +1323,11 @@ async def test_observed_ptt_read_error_replaces_seeded_on_with_unknown(
             assert seed.value is True and str(seed.path) == "global.tx_state.ptt"
             store.apply(replace(seed, path=OBSERVED_PTT_PATH, value=ObservedPtt.ON))
             server.behavior.malformed_responses["t"] = reply
-            with pytest.raises(CommandError) as legacy_error:
+            with pytest.raises(CommandError):
                 await adapter.read_ptt()
-            with pytest.raises(type(legacy_error.value)) as poll_error:
-                await poller._poll_medium()  # noqa: SLF001
-            assert str(poll_error.value) == str(legacy_error.value)
+            # MOR-4456: a refused `t` no longer raises out of the cycle — the
+            # unknown is published and the cycle continues past it.
+            await poller._poll_medium()  # noqa: SLF001
             assert project_observed_ptt(store.snapshot()) is ObservedPtt.UNKNOWN, (
                 "failed current PTT read retained ON evidence"
             )
@@ -1288,6 +1335,9 @@ async def test_observed_ptt_read_error_replaces_seeded_on_with_unknown(
             assert field.value is ObservedPtt.UNKNOWN
             assert field.provider_generation == store.provider_generation == 0
             assert radio.radio_state.ptt is True
+            assert "v" in server.commands_seen, (
+                "the cycle must continue to the VFO read past a refused `t`"
+            )
 
 
 @pytest.mark.asyncio
@@ -1353,11 +1403,9 @@ async def test_retired_ptt_completion_cannot_replace_current_observation(
                 current = store.snapshot().field(OBSERVED_PTT_PATH)
                 assert current.provider_generation == 1
                 release.set()
-                if read_error:
-                    with pytest.raises(CommandError):
-                        await task
-                else:
-                    await task
+                # MOR-4456: a retired refused `t` completes as unknown without
+                # raising, so both arms await the task directly now.
+                await task
                 assert store.snapshot().field(OBSERVED_PTT_PATH) == current, (
                     "retired PTT completion replaced current evidence"
                 )

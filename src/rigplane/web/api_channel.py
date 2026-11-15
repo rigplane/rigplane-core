@@ -68,12 +68,13 @@ proxying.
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
 import json
 import logging
 import struct
-from collections.abc import Coroutine
-from dataclasses import dataclass
+from collections.abc import Coroutine, Mapping
+from dataclasses import MISSING, dataclass, fields
 from enum import IntEnum
 from typing import TYPE_CHECKING, Any, Final, Protocol, cast, runtime_checkable
 
@@ -99,8 +100,14 @@ __all__ = [
     "ApiWireHeaderField",
     "ApiWireLimits",
     "ApiWireMessageTypes",
+    "ApiWirePayload",
+    "GoldenDocument",
+    "GoldenDocuments",
+    "api_channel_golden_documents",
+    "api_channel_golden_documents_from_json",
     "api_channel_wire_definition",
     "api_path_allowed",
+    "api_response_messages",
 ]
 
 logger = logging.getLogger(__name__)
@@ -203,18 +210,143 @@ class ApiWireLimits:
 
 
 @dataclass(frozen=True, slots=True)
+class ApiWirePayload:
+    """One JSON payload contract from its producer: ``carried_by`` names
+    the carrying frame, each field row is ``(name, type, required,
+    note)``, ``codes`` lists the values a string field may take. Field
+    order is the stable key order of the committed JSON.
+    """
+
+    version: int
+    carried_by: str
+    fields: tuple[tuple[str, str, bool, str], ...]
+    codes: tuple[str, ...] = ()
+
+
+#: How a producer annotation reads as a JSON value on the wire. An
+#: unmapped annotation fails the contract build, so a producer type
+#: change cannot drift past its exported contract.
+_WIRE_FIELD_TYPES: Final[Mapping[str, str]] = {
+    "str": "string",
+    "str | None": "string | null",
+    "int": "integer",
+    "dict[str, str]": "object: name -> value",
+    "dict[str, list[str]]": "object: name -> [values]",
+}
+
+
+def _payload_contract(
+    producer: type,
+    carried_by: str,
+    *,
+    constant: tuple[str, str, str] | None = None,
+    optional: frozenset[str] = frozenset(),
+    required: frozenset[str] = frozenset(),
+    rename: Mapping[str, str] | None = None,
+    notes: Mapping[str, str] | None = None,
+    codes: tuple[str, ...] = (),
+) -> ApiWirePayload:
+    """Derive one payload contract from the producer that owns it:
+    names, order, types and required-ness come from the dataclass and
+    its defaults; notes, a leading constant, renames and the
+    optional/required escapes (where the JSON shape differs from the
+    dataclass) are declared by the caller. The wire-json tests conform
+    the result to the real parsers and encoders.
+    """
+    rows: list[tuple[str, str, bool, str]] = (
+        [(constant[0], constant[1], True, constant[2])] if constant else []
+    )
+    for field in fields(producer):
+        name = (rename or {}).get(field.name, field.name)
+        defaulted = field.default is not MISSING or field.default_factory is not MISSING
+        rows.append(
+            (
+                name,
+                _WIRE_FIELD_TYPES[cast("str", field.type)],
+                field.name in required
+                or (field.name not in optional and not defaulted),
+                (notes or {}).get(name, ""),
+            )
+        )
+    return ApiWirePayload(1, carried_by, tuple(rows), codes)
+
+
+def _api_channel_payload_contracts() -> dict[str, ApiWirePayload]:
+    """The payload contracts, derived from their producer types; the
+    wire-json tests conform every row to the real parsers/encoders."""
+    from .channel_attach import (  # noqa: TID251
+        ATTACH_ACK_VERSION,
+        ChannelAttachedAck,
+        ClientChannelParams,
+    )
+
+    return {
+        "request_head": _payload_contract(
+            ApiRequestHead,
+            "REQ_HEAD frame payload (UTF-8 JSON object)",
+            optional=frozenset({"query", "headers"}),
+            notes={"method": "non-empty HTTP method", "path": "origin-form, no query"},
+        ),
+        "response_head": _payload_contract(
+            ApiResponseHead,
+            "RES_HEAD frame payload (UTF-8 JSON object)",
+            notes={"status": "HTTP status code", "headers": "answer headers"},
+        ),
+        "error": _payload_contract(
+            ApiErrorFrame,
+            "ERROR frame payload (UTF-8 JSON object)",
+            codes=(
+                _BAD_VERSION,
+                _MALFORMED,
+                _STALE_ID,
+                _TOO_LARGE,
+                _BUSY,
+                _TIMEOUT,
+                _INTERNAL,
+            ),
+        ),
+        "attach_frame": _payload_contract(
+            ClientChannelParams,
+            "first text frame on a client data channel",
+            constant=("type", '"attach"', "the attach discriminator"),
+            rename={"controller_role": "role"},
+            optional=frozenset({"controller_key"}),
+            notes={
+                "controller_key": "non-null session key on control/scope/audio; "
+                'null or absent only on the keyless "api" channel',
+                "role": '"primary" when absent',
+                "state_delta": "1 | 2; 2 (leaf deltas) when absent",
+            },
+        ),
+        "attach_ack": _payload_contract(
+            ChannelAttachedAck,
+            "first server text frame on a scope/audio channel",
+            constant=("type", '"attached"', "the ack discriminator"),
+            rename={"version": "v"},
+            required=frozenset({"channel", "version"}),
+            notes={
+                "channel": 'the acked label: "scope" | "audio"',
+                "version": f"ack version, currently {ATTACH_ACK_VERSION}",
+            },
+        ),
+    }
+
+
+@dataclass(frozen=True, slots=True)
 class ApiWireDefinition:
     """The wire contract as a typed, JSON-serialisable record.
 
     The one machine-readable copy of the header layout, message types,
-    version, chunk size, and limits. Use :func:`dataclasses.asdict` for the
-    plain-JSON form; every value round-trips through ``json`` unchanged.
+    version, chunk size, limits, and the JSON payload contracts. Use
+    :func:`dataclasses.asdict` for the plain-JSON form; every value
+    round-trips through ``json`` unchanged.
     """
 
     version: int
     header: ApiWireHeader
     message_types: ApiWireMessageTypes
     limits: ApiWireLimits
+    payloads: dict[str, ApiWirePayload]
 
 
 def api_channel_wire_definition() -> ApiWireDefinition:
@@ -248,6 +380,7 @@ def api_channel_wire_definition() -> ApiWireDefinition:
             send_high_water_bytes=SEND_HIGH_WATER_BYTES,
             send_low_water_bytes=SEND_LOW_WATER_BYTES,
         ),
+        payloads=_api_channel_payload_contracts(),
     )
 
 
@@ -756,18 +889,8 @@ class ApiChannelHandler:
         self, request_id: int, status: int, headers: dict[str, str], body: bytes
     ) -> None:
         """Stream RES_HEAD + <=16 KB RES_BODY chunks + END, with backpressure."""
-        await self._send_frame(
-            ApiMessageType.RES_HEAD,
-            request_id,
-            ApiResponseHead(status, headers).encode(),
-        )
-        for offset in range(0, len(body), RESPONSE_CHUNK_BYTES):
-            await self._send_frame(
-                ApiMessageType.RES_BODY,
-                request_id,
-                body[offset : offset + RESPONSE_CHUNK_BYTES],
-            )
-        await self._send_frame(ApiMessageType.END, request_id, b"")
+        for msg_type, payload in api_response_messages(status, headers, body):
+            await self._send_frame(msg_type, request_id, payload)
 
     async def _send_error(self, request_id: int, code: str, message: str) -> None:
         """Send one terminal ERROR, never raising (the channel may be dead).
@@ -830,3 +953,441 @@ class ApiChannelHandler:
                 await self._abort_unwritable("send buffer stayed full")
                 raise
         await self._conn.send_binary(_encode_frame(msg_type, request_id, payload))
+
+
+# Golden documents: the concrete frames the browser must handle,
+# generated from the server's own encoders, as one typed contract.
+
+#: The test that replays every committed golden document for real.
+_API_GOLDEN_TESTED_BY: Final = "tests/test_api_channel_golden.py::test_golden_documents_replay_through_real_handlers"
+
+#: Where a live session key goes when replaying a committed attach frame.
+_GOLDEN_KEY_PLACEHOLDER: Final = "<SESSION-KEY>"
+
+
+def api_response_messages(
+    status: int, headers: dict[str, str], body: bytes
+) -> list[tuple[ApiMessageType, bytes]]:
+    """RES_HEAD, <=16 KB RES_BODY chunks, END: the one chunking rule
+    shared by the handler's streaming and the golden documents."""
+    messages = [(ApiMessageType.RES_HEAD, ApiResponseHead(status, headers).encode())]
+    messages.extend(
+        (ApiMessageType.RES_BODY, bytes(body[off : off + RESPONSE_CHUNK_BYTES]))
+        for off in range(0, len(body), RESPONSE_CHUNK_BYTES)
+    )
+    messages.append((ApiMessageType.END, b""))
+    return messages
+
+
+@dataclass(frozen=True, slots=True)
+class GoldenFrame:
+    """One committed binary frame: whole-frame hex plus its decoded
+    meaning (``payload_bytes`` names a non-JSON payload's length)."""
+
+    hex: str
+    type: str
+    request_id: int
+    payload: Any = None
+    payload_bytes: int | None = None
+    variant: str = "binary"
+
+
+@dataclass(frozen=True, slots=True)
+class GoldenTextDocument:
+    """One text-frame document: an attach frame, its ack, or another
+    server text frame the golden replay pins (the audio TX-format ack)."""
+
+    direction: str
+    summary: str
+    text: str
+    decoded: Any
+    template: str | None
+    outcome: str
+    variant: str = "text"
+
+
+@dataclass(frozen=True, slots=True)
+class GoldenExchangeDocument:
+    """One request/reply exchange of binary frames (with the fixture
+    body the reply was built from, when the route serves one)."""
+
+    direction: str
+    summary: str
+    request: tuple[GoldenFrame, ...]
+    reply: tuple[GoldenFrame, ...]
+    outcome: str
+    route: str | None = None
+    response_body_b64: str | None = None
+    variant: str = "exchange"
+
+
+@dataclass(frozen=True, slots=True)
+class GoldenErrorsDocument:
+    """Every terminal ERROR frame, each with its trigger."""
+
+    direction: str
+    summary: str
+    triggers: dict[str, str]
+    frames: tuple[GoldenFrame, ...]
+    variant: str = "errors"
+
+
+#: Every golden document variant, keyed by its serialised discriminator.
+_GOLDEN_DOCUMENT_VARIANTS: Final[dict[str, type]] = {
+    "text": GoldenTextDocument,
+    "exchange": GoldenExchangeDocument,
+    "errors": GoldenErrorsDocument,
+}
+
+#: Any one golden document.
+GoldenDocument = GoldenTextDocument | GoldenExchangeDocument | GoldenErrorsDocument
+
+
+@dataclass(frozen=True, slots=True)
+class GoldenDocuments:
+    """The committed golden file as one typed contract, produced by the
+    server's own encoders and consumed through
+    :func:`api_channel_golden_documents_from_json`; ``shape`` is the
+    file's own field map, derived from these types."""
+
+    version: int
+    tested_by: str
+    formats: str
+    shape: dict[str, tuple[str, ...]]
+    documents: dict[str, GoldenDocument]
+
+
+def _golden_shape() -> dict[str, tuple[str, ...]]:
+    """The serialised shape of every golden type, from its own fields."""
+    return {
+        name: tuple(field.name for field in fields(cls))
+        for name, cls in {
+            "envelope": GoldenDocuments,
+            "frame": GoldenFrame,
+            **_GOLDEN_DOCUMENT_VARIANTS,
+        }.items()
+    }
+
+
+def _golden_object(obj: Any, cls: type, what: str) -> dict[str, Any]:
+    """Validate one decoded golden object against its shape, or raise."""
+    if not isinstance(obj, dict) or set(obj) != {field.name for field in fields(cls)}:
+        raise ValueError(f"{what} does not match the {cls.__name__} golden shape")
+    return obj
+
+
+def api_channel_golden_documents_from_json(data: Any) -> GoldenDocuments:
+    """Load committed golden JSON into the typed contract, validating
+    every key against the shape the producer types declare (a stale or
+    hand-edited file fails loudly instead of replaying half-read
+    frames). Raises :class:`ValueError` on mismatch.
+    """
+
+    def _frame(obj: Any) -> GoldenFrame:
+        return GoldenFrame(**_golden_object(obj, GoldenFrame, "golden frame"))
+
+    def _document(name: str, obj: Any) -> GoldenDocument:
+        variant: str | None = obj.get("variant") if isinstance(obj, dict) else None
+        cls: type | None = (
+            _GOLDEN_DOCUMENT_VARIANTS.get(variant) if variant is not None else None
+        )
+        if cls is None:
+            raise ValueError(f"golden document {name!r} has variant {variant!r}")
+        doc = _golden_object(obj, cls, f"golden document {name!r}")
+        if cls is GoldenExchangeDocument:
+            return GoldenExchangeDocument(
+                **{
+                    **doc,
+                    "request": tuple(map(_frame, doc["request"])),
+                    "reply": tuple(map(_frame, doc["reply"])),
+                }
+            )
+        if cls is GoldenErrorsDocument:
+            return GoldenErrorsDocument(
+                **{**doc, "frames": tuple(map(_frame, doc["frames"]))}
+            )
+        return GoldenTextDocument(**doc)
+
+    envelope = _golden_object(data, GoldenDocuments, "golden envelope")
+    return GoldenDocuments(
+        version=envelope["version"],
+        tested_by=envelope["tested_by"],
+        formats=envelope["formats"],
+        shape={key: tuple(value) for key, value in envelope["shape"].items()},
+        documents={
+            name: _document(name, doc) for name, doc in envelope["documents"].items()
+        },
+    )
+
+
+def _golden_frame(
+    msg_type: ApiMessageType, request_id: int, payload: bytes
+) -> GoldenFrame:
+    """One wire frame as a committed golden entry: bytes plus meaning."""
+    decoded: Any = None
+    if payload:
+        try:
+            decoded = json.loads(payload.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError, RecursionError):
+            decoded = None
+    return GoldenFrame(
+        hex=_encode_frame(int(msg_type), request_id, payload).hex(),
+        type=msg_type.name,
+        request_id=request_id,
+        payload=decoded,
+        payload_bytes=None if (decoded is not None or not payload) else len(payload),
+    )
+
+
+def _golden_attach_document(label: str) -> GoldenTextDocument:
+    """The attach frame for one data-channel label (client -> server)."""
+    keyless = label == "api"
+    decoded = {
+        "type": "attach",
+        "controller_key": None if keyless else _GOLDEN_KEY_PLACEHOLDER,
+        "state_delta": 2,
+        "role": "primary",
+    }
+    return GoldenTextDocument(
+        direction="client->server",
+        summary=f'the "{label}" attach frame (the first text frame)',
+        text=json.dumps(decoded),
+        decoded=decoded,
+        template=None
+        if keyless
+        else f"substitute a live controller_key for {_GOLDEN_KEY_PLACEHOLDER}",
+        outcome=(
+            "silent until the first request (the keyless acquire path)"
+            if keyless
+            else "answered by the attach ack; a resent frame is re-acknowledged"
+        ),
+    )
+
+
+def _golden_ack_document(kind: str) -> GoldenTextDocument:
+    """The attach ack for one lossy label (server -> client)."""
+    from .channel_attach import ChannelAttachedAck  # noqa: TID251
+
+    text = ChannelAttachedAck(kind).encode()
+    return GoldenTextDocument(
+        direction="server->client",
+        summary=f"the {kind} attach ack (the first server text frame)",
+        text=text,
+        decoded=json.loads(text),
+        template=None,
+        outcome="the client stops resending its attach",
+    )
+
+
+def _golden_audio_tx_format_document(
+    opus_decode: bool, sample_rate: int
+) -> GoldenTextDocument:
+    """The audio TX-format ack (server -> client), from the audio
+    handler's own typed producer and encoded exactly as its ``_send_json``
+    sends it (:func:`rigplane.web.protocol.encode_json`: compact
+    separators, the producer's key order). ``sample_rate`` is what the
+    golden replay stack really negotiates — the IC-7610 LAN profile's TX
+    leg, 48 kHz — and the replay test pins the live reply to this
+    document in full."""
+    from .handlers.audio import audio_tx_format_message  # noqa: TID251
+    from .protocol import encode_json  # noqa: TID251
+
+    text = encode_json(audio_tx_format_message(opus_decode, sample_rate))
+    return GoldenTextDocument(
+        direction="server->client",
+        summary=(
+            "the audio TX-format ack when Opus TX is decodable "
+            "(the reply to audio_start direction=tx)"
+        ),
+        text=text,
+        decoded=json.loads(text),
+        template=None,
+        outcome=(
+            "the client arms TX capture in the advertised codec "
+            "at the advertised sample rate"
+        ),
+    )
+
+
+def _request_head(
+    method: str, path: str, request_id: int, headers: dict[str, str] | None = None
+) -> GoldenFrame:
+    """A REQ_HEAD golden frame."""
+    payload = json.dumps(
+        {"method": method, "path": path, "query": {}, "headers": headers or {}}
+    ).encode()
+    return _golden_frame(ApiMessageType.REQ_HEAD, request_id, payload)
+
+
+async def api_channel_golden_documents() -> GoldenDocuments:
+    """Every concrete frame sequence the browser must handle, from the
+    server's own encoders; committed to ``api-channel-golden.json``,
+    replayed for real by ``tested_by``. Regenerate (repo root):
+
+        uv run python -c "import asyncio, dataclasses, json; from rigplane.web.api_channel import api_channel_golden_documents as d; print(json.dumps(dataclasses.asdict(asyncio.run(d()))))" > frontend/src/lib/transport/api-channel-golden.json
+    """
+    from .server import _send_response  # noqa: TID251
+
+    gf = _golden_frame
+    Head = tuple[str, str, int, dict[str, str] | None]
+    Msgs = list[tuple[ApiMessageType, bytes]]
+    Exchange = tuple[int, str, str, Head | None, Msgs, Msgs]
+
+    async def _route_frames(body: bytes) -> tuple[str, Msgs]:
+        writer: Any = _ChannelHttpWriter(("golden", 0))
+        await _send_response(
+            writer, 200, "OK", body, {"Content-Type": "application/json"}
+        )
+        status, headers, captured = _split_response(bytes(writer._buf))  # noqa: SLF001
+        return (
+            base64.b64encode(body).decode("ascii"),
+            api_response_messages(status, headers, captured),
+        )
+
+    refusal_body = json.dumps(
+        {"error": "controller_tx_unsupported"}, separators=(",", ":")
+    ).encode()
+    ok_b64, ok_reply = await _route_frames(b'{"golden": true}')
+    chunked_b64, chunked_reply = await _route_frames(b"A" * RESPONSE_CHUNK_BYTES + b"B")
+    end = (ApiMessageType.END, b"")
+    exchanges: dict[str, Exchange] = {
+        "api_tx_refused": (
+            1,
+            "a request with a body and its 403, id 1",
+            "a TX-capable body is refused before the shared dispatch",
+            (
+                "POST",
+                "/api/v1/civ/transaction",
+                1,
+                {"content-type": "application/json"},
+            ),
+            [
+                (
+                    ApiMessageType.REQ_BODY,
+                    json.dumps({"command": 3, "expect": "data"}).encode(),
+                ),
+                end,
+            ],
+            api_response_messages(
+                403, {"Content-Type": "application/json"}, refusal_body
+            ),
+        ),
+        "api_not_found": (
+            2,
+            "a request for an unknown path and its 404, id 2",
+            "only /api/v1/* table entries are routed",
+            ("GET", "/api/v1/nonexistent", 2, None),
+            [end],
+            api_response_messages(404, {}, b"404 Not Found"),
+        ),
+        "api_ok": (
+            3,
+            "a plain GET and its normal 200 response, id 3",
+            "RES_HEAD, one RES_BODY per <= 16 KB of body, then END",
+            ("GET", "/api/v1/band-plan/layers", 3, None),
+            [end],
+            ok_reply,
+        ),
+        "api_chunked": (
+            4,
+            "a chunked multi-message body (> 16 KB), id 4",
+            "RES_HEAD, 16384-byte + 1-byte RES_BODYs, END; concatenated body",
+            ("GET", "/api/v1/band-plan/layers", 4, None),
+            [end],
+            chunked_reply,
+        ),
+        "api_cancel": (
+            41,
+            "CANCEL drops request 41 before it answers",
+            "no frame is ever sent for id 41; the trailing END is a no-op "
+            "(a cancel that failed would answer it); the channel keeps serving",
+            ("GET", "/api/v1/info", 41, None),
+            [(ApiMessageType.CANCEL, b""), end],
+            [],
+        ),
+        "api_unknown_id_ignored": (
+            9999,
+            "frames for an unknown id are a no-op, id 9999",
+            "no ERROR, no answer; the channel keeps serving",
+            None,
+            [(ApiMessageType.REQ_BODY, b"x"), end, (ApiMessageType.CANCEL, b"")],
+            [],
+        ),
+    }
+    documents: dict[str, GoldenDocument] = {
+        f"attach_{label}": _golden_attach_document(label)
+        for label in ("control", "scope", "audio", "api")
+    }
+    documents.update(
+        {
+            f"attach_ack_{kind}": _golden_ack_document(kind)
+            for kind in ("scope", "audio")
+        }
+    )
+    documents["audio_tx_format_opus"] = _golden_audio_tx_format_document(
+        opus_decode=True, sample_rate=48000
+    )
+    fixtures = {"api_ok": ok_b64, "api_chunked": chunked_b64}
+    for name, (rid, summary, outcome, head, trailing, reply) in exchanges.items():
+        documents[name] = GoldenExchangeDocument(
+            direction="client->server then server->client",
+            summary=summary,
+            request=tuple(
+                [
+                    *([] if head is None else [_request_head(*head)]),
+                    *(gf(t, rid, p) for t, p in trailing),
+                ]
+            ),
+            reply=tuple(gf(m, rid, p) for m, p in reply),
+            outcome=outcome,
+            route="GET /api/v1/band-plan/layers" if name in fixtures else None,
+            response_body_b64=fixtures.get(name),
+        )
+    errors = {  # code: (request_id, message, trigger)
+        "stale_id": (
+            5,
+            "request id reused",
+            "resend the api_not_found head with id 5: the resend answers "
+            "stale_id (a rejected head never consumes its id)",
+        ),
+        "timeout": (
+            6,
+            "request timed out",
+            "reassembly or dispatch outlasting request_deadline_s answers timeout",
+        ),
+        "too_large": (
+            7,
+            "request body too large",
+            "REQ_HEAD id 7 then 16384-byte REQ_BODYs of 'x': past "
+            "max_request_body_bytes",
+        ),
+        "busy": (
+            40,
+            "too many requests",
+            "33 REQ_HEADs with no END: ids 8..39 fill the 32 slots; the "
+            "33rd answers busy",
+        ),
+        "malformed": (
+            0,
+            "frame too short",
+            "any frame shorter than the 7-byte header (the bytes 01 02 00 00)",
+        ),
+    }
+    documents["api_errors"] = GoldenErrorsDocument(
+        direction="server->client",
+        summary="every terminal ERROR frame, with its trigger",
+        triggers={code: spec[2] for code, spec in errors.items()},
+        frames=tuple(
+            gf(ApiMessageType.ERROR, rid, ApiErrorFrame(code, message).encode())
+            for code, (rid, message, _trigger) in errors.items()
+        ),
+    )
+    return GoldenDocuments(
+        version=1,
+        tested_by=_API_GOLDEN_TESTED_BY,
+        formats="text-frame documents carry the exact UTF-8 text; binary "
+        "frames carry whole-frame hex plus decoded meaning; every document "
+        "names its variant, and shape lists each variant's fields",
+        shape=_golden_shape(),
+        documents=documents,
+    )

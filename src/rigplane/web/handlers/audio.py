@@ -12,9 +12,9 @@ import inspect
 import logging
 import math
 import time
-from collections.abc import AsyncIterator, Awaitable
+from collections.abc import AsyncIterator, Awaitable, Mapping
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Callable, Protocol, cast
+from typing import TYPE_CHECKING, Any, Callable, Literal, Protocol, TypedDict, cast
 
 from rigplane.audio._codecs import decode_ulaw_to_pcm16
 from rigplane.audio._transcoder import PcmOpusTranscoder, create_pcm_opus_transcoder
@@ -61,7 +61,13 @@ if TYPE_CHECKING:
 from ...capabilities import CAP_AUDIO, CAP_LAN_DUAL_RX_AUDIO_ROUTING
 from ...capabilities import CAP_MOD_INPUT_ROUTING, CAP_TX
 
-__all__ = ["AudioBroadcaster", "AudioHandler", "RxPcmTapSource"]
+__all__ = [
+    "AudioBroadcaster",
+    "AudioHandler",
+    "AudioTxFormat",
+    "RxPcmTapSource",
+    "audio_tx_format_message",
+]
 
 logger = logging.getLogger(__name__)
 
@@ -103,6 +109,33 @@ _CAPTURE_ERROR_NAMES = frozenset(
         "unknown",
     }
 )
+
+
+class AudioTxFormat(TypedDict):
+    """The ``audio_tx_format`` ack payload (MOR-1791) as ONE typed
+    producer output: the handler sends it, and the api-channel golden
+    documents commit the same bytes (key order is the wire order —
+    :func:`audio_tx_format_message` builds it, nothing else)."""
+
+    type: Literal["audio_tx_format"]
+    codec: Literal["opus", "pcm16"]
+    opus_decode: bool
+    sample_rate: int
+
+
+def audio_tx_format_message(opus_decode: bool, sample_rate: int) -> AudioTxFormat:
+    """Build the ``audio_tx_format`` ack payload.
+
+    ``opus_decode`` is whether this server can decode a browser Opus TX
+    frame at all; ``codec`` restates it as the codec the client should
+    send (Opus when decodable, else its existing PCM16 capture path).
+    """
+    return AudioTxFormat(
+        type="audio_tx_format",
+        codec="opus" if opus_decode else "pcm16",
+        opus_decode=opus_decode,
+        sample_rate=sample_rate,
+    )
 
 
 def _bounded_audio_stats(message: dict[str, Any]) -> dict[str, Any]:
@@ -2104,7 +2137,7 @@ class AudioHandler:
             }
         )
 
-    async def _send_json(self, obj: dict[str, Any]) -> None:
+    async def _send_json(self, obj: Mapping[str, Any]) -> None:
         """Send a JSON message to the WS client."""
         try:
             await self._ws.send_text(encode_json(obj))
@@ -2132,12 +2165,7 @@ class AudioHandler:
         Opus and the client keeps its own choice, exactly as before.
         """
         await self._send_json(
-            {
-                "type": "audio_tx_format",
-                "codec": "opus" if opus_decode else "pcm16",
-                "opus_decode": opus_decode,
-                "sample_rate": self._tx_sample_rate(),
-            }
+            audio_tx_format_message(opus_decode, self._tx_sample_rate())
         )
 
     def _ensure_tx_transcoder(self) -> bool:

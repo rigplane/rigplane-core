@@ -6368,18 +6368,22 @@ async def test_run_publishes_tx_target_on_first_cycle() -> None:
 
 
 @pytest.mark.asyncio
-async def test_publish_tx_target_never_writes_for_unsupported_profile() -> None:
-    """Review R2, F2: early-return before any state-store write for radios
-    ``_compute_tx_target`` would call ``unsupported`` — no reason to restate
-    that constant on every reachable poll-loop tick."""
+async def test_publish_tx_target_writes_unsupported_without_source() -> None:
+    """MOR-4433 (supersedes review R2, F2): a profile that declares no native
+    ``get_tx_target`` source (IC-9700 here) publishes the sticky
+    ``unsupported`` fact instead of writing nothing, so the projection can
+    tell "no source" apart from "not yet read". The native-read profile
+    (IC-7610) keeps its early return — see the next test."""
 
     radio = _make_radio(model="IC-9700")
+    assert radio.profile.supports_command("get_tx_target") is False
     store = StateStore()
     poller = RadioPoller(radio, CommandQueue(), state_store=store)
 
     poller._publish_tx_target()  # noqa: SLF001
 
-    assert "global.tx_state.tx_target" not in store.snapshot().as_dict()
+    field = store.snapshot().field("global.tx_state.tx_target")
+    assert field.value == UnknownTxTarget(reason="unsupported")
 
 
 @pytest.mark.asyncio
