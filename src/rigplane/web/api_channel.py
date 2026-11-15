@@ -72,8 +72,8 @@ import contextlib
 import json
 import logging
 import struct
-from collections.abc import Coroutine
-from dataclasses import dataclass
+from collections.abc import Coroutine, Mapping
+from dataclasses import MISSING, dataclass, fields
 from enum import IntEnum
 from typing import TYPE_CHECKING, Any, Final, Protocol, cast, runtime_checkable
 
@@ -99,8 +99,10 @@ __all__ = [
     "ApiWireHeaderField",
     "ApiWireLimits",
     "ApiWireMessageTypes",
+    "ApiWirePayload",
     "api_channel_wire_definition",
     "api_path_allowed",
+    "api_response_messages",
 ]
 
 logger = logging.getLogger(__name__)
@@ -203,18 +205,143 @@ class ApiWireLimits:
 
 
 @dataclass(frozen=True, slots=True)
+class ApiWirePayload:
+    """One JSON payload contract from its producer: ``carried_by`` names
+    the carrying frame, each field row is ``(name, type, required,
+    note)``, ``codes`` lists the values a string field may take. Field
+    order is the stable key order of the committed JSON.
+    """
+
+    version: int
+    carried_by: str
+    fields: tuple[tuple[str, str, bool, str], ...]
+    codes: tuple[str, ...] = ()
+
+
+#: How a producer annotation reads as a JSON value on the wire. An
+#: unmapped annotation fails the contract build, so a producer type
+#: change cannot drift past its exported contract.
+_WIRE_FIELD_TYPES: Final[Mapping[str, str]] = {
+    "str": "string",
+    "str | None": "string | null",
+    "int": "integer",
+    "dict[str, str]": "object: name -> value",
+    "dict[str, list[str]]": "object: name -> [values]",
+}
+
+
+def _payload_contract(
+    producer: type,
+    carried_by: str,
+    *,
+    constant: tuple[str, str, str] | None = None,
+    optional: frozenset[str] = frozenset(),
+    required: frozenset[str] = frozenset(),
+    rename: Mapping[str, str] | None = None,
+    notes: Mapping[str, str] | None = None,
+    codes: tuple[str, ...] = (),
+) -> ApiWirePayload:
+    """Derive one payload contract from the producer that owns it:
+    names, order, types and required-ness come from the dataclass and
+    its defaults; notes, a leading constant, renames and the
+    optional/required escapes (where the JSON shape differs from the
+    dataclass) are declared by the caller. The wire-json tests conform
+    the result to the real parsers and encoders.
+    """
+    rows: list[tuple[str, str, bool, str]] = (
+        [(constant[0], constant[1], True, constant[2])] if constant else []
+    )
+    for field in fields(producer):
+        name = (rename or {}).get(field.name, field.name)
+        defaulted = field.default is not MISSING or field.default_factory is not MISSING
+        rows.append(
+            (
+                name,
+                _WIRE_FIELD_TYPES[cast("str", field.type)],
+                field.name in required
+                or (field.name not in optional and not defaulted),
+                (notes or {}).get(name, ""),
+            )
+        )
+    return ApiWirePayload(1, carried_by, tuple(rows), codes)
+
+
+def _api_channel_payload_contracts() -> dict[str, ApiWirePayload]:
+    """The payload contracts, derived from their producer types; the
+    wire-json tests conform every row to the real parsers/encoders."""
+    from .channel_attach import (  # noqa: TID251
+        ATTACH_ACK_VERSION,
+        ChannelAttachedAck,
+        ClientChannelParams,
+    )
+
+    return {
+        "request_head": _payload_contract(
+            ApiRequestHead,
+            "REQ_HEAD frame payload (UTF-8 JSON object)",
+            optional=frozenset({"query", "headers"}),
+            notes={"method": "non-empty HTTP method", "path": "origin-form, no query"},
+        ),
+        "response_head": _payload_contract(
+            ApiResponseHead,
+            "RES_HEAD frame payload (UTF-8 JSON object)",
+            notes={"status": "HTTP status code", "headers": "answer headers"},
+        ),
+        "error": _payload_contract(
+            ApiErrorFrame,
+            "ERROR frame payload (UTF-8 JSON object)",
+            codes=(
+                _BAD_VERSION,
+                _MALFORMED,
+                _STALE_ID,
+                _TOO_LARGE,
+                _BUSY,
+                _TIMEOUT,
+                _INTERNAL,
+            ),
+        ),
+        "attach_frame": _payload_contract(
+            ClientChannelParams,
+            "first text frame on a client data channel",
+            constant=("type", '"attach"', "the attach discriminator"),
+            rename={"controller_role": "role"},
+            optional=frozenset({"controller_key"}),
+            notes={
+                "controller_key": "non-null session key on control/scope/audio; "
+                'null or absent only on the keyless "api" channel',
+                "role": '"primary" when absent',
+                "state_delta": "1 | 2; 2 (leaf deltas) when absent",
+            },
+        ),
+        "attach_ack": _payload_contract(
+            ChannelAttachedAck,
+            "first server text frame on a scope/audio channel",
+            constant=("type", '"attached"', "the ack discriminator"),
+            rename={"version": "v"},
+            required=frozenset({"channel", "version"}),
+            notes={
+                "channel": 'the acked label: "scope" | "audio"',
+                "version": f"ack version, currently {ATTACH_ACK_VERSION}",
+            },
+        ),
+    }
+
+
+@dataclass(frozen=True, slots=True)
 class ApiWireDefinition:
     """The wire contract as a typed, JSON-serialisable record.
 
     The one machine-readable copy of the header layout, message types,
-    version, chunk size, and limits. Use :func:`dataclasses.asdict` for the
-    plain-JSON form; every value round-trips through ``json`` unchanged.
+    version, chunk size, limits, and the JSON payload contracts. Use
+    :func:`dataclasses.asdict` for the plain-JSON form; every value
+    round-trips through ``json`` unchanged.
     """
 
     version: int
     header: ApiWireHeader
     message_types: ApiWireMessageTypes
     limits: ApiWireLimits
+    payloads: dict[str, ApiWirePayload]
 
 
 def api_channel_wire_definition() -> ApiWireDefinition:
@@ -248,6 +375,7 @@ def api_channel_wire_definition() -> ApiWireDefinition:
             send_high_water_bytes=SEND_HIGH_WATER_BYTES,
             send_low_water_bytes=SEND_LOW_WATER_BYTES,
         ),
+        payloads=_api_channel_payload_contracts(),
     )
 
 
@@ -756,18 +884,8 @@ class ApiChannelHandler:
         self, request_id: int, status: int, headers: dict[str, str], body: bytes
     ) -> None:
         """Stream RES_HEAD + <=16 KB RES_BODY chunks + END, with backpressure."""
-        await self._send_frame(
-            ApiMessageType.RES_HEAD,
-            request_id,
-            ApiResponseHead(status, headers).encode(),
-        )
-        for offset in range(0, len(body), RESPONSE_CHUNK_BYTES):
-            await self._send_frame(
-                ApiMessageType.RES_BODY,
-                request_id,
-                body[offset : offset + RESPONSE_CHUNK_BYTES],
-            )
-        await self._send_frame(ApiMessageType.END, request_id, b"")
+        for msg_type, payload in api_response_messages(status, headers, body):
+            await self._send_frame(msg_type, request_id, payload)
 
     async def _send_error(self, request_id: int, code: str, message: str) -> None:
         """Send one terminal ERROR, never raising (the channel may be dead).
@@ -830,3 +948,17 @@ class ApiChannelHandler:
                 await self._abort_unwritable("send buffer stayed full")
                 raise
         await self._conn.send_binary(_encode_frame(msg_type, request_id, payload))
+
+
+def api_response_messages(
+    status: int, headers: dict[str, str], body: bytes
+) -> list[tuple[ApiMessageType, bytes]]:
+    """RES_HEAD, <=16 KB RES_BODY chunks, END: the one chunking rule the
+    handler streams its responses through."""
+    messages = [(ApiMessageType.RES_HEAD, ApiResponseHead(status, headers).encode())]
+    messages.extend(
+        (ApiMessageType.RES_BODY, bytes(body[off : off + RESPONSE_CHUNK_BYTES]))
+        for off in range(0, len(body), RESPONSE_CHUNK_BYTES)
+    )
+    messages.append((ApiMessageType.END, b""))
+    return messages
