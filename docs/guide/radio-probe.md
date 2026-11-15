@@ -23,7 +23,7 @@ It takes about a minute.
 & "C:\Program Files\RigPlane Pro\rigplane-pro\rigplane-pro.exe" radio-probe
 ```
 
-   This is where the Windows installer puts RigPlane Pro by default. **If you chose a different folder when you installed it:** right-click the RigPlane Pro icon in the Start menu, choose **Open file location**, and use that folder instead of `C:\Program Files\RigPlane Pro` at the start of the line (keep the `\rigplane-pro\rigplane-pro.exe` part).
+   This is where the Windows installer puts RigPlane Pro by default. **If you chose a different folder when you installed it:** right-click the RigPlane Pro icon in the Start menu, choose **Open file location**, and use that folder instead of `C:\Program Files\RigPlane Pro` at the start of the line (keep the `\rigplane-pro\rigplane-pro.exe` part). This line needs a RigPlane Pro version that includes the `radio-probe` command.
 
 5. The program looks for your radio and tells you what it found, for example:
 
@@ -40,7 +40,7 @@ Is this your radio? [Y/n]
    - what the radio says it is (its model code) and the RigPlane version,
    - your radio's current settings (frequency, mode, power and similar): these show what you use the radio for.
 
-   The program adds no name, computer name, internet address or file from your computer. Text stored in the radio's memory is included only if we ask you to add an extra option to the line; with the line above it is not.
+   The program adds no name, computer name, internet address or file from your computer. Text stored in the radio's memory is included only if we asked you to add an extra option to the line; with the line above it is not.
 
    Press **Enter** to save, or `n` to throw everything away. Nothing is written unless you say yes.
 8. The file is saved in your **Documents** folder, named like `FT-991A-radio-probe-2026-11-14.json`; the program prints the full location and opens the folder. Attach the file to an email to the person who asked you. If you want to look inside first, open it with Notepad: it is plain text.
