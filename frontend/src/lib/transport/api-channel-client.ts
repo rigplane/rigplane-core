@@ -269,16 +269,19 @@ export function createApiChannelFetch(
       }
       void (async () => {
         try {
-          if (!(await waitForDrain(request))) return;
+          await waitForDrain(request);
+          if (request.settled) return;
           request.id = ++nextId; // allocated at emission: ids leave in order
           pending.set(request.id, request);
           send(request, TYPES.REQ_HEAD, head);
           const chunkSize = LIMITS.response_chunk_bytes;
           for (let offset = 0; offset < body.length; offset += chunkSize) {
-            if (!(await waitForDrain(request))) return; // aborted or timed out mid-body
+            await waitForDrain(request);
+            if (request.settled) return; // aborted or timed out mid-body
             send(request, TYPES.REQ_BODY, body.slice(offset, offset + chunkSize));
           }
-          if (!(await waitForDrain(request))) return;
+          await waitForDrain(request);
+          if (request.settled) return;
           send(request, TYPES.END, new Uint8Array(0));
         } catch (error) {
           if (!request.settled) fail(request, error instanceof Error ? error : new Error('send failed'));
