@@ -12,6 +12,12 @@ from dataclasses import dataclass
 from rigplane.commands import parse_civ_frame
 from rigplane.probe.model import TerminationInfo
 
+#: The display name of this command in every customer-facing hint.
+#: The Pro sidecar calls the probe under its own command name, so every
+#: hint takes a ``prog`` parameter defaulting to this instead of spelling
+#: the name inline. This is the one place the default is spelled.
+DEFAULT_PROBE_PROG = "rigplane probe"
+
 
 def termination_line(termination: TerminationInfo | None) -> str:
     """The plain-words stop line, or ``""`` when the run completed."""
@@ -21,6 +27,7 @@ def termination_line(termination: TerminationInfo | None) -> str:
 
 
 __all__ = [
+    "DEFAULT_PROBE_PROG",
     "AbsentAnswer",
     "absent_answered_line",
     "bad_choice_message",
@@ -99,9 +106,9 @@ class AbsentAnswer:
     reply_hex: str | None
 
 
-def probe_help() -> str:
-    """The ``rigplane probe`` help text."""
-    return """rigplane probe - record how your radio answers, into one file you can send to us.
+def probe_help(prog: str = DEFAULT_PROBE_PROG) -> str:
+    """The probe help text, naming the command the user actually ran."""
+    return f"""{prog} - record how your radio answers, into one file you can send to us.
 
 By default this only READS. It asks the radio the questions its profile lists
 (frequency, mode, settings...) and writes the replies to a file. It does not
@@ -111,9 +118,9 @@ write to radio memory. Nothing is uploaded: you decide whether to send the file.
 With no arguments it scans USB serial ports for your radio and asks which
 one is yours. You can also name the model and port yourself:
 
-  rigplane probe
-  rigplane probe FT-991A
-  rigplane probe FT-991A --port /dev/ttyUSB0
+  {prog}
+  {prog} FT-991A
+  {prog} FT-991A --port /dev/ttyUSB0
 
   --include-private   also read stored memory contents (may hold callsigns/text)
 """
@@ -327,7 +334,9 @@ def bad_choice_message() -> str:
     return "That is not one of the numbers above."
 
 
-def no_radio_found_message(profile: str | None) -> str:
+def no_radio_found_message(
+    profile: str | None, prog: str = DEFAULT_PROBE_PROG
+) -> str:
     """The checklist when discovery found no usable radio (exit 3)."""
     header = f"No {profile} found." if profile else "No radio found."
     hand = profile if profile else "<model>"
@@ -339,34 +348,36 @@ def no_radio_found_message(profile: str | None) -> str:
         "  - RigPlane Pro is closed, if you use it\n"
         "  - other programs that use the radio are closed\n"
         "If you know the port, name the model and port by hand: "
-        f"rigplane probe {hand} --port <device>"
+        f"{prog} {hand} --port <device>"
     )
 
 
-def port_without_profile_message() -> str:
+def port_without_profile_message(prog: str = DEFAULT_PROBE_PROG) -> str:
     """The sentence for ``--port`` without a profile (exit 2)."""
     return (
         "A port alone is not enough: name your radio model too, for example: "
-        "rigplane probe FT-991A --port COM5. "
+        f"{prog} FT-991A --port COM5. "
         "Or drop --port to scan for it automatically."
     )
 
 
-def single_no_tty_message(model: str, port: str) -> str:
+def single_no_tty_message(
+    model: str, port: str, prog: str = DEFAULT_PROBE_PROG
+) -> str:
     """The sentence for one radio with no terminal to confirm in (exit 2)."""
     return (
         f"Found {model} on {port}, but there is no terminal to confirm in. "
         "Rerun with --yes to take this radio, or name it by hand: "
-        f"rigplane probe {model} --port {port}."
+        f"{prog} {model} --port {port}."
     )
 
 
-def several_no_tty_message() -> str:
+def several_no_tty_message(prog: str = DEFAULT_PROBE_PROG) -> str:
     """The sentence for several radios with no terminal to choose in (exit 2)."""
     return (
         "More than one radio found and there is no terminal to choose in. "
         "Rerun naming your radio, for example: "
-        "rigplane probe <model> --port <device>."
+        f"{prog} <model> --port <device>."
     )
 
 

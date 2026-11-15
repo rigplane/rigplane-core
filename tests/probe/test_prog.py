@@ -155,20 +155,14 @@ def test_default_port_alone_names_default_command(tmp_path, monkeypatch) -> None
     assert "rigplane probe" in out
 
 
-def test_default_single_no_tty_names_default_command(
-    tmp_path, monkeypatch
-) -> None:
+def test_default_single_no_tty_names_default_command(tmp_path, monkeypatch) -> None:
     code, out = _run_main(monkeypatch, tmp_path, [], [_cat()])
     assert code == 2
     assert "rigplane probe FTX-1 --port fake-cat" in out
 
 
-def test_default_several_no_tty_names_default_command(
-    tmp_path, monkeypatch
-) -> None:
-    code, out = _run_main(
-        monkeypatch, tmp_path, ["--yes"], [_civ(), _cat()]
-    )
+def test_default_several_no_tty_names_default_command(tmp_path, monkeypatch) -> None:
+    code, out = _run_main(monkeypatch, tmp_path, ["--yes"], [_civ(), _cat()])
     assert code == 2
     assert "rigplane probe <model> --port <device>" in out
 
@@ -196,9 +190,7 @@ def test_custom_prog_port_alone(tmp_path, monkeypatch, capsys, prog: str) -> Non
 
 
 @pytest.mark.parametrize("prog", [PROG_WIN, PROG_SHORT])
-def test_custom_prog_single_no_tty(
-    tmp_path, monkeypatch, capsys, prog: str
-) -> None:
+def test_custom_prog_single_no_tty(tmp_path, monkeypatch, capsys, prog: str) -> None:
     _fake_discovery(monkeypatch, [_cat()])
     code = probe_main([], prog=prog)
     assert code == 2
@@ -208,9 +200,7 @@ def test_custom_prog_single_no_tty(
 
 
 @pytest.mark.parametrize("prog", [PROG_WIN, PROG_SHORT])
-def test_custom_prog_several_no_tty(
-    tmp_path, monkeypatch, capsys, prog: str
-) -> None:
+def test_custom_prog_several_no_tty(tmp_path, monkeypatch, capsys, prog: str) -> None:
     _fake_discovery(monkeypatch, [_civ(), _cat()])
     code = probe_main(["--yes"], prog=prog)
     assert code == 2
@@ -227,9 +217,7 @@ def test_custom_prog_help_usage(tmp_path, monkeypatch, capsys) -> None:
     assert "rigplane probe" not in out
 
 
-def test_probe_main_returns_int_never_raises(
-    tmp_path, monkeypatch, capsys
-) -> None:
+def test_probe_main_returns_int_never_raises(tmp_path, monkeypatch, capsys) -> None:
     _fake_discovery(monkeypatch, [])
     assert probe_main(["--port", "COM5"], prog=PROG_WIN) == 2
     assert probe_main([], prog=PROG_WIN) == 3

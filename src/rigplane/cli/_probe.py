@@ -1,4 +1,4 @@
-"""``rigplane probe``: read-only radio probe wiring (MOR-4464 PR A).
+"""Read-only radio probe wiring (MOR-4464 PR A).
 
 Thin CLI over ``rigplane.probe``: argument parsing, prompts, and the USB
 serial transport. Nothing here decides what is sent; the runner sends
@@ -33,6 +33,7 @@ from rigplane.core.serial_open import open_serial_port
 from rigplane.profiles.rig_loader import RigConfig
 from rigplane.probe import render
 from rigplane.probe.model import ProbeFile
+from rigplane.probe.render import DEFAULT_PROBE_PROG
 from rigplane.probe.readlist import ReadRequest, build_read_plan
 from rigplane.probe.runner import (
     CIV_TIMEOUT_S,
@@ -47,6 +48,7 @@ __all__ = [
     "UnknownProfileError",
     "UnsupportedProtocolError",
     "add_subparser",
+    "build_probe_parser",
     "execute",
     "open_result_folder",
     "resolve_config",
@@ -148,6 +150,7 @@ async def select_radio(
     ask: Callable[[str], str],
     emit: Callable[[str], None] = print,
     discover: Callable[[], Awaitable[list[RadioDiscoveryResult]]] | None = None,
+    prog: str = DEFAULT_PROBE_PROG,
 ) -> RadioSelection | int:
     """Pick the radio to probe: discovery result or an exit code.
 
@@ -172,7 +175,7 @@ async def select_radio(
     if config is not None:
         results = [found for found in results if _matches_config(rigs, found, config)]
     if not results:
-        emit(render.no_radio_found_message(profile_name))
+        emit(render.no_radio_found_message(profile_name, prog))
         return 3
     if len(results) == 1:
         found = results[0]
@@ -185,7 +188,7 @@ async def select_radio(
             emit(render.not_supported_message(picked.protocol_type))
             return 2
         if not yes and not is_tty:
-            emit(render.single_no_tty_message(found.model, found.port))
+            emit(render.single_no_tty_message(found.model, found.port, prog))
             return 2
         if not yes and not _is_yes(ask(render.confirm_radio_prompt())):
             return 0
@@ -195,7 +198,7 @@ async def select_radio(
     emit(render.radio_choice_list([(found.model, found.port) for found in results]))
     if not is_tty or yes:
         # No guessing: several radios need a person (or a named port) to choose.
-        emit(render.several_no_tty_message())
+        emit(render.several_no_tty_message(prog))
         return 2
     while True:
         answer = ask(render.radio_choice_prompt(len(results))).strip()
@@ -638,13 +641,8 @@ def _positive_baud(value: str) -> int:
     return number
 
 
-def add_subparser(sub: Any) -> argparse.ArgumentParser:
-    """Register the ``probe`` subparser."""
-    p: argparse.ArgumentParser = sub.add_parser(
-        "probe",
-        help="Record how your radio answers, into one file you can send to us.",
-        description=render.probe_help(),
-    )
+def add_probe_arguments(p: argparse.ArgumentParser) -> None:
+    """Add the probe options to a parser (one definition, both entry points)."""
     p.add_argument(
         "profile",
         nargs="?",
@@ -676,11 +674,32 @@ def add_subparser(sub: Any) -> argparse.ArgumentParser:
         action="store_true",
         help="Answer both prompts with yes (needed without a TTY)",
     )
+
+
+def add_subparser(sub: Any) -> argparse.ArgumentParser:
+    """Register the ``probe`` subparser."""
+    p: argparse.ArgumentParser = sub.add_parser(
+        "probe",
+        help="Record how your radio answers, into one file you can send to us.",
+        description=render.probe_help(),
+    )
+    add_probe_arguments(p)
     return p
 
 
-def run(args: argparse.Namespace) -> int:
-    """Driver for ``rigplane probe``. Returns a process exit code."""
+def build_probe_parser(prog: str = DEFAULT_PROBE_PROG) -> argparse.ArgumentParser:
+    """Standalone probe parser showing ``prog`` as the command name.
+
+    The Pro sidecar entry point parses with this; the usage line and
+    ``--help`` name the command the user actually ran.
+    """
+    parser = argparse.ArgumentParser(prog=prog, description=render.probe_help(prog))
+    add_probe_arguments(parser)
+    return parser
+
+
+def run(args: argparse.Namespace, prog: str = DEFAULT_PROBE_PROG) -> int:
+    """Driver for the radio probe. Returns a process exit code."""
     from rigplane.cli import _rigs_dir
     from rigplane.rig_loader import RigLoadError, discover_available_rigs
 
@@ -692,7 +711,7 @@ def run(args: argparse.Namespace) -> int:
     profile = getattr(args, "profile", None)
     port = getattr(args, "port", None)
     if port is not None and profile is None:
-        print(render.port_without_profile_message())
+        print(render.port_without_profile_message(prog))
         return 2
     if profile is not None and port is not None:
         try:
@@ -732,11 +751,13 @@ def run(args: argparse.Namespace) -> int:
                 sibling_configs=list(rigs.values()),
             )
         )
-    return asyncio.run(_run_with_selection(args, rigs))
+    return asyncio.run(_run_with_selection(args, rigs, prog))
 
 
 async def _run_with_selection(
-    args: argparse.Namespace, rigs: Mapping[str, RigConfig]
+    args: argparse.Namespace,
+    rigs: Mapping[str, RigConfig],
+    prog: str = DEFAULT_PROBE_PROG,
 ) -> int:
     """Discovery path: pick the radio, then probe it exactly like a named run."""
     from rigplane.cli import _rigs_dir
@@ -752,6 +773,7 @@ async def _run_with_selection(
         is_tty=is_tty,
         ask=lambda prompt: input(prompt),
         emit=print,
+        prog=prog,
     )
     if isinstance(selection, int):
         return selection
