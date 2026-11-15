@@ -43,6 +43,9 @@ const request = { sourceId: 'radio', receiver: 0,
   view: { follow: 'vfo' as const, spanHz: 100_000 }, width: 2800, maxFps: 20 };
 const grantedWire = { type: 'granted', sourceId: 'radio', receiver: 0, width: 2049, fps: 20,
   view: { startHz: 14_026_000, endHz: 14_074_000 }, coverage: { startHz: 14_026_000, endHz: 14_074_000 } };
+/** What parseScopeGranted must produce from grantedWire: the typed grant. */
+const grantedTyped = { type: 'granted', sourceId: 'radio', receiver: 0, width: 2049, fps: 20,
+  view: { startHz: 14_026_000, endHz: 14_074_000 }, coverage: { startHz: 14_026_000, endHz: 14_074_000 } };
 
 /** Drive one full scope negotiation and capture the observable outcome. */
 async function negotiate(withAttachAck: boolean) {
@@ -69,6 +72,11 @@ async function negotiate(withAttachAck: boolean) {
   }
 
   port.message(grantedWire);
+  // Positive evidence, in each run (with and without the attach ack): the
+  // granted text message was dispatched and produced the typed grant BEFORE
+  // any binary frame is delivered. Comparing to a typed literal (not to the
+  // other run) fails if the controller never registers channel.onMessage.
+  expect(get(stream.granted)).toEqual(grantedTyped);
   const buffer = scopeWire({ sourceId: 'radio' });
   port.receive(buffer);
   const outcome = {
