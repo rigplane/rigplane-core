@@ -6,7 +6,7 @@
  * `tests/test_api_channel_golden.py::test_golden_documents_replay_through_real_handlers`.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import type { MessageTransport } from '../message-transport';
+import type { MessageTransport, TransportAttach } from '../message-transport';
 import wire from '../api-channel-wire.json';
 import golden from '../api-channel-golden.json';
 import {
@@ -291,7 +291,10 @@ describe('DataChannelTransport', () => {
     const errors: unknown[] = [], closes: unknown[] = [];
     t.onError(() => errors.push(true));
     t.onClose((info) => closes.push(info));
-    t.open('ignored://', { protocols: [token] });
+    // The required `role` makes a roleless attach unrepresentable in TS;
+    // the runtime guard still fails closed for untyped callers, so the
+    // test builds the unsound attach on purpose.
+    t.open('ignored://', { protocols: [token] } as TransportAttach);
     await vi.advanceTimersByTimeAsync(0);
     expect(ch.sent).toEqual([]); // nothing on the wire
     expect(errors).toHaveLength(1);

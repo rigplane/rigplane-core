@@ -81,8 +81,8 @@ export interface AudioControllerBinding {
   current(epoch: number): boolean;
   protocols(): string[];
   /** The controller session's role — the attach's `role` (an auxiliary
-   *  client attaches as auxiliary; a keyed attach without one fails). */
-  role?(): ControllerRole;
+   *  client attaches as auxiliary; an attach without one is refused). */
+  role(): ControllerRole;
 }
 
 /** Stable per-page-context token so the server can coalesce this audio
@@ -489,12 +489,13 @@ class AudioManager {
 
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
     const url = `${proto}//${location.host}/api/v1/audio`;
-    const protocols = this.controller?.protocols() ?? [];
-    const epoch = this.controller?.epoch() ?? 0;
+    const controller = this.controller;
+    const protocols = controller?.protocols() ?? [];
+    const epoch = controller?.epoch() ?? 0;
     const ws = createMessageTransport();
     this.ws = ws;
-    ws.open(authenticatedWsUrl(url), protocols.length > 0
-      ? { protocols, role: this.controller?.role?.() }
+    ws.open(authenticatedWsUrl(url), controller !== undefined && protocols.length > 0
+      ? { protocols, role: controller.role() }
       : undefined);
 
     ws.onOpen(() => {

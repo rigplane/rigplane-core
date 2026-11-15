@@ -2,9 +2,9 @@
  * `DataChannelTransport`: the `MessageTransport` over one injected native
  * `RTCDataChannel` (C5a). The first text frame sent is the attach frame,
  * built from the committed wire contract: keyed labels take their key from
- * the offered `rigplane-controller-v1.<key>` token and their role from the
- * caller's attach (a keyed attach without a role is refused, never
- * defaulted); the api label is the keyless acquire path. The transport
+ * the offered `rigplane-controller-v1.<key>` token; every label, the
+ * keyless api acquire included, takes its role from the caller's attach
+ * (no attach or no role is refused, never defaulted). The transport
  * opens only once the attach is acknowledged (scope/audio: the
  * `attach_ack`; control: hello; api: on send — reliable), so no client
  * frame can precede the attach on the wire; lossy labels resend until the
@@ -117,24 +117,21 @@ export class DataChannelTransport implements MessageTransport {
     const key = controllerKeyFromProtocols(attach?.protocols);
     this.offeredToken = key === null ? null : CONTROLLER_PROTOCOL_PREFIX + key;
     this.acceptedToken = '';
-    if (attach !== undefined && key === null && this.channel.label !== 'api') {
-      // Keyless attach is only the api label's acquire path; the server
-      // refuses a null key on a keyed label.
+    if (key === null && this.channel.label !== 'api') {
+      // Keyless is only the api label's acquire path; the server refuses a
+      // null key on a keyed label, and an attach-less open offers none.
       this.refuseAttach('keyless attach refused');
       return;
     }
-    // A keyed attach carries the caller's controller role; the transport
-    // never defaults one (a defaulted primary would steal the session).
-    // The keyless api acquire names primary: the committed keyless shape.
-    const role = attach !== undefined && key !== null ? attach.role : 'primary';
+    // Every label — the keyless api acquire included — carries the caller's
+    // controller role; the transport never defaults one (a defaulted primary
+    // would steal the session), so a missing attach or role is refused.
+    const role = attach?.role;
     if (role !== 'primary' && role !== 'auxiliary') {
       this.refuseAttach('roleless attach refused');
       return;
     }
-    this.attachFrame =
-      attach === undefined && this.channel.label !== 'api'
-        ? null // attach-less channel: no attach step
-        : buildContractPayload(wire.payloads.attach_frame, { type: 'attach', controller_key: key, role, state_delta: 2 });
+    this.attachFrame = buildContractPayload(wire.payloads.attach_frame, { type: 'attach', controller_key: key, role, state_delta: 2 });
     this.channel.binaryType = 'arraybuffer';
     this.channel.onopen = () => this.onChannelOpen();
     this.channel.onmessage = (event) => this.onChannelMessage(event.data);
@@ -173,11 +170,8 @@ export class DataChannelTransport implements MessageTransport {
     });
   }
   private onChannelOpen(): void {
-    if (this.attachFrame === null) {
-      this.resolveAttach();
-      return;
-    }
-    this.channel.send(this.attachFrame);
+    // open() builds the frame before wiring this handler, so it is set here.
+    this.channel.send(this.attachFrame as string);
     if (this.channel.label === 'api') {
       this.resolveAttach(); // reliable: nothing to lose
       return;
