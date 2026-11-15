@@ -1,7 +1,7 @@
 /**
  * `DataChannelTransport` unit tests (C5a) over a fake channel: the
  * `MessageTransport` mapping and the per-label attach step, driven by the
- * committed attach documents (`api-channel-golden.json`) — replayed through
+ * committed golden documents (`api-channel-golden.json`) — replayed through
  * the real handlers by the Python counterpart
  * `tests/test_api_channel_golden.py::test_golden_documents_replay_through_real_handlers`.
  */
@@ -21,6 +21,8 @@ import {
 interface GoldenDoc {
   readonly text?: string;
   readonly decoded?: Record<string, unknown> | null;
+  readonly direction?: string;
+  readonly variant?: string;
 }
 const goldenDocs = golden.documents as Record<string, GoldenDoc>;
 
@@ -69,6 +71,17 @@ function goldenAttachText(name: string, key: string): string {
   return text.replace('<SESSION-KEY>', key);
 }
 
+/** The committed control hello, verbatim: only a server->client text
+ * document is the producer-built first frame the attach resolves on. */
+function goldenHelloText(): string {
+  const doc = goldenDocs.control_hello;
+  expect(doc.direction).toBe('server->client');
+  expect(doc.variant).toBe('text');
+  const text = doc.text;
+  if (text === undefined) throw new Error('golden document control_hello has no text');
+  return text;
+}
+
 // Compile-time check (never called): a native RTCDataChannel is exactly the
 // channel surface the constructor takes.
 export const nativeChannelAccepted: (channel: RTCDataChannel) => DataChannelTransport = (channel) =>
@@ -89,7 +102,7 @@ describe('DataChannelTransport', () => {
     t.open('ignored://label-is-the-connection', { protocols: [token], role: 'primary' });
     expect(t.state).toBe('connecting');
     ch.simulateOpen();
-    ch.simulateMessage(JSON.stringify({ type: 'hello', radio: 'IC-7610' }));
+    ch.simulateMessage(goldenHelloText());
     expect(t.state).toBe('open');
     expect(ch.binaryType).toBe('arraybuffer');
     ch.simulateError();
@@ -135,7 +148,7 @@ describe('DataChannelTransport', () => {
     ]);
     vi.advanceTimersByTime(ATTACH_RESEND_MS * 4); // ordered/reliable: no resend
     expect(control.state).toBe('connecting');
-    controlCh.simulateMessage(JSON.stringify({ type: 'hello', radio: 'IC-7610' }));
+    controlCh.simulateMessage(goldenHelloText());
     expect(control.state).toBe('open');
     expect(control.attachedProtocol).toBe(token);
     const audioCh = new FakeDataChannel('audio');
@@ -314,6 +327,36 @@ describe('DataChannelTransport', () => {
     ch.simulateMessage(goldenDocs.attach_ack_scope.text ?? '');
     expect(t.state).toBe('open');
     expect(opens).toHaveLength(1);
+  });
+  it('control: a hello that violates the control_hello contract never completes the attach', () => {
+    const hello = JSON.parse(goldenHelloText()) as Record<string, unknown>;
+    const missingRadio: Record<string, unknown> = { ...hello };
+    delete missingRadio.radio;
+    const malformed = [
+      JSON.stringify({ type: 'hello' }), // type alone is not the contract
+      JSON.stringify(missingRadio), // one required field removed
+      JSON.stringify({ ...hello, connected: 'true' }), // a required boolean as a string
+    ];
+    for (const frame of malformed) {
+      const ch = new FakeDataChannel('control');
+      const t = new DataChannelTransport(ch);
+      const opens: unknown[] = [], texts: string[] = [];
+      t.onOpen(() => opens.push(true));
+      t.onText((text) => texts.push(text));
+      t.open('ignored://', { protocols: [token], role: 'primary' });
+      ch.simulateOpen();
+      ch.simulateMessage(frame);
+      // delivered like any other frame, but it proves no attach
+      expect(texts).toEqual([frame]);
+      expect(t.state).toBe('connecting');
+      vi.advanceTimersByTime(ATTACH_TIMEOUT_MS * 2);
+      expect(opens).toEqual([]); // the attach fails at the timeout
+      expect(t.attachedProtocol).toBe('');
+      expect(t.state).toBe('connecting'); // control is closed by the peer
+      ch.close();
+      expect(opens).toEqual([]);
+      expect(t.state).toBe('closed');
+    }
   });
   it('delivers non-ack frames received before the ack; send waits for open', () => {
     const ch = new FakeDataChannel('scope');
