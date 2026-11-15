@@ -815,8 +815,7 @@ class ApiChannelHandler:
         source = self._conn if isinstance(self._conn, _BackpressureSource) else None
         if timeout is None:
             while (
-                source is not None
-                and source.buffered_bytes() > SEND_HIGH_WATER_BYTES
+                source is not None and source.buffered_bytes() > SEND_HIGH_WATER_BYTES
             ):
                 await asyncio.sleep(_DRAIN_POLL_S)
         else:

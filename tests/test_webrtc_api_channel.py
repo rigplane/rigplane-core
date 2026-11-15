@@ -615,9 +615,9 @@ def test_api_wire_definition_is_typed_and_json_stable() -> None:
     ) == (1, 2, 3, 4, 5, 6, 7)
     assert definition.header.size_bytes == _HEADER.size
     assert struct.Struct(definition.header.layout).size == _HEADER.size
-    assert struct.Struct(definition.header.layout).pack(
+    assert struct.Struct(definition.header.layout).pack(1, 2, 3, 0) == _HEADER.pack(
         1, 2, 3, 0
-    ) == _HEADER.pack(1, 2, 3, 0)
+    )
     limits = definition.limits
     assert limits.response_chunk_bytes == _CHUNK
     assert limits.max_request_body_bytes == 1024 * 1024
@@ -1013,8 +1013,9 @@ async def test_api_requests_do_not_inherit_attachment_ticket(
                 headers: dict[str, str] = {}
                 if key is not None:
                     headers["x-rigplane-controller"] = key
-                resp = await keyed.request(req_id, "GET", "/api/v1/_test/ambient",
-                                           headers=headers)
+                resp = await keyed.request(
+                    req_id, "GET", "/api/v1/_test/ambient", headers=headers
+                )
                 return resp.status, json.loads(resp.body.decode())
 
             async def _http_probe(key: str | None) -> tuple[int, dict[str, Any]]:
@@ -1029,8 +1030,13 @@ async def test_api_requests_do_not_inherit_attachment_ticket(
             # Alive: omitted header acts sessionless, other key acts as it.
             status, api_owner = await _keyed_probe(1, None)
             http_status, http_owner = await _http_probe(None)
-            assert (status, api_owner) == (http_status, http_owner) == (
-                200, {"tx_owner": None},
+            assert (
+                (status, api_owner)
+                == (http_status, http_owner)
+                == (
+                    200,
+                    {"tx_owner": None},
+                )
             )
             status, api_owner = await _keyed_probe(2, key_b)
             http_status, http_owner = await _http_probe(key_b)
@@ -1052,8 +1058,13 @@ async def test_api_requests_do_not_inherit_attachment_ticket(
             assert status == 403, (status, api_refused)
             status, api_owner = await _keyed_probe(4, None)
             http_status, http_owner = await _http_probe(None)
-            assert (status, api_owner) == (http_status, http_owner) == (
-                200, {"tx_owner": None},
+            assert (
+                (status, api_owner)
+                == (http_status, http_owner)
+                == (
+                    200,
+                    {"tx_owner": None},
+                )
             )
         finally:
             with contextlib.suppress(Exception):
@@ -1260,9 +1271,7 @@ async def test_api_cancel_after_end_drops_dispatched_request() -> None:
         await client.connect(server.port)
         await client.attach(None)
         with patch.object(WebServer, "_serve_capabilities", _gated_caps):
-            client.send_raw(
-                _frame(_REQ_HEAD, 1, _head("GET", "/api/v1/capabilities"))
-            )
+            client.send_raw(_frame(_REQ_HEAD, 1, _head("GET", "/api/v1/capabilities")))
             client.send_raw(_frame(_END, 1, b""))
             await await_until(
                 lambda: entered.is_set(),
@@ -1391,8 +1400,7 @@ async def test_api_preview_channel_loss_cleans_abandoned_bundle() -> None:
             # Lose the channel: teardown cancels the dispatched request.
             await client.close()
             await await_until(
-                lambda: request_tasks[0].cancelling() > 0
-                or request_tasks[0].done(),
+                lambda: request_tasks[0].cancelling() > 0 or request_tasks[0].done(),
                 timeout=10.0,
                 description="abandoned preview request cancelled",
             )
@@ -1488,8 +1496,7 @@ async def test_api_preview_deadline_cleans_abandoned_bundle() -> None:
             # cancelled, but the handler keeps ownership until the worker
             # finishes, so the timeout ERROR only goes out after release.
             await await_until(
-                lambda: request_tasks[0].cancelling() > 0
-                or request_tasks[0].done(),
+                lambda: request_tasks[0].cancelling() > 0 or request_tasks[0].done(),
                 timeout=10.0,
                 description="preview request cancelled by the deadline",
             )
@@ -1592,11 +1599,11 @@ async def test_api_stalled_buffer_timeout_closes_channel() -> None:
     assert conn.close_calls >= 1
     assert handler._in_flight == 0
     assert not handler._background
-    leftover = {
-        task
-        for task in asyncio.all_tasks()
-        if not task.done()
-    } - before - {asyncio.current_task()}
+    leftover = (
+        {task for task in asyncio.all_tasks() if not task.done()}
+        - before
+        - {asyncio.current_task()}
+    )
     assert leftover == set()
 
 
@@ -1708,7 +1715,8 @@ async def _http_post_keyed(
             f"POST {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n"
             f"Content-Length: {len(raw)}\r\nContent-Type: application/json\r\n"
             f"X-RigPlane-Controller: {key}\r\n"
-            "Connection: close\r\n\r\n".encode() + raw
+            "Connection: close\r\n\r\n".encode()
+            + raw
         )
         await writer.drain()
         head = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), timeout=10.0)
@@ -1921,9 +1929,7 @@ async def test_api_transmission_end_stays_served(tmp_path: Path) -> None:
         assert grant.status == 201, (grant.status, grant.body[:200])
         key = json.loads(grant.body.decode())["controller_key"]
 
-        async def _post(
-            req_id: int, path: str, payload: dict[str, Any]
-        ) -> _Response:
+        async def _post(req_id: int, path: str, payload: dict[str, Any]) -> _Response:
             return await client.request(
                 req_id,
                 "POST",
@@ -1949,13 +1955,14 @@ async def test_api_transmission_end_stays_served(tmp_path: Path) -> None:
         # Typed send_civ is TX-family too: under managed authority the
         # dispatch refuses even END frames with its own code — again the
         # point is pass-through, not our 403.
-        end_civ = {"name": "send_civ", "params": {"command": 28, "sub": 0, "data": "00"}}
+        end_civ = {
+            "name": "send_civ",
+            "params": {"command": 28, "sub": 0, "data": "00"},
+        }
         resp = await _post(3, "/api/v1/commands", end_civ)
         assert resp.status == 403, (resp.status, resp.body[:200])
         assert json.loads(resp.body.decode())["error"] == "managed_tx_refused"
-        resp = await _post(
-            4, "/api/v1/commands/batch", {"steps": [end_civ]}
-        )
+        resp = await _post(4, "/api/v1/commands/batch", {"steps": [end_civ]})
         assert resp.status == 200, (resp.status, resp.body[:200])
         batch_obj = json.loads(resp.body.decode())
         assert batch_obj["results"][0]["ok"] is False, batch_obj
@@ -2085,10 +2092,7 @@ def test_api_tx_classification_sweeps_route_table() -> None:
         )
         is None
     )
-    assert (
-        api_channel_tx_refusal("POST", "/api/v1/commands", {"name": "nope"})
-        is None
-    )
+    assert api_channel_tx_refusal("POST", "/api/v1/commands", {"name": "nope"}) is None
     assert api_channel_tx_refusal("POST", "/api/v1/commands", None) is None
     # Batch: any TX-start step refuses the whole batch.
     assert (
@@ -2156,15 +2160,8 @@ def test_api_tx_classification_sweeps_route_table() -> None:
     )
     assert api_channel_tx_refusal("POST", "/api/v1/commands/batch", None) is None
     # CW send keys; CW stop ends.
-    assert (
-        api_channel_tx_refusal(
-            "POST", "/api/v1/radio/cw/send", {"text": "hi"}
-        )
-        == tx
-    )
-    assert (
-        api_channel_tx_refusal("POST", "/api/v1/radio/cw/stop", {}) is None
-    )
+    assert api_channel_tx_refusal("POST", "/api/v1/radio/cw/send", {"text": "hi"}) == tx
+    assert api_channel_tx_refusal("POST", "/api/v1/radio/cw/stop", {}) is None
     assert api_channel_tx_refusal("POST", "/api/v1/radio/cw/send", None) is None
     # Raw transactions: only exact transmission-end frames pass.
     assert (
