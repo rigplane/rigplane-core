@@ -896,6 +896,157 @@ async def test_api_cancel_drops_request() -> None:
 
 
 @_webrtc
+async def test_api_two_channels_share_one_key() -> None:
+    """Two api channels on one key: independent lifecycle, full cleanup.
+
+    Both attach with the same controller key and serve; closing either
+    first leaves the other serving on its own lifecycle entry; session
+    expiry and key release then close every remaining channel and empty
+    the session, after which the key is refused.
+    """
+    import time as _time
+
+    from rigplane.runtime.controller_authority import ControllerError
+
+    server = await _stand_up_light()
+    clients: list[_ApiClient] = []
+    try:
+        prober = _ApiClient()
+        clients.append(prober)
+        await prober.connect(server.port)
+        await prober.attach(None)
+
+        async def _grant() -> str:
+            grant = await prober.request(
+                len(prober._queues) + 1,
+                "POST",
+                "/api/v1/controller",
+                headers={"content-type": "application/json"},
+                body=json.dumps({"kind": "pro"}).encode(),
+            )
+            assert grant.status == 201, (grant.status, grant.body[:200])
+            return str(json.loads(grant.body.decode())["controller_key"])
+
+        async def _keyed(key: str) -> _ApiClient:
+            client = _ApiClient()
+            clients.append(client)
+            await client.connect(server.port)
+            await client.attach(key)
+            return client
+
+        def _bump_deadlines(seconds: float) -> None:
+            controller = server._controller  # noqa: SLF001
+            for session in controller._sessions.values():  # noqa: SLF001
+                session.deadline = _time.monotonic() + seconds
+
+        def _channel_count() -> int:
+            controller = server._controller  # noqa: SLF001
+            return sum(
+                len(session.channels)  # noqa: SLF001
+                for session in controller._sessions.values()  # noqa: SLF001
+            )
+
+        key = await _grant()
+        _bump_deadlines(120.0)
+        first = await _keyed(key)
+        second = await _keyed(key)
+        controller = server._controller  # noqa: SLF001
+        await await_until(
+            lambda: _channel_count() == 2,
+            timeout=10.0,
+            description="two api channels attached",
+        )
+        for client in (first, second):
+            resp = await client.request(1, "GET", "/api/v1/info")
+            assert resp.status == 200, (resp.status, resp.body[:200])
+
+        # Closing the first leaves the second serving on its own entry.
+        await first.close()
+        await await_until(
+            lambda: _channel_count() == 1,
+            timeout=10.0,
+            description="first api channel detached",
+        )
+        resp = await second.request(2, "GET", "/api/v1/info")
+        assert resp.status == 200, (resp.status, resp.body[:200])
+
+        # Session expiry closes the remaining channel and empties cleanup.
+        for session in controller._sessions.values():  # noqa: SLF001
+            session.deadline = 0.0
+        with pytest.raises(ControllerError):
+            controller.credential(key)
+        await await_until(
+            lambda: not controller._sessions,  # noqa: SLF001
+            timeout=10.0,
+            description="expired session cleaned up",
+        )
+        second.send_raw(_frame(_REQ_HEAD, 3, _head("GET", "/api/v1/info")))
+        second.send_raw(_frame(_END, 3, b""))
+        with pytest.raises(asyncio.TimeoutError):
+            await second._next_for(3, timeout=2.0)
+
+        # A fresh session: closing the second-attached channel first, then
+        # release, closes everything and invalidates the key.
+        key2 = await _grant()
+        _bump_deadlines(120.0)
+        third = await _keyed(key2)
+        fourth = await _keyed(key2)
+        await await_until(
+            lambda: _channel_count() == 2,
+            timeout=10.0,
+            description="two api channels attached again",
+        )
+        for client in (third, fourth):
+            resp = await client.request(1, "GET", "/api/v1/info")
+            assert resp.status == 200, (resp.status, resp.body[:200])
+        await fourth.close()
+        await await_until(
+            lambda: _channel_count() == 1,
+            timeout=10.0,
+            description="second-attached api channel detached",
+        )
+        resp = await third.request(2, "GET", "/api/v1/info")
+        assert resp.status == 200, (resp.status, resp.body[:200])
+        await controller.release(key2)
+        await await_until(
+            lambda: not controller._sessions,  # noqa: SLF001
+            timeout=10.0,
+            description="released session cleaned up",
+        )
+        third.send_raw(_frame(_REQ_HEAD, 3, _head("GET", "/api/v1/info")))
+        third.send_raw(_frame(_END, 3, b""))
+        with pytest.raises(asyncio.TimeoutError):
+            await third._next_for(3, timeout=2.0)
+        with pytest.raises(ControllerError):
+            controller.credential(key2)
+        # The dead key is refused at attach too.
+        fifth = _ApiClient()
+        clients.append(fifth)
+        await fifth.connect(server.port)
+        assert fifth._channel is not None
+        fifth._channel.send(
+            json.dumps(
+                {
+                    "type": "attach",
+                    "controller_key": key2,
+                    "state_delta": 2,
+                    "role": "primary",
+                }
+            )
+        )
+        await await_until(
+            lambda: fifth._closed.is_set(),
+            timeout=10.0,
+            description="attach with dead key refused",
+        )
+    finally:
+        for client in clients:
+            with contextlib.suppress(Exception):
+                await client.close()
+        await _tear_down(server)
+
+
+@_webrtc
 async def test_api_cancel_after_end_drops_dispatched_request() -> None:
     """CANCEL after END cancels the dispatched task and releases its slot.
 
