@@ -626,6 +626,7 @@ def test_api_wire_definition_is_typed_and_json_stable() -> None:
     assert limits.send_high_water_bytes == 256 * 1024
     assert limits.send_low_water_bytes == 64 * 1024
     wire = dataclasses.asdict(definition)
+    wire.pop("payloads")  # pinned in tests/test_api_channel_wire_json.py
     assert json.loads(json.dumps(wire)) == {
         "version": _API_VERSION,
         "header": {
