@@ -998,8 +998,7 @@ def _request_head(
 async def api_channel_golden_documents() -> dict[str, Any]:
     """Every concrete frame sequence the browser must handle, from the
     server's own encoders; committed to ``api-channel-golden.json`` and
-    replayed for real by the test named in ``_tested_by``. Regenerate
-    from the repo root:
+    replayed for real by the test named in ``_tested_by``. Regenerate:
 
         uv run python -c "import asyncio, json; from rigplane.web.api_channel import api_channel_golden_documents as d; print(json.dumps(asyncio.run(d())))" > frontend/src/lib/transport/api-channel-golden.json
     """
