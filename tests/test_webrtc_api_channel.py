@@ -1117,13 +1117,20 @@ async def test_api_transmission_end_stays_served(tmp_path: Path) -> None:
         )
         assert resp.status == 403, (resp.status, resp.body[:200])
         assert json.loads(resp.body.decode())["error"] == "managed_tx_refused"
+        # Typed send_civ is TX-family too: under managed authority the
+        # dispatch refuses even END frames with its own code — again the
+        # point is pass-through, not our 403.
         end_civ = {"name": "send_civ", "params": {"command": 28, "sub": 0, "data": "00"}}
         resp = await _post(3, "/api/v1/commands", end_civ)
-        assert resp.status == 200, (resp.status, resp.body[:200])
+        assert resp.status == 403, (resp.status, resp.body[:200])
+        assert json.loads(resp.body.decode())["error"] == "managed_tx_refused"
         resp = await _post(
             4, "/api/v1/commands/batch", {"steps": [end_civ]}
         )
         assert resp.status == 200, (resp.status, resp.body[:200])
+        batch_obj = json.loads(resp.body.decode())
+        assert batch_obj["steps"][0]["ok"] is False, batch_obj
+        assert batch_obj["steps"][0]["error"] == "managed_tx_refused", batch_obj
         resp = await _post(5, "/api/v1/radio/cw/stop", {})
         assert resp.status == 200, (resp.status, resp.body[:200])
         # Managed momentary PTT never serves over HTTP (409): the point is
