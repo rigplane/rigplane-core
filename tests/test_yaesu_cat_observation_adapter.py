@@ -53,9 +53,10 @@ from rigplane.backends.yaesu_cat.transport import (
 )
 from rigplane.profiles.rig_loader import RigConfig, load_rig
 from rigplane_testkit.sim.adapters.yaesu_cat import YaesuCatSerialFake
-from rigplane_testkit.sim.engine import Refused
+from rigplane_testkit.sim.engine import Ok, Refused
 from rigplane_testkit.yaesu.replay import REFUSAL
 from test_web_server import _addr, _http_get
+from test_yaesu_split_vfo_profile import _http_post_command
 from testkit.test_g7250_session_wire import (
     _ANSWER_WINDOW_S,
     _DEVICE,
@@ -4089,6 +4090,12 @@ async def _serve_sourceless_yaesu(
 
     def logged(line: str) -> Any:
         wire.append(line)
+        if line in ("BI0;", "BI1;"):
+            # The FT-991A sim profile models no break-in: accept the write
+            # (Yaesu SET convention: no reply data) so the command path is
+            # exercisable without extending the sim. The pin is the wire
+            # itself — the log above records every line either way.
+            return None, Ok()
         return handle(line)
 
     monkeypatch.setattr(fake.model, "handle_with_outcome", logged)
@@ -4230,3 +4237,23 @@ async def test_g7250_serves_unsupported_over_http(
         target = state.txTarget
         assert isinstance(target, UnknownTxTargetPublic)
         assert target.reason == "unsupported"
+
+
+@pytest.mark.realtime(reason="real HTTP socket and the production Yaesu command path")
+@pytest.mark.asyncio
+async def test_sourceless_break_in_command_reaches_radio(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Gate round 1, P1-1 (backend pin, kept tiny): ``POST /api/v1/commands
+    set_break_in`` for the sourceless profile travels the production command
+    path (HTTP admission → command queue → ``YaesuCatRadio.set_break_in``)
+    and reaches the CAT wire as ``BI1;`` — the frontend exception that arms
+    break-in on a sourceless target has a working command behind it."""
+    async with _serve_sourceless_yaesu(monkeypatch) as (web, wire):
+        host, port = _addr(web)
+        body = await _http_post_command(host, port, "set_break_in", {"mode": 1})
+        assert body["ok"] is True
+        async with asyncio.timeout(10):
+            while "BI1;" not in wire:
+                await asyncio.sleep(0.05)
+        assert "BI1;" in wire

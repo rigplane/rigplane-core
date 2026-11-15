@@ -17,7 +17,7 @@
  */
 import type { VfoScheme } from '$lib/types/capabilities';
 import type { NrLevelProjection, ControlDisplayDomain } from '$lib/radio/filter-controls';
-import type { FrequencyPermit, TxPermit } from '$lib/utils/tx-permit';
+import { isSourcelessPermitUnknown, type FrequencyPermit, type TxPermit } from '$lib/utils/tx-permit';
 import type { MeterSourceIdentity as PrimitiveMeterSourceIdentity } from '../primitives/meters/meter-ballistics.svelte';
 import { invalid, record, exactKeys, str } from './validator-primitives';
 
@@ -2566,15 +2566,15 @@ export function validateRadioViewModel(value: unknown): RadioViewModel {
   // must ALSO record that the affordance is disabled. Same shape as the
   // `band` invariant above (MOR-1294): a producer cannot ship the permissive
   // half of a TX-adjacent pair while silently dropping the restrictive half.
-  // MOR-4433 exception, mirroring `deriveCwKeyerReasons`: a sourceless
+  // MOR-4433 exception, exactly the adapter's (`deriveCwKeyerReasons`)
+  // narrow case via the shared `isSourcelessPermitUnknown`: a sourceless
   // target (`txTarget` `unsupported` — the sourceless class: G7250 and
   // the sourceless-Yaesu shape) has no source a wait could resolve, so
-  // its unknown permit does not disable break-in and
-  // no entry is required for it. A sourced-but-unobserved target still does.
-  const targetUnsupported =
-    txTarget.status === 'unknown' && txTarget.reason === 'unsupported';
+  // the unknown permit FOR that reason does not disable break-in and
+  // no entry is required for it. Any other non-allowed permit —
+  // sourced-but-unobserved target, unconfigured bands, denied — still does.
   if (cwKeyer !== undefined && cwKeyer.breakIn.availability.structural
-    && txPermit.status !== 'allowed' && !targetUnsupported
+    && txPermit.status !== 'allowed' && !isSourcelessPermitUnknown(txTarget, txPermit)
     && !disabledReasons.some((r) => r.field === 'cwKeyer.breakIn')) {
     invalid('$.disabledReasons', "a 'cwKeyer.breakIn' entry whenever txPermit is not 'allowed' (fail-open otherwise)");
   }

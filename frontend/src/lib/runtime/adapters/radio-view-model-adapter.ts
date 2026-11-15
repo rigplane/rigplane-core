@@ -47,7 +47,9 @@ import { isFieldAvailable, isFieldFreshlyObserved } from '$lib/state/field-statu
 import { modInputStateKey } from '$lib/radio/mod-input';
 import { flattenBands, findActiveBand, receiverInRepeaterBand } from '$lib/radio/band-plan';
 import { shiftFromDirection } from '$lib/radio/repeater-transitions';
-import { getFrequencyPermit, type FrequencyPermit, type TxPermit } from '$lib/utils/tx-permit';
+import {
+  getFrequencyPermit, isSourcelessPermitUnknown, type FrequencyPermit, type TxPermit,
+} from '$lib/utils/tx-permit';
 import {
   relativeVfoIdentityUnknown,
   resolveFilterModeConfig,
@@ -1704,7 +1706,7 @@ function deriveCwKeyer(state: ServerState | null, caps: Capabilities | null): Cw
  */
 function deriveCwKeyerReasons(
   cwKeyer: CwKeyerViewModel | undefined, modeFilter: ModeFilterViewModel | undefined,
-  txPermit: FrequencyPermit, txTarget: TxCapabilityFacts['txTarget'],
+  txPermit: FrequencyPermit, txTarget: TxTargetViewModel,
 ): Reason[] {
   if (!cwKeyer) return [];
   const modeReading = modeFilter?.currentMode.reading;
@@ -1717,12 +1719,10 @@ function deriveCwKeyerReasons(
     reasons.push({ field: 'cwKeyer.twinPeak', code: 'mutually-exclusive-control' });
   }
   // MOR-4433: the permit unknown that follows from a SOURCED target still
-  // disables break-in; only the unknown that follows from NO source does not.
-  const permitUnknownFromNoSource = txPermit.status === 'unknown'
-    && txPermit.reason === 'tx-target-unknown'
-    && txTarget.status === 'unknown' && txTarget.reason === 'unsupported';
+  // disables break-in; only the unknown that follows from NO source does not
+  // — the shared `isSourcelessPermitUnknown` decision, no local copy.
   if (cwKeyer.breakIn.availability.structural && txPermit.status !== 'allowed'
-    && !permitUnknownFromNoSource) {
+    && !isSourcelessPermitUnknown(txTarget, txPermit)) {
     reasons.push({
       field: 'cwKeyer.breakIn',
       code: txPermit.status === 'denied' ? 'out-of-band'
@@ -2336,7 +2336,7 @@ function deriveRadioViewModel(
       disabledReasons.push({ field: 'rfFrontEnd.preamp', code: 'receiver-lacks-control' });
     }
   }
-  disabledReasons.push(...deriveCwKeyerReasons(cwKeyer, modeFilter, txPermit, facts.txTarget));
+  disabledReasons.push(...deriveCwKeyerReasons(cwKeyer, modeFilter, txPermit, txTarget));
 
   return {
     topologyId: `${topology.structuralCount}/${topology.scheme}`,

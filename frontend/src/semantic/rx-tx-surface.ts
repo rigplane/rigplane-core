@@ -13,6 +13,7 @@
 import { t } from '$lib/i18n';
 import { BLOCKED_REASON_KEY } from '$lib/i18n/blocked-reasons';
 import type { DisabledReason, DisabledReasonCode, RadioViewModel, TxTargetViewModel } from './radio-view-model';
+import { isSourcelessPermitUnknown } from '$lib/utils/tx-permit';
 import { FAULT_REASON_CODES, KEY_BLOCKED_REASON_CODES } from './rx-tx-codes';
 
 /**
@@ -226,12 +227,15 @@ export function keyBlockedReasons(
   // no source that a wait could resolve. Any other unknown reason (a source
   // exists but is unobserved, stale, or contradictory) still blocks, as does
   // an unconfigured band table.
+  // No source (`unsupported`) is a target fact, permit-independent: the
+  // target line stays suppressed for sourceless radios whatever the permit.
+  // The permit line uses the shared narrow decision below.
   const targetUnsupported =
     view.txTarget.status === 'unknown' && view.txTarget.reason === 'unsupported';
   if (view.txTarget.status !== 'known' && !targetUnsupported) add('tx-target-unknown');
   if (view.txPermit.status === 'denied') add('tx-permit-denied');
   if (view.txPermit.status === 'unknown'
-    && !(targetUnsupported && view.txPermit.reason === 'tx-target-unknown')) {
+    && !isSourcelessPermitUnknown(view.txTarget, view.txPermit)) {
     add('tx-permit-unknown');
   }
   // MOR-1906. A 'failed' phase is a FAULT, not a session — and it blocks on the
