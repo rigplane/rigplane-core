@@ -7851,15 +7851,16 @@ class WebServer:
         admitted in every mode (it returns ``None`` — the channel holds
         no ticket and every request runs the shared HTTP controller gate
         with its own key), because it is how a browser acquires its
-        first key. A keyed ``api`` attach validates the key with
-        ``credential`` — liveness only, no primary/auxiliary side
-        effects — so session end and peer loss fence it like the other
-        channels.
+        first key. A keyed ``api`` attach mints one distinct
+        non-primary channel ticket per channel with ``channel_ticket``
+        — liveness only, no primary/auxiliary side effects — so two
+        channels on one key stay independent while session end and peer
+        loss fence each like the other channels.
         """
         if kind == "api":
             if params.controller_key is None:
                 return None
-            return self._controller.credential(params.controller_key)
+            return self._controller.channel_ticket(params.controller_key)
         if params.controller_key is None:
             if self._controller.mode != "local":
                 raise ControllerError("controller_invalid")
