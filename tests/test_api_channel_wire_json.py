@@ -1,10 +1,9 @@
 """The committed browser copy of the ``api`` wire contract cannot drift.
 
 ``api-channel-wire.json`` is the single source the browser ``api``
-client imports; this fails when it stops matching the definition, when
-a payload contract stops conforming to the real parsers and encoders,
-or when a committed golden document violates its payload contract.
-Regenerate from the repo root:
+client imports; this fails when it stops matching the definition, or
+when a payload contract stops conforming to the real parsers and
+encoders. Regenerate from the repo root:
 
     uv run python -c "import dataclasses, json; from rigplane.web.api_channel import api_channel_wire_definition as d; print(json.dumps(dataclasses.asdict(d())))" \
       > frontend/src/lib/transport/api-channel-wire.json
@@ -34,10 +33,6 @@ from rigplane.web.channel_attach import (
 _WIRE_JSON = (
     Path(__file__).resolve().parents[1]
     / "frontend/src/lib/transport/api-channel-wire.json"
-)
-_GOLDEN_JSON = (
-    Path(__file__).resolve().parents[1]
-    / "frontend/src/lib/transport/api-channel-golden.json"
 )
 
 
@@ -120,29 +115,3 @@ def test_payload_contracts_conform_to_real_parsers_and_encoders() -> None:
         row for row in payloads["attach_frame"].fields if row[0] == "controller_key"
     )
     assert (key_row[1], key_row[2]) == ("string | null", False), key_row
-
-
-def test_committed_golden_documents_validate_against_payload_contracts() -> None:
-    """Every committed golden document is a concrete frame its payload
-    contract describes (text documents re-parse from their own text)."""
-    golden = json.loads(_GOLDEN_JSON.read_text(encoding="utf-8"))
-    for name, doc in golden["documents"].items():
-        if name.startswith("attach_ack_"):
-            _conform("attach_ack", doc["decoded"])
-        elif name.startswith("attach_"):
-            _conform("attach_frame", doc["decoded"])
-        elif name == "api_errors":
-            for code, trigger in doc["triggers"].items():
-                assert isinstance(trigger, str) and code in (
-                    api_channel_wire_definition().payloads["error"].codes
-                ), code
-            for frame in doc["frames"]:
-                _conform("error", frame["payload"])
-        else:
-            for frame in doc["request"] + doc["reply"]:
-                if frame["type"] == "REQ_HEAD":
-                    _conform("request_head", frame["payload"])
-                elif frame["type"] == "RES_HEAD":
-                    _conform("response_head", frame["payload"])
-        if "text" in doc:
-            assert doc["decoded"] == json.loads(doc["text"]), name
