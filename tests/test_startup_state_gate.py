@@ -1155,27 +1155,23 @@ async def test_rigctld_unanswered_ptt_releases_the_gate_with_a_warning(
             caplog.at_level(logging.WARNING, logger="rigplane.web.web_startup"),
         ):
             await asyncio.wait_for(server.start(), timeout=60.0)
-        assert binds == ["bind"]
-        assert scheduler.startup_defect is None
         # Not vacuous: ``t`` was asked repeatedly — every timeout still
         # reconnects, so several silent asks reached it, each on its own
         # connection.
         assert fake.t_requests >= 3
         assert len(fake.t_connection_ids) >= 3
         ptt = FieldPath.global_("tx_state", "ptt")
+        _assert_released_with_one_named_warning(
+            binds=binds,
+            scheduler=scheduler,
+            caplog=caplog,
+            path=ptt,
+            # The lane files its non-critical outcome into the scheduler:
+            # the real ``t`` command and the recorded timeout cause.
+            warning_substring="global.tx_state.ptt: t; timed out",
+        )
         assert scheduler.consecutive_request_timeouts(ptt) > 0
         assert scheduler.startup_read_command(ptt) == "t"
-        warnings = [
-            record.getMessage()
-            for record in caplog.records
-            if record.levelno == logging.WARNING
-            and record.name == "rigplane.web.web_startup"
-            and "global.tx_state.ptt" in record.getMessage()
-        ]
-        assert len(warnings) == 1, [record.getMessage() for record in caplog.records]
-        # The lane files its non-critical outcome into the scheduler: the
-        # real ``t`` command and the recorded timeout cause.
-        assert "global.tx_state.ptt: t; timed out" in warnings[0], warnings[0]
         await server.stop()
     finally:
         await radio.disconnect()
@@ -1253,28 +1249,24 @@ async def test_rigctld_refused_ptt_opens_with_tx_unknown(
             caplog.at_level(logging.WARNING, logger="rigplane.web.web_startup"),
         ):
             await asyncio.wait_for(server.start(), timeout=30.0)
-        assert binds == ["bind"]
         # Not vacuous: the refused `t` was asked on the still-open connection.
         assert fake.refused_requests >= 1
         assert fake.connections == 1
-        assert scheduler.startup_defect is None
+        _assert_released_with_one_named_warning(
+            binds=binds,
+            scheduler=scheduler,
+            caplog=caplog,
+            path=PTT,
+            # The lane files the refused outcome into the scheduler: the
+            # real ``t`` command and the recorded refusal cause.
+            warning_substring="global.tx_state.ptt: t; refused",
+        )
         assert scheduler.consecutive_refusals(PTT) >= 1
         assert scheduler.consecutive_request_timeouts(PTT) == 0
         assert scheduler.startup_read_command(PTT) == "t"
         assert PTT not in scheduler.unobserved_startup_paths(
             _observed_paths(server, scheduler)
         )
-        warnings = [
-            record.getMessage()
-            for record in caplog.records
-            if record.levelno == logging.WARNING
-            and record.name == "rigplane.web.web_startup"
-            and "global.tx_state.ptt" in record.getMessage()
-        ]
-        assert len(warnings) == 1, [record.getMessage() for record in caplog.records]
-        # The lane files the refused outcome into the scheduler: the real
-        # ``t`` command and the recorded refusal cause.
-        assert "global.tx_state.ptt: t; refused" in warnings[0], warnings[0]
         await server.stop()
     finally:
         await radio.disconnect()
@@ -1585,28 +1577,29 @@ _FTX1_CAT_PAIRS = (
 )
 
 
-def _ftx1_table_silent_on_ft() -> RecordedCatAnswerTable:
-    """The bench FTX-1 recording with every ``FT;`` answer dropped.
+def _ftx1_table_with_tx_answers(
+    *,
+    silent: tuple[str, ...] = (),
+    refused: tuple[str, ...] = (),
+) -> RecordedCatAnswerTable:
+    """The bench FTX-1 recording with TX-lane answers re-scripted.
 
     :func:`RecordedCatAnswerTable.from_cat_pairs` records a request the
     next request overtakes without a reply as silence — the bench fact
-    "this read timed out" — so dropping the recorded ``FT0;`` replies
-    replays a radio that answers everything except ``FT;``, with no
-    hand-placed timeout standing in for the wire.
+    "this read timed out" — so dropping a command's replies replays a
+    radio that stays silent for it, and replacing them with ``?;``
+    replays a radio that refuses it, with no hand-placed timeout
+    standing in for the wire.
 
-    The live fake holds USB state while the bench recorded the MAIN/SUB
+    The shared row surgery repairs what the bench contradicts: the live
+    fake holds USB state while the bench recorded the MAIN/SUB
     manual-notch reads in FM (``BP01F35;``/``BP11F35;`` — the FM answer
     has no decimal form, see the ``available_when`` note on the notch
-    policy in ``rigs/ftx1.toml``). Those two replies are repaired to the
-    USB decimal form (``150`` mirrors the SUB USB sample ``BP11150;``
-    from the same session); without the repair the profile's decimal
-    parse would reject a bench answer the live radio state contradicts.
-
-    The same surgery answers ``RA0;`` (MAIN attenuator) with the
-    profile's well-formed OFF value: the recording holds exactly one
-    ``RA0;`` row — the probe window's refusal, which the 10-minute Core
-    session never re-asked — while this scenario needs the read answered
-    like every other non-TX-target read.
+    policy in ``rigs/ftx1.toml``), so those two replies take the USB
+    decimal form (``150`` mirrors the SUB USB sample ``BP11150;`` from
+    the same session); and the recording's single ``RA0;`` row — the
+    probe window's refusal, never re-asked — is answered with the
+    profile's well-formed OFF value.
     """
     rows = [
         json.loads(line) for line in _FTX1_CAT_PAIRS.read_text().splitlines() if line
@@ -1617,8 +1610,8 @@ def _ftx1_table_silent_on_ft() -> RecordedCatAnswerTable:
         if row["dir"] == "c2r":
             pending = str(row["line"])
             kept.append(row)
-        elif pending == "FT;" and reply_closes(pending, str(row["line"])):
-            pending = None  # swallow the FT0; reply: FT; stays silent
+        elif pending in silent and reply_closes(pending, str(row["line"])):
+            pending = None  # swallow the reply: the command stays silent
         else:
             if row["dir"] == "r2c" and row["line"] in ("BP01F35;", "BP11F35;"):
                 row = {**row, "line": str(row["line"])[:4] + "150;"}
@@ -1627,20 +1620,74 @@ def _ftx1_table_silent_on_ft() -> RecordedCatAnswerTable:
                 and row["line"] == "?;"
                 and reply_closes(pending, str(row["line"]))
             ):
-                # Bench probe refused the attenuator read; this scenario
-                # answers it OFF (see the docstring).
                 row = {**row, "line": "RA00;"}
+            elif (
+                pending in refused
+                and reply_closes(pending, str(row["line"]))
+                and row["line"] != "?;"
+            ):
+                # Bench answered (receiving); this scenario refuses it.
+                row = {**row, "line": "?;"}
             pending = None
             kept.append(row)
-    table = RecordedCatAnswerTable.from_cat_pairs(kept)
-    ft_answer = table.lookup("FT;")
-    assert ft_answer is not None and ft_answer.kind == "silence"
-    st_answer = table.lookup("ST;")
-    assert st_answer is not None and st_answer.reply == "ST0;"
+    return RecordedCatAnswerTable.from_cat_pairs(kept)
+
+
+def _assert_ftx1_table_basics(table: RecordedCatAnswerTable) -> None:
+    """Pin the shared surgery: notch repair and attenuator answer."""
     assert table.lookup("BP01;") is not None
     assert table.lookup("BP01;").reply == "BP01150;"  # type: ignore[union-attr]
     ra_answer = table.lookup("RA0;")
     assert ra_answer is not None and ra_answer.reply == "RA00;"
+
+
+def _ftx1_table_silent_on_ft() -> RecordedCatAnswerTable:
+    """The bench FTX-1 recording with every ``FT;`` answer dropped."""
+    table = _ftx1_table_with_tx_answers(silent=("FT;",))
+    ft_answer = table.lookup("FT;")
+    assert ft_answer is not None and ft_answer.kind == "silence"
+    st_answer = table.lookup("ST;")
+    assert st_answer is not None and st_answer.reply == "ST0;"
+    _assert_ftx1_table_basics(table)
+    return table
+
+
+def _ftx1_table_refused_tx() -> RecordedCatAnswerTable:
+    """The bench FTX-1 recording with the ``TX;`` answer replaced by ``?;``."""
+    table = _ftx1_table_with_tx_answers(refused=("TX;",))
+    tx_answer = table.lookup("TX;")
+    assert tx_answer is not None and tx_answer.kind == "refusal"
+    st_answer = table.lookup("ST;")
+    assert st_answer is not None and st_answer.reply == "ST0;"
+    ft_answer = table.lookup("FT;")
+    assert ft_answer is not None and ft_answer.reply == "FT0;"
+    _assert_ftx1_table_basics(table)
+    return table
+
+
+def _ftx1_table_silent_on_st() -> RecordedCatAnswerTable:
+    """The bench FTX-1 recording with every ``ST;`` answer dropped."""
+    table = _ftx1_table_with_tx_answers(silent=("ST;",))
+    st_answer = table.lookup("ST;")
+    assert st_answer is not None and st_answer.kind == "silence"
+    tx_answer = table.lookup("TX;")
+    assert tx_answer is not None and tx_answer.reply == "TX0;"
+    ft_answer = table.lookup("FT;")
+    assert ft_answer is not None and ft_answer.reply == "FT0;"
+    _assert_ftx1_table_basics(table)
+    return table
+
+
+def _ftx1_table_refused_st() -> RecordedCatAnswerTable:
+    """The bench FTX-1 recording with the ``ST;`` answer replaced by ``?;``."""
+    table = _ftx1_table_with_tx_answers(refused=("ST;",))
+    st_answer = table.lookup("ST;")
+    assert st_answer is not None and st_answer.kind == "refusal"
+    tx_answer = table.lookup("TX;")
+    assert tx_answer is not None and tx_answer.reply == "TX0;"
+    ft_answer = table.lookup("FT;")
+    assert ft_answer is not None and ft_answer.reply == "FT0;"
+    _assert_ftx1_table_basics(table)
     return table
 
 
@@ -1663,6 +1710,84 @@ async def _http_get_json(port: int, path: str) -> tuple[int, Any]:
     return status, json.loads(body)
 
 
+@asynccontextmanager
+async def _gated_yaesu_on_recording(
+    table: RecordedCatAnswerTable,
+    *,
+    reject: tuple[str, ...] = (),
+    start_timeout: float,
+    patch_bind: bool = True,
+) -> AsyncIterator[tuple[FakeCatRadio, YaesuCatRadio, WebServer, list[str]]]:
+    """Run the gated server on the real Yaesu reader against a recording.
+
+    ``FakeCatRadio`` replays *table* on a local port; the real
+    ``YaesuCatRadio`` and its production poller read through it into a
+    gated ``WebServer``. The listener bind is recorded instead of opened
+    (so the caller pins ``binds``); pass ``patch_bind=False`` for a real
+    ephemeral listener (the config uses port 0) when the test reads the
+    HTTP state. *reject* forces ``?;`` for those verbs past the fake's
+    own live handlers (which otherwise shadow the recorded shape). Yields
+    ``(fake, radio, server, binds)`` while the server runs, so the
+    caller asserts on the store, scheduler and warnings with the server
+    still up; everything stops on exit.
+    """
+    fake = FakeCatRadio(recorded_answers=table)
+    for verb in reject:
+        fake.reject(verb)
+    await fake.start()
+    try:
+        radio = YaesuCatRadio(device=fake.device_url, profile="ftx1")
+        await asyncio.wait_for(radio.connect(), 30)
+        assert radio.connected
+        config = _gated_config()
+        config.radio_model = "FTX-1"
+        server = WebServer(radio, config)
+        binds: list[str] = []
+
+        async def _bind(*_args: object, **_kwargs: object) -> _FakeAsyncServer:
+            binds.append("bind")
+            return _FakeAsyncServer()
+
+        try:
+            if patch_bind:
+                with patch("rigplane.web.web_startup.asyncio.start_server", new=_bind):
+                    await asyncio.wait_for(server.start(), start_timeout)
+            else:
+                await asyncio.wait_for(server.start(), start_timeout)
+            yield fake, radio, server, binds
+        finally:
+            await server.stop()
+            await radio.disconnect()
+    finally:
+        await fake.stop()
+
+
+def _assert_released_with_one_named_warning(
+    *,
+    binds: list[str],
+    scheduler: AcquisitionScheduler,
+    caplog: pytest.LogCaptureFixture,
+    path: FieldPath,
+    warning_substring: str,
+) -> str:
+    """Pin the released gate: bound once, no defect, one WARNING naming the path.
+
+    Returns the warning for the caller's command/cause asserts.
+    """
+    assert binds == ["bind"]
+    assert scheduler.startup_defect is None
+    warnings = [
+        record.getMessage()
+        for record in caplog.records
+        if record.levelno == logging.WARNING
+        and record.name == "rigplane.web.web_startup"
+        and str(path) in record.getMessage()
+    ]
+    assert len(warnings) == 1, [record.getMessage() for record in caplog.records]
+    assert warning_substring in warnings[0], warnings[0]
+    return warnings[0]
+
+
 @pytest.mark.asyncio
 async def test_yaesu_silent_tx_func_still_opens_with_tx_target_unknown() -> None:
     """MOR-4433: a real FTX-1 backend whose ``FT;`` stays silent still opens.
@@ -1683,49 +1808,36 @@ async def test_yaesu_silent_tx_func_still_opens_with_tx_target_unknown() -> None
         _TX_TARGET,
     )
 
-    fake = FakeCatRadio(recorded_answers=_ftx1_table_silent_on_ft())
-    await fake.start()
-    try:
-        radio = YaesuCatRadio(device=fake.device_url, profile="ftx1")
-        await asyncio.wait_for(radio.connect(), 30)
-        assert radio.connected
-        config = _gated_config()
-        config.radio_model = "FTX-1"
-        server = WebServer(radio, config)
-        try:
-            await asyncio.wait_for(server.start(), 60)
-            scheduler = radio._acquisition_scheduler
+    async with _gated_yaesu_on_recording(
+        _ftx1_table_silent_on_ft(), start_timeout=60, patch_bind=False
+    ) as (fake, radio, server, _binds):
+        scheduler = radio._acquisition_scheduler
 
-            # Not vacuous: the production poller asked for ``FT;`` on the
-            # wire — it is silent, not merely unasked.
-            assert "FT;" in fake.commands
+        # Not vacuous: the production poller asked for ``FT;`` on the
+        # wire — it is silent, not merely unasked.
+        assert "FT;" in fake.commands
 
-            # The critical observations arrived through the real poller —
-            # nothing was seeded by hand. The TX target is observed too —
-            # as unknown, republished every medium cycle — instead of
-            # staying unanswered.
-            from rigplane.core.tx_target import UnknownTxTarget
+        # The critical observations arrived through the real poller —
+        # nothing was seeded by hand. The TX target is observed too —
+        # as unknown, republished every medium cycle — instead of
+        # staying unanswered.
+        from rigplane.core.tx_target import UnknownTxTarget
 
-            observed = _observed_paths(server, scheduler)
-            for path in (_MAIN_FREQ, _MAIN_MODE, _PTT, _SPLIT):
-                assert path in observed, path
-            assert scheduler.startup_defect is None
-            tx_field = server.command_state_store.snapshot().field(_TX_TARGET)
-            assert isinstance(tx_field.value, UnknownTxTarget)
-            assert tx_field.value.reason == "not-observed"
+        observed = _observed_paths(server, scheduler)
+        for path in (_MAIN_FREQ, _MAIN_MODE, _PTT, _SPLIT):
+            assert path in observed, path
+        assert scheduler.startup_defect is None
+        tx_field = server.command_state_store.snapshot().field(_TX_TARGET)
+        assert isinstance(tx_field.value, UnknownTxTarget)
+        assert tx_field.value.reason == "not-observed"
 
-            port = int(server._server.sockets[0].getsockname()[1])  # noqa: SLF001
-            status, body = await _http_get_json(port, "/api/v1/state")
-            assert status == 200
-            assert body["txTarget"] == {
-                "status": "unknown",
-                "reason": "not-observed",
-            }
-        finally:
-            await server.stop()
-            await radio.disconnect()
-    finally:
-        await fake.stop()
+        port = int(server._server.sockets[0].getsockname()[1])  # noqa: SLF001
+        status, body = await _http_get_json(port, "/api/v1/state")
+        assert status == 200
+        assert body["txTarget"] == {
+            "status": "unknown",
+            "reason": "not-observed",
+        }
 
 
 @pytest.mark.asyncio
@@ -1754,27 +1866,154 @@ async def test_yaesu_unanswered_ptt_read_opens_with_tx_unknown(
         await asyncio.wait_for(server.start(), timeout=60.0)
         await server.stop()
 
-    assert binds == ["bind"]
-    assert scheduler.startup_defect is None
+    _assert_released_with_one_named_warning(
+        binds=binds,
+        scheduler=scheduler,
+        caplog=caplog,
+        path=FieldPath.global_("tx_state", "ptt"),
+        # The lane files its non-critical outcome into the scheduler: the
+        # real ``TX;`` command and the recorded timeout cause (the count
+        # itself is the fake clock's many medium cycles, so only the
+        # cause prefix is pinned here).
+        warning_substring="global.tx_state.ptt: TX; timed out",
+    )
     # Not vacuous: everything else answered — only PTT is still outstanding.
     assert scheduler.unobserved_startup_paths(_observed_paths(server, scheduler)) == (
         FieldPath.global_("tx_state", "ptt"),
     )
-    warnings = [
-        record.getMessage()
-        for record in caplog.records
-        if record.levelno == logging.WARNING
-        and "global.tx_state.ptt" in record.getMessage()
-    ]
-    assert len(warnings) == 1, [record.getMessage() for record in caplog.records]
-    # The lane files its non-critical outcome into the scheduler: the real
-    # ``TX;`` command and the recorded timeout cause (the count itself is
-    # the fake clock's many medium cycles, so only the cause prefix is
-    # pinned here).
-    assert "global.tx_state.ptt: TX; timed out" in warnings[0], warnings[0]
     ptt = FieldPath.global_("tx_state", "ptt")
     assert scheduler.consecutive_request_timeouts(ptt) > 0
     assert scheduler.startup_read_command(ptt) == "TX;"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("table_factory", "warning_substring", "refused"),
+    [
+        (_ftx1_table_silent_on_st, "global.tx_state.split: ST; timed out", False),
+        (_ftx1_table_refused_st, "global.tx_state.split: ST; refused", True),
+    ],
+    ids=("silent", "refused"),
+)
+async def test_yaesu_split_failure_opens_with_named_warning(
+    caplog: pytest.LogCaptureFixture,
+    table_factory: Callable[[], RecordedCatAnswerTable],
+    warning_substring: str,
+    refused: bool,
+) -> None:
+    """MOR-4456: an unanswered or refused split opens with a named WARNING.
+
+    The full production path — the real ``YaesuCatRadio`` against a CAT
+    fake that stays silent for ``ST;`` or answers it with ``?;``. Split
+    left the safety-critical set: silence keeps the path outstanding
+    until the non-critical deadline, while a refusal drops it at once
+    (answered-but-unavailable). Both file the lane's non-critical
+    outcome with the real ``ST;`` command, so the release names the
+    field, the command and the cause. The TX target answers here, so
+    only the split read can lapse.
+    """
+    from rigplane.backends.yaesu_cat.observations import (
+        _MAIN_FREQ,
+        _MAIN_MODE,
+        _PTT,
+        _TX_TARGET,
+    )
+
+    split = FieldPath.global_("tx_state", "split")
+    with caplog.at_level(logging.WARNING, logger="rigplane.web.web_startup"):
+        async with _gated_yaesu_on_recording(table_factory(), start_timeout=60) as (
+            fake,
+            radio,
+            server,
+            binds,
+        ):
+            scheduler = radio._acquisition_scheduler
+
+            # Not vacuous: the production poller asked for ``ST;`` on the
+            # wire — unanswered or refused, not merely unasked.
+            assert "ST;" in fake.commands
+
+            _assert_released_with_one_named_warning(
+                binds=binds,
+                scheduler=scheduler,
+                caplog=caplog,
+                path=split,
+                warning_substring=warning_substring,
+            )
+            # Only split never answered: every other startup path arrived
+            # through the same poller.
+            observed = _observed_paths(server, scheduler)
+            for path in (_MAIN_FREQ, _MAIN_MODE, _PTT, _TX_TARGET):
+                assert path in observed, path
+            if refused:
+                assert split not in scheduler.unobserved_startup_paths(observed)
+                assert scheduler.consecutive_refusals(split) >= 1
+                assert scheduler.consecutive_request_timeouts(split) == 0
+            else:
+                # Silence keeps the path outstanding until the deadline;
+                # the bench recording also leaves the SUB conditional
+                # reads unanswered, so membership — not equality — is
+                # the pin.
+                assert split in scheduler.unobserved_startup_paths(observed)
+                assert scheduler.consecutive_request_timeouts(split) > 0
+            assert scheduler.startup_read_command(split) == "ST;"
+
+
+@pytest.mark.asyncio
+async def test_yaesu_refused_ptt_read_opens_with_tx_unknown(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """MOR-4456: a refused PTT read opens with PTT unknown and a named WARNING.
+
+    The full production path — the real ``YaesuCatRadio.read_transmit_state``
+    against a CAT fake answering ``TX;`` with ``?;``. Production reports
+    the refusal as ``failure="refused"`` (a malformed reply stays
+    ``"read-error"``); the lane publishes unknown and files the refused
+    outcome with the real ``TX;`` command, so with every other field
+    answering the gate releases at once — no deadline wait, no abort —
+    with one WARNING naming the field, the command and the refusal cause.
+    A hand-raised ``CatCommandRejected`` out of the reader would take the
+    lane's ``except CatCommandRejected`` branch instead — a verdict
+    production never produces, which is why this test drives the wire.
+    """
+    from rigplane.backends.yaesu_cat.observations import (
+        _MAIN_FREQ,
+        _MAIN_MODE,
+        _SPLIT,
+        _TX_TARGET,
+    )
+
+    ptt = FieldPath.global_("tx_state", "ptt")
+    # The bench recording answers every other read; ``reject`` forces the
+    # ``?;`` past the fake's own ``get_ptt`` handler, which otherwise
+    # shadows the recorded refusal the table asserts above.
+    table = _ftx1_table_refused_tx()
+    with caplog.at_level(logging.WARNING, logger="rigplane.web.web_startup"):
+        async with _gated_yaesu_on_recording(
+            table, reject=("TX",), start_timeout=30
+        ) as (fake, radio, server, binds):
+            scheduler = radio._acquisition_scheduler
+
+            # Not vacuous: the production poller asked for ``TX;`` on the
+            # wire — refused, not merely unasked.
+            assert "TX;" in fake.commands
+
+            _assert_released_with_one_named_warning(
+                binds=binds,
+                scheduler=scheduler,
+                caplog=caplog,
+                path=ptt,
+                warning_substring="global.tx_state.ptt: TX; refused",
+            )
+            # The refusal drops PTT from the outstanding set at once: only
+            # answered fields remain.
+            observed = _observed_paths(server, scheduler)
+            assert ptt not in scheduler.unobserved_startup_paths(observed)
+            for path in (_MAIN_FREQ, _MAIN_MODE, _SPLIT, _TX_TARGET):
+                assert path in observed, path
+            assert scheduler.consecutive_refusals(ptt) >= 1
+            assert scheduler.consecutive_request_timeouts(ptt) == 0
+            assert scheduler.startup_read_command(ptt) == "TX;"
 
 
 @pytest.mark.asyncio

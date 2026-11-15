@@ -2738,9 +2738,9 @@ async def test_split_timeout_is_contained_and_counted_to_the_gate_threshold() ->
     """MOR-4456: an unanswered split read is served absent within its field.
 
     Three medium cycles with a silent ``ST;`` complete normally — the
-    fields after split (clarifier, tuner) still reach the store — while the
-    critical-path accounting is kept: the third unanswered read records
-    the declared-command defect the startup gate reads.
+    fields after split (clarifier, tuner) still reach the store — while
+    the lane files its non-critical outcome (the real ``ST;`` command,
+    counted for the gate) instead of the critical tally or a defect.
     """
     from rigplane.backends.yaesu_cat.observations import _RIT_ON, _SPLIT
 
@@ -2759,20 +2759,22 @@ async def test_split_timeout_is_contained_and_counted_to_the_gate_threshold() ->
         paths = {item.path for item in observations}
         assert _SPLIT not in paths
         assert _RIT_ON in paths, "the reads after split must still reach the store"
-        assert radio._critical_read_timeouts == {_SPLIT: cycle}
+        assert scheduler.consecutive_request_timeouts(_SPLIT) == cycle
     assert radio.read_split.await_count == 3
-    defect = scheduler.startup_defect
-    assert defect is not None
-    assert defect.paths == (_SPLIT,)
-    assert defect.command == "ST;"
+    assert radio._critical_read_timeouts == {}
+    assert scheduler.startup_defect is None
+    assert scheduler.consecutive_refusals(_SPLIT) == 0
+    assert scheduler.startup_read_command(_SPLIT) == "ST;"
 
 
 @pytest.mark.asyncio
-async def test_split_refusal_records_defect_and_stays_in_cycle() -> None:
-    """MOR-4456: a twice-refused split records the defect without raising.
+async def test_split_refusal_records_refusal_outcome_and_stays_in_cycle() -> None:
+    """MOR-4456: a twice-refused split files the refusal outcome without raising.
 
     The refusal is re-issued once (MOR-2584) without touching the timeout
     tally; the cycle completes and the fields after split still publish.
+    The filed outcome carries the real ``ST;`` command — the gate's
+    release names it — and no defect is recorded.
     """
     from rigplane.backends.yaesu_cat.observations import _RIT_ON, _SPLIT
 
@@ -2792,10 +2794,44 @@ async def test_split_refusal_records_defect_and_stays_in_cycle() -> None:
     assert _SPLIT not in paths
     assert _RIT_ON in paths, "the reads after split must still reach the store"
     assert radio._critical_read_timeouts == {}
-    defect = scheduler.startup_defect
-    assert defect is not None
-    assert defect.paths == (_SPLIT,)
-    assert defect.command == "ST;"
+    assert scheduler.startup_defect is None
+    assert scheduler.consecutive_refusals(_SPLIT) == 1
+    assert scheduler.consecutive_request_timeouts(_SPLIT) == 0
+    assert scheduler.startup_read_command(_SPLIT) == "ST;"
+
+
+@pytest.mark.asyncio
+async def test_split_malformed_read_records_nothing_and_stays_in_cycle() -> None:
+    """MOR-4456: a malformed split read files nothing and stays in-cycle.
+
+    A demoted malformed read is neither a timeout nor a refusal: the
+    cycle completes, the controls after split still publish, and the
+    scheduler holds no outcome, no tally and no defect for the path.
+    """
+    from rigplane.backends.yaesu_cat.observations import _RIT_ON, _SPLIT
+
+    profile = _profile_state_acquisition()
+    scheduler = AcquisitionScheduler(profile=profile)
+    radio = _split_containment_radio(
+        scheduler,
+        AsyncMock(
+            side_effect=CatParseError("XX{p};", "??;", "Response does not match")
+        ),
+    )
+    observations = await YaesuObservationAdapter(
+        radio,
+        profile=profile,
+        clock=_clock,
+    ).poll_tx_controls()
+    assert radio.read_split.await_count == 1
+    paths = {item.path for item in observations}
+    assert _SPLIT not in paths
+    assert _RIT_ON in paths, "the reads after split must still reach the store"
+    assert radio._critical_read_timeouts == {}
+    assert scheduler.startup_defect is None
+    assert scheduler.consecutive_refusals(_SPLIT) == 0
+    assert scheduler.consecutive_request_timeouts(_SPLIT) == 0
+    assert scheduler.startup_read_command(_SPLIT) == ""
 
 
 @pytest.mark.asyncio
@@ -2956,7 +2992,6 @@ _DEFECT_ROWS: tuple[tuple[str, str, int | None, str, tuple[str, ...]], ...] = (
         "poll_medium",
         ("receiver.sub.active.freq_mode.mode",),
     ),
-    ("ptt", "read_transmit_state", None, "poll_medium", ("global.tx_state.ptt",)),
     (
         "main.filter_width",
         "read_filter_width_reading",
@@ -3195,7 +3230,6 @@ _DEFECT_ROWS: tuple[tuple[str, str, int | None, str, tuple[str, ...]], ...] = (
         ("global.operator_controls.compressor_level",),
     ),
     ("vox", "read_vox", None, "poll_tx_controls", ("global.tx_state.vox_on",)),
-    ("split", "read_split", None, "poll_tx_controls", ("global.tx_state.split",)),
     (
         "clarifier",
         "read_clarifier",
@@ -3348,33 +3382,38 @@ async def test_refused_read_mid_cycle_still_emits_later_slow_fields() -> None:
     assert by_path["receiver.sub.operator_controls.repeater_shift"] == 1
 
 
+@pytest.mark.parametrize("failure", ["parse", "reject"])
 @pytest.mark.asyncio
-async def test_refused_declared_ptt_read_skips_ptt_and_publishes_unknown() -> None:
-    """MOR-2578: a refused declared PTT read skips PTT, not the medium lane.
+async def test_broken_declared_ptt_read_skips_ptt_and_publishes_unknown(
+    failure: str,
+) -> None:
+    """MOR-4456: a hand-raised PTT failure skips PTT, not the medium lane.
 
     The PTT branch of ``poll_medium`` is a direct call, not ``_safe_read``:
-    on a refusal it must record the defect, publish the observed PTT as
-    UNKNOWN (neither ON nor OFF — no invented False), keep
-    ``global.tx_state.ptt`` absent from the observations, and let the
-    lane's remaining reads (filter_width) still publish.
+    a hand-raised refusal or malformed read (production itself never
+    raises — a refusal reports ``failure="refused"``) publishes the
+    observed PTT as UNKNOWN (neither ON nor OFF — no invented False),
+    keeps ``global.tx_state.ptt`` absent from the observations, files
+    nothing (no defect, no outcome, no tally — PTT is no longer startup
+    critical), and lets the lane's remaining reads (filter_width) still
+    publish.
     """
+    from rigplane.backends.yaesu_cat.observations import _PTT
+
     profile = _profile_state_acquisition()
     scheduler = AcquisitionScheduler(profile=profile)
     radio = _gate_radio()
     radio._acquisition_scheduler = scheduler
-    _break_read(radio, "read_transmit_state", None, failure="reject")
+    _break_read(radio, "read_transmit_state", None, failure=failure)
 
     observations = await YaesuObservationAdapter(
         radio, profile=profile, clock=_clock
     ).poll_medium()
 
-    defect = scheduler.startup_defect
-    assert defect is not None
-    assert [str(path) for path in defect.paths] == ["global.tx_state.ptt"]
     paths = {str(item.path) for item in observations}
     # The raw PTT path is skipped — no invented False leaks into the store.
     assert "global.tx_state.ptt" not in paths
-    # The lane continues past the refused read: the earlier freq/mode pair
+    # The lane continues past the broken read: the earlier freq/mode pair
     # and the later filter_width still publish.
     assert "receiver.main.active.freq_mode.freq_hz" in paths
     assert "receiver.main.active.freq_mode.filter_width" in paths
@@ -3383,6 +3422,10 @@ async def test_refused_declared_ptt_read_skips_ptt_and_publishes_unknown() -> No
     observed = [item for item in observations if item.path == OBSERVED_PTT_PATH]
     assert len(observed) == 1
     assert observed[0].value is ObservedPtt.UNKNOWN
+    assert scheduler.startup_defect is None
+    assert scheduler.consecutive_refusals(_PTT) == 0
+    assert scheduler.consecutive_request_timeouts(_PTT) == 0
+    assert scheduler.startup_read_command(_PTT) == ""
 
 
 @pytest.mark.asyncio

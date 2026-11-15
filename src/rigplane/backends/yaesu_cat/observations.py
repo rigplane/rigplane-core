@@ -530,13 +530,22 @@ class YaesuObservationAdapter:
                         # The lane's only transmit-state read is the ``TX;``
                         # token query (the poller test pins the wire), so
                         # the outcome carries the real command even though
-                        # the reading itself names none. A refused-or-garbled
-                        # read ("read-error") files nothing: the reading no
-                        # longer says which of the two it was.
+                        # the reading itself names none. A garbled read
+                        # ("read-error") files nothing; a refusal arrives
+                        # as its own tag (the primitive distinguishes them).
                         self._record_noncritical_outcome(
                             "ptt",
                             (_PTT,),
                             StartupReadNote(command="TX;", cause="timed out"),
+                        )
+                    elif reading.failure == "refused":
+                        # A refused ``TX;`` is answered-but-unavailable: file
+                        # it so the path leaves the gate's outstanding set
+                        # at once and the release names the refusal.
+                        self._record_noncritical_outcome(
+                            "ptt",
+                            (_PTT,),
+                            StartupReadNote(command="TX;", cause="refused"),
                         )
                     publish_ptt_error()
                     # MOR-4456: PTT left the startup-critical set — a silent
@@ -2032,7 +2041,10 @@ class YaesuObservationAdapter:
         absent for the cycle) instead of raised; a twice-refused demoted
         read records the refusal the same way instead of the defect; a
         malformed demoted read records nothing (it is neither). The defect
-        record stays armed only for critical paths.
+        record stays armed only for critical paths. A timeout on the
+        refusal re-read counts and contains exactly like a first-read
+        timeout — filing the same non-critical outcome when demoted —
+        and transport failures still raise untouched.
         """
         try:
             value = await read
@@ -2058,6 +2070,14 @@ class YaesuObservationAdapter:
         except CatCommandRejected:
             try:
                 value = await remake()
+            except CatTimeoutError as retry_exc:
+                if demoted:
+                    self._record_noncritical_outcome(
+                        label, paths, self._note_from_wire_error(retry_exc, "timed out")
+                    )
+                    return False, None
+                self._count_critical_read_timeouts(label, retry_exc, paths)
+                raise
             except CatCommandRejected as retry_exc:
                 if demoted:
                     self._record_noncritical_outcome(

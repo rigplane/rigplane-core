@@ -2231,7 +2231,14 @@ class YaesuCatRadio:
         """
         try:
             token = await self.read_ptt_token()
-        except (CatCommandRejected, CatParseError):
+        except CatCommandRejected:
+            # MOR-4456: a refused ``TX;`` is a terminal answer, not a
+            # garbled one — the lane files it as the refused outcome so
+            # the gate names the real command and cause. Malformed stays
+            # ``"read-error"`` (pinned by the transmit-observation
+            # contract); both still read as unknown, never receiving.
+            return TxStateReading(value=None, failure="refused")
+        except CatParseError:
             return TxStateReading(value=None, failure="read-error")
         except CatTimeoutError:
             return TxStateReading(value=None, failure="timeout")

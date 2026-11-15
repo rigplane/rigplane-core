@@ -590,15 +590,20 @@ async def test_canonical_ptt_timeout_is_contained_without_reconnect(
 
     Three production medium cycles with a silent ``TX;``: no raise, no
     reconnect, the control after the PTT field still reaches the store
-    every cycle, and the critical-path counting still reaches the gate
-    threshold (the unchanged gate's abort on that threshold is pinned by
-    test_yaesu_unanswered_ptt_read_still_fails_startup).
+    every cycle, and the lane files its non-critical outcome (the real
+    ``TX;`` command, counted for the gate) instead of the critical
+    tally or a defect.
     """
     from rigplane.backends.yaesu_cat.observations import _PTT
+    from rigplane.core.acquisition_scheduler import AcquisitionScheduler
 
     radio, poller, store, clock, emitted = _canonical_ptt_path(
         monkeypatch, later_field=True
     )
+    # Production attaches the scheduler to the radio (the web scaffolding
+    # does it before the first cycle); the lane files its outcome there.
+    scheduler = AcquisitionScheduler(profile=radio.profile.state_acquisition)
+    radio._acquisition_scheduler = scheduler  # noqa: SLF001
     _seed_canonical_ptt(radio, store, clock, ObservedPtt.ON)
     radio.read_filter_width = AsyncMock(return_value=2400)
     radio._transport.query.side_effect = CatTimeoutError("TX timeout")  # noqa: SLF001
@@ -614,7 +619,12 @@ async def test_canonical_ptt_timeout_is_contained_without_reconnect(
     ] * 3
     assert store.snapshot().field(OBSERVED_PTT_PATH).value is ObservedPtt.UNKNOWN
     assert not any(str(item.path) == "global.tx_state.ptt" for item in emitted)
-    assert radio._critical_read_timeouts == {_PTT: 3}  # noqa: SLF001
+    # PTT left the critical set: no critical tally, no defect — the
+    # gate reads the filed non-critical outcome instead.
+    assert radio._critical_read_timeouts == {}  # noqa: SLF001
+    assert scheduler.startup_defect is None
+    assert scheduler.consecutive_request_timeouts(_PTT) == 3
+    assert scheduler.startup_read_command(_PTT) == "TX;"
     widths = [item for item in emitted if str(item.path).endswith("filter_width")]
     assert len(widths) == 3, "the control after PTT must reach the store every cycle"
 
@@ -627,10 +637,9 @@ async def test_canonical_split_timeout_is_contained_without_reconnect(
 
     Three production slow cycles with a silent ``ST;``: no raise, no
     reconnect, the controls after split (clarifier) still reach the store
-    every cycle, and the critical-path accounting is kept (the unchanged
-    gate's abort on the third attempt is pinned by
-    test_never_answered_split_path_fails_startup_after_three_attempts and
-    the new gate test below).
+    every cycle, and the lane files its non-critical outcome (the real
+    ``ST;`` command, counted for the gate) instead of the critical
+    tally or a defect.
     """
     from rigplane.backends.yaesu_cat.observations import (
         _RIT_FREQ,
@@ -638,10 +647,16 @@ async def test_canonical_split_timeout_is_contained_without_reconnect(
         _RIT_TX,
         _SPLIT,
     )
+    from rigplane.core.acquisition_scheduler import AcquisitionScheduler
 
     radio, poller, store, clock, emitted = _canonical_ptt_path(
         monkeypatch, extra_paths=(_SPLIT, _RIT_ON, _RIT_TX, _RIT_FREQ)
     )
+    # Production attaches the scheduler to the radio (the web scaffolding
+    # does it before the first cycle); the demoted lane files its outcome
+    # there.
+    scheduler = AcquisitionScheduler(profile=radio.profile.state_acquisition)
+    radio._acquisition_scheduler = scheduler  # noqa: SLF001
     _seed_canonical_ptt(radio, store, clock, ObservedPtt.ON)
     radio.read_clarifier = AsyncMock(return_value=(True, False))  # noqa: SLF001
     radio.read_clarifier_freq = AsyncMock(return_value=-250)  # noqa: SLF001
@@ -667,7 +682,83 @@ async def test_canonical_split_timeout_is_contained_without_reconnect(
         call.args[0] for call in radio._transport.query.await_args_list
     ] == ["ST;"] * 3
     assert not any(item.path == _SPLIT for item in emitted)
-    assert radio._critical_read_timeouts == {_SPLIT: 3}  # noqa: SLF001
+    # Split left the critical set: no critical tally, no defect — the
+    # gate reads the filed non-critical outcome instead.
+    assert radio._critical_read_timeouts == {}  # noqa: SLF001
+    assert scheduler.startup_defect is None
+    assert scheduler.consecutive_refusals(_SPLIT) == 0
+    assert scheduler.consecutive_request_timeouts(_SPLIT) == 3
+    assert scheduler.startup_read_command(_SPLIT) == "ST;"
+    by_path = [item.path for item in emitted]
+    for path in (_RIT_ON, _RIT_TX, _RIT_FREQ):
+        assert by_path.count(path) == 3, (
+            "the controls after split must reach the store every cycle"
+        )
+
+
+@pytest.mark.asyncio
+async def test_canonical_split_refusal_then_timeout_stays_contained(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """MOR-4456: a refused split with a silent re-read is served absent and counted.
+
+    Three production slow cycles where ``ST;`` first answers ``?;`` and the
+    single re-read stays silent: the retry timeout is contained exactly
+    like a plain timeout — no raise, no reconnect, split absent, the
+    controls after split (clarifier) still reach the store every cycle —
+    and files the same non-critical outcome (the real ``ST;`` command,
+    counted for the gate) instead of the critical tally or a defect.
+    """
+    from rigplane.backends.yaesu_cat.observations import (
+        _RIT_FREQ,
+        _RIT_ON,
+        _RIT_TX,
+        _SPLIT,
+    )
+    from rigplane.core.acquisition_scheduler import AcquisitionScheduler
+
+    radio, poller, store, clock, emitted = _canonical_ptt_path(
+        monkeypatch, extra_paths=(_SPLIT, _RIT_ON, _RIT_TX, _RIT_FREQ)
+    )
+    # Production attaches the scheduler to the radio (the web scaffolding
+    # does it before the first cycle); the demoted lane files its outcome
+    # there.
+    scheduler = AcquisitionScheduler(profile=radio.profile.state_acquisition)
+    radio._acquisition_scheduler = scheduler  # noqa: SLF001
+    _seed_canonical_ptt(radio, store, clock, ObservedPtt.ON)
+    radio.read_clarifier = AsyncMock(return_value=(True, False))  # noqa: SLF001
+    radio.read_clarifier_freq = AsyncMock(return_value=-250)  # noqa: SLF001
+    # Runtime-only-gated slow reads the reduced caps do not cover: answer
+    # them locally so the capped lane asks the wire for nothing but ST;.
+    radio.read_nb_level = AsyncMock(return_value=0)  # noqa: SLF001
+    radio.read_nr_level = AsyncMock(return_value=0)  # noqa: SLF001
+    radio.read_sql_type = AsyncMock(return_value=0)  # noqa: SLF001
+    radio.read_ctcss_tone_index = AsyncMock(return_value=8)  # noqa: SLF001
+
+    async def _answer(command: str) -> str:
+        assert command == "ST;", (
+            f"the capped slow lane must ask nothing else: {command}"
+        )
+        if len(radio._transport.query.await_args_list) % 2 == 1:  # noqa: SLF001
+            raise CatCommandRejected("?;", command="ST;")
+        raise CatTimeoutError("ST timeout", command="ST;")
+
+    radio._transport.query.side_effect = _answer  # noqa: SLF001
+    radio._transport.reconnect = AsyncMock()  # noqa: SLF001
+    for _ in range(3):
+        await poller._poll_slow()
+    radio._transport.reconnect.assert_not_awaited()  # noqa: SLF001
+    assert [  # noqa: SLF001
+        call.args[0] for call in radio._transport.query.await_args_list
+    ] == ["ST;"] * 6
+    assert not any(item.path == _SPLIT for item in emitted)
+    # Split left the critical set: no critical tally, no defect — the
+    # gate reads the filed non-critical outcome instead.
+    assert radio._critical_read_timeouts == {}  # noqa: SLF001
+    assert scheduler.startup_defect is None
+    assert scheduler.consecutive_refusals(_SPLIT) == 0
+    assert scheduler.consecutive_request_timeouts(_SPLIT) == 3
+    assert scheduler.startup_read_command(_SPLIT) == "ST;"
     by_path = [item.path for item in emitted]
     for path in (_RIT_ON, _RIT_TX, _RIT_FREQ):
         assert by_path.count(path) == 3, (
@@ -679,12 +770,13 @@ async def test_canonical_split_timeout_is_contained_without_reconnect(
 async def test_canonical_split_refusal_skips_retry_count_and_continues(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """MOR-4456: a twice-refused split records the defect and stays in-cycle.
+    """MOR-4456: a twice-refused split records the refusal outcome and stays in-cycle.
 
     The refusal is re-issued once (MOR-2584) without touching the timeout
     tally; the slow cycle completes with no reconnect and the controls
-    after split still publish. The defect the lane records is what the
-    unchanged gate aborts on (new gate test below).
+    after split still publish. The filed refusal drops the path from the
+    gate's outstanding set at once (the release is pinned by the gate
+    tests); no defect is recorded.
     """
     from rigplane.backends.yaesu_cat.observations import (
         _RIT_FREQ,
@@ -692,10 +784,16 @@ async def test_canonical_split_refusal_skips_retry_count_and_continues(
         _RIT_TX,
         _SPLIT,
     )
+    from rigplane.core.acquisition_scheduler import AcquisitionScheduler
 
     radio, poller, store, clock, emitted = _canonical_ptt_path(
         monkeypatch, extra_paths=(_SPLIT, _RIT_ON, _RIT_TX, _RIT_FREQ)
     )
+    # Production attaches the scheduler to the radio (the web scaffolding
+    # does it before the first cycle); the demoted lane files its outcome
+    # there.
+    scheduler = AcquisitionScheduler(profile=radio.profile.state_acquisition)
+    radio._acquisition_scheduler = scheduler  # noqa: SLF001
     _seed_canonical_ptt(radio, store, clock, ObservedPtt.ON)
     radio.read_clarifier = AsyncMock(return_value=(True, False))  # noqa: SLF001
     radio.read_clarifier_freq = AsyncMock(return_value=-250)  # noqa: SLF001
@@ -721,6 +819,12 @@ async def test_canonical_split_refusal_skips_retry_count_and_continues(
     ] == ["ST;", "ST;"]
     assert not any(item.path == _SPLIT for item in emitted)
     assert radio._critical_read_timeouts == {}  # noqa: SLF001
+    # The twice-refused read files the refusal outcome with the real
+    # command — the gate's release names it — and no defect.
+    assert scheduler.startup_defect is None
+    assert scheduler.consecutive_refusals(_SPLIT) == 1
+    assert scheduler.consecutive_request_timeouts(_SPLIT) == 0
+    assert scheduler.startup_read_command(_SPLIT) == "ST;"
     by_path = [item.path for item in emitted]
     for path in (_RIT_ON, _RIT_TX, _RIT_FREQ):
         assert path in by_path, "the controls after split must still publish"
