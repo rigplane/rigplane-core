@@ -848,8 +848,12 @@ test(`IC-705 external span narrowing adopts without a write and without hatch (c
     await expect.poll(() => sent.at(-1)?.view).toEqual({ follow: 'vfo', spanHz: 100_000 });
     await expect.poll(() => frames.at(-1)?.view).toEqual(expectedView);
     await page.keyboard.press('Escape');
+    const preWaitFrameCount = frames.length;
     await page.waitForTimeout(1500);
-    const postZoomFrameIdx = frames.length;
+    // At least one settled frame must arrive after the zoom pin, so the
+    // pre-change slice below is never vacuously empty.
+    await expect.poll(() => frames.length, { timeout: 30_000 }).toBeGreaterThan(preWaitFrameCount);
+    const postZoomFrameIdx = preWaitFrameCount;
     setupDone = true;
 
     // Snapshot the span-set receipts BEFORE the external change can fire:
@@ -860,8 +864,8 @@ test(`IC-705 external span narrowing adopts without a write and without hatch (c
     expect(setupElapsedS,
       `setup took ${setupElapsedS.toFixed(0)}s; the external change fires at ${externalAfterS}s`).toBeLessThan(externalAfterS - 15);
     // Every post-zoom pre-change frame shows the full 100 kHz view
-    // covered: the change has not fired yet.
-    expect(frames.length, 'no scope frames arrived during setup').toBeGreaterThan(postZoomFrameIdx);
+    // covered: the change has not fired yet. The slice is non-empty by
+    // the post-zoom growth poll above.
     expect(frames.slice(postZoomFrameIdx).every((f) => f.view[1] - f.view[0] === 100_000 && f.coverage[1] - f.coverage[0] === 100_000),
       'pre-change frames do not all show view=100000/cov=100000').toBe(true);
     const spanSetsBefore = await spanSetCount();
