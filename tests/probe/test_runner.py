@@ -20,7 +20,6 @@ from rigplane.commands import (
     CONTROLLER_ADDR,
     build_civ_frame,
     build_cmd29_frame,
-    command_carries_sub,
 )
 from rigplane.core.serial_open import open_serial_port
 from rigplane.profiles.rig_loader import RigConfig, load_rig
@@ -1139,10 +1138,6 @@ async def test_after_snapshot_transport_failure_names_the_phase() -> None:
 async def test_eof_partial_bytes_land_in_unsolicited() -> None:
     # P2: bytes received before the disconnect are retained in the
     # file, and the row reads transport_error rather than silence.
-    import asyncio
-
-    from rigplane.probe.readlist import build_read_plan
-
     config = _load("ic7300")
     addr = config.civ_addr
     (item,) = [
