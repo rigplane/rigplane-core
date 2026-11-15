@@ -494,7 +494,7 @@ class AudioManager {
     const ws = createMessageTransport();
     this.ws = ws;
     ws.open(authenticatedWsUrl(url), protocols.length > 0
-      ? { protocols, role: this.controller?.role() }
+      ? { protocols, role: this.controller?.role?.() }
       : undefined);
 
     ws.onOpen(() => {
