@@ -108,7 +108,7 @@ describe('createApiChannelFetch', () => {
       method: 'GET',
       path: '/api/v1/info',
       query: {},
-      headers: { 'x-rig-plane-controller': 'k' },
+      headers: { 'x-rigplane-controller': 'k' },
     });
     respond(ch, 1, 200, { 'Content-Type': 'application/json' }, utf8('{"ok":true}'));
     const res = await pending;
