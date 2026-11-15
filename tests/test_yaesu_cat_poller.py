@@ -562,10 +562,18 @@ async def test_canonical_ptt_transport_failure_preserves_reconnect_path(
     radio, poller, store, clock, emitted = _canonical_ptt_path(monkeypatch)
     _seed_canonical_ptt(radio, store, clock, ObservedPtt.ON)
     radio._transport.query.side_effect = error  # noqa: SLF001
-    poller._try_reconnect = AsyncMock(side_effect=asyncio.CancelledError)  # noqa: SLF001
-    with pytest.raises(asyncio.CancelledError):
-        await poller._run_poll_cycle("medium", poller._poll_medium, 0.1)  # noqa: SLF001
-    poller._try_reconnect.assert_awaited_once_with()  # noqa: SLF001
+    if isinstance(error, CatTimeoutError):
+        # MOR-4456 behaviour change: a PTT-only timeout publishes unknown
+        # and the cycle continues with no raise — and no reconnect.
+        poller._try_reconnect = AsyncMock()  # noqa: SLF001
+        assert await poller._emit_medium_observations() is True  # noqa: SLF001
+        poller._try_reconnect.assert_not_awaited()  # noqa: SLF001
+        assert radio._transport.stats.reconnects == 0  # noqa: SLF001
+    else:
+        poller._try_reconnect = AsyncMock(side_effect=asyncio.CancelledError)  # noqa: SLF001
+        with pytest.raises(asyncio.CancelledError):
+            await poller._run_poll_cycle("medium", poller._poll_medium, 0.1)  # noqa: SLF001
+        poller._try_reconnect.assert_awaited_once_with()  # noqa: SLF001
     assert [call.args[0] for call in radio._transport.query.await_args_list] == ["TX;"]  # noqa: SLF001
     assert [item.value for item in emitted if item.path == OBSERVED_PTT_PATH] == [
         ObservedPtt.UNKNOWN
@@ -588,17 +596,92 @@ async def test_canonical_ptt_error_sink_failure_preserves_reconnect(
     )
     sink = MagicMock(side_effect=sink_error("sink failed"))
     poller._observation_callback = sink  # noqa: SLF001
-    error_type = CatTimeoutError if failure == "timeout" else CatTransportError
-    with pytest.raises(error_type, match=f"PTT read failed: {failure}"):
-        await poller._emit_medium_observations()  # noqa: SLF001
+    if failure == "timeout":
+        # MOR-4456 behaviour change: a PTT-only timeout publishes unknown
+        # and the PTT lane itself raises nothing — the only raise here is
+        # the broken sink's own, from the batch publication.
+        with pytest.raises(sink_error):
+            await poller._emit_medium_observations()  # noqa: SLF001
+    else:
+        with pytest.raises(CatTransportError, match="PTT read failed: transport"):
+            await poller._emit_medium_observations()  # noqa: SLF001
+    # The unknown still reached the sink before it blew up.
+    assert [item.value for item in sink.call_args_list[0].args[0]] == [
+        ObservedPtt.UNKNOWN
+    ]
+    poller._try_reconnect = AsyncMock(side_effect=asyncio.CancelledError)  # noqa: SLF001
+    if failure == "timeout" and sink_error is asyncio.CancelledError:
+        # A CancelledError from the sink is indistinguishable from task
+        # cancellation — the cycle takes the stop path with no reconnect.
+        with pytest.raises(asyncio.CancelledError):
+            await poller._run_poll_cycle("medium", poller._poll_medium, 0.1)  # noqa: SLF001
+        poller._try_reconnect.assert_not_awaited()  # noqa: SLF001
+    else:
+        with pytest.raises(asyncio.CancelledError):
+            await poller._run_poll_cycle("medium", poller._poll_medium, 0.1)  # noqa: SLF001
+        poller._try_reconnect.assert_awaited_once_with()  # noqa: SLF001
+    if failure == "transport":
+        assert [args.args[0][0].value for args in sink.call_args_list] == [
+            ObservedPtt.UNKNOWN,
+            ObservedPtt.UNKNOWN,
+        ]
+
+
+@pytest.mark.asyncio
+async def test_canonical_ptt_freq_timeout_still_reaches_reconnect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A dead link still reconnects through the critical freq/mode reads.
+
+    MOR-4456 behaviour change: only the PTT read went non-critical — a
+    timeout of a startup-critical read (``_safe_read`` re-raises) still
+    takes the reconnect path.
+    """
+    radio, poller, store, clock, _ = _canonical_ptt_path(monkeypatch)
+    freq_path = FieldPath.active("main", "freq_mode", "freq_hz")
+    acquisition = radio.profile.state_acquisition
+    assert acquisition is not None
+    radio._profile_cache = replace(  # noqa: SLF001
+        radio.profile,
+        state_acquisition=replace(
+            acquisition,
+            capabilities=acquisition.capabilities
+            + (FieldCapability(path=freq_path, polling=True),),
+        ),
+    )
+    _seed_canonical_ptt(radio, store, clock, ObservedPtt.ON)
+    radio.read_freq = AsyncMock(side_effect=CatTimeoutError("freq timeout"))
     poller._try_reconnect = AsyncMock(side_effect=asyncio.CancelledError)  # noqa: SLF001
     with pytest.raises(asyncio.CancelledError):
         await poller._run_poll_cycle("medium", poller._poll_medium, 0.1)  # noqa: SLF001
     poller._try_reconnect.assert_awaited_once_with()  # noqa: SLF001
-    assert [args.args[0][0].value for args in sink.call_args_list] == [
-        ObservedPtt.UNKNOWN,
-        ObservedPtt.UNKNOWN,
-    ]
+    radio.read_freq.assert_awaited_once_with(0)
+    # The PTT read was never reached — the reconnect came from FREQ.
+    radio._transport.query.assert_not_awaited()  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_canonical_ptt_consecutive_timeouts_cause_no_reconnect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """N consecutive PTT timeouts publish unknown and never reconnect.
+
+    MOR-4456 behaviour change: a PTT-only timeout is served unknown and
+    the cycle continues with no raise, so the reconnect path stays
+    quiet no matter how many medium cycles in a row time out.
+    """
+    radio, poller, store, clock, emitted = _canonical_ptt_path(monkeypatch)
+    _seed_canonical_ptt(radio, store, clock, ObservedPtt.ON)
+    radio._transport.query.side_effect = CatTimeoutError("TX timeout")  # noqa: SLF001
+    poller._try_reconnect = AsyncMock()  # noqa: SLF001
+    for _ in range(5):
+        assert await poller._emit_medium_observations() is True  # noqa: SLF001
+    poller._try_reconnect.assert_not_awaited()  # noqa: SLF001
+    assert radio._transport.stats.reconnects == 0  # noqa: SLF001
+    assert [item.value for item in emitted if item.path == OBSERVED_PTT_PATH] == [
+        ObservedPtt.UNKNOWN
+    ] * 5
+    assert store.snapshot().field(OBSERVED_PTT_PATH).value is ObservedPtt.UNKNOWN
 
 
 @pytest.mark.asyncio
