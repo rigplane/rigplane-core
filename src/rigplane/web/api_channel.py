@@ -99,6 +99,9 @@ __all__ = [
     "ApiWireHeaderField",
     "ApiWireLimits",
     "ApiWireMessageTypes",
+    "ApiWirePayload",
+    "ApiWirePayloadField",
+    "ApiWirePayloads",
     "api_channel_wire_definition",
     "api_path_allowed",
 ]
@@ -203,18 +206,164 @@ class ApiWireLimits:
 
 
 @dataclass(frozen=True, slots=True)
+class ApiWirePayloadField:
+    """One JSON field of a producer-owned payload contract."""
+
+    name: str
+    type: str
+    required: bool
+    note: str
+
+
+@dataclass(frozen=True, slots=True)
+class ApiWirePayload:
+    """One JSON payload contract: what a frame carries, from its producer.
+
+    ``carried_by`` names the frame (or text-frame channel event) that
+    carries the payload; ``codes`` lists the machine-readable values a
+    string field may take (the ERROR contract's emit list). Field order
+    is the stable key order of the committed JSON.
+    """
+
+    version: int
+    carried_by: str
+    fields: tuple[ApiWirePayloadField, ...]
+    codes: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class ApiWirePayloads:
+    """Every JSON payload the api channel and its attach exchange carry."""
+
+    request_head: ApiWirePayload
+    response_head: ApiWirePayload
+    error: ApiWirePayload
+    attach_frame: ApiWirePayload
+    attach_ack: ApiWirePayload
+
+
+@dataclass(frozen=True, slots=True)
 class ApiWireDefinition:
     """The wire contract as a typed, JSON-serialisable record.
 
     The one machine-readable copy of the header layout, message types,
-    version, chunk size, and limits. Use :func:`dataclasses.asdict` for the
-    plain-JSON form; every value round-trips through ``json`` unchanged.
+    version, chunk size, limits, and the JSON payload contracts. Use
+    :func:`dataclasses.asdict` for the plain-JSON form; every value
+    round-trips through ``json`` unchanged.
     """
 
     version: int
     header: ApiWireHeader
     message_types: ApiWireMessageTypes
     limits: ApiWireLimits
+    payloads: ApiWirePayloads
+
+
+def _api_channel_payload_contracts() -> ApiWirePayloads:
+    """The payload contracts, owned by their producer types.
+
+    Every field mirrors what :meth:`ApiRequestHead.parse`,
+    :meth:`ApiResponseHead.encode`, :meth:`ApiErrorFrame.encode`,
+    :meth:`ClientChannelParams.from_attach_frame`, and
+    :class:`ChannelAttachedAck` actually accept or emit; the golden
+    replay test pins the bytes against the real handlers.
+    """
+    from .channel_attach import ATTACH_ACK_VERSION  # noqa: TID251
+
+    return ApiWirePayloads(
+        request_head=ApiWirePayload(
+            version=1,
+            carried_by="REQ_HEAD frame payload (UTF-8 JSON object)",
+            fields=(
+                ApiWirePayloadField("method", "string", True, "non-empty HTTP method"),
+                ApiWirePayloadField(
+                    "path",
+                    "string",
+                    True,
+                    "origin-form path: starts with '/', carries no query",
+                ),
+                ApiWirePayloadField(
+                    "query",
+                    "object: name -> array of strings",
+                    False,
+                    "absent means no query",
+                ),
+                ApiWirePayloadField(
+                    "headers",
+                    "object: name -> value, both strings",
+                    False,
+                    "absent means no headers",
+                ),
+            ),
+        ),
+        response_head=ApiWirePayload(
+            version=1,
+            carried_by="RES_HEAD frame payload (UTF-8 JSON object)",
+            fields=(
+                ApiWirePayloadField("status", "integer", True, "HTTP status code"),
+                ApiWirePayloadField(
+                    "headers", "object: name -> value", True, "answer headers"
+                ),
+            ),
+        ),
+        error=ApiWirePayload(
+            version=1,
+            carried_by="ERROR frame payload (UTF-8 JSON object)",
+            fields=(
+                ApiWirePayloadField("code", "string", True, "one of the codes below"),
+                ApiWirePayloadField("message", "string", True, "human-readable detail"),
+            ),
+            codes=(
+                _BAD_VERSION,
+                _MALFORMED,
+                _STALE_ID,
+                _TOO_LARGE,
+                _BUSY,
+                _TIMEOUT,
+                _INTERNAL,
+            ),
+        ),
+        attach_frame=ApiWirePayload(
+            version=1,
+            carried_by="first text frame on a client data channel (UTF-8 JSON object)",
+            fields=(
+                ApiWirePayloadField(
+                    "type", '"attach"', True, "the attach discriminator"
+                ),
+                ApiWirePayloadField(
+                    "controller_key",
+                    "string",
+                    True,
+                    "the session key from POST /api/v1/controller; null is "
+                    'admitted only on the "api" label (its keyless acquire '
+                    "path)",
+                ),
+                ApiWirePayloadField(
+                    "state_delta",
+                    "integer 1 | 2",
+                    False,
+                    "2 (leaf deltas) when absent",
+                ),
+                ApiWirePayloadField("role", "string", False, '"primary" when absent'),
+            ),
+        ),
+        attach_ack=ApiWirePayload(
+            version=1,
+            carried_by="first text frame the server sends on a scope/audio "
+            "data channel after attach",
+            fields=(
+                ApiWirePayloadField(
+                    "type", '"attached"', True, "the ack discriminator"
+                ),
+                ApiWirePayloadField(
+                    "v", "integer", True, f"ack version, currently {ATTACH_ACK_VERSION}"
+                ),
+                ApiWirePayloadField(
+                    "channel", '"scope" | "audio"', True, "the acked label"
+                ),
+            ),
+        ),
+    )
 
 
 def api_channel_wire_definition() -> ApiWireDefinition:
@@ -248,6 +397,7 @@ def api_channel_wire_definition() -> ApiWireDefinition:
             send_high_water_bytes=SEND_HIGH_WATER_BYTES,
             send_low_water_bytes=SEND_LOW_WATER_BYTES,
         ),
+        payloads=_api_channel_payload_contracts(),
     )
 
 
