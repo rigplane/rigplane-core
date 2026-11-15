@@ -93,6 +93,11 @@ __all__ = [
     "ApiChannelHandler",
     "ApiMessageType",
     "ApiRequestHead",
+    "ApiWireDefinition",
+    "ApiWireHeader",
+    "ApiWireHeaderField",
+    "ApiWireLimits",
+    "ApiWireMessageTypes",
     "api_channel_wire_definition",
     "api_path_allowed",
 ]
@@ -153,38 +158,96 @@ _TIMEOUT: Final = "timeout"
 _INTERNAL: Final = "internal"
 
 
-def api_channel_wire_definition() -> dict[str, Any]:
-    """Return the wire contract as a JSON-serialisable description.
+@dataclass(frozen=True, slots=True)
+class ApiWireHeaderField:
+    """One binary header field: wire name and width."""
+
+    name: str
+    type: str
+
+
+@dataclass(frozen=True, slots=True)
+class ApiWireHeader:
+    """The binary frame header layout the wire contract pins."""
+
+    layout: str
+    fields: tuple[ApiWireHeaderField, ...]
+    size_bytes: int
+    flags: str
+
+
+@dataclass(frozen=True, slots=True)
+class ApiWireMessageTypes:
+    """Every message type on the wire, by name."""
+
+    REQ_HEAD: int
+    REQ_BODY: int
+    RES_HEAD: int
+    RES_BODY: int
+    END: int
+    ERROR: int
+    CANCEL: int
+
+
+@dataclass(frozen=True, slots=True)
+class ApiWireLimits:
+    """The numeric limits the wire contract pins."""
+
+    response_chunk_bytes: int
+    max_request_body_bytes: int
+    max_in_flight_requests: int
+    request_deadline_s: float
+    send_high_water_bytes: int
+    send_low_water_bytes: int
+
+
+@dataclass(frozen=True, slots=True)
+class ApiWireDefinition:
+    """The wire contract as a typed, JSON-serialisable record.
 
     The one machine-readable copy of the header layout, message types,
-    version, chunk size, and limits, built from the module constants above
-    for the browser side (the browser transport will consume and check
-    this instead of re-listing values). Every value round-trips through
-    ``json`` unchanged.
+    version, chunk size, and limits. Use :func:`dataclasses.asdict` for the
+    plain-JSON form; every value round-trips through ``json`` unchanged.
     """
-    return {
-        "version": API_CHANNEL_VERSION,
-        "header": {
-            "layout": _FRAME_FORMAT,
-            "fields": [
-                {"name": "version", "type": "u8"},
-                {"name": "type", "type": "u8"},
-                {"name": "request_id", "type": "u32be"},
-                {"name": "flags", "type": "u8"},
-            ],
-            "size_bytes": _FRAME_HEADER.size,
-            "flags": "reserved, always sent as 0 and ignored on receipt",
-        },
-        "message_types": {entry.name: entry.value for entry in ApiMessageType},
-        "limits": {
-            "response_chunk_bytes": RESPONSE_CHUNK_BYTES,
-            "max_request_body_bytes": MAX_REQUEST_BODY_BYTES,
-            "max_in_flight_requests": MAX_IN_FLIGHT_REQUESTS,
-            "request_deadline_s": REQUEST_DEADLINE_S,
-            "send_high_water_bytes": SEND_HIGH_WATER_BYTES,
-            "send_low_water_bytes": SEND_LOW_WATER_BYTES,
-        },
-    }
+
+    version: int
+    header: ApiWireHeader
+    message_types: ApiWireMessageTypes
+    limits: ApiWireLimits
+
+
+def api_channel_wire_definition() -> ApiWireDefinition:
+    """Return the wire contract as a typed record.
+
+    Built from the module constants above for the browser side (the
+    browser transport will consume and check this instead of re-listing
+    values).
+    """
+    return ApiWireDefinition(
+        version=API_CHANNEL_VERSION,
+        header=ApiWireHeader(
+            layout=_FRAME_FORMAT,
+            fields=(
+                ApiWireHeaderField("version", "u8"),
+                ApiWireHeaderField("type", "u8"),
+                ApiWireHeaderField("request_id", "u32be"),
+                ApiWireHeaderField("flags", "u8"),
+            ),
+            size_bytes=_FRAME_HEADER.size,
+            flags="reserved, always sent as 0 and ignored on receipt",
+        ),
+        message_types=ApiWireMessageTypes(
+            **{entry.name: entry.value for entry in ApiMessageType}
+        ),
+        limits=ApiWireLimits(
+            response_chunk_bytes=RESPONSE_CHUNK_BYTES,
+            max_request_body_bytes=MAX_REQUEST_BODY_BYTES,
+            max_in_flight_requests=MAX_IN_FLIGHT_REQUESTS,
+            request_deadline_s=REQUEST_DEADLINE_S,
+            send_high_water_bytes=SEND_HIGH_WATER_BYTES,
+            send_low_water_bytes=SEND_LOW_WATER_BYTES,
+        ),
+    )
 
 
 @runtime_checkable
