@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from fake_rigctld import FakeRigctldServer
+from fake_rigctld import FakeRigctldBehavior, FakeRigctldServer
 from rigplane._poller_types import (
     CommandQueue,
     EnableScope,
@@ -661,6 +661,77 @@ async def test_observation_poller_reconciles_slow_control_set_without_waiting_fo
 
 
 @pytest.mark.asyncio
+async def test_refused_ptt_stays_in_cycle_with_vfo_and_drained_readback() -> None:
+    """MOR-4456 P1-2: a persistently refused ``t`` never leaves the cycle.
+
+    ``RPRT -4`` never closes the transport, so the refusal publishes PTT
+    unknown for that cycle while ``read_active_vfo()`` and the drained
+    slow-control readbacks still run and publish — and ``t`` is asked
+    again on the next cycle, with zero reconnects.
+    """
+    async with FakeRigctldServer(
+        behavior=FakeRigctldBehavior(unsupported_commands={"t"})
+    ) as server:
+        radio = RigctldClientRadio(host=server.host, port=server.port)
+        await radio.connect()
+        try:
+            writer_before = radio._transport._writer  # noqa: SLF001
+            queue = CommandQueue()
+            store = StateStore()
+            service = CommandService(
+                executor=_NoopCommandExecutor(),
+                state_store=store,
+            )
+            command_id = "ws-rigctld-preamp-refused-ptt"
+            intent = command_intent_from_request(
+                "set_preamp",
+                {"level": 2, "receiver": 0},
+                source="websocket",
+                command_id=command_id,
+            )
+            await service.execute(intent)
+            queue.put_ordered(
+                SetPreamp(2),
+                command_id=command_id,
+                source="websocket",
+                command_service=service,
+            )
+            observations: list[Observation] = []
+            results = []
+            radio.set_physical_write_result_callback(results.append)
+            poller = radio.create_observation_poller(
+                callback=observations.extend,
+                command_queue=queue,
+            )
+
+            await poller._poll_medium()  # noqa: SLF001
+            await poller._poll_medium()  # noqa: SLF001
+
+            assert radio.connected
+            assert radio._transport._writer is writer_before  # noqa: SLF001
+            assert server.commands_seen.count("t") == 2
+            unknowns = [item for item in observations if item.path == OBSERVED_PTT_PATH]
+            assert len(unknowns) == 2
+            assert all(item.value is ObservedPtt.UNKNOWN for item in unknowns)
+            vfo = next(
+                item
+                for item in observations
+                if str(item.path) == "receiver.main.vfo.active_slot"
+            )
+            assert vfo.value == "A"
+            readback = next(
+                item
+                for item in observations
+                if str(item.path) == "receiver.main.operator_controls.preamp"
+            )
+            assert readback.value == 2
+            assert readback.correlation_id == command_id
+            assert [result.status for result in results] == ["reconciled"]
+        finally:
+            await radio.disconnect()
+
+
+@pytest.mark.asyncio
 async def test_observation_poller_correlates_slow_control_after_overlay_ttl_edge() -> (
     None
 ):
@@ -1284,11 +1355,11 @@ async def test_observed_ptt_read_error_replaces_seeded_on_with_unknown(
             assert seed.value is True and str(seed.path) == "global.tx_state.ptt"
             store.apply(replace(seed, path=OBSERVED_PTT_PATH, value=ObservedPtt.ON))
             server.behavior.malformed_responses["t"] = reply
-            with pytest.raises(CommandError) as legacy_error:
+            with pytest.raises(CommandError):
                 await adapter.read_ptt()
-            with pytest.raises(type(legacy_error.value)) as poll_error:
-                await poller._poll_medium()  # noqa: SLF001
-            assert str(poll_error.value) == str(legacy_error.value)
+            # MOR-4456 P1-2: a refused PTT stays in-cycle — the poll
+            # completes and publishes unknown instead of raising.
+            await poller._poll_medium()  # noqa: SLF001
             assert project_observed_ptt(store.snapshot()) is ObservedPtt.UNKNOWN, (
                 "failed current PTT read retained ON evidence"
             )
@@ -1361,11 +1432,9 @@ async def test_retired_ptt_completion_cannot_replace_current_observation(
                 current = store.snapshot().field(OBSERVED_PTT_PATH)
                 assert current.provider_generation == 1
                 release.set()
-                if read_error:
-                    with pytest.raises(CommandError):
-                        await task
-                else:
-                    await task
+                # MOR-4456 P1-2: the stale refused completion no longer
+                # raises — it only must not replace current evidence.
+                await task
                 assert store.snapshot().field(OBSERVED_PTT_PATH) == current, (
                     "retired PTT completion replaced current evidence"
                 )
