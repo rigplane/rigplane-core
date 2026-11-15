@@ -81,6 +81,7 @@ def human_read_name(name: str) -> str:
     short = name[4:] if name.startswith("get_") else name
     return short.replace("_", " ")
 
+
 #: How many finding names print before the rest folds into "and N more".
 _MAX_FINDING_NAMES = 10
 

@@ -211,9 +211,7 @@ def test_zero_arg_several_radios_numbered_choice(tmp_path, monkeypatch) -> None:
     assert document.radio.profile == "FTX-1"
 
 
-def test_zero_arg_several_radios_bad_number_then_quit(
-    tmp_path, monkeypatch
-) -> None:
+def test_zero_arg_several_radios_bad_number_then_quit(tmp_path, monkeypatch) -> None:
     code, out, _ = _run_probe(
         monkeypatch,
         tmp_path,
@@ -281,9 +279,7 @@ def test_yes_takes_single_radio_without_tty(tmp_path, monkeypatch) -> None:
     assert (tmp_path / "p.json").exists()
 
 
-def test_several_radios_without_tty_is_exit_2_listing(
-    tmp_path, monkeypatch
-) -> None:
+def test_several_radios_without_tty_is_exit_2_listing(tmp_path, monkeypatch) -> None:
     docs = tmp_path / "Documents"
     docs.mkdir(exist_ok=True)
     monkeypatch.setattr(platformdirs, "user_documents_dir", lambda *a: str(docs))

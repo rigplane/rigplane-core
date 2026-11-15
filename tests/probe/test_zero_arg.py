@@ -108,8 +108,7 @@ def test_skip_reason_no_unambiguous_bytes() -> None:
 
 def test_skip_reason_run_aborted() -> None:
     assert (
-        render.skip_reason_text("run_aborted")
-        == "the run stopped before this question"
+        render.skip_reason_text("run_aborted") == "the run stopped before this question"
     )
 
 
@@ -236,9 +235,9 @@ def test_found_line_format() -> None:
 
 
 def test_choice_list_and_prompt() -> None:
-    assert render.radio_choice_list(
-        [("FT-991A", "COM5"), ("IC-7300", "COM6")]
-    ) == ("Found 2 radios:\n  1. FT-991A on COM5\n  2. IC-7300 on COM6")
+    assert render.radio_choice_list([("FT-991A", "COM5"), ("IC-7300", "COM6")]) == (
+        "Found 2 radios:\n  1. FT-991A on COM5\n  2. IC-7300 on COM6"
+    )
     assert render.radio_choice_prompt(2) == (
         "Type the number of your radio (1-2), or press Enter to quit: "
     )
@@ -313,9 +312,7 @@ async def _execute_default_out(
     return code, lines
 
 
-def test_default_save_goes_to_documents_with_dated_name(
-    tmp_path, monkeypatch
-) -> None:
+def test_default_save_goes_to_documents_with_dated_name(tmp_path, monkeypatch) -> None:
     code, lines = asyncio.run(
         _execute_default_out(tmp_path, monkeypatch, documents=None)
     )
@@ -330,9 +327,7 @@ def test_default_save_goes_to_documents_with_dated_name(
     assert str(matches[0].resolve()) in summary
 
 
-def test_default_save_never_overwrites_adds_suffix(
-    tmp_path, monkeypatch
-) -> None:
+def test_default_save_never_overwrites_adds_suffix(tmp_path, monkeypatch) -> None:
     from datetime import datetime, timezone
 
     stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -349,9 +344,7 @@ def test_default_save_never_overwrites_adds_suffix(
     assert document.schema == "rigplane-probe-v1"
 
 
-def test_default_save_falls_back_when_documents_missing(
-    tmp_path, monkeypatch
-) -> None:
+def test_default_save_falls_back_when_documents_missing(tmp_path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
     missing = tmp_path / "no-such-documents"
     home = tmp_path / "home"
@@ -386,9 +379,7 @@ def test_default_save_falls_back_when_documents_missing(
 # --- Folder opener ---
 
 
-def test_folder_opener_called_only_when_interactive(
-    tmp_path, monkeypatch
-) -> None:
+def test_folder_opener_called_only_when_interactive(tmp_path, monkeypatch) -> None:
     opened: list[Path] = []
     monkeypatch.chdir(tmp_path)
     docs = tmp_path / "Documents"
@@ -528,9 +519,7 @@ def test_select_single_radio_decline_quits_without_probing() -> None:
 def test_select_several_radios_numbered_choice() -> None:
     answers = iter(["2"])
     selection = _select(
-        discover=lambda: asyncio.sleep(
-            0, result=[_civ_result(), _cat_result()]
-        ),
+        discover=lambda: asyncio.sleep(0, result=[_civ_result(), _cat_result()]),
         ask=lambda prompt: next(answers),
     )
     assert not isinstance(selection, int)
@@ -552,9 +541,7 @@ def test_select_several_radios_bad_number_then_enter_quits() -> None:
             is_tty=True,
             ask=lambda prompt: next(answers),
             emit=emitted.append,
-            discover=lambda: asyncio.sleep(
-                0, result=[_civ_result(), _cat_result()]
-            ),
+            discover=lambda: asyncio.sleep(0, result=[_civ_result(), _cat_result()]),
         )
     )
     assert selection == 0
@@ -577,9 +564,7 @@ def test_select_profile_without_port_filters_discovery() -> None:
     seen_prompts: list[str] = []
     selection = _select(
         profile_name="FTX-1",
-        discover=lambda: asyncio.sleep(
-            0, result=[_civ_result(), _cat_result()]
-        ),
+        discover=lambda: asyncio.sleep(0, result=[_civ_result(), _cat_result()]),
         ask=lambda prompt: seen_prompts.append(prompt) or "",
     )
     assert not isinstance(selection, int)
@@ -639,9 +624,7 @@ def test_select_several_without_tty_is_exit_2_listing() -> None:
             is_tty=False,
             ask=lambda prompt: (_ for _ in ()).throw(AssertionError("no prompt")),
             emit=emitted.append,
-            discover=lambda: asyncio.sleep(
-                0, result=[_civ_result(), _cat_result()]
-            ),
+            discover=lambda: asyncio.sleep(0, result=[_civ_result(), _cat_result()]),
         )
     )
     assert selection == 2

@@ -509,9 +509,7 @@ async def _execute_after_open(
     if report.aborted is not None:
         emit(report.aborted)
 
-    saved_path = (
-        Path(out) if out else _default_out_path(config.model, documents_dir)
-    )
+    saved_path = Path(out) if out else _default_out_path(config.model, documents_dir)
     saved_abs = saved_path.resolve()
     content = report.file.to_json()
     identity = report.file.radio.identity_reported
@@ -765,9 +763,7 @@ async def _run_with_selection(
                 selection.device, baudrate=selection.baud
             )
             return await _yaesu_exchange(reader, writer)
-        addr = (
-            selection.address if selection.address is not None else config.civ_addr
-        )
+        addr = selection.address if selection.address is not None else config.civ_addr
         reader, writer = await open_serial_port(
             selection.device, baudrate=selection.baud
         )
