@@ -474,6 +474,206 @@ async def test_offer_with_malformed_ice_servers_rejected() -> None:
             await server._webrtc_sessions.close_all()
 
 
+async def _http_post_offer(
+    port: int, payload: dict[str, Any]
+) -> tuple[int, dict[str, Any]]:
+    """POST one JSON body to the offer endpoint of a running test server.
+
+    Raw-socket minimal POST, like the attach-path browser tests: the
+    request travels the real HTTP route and response serialisation.
+    """
+    reader, writer = await asyncio.open_connection("127.0.0.1", port)
+    raw = json.dumps(payload).encode()
+    writer.write(
+        f"POST /api/v1/transport/webrtc/offer HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n"
+        f"Content-Length: {len(raw)}\r\nContent-Type: application/json\r\n"
+        "Connection: close\r\n\r\n".encode()
+        + raw
+    )
+    await writer.drain()
+    head = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), timeout=10.0)
+    status = int(head.split(b" ", 2)[1])
+    body = json.loads(await asyncio.wait_for(reader.read(), timeout=10.0) or b"{}")
+    writer.close()
+    return status, body
+
+
+# --------------------------------------------------------------------------
+# 8b. valid ice_servers through the real offer endpoint
+# --------------------------------------------------------------------------
+
+
+@_webrtc
+@pytest.mark.realtime(
+    reason="real ICE/STUN wall-clock against live sockets on a running server"
+)
+async def test_offer_endpoint_forwards_ice_servers_to_answer() -> None:
+    """Valid ice_servers through the REAL offer endpoint yields srflx.
+
+    Drives ``POST /api/v1/transport/webrtc/offer`` on a running test
+    server (not the session manager directly) with ``ice_servers``
+    pointing at a local fake STUN responder bound to the default-route
+    address. The responder must RECEIVE binding requests and the answer
+    SDP must carry its srflx candidate. Removing the ``ice_servers``
+    forwarding in ``_handle_webrtc_offer`` leaves this red: the answer
+    stays host-only and the responder stays silent.
+    """
+    from rigplane.web.server import WebConfig, WebServer
+
+    stun_host = _default_route_ipv4()
+    if not stun_host:
+        pytest.skip("host exposes only loopback addresses")
+
+    loop = asyncio.get_running_loop()
+    responder = _StunResponder()
+    transport, _ = await loop.create_datagram_endpoint(
+        lambda: responder, local_addr=(stun_host, 0)
+    )
+    stun_port = transport.get_extra_info("sockname")[1]
+    web = WebServer(
+        None,
+        WebConfig(host="127.0.0.1", port=0, discovery=False, webrtc_enabled=True),
+    )
+    try:
+        await asyncio.wait_for(web.start(), timeout=15.0)
+        sdp, offer_type = await _offer_sdp()
+        status, answer = await _http_post_offer(
+            web.port,
+            {
+                "sdp": sdp,
+                "type": offer_type,
+                "ice_servers": [{"urls": [f"stun:{stun_host}:{stun_port}"]}],
+            },
+        )
+        assert status == 200, answer
+        assert answer["status"] == "ok", answer
+        lines = _answer_candidate_lines(answer["sdp"])
+        assert any("typ srflx" in ln for ln in lines), lines
+        assert responder.received, "STUN responder saw no binding requests"
+    finally:
+        transport.close()
+        with contextlib.suppress(Exception):
+            await web.stop()
+        if web._webrtc_sessions is not None:  # noqa: SLF001
+            await web._webrtc_sessions.close_all()  # noqa: SLF001
+
+
+# --------------------------------------------------------------------------
+# 8c. --webrtc-include-vpn through the real CLI → config → server path
+# --------------------------------------------------------------------------
+
+
+def _parse_web_cli(*extra: str) -> Any:
+    """Parse real ``web`` CLI args the way the operator's startup does."""
+    import io
+    from unittest.mock import patch
+
+    from rigplane.cli import _build_parser
+
+    parser = _build_parser()
+    with patch("sys.stderr", new_callable=io.StringIO):
+        args = parser.parse_args(["web", "--webrtc", *extra])
+    args.web_rigctld = False
+    return args
+
+
+async def _config_from_cli_startup(args: Any, monkeypatch: pytest.MonkeyPatch) -> Any:
+    """Run the real ``_cmd_web`` startup path, capturing its WebConfig.
+
+    Every forwarding step (parse → ``config_kwargs`` → ``WebConfig``) is
+    real code; only the final ``WebServer`` construction is captured so
+    no listener binds. Removing the CLI→config assignment leaves the
+    captured config at its default.
+    """
+    from unittest.mock import AsyncMock, patch
+
+    from rigplane.cli import _cmd_web
+
+    monkeypatch.setenv("ICOM_LOG_FILE", "off")
+    captured: dict[str, Any] = {}
+
+    class FakeWebServer:
+        def __init__(self, _radio: Any, cfg: Any) -> None:
+            captured["config"] = cfg
+            self._runtime_log_path = None
+
+        async def serve_forever(self, *, on_started: Any = None) -> None:
+            on_started()
+            raise asyncio.CancelledError
+
+    with patch("rigplane.web.server.WebServer", FakeWebServer):
+        assert await _cmd_web(AsyncMock(), args) == 0
+    return captured["config"]
+
+
+@_webrtc
+@pytest.mark.parametrize("include_vpn", [False, True])
+async def test_cli_webrtc_include_vpn_flag_reaches_answer(
+    monkeypatch: pytest.MonkeyPatch, include_vpn: bool
+) -> None:
+    """The ``--webrtc-include-vpn`` flag changes the answer's candidates.
+
+    Real CLI parsing (``_build_parser``) → real startup config
+    (``_cmd_web``) → real server (``WebServer``) → real answer
+    (``negotiate``): a second real local address classified as a VPN
+    tunnel through typed facts (``WindowsAdapterFacts`` →
+    ``classify_windows_interface`` → ``AddressInfo`` — no raw dicts) has
+    no host candidate without the flag and gains one with it. Removing
+    the CLI→config assignment leaves the flagged run red.
+    """
+    import aioice.ice
+
+    from rigplane.web.server import WebServer
+    from rigplane.web.transport import ice_gathering as ice_gathering
+
+    lan = _default_route_ipv4()
+    others = [a for a in aioice.ice.get_host_addresses(True, False) if a != lan]
+    if not lan or not others:
+        pytest.skip("needs a default-route address plus a second bindable IPv4 address")
+    tunnel_ip = others[0]
+
+    args = _parse_web_cli(*("--webrtc-include-vpn",) if include_vpn else ())
+    assert args.webrtc_include_vpn is include_vpn
+    cfg = await _config_from_cli_startup(args, monkeypatch)
+    assert cfg.webrtc_include_vpn is include_vpn
+    assert cfg.webrtc_enabled is True
+
+    tunnel_kind = classify_windows_interface(
+        WindowsAdapterFacts(
+            if_type=IF_TYPE_TUNNEL,
+            hardware_interface=False,
+            oper_up=True,
+            friendly_name="Test VPN",
+        )
+    )
+    assert tunnel_kind is IfKind.TUNNEL
+    monkeypatch.setattr(
+        ice_gathering,
+        "_enumerate_local_addresses",
+        lambda: [
+            AddressInfo(
+                ip=lan, ifname="en0", kind=IfKind.PHYSICAL, is_default_route=True
+            ),
+            AddressInfo(ip=tunnel_ip, ifname="Test VPN", kind=tunnel_kind),
+        ],
+    )
+    server = WebServer(None, cfg)
+    try:
+        sdp, offer_type = await _offer_sdp()
+        result = await server._webrtc_session_manager().negotiate(  # noqa: SLF001
+            sdp, offer_type
+        )
+    finally:
+        if server._webrtc_sessions is not None:  # noqa: SLF001
+            await server._webrtc_sessions.close_all()  # noqa: SLF001
+    hosts = [ln for ln in _answer_candidate_lines(result["sdp"]) if "typ host" in ln]
+    assert hosts, "an answer without host candidates proves nothing"
+    if include_vpn:
+        assert any(tunnel_ip in ln for ln in hosts), hosts
+    else:
+        assert not any(tunnel_ip in ln for ln in hosts), hosts
+
+
 # --------------------------------------------------------------------------
 # 9-10. gathering bound with STUN
 # --------------------------------------------------------------------------
@@ -484,6 +684,7 @@ class _StunResponder(asyncio.DatagramProtocol):
 
     def __init__(self) -> None:
         self.transport: asyncio.DatagramTransport | None = None
+        self.received: list[Any] = []
 
     def connection_made(self, transport: asyncio.BaseTransport) -> None:
         self.transport = transport  # type: ignore[assignment]
@@ -491,6 +692,7 @@ class _StunResponder(asyncio.DatagramProtocol):
     def datagram_received(self, data: bytes, addr: Any) -> None:
         if len(data) < 20 or data[0:2] != b"\x00\x01":
             return
+        self.received.append(addr)
         cookie = data[4:8]
         txn = data[8:20]
         host, port = addr[0], addr[1]
