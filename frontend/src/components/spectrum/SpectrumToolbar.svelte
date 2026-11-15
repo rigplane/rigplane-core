@@ -9,6 +9,7 @@
   import { toSpectrumAuthority } from '$lib/runtime/adapters/scope-adapter';
   import { bindSemanticSurfaceHandlers } from '$lib/runtime/adapters/panel-adapters';
   import { getAuthHeaders } from '$lib/auth';
+  import { apiFetch } from '$lib/api/api-fetch';
   import {
     getBandPlanRegion, getAvailableBandPlanRegions, loadBandPlanConfig, selectBandPlanRegion,
   } from '$lib/stores/band-plan-region.svelte';
@@ -167,7 +168,7 @@
   async function fetchLayers() {
     try {
       const [layerResp] = await Promise.all([
-        fetch('/api/v1/band-plan/layers', { headers: getAuthHeaders() }),
+        apiFetch('/api/v1/band-plan/layers', { headers: getAuthHeaders() }),
         loadBandPlanConfig(),
       ]);
       if (layerResp.ok) {

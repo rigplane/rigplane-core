@@ -1,3 +1,4 @@
+import { apiFetch } from '../api/api-fetch';
 type Role = 'primary' | 'auxiliary';
 type Grant = { controller_key: string; generation: number; controller_role?: Role };
 type Sender = (message: { type: 'controller_heartbeat' }) => void;
@@ -109,7 +110,7 @@ export class ControllerClient {
     this._remote = !this._localSessions;
     this.prepared = false;
     this.changed();
-    const statusResponse = await fetch('/api/v1/controller', { signal, redirect: 'error' });
+    const statusResponse = await apiFetch('/api/v1/controller', { signal, redirect: 'error' });
     this.check(epoch, signal);
     const status: unknown = await statusResponse.json();
     if (!statusResponse.ok || !record(status) || status.protocol_version !== 1
@@ -150,7 +151,7 @@ export class ControllerClient {
   }
 
   private async postBrowser(signal?: AbortSignal): Promise<{ status: number; value: unknown }> {
-    const response = await fetch('/api/v1/controller', {
+    const response = await apiFetch('/api/v1/controller', {
       method: 'POST', signal, redirect: 'error',
       headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ kind: 'browser' }),
     });
@@ -230,7 +231,7 @@ export class ControllerClient {
     this.reportedLoss = true;
     this.invalidate();
     if (!grant || grant.controller_role === 'auxiliary') return;
-    const response = await fetch('/api/v1/controller', {
+    const response = await apiFetch('/api/v1/controller', {
       method: 'DELETE', headers: { 'X-RigPlane-Controller': grant.controller_key }, redirect: 'error',
     });
     if (!response.ok && response.status !== 403) {

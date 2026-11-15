@@ -14,6 +14,8 @@ import { SAMPLE_RATE, TX_PCM_SAMPLE_RATES } from './constants';
 import { setAudioConnected } from '../stores/connection.svelte';
 import { setRxEnabled, setTxEnabled, setTxCodecFallback, setRxError, setTxError } from '../stores/audio.svelte';
 import { authenticatedWsUrl } from '../transport/ws-url';
+import type { MessageTransport } from '../transport/message-transport';
+import { createMessageTransport } from '../transport/transport-factory';
 import { getCapabilities, subscribeCapabilities } from '$lib/stores/capabilities.svelte';
 
 export type AudioFocus = RxAudioFocus;
@@ -120,7 +122,7 @@ function preferredRxCodec(): 'opus' | 'pcm16' {
  *  a remote reader and for whoever runs the station alike. */
 
 class AudioManager {
-  private ws: WebSocket | null = null;
+  private ws: MessageTransport | null = null;
   private readonly rxDiagnosticEnabled = import.meta.env.VITE_RX_AUDIO_DIAGNOSTIC === '1';
   private rxPlayer = new RxPlayer(this.rxDiagnosticEnabled);
   private rxDiagnosticOverlay: HTMLElement | null = null;
@@ -155,7 +157,7 @@ class AudioManager {
   // Reactive state (read externally)
   get rxEnabled(): boolean { return this._rxEnabled; }
   get txEnabled(): boolean { return this._txEnabled; }
-  get wsConnected(): boolean { return this.ws?.readyState === WebSocket.OPEN; }
+  get wsConnected(): boolean { return this.ws?.state === 'open'; }
   get txSupported(): boolean { return TxMic.supported(); }
 
   constructor() {
@@ -170,7 +172,7 @@ class AudioManager {
         return;
       }
       
-      if (this.ws?.readyState === WebSocket.OPEN) {
+      if (this.ws?.state === 'open') {
         this.ws.send(data);
         txFrames++;
         if (txFrames <= 3 || txFrames % 50 === 0) {
@@ -180,7 +182,7 @@ class AudioManager {
         // Dropped! WS not ready
         droppedFrames++;
         if (droppedFrames <= 5) {
-          console.warn(`[audio-ws] TX frame dropped, WS state=${this.ws?.readyState}`);
+          console.warn(`[audio-ws] TX frame dropped, transport state=${this.ws?.state}`);
         }
       }
     }, (reason) => this._failTxAudio(reason));
@@ -246,7 +248,7 @@ class AudioManager {
     this.rxPlayer.start();
     this._startRxDiagnosticOverlay();
     this.connect();
-    if (this.ws?.readyState === WebSocket.OPEN) {
+    if (this.ws?.state === 'open') {
       this.ws.send(JSON.stringify({
         type: 'audio_start',
         direction: 'rx',
@@ -268,7 +270,7 @@ class AudioManager {
     if (!this._rxEnabled) return;
     this._rxEnabled = false;
     setRxEnabled(false);
-    if (this.ws?.readyState === WebSocket.OPEN) {
+    if (this.ws?.state === 'open') {
       this.ws.send(JSON.stringify({ type: 'audio_stop', direction: 'rx' }));
     }
     this.rxPlayer.stop();
@@ -315,7 +317,7 @@ class AudioManager {
     if (!supported) return;
     // Only the focus + split_stereo pair maps to CI-V; gain is local.
     if (cfg.focus === undefined && cfg.split_stereo === undefined) return;
-    if (this.ws?.readyState === WebSocket.OPEN) {
+    if (this.ws?.state === 'open') {
       this._flushPendingAudioConfig();
       return;
     }
@@ -337,7 +339,7 @@ class AudioManager {
       this._audioConfigPending = false;
       return;
     }
-    if (this.ws?.readyState !== WebSocket.OPEN) return;
+    if (this.ws?.state !== 'open') return;
     this.ws.send(JSON.stringify({
       type: 'audio_config',
       focus: this.rxPlayer.focus,
@@ -416,7 +418,7 @@ class AudioManager {
     // MOR-3753: a new attempt supersedes a latched TX failure.
     setTxError(false);
     this.connect();
-    if (this.ws?.readyState === WebSocket.OPEN) {
+    if (this.ws?.state === 'open') {
       this.ws.send(JSON.stringify({ type: 'audio_start', direction: 'tx' }));
     }
     this.notify();
@@ -438,7 +440,7 @@ class AudioManager {
     if (!this._txEnabled) return;
     this._txEnabled = false;
     setTxEnabled(false);
-    if (this.ws?.readyState === WebSocket.OPEN) {
+    if (this.ws?.state === 'open') {
       this.ws.send(JSON.stringify({ type: 'audio_stop', direction: 'tx' }));
     }
     if (admission !== null) {
@@ -451,7 +453,7 @@ class AudioManager {
   /** A dead live socket under browser demand latches a fault per active
    *  direction — failed/red, never an endless yellow attempt. Silent when
    *  idle; a superseded socket cannot fault the live one. */
-  private _latchSocketFault(ws: WebSocket): void {
+  private _latchSocketFault(ws: MessageTransport): void {
     if (this.ws !== ws) return;
     if (this._rxEnabled) setRxError(true);
     if (this._txEnabled) setTxError(true);
@@ -476,7 +478,7 @@ class AudioManager {
       }
       return;
     }
-    if (this.ws?.readyState === WebSocket.OPEN || this.ws?.readyState === WebSocket.CONNECTING) {
+    if (this.ws?.state === 'open' || this.ws?.state === 'connecting') {
       return;
     }
     this.close();
@@ -485,13 +487,13 @@ class AudioManager {
     const url = `${proto}//${location.host}/api/v1/audio`;
     const protocols = this.controller?.protocols() ?? [];
     const epoch = this.controller?.epoch() ?? 0;
-    const ws = protocols.length ? new WebSocket(authenticatedWsUrl(url), protocols) : new WebSocket(authenticatedWsUrl(url));
-    ws.binaryType = 'arraybuffer';
+    const ws = createMessageTransport();
     this.ws = ws;
+    ws.open(authenticatedWsUrl(url), protocols.length > 0 ? { protocols } : undefined);
 
-    ws.onopen = () => {
+    ws.onOpen(() => {
       if (protocols.length > 0
-        && (this.ws !== ws || this.controller?.current(epoch) !== true || ws.protocol !== protocols[0])) { ws.close(); return; }
+        && (this.ws !== ws || this.controller?.current(epoch) !== true || ws.attachedProtocol !== protocols[0])) { ws.close(); return; }
       this.backoff = BACKOFF_MIN;
       setAudioConnected(true);
       // The link is back under live demand: a fault latched while it was
@@ -524,27 +526,29 @@ class AudioManager {
       this._startStatsTimer();
       this.rxPlayer.flush();
       this.notify();
-    };
+    });
 
-    ws.onmessage = (ev) => {
+    ws.onBinary((data) => {
       if (protocols.length > 0 && (this.ws !== ws || this.controller?.current(epoch) !== true)) return;
-      if (ev.data instanceof ArrayBuffer) {
-        this.rxPlayer.feed(ev.data);
-        return;
-      }
-      if (typeof ev.data === 'string') {
-        this._handleServerMessage(ev.data);
-      }
-    };
+      this.rxPlayer.feed(data);
+    });
 
-    ws.onerror = () => {
+    ws.onText((text) => {
+      if (protocols.length > 0 && (this.ws !== ws || this.controller?.current(epoch) !== true)) return;
+      this._handleServerMessage(text);
+    });
+
+    // The transport closes the socket on error by itself (the old
+    // `ws.onerror = () => ws.close()` wiring); latching is all that stays.
+    ws.onError(() => {
       console.error('[audio-ws] error');
       this._latchSocketFault(ws);
-      ws.close();
-    };
+    });
 
-    ws.onclose = (ev) => {
-      console.warn(`[audio-ws] closed code=${ev.code} reason=${ev.reason}`);
+    // `close()` below unsubscribes this handler first — the old
+    // `ws.onclose = null` — so an intentional close schedules no reconnect.
+    this.closeUnsub = ws.onClose((info) => {
+      console.warn(`[audio-ws] closed code=${info.code} reason=${info.reason}`);
       // Socket death under demand is a real fault; the TX admission path
       // below still owns its own resolve/notify/teardown unchanged.
       this._latchSocketFault(ws);
@@ -572,7 +576,7 @@ class AudioManager {
       const delay = this.backoff;
       this.backoff = Math.min(Math.floor(this.backoff * 1.7), BACKOFF_MAX);
       this.reconnectTimer = setTimeout(() => this.connect(), delay);
-    };
+    });
   }
 
   // ── TX codec negotiation (MOR-1791) ──
@@ -817,7 +821,7 @@ class AudioManager {
   }
 
   private _sendAudioStats(): void {
-    if (!this._rxEnabled || this.ws?.readyState !== WebSocket.OPEN) return;
+    if (!this._rxEnabled || this.ws?.state !== 'open') return;
     const stats = this.rxPlayer.stats();
     const error = stats.playback?.contextState === 'suspended' && stats.playback.resumeOutcome === 'rejected'
       ? stats.playback.lastResumeError : null;
@@ -838,16 +842,21 @@ class AudioManager {
     }));
   }
 
+  /** Unsubscribe for the live channel's close handler (the old `ws.onclose = null`). */
+  private closeUnsub: (() => void) | null = null;
+
   private close(): void {
     this._clearStatsTimer();
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
-    if (this.ws) {
-      this.ws.onclose = null;
-      this.ws.close();
-      this.ws = null;
+    const ws = this.ws;
+    this.ws = null;
+    if (ws) {
+      this.closeUnsub?.();
+      this.closeUnsub = null;
+      ws.close();
       setAudioConnected(false);
     }
   }
