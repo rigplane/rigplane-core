@@ -580,23 +580,27 @@ test('IC-705 narrower native span hatches the uncovered margins (control)', asyn
     // Wait until the external narrowing is visible on the wire: coverage
     // narrower than the (full, unclipped) view. The switch fires after
     // setup, so this poll is already waiting when the transient gap opens;
-    // follow adoption converges the gap (~1 s) by design.
-    await expect.poll(() => {
-      const f = frames.at(-1);
-      return f ? (f.view[1] - f.view[0]) - (f.coverage[1] - f.coverage[0]) : 0;
-    }, { timeout: 120_000 }).toBeGreaterThan(1);
+    // follow adoption converges the gap within a few waves by design, so the
+    // poll scans ALL frames (append-only: a gapped frame latches the
+    // predicate permanently) instead of only the latest, which is converged
+    // again by the time any fixed-interval sample lands after the switch.
+    await expect.poll(() => frames.some((f) =>
+      (f.view[1] - f.view[0]) - (f.coverage[1] - f.coverage[0]) > 1,
+    ), { timeout: 120_000 }).toBe(true);
     const narrowWall = Date.now();
-    const narrowPerf = await page.evaluate(() => performance.now());
-    // Sample inside the transient window: the gap converges by adoption, so
-    // a long settle would dilute the hatch to unhatched post-gap samples.
+    // Let the converged post-gap frames arrive for the record, then anchor
+    // the hatch window to the FIRST gapped frame's own timestamp (same
+    // machine clock on both sides) — never to the poll-fire time, which can
+    // lag the gap start by a whole poll interval.
     await page.waitForTimeout(1500);
-    const settleEndPerf = await page.evaluate(() => performance.now());
 
-    const windowSamples = (await page.evaluate(() => window.heldKeySamples))
-      .filter((s) => s.tPerf >= narrowPerf && s.tPerf <= settleEndPerf);
-    const hatched = windowSamples.filter((s) => s.hatchCount > 0);
-    const gapFrames = frames.filter((f) => f.tWall >= narrowWall && f.tWall <= narrowWall + 5000);
+    const gapFrames = frames.filter((f) =>
+      (f.view[1] - f.view[0]) - (f.coverage[1] - f.coverage[0]) > 1);
     const gapWidths = gapFrames.map((f) => (f.view[1] - f.view[0]) - (f.coverage[1] - f.coverage[0]));
+    const firstGapWall = gapFrames[0]?.tWall ?? narrowWall;
+    const windowSamples = (await page.evaluate(() => window.heldKeySamples))
+      .filter((s) => s.tWall >= firstGapWall && s.tWall <= firstGapWall + 1500);
+    const hatched = windowSamples.filter((s) => s.hatchCount > 0);
     console.log(`[held-key control narrower-native] ` +
       `samples=${windowSamples.length} hatched=${hatched.length} ` +
       `maxGap=${Math.max(...gapWidths)}Hz grantedWidth=${grantedWidthHz}Hz`);
