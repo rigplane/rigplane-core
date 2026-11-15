@@ -720,6 +720,12 @@ async def test_concurrent_negotiations_keep_their_own_policies() -> None:
     only its own policy, and the enumerator hook must observe each policy
     in its own context (proving the context var is visible inside the task
     that awaits ``setLocalDescription``).
+
+    The policy-isolation assertions hold on any host: the enumerator hook
+    records each negotiation's policy even when an answer ends up empty.
+    The answer-content contrast additionally needs a second local address
+    besides the filtered one, so on a single-homed host the test verifies
+    the isolation and skips the contrast.
     """
     import aioice.ice
 
@@ -760,15 +766,6 @@ async def test_concurrent_negotiations_keep_their_own_policies() -> None:
         await manager_include.close_all()
         ice_gathering._enumerate_local_addresses = real_enumerate
 
-    exclude_cands = _answer_candidate_lines(answer_exclude["sdp"])
-    include_cands = _answer_candidate_lines(answer_include["sdp"])
-    exclude_hosts = [ln for ln in exclude_cands if "typ host" in ln]
-    include_hosts = [ln for ln in include_cands if "typ host" in ln]
-    assert exclude_hosts, "answer without host candidates proves nothing"
-    assert include_hosts, "answer without host candidates proves nothing"
-    assert not any(target in ln for ln in exclude_hosts), exclude_hosts
-    assert any(target in ln for ln in include_hosts), include_hosts
-
     # The gather path observed each negotiation's own policy in its context.
     assert exclude in seen, seen
     assert include in seen, seen
@@ -777,6 +774,20 @@ async def test_concurrent_negotiations_keep_their_own_policies() -> None:
     # and a plain aioice gather outside any negotiate context is unfiltered.
     assert ice_gathering._active_policy.get() is None
     assert target in aioice.ice.get_host_addresses(True, True)
+
+    if not any(addr != target for addr in addrs):
+        pytest.skip(
+            "single-address host: excluding the only address leaves "
+            "nothing to contrast the policies against"
+        )
+    exclude_cands = _answer_candidate_lines(answer_exclude["sdp"])
+    include_cands = _answer_candidate_lines(answer_include["sdp"])
+    exclude_hosts = [ln for ln in exclude_cands if "typ host" in ln]
+    include_hosts = [ln for ln in include_cands if "typ host" in ln]
+    assert exclude_hosts, "answer without host candidates proves nothing"
+    assert include_hosts, "answer without host candidates proves nothing"
+    assert not any(target in ln for ln in exclude_hosts), exclude_hosts
+    assert any(target in ln for ln in include_hosts), include_hosts
 
 
 @_webrtc
