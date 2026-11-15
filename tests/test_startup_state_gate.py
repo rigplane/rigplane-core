@@ -1121,11 +1121,11 @@ async def test_rigctld_unanswered_ptt_releases_the_gate_with_a_warning(
 
     PTT left the startup-critical set: the silent ``t`` read demotes
     itself after one timeout (no defect) and the listener binds with one
-    WARNING naming the field and the cause (no declared read on a
-    profile-less backend). The key path refuses on the live store with
-    the existing unknown-RF-state reason. A late ``t`` answer never
-    reaches the demoted client — only a fresh radio object asks ``t``
-    again, which the tail of this test pins.
+    WARNING naming the field, the real wire command and the recorded
+    cause. The key path refuses on the live store with the existing
+    unknown-RF-state reason. A late ``t`` answer never reaches the
+    demoted client — only a fresh radio object asks ``t`` again, which
+    the tail of this test pins.
     """
     from rigplane._poller_types import PttOn
     from rigplane.backends.rigctld_client.radio import (
@@ -1172,12 +1172,14 @@ async def test_rigctld_unanswered_ptt_releases_the_gate_with_a_warning(
             and "global.tx_state.ptt" in record.getMessage()
         ]
         assert len(warnings) == 1, [record.getMessage() for record in caplog.records]
-        # Profile-less backend: "no declared read" (Yaesu fake precedent);
-        # the silent ``t`` is evidenced by the request count above. (The
-        # poller's own demotion WARNING lives on the backend logger and is
-        # pinned by the demotion test below.)
-        assert "no declared read" in warnings[0], warnings[0]
-        assert "never answered" in warnings[0], warnings[0]
+        # The lane files its non-critical outcome into the scheduler: the
+        # real ``t`` command and the recorded timeout cause. (The poller's
+        # own demotion WARNING lives on the backend logger and is pinned
+        # by the demotion test below.)
+        assert "global.tx_state.ptt: t; timed out 1x" in warnings[0], warnings[0]
+        ptt = FieldPath.global_("tx_state", "ptt")
+        assert scheduler.consecutive_request_timeouts(ptt) == 1
+        assert scheduler.startup_read_command(ptt) == "t"
         # The poller asked for real: the unknown-RF-state refusal is
         # evaluated on the live store the production poller fills.
         assert not evaluate_tx_interlock(
@@ -1765,10 +1767,8 @@ async def test_yaesu_unanswered_ptt_read_opens_with_tx_unknown(
     """MOR-4456: PTT silence no longer ends startup on the Yaesu path.
 
     ``ptt`` left the safety-critical set: cycles with no PTT answer record
-    no defect and the listener binds with one WARNING naming the field and
-    its cause. (The fake carries no resolvable profile, so the warning
-    names "no declared read"; the CAT verb is pinned on the wire by the
-    FT-991A integration test instead.)
+    no defect and the listener binds with one WARNING naming the field,
+    the real ``TX;`` wire command and the recorded timeout cause.
     """
     radio = _Ftx1CriticalRadio(never_answers="ptt")
     server = WebServer(radio, _gated_config())
@@ -1799,11 +1799,14 @@ async def test_yaesu_unanswered_ptt_read_opens_with_tx_unknown(
         and "global.tx_state.ptt" in record.getMessage()
     ]
     assert len(warnings) == 1, [record.getMessage() for record in caplog.records]
-    # The observation path counts nothing for a safety-demoted path, so the
-    # deadline cause is "never answered"; the fake carries no resolvable
-    # profile, so there is no wire command to name.
-    assert "no declared read" in warnings[0], warnings[0]
-    assert "never answered" in warnings[0], warnings[0]
+    # The lane files its non-critical outcome into the scheduler: the real
+    # ``TX;`` command and the recorded timeout cause (the count itself is
+    # the fake clock's many medium cycles, so only the cause prefix is
+    # pinned here).
+    assert "global.tx_state.ptt: TX; timed out" in warnings[0], warnings[0]
+    ptt = FieldPath.global_("tx_state", "ptt")
+    assert scheduler.consecutive_request_timeouts(ptt) > 0
+    assert scheduler.startup_read_command(ptt) == "TX;"
 
 
 @pytest.mark.asyncio

@@ -22,7 +22,7 @@ from rigplane.core.state_pipeline_contracts import (
     Observation,
     SourceMetadata,
 )
-from rigplane.core.state_store import StateStore
+from rigplane.core.state_store import FreshnessClock, StateStore
 from rigplane.core.tx_observation import OBSERVED_PTT_PATH, ObservedPtt, TxStateReading
 from rigplane.core.tx_target import KnownTxTarget, TxReceiver, UnknownTxTarget
 from rigplane.core.types import BreakInMode
@@ -1474,6 +1474,43 @@ async def test_tx_controls_poll_skips_fields_without_matching_runtime_capability
     radio.read_cw_pitch.assert_not_awaited()
     radio.read_break_in.assert_not_awaited()
     radio.read_break_in_delay.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "error",
+    [
+        CatTimeoutError("ST;", command="ST;"),
+        CatCommandRejected("?;", command="ST;"),
+    ],
+)
+async def test_demoted_split_outcome_files_command_and_cause(error: Exception) -> None:
+    """MOR-4456 P2 :622: a demoted split read files (command, cause).
+
+    A silent or refused ``ST;`` is served absent for the cycle, records no
+    defect — and files its non-critical outcome into the scheduler with
+    the real wire command, so the startup gate names ``ST;`` and the
+    recorded cause instead of ``no declared read`` / ``never answered``.
+    """
+    radio = _make_radio()
+    profile = _profile_state_acquisition()
+    scheduler = AcquisitionScheduler(profile=profile, clock=FreshnessClock(start=0.0))
+    radio._acquisition_scheduler = scheduler
+    adapter = YaesuObservationAdapter(radio, profile=profile, clock=_clock)
+    radio.read_split = AsyncMock(side_effect=error)
+
+    observations = await adapter.poll_tx_controls()
+
+    split = FieldPath.global_("tx_state", "split")
+    assert "global.tx_state.split" not in {str(item.path) for item in observations}
+    if isinstance(error, CatTimeoutError):
+        assert scheduler.consecutive_request_timeouts(split) == 1
+        assert scheduler.consecutive_refusals(split) == 0
+    else:
+        assert scheduler.consecutive_refusals(split) == 1
+        assert scheduler.consecutive_request_timeouts(split) == 0
+    assert scheduler.startup_read_command(split) == "ST;"
+    assert scheduler.startup_defect is None
 
 
 @pytest.mark.asyncio

@@ -25,6 +25,7 @@ from rigplane.core.acquisition_scheduler import (
     DeclaredCommandDefect,
     MeterObservationCoalescer,
     RadioStateModelService,
+    StartupReadNote,
     StateFreshnessService,
     derive_tx_active,
     resolve_available_when,
@@ -285,6 +286,47 @@ def test_refused_path_leaves_the_startup_set_unless_safety_critical() -> None:
     scheduler.record_read_refusal((_TUNER, freq), now=1.0)
 
     assert scheduler.unobserved_startup_paths(()) == (freq,)
+
+
+def test_direct_read_outcome_files_command_and_cause_for_the_gate() -> None:
+    """MOR-4456: direct-read lanes file (command, cause) into scheduler records.
+
+    The Yaesu CAT and rigctld client lanes read without dispatching
+    scheduler requests: a timeout counts in the existing
+    consecutive-timeout accounting (silence still blocks), a refusal keeps
+    its MOR-4058 record (answered-but-unavailable) — both carrying the real
+    wire command the gate names instead of ``no declared read``.
+    """
+    # NOTE: the timeout accounting reads request-group granularity
+    # (scope/family/receiver/slot, not the path name), so the two recorded
+    # paths live in different families to keep their counts apart.
+    clock = FreshnessClock(start=0.0)
+    ptt = FieldPath.global_("tx_state", "ptt")
+    scheduler = _refusal_scheduler(clock, ptt, _TUNER)
+    assert scheduler.startup_read_command(ptt) == ""
+    assert scheduler.startup_read_command(_TUNER) == ""
+
+    scheduler.record_direct_read_outcome(
+        (ptt,), StartupReadNote(command="t", cause="timed out")
+    )
+    assert scheduler.consecutive_request_timeouts(ptt) == 1
+    assert scheduler.consecutive_refusals(ptt) == 0
+    assert scheduler.startup_read_command(ptt) == "t"
+    assert ptt in scheduler.unobserved_startup_paths(())
+
+    scheduler.record_direct_read_outcome(
+        (_TUNER,), StartupReadNote(command="FA;", cause="refused")
+    )
+    assert scheduler.consecutive_refusals(_TUNER) == 1
+    assert scheduler.consecutive_request_timeouts(_TUNER) == 0
+    assert scheduler.startup_read_command(_TUNER) == "FA;"
+    assert _TUNER not in scheduler.unobserved_startup_paths(())
+
+    # A refusal is the terminal answer: later silence does not displace it.
+    scheduler.record_direct_read_outcome(
+        (_TUNER,), StartupReadNote(command="FA;", cause="timed out")
+    )
+    assert scheduler.startup_read_command(_TUNER) == "FA;"
 
 
 def test_refused_lone_group_is_asked_again_at_its_idle_ceiling() -> None:

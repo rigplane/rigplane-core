@@ -675,6 +675,10 @@ async def test_refused_ptt_stays_in_cycle_with_vfo_and_drained_readback() -> Non
         radio = RigctldClientRadio(host=server.host, port=server.port)
         await radio.connect()
         try:
+            radio._acquisition_scheduler = AcquisitionScheduler(  # noqa: SLF001
+                profile=build_external_rigctld_acquisition_profile(vfo_supported=True),
+                clock=FreshnessClock(start=0.0),
+            )
             writer_before = radio._transport._writer  # noqa: SLF001
             queue = CommandQueue()
             store = StateStore()
@@ -727,6 +731,13 @@ async def test_refused_ptt_stays_in_cycle_with_vfo_and_drained_readback() -> Non
             assert readback.value == 2
             assert readback.correlation_id == command_id
             assert [result.status for result in results] == ["reconciled"]
+            # MOR-4456 P2 :622: each refused ``t`` files its non-critical
+            # outcome with the real wire command for the startup gate.
+            ptt = FieldPath.global_("tx_state", "ptt")
+            scheduler = radio._acquisition_scheduler  # noqa: SLF001
+            assert scheduler.consecutive_refusals(ptt) == 2
+            assert scheduler.startup_read_command(ptt) == "t"
+            assert scheduler.startup_defect is None
         finally:
             await radio.disconnect()
 
