@@ -640,9 +640,22 @@ class ApiChannelHandler:
         state.end_event.set()
 
     def _on_cancel(self, request_id: int) -> None:
-        """Drop a request before it answers; unknown ids are a no-op."""
+        """Drop a request before it answers; unknown ids are a no-op.
+
+        A CANCEL after END still honours the cancellation: the dispatched
+        task is cancelled even before it starts, so a racing completion
+        cannot answer, and the slot is released through the existing
+        cleanup (the task's own ``finally`` is a no-op when it already
+        ran, and never runs when the task never started).
+        """
         state = self._requests.get(request_id)
-        if state is None or state.dispatched:
+        if state is None:
+            return
+        if state.dispatched:
+            state.cancelled = True
+            if state.task is not None:
+                state.task.cancel()
+            self._finish(request_id)
             return
         state.dispatched = True
         state.cancelled = True
