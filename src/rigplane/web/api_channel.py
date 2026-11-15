@@ -72,6 +72,7 @@ import contextlib
 import json
 import logging
 import struct
+from collections.abc import Coroutine
 from dataclasses import dataclass
 from enum import IntEnum
 from typing import TYPE_CHECKING, Any, Final, Protocol, cast, runtime_checkable
@@ -528,6 +529,7 @@ class ApiChannelHandler:
         self._server = server
         self._peer = peer
         self._requests: dict[int, _RequestState] = {}
+        self._background: set[asyncio.Task[None]] = set()
         self._highest_id = 0
         self._in_flight = 0
         self._done = False
@@ -536,13 +538,28 @@ class ApiChannelHandler:
             with contextlib.suppress(Exception):
                 source.set_buffer_low_watermark(SEND_LOW_WATER_BYTES)
 
+    def _spawn_send(self, coro: Coroutine[Any, Any, None]) -> asyncio.Task[None]:
+        """Track a fire-and-forget send for teardown (never untracked).
+
+        Overflow ERRORs cannot join a request task (its task is already
+        cancelled), so they run here; teardown cancels and gathers them.
+        """
+        task = asyncio.ensure_future(coro)
+        self._background.add(task)
+        task.add_done_callback(self._background.discard)
+        return task
+
     @property
     def done(self) -> bool:
         """True once the handler left its receive loop (channel over)."""
         return self._done
 
     async def run(self) -> None:
-        """Route frames until the channel closes, then release everything."""
+        """Route frames until the channel closes, then release everything.
+
+        Teardown cancels and gathers every request task and every tracked
+        background send, so no task outlives the channel.
+        """
         try:
             while True:
                 try:
@@ -561,6 +578,7 @@ class ApiChannelHandler:
                 for state in list(self._requests.values())
                 if state.task is not None
             ]
+            tasks.extend(self._background)
             for task in tasks:
                 task.cancel()
             if tasks:
@@ -625,7 +643,7 @@ class ApiChannelHandler:
             assert state.task is not None
             state.task.cancel()
             self._finish(request_id)
-            asyncio.ensure_future(
+            self._spawn_send(
                 self._send_error(request_id, _TOO_LARGE, "request body too large")
             )
             return
@@ -667,7 +685,9 @@ class ApiChannelHandler:
         One 15 s deadline covers reassembly plus dispatch plus the first
         send attempt; past it the request answers ERROR ``timeout`` and a
         late dispatch result is dropped. A handler exception answers
-        ERROR ``internal``: a request always gets its terminal frame.
+        ERROR ``internal``: a request always gets its terminal frame. The
+        terminal ERROR itself is bounded by the same deadline — past it
+        the unwritable channel is closed instead of wedging the task.
         """
         try:
             async with asyncio.timeout(REQUEST_DEADLINE_S):
@@ -747,22 +767,64 @@ class ApiChannelHandler:
         await self._send_frame(ApiMessageType.END, request_id, b"")
 
     async def _send_error(self, request_id: int, code: str, message: str) -> None:
-        """Send one terminal ERROR, never raising (the channel may be dead)."""
+        """Send one terminal ERROR, never raising (the channel may be dead).
+
+        The send is bounded by the existing request deadline: past it the
+        channel is unwritable, so it is closed (ending the receive loop)
+        instead of wedging the sender.
+        """
         with contextlib.suppress(Exception):
             await self._send_frame(
                 ApiMessageType.ERROR,
                 request_id,
                 ApiErrorFrame(code, message).encode(),
+                timeout=REQUEST_DEADLINE_S,
             )
 
-    async def _send_frame(self, msg_type: int, request_id: int, payload: bytes) -> None:
+    async def _abort_unwritable(self, reason: str) -> None:
+        """Close a channel that stayed unwritable past its send bound.
+
+        Closing wakes the receive loop (its ``recv`` raises ``EOFError``),
+        so a stuck transport cannot wedge requests past their deadline.
+        Bare ``close()`` fits every ``Connection`` (the protocol defaults
+        the code and reason, and the data-channel connection takes none).
+        """
+        with contextlib.suppress(Exception):
+            await self._conn.close()
+
+    async def _send_frame(
+        self,
+        msg_type: int,
+        request_id: int,
+        payload: bytes,
+        *,
+        timeout: float | None = None,
+    ) -> None:
         """Send one frame, waiting while the transport buffer is full.
 
         While the data channel reports more than 256 KB still buffered,
         the send waits (short poll for the drain); the receive loop and
-        every other request keep running meanwhile.
+        every other request keep running meanwhile. With *timeout* the
+        drain wait is bounded by the existing request deadline: past it
+        the channel is closed as unwritable and the send raises
+        :class:`TimeoutError`.
         """
         source = self._conn if isinstance(self._conn, _BackpressureSource) else None
-        while source is not None and source.buffered_bytes() > SEND_HIGH_WATER_BYTES:
-            await asyncio.sleep(_DRAIN_POLL_S)
+        if timeout is None:
+            while (
+                source is not None
+                and source.buffered_bytes() > SEND_HIGH_WATER_BYTES
+            ):
+                await asyncio.sleep(_DRAIN_POLL_S)
+        else:
+            try:
+                async with asyncio.timeout(timeout):
+                    while (
+                        source is not None
+                        and source.buffered_bytes() > SEND_HIGH_WATER_BYTES
+                    ):
+                        await asyncio.sleep(_DRAIN_POLL_S)
+            except TimeoutError:
+                await self._abort_unwritable("send buffer stayed full")
+                raise
         await self._conn.send_binary(_encode_frame(msg_type, request_id, payload))
