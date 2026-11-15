@@ -1018,6 +1018,94 @@ class _StubConn:
         self.watermark = value
 
 
+class _StalledConn(_StubConn):
+    """A connection whose transport buffer never drains (stuck peer).
+
+    ``recv`` blocks until ``close`` (like a real channel idling), then
+    raises ``EOFError`` so the handler's receive loop ends.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.buffered = 300 * 1024
+        self._released = asyncio.Event()
+        self.close_calls = 0
+
+    async def recv(self) -> tuple[int, bytes]:
+        await self._released.wait()
+        raise EOFError("stalled channel closed")
+
+    async def close(self, code: int = 1000, reason: str = "") -> None:
+        self.close_calls += 1
+        self._released.set()
+
+
+@pytest.mark.realtime(
+    reason="the request deadline and the terminal-send bound expire in "
+    "real time against a buffer that never drains"
+)
+async def test_api_stalled_buffer_timeout_closes_channel() -> None:
+    """A stalled buffer cannot wedge a request past its deadline.
+
+    The terminal ERROR send is bounded by the existing deadline; past it
+    the unwritable channel is closed, which ends the receive loop. No
+    request or background task is left behind.
+    """
+    from unittest.mock import patch
+
+    from rigplane.web import api_channel as api_mod
+
+    conn = _StalledConn()
+    server = WebServer(None, WebConfig())
+    handler = api_mod.ApiChannelHandler(conn, server, ("stub", 0))
+    before = set(asyncio.all_tasks())
+    with patch.object(api_mod, "REQUEST_DEADLINE_S", 0.2):
+        run_task = asyncio.ensure_future(handler.run())
+        await handler._on_head(1, _head("GET", "/api/v1/info"))
+        handler._on_end(1)
+        await asyncio.wait_for(run_task, timeout=10.0)
+    assert handler.done
+    assert conn.close_calls >= 1
+    assert handler._in_flight == 0
+    assert not handler._background
+    leftover = {
+        task
+        for task in asyncio.all_tasks()
+        if not task.done()
+    } - before - {asyncio.current_task()}
+    assert leftover == set()
+
+
+@pytest.mark.realtime(
+    reason="each oversize ERROR send waits out its bound in real time "
+    "against a buffer that never drains"
+)
+async def test_api_repeated_oversize_leaks_no_tasks() -> None:
+    """Repeated oversize bodies on a stalled channel leak no tasks.
+
+    Every overflow send is tracked and bounded: the channel closes, the
+    receive loop ends, and teardown gathers every request and background
+    task.
+    """
+    from unittest.mock import patch
+
+    from rigplane.web import api_channel as api_mod
+
+    conn = _StalledConn()
+    server = WebServer(None, WebConfig())
+    handler = api_mod.ApiChannelHandler(conn, server, ("stub", 0))
+    with patch.object(api_mod, "REQUEST_DEADLINE_S", 0.2):
+        run_task = asyncio.ensure_future(handler.run())
+        for req_id in range(1, 6):
+            await handler._on_head(req_id, _head("GET", "/api/v1/info"))
+            handler._on_body(req_id, b"x" * (api_mod.MAX_REQUEST_BODY_BYTES + 1))
+        await asyncio.wait_for(run_task, timeout=10.0)
+    assert handler.done
+    assert conn.close_calls >= 1
+    assert handler._in_flight == 0
+    assert not handler._background
+
+
 @pytest.mark.realtime(
     reason="proves a stalled transport buffer actually stalls the send in "
     "real time before the drain resumes it"
