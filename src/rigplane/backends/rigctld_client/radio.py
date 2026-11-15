@@ -247,23 +247,32 @@ class RigctldClientObservationPoller:
         )
         # MOR-4456: a ``t`` timeout closes the transport, fencing the
         # generation and discarding anything still unpublished — publish
-        # the answered reads first; the PTT outcome follows on its own.
+        # the answered reads first (annotated, exactly once — the final
+        # batch below carries only what this one did not); the PTT
+        # outcome follows on its own publication.
+        published_count = 0
         if self._provider_generation_is_current(provider_generation):
             self._callback(
-                self._stamp_provider_generation(observations, provider_generation)
+                self._annotate_readback_observations(
+                    self._stamp_provider_generation(observations, provider_generation)
+                )
             )
+            published_count = len(observations)
         try:
             ptt = await adapter.read_ptt()
         except Exception:
             # Best-effort: after a timeout the fence moved on and this is
-            # skipped, while a fenceless failure still lands the unknown.
+            # skipped, while a fenceless failure still lands the unknown
+            # (annotated like every other publication — one code path).
             # Re-raise either way for the reconnect path (as MOR-4433).
             if self._provider_generation_is_current(provider_generation):
                 unknown = adapter.observed_ptt_observation(None)
                 try:
                     self._callback(
-                        self._stamp_provider_generation(
-                            (*observations, unknown), provider_generation
+                        self._annotate_readback_observations(
+                            self._stamp_provider_generation(
+                                (unknown,), provider_generation
+                            )
                         )
                     )
                 except Exception:
@@ -277,7 +286,11 @@ class RigctldClientObservationPoller:
                 ptt.value, timestamp_monotonic=ptt.timestamp_monotonic
             )
             self._callback(
-                self._stamp_provider_generation((observed_ptt,), provider_generation)
+                self._annotate_readback_observations(
+                    self._stamp_provider_generation(
+                        (observed_ptt,), provider_generation
+                    )
+                )
             )
         observations.append(ptt)
         active_vfo = await adapter.read_active_vfo()
@@ -289,9 +302,15 @@ class RigctldClientObservationPoller:
         if not self._provider_generation_is_current(provider_generation):
             self._finish_readbacks(self._pending_readback_entries, "provider_lost")
             return
+        # MOR-4456: the early batch above already published (and
+        # reconciled) the freq/mode/control reads — the final batch
+        # carries only the tail (PTT, VFO, drained slow-control
+        # readbacks), so no observation is published twice.
         self._callback(
             self._annotate_readback_observations(
-                self._stamp_provider_generation(observations, provider_generation)
+                self._stamp_provider_generation(
+                    observations[published_count:], provider_generation
+                )
             )
         )
 
