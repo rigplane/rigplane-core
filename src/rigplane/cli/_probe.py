@@ -171,7 +171,15 @@ async def select_radio(
             return 2
     emit(render.discovery_announcement())
     probe = discover if discover is not None else discover_serial_radios
-    results = await probe()
+    try:
+        results = await probe()
+    except OSError:
+        # A USB device that disappears mid-scan fails the scan, not the
+        # run: pyserial's SerialException subclasses OSError (see
+        # backends/discovery.py), and CancelledError is not an OSError,
+        # so cancellation still propagates.
+        emit(render.discovery_failed_message())
+        return 3
     if config is not None:
         results = [found for found in results if _matches_config(rigs, found, config)]
     if not results:
@@ -329,9 +337,22 @@ def _resolve_save_dir(documents_dir: Callable[[], Path] | None) -> Path:
 
     The first folder that exists and is writable wins, so a missing or
     read-only Documents folder falls back instead of failing the run.
+    Each location is resolved only when reached: a failing Documents
+    resolver does not prevent trying home, and an unavailable current
+    directory does not fail a run whose Documents folder is fine.
     """
-    resolver = documents_dir if documents_dir is not None else _default_documents_dir
-    for candidate in (resolver(), Path.home(), Path.cwd()):
+    candidates: list[Callable[[], Path]] = []
+    if documents_dir is not None:
+        candidates.append(documents_dir)
+    else:
+        candidates.append(_default_documents_dir)
+    candidates.append(lambda: Path.home())
+    candidates.append(lambda: Path.cwd())
+    for resolve in candidates:
+        try:
+            candidate = resolve()
+        except OSError:
+            continue
         try:
             if candidate.is_dir() and os.access(candidate, os.W_OK):
                 return candidate
@@ -343,7 +364,7 @@ def _resolve_save_dir(documents_dir: Callable[[], Path] | None) -> Path:
 def _default_out_path(
     model: str, documents_dir: Callable[[], Path] | None = None
 ) -> Path:
-    """The default output file: Documents, dated, never overwriting silently."""
+    """The default output candidate: Documents, dated, never overwriting."""
     base = _resolve_save_dir(documents_dir)
     stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     stem = _model_file_stem(model)
@@ -355,12 +376,38 @@ def _default_out_path(
     return candidate
 
 
+def _write_capture(path: Path, content: str, *, exclusive: bool) -> Path:
+    """Write the capture file; return the path actually written.
+
+    An explicit ``--out`` names the file, so it is written as today
+    (truncating). The default name is only a candidate until the save
+    answer: it is created exclusively (mode ``"x"``), advancing to the
+    next ``-N`` suffix on collision and retrying, so a capture that
+    appears between selection and the save answer is never truncated.
+    """
+    if not exclusive:
+        path.write_text(content, encoding="utf-8")
+        return path
+    candidate = path
+    index = 2
+    while True:
+        try:
+            with candidate.open("x", encoding="utf-8") as handle:
+                handle.write(content)
+            return candidate
+        except FileExistsError:
+            candidate = path.with_name(f"{path.stem}-{index}{path.suffix}")
+            index += 1
+
+
 def open_result_folder(directory: Path) -> None:
-    """Open the save folder for the customer; never raises.
+    """Open the save folder for the customer; never raises or waits.
 
     Windows opens it directly; macOS uses ``open``; Linux uses
-    ``xdg-open`` only when it is on PATH. Any failure is silent: the
-    file is saved either way and its full path is already printed.
+    ``xdg-open`` only when it is on PATH. The opener is launched without
+    waiting (a foreground file manager must not hold the run or the
+    serial port). Any failure is silent: the file is saved either way
+    and its full path is already printed.
     """
     try:
         if sys.platform == "win32":
@@ -368,16 +415,16 @@ def open_result_folder(directory: Path) -> None:
             if starter is not None:
                 starter(str(directory))
         elif sys.platform == "darwin":
-            subprocess.run(
+            subprocess.Popen(
                 ["open", str(directory)],
-                check=False,
+                stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
         elif shutil.which("xdg-open") is not None:
-            subprocess.run(
+            subprocess.Popen(
                 ["xdg-open", str(directory)],
-                check=False,
+                stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
@@ -512,8 +559,14 @@ async def _execute_after_open(
     if report.aborted is not None:
         emit(report.aborted)
 
-    saved_path = Path(out) if out else _default_out_path(config.model, documents_dir)
-    saved_abs = saved_path.resolve()
+    if out is not None:
+        saved_abs = Path(out).resolve()
+        exclusive = False
+    else:
+        # The default name is only a candidate until the save answer;
+        # the file itself is created exclusively at save time below.
+        saved_abs = _default_out_path(config.model, documents_dir)
+        exclusive = True
     content = report.file.to_json()
     identity = report.file.radio.identity_reported
     settings = [
@@ -559,16 +612,16 @@ async def _execute_after_open(
     if not yes and not _is_yes(ask("Save the file? [Y/n] ")):
         return 0
     try:
-        saved_abs.write_text(content, encoding="utf-8")
+        actual = _write_capture(saved_abs, content, exclusive=exclusive)
     except OSError as exc:
         emit(f"Cannot save {saved_abs}: {exc.strerror or exc}")
         return 1
-    emit(render.closing_line(str(saved_abs)))
+    emit(render.closing_line(str(actual)))
     if is_tty and not yes:
         opener = open_folder if open_folder is not None else open_result_folder
-        emit(render.opening_folder_line(str(saved_abs.parent)))
+        emit(render.opening_folder_line(str(actual.parent)))
         try:
-            opener(saved_abs.parent)
+            opener(actual.parent)
         except Exception:
             pass  # an opening failure is never an error and is silent
     if not _any_answer(report.file):

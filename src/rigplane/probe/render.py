@@ -309,6 +309,11 @@ def found_line(model: str, port: str) -> str:
     return f"Found: {model} on {port}"
 
 
+def discovery_failed_message() -> str:
+    """The sentence when the USB scan itself fails (exit 3)."""
+    return "Could not scan the USB ports, so no radio was checked."
+
+
 def confirm_radio_prompt() -> str:
     """The question after a one-radio discovery result."""
     return "Is this your radio? [Y/n] "
