@@ -28,15 +28,9 @@ def test_committed_wire_json_matches_api_channel_definition() -> None:
     assert committed == current, "api-channel-wire.json drifted; regenerate it"
 
 
-def test_wire_json_carries_every_producer_payload_contract() -> None:
-    """The committed JSON also owns the JSON payload contracts.
-
-    The binary layout alone does not pin what the frames carry: the
-    request/response/error payloads and the attach frame/ack are typed
-    contracts exported next to it, versioned, in a stable key order.
-    """
-    committed = json.loads(_WIRE_JSON.read_text(encoding="utf-8"))
-    payloads = committed["payloads"]
+def test_committed_wire_json_carries_producer_payload_contracts() -> None:
+    """The JSON payload contracts ride along, versioned and stable."""
+    payloads = json.loads(_WIRE_JSON.read_text(encoding="utf-8"))["payloads"]
     assert set(payloads) == {
         "request_head",
         "response_head",
@@ -45,14 +39,9 @@ def test_wire_json_carries_every_producer_payload_contract() -> None:
         "attach_ack",
     }, sorted(payloads)
     for name, contract in payloads.items():
-        assert contract["version"] == 1, name
-        assert contract["carried_by"], name
-        assert contract["fields"], name
-        for field in contract["fields"]:
-            assert set(field) == {"name", "type", "required", "note"}, (name, field)
-    # The failure codes the server may emit, from the producer's own list.
-    codes = payloads["error"]["codes"]
-    for code in (
+        assert contract["version"] == 1 and contract["fields"], name
+        assert all(len(f) == 4 for f in contract["fields"]), name
+    assert payloads["error"]["codes"] == [
         "bad_version",
         "malformed",
         "stale_id",
@@ -60,5 +49,4 @@ def test_wire_json_carries_every_producer_payload_contract() -> None:
         "busy",
         "timeout",
         "internal",
-    ):
-        assert code in codes, code
+    ]

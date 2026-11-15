@@ -626,7 +626,6 @@ def test_api_wire_definition_is_typed_and_json_stable() -> None:
     assert limits.send_high_water_bytes == 256 * 1024
     assert limits.send_low_water_bytes == 64 * 1024
     wire = dataclasses.asdict(definition)
-    payloads = wire.pop("payloads")
     assert json.loads(json.dumps(wire)) == {
         "version": _API_VERSION,
         "header": {
@@ -658,40 +657,6 @@ def test_api_wire_definition_is_typed_and_json_stable() -> None:
             "send_low_water_bytes": 64 * 1024,
         },
     }
-    # The payload contracts, pinned by name: field order is the stable key
-    # order of the committed JSON (the full-dict equality lives in
-    # tests/test_api_channel_wire_json.py against the committed copy).
-    assert set(payloads) == {
-        "request_head",
-        "response_head",
-        "error",
-        "attach_frame",
-        "attach_ack",
-    }
-    field_names = {
-        name: [f["name"] for f in contract["fields"]]
-        for name, contract in payloads.items()
-    }
-    assert field_names == {
-        "request_head": ["method", "path", "query", "headers"],
-        "response_head": ["status", "headers"],
-        "error": ["code", "message"],
-        "attach_frame": ["type", "controller_key", "state_delta", "role"],
-        "attach_ack": ["type", "v", "channel"],
-    }
-    assert payloads["error"]["codes"] == [
-        "bad_version",
-        "malformed",
-        "stale_id",
-        "too_large",
-        "busy",
-        "timeout",
-        "internal",
-    ]
-    assert all(
-        contract["version"] == 1 and contract["carried_by"]
-        for contract in payloads.values()
-    )
 
 
 @_webrtc

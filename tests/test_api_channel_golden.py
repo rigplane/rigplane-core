@@ -1,13 +1,11 @@
 """Golden api-channel documents: producer-built, replayed for real.
 
-``frontend/src/lib/transport/api-channel-golden.json`` pins the concrete
-frames the browser must handle, generated from the server's own
-encoders. This file fails when the committed JSON drifts from the
-producer builder, and replays EVERY document through the real stack —
-real aiortc data channels, the real attach path, the real request
-handling — asserting the documented outcome, so the browser tests that
-read the same file are pinned to what the server really does.
-"""
+The committed JSON pins the frames the browser must handle, from the
+server's own encoders; this file fails when it drifts and replays EVERY
+document through the real stack — real aiortc data channels, the real
+attach path (lost-ack retry included), the api channel's real request
+handling — asserting the documented outcome, so browser tests reading
+the same file are pinned to what the server really does."""
 
 from __future__ import annotations
 
@@ -25,12 +23,7 @@ from rigplane.web.server import WebServer
 from rigplane.web.transport.webrtc import webrtc_available
 
 from test_webrtc_api_channel import _ApiClient, _ApiError, _frame, _head
-from test_webrtc_attach_path import (
-    _LossyAckPeer,
-    _acquire_session,
-    _stand_up_stack,
-    _tear_down_stack,
-)
+from test_webrtc_attach_path import _acquire_session, _stand_up_stack, _tear_down_stack
 
 _webrtc = pytest.mark.skipif(
     not webrtc_available(), reason="aiortc extra not installed"
@@ -48,78 +41,145 @@ def _golden() -> dict[str, Any]:
 
 
 def _raw(frame: dict[str, Any]) -> bytes:
-    return (
-        bytes.fromhex(frame["hex"])
-        if "hex" in frame
-        else base64.b64decode(frame["b64"])
-    )
+    hex_ = frame.get("hex")
+    return bytes.fromhex(hex_) if hex_ else base64.b64decode(frame["b64"])
 
 
-def _seq(doc: dict[str, Any]) -> list[tuple[int, int, bytes]]:
-    """(type, request_id, payload) of every frame: with version 1 and the
-    reserved flag 0 this pins every byte of the committed frames."""
+def _seq(frames: list[dict[str, Any]]) -> list[tuple[int, int, bytes]]:
+    """(type, request_id, payload): with version 1 and flag 0 this pins
+    every byte of the committed frames."""
     out = []
-    for frame in doc["frames"]:
+    for frame in frames:
         raw = _raw(frame)
         assert raw[0] == 1 and raw[6] == 0, raw[:8]
         out.append((raw[1], int.from_bytes(raw[2:6], "big"), raw[7:]))
     return out
 
 
+class _LossyAckPeer:
+    """A control+scope+audio peer that can lose its first attach ack:
+    ``take(drop_first_ack=True)`` discards it, modelling the transit
+    loss that makes a client resend its attach frame."""
+
+    def __init__(self) -> None:
+        self._pc: Any = None
+        self._channels: dict[str, Any] = {}
+        self.received: dict[str, list[Any]] = {}
+        self._dropped: set[str] = set()
+
+    async def connect(self, web: WebServer, labels: tuple[str, ...]) -> None:
+        from aiortc import RTCPeerConnection, RTCSessionDescription
+
+        self._pc = RTCPeerConnection()
+        for label in labels:
+            channel = self._pc.createDataChannel(label, ordered=True)
+            self._channels[label] = channel
+            self.received[label] = []
+
+            @channel.on("message")  # type: ignore[misc, no-untyped-call]
+            def _on_message(message: Any, _label: str = label) -> None:
+                self.received[_label].append(message)
+
+        offer = await self._pc.createOffer()
+        await self._pc.setLocalDescription(offer)
+        manager = web._webrtc_session_manager()  # noqa: SLF001
+        answer = await manager.negotiate(
+            self._pc.localDescription.sdp, self._pc.localDescription.type
+        )
+        await self._pc.setRemoteDescription(
+            RTCSessionDescription(sdp=answer["sdp"], type=answer["type"])
+        )
+        await await_until(
+            lambda: all(c.readyState == "open" for c in self._channels.values()),
+            timeout=15.0,
+            description="data channels open",
+        )
+
+    def send_text(self, label: str, text: str) -> None:
+        self._channels[label].send(text)
+
+    def take(
+        self, label: str, *, drop_first_ack: bool = False
+    ) -> dict[str, Any] | None:
+        while self.received[label]:
+            message = self.received[label].pop(0)
+            if not isinstance(message, str):
+                continue
+            parsed = json.loads(message)
+            first_ack = parsed.get("type") == "attached" and label not in self._dropped
+            if drop_first_ack and first_ack:
+                self._dropped.add(label)  # lost: the client never saw it
+                continue
+            return parsed
+        return None
+
+    async def close(self) -> None:
+        if self._pc is not None:
+            with contextlib.suppress(Exception):
+                await self._pc.close()
+
+
 def test_committed_golden_json_matches_producer_documents() -> None:
     from rigplane.web.api_channel import api_channel_golden_documents
 
-    assert _golden() == asyncio.run(api_channel_golden_documents()), (
-        "api-channel-golden.json drifted; regenerate it"
-    )
-
-
-def test_golden_json_names_its_replayer() -> None:
     golden = _golden()
     assert golden["_tested_by"] == _REPLAYER
-    assert len(golden["documents"]) == 21, sorted(golden["documents"])
-
-
-def _with_id(frame: bytes, request_id: int) -> bytes:
-    return frame[:2] + request_id.to_bytes(4, "big") + frame[6:]
+    assert len(golden["documents"]) == 13, sorted(golden["documents"])
+    assert (
+        golden["documents"] == asyncio.run(api_channel_golden_documents())["documents"]
+    ), "api-channel-golden.json drifted; regenerate it"
 
 
 @_webrtc
 @pytest.mark.realtime(
-    reason="the timeout document needs the (test-shortened) request "
-    "deadline to pass in real time before the server answers ERROR"
+    reason="the timeout document needs the shortened request deadline "
+    "to pass in real time before the server answers ERROR"
 )
 async def test_golden_documents_replay_through_real_handlers(
     tmp_path: Path,
 ) -> None:
-    golden = _golden()
-    docs = golden["documents"]
+    docs = _golden()["documents"]
     stack = await _stand_up_stack(tmp_path, audio=True)
-    peer = _LossyAckPeer(("control", "scope", "audio"))
+    peer = _LossyAckPeer()
     api = _ApiClient()
     try:
-        # -- attach documents, over real lossy data channels --
-        await peer.connect(stack.web)
+        # -- attach documents on real lossy channels, ack lost and retried --
+        await peer.connect(stack.web, ("control", "scope", "audio"))
         key = await _acquire_session(stack.web.port)
+
+        def _attach_text(label: str) -> str:
+            return docs[f"attach_{label}"]["text"].replace("<SESSION-KEY>", key)
+
         for label in ("control", "scope", "audio"):
-            peer.send_text(
-                label, docs[f"attach_{label}"]["text"].replace("<SESSION-KEY>", key)
-            )
+            peer.send_text(label, _attach_text(label))
         hello = await await_until(
             lambda: peer.take("control"), timeout=10.0, description="control hello"
         )
         assert hello is not None and hello["type"] == "hello", hello
         for label in ("scope", "audio"):
+            # The lossy-channel retry: the interceptor drops the first
+            # ack, the client resends the attach, and the ONE attach
+            # path re-acknowledges it — then the channel keeps working.
+            peer.send_text(label, _attach_text(label))
             ack = await await_until(
-                lambda bound=label: peer.take(bound),
-                timeout=10.0,
-                description=f"{label} attach ack",
+                lambda bound=label: peer.take(bound, drop_first_ack=True),
+                timeout=5.0,
+                description=f"re-acknowledged {label} attach",
             )
             assert ack == json.loads(docs[f"attach_ack_{label}"]["text"]), ack
+        peer.send_text("scope", json.dumps({"type": "ping"}))
+        pong = await await_until(
+            lambda: peer.take("scope"), timeout=10.0, description="scope pong"
+        )
+        assert pong == {"type": "pong"}, pong
+        peer.send_text("audio", json.dumps({"type": "audio_start", "direction": "tx"}))
+        fmt = await await_until(
+            lambda: peer.take("audio"), timeout=10.0, description="audio format"
+        )
+        assert fmt is not None and fmt["type"] == "audio_tx_format", fmt
 
         # -- api documents on a real api channel, exact committed bytes --
         await api.connect(stack.web.port)
-        assert api._channel is not None  # noqa: SLF001
         api._channel.send(docs["attach_api"]["text"])  # noqa: SLF001
         for _ in range(20):
             await asyncio.sleep(0)
@@ -136,27 +196,21 @@ async def test_golden_documents_replay_through_real_handlers(
 
         def _check(name: str, got: list[tuple[int, bytes]]) -> None:
             assert [(t, p) for t, p in got] == [
-                (t, p) for t, _i, p in _seq(docs[name])
+                (t, p) for t, _i, p in _seq(docs[name]["reply"])
             ], (name, got)
-
-        for request_name, response_name in (
-            ("api_request_tx_refused", "api_response_tx_refused"),
-            ("api_request_not_found", "api_response_not_found"),
-        ):
-            for frame in (_raw(f) for f in docs[request_name]["frames"]):
-                api.send_raw(frame)
-            request_id = _seq(docs[request_name])[0][1]
-            _check(response_name, await _replies(request_id))
 
         from unittest.mock import patch
 
         from rigplane.web import server as server_module
 
-        for request_name, response_name in (
-            ("api_request_ok", "api_response_ok"),
-            ("api_request_chunked", "api_response_chunked"),
-        ):
-            body = base64.b64decode(docs[response_name]["response_body_b64"])
+        for name in ("api_tx_refused", "api_not_found"):
+            doc = docs[name]
+            for frame in (_raw(f) for f in doc["request"]):
+                api.send_raw(frame)
+            _check(name, await _replies(_seq(doc["request"])[0][1]))
+        for name in ("api_ok", "api_chunked"):
+            doc = docs[name]
+            body = base64.b64decode(doc["response_body_b64"])
 
             async def _route(writer: Any, _body: bytes = body) -> None:
                 await server_module._send_response(
@@ -168,44 +222,37 @@ async def test_golden_documents_replay_through_real_handlers(
                 "_serve_band_plan_layers",
                 lambda self, writer: _route(writer),
             ):
-                for frame in (_raw(f) for f in docs[request_name]["frames"]):
+                for frame in (_raw(f) for f in doc["request"]):
                     api.send_raw(frame)
-                request_id = _seq(docs[request_name])[0][1]
-                _check(response_name, await _replies(request_id))
+                _check(name, await _replies(_seq(doc["request"])[0][1]))
 
         # -- failure shapes --
-        async def _expect_error(name: str, request_id: int) -> None:
-            want = json.loads(_seq(docs[name])[0][2])
+        async def _expect_error(code: str) -> None:
+            want = next(
+                f
+                for f in _seq(docs["api_errors"]["frames"])
+                if f[2] and json.loads(f[2])["code"] == code
+            )
             with pytest.raises(_ApiError) as caught:
-                await api._next_for(request_id)  # noqa: SLF001
-            assert (caught.value.code, caught.value.message) == (
-                want["code"],
-                want["message"],
-            ), (name, caught.value)
+                await api._next_for(want[1])  # noqa: SLF001
+            error = json.loads(want[2])
+            got = caught.value
+            assert (got.code, got.message) == (code, error["message"]), (code, got)
 
-        head_nf = _raw(docs["api_request_not_found"]["frames"][0])
-        end_nf = _raw(docs["api_request_not_found"]["frames"][1])
-        api.send_raw(_with_id(head_nf, 5))
-        api.send_raw(_with_id(end_nf, 5))
-        _check("api_response_not_found", await _replies(5))
-        api.send_raw(_with_id(head_nf, 5))  # the resend: id 5 is stale now
-        await _expect_error("api_error_stale_id", 5)
+        head_nf = _head("GET", "/api/v1/nonexistent")
+        api.send_raw(_frame(1, 5, head_nf))
+        api.send_raw(_frame(5, 5, b""))
+        _check("api_not_found", await _replies(5))
+        api.send_raw(_frame(1, 5, head_nf))  # the resend: id 5 is stale now
+        await _expect_error("stale_id")
 
         from rigplane.web import api_channel as api_mod
 
-        real_caps = WebServer._serve_capabilities
-
-        async def _slow_caps(self: WebServer, writer: Any, headers: Any = None) -> None:
-            await asyncio.sleep(30.0)
-            await real_caps(self, writer, headers)
-
-        with (
-            patch.object(api_mod, "REQUEST_DEADLINE_S", 0.3),
-            patch.object(WebServer, "_serve_capabilities", _slow_caps),
-        ):
-            api.send_raw(_frame(1, 6, _head("GET", "/api/v1/capabilities")))
-            api.send_raw(_frame(5, 6, b""))
-            await _expect_error("api_error_timeout", 6)
+        with patch.object(api_mod, "REQUEST_DEADLINE_S", 0.3):
+            # A request that never gets its END: reassembly outlasts the
+            # (shortened) deadline and answers ERROR timeout.
+            api.send_raw(_frame(1, 6, _head("GET", "/api/v1/info")))
+            await _expect_error("timeout")
 
         api.send_raw(
             _frame(
@@ -221,29 +268,27 @@ async def test_golden_documents_replay_through_real_handlers(
         big = b"x" * (1024 * 1024 + 1)
         for off in range(0, len(big), 16384):
             api.send_raw(_frame(2, 7, big[off : off + 16384]))
-        await _expect_error("api_error_too_large", 7)
+        await _expect_error("too_large")
 
         for request_id in range(8, 41):  # 33 heads, no END
             api.send_raw(_frame(1, request_id, _head("GET", "/api/v1/info")))
-        await _expect_error("api_error_busy", 40)
+        await _expect_error("busy")
         for request_id in range(8, 40):
             api.send_raw(_frame(7, request_id, b""))  # CANCEL the in-flight
 
         api.send_raw(b"\x01\x02\x00\x00")  # shorter than the 7-byte header
-        await _expect_error("api_error_malformed", 0)
+        await _expect_error("malformed")
 
-        for frame in (_raw(f) for f in docs["api_cancel"]["frames"]):
-            api.send_raw(frame)
-        for frame in (_raw(f) for f in docs["api_unknown_id_ignored"]["frames"]):
-            api.send_raw(frame)
+        for name in ("api_cancel", "api_unknown_id_ignored"):
+            for frame in (_raw(f) for f in docs[name]["request"]):
+                api.send_raw(frame)
         for _ in range(20):
             await asyncio.sleep(0)
+        # Cancelled/unknown ids stay silent; the channel still serves.
         for request_id in (41, 9999):
             assert api._queues.get(request_id, asyncio.Queue()).empty()  # noqa: SLF001
-        # The channel still serves after every failure shape.
         assert (await api.request(42, "GET", "/api/v1/info")).status == 200
     finally:
-        with contextlib.suppress(Exception):
-            await api.close()
+        await api.close()
         await peer.close()
         await _tear_down_stack(stack)
