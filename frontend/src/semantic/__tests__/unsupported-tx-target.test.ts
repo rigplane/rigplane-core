@@ -119,7 +119,9 @@ describe('unsupported TX target does not block', () => {
 
 describe('adapter projects the unsupported target without blocking', () => {
   /** Minimal `ab` capabilities with TX bands configured (single-receiver
-   *  ab shape — the FT-991A topology with no TX-target source). */
+   *  ab shape — the FT-991A topology with no TX-target source). The
+   *  `audioConfig`/`webrtc` entries are the producer's required fields
+   *  (`Capabilities` in `$lib/types/capabilities`), not adornments. */
   const caps: Capabilities = {
     model: 'FT-991A',
     scope: false,
@@ -132,6 +134,8 @@ describe('adapter projects the unsupported target without blocking', () => {
     txBands: [{ name: '20m', start: 14_000_000, end: 14_350_000 }],
     modes: ['USB'],
     filters: ['NARROW'],
+    audioConfig: { sampleRate: 48_000, channels: 1, codecs: ['pcm16'] },
+    webrtc: { available: false, enabled: false },
   };
 
   /** Server state carrying the backend's `unsupported` projection, observed. */
