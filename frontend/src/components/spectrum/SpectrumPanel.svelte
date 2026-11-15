@@ -714,6 +714,50 @@
   // only a narrowing of the radio's own native window can be an external
   // change to adopt, never a shrinking frame intersection.
   let lastNativeWidthHz: number | null = null;
+  // MOR-4451 defect 1: the ONE adoption rule, shared by the follow
+  // adoption in the coordination effect below and the hatch input. The
+  // adoption write lands in a post-render $effect while the hatch DOM
+  // commits in the render phase, so the hatch input must predict the
+  // adoption with this same rule instead of reading the still-stale
+  // follow width — otherwise every frames-first adoption commits
+  // hatch-then-clean (two DOM commits the rAF sampler can paint
+  // between). Returns the adopted width, or null when this tick adopts
+  // nothing. Pure: no latch update, so the effect and the hatch derived
+  // always agree in the same tick. (`lastNativeWidthHz` is intentionally
+  // a plain read here: it is only ever assigned the current native
+  // width, so whenever it differs all other inputs already changed and
+  // re-ran this rule's readers.)
+  function adoptedFollowWidth(input: {
+    follow: number | null;
+    geometry: ScopeGeometry | null;
+    grant: ScopeGranted | null;
+    nativeWidthHz: number | null;
+    lastNativeWidthHz: number | null;
+    fixed: boolean;
+    changingMode: boolean;
+    requestedView: View | null;
+  }): number | null {
+    const { follow, geometry, grant, nativeWidthHz, lastNativeWidthHz, fixed, changingMode, requestedView } = input;
+    // A late response to an earlier zoom cannot adopt over newer intent:
+    // the grant still answers the current follow request when its width
+    // matches the requested follow width. The frame view is NOT part of
+    // the guard — the server clips follow frames to a narrowed native
+    // before the span-index readback arrives, so demanding frame view
+    // width == follow width misses the adoption forever (MOR-4451).
+    const currentGrant = follow !== null && geometry !== null && grant !== null
+      && geometry.receiver === grant.receiver
+      && Math.abs(grant.view.endHz - grant.view.startHz - follow) < 1;
+    // The 1 Hz epsilon keeps the clamp from firing on wire/view
+    // reconstruction jitter (a freq±span/2 window rebuilds 1 ulp off
+    // the requested width); real adoptions are thousands of times
+    // larger.
+    if (!fixed && !changingMode && requestedView === null && currentGrant && nativeWidthHz !== null
+      && follow !== null && lastNativeWidthHz !== null
+      && nativeWidthHz < lastNativeWidthHz - 1 && follow > nativeWidthHz + 1) {
+      return nativeWidthHz;
+    }
+    return null;
+  }
   const scopeView = createScopeView({ startHz: 0, endHz: 0 });
   let coordinatingView = false;
   let effectiveView = $state.raw<View>({ startHz: 0, endHz: 0 });
@@ -811,24 +855,9 @@
           // adoption — our own zoom/step gestures ask the server for a
           // covering preset, never for less than requested.
           const nativeWidthHz = nativeScopeWidthHz;
-          // A late response to an earlier zoom cannot adopt over newer
-          // intent: the grant still answers the current follow request
-          // when its width matches the requested follow width. The frame
-          // view is NOT part of the guard — the server clips follow
-          // frames to a narrowed native before the span-index readback
-          // arrives, so demanding frame width == follow width misses
-          // the adoption forever (MOR-4451).
-          const currentGrant = follow !== null && grant !== null && geometry.receiver === grant.receiver
-            && Math.abs(grant.view.endHz - grant.view.startHz - follow) < 1;
-          // The 1 Hz epsilon keeps the clamp from firing on wire/view
-          // reconstruction jitter (a freq±span/2 window rebuilds 1 ulp off
-          // the requested width); real adoptions are thousands of times
-          // larger.
-          if (!fixed && !changingMode && requestedView === null && currentGrant && nativeWidthHz !== null
-            && follow !== null && lastNativeWidthHz !== null
-            && nativeWidthHz < lastNativeWidthHz - 1 && follow > nativeWidthHz + 1) {
-            followSpanHz = nativeWidthHz;
-          }
+          const adopted = adoptedFollowWidth({ follow, geometry, grant, nativeWidthHz,
+            lastNativeWidthHz, fixed, changingMode, requestedView });
+          if (adopted !== null) followSpanHz = adopted;
           lastNativeWidthHz = nativeWidthHz;
           const span = followSpanHz ?? (geometry.view.endHz - geometry.view.startHz);
           // MOR-4392: in FIX the displayed window is the fixed window (or a
@@ -927,8 +956,30 @@
   // a truly narrower native hatches.
   let nativeScopeCoverage = $derived(nativeScopeWidthHz !== null
     ? { startHz: 0, endHz: nativeScopeWidthHz } : null);
+  // MOR-4451 defect 1: the hatch input predicts the adoption with the
+  // same rule the coordination effect applies, so the hatch decision for
+  // the adopted view uses the adopted width in the same tick the readback
+  // arrives — not the still-stale follow width the post-render effect has
+  // yet to write. Null (no adoption this tick) keeps the displayed view,
+  // so every other tick is byte-identical to before.
+  let adoptedFollowSpanHz = $derived(adoptedFollowWidth({
+    follow: followSpanHz,
+    geometry: frameGeometry,
+    grant: frameGrant,
+    nativeWidthHz: nativeScopeWidthHz,
+    lastNativeWidthHz,
+    fixed: isFixedScope,
+    changingMode: spectrumAuthority !== null
+      && hasPendingScopeModeChange(spectrumAuthority.providerGeneration, runtime.controlSession.epoch),
+    requestedView,
+  }));
+  let hatchRequestedView = $derived.by(() => {
+    if (adoptedFollowSpanHz === null || effectiveView.endHz <= effectiveView.startHz) return effectiveView;
+    const centerHz = viewCenterHz(effectiveView);
+    return { startHz: centerHz - adoptedFollowSpanHz / 2, endHz: centerHz + adoptedFollowSpanHz / 2 };
+  });
   let coverageProjection = $derived(!audioFft && displayGeometry !== null && scopeDemandOn
-    ? projectScopeCoverage(displayGeometry, effectiveView, nativeScopeCoverage) : null);
+    ? projectScopeCoverage(displayGeometry, hatchRequestedView, nativeScopeCoverage) : null);
   let coverageHatched = $derived(coverageProjection?.hatched.filter(
     (range) => range.end - range.start > 0.001) ?? []);
   function hatchReasonText(reason: ScopeCoverageProjection['hatched'][number]['reason']): string {
