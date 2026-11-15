@@ -896,6 +896,10 @@ async def test_api_cancel_drops_request() -> None:
 
 
 @_webrtc
+@pytest.mark.realtime(
+    reason="controller sessions carry a 6 s TTL while webrtc ICE setup "
+    "takes seconds, so the test pins session deadlines to the real clock"
+)
 async def test_api_requests_do_not_inherit_attachment_ticket(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -907,6 +911,8 @@ async def test_api_requests_do_not_inherit_attachment_ticket(
     session's header it must act as that session (HTTP parity), and both
     parities hold after the named session ends.
     """
+    import time as _time
+
     from rigplane.web import server as server_module
     from rigplane.web.web_routing import ApiRoute
     from rigplane.web import web_routing
@@ -956,6 +962,9 @@ async def test_api_requests_do_not_inherit_attachment_ticket(
 
         key_a = await _api_grant(1)
         key_b = await _api_grant(2)
+        controller = server._controller  # noqa: SLF001
+        for session in controller._sessions.values():  # noqa: SLF001
+            session.deadline = _time.monotonic() + 120.0
 
         keyed = _ApiClient()
         await keyed.connect(server.port)
