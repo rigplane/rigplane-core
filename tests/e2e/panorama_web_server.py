@@ -46,6 +46,10 @@ class PanoramaSimulator(MockIcomRadio):
         self.span_index = self.profile.scope_span_presets_hz.index(100_000)
         self.scope_mode = 0
         self.fixed = (14_200_000, 14_300_000)
+        # SCROLL-C window, radio-owned: the radio scrolls its own edges
+        # when the VFO leaves the window (CI-V 27 15 SPAN applies in
+        # Center and SCROLL-C). None until the first SCROLL-C pump.
+        self.scroll: tuple[int, int] | None = None
         self.set_frequency(14_250_000)
 
     def _dispatch_scope(self, payload: bytes, from_addr: int) -> bytes | None:
@@ -128,7 +132,22 @@ class PanoramaSimulator(MockIcomRadio):
         if self.evidence.with_suffix(".pause").exists():
             return 0
         span = self.profile.scope_span_presets_hz[self.span_index]
-        first, last = self.fixed if self.scope_mode == 1 else (self._frequency, span)
+        if self.scope_mode in (1, 3):
+            # Edge-number modes (FIX, SCROLL-F): the window is the selected
+            # EDGE pair; the radio never moves it on its own.
+            first, last = self.fixed
+        elif self.scope_mode == 2:
+            # SCROLL-C: the radio owns the window and scrolls it to keep
+            # the VFO inside, at the SPAN width. Recentering on exit is
+            # the test-infra model of that scroll.
+            if (
+                self.scroll is None
+                or not self.scroll[0] <= self._frequency < self.scroll[1]
+            ):
+                self.scroll = (self._frequency - span, self._frequency + span)
+            first, last = self.scroll
+        else:
+            first, last = self._frequency, span
         for receiver, templates in self._scope_templates.items():
             shaped = []
             for template in templates:
