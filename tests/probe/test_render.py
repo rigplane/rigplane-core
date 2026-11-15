@@ -10,7 +10,7 @@ def test_start_screen_names_profile_port_and_count() -> None:
         profile_name="FT-991A", port_label="COM5 @ 38400", n_questions=140
     )
     assert text == (
-        "RigPlane radio probe \u2014 READ ONLY\n"
+        "RigPlane radio probe - READ ONLY\n"
         "Radio profile: FT-991A    Port: COM5 @ 38400\n"
         "This run asks about 140 read questions, one at a time, "
         "usually under a minute.\n"
@@ -101,12 +101,13 @@ def test_pre_save_summary_with_skipped_and_findings() -> None:
         "  - what the radio says it is (model code 7250) and the RigPlane version\n"
         "  - your radio's current settings as of this moment: frequency 14.074 MHz\n"
         "  - not included: stored memory contents (you did not ask for them)\n"
-        "  - 4 reads were not sent (3 unsafe_family, 1 private); "
-        "each is listed under 'skipped' in the file with why\n"
+        "  - 4 reads were not sent (3 never asked: asking could change "
+        "something on the radio; 1 stored memory, only read if you ask for "
+        "it); each is listed under 'skipped' in the file with why\n"
         "  - notable: the radio answered 1 read the profile calls absent: "
-        "get_data_mode (01)\n"
+        "data mode (01)\n"
         "  - notable: the radio did not answer 1 read the profile declares "
-        "present: get_freq\n"
+        "present: freq\n"
         "The tool itself does not add your name, computer name, internet "
         "address, or any file from your computer.\n"
         "But the --label text is saved exactly as you typed it, and stored "
@@ -130,7 +131,7 @@ def test_absent_answered_line_lists_name_and_value() -> None:
         ]
     ) == (
         "  - notable: the radio answered 1 read the profile calls absent: "
-        "get_auto_notch (02)\n"
+        "auto notch (02)\n"
     )
 
 
@@ -145,7 +146,7 @@ def test_absent_answered_line_brackets_reply_without_request_echo() -> None:
         ]
     ) == (
         "  - notable: the radio answered 1 read the profile calls absent: "
-        "get_auto_notch ([fefee01a160202fd])\n"
+        "auto notch ([fefee01a160202fd])\n"
     )
 
 
@@ -160,9 +161,9 @@ def test_absent_answered_entries_cap_at_ten() -> None:
     ]
     assert render.absent_answered_line(entries) == (
         "  - notable: the radio answered 12 reads the profile calls absent: "
-        "get_item_00 (01), get_item_01 (01), get_item_02 (01), get_item_03 (01), "
-        "get_item_04 (01), get_item_05 (01), get_item_06 (01), get_item_07 (01), "
-        "get_item_08 (01), get_item_09 (01) and 2 more\n"
+        "item 00 (01), item 01 (01), item 02 (01), item 03 (01), "
+        "item 04 (01), item 05 (01), item 06 (01), item 07 (01), "
+        "item 08 (01), item 09 (01) and 2 more\n"
     )
 
 
@@ -170,17 +171,18 @@ def test_finding_names_cap_at_ten() -> None:
     names = [f"get_item_{index:02d}" for index in range(12)]
     assert render.present_missed_line(names) == (
         "  - notable: the radio did not answer 12 reads the profile declares "
-        "present: get_item_00, get_item_01, get_item_02, get_item_03, "
-        "get_item_04, get_item_05, get_item_06, get_item_07, get_item_08, "
-        "get_item_09 and 2 more\n"
+        "present: item 00, item 01, item 02, item 03, "
+        "item 04, item 05, item 06, item 07, item 08, "
+        "item 09 and 2 more\n"
     )
     assert render.absent_answered_line([]) == ""
     assert render.skipped_line({}) == ""
 
 
 def test_closing_line() -> None:
-    assert render.closing_line() == (
-        "Done. Nothing was uploaded. Send the file to the person who asked you for it."
+    assert render.closing_line("/home/user/Documents/FT-991A-radio-probe.json") == (
+        "Saved to /home/user/Documents/FT-991A-radio-probe.json. "
+        "Nothing was uploaded. Send the file to the person who asked you for it."
     )
 
 

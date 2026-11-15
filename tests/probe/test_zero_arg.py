@@ -198,9 +198,8 @@ def _every_customer_string() -> list[str]:
         render.radio_choice_list([("FT-991A", "COM5"), ("IC-7300", "COM6")]),
         render.radio_choice_prompt(2),
         render.bad_choice_message(),
-        render.no_radio_found_message(profile=None, found=0),
-        render.no_radio_found_message(profile="FT-991A", found=0),
-        render.no_radio_found_message(profile="FT-991A", found=2),
+        render.no_radio_found_message(profile=None),
+        render.no_radio_found_message(profile="FT-991A"),
         render.port_without_profile_message(),
         render.single_no_tty_message("FT-991A", "COM5"),
         render.several_no_tty_message(),
@@ -215,13 +214,12 @@ def test_every_customer_visible_string_is_ascii() -> None:
     from rigplane.cli import _build_parser
 
     parser = _build_parser()
-    help_text: list[str] = [parser.format_help()]
-    probe_action = next(
+    sub = next(
         action
-        for action in parser._subparsers._group_actions[0]._choices_actions  # type: ignore[attr-defined]
-        if action.dest == "probe"
+        for action in parser._actions
+        if isinstance(action, argparse._SubParsersAction)
     )
-    _ = probe_action  # the probe subparser help is inside format_help
+    help_text: list[str] = [sub.choices["probe"].format_help()]
     for text in _every_customer_string() + help_text:
         assert text.isascii(), repr(text)
 
@@ -248,7 +246,7 @@ def test_choice_list_and_prompt() -> None:
 
 
 def test_no_radio_found_checklist() -> None:
-    text = render.no_radio_found_message(profile=None, found=0)
+    text = render.no_radio_found_message(profile=None)
     assert text.startswith("No radio found.")
     for line in (
         "the radio is on",
@@ -262,7 +260,7 @@ def test_no_radio_found_checklist() -> None:
 
 
 def test_no_radio_found_names_profile() -> None:
-    text = render.no_radio_found_message(profile="FT-991A", found=0)
+    text = render.no_radio_found_message(profile="FT-991A")
     assert text.startswith("No FT-991A found.")
     assert "rigplane probe FT-991A --port <device>" in text
 
@@ -508,19 +506,11 @@ def test_select_single_radio_confirmed_with_enter() -> None:
 
 
 def test_select_single_radio_decline_quits_without_probing() -> None:
-    async def never_discover():
-        raise AssertionError("discovery already faked at this level")
-
-    opened = False
-
-    async def factory():
-        nonlocal opened
-        opened = True
-        raise AssertionError("must not open the port")
-
+    # Declining stops inside selection: no exchange factory is ever built,
+    # so nothing beyond discovery can touch a port.
     emitted: list[str] = []
-    code = asyncio.run(
-        probe_cli.run_selection_then_probe(
+    outcome = asyncio.run(
+        probe_cli.select_radio(
             rigs=RIGS,
             rigs_dir=REPO_ROOT / "rigs",
             profile_name=None,
@@ -531,16 +521,9 @@ def test_select_single_radio_decline_quits_without_probing() -> None:
             ask=lambda prompt: "n",
             emit=emitted.append,
             discover=lambda: asyncio.sleep(0, result=[_civ_result()]),
-            exchange_factory=factory,
-            out=None,
-            include_private=False,
-            label="",
-            gap_s=GAP,
-            timeout_s=TIMEOUT,
         )
     )
-    assert code == 0
-    assert opened is False
+    assert outcome == 0
     assert any("Found: IC-7300 on COM5" in line for line in emitted)
 
 

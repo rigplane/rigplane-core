@@ -170,7 +170,7 @@ def test_zero_arg_single_radio_confirm_with_enter(tmp_path, monkeypatch) -> None
     assert "Is this your radio?" in out
     document = ProbeFile.from_json((tmp_path / "p.json").read_text(encoding="utf-8"))
     assert document.radio.identity_matches_profile is True
-    assert opened == [tmp_path / "Documents"]
+    assert opened == [tmp_path]  # --out names the file, so its folder opens
 
 
 def test_zero_arg_single_radio_decline_sends_nothing(

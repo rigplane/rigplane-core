@@ -369,10 +369,14 @@ async def test_execute_identifying_label_is_saved_verbatim(tmp_path) -> None:
     assert "saved exactly as you typed it" in summary
 
 
-async def test_execute_default_out_path_uses_profile_and_timestamp(
+async def test_execute_default_out_path_uses_documents_and_date(
     tmp_path, monkeypatch
 ) -> None:
+    from datetime import datetime, timezone
+
     monkeypatch.chdir(tmp_path)
+    docs = tmp_path / "Documents"
+    docs.mkdir()
     code = await execute(
         resolve_config("FT-991A", RIGS),
         (REPO_ROOT / "rigs" / "ft991a.toml").read_bytes(),
@@ -387,10 +391,13 @@ async def test_execute_default_out_path_uses_profile_and_timestamp(
         exchange_factory=_stub_answers([]),
         gap_s=GAP,
         timeout_s=TIMEOUT,
+        documents_dir=lambda: docs,
     )
     assert code == 0
-    matches = list(tmp_path.glob("ft991a-probe-*.json"))
+    stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    matches = list(docs.glob(f"FT-991A-radio-probe-{stamp}.json"))
     assert len(matches) == 1
+    assert not list(tmp_path.glob("*.json"))
 
 
 # --- P2 batch ---
