@@ -167,7 +167,9 @@ def test_bad_length_and_other_sender_are_dropped_without_samples() -> None:
 def test_receive_port_is_exclusive_and_reusable_after_close() -> None:
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as radio:
         radio.bind(("127.0.0.1", 0))
-        first = XieguUdpIqSource(_spec(int(radio.getsockname()[1])), start_grace_s=100.0)
+        first = XieguUdpIqSource(
+            _spec(int(radio.getsockname()[1])), start_grace_s=100.0
+        )
         blocks: list[IqBlock] = []
         first.on_block(blocks.append)
         first.set_center_freq(7_183_000)
