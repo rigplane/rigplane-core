@@ -62,8 +62,16 @@ function bodyBytes(body: BodyInit | null | undefined): Uint8Array {
   throw new TypeError('api channel: unsupported request body type');
 }
 
-function concat(chunks: Uint8Array[]): Uint8Array {
-  return new Uint8Array(chunks.flatMap((chunk) => [...chunk]));
+function concat(chunks: Uint8Array[]): Uint8Array<ArrayBuffer> {
+  // A fresh copy backed by its own ArrayBuffer: a proper BodyInit for
+  // Response (a Uint8Array view over a shared/pooled buffer is not).
+  const bytes = new Uint8Array(chunks.reduce((size, chunk) => size + chunk.length, 0));
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return bytes;
 }
 function errorResponse(code: string, message: string): Response {
   return new Response(JSON.stringify({ error: code, message }), {
@@ -120,7 +128,7 @@ export function createApiChannelFetch(
         const body = concat(request.chunks);
         settleWith(
           request,
-          new Response(body.length === 0 ? null : body, {
+          new Response(body.length === 0 ? null : body.buffer, {
             status: request.status ?? 200,
             headers: new Headers(request.headers),
           })
@@ -194,7 +202,7 @@ export function createApiChannelFetch(
         onAbort: null,
       };
       const signal = init?.signal;
-      if (signal !== undefined) {
+      if (signal) {
         const onAbortEvent = () => {
           fail(request, Object.assign(new Error('The api channel request was aborted'), { name: 'AbortError' }));
           cancel(request);
