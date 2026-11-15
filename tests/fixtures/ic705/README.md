@@ -18,7 +18,7 @@ production `rigplane` client behind the serial bridge recorder
 
 Capture steps (each behind its own recorder instance):
 
-1. `probe` - `scripts/ic7610_capture/probe.py --backend serial --model IC-705 --radio-addr 0xA4`: the safe subset of `rigs/ic705.toml` getters once, paced 0.3 s (the probe driver deliberately leaves out the 0x07, 0x0E and 0x1C families and `1A 00`: `get_vfo`, `get_scan`, `get_transceiver_status`, `get_tuner_status`, `get_xfc_status`, `get_memory_contents` and similar were NOT asked, so they are untested on hardware), plus four unknown commands (answer class and latency per command: `probe_answers.json`).
+1. `probe` - `rigplane probe IC-705 --port DEV --baud 115200 --address 0xA4`: the safe subset of `rigs/ic705.toml` getters once, paced 0.15 s (the probe driver deliberately leaves out the 0x07, 0x0E and 0x1C families and `1A 00`: `get_vfo`, `get_scan`, `get_transceiver_status`, `get_tuner_status`, `get_xfc_status`, `get_memory_contents` and similar were NOT asked, so they are untested on hardware), plus four unknown commands (answer class and latency per command: `probe_answers.json`).
 2. `scope` - `rigplane --backend serial ... web --no-rigctld --no-discovery` for ~90 s; a client of `/api/v1/ws` and `/api/v1/scope` counted frames for 60 s. The recording keeps the client's startup reads, the scope switches and five complete scope sweeps.
 3. `readonly_session` - `rigplane validate --hardware --allow-hardware --read-only`.
 4. Probe repeated after steps 2-3 to prove nothing stayed changed: 105 of 107 answers identical, the two differences are the S-meter and the radio clock.

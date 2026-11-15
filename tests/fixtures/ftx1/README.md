@@ -40,7 +40,7 @@ closes it (`python -m rigplane_testkit.yaesu.fixtures extract`).
   polling the radio for 10 minutes: 38,827 requests, 57 distinct. The radio
   answered every one with data (no `?;`, no silence), median latency 8-10 ms.
 - `probe` — every one of the 72 READ lines the profile declares
-  (`scripts/ftx1_capture/probe.py`), once, paced 0.3 s: 71 data, 1 refusal
+  (`rigplane probe FTX-1`), once, paced 0.3 s: 71 data, 1 refusal
   (`RA0;` answered `?;`), 0 silence.
 - `contact` — the first read-only contact (`ID;`, `IF;`, `FA;`, `MD0;`) and
   a 30-command state snapshot.

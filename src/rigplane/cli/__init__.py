@@ -107,6 +107,10 @@ from rigplane.cli._convert import (  # noqa: E402
     add_subparser as _add_convert_subparser,
     run as _run_convert,
 )
+from rigplane.cli._probe import (  # noqa: E402
+    add_subparser as _add_probe_subparser,
+    run as _run_probe,
+)
 from rigplane.cli._models import (  # noqa: E402
     add_subparser as _add_models_subparser,
     backend_for_protocol as _backend_for_protocol,
@@ -404,6 +408,7 @@ _COMMAND_NAMES = {
     "radio-validate",
     "convert",
     "models",
+    "probe",
 }
 
 _GLOBAL_CONNECTION_OPTIONS = {
@@ -2007,6 +2012,9 @@ def _build_parser() -> argparse.ArgumentParser:
 
     # models — list supported radio profiles and exact --model values
     _add_models_subparser(sub)
+
+    # probe — record how your radio answers, into one file you can send to us
+    _add_probe_subparser(sub)
 
     return p
 
@@ -5595,6 +5603,8 @@ def main() -> None:
         sys.exit(_run_convert(args))
     elif args.command == "models":
         sys.exit(_run_models(args))
+    elif args.command == "probe":
+        sys.exit(_run_probe(args))
     elif args.command is None:
         parser.print_help()
         sys.exit(0)
