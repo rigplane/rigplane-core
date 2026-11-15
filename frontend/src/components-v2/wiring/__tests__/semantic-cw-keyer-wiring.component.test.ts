@@ -886,28 +886,6 @@ describe('break-in is gated on the ONE txPermit, end to end', () => {
     flushSync();
     expect(sendCommand).toHaveBeenCalledExactlyOnceWith('set_break_in', { mode: 2 }, expect.any(String));
   });
-
-  /**
-   * MOR-4433 RED (gate round 1, P1-1): a sourceless profile — `unsupported`
-   * target, permit unknown for exactly that reason, bands configured — must
-   * arm break-in through the SAME narrow exception the adapter records.
-   * Clicks the real surface and asserts the real `set_break_in` command is
-   * emitted through the real command path (surface handler → intent →
-   * command bus), with no key-class command beside it. Fails before the
-   * renderer/handler exception, passes after.
-   */
-  it('RED: arms break-in on a sourceless profile and emits set_break_in', () => {
-    useState(liveState({
-      txTarget: { status: 'unknown', reason: 'unsupported' },
-    } as Partial<ServerState>));
-    render();
-    expect(el('break-in')!.dataset.permitted).toBe('true');
-    expect(el('break-in-full')!.hasAttribute('disabled')).toBe(false);
-    press(el('break-in-full')!);
-    flushSync();
-    expect(sendCommand).toHaveBeenCalledExactlyOnceWith('set_break_in', { mode: 2 }, expect.any(String));
-    expect(txHarness.trace()).toEqual([]);
-  });
 });
 
 /* ── (d) receiver-scoped intents follow the ACTIVE VFO ─────────── */

@@ -47,9 +47,7 @@ import { isFieldAvailable, isFieldFreshlyObserved } from '$lib/state/field-statu
 import { modInputStateKey } from '$lib/radio/mod-input';
 import { flattenBands, findActiveBand, receiverInRepeaterBand } from '$lib/radio/band-plan';
 import { shiftFromDirection } from '$lib/radio/repeater-transitions';
-import {
-  getFrequencyPermit, isSourcelessPermitUnknown, type FrequencyPermit, type TxPermit,
-} from '$lib/utils/tx-permit';
+import { getFrequencyPermit, type FrequencyPermit, type TxPermit } from '$lib/utils/tx-permit';
 import {
   relativeVfoIdentityUnknown,
   resolveFilterModeConfig,
@@ -1694,19 +1692,12 @@ function deriveCwKeyer(state: ServerState | null, caps: Capabilities | null): Cw
  * (invariant R9). The reason CODES mirror the model-level `txPermit` entries
  * `toRadioViewModel` already emits, so there is one vocabulary for one
  * permit. Anything other than a positively `'allowed'` permit — denied,
- * ranges-unconfigured, tx-target-unknown — disables break-in, EXCEPT the
- * permit unknown that follows from a sourceless target (MOR-4433:
- * `txTarget` `unsupported` — the sourceless class (G7250 and the
- * sourceless-Yaesu shape) — has no source a wait
- * could resolve, so blocking break-in on it prohibits transmit with no
- * condition to wait out). The unknown permit still disables break-in while
- * a source exists (not-observed/stale/contradiction) and while no band table
- * is configured; that fail-closed pairing is additionally enforced by
- * `validateRadioViewModel`.
+ * ranges-unconfigured, tx-target-unknown — disables break-in; that
+ * fail-closed pairing is additionally enforced by `validateRadioViewModel`.
  */
 function deriveCwKeyerReasons(
   cwKeyer: CwKeyerViewModel | undefined, modeFilter: ModeFilterViewModel | undefined,
-  txPermit: FrequencyPermit, txTarget: TxTargetViewModel,
+  txPermit: FrequencyPermit,
 ): Reason[] {
   if (!cwKeyer) return [];
   const modeReading = modeFilter?.currentMode.reading;
@@ -1718,11 +1709,7 @@ function deriveCwKeyerReasons(
   if (cwKeyer.twinPeak.availability.structural && mode !== 'RTTY' && mode !== 'RTTY-R') {
     reasons.push({ field: 'cwKeyer.twinPeak', code: 'mutually-exclusive-control' });
   }
-  // MOR-4433: the permit unknown that follows from a SOURCED target still
-  // disables break-in; only the unknown that follows from NO source does not
-  // — the shared `isSourcelessPermitUnknown` decision, no local copy.
-  if (cwKeyer.breakIn.availability.structural && txPermit.status !== 'allowed'
-    && !isSourcelessPermitUnknown(txTarget, txPermit)) {
+  if (cwKeyer.breakIn.availability.structural && txPermit.status !== 'allowed') {
     reasons.push({
       field: 'cwKeyer.breakIn',
       code: txPermit.status === 'denied' ? 'out-of-band'
@@ -2336,7 +2323,7 @@ function deriveRadioViewModel(
       disabledReasons.push({ field: 'rfFrontEnd.preamp', code: 'receiver-lacks-control' });
     }
   }
-  disabledReasons.push(...deriveCwKeyerReasons(cwKeyer, modeFilter, txPermit, txTarget));
+  disabledReasons.push(...deriveCwKeyerReasons(cwKeyer, modeFilter, txPermit));
 
   return {
     topologyId: `${topology.structuralCount}/${topology.scheme}`,

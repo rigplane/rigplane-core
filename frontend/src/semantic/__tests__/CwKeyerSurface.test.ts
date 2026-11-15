@@ -301,8 +301,7 @@ describe('the CW-keyer surface is NOT a key path (decomposition R9)', () => {
     // contract can.
     expect([...new Set(specifiers)]).toEqual([
       '$lib/i18n', './CwKeyerInstrumentHost.svelte', '$lib/types/capabilities',
-      './radio-view-model', '$lib/utils/tx-permit',
-      './pressed-of', '../primitives/reading-text', 'svelte',
+      './radio-view-model', './pressed-of', '../primitives/reading-text', 'svelte',
       '../primitives/control-feedback/control-feedback-presentation',
       '../primitives/scalar/committed-scalar.svelte',
       '../primitives/scalar/value-control-core',
@@ -364,24 +363,15 @@ describe('the CW-keyer surface is NOT a key path (decomposition R9)', () => {
   });
 
   // Kills: (a) a key path, (c) a second permit derivation. Neither the key
-  // vocabulary nor the permit machinery may appear anywhere in this file —
-  // with exactly ONE exception (MOR-4433): the shared `isSourcelessPermitUnknown`
-  // predicate READ from `$lib/utils/tx-permit` (pinned below). A
-  // `getFrequencyPermit` call, a band-plan lookup, or any other import from
-  // the permit utility would be a second derivation and still fails here.
+  // vocabulary nor the permit machinery may appear anywhere in this file.
   it('never mentions keying, PTT, the TX controller or a permit derivation', () => {
     for (const forbidden of [
       'ptt', 'Ptt', 'PTT', 'requestKey', 'onRequestKey', 'onRequestUnkey', 'tx-controller',
       'TxAuthoritySnapshot', 'keyBlockedReasons', 'getFrequencyPermit', 'txBands', 'sendCommand',
-      '$lib/transport',
+      '$lib/transport', '$lib/utils/tx-permit',
     ]) {
       expect(CODE).not.toContain(forbidden);
     }
-    // The single allowed `$lib/utils/tx-permit` import (see the specifier
-    // allow-list above) is the shared `isSourcelessPermitUnknown` predicate —
-    // a second permit derivation would have to name `getFrequencyPermit`,
-    // `txBands`, or another import, each of which fails above or in the list.
-    expect(CODE).toContain('isSourcelessPermitUnknown');
   });
 
   // Kills: the surface growing an authority prop or a key intent. The props
