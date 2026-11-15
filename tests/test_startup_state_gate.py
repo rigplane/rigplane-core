@@ -2677,7 +2677,7 @@ async def test_never_answered_critical_path_fails_startup_after_three_attempts()
     message = str(caught.value)
     assert message.startswith("web startup aborted: ")
     assert message.endswith("Refusing to start a half-working server.")
-    assert "main.freq_mode.freq_hz" in message
+    assert "receiver.main.active.freq_mode.freq_hz" in message
     assert "still unanswered after 3 failed reads of its request group" in message
     assert scheduler.startup_defect is not None
 
