@@ -2720,6 +2720,121 @@ async def test_unparseable_sub_s_meter_is_a_startup_defect() -> None:
     assert {str(item.path) for item in observations} == {"receiver.main.meters.s_meter"}
 
 
+def _split_containment_radio(
+    scheduler: AcquisitionScheduler,
+    read_split: AsyncMock,
+) -> MagicMock:
+    """``_make_radio`` with a real timeout tally and startup scheduler."""
+    radio = _make_radio()
+    radio._poll_warned_fields = set()
+    radio._acquisition_scheduler = scheduler
+    radio._critical_read_timeouts = {}
+    radio.read_split = read_split
+    return radio
+
+
+@pytest.mark.asyncio
+async def test_split_timeout_is_contained_and_counted_to_the_gate_threshold() -> None:
+    """MOR-4456: an unanswered split read is served absent within its field.
+
+    Three medium cycles with a silent ``ST;`` complete normally — the
+    fields after split (clarifier, tuner) still reach the store — while the
+    critical-path accounting is kept: the third unanswered read records
+    the declared-command defect the startup gate reads.
+    """
+    from rigplane.backends.yaesu_cat.observations import _RIT_ON, _SPLIT
+
+    profile = _profile_state_acquisition()
+    scheduler = AcquisitionScheduler(profile=profile)
+    radio = _split_containment_radio(
+        scheduler,
+        AsyncMock(side_effect=CatTimeoutError("ST timeout", command="ST;")),
+    )
+    for cycle in range(1, 4):
+        observations = await YaesuObservationAdapter(
+            radio,
+            profile=profile,
+            clock=_clock,
+        ).poll_tx_controls()
+        paths = {item.path for item in observations}
+        assert _SPLIT not in paths
+        assert _RIT_ON in paths, "the reads after split must still reach the store"
+        assert radio._critical_read_timeouts == {_SPLIT: cycle}
+    assert radio.read_split.await_count == 3
+    defect = scheduler.startup_defect
+    assert defect is not None
+    assert defect.paths == (_SPLIT,)
+    assert defect.command == "ST;"
+
+
+@pytest.mark.asyncio
+async def test_split_refusal_records_defect_and_stays_in_cycle() -> None:
+    """MOR-4456: a twice-refused split records the defect without raising.
+
+    The refusal is re-issued once (MOR-2584) without touching the timeout
+    tally; the cycle completes and the fields after split still publish.
+    """
+    from rigplane.backends.yaesu_cat.observations import _RIT_ON, _SPLIT
+
+    profile = _profile_state_acquisition()
+    scheduler = AcquisitionScheduler(profile=profile)
+    radio = _split_containment_radio(
+        scheduler,
+        AsyncMock(side_effect=CatCommandRejected("?;", command="ST;")),
+    )
+    observations = await YaesuObservationAdapter(
+        radio,
+        profile=profile,
+        clock=_clock,
+    ).poll_tx_controls()
+    assert radio.read_split.await_count == 2
+    paths = {item.path for item in observations}
+    assert _SPLIT not in paths
+    assert _RIT_ON in paths, "the reads after split must still reach the store"
+    assert radio._critical_read_timeouts == {}
+    defect = scheduler.startup_defect
+    assert defect is not None
+    assert defect.paths == (_SPLIT,)
+    assert defect.command == "ST;"
+
+
+@pytest.mark.asyncio
+async def test_split_transport_failure_still_raises() -> None:
+    """MOR-4456: only timeouts are contained — a split transport failure raises."""
+    profile = _profile_state_acquisition()
+    scheduler = AcquisitionScheduler(profile=profile)
+    radio = _split_containment_radio(
+        scheduler,
+        AsyncMock(side_effect=CatTransportError("link down")),
+    )
+    with pytest.raises(CatTransportError):
+        await YaesuObservationAdapter(
+            radio,
+            profile=profile,
+            clock=_clock,
+        ).poll_tx_controls()
+
+
+@pytest.mark.asyncio
+async def test_freq_timeout_still_raises_for_reconnect() -> None:
+    """MOR-4456: only the PTT/split lanes are contained — a FREQ timeout raises."""
+    profile = _profile_state_acquisition()
+    scheduler = AcquisitionScheduler(profile=profile)
+    radio = _split_containment_radio(
+        scheduler,
+        AsyncMock(return_value=False),
+    )
+    radio.read_freq = AsyncMock(
+        side_effect=CatTimeoutError("FA timeout", command="FA;")
+    )
+    with pytest.raises(CatTimeoutError):
+        await YaesuObservationAdapter(
+            radio,
+            profile=profile,
+            clock=_clock,
+        ).poll_medium()
+
+
 @pytest.mark.asyncio
 async def test_sub_s_meter_reads_through_the_profile_despite_the_echoed_side(
     caplog: pytest.LogCaptureFixture,
