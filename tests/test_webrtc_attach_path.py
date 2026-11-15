@@ -1219,10 +1219,11 @@ async def test_attach_ack_on_lossy_channels_only(tmp_path: Path) -> None:
             timeout=10.0,
             description="audio_tx_format after the ack",
         )
-        # api: NO ack and no text frame ever; the binary wire serves.
+        # api: NO ack and no text frame ever. The channel is ordered and
+        # reliable, so an ack (sent before the first handler byte) would
+        # arrive BEFORE any response; after the response lands, "no text
+        # frame was received" proves there was none — no timed wait.
         _attach("api", None)
-        await asyncio.sleep(0.5)  # a stray text frame would land here
-        assert not received["api"], received["api"]
         req_id = 7
         head = json.dumps(
             {"method": "GET", "path": "/api/v1/info", "query": {}, "headers": {}}
