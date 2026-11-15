@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import replace
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, call
 
@@ -42,6 +43,10 @@ from rigplane.backends.yaesu_cat.transport import (
     CatTimeoutError,
     CatTransportError,
 )
+from rigplane.profiles.rig_loader import load_rig
+from rigplane_testkit.sim.adapters.yaesu_cat import YaesuCatSerialFake
+from rigplane_testkit.sim.engine import Refused
+from rigplane_testkit.yaesu.replay import REFUSAL
 
 
 def _clock() -> float:
@@ -856,6 +861,58 @@ async def test_missing_or_unsupported_ft_is_unknown(
     )._read_tx_target()
 
     assert target == expected
+
+
+_ROOT = Path(__file__).resolve().parents[1]
+_FTX1_RIG = _ROOT / "rigs" / "ftx1.toml"
+_FTX1_SIM = _ROOT / "rigplane_testkit" / "sim" / "profiles" / "ftx1.toml"
+
+
+@pytest.mark.asyncio
+async def test_ftx1_refused_ft_is_not_unsupported(monkeypatch) -> None:
+    """Gate P2 (MOR-4433): a declared ``FT;`` source the radio refuses
+    (``?;``) is a source that exists but gave no answer — the medium lane
+    must publish ``not-observed``, never ``unsupported`` (reserved for a
+    source that does not exist at all).
+
+    Production path throughout: the real ``YaesuCatRadio`` on the committed
+    FTX-1 profile over the CAT simulator, with only the ``FT;`` line refused
+    at the wire. Fails before the fix (``CatCommandRejected`` maps to
+    ``unsupported``); passes after.
+    """
+    radio = YaesuCatRadio("/dev/fixture", profile=load_rig(_FTX1_RIG))
+    fake = YaesuCatSerialFake.from_profile(_ROOT, _FTX1_SIM, rig_path=_FTX1_RIG)
+    wire = []
+    handle = fake.model.handle_with_outcome
+
+    def logged(line):
+        wire.append(line)
+        if line == "FT;":
+            return REFUSAL, Refused("native_refusal")
+        return handle(line)
+
+    monkeypatch.setattr(fake.model, "handle_with_outcome", logged)
+
+    async def open_port(*args, **kwargs):
+        return await fake.open_serial_connection()
+
+    monkeypatch.setattr(
+        "rigplane.backends.yaesu_cat.transport.open_serial_port", open_port
+    )
+    await radio._transport.connect()
+    try:
+        observations = await YaesuObservationAdapter.from_radio(radio).poll_medium()
+    finally:
+        await radio._transport.close()
+
+    assert "FT;" in wire, "the TX-function read never reached the wire"
+    by_path = {str(item.path): item.value for item in observations}
+    assert "global.tx_state.tx_target" in by_path, (
+        f"no tx_target observation published: {sorted(by_path)}"
+    )
+    target = by_path["global.tx_state.tx_target"]
+    assert target != UnknownTxTarget(reason="unsupported")
+    assert target == UnknownTxTarget(reason="not-observed")
 
 
 @pytest.mark.asyncio
