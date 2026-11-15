@@ -1390,6 +1390,91 @@ async def test_rigctld_refused_ptt_opens_after_the_non_critical_deadline(
     assert "after 10s" in warnings[0]
 
 
+async def _bind_managed_tx_and_start(
+    fake: _TcpRigctldServer, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> tuple["RigctldClientRadio", "ManagedTxComposition", WebServer, list[str]]:  # noqa: F821
+    """``cli/_cmd_web``'s managed-TX assembly on a TCP fake; the startup PTT
+    probe runs in ``bind_state_store`` (MOR-4456)."""
+    from rigplane.runtime.managed_tx_composition import (
+        ManagedTxComposition,
+        install_managed_tx_composition,
+    )
+    from rigplane.web.web_startup import (
+        attach_managed_tx_composition,
+        prepare_managed_tx_observation_generation,
+    )
+
+    radio = _real_rigctld_radio(fake)
+    composition = ManagedTxComposition(radio, config_path=tmp_path / "managed-tx.json")
+    install_managed_tx_composition(radio, composition)
+    await radio.connect()
+    server = WebServer(radio, _gated_config())
+    prepare_managed_tx_observation_generation(server)
+    await composition.transport_ready(radio)
+    await composition.bind_state_store(server.command_state_store)
+    attach_managed_tx_composition(server, composition)
+    binds: list[str] = []
+
+    async def _bind(*_args: object, **_kwargs: object) -> _FakeAsyncServer:
+        binds.append("bind")
+        return _FakeAsyncServer()
+
+    with (
+        patch("rigplane.web.web_startup.asyncio.start_server", new=_bind),
+        caplog.at_level(logging.WARNING, logger="rigplane.web.web_startup"),
+    ):
+        await asyncio.wait_for(server.start(), timeout=30.0)
+    return radio, composition, server, binds
+
+
+@pytest.mark.asyncio
+async def test_managed_startup_survives_an_unanswered_ptt_probe(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A silent `t` must not kill managed startup: the probe's timeout retires
+    the first connection, the fix reopens it before the readiness check, so
+    the listener binds, freq/mode are served, PTT is unobserved and the
+    deadline WARNING names it. Red on f245f1bf0 (readiness check aborts)."""
+    from rigplane.backends.rigctld_client.observations import (
+        _FREQ as _RIG_FREQ,
+        _MODE as _RIG_MODE,
+    )
+
+    PTT = FieldPath.global_("tx_state", "ptt")
+    fake = _TcpRigctldServer(silent="t")
+    await fake.start()
+    try:
+        radio, composition, server, binds = await _bind_managed_tx_and_start(
+            fake, tmp_path, caplog
+        )
+        try:
+            scheduler = radio._acquisition_scheduler
+            assert binds == ["bind"]
+            assert scheduler.startup_defect is None
+            # Not vacuous: `t` was really asked and really stayed silent,
+            # and the probe's timeout retired the first connection before
+            # the fix reopened it.
+            assert fake.t_requests >= 1
+            assert fake.connections >= 2
+            observed = _observed_paths(server, scheduler)
+            assert PTT in scheduler.unobserved_startup_paths(observed)
+            assert _RIG_FREQ in observed
+            assert _RIG_MODE in observed
+            await server.stop()
+        finally:
+            await composition.shutdown(asyncio.Event())
+            await radio.disconnect()
+    finally:
+        await fake.stop()
+
+    assert any(
+        r.levelno == logging.WARNING
+        and "global.tx_state.ptt" in r.getMessage()
+        and "after 10s" in r.getMessage()
+        for r in caplog.records
+    ), "the deadline WARNING must name the unanswered path"
+
+
 @pytest.mark.asyncio
 async def test_rigctld_connection_drop_never_builds_a_declared_defect() -> None:
     """MOR-2757 (b): a dropped connection is link quality, not a defect.
