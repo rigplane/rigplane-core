@@ -833,7 +833,9 @@ async def test_invalid_ft_type_or_range_is_contradiction(tx_func: object) -> Non
             CatParseError("FT{vfo};", "FTX;", "invalid vfo"),
             UnknownTxTarget(reason="contradiction"),
         ),
-        (CatCommandRejected("?;"), UnknownTxTarget(reason="unsupported")),
+        # Gate P2 (MOR-4433): a refused DECLARED source is not an absent
+        # source — the read exists, only the answer is missing.
+        (CatCommandRejected("?;"), UnknownTxTarget(reason="not-observed")),
         # MOR-4433 PR1: an undeclared/absent command raises CommandError
         # out of _query (not CatCommandRejected) — it must report
         # unsupported, not abort the medium poll batch.

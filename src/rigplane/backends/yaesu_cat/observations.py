@@ -714,10 +714,17 @@ class YaesuObservationAdapter:
         # contains it as ``not-observed`` so the medium cycle survives.
         try:
             tx_func = await method()
+        except CatCommandRejected:
+            # Gate P2 (MOR-4433): the profile declares the source and the
+            # radio refused the read (?;), so the source exists and only
+            # the answer is missing. It reports not-observed — never
+            # unsupported, which is reserved for a source that does not
+            # exist at all — instead of aborting the whole medium poll
+            # batch.
+            return UnknownTxTarget(reason="not-observed")
         except (
             AttributeError,
             NotImplementedError,
-            CatCommandRejected,
             CommandError,
         ):
             # CommandError is the absent/unsupported-command refusal: _query
