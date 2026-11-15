@@ -14,10 +14,11 @@ import hashlib
 import re
 import sys
 import tomllib
-from collections.abc import Awaitable, Callable, Iterable, Mapping
+from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 
 from rigplane.cli._models import match_rig
 from rigplane.commands import CONTROLLER_ADDR, build_civ_frame, command_carries_sub
@@ -25,7 +26,7 @@ from rigplane.core.serial_open import open_serial_port
 from rigplane.profiles.rig_loader import RigConfig
 from rigplane.probe import render
 from rigplane.probe.model import ProbeFile
-from rigplane.probe.readlist import build_read_plan
+from rigplane.probe.readlist import ReadRequest, build_read_plan
 from rigplane.probe.runner import (
     CIV_TIMEOUT_S,
     CAT_TIMEOUT_S,
@@ -72,44 +73,95 @@ def resolve_config(name: str, rigs: Mapping[str, RigConfig]) -> RigConfig:
     return config
 
 
+@runtime_checkable
+class _Closable(Protocol):
+    """An exchange that owns its serial writer (closed when the run ends)."""
+
+    def close(self) -> Any: ...
+
+
+class _OwnedExchange:
+    """An exchange bound to its serial writer.
+
+    The runner closes the port when the run ends; the writer is recorded
+    here so ``execute`` can do that without changing the exchange type
+    the tests double.
+    """
+
+    def __init__(self, exchange: Exchange, writer: Any) -> None:
+        self._exchange = exchange
+        self._writer = writer
+
+    async def __call__(self, request: bytes | None, timeout: float) -> bytes | None:
+        return await self._exchange(request, timeout)
+
+    def close(self) -> None:
+        self._writer.close()
+
+
+@contextmanager
+def _closing(exchange: Exchange) -> Iterator[Exchange]:
+    """Close the owned writer, if any, on completion, decline, error or cancel."""
+    try:
+        yield exchange
+    finally:
+        if isinstance(exchange, _Closable):
+            exchange.close()
+
+
 async def _yaesu_exchange(reader: Any, writer: Any) -> Exchange:
+    last_sent: bytes | None = None
+
     async def exchange(request: bytes | None, timeout: float) -> bytes | None:
+        nonlocal last_sent
         if request:
+            last_sent = bytes(request)
             writer.write(request)
             await writer.drain()
         try:
-            raw: bytes = await asyncio.wait_for(reader.readuntil(b";"), timeout)
-        except (asyncio.TimeoutError, asyncio.IncompleteReadError):
+            if request is not None:
+                return await asyncio.wait_for(reader.readuntil(b";"), timeout)
+            while True:
+                raw: bytes = await asyncio.wait_for(reader.readuntil(b";"), timeout)
+                if raw == last_sent:
+                    continue  # USB echo of our own request, not the answer
+                return raw
+        except asyncio.TimeoutError:
             return None
-        return raw
+        # IncompleteReadError (a disconnected stream, with .partial bytes
+        # kept) propagates: the runner records it as a transport failure.
 
-    return exchange
+    return _OwnedExchange(exchange, writer)
 
 
 async def _civ_exchange(reader: Any, writer: Any, radio_addr: int) -> Exchange:
+    last_sent: bytes | None = None
+
     async def exchange(request: bytes | None, timeout: float) -> bytes | None:
-        sent: bytes | None = None
+        nonlocal last_sent
         if request:
             command, rest = request[0], request[1:]
             if command_carries_sub(command) and rest:
                 sub, data = rest[0], rest[1:]
             else:
                 sub, data = None, rest
-            sent = build_civ_frame(
+            last_sent = build_civ_frame(
                 radio_addr, CONTROLLER_ADDR, command, sub=sub, data=data or None
             )
-            writer.write(sent)
+            writer.write(last_sent)
             await writer.drain()
         try:
             while True:
                 raw: bytes = await asyncio.wait_for(reader.readuntil(b"\xfd"), timeout)
-                if sent is not None and raw == sent:
+                if raw == last_sent:
                     continue  # USB echo of our own frame, not the answer
                 return raw
-        except (asyncio.TimeoutError, asyncio.IncompleteReadError):
+        except asyncio.TimeoutError:
             return None
+        # IncompleteReadError (a disconnected stream, with .partial bytes
+        # kept) propagates: the runner records it as a transport failure.
 
-    return exchange
+    return _OwnedExchange(exchange, writer)
 
 
 async def _open_exchange(
@@ -188,6 +240,46 @@ async def execute(
         emit(render.cannot_open_message(device_label))
         return 3
 
+    with _closing(exchange):
+        return await _execute_after_open(
+            config=config,
+            profile_toml_bytes=profile_toml_bytes,
+            baud=baud,
+            out=out,
+            include_private=include_private,
+            label=label,
+            yes=yes,
+            is_tty=is_tty,
+            ask=ask,
+            exchange=exchange,
+            gap_s=gap_s,
+            window=window,
+            items=items,
+            sibling_configs=sibling_configs,
+            emit=emit,
+        )
+
+
+async def _execute_after_open(
+    *,
+    config: RigConfig,
+    profile_toml_bytes: bytes,
+    baud: int,
+    out: str | None,
+    include_private: bool,
+    label: str,
+    yes: bool,
+    is_tty: bool,
+    ask: Callable[[str], str],
+    exchange: Exchange,
+    gap_s: float,
+    window: float,
+    items: list[ReadRequest],
+    sibling_configs: Iterable[RigConfig] | None,
+    emit: Callable[[str], None],
+) -> int:
+    """The probe pass and save; the caller owns closing the exchange."""
+
     def on_progress(done: int, total: int) -> None:
         if done % 20 == 0 or done == total:
             emit(render.progress_line(done, total))
@@ -255,7 +347,11 @@ async def execute(
     )
     if not yes and not _is_yes(ask("Save the file? [Y/n] ")):
         return 0
-    saved_abs.write_text(content, encoding="utf-8")
+    try:
+        saved_abs.write_text(content, encoding="utf-8")
+    except OSError as exc:
+        emit(f"Cannot save {saved_abs}: {exc.strerror or exc}")
+        return 1
     emit(render.closing_line())
     if not _any_answer(report.file):
         emit(render.no_answers_message())
@@ -291,6 +387,36 @@ def profile_source_bytes(rigs_dir: Path, config: RigConfig) -> bytes:
     raise UnknownProfileError(f"profile source for {config.model!r} not found")
 
 
+def _civ_address(value: str) -> int:
+    """Parse a CI-V radio address; a bad value fails parsing, not the port open."""
+    try:
+        number = int(value, 0)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"CI-V address must be a byte 0-255, got {value!r}"
+        ) from None
+    if not 0 <= number <= 0xFF:
+        raise argparse.ArgumentTypeError(
+            f"CI-V address must be a byte 0-255, got {value!r}"
+        )
+    return number
+
+
+def _positive_baud(value: str) -> int:
+    """Parse a baud rate; a bad value fails parsing, not the port open."""
+    try:
+        number = int(value, 0)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"baud rate must be a positive number, got {value!r}"
+        ) from None
+    if number <= 0:
+        raise argparse.ArgumentTypeError(
+            f"baud rate must be a positive number, got {value!r}"
+        )
+    return number
+
+
 def add_subparser(sub: Any) -> argparse.ArgumentParser:
     """Register the ``probe`` subparser."""
     p: argparse.ArgumentParser = sub.add_parser(
@@ -300,10 +426,10 @@ def add_subparser(sub: Any) -> argparse.ArgumentParser:
     )
     p.add_argument("profile", help="Radio model from `rigplane models`")
     p.add_argument("--port", required=True, help="Serial device (e.g. /dev/ttyUSB0)")
-    p.add_argument("--baud", type=int, default=None, help="Baud rate")
+    p.add_argument("--baud", type=_positive_baud, default=None, help="Baud rate")
     p.add_argument(
         "--address",
-        type=lambda value: int(value, 0),
+        type=_civ_address,
         default=None,
         help="CI-V radio address (default: the profile's)",
     )
