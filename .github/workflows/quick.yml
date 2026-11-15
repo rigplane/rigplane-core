@@ -510,6 +510,10 @@ jobs:
         if: needs.classify.outputs.ci == 'true'
         run: node --test .github/scripts/agent-review-gate.test.js
 
+      - name: PR guardrail path matcher tests
+        if: needs.classify.outputs.ci == 'true'
+        run: node --test .github/scripts/pr-guardrail.test.js
+
       - name: Merge queue gate tests
         if: needs.classify.outputs.ci == 'true'
         run: node --test .github/scripts/merge-queue-gates.test.js
