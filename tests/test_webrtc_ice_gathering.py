@@ -14,6 +14,7 @@ import json
 import socket
 import struct
 import time
+from collections.abc import Container
 from typing import Any
 
 import pytest
@@ -568,6 +569,141 @@ async def test_multihomed_answer_fast_with_stun() -> None:
         transport.close()
         await manager.close_all()
     assert elapsed <= 1.0, elapsed
+    lines = _answer_candidate_lines(result["sdp"])
+    assert any("typ srflx" in ln for ln in lines), lines
+
+
+class _SelectiveStunResponder(_StunResponder):
+    """STUN responder that answers only requests from allowed sources.
+
+    Models a second local interface that cannot reach the STUN server: the
+    ignored source's transaction never completes, so without the
+    default-route split the gather waits out the whole cap.
+    """
+
+    def __init__(self, allowed_sources: Container[str]) -> None:
+        super().__init__()
+        self._allowed = frozenset(allowed_sources)
+
+    def datagram_received(self, data: bytes, addr: Any) -> None:
+        if addr[0] not in self._allowed:
+            return
+        super().datagram_received(data, addr)
+
+
+@_webrtc
+@pytest.mark.realtime(
+    reason="measures real ICE/STUN wall-clock time against live sockets"
+)
+async def test_unreachable_second_interface_does_not_stall_gather(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only the default-route address queries STUN; the rest stay host-only.
+
+    The responder answers the default-route address but ignores the second
+    local address, modelling a multihomed host whose second interface
+    cannot reach the STUN server. The answer must come back well under the
+    cap with exactly 1 srflx, plus host candidates for BOTH addresses.
+    """
+    import aioice.ice
+
+    from rigplane.web.transport import ice_gathering as ice_gathering
+    from rigplane.web.transport.webrtc_session import WebRtcSessionManager
+
+    lan = _default_route_ipv4()
+    if not lan:
+        pytest.skip("host exposes only loopback addresses")
+    # A second real, bindable IPv4 address (aioice excludes 127.0.0.1 from
+    # its own list, so loopback cannot play that role here).
+    others = [a for a in aioice.ice.get_host_addresses(True, False) if a != lan]
+    if not others:
+        pytest.skip("host has only one non-loopback IPv4 address")
+    second = others[0]
+
+    monkeypatch.setattr(
+        ice_gathering,
+        "_enumerate_local_addresses",
+        lambda: [
+            AddressInfo(
+                ip=lan,
+                ifname="en0",
+                kind=IfKind.PHYSICAL,
+                is_default_route=True,
+            ),
+            AddressInfo(ip=second, ifname="aux", kind=IfKind.PHYSICAL),
+        ],
+    )
+
+    loop = asyncio.get_running_loop()
+    transport, _ = await loop.create_datagram_endpoint(
+        lambda: _SelectiveStunResponder({lan}),
+        local_addr=("127.0.0.1", 0),
+    )
+    port = transport.get_extra_info("sockname")[1]
+    manager = WebRtcSessionManager(None, None, "test")
+    try:
+        sdp, offer_type = await _offer_sdp()
+        start = time.monotonic()
+        result = await manager.negotiate(
+            sdp,
+            offer_type,
+            ice_servers=[IceServer(urls=[f"stun:127.0.0.1:{port}"])],
+        )
+        elapsed = time.monotonic() - start
+    finally:
+        transport.close()
+        await manager.close_all()
+    assert elapsed <= 1.0, elapsed
+    lines = _answer_candidate_lines(result["sdp"])
+    assert sum(1 for ln in lines if "typ srflx" in ln) == 1, lines
+    hosts = [ln for ln in lines if "typ host" in ln]
+    assert any(lan in ln for ln in hosts), hosts
+    assert any(second in ln for ln in hosts), hosts
+
+
+@_webrtc
+@pytest.mark.realtime(
+    reason="measures real ICE/STUN wall-clock time against live sockets"
+)
+async def test_no_default_route_falls_back_to_all_kept_querying_stun(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Without a default-route address every kept address still queries STUN.
+
+    Fallback path: the old behaviour holds (bounded wait, srflx obtained),
+    so a host with no detectable default route loses nothing.
+    """
+    lan = _default_route_ipv4()
+
+    from rigplane.web.transport import ice_gathering as ice_gathering
+    from rigplane.web.transport.webrtc_session import WebRtcSessionManager
+
+    infos = [
+        AddressInfo(ip="127.0.0.1", ifname="lo", kind=IfKind.PHYSICAL),
+    ]
+    if lan:
+        infos.append(AddressInfo(ip=lan, ifname="en0", kind=IfKind.PHYSICAL))
+    monkeypatch.setattr(ice_gathering, "_enumerate_local_addresses", lambda: infos)
+
+    loop = asyncio.get_running_loop()
+    transport, _ = await loop.create_datagram_endpoint(
+        _StunResponder, local_addr=("127.0.0.1", 0)
+    )
+    port = transport.get_extra_info("sockname")[1]
+    manager = WebRtcSessionManager(None, None, "test")
+    try:
+        sdp, offer_type = await _offer_sdp()
+        start = time.monotonic()
+        result = await manager.negotiate(
+            sdp,
+            offer_type,
+            ice_servers=[IceServer(urls=[f"stun:127.0.0.1:{port}"])],
+        )
+        elapsed = time.monotonic() - start
+    finally:
+        transport.close()
+        await manager.close_all()
+    assert elapsed <= GATHER_TIMEOUT_S + 1.0, elapsed
     lines = _answer_candidate_lines(result["sdp"])
     assert any("typ srflx" in ln for ln in lines), lines
 

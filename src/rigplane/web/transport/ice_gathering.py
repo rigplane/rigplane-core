@@ -52,7 +52,17 @@ which installs the two hooks ONCE per process (idempotent; a module-level
 flag guards double install; they are never uninstalled): a patched
 ``aioice.ice.get_host_addresses`` (address allow-list) and a cap on
 ``Connection.get_component_candidates``' STUN/TURN wait at
-``GATHER_TIMEOUT_S``. The hooks read the active policy from a
+``GATHER_TIMEOUT_S``. The component-candidates hook additionally restricts
+server-reflexive and relayed gathering to the default-route address(es):
+aioice queries STUN from every IPv4 host address it binds, so one
+interface that cannot reach the STUN server (a common multihomed case —
+a second interface without internet) stalls the whole wait at the cap,
+while one srflx from the default-route address is all the peer needs.
+Host candidates still come from every policy-kept address; when the host
+has no default-route address the hook falls back to today's behaviour
+(all kept addresses may query the servers, bounded by the cap). This
+split is part of the upstream proposal: stop waiting once one srflx per
+family is obtained. The hooks read the active policy from a
 ``contextvars.ContextVar`` that each ``negotiate()`` sets for the duration
 of its gathering (token reset in ``finally``), so concurrent negotiations
 keep their own policies. When no policy is set in the current context
@@ -66,6 +76,7 @@ from __future__ import annotations
 
 import contextlib
 import contextvars
+import copy
 import ctypes
 import enum
 import importlib
@@ -878,7 +889,11 @@ def install_ice_gathering_policy() -> None:
     the current context's policy and caps
     ``Connection.get_component_candidates``' STUN/TURN wait at
     ``GATHER_TIMEOUT_S`` so one unresponsive server cannot stall the answer
-    past the total bound. A second call changes nothing (it never wraps
+    past the total bound. The component-candidates hook further gathers
+    server-reflexive/relayed candidates from the default-route
+    address(es) only (host candidates still from every kept address),
+    falling back to all kept addresses when there is no default-route
+    address. A second call changes nothing (it never wraps
     twice). The hooks are never uninstalled during normal operation:
     uninstalling around an ``await`` is what let two concurrent
     negotiations interleave patch/restore and leak one negotiation's
@@ -919,7 +934,41 @@ def install_ice_gathering_policy() -> None:
         if active is None:
             return await original_component(self, component, addresses, timeout=timeout)
         bound = min(float(timeout), GATHER_TIMEOUT_S)
-        return await original_component(self, component, addresses, timeout=bound)
+        try:
+            infos = _enumerate_local_addresses()
+        except Exception:
+            return await original_component(self, component, addresses, timeout=bound)
+        default_ips = {info.ip for info in infos if info.is_default_route}
+        first = [addr for addr in addresses if addr in default_ips]
+        rest = [addr for addr in addresses if addr not in default_ips]
+        if not first or not rest:
+            # No default-route address among the candidates (or nothing
+            # beyond it): today's behaviour — every kept address may query
+            # STUN/TURN, bounded by the cap.
+            return await original_component(self, component, addresses, timeout=bound)
+        # Server-reflexive and relayed candidates come from the
+        # default-route address(es) only: aioice queries STUN from EVERY
+        # IPv4 host address it binds, so one interface that cannot reach
+        # the STUN server stalls the whole wait at the cap even though one
+        # srflx from the working default route is all the peer needs.
+        # Host candidates still come from every kept address. The second
+        # call runs against a shallow copy of the Connection with the
+        # server settings cleared — never by mutating the shared object:
+        # aioice's gather_candidates runs one such call per component
+        # concurrently on the same Connection, and a temporary clear plus
+        # restore would race across components. The copy shares the
+        # protocol/remote state containers, so its bound transports stay
+        # alive on the real connection for the later checks.
+        first_candidates = await original_component(
+            self, component, first, timeout=bound
+        )
+        host_only = copy.copy(self)
+        host_only.stun_server = None
+        host_only.turn_server = None
+        rest_candidates = await original_component(
+            host_only, component, rest, timeout=bound
+        )
+        return list(first_candidates) + list(rest_candidates)
 
     aioice_ice.get_host_addresses = _filtered_host_addresses
     aioice_ice.Connection.get_component_candidates = _bounded_component_candidates
