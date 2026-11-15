@@ -502,6 +502,100 @@ async def test_api_excluded_tx_paths_are_404() -> None:
 
 
 @_webrtc
+async def test_api_new_table_route_reachable_without_channel_change(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A route added to the router table is served over api with no channel change.
+
+    The test-only route lands as one ``API_ROUTE_TABLE`` entry (the way a
+    real route lands); ``api_channel.py`` is untouched and still serves it,
+    while the TX exclusions keep refusing on the same channel.
+    """
+    from rigplane.web import api_channel as api_mod
+    from rigplane.web import server as server_module
+    from rigplane.web import web_routing
+
+    async def _test_only_ping(
+        server: WebServer,
+        writer: asyncio.StreamWriter,
+        method: str,
+        path: str,
+        headers: dict[str, str] | None,
+        reader: asyncio.StreamReader | None,
+        query: dict[str, list[str]] | None,
+    ) -> None:
+        await server_module._send_response(
+            writer,
+            200,
+            "OK",
+            b'{"pong":true}',
+            {"Content-Type": "application/json"},
+        )
+
+    monkeypatch.setattr(
+        web_routing,
+        "API_ROUTE_TABLE",
+        web_routing.API_ROUTE_TABLE
+        + (web_routing.ApiRoute(("GET",), "/api/v1/_test/ping", _test_only_ping),),
+    )
+    assert api_mod.api_path_allowed("GET", "/api/v1/_test/ping")
+    assert not api_mod.api_path_allowed("POST", "/api/v1/_test/ping")
+
+    server = await _stand_up_light()
+    client = _ApiClient()
+    try:
+        await client.connect(server.port)
+        await client.attach(None)
+        resp = await client.request(1, "GET", "/api/v1/_test/ping")
+        assert resp.status == 200, (resp.status, resp.body[:200])
+        assert json.loads(resp.body.decode()) == {"pong": True}
+        excluded = await client.request(
+            2,
+            "POST",
+            "/api/v1/managed-transmit/command",
+            headers={"content-type": "application/json"},
+            body=b"{}",
+        )
+        assert excluded.status == 404, (excluded.status, excluded.body[:200])
+    finally:
+        await _tear_down(server, client)
+
+
+def test_api_wire_definition_round_trips_and_matches_contract() -> None:
+    """The wire description is JSON-stable and matches the typed contract.
+
+    Values are checked against this file's independent mirrors (not the
+    module constants the description is built from), so drift in either
+    copy fails.
+    """
+    from rigplane.web import api_channel as api_mod
+
+    definition = api_mod.api_channel_wire_definition()
+    assert json.loads(json.dumps(definition)) == definition
+    assert definition["version"] == _API_VERSION
+    assert definition["message_types"] == {
+        "REQ_HEAD": 1,
+        "REQ_BODY": 2,
+        "RES_HEAD": 3,
+        "RES_BODY": 4,
+        "END": 5,
+        "ERROR": 6,
+        "CANCEL": 7,
+    }
+    header = definition["header"]
+    assert header["size_bytes"] == _HEADER.size
+    assert struct.Struct(header["layout"]).size == _HEADER.size
+    assert struct.Struct(header["layout"]).pack(1, 2, 3, 0) == _HEADER.pack(1, 2, 3, 0)
+    limits = definition["limits"]
+    assert limits["response_chunk_bytes"] == _CHUNK
+    assert limits["max_request_body_bytes"] == 1024 * 1024
+    assert limits["max_in_flight_requests"] == 32
+    assert limits["request_deadline_s"] == 15.0
+    assert limits["send_high_water_bytes"] == 256 * 1024
+    assert limits["send_low_water_bytes"] == 64 * 1024
+
+
+@_webrtc
 async def test_api_bad_version_errors_and_closes() -> None:
     """A version mismatch answers ERROR and then closes the channel."""
     server = await _stand_up_light()

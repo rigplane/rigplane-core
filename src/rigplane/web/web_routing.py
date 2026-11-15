@@ -19,8 +19,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from collections.abc import Callable
-from typing import TYPE_CHECKING, Any
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, Final
 from rigplane.runtime.controller_authority import ControllerAuthority, ControllerError
 from rigplane.runtime.tx_interlock import (
     is_exact_raw_transmission_end_frame,
@@ -37,7 +38,14 @@ from rigplane.core.host_guard import (  # noqa: TID251
 if TYPE_CHECKING:
     from .server import WebServer  # noqa: TID251
 
-__all__ = ["dispatch_http_request", "dispatch_http_with_controller_gate"]
+__all__ = [
+    "API_CHANNEL_TX_EXCLUSIONS",
+    "API_ROUTE_TABLE",
+    "ApiRoute",
+    "api_route_for_path",
+    "dispatch_http_request",
+    "dispatch_http_with_controller_gate",
+]
 
 logger = logging.getLogger(__name__)
 
@@ -281,6 +289,449 @@ async def _buffered_reader_for_transmission_end_frame(
     return buffered if exempt else None
 
 
+# ---------------------------------------------------------------------------
+# The /api/v1/* route table: the single place a route is added.
+#
+# Every /api/v1/* path the HTTP router serves is one entry here —
+# ``_dispatch_http_routes`` looks the path up in this table (exact match
+# first, then the one trailing-id prefix) and enforces the entry's method
+# set with the same 405 the old per-branch checks answered. Adding a route
+# means adding one entry; no other list needs a matching edit.
+#
+# The ``api`` data channel (rigplane.web.api_channel) serves from this same
+# table: the rule is "every /api/v1/* route in this table, minus the
+# ``API_CHANNEL_TX_EXCLUSIONS`` below". The router has no notion of "routes
+# the UI needs", so there is no per-route api flag — reachability follows
+# routing, and the two TX-keying paths are the only carve-out. A routed
+# path under the wrong method answers 404 on that transport (it never
+# reaches dispatch); over HTTP the same request answers 405.
+# ---------------------------------------------------------------------------
+
+#: One table route's handler: the branch body the old if-chain ran.
+RouteHandler = Callable[..., Awaitable[None]]
+
+
+@dataclass(frozen=True, slots=True)
+class ApiRoute:
+    """One ``/api/v1/*`` route: methods served, path, and handler.
+
+    ``methods`` is None when the route predates a method check and answers
+    any method (its handler decides — the EiBi query branches and the
+    controller acquisition branch); otherwise only the listed methods reach
+    the handler and anything else answers 405. ``prefix`` marks the one
+    trailing-id route (``DELETE /api/v1/diagnose/preview/<id>``); every
+    other route matches its path exactly.
+    """
+
+    methods: tuple[str, ...] | None
+    path: str
+    handler: RouteHandler
+    prefix: bool = False
+
+
+async def _handle_route_controller(
+    server: WebServer,
+    writer: asyncio.StreamWriter,
+    method: str,
+    path: str,
+    headers: dict[str, str] | None,
+    reader: asyncio.StreamReader | None,
+    query: dict[str, list[str]] | None,
+) -> None:
+    """Acquire/grant controller keys (any method; the handler decides)."""
+    await server._handle_http_controller(method, path, writer, headers, reader)
+
+
+async def _handle_route_managed_tx(
+    server: WebServer,
+    writer: asyncio.StreamWriter,
+    method: str,
+    path: str,
+    headers: dict[str, str] | None,
+    reader: asyncio.StreamReader | None,
+    query: dict[str, list[str]] | None,
+) -> None:
+    """Serve the three managed-transmit paths (methods enforced by the table)."""
+    await server._handle_http_managed_tx(path, writer, headers, reader)
+
+
+async def _handle_route_bridge(
+    server: WebServer,
+    writer: asyncio.StreamWriter,
+    method: str,
+    path: str,
+    headers: dict[str, str] | None,
+    reader: asyncio.StreamReader | None,
+    query: dict[str, list[str]] | None,
+) -> None:
+    """Serve the audio bridge endpoint for any of its methods."""
+    await server._handle_bridge(method, writer, headers, reader)
+
+
+async def _handle_route_radio_post(
+    server: WebServer,
+    writer: asyncio.StreamWriter,
+    method: str,
+    path: str,
+    headers: dict[str, str] | None,
+    reader: asyncio.StreamReader | None,
+    query: dict[str, list[str]] | None,
+) -> None:
+    """Serve the POST-only radio/command/transaction group by path."""
+    if path == "/api/v1/civ/transaction":
+        await server._handle_http_civ_transaction(writer, headers, reader)
+        return
+    if path.startswith("/api/v1/commands"):
+        await server._handle_http_commands(path, writer, headers, reader)
+    else:
+        await server._handle_radio_control(path, writer, headers, reader)
+
+
+async def _handle_route_band_plan_config(
+    server: WebServer,
+    writer: asyncio.StreamWriter,
+    method: str,
+    path: str,
+    headers: dict[str, str] | None,
+    reader: asyncio.StreamReader | None,
+    query: dict[str, list[str]] | None,
+) -> None:
+    """Serve the band-plan config (the table restricts this to GET/POST)."""
+    if method == "GET":
+        await server._serve_band_plan_config(writer)
+    else:
+        await server._handle_band_plan_config(writer, headers, reader)
+
+
+async def _handle_route_eibi_fetch(
+    server: WebServer,
+    writer: asyncio.StreamWriter,
+    method: str,
+    path: str,
+    headers: dict[str, str] | None,
+    reader: asyncio.StreamReader | None,
+    query: dict[str, list[str]] | None,
+) -> None:
+    """Run an EiBi fetch."""
+    await server._handle_eibi_fetch(writer, headers, reader)
+
+
+async def _handle_route_eibi_status(
+    server: WebServer,
+    writer: asyncio.StreamWriter,
+    method: str,
+    path: str,
+    headers: dict[str, str] | None,
+    reader: asyncio.StreamReader | None,
+    query: dict[str, list[str]] | None,
+) -> None:
+    """Answer the EiBi status snapshot (any method, as routed before)."""
+    from . import server as _server_mod  # noqa: TID251
+
+    body = json.dumps(
+        server._eibi.status(),
+        separators=(",", ":"),
+    ).encode()
+    await _server_mod._send_response(
+        writer,
+        200,
+        "OK",
+        body,
+        {"Content-Type": "application/json"},
+    )
+
+
+async def _handle_route_eibi_stations(
+    server: WebServer,
+    writer: asyncio.StreamWriter,
+    method: str,
+    path: str,
+    headers: dict[str, str] | None,
+    reader: asyncio.StreamReader | None,
+    query: dict[str, list[str]] | None,
+) -> None:
+    """Answer the EiBi station query (any method, as routed before)."""
+    await server._serve_eibi_stations(writer, query or {})
+
+
+async def _handle_route_eibi_segments(
+    server: WebServer,
+    writer: asyncio.StreamWriter,
+    method: str,
+    path: str,
+    headers: dict[str, str] | None,
+    reader: asyncio.StreamReader | None,
+    query: dict[str, list[str]] | None,
+) -> None:
+    """Answer the EiBi segment query (any method, as routed before)."""
+    await server._serve_eibi_segments(writer, query or {})
+
+
+async def _handle_route_eibi_identify(
+    server: WebServer,
+    writer: asyncio.StreamWriter,
+    method: str,
+    path: str,
+    headers: dict[str, str] | None,
+    reader: asyncio.StreamReader | None,
+    query: dict[str, list[str]] | None,
+) -> None:
+    """Answer the EiBi identify query, with the FCC fallback for US AM."""
+    from . import server as _server_mod  # noqa: TID251
+
+    freq = int((query or {}).get("freq", ["0"])[0])
+    tol = int((query or {}).get("tolerance", ["5000"])[0])
+    matches = server._eibi.identify(freq, tol)
+
+    # Fallback to FCC for US AM stations if no EiBi match
+    if not matches and 530_000 <= freq <= 1_700_000:
+        try:
+            from .eibi import fcc_identify  # noqa: TID251
+
+            matches = await fcc_identify(freq, tol)
+        except Exception:
+            logger.debug("fcc identify fallback failed")
+
+    body = json.dumps(
+        {"stations": matches, "freq_hz": freq},
+        separators=(",", ":"),
+    ).encode()
+    await _server_mod._send_response(
+        writer,
+        200,
+        "OK",
+        body,
+        {"Content-Type": "application/json"},
+    )
+
+
+async def _handle_route_eibi_bands(
+    server: WebServer,
+    writer: asyncio.StreamWriter,
+    method: str,
+    path: str,
+    headers: dict[str, str] | None,
+    reader: asyncio.StreamReader | None,
+    query: dict[str, list[str]] | None,
+) -> None:
+    """Answer the EiBi band list (any method, as routed before)."""
+    from . import server as _server_mod  # noqa: TID251
+
+    bands = server._eibi.get_bands()
+    body = json.dumps(
+        {"bands": bands},
+        separators=(",", ":"),
+    ).encode()
+    await _server_mod._send_response(
+        writer,
+        200,
+        "OK",
+        body,
+        {"Content-Type": "application/json"},
+    )
+
+
+async def _handle_route_webrtc_offer(
+    server: WebServer,
+    writer: asyncio.StreamWriter,
+    method: str,
+    path: str,
+    headers: dict[str, str] | None,
+    reader: asyncio.StreamReader | None,
+    query: dict[str, list[str]] | None,
+) -> None:
+    """Run the gated WebRTC SDP exchange."""
+    await server._handle_webrtc_offer(writer, headers, reader)
+
+
+async def _handle_route_webrtc_ice(
+    server: WebServer,
+    writer: asyncio.StreamWriter,
+    method: str,
+    path: str,
+    headers: dict[str, str] | None,
+    reader: asyncio.StreamReader | None,
+    query: dict[str, list[str]] | None,
+) -> None:
+    """Run the gated WebRTC ICE trickle."""
+    await server._handle_webrtc_ice(writer, headers, reader)
+
+
+async def _handle_route_diagnose_preview(
+    server: WebServer,
+    writer: asyncio.StreamWriter,
+    method: str,
+    path: str,
+    headers: dict[str, str] | None,
+    reader: asyncio.StreamReader | None,
+    query: dict[str, list[str]] | None,
+) -> None:
+    """Stage a diagnostic bundle preview."""
+    await server._handle_diagnose_preview(writer, headers, reader)
+
+
+async def _handle_route_diagnose_send(
+    server: WebServer,
+    writer: asyncio.StreamWriter,
+    method: str,
+    path: str,
+    headers: dict[str, str] | None,
+    reader: asyncio.StreamReader | None,
+    query: dict[str, list[str]] | None,
+) -> None:
+    """Send a staged diagnostic bundle."""
+    await server._handle_diagnose_send(writer, headers, reader)
+
+
+async def _handle_route_diagnose_save(
+    server: WebServer,
+    writer: asyncio.StreamWriter,
+    method: str,
+    path: str,
+    headers: dict[str, str] | None,
+    reader: asyncio.StreamReader | None,
+    query: dict[str, list[str]] | None,
+) -> None:
+    """Save a staged diagnostic bundle."""
+    await server._handle_diagnose_save(writer, headers, reader)
+
+
+async def _handle_route_diagnose_delete(
+    server: WebServer,
+    writer: asyncio.StreamWriter,
+    method: str,
+    path: str,
+    headers: dict[str, str] | None,
+    reader: asyncio.StreamReader | None,
+    query: dict[str, list[str]] | None,
+) -> None:
+    """Delete a staged diagnostic preview by its trailing id."""
+    preview_id = path.removeprefix("/api/v1/diagnose/preview/")
+    await server._handle_diagnose_delete(writer, headers, preview_id)
+
+
+async def _handle_route_tail_get(
+    server: WebServer,
+    writer: asyncio.StreamWriter,
+    method: str,
+    path: str,
+    headers: dict[str, str] | None,
+    reader: asyncio.StreamReader | None,
+    query: dict[str, list[str]] | None,
+) -> None:
+    """Serve the GET/HEAD status surface (the table restricts the methods)."""
+    from . import server as _server_mod  # noqa: TID251
+
+    if path == "/api/v1/info":
+        await server._serve_info(writer, headers)
+    elif path == "/api/v1/station":
+        await server._serve_station_status(writer, headers)
+    elif path == "/api/v1/runtime":
+        await server._serve_runtime(writer, headers)
+    elif path == "/api/v1/state":
+        await server._serve_state(writer, headers)
+    elif path == "/api/v1/capabilities":
+        await server._serve_capabilities(writer, headers)
+    elif path == "/api/v1/dx/spots":
+        await server._serve_dx_spots(writer)
+    elif path == "/api/v1/band-plan/segments":
+        await server._serve_band_plan_segments(writer, query or {})
+    elif path == "/api/v1/band-plan/layers":
+        await server._serve_band_plan_layers(writer)
+    elif path == "/api/v1/memories":
+        await server._serve_memories(writer, query or {})
+    elif path == "/api/v1/audio/analysis":
+        await server._serve_audio_analysis(writer, headers)
+    else:  # Unreachable through the table; totality if table and code drift.
+        await _server_mod._send_response(writer, 404, "Not Found", b"404 Not Found", {})
+
+
+#: Every ``/api/v1/*`` path the HTTP router serves. ``_dispatch_http_routes``
+#: matches path here and enforces the entry's method set; the ``api`` data
+#: channel serves every entry except ``API_CHANNEL_TX_EXCLUSIONS``.
+API_ROUTE_TABLE: Final[tuple[ApiRoute, ...]] = (
+    ApiRoute(None, "/api/v1/controller", _handle_route_controller),
+    ApiRoute(None, "/api/v1/controller/mode", _handle_route_controller),
+    ApiRoute(("GET",), "/api/v1/managed-transmit", _handle_route_managed_tx),
+    ApiRoute(("POST",), "/api/v1/managed-transmit/command", _handle_route_managed_tx),
+    ApiRoute(("PUT",), "/api/v1/managed-transmit/tot", _handle_route_managed_tx),
+    ApiRoute(
+        ("GET", "HEAD", "POST", "PATCH", "DELETE"),
+        "/api/v1/bridge",
+        _handle_route_bridge,
+    ),
+    ApiRoute(("POST",), "/api/v1/radio/disconnect", _handle_route_radio_post),
+    ApiRoute(("POST",), "/api/v1/radio/connect", _handle_route_radio_post),
+    ApiRoute(("POST",), "/api/v1/radio/power", _handle_route_radio_post),
+    ApiRoute(("POST",), "/api/v1/radio/cw/send", _handle_route_radio_post),
+    ApiRoute(("POST",), "/api/v1/radio/cw/stop", _handle_route_radio_post),
+    ApiRoute(("POST",), "/api/v1/commands", _handle_route_radio_post),
+    ApiRoute(("POST",), "/api/v1/commands/batch", _handle_route_radio_post),
+    ApiRoute(("POST",), "/api/v1/civ/transaction", _handle_route_radio_post),
+    ApiRoute(
+        ("GET", "POST"), "/api/v1/band-plan/config", _handle_route_band_plan_config
+    ),
+    ApiRoute(("POST",), "/api/v1/eibi/fetch", _handle_route_eibi_fetch),
+    ApiRoute(None, "/api/v1/eibi/status", _handle_route_eibi_status),
+    ApiRoute(None, "/api/v1/eibi/stations", _handle_route_eibi_stations),
+    ApiRoute(None, "/api/v1/eibi/segments", _handle_route_eibi_segments),
+    ApiRoute(None, "/api/v1/eibi/identify", _handle_route_eibi_identify),
+    ApiRoute(None, "/api/v1/eibi/bands", _handle_route_eibi_bands),
+    ApiRoute(("POST",), "/api/v1/transport/webrtc/offer", _handle_route_webrtc_offer),
+    ApiRoute(
+        ("POST",), "/api/v1/transport/webrtc/ice-candidate", _handle_route_webrtc_ice
+    ),
+    ApiRoute(("POST",), "/api/v1/diagnose/preview", _handle_route_diagnose_preview),
+    ApiRoute(("POST",), "/api/v1/diagnose/send", _handle_route_diagnose_send),
+    ApiRoute(("POST",), "/api/v1/diagnose/save", _handle_route_diagnose_save),
+    ApiRoute(
+        ("DELETE",),
+        "/api/v1/diagnose/preview/",
+        _handle_route_diagnose_delete,
+        prefix=True,
+    ),
+    ApiRoute(("GET", "HEAD"), "/api/v1/info", _handle_route_tail_get),
+    ApiRoute(("GET", "HEAD"), "/api/v1/station", _handle_route_tail_get),
+    ApiRoute(("GET", "HEAD"), "/api/v1/runtime", _handle_route_tail_get),
+    ApiRoute(("GET", "HEAD"), "/api/v1/state", _handle_route_tail_get),
+    ApiRoute(("GET", "HEAD"), "/api/v1/capabilities", _handle_route_tail_get),
+    ApiRoute(("GET", "HEAD"), "/api/v1/dx/spots", _handle_route_tail_get),
+    ApiRoute(("GET", "HEAD"), "/api/v1/band-plan/segments", _handle_route_tail_get),
+    ApiRoute(("GET", "HEAD"), "/api/v1/band-plan/layers", _handle_route_tail_get),
+    ApiRoute(("GET", "HEAD"), "/api/v1/memories", _handle_route_tail_get),
+    ApiRoute(("GET", "HEAD"), "/api/v1/audio/analysis", _handle_route_tail_get),
+)
+
+#: (method, path) pairs the ``api`` data channel refuses with 404 even
+#: though HTTP routes them. Both key the transmitter: over a data channel
+#: the UI keys PTT through the control channel command instead, which is
+#: fenced by the controller session. A data-channel REST path must not
+#: become a second, unfenced TX keying mechanism beside it, so excluded
+#: paths read exactly like unknown ones (404, indistinguishable by design)
+#: even with a valid controller key.
+API_CHANNEL_TX_EXCLUSIONS: Final[frozenset[tuple[str, str]]] = frozenset(
+    {
+        ("POST", "/api/v1/managed-transmit/command"),
+        ("POST", "/api/v1/civ/transaction"),
+    }
+)
+
+
+def api_route_for_path(path: str) -> ApiRoute | None:
+    """Match *path* against the route table: exact entries first, then prefix.
+
+    Returns the entry or None. Method checks stay with the callers (HTTP
+    answers 405, the ``api`` channel answers 404 — see the table comment).
+    """
+    for route in API_ROUTE_TABLE:
+        if not route.prefix and path == route.path:
+            return route
+    for route in API_ROUTE_TABLE:
+        if route.prefix and path.startswith(route.path):
+            return route
+    return None
+
+
 async def dispatch_http_request(
     server: WebServer,
     writer: asyncio.StreamWriter,
@@ -343,7 +794,7 @@ async def _dispatch_http_request(
     reader: asyncio.StreamReader | None = None,
     query: dict[str, list[str]] | None = None,
 ) -> None:
-    """The route table itself; called only by :func:`dispatch_http_request`."""
+    """Host/Origin transport gates, then the controller gate plus the table."""
     # Lazy import: keeps test patches of ``rigplane.web.server._send_response``
     # effective (binding lookup goes through the module).
     from . import server as _server_mod  # noqa: TID251
@@ -419,8 +870,9 @@ async def dispatch_http_with_controller_gate(
     controller rules per request; the Host/Origin gates stay HTTP-only
     (a data channel has neither header).
     """
-    if path in ("/api/v1/controller", "/api/v1/controller/mode"):
-        await server._handle_http_controller(method, path, writer, headers, reader)
+    route = api_route_for_path(path)
+    if route is not None and route.handler is _handle_route_controller:
+        await route.handler(server, writer, method, path, headers, reader, query)
         return
     controller = getattr(server, "_controller", None)
     if not isinstance(controller, ControllerAuthority):
@@ -525,6 +977,18 @@ async def _dispatch_http_routes(
     from . import server as _server_mod  # noqa: TID251
 
     _send_response = _server_mod._send_response
+
+    # Every /api/v1/* route lives in API_ROUTE_TABLE: match path here and
+    # enforce the entry's method set with the same 405 the old per-branch
+    # checks answered.
+    route = api_route_for_path(path)
+    if route is not None:
+        if route.methods is not None and method not in route.methods:
+            await _send_response(writer, 405, "Method Not Allowed", b"", {})
+            return
+        await route.handler(server, writer, method, path, headers, reader, query)
+        return
+
     if path == "/healthz":
         if method not in ("GET", "HEAD"):
             await _send_response(writer, 405, "Method Not Allowed", b"", {})
@@ -537,176 +1001,6 @@ async def _dispatch_http_routes(
             await _send_response(writer, 405, "Method Not Allowed", b"", {})
             return
         await server._serve_ready(writer, headers)
-        return
-
-    # Routes that accept POST/DELETE
-    if path in (
-        "/api/v1/managed-transmit",
-        "/api/v1/managed-transmit/command",
-        "/api/v1/managed-transmit/tot",
-    ):
-        expected_methods = {
-            "/api/v1/managed-transmit": ("GET",),
-            "/api/v1/managed-transmit/command": ("POST",),
-            "/api/v1/managed-transmit/tot": ("PUT",),
-        }[path]
-        if method not in expected_methods:
-            await _send_response(writer, 405, "Method Not Allowed", b"", {})
-            return
-        await server._handle_http_managed_tx(path, writer, headers, reader)
-        return
-
-    if path == "/api/v1/bridge":
-        if method not in ("GET", "HEAD", "POST", "PATCH", "DELETE"):
-            await _send_response(writer, 405, "Method Not Allowed", b"", {})
-            return
-        await server._handle_bridge(method, writer, headers, reader)
-        return
-    if path in (
-        "/api/v1/radio/disconnect",
-        "/api/v1/radio/connect",
-        "/api/v1/radio/power",
-        "/api/v1/radio/cw/send",
-        "/api/v1/radio/cw/stop",
-        "/api/v1/commands",
-        "/api/v1/commands/batch",
-        "/api/v1/civ/transaction",
-    ):
-        if method != "POST":
-            await _send_response(writer, 405, "Method Not Allowed", b"", {})
-            return
-        if path == "/api/v1/civ/transaction":
-            await server._handle_http_civ_transaction(writer, headers, reader)
-            return
-        if path.startswith("/api/v1/commands"):
-            await server._handle_http_commands(path, writer, headers, reader)
-        else:
-            await server._handle_radio_control(path, writer, headers, reader)
-        return
-
-    if path == "/api/v1/band-plan/config":
-        if method == "GET":
-            await server._serve_band_plan_config(writer)
-        elif method == "POST":
-            await server._handle_band_plan_config(writer, headers, reader)
-        else:
-            await _send_response(writer, 405, "Method Not Allowed", b"", {})
-        return
-
-    # EiBi routes (POST for fetch, GET for queries)
-    if path == "/api/v1/eibi/fetch":
-        if method == "POST":
-            await server._handle_eibi_fetch(writer, headers, reader)
-        else:
-            await _send_response(writer, 405, "Method Not Allowed", b"", {})
-        return
-
-    if path == "/api/v1/eibi/status":
-        body = json.dumps(
-            server._eibi.status(),
-            separators=(",", ":"),
-        ).encode()
-        await _send_response(
-            writer,
-            200,
-            "OK",
-            body,
-            {"Content-Type": "application/json"},
-        )
-        return
-
-    if path == "/api/v1/eibi/stations":
-        await server._serve_eibi_stations(writer, query or {})
-        return
-
-    if path == "/api/v1/eibi/segments":
-        await server._serve_eibi_segments(writer, query or {})
-        return
-
-    if path == "/api/v1/eibi/identify":
-        freq = int((query or {}).get("freq", ["0"])[0])
-        tol = int((query or {}).get("tolerance", ["5000"])[0])
-        matches = server._eibi.identify(freq, tol)
-
-        # Fallback to FCC for US AM stations if no EiBi match
-        if not matches and 530_000 <= freq <= 1_700_000:
-            try:
-                from .eibi import fcc_identify  # noqa: TID251
-
-                matches = await fcc_identify(freq, tol)
-            except Exception:
-                logger.debug("fcc identify fallback failed")
-
-        body = json.dumps(
-            {"stations": matches, "freq_hz": freq},
-            separators=(",", ":"),
-        ).encode()
-        await _send_response(
-            writer,
-            200,
-            "OK",
-            body,
-            {"Content-Type": "application/json"},
-        )
-        return
-
-    if path == "/api/v1/eibi/bands":
-        bands = server._eibi.get_bands()
-        body = json.dumps(
-            {"bands": bands},
-            separators=(",", ":"),
-        ).encode()
-        await _send_response(
-            writer,
-            200,
-            "OK",
-            body,
-            {"Content-Type": "application/json"},
-        )
-        return
-
-    # Gated WebRTC transport entrypoint (A2.3 / MOR-307): stateless SDP
-    # exchange + ICE trickle, behind WebConfig.webrtc_enabled + [webrtc] extra.
-    if path == "/api/v1/transport/webrtc/offer":
-        if method != "POST":
-            await _send_response(writer, 405, "Method Not Allowed", b"", {})
-            return
-        await server._handle_webrtc_offer(writer, headers, reader)
-        return
-    if path == "/api/v1/transport/webrtc/ice-candidate":
-        if method != "POST":
-            await _send_response(writer, 405, "Method Not Allowed", b"", {})
-            return
-        await server._handle_webrtc_ice(writer, headers, reader)
-        return
-
-    # Diagnostic upload endpoints (issue #1396).
-    if path == "/api/v1/diagnose/preview":
-        if method != "POST":
-            await _send_response(writer, 405, "Method Not Allowed", b"", {})
-            return
-        await server._handle_diagnose_preview(writer, headers, reader)
-        return
-    if path == "/api/v1/diagnose/send":
-        if method != "POST":
-            await _send_response(writer, 405, "Method Not Allowed", b"", {})
-            return
-        await server._handle_diagnose_send(writer, headers, reader)
-        return
-    if path == "/api/v1/diagnose/save":
-        if method != "POST":
-            await _send_response(writer, 405, "Method Not Allowed", b"", {})
-            return
-        await server._handle_diagnose_save(writer, headers, reader)
-        return
-    # DELETE /api/v1/diagnose/preview/<preview_id> — prefix dispatch.
-    # The trailing slash check prevents collision with POST /preview above.
-    if path.startswith("/api/v1/diagnose/preview/"):
-        if method != "DELETE":
-            await _send_response(writer, 405, "Method Not Allowed", b"", {})
-            return
-        preview_id = path.removeprefix("/api/v1/diagnose/preview/")
-        await server._handle_diagnose_delete(writer, headers, preview_id)
         return
 
     if method not in ("GET", "HEAD"):

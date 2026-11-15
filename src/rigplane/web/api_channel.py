@@ -15,17 +15,23 @@ HTTP lane also uses), in-process, with a synthetic request/response
 adapter. There is no second router and no URL is ever proxied: the
 adapter builds a ``StreamReader`` over the request body plus a capturing
 writer, runs the shared dispatch, and splits the captured HTTP bytes
-back into status/headers/body. An explicit allow-list below is the
-routing for this transport; anything else answers 404.
+back into status/headers/body. What this transport serves is derived
+from the router's own ``API_ROUTE_TABLE`` — the rule is "every
+``/api/v1/*`` route in that table, minus the TX exclusions" — so adding
+a route to the router is the only place to change. The router has no
+notion of "routes the UI needs", so there is no per-route api flag;
+reachability follows routing. Anything else (an unknown path, an
+excluded TX path, or a routed path under the wrong method) answers 404
+without touching controller state.
 
-TX-capable REST is excluded from the allow-list even where HTTP serves
-it: ``POST /api/v1/managed-transmit/command`` and ``POST
-/api/v1/civ/transaction`` both key the transmitter. Over a data channel
-the UI keys PTT through the control channel command instead, which is
-fenced by the controller session. A data-channel REST path must not
-become a second, unfenced TX keying mechanism beside it, so excluded
-paths read exactly like unknown ones (404, indistinguishable by design)
-even with a valid controller key.
+TX-capable REST is excluded even where HTTP serves it (see
+``API_CHANNEL_TX_EXCLUSIONS`` for the pair and the reason): both key
+the transmitter, and over a data channel the UI keys PTT through the
+control channel command instead, which is fenced by the controller
+session. A data-channel REST path must not become a second, unfenced TX
+keying mechanism beside it, so excluded paths read exactly like unknown
+ones (404, indistinguishable by design) even with a valid controller
+key.
 
 Wire format (typed, versioned): every message is a binary header
 ``[u8 version=1][u8 type][u32 request_id BE][u8 flags]`` plus payload.
@@ -64,6 +70,7 @@ import json
 import logging
 import struct
 from dataclasses import dataclass
+from enum import IntEnum
 from typing import TYPE_CHECKING, Any, Final, Protocol, cast, runtime_checkable
 
 from ..ws import WS_OP_BINARY  # noqa: TID251
@@ -81,7 +88,9 @@ __all__ = [
     "SEND_HIGH_WATER_BYTES",
     "SEND_LOW_WATER_BYTES",
     "ApiChannelHandler",
+    "ApiMessageType",
     "ApiRequestHead",
+    "api_channel_wire_definition",
     "api_path_allowed",
 ]
 
@@ -90,17 +99,22 @@ logger = logging.getLogger(__name__)
 #: Wire version; a mismatch answers ERROR ``bad_version`` and closes.
 API_CHANNEL_VERSION: Final = 1
 
-#: Message types on the wire.
-_REQ_HEAD: Final = 0x01
-_REQ_BODY: Final = 0x02
-_RES_HEAD: Final = 0x03
-_RES_BODY: Final = 0x04
-_END: Final = 0x05
-_ERROR: Final = 0x06
-_CANCEL: Final = 0x07
+
+class ApiMessageType(IntEnum):
+    """The one definition of every message type on the wire."""
+
+    REQ_HEAD = 0x01
+    REQ_BODY = 0x02
+    RES_HEAD = 0x03
+    RES_BODY = 0x04
+    END = 0x05
+    ERROR = 0x06
+    CANCEL = 0x07
+
 
 #: Binary header ``[u8 version][u8 type][u32 request_id BE][u8 flags]``.
-_FRAME_HEADER: Final = struct.Struct(">BBIB")
+_FRAME_FORMAT: Final = ">BBIB"
+_FRAME_HEADER: Final = struct.Struct(_FRAME_FORMAT)
 
 #: Biggest RES_BODY payload the server ever emits in one frame.
 RESPONSE_CHUNK_BYTES: Final = 16 * 1024
@@ -134,6 +148,39 @@ _TOO_LARGE: Final = "too_large"
 _BUSY: Final = "busy"
 _TIMEOUT: Final = "timeout"
 _INTERNAL: Final = "internal"
+
+
+def api_channel_wire_definition() -> dict[str, Any]:
+    """Return the wire contract as a JSON-serialisable description.
+
+    The one machine-readable copy of the header layout, message types,
+    version, chunk size, and limits, built from the module constants above
+    for the browser side (the frontend consumes and checks this instead of
+    re-listing values). Every value round-trips through ``json`` unchanged.
+    """
+    return {
+        "version": API_CHANNEL_VERSION,
+        "header": {
+            "layout": _FRAME_FORMAT,
+            "fields": [
+                {"name": "version", "type": "u8"},
+                {"name": "type", "type": "u8"},
+                {"name": "request_id", "type": "u32be"},
+                {"name": "flags", "type": "u8"},
+            ],
+            "size_bytes": _FRAME_HEADER.size,
+            "flags": "reserved, always sent as 0 and ignored on receipt",
+        },
+        "message_types": {entry.name: entry.value for entry in ApiMessageType},
+        "limits": {
+            "response_chunk_bytes": RESPONSE_CHUNK_BYTES,
+            "max_request_body_bytes": MAX_REQUEST_BODY_BYTES,
+            "max_in_flight_requests": MAX_IN_FLIGHT_REQUESTS,
+            "request_deadline_s": REQUEST_DEADLINE_S,
+            "send_high_water_bytes": SEND_HIGH_WATER_BYTES,
+            "send_low_water_bytes": SEND_LOW_WATER_BYTES,
+        },
+    }
 
 
 @runtime_checkable
@@ -234,50 +281,26 @@ def _encode_frame(msg_type: int, request_id: int, payload: bytes) -> bytes:
     return _FRAME_HEADER.pack(API_CHANNEL_VERSION, msg_type, request_id, 0) + payload
 
 
-# (method, path) pairs the api channel serves; anything else answers 404.
-# Mirrors the frontend's fetch surface (frontend/src `fetch(` + `/api/v1/`
-# literals), minus the TX-capable REST the module docstring excludes.
-_API_ALLOW_LIST: Final = frozenset(
-    {
-        ("GET", "/api/v1/controller"),
-        ("POST", "/api/v1/controller"),
-        ("DELETE", "/api/v1/controller"),
-        ("GET", "/api/v1/info"),
-        ("GET", "/api/v1/capabilities"),
-        ("GET", "/api/v1/band-plan/segments"),
-        ("GET", "/api/v1/band-plan/layers"),
-        ("GET", "/api/v1/band-plan/config"),
-        ("POST", "/api/v1/band-plan/config"),
-        ("POST", "/api/v1/eibi/fetch"),
-        ("GET", "/api/v1/eibi/status"),
-        ("GET", "/api/v1/eibi/stations"),
-        ("GET", "/api/v1/eibi/segments"),
-        ("GET", "/api/v1/eibi/identify"),
-        ("GET", "/api/v1/eibi/bands"),
-        ("GET", "/api/v1/memories"),
-        ("POST", "/api/v1/radio/power"),
-        ("GET", "/api/v1/managed-transmit"),
-        ("PUT", "/api/v1/managed-transmit/tot"),
-        ("POST", "/api/v1/diagnose/preview"),
-        ("POST", "/api/v1/diagnose/send"),
-        ("POST", "/api/v1/diagnose/save"),
-    }
-)
-
-#: Prefix whose DELETE carries a preview id (``/preview/<id>``).
-_DIAGNOSE_DELETE_PREFIX: Final = "/api/v1/diagnose/preview/"
-
-
 def api_path_allowed(method: str, path: str) -> bool:
     """True when the api channel routes ``(method, path)``.
 
-    The allow-list is the routing for this transport: anything else (an
-    unknown path, a TX-capable path, or a listed path under the wrong
-    method) answers 404 without touching controller state.
+    Derived from the router's own ``API_ROUTE_TABLE`` (see the module
+    docstring for the rule): every ``/api/v1/*`` entry except the TX
+    exclusions. Anything else (an unknown path, an excluded TX path, or a
+    routed path under the wrong method) answers 404 without touching
+    controller state.
     """
-    if (method, path) in _API_ALLOW_LIST:
-        return True
-    return method == "DELETE" and path.startswith(_DIAGNOSE_DELETE_PREFIX)
+    from .web_routing import (  # noqa: TID251
+        API_CHANNEL_TX_EXCLUSIONS,
+        api_route_for_path,
+    )
+
+    if (method, path) in API_CHANNEL_TX_EXCLUSIONS:
+        return False
+    route = api_route_for_path(path)
+    if route is None:
+        return False
+    return route.methods is None or method in route.methods
 
 
 class _ChannelHttpWriter:
@@ -493,13 +516,13 @@ class ApiChannelHandler:
             with contextlib.suppress(Exception):
                 await self._conn.close(1000, "bad version")
             return True
-        if msg_type == _REQ_HEAD:
+        if msg_type == ApiMessageType.REQ_HEAD:
             await self._on_head(request_id, body)
-        elif msg_type == _REQ_BODY:
+        elif msg_type == ApiMessageType.REQ_BODY:
             self._on_body(request_id, body)
-        elif msg_type == _END:
+        elif msg_type == ApiMessageType.END:
             self._on_end(request_id)
-        elif msg_type == _CANCEL:
+        elif msg_type == ApiMessageType.CANCEL:
             self._on_cancel(request_id)
         else:
             await self._send_error(request_id, _MALFORMED, "unknown message type")
@@ -612,19 +635,25 @@ class ApiChannelHandler:
     ) -> None:
         """Stream RES_HEAD + <=16 KB RES_BODY chunks + END, with backpressure."""
         await self._send_frame(
-            _RES_HEAD, request_id, ApiResponseHead(status, headers).encode()
+            ApiMessageType.RES_HEAD,
+            request_id,
+            ApiResponseHead(status, headers).encode(),
         )
         for offset in range(0, len(body), RESPONSE_CHUNK_BYTES):
             await self._send_frame(
-                _RES_BODY, request_id, body[offset : offset + RESPONSE_CHUNK_BYTES]
+                ApiMessageType.RES_BODY,
+                request_id,
+                body[offset : offset + RESPONSE_CHUNK_BYTES],
             )
-        await self._send_frame(_END, request_id, b"")
+        await self._send_frame(ApiMessageType.END, request_id, b"")
 
     async def _send_error(self, request_id: int, code: str, message: str) -> None:
         """Send one terminal ERROR, never raising (the channel may be dead)."""
         with contextlib.suppress(Exception):
             await self._send_frame(
-                _ERROR, request_id, ApiErrorFrame(code, message).encode()
+                ApiMessageType.ERROR,
+                request_id,
+                ApiErrorFrame(code, message).encode(),
             )
 
     async def _send_frame(self, msg_type: int, request_id: int, payload: bytes) -> None:
