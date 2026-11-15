@@ -23,14 +23,14 @@ export const ATTACH_TIMEOUT_MS = 5000; // give-up bound for the attach step
 export type DataChannelLike = Pick<RTCDataChannel, 'label' | 'readyState' | 'bufferedAmount' | 'binaryType' | 'onopen' | 'onmessage' | 'onclose' | 'onerror' | 'send' | 'close'>;
 
 /** A wire payload contract: its `fields` rows (name, kind, required, note). */
-export interface PayloadContract { readonly fields: readonly (string | boolean)[][] }
+interface PayloadContract { readonly fields: readonly (string | boolean)[][] }
 /** The typed, contract-validated `attach_ack` payload. */
-export interface AttachAck { readonly type: 'attached'; readonly v: number; readonly channel: string }
-export const CONTROLLER_PROTOCOL_PREFIX = 'rigplane-controller-v1.';
+interface AttachAck { readonly type: 'attached'; readonly v: number; readonly channel: string }
+const CONTROLLER_PROTOCOL_PREFIX = 'rigplane-controller-v1.';
 
 /** The session key offered as a `rigplane-controller-v1.<key>` token — the
  * shape `ControllerClient.protocols()` offers; null when no token is offered. */
-export function controllerKeyFromProtocols(protocols: readonly string[] | undefined): string | null {
+function controllerKeyFromProtocols(protocols: readonly string[] | undefined): string | null {
   const token = (protocols ?? []).find(
     (p) => p.startsWith(CONTROLLER_PROTOCOL_PREFIX) && p.length > CONTROLLER_PROTOCOL_PREFIX.length,
   );
@@ -59,7 +59,7 @@ export function payloadMatchesContract(contract: PayloadContract, value: unknown
 }
 
 /** Build a payload carrying exactly the contract's fields. */
-export function buildContractPayload(contract: PayloadContract, parts: Record<string, unknown>): string {
+function buildContractPayload(contract: PayloadContract, parts: Record<string, unknown>): string {
   const payload: Record<string, unknown> = {};
   for (const row of contract.fields) {
     const [name, kind] = row;
@@ -75,7 +75,7 @@ export function buildContractPayload(contract: PayloadContract, parts: Record<st
   return JSON.stringify(payload);
 }
 /** Decode a payload text against a contract; null when it violates it. */
-export function decodeContractPayload<T>(contract: PayloadContract, text: string): T | null {
+function decodeContractPayload<T>(contract: PayloadContract, text: string): T | null {
   let value: unknown;
   try {
     value = JSON.parse(text);

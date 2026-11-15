@@ -1,15 +1,12 @@
 // Shared fake `RTCDataChannel` for the C5a tests: records sends, lets the
-// test act as the peer, and decodes the committed golden documents' frames.
+// test act as the peer, and exposes the committed golden documents' texts.
 import golden from '../../api-channel-golden.json';
 import type { DataChannelLike } from '../../datachannel-transport';
 
-export interface GoldenDoc {
+/** One committed golden document, as far as these tests read it. */
+interface GoldenDoc {
   readonly text?: string;
   readonly decoded?: Record<string, unknown> | null;
-  readonly request?: readonly { hex: string; payload?: unknown }[];
-  readonly reply?: readonly { hex: string; payload?: unknown }[];
-  readonly frames?: readonly { hex: string; payload?: unknown }[];
-  readonly response_body_b64?: string | null;
 }
 export const goldenDocs = golden.documents as Record<string, GoldenDoc>;
 
@@ -49,14 +46,6 @@ export class FakeDataChannel implements DataChannelLike {
   textFrames(): string[] {
     return this.sent.filter((f): f is string => typeof f === 'string');
   }
-}
-/** One committed golden frame, decoded; `id` rewrites the envelope's request
- * id (the payload bytes stay exactly the committed ones). */
-export function goldenFrame(hex: string, id = -1): ArrayBuffer {
-  const bytes = new Uint8Array(hex.length / 2);
-  for (let i = 0; i < bytes.length; i++) bytes[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
-  if (id >= 0) new DataView(bytes.buffer).setUint32(2, id, false);
-  return bytes.buffer as ArrayBuffer;
 }
 
 /** The golden attach frame's text, `<SESSION-KEY>` substituted live. */
