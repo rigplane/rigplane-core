@@ -118,6 +118,8 @@ _CMD_MODE_SET = 0x06  # set operating mode (+ filter)
 _CMD_METER = 0x15  # meter readings
 _SUB_S_METER = 0x02
 _CMD_TRANSCEIVER_ID = 0x19  # read transceiver ID
+_CMD_XIEGU_MODEL_ID = 0x1D  # Xiegu model ID (sub 0x19 carries the id bytes)
+_SUB_XIEGU_MODEL_ID = 0x19
 _SUB_TRANSCEIVER_ID = 0x00
 _CMD_SEL_FREQ_GET = 0x25  # read the selected VFO's frequency (data 00)
 _CMD_SEL_MODE_GET = 0x26  # read the selected VFO's mode, data mode and filter (data 00)
@@ -289,6 +291,13 @@ class CivSerialFake:
                 )
             model_id = bytes.fromhex(profile.expected_identity_ids[0])
         self._model_id = bytes(model_id)
+        # The Xiegu model-id answer (``1D 19``), driven by the profile's
+        # ``[radio].xiegu_model_id`` when it declares one (MOR-4352): a
+        # radio without it keeps NAKing the command, as before.
+        xiegu_model_id = profile.xiegu_model_id
+        self._xiegu_model_id = (
+            None if xiegu_model_id is None else xiegu_model_id.to_bytes(2, "big")
+        )
         self._recorded_answers = recorded_answers
         if echo is not None:
             self.echo = echo
@@ -765,6 +774,14 @@ class CivSerialFake:
                 _CMD_TRANSCEIVER_ID,
                 sub=_SUB_TRANSCEIVER_ID,
                 data=self.model_id,
+            )
+        if cmd == _CMD_XIEGU_MODEL_ID and self._xiegu_model_id is not None:
+            # 0x1D carries no sub: the 0x19 byte is payload, then the id.
+            return build_civ_frame(
+                CONTROLLER_ADDR,
+                self._civ_addr,
+                _CMD_XIEGU_MODEL_ID,
+                data=bytes((_SUB_XIEGU_MODEL_ID,)) + self._xiegu_model_id,
             )
         if (
             cmd == _CMD_VFO

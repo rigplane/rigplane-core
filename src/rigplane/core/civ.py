@@ -26,6 +26,7 @@ __all__ = [
     "PTT_REPLY_QUIESCENCE_S",
     "OwedReplyEntry",
     "PttReplyLedger",
+    "civ_response_matches",
     "is_directed_ptt_reply",
     "iter_civ_frames",
     "read_identity_from_frame",
@@ -211,6 +212,26 @@ def read_identity_from_frame(frame: CivFrame) -> CivRequestKey:
         receiver=frame.receiver,
         data_prefix=frame.data,
     )
+
+
+def civ_response_matches(key: CivRequestKey, frame: CivFrame) -> bool:
+    """Whether *frame* answers the request described by *key*.
+
+    The one pure CI-V attribution predicate: command and sub-command
+    must agree, a keyed receiver must agree, and a keyed data prefix
+    must prefix the reply. :meth:`CivRequestTracker._matches` delegates
+    here, and single-flight probers reuse it instead of reimplementing
+    it; stricter probers add their own selector checks on top.
+    """
+    if frame.command != key.command:
+        return False
+    if frame.sub != key.sub:
+        return False
+    if key.receiver is not None and frame.receiver != key.receiver:
+        return False
+    if key.data_prefix and not frame.data.startswith(key.data_prefix):
+        return False
+    return True
 
 
 def iter_civ_frames(payload: bytes) -> Iterator[bytes]:
@@ -741,12 +762,4 @@ class CivRequestTracker:
 
     @staticmethod
     def _matches(key: CivRequestKey, frame: CivFrame) -> bool:
-        if frame.command != key.command:
-            return False
-        if frame.sub != key.sub:
-            return False
-        if key.receiver is not None and frame.receiver != key.receiver:
-            return False
-        if key.data_prefix and not frame.data.startswith(key.data_prefix):
-            return False
-        return True
+        return civ_response_matches(key, frame)

@@ -21,26 +21,9 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from rigplane.probe.classify import cat_reply_closes as reply_closes
+
 REFUSAL = "?;"
-
-# The one recorded exception to "a data reply starts with the whole request
-# body": the radio answers the SUB S-meter read ``SM1;`` with the side digit
-# echoed as 0 (rigs/ftx1.toml: get_s_meter_sub).
-_ECHO_EXCEPTIONS = {"SM1;": "SM0"}
-
-
-def reply_closes(request: str, reply: str) -> bool:
-    """True when *reply* (with its ``;``) can be the radio's answer to *request*.
-
-    A data reply starts with the whole request body (``NA1;`` -> ``NA1x;``) or
-    is the ``?;`` refusal. A late reply to an earlier request that merely
-    shares the two-letter verb (``NA00;`` for ``NA1;``) is not one.
-    """
-    return (
-        reply == REFUSAL
-        or reply.startswith(request[:-1])
-        or reply.startswith(_ECHO_EXCEPTIONS.get(request, "\0"))
-    )
 
 
 @dataclass(frozen=True, slots=True)
