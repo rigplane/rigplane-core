@@ -1602,6 +1602,56 @@ async def test_managed_startup_survives_an_unanswered_ptt_probe(
 
 
 @pytest.mark.asyncio
+async def test_managed_startup_survives_a_refused_ptt_probe(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A REFUSED `t` (RPRT error) at managed startup keeps the connection open:
+    the probe refusal is not a timeout, so there is no reconnect (one
+    connection), the listener binds, freq/mode are served, PTT stays
+    unobserved and the deadline WARNING names it."""
+    from rigplane.backends.rigctld_client.observations import (
+        _FREQ as _RIG_FREQ,
+        _MODE as _RIG_MODE,
+    )
+
+    PTT = FieldPath.global_("tx_state", "ptt")
+    fake = _TcpRigctldServer(refuse="t")
+    await fake.start()
+    try:
+        radio, composition, server, binds = await _bind_managed_tx_and_start(
+            fake, tmp_path, caplog
+        )
+        try:
+            scheduler = radio._acquisition_scheduler
+            assert binds == ["bind"]
+            assert scheduler.startup_defect is None
+            assert fake.refused_requests >= 1  # really asked, really refused
+            assert fake.connections == 1  # a refusal never retires the link
+            observed = _observed_paths(server, scheduler)
+            assert PTT in scheduler.unobserved_startup_paths(observed)
+            assert _RIG_FREQ in observed
+            assert _RIG_MODE in observed
+            await server.stop()
+        finally:
+            # Production shutdown runs with the termination event set (SIGTERM);
+            # an unset event would wait for the startup release that a
+            # refused `t` can never confirm.
+            terminated = asyncio.Event()
+            terminated.set()
+            await composition.shutdown(terminated)
+            await radio.disconnect()
+    finally:
+        await fake.stop()
+
+    assert any(
+        r.levelno == logging.WARNING
+        and "global.tx_state.ptt" in r.getMessage()
+        and "after 10s" in r.getMessage()
+        for r in caplog.records
+    ), "the deadline WARNING must name the unanswered path"
+
+
+@pytest.mark.asyncio
 async def test_managed_startup_with_silent_t_probes_once_and_keeps_local_ptt(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
