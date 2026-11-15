@@ -568,38 +568,83 @@ async def test_api_new_table_route_reachable_without_channel_change(
         await _tear_down(server, client)
 
 
-def test_api_wire_definition_round_trips_and_matches_contract() -> None:
-    """The wire description is JSON-stable and matches the typed contract.
+def test_api_wire_definition_is_typed_and_json_stable() -> None:
+    """The wire description is a typed contract, JSON-stable, value-pinned.
 
-    Values are checked against this file's independent mirrors (not the
-    module constants the description is built from), so drift in either
-    copy fails.
+    The test consumes the producer's own frozen dataclasses (not a
+    re-listed dict), pins every value against this file's independent
+    mirrors (not the module constants the description is built from), so
+    drift in either copy fails, and proves the typed record round-trips
+    through JSON unchanged.
     """
+    import dataclasses
+
     from rigplane.web import api_channel as api_mod
 
     definition = api_mod.api_channel_wire_definition()
-    assert json.loads(json.dumps(definition)) == definition
-    assert definition["version"] == _API_VERSION
-    assert definition["message_types"] == {
-        "REQ_HEAD": 1,
-        "REQ_BODY": 2,
-        "RES_HEAD": 3,
-        "RES_BODY": 4,
-        "END": 5,
-        "ERROR": 6,
-        "CANCEL": 7,
+    assert isinstance(definition, api_mod.ApiWireDefinition)
+    assert isinstance(definition.header, api_mod.ApiWireHeader)
+    assert isinstance(definition.message_types, api_mod.ApiWireMessageTypes)
+    assert isinstance(definition.limits, api_mod.ApiWireLimits)
+    assert all(
+        isinstance(field, api_mod.ApiWireHeaderField)
+        for field in definition.header.fields
+    )
+    assert definition.version == _API_VERSION
+    types = definition.message_types
+    assert (
+        types.REQ_HEAD,
+        types.REQ_BODY,
+        types.RES_HEAD,
+        types.RES_BODY,
+        types.END,
+        types.ERROR,
+        types.CANCEL,
+    ) == (1, 2, 3, 4, 5, 6, 7)
+    assert definition.header.size_bytes == _HEADER.size
+    assert struct.Struct(definition.header.layout).size == _HEADER.size
+    assert struct.Struct(definition.header.layout).pack(
+        1, 2, 3, 0
+    ) == _HEADER.pack(1, 2, 3, 0)
+    limits = definition.limits
+    assert limits.response_chunk_bytes == _CHUNK
+    assert limits.max_request_body_bytes == 1024 * 1024
+    assert limits.max_in_flight_requests == 32
+    assert limits.request_deadline_s == 15.0
+    assert limits.send_high_water_bytes == 256 * 1024
+    assert limits.send_low_water_bytes == 64 * 1024
+    wire = dataclasses.asdict(definition)
+    assert json.loads(json.dumps(wire)) == {
+        "version": _API_VERSION,
+        "header": {
+            "layout": ">BBIB",
+            "fields": [
+                {"name": "version", "type": "u8"},
+                {"name": "type", "type": "u8"},
+                {"name": "request_id", "type": "u32be"},
+                {"name": "flags", "type": "u8"},
+            ],
+            "size_bytes": _HEADER.size,
+            "flags": "reserved, always sent as 0 and ignored on receipt",
+        },
+        "message_types": {
+            "REQ_HEAD": 1,
+            "REQ_BODY": 2,
+            "RES_HEAD": 3,
+            "RES_BODY": 4,
+            "END": 5,
+            "ERROR": 6,
+            "CANCEL": 7,
+        },
+        "limits": {
+            "response_chunk_bytes": _CHUNK,
+            "max_request_body_bytes": 1024 * 1024,
+            "max_in_flight_requests": 32,
+            "request_deadline_s": 15.0,
+            "send_high_water_bytes": 256 * 1024,
+            "send_low_water_bytes": 64 * 1024,
+        },
     }
-    header = definition["header"]
-    assert header["size_bytes"] == _HEADER.size
-    assert struct.Struct(header["layout"]).size == _HEADER.size
-    assert struct.Struct(header["layout"]).pack(1, 2, 3, 0) == _HEADER.pack(1, 2, 3, 0)
-    limits = definition["limits"]
-    assert limits["response_chunk_bytes"] == _CHUNK
-    assert limits["max_request_body_bytes"] == 1024 * 1024
-    assert limits["max_in_flight_requests"] == 32
-    assert limits["request_deadline_s"] == 15.0
-    assert limits["send_high_water_bytes"] == 256 * 1024
-    assert limits["send_low_water_bytes"] == 64 * 1024
 
 
 @_webrtc
