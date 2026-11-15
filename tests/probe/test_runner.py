@@ -1172,3 +1172,23 @@ async def test_eof_partial_bytes_land_in_unsolicited() -> None:
     )
     assert [row.outcome for row in report.file.commands] == ["transport_error"]
     assert partial.hex() in [row.hex for row in report.file.unsolicited]
+
+
+async def test_send_gate_refuses_a_body_off_the_allow_list() -> None:
+    # Class sweep: the allow-list check lives at the one send gate, not
+    # only where the read list is built. A forbidden body raises before
+    # anything is transmitted.
+    gate = runner._SendGate(GAP, allowed=frozenset({b"FA;"}))
+
+    async def exchange(request: bytes | None, timeout: float) -> bytes | None:
+        raise AssertionError("forbidden bodies are never sent")
+
+    with pytest.raises(ValueError, match="not in the read list"):
+        await runner._gated_ask(
+            gate,
+            exchange,
+            b"ROGUE;",
+            SHORT_TIMEOUT,
+            attribute=lambda chunk: True,
+            garbled=lambda chunk: False,
+        )
