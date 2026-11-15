@@ -73,7 +73,7 @@ def _conform(payload: str, obj: Any) -> None:
                 and all(isinstance(item, str) for item in value)
             )
             or (wire_type.startswith("object") and isinstance(value, dict))
-            or isinstance(value, str)
+            or (wire_type == "string" and isinstance(value, str))
         ), (payload, name, wire_type, value)
 
 
@@ -160,6 +160,20 @@ def test_payload_contracts_conform_to_real_parsers_and_encoders() -> None:
     assert hello["server"] == "rigplane"
     with pytest.raises(AssertionError):
         _conform("control_hello", {k: v for k, v in hello.items() if k != "version"})
+    # A string is a valid value only for string-typed rows: substituting
+    # one for the boolean, integer or array fields — or replacing the
+    # literal discriminator — must fail the contract (Codex P1, MOR-4489).
+    for field in ("connected", "radio_ready"):
+        wrong = dict(hello, **{field: "false"})
+        with pytest.raises(AssertionError):
+            _conform("control_hello", wrong)
+    for wrong_payload in (
+        dict(hello, proto="1"),
+        dict(hello, capabilities="audio"),
+        dict(hello, type="welcome"),
+    ):
+        with pytest.raises(AssertionError):
+            _conform("control_hello", wrong_payload)
 
 
 def test_committed_golden_documents_validate_against_payload_contracts() -> None:
