@@ -164,16 +164,6 @@ async def _civ_exchange(reader: Any, writer: Any, radio_addr: int) -> Exchange:
     return _OwnedExchange(exchange, writer)
 
 
-async def _open_exchange(
-    config: RigConfig, device: str, baud: int, radio_addr: int
-) -> Exchange:
-    """Open the USB serial port and build the protocol exchange."""
-    reader, writer = await open_serial_port(device, baudrate=baud)
-    if config.protocol_type == "yaesu_cat":
-        return await _yaesu_exchange(reader, writer)
-    return await _civ_exchange(reader, writer, radio_addr)
-
-
 def _default_out_path(model: str) -> Path:
     stem = re.sub(r"[^a-z0-9]+", "", model.lower())
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")

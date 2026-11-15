@@ -105,14 +105,16 @@ class _Answer:
 class _SendGate:
     """The one gate every transmitted read passes through.
 
-    Applies ``gap_s`` pacing before each send and counts consecutive
-    silences across every phase (identity, snapshots, main pass). Five
-    silent in a row, or a transport break, stops the run, and nothing
-    more is sent afterwards.
+    Applies ``gap_s`` pacing before each send, refuses bodies off the
+    read plan's allow-list before anything goes out, and counts
+    consecutive silences across every phase (identity, snapshots, main
+    pass). Five silent in a row, or a transport break, stops the run,
+    and nothing more is sent afterwards.
     """
 
-    def __init__(self, gap_s: float) -> None:
+    def __init__(self, gap_s: float, *, allowed: frozenset[bytes]) -> None:
         self.gap_s = gap_s
+        self.allowed = allowed
         self.silent_run = 0
         self.stopped = False
         self.stop_status = "completed"
@@ -150,6 +152,8 @@ async def _gated_ask(
     garbled: Callable[[bytes], bool],
 ) -> _Answer | None:
     """Pace and send once; ``None`` when the run already stopped."""
+    if body not in gate.allowed:
+        raise ValueError(f"refusing to send {body!r}: not in the read list")
     if gate.stopped:
         return None
     if gate.gap_s:
@@ -501,12 +505,9 @@ async def run_probe(
         item.body for item in identity_requests(config)
     }
     watch = list(full) if items is None else list(items)
-    for item in watch:
-        if item.body not in allowed:
-            raise ValueError(f"refusing to send {item.body!r}: not in the read list")
     strays = _Strays(time.monotonic())
 
-    gate = _SendGate(gap_s)
+    gate = _SendGate(gap_s, allowed=frozenset(allowed))
     identity = await _read_identity(config, exchange, window, gate, strays)
     before = await _read_snapshot(
         config, {item.name: item for item in full}, exchange, window, gate, strays
