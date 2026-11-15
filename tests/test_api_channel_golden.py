@@ -212,7 +212,9 @@ async def test_golden_documents_replay_through_real_handlers(
                 1,
                 7,
                 _head(
-                    "POST", "/api/v1/eibi/fetch", {"content-type": "application/json"}
+                    "POST",
+                    "/api/v1/eibi/fetch",
+                    headers={"content-type": "application/json"},
                 ),
             )
         )
