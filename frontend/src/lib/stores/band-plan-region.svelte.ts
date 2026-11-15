@@ -5,6 +5,7 @@
 // portrait layout hides it), so the overlay never guesses a region.
 
 import { getAuthHeaders } from '$lib/auth';
+import { apiFetch } from '$lib/api/api-fetch';
 
 const CONFIG_URL = '/api/v1/band-plan/config';
 
@@ -31,7 +32,7 @@ export function loadBandPlanConfig(): Promise<void> {
   const startedAt = epoch;
   const request: Promise<void> = (async () => {
     try {
-      const resp = await fetch(CONFIG_URL, { headers: getAuthHeaders() });
+      const resp = await apiFetch(CONFIG_URL, { headers: getAuthHeaders() });
       if (!resp.ok) return;
       const config = await resp.json();
       if (startedAt !== epoch) return;
@@ -53,7 +54,7 @@ export function loadBandPlanConfig(): Promise<void> {
 /** Ask the server to switch region; the new region is in effect when true. */
 export async function selectBandPlanRegion(next: string): Promise<boolean> {
   try {
-    const resp = await fetch(CONFIG_URL, {
+    const resp = await apiFetch(CONFIG_URL, {
       method: 'POST',
       headers: { ...getAuthHeaders(), 'Content-Type': 'application/json' },
       body: JSON.stringify({ region: next }),
