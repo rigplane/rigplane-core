@@ -1380,6 +1380,62 @@ describe('SpectrumPanel component', () => {
     expect(hatches[0]!.dataset.reason).toBe('view wider than coverage');
   });
 
+  it('passes no canvas hatch ranges when the native coverage is offset at equal width (MOR-4451)', async () => {
+    runtimeHarness.state.currentCaps = structuredClone(IC7300_CAPABILITIES);
+    authorityHarness.state.current = authority({ frequencyHz: 14_050_000 });
+    const target = mountPanel(); emitFrame(); await flushWaterfallPaint();
+    // The grant carries the truthful native coverage: 100 kHz at the panned
+    // position while the radio still delivers the old offset window.
+    const stream = scopeControllerHarness.stream('hardware');
+    stream.handleMessage({ type: 'granted', ...stream.subscription!,
+      view: { startHz: 14_010_000, endHz: 14_110_000 },
+      coverage: { startHz: 14_010_000, endHz: 14_110_000 }, fps: 20 });
+    flushSync();
+    authorityHarness.state.current = authority({ frequencyHz: 14_060_000 });
+    refreshSpectrumAuthority();
+    emitFrame({ startFreq: 14_000_000, endFreq: 14_100_000,
+      coverageStartHz: 14_000_000, coverageEndHz: 14_100_000, sequence: 2 });
+    await flushWaterfallPaint();
+    await vi.waitFor(() => {
+      const gates = JSON.parse(target.querySelector('.spectrum-panel')!
+        .getAttribute('data-passband-gates')!) as ScopePassbandDiagnostics;
+      expect([gates.viewStartHz, gates.viewEndHz]).toEqual([14_010_000, 14_110_000]);
+    }, { timeout: 5_000, interval: 25 });
+    // Offset but equal width: the DOM stays unhatched AND the canvas gets
+    // no ranges — the one decision reaches both consumers.
+    expect(target.querySelectorAll('.scope-hatch')).toHaveLength(0);
+    expect(spectrumRendererHarness.lastOptions.hatchRanges).toBeNull();
+  });
+
+  it('passes the DOM hatch ranges to the canvas when the native coverage is narrower (MOR-4451)', async () => {
+    runtimeHarness.state.currentCaps = structuredClone(IC7300_CAPABILITIES);
+    authorityHarness.state.current = authority({ frequencyHz: 14_050_000 });
+    const target = mountPanel(); emitFrame(); await flushWaterfallPaint();
+    const stream = scopeControllerHarness.stream('hardware');
+    stream.handleMessage({ type: 'granted', ...stream.subscription!,
+      view: { startHz: 14_010_000, endHz: 14_110_000 },
+      coverage: { startHz: 14_020_000, endHz: 14_100_000 }, fps: 20 });
+    flushSync();
+    authorityHarness.state.current = authority({ frequencyHz: 14_060_000 });
+    refreshSpectrumAuthority();
+    emitFrame({ startFreq: 14_000_000, endFreq: 14_100_000,
+      coverageStartHz: 14_000_000, coverageEndHz: 14_100_000, sequence: 2 });
+    await flushWaterfallPaint();
+    await vi.waitFor(() => {
+      const gates = JSON.parse(target.querySelector('.spectrum-panel')!
+        .getAttribute('data-passband-gates')!) as ScopePassbandDiagnostics;
+      expect([gates.viewStartHz, gates.viewEndHz]).toEqual([14_010_000, 14_110_000]);
+    }, { timeout: 5_000, interval: 25 });
+    const hatches = target.querySelectorAll<HTMLElement>('.scope-hatch');
+    expect(hatches).toHaveLength(1);
+    // The canvas ranges ARE the DOM ranges: same normalized fractions.
+    const ranges = spectrumRendererHarness.lastOptions.hatchRanges as { start: number; end: number }[];
+    expect(ranges).toHaveLength(1);
+    expect(ranges[0]!.start * 100).toBeCloseTo(parseFloat(hatches[0]!.style.left), 1);
+    expect((ranges[0]!.end - ranges[0]!.start) * 100)
+      .toBeCloseTo(parseFloat(hatches[0]!.style.width), 1);
+  });
+
   // ── MOR-4392: ZOOM is a client crop of the requested width ──
   it('crops below the narrowest span preset down to a floor of a few native bins (MOR-4392)', async () => {
     runtimeHarness.state.currentCaps = validateCapabilities({ ...IC7300_CAPABILITIES, ...spanCapabilities, model: 'IC-705' });

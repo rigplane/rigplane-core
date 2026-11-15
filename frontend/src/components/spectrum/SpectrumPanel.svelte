@@ -1117,6 +1117,14 @@
     spanHz: viewportSpanHz,
     sampleSpanHz: spanHz,
     coverage: audioFft ? undefined : frameGeometry?.coverage,
+    // MOR-4451: the ONE hatch decision — the same projectScopeCoverage
+    // ranges the DOM overlay renders (empty when the native is as wide as
+    // the view, whatever the offset). The renderer paints only these; its
+    // private outside-coverage fill is deleted, so coverage above feeds the
+    // trace gap alone and can never hatch a second time.
+    hatchRanges: coverageHatched.length > 0
+      ? coverageHatched.map(({ start, end }) => ({ start, end }))
+      : null,
     sampleOffset: audioFft && !audioProjection ? Math.floor((frameGeometry?.width ?? 0) / 2) : 0,
     sampleWindow: audioSampleWindow,
     sampleAmplitudeMax: audioFft ? 160 : 80,

@@ -646,3 +646,43 @@ it('can hide only the carrier marker while retaining RF geometry and labels', ()
   expect(hidden.log.fillText).toEqual(shown.log.fillText);
   expect(hidden.log.strokes).toBe(shown.log.strokes - 1);
 });
+
+// ── Single hatch decision (MOR-4451) ────────────────────────────────────────
+//
+// The canvas fill is drawn only for the panel's hatchRanges — never from
+// coverage on its own. Uncovered columns without a range stay plain
+// background (the trace gap leaves them blank, never hatched).
+describe('canvas hatch ranges (MOR-4451)', () => {
+  const hatchOpts = (o: Partial<SpectrumOptions> = {}): SpectrumOptions => opts({
+    spanHz: 100_000, centerHz: 14_250_000, scopeMode: 0, passbandHz: 0, ...o,
+  });
+  // The overlay fill paints one full-canvas fillRect through the clip; the
+  // background never paints one (bgColor stays transparent) and the trace
+  // fill goes through fill(path), never fillRect.
+  const fullFills = (log: { fillRect: number[][] }) =>
+    log.fillRect.filter(([x, y, w, h]) => x === 0 && y === 0 && w === 800 && h === 400);
+  // Hatch diagonals start left of the canvas (x steps from -height at y 0);
+  // grid and marker strokes never moveTo a negative x at y 0.
+  const hatchDiagonals = (log: { moveTo: number[][] }) =>
+    log.moveTo.filter(([x, y]) => y === 0 && x < 0);
+
+  it('draws no fill without hatch ranges even when coverage is narrower than the view', () => {
+    const { ctx, log } = createMockCtx();
+    renderSpectrum(ctx, data50(), 800, 400, hatchOpts({
+      coverage: { startHz: 14_200_000, endHz: 14_290_000 },
+      hatchRanges: null,
+    }));
+    expect(fullFills(log)).toEqual([]);
+    expect(hatchDiagonals(log)).toEqual([]);
+  });
+
+  it('draws the fill only for the given hatch ranges', () => {
+    const { ctx, log } = createMockCtx();
+    renderSpectrum(ctx, data50(), 800, 400, hatchOpts({
+      coverage: { startHz: 14_200_000, endHz: 14_290_000 },
+      hatchRanges: [{ start: 0.9, end: 1 }],
+    }));
+    expect(fullFills(log)).toHaveLength(1);
+    expect(hatchDiagonals(log).length).toBeGreaterThan(0);
+  });
+});
