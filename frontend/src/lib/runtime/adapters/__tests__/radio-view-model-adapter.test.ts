@@ -24,6 +24,7 @@ import {
 import {
   keyBlockedReasons, type TxAuthoritySnapshot,
 } from '../../../../semantic/rx-tx-surface';
+import { getFrequencyPermit } from '$lib/utils/tx-permit';
 import { antennaSwitchBlocks } from '../../../../semantic/AntennaSurface.svelte';
 import {
   topologyFixtures, withAntenna, withCwKeyer,
@@ -1865,6 +1866,54 @@ describe('MOR-4433 — sourceless TX target through the real adapter', () => {
     expect(
       view.disabledReasons.some((r) => r.field === 'cwKeyer.breakIn'),
     ).toBe(true);
+  });
+
+  /* MOR-4433 RED (gate round 1, P1-3): an unconfigured band table must win
+   * over the missing target frequency in the REAL producer. With an
+   * unsupported target and `caps.txBands === null`, `deriveTxCapabilities`
+   * calls `getFrequencyPermit(null, null)` — which today checks the missing
+   * frequency first and returns `unknown/tx-target-unknown`, so the
+   * sourceless exception suppresses it and an otherwise unavailable TUNE
+   * becomes enabled. The producer must classify unconfigured bands (`null`
+   * → unknown/ranges-unconfigured) and explicit deny-all (`[]` → denied)
+   * BEFORE the missing-frequency check. Fails before the fix, passes after;
+   * the permit is never overwritten by hand — every assertion below reads
+   * the producer's own output through `toRadioViewModel`/`keyBlockedReasons`.
+   */
+  it('RED: getFrequencyPermit classifies the band table before the missing frequency', () => {
+    expect(getFrequencyPermit(null, null)).toEqual(
+      { status: 'unknown', reason: 'ranges-unconfigured' },
+    );
+    expect(getFrequencyPermit(null, [])).toEqual(
+      { status: 'denied', reason: 'outside-configured-ranges' },
+    );
+    // Known targets keep their behaviour: unconfigured is unknown, empty is deny-all.
+    expect(getFrequencyPermit(14_074_000, null)).toEqual(
+      { status: 'unknown', reason: 'ranges-unconfigured' },
+    );
+    expect(getFrequencyPermit(14_074_000, [])).toEqual(
+      { status: 'denied', reason: 'outside-configured-ranges' },
+    );
+  });
+
+  it('RED: toRadioViewModel preserves ranges-unconfigured with txBands null', () => {
+    const view = toRadioViewModel(
+      sourcelessState('unsupported'), { ...sourcelessCaps, txBands: null },
+    );
+    if (view === null) throw new Error('fixture precondition: model is null');
+    expect(view.txPermit).toEqual({ status: 'unknown', reason: 'ranges-unconfigured' });
+    expect(keyBlockedReasons(view, IDLE_RX)).toContain('tx-permit-unknown');
+  });
+
+  it('RED: toRadioViewModel preserves deny-all with txBands []', () => {
+    const view = toRadioViewModel(
+      sourcelessState('unsupported'), { ...sourcelessCaps, txBands: [] },
+    );
+    if (view === null) throw new Error('fixture precondition: model is null');
+    expect(view.txPermit).toEqual(
+      { status: 'denied', reason: 'outside-configured-ranges' },
+    );
+    expect(keyBlockedReasons(view, IDLE_RX)).toContain('tx-permit-denied');
   });
 });
 
