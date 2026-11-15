@@ -13,13 +13,14 @@ from pathlib import Path
 from rigplane.web.api_channel import api_channel_wire_definition
 
 _WIRE_JSON = (
-    Path(__file__).resolve().parents[1] / "frontend/src/lib/transport/api-channel-wire.json"
+    Path(__file__).resolve().parents[1]
+    / "frontend/src/lib/transport/api-channel-wire.json"
 )
 _REGENERATE = (
-    'regenerate from the repo root: uv run python -c '
+    "regenerate from the repo root: uv run python -c "
     '"import dataclasses, json; from rigplane.web.api_channel import '
     'api_channel_wire_definition as d; print(json.dumps(dataclasses.asdict(d())))" '
-    '> frontend/src/lib/transport/api-channel-wire.json'
+    "> frontend/src/lib/transport/api-channel-wire.json"
 )
 
 
