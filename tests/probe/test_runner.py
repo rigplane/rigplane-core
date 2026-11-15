@@ -357,7 +357,9 @@ async def test_refused_and_silent_keep_the_run_going() -> None:
     assert report.aborted is None
 
 
-async def test_silent_answer_is_recorded_not_fatal() -> None:
+async def test_silent_radio_stops_before_the_main_pass() -> None:
+    # MOR-4464 finding 5: identity and snapshot silence counts toward
+    # the stop, so a fully silent radio never reaches the main pass.
     config = _load("ftx1")
     radio = FakeCatRadio(profile="ftx1")
     await radio.start()
@@ -381,11 +383,14 @@ async def test_silent_answer_is_recorded_not_fatal() -> None:
             writer.close()
     finally:
         await radio.stop()
-    assert [row.outcome for row in report.file.commands] == ["silent"]
-    assert report.aborted is None
+    assert [row.outcome for row in report.file.commands] == []
+    assert report.aborted == runner.SILENT_ABORT_MESSAGE
 
 
 async def test_five_silent_in_a_row_aborts_with_plain_message() -> None:
+    # MOR-4464 finding 5: the stop already fires inside the snapshot
+    # phase (identity plus four snapshot reads), so the main pass never
+    # runs on a fully silent radio.
     config = _load("ftx1")
     radio = FakeCatRadio(profile="ftx1")
     await radio.start()
@@ -408,11 +413,8 @@ async def test_five_silent_in_a_row_aborts_with_plain_message() -> None:
             writer.close()
     finally:
         await radio.stop()
-    assert len(report.file.commands) == 5
-    assert all(row.outcome == "silent" for row in report.file.commands)
-    assert report.aborted == (
-        "The radio stopped answering. Check it is on, and the port and speed are right."
-    )
+    assert [row.outcome for row in report.file.commands] == []
+    assert report.aborted == runner.SILENT_ABORT_MESSAGE
 
 
 async def test_garbled_reply_is_malformed_and_does_not_abort() -> None:
@@ -526,6 +528,8 @@ async def test_private_reads_sent_with_the_flag() -> None:
 
 
 async def test_transport_error_ends_the_run() -> None:
+    # MOR-4464 finding 5: a break in the before snapshot stops the run
+    # before the main pass; nothing more is sent.
     config = _load("ftx1")
 
     async def exchange(request: bytes | None, timeout: float) -> bytes | None:
@@ -545,7 +549,7 @@ async def test_transport_error_ends_the_run() -> None:
         timeout_s=TIMEOUT,
         items=_subset(config, "get_freq", "get_id"),
     )
-    assert [row.outcome for row in report.file.commands] == ["transport_error"]
+    assert [row.outcome for row in report.file.commands] == []
     assert report.aborted is not None
 
 

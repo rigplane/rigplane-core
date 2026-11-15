@@ -94,6 +94,57 @@ class _Answer:
     garbled: bool
 
 
+class _SendGate:
+    """The one gate every transmitted read passes through.
+
+    Applies ``gap_s`` pacing before each send and counts consecutive
+    silences across every phase (identity, snapshots, main pass). Five
+    silent in a row, or a transport break, stops the run, and nothing
+    more is sent afterwards.
+    """
+
+    def __init__(self, gap_s: float) -> None:
+        self.gap_s = gap_s
+        self.silent_run = 0
+        self.stopped = False
+        self.detail = ""
+
+    def stop(self, detail: str) -> None:
+        """Stop the run; the first stop wins and names the file's reason."""
+        if not self.stopped:
+            self.stopped = True
+            self.detail = detail
+
+    def note_silent(self) -> None:
+        """Count one unanswered read; five in a row stops the run."""
+        self.silent_run += 1
+        if self.silent_run >= SILENT_LIMIT:
+            self.stop(SILENT_ABORT_MESSAGE)
+
+    def note_answered(self) -> None:
+        """Any answer, even a refusal, breaks the silence run."""
+        self.silent_run = 0
+
+
+async def _gated_ask(
+    gate: _SendGate,
+    exchange: Exchange,
+    body: bytes,
+    window: float,
+    *,
+    attribute: Callable[[bytes], bool],
+    garbled: Callable[[bytes], bool],
+) -> _Answer | None:
+    """Pace and send once; ``None`` when the run already stopped."""
+    if gate.stopped:
+        return None
+    if gate.gap_s:
+        await asyncio.sleep(gate.gap_s)
+    return await _ask(
+        exchange, body, window, attribute=attribute, garbled=garbled
+    )
+
+
 def _elapsed_ms(started: float) -> float:
     return round((time.monotonic() - started) * 1000.0, 1)
 
@@ -276,28 +327,41 @@ async def _read_identity(
     config: RigConfig,
     exchange: Exchange,
     window: float,
+    gate: _SendGate,
     strays: _Strays,
-) -> tuple[_Identity, BaseException | None]:
-    """Send the identity reads; a mismatch never stops the run."""
+) -> _Identity:
+    """Send the identity reads through the gate.
+
+    A mismatch never stops the run; silence counts toward the stop,
+    and a transport break stops everything.
+    """
     protocol = config.protocol_type
     garbled = _garble_check(protocol)
     raws: list[tuple[str, str, str]] = []
     for item in identity_requests(config):
-        answer = await _ask(
+        answer = await _gated_ask(
+            gate,
             exchange,
             item.body,
             window,
             attribute=_matcher(protocol, item),
             garbled=garbled,
         )
+        if answer is None:
+            break
         if answer.broken is not None:
-            return _Identity("", "", False), answer.broken
+            gate.stop(f"Transport error: {answer.broken}")
+            break
         for stray in answer.strays:
             strays.add(stray, protocol)
+        if answer.reply is None:
+            gate.note_silent()
+        else:
+            gate.note_answered()
         raw, parsed = _parse_identity_answer(config, item.name, answer.reply)
         raws.append((item.name, raw, parsed))
     if not raws:
-        return _Identity("", "", False), None
+        return _Identity("", "", False)
     hit = next(
         (
             index
@@ -308,9 +372,9 @@ async def _read_identity(
     )
     if hit is None:
         _name, raw, parsed = raws[0]
-        return _Identity(raw, parsed, False), None
+        return _Identity(raw, parsed, False)
     _name, raw, parsed = raws[hit]
-    return _Identity(raw, parsed, True), None
+    return _Identity(raw, parsed, True)
 
 
 async def _read_snapshot(
@@ -318,27 +382,42 @@ async def _read_snapshot(
     full: dict[str, ReadRequest],
     exchange: Exchange,
     window: float,
+    gate: _SendGate,
     strays: _Strays,
 ) -> dict[str, str | None]:
-    """Read the profile state reads once; silence records ``None``."""
+    """Read the profile state reads once through the gate.
+
+    Silence records ``None`` and counts toward the stop; a broken
+    exchange stops the run, and once stopped nothing more is sent.
+    """
     protocol = config.protocol_type
     garbled = _garble_check(protocol)
     out: dict[str, str | None] = {}
     for name in snapshot_names(config, set(full)):
         item = full[name]
-        answer = await _ask(
+        answer = await _gated_ask(
+            gate,
             exchange,
             item.body,
             window,
             attribute=_matcher(protocol, item),
             garbled=garbled,
         )
-        if answer.broken is not None:
+        if answer is None:
             out[name] = None
-            break
+            continue
+        if answer.broken is not None:
+            gate.stop(f"Transport error: {answer.broken}")
+            out[name] = None
+            continue
         for stray in answer.strays:
             strays.add(stray, protocol)
-        out[name] = _snapshot_value(protocol, answer.reply)
+        if answer.reply is None:
+            gate.note_silent()
+            out[name] = None
+        else:
+            gate.note_answered()
+            out[name] = _snapshot_value(protocol, answer.reply)
     return out
 
 
@@ -409,38 +488,35 @@ async def run_probe(
             raise ValueError(f"refusing to send {item.body!r}: not in the read list")
     strays = _Strays(time.monotonic())
 
-    identity, broken = await _read_identity(config, exchange, window, strays)
+    gate = _SendGate(gap_s)
+    identity = await _read_identity(config, exchange, window, gate, strays)
     before = await _read_snapshot(
-        config, {item.name: item for item in full}, exchange, window, strays
+        config, {item.name: item for item in full}, exchange, window, gate, strays
     )
 
     rows: list[CommandRow] = []
-    aborted: str | None = None
-    if broken is not None:
-        aborted = f"Transport error: {broken}"
-        after = dict(before)
-    else:
-        silent_run = 0
+    if not gate.stopped:
         for index, item in enumerate(watch):
-            row, silent = await _ask_once(config, item, exchange, window, strays)
+            row = await _ask_once(config, item, exchange, window, gate, strays)
+            if row is None:
+                break
             rows.append(row)
-            silent_run = silent_run + 1 if silent else 0
             if progress is not None:
                 progress(index + 1, len(watch))
-            if gap_s:
-                await asyncio.sleep(gap_s)
-            if row.outcome == "transport_error":
-                aborted = f"Transport error: {item.name}"
+            if gate.stopped:
                 break
-            if silent_run >= SILENT_LIMIT:
-                aborted = SILENT_ABORT_MESSAGE
-                break
-        if aborted is not None and rows and rows[-1].outcome == "transport_error":
-            after = dict(before)
-        else:
-            after = await _read_snapshot(
-                config, {item.name: item for item in full}, exchange, window, strays
-            )
+    if gate.stopped:
+        after = dict(before)
+    else:
+        after = await _read_snapshot(
+            config,
+            {item.name: item for item in full},
+            exchange,
+            window,
+            gate,
+            strays,
+        )
+    aborted = gate.detail or None
 
     changed = sorted(name for name in before if before[name] != after.get(name))
     file = ProbeFile(
@@ -480,21 +556,31 @@ async def _ask_once(
     item: ReadRequest,
     exchange: Exchange,
     window: float,
+    gate: _SendGate,
     strays: _Strays,
-) -> tuple[CommandRow, bool]:
-    """Send one read; return its file row and whether it was silent."""
+) -> CommandRow | None:
+    """Send one read through the gate; ``None`` when already stopped."""
     protocol = config.protocol_type
     garbled = _garble_check(protocol)
-    answer = await _ask(
+    answer = await _gated_ask(
+        gate,
         exchange,
         item.body,
         window,
         attribute=_matcher(protocol, item),
         garbled=garbled,
     )
+    if answer is None:
+        return None
     for stray in answer.strays:
         strays.add(stray, protocol)
     outcome = _outcome(protocol, item, answer)
+    if outcome == "silent":
+        gate.note_silent()
+    elif outcome == "transport_error":
+        gate.stop(f"Transport error: {item.name}: {answer.broken}")
+    else:
+        gate.note_answered()
     if protocol == "yaesu_cat":
         template = _cat_template_of(config, item.name, item.body)
         try:
@@ -526,4 +612,4 @@ async def _ask_once(
         expected=item.expected,
         note=item.note,
     )
-    return row, outcome == "silent"
+    return row
