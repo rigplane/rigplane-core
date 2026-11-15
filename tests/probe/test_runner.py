@@ -13,6 +13,7 @@ from pathlib import Path
 from rigplane.commands import (
     CONTROLLER_ADDR,
     build_civ_frame,
+    build_cmd29_frame,
     command_carries_sub,
 )
 from rigplane.core.serial_open import open_serial_port
@@ -82,6 +83,125 @@ def _civ_exchange(reader, writer, radio_addr: int) -> runner.Exchange:
 
 def _nak_frame(civ_addr: int) -> bytes:
     return build_civ_frame(civ_addr, CONTROLLER_ADDR, 0xFA)
+
+
+def _queued_civ(
+    seen: list[bytes], chunks: list[bytes | None]
+) -> runner.Exchange:
+    """Scripted CI-V exchange: every call takes the next queued chunk."""
+
+    async def exchange(request: bytes | None, timeout: float) -> bytes | None:
+        if request is not None:
+            seen.append(request)
+        if chunks:
+            return chunks.pop(0)
+        return None
+
+    return exchange
+
+
+def _identity_frame(config) -> bytes:
+    """A matching identity answer, consumed by the runner's identity phase."""
+    addr = config.civ_addr
+    return build_civ_frame(CONTROLLER_ADDR, addr, 0x19, sub=0x00, data=b"")
+
+
+async def test_stale_menu_reply_is_not_taken_as_the_answer() -> None:
+    # MOR-4464 finding 3: a delayed reply to another menu item must not
+    # answer this read; the correct reply still settles the row.
+    config = _load("ic7300")
+    addr = config.civ_addr
+    stale = build_civ_frame(
+        CONTROLLER_ADDR, addr, 0x1A, sub=0x05, data=bytes.fromhex("000301")
+    )
+    correct = build_civ_frame(
+        CONTROLLER_ADDR, addr, 0x1A, sub=0x05, data=bytes.fromhex("000201")
+    )
+    seen: list[bytes] = []
+    report = await runner.run_probe(
+        config,
+        config_toml_sha256="0" * 64,
+        exchange=_queued_civ(seen, [_identity_frame(config), stale, correct]),
+        port_kind="usb",
+        baud=CIV_BAUD,
+        label="",
+        include_private=False,
+        gap_s=GAP,
+        timeout_s=TIMEOUT,
+        items=_subset(config, "get_ssb_rx_bass"),
+    )
+    assert [row.outcome for row in report.file.commands] == ["data"]
+    assert report.file.commands[0].reply_hex == correct.hex()
+    assert [row.hex for row in report.file.unsolicited] == [stale.hex()]
+
+
+async def test_wrong_receiver_reply_is_not_taken_as_the_answer() -> None:
+    # MOR-4464 finding 3: a wrapped MAIN reply must not answer a SUB read.
+    config = _load("ic7610")
+    addr = config.civ_addr
+    main_reply = build_cmd29_frame(
+        CONTROLLER_ADDR, addr, 0x14, sub=0x01, data=bytes.fromhex("0010"),
+        receiver=0x00,
+    )
+    sub_reply = build_cmd29_frame(
+        CONTROLLER_ADDR, addr, 0x14, sub=0x01, data=bytes.fromhex("0010"),
+        receiver=0x01,
+    )
+    items = [
+        item
+        for item in build_read_plan(config).asked
+        if item.name == "cmd29:get_af_level:1"
+    ]
+    assert len(items) == 1
+    seen: list[bytes] = []
+    report = await runner.run_probe(
+        config,
+        config_toml_sha256="0" * 64,
+        exchange=_queued_civ(seen, [_identity_frame(config), main_reply, sub_reply]),
+        port_kind="usb",
+        baud=CIV_BAUD,
+        label="",
+        include_private=False,
+        gap_s=GAP,
+        timeout_s=TIMEOUT,
+        items=items,
+    )
+    assert [row.outcome for row in report.file.commands] == ["data"]
+    assert report.file.commands[0].reply_hex == sub_reply.hex()
+    assert [row.hex for row in report.file.unsolicited] == [main_reply.hex()]
+
+
+async def test_plain_reply_to_wrapped_request_is_left_unsolicited() -> None:
+    # MOR-4464 finding 3: the shared matcher cannot attribute an
+    # unwrapped reply to a wrapped read (the receiver is unknown), so the
+    # frame stays unsolicited instead of answering either receiver.
+    config = _load("ic7610")
+    addr = config.civ_addr
+    plain = build_civ_frame(
+        CONTROLLER_ADDR, addr, 0x14, sub=0x01, data=bytes.fromhex("0010")
+    )
+    items = [
+        item
+        for item in build_read_plan(config).asked
+        if item.name == "cmd29:get_af_level:0"
+    ]
+    assert len(items) == 1
+    seen: list[bytes] = []
+    report = await runner.run_probe(
+        config,
+        config_toml_sha256="0" * 64,
+        exchange=_queued_civ(seen, [_identity_frame(config), plain]),
+        port_kind="usb",
+        baud=CIV_BAUD,
+        label="",
+        include_private=False,
+        gap_s=GAP,
+        timeout_s=SHORT_TIMEOUT,
+        items=items,
+    )
+    assert [row.outcome for row in report.file.commands] == ["unsolicited"]
+    assert report.file.commands[0].reply_hex is None
+    assert [row.hex for row in report.file.unsolicited] == [plain.hex()]
 
 
 async def _run_yaesu(

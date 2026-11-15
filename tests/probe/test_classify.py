@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from rigplane.commands import CONTROLLER_ADDR, build_civ_frame, build_cmd29_frame
 from rigplane.probe.classify import classify_cat, classify_civ
 
 # Full CI-V frames on the wire: FE FE <to> <from> <body> FD.
@@ -56,3 +57,30 @@ def test_civ_cmd29_wrapper_matches_plain_reply() -> None:
 def test_civ_unknown_request_accepts_data() -> None:
     assert classify_civ(bytes((0x7F,)), _FREQ_DATA, kind="unknown") == "data"
     assert classify_civ(bytes((0x7F,)), _NAK, kind="unknown") == "refused"
+
+
+def test_civ_stale_selector_is_malformed() -> None:
+    # MOR-4464 finding 3: a reply echoing another menu item is not this
+    # read's answer, even though the (command, sub) pair matches.
+    stale = build_civ_frame(
+        CONTROLLER_ADDR, 0x94, 0x1A, sub=0x05, data=bytes.fromhex("000301")
+    )
+    assert classify_civ(bytes.fromhex("1a050002"), stale) == "malformed"
+
+
+def test_civ_wrong_receiver_is_malformed() -> None:
+    # MOR-4464 finding 3: a wrapped MAIN reply is not a SUB read's answer.
+    main_reply = build_cmd29_frame(
+        CONTROLLER_ADDR, 0x98, 0x14, sub=0x01, data=bytes.fromhex("0010"),
+        receiver=0x00,
+    )
+    assert classify_civ(bytes.fromhex("29011401"), main_reply) == "malformed"
+
+
+def test_civ_plain_reply_to_wrapped_request_is_malformed() -> None:
+    # MOR-4464 finding 3: the shared matcher cannot attribute an
+    # unwrapped reply to a wrapped read, so classification refuses it.
+    plain = build_civ_frame(
+        CONTROLLER_ADDR, 0x98, 0x14, sub=0x01, data=bytes.fromhex("0010")
+    )
+    assert classify_civ(bytes.fromhex("29001401"), plain) == "malformed"
