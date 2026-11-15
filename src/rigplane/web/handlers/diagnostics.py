@@ -22,6 +22,7 @@ See spec §4.9 in
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import secrets
 import tempfile
@@ -85,6 +86,16 @@ class _PreviewSession:
 def _bundle_filename(now_unix: int) -> str:
     ts = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime(now_unix))
     return f"rigplane-report-{ts}.zip"
+
+
+def _discard_staging_dir(bundle_path: Path, staging_dir: Path) -> None:
+    """Remove an unregistered bundle and its staging directory (best effort)."""
+    try:
+        if bundle_path.exists():
+            bundle_path.unlink()
+        staging_dir.rmdir()
+    except OSError:
+        pass
 
 
 class DiagnosticsHandler:
@@ -173,6 +184,9 @@ class DiagnosticsHandler:
 
         ``body`` accepts: ``description`` (str), ``issue_ref`` (str),
         ``email`` (str), ``callsign`` (str). Unknown keys are ignored.
+
+        Cancellation-safe: if the caller goes away while the bundle builds,
+        the worker is owned to completion and its staging directory removed.
         """
         await self.start()
 
@@ -202,16 +216,28 @@ class DiagnosticsHandler:
         filename = _bundle_filename(now_unix)
         bundle_path = staging_dir / filename
 
+        worker: asyncio.Task[Path] = asyncio.ensure_future(
+            asyncio.to_thread(build_bundle, ctx, bundle_path)
+        )
         try:
-            await asyncio.to_thread(build_bundle, ctx, bundle_path)
+            await asyncio.shield(worker)
+        except asyncio.CancelledError:
+            # The request is gone (channel loss or deadline) but the worker
+            # thread keeps writing: keep ownership until it finishes, then
+            # remove the abandoned staging directory so no orphan is left.
+            while not worker.done():
+                try:
+                    await asyncio.shield(worker)
+                except asyncio.CancelledError:
+                    continue
+            if not worker.cancelled():
+                with contextlib.suppress(Exception):
+                    worker.result()
+            _discard_staging_dir(bundle_path, staging_dir)
+            raise
         except Exception as exc:  # noqa: BLE001 — bubble up as 500
             # Session was never registered, just clean up.
-            try:
-                if bundle_path.exists():
-                    bundle_path.unlink()
-                staging_dir.rmdir()
-            except OSError:
-                pass
+            _discard_staging_dir(bundle_path, staging_dir)
             raise RuntimeError(f"bundle generation failed: {exc}") from exc
 
         manifest, files, total_size = _read_zip_meta(bundle_path)
