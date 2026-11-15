@@ -338,6 +338,38 @@ async def test_execute_no_answers_is_exit_3_but_file_saved(tmp_path) -> None:
     assert any("stopped early" in line for line in lines)
 
 
+async def test_execute_identifying_label_is_saved_verbatim(tmp_path) -> None:
+    # MOR-4464 finding 2: the label is saved exactly as typed, so the
+    # summary must not promise the file holds no name or address.
+    label = "Alice Example 192.168.1.7 MY-COMPUTER"
+    out = tmp_path / "probe.json"
+    seen: list[bytes] = []
+    lines: list[str] = []
+    code = await execute(
+        resolve_config("FT-991A", RIGS),
+        (REPO_ROOT / "rigs" / "ft991a.toml").read_bytes(),
+        device_label="COM5 @ 38400",
+        baud=38400,
+        out=str(out),
+        include_private=False,
+        label=label,
+        yes=True,
+        is_tty=False,
+        ask=lambda prompt: (_ for _ in ()).throw(AssertionError("no prompt")),
+        exchange_factory=_stub_answers(seen),
+        gap_s=GAP,
+        timeout_s=TIMEOUT,
+        emit=lines.append,
+    )
+    assert code == 0
+    text = out.read_text(encoding="utf-8")
+    assert label in text
+    assert ProbeFile.from_json(text).label == label
+    summary = "\n".join(lines)
+    assert "does NOT contain: your name" not in summary
+    assert "saved exactly as you typed it" in summary
+
+
 async def test_execute_default_out_path_uses_profile_and_timestamp(
     tmp_path, monkeypatch
 ) -> None:
