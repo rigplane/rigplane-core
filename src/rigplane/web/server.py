@@ -153,8 +153,11 @@ from .api_contract import (  # noqa: TID251
 )
 from .api_channel import ApiChannelHandler  # noqa: TID251
 from .channel_attach import (  # noqa: TID251
+    ATTACH_ACK_KINDS,
+    ChannelAttachedAck,
     ChannelKind,
     ClientChannelParams,
+    ReAckingConnection,
     TransportKind,
 )
 from .discovery import DiscoveryResponder  # noqa: TID251
@@ -7934,9 +7937,11 @@ class WebServer:
         the WebSocket upgrade calls :meth:`_resolve_client_ticket` and
         :meth:`serve_client_channel` with ``transport="ws"`` around the
         101 handshake, which must stay between the refusal decision and
-        the first handler byte. When ``track_owners`` is given, the
-        attached session owner is recorded in it for the channel's
-        lifetime, so a transport-loss signal can fence that session
+        the first handler byte. A lossy data-channel attach (scope/audio,
+        the only channels that can lose the attach frame) is acknowledged
+        there with one ``ChannelAttachedAck`` text frame; control/api and
+        the WebSocket lane never send one. When ``track_owners`` is given,
+        the attached session owner is recorded in it for the channel's        lifetime, so a transport-loss signal can fence that session
         through the existing session-loss path. A keyless ``api`` attach
         resolves to no ticket (``None``): nothing is tracked and the
         channel holds no session.
@@ -7948,6 +7953,17 @@ class WebServer:
             and ticket.tx_owner is not None
         ):
             track_owners.add(ticket.tx_owner)
+        if transport == "datachannel" and kind in ATTACH_ACK_KINDS:
+            # The ack, before the first handler byte (a dead send must
+            # not kill the attach). The wrapper re-acknowledges a REPEAT
+            # attach: the retry never reaches the handler and builds no
+            # new ticket or handler.
+            conn = ReAckingConnection(conn, kind)
+            try:
+                await conn.send_text(ChannelAttachedAck(kind).encode())
+            except Exception:
+                logger.debug("attach ack send failed on %r", kind, exc_info=True)
+
         try:
             await self.serve_client_channel(
                 conn, kind, ticket, params, peer, transport=transport
