@@ -20,7 +20,13 @@
  *       over-disable of MOR-1296 O2.
  *   (c) NO SECOND PERMIT: the whole composed tree resolves break-in from the
  *       ONE `txPermit`; moving the radio out of band flips the gate with no
- *       band-plan lookup anywhere in the CW path.
+ *       band-plan lookup anywhere in the CW path. The sourceless exception is
+ *       pinned against the shared seam document
+ *       `../../../lib/transport/__tests__/fixtures/sourceless-break-in-seam.json`
+ *       (Python companion: `tests/web/test_sourceless_break_in_seam.py`,
+ *       which replays the same request through the real handler + CI-V fake
+ *       and checks the drift): the emitted command equals the document's
+ *       request here, and the handler reply and public state there.
  *   (d) Receiver-scoped intents (APF, TPF) target the ACTIVE VFO — the facts
  *       and the commands must name the same receiver.
  *   (e) MOUNTING: the surface is control-bearing and the dual composition's
@@ -33,6 +39,7 @@
  * Isolated pool by name (`*.component.test.ts`), per the MOR-1272 doctrine.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import sourcelessBreakInSeamJson from '../../../lib/transport/__tests__/fixtures/sourceless-break-in-seam.json';
 import { flushSync, mount, unmount } from 'svelte';
 import type { Capabilities } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';
@@ -175,6 +182,20 @@ import { ManagedAppTxHarness } from '$lib/runtime/tx-controller/__tests__/suppor
  * because value 2 starts an ATU tune cycle (the MOR-1244 carrier).
  */
 const KEY_CLASS_COMMANDS = ['ptt', 'set_tuner_status'] as const;
+
+/**
+ * MOR-4473: the sourceless break-in exchange, shared with the Python replay
+ * (`tests/web/test_sourceless_break_in_seam.py`). The cases below drive the
+ * surface from the document's sourceless permit shape and assert the emitted
+ * command equals its request; the handler reply and public break-in state
+ * are asserted on the Python side.
+ */
+interface SourcelessBreakInSeam {
+  txTarget: { status: 'unknown'; reason: 'unsupported' };
+  request: { name: string; params: { mode: number } };
+  state: { breakIn: number };
+}
+const SEAM = sourcelessBreakInSeamJson as unknown as SourcelessBreakInSeam;
 
 const fresh = {
   storePath: 'x', observed: true, freshness: 'fresh', availability: 'available',
@@ -891,21 +912,26 @@ describe('break-in is gated on the ONE txPermit, end to end', () => {
    * MOR-4433 RED (gate round 1, P1-1): a sourceless profile — `unsupported`
    * target, permit unknown for exactly that reason, bands configured — must
    * arm break-in through the SAME narrow exception the adapter records.
-   * Clicks the real surface and asserts the real `set_break_in` command is
-   * emitted through the real command path (surface handler → intent →
-   * command bus), with no key-class command beside it. Fails before the
-   * renderer/handler exception, passes after.
+   * MOR-4473: the permit shape comes from the shared seam document and the
+   * emitted command must equal the document's request verbatim (the Python
+   * companion `tests/web/test_sourceless_break_in_seam.py` replays that same
+   * request through the real handler and asserts the reply and public
+   * state). Clicks the real surface and asserts the real `set_break_in`
+   * command is emitted through the real command path (surface handler →
+   * intent → command bus), with no key-class command beside it. Fails before
+   * the renderer/handler exception, passes after.
    */
   it('RED: arms break-in on a sourceless profile and emits set_break_in', () => {
     useState(liveState({
-      txTarget: { status: 'unknown', reason: 'unsupported' },
+      txTarget: { ...SEAM.txTarget },
     } as Partial<ServerState>));
     render();
     expect(el('break-in')!.dataset.permitted).toBe('true');
     expect(el('break-in-full')!.hasAttribute('disabled')).toBe(false);
     press(el('break-in-full')!);
     flushSync();
-    expect(sendCommand).toHaveBeenCalledExactlyOnceWith('set_break_in', { mode: 2 }, expect.any(String));
+    expect(sendCommand).toHaveBeenCalledExactlyOnceWith(
+      SEAM.request.name, SEAM.request.params, expect.any(String));
     expect(txHarness.trace()).toEqual([]);
   });
 });
