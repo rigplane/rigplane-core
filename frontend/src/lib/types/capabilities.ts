@@ -275,6 +275,10 @@ export interface Capabilities {
   keyboard?: KeyboardConfig | null;
   antennas?: number;      // Number of antenna ports
   hasRxAntenna?: boolean;
+  /** Full view widths in Hz (end - start), NOT radio presets: on CENTER a
+   *  half-width (Icom CI-V) preset appears as twice its number
+   *  (server: `profile.scope_span_view_widths_hz`, since #4565). The native
+   *  width reader returns `span_choices_hz[i]` unchanged — no client ×2. */
   span_choices_hz?: readonly number[];
   scopeSources?: readonly string[];
   scopeDefaultSourceId?: 'radio' | 'audio_fft' | 'iq_fft' | null;

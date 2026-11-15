@@ -1512,7 +1512,7 @@ describe('SpectrumPanel component', () => {
 
   it('keeps the requested width on delayed partially intersecting frames and adopts only an observed narrowing (MOR-4451)', async () => {
     runtimeHarness.state.currentCaps = validateCapabilities({ ...IC7300_CAPABILITIES, ...spanCapabilities, model: 'IC-705' });
-    // Observed span index 5 names the 100 kHz CENTER half-width preset: the
+    // Observed span index 5 names the 200 kHz published view width: the
     // native window is 200 kHz, matching the zoomed follow width below.
     authorityHarness.state.current = authority({ frequencyHz: 14_050_000, scopeControls: testScopeControls(2, 5) });
     const target = mountPanel(); emitFrame(); await flushWaterfallPaint();
@@ -1543,7 +1543,7 @@ describe('SpectrumPanel component', () => {
     expect(subscribes()).toHaveLength(sentBefore);
     expect(target.querySelectorAll('.scope-hatch')).toHaveLength(0);
     // A genuinely observed narrowing (front panel / RigDeck) below the follow
-    // width still adopts: the span index drops to the 50 kHz preset.
+    // width still adopts: the span index drops to the 100 kHz view width.
     authorityHarness.state.current = authority({ frequencyHz: 14_050_000, scopeControls: testScopeControls(2, 4) });
     refreshSpectrumAuthority(); flushSync();
     expect(read().view).toEqual({ follow: 'vfo', spanHz: 100_000 });
@@ -1553,7 +1553,7 @@ describe('SpectrumPanel component', () => {
 
   it('hatches a genuinely narrower observed native even when the grant coverage is as wide as the view (MOR-4451)', async () => {
     runtimeHarness.state.currentCaps = validateCapabilities({ ...IC7300_CAPABILITIES, ...spanCapabilities, model: 'IC-705' });
-    // Observed span index 3 names the 25 kHz CENTER half-width preset: the
+    // Observed span index 3 names the 50 kHz published view width: the
     // radio delivers a 50 kHz window. The follow width zooms out to 100 kHz
     // while the grant below still carries the old 100 kHz coverage, so only
     // the observed span can hatch the undelivered margins.

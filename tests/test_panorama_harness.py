@@ -88,6 +88,26 @@ def test_scope_span_capability_fixture(model: str) -> None:
     assert caps == json.loads(fixture.read_text())
 
 
+@pytest.mark.parametrize("model", ["IC-705", "IC-7300", "IC-7610"])
+def test_scope_span_choices_publish_full_view_widths(model: str) -> None:
+    """MOR-4451: the published span_choices_hz fact states FULL view widths
+    (end - start) — twice an Icom ±half-width preset. Fails if the server
+    goes back to publishing the radio's half-width presets."""
+    from test_web_server_coverage import _scope_radio
+    from rigplane.web.server import WebConfig, WebServer
+
+    server = WebServer(
+        _scope_radio(), WebConfig(radio_model=model, scope_source="hardware")
+    )
+    profile = server._get_profile()
+    assert profile is not None
+    assert profile.scope_span_preset_semantics == "half_width"
+    caps = server._scope_source_capabilities(profile)
+    assert caps["span_choices_hz"] == [
+        2 * preset for preset in profile.scope_span_presets_hz
+    ]
+
+
 def test_latency_harness_uses_the_shared_civ_plan(tmp_path: Path) -> None:
     """The latency knobs configure the shared outbound CI-V plan — nothing else.
 
