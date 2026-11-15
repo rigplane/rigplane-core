@@ -558,8 +558,12 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         self._civ_recovering: bool = False
         self._last_civ_data_received: float | None = None
         self._civ_recovery_lock = asyncio.Lock()
-        # Group select + channel select must not interleave with another recall.
+        # Serialize typed operations that depend on the selected memory slot.
+        # This does not exclude raw CI-V or physical changes at the radio.
         self._memory_select_lock = asyncio.Lock()
+        # Track an unconfirmed grouped recall, not the radio's initial slot.
+        # Reconnect/channel-only selection cannot confirm the missing group.
+        self._memory_selection_uncertain = False
         self._civ_recovery_wait_timeout: float = float(
             os.environ.get("ICOM_CIV_RECOVERY_WAIT_TIMEOUT_S", "12.0")
         )
@@ -6249,9 +6253,12 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         if group is None:
             if not 1 <= channel <= 101:
                 raise ValueError(f"Channel must be 1-101, got {channel}")
-            await self._send_fire_and_forget(
-                self._commands.build_memory_mode_set(channel, to_addr=self._radio_addr)
+            civ = self._commands.build_memory_mode_set(
+                channel, to_addr=self._radio_addr
             )
+            async with self._memory_select_lock:
+                self._require_confirmed_memory_selection()
+                await self._send_fire_and_forget(civ)
             return
         memory = self._profile.memory
         if memory is None or not memory.recall or memory.addressing != "group_channel":
@@ -6266,34 +6273,60 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             ),
         ]
         async with self._memory_select_lock:
+            # A sent group change cannot be rolled back on timeout/cancellation.
+            # Keep the uncertainty on every incomplete exit; only both positive
+            # ACKs confirm a complete selection. Validate/build before this point.
+            self._memory_selection_uncertain = True
             for civ in frames:
                 resp = await self._send_civ_expect(civ, label="recall_memory_channel")
-                if parse_ack_nak(resp) is False:
+                if parse_ack_nak(resp) is not True:
                     raise CommandError(
                         f"Radio rejected memory recall {group}/{channel}"
                     )
+            self._memory_selection_uncertain = False
+
+    def _require_confirmed_memory_selection(self) -> None:
+        """Refuse typed slot-dependent operations after an incomplete recall.
+
+        Called under ``_memory_select_lock``. A full acknowledged group/channel
+        recall restores admission; raw CI-V and physical selections do not.
+        """
+        if self._memory_selection_uncertain:
+            raise CommandError(
+                "Memory selection is uncertain after an incomplete recall; "
+                "recall a complete group and channel before another memory operation"
+            )
 
     async def memory_write(self) -> None:
         """Write current VFO state to selected memory channel."""
-        await self._send_fire_and_forget(
-            self._commands.build_memory_write(to_addr=self._radio_addr)
-        )
+        civ = self._commands.build_memory_write(to_addr=self._radio_addr)
+        async with self._memory_select_lock:
+            self._require_confirmed_memory_selection()
+            # wait_dispatch remains True: hold through the actual wire send,
+            # even though this legacy operation does not await a radio ACK.
+            await self._send_fire_and_forget(civ)
 
     async def memory_to_vfo(self, channel: int) -> None:
         """Load memory channel to VFO."""
         if not 1 <= channel <= 101:
             raise ValueError(f"Channel must be 1-101, got {channel}")
-        await self._send_fire_and_forget(
-            self._commands.build_memory_to_vfo(channel, to_addr=self._radio_addr)
-        )
+        civ = self._commands.build_memory_to_vfo(channel, to_addr=self._radio_addr)
+        async with self._memory_select_lock:
+            self._require_confirmed_memory_selection()
+            # wait_dispatch remains True: hold through the actual wire send,
+            # even though this legacy operation does not await a radio ACK.
+            await self._send_fire_and_forget(civ)
 
     async def memory_clear(self, channel: int) -> None:
         """Clear memory channel."""
         if not 1 <= channel <= 101:
             raise ValueError(f"Channel must be 1-101, got {channel}")
-        await self._send_fire_and_forget(
-            self._commands.build_memory_clear(channel, to_addr=self._radio_addr)
-        )
+        civ = self._commands.build_memory_clear(channel, to_addr=self._radio_addr)
+        async with self._memory_select_lock:
+            self._require_confirmed_memory_selection()
+            # wait_dispatch remains True: hold through the actual wire send,
+            # even though this legacy operation does not await a radio ACK.
+            await self._send_fire_and_forget(civ)
 
     async def get_memory_contents(self, channel: int) -> MemoryChannel:
         """Read full memory channel data.
