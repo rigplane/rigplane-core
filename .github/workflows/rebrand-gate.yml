@@ -54,10 +54,14 @@ jobs:
           fetch-depth: 1
 
       - name: Check out repository (retry)
-        if: failure() && steps.checkout.conclusion == 'failure'
+        id: checkout_retry
+        if: steps.checkout.outcome == 'failure'
         uses: actions/checkout@v6
         with:
           fetch-depth: 1
 
       - name: Wave 2 rebrand grep gate
+        if: >-
+          steps.checkout.outcome == 'success' ||
+          steps.checkout_retry.outcome == 'success'
         run: .github/scripts/check-rebrand-allowlist.sh
