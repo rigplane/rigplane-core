@@ -82,7 +82,8 @@ stop reason in `detail`.
 
 Termination, an object the parser validates: `status` is one of
 `completed` (every planned read was sent), `silence_stop` (five
-unanswered reads in a row), `transport_error` (the serial link
+unanswered reads in a row: anywhere while nothing answered yet,
+otherwise inside the main pass), `transport_error` (the serial link
 broke); `detail` is the plain-words reason shown to the customer
 (the silence message, or the phase and error for a transport break).
 Files written before this key existed parse as `completed`.

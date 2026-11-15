@@ -293,9 +293,7 @@ def _file_for_any_answer(
         ),
         private_reads_included=False,
         label="",
-        snapshot=Snapshot(
-            before=dict(snapshot_before or {}), after={}, changed=[]
-        ),
+        snapshot=Snapshot(before=dict(snapshot_before or {}), after={}, changed=[]),
         termination=TerminationInfo(status="completed"),
     )
 
@@ -306,9 +304,7 @@ def test_any_answer_counts_identity_only() -> None:
 
 def test_any_answer_counts_snapshot_only() -> None:
     assert (
-        _any_answer(
-            _file_for_any_answer(snapshot_before={"get_freq": "FA14074000;"})
-        )
+        _any_answer(_file_for_any_answer(snapshot_before={"get_freq": "FA14074000;"}))
         is True
     )
 

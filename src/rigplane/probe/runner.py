@@ -107,8 +107,12 @@ class _SendGate:
 
     Applies ``gap_s`` pacing before each send, refuses bodies off the
     read plan's allow-list before anything goes out, and counts
-    consecutive silences across every phase (identity, snapshots, main
-    pass). Five silent in a row, or a transport break, stops the run,
+    consecutive silences. While nothing has answered yet the count runs
+    across every phase (identity, snapshots, main pass), so a fully
+    silent radio still stops after the same five requests. Once
+    anything answers, each phase counts on its own: five silent in a
+    row inside a snapshot phase ends that phase only, five in a row
+    inside the main pass (or a transport break anywhere) stops the run,
     and nothing more is sent afterwards.
     """
 
@@ -116,6 +120,8 @@ class _SendGate:
         self.gap_s = gap_s
         self.allowed = allowed
         self.silent_run = 0
+        self.answered = False
+        self.snapshot_ended = False
         self.stopped = False
         self.stop_status = "completed"
         self.stop_detail = ""
@@ -131,14 +137,41 @@ class _SendGate:
         """Stop the run on a broken exchange, naming the phase and error."""
         self.stop("transport_error", f"Transport error in {phase}: {error}")
 
+    def begin_phase(self) -> None:
+        """A snapshot or main-pass boundary.
+
+        Silence never carries across phases once something answered;
+        while nothing answered yet the run-wide count carries on, so a
+        fully silent radio still stops at the same five requests.
+        """
+        self.snapshot_ended = False
+        if self.answered:
+            self.silent_run = 0
+
     def note_silent(self) -> None:
         """Count one unanswered read; five in a row stops the run."""
         self.silent_run += 1
         if self.silent_run >= SILENT_LIMIT:
             self.stop("silence_stop", SILENT_ABORT_MESSAGE)
 
+    def note_snapshot_silent(self) -> None:
+        """Count one unanswered snapshot read.
+
+        While nothing has answered yet this is the run-wide count;
+        once something answered, five in a row ends the snapshot phase
+        only and the run goes on.
+        """
+        self.silent_run += 1
+        if self.silent_run < SILENT_LIMIT:
+            return
+        if self.answered:
+            self.snapshot_ended = True
+        else:
+            self.stop("silence_stop", SILENT_ABORT_MESSAGE)
+
     def note_answered(self) -> None:
         """Any answer, even a refusal, breaks the silence run."""
+        self.answered = True
         self.silent_run = 0
 
 
@@ -407,13 +440,18 @@ async def _read_snapshot(
 ) -> dict[str, str | None]:
     """Read the profile state reads once through the gate.
 
-    Silence records ``None`` and counts toward the stop; a broken
-    exchange stops the run, and once stopped nothing more is sent.
+    Silence records ``None``; a broken exchange stops the run, and
+    once stopped nothing more is sent. Five silent in a row ends the
+    snapshot phase only once something answered (the rest stay
+    unsent); while nothing answered yet it stops the whole run.
     """
     protocol = config.protocol_type
     garbled = _garble_check(protocol)
     out: dict[str, str | None] = {}
     for name in snapshot_names(config, set(full)):
+        if gate.stopped or gate.snapshot_ended:
+            out[name] = None
+            continue
         item = full[name]
         answer = await _gated_ask(
             gate,
@@ -433,7 +471,7 @@ async def _read_snapshot(
         for stray in answer.strays:
             strays.add(stray.chunk, protocol, at=stray.arrived)
         if answer.reply is None:
-            gate.note_silent()
+            gate.note_snapshot_silent()
             out[name] = None
         else:
             gate.note_answered()
@@ -488,10 +526,13 @@ async def run_probe(
     """Run one read pass over *items* (default: the whole read plan).
 
     Identity reads go first, then the before snapshot, the pass, and the
-    after snapshot. Five silent commands in a row stop the pass; a
-    transport break stops everything. Identity mismatch never stops.
-    Declared-absent CI-V reads borrow bytes from *siblings*, the other
-    shipped profiles; without them those reads are recorded as skipped.
+    after snapshot. While nothing answered yet, five silent reads in a
+    row stop the run; once something answered, a silent snapshot phase
+    ends that phase only while five silent in a row inside the main
+    pass still stop the run. A transport break stops everything.
+    Identity mismatch never stops. Declared-absent CI-V reads borrow
+    bytes from *siblings*, the other shipped profiles; without them
+    those reads are recorded as skipped.
     """
     protocol = config.protocol_type
     if protocol not in ("civ", "yaesu_cat"):
@@ -507,12 +548,14 @@ async def run_probe(
 
     gate = _SendGate(gap_s, allowed=frozenset(allowed))
     identity = await _read_identity(config, exchange, window, gate, strays)
+    gate.begin_phase()
     before = await _read_snapshot(
         config, {item.name: item for item in full}, exchange, window, gate, strays
     )
 
     rows: list[CommandRow] = []
     if not gate.stopped:
+        gate.begin_phase()
         for index, item in enumerate(watch):
             row = await _ask_once(config, item, exchange, window, gate, strays)
             if row is None:
@@ -525,6 +568,7 @@ async def run_probe(
     if gate.stopped:
         after = dict(before)
     else:
+        gate.begin_phase()
         after = await _read_snapshot(
             config,
             {item.name: item for item in full},

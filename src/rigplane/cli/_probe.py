@@ -350,6 +350,12 @@ async def _execute_after_open(
 
 
 def _any_answer(file: ProbeFile) -> bool:
+    if file.radio.identity_reported.raw:
+        return True
+    if any(value is not None for value in file.snapshot.before.values()):
+        return True
+    if any(value is not None for value in file.snapshot.after.values()):
+        return True
     return any(
         row.outcome in ("data", "refused", "ack_only", "malformed", "unsolicited")
         for row in file.commands
