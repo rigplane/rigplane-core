@@ -6,6 +6,12 @@ import importlib.util
 import sys
 from pathlib import Path
 
+# The production CI-V exchange under test: the same implementation the
+# CLI wires to the port, not a private copy.
+from rigplane.cli._probe import _civ_exchange
+from rigplane.core.serial_open import open_serial_port
+from rigplane.probe import runner
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -30,6 +36,12 @@ def frame(body_hex: str) -> bytes:
 def test_reads_the_profile_declares_pass() -> None:
     for read in ("03", "04", "1900", "1502", "1513", "2712"):
         assert guard(frame(read)), read
+
+
+def test_borrowed_sibling_reads_pass_the_guard() -> None:
+    # MOR-4464 finding 1: IC-7300 borrows get_scope_rbw (27 1f) from the
+    # IC-7610, so the guard built from the complete read plan admits it.
+    assert guard(frame("271f"))
 
 
 def test_status_reads_pass_but_their_write_forms_do_not() -> None:
@@ -70,19 +82,18 @@ def test_wrong_addresses_and_junk_are_refused() -> None:
 async def test_probe_driver_through_the_guarded_bridge_is_never_blocked(
     tmp_path,
 ) -> None:
-    """The production client + the probe list pass the guard untouched.
+    """The probe and the bridge guard pass each other untouched.
 
-    Rehearsal of the bench path on a fake: ``probe.py``'s client connects
-    to the guarded recorder over ``socket://`` and every probe plus the
-    client's own connect traffic reaches the radio; a blocked frame here
-    would mean the bench session silently loses requests.
+    Rehearsal of the bench path on a fake: ``rigplane probe`` connects
+    to the guarded recorder over ``socket://`` and every read the
+    profile lists reaches the radio; a blocked frame here would mean
+    the bench session silently loses requests.
     """
-    from rigplane.backends.config import SerialBackendConfig
-    from rigplane.backends.factory import create_radio
+    from rigplane.profiles.rig_loader import discover_rigs
     from rigplane_testkit.serial import CivSerialFake, SerialCivRecorder
 
-    probe = bridge.PROBE  # the IC-7610 probe driver, loaded by bridge.py
-    build_allowed_bodies = bridge.build_allowed_bodies
+    rigs = discover_rigs(REPO_ROOT / "rigs")
+    config = rigs["IC-7300"]
     fake = CivSerialFake(echo=False)
     out = tmp_path / "rec.jsonl"
     rec = SerialCivRecorder(
@@ -92,44 +103,40 @@ async def test_probe_driver_through_the_guarded_bridge_is_never_blocked(
         client_filter=bridge.make_guard("IC-7300", 0x94).new_filter,
     )
     await rec.start()
-    radio = create_radio(
-        SerialBackendConfig(
-            device=f"socket://127.0.0.1:{rec.listen_port}",
-            baudrate=115200,
-            radio_addr=0x94,
-            model="IC-7300",
-        )
-    )
     try:
-        await radio.connect()
-        profile = probe.load_profile("IC-7300")
-        results = await probe.run_probes(
-            radio,
-            probe.build_probe_list(profile)[:25],
-            build_allowed_bodies(profile),
-            pace=0.0,
-            timeout=0.5,
+        reader, writer = await open_serial_port(
+            f"socket://127.0.0.1:{rec.listen_port}", baudrate=115200
         )
+        try:
+            report = await runner.run_probe(
+                config,
+                "0" * 64,
+                exchange=await _civ_exchange(reader, writer, 0x94),
+                port_kind="usb",
+                baud=115200,
+                label="",
+                include_private=False,
+                gap_s=0.0,
+                timeout_s=0.5,
+                siblings=list(rigs.values()),
+            )
+        finally:
+            writer.close()
     finally:
-        await radio.disconnect()
         await rec.stop()
     assert rec.blocked_lines == 0
-    assert {r["class"] for r in results} <= {"data", "nak", "ack"}
+    assert {row.outcome for row in report.file.commands} <= {
+        "data",
+        "refused",
+        "ack_only",
+    }
+    import json
 
-
-def test_loading_the_bridge_leaves_other_radios_probe_modules_alone() -> None:
-    """FTX-1's capture scripts use the same bare module names (probe, probe_list)."""
-    sentinel_probe, sentinel_list = object(), object()
-    saved = {n: sys.modules.get(n) for n in ("probe", "probe_list")}
-    sys.modules["probe"], sys.modules["probe_list"] = sentinel_probe, sentinel_list
-    try:
-        fresh = _load("bridge")  # a second load while those names are taken
-        assert fresh.PROBE is not sentinel_probe
-        assert sys.modules["probe"] is sentinel_probe
-        assert sys.modules["probe_list"] is sentinel_list
-    finally:
-        for name, mod in saved.items():
-            if mod is None:
-                sys.modules.pop(name, None)
-            else:
-                sys.modules[name] = mod
+    through = set()
+    for line in out.read_text().splitlines():
+        row = json.loads(line)
+        if row["dir"] == "c2r":
+            raw = bytes.fromhex(row["hex"])
+            through.add(raw[4:-1].hex())
+    # The borrowed scope RBW read reaches the fake instead of being blocked.
+    assert "271f" in through
