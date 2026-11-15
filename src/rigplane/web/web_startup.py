@@ -14,7 +14,7 @@ from asyncio import Event
 import logging
 import time
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Final, cast
 
 from ..core.acquisition_scheduler import (
     AcquisitionScheduler,
@@ -447,6 +447,51 @@ def _startup_path_command(server: WebServer, path: FieldPath) -> str:
     return " ".join(parts)
 
 
+#: PTT/split paths whose refusal the gate reports once at release (MOR-4456).
+#: A refused read is answered-but-unavailable, so it leaves
+#: ``unobserved_startup_paths`` at once and never joins the deadline
+#: ``lapsed`` set the WARNING below iterates — without the release summary
+#: a gate that opens with only refused PTT/split outstanding stays silent
+#: despite the promised named WARNING.
+_STARTUP_REFUSAL_SUMMARY_PATHS: Final[tuple[FieldPath, ...]] = (
+    FieldPath.global_("tx_state", "ptt"),
+    FieldPath.global_("tx_state", "split"),
+)
+
+
+def _warn_on_refused_tx_state_paths(
+    server: WebServer, scheduler: AcquisitionScheduler
+) -> None:
+    """Log the single release summary for refused, unobserved PTT/split.
+
+    Uses only the existing refusal records
+    (:meth:`AcquisitionScheduler.consecutive_refusals`): a path the radio
+    answered after its refusal has no record left
+    (:meth:`AcquisitionScheduler.end_refusals`), and an observed path is
+    skipped, so the summary fires exactly for the paths the gate releases
+    without ever having seen.
+    """
+
+    observed = frozenset(_observed_paths(server, scheduler))
+    refused = tuple(
+        path
+        for path in _STARTUP_REFUSAL_SUMMARY_PATHS
+        if scheduler.consecutive_refusals(path) > 0 and path not in observed
+    )
+    if not refused:
+        return
+    logger.warning(
+        "initial state acquisition: refused reads for %s; serving without them (%s)",
+        ", ".join(str(path) for path in refused),
+        "; ".join(
+            f"{path}: "
+            f"{_startup_path_command(server, path) or 'no declared read'}; "
+            f"{_startup_lapse_cause(scheduler, path)}"
+            for path in refused
+        ),
+    )
+
+
 def _startup_lapse_cause(scheduler: AcquisitionScheduler, path: FieldPath) -> str:
     """Name why a lapsed non-critical path never answered (MOR-4456).
 
@@ -513,6 +558,8 @@ async def _await_initial_state_acquisition(
       command each never answered and why (refused vs silent, MOR-4456),
       their controls stay unread (dimmed), and polling continues, so a
       late answer clears the served-unknown with no durable mark to lift;
+      a refused PTT/split read leaves the outstanding set at once, so it
+      never joins that deadline set — the release summary names it instead;
       and
     * a safety-critical path whose request group reaches
       :data:`_STARTUP_GATE_CRITICAL_ATTEMPTS` failed reads (the initial
@@ -590,6 +637,7 @@ async def _await_initial_state_acquisition(
         ),
     )
     if not outstanding:
+        _warn_on_refused_tx_state_paths(server, scheduler)
         return
     logger.info(
         "waiting for initial state acquisition: %d fields outstanding",
@@ -696,6 +744,7 @@ async def _await_initial_state_acquisition(
                 )
             else:
                 logger.info("initial state acquisition still waiting on %s", paths)
+    _warn_on_refused_tx_state_paths(server, scheduler)
     logger.info("initial state acquisition complete")
 
 
