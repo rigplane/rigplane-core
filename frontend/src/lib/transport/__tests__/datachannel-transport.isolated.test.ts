@@ -49,10 +49,12 @@ describe('DataChannelTransport', () => {
     const t = new DataChannelTransport(ch);
     t.open('ignored://', { protocols: [token] });
     ch.simulateOpen();
+    // The attach frame's shape is the golden document's (JSON spacing is
+    // not part of the contract); a resend repeats it byte for byte.
     const frame = goldenAttachText('attach_scope', KEY);
-    expect(ch.sent).toEqual([frame]);
+    expect(ch.sent.map((f) => JSON.parse(f as string))).toEqual([JSON.parse(frame)]);
     vi.advanceTimersByTime(ATTACH_RESEND_MS * 2);
-    expect(ch.textFrames()).toEqual([frame, frame, frame]);
+    expect(ch.textFrames()).toEqual([ch.sent[0], ch.sent[0], ch.sent[0]]);
     ch.simulateMessage(goldenDocs.attach_ack_scope.text ?? '');
     expect(t.state).toBe('open');
     expect(t.attachedProtocol).toBe(token);
@@ -77,7 +79,9 @@ describe('DataChannelTransport', () => {
     const control = new DataChannelTransport(controlCh);
     control.open('ignored://', { protocols: [token] });
     controlCh.simulateOpen();
-    expect(controlCh.sent).toEqual([goldenAttachText('attach_control', KEY)]);
+    expect(controlCh.sent.map((f) => JSON.parse(f as string))).toEqual([
+      JSON.parse(goldenAttachText('attach_control', KEY)),
+    ]);
     vi.advanceTimersByTime(ATTACH_RESEND_MS * 4); // ordered/reliable: no resend
     expect(control.state).toBe('connecting');
     controlCh.simulateMessage(JSON.stringify({ type: 'hello', radio: 'IC-7610' }));
