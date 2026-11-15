@@ -52,9 +52,7 @@ def test_filter_center_offsets_wave_by_passband_centre(
     the passband centre — LSB negative, USB positive, by half the current
     filter width decoded from the profile segments. Carrier Point Center
     (the default) keeps the wave centred on the VFO."""
-    sim = PanoramaSimulator(
-        "IC-705", tmp_path / "radio.jsonl", scope_center_type=0
-    )
+    sim = PanoramaSimulator("IC-705", tmp_path / "radio.jsonl", scope_center_type=0)
     sim.set_mode(mode)
     sim.pump_scope_stream()
     mode_name = "LSB" if mode == 0x00 else "USB"

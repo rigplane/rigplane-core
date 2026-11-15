@@ -313,7 +313,9 @@ class PanoramaSimulator(MockIcomRadio):
         if self.evidence.with_suffix(".pause").exists():
             return 0
         span = self.profile.scope_span_presets_hz[self.span_index]
-        first, last = self.fixed if self.scope_mode == 1 else (self._scope_wave_center_hz(), span)
+        first, last = (
+            self.fixed if self.scope_mode == 1 else (self._scope_wave_center_hz(), span)
+        )
         for receiver, templates in self._scope_templates.items():
             shaped = []
             for template in templates:
