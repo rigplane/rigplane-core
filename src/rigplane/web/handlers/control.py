@@ -727,9 +727,7 @@ def starts_transmission(name: str, params: Mapping[str, Any]) -> bool:
         return True
     return (
         name == "send_cw_text"
-        or (
-            name == "set_vox" and params.get("on", params.get("value")) is not False
-        )
+        or (name == "set_vox" and params.get("on", params.get("value")) is not False)
         or (name == "set_tuner_status" and params.get("value") == 2)
         or (name == "set_break_in" and params.get("mode") != 0)
     )

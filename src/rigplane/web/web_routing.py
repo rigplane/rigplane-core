@@ -346,9 +346,7 @@ def _batch_step_starts_transmission(raw_step: Any) -> bool | None:
     return _typed_command_starts_transmission(raw_step)
 
 
-def api_channel_tx_refusal(
-    method: str, path: str, payload: object
-) -> str | None:
+def api_channel_tx_refusal(method: str, path: str, payload: object) -> str | None:
     """Controller code refusing TX-capable ``api``-channel REST, or None.
 
     The ``api`` data channel carries no controller fence of its own —
@@ -371,10 +369,7 @@ def api_channel_tx_refusal(
             return "controller_tx_unsupported"
         return None
     if path == "/api/v1/managed-transmit/command":
-        if (
-            isinstance(payload, dict)
-            and payload.get("operation") == "transmit_on"
-        ):
+        if isinstance(payload, dict) and payload.get("operation") == "transmit_on":
             return "controller_tx_unsupported"
         return None
     if path == "/api/v1/civ/transaction":
@@ -838,6 +833,7 @@ API_ROUTE_TABLE: Final[tuple[ApiRoute, ...]] = (
     ApiRoute(("GET", "HEAD"), "/api/v1/memories", _handle_route_tail_get),
     ApiRoute(("GET", "HEAD"), "/api/v1/audio/analysis", _handle_route_tail_get),
 )
+
 
 def api_route_for_path(path: str) -> ApiRoute | None:
     """Match *path* against the route table: exact entries first, then prefix.
