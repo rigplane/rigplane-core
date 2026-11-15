@@ -420,17 +420,27 @@ def _serve_without_port(server: WebServer) -> None:
     )
 
 
-def _startup_path_command(server: WebServer, path: FieldPath) -> str:
-    """Return the CI-V wire form the radio would read *path* with.
+def _startup_path_command(
+    server: WebServer, scheduler: AcquisitionScheduler, path: FieldPath
+) -> str:
+    """Return the wire form the radio would read *path* with.
 
-    Reuses :func:`acquisition_query_resolver_for_profile` — the single
-    path-to-query mapping the poller's executor already reads through —
-    over the radio's own profile, so the defect names the exact command
-    the radio never answered. Radios without a resolvable profile (no
-    ``_profile``, or no declared getter for the path) get an empty
+    A direct-read lane's recorded command wins when one exists (MOR-4456);
+    otherwise this reuses :func:`acquisition_query_resolver_for_profile` —
+    the single path-to-query mapping the poller's executor already reads
+    through — over the radio's own profile, so the defect names the exact
+    command the radio never answered. Radios without a resolvable profile
+    (no ``_profile``, or no declared getter for the path) get an empty
     command.
     """
 
+    # MOR-4456: a direct-read lane (Yaesu CAT, rigctld client) records the
+    # wire command it actually used into the scheduler — that real command
+    # wins over the CI-V profile derivation below, which knows nothing of
+    # ``TX;``/``ST;``/``t``.
+    recorded = scheduler.startup_read_command(path)
+    if recorded:
+        return recorded
     profile = getattr(server._radio, "_profile", None)
     if not isinstance(profile, RadioProfile):
         return ""
@@ -459,6 +469,20 @@ _STARTUP_REFUSAL_SUMMARY_PATHS: Final[tuple[FieldPath, ...]] = (
 )
 
 
+def _format_unanswered_path(
+    server: WebServer, scheduler: AcquisitionScheduler, path: FieldPath
+) -> str:
+    """Render one unanswered path for the startup WARNINGs (MOR-4456).
+
+    The ``;`` separates the command from the cause; a recorded wire
+    command already ending in ``;`` (``TX;``/``ST;``/``t``) keeps its real
+    form instead of doubling the separator.
+    """
+
+    command = _startup_path_command(server, scheduler, path) or "no declared read"
+    return f"{path}: {command.rstrip(';')}; {_startup_lapse_cause(scheduler, path)}"
+
+
 def _warn_on_refused_tx_state_paths(
     server: WebServer, scheduler: AcquisitionScheduler
 ) -> None:
@@ -483,12 +507,7 @@ def _warn_on_refused_tx_state_paths(
     logger.warning(
         "initial state acquisition: refused reads for %s; serving without them (%s)",
         ", ".join(str(path) for path in refused),
-        "; ".join(
-            f"{path}: "
-            f"{_startup_path_command(server, path) or 'no declared read'}; "
-            f"{_startup_lapse_cause(scheduler, path)}"
-            for path in refused
-        ),
+        "; ".join(_format_unanswered_path(server, scheduler, path) for path in refused),
     )
 
 
@@ -529,7 +548,7 @@ def _record_critical_startup_defect(
     defect = DeclaredCommandDefect(
         label="startup gate",
         paths=(path,),
-        command=_startup_path_command(server, path),
+        command=_startup_path_command(server, scheduler, path),
         frame="",
         detail=(
             f"safety-critical path still unanswered after "
@@ -666,9 +685,7 @@ async def _await_initial_state_acquisition(
                     ", ".join(str(path) for path in lapsed),
                     _STARTUP_GATE_NON_CRITICAL_DEADLINE_SECONDS,
                     "; ".join(
-                        f"{path}: "
-                        f"{_startup_path_command(server, path) or 'no declared read'}; "
-                        f"{_startup_lapse_cause(scheduler, path)}"
+                        _format_unanswered_path(server, scheduler, path)
                         for path in lapsed
                     ),
                 )

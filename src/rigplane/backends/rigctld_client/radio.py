@@ -7,11 +7,12 @@ import logging
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Any, Sequence
+from typing import TYPE_CHECKING, Any, Literal, Sequence
 
 from ...exceptions import CommandError
 from ...exceptions import ConnectionError as RadioConnectionError
 from ...exceptions import TimeoutError as RadioTimeoutError
+from ...core.acquisition_scheduler import AcquisitionScheduler, StartupReadNote
 from ...core.command_dispatch import ManagedWriteAdmission, execute_command_intent
 from ...core.radio_protocol import (
     PhysicalWriteReadbackResult,
@@ -236,6 +237,22 @@ class RigctldClientObservationPoller:
         except Exception:
             logger.warning("rigctld-client transport reconnect failed", exc_info=True)
 
+    def _record_ptt_outcome(self, cause: Literal["refused", "timed out"]) -> None:
+        """File the transmit-state read's outcome for the startup gate (MOR-4456).
+
+        The medium lane's only transmit-state read is the ``t`` query, so
+        the note carries the real wire command. Transport failures never
+        reach here — they raise unwrapped above.
+        """
+
+        scheduler = getattr(self._radio, "_acquisition_scheduler", None)
+        if not isinstance(scheduler, AcquisitionScheduler):
+            return
+        scheduler.record_direct_read_outcome(
+            (FieldPath.global_("tx_state", "ptt"),),
+            StartupReadNote(command="t", cause=cause),
+        )
+
     async def _poll_medium(self) -> None:
         from .observations import RigctldClientObservationAdapter
 
@@ -272,11 +289,13 @@ class RigctldClientObservationPoller:
             try:
                 raw_ptt = await adapter.read_ptt()
             except (asyncio.TimeoutError, RadioTimeoutError):
+                self._record_ptt_outcome("timed out")
                 self._radio._demote_ptt_read_after_timeout()  # noqa: SLF001
                 raise
             except RadioConnectionError:
                 raise
             except CommandError:
+                self._record_ptt_outcome("refused")
                 observations.append(adapter.observed_ptt_observation(None))
             else:
                 if self._provider_generation_is_current(provider_generation):
