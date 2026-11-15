@@ -1,107 +1,203 @@
 /**
- * `api` channel client tests (C5a): the C3 wire format driven through
- * a real `DataChannelTransport` over the shared fake channel, frames
- * hand-built from the pinned contract (an independent oracle, like
- * `tests/test_webrtc_api_channel.py`).
+ * `api` channel client tests (C5a): the committed producer-built golden
+ * documents (`api-channel-golden.json`) drive the fake peer — every reply
+ * decodes the committed hex, with only the envelope's request id rewritten
+ * to the client's allocated id. The same documents are replayed through
+ * the real server stack by the Python counterpart
+ * `tests/test_api_channel_golden.py::test_golden_documents_replay_through_real_handlers`.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { FakeDataChannel } from './support/fake-datachannel';
+import {
+  FakeDataChannel,
+  goldenFrame,
+  goldenDocs,
+  goldenErrorFrame,
+} from './support/fake-datachannel';
 import { DataChannelTransport } from '../datachannel-transport';
 import { createApiChannelFetch } from '../api-channel-client';
 import wire from '../api-channel-wire.json';
 
-const REQ_HEAD = 1;
-const REQ_BODY = 2;
-const RES_HEAD = 3;
-const RES_BODY = 4;
-const END = 5;
-const ERROR = 6;
-const CANCEL = 7;
+const T = wire.message_types;
+const H = wire.header.size_bytes;
 const utf8 = new TextEncoder();
 
+/** A deliberately hand-built frame — negative tests only; every replay
+ * of a well-formed frame decodes the committed golden hex. */
 function frame(type: number, id: number, payload: Uint8Array = new Uint8Array(0)) {
-  const out = new Uint8Array(7 + payload.length);
+  const out = new Uint8Array(H + payload.length);
   const view = new DataView(out.buffer);
-  view.setUint8(0, 1);
+  view.setUint8(0, wire.version);
   view.setUint8(1, type);
   view.setUint32(2, id, false);
-  view.setUint8(6, 0);
-  out.set(payload, 7);
+  out.set(payload, H);
   return out;
 }
-
-/** One attached `api` channel: the fake channel, its transport, fetch. */
-function openApiChannel() {
-  const ch = new FakeDataChannel('api');
-  const transport = new DataChannelTransport(ch);
-  transport.open('ignored://');
-  ch.simulateOpen();
-  return { ch, api: createApiChannelFetch(transport) };
-}
-
-function reply(ch: FakeDataChannel, type: number, id: number, payload: Uint8Array = new Uint8Array(0)) {
-  ch.simulateMessage(frame(type, id, payload).slice().buffer);
-}
-
 
 function frames(ch: FakeDataChannel) {
   return ch.sent
     .filter((f): f is ArrayBuffer => f instanceof ArrayBuffer)
     .map((raw) => {
       const bytes = new Uint8Array(raw);
-      return { type: bytes[1], id: new DataView(raw).getUint32(2, false), payload: bytes.slice(7) };
+      return { type: bytes[1], id: new DataView(raw).getUint32(2, false), payload: bytes.slice(H) };
     });
 }
 
-/** Complete one server response (RES_HEAD + <=16 KB chunks + END). */
-function respond(ch: FakeDataChannel, id: number, status: number, body: Uint8Array) {
-  reply(ch, RES_HEAD, id, utf8.encode(JSON.stringify({ status })));
-  const chunk = wire.limits.response_chunk_bytes;
-  for (let off = 0; off < body.length; off += chunk) {
-    reply(ch, RES_BODY, id, body.slice(off, off + chunk));
-  }
-  reply(ch, END, id);
+/** Answer with committed golden frames under the live request id. */
+function replay(ch: FakeDataChannel, doc: readonly { hex: string }[], id: number) {
+  for (const f of doc) ch.simulateMessage(goldenFrame(f.hex, id));
+}
+
+function b64(value: string): Uint8Array {
+  return Uint8Array.from(atob(value), (c) => c.charCodeAt(0));
+}
+
+/** One attached `api` channel: the mandatory keyless attach (the golden
+ * attach_api shape) is the first text frame. */
+function openApiChannel() {
+  const ch = new FakeDataChannel('api');
+  const transport = new DataChannelTransport(ch);
+  transport.open('ignored://');
+  ch.simulateOpen();
+  expect(ch.textFrames().map((f) => JSON.parse(f))).toEqual([goldenDocs.attach_api.decoded]);
+  return { ch, api: createApiChannelFetch(transport) };
 }
 
 describe('createApiChannelFetch', () => {
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());
-  it('sends REQ_HEAD + END, reassembles chunked responses, ids increase', async () => {
+  it('replays api_ok, api_chunked and api_not_found with complete heads', async () => {
     const { ch, api } = openApiChannel();
-    const pending = api('/api/v1/info?a=1&b=2&b=3', {
-      headers: { 'X-RigPlane-Controller': 'k' },
-    });
+    const ok = api('/api/v1/band-plan/layers');
     await vi.advanceTimersByTimeAsync(0);
     const sent = frames(ch);
-    expect(sent.map((f) => f.type)).toEqual([REQ_HEAD, END]);
-    const head = JSON.parse(new TextDecoder().decode(sent[0].payload));
-    expect(head.method).toBe('GET');
-    expect(head.path).toBe('/api/v1/info');
-    expect(head.query).toEqual({ a: ['1'], b: ['2', '3'] });
-    expect(head.headers).toEqual({ 'x-rigplane-controller': 'k' });
-    respond(ch, 1, 200, utf8.encode('{"ok":true}'));
-    const res = await pending;
+    expect(sent.map((f) => f.type)).toEqual([T.REQ_HEAD, T.END]);
+    // The request head is exactly the golden document's payload.
+    expect(JSON.parse(new TextDecoder().decode(sent[0].payload))).toEqual(
+      goldenDocs.api_ok.request?.[0]?.payload,
+    );
+    replay(ch, goldenDocs.api_ok.reply ?? [], 1);
+    const res = await ok;
     expect(res.status).toBe(200);
-    expect(await res.text()).toBe('{"ok":true}');
-    const body = new Uint8Array(40 * 1024);
-    for (let i = 0; i < body.length; i++) body[i] = i % 251;
+    expect(res.headers.get('content-length')).toBe('16');
+    expect(res.headers.get('x-frame-options')).toBe('DENY');
+    expect(new Uint8Array(await res.arrayBuffer())).toEqual(b64(goldenDocs.api_ok.response_body_b64 ?? ''));
+    const chunked = api('/api/v1/band-plan/layers');
+    await vi.advanceTimersByTimeAsync(0);
+    replay(ch, goldenDocs.api_chunked.reply ?? [], 2);
+    const big = await chunked;
+    expect(big.status).toBe(200);
+    expect(big.headers.get('content-length')).toBe('16385');
+    expect(new Uint8Array(await big.arrayBuffer())).toEqual(b64(goldenDocs.api_chunked.response_body_b64 ?? ''));
+    const missing = api('/api/v1/nonexistent');
+    await vi.advanceTimersByTimeAsync(0);
+    replay(ch, goldenDocs.api_not_found.reply ?? [], 3);
+    const notFound = await missing;
+    expect(notFound.status).toBe(404);
+    expect(await notFound.text()).toBe('404 Not Found');
+    expect(frames(ch).filter((f) => f.type === T.REQ_HEAD).map((f) => f.id)).toEqual([1, 2, 3]);
+    const queried = api('/api/v1/info?a=1&b=2&b=3', { headers: { 'X-RigPlane-Controller': 'k' } });
+    await vi.advanceTimersByTimeAsync(0);
+    const headFrames = frames(ch).filter((f) => f.type === T.REQ_HEAD && f.id === 4);
+    expect(headFrames).toHaveLength(1);
+    expect(JSON.parse(new TextDecoder().decode(headFrames[0].payload))).toEqual({
+      method: 'GET',
+      path: '/api/v1/info',
+      query: { a: ['1'], b: ['2', '3'] },
+      headers: { 'x-rigplane-controller': 'k' },
+    });
+    replay(ch, goldenDocs.api_ok.reply ?? [], 4);
+    expect((await queried).status).toBe(200);
+  });
+  it('settles golden ERROR frames as 502 responses; contract violations are protocol errors', async () => {
+    const { ch, api } = openApiChannel();
+    const first = api('/api/v1/info');
+    await vi.advanceTimersByTimeAsync(0);
+    replay(ch, [goldenErrorFrame('timeout')], 1);
+    const res = await first;
+    expect(res.status).toBe(502);
+    expect(res.headers.get('X-RigPlane-Api-Error')).toBe('timeout');
+    expect(await res.json()).toEqual({ error: 'timeout', message: 'request timed out' });
+    // An ERROR code outside payloads.error.codes is a protocol error.
     const second = api('/api/v1/info');
     await vi.advanceTimersByTimeAsync(0);
-    expect(
-      frames(ch)
-        .filter((f) => f.type === REQ_HEAD)
-        .map((f) => f.id)
-    ).toEqual([1, 2]);
-    respond(ch, 2, 200, body);
-    expect(new Uint8Array(await (await second).arrayBuffer())).toEqual(body);
-    // Third request: a terminal ERROR frame resolves as an error Response.
+    ch.simulateMessage(frame(T.ERROR, 2, utf8.encode('{"code":"nope","message":"x"}')).buffer);
+    expect((await second).headers.get('X-RigPlane-Api-Error')).toBe('malformed');
+    // So is a RES_HEAD missing the contract-required headers field.
     const third = api('/api/v1/info');
     await vi.advanceTimersByTimeAsync(0);
-    reply(ch, ERROR, 3, utf8.encode(JSON.stringify({ code: 'timeout', message: 'nope' })));
-    const errored = await third;
-    expect(errored.status).toBe(502);
-    expect(errored.headers.get('X-RigPlane-Api-Error')).toBe('timeout');
-    expect(await errored.json()).toEqual({ error: 'timeout', message: 'nope' });
+    ch.simulateMessage(frame(T.RES_HEAD, 3, utf8.encode('{"status":200}')).buffer);
+    expect((await third).headers.get('X-RigPlane-Api-Error')).toBe('malformed');
+  });
+  it('ignores golden frames for an unknown id (api_unknown_id_ignored)', async () => {
+    const { ch, api } = openApiChannel();
+    const pending = api('/api/v1/info');
+    await vi.advanceTimersByTimeAsync(0);
+    for (const f of goldenDocs.api_unknown_id_ignored.request ?? []) {
+      ch.simulateMessage(goldenFrame(f.hex)); // committed id 9999: unknown here
+    }
+    replay(ch, goldenDocs.api_ok.reply ?? [], 1); // the live request still completes
+    expect((await pending).status).toBe(200);
+  });
+  it('aborts like api_cancel: HEAD then CANCEL, and nothing after', async () => {
+    const { ch, api } = openApiChannel();
+    const ctrl = new AbortController();
+    const pending = api('/api/v1/info', { signal: ctrl.signal });
+    await vi.advanceTimersByTimeAsync(0);
+    ctrl.abort();
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+    // The golden document's trailing END is server tolerance; the settled
+    // client sends nothing after CANCEL.
+    expect(frames(ch).map((f) => f.type)).toEqual([T.REQ_HEAD, T.CANCEL]);
+  });
+  it('sends nothing for an immediately aborted bodyless request', async () => {
+    const { ch, api } = openApiChannel();
+    const ctrl = new AbortController();
+    ctrl.abort();
+    const base = vi.getTimerCount();
+    await expect(
+      api('/api/v1/controller', { method: 'DELETE', signal: ctrl.signal }),
+    ).rejects.toMatchObject({ name: 'AbortError' });
+    expect(frames(ch)).toEqual([]); // no HEAD, no END — and no CANCEL: the id never left
+    expect(vi.getTimerCount()).toBe(base);
+  });
+  it('stops drain polling when the request settles under backpressure', async () => {
+    const { ch, api } = openApiChannel();
+    ch.bufferedAmount = wire.limits.send_high_water_bytes + 1;
+    const base = vi.getTimerCount();
+    const ctrl = new AbortController();
+    const aborted = api('/api/v1/info', { signal: ctrl.signal });
+    await vi.advanceTimersByTimeAsync(200);
+    ctrl.abort();
+    await expect(aborted).rejects.toMatchObject({ name: 'AbortError' });
+    await vi.advanceTimersByTimeAsync(200);
+    expect(frames(ch)).toEqual([]); // never sent: the id was never allocated
+    expect(vi.getTimerCount()).toBe(base); // the drain poll stopped with it
+    const stalled = api('/api/v1/info').catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(wire.limits.request_deadline_s * 1000 + 1);
+    expect(await stalled).toMatchObject({ name: 'TimeoutError' });
+    expect(frames(ch)).toEqual([]);
+    expect(vi.getTimerCount()).toBe(base);
+    ch.bufferedAmount = 0; // release the stall: nothing more is ever sent
+    await vi.advanceTimersByTimeAsync(100);
+    expect(frames(ch)).toEqual([]);
+  });
+  it('keeps HEAD ids in emission order under high→intermediate→low backpressure', async () => {
+    const { ch, api } = openApiChannel();
+    ch.bufferedAmount = wire.limits.send_high_water_bytes + 1;
+    const early = api('/api/v1/band-plan/layers'); // above high-water: waits for low
+    await vi.advanceTimersByTimeAsync(50);
+    ch.bufferedAmount = 131072; // below high-water, above low-water
+    const late = api('/api/v1/band-plan/layers'); // admitted at once
+    await vi.advanceTimersByTimeAsync(50);
+    // The later request's HEAD left first, so it must carry the lower id.
+    expect(frames(ch).filter((f) => f.type === T.REQ_HEAD).map((f) => f.id)).toEqual([1]);
+    ch.bufferedAmount = 0;
+    await vi.advanceTimersByTimeAsync(50);
+    expect(frames(ch).filter((f) => f.type === T.REQ_HEAD).map((f) => f.id)).toEqual([1, 2]);
+    replay(ch, goldenDocs.api_ok.reply ?? [], 1);
+    replay(ch, goldenDocs.api_ok.reply ?? [], 2);
+    expect((await early).status).toBe(200);
+    expect((await late).status).toBe(200);
   });
   it('chunks a request body at the wire chunk size', async () => {
     const { ch, api } = openApiChannel();
@@ -110,41 +206,11 @@ describe('createApiChannelFetch', () => {
     const pending = api('/api/v1/controller', { method: 'POST', body: body.buffer });
     await vi.advanceTimersByTimeAsync(0);
     const sent = frames(ch);
-    expect(sent.map((f) => f.type)).toEqual([REQ_HEAD, REQ_BODY, REQ_BODY, REQ_BODY, END]);
-    const bodies = sent.filter((f) => f.type === REQ_BODY);
+    expect(sent.map((f) => f.type)).toEqual([T.REQ_HEAD, T.REQ_BODY, T.REQ_BODY, T.REQ_BODY, T.END]);
+    const bodies = sent.filter((f) => f.type === T.REQ_BODY);
     expect(bodies.map((f) => f.payload.length)).toEqual([chunk, chunk, 100]);
     expect(new Uint8Array(bodies.flatMap((f) => [...f.payload]))).toEqual(body);
-    respond(ch, 1, 204, new Uint8Array(0));
-    expect((await pending).status).toBe(204);
-  });
-  it('sends CANCEL and rejects with AbortError on AbortSignal', async () => {
-    const { ch, api } = openApiChannel();
-    const ctrl = new AbortController();
-    const pending = api('/api/v1/info', { signal: ctrl.signal });
-    await vi.advanceTimersByTimeAsync(0);
-    ctrl.abort();
-    await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
-    expect(frames(ch).find((f) => f.type === CANCEL)?.id).toBe(1);
-  });
-  it('rejects with a timeout and sends CANCEL at the wire deadline', async () => {
-    const { ch, api } = openApiChannel();
-    let failure: unknown;
-    const pending = api('/api/v1/info').catch((err: unknown) => {
-      failure = err;
-    });
-    await vi.advanceTimersByTimeAsync(wire.limits.request_deadline_s * 1000 + 1);
-    await pending;
-    expect(failure).toMatchObject({ name: 'TimeoutError' });
-    expect(frames(ch).some((f) => f.type === CANCEL)).toBe(true);
-  });
-  it('waits while bufferedAmount is above the high-water mark', async () => {
-    const { ch, api } = openApiChannel();
-    ch.bufferedAmount = wire.limits.send_high_water_bytes + 1;
-    const pending = api('/api/v1/info');
-    await vi.advanceTimersByTimeAsync(1000);
-    expect(frames(ch)).toEqual([]);
-    ch.bufferedAmount = 0;
-    await vi.advanceTimersByTimeAsync(1000);
-    expect(frames(ch)[0]?.type).toBe(REQ_HEAD);
+    replay(ch, goldenDocs.api_ok.reply ?? [], 1);
+    expect((await pending).status).toBe(200);
   });
 });
