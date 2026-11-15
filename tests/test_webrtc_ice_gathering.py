@@ -1078,6 +1078,76 @@ def test_enumeration_failure_keeps_every_address(
 
 
 @_webrtc
+def test_all_virtual_host_falls_back_to_every_address(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A host whose every address is excluded (all virtual, no default route —
+    a container or VM) keeps aioice's full list instead of NO candidates."""
+    import aioice.ice
+
+    from rigplane.web.transport import ice_gathering as ice_gathering
+
+    ice_gathering.install_ice_gathering_policy()
+    token = ice_gathering._active_policy.set(None)
+    try:
+        full = aioice.ice.get_host_addresses(True, True)
+    finally:
+        ice_gathering._active_policy.reset(token)
+    if not full:
+        pytest.skip("aioice reports no host addresses here")
+    every_address_virtual = [
+        AddressInfo(ip=ip, ifname=f"veth{index}", kind=IfKind.BRIDGE)
+        for index, ip in enumerate(full)
+    ]
+    monkeypatch.setattr(
+        ice_gathering, "_enumerate_local_addresses", lambda: every_address_virtual
+    )
+    policy = ice_gathering.IceGatheringPolicy()
+    assert policy.select(every_address_virtual) == []
+    with ice_gathering.apply_ice_gathering_policy(policy):
+        assert aioice.ice.get_host_addresses(True, True) == full
+
+
+@_webrtc
+@pytest.mark.realtime(
+    reason="measures real negotiation wall-clock time against live sockets"
+)
+async def test_all_virtual_host_still_answers_with_host_candidates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Negotiation on an all-virtual host still yields host candidates."""
+    import aioice.ice
+
+    from rigplane.web.transport import ice_gathering as ice_gathering
+    from rigplane.web.transport.webrtc_session import WebRtcSessionManager
+
+    ice_gathering.install_ice_gathering_policy()
+    token = ice_gathering._active_policy.set(None)
+    try:
+        full = aioice.ice.get_host_addresses(True, True)
+    finally:
+        ice_gathering._active_policy.reset(token)
+    if not full:
+        pytest.skip("aioice reports no host addresses here")
+    monkeypatch.setattr(
+        ice_gathering,
+        "_enumerate_local_addresses",
+        lambda: [AddressInfo(ip=ip, ifname="veth", kind=IfKind.BRIDGE) for ip in full],
+    )
+    manager = WebRtcSessionManager(None, None, "test")
+    try:
+        sdp, offer_type = await _offer_sdp()
+        start = time.monotonic()
+        result = await manager.negotiate(sdp, offer_type)
+        elapsed = time.monotonic() - start
+    finally:
+        await manager.close_all()
+    assert elapsed <= GATHER_TIMEOUT_S + 1.0, elapsed
+    lines = _answer_candidate_lines(result["sdp"])
+    assert any("typ host" in ln for ln in lines), lines
+
+
+@_webrtc
 @pytest.mark.realtime(
     reason="measures real negotiation wall-clock time against live sockets"
 )

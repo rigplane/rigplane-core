@@ -946,7 +946,14 @@ def install_ice_gathering_policy() -> None:
         known = {info.ip for info in infos}
         # Addresses the enumerator did not see are kept: never drop an
         # address we could not classify.
-        return [addr for addr in addresses if addr not in known or addr in allowed]
+        selected = [addr for addr in addresses if addr not in known or addr in allowed]
+        if not selected:
+            # The policy would leave NO host candidate (e.g. a container or VM
+            # whose every interface is virtual and that has no default route):
+            # an answer without candidates cannot connect at all, so fall back
+            # to aioice's unfiltered list; the gather stays bounded by the cap.
+            return addresses
+        return selected
 
     async def _bounded_component_candidates(
         self: Any, component: int, addresses: list[str], timeout: int = 5
