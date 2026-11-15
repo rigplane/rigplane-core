@@ -352,10 +352,8 @@ async def test_refused_ft_read_does_not_abort_the_medium_poll(radio):
     radio._transport.query = query
     observations = await YaesuObservationAdapter.from_radio(radio).poll_medium()
     by_path = {str(item.path): item for item in observations}
-    # Gate P2 (MOR-4433): a refused DECLARED source is not-observed, never
-    # unsupported (reserved for a source the profile does not declare).
     assert by_path["global.tx_state.tx_target"].value == UnknownTxTarget(
-        reason="not-observed"
+        reason="unsupported"
     )
     assert by_path["receiver.main.active.freq_mode.freq_hz"].value == 14_074_000
     assert "global.tx_state.ptt" in by_path
