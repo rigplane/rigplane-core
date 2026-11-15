@@ -1507,16 +1507,12 @@ class _Ftx1CriticalRadio:
         return "USB", None
 
     async def read_transmit_state(self) -> object:
-        from rigplane.backends.yaesu_cat.transport import CatCommandRejected
         from rigplane.core.tx_observation import TxStateReading
 
         if self._never_answers == "ptt":
             # What the transport reports when the PTT read stays silent:
             # the adapter builds its own ``CatTimeoutError`` from this tag.
             return TxStateReading(value=None, failure="timeout")
-        if self._never_answers == "ptt-refused":
-            # MOR-4456: the token read itself refuses the command.
-            raise CatCommandRejected("?;", command="TX;")
         return TxStateReading(
             value=False,
             verified_readback=True,
@@ -1634,6 +1630,57 @@ def _ftx1_table_silent_on_ft() -> RecordedCatAnswerTable:
     assert ft_answer is not None and ft_answer.kind == "silence"
     st_answer = table.lookup("ST;")
     assert st_answer is not None and st_answer.reply == "ST0;"
+    assert table.lookup("BP01;") is not None
+    assert table.lookup("BP01;").reply == "BP01150;"  # type: ignore[union-attr]
+    ra_answer = table.lookup("RA0;")
+    assert ra_answer is not None and ra_answer.reply == "RA00;"
+    return table
+
+
+def _ftx1_table_refused_tx() -> RecordedCatAnswerTable:
+    """The bench FTX-1 recording with the ``TX;`` answer replaced by ``?;``.
+
+    The same row surgery as :func:`_ftx1_table_silent_on_ft` (the USB
+    decimal repair of the FM-recorded manual-notch replies and the
+    attenuator answer the bench only refused), but every ``FT;`` reply is
+    kept — the TX target answers here — while each ``TX0;`` reply becomes
+    the ``?;`` refusal, replaying a radio that refuses only the PTT read.
+    """
+
+    rows = [
+        json.loads(line) for line in _FTX1_CAT_PAIRS.read_text().splitlines() if line
+    ]
+    kept: list[dict[str, object]] = []
+    pending: str | None = None
+    for row in rows:
+        if row["dir"] == "c2r":
+            pending = str(row["line"])
+            kept.append(row)
+        else:
+            if row["dir"] == "r2c" and row["line"] in ("BP01F35;", "BP11F35;"):
+                row = {**row, "line": str(row["line"])[:4] + "150;"}
+            elif (
+                pending == "RA0;"
+                and row["line"] == "?;"
+                and reply_closes(pending, str(row["line"]))
+            ):
+                row = {**row, "line": "RA00;"}
+            elif (
+                pending == "TX;"
+                and reply_closes(pending, str(row["line"]))
+                and row["line"] != "?;"
+            ):
+                # Bench answered TX0; (receiving); this scenario refuses it.
+                row = {**row, "line": "?;"}
+            pending = None
+            kept.append(row)
+    table = RecordedCatAnswerTable.from_cat_pairs(kept)
+    tx_answer = table.lookup("TX;")
+    assert tx_answer is not None and tx_answer.kind == "refusal"
+    st_answer = table.lookup("ST;")
+    assert st_answer is not None and st_answer.reply == "ST0;"
+    ft_answer = table.lookup("FT;")
+    assert ft_answer is not None and ft_answer.reply == "FT0;"
     assert table.lookup("BP01;") is not None
     assert table.lookup("BP01;").reply == "BP01150;"  # type: ignore[union-attr]
     ra_answer = table.lookup("RA0;")
@@ -1762,20 +1809,21 @@ async def test_yaesu_unanswered_ptt_read_still_fails_startup() -> None:
 @pytest.mark.parametrize(
     ("never_answers", "failed_path", "healthy_path"),
     [
-        ("ptt-refused", "global.tx_state.ptt", "global.tx_state.split"),
         ("split-timeout", "global.tx_state.split", "global.tx_state.ptt"),
         ("split-refused", "global.tx_state.split", "global.tx_state.ptt"),
     ],
 )
-async def test_yaesu_contained_tx_state_failure_still_fails_startup(
+async def test_yaesu_contained_split_failure_still_fails_startup(
     never_answers: str, failed_path: str, healthy_path: str
 ) -> None:
-    """MOR-4456: contained PTT/split failures still end startup on the Yaesu path.
+    """MOR-4456: contained split failures still end startup on the Yaesu path.
 
-    The lane no longer raises for a refused PTT, a silent split, or a
-    refused split — but the defect/count accounting is kept, so the
-    UNCHANGED gate still refuses the bind naming the field. The TX-target
-    read answers here, so only the contained failure can be the cause.
+    The lane no longer raises for a silent or refused split — but the
+    defect/count accounting is kept, so the UNCHANGED gate still refuses
+    the bind naming the field. The TX-target read answers here, so only
+    the contained failure can be the cause. (A refused PTT read is pinned
+    separately below: production publishes it unknown with no defect, so
+    the gate keeps waiting instead of aborting.)
     """
     radio = _Ftx1CriticalRadio(never_answers=never_answers)
     server = WebServer(radio, _gated_config())
@@ -1800,6 +1848,85 @@ async def test_yaesu_contained_tx_state_failure_still_fails_startup(
     assert "global.tx_state.tx_target" not in message
     assert scheduler.startup_defect is not None
     assert [str(path) for path in scheduler.startup_defect.paths] == [failed_path]
+
+
+@pytest.mark.asyncio
+async def test_yaesu_refused_ptt_read_keeps_startup_waiting() -> None:
+    """MOR-4456: a refused PTT read publishes unknown — startup keeps waiting.
+
+    The full production path — the real ``YaesuCatRadio.read_transmit_state``
+    against a CAT fake answering ``TX;`` with ``?;``. Production catches
+    that refusal and reports ``failure="read-error"``; the lane publishes
+    unknown with NO defect, NO refusal tally and NO timeout tally, so with
+    every other field answering the UNCHANGED gate keeps waiting on
+    ``global.tx_state.ptt`` instead of aborting. A hand-raised
+    ``CatCommandRejected`` out of the reader would take the lane's
+    ``except CatCommandRejected`` branch and record a defect — a verdict
+    production never produces, which is why this test drives the wire.
+    """
+    from rigplane.backends.yaesu_cat.observations import (
+        _MAIN_FREQ,
+        _MAIN_MODE,
+        _PTT,
+        _SPLIT,
+        _TX_TARGET,
+    )
+
+    # The bench recording answers every other read; ``reject`` forces the
+    # ``?;`` past the fake's own ``get_ptt`` handler, which otherwise
+    # shadows the recorded refusal the table asserts above.
+    fake = FakeCatRadio(recorded_answers=_ftx1_table_refused_tx())
+    fake.reject("TX")
+    await fake.start()
+    try:
+        radio = YaesuCatRadio(device=fake.device_url, profile="ftx1")
+        await asyncio.wait_for(radio.connect(), 30)
+        assert radio.connected
+        config = _gated_config()
+        config.radio_model = "FTX-1"
+        server = WebServer(radio, config)
+        try:
+            binds: list[str] = []
+
+            async def _bind(*_args: object, **_kwargs: object) -> _FakeAsyncServer:
+                binds.append("bind")
+                return _FakeAsyncServer()
+
+            with patch("rigplane.web.web_startup.asyncio.start_server", new=_bind):
+                with pytest.raises(asyncio.TimeoutError):
+                    await asyncio.wait_for(server.start(), timeout=15.0)
+
+                # Read while the server is still up: ``stop`` advances the
+                # provider generation, hiding pre-stop fields from the
+                # snapshot below.
+                scheduler = radio._acquisition_scheduler
+
+                # Not vacuous: the production poller asked for ``TX;`` on
+                # the wire — refused, not merely unasked.
+                assert "TX;" in fake.commands
+
+                # No abort and no defect: the refusal is not a startup failure.
+                assert binds == []
+                assert scheduler.startup_defect is None
+                assert scheduler.consecutive_refusals(_PTT) == 0
+                assert _PTT not in radio._critical_read_timeouts  # noqa: SLF001
+
+                # The gate is still waiting on PTT — and only on PTT:
+                # every other critical field answered through the same
+                # poller.
+                observed = _observed_paths(server, scheduler)
+                assert scheduler.unobserved_startup_paths(observed) != ()
+                assert _PTT in scheduler.unobserved_startup_paths(observed)
+                for path in (_MAIN_FREQ, _MAIN_MODE, _SPLIT, _TX_TARGET):
+                    assert path not in scheduler.unobserved_startup_paths(observed), (
+                        path
+                    )
+
+                await server.stop()
+        finally:
+            await radio.disconnect()
+    finally:
+        await fake.stop()
 
 
 @pytest.mark.asyncio
