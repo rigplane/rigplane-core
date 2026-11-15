@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -98,11 +99,24 @@ FT991A_RIG = ROOT / "rigs" / "ft991a.toml"
 #: messages name it instead of the real FT-991A it is derived from.
 _SYNTHETIC_MODEL = "FT-991A-NO-TX-SRC"
 
-_FIXED_NOW = 1_000_000.0
-
 
 def _clock() -> float:
-    return _FIXED_NOW
+    """Harness clock sharing a base with the running event loop's time.
+
+    Managed-TX deadlines are computed from ``loop.time()`` in production
+    (``web/handlers/control.py``) and compared against the poller/queue
+    clock (``validate_command_queue_entry_currency``) and the authority
+    clock (``managed_tx_authority.py``) — so the harness clock must read
+    that same base. A fixed constant goes stale on any host whose
+    monotonic uptime differs (MOR-4433 CI root cause: ``1_000_000.0`` is
+    already past every real deadline on a host up less than ~11.6 days).
+    Outside a running loop (sync test setup) fall back to
+    ``time.monotonic``, the base ``loop.time()`` itself reads.
+    """
+    try:
+        return asyncio.get_running_loop().time()
+    except RuntimeError:
+        return time.monotonic()
 
 
 _TX_TARGET_PATH = FieldPath.global_("tx_state", "tx_target")
@@ -296,7 +310,7 @@ def _apply_input(
             path=path,
             value=value,
             source=SourceMetadata(source="test", provider="test"),
-            timestamp_monotonic=_FIXED_NOW,
+            timestamp_monotonic=_clock(),
             max_age=60.0,
             provider_generation=generation,
         )
@@ -307,7 +321,7 @@ def _seed_ic7300_derivation_inputs(store: StateStore, generation: int) -> None:
     """Seed identity/split/selected+unselected freq — all four derivation
     inputs — plus the sibling mode leaves the retention bootstrap needs
     (mirrors ``_seed_tx_target_ready`` in ``test_radio_poller_coverage.py``,
-    pinned to the fixed test clock)."""
+    stamped on the shared loop-time harness clock)."""
     _apply_input(store, FieldPath.active_slot("0"), "A", generation=generation)
     _apply_input(
         store, FieldPath.global_("tx_state", "split"), False, generation=generation
@@ -366,6 +380,9 @@ async def test_civ_poller_leaves_native_ic7610_target_alone() -> None:
     assert _published_tx_target(store) is None
 
 
+@pytest.mark.realtime(
+    reason="seeds derivation inputs on the running loop's clock; the poller judges their freshness against that same base"
+)
 @pytest.mark.asyncio
 async def test_civ_poller_still_derives_ic7300_target() -> None:
     """No regression: the IC-7300 derivation still produces a known target
@@ -479,6 +496,9 @@ async def test_http_state_projects_unsupported_tx_target(model: str) -> None:
     assert state["txTarget"] == {"status": "unknown", "reason": "unsupported"}
 
 
+@pytest.mark.realtime(
+    reason="real HTTP socket, and seeded inputs stamped on the running loop's clock the projection's freshness check reads"
+)
 @pytest.mark.asyncio
 async def test_http_state_still_derives_ic7300_target() -> None:
     """No regression: the IC-7300 HTTP projection still derives a known
@@ -749,73 +769,6 @@ async def _ws_ptt(
     return await _ws_recv_cmd_response(reader)
 
 
-#: The exact refusal the server sends when its 10s admission budget expires
-#: before the background consumer drains the entry (production
-#: ``enqueue_managed_positive_tx``) — a scheduling stall, never a TX-target
-#: gate. Only this surface is retried; any other refusal fails fast.
-_STALL_SURFACE = "managed transmit authority unavailable"
-
-
-async def _ws_ptt_stall_tolerant(
-    reader: asyncio.StreamReader,
-    writer: asyncio.StreamWriter,
-    cmd_id: str,
-    state: bool,
-    *,
-    calls: list[bool],
-    actuated: list[bool],
-) -> dict[str, Any] | None:
-    """Key/unkey over WS, tolerating scheduling stalls but nothing else.
-
-    Returns the response envelope to assert strictly, or ``None`` when a
-    refused attempt observably actuated anyway (``calls == actuated``): the
-    admission budget expired after the effect landed, so no gate fired and
-    the caller asserts on the wire instead of the envelope. A refused
-    attempt with no actuation completed server-side (its envelope was
-    consumed), so resending cannot double-actuate; any other refusal is a
-    product signal and returns at once. A client-side timeout never
-    resends — the attempt is still live — it waits out the late envelope
-    within the outer bound.
-    """
-    async with asyncio.timeout(120.0):
-        while True:
-            try:
-                response = await _ws_ptt(reader, writer, cmd_id, state)
-            except asyncio.TimeoutError:
-                return await _ws_recv_cmd_response(reader, timeout=120.0)
-            if response.get("ok") is True:
-                return response
-            if response.get("message") != _STALL_SURFACE:
-                return response
-            if calls == actuated:
-                return None
-            # Stall surface with no actuation: the entry completed without
-            # running anything — safe to resend.
-
-
-async def _http_post_stall_tolerant(
-    web: WebServer, path: str, payload: dict[str, Any]
-) -> tuple[int, dict[str, Any]]:
-    """POST one JSON body, retrying only scheduling stalls.
-
-    A stalled loop can push the server's reply past the client's 10s read
-    (``asyncio.TimeoutError``) or make the batch step report 504. Only
-    those two stall surfaces are retried, within the bound; any other
-    status — the 409 refusal pin, the 200 execution pin, or a real 500 —
-    returns at once for the caller to assert strictly. ``set_tuner_status``
-    is idempotent, so resending is safe.
-    """
-    async with asyncio.timeout(120.0):
-        while True:
-            try:
-                status, body = await _http_post(web, path, payload)
-            except asyncio.TimeoutError:
-                continue
-            if status == 504:
-                continue
-            return status, body
-
-
 async def _http_post(
     web: WebServer, path: str, payload: dict[str, Any]
 ) -> tuple[int, dict[str, Any]]:
@@ -872,26 +825,14 @@ async def test_ws_managed_key_unkey_per_model(model: str, tmp_path: Path) -> Non
         host, port = _addr(web)
         reader, writer, _accept = await _ws_connect(host, port, "/api/v1/ws")
         try:
-            keyed = await _ws_ptt_stall_tolerant(
-                reader, writer, "key-1", True, calls=calls, actuated=[True]
-            )
-            if keyed is None:
-                # The refused attempt keyed the rig before the budget
-                # expired: no gate fired — the wire proves admission.
-                assert calls == [True]
-            else:
-                assert keyed["ok"] is True, f"key refused: {keyed}"
-                assert keyed["id"] == "key-1"
-                assert keyed["result"] == {"state": True}
-            unkeyed = await _ws_ptt_stall_tolerant(
-                reader, writer, "key-2", False, calls=calls, actuated=[True, False]
-            )
-            if unkeyed is None:
-                assert calls == [True, False]
-            else:
-                assert unkeyed["ok"] is True, f"unkey refused: {unkeyed}"
-                assert unkeyed["id"] == "key-2"
-                assert unkeyed["result"] == {"state": False}
+            keyed = await _ws_ptt(reader, writer, "key-1", True)
+            assert keyed["ok"] is True, f"key refused: {keyed}"
+            assert keyed["id"] == "key-1"
+            assert keyed["result"] == {"state": True}
+            unkeyed = await _ws_ptt(reader, writer, "key-2", False)
+            assert unkeyed["ok"] is True, f"unkey refused: {unkeyed}"
+            assert unkeyed["id"] == "key-2"
+            assert unkeyed["result"] == {"state": False}
         finally:
             await _close_ws(writer)
             writer.close()
@@ -939,7 +880,7 @@ async def test_http_tuner_refused_unsupported_where_undeclared(
         _poller,
         _calls,
     ):
-        status, body = await _http_post_stall_tolerant(
+        status, body = await _http_post(
             web,
             "/api/v1/commands",
             {"name": "set_tuner_status", "params": {"value": 1}, "id": "tune-1"},
