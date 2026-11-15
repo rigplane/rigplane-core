@@ -8081,9 +8081,12 @@ class WebServer:
                 assert task is not None
                 self._controller_handler_tasks[ticket] = task
         try:
-            if ticket is None:
-                # Keyless api: no ambient session; every request carries
-                # and validates its own key through the shared HTTP gate.
+            if ticket is None or kind == "api":
+                # No ambient session on the api channel — keyless or keyed:
+                # every request carries and validates its own key through
+                # the shared HTTP gate (the per-request credential, or the
+                # ordinary sessionless ticket, exactly like HTTP), so
+                # request tasks never inherit the attachment ticket.
                 await handler.run()
             else:
                 with self._controller.bind(ticket):
