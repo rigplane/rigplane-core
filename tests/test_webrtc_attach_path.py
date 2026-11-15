@@ -1117,6 +1117,73 @@ async def test_websocket_scope_output_shape(tmp_path: Path) -> None:
         await _tear_down_stack(stack)
 
 
+class _LossyAckPeer:
+    """A control+scope+audio peer that can lose its first attach ack:
+    ``take(drop_first_ack=True)`` discards it, modelling the transit
+    loss that makes a client resend its attach frame."""
+
+    def __init__(self) -> None:
+        self._pc: Any = None
+        self._channels: dict[str, Any] = {}
+        self.received: dict[str, list[Any]] = {}
+        self._dropped: set[str] = set()
+
+    async def connect(self, web: WebServer, labels: tuple[str, ...]) -> None:
+        """Open one ordered data channel per label, then negotiate."""
+        from aiortc import RTCPeerConnection, RTCSessionDescription
+
+        self._pc = RTCPeerConnection()
+        for label in labels:
+            channel = self._pc.createDataChannel(label, ordered=True)
+            self._channels[label] = channel
+            self.received[label] = []
+
+            @channel.on("message")  # type: ignore[misc, no-untyped-call]
+            def _on_message(message: Any, _label: str = label) -> None:
+                self.received[_label].append(message)
+
+        offer = await self._pc.createOffer()
+        await self._pc.setLocalDescription(offer)
+        manager = web._webrtc_session_manager()  # noqa: SLF001
+        answer = await manager.negotiate(
+            self._pc.localDescription.sdp, self._pc.localDescription.type
+        )
+        await self._pc.setRemoteDescription(
+            RTCSessionDescription(sdp=answer["sdp"], type=answer["type"])
+        )
+        await await_until(
+            lambda: all(c.readyState == "open" for c in self._channels.values()),
+            timeout=15.0,
+            description="data channels open",
+        )
+
+    def send_text(self, label: str, text: str) -> None:
+        """Send one text frame on the label's channel."""
+        self._channels[label].send(text)
+
+    def take(
+        self, label: str, *, drop_first_ack: bool = False
+    ) -> dict[str, Any] | None:
+        """The next text frame as parsed JSON (binary frames skipped)."""
+        while self.received[label]:
+            message = self.received[label].pop(0)
+            if not isinstance(message, str):
+                continue
+            parsed = json.loads(message)
+            first_ack = parsed.get("type") == "attached" and label not in self._dropped
+            if drop_first_ack and first_ack:
+                self._dropped.add(label)  # lost: the client never saw it
+                continue
+            return parsed
+        return None
+
+    async def close(self) -> None:
+        """Close the peer connection (idempotent, never raises)."""
+        if self._pc is not None:
+            with contextlib.suppress(Exception):
+                await self._pc.close()
+
+
 @_webrtc
 async def test_attach_ack_on_lossy_channels_only(tmp_path: Path) -> None:
     """The ack exists only where the attach frame can be lost: the lossy
@@ -1127,63 +1194,36 @@ async def test_attach_ack_on_lossy_channels_only(tmp_path: Path) -> None:
     pump asserts each inbound frame is bytes.
     """
     stack = await _stand_up_stack(tmp_path, audio=True)
-    from aiortc import RTCPeerConnection, RTCSessionDescription
+    peer = _LossyAckPeer()
+    try:  # peer setup, negotiation and acquisition are in cleanup scope
+        await peer.connect(stack.web, ("control", "scope", "audio"))
+        key = await _acquire_session(stack.web.port)
 
-    pc = RTCPeerConnection()
-    labels = ("control", "scope", "audio")
-    channels = {label: pc.createDataChannel(label, ordered=True) for label in labels}
-    received: dict[str, list[Any]] = {label: [] for label in labels}
-    for label, channel in channels.items():
-
-        @channel.on("message")  # type: ignore[misc, no-untyped-call]
-        def _on_message(message: Any, _label: str = label) -> None:
-            received[_label].append(message)
-
-    offer = await pc.createOffer()
-    await pc.setLocalDescription(offer)
-    manager = stack.web._webrtc_session_manager()  # noqa: SLF001
-    answer = await manager.negotiate(pc.localDescription.sdp, pc.localDescription.type)
-    await pc.setRemoteDescription(
-        RTCSessionDescription(sdp=answer["sdp"], type=answer["type"])
-    )
-    await await_until(
-        lambda: all(c.readyState == "open" for c in channels.values()), timeout=15.0
-    )
-    key = await _acquire_session(stack.web.port)
-
-    def _attach(label: str, frame_key: str | None) -> None:
-        channels[label].send(
-            json.dumps(
-                {
-                    "type": "attach",
-                    "controller_key": frame_key,
-                    "state_delta": 2,
-                    "role": "primary",
-                }
+        def _attach(label: str) -> None:
+            peer.send_text(
+                label,
+                json.dumps(
+                    {
+                        "type": "attach",
+                        "controller_key": key,
+                        "state_delta": 2,
+                        "role": "primary",
+                    }
+                ),
             )
-        )
 
-    def _take(label: str) -> dict[str, Any] | None:
-        while received[label]:
-            message = received[label].pop(0)
-            if isinstance(message, str):
-                return json.loads(message)
-        return None
-
-    try:
-        _attach("control", key)
+        _attach("control")
         first = await await_until(
-            lambda: _take("control"), timeout=10.0, description="control first frame"
+            lambda: peer.take("control"), timeout=10.0, description="control hello"
         )
         assert first is not None and first["type"] == "hello", first
         for label in ("scope", "audio"):  # the ack is the first frame
-            _attach(label, key)
+            _attach(label)
             assert await await_until(
-                lambda bound=label: _take(bound), timeout=10.0, description=label
+                lambda bound=label: peer.take(bound), timeout=10.0, description=label
             ) == {"type": "attached", "v": 1, "channel": label}
     finally:
-        with contextlib.suppress(Exception):
-            await pc.close()
+        await peer.close()
         await _tear_down_stack(stack)
 
 

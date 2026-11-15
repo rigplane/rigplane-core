@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import contextlib
 import json
 from pathlib import Path
 from typing import Any, Iterable
@@ -30,7 +29,12 @@ from rigplane.web.server import WebServer
 from rigplane.web.transport.webrtc import webrtc_available
 
 from test_webrtc_api_channel import _ApiClient, _ApiError, _frame, _head
-from test_webrtc_attach_path import _acquire_session, _stand_up_stack, _tear_down_stack
+from test_webrtc_attach_path import (
+    _LossyAckPeer,
+    _acquire_session,
+    _stand_up_stack,
+    _tear_down_stack,
+)
 
 _webrtc = pytest.mark.skipif(
     not webrtc_available(), reason="aiortc extra not installed"
@@ -59,69 +63,6 @@ def _seq(frames: Iterable[GoldenFrame]) -> list[tuple[int, int, bytes]]:
         assert raw[0] == 1 and raw[6] == 0, raw[:8]
         out.append((int(ApiMessageType[frame.type]), frame.request_id, raw[7:]))
     return out
-
-
-class _LossyAckPeer:
-    """A control+scope+audio peer that can lose its first attach ack:
-    ``take(drop_first_ack=True)`` discards it, modelling the transit
-    loss that makes a client resend its attach frame."""
-
-    def __init__(self) -> None:
-        self._pc: Any = None
-        self._channels: dict[str, Any] = {}
-        self.received: dict[str, list[Any]] = {}
-        self._dropped: set[str] = set()
-
-    async def connect(self, web: WebServer, labels: tuple[str, ...]) -> None:
-        from aiortc import RTCPeerConnection, RTCSessionDescription
-
-        self._pc = RTCPeerConnection()
-        for label in labels:
-            channel = self._pc.createDataChannel(label, ordered=True)
-            self._channels[label] = channel
-            self.received[label] = []
-
-            @channel.on("message")  # type: ignore[misc, no-untyped-call]
-            def _on_message(message: Any, _label: str = label) -> None:
-                self.received[_label].append(message)
-
-        offer = await self._pc.createOffer()
-        await self._pc.setLocalDescription(offer)
-        manager = web._webrtc_session_manager()  # noqa: SLF001
-        answer = await manager.negotiate(
-            self._pc.localDescription.sdp, self._pc.localDescription.type
-        )
-        await self._pc.setRemoteDescription(
-            RTCSessionDescription(sdp=answer["sdp"], type=answer["type"])
-        )
-        await await_until(
-            lambda: all(c.readyState == "open" for c in self._channels.values()),
-            timeout=15.0,
-            description="data channels open",
-        )
-
-    def send_text(self, label: str, text: str) -> None:
-        self._channels[label].send(text)
-
-    def take(
-        self, label: str, *, drop_first_ack: bool = False
-    ) -> dict[str, Any] | None:
-        while self.received[label]:
-            message = self.received[label].pop(0)
-            if not isinstance(message, str):
-                continue
-            parsed = json.loads(message)
-            first_ack = parsed.get("type") == "attached" and label not in self._dropped
-            if drop_first_ack and first_ack:
-                self._dropped.add(label)  # lost: the client never saw it
-                continue
-            return parsed
-        return None
-
-    async def close(self) -> None:
-        if self._pc is not None:
-            with contextlib.suppress(Exception):
-                await self._pc.close()
 
 
 def test_committed_golden_json_is_one_typed_contract() -> None:
