@@ -1,9 +1,10 @@
 """The committed browser copy of the ``api`` wire contract cannot drift.
 
 ``api-channel-wire.json`` is the single source the browser ``api``
-client imports; this fails when it stops matching the definition, or
-when a payload contract stops conforming to the real parsers and
-encoders. Regenerate from the repo root:
+client imports; this fails when it stops matching the definition, when
+a payload contract stops conforming to the real parsers and encoders,
+or when a committed golden document violates its payload contract.
+Regenerate from the repo root:
 
     uv run python -c "import dataclasses, json; from rigplane.web.api_channel import api_channel_wire_definition as d; print(json.dumps(dataclasses.asdict(d())))" \
       > frontend/src/lib/transport/api-channel-wire.json
@@ -22,6 +23,10 @@ from rigplane.web.api_channel import (
     ApiErrorFrame,
     ApiRequestHead,
     ApiResponseHead,
+    GoldenErrorsDocument,
+    GoldenExchangeDocument,
+    GoldenTextDocument,
+    api_channel_golden_documents_from_json,
     api_channel_wire_definition,
 )
 from rigplane.web.channel_attach import (
@@ -33,6 +38,10 @@ from rigplane.web.channel_attach import (
 _WIRE_JSON = (
     Path(__file__).resolve().parents[1]
     / "frontend/src/lib/transport/api-channel-wire.json"
+)
+_GOLDEN_JSON = (
+    Path(__file__).resolve().parents[1]
+    / "frontend/src/lib/transport/api-channel-golden.json"
 )
 
 
@@ -115,3 +124,38 @@ def test_payload_contracts_conform_to_real_parsers_and_encoders() -> None:
         row for row in payloads["attach_frame"].fields if row[0] == "controller_key"
     )
     assert (key_row[1], key_row[2]) == ("string | null", False), key_row
+
+
+def test_committed_golden_documents_validate_against_payload_contracts() -> None:
+    """Every committed golden document is a concrete frame its payload
+    contract describes, read through the producer's typed loader (text
+    documents re-parse from their own text)."""
+    golden = api_channel_golden_documents_from_json(
+        json.loads(_GOLDEN_JSON.read_text(encoding="utf-8"))
+    )
+    for name, doc in golden.documents.items():
+        match doc:
+            case GoldenTextDocument(decoded={"type": "attach"}):
+                _conform("attach_frame", doc.decoded)
+            case GoldenTextDocument(decoded={"type": "attached"}):
+                _conform("attach_ack", doc.decoded)
+            case GoldenTextDocument():
+                raise AssertionError(f"{name}: unknown text document {doc.decoded!r}")
+            case GoldenErrorsDocument():
+                for code, trigger in doc.triggers.items():
+                    assert isinstance(trigger, str) and code in (
+                        api_channel_wire_definition().payloads["error"].codes
+                    ), code
+                for frame in doc.frames:
+                    _conform("error", frame.payload)
+            case GoldenExchangeDocument():
+                for frame in doc.request + doc.reply:
+                    match frame.type:
+                        case "REQ_HEAD":
+                            _conform("request_head", frame.payload)
+                        case "RES_HEAD":
+                            _conform("response_head", frame.payload)
+            case _:
+                raise AssertionError(f"{name}: unknown golden document {doc!r}")
+        if isinstance(doc, GoldenTextDocument):
+            assert doc.decoded == json.loads(doc.text), name
