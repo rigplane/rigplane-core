@@ -2,14 +2,15 @@ import { validateCapabilities, type Capabilities } from '../types/capabilities';
 import type { MemoryPageDto } from '../types/memory-list';
 import type { InfoResponse } from '../types/protocol';
 import { getAuthHeaders, getAuthToken } from '../auth';
+import { apiFetch } from '../api/api-fetch';
 
-export { getAuthHeaders, getAuthToken };
+export { getAuthHeaders, getAuthToken, apiFetch };
 
 const BASE = '/api/v1';
 
 async function fetchApiResponse(path: string, signal?: AbortSignal): Promise<Response> {
   signal?.throwIfAborted();
-  const res = await fetch(path, { headers: getAuthHeaders(), signal, redirect: 'error' });
+  const res = await apiFetch(path, { headers: getAuthHeaders(), signal, redirect: 'error' });
   signal?.throwIfAborted();
   return res;
 }
