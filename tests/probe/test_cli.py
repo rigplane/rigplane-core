@@ -229,6 +229,66 @@ async def test_execute_g7250_file_records_skipped_and_summary(tmp_path) -> None:
     assert any("were not sent" in line for line in lines)
 
 
+async def test_execute_g7250_reports_matched_identity(tmp_path) -> None:
+    # MOR-4464 finding 4: the file reports the answer that established
+    # the match (parsed 7250), and the summary shows that model code.
+    from rigplane.commands import CONTROLLER_ADDR, build_civ_frame
+
+    config = resolve_config("G7250", RIGS)
+    addr = config.civ_addr
+    addr_echo = build_civ_frame(
+        CONTROLLER_ADDR, addr, 0x19, sub=0x00, data=bytes((addr,))
+    )
+    model = build_civ_frame(
+        CONTROLLER_ADDR, addr, 0x1D, data=bytes.fromhex("197250")
+    )
+    queues: dict[bytes, list[bytes | None]] = {
+        b"\x19\x00": [addr_echo],
+        b"\x1d\x19": [model],
+    }
+    pending: list[bytes | None] = []
+
+    async def factory() -> runner.Exchange:
+        async def exchange(request: bytes | None, timeout: float) -> bytes | None:
+            nonlocal pending
+            if request is not None:
+                pending = list(queues.get(request, []))
+                if pending:
+                    return pending.pop(0)
+                return build_civ_frame(addr, CONTROLLER_ADDR, 0xFA)
+            if pending:
+                return pending.pop(0)
+            return None
+
+        return exchange
+
+    lines: list[str] = []
+    out = tmp_path / "probe.json"
+    code = await execute(
+        config,
+        (REPO_ROOT / "rigs" / "g7250.toml").read_bytes(),
+        device_label="COM5 @ 115200",
+        baud=115200,
+        out=str(out),
+        include_private=False,
+        label="",
+        yes=True,
+        is_tty=False,
+        ask=lambda prompt: (_ for _ in ()).throw(AssertionError("no prompt")),
+        exchange_factory=factory,
+        gap_s=GAP,
+        timeout_s=TIMEOUT,
+        emit=lines.append,
+        sibling_configs=list(RIGS.values()),
+    )
+    assert code == 0
+    document = ProbeFile.from_json(out.read_text(encoding="utf-8"))
+    assert document.radio.identity_matches_profile is True
+    assert document.radio.identity_reported.parsed == "7250"
+    assert document.radio.identity_reported.raw == model.hex()
+    assert any("model code 7250" in line for line in lines)
+
+
 async def test_execute_cannot_open_is_exit_3(capsys, tmp_path) -> None:
     async def factory() -> runner.Exchange:
         raise OSError("connection refused")

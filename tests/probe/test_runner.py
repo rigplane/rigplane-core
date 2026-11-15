@@ -548,6 +548,80 @@ async def test_transport_error_ends_the_run() -> None:
     assert report.aborted is not None
 
 
+async def test_identity_reports_the_answer_that_matched() -> None:
+    # MOR-4464 finding 4: G7250 answers 19 00 with the echoed address
+    # and 1d 19 with the model id; the file must report the matching
+    # answer (parsed 7250), not the first one (parsed a0).
+    config = _load("g7250")
+    addr = config.civ_addr
+    addr_echo = build_civ_frame(
+        CONTROLLER_ADDR, addr, 0x19, sub=0x00, data=bytes((addr,))
+    )
+    model = build_civ_frame(
+        CONTROLLER_ADDR, addr, 0x1D, data=bytes.fromhex("197250")
+    )
+    seen: list[bytes] = []
+    report = await runner.run_probe(
+        config,
+        config_toml_sha256="0" * 64,
+        exchange=_nak_except(
+            seen,
+            {
+                bytes.fromhex("1900"): [addr_echo],
+                bytes.fromhex("1d19"): [model],
+            },
+            addr=addr,
+        ),
+        port_kind="usb",
+        baud=CIV_BAUD,
+        label="",
+        include_private=False,
+        gap_s=GAP,
+        timeout_s=SHORT_TIMEOUT,
+        items=_subset(config, "get_freq"),
+    )
+    assert report.aborted is None
+    assert report.file.radio.identity_matches_profile is True
+    assert report.file.radio.identity_reported.parsed == "7250"
+    assert report.file.radio.identity_reported.raw == model.hex()
+
+
+async def test_identity_falls_back_to_the_first_answer() -> None:
+    # MOR-4464 finding 4: when no answer matches, or all stay silent,
+    # the report keeps the first answer deterministically.
+    config = _load("g7250")
+    addr = config.civ_addr
+    wrong_model = build_civ_frame(
+        CONTROLLER_ADDR, addr, 0x1D, data=bytes.fromhex("199999")
+    )
+    addr_echo = build_civ_frame(
+        CONTROLLER_ADDR, addr, 0x19, sub=0x00, data=bytes((addr,))
+    )
+    seen: list[bytes] = []
+    report = await runner.run_probe(
+        config,
+        config_toml_sha256="0" * 64,
+        exchange=_nak_except(
+            seen,
+            {
+                bytes.fromhex("1900"): [addr_echo],
+                bytes.fromhex("1d19"): [wrong_model],
+            },
+            addr=addr,
+        ),
+        port_kind="usb",
+        baud=CIV_BAUD,
+        label="",
+        include_private=False,
+        gap_s=GAP,
+        timeout_s=SHORT_TIMEOUT,
+        items=_subset(config, "get_freq"),
+    )
+    assert report.file.radio.identity_matches_profile is False
+    assert report.file.radio.identity_reported.raw == addr_echo.hex()
+    assert report.file.radio.identity_reported.parsed == format(addr, "02x")
+
+
 async def test_identity_mismatch_does_not_stop_the_run() -> None:
     config = _load("ic7300")
     fake = CivSerialFake(model="IC-7300", model_id=b"\x99", echo=False)
