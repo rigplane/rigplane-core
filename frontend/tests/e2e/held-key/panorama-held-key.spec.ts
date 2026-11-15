@@ -1428,6 +1428,7 @@ test('IC-705 FIX unzoomed held ArrowRight keeps the fixed window with a forward 
   let server: JourneyServerHandle | undefined;
   const sent: Array<ScopeSubscription & { type: string }> = [];
   const grants: Array<{ tWall: number; grant: ScopeGranted }> = [];
+  const setFreqCommands: Array<{ tWall: number; freqHz: number | null }> = [];
   const frames: Array<{ view: number[]; coverage: number[]; receivedAt: number; tWall: number }> = [];
   try {
     server = await startJourneyServer(port, 14_250_000,
@@ -1437,7 +1438,20 @@ test('IC-705 FIX unzoomed held ArrowRight keeps the fixed window with a forward 
     serverReady = true;
     const watch = watchPanoramaErrors(page);
     page.on('websocket', (socket) => {
-      if (new URL(socket.url()).pathname === '/api/v1/ws') return;
+      if (new URL(socket.url()).pathname === '/api/v1/ws') {
+        socket.on('framesent', ({ payload }) => {
+          if (typeof payload === 'string') {
+            const command = JSON.parse(payload) as WsCommand;
+            if (command.type === 'cmd' && command.name === 'set_freq') {
+              setFreqCommands.push({
+                tWall: Date.now(),
+                freqHz: (command.params as { freq?: number } | undefined)?.freq ?? null,
+              });
+            }
+          }
+        });
+        return;
+      }
       if (!socket.url().endsWith('/api/v1/scope')) return;
       socket.on('framesent', ({ payload }) => {
         if (typeof payload === 'string') {
@@ -1487,6 +1501,13 @@ test('IC-705 FIX unzoomed held ArrowRight keeps the fixed window with a forward 
       { timeout: 30_000 }).toBe(1);
     // Every frame carries the fixed window from here on.
     await expect.poll(() => frames.at(-1)?.view, { timeout: 30_000 }).toEqual([...FIX_WINDOW]);
+    // The FIX click re-proves the passband tuple (mode-change
+    // invalidation): the marker and the overlay hide for a few seconds
+    // with no tuning at all and return on their own (~5 s on this
+    // tree). Bursting inside that window would hide the marker for an
+    // unrelated reason, so the burst starts only after both are back.
+    await expect.poll(() => marker.count(), { timeout: 30_000 }).toBe(1);
+    await expect(page.locator('.waterfall-content .passband-overlay')).toBeVisible({ timeout: 30_000 });
     await page.waitForTimeout(1000);
     setupDone = true;
 
@@ -1532,10 +1553,6 @@ test('IC-705 FIX unzoomed held ArrowRight keeps the fixed window with a forward 
         && Number.isFinite(s.gates.viewEndHz) && Number.isFinite(s.areaWidth) && s.areaWidth > 0)
       .map((s) => (s.gates!.viewEndHz - s.gates!.viewStartHz) / s.areaWidth);
     const hzPerPx = pxScales.length > 0 ? pxScales[pxScales.length - 1] : 125;
-    const markerAdvance = checkAdvanceAndSettle({
-      name: 'marker', values: inWindow.map((s) => ({ t: s.tPerf, v: markerFrequency(s) })),
-      confirmedHz: afterHz, toleranceHz: toleranceHz + hzPerPx, minimumAdvanceHz: 1_000,
-    });
     // Rendered view: every gated sample shows the fixed window, constant.
     const gated = inWindow.filter((s) => s.gates !== null
       && Number.isFinite(s.gates.viewStartHz) && Number.isFinite(s.gates.viewEndHz));
@@ -1552,13 +1569,32 @@ test('IC-705 FIX unzoomed held ArrowRight keeps the fixed window with a forward 
     const newModeSets = receiptsAfter.slice(receiptsBaseline)
       .filter((receipt) => receipt.sub === 0x14);
     const spanText = await page.getByTestId('scope-span-value').first().innerText().catch(() => null);
+    // Facts first: the advance/settle checks below throw, so the measured
+    // facts print before any of them can fail.
+    const markerValues = inWindow.map((s) => markerFrequency(s))
+      .filter((v): v is number => v !== null && Number.isFinite(v));
+    const vfoTexts = [...new Set(inWindow.map((s) => s.vfoText))];
+    const markerJumpIdx = inWindow.findIndex((s) => {
+      const v = markerFrequency(s);
+      return v !== null && Number.isFinite(v) && Math.abs(v - beforeHz) > 500;
+    });
+    // Was the marker already gone BEFORE the burst (mode-change hiding)
+    // or did the burst hide it (pending hiding)? The last pre-burst
+    // sample decides.
+    const preBurst = samples.filter((s) => s.tPerf < burstStartPerf);
+    const preBurstTail = preBurst.slice(-3).map((s) => ({
+      t: Math.round(s.tPerf - burstStartPerf), vfo: s.vfoText, x: s.markerX,
+      mf: markerFrequency(s),
+    }));
     console.log(`[held-key FIX unzoomed] ` +
       `vfo maxBackward=${vfo.maxBackwardHz}Hz marker maxBackward=${markerSeries.maxBackwardHz}Hz ` +
-      `marker advance=${markerAdvance.advanceHz}Hz settle=${markerAdvance.settleHz}Hz ` +
+      `marker n=${markerValues.length} min=${markerValues.length ? Math.min(...markerValues) : 'none'} ` +
+      `max=${markerValues.length ? Math.max(...markerValues) : 'none'} ` +
       `gateStartOffMax=${Math.max(...startOff)}Hz gateEndOffMax=${Math.max(...endOff)}Hz ` +
       `burstFrames=${burstFrames.length} longGaps=${longGaps.length} hatched=${hatchedBurst.length} ` +
       `spanText=${spanText} before=${beforeHz} after=${afterHz} ` +
-      `newSpan=${newSpanSets.length} newMode=${newModeSets.length}`);
+      `setFreq=${setFreqCommands.length} newSpan=${newSpanSets.length} newMode=${newModeSets.length} ` +
+      `vfoSteps=${vfoTexts.length} jumpIdx=${markerJumpIdx} preBurst=${JSON.stringify(preBurstTail)}`);
     await info.attach('held-key-fix-unzoomed', {
       body: JSON.stringify({
         params: { fixedView: FIX_WINDOW, seed, downs: FIX_BURST_DOWNS },
@@ -1566,11 +1602,20 @@ test('IC-705 FIX unzoomed held ArrowRight keeps the fixed window with a forward 
         frames: burstFrames.map((f) => ({ view: f.view, coverage: f.coverage })),
         gateStartOffMax: Math.max(...startOff), gateEndOffMax: Math.max(...endOff),
         monotonic: { toleranceHz, vfo, marker: markerSeries },
+        markerValues: { n: markerValues.length,
+          min: markerValues.length ? Math.min(...markerValues) : null,
+          max: markerValues.length ? Math.max(...markerValues) : null },
+        vfoTexts, markerJumpIdx, preBurstTail,
+        setFreqCommands,
         newSpanSets, newModeSets,
         samples: inWindow.length, hatched: hatchedBurst.length,
         longGaps: longGaps.length,
       }, null, 2),
       contentType: 'application/json',
+    });
+    const markerAdvance = checkAdvanceAndSettle({
+      name: 'marker', values: inWindow.map((s) => ({ t: s.tPerf, v: markerFrequency(s) })),
+      confirmedHz: afterHz, toleranceHz: toleranceHz + hzPerPx, minimumAdvanceHz: 1_000,
     });
 
     // (a1) every burst frame carries the fixed window — the radio owns it.
@@ -1626,6 +1671,7 @@ test('IC-705 FIX zoomed crop follows the VFO centred, clamps at the window edge,
   let server: JourneyServerHandle | undefined;
   const sent: Array<ScopeSubscription & { type: string }> = [];
   const grants: Array<{ tWall: number; grant: ScopeGranted }> = [];
+  const setFreqCommands: Array<{ tWall: number; freqHz: number | null }> = [];
   const frames: Array<{ view: number[]; coverage: number[]; receivedAt: number; tWall: number }> = [];
   try {
     server = await startJourneyServer(port, 14_250_000,
@@ -1635,7 +1681,20 @@ test('IC-705 FIX zoomed crop follows the VFO centred, clamps at the window edge,
     serverReady = true;
     const watch = watchPanoramaErrors(page);
     page.on('websocket', (socket) => {
-      if (new URL(socket.url()).pathname === '/api/v1/ws') return;
+      if (new URL(socket.url()).pathname === '/api/v1/ws') {
+        socket.on('framesent', ({ payload }) => {
+          if (typeof payload === 'string') {
+            const command = JSON.parse(payload) as WsCommand;
+            if (command.type === 'cmd' && command.name === 'set_freq') {
+              setFreqCommands.push({
+                tWall: Date.now(),
+                freqHz: (command.params as { freq?: number } | undefined)?.freq ?? null,
+              });
+            }
+          }
+        });
+        return;
+      }
       if (!socket.url().endsWith('/api/v1/scope')) return;
       socket.on('framesent', ({ payload }) => {
         if (typeof payload === 'string') {
@@ -1681,20 +1740,40 @@ test('IC-705 FIX zoomed crop follows the VFO centred, clamps at the window edge,
       .filter((receipt) => receipt.sub === 0x14).at(-1)?.data[1],
       { timeout: 30_000 }).toBe(1);
     await expect.poll(() => frames.at(-1)?.view, { timeout: 30_000 }).toEqual([...FIX_WINDOW]);
+    // Same mode-change re-proof window as the unzoomed row: the marker
+    // and the overlay hide for a few seconds after the FIX click with no
+    // tuning at all. The zoom and the burst start only after both are
+    // back, so a hidden marker can never be blamed on the crop or the
+    // burst.
+    await expect.poll(() => marker.count(), { timeout: 30_000 }).toBe(1);
+    await expect(page.locator('.waterfall-content .passband-overlay')).toBeVisible({ timeout: 30_000 });
 
     // One ZOOM in inside FIX: a client crop narrower than the window. The
-    // crop writes nothing to the radio (owner rule); the window halves.
+    // crop writes nothing to the radio (owner rule) and stays client-side:
+    // the wire keeps carrying the fixed window (the radio owns it), so the
+    // crop is read from the rendered view (data-passband-gates), never
+    // from the frames. The rendered width halves.
+    const readCropHz = async (): Promise<[number, number] | null> => {
+      const raw = await page.locator('.spectrum-panel').first()
+        .getAttribute('data-passband-gates').catch(() => null);
+      if (!raw) return null;
+      const gates = JSON.parse(raw) as { viewStartHz?: unknown; viewEndHz?: unknown };
+      if (typeof gates.viewStartHz !== 'number' || typeof gates.viewEndHz !== 'number') return null;
+      return [gates.viewStartHz, gates.viewEndHz];
+    };
     await page.getByRole('button', { name: 'More scope controls' }).first().click();
     await page.getByTestId('scope-zoom-in').first().click();
     await page.keyboard.press('Escape');
-    const cropWidthHz = FIX_WINDOW[1] - FIX_WINDOW[0];
-    await expect.poll(() => {
-      const latest = frames.at(-1);
-      return latest ? latest.view[1] - latest.view[0] : 0;
-    }, { timeout: 30_000 }).toBeLessThan(cropWidthHz);
-    const croppedView = frames.at(-1)!.view;
+    const fullWidthHz = FIX_WINDOW[1] - FIX_WINDOW[0];
+    await expect.poll(async () => {
+      const crop = await readCropHz();
+      return crop ? crop[1] - crop[0] : 0;
+    }, { timeout: 30_000 }).toBeLessThan(fullWidthHz);
+    const croppedView = (await readCropHz())!;
     const croppedWidthHz = croppedView[1] - croppedView[0];
-    expect(croppedWidthHz, 'zoom-in inside FIX did not narrow the crop').toBeLessThan(cropWidthHz);
+    expect(croppedWidthHz, 'zoom-in inside FIX did not narrow the crop').toBeLessThan(fullWidthHz);
+    // The wire still carries the radio-owned window under the crop.
+    await expect.poll(() => frames.at(-1)?.view, { timeout: 30_000 }).toEqual([...FIX_WINDOW]);
     await page.waitForTimeout(1000);
     setupDone = true;
 
@@ -1745,19 +1824,18 @@ test('IC-705 FIX zoomed crop follows the VFO centred, clamps at the window edge,
       && s.markerX !== null);
     const centreOff = unclamped.map((s) => {
       const centre = (s.gates!.viewStartHz + s.gates!.viewEndHz) / 2;
-      return Math.abs((markerFrequency(s) ?? NaN) - centre);
-    }).filter((v) => Number.isFinite(v));
-    const maxCentreOff = centreOff.length > 0 ? Math.max(...centreOff) : NaN;
+      return { t: s.tPerf - burstStartPerf, off: Math.abs((markerFrequency(s) ?? NaN) - centre) };
+    }).filter((v) => Number.isFinite(v.off));
+    const maxCentreOff = centreOff.length > 0 ? Math.max(...centreOff.map((v) => v.off)) : NaN;
+    const maxCentreT = centreOff.length > 0
+      ? centreOff.find((v) => v.off === maxCentreOff)!.t : NaN;
+    const centreOffTail = centreOff.slice(-5).map((v) => `${Math.round(v.t)}:${v.off.toFixed(0)}`);
     // Crop inside the window always; clamp: the crop reaches the edge.
     const gatedAll = inWindow.filter((s) => s.gates !== null
       && Number.isFinite(s.gates.viewStartHz) && Number.isFinite(s.gates.viewEndHz));
     const outside = gatedAll.filter((s) =>
       s.gates!.viewStartHz < FIX_WINDOW[0] - 1 || s.gates!.viewEndHz > FIX_WINDOW[1] + 1);
     const reachedEdge = gatedAll.some((s) => FIX_WINDOW[1] - s.gates!.viewEndHz <= 1);
-    const markerAdvance = checkAdvanceAndSettle({
-      name: 'marker', values: inWindow.map((s) => ({ t: s.tPerf, v: markerFrequency(s) })),
-      confirmedHz: afterHz, toleranceHz: toleranceHz + hzPerPx, minimumAdvanceHz: stepHz,
-    });
     const burstFrames = frames.filter((f) => f.tWall >= burstStartWall && f.tWall <= burstEndWall);
     const hatchedBurst = inWindow.filter((s) => s.hatchCount > 0);
     const gaps = passbandGaps(passbandSamples, burstStartPerf, settleEndPerf);
@@ -1766,15 +1844,21 @@ test('IC-705 FIX zoomed crop follows the VFO centred, clamps at the window edge,
     const newScopeSets = receiptsAfter.slice(receiptsBaseline)
       .filter((receipt) => (receipt.sub === 0x15 && receipt.data.length === 6) || receipt.sub === 0x14);
     const spanText = await page.getByTestId('scope-span-value').first().innerText().catch(() => null);
+    // Facts first: the advance/settle checks below throw, so the measured
+    // facts print before any of them can fail.
+    const markerValues = inWindow.map((s) => markerFrequency(s))
+      .filter((v): v is number => v !== null && Number.isFinite(v));
     console.log(`[held-key FIX zoomed interim] ` +
       `marker maxBackward=${markerSeries.maxBackwardHz}Hz ` +
       `cropStart maxBackward=${cropStart.maxBackwardHz}Hz cropEnd maxBackward=${cropEnd.maxBackwardHz}Hz ` +
+      `marker n=${markerValues.length} min=${markerValues.length ? Math.min(...markerValues) : 'none'} ` +
+      `max=${markerValues.length ? Math.max(...markerValues) : 'none'} ` +
       `unclamped=${unclamped.length} maxCentreOff=${Number.isFinite(maxCentreOff) ? maxCentreOff.toFixed(0) : 'none'}Hz ` +
+      `atT=${Number.isFinite(maxCentreT) ? Math.round(maxCentreT) : 'none'}ms tail=[${centreOffTail}] ` +
       `outside=${outside.length} reachedEdge=${reachedEdge} ` +
-      `marker advance=${markerAdvance.advanceHz}Hz settle=${markerAdvance.settleHz}Hz ` +
       `burstFrames=${burstFrames.length} longGaps=${longGaps.length} hatched=${hatchedBurst.length} ` +
       `spanText=${spanText} cropWidth=${croppedWidthHz} before=${beforeHz} after=${afterHz} ` +
-      `newScopeSets=${newScopeSets.length}`);
+      `setFreq=${setFreqCommands.length} newScopeSets=${newScopeSets.length}`);
     await info.attach('held-key-fix-zoomed-interim', {
       body: JSON.stringify({
         params: { fixedView: FIX_WINDOW, cropWidthHz: croppedWidthHz, seed, downs: FIX_BURST_DOWNS, stepHz },
@@ -1783,10 +1867,13 @@ test('IC-705 FIX zoomed crop follows the VFO centred, clamps at the window edge,
           markerBackwardHz: markerSeries.maxBackwardHz,
           cropStartBackwardHz: cropStart.maxBackwardHz,
           cropEndBackwardHz: cropEnd.maxBackwardHz,
+          markerValues: { n: markerValues.length,
+            min: markerValues.length ? Math.min(...markerValues) : null,
+            max: markerValues.length ? Math.max(...markerValues) : null },
           unclampedSamples: unclamped.length, maxCentreOffHz: maxCentreOff,
           outsideWindow: outside.length, reachedEdge,
-          markerAdvanceHz: markerAdvance.advanceHz, markerSettleHz: markerAdvance.settleHz,
         },
+        setFreqCommands,
         frames: burstFrames.map((f) => ({ view: f.view, coverage: f.coverage })),
         gates: gatedAll.map((s) => [s.gates!.viewStartHz, s.gates!.viewEndHz]),
         newScopeSets,
@@ -1794,6 +1881,10 @@ test('IC-705 FIX zoomed crop follows the VFO centred, clamps at the window edge,
         longGaps: longGaps.length,
       }, null, 2),
       contentType: 'application/json',
+    });
+    const markerAdvance = checkAdvanceAndSettle({
+      name: 'marker', values: inWindow.map((s) => ({ t: s.tPerf, v: markerFrequency(s) })),
+      confirmedHz: afterHz, toleranceHz: toleranceHz + hzPerPx, minimumAdvanceHz: stepHz,
     });
 
     // (b1) smooth: no backward moves (crop edges, marker).
