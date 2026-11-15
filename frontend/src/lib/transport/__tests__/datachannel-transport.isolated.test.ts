@@ -81,8 +81,9 @@ describe('DataChannelTransport', () => {
     t.onText((text) => texts.push(text));
     t.onBinary((data) => binaries.push(data));
     t.onClose((info) => closes.push(info));
-    expect(t.state).toBe('connecting');
+    expect(t.state).toBe('closed');
     t.open('ignored://label-is-the-connection');
+    expect(t.state).toBe('connecting');
     ch.simulateOpen();
     expect(t.state).toBe('open');
     expect(opens).toHaveLength(1);
