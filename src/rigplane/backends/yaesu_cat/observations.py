@@ -7,11 +7,12 @@ import logging
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Protocol, TypeVar, cast
+from typing import TYPE_CHECKING, Literal, Protocol, TypeVar, cast
 
 from rigplane.core.acquisition_scheduler import (
     AcquisitionScheduler,
     DeclaredCommandDefect,
+    StartupReadNote,
     resolve_available_when,
 )
 from rigplane.core.exceptions import CommandError
@@ -508,9 +509,12 @@ class YaesuObservationAdapter:
                 KeyError,
                 CatCommandRejected,
             ) as exc:
-                # Same rule as ``_safe_read``: record the defect (what the
-                # startup gate reads), skip this field, keep the cycle.
-                self._record_declared_defect("ptt", exc, (_PTT,))
+                # MOR-4456: PTT left the startup-critical set — a refused
+                # or malformed PTT read is served unknown instead of
+                # recording the defect the startup gate reads (``_safe_read``
+                # records only for critical paths; the gate names a lapsed
+                # path on its deadline WARNING). Skip this field, keep the
+                # cycle.
                 self._log_field_skip(
                     "ptt",
                     "Skipping field %s — declared read refused or malformed: %s",
@@ -522,19 +526,24 @@ class YaesuObservationAdapter:
                 raise
             else:
                 if reading.failure is not None:
-                    publish_ptt_error()
                     if reading.failure == "timeout":
-                        # MOR-4456: a PTT-only timeout is contained in the
-                        # lane — unknown is already published above and the
-                        # cycle continues — but the critical-path COUNT is
-                        # kept, so the unchanged gate still ends startup
-                        # after the three reads. Only transport failures
-                        # still raise below. (MOR-2757: the count is taken
-                        # here because the raised ``CatTimeoutError`` used
-                        # to be built here; the tag carries no wire
-                        # command, so the defect names the field only.)
-                        exc = CatTimeoutError("PTT read failed: timeout")
-                        self._count_critical_read_timeouts("ptt", exc, (_PTT,))
+                        # The lane's only transmit-state read is the ``TX;``
+                        # token query (the poller test pins the wire), so
+                        # the outcome carries the real command even though
+                        # the reading itself names none. A refused-or-garbled
+                        # read ("read-error") files nothing: the reading no
+                        # longer says which of the two it was.
+                        self._record_noncritical_outcome(
+                            "ptt",
+                            (_PTT,),
+                            StartupReadNote(command="TX;", cause="timed out"),
+                        )
+                    publish_ptt_error()
+                    # MOR-4456: PTT left the startup-critical set — a silent
+                    # read is served unknown above and the cycle continues
+                    # with what it accumulated (the MOR-4433 containment,
+                    # one lane over). Only a transport failure still raises:
+                    # link quality keeps the reconnect path.
                     if reading.failure == "transport":
                         raise CatTransportError("PTT read failed: transport")
                 else:
@@ -1797,19 +1806,19 @@ class YaesuObservationAdapter:
                 )
         # split (MOR-446) — GLOBAL tx_state bool (CAT ``ST``), gated on the
         # ``split`` runtime capability, mirroring the legacy poller's
-        # ``"split" in caps`` gate. MOR-4456: an unanswered split read is
-        # contained as an absent observation within its field (the
-        # MOR-4433 ``_read_tx_target`` containment shape) — the completed
-        # fields and the reads after split still reach the store — with
-        # its critical-path accounting kept, so the unchanged gate still
-        # ends startup after three attempts.
+        # ``"split" in caps`` gate. MOR-4456: split left the
+        # startup-critical set — a refused or unanswered split read is a
+        # counted non-critical outcome, served absent for the cycle (the
+        # PTT-lane and MOR-4433 ``_read_tx_target`` containment shape), so
+        # ``demoted`` files it into the scheduler's outcome records instead
+        # of raising or recording the defect that ends startup.
         if self._has_runtime_capability("split") and self._can_poll(_SPLIT):
             ok, value = await self._safe_read(
                 "split",
                 self.radio.read_split(),
                 lambda: self.radio.read_split(),
                 paths=(_SPLIT,),
-                contain_timeout=True,
+                demoted=True,
             )
             if ok:
                 observations.append(
@@ -1978,7 +1987,7 @@ class YaesuObservationAdapter:
         remake: Callable[[], Awaitable[_T]],
         *,
         paths: tuple[FieldPath, ...] = (),
-        contain_timeout: bool = False,
+        demoted: bool = False,
     ) -> tuple[bool, _T | None]:
         """Await one field read, classifying a FIELD-level CAT failure.
 
@@ -2017,25 +2026,28 @@ class YaesuObservationAdapter:
         so the 3rd unanswered read records the declared-command defect that
         ends startup. The re-raise keeps the reconnect path unchanged.
 
-        MOR-4456: ``contain_timeout`` serves a contained lane's unanswered
-        read as absent for the cycle — completed fields still reach the
-        store and the reads after this one still run — while the
-        critical-path accounting above is kept, so the unchanged gate
-        still ends startup after three attempts. Only timeouts are
-        contained; a refused or malformed read keeps the defect record
-        below, and transport failures still raise untouched.
+        MOR-4456: ``demoted`` marks a read whose paths left the critical
+        set — split today. A demoted timeout is contained here as the
+        lane's own non-critical outcome (counted for the gate, served
+        absent for the cycle) instead of raised; a twice-refused demoted
+        read records the refusal the same way instead of the defect; a
+        malformed demoted read records nothing (it is neither). The defect
+        record stays armed only for critical paths.
         """
         try:
             value = await read
         except CatTimeoutError as exc:
-            self._count_critical_read_timeouts(label, exc, paths)
-            if contain_timeout:
+            if demoted:
+                self._record_noncritical_outcome(
+                    label, paths, self._note_from_wire_error(exc, "timed out")
+                )
                 return False, None
+            self._count_critical_read_timeouts(label, exc, paths)
             raise
         except (CatParseError, CatFormatError, ValueError, KeyError) as exc:
             # ValueError covers _read_meter / int() malformed-frame failures;
             # CatParse/FormatError subclass ValueError but are listed for clarity.
-            if paths:
+            if paths and not demoted:
                 self._record_declared_defect(label, exc, paths)
             self._log_field_skip(
                 label,
@@ -2047,7 +2059,11 @@ class YaesuObservationAdapter:
             try:
                 value = await remake()
             except CatCommandRejected as retry_exc:
-                if paths:
+                if demoted:
+                    self._record_noncritical_outcome(
+                        label, paths, self._note_from_wire_error(retry_exc, "refused")
+                    )
+                elif paths:
                     self._record_declared_defect(label, retry_exc, paths)
                 self._log_field_skip(
                     label,
@@ -2056,7 +2072,7 @@ class YaesuObservationAdapter:
                 )
                 return False, None
             except (CatParseError, CatFormatError, ValueError, KeyError) as retry_exc:
-                if paths:
+                if paths and not demoted:
                     self._record_declared_defect(label, retry_exc, paths)
                 self._log_field_skip(
                     label,
@@ -2121,6 +2137,38 @@ class YaesuObservationAdapter:
             counts[path] = count
             if count >= _CRITICAL_READ_TIMEOUT_ATTEMPTS:
                 self._record_declared_defect(label, exc, (path,))
+
+    def _record_noncritical_outcome(
+        self,
+        label: str,
+        paths: tuple[FieldPath, ...],
+        note: StartupReadNote,
+    ) -> None:
+        """File one demoted read's outcome for the startup gate (MOR-4456).
+
+        The lane builds the note from the wire command it just used — the
+        exception's own ``command`` at ``_safe_read`` sites, the lane's
+        single ``TX;`` token query for PTT — so the gate names the real
+        ``TX;``/``ST;`` with no per-radio table. Nothing is filed when the
+        radio carries no scheduler (test doubles without one).
+        """
+
+        scheduler = getattr(self.radio, "_acquisition_scheduler", None)
+        if not isinstance(scheduler, AcquisitionScheduler):
+            return
+        scheduler.record_direct_read_outcome(paths, note)
+
+    @staticmethod
+    def _note_from_wire_error(
+        exc: Exception,
+        cause: Literal["refused", "timed out"],
+    ) -> StartupReadNote:
+        """Build the outcome note from the wire error's own command."""
+
+        command = getattr(exc, "command", "")
+        if not isinstance(command, str):
+            command = ""
+        return StartupReadNote(command=command, cause=cause)
 
     def _record_declared_defect(
         self,

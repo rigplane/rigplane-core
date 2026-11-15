@@ -7,11 +7,12 @@ import logging
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Any, Sequence
+from typing import TYPE_CHECKING, Any, Literal, Sequence
 
 from ...exceptions import CommandError
 from ...exceptions import ConnectionError as RadioConnectionError
 from ...exceptions import TimeoutError as RadioTimeoutError
+from ...core.acquisition_scheduler import AcquisitionScheduler, StartupReadNote
 from ...core.command_dispatch import ManagedWriteAdmission, execute_command_intent
 from ...core.radio_protocol import (
     PhysicalWriteReadbackResult,
@@ -236,6 +237,22 @@ class RigctldClientObservationPoller:
         except Exception:
             logger.warning("rigctld-client transport reconnect failed", exc_info=True)
 
+    def _record_ptt_outcome(self, cause: Literal["refused", "timed out"]) -> None:
+        """File the transmit-state read's outcome for the startup gate (MOR-4456).
+
+        The medium lane's only transmit-state read is the ``t`` query, so
+        the note carries the real wire command. Transport failures never
+        reach here — they raise unwrapped above.
+        """
+
+        scheduler = getattr(self._radio, "_acquisition_scheduler", None)
+        if not isinstance(scheduler, AcquisitionScheduler):
+            return
+        scheduler.record_direct_read_outcome(
+            (FieldPath.global_("tx_state", "ptt"),),
+            StartupReadNote(command="t", cause=cause),
+        )
+
     async def _poll_medium(self) -> None:
         from .observations import RigctldClientObservationAdapter
 
@@ -246,46 +263,64 @@ class RigctldClientObservationPoller:
         observations: list["Observation"] = list(
             await adapter.read_freq_mode_controls()
         )
-
-        def _publish_unknown_ptt() -> None:
-            if not self._provider_generation_is_current(provider_generation):
-                return
-            unknown = adapter.observed_ptt_observation(None)
-            try:
-                self._callback(
-                    self._stamp_provider_generation((unknown,), provider_generation)
+        # MOR-4456: the answered reads publish first (annotated, exactly
+        # once — the final batch below carries only what this one did
+        # not); the PTT outcome follows on its own publication, before the
+        # VFO read. The order is pinned by the adapter tests. A ``t``
+        # timeout fences the generation, so anything unpublished is
+        # discarded instead of reaching the store half-answered.
+        published_count = 0
+        if self._provider_generation_is_current(provider_generation):
+            self._callback(
+                self._annotate_readback_observations(
+                    self._stamp_provider_generation(observations, provider_generation)
                 )
-            except Exception:
-                logger.warning(
-                    "rigctld-client PTT error observation publication failed",
-                    exc_info=True,
-                )
-
-        ptt: Observation | None = None
+            )
+            published_count = len(observations)
+        # MOR-4456: the transmit-state read is optional — a radio that
+        # never answers ``t`` must not take the receive state down with it
+        # every cycle (BEHAVIOUR CHANGE: loss of the link is detected by
+        # the frequency/mode reads now). A ``t`` timeout still raises (one
+        # reconnect per cycle, no beta1 demote); a refused ``t`` (``RPRT``)
+        # never closed the transport, so it stays in-cycle: unknown for
+        # this cycle, asked again on the next.
+        raw_ptt: Observation | None = None
         try:
-            ptt = await adapter.read_ptt()
-        except (asyncio.TimeoutError, RadioTimeoutError, RadioConnectionError):
-            _publish_unknown_ptt()
+            raw_ptt = await adapter.read_ptt()
+        except (asyncio.TimeoutError, RadioTimeoutError):
+            # PTT left the startup-critical set — file the timeout as a
+            # typed note for the gate's named WARNING, then raise: the
+            # timeout still closes the connection and the poller still
+            # reconnects for the next cycle.
+            self._record_ptt_outcome("timed out")
+            raise
+        except RadioConnectionError:
             raise
         except CommandError:
-            # MOR-4456: a refused (or malformed) `t` is an answer, not a
-            # link failure — publish unknown for this cycle and keep the
-            # cycle: the VFO and web-command readbacks still run and
-            # publish below. Only timeouts and transport errors raise, as
-            # before (a `t` timeout still closes the connection, still
-            # reconnects, and still counts in `_critical_read_timeouts`).
-            _publish_unknown_ptt()
-        if ptt is not None and self._provider_generation_is_current(
-            provider_generation
-        ):
-            observed_ptt = adapter.observed_ptt_observation(
-                ptt.value, timestamp_monotonic=ptt.timestamp_monotonic
-            )
-            self._callback(
-                self._stamp_provider_generation((observed_ptt,), provider_generation)
-            )
-        if ptt is not None:
-            observations.append(ptt)
+            # A refused (or malformed) `t` is an answer, not a link
+            # failure — file it as a typed note (the refusal drops PTT
+            # from the gate's outstanding set at once) and publish unknown
+            # for this cycle; the VFO and web-command readbacks still run
+            # and publish below. Only timeouts and transport errors raise.
+            self._record_ptt_outcome("refused")
+            observations.append(adapter.observed_ptt_observation(None))
+        else:
+            if self._provider_generation_is_current(provider_generation):
+                self._callback(
+                    self._annotate_readback_observations(
+                        self._stamp_provider_generation(
+                            (
+                                adapter.observed_ptt_observation(
+                                    raw_ptt.value,
+                                    timestamp_monotonic=raw_ptt.timestamp_monotonic,
+                                ),
+                            ),
+                            provider_generation,
+                        )
+                    )
+                )
+        if raw_ptt is not None:
+            observations.append(raw_ptt)
         active_vfo = await adapter.read_active_vfo()
         if active_vfo is not None:
             observations.append(active_vfo)
@@ -295,9 +330,15 @@ class RigctldClientObservationPoller:
         if not self._provider_generation_is_current(provider_generation):
             self._finish_readbacks(self._pending_readback_entries, "provider_lost")
             return
+        # MOR-4456: the early batch above already published (and
+        # reconciled) the freq/mode/control reads, and the PTT outcome has
+        # its own publication — the final batch carries only the tail, so
+        # no observation is published twice.
         self._callback(
             self._annotate_readback_observations(
-                self._stamp_provider_generation(observations, provider_generation)
+                self._stamp_provider_generation(
+                    observations[published_count:], provider_generation
+                )
             )
         )
 
