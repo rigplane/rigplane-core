@@ -1110,6 +1110,11 @@ class RigctldClientRadio:
             # before the web/station readiness check (managed startup probes
             # PTT in ``bind_state_store``): heal the link with the poller's own
             # ``_reconnect_transport`` idiom; PTT stays unobserved.
+            # The probe timeout also latches the medium-lane demotion, so
+            # the first poll cycle does not ask ``t`` again (a second
+            # unanswered request whose timeout would retire the provider
+            # the probe just published). Solicited reads are unaffected:
+            # only the poll cycle stops asking.
             if not self._intentional_disconnect and not self._transport.connected:
                 try:
                     await self._transport.connect()
@@ -1117,6 +1122,7 @@ class RigctldClientRadio:
                     logger.warning(
                         "rigctld-client transport reconnect failed", exc_info=True
                     )
+            self._demote_ptt_read_after_timeout()
             return TxStateReading(value=None, failure="timeout")
         except Exception:
             return TxStateReading(value=None, failure="read-error")

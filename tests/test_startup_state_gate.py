@@ -1022,6 +1022,8 @@ class _TcpRigctldServer:
         "m": ("USB", "2400"),
         "v": ("VFOA",),
         "t": ("0",),
+        "T 1": ("RPRT 0",),
+        "T 0": ("RPRT 0",),
         "l RF": ("128",),
         "l AF": ("128",),
         "l PREAMP": ("0",),
@@ -1044,6 +1046,7 @@ class _TcpRigctldServer:
         self.t_requests = 0
         self.t_commands = 0
         self.t_connection_ids: set[int] = set()
+        self.tx_commands: list[str] = []
         self.refused_requests = 0
         self.connections = 0
         self._conn_serial = 0
@@ -1076,6 +1079,8 @@ class _TcpRigctldServer:
                     self.f_requests += 1
                 if command == "t":
                     self.t_commands += 1
+                if command in ("T 1", "T 0"):
+                    self.tx_commands.append(command)
                 if command == self.silent:
                     # Never answer: the real transport's read timeout fires,
                     # closing the connection from the client side.
@@ -1473,6 +1478,107 @@ async def test_managed_startup_survives_an_unanswered_ptt_probe(
         and "after 10s" in r.getMessage()
         for r in caplog.records
     ), "the deadline WARNING must name the unanswered path"
+
+
+@pytest.mark.asyncio
+async def test_managed_startup_with_silent_t_probes_once_and_keeps_local_ptt(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """MOR-4456 P1: the managed-startup PTT probe demotes the poll-cycle ``t`` read.
+
+    Production CLI startup runs ``ManagedTxComposition.bind_state_store``
+    -> ``_record_startup_release`` -> ``radio.read_transmit_state`` BEFORE
+    the first poll cycle. On a silent ``t`` that probe times out and
+    reopens the transport — but without latching the demotion flag, so the
+    first poll cycle asks ``t`` again: a second unanswered request, a third
+    connection, and the second timeout advances the bound store generation,
+    which clears the active provider without republishing it. Receive
+    polling recovers but local managed PTT stays unavailable.
+
+    Through the full production managed composition on the real TCP fake
+    (silent ``t`` only): exactly one ``t`` request in total, exactly two
+    connections in total (the probe-timeout reopen only), three successive
+    receive cycles still served over HTTP, and a local unbound
+    ``submit_ptt`` admitted and on the wire (cf.
+    ``test_managed_key_admitted_while_ptt_unobserved_after_start_without_ptt``).
+    """
+    from rigplane.runtime.managed_tx_composition import (
+        ManagedTxComposition,
+        install_managed_tx_composition,
+    )
+    from rigplane.runtime.managed_tx_state import ManagedTxOutcome
+    from rigplane.runtime.tx_interlock import RfState, resolve_rf_state
+    from rigplane.web.web_startup import (
+        attach_managed_tx_composition,
+        prepare_managed_tx_observation_generation,
+    )
+
+    fake = _TcpRigctldServer(silent="t")
+    await fake.start()
+    try:
+        radio = _real_rigctld_radio(fake)
+        composition = ManagedTxComposition(
+            radio, config_path=tmp_path / "managed-tx.json"
+        )
+        install_managed_tx_composition(radio, composition)
+        await radio.connect()
+        server = WebServer(radio, _gated_config())
+        prepare_managed_tx_observation_generation(server)
+        await composition.transport_ready(radio)
+        await composition.bind_state_store(server.command_state_store)
+        attach_managed_tx_composition(server, composition)
+        try:
+            await asyncio.wait_for(server.start(), timeout=60.0)
+            # ONE unanswered ``t`` (the startup probe) and its ONE reopen:
+            # the poller must never ask ``t`` again.
+            assert fake.connections == 2
+            assert fake.t_requests == 1
+            assert fake.t_commands == 1
+            port = int(server._server.sockets[0].getsockname()[1])  # noqa: SLF001
+            base_f = fake.f_requests
+            for _ in range(3):
+                await await_until(
+                    lambda: fake.f_requests >= base_f + 1,
+                    timeout=30.0,
+                    description="another receive cycle with t demoted",
+                )
+                base_f = fake.f_requests
+                status, body = await _http_get_json(port, "/api/v1/state")
+                assert status == 200
+                assert body["main"]["freqHz"] == 14074000
+                assert body["main"]["mode"] == "USB"
+            assert fake.t_requests == 1
+            assert fake.t_commands == 1
+            assert fake.connections == 2
+            # Local managed PTT is available: RF state is UNKNOWN (PTT
+            # unobserved, so no radio-TX refusal) and a local unbound key
+            # is admitted and reaches the wire.
+            store = server.command_state_store
+            assert resolve_rf_state(store.snapshot()) is RfState.UNKNOWN
+            assert composition.authority.radio_tx_refusal_nowait() is None
+            pressed = await composition.authority.submit_ptt(True, "memory-primary")
+            assert pressed.outcome is ManagedTxOutcome.ACCEPTED
+            await pressed.wait_settlement()
+            assert "T 1" in fake.tx_commands
+            # The unkey is issued but never CONFIRMED on a silent ``t``:
+            # the release readback times out, so the authority keeps the
+            # release owed and retries by design (fail-closed MOR-2862).
+            # Await the wire effect, not the confirmation.
+            released = await composition.authority.submit_force_off()
+            await await_until(
+                lambda: "T 0" in fake.tx_commands,
+                timeout=30.0,
+                description="the unkey reaching the rig",
+            )
+            assert released.outcome is ManagedTxOutcome.ACCEPTED
+            await server.stop()
+        finally:
+            with suppress(Exception):
+                await server.stop()
+            await composition.shutdown(asyncio.Event())
+            await radio.disconnect()
+    finally:
+        await fake.stop()
 
 
 @pytest.mark.asyncio
