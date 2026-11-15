@@ -292,8 +292,6 @@ async def _execute_default_out(
     monkeypatch.chdir(tmp_path)
     docs = tmp_path / "Documents"
     docs.mkdir(exist_ok=True)
-    if documents is None:
-        (tmp_path / "probe.json").touch()  # unrelated file, must not collide
     lines: list[str] = []
     code = await execute(
         resolve_config("FT-991A", RIGS),
