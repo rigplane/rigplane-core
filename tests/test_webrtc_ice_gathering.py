@@ -650,6 +650,18 @@ async def test_unreachable_second_interface_does_not_stall_gather(
             ice_servers=[IceServer(urls=[f"stun:127.0.0.1:{port}"])],
         )
         elapsed = time.monotonic() - start
+        # The host sockets of BOTH addresses belong to the real connection
+        # (connectivity checks on the second interface reach live ICE
+        # state), and the STUN setting cleared for the host-only call is
+        # restored afterwards.
+        session = manager._sessions[result["sessionId"]]  # noqa: SLF001
+        ice_transports = session.pc._RTCPeerConnection__iceTransports  # noqa: SLF001
+        assert len(ice_transports) == 1
+        connection = next(iter(ice_transports)).iceGatherer._connection  # noqa: SLF001
+        assert connection.stun_server is not None
+        protocols = list(connection._protocols)  # noqa: SLF001
+        assert protocols
+        assert all(protocol.receiver is connection for protocol in protocols)
     finally:
         transport.close()
         await manager.close_all()

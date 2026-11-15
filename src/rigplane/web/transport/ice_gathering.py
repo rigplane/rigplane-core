@@ -62,7 +62,14 @@ Host candidates still come from every policy-kept address; when the host
 has no default-route address the hook falls back to today's behaviour
 (all kept addresses may query the servers, bounded by the cap). This
 split is part of the upstream proposal: stop waiting once one srflx per
-family is obtained. The hooks read the active policy from a
+family is obtained. Address families: aioice queries STUN for IPv4 host
+addresses only, so server-reflexive candidates are IPv4; the IPv6
+addresses on the default-route interface (Linux/macOS mark the whole
+interface) join the first call and IPv6 still contributes host candidates.
+Two default routes (a metric tie, or a full-tunnel VPN that becomes the
+default): every default-route address is in the first call and may query
+the servers; an unreachable one costs at most the ``GATHER_TIMEOUT_S`` cap,
+no further mechanism. The hooks read the active policy from a
 ``contextvars.ContextVar`` that each ``negotiate()`` sets for the duration
 of its gathering (token reset in ``finally``), so concurrent negotiations
 keep their own policies. When no policy is set in the current context
@@ -74,9 +81,9 @@ should be replaced by that parameter.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import contextvars
-import copy
 import ctypes
 import enum
 import importlib
@@ -882,6 +889,18 @@ _active_policy: contextvars.ContextVar[IceGatheringPolicy | None] = (
 _installed: bool = False
 
 
+_GATHER_LOCK_ATTR: Final = "_rigplane_gather_lock"
+
+
+def _gather_lock(connection: Any) -> asyncio.Lock:
+    """One lock per aioice Connection, serialising policy-driven gathers."""
+    lock = getattr(connection, _GATHER_LOCK_ATTR, None)
+    if lock is None:
+        lock = asyncio.Lock()
+        setattr(connection, _GATHER_LOCK_ATTR, lock)
+    return lock
+
+
 def install_ice_gathering_policy() -> None:
     """Install the two aioice hooks ONCE per process (idempotent).
 
@@ -951,23 +970,30 @@ def install_ice_gathering_policy() -> None:
         # IPv4 host address it binds, so one interface that cannot reach
         # the STUN server stalls the whole wait at the cap even though one
         # srflx from the working default route is all the peer needs.
-        # Host candidates still come from every kept address. The second
-        # call runs against a shallow copy of the Connection with the
-        # server settings cleared — never by mutating the shared object:
-        # aioice's gather_candidates runs one such call per component
-        # concurrently on the same Connection, and a temporary clear plus
-        # restore would race across components. The copy shares the
-        # protocol/remote state containers, so its bound transports stay
-        # alive on the real connection for the later checks.
-        first_candidates = await original_component(
-            self, component, first, timeout=bound
-        )
-        host_only = copy.copy(self)
-        host_only.stun_server = None
-        host_only.turn_server = None
-        rest_candidates = await original_component(
-            host_only, component, rest, timeout=bound
-        )
+        # Host candidates still come from every kept address.
+        #
+        # Both calls run on the REAL Connection: the host sockets created
+        # here belong to it (``StunProtocol(self)``), and later ICE state
+        # (remote credentials, role switches, the event waiter) is set on
+        # it, so a copy would answer connectivity checks with stale state.
+        # The server settings are cleared only for the second call and
+        # restored in ``finally``. aioice's ``gather_candidates`` runs one
+        # call per component concurrently on the same Connection, so the
+        # per-Connection lock serialises them while a policy is active.
+        lock = _gather_lock(self)
+        async with lock:
+            first_candidates = await original_component(
+                self, component, first, timeout=bound
+            )
+            saved = (self.stun_server, self.turn_server)
+            self.stun_server = None
+            self.turn_server = None
+            try:
+                rest_candidates = await original_component(
+                    self, component, rest, timeout=bound
+                )
+            finally:
+                self.stun_server, self.turn_server = saved
         return list(first_candidates) + list(rest_candidates)
 
     aioice_ice.get_host_addresses = _filtered_host_addresses
