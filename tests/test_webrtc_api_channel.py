@@ -755,6 +755,70 @@ async def test_api_body_over_1mb_is_rejected() -> None:
         await _tear_down(server, client)
 
 
+async def test_api_body_chunks_retained_by_bytes() -> None:
+    """Many empty + 1-byte chunks: one bytearray bounded by bytes.
+
+    50k empty frames retain nothing; 1-byte chunks accumulate exactly to
+    the 1 MB cap and the next byte refuses ``too_large`` with the slot
+    released. A flood of empties alone never trips the cap and the request
+    still completes.
+    """
+    from rigplane.web import api_channel as api_mod
+
+    def _head_payload() -> bytes:
+        return json.dumps(
+            {"method": "GET", "path": "/api/v1/info", "query": {}, "headers": {}}
+        ).encode()
+
+    def _terminal_errors() -> list[tuple[int, dict[str, str]]]:
+        found: list[tuple[int, dict[str, str]]] = []
+        for frame in conn.sent:
+            assert len(frame) >= 7
+            _version, msg_type, req_id, _flags = struct.unpack(">BBIB", frame[:7])
+            if msg_type == _ERROR:
+                found.append((req_id, json.loads(frame[7:].decode())))
+        return found
+
+    conn = _StubConn()
+    server = WebServer(None, WebConfig())
+    handler = api_mod.ApiChannelHandler(conn, server, ("stub", 0))
+    await handler._on_head(1, _head_payload())
+    state = handler._requests[1]
+    for _ in range(50_000):
+        handler._on_body(1, b"")
+    assert isinstance(state.buf, bytearray)
+    assert len(state.buf) == 0
+    for _ in range(api_mod.MAX_REQUEST_BODY_BYTES):
+        handler._on_body(1, b"x")
+    assert len(state.buf) == api_mod.MAX_REQUEST_BODY_BYTES
+    handler._on_body(1, b"y")
+    assert 1 not in handler._requests
+    assert handler._in_flight == 0
+    await asyncio.sleep(0.2)
+    assert (1, {"code": "too_large", "message": "request body too large"}) in [
+        (req_id, {"code": err["code"], "message": err["message"]})
+        for req_id, err in _terminal_errors()
+    ]
+
+    # Empties alone: no cap trip, the request still completes 200.
+    await handler._on_head(2, _head_payload())
+    for _ in range(10_000):
+        handler._on_body(2, b"")
+    handler._on_end(2)
+    task = handler._requests[2].task
+    assert task is not None
+    await asyncio.wait_for(task, timeout=10.0)
+    assert handler._in_flight == 0
+    statuses = {}
+    for frame in conn.sent:
+        _version, msg_type, req_id, _flags = struct.unpack(">BBIB", frame[:7])
+        if msg_type == _RES_HEAD:
+            statuses[req_id] = json.loads(frame[7:].decode())["status"]
+    assert statuses.get(2) == 200, statuses
+    await handler.run()
+    assert handler.done
+
+
 @_webrtc
 async def test_api_33rd_in_flight_is_busy() -> None:
     """32 requests in flight is the cap: the 33rd HEAD answers ERROR busy."""
