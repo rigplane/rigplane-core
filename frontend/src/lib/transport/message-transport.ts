@@ -18,6 +18,8 @@
  * seam so a second transport is a drop-in later.
  */
 
+import type { ControllerRole } from './controller-client';
+
 export type MessageTransportState = 'connecting' | 'open' | 'closed';
 
 /**
@@ -25,10 +27,13 @@ export type MessageTransportState = 'connecting' | 'open' | 'closed';
  *
  * `protocols` are the session subprotocol tokens to offer (empty when
  * sessionless). The peer echoes the accepted one, visible as
- * `attachedProtocol` once open.
+ * `attachedProtocol` once open. `role` is the caller's controller-session
+ * role; a keyed data-channel attach fails when the caller names none —
+ * the transport never defaults it.
  */
 export interface TransportAttach {
   readonly protocols: readonly string[];
+  readonly role?: ControllerRole;
 }
 
 export interface TransportCloseInfo {

@@ -7,8 +7,11 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { MessageTransport } from '../message-transport';
+import wire from '../api-channel-wire.json';
 import { FakeDataChannel, goldenDocs, goldenAttachText } from './support/fake-datachannel';
-import { DataChannelTransport, ATTACH_RESEND_MS, ATTACH_TIMEOUT_MS } from '../datachannel-transport';
+import {
+  DataChannelTransport, ATTACH_RESEND_MS, ATTACH_TIMEOUT_MS, payloadMatchesContract,
+} from '../datachannel-transport';
 
 // Compile-time check (never called): a native RTCDataChannel is exactly the
 // channel surface the constructor takes.
@@ -41,7 +44,7 @@ describe('DataChannelTransport', () => {
   it('scope: resends the golden attach until the golden ack; audio times out without one', () => {
     const ch = new FakeDataChannel('scope');
     const t = new DataChannelTransport(ch);
-    t.open('ignored://', { protocols: [token] });
+    t.open('ignored://', { protocols: [token], role: 'primary' });
     ch.simulateOpen();
     // The shape is the golden document's (JSON spacing is not contractual).
     const frame = goldenAttachText('attach_scope', KEY);
@@ -57,7 +60,7 @@ describe('DataChannelTransport', () => {
     const starved = new DataChannelTransport(slow);
     const errors: unknown[] = [];
     starved.onError(() => errors.push(true));
-    starved.open('ignored://', { protocols: [token] });
+    starved.open('ignored://', { protocols: [token], role: 'primary' });
     slow.simulateOpen();
     vi.advanceTimersByTime(ATTACH_TIMEOUT_MS - 1);
     expect(errors).toHaveLength(0);
@@ -68,7 +71,7 @@ describe('DataChannelTransport', () => {
   it('control opens on hello, audio on its ack; api sends the keyless golden attach', () => {
     const controlCh = new FakeDataChannel('control');
     const control = new DataChannelTransport(controlCh);
-    control.open('ignored://', { protocols: [token] });
+    control.open('ignored://', { protocols: [token], role: 'primary' });
     controlCh.simulateOpen();
     expect(controlCh.sent.map((f) => JSON.parse(f as string))).toEqual([
       JSON.parse(goldenAttachText('attach_control', KEY)),
@@ -80,7 +83,7 @@ describe('DataChannelTransport', () => {
     expect(control.attachedProtocol).toBe(token);
     const audioCh = new FakeDataChannel('audio');
     const audio = new DataChannelTransport(audioCh);
-    audio.open('ignored://', { protocols: [token] });
+    audio.open('ignored://', { protocols: [token], role: 'primary' });
     audioCh.simulateOpen();
     audioCh.simulateMessage(goldenDocs.attach_ack_audio.text ?? '');
     expect(audio.state).toBe('open');
@@ -100,7 +103,7 @@ describe('DataChannelTransport', () => {
     const ws: MessageTransport = new DataChannelTransport(ch);
     const protocols = [token]; // controllerClient.protocols() with a live grant
     let attached = false;
-    ws.open('wss://rigplane.local/api/v1/ws', protocols.length > 0 ? { protocols } : undefined);
+    ws.open('wss://rigplane.local/api/v1/ws', protocols.length > 0 ? { protocols, role: 'primary' } : undefined);
     ws.onOpen(() => {
       if (ws.attachedProtocol !== protocols[0]) ws.close(); // the ws-client.ts guard
       else attached = true;
@@ -136,6 +139,85 @@ describe('DataChannelTransport', () => {
     expect(t.state).toBe('open');
     expect(ch.textFrames().map((f) => JSON.parse(f as string))).toEqual([goldenDocs.attach_api.decoded]);
   });
+  it('already-open keyed channel: connecting until the ack, the attach first, onOpen once', async () => {
+    const ch = new FakeDataChannel('scope');
+    ch.readyState = 'open';
+    const t = new DataChannelTransport(ch);
+    const opens: unknown[] = [];
+    t.open('ignored://', { protocols: [token], role: 'primary' });
+    t.onOpen(() => opens.push(true)); // registered right after open(): still notified
+    expect(t.state).toBe('connecting'); // not the native channel's readyState
+    expect(() => t.send('early')).toThrow(/not open/);
+    await vi.advanceTimersByTimeAsync(0); // the same start the open event runs
+    expect(ch.textFrames().map((f) => JSON.parse(f))).toEqual([JSON.parse(goldenAttachText('attach_scope', KEY))]);
+    expect(t.state).toBe('connecting');
+    expect(() => t.send('early')).toThrow(/not open/);
+    expect(opens).toEqual([]);
+    ch.simulateMessage(goldenDocs.attach_ack_scope.text ?? '');
+    expect(t.state).toBe('open');
+    expect(opens).toHaveLength(1);
+    ch.simulateMessage(goldenDocs.attach_ack_scope.text ?? '');
+    expect(opens).toHaveLength(1); // exactly once
+  });
+  it('not-yet-open keyed channel: connecting until the ack, the attach first, send refused before it', () => {
+    const ch = new FakeDataChannel('scope');
+    const t = new DataChannelTransport(ch);
+    const opens: unknown[] = [];
+    t.open('ignored://', { protocols: [token], role: 'primary' });
+    t.onOpen(() => opens.push(true));
+    expect(t.state).toBe('connecting');
+    ch.simulateOpen();
+    expect(ch.textFrames().map((f) => JSON.parse(f))).toEqual([JSON.parse(goldenAttachText('attach_scope', KEY))]);
+    expect(t.state).toBe('connecting');
+    expect(() => t.send('early')).toThrow(/not open/);
+    expect(opens).toEqual([]);
+    ch.simulateMessage(goldenDocs.attach_ack_scope.text ?? '');
+    expect(t.state).toBe('open');
+    expect(opens).toHaveLength(1);
+  });
+  it('carries the caller role: primary matches the golden control attach, auxiliary joins an existing primary', () => {
+    const primaryCh = new FakeDataChannel('control');
+    const primary = new DataChannelTransport(primaryCh);
+    primary.open('ignored://', { protocols: [token], role: 'primary' });
+    primaryCh.simulateOpen();
+    expect(primaryCh.textFrames().map((f) => JSON.parse(f))).toEqual([
+      JSON.parse(goldenAttachText('attach_control', KEY)),
+    ]);
+    const auxCh = new FakeDataChannel('control');
+    const auxiliary = new DataChannelTransport(auxCh);
+    auxiliary.open('ignored://', { protocols: [token], role: 'auxiliary' });
+    auxCh.simulateOpen();
+    const sent = JSON.parse(auxCh.textFrames()[0]) as Record<string, unknown>;
+    expect(sent['role']).toBe('auxiliary');
+    expect(payloadMatchesContract(wire.payloads.attach_frame, sent)).toBe(true);
+  });
+  it('refuses a keyed attach that names no role instead of defaulting one', async () => {
+    const ch = new FakeDataChannel('scope');
+    const t = new DataChannelTransport(ch);
+    const errors: unknown[] = [], closes: unknown[] = [];
+    t.onError(() => errors.push(true));
+    t.onClose((info) => closes.push(info));
+    t.open('ignored://', { protocols: [token] });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(ch.sent).toEqual([]); // nothing on the wire
+    expect(errors).toHaveLength(1);
+    expect(closes).toEqual([{ code: 1006, reason: 'roleless attach refused', wasClean: false }]);
+    expect(t.state).toBe('closed');
+  });
+  it('rejects an attach ack whose version is not the committed attach_ack version', () => {
+    const ch = new FakeDataChannel('scope');
+    const t = new DataChannelTransport(ch);
+    const opens: unknown[] = [];
+    t.onOpen(() => opens.push(true));
+    t.open('ignored://', { protocols: [token], role: 'primary' });
+    ch.simulateOpen();
+    ch.simulateMessage('{"type":"attached","v":2,"channel":"scope"}');
+    expect(t.state).toBe('connecting');
+    expect(opens).toEqual([]);
+    ch.simulateMessage(goldenDocs.attach_ack_scope.text ?? '');
+    expect(t.state).toBe('open');
+    expect(opens).toHaveLength(1);
+  });
   it('delivers non-ack frames received before the ack; send waits for open', () => {
     const ch = new FakeDataChannel('scope');
     const t = new DataChannelTransport(ch);
@@ -145,9 +227,9 @@ describe('DataChannelTransport', () => {
     t.onText((text) => texts.push(text));
     t.onBinary((data) => binaries.push(data));
     t.onOpen(() => opens.push(true));
-    t.open('ignored://', { protocols: [token] });
+    t.open('ignored://', { protocols: [token], role: 'primary' });
     ch.simulateOpen();
-    expect(() => t.send('early')).toThrow(/closed transport/);
+    expect(() => t.send('early')).toThrow(/not open/);
     ch.simulateMessage('{"type":"hello"}');
     const bytes = new Uint8Array([9]).buffer as ArrayBuffer;
     ch.simulateMessage(bytes);

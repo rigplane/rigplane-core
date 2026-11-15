@@ -1,6 +1,6 @@
 import { apiFetch } from '../api/api-fetch';
-type Role = 'primary' | 'auxiliary';
-type Grant = { controller_key: string; generation: number; controller_role?: Role };
+export type ControllerRole = 'primary' | 'auxiliary';
+type Grant = { controller_key: string; generation: number; controller_role?: ControllerRole };
 type Sender = (message: { type: 'controller_heartbeat' }) => void;
 
 const messages = {
@@ -41,7 +41,7 @@ export class ControllerClient {
   constructor(private readonly clock = () => performance.now()) {}
 
   get remote(): boolean { return this._remote; }
-  get role(): Role { return this.#grant?.controller_role ?? 'primary'; }
+  get role(): ControllerRole { return this.#grant?.controller_role ?? 'primary'; }
   get epoch(): number { return this._epoch; }
   get session(): boolean { return this.#grant !== null; }
   get sessionMode(): boolean { return this._remote || this._localSessions; }
