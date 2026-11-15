@@ -509,6 +509,7 @@ describe('RX refusal reason routing (MOR-3823)', () => {
     epoch: () => 1,
     current: () => true,
     protocols: () => [] as string[],
+    role: () => 'primary',
   });
 
   /** Set the page hostname, start RX (the user's RX action) against a fresh

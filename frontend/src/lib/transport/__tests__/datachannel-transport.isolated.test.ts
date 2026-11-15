@@ -1,5 +1,5 @@
 /**
- * `DataChannelTransport` unit tests (C5a) over the shared fake channel: the
+ * `DataChannelTransport` unit tests (C5a) over a fake channel: the
  * `MessageTransport` mapping and the per-label attach step, driven by the
  * committed attach documents (`api-channel-golden.json`) — replayed through
  * the real handlers by the Python counterpart
@@ -8,10 +8,66 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { MessageTransport } from '../message-transport';
 import wire from '../api-channel-wire.json';
-import { FakeDataChannel, goldenDocs, goldenAttachText } from './support/fake-datachannel';
+import golden from '../api-channel-golden.json';
 import {
-  DataChannelTransport, ATTACH_RESEND_MS, ATTACH_TIMEOUT_MS, payloadMatchesContract,
+  DataChannelTransport, type DataChannelLike, ATTACH_RESEND_MS, ATTACH_TIMEOUT_MS, payloadMatchesContract,
 } from '../datachannel-transport';
+
+// Fake `RTCDataChannel` (moved from ./support/fake-datachannel.ts, its only
+// user): records sends, lets the test act as the peer, and exposes the
+// committed golden documents' texts.
+
+/** One committed golden document, as far as these tests read it. */
+interface GoldenDoc {
+  readonly text?: string;
+  readonly decoded?: Record<string, unknown> | null;
+}
+const goldenDocs = golden.documents as Record<string, GoldenDoc>;
+
+class FakeDataChannel implements DataChannelLike {
+  readyState: RTCDataChannelState = 'connecting';
+  binaryType: BinaryType = 'blob';
+  readonly label: string;
+  bufferedAmount = 0;
+  sent: Array<string | ArrayBuffer> = [];
+  // This-less callbacks: assignable to the DOM handler types (a function
+  // without a this parameter fits any this), and callable on the fake.
+  onopen: ((ev: Event) => unknown) | null = null;
+  onmessage: ((ev: MessageEvent) => unknown) | null = null;
+  onclose: ((ev: Event) => unknown) | null = null;
+  onerror: ((ev: Event) => unknown) | null = null;
+  constructor(label = 'control') {
+    this.label = label;
+  }
+  send(data: string | ArrayBuffer | ArrayBufferView | Blob): void {
+    this.sent.push(data as string | ArrayBuffer);
+  }
+  close(): void {
+    if (this.readyState === 'closed') return;
+    this.readyState = 'closed';
+    this.onclose?.(new Event('close'));
+  }
+  simulateOpen(): void {
+    this.readyState = 'open';
+    this.onopen?.(new Event('open'));
+  }
+  simulateMessage(data: unknown): void {
+    this.onmessage?.({ data } as unknown as MessageEvent);
+  }
+  simulateError(): void {
+    this.onerror?.(new Event('error'));
+  }
+  textFrames(): string[] {
+    return this.sent.filter((f): f is string => typeof f === 'string');
+  }
+}
+
+/** The golden attach frame's text, `<SESSION-KEY>` substituted live. */
+function goldenAttachText(name: string, key: string): string {
+  const text = goldenDocs[name]?.text;
+  if (text === undefined) throw new Error(`golden document ${name} has no text`);
+  return text.replace('<SESSION-KEY>', key);
+}
 
 // Compile-time check (never called): a native RTCDataChannel is exactly the
 // channel surface the constructor takes.
@@ -23,16 +79,17 @@ const token = `rigplane-controller-v1.${KEY}`;
 describe('DataChannelTransport', () => {
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());
-  it('maps an attach-less channel: events, state, error, close', () => {
-    const ch = new FakeDataChannel('scope');
+  it('maps a keyed control channel: events, state, error, close', () => {
+    const ch = new FakeDataChannel('control');
     const t = new DataChannelTransport(ch);
     const errors: unknown[] = [], closes: unknown[] = [];
     t.onError(() => errors.push(true));
     t.onClose((info) => closes.push(info));
     expect(t.state).toBe('closed');
-    t.open('ignored://label-is-the-connection');
+    t.open('ignored://label-is-the-connection', { protocols: [token], role: 'primary' });
     expect(t.state).toBe('connecting');
     ch.simulateOpen();
+    ch.simulateMessage(JSON.stringify({ type: 'hello', radio: 'IC-7610' }));
     expect(t.state).toBe('open');
     expect(ch.binaryType).toBe('arraybuffer');
     ch.simulateError();
@@ -90,13 +147,37 @@ describe('DataChannelTransport', () => {
     expect(audio.attachedProtocol).toBe(token);
     const apiCh = new FakeDataChannel('api');
     const api = new DataChannelTransport(apiCh);
-    api.open('ignored://'); // keyless: the api acquire path offers no token
+    api.open('ignored://', { protocols: [], role: 'primary' }); // keyless acquire: no token, the caller's role
     apiCh.simulateOpen();
     expect(apiCh.sent.map((f) => JSON.parse(f as string))).toEqual([goldenDocs.attach_api.decoded]);
     expect(api.state).toBe('open'); // reliable delivery: nothing to wait for
     expect(api.attachedProtocol).toBe('');
     vi.advanceTimersByTime(ATTACH_RESEND_MS * 4);
     expect(apiCh.textFrames()).toHaveLength(1); // never resent
+  });
+  it("api: the keyless acquire carries the caller's role, not a default", () => {
+    const ch = new FakeDataChannel('api');
+    const t = new DataChannelTransport(ch);
+    t.open('ignored://', { protocols: [], role: 'auxiliary' });
+    ch.simulateOpen();
+    const sent = JSON.parse(ch.textFrames()[0]) as Record<string, unknown>;
+    expect(sent['role']).toBe('auxiliary');
+    expect(sent['controller_key']).toBeNull();
+    expect(payloadMatchesContract(wire.payloads.attach_frame, sent)).toBe(true);
+    expect(t.state).toBe('open'); // reliable: nothing to wait for
+  });
+  it('api: a missing attach is refused instead of a defaulted primary', async () => {
+    const ch = new FakeDataChannel('api');
+    const t = new DataChannelTransport(ch);
+    const errors: unknown[] = [], closes: unknown[] = [];
+    t.onError(() => errors.push(true));
+    t.onClose((info) => closes.push(info));
+    t.open('ignored://');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(ch.sent).toEqual([]); // nothing on the wire
+    expect(errors).toHaveLength(1);
+    expect(closes).toEqual([{ code: 1006, reason: 'roleless attach refused', wasClean: false }]);
+    expect(t.state).toBe('closed');
   });
   it('serves the WsChannel/AudioManager attach pattern through the MessageTransport interface', () => {
     const ch = new FakeDataChannel('scope');
@@ -119,9 +200,22 @@ describe('DataChannelTransport', () => {
     const errors: unknown[] = [], closes: unknown[] = [];
     t.onError(() => errors.push(true));
     t.onClose((info) => closes.push(info));
-    t.open('ignored://', { protocols: [] }); // a sessionless offer on a keyed channel
+    t.open('ignored://', { protocols: [], role: 'primary' }); // a keyless offer on a keyed channel
     await vi.advanceTimersByTimeAsync(0);
     expect(ch.sent).toEqual([]); // the offer itself is invalid: nothing is sent
+    expect(errors).toHaveLength(1);
+    expect(closes).toEqual([{ code: 1006, reason: 'keyless attach refused', wasClean: false }]);
+    expect(t.state).toBe('closed');
+  });
+  it('refuses an attach-less open on a keyed label: no attach step, error + close', async () => {
+    const ch = new FakeDataChannel('scope');
+    const t = new DataChannelTransport(ch);
+    const errors: unknown[] = [], closes: unknown[] = [];
+    t.onError(() => errors.push(true));
+    t.onClose((info) => closes.push(info));
+    t.open('ignored://');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(ch.sent).toEqual([]); // nothing on the wire
     expect(errors).toHaveLength(1);
     expect(closes).toEqual([{ code: 1006, reason: 'keyless attach refused', wasClean: false }]);
     expect(t.state).toBe('closed');
@@ -131,7 +225,7 @@ describe('DataChannelTransport', () => {
     ch.readyState = 'open';
     const t = new DataChannelTransport(ch);
     const opens: unknown[] = [];
-    t.open('ignored://');
+    t.open('ignored://', { protocols: [], role: 'primary' });
     t.onOpen(() => opens.push(true));
     expect(opens).toEqual([]); // deferred: open(); onOpen(...) still sees it
     await vi.advanceTimersByTimeAsync(0);

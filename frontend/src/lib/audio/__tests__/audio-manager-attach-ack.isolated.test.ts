@@ -173,6 +173,7 @@ describe('audio channel attach acknowledgement compatibility (MOR-4478)', () => 
     audioManager.setControllerBinding({
       remote: () => true, ready: () => true, epoch: () => 7, current: () => true,
       protocols: () => [`rigplane-controller-v1.${'a'.repeat(64)}`],
+      role: () => 'primary',
     });
     return { audioManager, setRxError: vi.mocked(audio.setRxError) };
   }
