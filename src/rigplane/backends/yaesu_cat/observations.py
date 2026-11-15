@@ -2022,8 +2022,10 @@ class YaesuObservationAdapter:
         store and the reads after this one still run — while the
         critical-path accounting above is kept, so the unchanged gate
         still ends startup after three attempts. Only timeouts are
-        contained; a refused or malformed read keeps the defect record
-        below, and transport failures still raise untouched.
+        contained — a timeout on the refusal re-read counts and contains
+        exactly like a first-read timeout; a refused or malformed read
+        keeps the defect record below, and transport failures still raise
+        untouched.
         """
         try:
             value = await read
@@ -2046,6 +2048,11 @@ class YaesuObservationAdapter:
         except CatCommandRejected:
             try:
                 value = await remake()
+            except CatTimeoutError as retry_exc:
+                self._count_critical_read_timeouts(label, retry_exc, paths)
+                if contain_timeout:
+                    return False, None
+                raise
             except CatCommandRejected as retry_exc:
                 if paths:
                     self._record_declared_defect(label, retry_exc, paths)

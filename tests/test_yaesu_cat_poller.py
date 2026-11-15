@@ -676,6 +676,65 @@ async def test_canonical_split_timeout_is_contained_without_reconnect(
 
 
 @pytest.mark.asyncio
+async def test_canonical_split_refusal_then_timeout_stays_contained(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """MOR-4456: a refused split with a silent re-read is served absent and counted.
+
+    Three production slow cycles where ``ST;`` first answers ``?;`` and the
+    single re-read stays silent: the retry timeout gets the same
+    containment flag and critical-read accounting as a plain timeout — no
+    raise, no reconnect, split absent, the controls after split
+    (clarifier) still reach the store every cycle, and the tally reaches
+    the gate threshold on the third cycle exactly like three plain
+    timeouts.
+    """
+    from rigplane.backends.yaesu_cat.observations import (
+        _RIT_FREQ,
+        _RIT_ON,
+        _RIT_TX,
+        _SPLIT,
+    )
+
+    radio, poller, store, clock, emitted = _canonical_ptt_path(
+        monkeypatch, extra_paths=(_SPLIT, _RIT_ON, _RIT_TX, _RIT_FREQ)
+    )
+    _seed_canonical_ptt(radio, store, clock, ObservedPtt.ON)
+    radio.read_clarifier = AsyncMock(return_value=(True, False))  # noqa: SLF001
+    radio.read_clarifier_freq = AsyncMock(return_value=-250)  # noqa: SLF001
+    # Runtime-only-gated slow reads the reduced caps do not cover: answer
+    # them locally so the capped lane asks the wire for nothing but ST;.
+    radio.read_nb_level = AsyncMock(return_value=0)  # noqa: SLF001
+    radio.read_nr_level = AsyncMock(return_value=0)  # noqa: SLF001
+    radio.read_sql_type = AsyncMock(return_value=0)  # noqa: SLF001
+    radio.read_ctcss_tone_index = AsyncMock(return_value=8)  # noqa: SLF001
+
+    async def _answer(command: str) -> str:
+        assert command == "ST;", (
+            f"the capped slow lane must ask nothing else: {command}"
+        )
+        if len(radio._transport.query.await_args_list) % 2 == 1:  # noqa: SLF001
+            raise CatCommandRejected("?;", command="ST;")
+        raise CatTimeoutError("ST timeout", command="ST;")
+
+    radio._transport.query.side_effect = _answer  # noqa: SLF001
+    radio._transport.reconnect = AsyncMock()  # noqa: SLF001
+    for _ in range(3):
+        await poller._poll_slow()
+    radio._transport.reconnect.assert_not_awaited()  # noqa: SLF001
+    assert [  # noqa: SLF001
+        call.args[0] for call in radio._transport.query.await_args_list
+    ] == ["ST;"] * 6
+    assert not any(item.path == _SPLIT for item in emitted)
+    assert radio._critical_read_timeouts == {_SPLIT: 3}  # noqa: SLF001
+    by_path = [item.path for item in emitted]
+    for path in (_RIT_ON, _RIT_TX, _RIT_FREQ):
+        assert by_path.count(path) == 3, (
+            "the controls after split must reach the store every cycle"
+        )
+
+
+@pytest.mark.asyncio
 async def test_canonical_split_refusal_skips_retry_count_and_continues(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
