@@ -32,6 +32,7 @@ __all__ = [
     "PACKET_QUEUE_MAXSIZE",
     "PING_SIZE",
     "PRESSURE_THRESHOLD",
+    "RENUMBER_JUMP",
     "REORDER_WINDOW",
     "RxOrderStats",
 ]
@@ -49,6 +50,7 @@ DISCOVERY_RETRIES = 10
 DISCOVERY_TIMEOUT = 1.0  # seconds per attempt
 BUFSIZE = 500
 MAX_MISSING = 50
+RENUMBER_JUMP = 2000
 # Ordered delivery (MOR-4205): the most sequence numbers that may lie between
 # the oldest undelivered number and the newest one received. Past it the
 # oldest gap is given up even while its retransmit is still being asked for,
@@ -75,16 +77,24 @@ class RxOrderStats:
         duplicate: Packets dropped because their number was already
             delivered or is already held.
         lost: Numbers delivery moved past without their packet: the
-            retransmit budget ran out, the hold reached ``REORDER_WINDOW``,
-            or a jump wider than ``MAX_MISSING`` skipped them.
+            retransmit budget ran out or the hold reached ``REORDER_WINDOW``.
+            Includes burst loss for forward frontier deltas greater than
+            ``MAX_MISSING`` and up to ``RENUMBER_JUMP``.
         late: Packets that arrived after their number was given up; dropped,
             because later packets were already delivered.
+        reanchored: Times the delivery anchor moved onto the live stream
+            after a numbering jump: a run of more than ``REORDER_WINDOW``
+            consecutive packets all behind the anchor, or a forward frontier
+            delta greater than ``RENUMBER_JUMP`` (MOR-4416). One event,
+            however many packets the run held — the run's packets up to the
+            window still count as ``duplicate``/``late`` as before.
     """
 
     reordered: int = 0
     duplicate: int = 0
     lost: int = 0
     late: int = 0
+    reanchored: int = 0
 
 
 # One held inbound data packet, as ``_route_data_packet`` takes it:
@@ -194,6 +204,10 @@ class IcomTransport:
         self._rx_duplicate = 0
         self._rx_lost = 0
         self._rx_late = 0
+        self._rx_reanchored = 0
+        # Consecutive numbered packets seen behind the delivery anchor; a run
+        # past ``REORDER_WINDOW`` re-anchors (MOR-4416, ``_accept_in_order``).
+        self._rx_behind_run = 0
         self._udp_transport: asyncio.DatagramTransport | None = None
         self._udp_peer_addr: tuple[str, int] | None = None
         self._udp_close_event: asyncio.Event | None = None
@@ -249,6 +263,7 @@ class IcomTransport:
             duplicate=self._rx_duplicate,
             lost=self._rx_lost,
             late=self._rx_late,
+            reanchored=self._rx_reanchored,
         )
 
     @property
@@ -316,6 +331,7 @@ class IcomTransport:
         self._rx_next = None
         self._rx_held.clear()
         self._rx_given_up.clear()
+        self._rx_behind_run = 0
         self.remote_id = 0
         while True:
             try:
@@ -786,10 +802,25 @@ class IcomTransport:
 
         if 1 <= delta <= 0x7FFF:
             # Forward progress in uint16 sequence space.
+            if delta > RENUMBER_JUMP:
+                self._reanchor_rx(seq, forward_jump=delta)
+                return
             if delta > MAX_MISSING:
-                logger.warning("Large seq gap: %d -> %d, resetting", last_seq, seq)
                 self.rx_missing.clear()
+                if self.ordered_ingress:
+                    # Settle older held gaps before advancing past this burst.
+                    self._release_in_order()
+                    self._rx_lost += delta - 1
+                    for offset in range(max(1, delta - REORDER_WINDOW), delta):
+                        self._rx_given_up.append((last_seq + offset) & 0xFFFF)
+                    self._rx_next = seq
                 self.rx_last_seq = seq
+                logger.warning(
+                    "CI-V burst loss %d packets (last_seq=%d, new_seq=%d)",
+                    delta - 1,
+                    last_seq,
+                    seq,
+                )
                 return
 
             for offset in range(1, delta):
@@ -967,20 +998,38 @@ class IcomTransport:
     def _accept_in_order(self, packet: _HeldPacket, arrived_after_later: bool) -> None:
         """Hold one numbered data packet and deliver what is now in order."""
         seq = packet[2]
-        nxt = seq if self._rx_next is None else self._rx_next
+        if self._rx_next is None:
+            nxt = seq
+            logger.info(
+                "CI-V ingress anchored at the first numbered packet seq=%d", seq
+            )
+        else:
+            nxt = self._rx_next
         behind = (nxt - seq) & 0xFFFF
         if 0 < behind < 0x8000:
-            # Older than the next number, however far: within one session the
-            # radio never numbers backwards. Its numbering restarts only with
-            # a new session, and a new session is a new transport (or
-            # ``connect``, which resets this state); a radio that restarted
-            # without one delivers nothing new here, and the CI-V data
-            # watchdog's soft reconnect builds that new transport.
-            if seq in self._rx_given_up:
-                self._rx_late += 1
-            else:
-                self._rx_duplicate += 1
-            return
+            # Older than the next number, however far: a duplicate, or late
+            # after its number was given up. One such packet — even far
+            # behind — is never a reason to move the anchor: a stray old
+            # datagram must never be redelivered
+            # (test_an_old_duplicate_far_behind_is_never_redelivered). But a
+            # RUN of them past the window is no reorder: the anchor itself is
+            # stale. A first packet from the previous session's numbering
+            # (the radio may track numbering per client across processes,
+            # MOR-3418) or a radio that restarted its numbering on the live
+            # link (MOR-4416) otherwise drops every fresh packet until the
+            # counter climbs past the anchor — past the CI-V data watchdog.
+            self._rx_behind_run += 1
+            if self._rx_behind_run <= REORDER_WINDOW:
+                if seq in self._rx_given_up:
+                    self._rx_late += 1
+                else:
+                    self._rx_duplicate += 1
+                return
+            self._reanchor_rx(seq)
+            nxt = seq
+            arrived_after_later = False  # the frontier just reset
+        else:
+            self._rx_behind_run = 0
         if seq in self._rx_held:
             self._rx_duplicate += 1
             return
@@ -989,6 +1038,37 @@ class IcomTransport:
         self._rx_held[seq] = packet
         self._rx_next = nxt
         self._release_in_order()
+
+    def _reanchor_rx(self, seq: int, *, forward_jump: int = 0) -> None:
+        """Move the delivery anchor onto the live stream after a numbering jump.
+
+        The held packets and the missing set belong to the dead numbering
+        epoch: the radio never resumes them, and giving them up one by one
+        would count thousands of ``lost``. They drop uncounted — the event
+        itself is counted once (``reanchored``) and logged once, with the old
+        anchor, the new sequence and the run length or forward delta. The
+        frontier (``rx_last_seq``) restarts at the re-anchor packet, so a gap
+        right after the jump is tracked and asked for like any other.
+        """
+        old_next = self._rx_next
+        run = self._rx_behind_run
+        dropped_held = len(self._rx_held)
+        self._rx_held.clear()
+        self.rx_missing.clear()
+        self._rx_given_up.clear()
+        self._rx_behind_run = 0
+        self.rx_last_seq = seq
+        self._rx_next = seq
+        self._rx_reanchored += 1
+        logger.warning(
+            "CI-V ingress re-anchored after a numbering jump "
+            "(old_next=%s new_seq=%d behind_run=%d forward_jump=%d dropped_held=%d)",
+            old_next,
+            seq,
+            run,
+            forward_jump,
+            dropped_held,
+        )
 
     def _release_in_order(self) -> None:
         """Deliver held packets from the next number on, giving up spent gaps.

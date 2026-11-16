@@ -21,7 +21,13 @@ from rigplane.runtime._poller_types import (
     validate_command_queue_entry_currency,
 )
 from rigplane.runtime.radio import CoreRadio
-from rigplane.runtime.managed_tx_state import ManagedTxIntentKind
+from rigplane.runtime.managed_tx_state import (
+    AbortOperation,
+    ActuationOperation,
+    ActuationResult,
+    EffectToken,
+    ManagedTxIntentKind,
+)
 from rigplane.web.handlers.control import ControlHandler
 from rigplane.web.server import WebConfig, WebServer
 from rigplane.web.web_startup import attach_managed_tx_composition
@@ -120,6 +126,15 @@ class _YaesuActuator(_DelayedWire):
 
 class _RigctldActuator(_DelayedWire):
     actuate = RigctldClientRadio.actuate
+    # ``actuate`` skips the unkey read-back while the transmit-state read is
+    # not answerable (MOR-4456); borrow that one concept and its two facts
+    # from the producer, starting answerable like a fresh client.
+    _ptt_read_answerable = RigctldClientRadio._ptt_read_answerable
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._ptt_read_demoted = False
+        self._ptt_read_refused = False
 
     async def _set_ptt(
         self,
@@ -433,3 +448,72 @@ async def test_first_signal_fences_admitted_on_at_final_wire(
         await session.shutdown()
         serving.cancel()
         await asyncio.gather(serving, return_exceptions=True)
+
+
+class _UnansweredReleaseActuator:
+    """A radio that keys and stops CW but never confirms the unkey.
+
+    Every release attempt fails, so the authority keeps the release owed and
+    its scheduler retries it; ``retry_entered`` marks the scheduler's retry
+    in flight. ``answer_release`` lets the test's cleanup end the retries.
+    """
+
+    def __init__(self) -> None:
+        self.release_attempts = 0
+        self.retry_entered = asyncio.Event()
+        self.answer_release = False
+
+    async def actuate(
+        self,
+        token: EffectToken,
+        operation: ActuationOperation | AbortOperation,
+        *,
+        is_current: Callable[[], bool],
+    ) -> ActuationResult:
+        del token, is_current
+        if operation is not ActuationOperation.FORCE_RECEIVE or self.answer_release:
+            return ActuationResult.ACCEPTED
+        self.release_attempts += 1
+        if self.release_attempts >= 2:
+            self.retry_entered.set()
+            await asyncio.Event().wait()
+        raise RuntimeError("radio did not answer the unkey")
+
+
+@pytest.mark.asyncio
+async def test_cancelling_every_task_ends_a_release_retry_in_flight(tmp_path) -> None:
+    """MOR-4518: the release-retry scheduler honours cancellation.
+
+    ``asyncio.run`` (and pytest's loop teardown) cancel every task once and
+    wait for them. A retry in flight settles even when its waiter is
+    cancelled, so a scheduler that swallowed that cancel re-armed the retry
+    every second and the loop never closed: the process could not exit
+    while a radio did not confirm its unkey.
+    """
+    actuator = _UnansweredReleaseActuator()
+
+    async def retire(event: Any) -> None:
+        del event
+
+    composition = ManagedTxComposition(
+        actuator, config_path=tmp_path / "unanswered.json", retire_provider=retire
+    )
+    store = StateStore()
+    store.begin_provider_generation()
+    await composition.transport_ready(object())
+    await composition.bind_state_store(store)
+    current = asyncio.current_task()
+    try:
+        on = await composition.authority.submit_transmit_on()
+        await on.wait_settlement()
+        off = await composition.authority.submit_force_off()
+        await off.wait_settlement()
+        await asyncio.wait_for(actuator.retry_entered.wait(), 5)
+
+        others = [task for task in asyncio.all_tasks() if task is not current]
+        for task in others:
+            task.cancel()
+        _, pending = await asyncio.wait(others, timeout=5)
+        assert not pending, f"tasks ignored cancellation: {pending}"
+    finally:
+        actuator.answer_release = True
