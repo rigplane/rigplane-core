@@ -44,11 +44,9 @@ _SET_FREQ = 0x05
 #: the set starts, plus the web command queue's own dispatch latency) but
 #: inside the answer window (2 s). It is scheduled from its read and then
 #: re-anchored to the set's actual dispatch (always post-cutoff), so queue
-#: latency cannot drop it inside the drain. The set's own FB follows the
-#: FA's actual delivery.
+#: latency cannot drop it inside the drain.
 _FA_DELAY_S = 1.6
 _FA_AFTER_SET_DISPATCH_S = 0.25
-_FB_AFTER_FA_S = 0.1
 
 
 async def _wait_until(predicate, description: str, timeout_s: float = 10.0) -> None:
@@ -61,13 +59,17 @@ async def _wait_until(predicate, description: str, timeout_s: float = 10.0) -> N
 
 
 class _DelayedAnswers:
-    """Hold two answers back so they land past the drain cutoff.
+    """Delay the radio's answers the way a radio that answers in order would.
 
-    The tuner-status refusal is delivered ``_FA_DELAY_S`` after its read;
-    the frequency SET's confirmation follows the FA's actual delivery by
-    ``_FB_AFTER_FA_S`` — both through the simulator's own outbound funnel,
-    so the wire sees them in the order the radio would have sent them
-    whatever the web command queue's dispatch latency is.
+    The refused tuner read's ``FA`` is held back past the drain cutoff. A
+    real radio answers in command order, so nothing it was asked after that
+    read can reach the wire before the ``FA`` does: every later reply (the
+    poller's answers, the frequency SET's ``FB``) queues behind it in the
+    order it was produced, and the queue is flushed in that order through
+    the simulator's own outbound funnel. A delivery model that lets the
+    poller's answers overtake the held ``FA`` is not a wire order, and the
+    tracker rightly reads such an overtaking answer as proof the read's
+    answer was lost.
     """
 
     def __init__(self, sim: MockIcomRadio) -> None:
@@ -75,10 +77,9 @@ class _DelayedAnswers:
         self._wire: dict[str, Any] = {}
         self._armed = False
         self._first_read_delayed = False
-        self._fa_delivered = False
-        self._fa_reply: bytes | None = None
-        self._fa_handle: Any = None
-        self._pending_fb: bytes | None = None
+        self._holding = False
+        self._outbox: list[bytes] = []
+        self._release_handle: Any = None
         self._dispatch = sim._dispatch_civ
         self._handle = sim._handle_civ_data
 
@@ -99,27 +100,20 @@ class _DelayedAnswers:
                 and not self._first_read_delayed
             ):
                 self._first_read_delayed = True
-                self._fa_reply = reply
-                self._schedule_fa(_FA_DELAY_S)
+                self._holding = True
+                self._outbox.append(reply)
+                self._schedule_release(_FA_DELAY_S)
                 return None
+            if not self._holding:
+                return reply
+            self._outbox.append(reply)
             if cmd == _SET_FREQ and payload:
                 # The set's dispatch is always past the drain cutoff (the
-                # cutoff gates the send), so re-anchor a still-pending FA
-                # just behind it: the refusal then provably lands while
-                # the set's waiter is registered, not inside the drain.
-                if self._fa_handle is not None:
-                    self._fa_handle.cancel()
-                    self._fa_handle = None
-                    self._schedule_fa(_FA_AFTER_SET_DISPATCH_S)
-                # The set's own FB must arrive after the read's FA, as on
-                # an ordered wire: chain it to the FA's real delivery (or
-                # deliver it promptly when the FA has already landed).
-                if self._fa_delivered:
-                    self._deliver_later(reply, _FB_AFTER_FA_S)
-                else:
-                    self._pending_fb = reply
-                return None
-            return reply
+                # cutoff gates the send), so re-anchor the release just
+                # behind it: the refusal then provably lands while the
+                # set's waiter is registered, not inside the drain.
+                self._schedule_release(_FA_AFTER_SET_DISPATCH_S)
+            return None
 
         sim._handle_civ_data = handle
         sim._dispatch_civ = dispatch
@@ -127,37 +121,26 @@ class _DelayedAnswers:
     def arm(self) -> None:
         self._armed = True
 
-    def _schedule_fa(self, delay: float) -> None:
+    def _schedule_release(self, delay: float) -> None:
+        if self._release_handle is not None:
+            self._release_handle.cancel()
         loop = asyncio.get_running_loop()
-        self._fa_handle = loop.call_later(delay, self._fire_fa)
+        self._release_handle = loop.call_later(delay, self._release)
 
-    def _fire_fa(self) -> None:
-        self._fa_handle = None
-        reply, self._fa_reply = self._fa_reply, None
-        if reply is not None:
-            self._deliver(reply)
-
-    def _deliver_later(self, reply: bytes, delay: float) -> None:
-        loop = asyncio.get_running_loop()
-        loop.call_later(delay, lambda: self._deliver(reply))
-
-    def _deliver(self, reply: bytes) -> None:
+    def _release(self) -> None:
+        self._release_handle = None
+        self._holding = False
+        outbox, self._outbox = self._outbox, []
         sim = self._sim
         if not self._wire:
             return
-        # The first delayed delivery is the read's FA by construction: the
-        # set's FB is only ever chained behind it.
-        is_fa = not self._fa_delivered
-        self._fa_delivered = True
-        sim._send(
-            self._wire["proto"],
-            sim._wrap_civ(reply, self._wire["sender_id"]),
-            self._wire["addr"],
-            "civ",
-        )
-        pending, self._pending_fb = self._pending_fb, None
-        if is_fa and pending is not None:
-            self._deliver_later(pending, _FB_AFTER_FA_S)
+        for reply in outbox:
+            sim._send(
+                self._wire["proto"],
+                sim._wrap_civ(reply, self._wire["sender_id"]),
+                self._wire["addr"],
+                "civ",
+            )
 
 
 def _state_has_frequency(session: aiohttp.ClientSession, base: str):

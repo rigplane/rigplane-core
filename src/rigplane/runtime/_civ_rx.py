@@ -1217,12 +1217,14 @@ class CivRuntime:
         wait_response: bool = True,
         *,
         is_current: Callable[[], bool] | None = None,
+        deadline: float | None = None,
     ) -> "CivFrame | None":
         """Execute one CI-V command via request tracker (public API)."""
         return await self._execute_civ_raw(
             civ_frame,
             wait_response=wait_response,
             is_current=is_current,
+            deadline=deadline,
         )
 
     async def execute_civ_transaction(
@@ -4727,6 +4729,7 @@ class CivRuntime:
         expects_data: bool = False,
         request_key: CivRequestKey | None = None,
         consumes_nak: bool = False,
+        caller_deadline: float | None = None,
     ) -> None:
         """Let fire-and-forget ACK sinks drain before a blocking command.
 
@@ -4784,7 +4787,19 @@ class CivRuntime:
                 return tracker.ack_sink_read_count
             return tracker.ack_sink_count
 
-        deadline = time.monotonic() + _ACK_SINK_DRAIN_BUDGET_S
+        # The drain is this side's own scheduling and must never spend the
+        # caller's deadline (MOR-4384 round 3): a caller that stops waiting
+        # sooner than the radio's full answer window past the drain gets
+        # only the slack it has beyond that window — none for a 0.5 s
+        # managed-TX probe, whose arm the drain used to starve. With no
+        # slack the drain does not wait and presumes nothing lost: every
+        # sink keeps its real window, and only the windows that already
+        # closed expire below.
+        budget = _ACK_SINK_DRAIN_BUDGET_S
+        if caller_deadline is not None:
+            slack = caller_deadline - time.monotonic() - self._host._civ_get_timeout
+            budget = min(budget, slack)
+        deadline = time.monotonic() + max(budget, 0.0)
         while True:
             expired = tracker.expire_ack_sinks(
                 answer_window=self._host._civ_get_timeout
@@ -4801,6 +4816,8 @@ class CivRuntime:
             await asyncio.sleep(0.005)
             if check_current is not None:
                 check_current()
+        if budget <= 0:
+            return
         if expects_data:
             if consumes_nak:
                 # A NAK-terminal read's refusal FA collides with an older
@@ -4832,8 +4849,13 @@ class CivRuntime:
         wait_response: bool = True,
         *,
         is_current: Callable[[], bool] | None = None,
+        deadline: float | None = None,
     ) -> "CivFrame | None":
         """Execute one CI-V command via request tracker (serialized by worker).
+
+        ``deadline`` is the monotonic instant the caller stops waiting (see
+        ``IcomCommander.send``); the ACK-sink drain spends only the time
+        the caller has beyond the radio's full answer window.
 
         A response-expecting read settles on the first of its data response
         or its NAK-only ACK waiter (``CivRequestTracker.register_ack`` with
@@ -4982,6 +5004,7 @@ class CivRuntime:
             expects_data=expects_response,
             request_key=request_key,
             consumes_nak=expects_response,
+            caller_deadline=deadline,
         )
         check_current(pre_wire=True)
 

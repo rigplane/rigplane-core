@@ -294,10 +294,12 @@ async def test_invocation_context_survives_queue_and_timeout(
     entered, release = asyncio.Event(), asyncio.Event()
     original = runtime.execute_civ_raw
 
-    async def executor(frame, wait_response=True, *, is_current=None):
+    async def executor(frame, wait_response=True, *, is_current=None, deadline=None):
         entered.set()
         await release.wait()
-        return await original(frame, wait_response, is_current=is_current)
+        return await original(
+            frame, wait_response, is_current=is_current, deadline=deadline
+        )
 
     if queued:
         from rigplane.commands.commander import IcomCommander

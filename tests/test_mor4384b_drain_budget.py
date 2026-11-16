@@ -678,3 +678,71 @@ class TestLiveReadSinkOutlivesTheDrainBudget:
             ), "the late refusal did not retire the read it answers"
         finally:
             await _stop(radio)
+
+
+class TestDrainKeepsClearOfCallerDeadline:
+    """The drain never spends a caller's deadline (round 3).
+
+    A NAK-terminal read now drains every open read sink, and the managed-TX
+    arm probe (``0x1C 0x00``, 0.5 s) used to lose its whole budget in that
+    wait, so TX arming failed at connect. The drain spends only the time a
+    caller's deadline has beyond the radio's full answer window.
+    """
+
+    @pytest.mark.realtime(
+        reason="the probe must go out well inside the 0.5 s drain budget"
+    )
+    @pytest.mark.asyncio
+    async def test_commander_read_with_tight_deadline_is_sent_without_draining(
+        self,
+    ) -> None:
+        """A 0.5 s caller goes on the wire at once, behind an open read sink."""
+        transport = _MockTransport()
+        radio = _make_radio(transport)
+        try:
+            runtime = radio._civ_runtime
+            tuner_read = build_civ_frame(IC_7610_ADDR, CONTROLLER_ADDR, 0x1C, sub=0x01)
+            assert (
+                await runtime._execute_civ_raw(tuner_read, wait_response=False) is None
+            )
+            probe = build_civ_frame(IC_7610_ADDR, CONTROLLER_ADDR, 0x1C, sub=0x00)
+            runtime.start_worker()
+            task = asyncio.create_task(radio._send_civ_expect(probe, timeout=0.5))
+            try:
+                await asyncio.sleep(0.15)
+                assert len(transport.sent_packets) == 2, (
+                    "the probe sat in the ACK-sink drain instead of going out"
+                )
+                assert radio._civ_request_tracker.ack_sink_count == 1, (
+                    "a drain with no slack presumed the open read sink lost"
+                )
+            finally:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+                await runtime.stop_worker()
+        finally:
+            await _stop(radio)
+
+    @pytest.mark.realtime(reason="pins the 0.5 s drain budget of an open-ended caller")
+    @pytest.mark.asyncio
+    async def test_open_ended_caller_still_drains_its_budget(self) -> None:
+        """No deadline, no slack limit: the drain waits its own budget."""
+        transport = _MockTransport()
+        radio = _make_radio(transport)
+        try:
+            runtime = radio._civ_runtime
+            tuner_read = build_civ_frame(IC_7610_ADDR, CONTROLLER_ADDR, 0x1C, sub=0x01)
+            assert (
+                await runtime._execute_civ_raw(tuner_read, wait_response=False) is None
+            )
+            started = time.monotonic()
+            await runtime._drain_ack_sinks_before_blocking(
+                expects_data=True,
+                request_key=None,
+                consumes_nak=True,
+                caller_deadline=None,
+            )
+            assert time.monotonic() - started >= 0.45
+            assert radio._civ_request_tracker.ack_sink_count == 0
+        finally:
+            await _stop(radio)
