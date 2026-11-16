@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ManagedTxController } from '../../runtime/tx-controller/managed-controller';
+import type { ControllerRole } from '../../transport/message-transport';
 import type { RxAudioFocus, RxPlaybackDiagnostics, RxPlayer } from '../rx-player';
 import { validateCapabilities } from '$lib/types/capabilities';
 import stateWireGoldens from '$lib/transport/__tests__/fixtures/state-wire-goldens.json';
@@ -237,6 +238,7 @@ describe('AudioManager controller currency', () => {
       remote: () => true, ready: current, epoch: () => 7,
       current: (epoch: number) => epoch === 7 && current(),
       protocols: () => [`rigplane-controller-v1.${'a'.repeat(64)}`],
+      role: (): ControllerRole => 'primary',
     };
   }
 
@@ -365,7 +367,7 @@ describe('AudioManager TX start failure latch (MOR-3753)', () => {
     audioManager.setControllerBinding({
       remote: () => true, ready: () => current, epoch: () => 7,
       current: (epoch: number) => epoch === 7 && current,
-      protocols: () => [],
+      protocols: () => [], role: () => 'primary',
     });
     let settleCapture!: (reason: string | null) => void;
     txStart.mockImplementationOnce(() => new Promise((resolve) => { settleCapture = resolve; }));
@@ -387,6 +389,7 @@ describe('AudioManager TX start failure latch (MOR-3753)', () => {
     audioManager.setControllerBinding({
       remote: () => true, ready: () => current, epoch: () => 7,
       current: (epoch: number) => epoch === 7 && current, protocols: () => [],
+      role: () => 'primary',
     });
     const failure = new Error('late capture setup failure');
     let rejectCapture!: (reason: Error) => void;
@@ -413,7 +416,7 @@ describe('AudioManager TX start failure latch (MOR-3753)', () => {
     audioManager.setControllerBinding({
       remote: () => true, ready: () => ready, epoch: () => 7,
       current: (epoch: number) => epoch === 7 && ready,
-      protocols: () => [],
+      protocols: () => [], role: () => 'primary',
     });
     txStart.mockResolvedValueOnce('TX MIC: permission denied');
     await expect(audioManager.startTx()).resolves.toBe('TX MIC: permission denied');
@@ -453,6 +456,7 @@ describe('remote TX audio admission before managed PTT', () => {
       remote: () => true, ready: () => current, epoch: () => 7,
       current: (epoch) => epoch === 7 && current,
       protocols: () => [`rigplane-controller-v1.${'a'.repeat(64)}`],
+      role: () => 'primary',
     });
     audioManager.startRx();
     const socket = FakeWebSocket.instances[0];
@@ -1163,6 +1167,7 @@ describe('local controller session audio', () => {
       epoch: () => 7,
       current: (epoch: number) => epoch === 7 && state.current,
       protocols: () => (state.ready ? [`rigplane-controller-v1.${sessionKey}`] : []),
+      role: (): ControllerRole => 'primary',
     };
   }
 

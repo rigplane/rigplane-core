@@ -35,6 +35,7 @@ from rigplane.web.channel_attach import (
     ClientChannelParams,
 )
 from rigplane.web.handlers.audio import audio_tx_format_message
+from rigplane.web.handlers.control import control_hello_message
 
 _WIRE_JSON = (
     Path(__file__).resolve().parents[1]
@@ -65,8 +66,14 @@ def _conform(payload: str, obj: Any) -> None:
             (wire_type == "string | null" and (value is None or isinstance(value, str)))
             or (wire_type.startswith('"') and value == wire_type.strip('"'))
             or (wire_type == "integer" and type(value) is int)
+            or (wire_type == "boolean" and isinstance(value, bool))
+            or (
+                wire_type == "array of strings"
+                and isinstance(value, list)
+                and all(isinstance(item, str) for item in value)
+            )
             or (wire_type.startswith("object") and isinstance(value, dict))
-            or isinstance(value, str)
+            or (wire_type == "string" and isinstance(value, str))
         ), (payload, name, wire_type, value)
 
 
@@ -80,6 +87,7 @@ def test_payload_contracts_conform_to_real_parsers_and_encoders() -> None:
         "error",
         "attach_frame",
         "attach_ack",
+        "control_hello",
     }, sorted(payloads)
     assert payloads["error"].codes == (
         "bad_version",
@@ -125,6 +133,47 @@ def test_payload_contracts_conform_to_real_parsers_and_encoders() -> None:
         row for row in payloads["attach_frame"].fields if row[0] == "controller_key"
     )
     assert (key_row[1], key_row[2]) == ("string | null", False), key_row
+    # control_hello: the control handler's own typed producer conforms to
+    # the exported rows — the declaration order is the wire key order and
+    # the builder owns the capability sort — and a hello missing a
+    # required field fails them (MOR-4489).
+    hello = control_hello_message(
+        version="3.1.2",
+        radio="IC-7610",
+        connected=True,
+        radio_ready=True,
+        capabilities={"tx", "audio"},
+    )
+    _conform("control_hello", hello)
+    assert list(hello) == [
+        "type",
+        "proto",
+        "server",
+        "version",
+        "radio",
+        "connected",
+        "radio_ready",
+        "capabilities",
+    ], hello
+    assert hello["capabilities"] == ["audio", "tx"]
+    assert hello["type"] == "hello" and hello["proto"] == 1
+    assert hello["server"] == "rigplane"
+    with pytest.raises(AssertionError):
+        _conform("control_hello", {k: v for k, v in hello.items() if k != "version"})
+    # A string is a valid value only for string-typed rows: substituting
+    # one for the boolean, integer or array fields — or replacing the
+    # literal discriminator — must fail the contract (Codex P1, MOR-4489).
+    for field in ("connected", "radio_ready"):
+        wrong = dict(hello, **{field: "false"})
+        with pytest.raises(AssertionError):
+            _conform("control_hello", wrong)
+    for wrong_payload in (
+        dict(hello, proto="1"),
+        dict(hello, capabilities="audio"),
+        dict(hello, type="welcome"),
+    ):
+        with pytest.raises(AssertionError):
+            _conform("control_hello", wrong_payload)
 
 
 def test_committed_golden_documents_validate_against_payload_contracts() -> None:
@@ -149,6 +198,11 @@ def test_committed_golden_documents_validate_against_payload_contracts() -> None
                 assert doc.decoded == audio_tx_format_message(
                     doc.decoded["opus_decode"], doc.decoded["sample_rate"]
                 ), (name, doc.decoded)
+            case GoldenTextDocument(decoded={"type": "hello"}):
+                # The control channel's hello: a payload contract of its
+                # own, built by the control handler's typed producer —
+                # the keys are exactly the producer's, in its order.
+                _conform("control_hello", doc.decoded)
             case GoldenTextDocument():
                 raise AssertionError(f"{name}: unknown text document {doc.decoded!r}")
             case GoldenErrorsDocument():

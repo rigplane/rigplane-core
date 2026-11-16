@@ -76,7 +76,18 @@ import struct
 from collections.abc import Coroutine, Mapping
 from dataclasses import MISSING, dataclass, fields
 from enum import IntEnum
-from typing import TYPE_CHECKING, Any, Final, Protocol, cast, runtime_checkable
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Final,
+    Literal,
+    Protocol,
+    cast,
+    get_args,
+    get_origin,
+    get_type_hints,
+    runtime_checkable,
+)
 
 from ..ws import WS_OP_BINARY  # noqa: TID251
 
@@ -230,6 +241,8 @@ _WIRE_FIELD_TYPES: Final[Mapping[str, str]] = {
     "str": "string",
     "str | None": "string | null",
     "int": "integer",
+    "bool": "boolean",
+    "list[str]": "array of strings",
     "dict[str, str]": "object: name -> value",
     "dict[str, list[str]]": "object: name -> [values]",
 }
@@ -271,6 +284,33 @@ def _payload_contract(
     return ApiWirePayload(1, carried_by, tuple(rows), codes)
 
 
+def _typed_dict_payload_contract(
+    producer: type,
+    carried_by: str,
+    *,
+    notes: Mapping[str, str] | None = None,
+) -> ApiWirePayload:
+    """Derive one payload contract from its TypedDict producer: names,
+    order, types and required-ness come from the resolved annotations
+    themselves (every key of a total TypedDict is required), so a
+    producer change cannot drift past its exported contract. A
+    ``Literal`` annotation is its own JSON value on the wire; any other
+    unmapped annotation fails the contract build, exactly like the
+    dataclass path.
+    """
+    rows: list[tuple[str, str, bool, str]] = []
+    for name, annotation in get_type_hints(producer).items():
+        if get_origin(annotation) is Literal:
+            wire_type = json.dumps(get_args(annotation)[0])
+        else:
+            key = (
+                annotation.__name__ if isinstance(annotation, type) else str(annotation)
+            )
+            wire_type = _WIRE_FIELD_TYPES[key]
+        rows.append((name, wire_type, True, (notes or {}).get(name, "")))
+    return ApiWirePayload(1, carried_by, tuple(rows))
+
+
 def _api_channel_payload_contracts() -> dict[str, ApiWirePayload]:
     """The payload contracts, derived from their producer types; the
     wire-json tests conform every row to the real parsers/encoders."""
@@ -279,6 +319,7 @@ def _api_channel_payload_contracts() -> dict[str, ApiWirePayload]:
         ChannelAttachedAck,
         ClientChannelParams,
     )
+    from .handlers.control import ControlHello  # noqa: TID251
 
     return {
         "request_head": _payload_contract(
@@ -327,6 +368,19 @@ def _api_channel_payload_contracts() -> dict[str, ApiWirePayload]:
             notes={
                 "channel": 'the acked label: "scope" | "audio"',
                 "version": f"ack version, currently {ATTACH_ACK_VERSION}",
+            },
+        ),
+        "control_hello": _typed_dict_payload_contract(
+            ControlHello,
+            "first server text frame on the control channel (proves the attach)",
+            notes={
+                "proto": "control-channel protocol version, currently 1",
+                "server": 'always "rigplane"',
+                "version": "server version string",
+                "radio": "active radio model name",
+                "connected": "backend radio link state",
+                "radio_ready": "backend radio readiness (CI-V healthy)",
+                "capabilities": "sorted capability tags the active radio projects",
             },
         ),
     }
@@ -1209,6 +1263,43 @@ def _golden_audio_tx_format_document(
     )
 
 
+def _golden_control_hello_document() -> GoldenTextDocument:
+    """The control-channel hello (server -> client), from the control
+    handler's own typed producer and encoded exactly as its
+    ``_send_hello`` sends it (:func:`rigplane.web.protocol.encode_json`:
+    compact separators, the producer's key order). The control channel
+    has no separate attach ack — this hello is itself the proof of the
+    attach. ``version``, ``radio`` and ``capabilities`` are example
+    values (they follow the live server and radio); the keys and their
+    order are the contract, which the replay test pins."""
+    from .handlers.control import control_hello_message  # noqa: TID251
+    from .protocol import encode_json  # noqa: TID251
+
+    text = encode_json(
+        control_hello_message(
+            version="3.1.2",
+            radio="IC-7610",
+            connected=True,
+            radio_ready=True,
+            capabilities={"audio", "cw", "scope", "tx"},
+        )
+    )
+    return GoldenTextDocument(
+        direction="server->client",
+        summary=(
+            "the control-channel hello: the first server text frame, "
+            "proving the attach (version, radio and capabilities are examples)"
+        ),
+        text=text,
+        decoded=json.loads(text),
+        template=None,
+        outcome=(
+            "the client stops resending its attach and learns the "
+            "server, radio and capability surface"
+        ),
+    )
+
+
 def _request_head(
     method: str, path: str, request_id: int, headers: dict[str, str] | None = None
 ) -> GoldenFrame:
@@ -1327,6 +1418,7 @@ async def api_channel_golden_documents() -> GoldenDocuments:
     documents["audio_tx_format_opus"] = _golden_audio_tx_format_document(
         opus_decode=True, sample_rate=48000
     )
+    documents["control_hello"] = _golden_control_hello_document()
     fixtures = {"api_ok": ok_b64, "api_chunked": chunked_b64}
     for name, (rid, summary, outcome, head, trailing, reply) in exchanges.items():
         documents[name] = GoldenExchangeDocument(
