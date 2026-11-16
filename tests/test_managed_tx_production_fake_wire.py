@@ -120,6 +120,15 @@ class _YaesuActuator(_DelayedWire):
 
 class _RigctldActuator(_DelayedWire):
     actuate = RigctldClientRadio.actuate
+    # ``actuate`` skips the unkey read-back while the transmit-state read is
+    # not answerable (MOR-4456); borrow that one concept and its two facts
+    # from the producer, starting answerable like a fresh client.
+    _ptt_read_answerable = RigctldClientRadio._ptt_read_answerable
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._ptt_read_demoted = False
+        self._ptt_read_refused = False
 
     async def _set_ptt(
         self,
