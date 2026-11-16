@@ -143,3 +143,51 @@ export async function expectReadoutHz(
     })
     .toBe(hz);
 }
+
+/** Origins (as `origin`) of every destination that is not the station. */
+export function foreignDestinations(urls: readonly string[]): string[] {
+  return urls.map((url) => new URL(url).origin).filter((origin) => origin !== STATION_ORIGIN);
+}
+
+/** Latency (ms) of the unkey that answers this press/release, or null while
+ * the simulator has not (finally) unkeyed. */
+export function unkeyLatencyMs(
+  state: SimState,
+  _pressedAtMs: number,
+  releasedAtMs: number,
+): number | null {
+  const unkey = state.ptt_timeline
+    .filter(([at, keyed]) => !keyed && at * 1000 >= releasedAtMs - 250)
+    .at(0);
+  return unkey ? unkey[0] * 1000 - releasedAtMs : null;
+}
+
+/** Register a first-text-frame listener per channel, send the attaches,
+ * resolve with every channel's first text frame. Self-contained: shipped
+ * into the page via toString(). */
+export async function collectFirstTexts(
+  channels: Record<string, EventTarget>,
+  send: () => void,
+  deadlinesMs: Record<string, number>,
+): Promise<Record<string, string>> {
+  const first = (label: string) =>
+    new Promise<string>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(`${label} timed out`)), deadlinesMs[label]);
+      const onMessage = (event: Event) => {
+        const data = (event as MessageEvent).data;
+        if (typeof data !== 'string') return;
+        clearTimeout(timer);
+        channels[label].removeEventListener('message', onMessage);
+        resolve(data);
+      };
+      channels[label].addEventListener('message', onMessage);
+    });
+  const frames: Record<string, string> = {};
+  const control = first('control');
+  send();
+  frames.control = await control;
+  const [scope, audio] = await Promise.all([first('scope'), first('audio')]);
+  frames.scope = scope;
+  frames.audio = audio;
+  return frames;
+}

@@ -27,6 +27,15 @@ export interface RecordedResult {
   status: 'passed' | 'failed' | 'timedOut' | 'interrupted' | 'skipped' | 'didNotRun';
 }
 
+/** The matrix the remote config requires, independent of any CLI filter
+ * (`--project`, `--grep`, `--repeat-each`): every row in every project,
+ * `repeatEach` times. playwright.remote.config.ts is built from it. */
+export const REQUIRED_MATRIX = {
+  projects: ['chromium', 'webkit'],
+  rows: ['L1', 'L2', 'L3', 'P0'],
+  repeatEach: 2,
+} as const;
+
 const PASSED = 'passed';
 
 /** The problems of a run: empty means every planned test ran and passed. */
