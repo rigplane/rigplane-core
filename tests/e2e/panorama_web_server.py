@@ -365,7 +365,6 @@ class PanoramaSimulator(MockIcomRadio):
             return self._frequency
         return self._frequency + sign * (width_hz // 2)
 
-
     def pump_scope_stream(self) -> int:
         if self.evidence.with_suffix(".pause").exists():
             return 0
