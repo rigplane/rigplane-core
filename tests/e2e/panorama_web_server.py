@@ -133,7 +133,6 @@ class PanoramaSimulator(MockIcomRadio):
         # of the same scheduled change, never a second mechanism.
         self._external_hold: tuple[str, int, float] | None = None
         self.scope_mode = 0
-        self._active_slot = 0  # single-receiver A/B: 0 = A, 1 = B
         self.fixed = (14_200_000, 14_300_000)
         # SCROLL-C window, radio-owned: the radio scrolls its own edges
         # when the VFO leaves the window (CI-V 27 15 SPAN applies in
@@ -193,28 +192,6 @@ class PanoramaSimulator(MockIcomRadio):
                     from_addr, self._radio_addr, 0x14, sub=sub, data=data
                 ),
             )
-        if cmd == 0x07 and payload in (b"\x00", b"\x01") and not self._dual_receiver:
-            # A/B slot select on a single-receiver radio: the connection
-            # policy selects VFO A and the passband identity needs the
-            # confirmed slot. Exchanging slots swaps the selected and
-            # unselected sets, exactly as the dual-receiver select does.
-            target = payload[0]
-            if target != self._active_slot:
-                self._frequency, self._unselected_frequency = (
-                    self._unselected_frequency,
-                    self._frequency,
-                )
-                self._mode, self._unselected_mode = self._unselected_mode, self._mode
-                self._data_mode, self._unselected_data_mode = (
-                    self._unselected_data_mode,
-                    self._data_mode,
-                )
-                self._filter, self._unselected_filter = (
-                    self._unselected_filter,
-                    self._filter,
-                )
-                self._active_slot = target
-            return self._civ_ack(from_addr, self._radio_addr)
         return super()._dispatch_civ_native(cmd, payload, from_addr)
 
     def _dispatch_cmd29(

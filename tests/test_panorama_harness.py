@@ -298,3 +298,32 @@ async def test_configured_delay_applies_once_over_the_wire(
         await sim.stop()
     assert elapsed >= 0.2, "the configured delay must apply"
     assert elapsed < 0.35, f"one delay, not two: {elapsed:.3f}s for delay 0.2"
+
+
+@pytest.mark.parametrize("model", ["IC-705", "IC-7300"])
+def test_panorama_harness_ab_select_uses_the_shared_state(
+    model: str, tmp_path: Path
+) -> None:
+    """A -> B -> B -> A on the harness goes through the shared simulator's
+    VFO A/B state (``_selected_vfo_letter`` / ``_swap_selected_unselected``):
+    the harness keeps no selection copy of its own, and the selected VFO's
+    frequency is the one the passband state reads."""
+    sim = PanoramaSimulator(model, tmp_path / "radio.jsonl")
+    assert not hasattr(sim, "_active_slot")
+    sim.set_frequency(14_250_000)
+    sim._unselected_frequency = 7_100_000
+
+    def select(letter: int) -> None:
+        reply = sim._dispatch_civ_native(0x07, bytes([letter]), 0xE0)
+        assert reply is not None and parse_civ_frame(reply).command == 0xFB
+
+    seen = []
+    for letter in (0x00, 0x01, 0x01, 0x00):
+        select(letter)
+        seen.append((sim._selected_vfo_letter, sim._frequency))
+    assert seen == [
+        ("A", 14_250_000),
+        ("B", 7_100_000),
+        ("B", 7_100_000),
+        ("A", 14_250_000),
+    ]
