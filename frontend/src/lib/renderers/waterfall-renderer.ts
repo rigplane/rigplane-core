@@ -1,4 +1,5 @@
 import type { View } from '../runtime/scope-view';
+import type { ScopeFrame } from '../runtime/scope-frame';
 
 interface ColorStop {
   stop: number;
@@ -60,13 +61,13 @@ export const defaultWaterfallOptions: WaterfallOptions = {
 };
 
 /** Frame identity for the per-frame dedupe (MOR-4383): one row group per NEW
- * frame. A repeated or stale identity is a registration replay, never a new
- * row; a new epoch restarts the smoothing state like a geometry change.
- * Field names match the ScopeFrame contract the delivery maps from. */
-export interface WaterfallFrameIdentity {
-  readonly seq: number;
-  readonly epoch: number;
-}
+ * frame on the SAME qualified stream. A repeated or stale identity is a
+ * registration replay, never a new row; a new stream restarts the sequence
+ * AND the smoothing state like a geometry change. A Pick of the ScopeFrame
+ * contract the delivery maps from: hub sequences are per receiver while
+ * radio wire epochs stay 0, so only the qualified (source, sourceId,
+ * receiver, epoch) stream tells a new row from a replay. */
+export type WaterfallFrameIdentity = Pick<ScopeFrame, 'source' | 'sourceId' | 'receiver' | 'epoch' | 'seq'>;
 
 export class WaterfallRenderError extends Error {
   readonly code = 'webgl-required';
@@ -194,10 +195,10 @@ export class WaterfallRenderer {
   private smoothRange = 1;
   private smoothCentre = 0;
   private previousValid = false;
-  // MOR-4383 frame dedupe: the last delivered identity (mirrors the 2D
-  // reference's frameEpoch/lastSeq, both starting at zero = none seen).
-  private frameEpoch = 0;
-  private lastSeq = 0;
+  // MOR-4383 frame dedupe: the last delivered stream (null = none seen, so
+  // a valid seq 0 is a real row, never a replay) and its latest sequence.
+  private lastStream: Omit<WaterfallFrameIdentity, 'seq'> | null = null;
+  private lastSeq = -1;
 
   constructor(private readonly canvas: HTMLCanvasElement, options: WaterfallOptions) {
     const gl = canvas.getContext('webgl2', { alpha: false, antialias: false, depth: false, stencil: false });
@@ -344,15 +345,19 @@ export class WaterfallRenderer {
     if (this.destroyed || !this.program || this.width <= 0 || this.height <= 0) return;
     const offset = this.options.sampleOffset ?? 0, samples = data.length - offset;
     if (samples <= 0) return;
-    // One group per NEW frame: a repeated or older identity is a
-    // registration replay — no rows, no draw. A new epoch restarts the
-    // smoothing state exactly like a geometry change (keep goes false
-    // below via smoothBins/previousValid). Calls without an identity keep
-    // the legacy always-process behaviour.
+    // One group per NEW frame on the same stream: a repeated or older
+    // identity is a registration replay — no rows, no draw. A new stream
+    // (receiver switch, source change, epoch restart) resets the sequence
+    // AND the smoothing state exactly like a geometry change (keep goes
+    // false below via smoothBins/previousValid). Calls without an identity
+    // keep the legacy always-process behaviour.
     if (identity !== undefined) {
-      if (identity.epoch !== this.frameEpoch) {
-        this.frameEpoch = identity.epoch;
-        this.lastSeq = 0;
+      const stream = this.lastStream;
+      if (stream === null || stream.source !== identity.source || stream.sourceId !== identity.sourceId
+        || stream.receiver !== identity.receiver || stream.epoch !== identity.epoch) {
+        this.lastStream = { source: identity.source, sourceId: identity.sourceId,
+          receiver: identity.receiver, epoch: identity.epoch };
+        this.lastSeq = -1;
         this.smoothBins = 0;
         this.previousValid = false;
       }

@@ -1413,7 +1413,8 @@
         // MOR-4383: the delivery carries the frame identity so the renderer
         // paints one row group per NEW frame (registration replays dedupe).
         // Field names come straight from the ScopeFrame contract.
-        const identity: WaterfallFrameIdentity = { seq: frame.seq, epoch: frame.epoch };
+        const identity: WaterfallFrameIdentity = { source: frame.source, sourceId: frame.sourceId,
+          receiver: frame.receiver, seq: frame.seq, epoch: frame.epoch };
         if (!sdrTxFrozen) waterfallPush?.(pixels, waterfallOptions, token, identity);
         else trace?.record('waterfall_suppressed', token, 0, true);
         if (traceStart) trace?.record('fanout', token, performance.now() - traceStart);
@@ -1663,7 +1664,8 @@
             const frame = geometry && scopeDemandOn && samplePlaneLive && geometry.freshness === 'fresh' && !sdrTxFrozen
               ? runtime.scope.stream(audioFft ? 'audio_fft' : 'hardware')
                 .latest(scopeSlotKey(geometry.sourceId, geometry.receiver)) : null;
-            if (frame?.pixels) fn(frame.pixels, waterfallOptions, null, { seq: frame.seq, epoch: frame.epoch });
+            if (frame?.pixels) fn(frame.pixels, waterfallOptions, null, { source: frame.source,
+              sourceId: frame.sourceId, receiver: frame.receiver, seq: frame.seq, epoch: frame.epoch });
           }}
         />
         <!-- MOR-3158: the TX-frozen veil rides inside the history wrapper so

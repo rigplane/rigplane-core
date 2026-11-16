@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { WaterfallRenderer, defaultWaterfallOptions } from '../waterfall-renderer';
+import { WaterfallRenderer, defaultWaterfallOptions, type WaterfallFrameIdentity } from '../waterfall-renderer';
 import { countTypedArrays, webglFixture } from './webgl-fixture';
 
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
@@ -102,21 +102,24 @@ describe('MOR-4383 waterfall smoothing', () => {
   it('dedupes repeated frame identities and resets on epoch change', () => {
     const f = webglFixture(100, 50);
     const r = new WaterfallRenderer(f.canvas, options);
-    r.pushRow(new Uint8Array([0, 80, 0]), { seq: 26_218, epoch: 1 });
+    const stream = (seq: number, epoch: number): WaterfallFrameIdentity => ({
+      source: 'radio', sourceId: 'radio', receiver: 0, seq, epoch,
+    });
+    r.pushRow(new Uint8Array([0, 80, 0]), stream(26_218, 1));
     expect(f.named('texSubImage2D')).toHaveLength(3);
     // Same seq again (registration replay): no new rows, no draw.
     f.calls.length = 0;
-    r.pushRow(new Uint8Array([0, 80, 0]), { seq: 26_218, epoch: 1 });
+    r.pushRow(new Uint8Array([0, 80, 0]), stream(26_218, 1));
     expect(f.calls).toHaveLength(0);
     // Older seq after a newer one: still ignored.
-    r.pushRow(new Uint8Array([0, 80, 0]), { seq: 26_217, epoch: 1 });
+    r.pushRow(new Uint8Array([0, 80, 0]), stream(26_217, 1));
     expect(f.calls).toHaveLength(0);
     // Next seq: one new group.
-    r.pushRow(new Uint8Array([0, 80, 0]), { seq: 26_219, epoch: 1 });
+    r.pushRow(new Uint8Array([0, 80, 0]), stream(26_219, 1));
     expect(f.named('texSubImage2D')).toHaveLength(3);
     // New epoch: processed again, IIR state reset to raw.
     f.calls.length = 0;
-    r.pushRow(new Uint8Array([0, 0, 0]), { seq: 1, epoch: 2 });
+    r.pushRow(new Uint8Array([0, 0, 0]), stream(1, 2));
     expectBytes(f, [[0, 0, 0], [0, 0, 0], [0, 0, 0]]);
   });
 

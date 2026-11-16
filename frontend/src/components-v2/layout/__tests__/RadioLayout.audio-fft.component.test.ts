@@ -394,7 +394,7 @@ describe('MOR-2355 central default scope source', () => {
         sampleWindow: { start: 0.5, end: 1 }, sampleAmplitudeMax: 160 });
       // MOR-4383: the delivery carries the frame identity (scopeWire
       // defaults seq 0, epoch 1); same-seq redeliveries dedupe by design.
-      expect(push).toHaveBeenLastCalledWith(projected, { seq: 0, epoch: 1 });
+      expect(push).toHaveBeenLastCalledWith(projected, { source: 'audio_fft', sourceId: 'audio_fft', receiver: null, seq: 0, epoch: 1 });
       expect(target.querySelector('.freq-axis')!.textContent).toContain(`${span / 1000} kHz`);
       const displayed = expectCentralOutput(input, renderOptions);
       expect(displayed).toHaveLength(count);
@@ -419,7 +419,7 @@ describe('MOR-2355 central default scope source', () => {
     expect(renderOptions).toMatchObject({ sampleOffset: 0, sampleWindow: { start: 0.5, end: 1 }, sampleAmplitudeMax: 160 });
     expect(expectCentralOutput(input, renderOptions)).toEqual(new Uint8Array([0, 40, 60, 80]));
     // MOR-4383: the delivery carries the frame identity (scopeWire defaults).
-    expect(push).toHaveBeenLastCalledWith(projected, { seq: 0, epoch: 1 });
+    expect(push).toHaveBeenLastCalledWith(projected, { source: 'audio_fft', sourceId: 'audio_fft', receiver: null, seq: 0, epoch: 1 });
 
     const renderer = new SpectrumRenderer();
     renderer.setAvgEnabled(false);
@@ -447,7 +447,7 @@ describe('MOR-2355 central default scope source', () => {
     const input = frame(14100000, 14200000, undefined, 'radio'); hardware.fire(input.data); draw();
     // MOR-4383: the raw pixels flow unfiltered; the delivery carries the
     // frame identity (scopeWire defaults seq 0, epoch 1).
-    expect(push).toHaveBeenCalledWith(input.pixels, { seq: 0, epoch: 1 });
+    expect(push).toHaveBeenCalledWith(input.pixels, { source: 'radio', sourceId: 'radio', receiver: 0, seq: 0, epoch: 1 });
     expect(target.querySelector('.spectrum-toolbar')).not.toBeNull();
     target.querySelector<HTMLButtonElement>('[title="Toggle fullscreen"]')!.click(); flushSync();
     expect(target.querySelector('.spectrum-panel.fullscreen')).not.toBeNull();
