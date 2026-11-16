@@ -488,6 +488,10 @@ def _cat_plan_facts(first: ProbeFile, wire: tuple[str, ...]) -> tuple[str, str, 
     return target, trigger, verb
 
 
+@pytest.mark.realtime(
+    reason="real probe CLI against a local CAT fake: the silence-window "
+    "override and the probe's own answer timeouts run on the real clock"
+)
 async def test_cat_round_trip_through_real_cli(tmp_path, monkeypatch) -> None:
     """The CAT capture replays as a regression test (FT-991A).
 
