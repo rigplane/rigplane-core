@@ -5213,7 +5213,7 @@ describe('SpectrumPanel waterfall stream identity (MOR-4383)', () => {
         emitFrame({ receiver: 1, sequence: 21 });
         await flushWaterfallPaint();
         expect(capture.uploads()).toBeGreaterThan(painted);
-        expect(push.mock.calls.at(-1)?.[3]).toMatchObject({ receiver: 1 });
+        expect(push.mock.calls.at(-1)?.[1]).toMatchObject({ receiver: 1 });
       } finally {
         push.mockRestore();
       }
