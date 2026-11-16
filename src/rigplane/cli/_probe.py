@@ -11,14 +11,12 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import concurrent.futures
 import hashlib
 import os
 import re
 import shutil
 import subprocess
 import sys
-import threading
 import tomllib
 from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
@@ -449,63 +447,69 @@ def _is_strict_yes(answer: str) -> bool:
     return answer.strip().lower() in ("y", "yes")
 
 
-class _Lines:
-    """Every prompt of one run, read on a daemon thread so the event loop
-    (Ctrl-C, the time limit of a check question) keeps running. A read left
-    open by that time limit or a cancel answers the next prompt instead of
-    racing it for the same line."""
+Lines = Callable[[str], Awaitable[str | None]]  # a prompt -> its answer (None: EOF)
 
-    def __init__(self, ask: Callable[[str], str], emit: Callable[[str], None]):
-        self._ask, self._emit = ask, emit
-        self._open: concurrent.futures.Future[str] | None = None
 
-    def _read(self, prompt: str) -> concurrent.futures.Future[str]:
-        if self._open is not None:
-            self._emit(prompt)
-            return self._open
-        future: concurrent.futures.Future[str] = concurrent.futures.Future()
+class _TerminalLines:
+    """The ``--checks`` questions, read from the terminal on the event loop
+    (signal handlers and the question time limit keep running). Each prompt
+    first discards whatever was typed before it opened, so a late answer to
+    a question that timed out never answers a later one; the terminal is
+    watched only while a prompt waits. POSIX only (Windows: MOR-4497)."""
 
-        def read() -> None:
-            try:
-                future.set_result(self._ask(prompt))
-            except BaseException as error:  # noqa: BLE001 -- re-raised by the caller
-                future.set_exception(error)
+    def __init__(self, fd: int, write: Callable[[str], None]) -> None:
+        self._fd, self._write = fd, write
 
-        threading.Thread(target=read, daemon=True).start()
-        self._open = future
-        return future
+    async def __call__(self, prompt: str) -> str | None:
+        import termios
 
-    def _settle(self, future: concurrent.futures.Future[str]) -> None:
-        if future.done():
-            self._open = None
+        termios.tcflush(self._fd, termios.TCIFLUSH)
+        self._write(prompt)
+        loop = asyncio.get_running_loop()
+        answer: asyncio.Future[str | None] = loop.create_future()
+        typed = bytearray()
 
-    def __call__(self, prompt: str) -> str:
-        future = self._read(prompt)
+        def readable() -> None:
+            chunk = os.read(self._fd, 4096)
+            typed.extend(chunk)
+            if answer.done():
+                return
+            if b"\n" in typed:
+                answer.set_result(typed.split(b"\n", 1)[0].decode(errors="replace"))
+            elif not chunk:
+                answer.set_result(None)
+
+        loop.add_reader(self._fd, readable)
         try:
-            return future.result()
+            return await answer
         finally:
-            self._settle(future)
+            loop.remove_reader(self._fd)
 
-    async def wait(self, prompt: str) -> str:
-        future = self._read(prompt)
-        try:
-            return await asyncio.shield(asyncio.wrap_future(future))
-        finally:
-            self._settle(future)
+
+_HAS_TERMINAL_READER = sys.platform != "win32"  # termios + loop.add_reader
+
+
+def _write_prompt(text: str) -> None:
+    sys.stdout.write(text)
+    sys.stdout.flush()
 
 
 def _checks_request(
-    config: RigConfig, journal: Path, lines: _Lines, emit: Callable[[str], None]
+    config: RigConfig, journal: Path, lines: Lines, emit: Callable[[str], None]
 ) -> ChecksRequest:
     """The person's side of the checks: the block question, one question per
-    check (both default no, never answered by ``--yes``) and the check asks."""
+    check (both default no, never answered by ``--yes``, end of input is a
+    no) and the check asks. Every answer is awaited on the event loop."""
     total = len(config.probe_checks)
 
-    def begin() -> bool:
-        emit(render.checks_block_start(total))
-        return _is_strict_yes(lines(render.checks_prompt()))
+    async def agreed(prompt: str) -> bool:
+        return _is_strict_yes(await lines(prompt) or "")
 
-    def consent(check: ProbeCheck, originals: dict[str, str]) -> bool:
+    async def begin() -> bool:
+        emit(render.checks_block_start(total))
+        return await agreed(render.checks_prompt())
+
+    async def consent(check: ProbeCheck, originals: dict[str, str]) -> bool:
         index = config.probe_checks.index(check) + 1
         what, after = check.explain_what, check.explain_after
         emit(
@@ -513,13 +517,15 @@ def _checks_request(
                 index, total, check.title, what, after, originals, check.warnings
             )
         )
-        return _is_strict_yes(lines(render.check_prompt()))
+        return await agreed(render.check_prompt())
 
     async def ask(question: str) -> str | None:
-        prompt = render.check_question_prompt(question, ASK_TIMEOUT_S)
-        return (await lines.wait(prompt)).strip() or None
+        answer = await lines(render.check_question_prompt(question, ASK_TIMEOUT_S))
+        return (answer or "").strip() or None
 
-    return ChecksRequest(consent, ask, begin=begin, journal_path=journal)
+    return ChecksRequest(
+        consent, ask, ask_timeout_s=ASK_TIMEOUT_S, begin=begin, journal_path=journal
+    )
 
 
 async def execute(
@@ -542,6 +548,7 @@ async def execute(
     open_folder: Callable[[Path], None] | None = None,
     documents_dir: Callable[[], Path] | None = None,
     checks: bool = False,
+    check_lines: Lines | None = None,
 ) -> int:
     """Run the probe end to end; return the process exit code.
 
@@ -550,13 +557,9 @@ async def execute(
     the port cannot be opened or nothing answered at all, 4 a check could
     not put the radio back. The file is written only after the save
     answer. The tool itself records no port path, host, or user - only
-    what you type in ``--label``, plus the radio's answers. A check
-    journal left behind is printed first, whatever the command.
+    what you type in ``--label``, plus the radio's answers. The checks
+    questions come from *check_lines* (default: the terminal).
     """
-    journal = journal_path()
-    if (left := leftover_journal_line(journal)) is not None:
-        emit(left)
-        emit(render.journal_instruction_line(str(journal)))
     if config.protocol_type not in _SUPPORTED:
         emit(render.not_supported_message(config.protocol_type))
         return 2
@@ -569,7 +572,13 @@ async def execute(
     if checks and not config.probe_checks:
         emit(render.no_checks_message())
         checks = False
-    lines = _Lines(ask, emit)
+    if checks and check_lines is None and not _HAS_TERMINAL_READER:
+        emit(render.checks_not_on_windows_message())  # no reader yet (MOR-4497)
+        checks = False
+    request = None
+    if checks:
+        lines = check_lines or _TerminalLines(sys.stdin.fileno(), _write_prompt)
+        request = _checks_request(config, journal_path(), lines, emit)
 
     plan = build_read_plan(
         config, include_private=include_private, siblings=sibling_configs
@@ -586,7 +595,7 @@ async def execute(
             checks=checks,
         )
     )
-    if not yes and not _is_yes(lines("Continue? [Y/n] ")):
+    if not yes and not _is_yes(ask("Continue? [Y/n] ")):
         return 0
 
     try:
@@ -605,7 +614,7 @@ async def execute(
             label=label,
             yes=yes,
             is_tty=is_tty,
-            lines=lines,
+            ask=ask,
             exchange=exchange,
             gap_s=gap_s,
             window=window,
@@ -614,7 +623,7 @@ async def execute(
             emit=emit,
             open_folder=open_folder,
             documents_dir=documents_dir,
-            checks=_checks_request(config, journal, lines, emit) if checks else None,
+            checks=request,
         )
 
 
@@ -628,7 +637,7 @@ async def _execute_after_open(
     label: str,
     yes: bool,
     is_tty: bool,
-    lines: _Lines,
+    ask: Callable[[str], str],
     exchange: Exchange,
     gap_s: float,
     window: float,
@@ -726,7 +735,7 @@ async def _execute_after_open(
             checks=records,
         )
     )
-    if not yes and not _is_yes(lines("Save the file? [Y/n] ")):
+    if not yes and not _is_yes(ask("Save the file? [Y/n] ")):
         return report.exit_code
     try:
         actual = _write_capture(saved_abs, content, exclusive=exclusive)
@@ -876,9 +885,18 @@ def build_probe_parser(prog: str = DEFAULT_PROBE_PROG) -> argparse.ArgumentParse
 
 
 def run(args: argparse.Namespace, prog: str = DEFAULT_PROBE_PROG) -> int:
-    """Driver for the radio probe. Returns a process exit code."""
+    """Driver for the radio probe. Returns a process exit code.
+
+    A check journal left behind is printed first, before anything else can
+    stop the command (discovery, a usage error, a missing radio).
+    """
     from rigplane.cli import _rigs_dir
     from rigplane.rig_loader import RigLoadError, discover_available_rigs
+
+    journal = journal_path()
+    if (left := leftover_journal_line(journal)) is not None:
+        print(left)
+        print(render.journal_instruction_line(str(journal)))
 
     try:
         rigs = discover_available_rigs(_rigs_dir())

@@ -85,13 +85,15 @@ Key = tuple[str, int | None]
 @dataclass(frozen=True, slots=True)
 class ChecksRequest:
     """``begin()`` once after the read pass (False: no check, the file stays
-    read-only), ``consent(check, originals)``, ``ask`` (``None``: skipped),
-    ``on_event`` (journal_written, steps_begin, restore_begin)."""
+    read-only), ``consent(check, originals)`` (awaited as the cancellable
+    task, so a signal while it waits refuses the check before any write),
+    ``ask`` (``None``: skipped), ``on_event`` (journal_written, steps_begin,
+    restore_begin)."""
 
-    consent: Callable[[ProbeCheck, dict[str, str]], bool]
+    consent: Callable[[ProbeCheck, dict[str, str]], Awaitable[bool]]
     ask: Callable[[str], Awaitable[str | None]]
     on_event: Callable[[str], None] | None = None
-    begin: Callable[[], bool] | None = None
+    begin: Callable[[], Awaitable[bool]] | None = None
     ask_timeout_s: float = ASK_TIMEOUT_S
     journal_path: Path = field(default_factory=journal_path)  # tests override
 
@@ -117,7 +119,7 @@ class _Run:
     window: float
     request: ChecksRequest
     strays: _Strays
-    task: asyncio.Future[None] | None = None
+    task: asyncio.Future[Any] | None = None
     restoring: bool = False
     cancelled: bool = False
     pending: Callable[[bytes], bool] | None = None  # a cancelled ask's answer
@@ -361,9 +363,17 @@ async def _run_one(run: _Run, check: ProbeCheck) -> CheckRecord:
     except _Stop as stop:
         return record("refused", error=str(stop))
     originals.update(_hand(run.config, k, v) for k, v in state.originals)
+    run.task = asyncio.ensure_future(run.request.consent(check, dict(originals)))
+    try:
+        agreed = await run.task
+    except asyncio.CancelledError:
+        if not run.cancelled:
+            raise
+    finally:
+        run.task = None
     if run.cancelled:
         return record("refused", error="cancelled before any write")
-    if not run.request.consent(check, dict(originals)):
+    if not agreed:
         return record("declined")
     journal, now = run.request.journal_path, datetime.now(timezone.utc).isoformat()
     noted = ChecksJournal(

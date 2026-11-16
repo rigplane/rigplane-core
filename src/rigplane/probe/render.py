@@ -38,6 +38,7 @@ __all__ = [
     "checks_block_start",
     "checks_done_line",
     "checks_need_terminal_message",
+    "checks_not_on_windows_message",
     "checks_prompt",
     "checks_summary_line",
     "closing_line",
@@ -276,6 +277,12 @@ def pre_save_summary(
 ) -> str:
     """The summary shown before the file exists on disk."""
     settings = ", ".join(settings_lines)
+    # after a check the radio may differ from the snapshot taken before it
+    when = (
+        "settings at the start of this run"
+        if checks
+        else ("current settings as of this moment")
+    )
     if private_reads_included:
         memory_line = (
             "  - stored memory contents: these can contain callsigns "
@@ -290,7 +297,7 @@ def pre_save_summary(
         "It contains:\n"
         f"  - the questions we asked and the radio's exact replies ({n_commands} of them)\n"
         f"  - what the radio says it is ({identity_text}) and the RigPlane version\n"
-        f"  - your radio's current settings as of this moment: {settings}\n"
+        f"  - your radio's {when}: {settings}\n"
         f"{memory_line}"
         f"{skipped_line(skipped_counts or {})}"
         f"{absent_answered_line(absent_answered or [])}"
@@ -448,6 +455,11 @@ def checks_need_terminal_message() -> str:
     )
 
 
+def checks_not_on_windows_message() -> str:
+    """``--checks`` on Windows, which has no terminal reader for it yet."""
+    return "--checks does not work on Windows yet. Running the read-only probe only."
+
+
 def no_checks_message() -> str:
     """``--checks`` on a profile that carries no checks."""
     return "This radio has no checks yet. Running the read-only probe only."
@@ -472,14 +484,15 @@ def checks_block_start(n: int) -> str:
     return (
         "The read-only part is done.\n"
         f"Next there {count}. Each one CHANGES one or more settings on your radio "
-        "for a moment, asks the radio what it now says, and puts the settings back. "
-        "None of them transmits, starts the antenna tuner or writes to the radio's "
+        "for a moment, asks the radio what it now says, then sets them back and reads "
+        "them again to confirm. If the radio does not take a setting back, this "
+        "program tells you what to set by hand. None of them transmits, starts the antenna tuner or writes to the radio's "
         "memory channels. You can say no to any check.\n"
         'Do not touch the knobs or buttons of the radio until this program says "done".\n'
         "Nothing may key the radio while a check runs: no PTT, no CW key, no VOX or "
         "microphone PTT, no digital program.\n"
-        "Do not close this window while a check is running: press Ctrl-C instead, "
-        "the program then puts the settings back first.\n"
+        "Do not close this window while a check is running: press Ctrl-C instead: "
+        "the program then tries to put the settings back before it stops.\n"
         "If you close this window anyway, the radio may be left changed. Run the "
         "program again: it will show the values to set back.\n"
         'If the cable comes out, set the values listed under "Right now" back by hand.'
@@ -506,10 +519,10 @@ def check_screen(
         f"Check {index} of {total}: {title}",
         f"  What it does: {what}",
         f"  Afterwards:   {after}",
-        f"  Right now:    {now} (these will be restored).",
+        f"  Right now:    {now} (the check will try to set these back).",
         "  Never:        no transmit, no tuner, no memory channel write.",
         *(f"  {warning}" for warning in warnings),
-        "  Ctrl-C at any time puts the settings back first.",
+        "  Ctrl-C at any time: the program tries to put the settings back, then stops.",
     ]
     return "\n".join(lines)
 
@@ -539,8 +552,8 @@ def check_result_line(index: int, record: CheckRecord) -> str:
         return f"WARNING: {error}. This check never transmits."
     if not record.verified:
         return (
-            f"Check {index} done: settings put back, but the radio now reports a "
-            "different value than before (see the file)."
+            f"Check {index} done: the settings were sent back, but the radio did not "
+            "confirm them (see the file). Check them on the radio before transmitting."
         )
     early = f" It stopped early: {error}." if error else ""
     return f"Check {index} done: settings put back and verified.{early}"
@@ -556,22 +569,26 @@ def checks_summary_line(records: Sequence[CheckRecord]) -> str:
     if not records:
         return ""
     ran = [r for r in records if r.status == "ran"]
+    confirmed = [r for r in ran if r.restored and r.verified]
+    unconfirmed = [r for r in ran if r.restored and not r.verified]
+    lost = [r for r in ran if not r.restored]
     kinds = (
-        ("verified", [r for r in ran if r.restored and r.verified]),
-        (
-            "put back but read differently",
-            [r for r in ran if r.restored and not r.verified],
-        ),
-        ("NOT put back", [r for r in ran if not r.restored]),
+        ("verified", confirmed),
+        ("sent back but not confirmed", unconfirmed),
+        ("NOT put back", lost),
         ("skipped by you", [r for r in records if r.status == "declined"]),
         ("not run", [r for r in records if r.status not in ("ran", "declined")]),
     )
     parts = ", ".join(f"{len(group)} {name}" for name, group in kinds if group)
-    back = [name for r in ran if r.restored for name in r.originals]
-    lost = [name for r in ran if not r.restored for name in r.originals]
-    changed = "" if lost else "; nothing was changed"
-    if back:
-        changed = f"; settings changed and put back: {', '.join(back)}"
-    if lost:
-        changed += f"; NOT put back, set by hand: {', '.join(lost)}"
+    named = (
+        ("settings changed and put back (confirmed)", confirmed),
+        ("sent back but not confirmed, check them on the radio", unconfirmed),
+        ("NOT put back, set by hand", lost),
+    )
+    said = [
+        f"{text}: {', '.join(name for r in group for name in r.originals)}"
+        for text, group in named
+        if group
+    ]
+    changed = "; " + "; ".join(said or ["nothing was changed"])
     return f"  - checks: {len(records)} offered ({parts}){changed}\n"
