@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import importlib
+import importlib.util
 import json
 import socket
 import struct
@@ -1291,10 +1292,18 @@ def test_real_enumeration_table() -> None:
     """Real enumeration on this host: at least one address, every entry
     classified, the default-route address present and kept by the policy.
 
-    Prints the ``ifname ip kind kept`` table so it shows with ``pytest -s``.
+    Which path runs depends on the host: with the optional webrtc extra
+    (``ifaddr`` installed) the interface table is read; without it the
+    ``getaddrinfo``/default-route fallback answers (pinned separately by the
+    ``test_fallback_*`` tests, which do not depend on the host).
+
+    Prints the path and the ``ifname ip kind kept`` table so they show with
+    ``pytest -s``.
     """
     from rigplane.web.transport import ice_gathering as ice_gathering
 
+    path = "ifaddr" if importlib.util.find_spec("ifaddr") else "fallback"
+    print(f"\nenumeration path: {path}")
     infos = ice_gathering._enumerate_local_addresses()
     assert infos, "expected at least one local address"
     for info in infos:
