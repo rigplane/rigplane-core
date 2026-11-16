@@ -30,13 +30,23 @@ __all__ = [
     "DEFAULT_PROBE_PROG",
     "AbsentAnswer",
     "absent_answered_line",
+    "ask_question_prompt",
     "bad_choice_message",
+    "check_consent_prompt",
+    "check_restore_warning",
+    "check_result_line",
+    "checks_consent_prompt",
+    "checks_intro",
+    "checks_no_checks_message",
+    "checks_no_tty_message",
+    "checks_summary_line",
     "closing_line",
     "cannot_open_message",
     "confirm_radio_prompt",
     "discovery_announcement",
     "found_line",
     "human_read_name",
+    "journal_pending_message",
     "no_answers_message",
     "no_profile_for_radio_message",
     "no_radio_found_message",
@@ -44,6 +54,7 @@ __all__ = [
     "opening_folder_line",
     "port_without_profile_message",
     "pre_save_summary",
+    "precondition_abort_message",
     "present_missed_line",
     "probe_help",
     "progress_line",
@@ -404,6 +415,126 @@ def cannot_open_message(device: str) -> str:
     """The message when the serial port cannot be opened."""
     return (
         f"Cannot open {device}. Check the radio is on and the port and speed are right."
+    )
+
+
+def checks_no_tty_message() -> str:
+    """The sentence for ``--checks`` with no terminal to ask in (exit 2)."""
+    return (
+        "--checks changes settings on your radio, so it needs a terminal "
+        "to ask before each change. Rerun in a terminal."
+    )
+
+
+def checks_no_checks_message(model: str) -> str:
+    """The sentence for ``--checks`` on a profile without checks."""
+    return (
+        f"{model} has no write checks. "
+        "The read-only part is the whole run; nothing was changed."
+    )
+
+
+def checks_intro(n: int) -> str:
+    """The block starting the optional write checks (ends asking)."""
+    return (
+        "The read-only part is done.\n"
+        f"Next there are {n} optional checks. Each one CHANGES one setting "
+        "on your radio for a moment, asks the radio what it now says, and "
+        "puts the setting back. None of them transmits, starts the antenna "
+        "tuner or writes to the radio's memory. You can say no to any check.\n"
+        'Do not touch the knobs or buttons of the radio until this program says "done".\n'
+        "Nothing may key the radio while a check runs: no PTT, no CW key, "
+        "no VOX or microphone PTT, no digital program.\n"
+        'If the program stops or the cable comes out, set the values listed under "Right now" back by hand.\n'
+        "Run the checks? [y/N]"
+    )
+
+
+def checks_consent_prompt() -> str:
+    """The question starting the optional write checks."""
+    return "Run the checks? [y/N]"
+
+
+def check_consent_prompt(
+    i: int,
+    n: int,
+    title: str,
+    explain_what: str,
+    explain_after: str,
+    right_now: list[str],
+    warnings: tuple[str, ...] = (),
+    raw_verbs: tuple[str, ...] = (),
+) -> str:
+    """The per-check question: what changes, what is now, what never."""
+    lines = [
+        f"Check {i} of {n}: {title}",
+        f"  What it does: {explain_what}",
+        f"  Afterwards:   {explain_after}",
+        f"  Right now:    {', '.join(right_now)} (these will be restored).",
+        "  Never:        no transmit, no tuner, no memory write.",
+    ]
+    lines.extend(f"  {warning}" for warning in warnings)
+    if raw_verbs:
+        lines.append(
+            f"  This check sends the command(s) {', '.join(raw_verbs)} "
+            "to your radio, which RigPlane does not normally use."
+        )
+    lines.append("  Ctrl-C at any time puts the settings back first.")
+    lines.append("Run this check? [y/N]")
+    return "\n".join(lines)
+
+
+def ask_question_prompt(question: str) -> str:
+    """The question put to the person mid-check (60 s to answer)."""
+    return (
+        f"Look at the radio. {question} Type your answer, "
+        "or press Enter to skip (it is skipped after 60 seconds):"
+    )
+
+
+def check_result_line(i: int, verified: bool) -> str:
+    """The per-check result: verified, or put back but different."""
+    if verified:
+        return f"Check {i} done: settings put back and verified."
+    return (
+        f"Check {i} done: settings put back, but the radio now reports "
+        "a different value than before (see the file)."
+    )
+
+
+def check_restore_warning(name: str, value: str) -> str:
+    """The warning when one original could not be put back."""
+    return (
+        f"WARNING: could not put {name} back to {value}. "
+        "Please set it by hand. This check never transmits."
+    )
+
+
+def precondition_abort_message() -> str:
+    """The abort when the radio is not in VFO mode."""
+    return (
+        "Switch the radio to VFO mode (not a memory channel) "
+        "and run the check again. Nothing was changed."
+    )
+
+
+def checks_summary_line(
+    run: int, verified: int, skipped: int, changed: list[str]
+) -> str:
+    """The pre-save one-liner over the checks that ran."""
+    names = ", ".join(changed) if changed else "none"
+    return (
+        f"checks: {run} run ({verified} verified, {skipped} skipped by you); "
+        f"settings changed and put back: {names}"
+    )
+
+
+def journal_pending_message(items: list[str], path: str) -> str:
+    """The next-start message for a journal an unfinished check left."""
+    return (
+        "A check did not finish last time. Before it the radio had: "
+        f"{', '.join(items)}. Please set these by hand. "
+        f"The journal file is left in place until you delete it: {path}"
     )
 
 

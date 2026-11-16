@@ -126,6 +126,15 @@ class _SendGate:
         self.stop_status = "completed"
         self.stop_detail = ""
 
+    def allow(self, body: bytes) -> None:
+        """Admit one validated body to the allow-list.
+
+        The read pass admits its whole plan up front; the write checks
+        admit each computed restore body only after it is built and
+        policy-checked.
+        """
+        self.allowed = self.allowed | {body}
+
     def stop(self, status: str, detail: str) -> None:
         """Stop the run; the first stop wins and names the file's reason."""
         if not self.stopped:
