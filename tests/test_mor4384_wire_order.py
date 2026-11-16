@@ -543,6 +543,40 @@ async def test_t5_echo_confirmed_write_retires_the_older_lost_read(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("read_kind", ["blocking", "sink"])
+async def test_t1_an_unsent_read_does_not_suppress_a_sent_writes_echo(
+    read_kind: str,
+) -> None:
+    """T1 echo: a read still in its pacing gap claims nothing, echoes included.
+
+    Sent write A's echo arrives while a matching read B is registered but
+    not yet sent: the echo confirms A, and B stays open for its own answer.
+    """
+    tracker = CivRequestTracker()
+    write = _request(*_WRITE, data=_level(7))
+    pending = tracker.register_ack(
+        wait=True,
+        consume_backlog=False,
+        write_identity=read_identity_from_frame(parse_civ_frame(write)),
+    )
+    assert isinstance(pending, asyncio.Future)
+    tracker.mark_sent(1.0, futures=(pending,))
+    key = CivRequestKey(command=_WRITE[0], sub=_WRITE[1])
+    if read_kind == "blocking":
+        read = tracker.register_response(key)
+    else:
+        tracker.register_ack(wait=False, response_key=key, refused_read=key)
+
+    echo = _answer(*_WRITE, data=_level(7))
+    assert tracker.resolve_write_echo(echo, ordered_ingress=True) is True
+    assert pending.result().command == 0xFB
+    assert tracker.pending_count == 1
+    if read_kind == "blocking":
+        assert not read.done()
+        read.cancel()
+
+
+@pytest.mark.asyncio
 async def test_t1_an_echo_before_the_write_is_sent_confirms_nothing() -> None:
     """T1 echo: an entry not yet sent claims nothing, an echo included.
 
