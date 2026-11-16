@@ -1,23 +1,36 @@
 """``rigplane probe --checks``: the CLI wiring of the write checks (MOR-4502).
 
-Every run drives the real ``execute()`` against the testkit ``FakeCatRadio``
-(FT-991A) through the production serial exchange, with a scripted person at
-the keyboard. The synthetic check comes from the engine tests' loader helper;
-the journal lives in the temporary state folder (``conftest.py``).
+Runs drive the testkit ``FakeCatRadio`` (FT-991A) through the production
+serial exchange. Most tests call ``execute()`` with a scripted person; the
+reader tests type on a real pseudo-terminal (and press a real Ctrl-C); the
+entry tests go through ``probe_main`` with stdin/stdout on that terminal.
+The synthetic checks come from the engine tests' loader helper; the journal
+lives in a temporary state folder (``state_dir``).
 """
 
 from __future__ import annotations
 
 import argparse
 import ast
+import asyncio
+import os
+import pty
 import re
+import select
+import signal
+import threading
+import time
+from collections import Counter
 from collections.abc import Callable
 from pathlib import Path
 
+import platformdirs
 import pytest
 
-from rigplane.cli import _probe
-from rigplane.cli._probe import build_probe_parser, execute
+import rigplane.cli as cli_module
+from rigplane.backends.discovery import RadioDiscoveryResult
+from rigplane.cli import _probe, probe_main
+from rigplane.cli._probe import _TerminalLines, build_probe_parser, execute
 from rigplane.probe import render
 from rigplane.probe.journal import journal_path, leftover_journal_line
 from rigplane.probe.model import CheckRecord, CheckWitness, ProbeFile
@@ -53,11 +66,40 @@ POWER_ASK = check_toml(
     ],
     ["power"],
 )
+WITNESSED = check_toml(
+    [
+        'kind = "write"\nentry = "power"\nvalue = 100',
+        'kind = "ask"\nquestion = "Did the meter move?"',
+    ],
+    ["power"],
+    'witness = ["info"]',
+)
+SECOND_POWER = """
+[[probe.checks]]
+id = "second"
+title = "Second check"
+explain_what = "Raises the RF power for a moment."
+explain_after = "Puts it back."
+[[probe.checks.steps]]
+kind = "write"
+entry = "power"
+value = 100
+[[probe.checks.restore]]
+entry = "power"
+"""
 CAT_WRITE = re.compile(r"(FA|FB)\d{9};|FT[23];|PC\d{3};|MD0\w;")
 PINNED = (
     "A check could not put the radio back: RF power is now 100 W, it was 20 W. "
     "Set it back by hand before transmitting."
 )
+
+
+@pytest.fixture(autouse=True)
+def state_dir(tmp_path_factory, monkeypatch) -> Path:
+    """The checks journal lives in a temporary folder, never the user's."""
+    state = tmp_path_factory.mktemp("state")
+    monkeypatch.setattr(platformdirs, "user_state_path", lambda app: state / app)
+    return state / "rigplane"
 
 
 class Person:
@@ -75,16 +117,63 @@ class Person:
                 return answer() if callable(answer) else answer
         return ""
 
+    async def lines(self, prompt: str) -> str | None:
+        return self.ask(prompt)
+
     def emit(self, text: str) -> None:
         self.log.append(("emit", text))
 
     def asked(self, prompt: str) -> bool:
         return ("ask", prompt) in self.log
 
+    def said(self, text: str) -> bool:
+        return any(text in t for k, t in self.log if k == "emit")
+
     def index(self, kind: str, start: str) -> int:
         return next(
             i for i, (k, t) in enumerate(self.log) if k == kind and t.startswith(start)
         )
+
+
+class Terminal:
+    """A real pseudo-terminal. The program uses the slave side; a thread
+    reads the screen and, for each new appearance of a rule's prompt, types
+    the rule's answer (a callable runs first; ``None`` types nothing)."""
+
+    def __init__(self, rules: dict[str, str | Callable[[], str | None]]):
+        self.master, self.slave = pty.openpty()
+        self.rules, self.seen = rules, Counter[str]()
+        self.screen = ""
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._watch, daemon=True)
+        self._thread.start()
+
+    def _watch(self) -> None:
+        while not self._stop.is_set():
+            if not select.select([self.master], [], [], 0.02)[0]:
+                continue
+            try:
+                self.screen += os.read(self.master, 4096).decode(errors="replace")
+            except OSError:
+                return
+            for prompt, action in self.rules.items():
+                while self.screen.count(prompt) > self.seen[prompt]:
+                    self.seen[prompt] += 1
+                    text = action() if callable(action) else action
+                    if text is not None:
+                        os.write(self.master, text.encode())
+
+    def write(self, text: str) -> None:
+        os.write(self.slave, text.encode())
+
+    def lines(self) -> _TerminalLines:
+        return _TerminalLines(self.slave, self.write)
+
+    def close(self) -> None:
+        self._stop.set()
+        self._thread.join()
+        os.close(self.master)
+        os.close(self.slave)
 
 
 def cat_writes(radio) -> list[str]:
@@ -100,6 +189,8 @@ async def drive(
     checks: bool = True,
     yes: bool = False,
     is_tty: bool = True,
+    lines=None,
+    gap_s: float = 0.0,
 ) -> tuple[int, Path]:
     out = tmp_path / "probe.json"
 
@@ -118,10 +209,11 @@ async def drive(
         is_tty=is_tty,
         ask=person.ask,
         exchange_factory=factory,
-        gap_s=0.0,
+        gap_s=gap_s,
         timeout_s=0.2,
         emit=person.emit,
         checks=checks,
+        check_lines=lines or person.lines,
     )
     return code, out
 
@@ -172,8 +264,6 @@ async def test_checks_without_a_terminal_exit_2_before_the_port(tmp_path) -> Non
 def test_discovery_path_refuses_checks_without_a_terminal_before_scanning(
     monkeypatch, capsys
 ) -> None:
-    import asyncio
-
     class NoTerminal:
         def isatty(self) -> bool:
             return False
@@ -194,6 +284,36 @@ def test_checks_flag_is_one_definition_for_both_entry_points() -> None:
     parser = argparse.ArgumentParser()
     _probe.add_subparser(parser.add_subparsers())
     assert parser.parse_args(["probe", "--checks"]).checks is True
+
+
+async def test_checks_on_windows_run_the_read_probe_only(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(_probe, "_HAS_TERMINAL_READER", False)  # as on Windows
+    config = load(tmp_path, "ft991a", SPLIT)
+    radio = await cat_radio()
+    person = Person()
+    try:
+        out = tmp_path / "probe.json"
+        code = await execute(
+            config,
+            b"profile bytes",
+            device_label="COM5",
+            baud=38400,
+            out=str(out),
+            include_private=False,
+            label="",
+            yes=True,
+            is_tty=True,
+            ask=person.ask,
+            exchange_factory=lambda: cat_exchange(radio),
+            gap_s=0.0,
+            timeout_s=0.2,
+            emit=person.emit,
+            checks=True,
+        )
+    finally:
+        await radio.stop()
+    assert code == 0 and person.said(render.checks_not_on_windows_message())
+    assert saved(out).mode == "read" and cat_writes(radio) == []
 
 
 # --- consent ------------------------------------------------------------------------------
@@ -285,7 +405,52 @@ async def test_yes_to_a_check_restores_and_saves_the_record(tmp_path) -> None:
     assert not journal_path().exists()
 
 
-async def test_failed_restore_is_exit_4_with_the_pinned_line_first(tmp_path) -> None:
+async def test_a_leftover_journal_refuses_the_checks_without_a_write(tmp_path) -> None:
+    body = write_leftover(journal_path())
+    config = load(tmp_path, "ft991a", SPLIT)
+    radio = await cat_radio()
+    person = Person({render.checks_prompt(): "y", render.check_prompt(): "y"})
+    try:
+        code, out = await drive(tmp_path, config, radio, person)
+    finally:
+        await radio.stop()
+    assert code == 0
+    assert not person.asked(render.check_prompt())
+    assert cat_writes(radio) == [] and journal_path().read_bytes() == body
+    (record,) = saved(out).checks
+    assert record.status == "refused"
+    assert ("emit", render.check_result_line(1, record)) in person.log
+
+
+async def test_a_profile_without_checks_runs_the_read_probe_only(tmp_path) -> None:
+    from rigplane.cli._probe import resolve_config
+
+    radio = await cat_radio()
+    person = Person()
+    try:
+        code, out = await drive(
+            tmp_path, resolve_config("FT-991A", RIGS), radio, person
+        )
+    finally:
+        await radio.stop()
+    assert code == 0
+    assert ("emit", render.no_checks_message()) in person.log
+    assert not person.asked(render.checks_prompt())
+    assert saved(out).mode == "read"
+
+
+# --- what the person is told after a check: only what the engine confirmed ------------
+
+
+def _summary(person: Person) -> str:
+    return next(
+        t for k, t in person.log if k == "emit" and t.startswith("Ready to save")
+    )
+
+
+async def test_a_rejected_restore_is_exit_4_with_the_pinned_line_first(
+    tmp_path,
+) -> None:
     config = load(tmp_path, "ft991a", POWER_ASK)
     radio = await cat_radio()
     radio.hold("PC", "020")
@@ -312,88 +477,306 @@ async def test_failed_restore_is_exit_4_with_the_pinned_line_first(tmp_path) -> 
     assert record.restored is False
     assert ("emit", render.check_result_line(1, record)) in person.log
     assert leftover_journal_line(journal_path()) == PINNED
+    summary = _summary(person)
+    assert "NOT put back, set by hand: RF power" in summary
+    assert "put back (confirmed)" not in summary and "current settings" not in summary
+    assert not person.said("put back and verified")
 
 
-# --- leftover journal ---------------------------------------------------------------------
-
-
-async def test_a_leftover_journal_is_printed_first_on_a_plain_probe(tmp_path) -> None:
-    from rigplane.cli._probe import resolve_config
-
-    body = write_leftover(journal_path())
+async def test_a_differing_restore_readback_is_not_called_put_back(tmp_path) -> None:
+    config = load(tmp_path, "ft991a", POWER_ASK)
     radio = await cat_radio()
-    person = Person()
-    try:
-        code, _ = await drive(
-            tmp_path, resolve_config("FT-991A", RIGS), radio, person, checks=False
-        )
-    finally:
-        await radio.stop()
-    assert code == 0
-    assert person.log[:2] == [
-        ("emit", PINNED),
-        ("emit", render.journal_instruction_line(str(journal_path()))),
-    ]
-    assert cat_writes(radio) == [] and journal_path().read_bytes() == body
+    radio.hold("PC", "020")
 
+    def drift() -> str:
+        radio.hold("PC", "050")  # the restore is accepted, the read-back differs
+        return ""
 
-async def test_a_leftover_journal_refuses_the_checks_without_a_write(tmp_path) -> None:
-    body = write_leftover(journal_path())
-    config = load(tmp_path, "ft991a", SPLIT)
-    radio = await cat_radio()
-    person = Person({render.checks_prompt(): "y", render.check_prompt(): "y"})
+    person = Person(
+        {render.checks_prompt(): "y", render.check_prompt(): "y", "Look at": drift}
+    )
     try:
         code, out = await drive(tmp_path, config, radio, person)
     finally:
         await radio.stop()
-    assert code == 0 and person.log[0] == ("emit", PINNED)
-    assert not person.asked(render.check_prompt())
-    assert cat_writes(radio) == [] and journal_path().read_bytes() == body
     (record,) = saved(out).checks
-    assert record.status == "refused"
-    assert ("emit", render.check_result_line(1, record)) in person.log
+    assert code == 4 and (record.restored, record.verified) == (True, False)
+    assert person.said(render.check_result_line(1, record))
+    assert "did not confirm" in render.check_result_line(1, record)
+    summary = _summary(person)
+    assert "sent back but not confirmed, check them on the radio: RF power" in summary
+    assert "put back (confirmed)" not in summary
+    assert "settings at the start of this run" in summary
+    assert not person.said("put back and verified") and not person.said(PINNED)
+    assert person.said(render.journal_instruction_line(str(journal_path())))
+
+
+async def test_missing_witness_data_never_claims_a_different_value(tmp_path) -> None:
+    config = load(tmp_path, "ft991a", WITNESSED)
+    radio = await cat_radio()
+
+    def mute_witness() -> str:
+        radio.reject("IF")  # the witness read after the restore gets no data
+        return ""
+
+    person = Person(
+        {
+            render.checks_prompt(): "y",
+            render.check_prompt(): "y",
+            "Look at": mute_witness,
+        }
+    )
+    try:
+        code, out = await drive(tmp_path, config, radio, person)
+    finally:
+        await radio.stop()
+    (record,) = saved(out).checks
+    assert code == 4 and (record.restored, record.verified) == (True, False)
+    assert record.witness.after.get("info") is None
+    assert person.said(render.check_result_line(1, record))
+    assert not person.said("different value") and not person.said("put back and")
+
+
+# --- the terminal reader: one answer per prompt, Ctrl-C reaches the engine -------------
+
+
+async def test_a_late_answer_to_a_timed_out_question_never_answers_the_next() -> None:
+    term = Terminal({})
+    try:
+        lines = term.lines()
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(lines("Did the meter move? "), 0.1)
+        os.write(term.master, b"yes\n")  # typed after the question expired
+        await asyncio.sleep(0.1)
+        consent = asyncio.ensure_future(lines(render.check_prompt()))
+        await asyncio.sleep(0.2)
+        assert not consent.done()
+        os.write(term.master, b"n\n")
+        assert await asyncio.wait_for(consent, 5) == "n"
+    finally:
+        term.close()
+
+
+async def test_two_checks_a_late_yes_does_not_authorize_the_second(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setattr(_probe, "ASK_TIMEOUT_S", 0.3)
+    config = load(tmp_path, "ft991a", SPLIT + SECOND_POWER)
+    radio = await cat_radio()
+    consents = iter(["y\n", "n\n"])
+
+    def too_late() -> str:
+        time.sleep(0.4)  # past the 0.3 s limit, while check 1 is restoring
+        return "yes\n"
+
+    term = Terminal(
+        {
+            render.checks_prompt(): "y\n",
+            render.check_prompt(): lambda: next(consents),
+            "Look at the radio.": too_late,
+        }
+    )
+    try:
+        code, out = await drive(
+            tmp_path, config, radio, Person(), lines=term.lines(), gap_s=0.05
+        )
+    finally:
+        term.close()
+        await radio.stop()
+    first, second = saved(out).checks
+    assert code == 0 and first.answers[0].skipped
+    assert (first.restored, first.verified) == (True, True)
+    assert second.status == "declined"
+    assert term.seen[render.check_prompt()] == 2
+    assert "PC100;" not in radio.commands
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX signals (Windows: MOR-4497)")
+async def test_ctrl_c_at_the_check_question_ends_with_no_write(tmp_path) -> None:
+    config = load(tmp_path, "ft991a", SPLIT)
+    radio = await cat_radio()
+
+    def ctrl_c() -> None:
+        os.kill(os.getpid(), signal.SIGINT)  # no newline typed
+        return None
+
+    term = Terminal({render.checks_prompt(): "y\n", render.check_prompt(): ctrl_c})
+    try:
+        code, out = await asyncio.wait_for(
+            drive(tmp_path, config, radio, Person(), yes=True, lines=term.lines()), 60
+        )
+    finally:
+        term.close()
+        await radio.stop()
+    (record,) = saved(out).checks
+    assert code == 0
+    assert (record.status, record.error) == ("refused", "cancelled before any write")
+    assert cat_writes(radio) == [] and not journal_path().exists()
+
+
+# --- through the real entry point (probe_main) --------------------------------------------
+
+
+def rigs_with(tmp_path: Path, toml: str, monkeypatch) -> None:
+    """The shipped FT-991A plus *toml*, as the only profile the CLI finds."""
+    rigs = tmp_path / "rigs"
+    rigs.mkdir()
+    load(rigs, "ft991a", toml)
+    monkeypatch.setattr(cli_module, "_rigs_dir", lambda: rigs)
+
+
+async def on_terminal(term: Terminal, monkeypatch, argv: list[str]) -> int:
+    """``probe_main`` with stdin and stdout on the pseudo-terminal."""
+    monkeypatch.setattr("sys.stdin", open(term.slave, closefd=False))
+    monkeypatch.setattr("sys.stdout", open(term.slave, "w", closefd=False))
+    # the fake radio answers on this loop; probe_main runs its own
+    return await asyncio.wait_for(asyncio.to_thread(probe_main, argv), 120)
+
+
+async def test_entry_named_port_checks_run_write_restore_and_save(
+    tmp_path, monkeypatch
+) -> None:
+    rigs_with(tmp_path, SPLIT, monkeypatch)
+    radio = await cat_radio()
+    out = tmp_path / "probe.json"
+    term = Terminal(
+        {
+            render.checks_prompt(): "y\n",
+            render.check_prompt(): "y\n",
+            "Look at the radio.": "yes\n",
+        }
+    )
+    argv = ["FT-991A", "--port", radio.device_url, "--checks", "--yes"]
+    try:
+        code = await on_terminal(term, monkeypatch, [*argv, "--out", str(out)])
+    finally:
+        term.close()
+        await radio.stop()
+    (record,) = saved(out).checks
+    assert code == 0 and (record.status, record.restored, record.verified) == (
+        "ran",
+        True,
+        True,
+    )
+    assert record.answers[0].answer == "yes"
+    assert "FT3;" in radio.commands and "FT2;" in radio.commands  # write, restore
+
+
+async def test_entry_named_port_failed_restore_is_exit_4(tmp_path, monkeypatch) -> None:
+    rigs_with(tmp_path, POWER_ASK, monkeypatch)
+    radio = await cat_radio()
+    radio.hold("PC", "020")
+    out = tmp_path / "probe.json"
+
+    def refuse_power() -> str:
+        radio.reject("PC")
+        return "\n"
+
+    term = Terminal(
+        {
+            render.checks_prompt(): "y\n",
+            render.check_prompt(): "y\n",
+            "Look at the radio.": refuse_power,
+        }
+    )
+    argv = ["FT-991A", "--port", radio.device_url, "--checks", "--yes"]
+    try:
+        code = await on_terminal(term, monkeypatch, [*argv, "--out", str(out)])
+    finally:
+        term.close()
+        await radio.stop()
+    (record,) = saved(out).checks
+    assert code == 4 and record.restored is False
+    assert "PC100;" in radio.commands and PINNED in term.screen
+
+
+async def test_entry_discovery_checks_run_write_restore_and_save(
+    tmp_path, monkeypatch
+) -> None:
+    rigs_with(tmp_path, SPLIT, monkeypatch)
+    radio = await cat_radio()
+    out = tmp_path / "probe.json"
+
+    async def found():
+        return [
+            RadioDiscoveryResult(
+                port=radio.device_url,
+                protocol="yaesu_cat",
+                model="FT-991A",
+                profile_id="yaesu_ft991a",
+                baudrate=38400,
+                address="0670",
+            )
+        ]
+
+    monkeypatch.setattr(_probe, "discover_serial_radios", found)
+    term = Terminal(
+        {
+            render.checks_prompt(): "y\n",
+            render.check_prompt(): "y\n",
+            "Look at the radio.": "yes\n",
+        }
+    )
+    try:
+        code = await on_terminal(
+            term, monkeypatch, ["--checks", "--yes", "--out", str(out)]
+        )
+    finally:
+        term.close()
+        await radio.stop()
+    (record,) = saved(out).checks
+    assert code == 0 and (record.status, record.restored) == ("ran", True)
+    assert "FT3;" in radio.commands and "FT2;" in radio.commands
+
+
+async def _no_radio():
+    return []
+
+
+async def _scan_fails():
+    raise OSError("device vanished")
+
+
+@pytest.mark.parametrize(
+    ("argv", "scan", "code"),
+    [
+        (["--checks"], _no_radio, 3),
+        ([], _scan_fails, 3),
+        (["--port", "COM5"], _no_radio, 2),
+    ],
+    ids=["no-radio", "scan-fails", "usage-error"],
+)
+def test_entry_prints_the_leftover_journal_first_whatever_stops_it(
+    argv, scan, code, monkeypatch, capsys
+) -> None:
+    body = write_leftover(journal_path())
+    monkeypatch.setattr(_probe, "discover_serial_radios", scan)
+    monkeypatch.setattr("sys.stdin", type("Tty", (), {"isatty": lambda self: True})())
+    assert probe_main(argv) == code
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[:2] == [
+        PINNED,
+        render.journal_instruction_line(str(journal_path())),
+    ]
+    assert journal_path().read_bytes() == body
 
 
 @pytest.mark.parametrize("kind", ["garbage", "directory"])
-async def test_an_unreadable_journal_prints_a_plain_line(tmp_path, kind) -> None:
-    from rigplane.cli._probe import resolve_config
-
+def test_entry_unreadable_journal_prints_a_plain_line(
+    kind, monkeypatch, capsys
+) -> None:
     path = journal_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     if kind == "garbage":
         path.write_bytes(b"not json at all")
     else:
         path.mkdir()
-    radio = await cat_radio()
-    person = Person()
-    try:
-        code, _ = await drive(
-            tmp_path, resolve_config("FT-991A", RIGS), radio, person, checks=False
-        )
-    finally:
-        await radio.stop()
-    assert code == 0
-    assert person.log[:2] == [
-        ("emit", render.journal_unreadable_line(str(path))),
-        ("emit", render.journal_instruction_line(str(path))),
+    monkeypatch.setattr(_probe, "discover_serial_radios", _no_radio)
+    assert probe_main([]) == 3
+    assert capsys.readouterr().out.splitlines()[:2] == [
+        render.journal_unreadable_line(str(path)),
+        render.journal_instruction_line(str(path)),
     ]
-
-
-async def test_a_profile_without_checks_runs_the_read_probe_only(tmp_path) -> None:
-    from rigplane.cli._probe import resolve_config
-
-    radio = await cat_radio()
-    person = Person()
-    try:
-        code, out = await drive(
-            tmp_path, resolve_config("FT-991A", RIGS), radio, person
-        )
-    finally:
-        await radio.stop()
-    assert code == 0
-    assert ("emit", render.no_checks_message()) in person.log
-    assert not person.asked(render.checks_prompt())
-    assert saved(out).mode == "read"
 
 
 # --- the CLI never builds a frame ---------------------------------------------------------
@@ -416,14 +799,16 @@ def test_checks_block_start_text() -> None:
     assert render.checks_block_start(3) == (
         "The read-only part is done.\n"
         "Next there are 3 optional checks. Each one CHANGES one or more settings "
-        "on your radio for a moment, asks the radio what it now says, and puts "
-        "the settings back. None of them transmits, starts the antenna tuner or "
-        "writes to the radio's memory channels. You can say no to any check.\n"
+        "on your radio for a moment, asks the radio what it now says, then sets "
+        "them back and reads them again to confirm. If the radio does not take a "
+        "setting back, this program tells you what to set by hand. None of them "
+        "transmits, starts the antenna tuner or writes to the radio's memory "
+        "channels. You can say no to any check.\n"
         'Do not touch the knobs or buttons of the radio until this program says "done".\n'
         "Nothing may key the radio while a check runs: no PTT, no CW key, no VOX "
         "or microphone PTT, no digital program.\n"
-        "Do not close this window while a check is running: press Ctrl-C instead, "
-        "the program then puts the settings back first.\n"
+        "Do not close this window while a check is running: press Ctrl-C instead: "
+        "the program then tries to put the settings back before it stops.\n"
         "If you close this window anyway, the radio may be left changed. Run the "
         "program again: it will show the values to set back.\n"
         'If the cable comes out, set the values listed under "Right now" back by hand.'
@@ -446,10 +831,10 @@ def test_check_screen_text() -> None:
         "switches split on.\n"
         "  Afterwards:   puts VFO-A, VFO-B and split back exactly as they are now.\n"
         "  Right now:    VFO-A 14.2 MHz, VFO-B 14.25 MHz, split off "
-        "(these will be restored).\n"
+        "(the check will try to set these back).\n"
         "  Never:        no transmit, no tuner, no memory channel write.\n"
         "  Switch off an amplifier first.\n"
-        "  Ctrl-C at any time puts the settings back first."
+        "  Ctrl-C at any time: the program tries to put the settings back, then stops."
     )
 
 
@@ -463,6 +848,9 @@ def test_prompts_and_one_line_messages() -> None:
     assert render.checks_need_terminal_message() == (
         "--checks asks you questions, so it needs a terminal window: "
         "run it there, not from a script or a pipe."
+    )
+    assert render.checks_not_on_windows_message() == (
+        "--checks does not work on Windows yet. Running the read-only probe only."
     )
     assert render.no_checks_message() == (
         "This radio has no checks yet. Running the read-only probe only."
@@ -490,8 +878,8 @@ def test_check_result_lines() -> None:
         "the radio did not accept split = 'on'."
     )
     assert line(2, _record("ran", verified=False)) == (
-        "Check 2 done: settings put back, but the radio now reports a different "
-        "value than before (see the file)."
+        "Check 2 done: the settings were sent back, but the radio did not confirm "
+        "them (see the file). Check them on the radio before transmitting."
     )
     assert line(
         2,
@@ -525,18 +913,21 @@ def test_pre_save_summary_carries_the_checks_line() -> None:
         _record("ran", originals={"VFO-B": "1 MHz"}, restored=False, verified=False),
     )
     assert render.checks_summary_line(records) == (
-        "  - checks: 5 offered (1 verified, 1 put back but read differently, "
+        "  - checks: 5 offered (1 verified, 1 sent back but not confirmed, "
         "1 NOT put back, 1 skipped by you, 1 not run); settings changed and put "
-        "back: VFO-A, split, RF power; NOT put back, set by hand: VFO-B\n"
+        "back (confirmed): VFO-A, split; sent back but not confirmed, check them "
+        "on the radio: RF power; NOT put back, set by hand: VFO-B\n"
     )
     assert render.checks_summary_line(()) == ""
     assert render.checks_summary_line((_record("declined"),)) == (
         "  - checks: 1 offered (1 skipped by you); nothing was changed\n"
     )
     text = render.pre_save_summary(
-        "/p", 10, 1, "unknown model", [], False, checks=records
+        "/p", 10, 1, "unknown model", ["mode USB"], False, checks=records
     )
     assert render.checks_summary_line(records) in text
+    assert "  - your radio's settings at the start of this run: mode USB\n" in text
+    assert "current settings" not in text
 
 
 def test_start_screen_with_checks_does_not_claim_read_only() -> None:
