@@ -250,7 +250,7 @@ async def test_link_lost_during_restore_is_exit_4_and_keeps_the_journal(
     assert not record.restored and not record.verified
     assert result.termination is not None
     assert result.termination.status == "restore_failed"
-    assert "please set it by hand" in (record.error or "")
+    assert "could not put" in (record.error or "")
     assert req.journal_path.exists()
     # the one attempted restore write is recorded; suppressed sends are not
     restore = record.steps[-1:]

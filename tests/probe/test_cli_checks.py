@@ -751,7 +751,7 @@ async def _scan_fails():
 @pytest.mark.parametrize(
     ("argv", "scan", "code"),
     [
-        (["--checks"], _no_radio, 3),
+        ([], _no_radio, 3),
         ([], _scan_fails, 3),
         (["--port", "COM5"], _no_radio, 2),
     ],
@@ -762,13 +762,59 @@ def test_entry_prints_the_leftover_journal_first_whatever_stops_it(
 ) -> None:
     body = write_leftover(journal_path())
     monkeypatch.setattr(_probe, "discover_serial_radios", scan)
-    monkeypatch.setattr("sys.stdin", type("Tty", (), {"isatty": lambda self: True})())
     assert probe_main(argv) == code
     lines = capsys.readouterr().out.splitlines()
     assert lines[:2] == [
         PINNED,
         render.journal_instruction_line(str(journal_path())),
     ]
+    assert journal_path().read_bytes() == body
+
+
+async def _leftover_on_terminal(tmp_path, monkeypatch, set_back: str):
+    """A leftover journal and a --checks run on a terminal; *set_back* answers
+    the question about it. Returns (code, record, radio, screen, body)."""
+    rigs_with(tmp_path, SPLIT, monkeypatch)
+    body = write_leftover(journal_path())
+    radio = await cat_radio()
+    out = tmp_path / "probe.json"
+    term = Terminal(
+        {
+            render.journal_set_back_prompt(): set_back,
+            render.checks_prompt(): "y\n",
+            render.check_prompt(): "y\n",
+            "Look at the radio.": "yes\n",
+        }
+    )
+    argv = ["FT-991A", "--port", radio.device_url, "--checks", "--yes"]
+    try:
+        code = await on_terminal(term, monkeypatch, [*argv, "--out", str(out)])
+    finally:
+        term.close()
+        await radio.stop()
+    (record,) = saved(out).checks
+    return code, record, radio, term.screen, body
+
+
+async def test_entry_yes_to_set_back_removes_the_journal_and_checks_run(
+    tmp_path, monkeypatch
+) -> None:
+    code, record, radio, screen, _ = await _leftover_on_terminal(
+        tmp_path, monkeypatch, "y\n"
+    )
+    assert screen.index(PINNED) < screen.index(render.journal_set_back_prompt())
+    assert code == 0 and record.status == "ran" and "FT3;" in radio.commands
+    assert not journal_path().exists()
+
+
+async def test_entry_enter_at_set_back_keeps_the_journal_and_no_check_writes(
+    tmp_path, monkeypatch
+) -> None:
+    code, record, radio, screen, body = await _leftover_on_terminal(
+        tmp_path, monkeypatch, "\n"
+    )
+    assert render.journal_set_back_prompt() in screen
+    assert code == 0 and record.status == "refused" and cat_writes(radio) == []
     assert journal_path().read_bytes() == body
 
 
@@ -816,9 +862,9 @@ def test_checks_block_start_text() -> None:
         "transmits, starts the antenna tuner or writes to the radio's memory "
         "channels. You can say no to any check.\n"
         'Do not touch the knobs or buttons of the radio until this program says "done".\n'
-        "Nothing may key the radio while a check runs: no PTT, no CW key, no VOX "
-        "or microphone PTT, no digital program.\n"
-        "Do not close this window while a check is running: press Ctrl-C instead: "
+        "Do not transmit while a check runs: no PTT, no CW key, no VOX, "
+        "no digital-mode program.\n"
+        "Do not close this window while a check is running. Press Ctrl-C instead; "
         "the program then tries to put the settings back before it stops.\n"
         "If you close this window anyway, the radio may be left changed. Run the "
         "program again: it will show the values to set back.\n"
@@ -871,8 +917,11 @@ def test_prompts_and_one_line_messages() -> None:
         "again: /s/j.json"
     )
     assert render.journal_unreadable_line("/s/j.json") == (
-        "A check journal from an earlier run cannot be read: /s/j.json. "
-        "Check the radio's settings by hand."
+        "The file with the values an earlier check should have set back cannot "
+        "be read: /s/j.json. Check the radio's settings by hand."
+    )
+    assert render.journal_set_back_prompt() == (
+        "Are these set back on the radio now? [y/N] "
     )
     assert render.checks_done_line() == "The checks are done."
 
@@ -898,11 +947,11 @@ def test_check_result_lines() -> None:
             "ran",
             restored=False,
             verified=False,
-            error="could not put VFO-B back to 14.25 MHz; please set it by hand",
+            error="could not put VFO-B back to 14.25 MHz",
         ),
     ) == (
-        "WARNING: could not put VFO-B back to 14.25 MHz; please set it by hand. "
-        "This check never transmits."
+        "WARNING: could not put VFO-B back to 14.25 MHz. "
+        "Please set it by hand before you transmit."
     )
     assert line(1, _record("declined")) == "Check 1 skipped by you."
     assert line(1, _record("refused", error="precondition vfo not met.")) == (
