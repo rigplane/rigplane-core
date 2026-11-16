@@ -56,7 +56,10 @@ class RadioFacts:
     modes: tuple[str, ...]
     mode_codes: tuple[str, ...] | None
     cmd29_routes: frozenset[tuple[int, int | None]]
-    vfo_swap: tuple[int, ...] | None
+    swap_ab: tuple[int, ...] | None
+    swap_main_sub: tuple[int, ...] | None
+    unselected_is_sub: bool  # 25/26 selector 01 is the physical SUB receiver
+    data_modes: int  # DATA sub-modes after OFF ([data_mode].count)
     freq_ranges: tuple[tuple[int, int], ...]
 
 
@@ -151,19 +154,17 @@ def _cat_modes(facts: RadioFacts) -> Codec:
 
 def _civ_modes(facts: RadioFacts) -> _Choice:
     found = ((n, Mode.__members__.get(n.replace("-", "_"))) for n in facts.modes)
-    return _Choice(tuple((n, bytes((m,))) for n, m in found if m and not _voice(n)))
+    return _Choice(
+        tuple((n, bytes((m,))) for n, m in found if m is not None and not _voice(n))
+    )
 
 
-_DATA = _Choice(((0, b"\x00"), (1, b"\x01")))
 _FILTER = _Choice(tuple((i, bytes((i,))) for i in (1, 2, 3)))
 
 
 def _mode_data_filter(facts: RadioFacts) -> Codec:
-    return _Fields((_civ_modes(facts), _DATA, _FILTER))
-
-
-def _mode_filter(facts: RadioFacts) -> Codec:
-    return _Fields((_civ_modes(facts), _FILTER))
+    data = _Choice(tuple((i, bytes((i,))) for i in range(facts.data_modes + 1)))
+    return _Fields((_civ_modes(facts), data, _FILTER))
 
 
 # --- the closed table ------------------------------------------------------------------
@@ -172,7 +173,8 @@ def _mode_filter(facts: RadioFacts) -> Codec:
 @dataclass(frozen=True, slots=True)
 class _Form:
     """One spelling of an entry: ``(profile command, template)`` per side
-    (CAT text with ``{}`` fields, CI-V hex; ``vfo_swap`` is ``[vfo]`` swap)."""
+    (CAT text with ``{}`` fields, CI-V hex; ``swap_*`` name ``[vfo]`` swaps;
+    a MAIN/SUB swap counts only where 25/26 01 is the physical SUB)."""
 
     read: tuple[str, str] | None
     write: tuple[str, str] | None
@@ -240,7 +242,7 @@ TABLE: dict[str, tuple[TableEntry, ...]] = {
             "freq_selected",
             (
                 _civ("selected_freq", "25 00", _freq_civ),
-                _Form(("get_freq", "03"), ("set_freq", "05"), _freq_civ),
+                _Form(("get_freq", "03"), None),
             ),
         ),
         TableEntry("freq_unselected", (_civ("unselected_freq", "25 01", _freq_civ),)),
@@ -248,7 +250,7 @@ TABLE: dict[str, tuple[TableEntry, ...]] = {
             "mode_selected",
             (
                 _civ("selected_mode", "26 00", _mode_data_filter),
-                _Form(("get_mode", "04"), ("set_mode", "06"), _mode_filter),
+                _Form(("get_mode", "04"), None),
             ),
         ),
         TableEntry(
@@ -256,7 +258,10 @@ TABLE: dict[str, tuple[TableEntry, ...]] = {
         ),
         TableEntry(
             "vfo_exchange",
-            (_Form(None, ("vfo_swap", "07 B0"), _Fields(())),),
+            (
+                _Form(None, ("swap_ab", "07 B0"), _Fields(())),
+                _Form(None, ("swap_main_sub", "07 B0"), _Fields(())),
+            ),
             ("freq_selected", "freq_unselected", "mode_selected", "mode_unselected"),
         ),
         TableEntry("rf_power", (_civ("rf_power", "14 0A", _LEVEL),)),
@@ -301,8 +306,12 @@ class Parsed:
 def _declared(facts: RadioFacts, name: str, write: bool) -> str | None:
     """The profile's template for one side, in the table's notation."""
     spec = facts.commands.get(name)
-    if name == "vfo_swap" and facts.vfo_swap:
-        return "07 " + bytes(facts.vfo_swap).hex(" ").upper()
+    swap = {"swap_ab": facts.swap_ab, "swap_main_sub": facts.swap_main_sub}
+    if not facts.unselected_is_sub:
+        swap["swap_main_sub"] = None  # 25/26 01 would not capture SUB
+    if code := swap.get(name):
+        code = code[1:] if len(code) == 2 and code[0] == 0x07 else code
+        return "07 " + bytes(code).hex(" ").upper()
     if isinstance(spec, CivCommandSpec) and facts.protocol == "civ":
         return bytes(spec.bytes).hex(" ").upper()
     text = getattr(spec, "write" if write else "read", None)
@@ -343,13 +352,24 @@ def _compile(spec: TableEntry, facts: RadioFacts) -> Entry | None:
 
 def compile_table(facts: RadioFacts, ids: Collection[str] | None = None) -> Table:
     """The table for one profile: ``ids`` must all be available; without
-    ``ids``, entries the profile does not declare are left out."""
+    ``ids``, entries the profile does not declare are left out. An entry that
+    changes others is available only where each of them is writable here."""
     specs = {spec.id: spec for spec in TABLE.get(facts.protocol, ())}
     if unknown := sorted(set(ids or ()) - set(specs)):
         raise ValueError(f"entry {unknown[0]!r} is not in the table")
+    done: dict[str, Entry | None] = {}
+
+    def get(entry_id: str) -> Entry | None:
+        if entry_id not in done:
+            done[entry_id] = _compile(specs[entry_id], facts)
+        return done[entry_id]
+
     entries = []
     for entry_id in specs if ids is None else sorted(ids, key=list(specs).index):
-        entry = _compile(specs[entry_id], facts)
+        entry = get(entry_id)
+        others = [get(c) for c in entry.changes if c != entry_id] if entry else []
+        if any(other is None or other.write is None for other in others):
+            entry = None
         if entry is None and ids is not None:
             raise ValueError(f"entry {entry_id!r} is not available on this radio")
         entries += [] if entry is None else [entry]
@@ -434,15 +454,15 @@ def judged_frame(
 
 @dataclass(frozen=True, slots=True)
 class ProbeCheckStep:
-    """``write``/``read`` name an entry (a write with its value) and carry the
-    judged ``frame``; ``ask`` carries the question put to the person."""
+    """``write``/``read`` name an entry (a write with its value) and carry
+    no bytes (the engine judges again right before the port); ``ask``
+    carries the question put to the person."""
 
     kind: str
     entry: str = ""
     value: object = None
     receiver: int | None = None
     question: str = ""
-    frame: bytes = b""
 
 
 @dataclass(frozen=True, slots=True)
@@ -536,7 +556,9 @@ class _Loader:
         mapping = self.map(where, raw, _KEYS[kind])
         entry = self.text(f"{where}.entry", mapping.get("entry"))
         receiver = mapping.get("receiver")
-        if receiver is not None and receiver not in _RECEIVERS:
+        if receiver is not None and (
+            not isinstance(receiver, str) or receiver not in _RECEIVERS
+        ):
             raise self.fail(f"{where}.receiver must be 'main' or 'sub'")
         return mapping, entry, None if receiver is None else _RECEIVERS[receiver]
 
@@ -568,8 +590,8 @@ class _Loader:
         mapping, entry, receiver = self.named(where, raw, kind)
         value = mapping.get("value", () if kind == "write" else None)
         value = tuple(value) if isinstance(value, list) else value
-        frame = self.judge(where, entry, kind, value, receiver)
-        return ProbeCheckStep(kind, entry, value, receiver, frame=frame)
+        self.judge(where, entry, kind, value, receiver)
+        return ProbeCheckStep(kind, entry, value, receiver)
 
     def restore(self, where: str, raw: object) -> ProbeRestoreItem:
         mapping, entry, receiver = self.named(where, raw, "restore")
@@ -594,6 +616,9 @@ class _Loader:
         slug = mapping.get("id")
         if not isinstance(slug, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]*", slug):
             raise self.fail(f"{where}.id must be a slug like 'power-2m'")
+        for key in ("witness", "warnings", "steps", "restore", "preconditions"):
+            if not isinstance(mapping.get(key, []), list):
+                raise self.fail(f"{where}.{key} must be an array")
         named = [*mapping.get("witness", [])]
         for key in ("steps", "restore", "preconditions"):
             named += [
@@ -648,7 +673,7 @@ def parse_probe_checks(
         return ()
     loader = _Loader(filename, facts)
     section = loader.map("[probe]", raw, {"checks"})
-    if not section.get("checks"):
+    if section.get("checks", []) == []:
         return ()
     if facts.protocol not in TABLE:
         raise loader.fail("[probe]: probe checks need USB CI-V or Yaesu CAT")

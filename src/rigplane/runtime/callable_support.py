@@ -34,7 +34,7 @@ from rigplane.commands import (
     set_rx_antenna_ant1,
     stop_cw,
 )
-from rigplane.profiles import RadioProfile
+from rigplane.profiles import RadioProfile, selector_one_is_sub
 
 CommandBuilder: TypeAlias = Callable[..., object]
 
@@ -165,17 +165,10 @@ def split_tx_routes_unselected_selector(profile: RadioProfile) -> bool:
 
 
 def unselected_selector_is_sub(profile: RadioProfile) -> bool:
-    """Whether CI-V 0x25/0x26 selector 01 is the physical SUB receiver.
-
-    Profile data, not a model check: ``split_tx_target = "sub_receiver"``
-    declares that selector 01 is the SUB band (IC-7610 CI-V Reference Guide
-    Rev.4 p.9/p.13). ``main_unselected`` -- selector 01 is the unselected
-    VFO inside MAIN, never SUB -- and any other value fail closed (MOR-3591).
-    """
-    return (
-        profile.receiver_count >= 2
-        and getattr(profile, "split_tx_target", "none") == "sub_receiver"
-    )
+    """Whether CI-V 0x25/0x26 selector 01 is the physical SUB receiver
+    (:func:`rigplane.profiles.selector_one_is_sub`)."""
+    target = getattr(profile, "split_tx_target", "none")
+    return selector_one_is_sub(profile.receiver_count, target)
 
 
 def _validate_relations(
