@@ -29,7 +29,7 @@ from typing import (
     runtime_checkable,
 )
 
-from ._portaudio_enum import WASAPI_HOST_API
+from ._portaudio_enum import _NATIVE_LOCK, WASAPI_HOST_API, portaudio_native_access
 from ._usb_holder import (
     HOLDER_LOOKUP_TIMEOUT_S,
     HolderLookup,
@@ -770,8 +770,9 @@ class _OpenStreamCount:
     def __init__(self) -> None:
         # Re-entrant: it also serialises native device queries and probes
         # against a restart (see :func:`portaudio_native_access`).
-        self._lock = threading.RLock()
+        self._lock = _NATIVE_LOCK
         self._count = 0
+        self.restarts = 0
 
     @property
     def guard(self) -> AbstractContextManager[bool]:
@@ -795,20 +796,20 @@ class _OpenStreamCount:
             if self._count:
                 return False
             restart()
+            self.restarts += 1
             return True
 
 
 _open_streams = _OpenStreamCount()
 
 
-def portaudio_native_access() -> AbstractContextManager[bool]:
-    """Hold off a device re-scan while a native query or probe runs (MOR-4338).
+def device_scan_generation() -> int:
+    """How many times PortAudio was restarted to re-scan devices (MOR-4338).
 
-    ``Pa_Terminate`` destroys the device tables, so enumeration and format
-    probes must not run while :meth:`PortAudioBackend.refresh_devices`
-    restarts PortAudio.
+    A caller that selected device indices before an operation that can restart
+    PortAudio re-selects when this changed.
     """
-    return _open_streams.guard
+    return _open_streams.restarts
 
 
 class _WindowsMtaLease:
@@ -2920,6 +2921,7 @@ __all__ = [
     "FakeRxStream",
     "FakeTxStream",
     "PortAudioBackend",
+    "device_scan_generation",
     "portaudio_native_access",
     "RxStreamHealth",
     "RxStream",

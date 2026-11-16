@@ -12,6 +12,7 @@ See :mod:`rigplane.usb_audio_resolve` for the topology-based resolution logic.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import logging
 import platform
 import sys
@@ -49,6 +50,13 @@ from .backend import (
 )
 
 logger = logging.getLogger(__name__)
+_retry_epoch: contextvars.ContextVar[int | None] = contextvars.ContextVar(
+    "usb_audio_retry_epoch", default=None
+)
+"""The stop count a start that retries after a device re-scan began with.
+
+Local to each start's task context, so overlapping RX/TX retries never clear
+or inherit each other's value (MOR-4338)."""
 _PORTAUDIO_OPERATION_IDS = count(1)
 
 _SILENCE_WARN_SECONDS = 10
@@ -1230,7 +1238,8 @@ def list_usb_audio_devices(sounddevice_module: Any) -> list[UsbAudioDevice]:
         Prefer :func:`_devices_from_backend` with an :class:`AudioBackend`.
         This function is kept for backward compatibility with CLI code.
     """
-    raw_devices = list(sounddevice_module.query_devices())
+    with portaudio_native_access():
+        raw_devices = list(sounddevice_module.query_devices())
     default_input_idx: int | None = None
     default_output_idx: int | None = None
     default_raw = getattr(getattr(sounddevice_module, "default", None), "device", None)
@@ -1396,9 +1405,6 @@ class UsbAudioDriver:
         # Counts stop_* calls so a start retrying after a device re-scan can
         # see that teardown ran meanwhile (MOR-4338).
         self._stop_epoch = 0
-        # Set only while a start retries after a device re-scan: the stop
-        # count it began with (checked again just before the stream opens).
-        self._retry_epoch: int | None = None
         self._selected_tx: UsbAudioDevice | None = None
 
         self._rx_stream: RxStream | None = None
@@ -1964,7 +1970,8 @@ class UsbAudioDriver:
         pool-saturation fail-fast and the MOR-1438 F1 cancellation
         handling).
         """
-        if self._retry_epoch is not None and self._stop_epoch != self._retry_epoch:
+        retry_epoch = _retry_epoch.get()
+        if retry_epoch is not None and self._stop_epoch != retry_epoch:
             start_coro.close()
             raise AudioDriverLifecycleError(
                 "Audio start was cancelled by a stop during the device re-scan."
@@ -2151,11 +2158,11 @@ class UsbAudioDriver:
                 direction.upper(),
                 first,
             )
-        self._retry_epoch = epoch
+        token = _retry_epoch.set(epoch)
         try:
             await start()
         finally:
-            self._retry_epoch = None
+            _retry_epoch.reset(token)
 
     async def start_rx(
         self,

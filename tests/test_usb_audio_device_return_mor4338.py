@@ -34,7 +34,10 @@ from rigplane.audio.backend import (
     FakeAudioBackend,
     _OpenStreamCount,
     _open_streams,
+    device_scan_generation,
 )
+from rigplane.audio._portaudio_enum import read_portaudio_enumeration
+from rigplane.audio.bridge import AudioBridge
 from rigplane.backends.ic705 import Ic705SerialRadio
 from rigplane.backends.ic7300 import Ic7300SerialRadio
 from rigplane.types import AudioCodec
@@ -119,6 +122,7 @@ class _ReturnedRadioBackend(FakeAudioBackend):
         if not self._can_refresh:
             return False
         self._devices = self._fresh
+        _open_streams.restart_if_idle(lambda: None)  # the real scan counter
         return True
 
 
@@ -449,3 +453,128 @@ async def test_duplex_start_after_the_radio_returns_rescans_and_succeeds(name):
     assert backend.refreshes == 1
     assert [s.running for s in backend.duplex_streams] == [True]
     await driver.stop_tx()
+
+
+class _CableBackend(FakeAudioBackend):
+    """The bridge's backend: the OS renumbers the cable after a device re-scan."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.opened: list[tuple[str, int]] = []
+        self._scan = device_scan_generation()
+
+    def list_devices(self):
+        cable = dict(name="RigPlane Virtual Cable", input_channels=2, output_channels=2)
+        if device_scan_generation() == self._scan:
+            return [AudioDeviceInfo(id=AudioDeviceId(1), **cable)]
+        # The returned radio's codec now sorts in front of the cable.
+        return [
+            AudioDeviceInfo(
+                id=AudioDeviceId(1),
+                name="USB Audio CODEC",
+                input_channels=1,
+                output_channels=1,
+            ),
+            AudioDeviceInfo(id=AudioDeviceId(2), **cable),
+        ]
+
+    def open_tx(self, device, **kwargs):
+        self.opened.append(("playback", int(device)))
+        return super().open_tx(device, **kwargs)
+
+    def open_rx(self, device, **kwargs):
+        self.opened.append(("capture", int(device)))
+        return super().open_rx(device, **kwargs)
+
+
+async def test_bridge_uses_the_cable_ids_of_the_scan_the_radio_recovery_made():
+    radio_backend = _ReturnedRadioBackend(stale=[], fresh=[_codec("USB Audio CODEC")])
+    radio = Ic7300SerialRadio(
+        device="/dev/ttyUSB-fake",
+        civ_link=_FakeSerialCivLink(model_id=0x94),
+        audio_driver=UsbAudioDriver(backend=radio_backend),
+        audio_codec=AudioCodec.PCM_1CH_16BIT,
+        _enumerate_serial_ports_fn=lambda: [],
+    )
+    radio._SERIAL_WATCHDOG_INTERVAL_S = 3600.0
+    await radio.connect()
+    cable_backend = _CableBackend()
+    bridge = AudioBridge(
+        radio,
+        device_name="RigPlane Virtual Cable",
+        tx_enabled=False,
+        backend=cable_backend,
+    )
+    try:
+        await bridge.start()
+        assert radio_backend.refreshes == 1
+        assert cable_backend.opened == [("playback", 2)]  # the renumbered cable
+    finally:
+        await bridge.stop()
+        await radio.disconnect()
+
+
+async def test_overlapping_retries_keep_each_starts_stop():
+    loop = asyncio.get_running_loop()
+    entered = asyncio.Event()
+    listed_after_refresh = 0
+    refresh_calls = 0
+    refresh_both = asyncio.Event()
+    backend = _ReturnedRadioBackend(stale=[], fresh=[_codec("USB Audio CODEC")])
+    backend.refresh_gate = threading.Event()
+    backend.list_gate = threading.Event()
+
+    def on_refresh() -> None:
+        nonlocal refresh_calls
+        refresh_calls += 1
+        if refresh_calls == 2:
+            loop.call_soon_threadsafe(refresh_both.set)
+
+    def list_devices():
+        nonlocal listed_after_refresh
+        if backend.refreshes >= 2:
+            listed_after_refresh += 1
+            if listed_after_refresh == 2:  # the second start's retry selection
+                loop.call_soon_threadsafe(entered.set)
+                backend.list_gate.wait()
+        return FakeAudioBackend.list_devices(backend)
+
+    backend.on_refresh = on_refresh
+    backend.list_devices = list_devices  # type: ignore[method-assign]
+    driver = UsbAudioDriver(backend=backend)
+    rx = asyncio.ensure_future(driver.start_rx(lambda _pcm: None))
+    tx = asyncio.ensure_future(driver.start_tx())
+    await refresh_both.wait()
+    backend.refresh_gate.set()
+    await entered.wait()
+    done, pending = await asyncio.wait({rx, tx}, return_when=asyncio.FIRST_COMPLETED)
+    (paused,) = pending
+    # One retry finished; the other is still choosing its devices.
+    await (driver.stop_rx() if paused is rx else driver.stop_tx())
+    backend.list_gate.set()
+
+    with pytest.raises(AudioDriverLifecycleError):
+        await paused
+    assert not (driver.rx_running if paused is rx else driver.tx_running)
+
+
+class _GuardSd(_RescanSd):
+    def __init__(self) -> None:
+        super().__init__()
+        self.held: list[bool] = []
+
+    def query_devices(self, index=None):
+        self.held.append(_open_streams._lock._is_owned())
+        return []
+
+    def query_hostapis(self, index=None):
+        self.held.append(_open_streams._lock._is_owned())
+        return []
+
+
+def test_the_shared_enumeration_helper_holds_the_native_guard():
+    sd = _GuardSd()
+
+    read_portaudio_enumeration(sd)
+
+    assert sd.held and all(sd.held)
