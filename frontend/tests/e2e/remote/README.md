@@ -14,6 +14,7 @@ whole run when any row is skipped, `fixme`, or missing from the results.
 | L2 | Tune in the UI → the simulator's frequency follows; change the frequency on the station side → the UI follows. |
 | L3 | Hold PTT in the phone layout → the simulator reports keyed; release → unkeyed within 1 s (read from the simulator's own PTT journal, not the UI; the helper requires the final state OFF and an OFF at or after this release). The microphone stub honours the page's audio constraints (rate, channel count) so the page's Opus encoder accepts it; the stub is defined on the `MediaDevices` prototype because WebKit may recreate the `navigator.mediaDevices` wrapper and drop an instance property. |
 | P0 | A bare page opens an `RTCPeerConnection` with the four data channels to Core's answerer (`POST /api/v1/transport/webrtc/offer`, offer relayed by the Node test) and the `control` channel delivers `control_hello`, validated against `payloads.control_hello` in the wire contract. The bare page is served on the station's origin with every request routed locally (`**/*`; the row asserts the fulfilled document, status 200): `about:blank` is an insecure context in WebKit, where WebRTC then gathers nothing. |
+| R-A1 | Remote boot over the real seam: a test-only boot entry (built into `frontend/dist/remote-entry` by `vite.remote-entry.config.ts` from the Playwright globalSetup, served by the station itself) exposes `window.__bootRemote`, which creates the peer and the `api` channel in the page, relays the offer, and calls the production `bootRemote({ api, createChannel }, { onLinkLost })`; `createChannel` mints a fresh native channel per open and the entry records every channel (open/close, frame counts). The row proves, in order: bootstrap (readout equals the simulator's frequency over the api-channel grant and the control attach), one user command reaches the simulator, the audio channel is created on demand (none exists after a 6 s wait, longer than the server's 5 s attach deadline) and receives frames, RX off/on leaves two recorded audio channels with the first closed and the server's audio client count 1 → 0 → 1 (`wsClients.audio`), the scope VIEW toggle releases and reacquires the scope channel the same way (`wsClients.scope`), `handle.shutdown()` closes every recorded channel page-side, rejects a pending and a new `apiFetch`, and unmounts the App (`#app` empty); and the must-nots: `onLinkLost` never called, no page reload (navigation and `load` counters). |
 
 The station is `tests/e2e/remote_web_server.py`: the real `WebServer` over
 the IC-7610 LAN fake (`stateful_ptt=True, ptt_on_session_loss="hold"`),
@@ -44,7 +45,11 @@ negotiated channels.
 The microphone stub (the only allowed one) replaces
 `navigator.mediaDevices.getUserMedia` in `page.addInitScript` with an
 oscillator → `MediaStreamDestination` stream; everything after
-`getUserMedia` is the production path, in both browsers.
+`getUserMedia` is the production path, in both browsers. The R-A1 boot
+entry adds exactly one more fake-shaped seam: the Node-side offer relay
+(`__relayOffer`, shared with P0). Nothing else is faked — the entry page,
+its assets, the peer connection, the channels and every station endpoint
+are real.
 
 ## Running (Mac mini only — never the laptop)
 

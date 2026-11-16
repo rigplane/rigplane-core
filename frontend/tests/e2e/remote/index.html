@@ -1,0 +1,17 @@
+<!doctype html>
+<!-- The R-A1 test-only boot page (see boot-entry.ts): the #app root the
+     production startApp mounts into, and nothing else. Served by the
+     station itself from frontend/dist/remote-entry (built by
+     vite.remote-entry.config.ts), so the page origin is the station's. -->
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>rigplane remote-entry</title>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="./boot-entry.ts"></script>
+  </body>
+</html>
+

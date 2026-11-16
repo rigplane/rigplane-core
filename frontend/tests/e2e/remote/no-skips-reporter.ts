@@ -14,7 +14,7 @@ import type { Reporter, TestCase, TestResult } from '@playwright/test/reporter';
  * `repeatEach` times. playwright.remote.config.ts is built from it. */
 export const REQUIRED_MATRIX = {
   projects: ['chromium', 'webkit'],
-  rows: ['L1', 'L2', 'L3', 'P0'],
+  rows: ['L1', 'L2', 'L3', 'P0', 'R-A1'],
   repeatEach: 2,
 } as const;
 
@@ -28,9 +28,15 @@ export interface RecordedCase {
   status: 'passed' | 'failed' | 'timedOut' | 'interrupted' | 'skipped';
 }
 
-/** The row id ("L1", "P0") a test title starts with, or null. */
+/** The row id ("L1", "P0", "R-A1") a test title starts with, or null.
+ * The REQUIRED_MATRIX rows are the authority: a title carrying any other
+ * prefix is not a row of this suite (the matrix check below fails a run
+ * whose required rows are missing, so a mistyped row cannot pass). */
 export function rowOf(title: string): string | null {
-  return /^([A-Z]\d+):/.exec(title)?.[1] ?? null;
+  for (const row of REQUIRED_MATRIX.rows) {
+    if (title.startsWith(`${row}:`)) return row;
+  }
+  return null;
 }
 
 /**

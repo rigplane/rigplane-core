@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
 import wire from '../../../src/lib/transport/api-channel-wire.json' with { type: 'json' };
 import golden from '../../../src/lib/transport/api-channel-golden.json' with { type: 'json' };
 import {
@@ -12,10 +12,13 @@ import {
   setStationFrequency,
   simState,
   simUnkeyLatencyMs,
+  stationState,
+  stubMicrophone,
   STATION_ORIGIN,
   trackDestinations,
   type RelayedAnswer,
 } from './station';
+import type { RecordedChannel } from './boot-entry';
 
 /**
  * The remote/browser E2E matrix (C5b PR-0, MOR-4493). Every row runs in
@@ -61,6 +64,20 @@ function payloadMatchesWireContract(
     const [name, kind] = row as [string, string];
     if (typeof name !== 'string' || typeof kind !== 'string') return false;
     return Object.hasOwn(record, name) ? kindOk(kind, record[name]) : row[2] !== true;
+  });
+}
+
+/** Expose the Node-side offer relay the P0 probe and the R-A1 boot entry
+ * both use: the station's real WebRTC endpoint answers it; the relay (not
+ * a faked server) is the one signalling fake the harness allows. */
+async function exposeOfferRelay(page: Page): Promise<void> {
+  await page.exposeFunction('__relayOffer', async (sdp: string, type: string) => {
+    const response = await fetch(`${STATION_ORIGIN}/api/v1/transport/webrtc/offer`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ sdp, type }),
+    });
+    return parseRelayedAnswer(await response.json());
   });
 }
 
@@ -193,14 +210,7 @@ test('P0: a bare page connects four data channels and reaches control_hello', as
   // interception fails the row here.
   expect(navigation?.status()).toBe(200);
   expect(await page.title()).toBe('bare-page');
-  await page.exposeFunction('__relayOffer', async (sdp: string, type: string) => {
-    const response = await fetch(`${STATION_ORIGIN}/api/v1/transport/webrtc/offer`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ sdp, type }),
-    });
-    return parseRelayedAnswer(await response.json());
-  });
+  await exposeOfferRelay(page);
   await page.exposeFunction('__controllerKey', acquireControllerKey);
 
   const outcome = await page.evaluate(
@@ -316,3 +326,174 @@ test('P0: a bare page connects four data channels and reaches control_hello', as
   expect(JSON.parse(outcome.scopeAck)).toEqual(ATTACH_DOCUMENTS.attach_ack_scope.decoded);
   expect(JSON.parse(outcome.audioAck)).toEqual(ATTACH_DOCUMENTS.attach_ack_audio.decoded);
 });
+
+/** The R-A1 boot entry's exposed surface (boot-entry.ts), as the Node side
+ * reads it back from the page. */
+interface EntryWindow {
+  __bootRemote?: (channels: readonly ChannelSpec[]) => Promise<RecordedChannel[]>;
+  __remoteSnapshot?: () => {
+    channels: RecordedChannel[];
+    linkLost: string[];
+    loads: number;
+    pcState: string;
+  };
+  __remoteHandle?: { shutdown(): void };
+  __apiFetch?: (path: string, init?: RequestInit) => Promise<Response>;
+}
+
+test('R-A1: remote boot, real seam — the UI runs over bootRemote\'s link', async ({ page }) => {
+  // The full row is longer than the matrix default: boot (ICE + kit
+  // activation + control attach), a deliberate 6 s wait, two RX-audio
+  // cycles, a scope release/reacquire and shutdown.
+  test.setTimeout(150_000);
+  await setStationFrequency(BASELINE_HZ);
+  // The two allowed fakes only: the mic stub and the offer relay. The page
+  // itself, the peer connection and every channel are the page's own.
+  await stubMicrophone(page);
+  await exposeOfferRelay(page);
+  await page.goto(`${STATION_ORIGIN}/remote-entry/index.html`, { waitUntil: 'domcontentloaded' });
+  // Any reload of this page destroys the injected link (PR-B's must-not);
+  // the row counts main-frame navigations from here on.
+  let navigations = 0;
+  page.on('framenavigated', (frame) => {
+    if (frame === page.mainFrame()) navigations += 1;
+  });
+
+  const entry = () => page.evaluate(() => (window as typeof window & EntryWindow).__remoteSnapshot!());
+  const channelsOf = async (label: string): Promise<RecordedChannel[]> =>
+    (await entry()).channels.filter((channel) => channel.label === label);
+  const liveChannels = async (label: string): Promise<RecordedChannel[]> =>
+    (await channelsOf(label)).filter((channel) => channel.opened && !channel.closed);
+
+  // Boot: the page creates the peer and the api channel, relays the offer,
+  // then calls the production bootRemote over them.
+  await page.evaluate(
+    (channels) => (window as typeof window & EntryWindow).__bootRemote!(channels),
+    [...CHANNELS],
+  );
+
+  // 1. Bootstrap over the seam: the UI attached control through the link
+  // (the server counts a control client) and shows the server's frequency.
+  await expectControlLink();
+  await expect.poll(async () => (await liveChannels('control')).length).toBeGreaterThan(0);
+  const serverHz = (await simState()).freq_hz;
+  await expectReadoutHz(page, serverHz);
+
+  // 2. One user command end to end: tune through the frequency entry
+  // dialog; the simulator's state (not the UI) is the witness.
+  const readout = page.locator('.receiver-instrument [data-vfo-freq]').first();
+  await readout.click();
+  await page.getByTestId('band-entry-input').fill('7.100');
+  await page.getByTestId('band-entry-set').click();
+  await expect.poll(async () => (await simState()).freq_hz).toBe(TUNED_HZ);
+  await expectReadoutHz(page, TUNED_HZ);
+
+  // 3. The audio channel is created ON DEMAND: after 6 s with RX audio off
+  // — longer than the server's 5 s attach deadline counted from a channel
+  // reaching it — no audio channel exists yet. Enabling RX LIVE must then
+  // still attach a fresh channel and receive audio frames on it.
+  await page.waitForTimeout(6_000); // the deliberate wait; not synchronisation
+  expect(await channelsOf('audio'), 'no audio channel while RX audio is off').toHaveLength(0);
+  await page.getByTestId('rx-audio-monitor-live').click();
+  await expect(page.getByTestId('rx-audio-monitor')).toHaveAttribute('data-monitor-mode', 'live');
+  await expect
+    .poll(async () => ((await channelsOf('audio')).at(0)?.binaryFrames ?? -1), {
+      timeout: 15_000,
+    })
+    .toBeGreaterThan(0);
+  // The server's audio broadcaster served that client (wsClients.audio
+  // counts the audio subscriptions the attached channel made).
+  await expect
+    .poll(async () => (await stationState()).wsClients?.audio ?? 0)
+    .toBeGreaterThan(0);
+
+  // 4. RX audio off closes the channel; on again is a NEW channel that
+  // also receives frames. The page recorded two audio channels, the first
+  // closed; the server's audio client count went 1 -> 0 -> 1.
+  await page.getByTestId('rx-audio-monitor-mute').click();
+  await expect(page.getByTestId('rx-audio-monitor')).toHaveAttribute('data-monitor-mode', 'mute');
+  await expect
+    .poll(async () => (await channelsOf('audio')).filter((c) => c.closed).length)
+    .toBeGreaterThanOrEqual(1);
+  await expect.poll(async () => (await stationState()).wsClients?.audio ?? -1).toBe(0);
+  await page.getByTestId('rx-audio-monitor-live').click();
+  await expect
+    .poll(async () => {
+      const audio = await channelsOf('audio');
+      return audio.length >= 2 && audio[0]!.closed && (audio.at(-1)?.binaryFrames ?? 0) > 0
+        ? audio.length
+        : -1;
+    }, { timeout: 15_000 })
+    .toBeGreaterThanOrEqual(2);
+  await expect.poll(async () => (await stationState()).wsClients?.audio ?? -1).toBe(1);
+  const audioChannels = await channelsOf('audio');
+  expect(audioChannels.map((c) => c.closed)).toEqual([true, false]);
+
+  // Same for scope: the boot-opened scope channel serves, the VIEW toggle
+  // releases it (channel closed, the server's scope handler gone), and
+  // re-enabling opens a second scope channel.
+  await expect
+    .poll(async () => ((await liveChannels('scope')).length > 0 && ((await stationState()).wsClients?.scope ?? 0) > 0))
+    .toBe(true);
+  const viewToggle = page.locator('.scope-demand-toggle').first();
+  await expect(viewToggle).toHaveAttribute('aria-pressed', 'true');
+  await viewToggle.click();
+  await expect(viewToggle).toHaveAttribute('aria-pressed', 'false');
+  await expect
+    .poll(async () => (await channelsOf('scope')).filter((c) => c.closed).length)
+    .toBeGreaterThanOrEqual(1);
+  await expect.poll(async () => (await stationState()).wsClients?.scope ?? -1).toBe(0);
+  await viewToggle.click();
+  await expect
+    .poll(async () => {
+      const scope = await channelsOf('scope');
+      return scope.length >= 2 && scope[0]!.closed && scope.at(-1)!.opened && !scope.at(-1)!.closed
+        ? scope.length
+        : -1;
+    })
+    .toBeGreaterThanOrEqual(2);
+  await expect.poll(async () => (await stationState()).wsClients?.scope ?? -1).toBe(1);
+  const scopeChannels = await channelsOf('scope');
+  expect(scopeChannels.at(-1)!.closed, 'the reacquired scope channel is open').toBe(false);
+
+  // 5. shutdown(): a pending apiFetch (issued, its HEAD one microtask
+  // away) and a new one both reject; every channel the UI opened — api,
+  // control, scope, both audio channels — is closed on the page side; the
+  // App is unmounted.
+  const rejections = await page.evaluate(async () => {
+    const w = window as typeof window & EntryWindow;
+    const describe = (error: unknown) => ({
+      name: error instanceof Error ? error.name : typeof error,
+      message: error instanceof Error ? error.message : String(error),
+    });
+    const outcome = (promise: Promise<Response>) =>
+      promise.then(
+        (response) => ({ rejected: false as const, status: response.status }),
+        (error: unknown) => ({ rejected: true as const, ...describe(error) }),
+      );
+    const pending = w.__apiFetch!('/api/v1/state'); // still pending: unsettled
+    w.__remoteHandle!.shutdown(); // the same task: it is pending AT shutdown
+    return { pending: await outcome(pending), fresh: await outcome(w.__apiFetch!('/api/v1/state')) };
+  });
+  expect(rejections.pending.rejected, 'the pending apiFetch rejects').toBe(true);
+  expect(rejections.fresh.rejected, 'a new apiFetch after shutdown rejects').toBe(true);
+  await expect
+    .poll(async () => {
+      const { channels } = await entry();
+      return channels.length > 0 && channels.every((c) => c.closed && c.readyState === 'closed')
+        ? channels.length
+        : -1;
+    }, { timeout: 15_000 })
+    .toBeGreaterThan(0);
+  await expect
+    .poll(async () => page.evaluate(() => document.getElementById('app')?.childElementCount ?? -1))
+    .toBe(0);
+
+  // 6. Must-not: no link loss was reported and the page never reloaded
+  // (the entry counts load events; its own module load is the one).
+  const final = await entry();
+  expect(final.linkLost, 'onLinkLost was never called').toEqual([]);
+  expect(final.loads, 'exactly the initial load event').toBe(1);
+  expect(navigations, 'no main-frame navigation after the entry loaded').toBe(0);
+});
+

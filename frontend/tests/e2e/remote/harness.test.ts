@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import hostWire from '../../../../tests/fixtures/host-api-v3-wire.json' with { type: 'json' };
 import type { TestCase, TestResult } from '@playwright/test/reporter';
-import NoSkipsReporter, { REQUIRED_MATRIX } from './no-skips-reporter';
+import NoSkipsReporter, { REQUIRED_MATRIX, rowOf } from './no-skips-reporter';
 import {
   collectFirstTexts,
   foreignDestinations,
@@ -64,8 +64,9 @@ const everyCase = (filter: (c: Executed) => boolean = () => true): Executed[] =>
     .filter(filter);
 
 describe('NoSkipsReporter: the required matrix, not the filtered suite', () => {
-  it('passes the full matrix (16 cases)', async () => {
-    expect(everyCase()).toHaveLength(16);
+  it('passes the full matrix (20 cases, R-A1 included)', async () => {
+    expect(everyCase()).toHaveLength(20);
+    expect(REQUIRED_MATRIX.rows).toContain('R-A1');
     expect(await verdict(everyCase())).toBeUndefined();
   });
 
@@ -74,9 +75,17 @@ describe('NoSkipsReporter: the required matrix, not the filtered suite', () => {
     expect(result).toEqual({ status: 'failed' });
   });
 
-  it('fails when --grep filtered rows away', async () => {
+  it('fails when --grep filtered rows away (the R-A1 repetitions too)', async () => {
     const result = await verdict(everyCase((c) => c.row === 'L1'));
     expect(result).toEqual({ status: 'failed' });
+    const withoutRemoteRow = await verdict(everyCase((c) => c.row !== 'R-A1'));
+    expect(withoutRemoteRow).toEqual({ status: 'failed' });
+  });
+
+  it('reads the hyphenated row id of a test title', () => {
+    expect(rowOf('R-A1: remote boot, real seam')).toBe('R-A1');
+    expect(rowOf('L2: tuning follows both ways')).toBe('L2');
+    expect(rowOf('no row prefix here')).toBeNull();
   });
 
   it('fails when --repeat-each=1 reduced the repetitions', async () => {
