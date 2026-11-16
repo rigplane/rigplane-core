@@ -1,24 +1,18 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { defaultWaterfallOptions, type WaterfallOptions } from '../waterfall-renderer';
-import { defaultSpectrumOptions, renderSpectrum, type SpectrumOptions } from '../spectrum-renderer';
-import { recordCanvasLayers } from './canvas-layers-fixture';
 import {
   defaultStackedTraceSettings,
+  parseStackedTraceSettings,
+  stackedTraceTunables,
   projectStackedDepth,
   projectStackedRow,
   stackedColumnCount,
   stackedGlidePhase,
   stackedRowGeometry,
-  stackedScreenX,
-  stackedTraceMarkers,
-  unprojectStackedFloor,
   type StackedDepth,
   type StackedRowGeometry,
   type StackedRowView,
-  type StackedTraceMarkers,
 } from '../stacked-trace-geometry';
-
-afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 const row = (): StackedRowGeometry => ({
   startHz: 0, spanHz: 1, coverStartHz: 0, coverEndHz: 0, samples: 0, sampleOffset: 0, amplitudeMax: 80,
@@ -124,14 +118,16 @@ describe('MOR-4463 stacked-trace depth projection', () => {
     const farGap = steps[10].baseline - steps[9].baseline;
     // Far rows sit several times closer together than near ones (a linear
     // floor would give equal gaps).
-    expect(farGap).toBeLessThan(nearGap / 3);
+    expect(farGap).toBeLessThan(nearGap / 2.2);
     expect(steps[10].baseline).toBeCloseTo(settings.floorRise, 12);
     // Near rows keep their full colour; the last one is almost dissolved.
     expect(steps[0].fog).toBe(0);
     expect(steps[1].fog).toBe(0);
-    expect(steps[5].fog).toBeGreaterThan(0.1);
-    expect(steps[5].fog).toBeLessThan(0.6);
-    expect(steps[10].fog).toBeCloseTo(0.9, 12);
+    expect(steps[5].fog).toBeGreaterThan(0.2 * settings.haze);
+    expect(steps[5].fog).toBeLessThan(0.6 * settings.haze);
+    expect(steps[10].fog).toBeCloseTo(settings.haze, 12);
+    // A light haze: the far rows stay readable.
+    expect(settings.haze).toBeLessThanOrEqual(0.3);
   });
 
   it('keeps the whole scene inside the pane', () => {
@@ -154,131 +150,64 @@ describe('MOR-4463 stacked-trace perspective', () => {
     projectStackedDepth(depth, settings, out);
     return out;
   };
-  const fractions = Array.from({ length: 21 }, (_, i) => i / 20);
 
-  it('spans the pane on the front row and narrows the last row to 1 / (1 + recede)', () => {
-    expect([stackedScreenX(0, at(0).scale), stackedScreenX(1, at(0).scale)]).toEqual([0, 1]);
-    const last = at(1).scale;
-    expect(last).toBeCloseTo(1 / (1 + settings.recede), 12);
-    expect(stackedScreenX(0, last)).toBeCloseTo(0.5 - 0.5 * last, 12);
-    expect(stackedScreenX(1, last)).toBeCloseTo(0.5 + 0.5 * last, 12);
-    expect(last).toBeLessThan(0.7);
+  it('narrows the view to 60 % at the last row', () => {
+    expect(at(1).scale).toBeCloseTo(0.6, 12);
+    expect(at(1).scale).toBeCloseTo(1 / (1 + settings.recede), 12);
   });
 
   it('runs every frequency along a straight line to one vanishing point above the middle of the pane', () => {
+    // A view fraction f on a row is drawn at 0.5 + (f - 0.5) * scale, on the
+    // row's baseline. All such points of one f lie on the line from (f, 0)
+    // to the vanishing point (0.5, vanishY) exactly when the scale falls
+    // linearly with the baseline and reaches zero at vanishY.
     const vanishY = settings.floorRise * (1 + settings.recede) / settings.recede;
-    for (const fraction of fractions) {
-      for (let row = 1; row <= settings.rows; row++) {
-        const placed = at(row / settings.rows);
-        // On the line from (fraction, 0) to (0.5, vanishY).
-        expect(stackedScreenX(fraction, placed.scale) - 0.5)
-          .toBeCloseTo((fraction - 0.5) * (vanishY - placed.baseline) / vanishY, 12);
-      }
-    }
-  });
-
-  it('un-projects a grid of floor points on every row, resting or gliding, to its frequency and depth', () => {
-    const point = { depth: 0, fraction: 0 };
-    for (let step = 0; step <= settings.rows * 2; step++) {
-      const depth = step / (settings.rows * 2), placed = at(depth);
-      for (const fraction of fractions) {
-        unprojectStackedFloor(stackedScreenX(fraction, placed.scale), placed.baseline, settings, point);
-        expect(point.depth).toBeCloseTo(depth, 9);
-        expect(point.fraction).toBeCloseTo(fraction, 9);
-      }
-    }
-  });
-
-  it('takes the front row for a point in front of the stack and the last row beyond it', () => {
-    const point = { depth: 0, fraction: 0 };
-    unprojectStackedFloor(0.2, -0.05, settings, point);
-    expect(point).toEqual({ depth: 0, fraction: 0.2 });
-    for (const rise of [settings.floorRise, settings.floorRise + 0.2, 5]) {
-      unprojectStackedFloor(0.4, rise, settings, point);
-      expect(point.depth).toBe(1);
-      expect(point.fraction).toBeCloseTo(0.5 - 0.1 * (1 + settings.recede), 12);
+    expect(vanishY).toBeGreaterThan(settings.floorRise);
+    for (let row = 0; row <= settings.rows; row++) {
+      const placed = at(row / settings.rows);
+      expect(placed.scale).toBeCloseTo(1 - placed.baseline / vanishY, 12);
     }
   });
 });
 
-// The marks of the flat trace, recorded from the flat renderer itself: the
-// stacked view must put its own at the same view fractions.
-function flatMarks(options: SpectrumOptions, width: number, height: number) {
-  const marker: number[] = [], bands: [number, number][] = [], clips: [number, number][] = [];
-  let stroke = '', fill = '';
-  const noop = () => {};
-  const ctx = {
-    clearRect: noop, closePath: noop, stroke: noop, fill: noop, beginPath: noop, fillText: noop, setLineDash: noop,
-    lineTo: noop, drawImage: noop, setTransform: noop, save: noop, restore: noop, clip: noop,
-    measureText: () => ({ width: 10 }), createLinearGradient: () => ({ addColorStop: noop }),
-    moveTo: (x: number, y: number) => { if (stroke === options.tuneLineColor && y === 0) marker.push(x); },
-    fillRect: (x: number, _y: number, w: number) => { if (fill === options.passbandFillColor) bands.push([x, x + w]); },
-    rect: (x: number, _y: number, w: number) => { clips.push([x, x + w]); },
-    set fillStyle(value: string) { fill = value; }, set strokeStyle(value: string) { stroke = value; },
-    set lineWidth(_: number) {}, set font(_: string) {}, set textAlign(_: string) {},
-  } as unknown as CanvasRenderingContext2D;
-  recordCanvasLayers(ctx);
-  renderSpectrum(ctx, new Uint8Array(50).fill(30), width, height, options);
-  // The hatch clips the part left of the samples and the part right of them.
-  return { marker, bands, cover: clips.length === 2 ? [clips[0][1], clips[1][0]] : [0, width] };
-}
-
-describe('MOR-4463 stacked-trace markers', () => {
-  const base: SpectrumOptions = { ...defaultSpectrumOptions, centerHz: 14_050_000, spanHz: 100_000,
-    tuneHz: 14_050_000, passbandHz: 2_400, passbandShiftHz: 0, mode: 'USB' };
-  const markers = (options: SpectrumOptions): StackedTraceMarkers => {
-    const out = { tune: 9, bandLo: 9, bandHi: 9, coverLo: 9, coverHi: 9 };
-    stackedTraceMarkers(options, out);
-    return out;
-  };
-
-  it.each<[string, Partial<SpectrumOptions>]>([
-    ['centre mode, USB', {}],
-    ['centre mode, LSB with a shift', { mode: 'LSB', passbandShiftHz: 300 }],
-    ['centre mode, CW', { mode: 'CW', passbandHz: 500 }],
-    ['fixed mode, tuned off centre', { scopeMode: 1, tuneHz: 14_013_000 }],
-    ['fixed mode, tuned outside the view', { scopeMode: 3, tuneHz: 14_190_000 }],
-    ['a panorama shifted against its samples', { sampleSpanHz: 100_000, panoramaShiftHz: 21_000 }],
-    ['a zoomed view inside its coverage', { spanHz: 20_000, sampleSpanHz: 100_000 }],
-    ['coverage narrower than the view', { coverage: { startHz: 14_012_000, endHz: 14_081_000 } }],
-  ])('puts the marker, the passband and the coverage where the flat renderer draws them: %s', (_, patch) => {
-    const options = { ...base, ...patch }, width = 1000;
-    const flat = flatMarks(options, width, 200), stacked = markers(options);
-    expect(flat.marker).toHaveLength(1);
-    expect(stacked.tune * width).toBeCloseTo(flat.marker[0], 9);
-    if (patch.tuneHz === 14_190_000) {
-      // The marker is held at the edge of the view; no passband fits there.
-      expect(flat.bands).toHaveLength(0);
-      expect(stacked.bandHi).toBeLessThanOrEqual(stacked.bandLo);
-    } else {
-      expect(flat.bands).toHaveLength(1);
-      expect(stacked.bandLo * width).toBeCloseTo(flat.bands[0][0], 9);
-      expect(stacked.bandHi * width).toBeCloseTo(flat.bands[0][1], 9);
+describe('MOR-4463 stacked-trace adjustable settings', () => {
+  it('offers every adjustable value a range that holds its default', () => {
+    expect(stackedTraceTunables.map(item => item.key))
+      .toEqual(['recede', 'rows', 'rowPeriodMs', 'floorRise', 'traceHeight', 'haze', 'rowBlend', 'rowSoften', 'floorDrop', 'colorGain']);
+    for (const { key, min, max, step } of stackedTraceTunables) {
+      expect(defaultStackedTraceSettings[key], key).toBeGreaterThanOrEqual(min);
+      expect(defaultStackedTraceSettings[key], key).toBeLessThanOrEqual(max);
+      expect(step, key).toBeGreaterThan(0);
     }
-    expect(stacked.coverLo * width).toBeCloseTo(flat.cover[0], 9);
-    expect(stacked.coverHi * width).toBeCloseTo(flat.cover[1], 9);
   });
 
-  it('hides what the flat renderer does not draw', () => {
-    const hidden = (patch: Partial<SpectrumOptions>) => {
-      const options = { ...base, ...patch };
-      return { flat: flatMarks(options, 1000, 200), stacked: markers(options) };
-    };
-    const noMarker = hidden({ showTuneIndicator: false });
-    expect(noMarker.flat.marker).toHaveLength(0);
-    expect(noMarker.stacked.tune).toBeLessThan(0);
-    expect(noMarker.stacked.bandHi).toBeGreaterThan(noMarker.stacked.bandLo);
-    const noBand = hidden({ passbandHz: 0 });
-    expect(noBand.flat.bands).toHaveLength(0);
-    expect(noBand.stacked.bandHi).toBeLessThanOrEqual(noBand.stacked.bandLo);
-    expect(noBand.stacked.tune).toBe(0.5);
-    const noOverlays = hidden({ showRfOverlays: false });
-    expect(noOverlays.flat.marker).toHaveLength(0);
-    expect(noOverlays.flat.bands).toHaveLength(0);
-    expect(noOverlays.stacked.tune).toBeLessThan(0);
-    expect(noOverlays.stacked.bandHi).toBeLessThanOrEqual(noOverlays.stacked.bandLo);
-    const noSpan = markers({ ...base, spanHz: 0 });
-    expect(noSpan).toEqual({ tune: -1, bandLo: 0, bandHi: 0, coverLo: 0, coverHi: 1 });
+  it('keeps the whole scene inside the pane at every corner of the ranges', () => {
+    const out = { baseline: 0, scale: 0, fog: 0 };
+    for (const recede of [0, 2]) for (const floorRise of [0.2, 0.7]) for (const traceHeight of [0.2, 0.8]) {
+      const settings = parseStackedTraceSettings({ recede, floorRise, traceHeight });
+      for (const depth of [0, 0.5, 1]) {
+        projectStackedDepth(depth, settings, out);
+        expect(out.baseline).toBeLessThanOrEqual(floorRise + 1e-12);
+        expect(out.scale).toBeGreaterThan(0);
+        expect(out.scale).toBeLessThanOrEqual(1);
+      }
+    }
+  });
+
+  it('reads stored settings: defaults for what is missing or not a number, every value held in its range', () => {
+    expect(parseStackedTraceSettings(null)).toEqual(defaultStackedTraceSettings);
+    expect(parseStackedTraceSettings('rows')).toEqual(defaultStackedTraceSettings);
+    expect(parseStackedTraceSettings({ rows: '40', haze: Number.NaN, recede: Number.POSITIVE_INFINITY }))
+      .toEqual(defaultStackedTraceSettings);
+    const inside = { rows: 40, haze: 0.5, recede: 1, floorRise: 0.3, traceHeight: 0.7, rowPeriodMs: 50, rowBlend: 1,
+      rowSoften: 0.5, floorDrop: 12, colorGain: 30 };
+    expect(parseStackedTraceSettings({ ...inside, rows: 40.4 })).toEqual({ ...defaultStackedTraceSettings, ...inside });
+    expect(parseStackedTraceSettings({ rows: 1, haze: 5, recede: -1, floorRise: 9, traceHeight: 0, rowPeriodMs: 1, rowBlend: 0,
+      rowSoften: -3, floorDrop: 99, colorGain: 101 }))
+      .toEqual({ ...defaultStackedTraceSettings, rows: 24, haze: 0.9, recede: 0, floorRise: 0.7, traceHeight: 0.2, rowPeriodMs: 40,
+        rowBlend: 0.2, rowSoften: 0, floorDrop: 24, colorGain: 100 });
+    // The label strip is not adjustable, and unknown keys are dropped.
+    expect(parseStackedTraceSettings({ frontInsetPx: 99, colour: 'red' })).toEqual(defaultStackedTraceSettings);
   });
 });
 

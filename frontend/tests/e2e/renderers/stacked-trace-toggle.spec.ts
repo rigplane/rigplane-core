@@ -41,7 +41,8 @@ test('flat by default; the 3D key switches the pane, survives a reload and switc
   await expect(page.locator('button', { hasText: /^BANDS$/ }).first()).toBeVisible();
   // The frame the panel already holds reaches the new view.
   await expect.poll(async () => Number(await stacked.getAttribute('data-history-rows'))).toBeGreaterThan(0);
-  await expect(page.locator('.db-scale .tick').first()).toBeHidden();
+  // The level scale stays beside the pane in the 3D view.
+  await expect(page.locator('.db-scale .tick').first()).toBeVisible();
   // The pane keeps its place: same box as the flat canvas had, waterfall untouched.
   const pane = await page.locator('.spectrum-area').boundingBox();
   const view = await stacked.boundingBox();
@@ -63,44 +64,38 @@ test('flat by default; the 3D key switches the pane, survives a reload and switc
   expect(errors).toEqual([]);
 });
 
-// The panel's own full-height marks read a flat trace. Over the scene they
-// would stand upright against rows drawn in perspective, so the 3D view hides
-// them (it draws the marker and the hatch itself) and keeps the passband
-// handle to the front rows, where it is exact.
-test('the upright marks of the flat trace give way to the scene in the 3D view and return with the flat one', async ({ page }) => {
+test('the 3D view can be adjusted on its own key; the values are kept and return to the defaults', async ({ page }) => {
   const errors: string[] = []; page.on('pageerror', error => errors.push(error.message));
   await page.goto('/fixtures/spectrum-witness.html');
-  const area = page.locator('.spectrum-area').first();
-  const box = (await area.boundingBox())!;
-  // Stand-ins carrying the panel's class names, so the test does not depend on the witness state.
-  await area.evaluate((element) => {
-    for (const name of ['tune-line', 'scope-hatch', 'passband-resize-zone']) {
-      const mark = document.createElement('div');
-      mark.className = name; mark.dataset.witness = name;
-      mark.style.cssText = 'position:absolute;left:10%;width:2px;bottom:0;pointer-events:none';
-      if (name !== 'passband-resize-zone') mark.style.top = '0';
-      element.append(mark);
-    }
-  });
-  const witness = (name: string) => page.locator(`[data-witness="${name}"]`);
-  const handleTop = () => witness('passband-resize-zone').evaluate(element => Number.parseFloat(getComputedStyle(element).top));
-  await expect(witness('tune-line')).toBeVisible();
-  await expect(witness('scope-hatch')).toBeVisible();
-  const flatTop = await handleTop();
-
+  await expect(page.getByTestId('stacked-trace-tune')).toHaveCount(0);
   await page.getByTestId('scope-3d-toggle').first().click();
-  await expect(page.getByTestId('stacked-trace')).toBeVisible();
-  await expect(witness('tune-line')).toBeHidden();
-  await expect(witness('scope-hatch')).toBeHidden();
-  expect(await handleTop()).toBeCloseTo(box.height * 0.6, 0);
-  // The stand-in has no top of its own: only the 3D view's rule puts it there.
-  expect(Math.abs(flatTop - box.height * 0.6)).toBeGreaterThan(box.height * 0.3);
+  const key = page.getByTestId('stacked-trace-tune');
+  await expect(key).toHaveAttribute('title', en['core.scope.stackedTrace.tune.title']);
+  await key.click();
+  const panel = page.getByRole('dialog', { name: en['core.scope.stackedTrace.tune.title'] });
+  await expect(panel.locator('input[type="range"]')).toHaveCount(10);
+  await expect(panel).toContainText(en['core.scope.stackedTrace.tune.haze']);
+  const haze = panel.locator('input[data-setting="haze"]');
+  const before = await haze.inputValue();
+  // The scene repaints with the new value: the pane's pixels change.
+  const scene = page.locator('[data-stacked-trace] canvas').first();
+  const paintedBefore = await scene.screenshot();
+  await haze.fill('0.9');
+  await panel.locator('input[data-setting="recede"]').fill('2');
+  await expect.poll(async () => (await scene.screenshot()).equals(paintedBefore)).toBe(false);
+  // A press on the adjustments is not a click on the spectrum.
+  expect(await page.evaluate(() => window.__spectrumWitness.commands)).toEqual([]);
 
+  await reloadQuietly(page);
+  await page.getByTestId('stacked-trace-tune').click();
+  const restored = page.getByRole('dialog').locator('input[data-setting="haze"]');
+  await expect(restored).toHaveValue('0.9');
+  await page.getByTestId('stacked-trace-tune-reset').click();
+  await expect(restored).toHaveValue(before);
+  await reloadQuietly(page);
+  await page.getByTestId('stacked-trace-tune').click();
+  await expect(page.getByRole('dialog').locator('input[data-setting="haze"]')).toHaveValue(before);
   await page.getByTestId('scope-3d-toggle').first().click();
-  await expect(page.locator(flat)).toHaveCount(1);
-  await expect(witness('tune-line')).toBeVisible();
-  await expect(witness('scope-hatch')).toBeVisible();
-  expect(await handleTop()).toBe(flatTop);
   expect(errors).toEqual([]);
 });
 

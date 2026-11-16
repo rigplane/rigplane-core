@@ -9,7 +9,6 @@ import { webglFixture } from '$lib/renderers/__tests__/webgl-fixture';
 import { RecordedPath } from '$lib/renderers/__tests__/canvas-layers-fixture';
 
 type Push = (pixels: Uint8Array) => void;
-type Locate = import('$lib/renderers/stacked-trace-geometry').StackedTraceLocate;
 type Fixture = ReturnType<typeof webglFixture>;
 
 // The preference store is a module singleton, so every test loads a fresh
@@ -39,8 +38,7 @@ function flushFrames(now: number): void {
   for (const frame of due) frame(now);
 }
 
-async function mountPane(props: { colorScheme?: 'classic'; showRfOverlays?: boolean; hostSurface?: boolean;
-  onLocate?: (locate: Locate | null) => void } = { colorScheme: 'classic' }) {
+async function mountPane(props: { colorScheme?: 'classic'; showRfOverlays?: boolean; hostSurface?: boolean } = { colorScheme: 'classic' }) {
   svelte = await import('svelte');
   const store = await import('$lib/stores/stacked-trace.svelte');
   const { default: Harness } = await import('./StackedTraceHarness.svelte');
@@ -138,25 +136,6 @@ describe('MOR-4463 stacked-trace toggle', () => {
     expect(localStorage.getItem('rigplane-spectrum-stacked-trace')).toBe('0');
     flushFrames(300);
     expect(flatDraws).toBeGreaterThan(flatBefore);
-  });
-
-  it('hands the host the pointer map of the stacked view only while that view is shown', async () => {
-    const maps: (Locate | null)[] = [];
-    const pane = await mountPane({ colorScheme: 'classic', onLocate: locate => maps.push(locate) });
-    pane.push(new Uint8Array(475).fill(40));
-    flushFrames(16);
-    // The flat trace needs no map: a pointer's x is its frequency there.
-    expect(maps).toEqual([]);
-    pane.set(true);
-    flushFrames(32);
-    expect(maps).toHaveLength(1);
-    const locate = maps[0]!;
-    expect(locate(0.5, 0.5)).toBeCloseTo(0.5, 12);
-    // High in the 400 x 200 pane the pointer is on the last row, 1 / 2.5 of the pane wide.
-    expect(locate(0.4, 0.3)).toBeCloseTo(0.25, 9);
-    pane.set(false);
-    expect(maps).toHaveLength(2);
-    expect(maps[1]).toBeNull();
   });
 
   it('restores the stacked view from the stored preference on the next load', async () => {
