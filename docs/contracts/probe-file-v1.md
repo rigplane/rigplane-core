@@ -125,14 +125,18 @@ Outcome to rows, true to the converter and pinned by its unit table:
 | `transport_error` | none |
 
 Skipped reads are never rows: only reads the run actually sent become
-rows, one per distinct request (first occurrence wins). A silent CAT
-read replays as silence: the converter emits the bare request row and
-`from_cat_pairs` records an overtaken or trailing request as silence.
+rows, one per distinct request (first occurrence wins). A silent read
+replays as silence on both protocols: the converter emits the bare
+request row, `from_cat_pairs` records an overtaken or trailing request
+as silence, and `RecordedAnswerTable` records a CI-V request with no
+reply row as silence (the serial fake then sends nothing; a request the
+rows never saw still gets the NAK fallback).
 
 ## Relation to other formats
 
 The recorder JSONL is a byte-chunk log with no request/reply pairing;
-fixture `*_pairs.jsonl` files hold trimmed pairs without silence rows.
+fixture `*_pairs.jsonl` files hold trimmed pairs; a request nothing answered
+keeps its request row alone.
 The probe file is a paired, classified table: a converter can replay
 its `data`/`refused` rows as pairs and its silences as requests with
 no reply. Committing a customer capture as a fixture additionally

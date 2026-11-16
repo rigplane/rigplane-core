@@ -192,7 +192,7 @@ What the IC-7610 fakes reproduce and what they do not: `docs/internals/ic7610-fa
   requests, a Command29-wrapped request is answered only from the table or
   NAKed (never unwrapped into a native handler), and any other unknown
   request falls to the table then a NAK (a controller's own ACK/NAK gets no
-  reply). The echo default comes from the table's `echo` fact unless
+  reply); a request the table records as unanswered stays unanswered. The echo default comes from the table's `echo` fact unless
   `echo=` is passed explicitly. The implementation lives
   in `rigplane_testkit/serial/civ_serial.py`.
 - `rigplane_testkit.serial.recorder` — `SerialCivRecorder`, a TCP↔serial

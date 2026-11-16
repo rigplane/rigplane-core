@@ -15,7 +15,7 @@ import struct
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Iterator, Literal
 
 from rigplane_testkit.fixture_rows import CivPairRow, civ_rows
 
@@ -197,6 +197,18 @@ def _longest_prefix(
     return max(matches, key=len) if matches else None
 
 
+@dataclass(frozen=True, slots=True)
+class RecordedCivAnswer:
+    """What the table knows about one request body.
+
+    ``reply`` is the reply frame for ``kind == "reply"`` and ``None`` for
+    ``"silence"`` (the recording shows the radio did not answer).
+    """
+
+    kind: Literal["reply", "silence"]
+    reply: bytes | None
+
+
 class RecordedAnswerTable:
     """The recorded request → reply facts of one transport, as an answer table.
 
@@ -215,16 +227,22 @@ class RecordedAnswerTable:
       earlier makes that key (the longest such one) writable; any other
       recorded ACK is a plain ACK for that exact body.
     - a recorded **NAK** NAKs that exact request body.
+    - a recorded request with **no reply row** (the radio did not answer) is
+      recorded silence for that exact request body; a reply recorded for the
+      same body always beats it.
     - ``echo`` is true when the transport's rows show the radio echoing
       requests (an ``r2c`` row equal to the ``c2r`` row before it), read
       from the rows — never from the transport name.
 
-    :meth:`answer` returns the reply frame addressed back to the requester
-    (to/from swapped).  It tries the exact request body first, in this order:
-    recorded NAK, fixed answer, register read, plain ACK.  A body with no
-    exact entry that extends a writable register key is a write: the
-    remainder after the longest such key is stored into that register and
-    the answer is an ACK.  Any other body returns None.
+    :meth:`lookup` returns a :class:`RecordedCivAnswer` — the reply frame
+    addressed back to the requester (to/from swapped), or recorded silence —
+    and None for a body the recording never saw.  It tries the exact request
+    body first, in this order: recorded NAK, fixed answer, register read,
+    plain ACK, recorded silence.  A body with no exact entry that extends a
+    writable register key is a write: the remainder after the longest such
+    key is stored into that register and the answer is an ACK.  Any other
+    body is unrecorded.  :meth:`answer` is the reply frame alone: None for
+    silence and for an unrecorded body alike.
     """
 
     def __init__(self) -> None:
@@ -234,6 +252,7 @@ class RecordedAnswerTable:
         self._writes: set[bytes] = set()  # register keys a recorded ACK wrote
         self._acks: set[bytes] = set()  # exact bodies with a plain recorded ACK
         self._naks: set[bytes] = set()  # exact bodies with a recorded NAK
+        self._silent: set[bytes] = set()  # exact bodies the radio never answered
 
     @classmethod
     def from_civ_pairs(
@@ -273,9 +292,11 @@ class RecordedAnswerTable:
         return table
 
     def _learn(self, request: bytes, reply: bytes | None) -> None:
-        if reply is None:
-            return
         body = _frame_body(request)
+        if reply is None:
+            self._silent.add(body)
+            return
+        self._silent.discard(body)
         reply_body = _frame_body(reply)
         if reply_body == bytes([_CIV_ACK]):
             key = _longest_prefix(self._registers, body)
@@ -290,22 +311,36 @@ class RecordedAnswerTable:
         else:
             self._fixed[body] = reply_body
 
-    def answer(self, frame: bytes) -> bytes | None:
-        """The reply to one request frame, else None (order: class docstring)."""
+    def lookup(self, frame: bytes) -> RecordedCivAnswer | None:
+        """The recorded answer to one request frame (order: class docstring).
+
+        None means the recording never saw this request body.
+        """
         body = _frame_body(frame)
         if body in self._naks:
-            return self._reply(frame, bytes([_CIV_NAK]))
+            return self._recorded(frame, bytes([_CIV_NAK]))
         if body in self._fixed:
-            return self._reply(frame, self._fixed[body])
+            return self._recorded(frame, self._fixed[body])
         if body in self._registers:
-            return self._reply(frame, body + self._registers[body])
+            return self._recorded(frame, body + self._registers[body])
         if body in self._acks:
-            return self._reply(frame, bytes([_CIV_ACK]))
+            return self._recorded(frame, bytes([_CIV_ACK]))
+        if body in self._silent:
+            return RecordedCivAnswer("silence", None)
         key = _longest_prefix(self._writes, body)
         if key is not None:
             self._registers[key] = body[len(key) :]
-            return self._reply(frame, bytes([_CIV_ACK]))
+            return self._recorded(frame, bytes([_CIV_ACK]))
         return None
+
+    def answer(self, frame: bytes) -> bytes | None:
+        """The reply frame to one request frame; None for silence or a miss."""
+        recorded = self.lookup(frame)
+        return None if recorded is None else recorded.reply
+
+    @classmethod
+    def _recorded(cls, request: bytes, body: bytes) -> RecordedCivAnswer:
+        return RecordedCivAnswer("reply", cls._reply(request, body))
 
     @staticmethod
     def _reply(request: bytes, body: bytes) -> bytes:
