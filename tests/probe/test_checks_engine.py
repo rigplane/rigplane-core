@@ -66,10 +66,7 @@ class ScriptedWire:
         self._script = {body: list(queue) for body, queue in script.items()}
         self.sent: list[bytes] = []
 
-    async def __call__(self, request: bytes | None, timeout: float):
-        if request is None:
-            return None
-        self.sent.append(bytes(request))
+    def _queued(self, request: bytes):
         queue = self._script.get(request, [])
         if not queue:
             return None
@@ -77,6 +74,65 @@ class ScriptedWire:
         if isinstance(item, BaseException):
             raise item
         return item
+
+    async def __call__(self, request: bytes | None, timeout: float):
+        if request is None:
+            return None
+        self.sent.append(bytes(request))
+        return self._queued(request)
+
+
+class StatefulScriptedWire(ScriptedWire):
+    """Models FA/MD0 state like a radio: writes apply, reads answer it.
+
+    Queued outcomes still decide write answers (``?;`` refuses without
+    applying, ``None`` applies silently); an explicitly emptied queue
+    silences the read. Optional *clamp* maps a write line to the canned
+    line the radio stores instead.
+    """
+
+    def __init__(
+        self,
+        script: dict[bytes, list],
+        *,
+        freq: int = 14074000,
+        mode: str = "2",
+        clamp: dict[str, str] | None = None,
+    ) -> None:
+        super().__init__(script)
+        self._freq = freq
+        self._mode = mode
+        self._clamp = clamp or {}
+
+    async def __call__(self, request: bytes | None, timeout: float):
+        if request is None:
+            return None
+        self.sent.append(bytes(request))
+        try:
+            line = request.decode("ascii")
+        except UnicodeDecodeError:
+            return self._queued(request)
+        if line in ("FA;", "MD0;"):
+            queue = self._script.get(request, [])
+            if request in self._script and not queue:
+                return None
+            if line == "FA;":
+                return f"FA{self._freq:09d};".encode("ascii")
+            return f"MD0{self._mode};".encode("ascii")
+        if line.startswith("FA") and line.endswith(";") and len(line) > 3:
+            queued = self._queued(request)
+            if queued is not None:
+                return queued
+            stored = self._clamp.get(line, line)
+            self._freq = int(stored[2:-1])
+            return None
+        if line.startswith("MD0") and line.endswith(";") and len(line) > 4:
+            queued = self._queued(request)
+            if queued is not None:
+                return queued
+            self._mode = line[3:-1]
+            return None
+        return self._queued(request)
 
 
 def _standard_script() -> dict[bytes, list]:
@@ -101,10 +157,11 @@ async def _run(
     answers: list[str | None] | None = None,
     on_event=None,
     ask_timeout_s: float = 60.0,
+    clamp: dict[str, str] | None = None,
 ):
     from rigplane.probe.checks import run_checks
 
-    wire = ScriptedWire(script)
+    wire = StatefulScriptedWire(script, clamp=clamp)
     emitted: list[str] = []
     answer_iter = iter(answers or [])
 
@@ -252,9 +309,12 @@ def test_clamped_write_is_unverified_with_both_values_in_file(
 ) -> None:
     async def scenario() -> None:
         script = _standard_script()
-        script[b"FA007074000;"] = [None]
-        script[b"FA;"] = [FA_HOME, FA_HOME, FA_HOME, FA_HOME]
-        result, _wire, _ = await _run(_freq_mode_check(), script, tmp_path)
+        result, _wire, _ = await _run(
+            _freq_mode_check(),
+            script,
+            tmp_path,
+            clamp={"FA007074000;": "FA005000000;"},
+        )
         (record,) = result.records
         assert record.verified is False
         assert record.restored is True
@@ -359,11 +419,43 @@ def test_link_dies_mid_check_leaves_journal_and_exit_4(tmp_path: Path) -> None:
         boom = OSError("link died")
         script = _standard_script()
         script[b"FA007074000;"] = [boom]
-        result, _wire, _ = await _run(_freq_mode_check(), script, tmp_path)
+        inner = StatefulScriptedWire(script)
+
+        class BrokenWire:
+            def __init__(self) -> None:
+                self.sent = inner.sent
+                self._broken = False
+
+            async def __call__(self, request: bytes | None, timeout: float):
+                if self._broken:
+                    raise OSError("link died")
+                try:
+                    return await inner(request, timeout)
+                except OSError:
+                    self._broken = True
+                    raise
+
+        from rigplane.probe.checks import run_checks
+
+        emitted: list[str] = []
+        journal = tmp_path / "probe.json.checks-journal.json"
+
+        async def ask(prompt: str):
+            return None
+
+        result = await run_checks(
+            config=_cat_config(_freq_mode_check()),
+            exchange=BrokenWire(),
+            gap_s=0.0,
+            timeout_s=0.5,
+            journal_path=journal,
+            consent=lambda prompt: "y",
+            ask=ask,
+            emit=emitted.append,
+        )
         (record,) = result.records
         assert record.restored is False
         assert result.exit_code == 4
-        journal = tmp_path / "probe.json.checks-journal.json"
         assert journal.exists()
 
     asyncio.run(scenario())
@@ -382,7 +474,7 @@ def test_sigterm_during_check_restores_first(tmp_path: Path) -> None:
     import os
     import signal
 
-    class SigtermWire(ScriptedWire):
+    class SigtermWire(StatefulScriptedWire):
         def __init__(self, script: dict[bytes, list]) -> None:
             super().__init__(script)
             self._killed = False
