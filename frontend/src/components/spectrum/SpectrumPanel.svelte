@@ -63,7 +63,7 @@
   import {
     formatFreqOffset,
     deriveFreqTicks,
-    isFixedScope as isFixedScopeFn,
+    isRadioOwnedWindowScope as isRadioOwnedWindowScopeFn,
   } from './spectrum-logic';
   import { PanoramaViewportCenter } from './panorama-motion';
   import { hasCommandModifier } from '../../components-v2/layout/keyboard-map';
@@ -520,7 +520,7 @@
     spectrumAuthority !== null && spectrumAuthority.frequencyHz !== null && spanHz > 0,
   );
   let scopeMode = $derived(frameScopeMode);
-  let isFixedScope = $derived(isFixedScopeFn(scopeMode));
+  let isRadioOwnedWindow = $derived(isRadioOwnedWindowScopeFn(scopeMode));
   let displayTuple = $derived(!managedUnavailable && scopeRegion
     && scopeContentState !== 'out-of-range'
     && (scopeRegion.passband.state === 'current' || scopeRegion.passband.state === 'stale')
@@ -529,7 +529,7 @@
   // MOR-2464: in CENTER the anchor stays at 50%, the panorama glides under it.
   let explicitView = $state(false);
   let requestedView = $state.raw<View | null>(null);
-  let proportionalIndicator = $derived(isFixedScope || requestedView !== null);
+  let proportionalIndicator = $derived(isRadioOwnedWindow || requestedView !== null);
   let displayFrequencyHz = $derived(managed ? displayTuple?.frequencyHz : spectrumAuthority?.frequencyHz);
   // MOR-4256/MOR-4270: the preview survives only while the captured gesture
   // context still matches — a receiver/provider switch, a retune from
@@ -649,7 +649,7 @@
   // proportional line, audio FFT shows none, and viewer OFF hides it.
   // Only observed scope-control facts establish CENTER. The numeric
   // presentation fallback on v2 geometry is not mode evidence.
-  let centerReferenceMode = $derived(scopeControlsMode !== null && !isFixedScopeFn(scopeControlsMode));
+  let centerReferenceMode = $derived(scopeControlsMode !== null && !isRadioOwnedWindowScopeFn(scopeControlsMode));
   // Remember CENTER/FIX per identity; the static ruler carries no RF geometry.
   let provenCenterMode = $state<{ providerGeneration: number; receiver: 0 | 1; sessionEpoch: number } | null>(null);
   let rememberedCenterReference = $derived.by(() => {
@@ -689,7 +689,7 @@
   let panoramaKeyApplied = $state<string | null>(null);
   let panoramaTargetApplied: number | null = null;
 
-  let panoramaActive = $derived(!audioFft && !isFixedScope && spanHz > 0);
+  let panoramaActive = $derived(!audioFft && !isRadioOwnedWindow && spanHz > 0);
   // MOR-2464 follow-up: the panorama target takes the freshest display-only
   // leg available. (1) The local tuning burst — the accumulator's per-gesture
   // target, paced-unsent steps included — shields the glide from the
@@ -718,9 +718,9 @@
     const frequency = displayFrequencyHz;
     const authority = spectrumAuthority;
     const nativeRadio = !audioFft && !sdrSource;
-    const center = scopeControlsMode !== null ? !isFixedScopeFn(scopeControlsMode) : null;
+    const center = scopeControlsMode !== null ? !isRadioOwnedWindowScopeFn(scopeControlsMode) : null;
     const sessionEpoch = runtime.controlSession.epoch;
-    const fixed = isFixedScope;
+    const radioOwned = isRadioOwnedWindow;
     const follow = followSpanHz;
     const requested = requestedView;
     const active = panoramaActive;
@@ -740,7 +740,9 @@
         }
         if (geometry && geometry.view.endHz > geometry.view.startHz) {
           const span = follow ?? geometry.view.endHz - geometry.view.startHz;
-          scopeView.set('confirmed', requested ?? ((fixed && follow === null) || frequency === null || frequency === undefined ? geometry.view
+          // #4565: a radio-owned window (FIX/SCROLL-C/SCROLL-F) is always the
+          // reported geometry — a span gesture's follow width never re-centres it.
+          scopeView.set('confirmed', requested ?? (radioOwned || frequency === null || frequency === undefined ? geometry.view
             : { startHz: frequency - span / 2, endHz: frequency + span / 2 }));
         }
         const confirmed = scopeView.confirmed;
@@ -954,7 +956,7 @@
         position: index * 25,
         label: `${Number(((startFreq + spanHz * index / 4) / 1000).toFixed(2))} kHz`,
       }))
-    : explicitView || isFixedScope
+    : explicitView || isRadioOwnedWindow
       ? viewportSpanHz > 0 ? Array.from({ length: 5 }, (_, index) => ({
           position: index * 25,
           label: ((viewportStartFreq + viewportSpanHz * index / 4) / 1e6).toFixed(3),
@@ -1574,7 +1576,7 @@
       {/if}
       {#if !audioFft}<BandPlanOverlay startFreq={viewportStartFreq} endFreq={viewportEndFreq} visible={showBandPlan} {hiddenLayers} region={bandPlanRegion} />{/if}
       {#if scopeTraceLive && scopeContentState !== 'out-of-range' && frameGeometry?.hasPixels !== false}
-      <SpectrumCanvas data={null} options={spectrumOptions} spanHz={viewportSpanHz} absoluteLabels={explicitView || isFixedScope} {enableAvg} {enablePeakHold} trace={traceStatus === 'recording' ? trace : null} surface={spectrumSurface} onRegisterPush={(fn) => {
+      <SpectrumCanvas data={null} options={spectrumOptions} spanHz={viewportSpanHz} absoluteLabels={explicitView || isRadioOwnedWindow} {enableAvg} {enablePeakHold} trace={traceStatus === 'recording' ? trace : null} surface={spectrumSurface} onRegisterPush={(fn) => {
         spectrumPush = fn;
         const geometry = frameGeometry;
         const frame = geometry && scopeDemandOn && samplePlaneLive && geometry.freshness === 'fresh'

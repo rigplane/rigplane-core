@@ -950,7 +950,7 @@ describe('SpectrumPanel component', () => {
       control.step(-1); flushSync();
       expect(view()).toEqual({ follow: 'vfo', spanHz: 50_000 });
       control.step(second); flushSync();
-      const expected = second === -1 ? 25_000 : 100_000;
+      const expected = second === -1 ? 20_000 : 100_000;
       expect(view()).toEqual({ follow: 'vfo', spanHz: expected });
       expect(control.spanHz).toBe(100_000);
       expect(target.querySelector('[title="Scope span"] .toolbar-value')?.textContent).toBe('±50k');
@@ -964,9 +964,26 @@ describe('SpectrumPanel component', () => {
       target.querySelector<HTMLButtonElement>('[data-testid="scope-zoom-in"]')!.click(); flushSync();
       mockRuntime.scope.spanControl!.step(-1); flushSync();
       const request = JSON.parse(target.querySelector('.spectrum-panel')!.getAttribute('data-scope-subscription')!);
-      expect(request.view).toEqual({ follow: 'vfo', spanHz: 25_000 });
+      expect(request.view).toEqual({ follow: 'vfo', spanHz: 20_000 });
       expect(mockRuntime.scope.spanControl!.spanHz).toBe(100_000);
     });
+  });
+
+  // #4565 pre-review item 1. Guards the `radioOwned || frequency === null`
+  // term of the confirmed-view effect in SpectrumPanel.svelte: after a span
+  // gesture `followSpanHz` is set, and a radio-owned mode (SCROLL-C) must still
+  // show the REPORTED window, not a VFO-centred one. The VFO sits 5 kHz off the
+  // window centre here, so a VFO-centred view would shift every axis label.
+  it.each([2, 1, 3])('keeps the reported window after a span gesture in radio-owned mode %s', async (mode) => {
+    runtimeHarness.state.currentCaps = validateCapabilities({ ...IC7300_CAPABILITIES, ...spanCapabilities, model: 'IC-7610' });
+    authorityHarness.state.current = authority({ frequencyHz: 14_055_000, scopeControls: testScopeControls(mode) });
+    const target = mountPanel();
+    emitFrame({ mode, startFreq: 14_000_000, endFreq: 14_100_000 }); await flushWaterfallPaint();
+    mockRuntime.scope.spanControl!.step(-1); flushSync();
+    emitFrame({ mode, startFreq: 14_025_000, endFreq: 14_075_000, sequence: 2 }); await flushWaterfallPaint();
+    const ticks = [...target.querySelectorAll('.freq-axis .tick')].map((tick) => tick.textContent);
+    expect([ticks[0], ticks.at(-1)]).toEqual(['14.025', '14.075']);
+    expect(target.querySelector('.scope-hatch')).toBeNull();
   });
 
   it('labels and steps from granted FIXED edges without a legacy index', async () => {
@@ -1393,6 +1410,9 @@ describe('SpectrumPanel component', () => {
   });
 
   it('shows the static CENTER reference from frequency evidence before any frame data', () => {
+    // True CENTER: in SCROLL-C the marker moves across the fixed window, so
+    // the stationary 50% reference needs scope mode 0, not the mode-2 default.
+    authorityHarness.state.current = authority({ scopeControls: testScopeControls(0) });
     const target = mountPanel();
     // No frame has arrived (span 0), but the radio's observed frequency is
     // evidence enough for the stationary CENTER reference in BOTH areas
@@ -2796,6 +2816,9 @@ describe('managed scope projection (MOR-2367)', () => {
     expect(mounted.target.querySelector('[data-testid="scope-out-of-range"]')).toBeNull();
   });
   it.each([null, 'current'] as const)('never acquires a raw hardware lease for managed %s', (kind) => {
+    // True CENTER (mode 0): the null case pins the stationary reference,
+    // which SCROLL-C (the fixture default) no longer shows.
+    authorityHarness.state.current = authority({ scopeControls: testScopeControls(0) });
     const { target } = managed(kind === null ? null : projection());
     expect(sharedLeaseAcquisitions).toHaveBeenCalledTimes(1);
     expect(streamSubscriptions.hardware).toHaveBeenCalledTimes(1);
@@ -2904,6 +2927,9 @@ describe('managed scope projection (MOR-2367)', () => {
     await vi.waitFor(() => expect(shifts().at(-1)).toBe(14_090_000 - 14_060_000));
   });
   it.each(['null', 'off'] as const)('clears pixels, coordinates and active captures on %s while shared health stays true', async (boundary) => {
+    // True CENTER (mode 0): the null case pins the stationary reference,
+    // which SCROLL-C (the fixture default) no longer shows.
+    authorityHarness.state.current = authority({ scopeControls: testScopeControls(0) });
     const { target, props, onScopeDemandChange } = managed(projection());
     const shared = harnessLeases.at(-1)!;
     expect(sharedLeaseAcquisitions).toHaveBeenCalledTimes(1);
@@ -2949,6 +2975,9 @@ describe('managed scope projection (MOR-2367)', () => {
     mockRuntime.releaseHardwareScope(shared);
   });
   it.each(['unknown', 'unsupported'] as const)('keeps the managed sample plane without raw RF fallback for %s passband', (state) => {
+    // True CENTER (mode 0): the stationary reference needs scope mode 0,
+    // not the SCROLL-C fixture default.
+    authorityHarness.state.current = authority({ scopeControls: testScopeControls(0) });
     const { target } = managed(projection(state));
     expect(target.querySelector('canvas')).not.toBeNull();
     expect(target.querySelector('.freq-axis')).not.toBeNull();
@@ -2961,6 +2990,9 @@ describe('managed scope projection (MOR-2367)', () => {
     expect(target.querySelector('.passband-resize-zone')).toBeNull();
   });
   it('keeps the static CENTER reference through a focus-like projection gap and restores passband on recovery', () => {
+    // True CENTER (mode 0): the stationary reference is CENTER-only since
+    // SCROLL-C keeps a fixed window with a moving marker.
+    authorityHarness.state.current = authority({ scopeControls: testScopeControls(0) });
     const { target, props } = managed(projection());
     expect(target.querySelectorAll('.tune-line')).toHaveLength(1);
     expect(target.querySelector('.spectrum-area .tune-line')).toBeNull();
@@ -3010,6 +3042,9 @@ describe('managed scope projection (MOR-2367)', () => {
     expectCenterReference(target, false);
   });
   it('keeps the static CENTER reference through a strict authority freshness gap in the same session', () => {
+    // True CENTER (mode 0) throughout: the stationary reference is
+    // CENTER-only since SCROLL-C keeps a fixed window with a moving marker.
+    authorityHarness.state.current = authority({ scopeControls: testScopeControls(0) });
     const { target, props } = managed(projection());
     expect(target.querySelector('.spectrum-area .tune-line')).toBeNull();
     expect(target.querySelector('.waterfall-content .tune-line')).not.toBeNull();
@@ -3020,12 +3055,14 @@ describe('managed scope projection (MOR-2367)', () => {
     authorityHarness.state.current = null; refreshSpectrumAuthority(); flushSync();
     expectCenterReference(target, true);
     // Refocus: frames and authority return; the normal path resumes.
-    authorityHarness.state.current = authority(); refreshSpectrumAuthority(); flushSync();
+    authorityHarness.state.current = authority({ scopeControls: testScopeControls(0) }); refreshSpectrumAuthority(); flushSync();
     props.set('projection', projection()); resumeFrames();
     expect(target.querySelector('.passband-overlay')).not.toBeNull();
     expect(target.querySelectorAll('.tune-line')).toHaveLength(1);
   });
   it('clears the remembered mode on a provider identity change', () => {
+    // True CENTER (mode 0): the remembered reference needs a center mode.
+    authorityHarness.state.current = authority({ scopeControls: testScopeControls(0) });
     const { target, props } = managed(projection());
     silenceFrames();
     authorityHarness.state.current = null;
@@ -3050,8 +3087,11 @@ describe('managed scope projection (MOR-2367)', () => {
     expectCenterReference(target, false);
   });
   it('retains whole stale geometry with no cue while strict fresh frequency still pans', () => {
+    // True CENTER (mode 0) throughout: CENTER-anchored geometry, and the
+    // SCROLL-C default would re-anchor proportionally instead.
+    authorityHarness.state.current = authority({ scopeControls: testScopeControls(0) });
     const { target, props } = managed(projection()); const original = target.querySelector('.passband-overlay')!.getAttribute('style');
-    authorityHarness.state.current = authority({ filterWidthHz: null, ifShiftHz: null }); refreshSpectrumAuthority();
+    authorityHarness.state.current = authority({ filterWidthHz: null, ifShiftHz: null, scopeControls: testScopeControls(0) }); refreshSpectrumAuthority();
     props.set('projection', projection('stale')); flushSync();
     expect(target.querySelector('.passband-overlay')!.getAttribute('style')).toBe(original);
     // MOR-2425/R41: the geometry is retained with NO cue at all.
@@ -3062,7 +3102,7 @@ describe('managed scope projection (MOR-2367)', () => {
     pointer(spectrum, 'pointerdown', 82, 100); pointer(spectrum, 'pointermove', 82, 120); pointer(spectrum, 'pointerup', 82, 120);
     expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledTimes(2);
     expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledWith(14_040_000, 0);
-    authorityHarness.state.current = authority({ frequencyHz: null }); refreshSpectrumAuthority(); flushSync();
+    authorityHarness.state.current = authority({ frequencyHz: null, scopeControls: testScopeControls(0) }); refreshSpectrumAuthority(); flushSync();
     pointer(spectrum, 'pointerdown', 83, 100); pointer(spectrum, 'pointermove', 83, 120); pointer(spectrum, 'pointerup', 83, 120);
     expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledTimes(2);
     props.set('projection', projection()); flushSync();
@@ -3943,7 +3983,9 @@ describe('drag-to-tune live preview (MOR-4256)', () => {
   it('retires the preview the moment the captured context changes and rejects the release', async () => {
     const restore = stubReducedMotion();
     try {
-      authorityHarness.state.current = authority({ frequencyHz: 14_050_000 });
+      // True CENTER (mode 0): the preview pans the panorama under a
+      // stationary center, which SCROLL-C (the fixture default) has no claim to.
+      authorityHarness.state.current = authority({ frequencyHz: 14_050_000, scopeControls: testScopeControls(0) });
       const target = mountPanel();
       emitFrame();
       const { spectrum } = prepareGeometry(target);
@@ -3953,7 +3995,7 @@ describe('drag-to-tune live preview (MOR-4256)', () => {
       await vi.waitFor(() => expect(spectrumRendererHarness.lastOptions?.panoramaShiftHz).toBe(-10_000));
       // A retune from another client lands mid-drag: the preview anchored
       // to the captured 14.050 MHz must not retarget the new observation.
-      authorityHarness.state.current = authority({ frequencyHz: 7_050_000 });
+      authorityHarness.state.current = authority({ frequencyHz: 7_050_000, scopeControls: testScopeControls(0) });
       refreshSpectrumAuthority();
       await flushPreviewPaint();
       await vi.waitFor(() => expect(spectrumRendererHarness.lastOptions?.centerHz).toBe(7_050_000));
