@@ -2,6 +2,7 @@
   import { runtime } from '$lib/runtime';
   import { getHostUi } from '$lib/local-extensions/host-ui';
   import { t } from '$lib/i18n';
+  import { isStackedTraceEnabled, isStackedTraceUnavailable, setStackedTraceEnabled } from '$lib/stores/stacked-trace.svelte';
   import { hasTx, hasDualReceiver, hasAnyScope, hasSpectrum, hasCapability, receiverLabel } from '$lib/stores/capabilities.svelte';
   import { HardwareButton } from '$lib/Button';
   import SpectrumPanel from '../../components/spectrum/SpectrumPanel.svelte';
@@ -109,6 +110,8 @@
   // layout — not the panel — holds them once the toolbar is hidden.
   let scopeAvg = $state(true);
   let scopeSmooth = $state(true);
+  // MOR-4463: lit as on the desktop key — on and usable in this browser.
+  let stackedTrace = $derived(isStackedTraceEnabled() && !isStackedTraceUnavailable());
   let scopePeakHold = $state(true);
   let scopeBandPlan = $state(true);
 
@@ -836,6 +839,12 @@
                 lit={managedScopeRegion.demanded}
                 onclick={() => { const region = managedScopeRegion; if (region) region.setDemand(!region.demanded); }} />
             {/if}
+            <!-- MOR-4463: the same per-browser 3D switch the desktop toolbar
+                 key drives; the phone hides that toolbar. -->
+            <ScopeFlatKey label="3D" testid="scope-key-3d"
+              lit={stackedTrace} disabled={isStackedTraceUnavailable()}
+              title={t(isStackedTraceUnavailable() ? 'core.scope.stackedTrace.unavailable' : 'core.scope.stackedTrace.title')}
+              onclick={() => setStackedTraceEnabled(!stackedTrace)} />
             <ScopeFlatKey label="AVG" testid="scope-key-avg"
               lit={scopeAvg} onclick={() => (scopeAvg = !scopeAvg)} />
             <ScopeFlatKey label="SMTH" testid="scope-key-smooth"
