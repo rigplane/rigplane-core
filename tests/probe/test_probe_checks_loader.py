@@ -166,7 +166,7 @@ def test_a_read_needs_a_read_form_and_a_restore_item_needs_both() -> None:
     _fails(check_toml([("read", "vfo_exchange")], []), "read", "ic705")
     _fails(check_toml([("read", "freq_a")], ["info"]), "info", "ft991a", CAT_EXTRA)
     _fails(
-        check_toml([("read", "freq_a")], [], 'witness = ["vfo_exchange"]'),
+        check_toml([("read", "freq_selected")], [], 'witness = ["vfo_exchange"]'),
         "read",
         "ic705",
     )

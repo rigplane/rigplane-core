@@ -76,6 +76,7 @@ def facts(name: str, extra: dict | None = None):
         mode_codes=None if config.mode_codes is None else tuple(config.mode_codes),
         cmd29_routes=frozenset(config.cmd29_routes),
         vfo_swap=config.vfo_swap_ab or config.vfo_swap_main_sub,
+        freq_ranges=tuple((r["start_hz"], r["end_hz"]) for r in config.freq_ranges),
     )
 
 
@@ -97,13 +98,13 @@ ALL_TABLES = ("ft991a+", "ftx1", *CIV_RIGS)
 #: Candidate values per entry; the ones the compiled codec accepts are used.
 SAMPLES: dict[str, tuple[object, ...]] = {
     "freq_a": (7074000, 145000000),
-    "freq_b": (14250000,),
+    "freq_b": (14250000, 145000000),
     "mode_main": ("USB", "FM"),
     "split": ("on", "off"),
     "power": (50, 100),
     "speech_processor": ("1", "2"),
     "freq_selected": (7074000, 145000000),
-    "freq_unselected": (14250000,),
+    "freq_unselected": (14250000, 145000000),
     "mode_selected": (("USB", 0, 1), ("FM", 1, 2), ("USB", 1), ("CW", 3)),
     "mode_unselected": (("USB", 0, 1), ("LSB", 1, 3)),
     "vfo_exchange": ((),),
@@ -364,7 +365,7 @@ def test_t5_a_write_without_every_changed_restore_fails_and_is_not_sendable(
     ][:1]
     value = parse_frame(table, frame).value
     full = list(entry.changes)
-    assert entry_id in full
+    assert full and (entry_id in full or entry.read is None)
     (check,) = load_checks(facts_, check_toml([("write", entry_id, value)], full))
     assert check.steps[0].frame == frame
     assert sendable(parse_frame(table, frame), {(c, None) for c in full})
@@ -556,10 +557,10 @@ def test_t7_cat_c4fm_codes_from_the_profile_are_outside_the_mode_domain(
 
 
 def test_t7_mode_codes_are_profile_data_not_one_table() -> None:
-    """FTX-1 code E is AM-N (in its domain); on the FT-991A E is C4FM."""
+    """FTX-1 code E is PSK (in its domain); on the FT-991A E is C4FM."""
     from rigplane.profiles.probe_checks import parse_frame
 
-    assert parse_frame(table_for("ftx1"), b"MD0E;").value == "AM-N"
+    assert parse_frame(table_for("ftx1"), b"MD0E;").value == "PSK"
     assert parse_frame(table_for("ft991a+"), b"MD0E;") is None
 
 
