@@ -489,6 +489,18 @@ class ScopeSession:
             raise RuntimeError("scope control is deferred until radio readiness")
         if self._tx or (self.tx_probe is not None and self.tx_probe()):
             raise RuntimeError("scope control is deferred during transmit")
+        if name == "span" and self._applied.get((receiver, "span")) == value:
+            # #4565: the radio already reports the chosen preset — a
+            # front-panel (or other-controller) change adopted via
+            # observe(), or our own write echoed back. Re-asserting it
+            # would emit a same-value 0x15 SET, so the span part is a
+            # no-op; set_center's mode write is a separate _put and keeps
+            # its own logic. The report resolves any in-flight uncertainty
+            # for this key, so adoption of later changes resumes. An
+            # unknown span (never read) still writes below, as today —
+            # and the restore loop inherits the same no-op through here.
+            self._uncertain.discard((receiver, name))
+            return
         applied = self._applied.get((receiver, name))
         self._uncertain.add((receiver, name))
         try:
