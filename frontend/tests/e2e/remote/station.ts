@@ -257,22 +257,24 @@ export async function collectFirstTexts(
 }
 
 /** The station's reply to POST /api/v1/transport/webrtc/offer (producer:
- * WebServer._handle_webrtc_offer, `{"status": "ok", sdp, type}`); the SDP
- * pair is the W3C RTCSessionDescriptionInit. */
-export type RelayedAnswer = RTCSessionDescriptionInit & { status: 'ok'; sdp: string };
+ * WebServer._handle_webrtc_offer; a success is `{status: "ok", sessionId,
+ * sdp, type}`, a refusal `{status: "error", code}`). The SDP pair is the
+ * W3C RTCSessionDescriptionInit and `status` the only discriminator the
+ * harness reads; tests/testkit/test_remote_web_server_sidecar.py pins the
+ * key set of a REAL reply. */
+export type RelayedAnswer = RTCSessionDescriptionInit & { status: 'ok' };
 
+/** Narrow a relayed reply by its discriminator. The SDP itself is not
+ * re-checked here: the page's `setRemoteDescription` is its validator. */
 export function parseRelayedAnswer(value: unknown): RelayedAnswer {
-  const record = value as Record<string, unknown> | null;
   if (
-    typeof record !== 'object' ||
-    record === null ||
-    record.status !== 'ok' ||
-    typeof record.sdp !== 'string' ||
-    record.type !== 'answer'
+    typeof value !== 'object' ||
+    value === null ||
+    (value as { status?: unknown }).status !== 'ok'
   ) {
-    throw new Error(`offer refused or malformed answer: ${JSON.stringify(value)}`);
+    throw new Error(`offer refused: ${JSON.stringify(value)}`);
   }
-  return { status: 'ok', sdp: record.sdp, type: 'answer' };
+  return value as RelayedAnswer;
 }
 
 /**
