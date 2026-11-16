@@ -12,6 +12,12 @@ import { defineConfig } from '@playwright/test';
 const PORT = 18766;
 const READ_ONLY_PORT = 18767;
 
+// MOR-4450: headless Chromium on macOS hosts has no GPU-backed WebGL2 (the Mac
+// mini returns a null context), while Linux CI falls back to SwiftShader on its
+// own. The panorama-settle rows count WebGL2 draw calls, so request the same
+// software rasteriser everywhere and every host runs one test behaviour.
+const SOFTWARE_WEBGL_ARGS = ['--use-angle=swiftshader', '--enable-unsafe-swiftshader'];
+
 export default defineConfig({
   testDir: './tests/e2e/journey',
   testMatch: /.*\.spec\.ts$/,
@@ -52,7 +58,11 @@ export default defineConfig({
     // The PTT scenario starts the browser microphone before it sends ptt_on
     // (ManagedTxController.#sendPttOn); these flags give it a fake one.
     launchOptions: {
-      args: ['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream'],
+      args: [
+        '--use-fake-device-for-media-stream',
+        '--use-fake-ui-for-media-stream',
+        ...SOFTWARE_WEBGL_ARGS,
+      ],
     },
   },
 });
