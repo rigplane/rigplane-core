@@ -1032,7 +1032,8 @@ describe('SpectrumPanel component', () => {
   // refuse it. S-C owns its window but the span write is accepted.
   it.each(['IC-705', 'IC-7300'])('steps SPAN while %s observes SCROLL-C (mode 2)', async (model) => {
     runtimeHarness.state.currentCaps = validateCapabilities({ ...IC7300_CAPABILITIES, ...spanCapabilities, model });
-    authorityHarness.state.current = authority({ scopeControls: testScopeControls(2) });
+    // The observed span reading (choice 4 = 100 kHz) names the radio window the frame shows.
+    authorityHarness.state.current = authority({ scopeControls: testScopeControls(2, 4) });
     const target = mountPanel();
     emitFrame({ mode: 2, startFreq: 14_000_000, endFreq: 14_100_000 }); await flushWaterfallPaint();
     const control = mockRuntime.scope.spanControl!;
