@@ -363,17 +363,16 @@ class CivRequestTracker:
 
     @property
     def ack_unclaimed_at(self) -> float | None:
-        """Monotonic time a bare FB/FA was last left able to arrive unclaimed.
+        """Monotonic time a write's ACK/NAK was last left unclaimed, if ever.
 
         An ACK/NAK frame names no command and ``resolve`` hands it to the
-        first eligible waiter, so an answer whose waiter is gone — a
-        write's FB/FA (MOR-2860) or a read's FA, since a refused read is
-        answered with one — can still settle a later waiter.
+        first eligible waiter, so a write whose answer was left unclaimed can
+        still settle a later write's waiter (MOR-2860).
         """
         return self._ack_unclaimed_at
 
     def note_ack_unclaimed(self) -> None:
-        """Record that a bare FB/FA can still arrive with no waiter."""
+        """Record that a write's ACK/NAK can still arrive with no waiter."""
         self._ack_unclaimed_at = time.monotonic()
 
     def snapshot_stats(self) -> dict[str, int]:
@@ -551,9 +550,10 @@ class CivRequestTracker:
 
         A sink is owed its answer for ``answer_window`` from its send
         stamp (registration until sent); only an ordered answer that passed
-        it (``resolve``) retires it sooner. Its late FB/FA could still
-        settle a later waiter, so every expiry calls
-        :meth:`note_ack_unclaimed` (read by the PTT-release readback check).
+        it (``resolve``) retires it sooner. An expired write sink's late
+        FB/FA could still settle a later write, so it calls
+        :meth:`note_ack_unclaimed` (read by the PTT-release check); a read
+        is never answered with FB and does not.
 
         Returns:
             Number of sink entries expired.
@@ -567,7 +567,8 @@ class CivRequestTracker:
                 kept.append(waiter)
             else:
                 _log_sink("civ.sink.expired", waiter, now)
-                self.note_ack_unclaimed()
+                if waiter.response_key is None:
+                    self.note_ack_unclaimed()
         expired = len(self._ack_waiters) - len(kept)
         self._ack_waiters = kept
         return expired
