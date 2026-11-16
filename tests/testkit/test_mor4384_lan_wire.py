@@ -254,3 +254,42 @@ async def test_lan_outbound_reorder_off_by_one_is_the_only_damage(
     assert tracker.pending_count == 0
     assert tracker.timeout_count == 0
     assert tracker.snapshot_stats()["ack_orphans"] == 0
+
+
+def _read(sub: int) -> bytes:
+    return build_civ_frame(_ADDR, CONTROLLER_ADDR, 0x14, sub=sub)
+
+
+async def test_lan_stated_residual_delayed_read_refusal_charged_to_next_setter(
+    lan: _Lan, virtual_clock: VirtualClock
+) -> None:
+    """Stated residual (same exposure as main, MOR-4209), pinned as is.
+
+    Read sink A (AF level) is delayed on the way out (resent), so the radio
+    handles keyed read B (RF gain) first and answers it. B's directed
+    answer on the ordered LAN link retires A by evidence. A's refusal then
+    arrives late, while blocking setter C is open: it is charged to C.
+    C sees the refusal and A is not marked refused. Any change that makes
+    this better or worse must trip this row.
+    """
+    runtime = lan.radio._civ_runtime
+    tracker = lan.radio._civ_request_tracker
+    await runtime._execute_civ_raw(_read(0x01), wait_response=False)  # A
+    await runtime._execute_civ_raw(_read(0x02), wait_response=False)  # B
+    await lan.sent_count(2)
+    lan.lan.deliver(
+        lan.lan.packet(
+            build_civ_frame(CONTROLLER_ADDR, _ADDR, 0x14, sub=0x02, data=b"\x01\x28")
+        )
+    )
+    await _settle(virtual_clock)
+    assert tracker.ack_sink_count == 0, "B's answer did not retire A"
+
+    c = lan.blocking_write(3)
+    await lan.sent_count(3)
+    lan.lan.deliver(lan.lan.packet(_fa()))  # A's late refusal
+    result_c = await c
+
+    assert result_c is not None and result_c.command == 0xFA
+    assert tracker.take_refused_reads() == ()
+    assert tracker.pending_count == 0
