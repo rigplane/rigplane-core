@@ -98,9 +98,10 @@ A `checks` record (`CheckRecord`, every key required, no other allowed):
 `steps` (every frame sent: `{kind, entry, request_hex, reply_hex, class,
 value}`), `answers` (`{question, answer, skipped}`), `originals` (setting to
 hand-settable value), `witness` (`{before, after, changed}`), `restored`,
-`verified`, `error`. The fsynced journal `<out>.checks-journal.json`
-(`{check_id, check_title, profile, originals, saved_utc, now}`) is written
-before the first write and removed after a verified restore.
+`verified`, `error`. One fsynced journal per user (`probe-checks-journal.json`
+in the rigplane state folder; `{check_id, check_title, profile, originals,
+saved_utc, now}`) is written before the first write, removed after a
+verified restore; while it exists every check is refused.
 
 ## Redaction
 

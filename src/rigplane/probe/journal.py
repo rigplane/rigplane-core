@@ -15,18 +15,19 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+import platformdirs
+
 from rigplane.probe.model import _need_mapping, _need_str
 
 __all__ = [
     "ChecksJournal",
-    "journal_path_for",
+    "journal_path",
     "leftover_journal_line",
     "read_journal",
     "remove_journal",
     "write_journal",
 ]
 
-_SUFFIX = ".checks-journal.json"
 _KEYS = ("check_id", "check_title", "profile", "originals", "saved_utc", "now")
 
 
@@ -74,14 +75,15 @@ class ChecksJournal:
         )
 
 
-def journal_path_for(out: Path) -> Path:
-    """The journal next to one output file."""
-    return out.with_name(out.name + _SUFFIX)
+def journal_path() -> Path:
+    """The one journal place per user, whatever the output file is called."""
+    return Path(platformdirs.user_state_path("rigplane")) / "probe-checks-journal.json"
 
 
 def write_journal(path: Path, journal: ChecksJournal) -> None:
     """Write, flush and fsync the journal, then fsync its directory (POSIX:
     the rename itself must survive a power cut). Returns only when durable."""
+    path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.tmp")
     with temporary.open("w", encoding="utf-8") as stream:
         stream.write(journal.to_json())

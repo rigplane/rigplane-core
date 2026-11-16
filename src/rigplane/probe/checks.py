@@ -25,7 +25,13 @@ from pathlib import Path
 from typing import Any
 
 from rigplane.commands import parse_civ_frame
-from rigplane.probe.journal import ChecksJournal, remove_journal, write_journal
+from rigplane.probe.journal import (
+    ChecksJournal,
+    journal_path,
+    leftover_journal_line,
+    remove_journal,
+    write_journal,
+)
 from rigplane.probe.model import (
     CheckAnswerRow,
     CheckRecord,
@@ -63,7 +69,6 @@ _LABELS = {
     "freq_a": "VFO-A",
     "freq_b": "VFO-B",
     "mode_main": "mode",
-    "split": "split",
     "power": "RF power",
     "speech_processor": "speech processor",
     "freq_selected": "frequency of the selected VFO",
@@ -79,15 +84,14 @@ Key = tuple[str, int | None]
 
 @dataclass(frozen=True, slots=True)
 class ChecksRequest:
-    """``--checks``: ``consent(check, originals)`` per check, ``ask`` a question
-    (``None``: skipped); ``on_event`` gets journal_written, steps_begin and
-    restore_begin."""
+    """``consent(check, originals)``, ``ask`` (``None``: skipped), ``on_event``
+    (journal_written, steps_begin, restore_begin)."""
 
-    journal_path: Path
     consent: Callable[[ProbeCheck, dict[str, str]], bool]
     ask: Callable[[str], Awaitable[str | None]]
     on_event: Callable[[str], None] | None = None
     ask_timeout_s: float = ASK_TIMEOUT_S
+    journal_path: Path = field(default_factory=journal_path)  # tests override
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,7 +105,7 @@ class ChecksResult:
 
 
 class _Stop(Exception):
-    """Refused before writing, or a step failed."""
+    pass
 
 
 @dataclass(slots=True)
@@ -197,7 +201,11 @@ async def _send(
     cat_write = protocol == "yaesu_cat" and bool(write)
     item = ReadRequest(key[0], body, "get" if protocol == "civ" else "cat")
     while run.unsettled:  # read out the late answer of a cancelled exchange
-        run.unsettled = await run.exchange(None, run.window) is not None
+        try:
+            run.unsettled = await run.exchange(None, run.window) is not None
+        except (OSError, asyncio.IncompleteReadError) as broken:
+            run.unsettled = False
+            run.gate.stop_transport("write check", broken)
     run.gate.allowed = run.gate.allowed | {body}
     answer = await _gated_ask(
         run.gate,
@@ -220,7 +228,7 @@ async def _send(
         run.gate.stop_transport("write check", answer.broken)
     elif answer.reply is not None:
         run.gate.note_answered()
-    elif not cat_write:  # a Yaesu write answers nothing
+    elif not (cat_write or run.restoring):  # restore silence never stops it
         run.gate.note_silent()
     ok = (
         ("silent", "unsolicited")
@@ -340,6 +348,16 @@ async def _run_one(run: _Run, check: ProbeCheck) -> CheckRecord:
         done = (tuple(state.steps), tuple(state.answers), originals)
         return CheckRecord(check.id, check.title, status, *done, error=error, **ran)
 
+    try:  # a journal from an earlier check holds originals nobody restored
+        left = run.request.journal_path.exists() and leftover_journal_line(
+            run.request.journal_path
+        )
+    except ValueError:
+        left = (
+            f"the journal {run.request.journal_path} cannot be read; check it by hand"
+        )
+    if left:
+        return record("refused", error=left)
     try:
         await _prepare(run, state)
     except _Stop as stop:

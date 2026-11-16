@@ -793,12 +793,19 @@ async def test_silence_inside_the_restore_never_stops_the_later_originals(
 async def test_a_dead_link_while_reading_out_a_cancel_is_exit_4_with_the_journal(
     tmp_path: Path,
 ) -> None:
+    from rigplane_testkit.serial import CivSerialFake
+
     config = load(tmp_path, "ic705", CIV_POWER_FREQ)
-    fake = civ_fake("IC-705")
+    fake = CivSerialFake(model="IC-705", model_id=b"\xa4", echo=False, ack_set_s=0.3)
+    fake.hold(b"\x14\x0a", b"\x01\x28")
+    fake.hold(b"\x25\x00", bcd_le(14_074_000))  # slow ACKs: the cancel lands mid-step
     inner = await civ_exchange(fake)
+
+    drained: list[None] = []
 
     async def exchange(body: bytes | None, timeout: float):
         if body is None:
+            drained.append(None)
             raise OSError("the USB cable came out")
         return await inner(body, timeout)
 
@@ -809,6 +816,7 @@ async def test_a_dead_link_while_reading_out_a_cancel_is_exit_4_with_the_journal
     req = request(tmp_path, events=events)
     result = await run(config, req, exchange)
     (record,) = result.records
+    assert drained, "the cancel never led to reading out the late answer"
     assert result.exit_code == 4 and not record.restored
     assert req.journal_path.exists()
 
