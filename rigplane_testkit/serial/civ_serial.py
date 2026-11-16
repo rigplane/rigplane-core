@@ -319,6 +319,7 @@ class CivSerialFake:
         self._ptt = False
         self._s_meter = s_meter
 
+        self._held: dict[bytes, bytes] = {}
         # Fault surface (all off by default).
         self._identity_delay_s = 0.0
         self._identity_after_reconnect_only = False
@@ -602,6 +603,12 @@ class CivSerialFake:
         link. Writes and every other request are answered as usual."""
         self._lost_answers.append(command)
 
+    def hold(self, key: bytes, value: bytes) -> None:
+        """Model one setting as a register (MOR-4464 write checks): the body
+        ``key`` answers ``key + value``; ``key`` plus a value of the same
+        width stores it and ACKs. Held keys answer before native handlers."""
+        self._held[bytes(key)] = bytes(value)
+
     def silence(self, for_seconds: float) -> None:
         """MOR-2861: the link stays open and nothing answers for the window.
 
@@ -777,6 +784,22 @@ class CivSerialFake:
                 return recorded.reply
             if parsed.receiver is not None:
                 return self._nak()
+        head = bytes((cmd,)) + (b"" if parsed.sub is None else bytes((parsed.sub,)))
+        body = head + bytes(parsed.data)
+        for key, value in self._held.items():
+            if parsed.receiver is None and body == key:
+                return build_civ_frame(
+                    CONTROLLER_ADDR,
+                    self._civ_addr,
+                    cmd,
+                    sub=parsed.sub,
+                    data=(key + value)[len(head) :],
+                )
+            if parsed.receiver is None and body[: len(key)] == key:
+                if len(body) - len(key) != len(value):
+                    return self._nak()
+                self._held[key] = body[len(key) :]
+                return self._ack()
         if cmd == _CMD_TRANSCEIVER_ID and parsed.sub == _SUB_TRANSCEIVER_ID:
             if self._identity_after_reconnect_only and connection.ordinal < 2:
                 return None

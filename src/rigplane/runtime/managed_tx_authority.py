@@ -1425,6 +1425,13 @@ class ManagedTxAuthority:
                 deadline = self._next_due_locked()
             await self._wakeup.wait_until(deadline)
             await self._process_due()
+            # MOR-4518: a due attempt settles even when this task is cancelled
+            # mid-attempt (the lane records the cancelled attempt and returns
+            # it). Honour that cancellation here, or an owed release re-arms
+            # its retry forever and ``asyncio.run``'s final cancel never ends.
+            task = asyncio.current_task()
+            if task is not None and task.cancelling():
+                raise asyncio.CancelledError
 
     async def _process_due(self) -> None:
         transition = None
