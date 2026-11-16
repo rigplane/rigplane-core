@@ -3,6 +3,8 @@
  * All functions are side-effect-free and independently testable.
  */
 
+import { isSpanDisabledScope } from './spectrum-logic';
+
 /* ── Constants ── */
 
 /**
@@ -39,9 +41,9 @@ export function isSpanApplicable(mode: number | undefined): boolean {
   return mode === 0 || mode === 2;
 }
 
-/** EDGE selector is shown in FIX (1) and SCROLL-F (3) modes */
+/** EDGE selector is shown in FIX (1) and SCROLL-F (3) modes — the SPAN-disabled modes */
 export function isEdgeApplicable(mode: number | undefined): boolean {
-  return mode === 1 || mode === 3;
+  return isSpanDisabledScope(mode);
 }
 
 /* ── Range clamps ── */

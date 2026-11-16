@@ -37,6 +37,7 @@ from rigplane.web.web_startup import (
     prepare_managed_tx_observation_generation,
 )
 
+from rigplane_testkit.icom.replay import RecordedAnswerTable, RecordedCivAnswer
 from rigplane_testkit.serial import CivSerialFake
 from testkit.test_sim_cw_text_civ_long_text import _rigs_dir
 from testkit.test_sim_cw_text_entry_points import _OUTCOME, _ended_unsent
@@ -49,7 +50,7 @@ TEXT = "A" * 30 + "B" * 30
 ABORTED = "CW text send to IC-7300 was cancelled by a transmit abort"
 
 
-class _HoldSecondFrame:
+class _HoldSecondFrame(RecordedAnswerTable):
     """Answer table: ACK the first 0x17 text frame, then the radio goes quiet.
 
     Fake hardware only. After that ACK the fake answers nothing for a short
@@ -57,15 +58,15 @@ class _HoldSecondFrame:
     an ACK that does not come.
     """
 
-    echo = True
-
     def __init__(self, civ_addr: int) -> None:
+        super().__init__()
+        self.echo = True
         self._civ_addr = civ_addr
         self.fake: CivSerialFake | None = None
         self.payloads: list[bytes] = []
         self.holding = asyncio.Event()
 
-    def answer(self, frame: bytes) -> bytes | None:
+    def lookup(self, frame: bytes) -> RecordedCivAnswer | None:
         parsed = parse_civ_frame(frame)
         if parsed.command != _SEND_CW:
             return None
@@ -74,7 +75,9 @@ class _HoldSecondFrame:
             assert self.fake is not None
             self.fake.silence(_QUIET_S)
             self.holding.set()
-        return build_civ_frame(CONTROLLER_ADDR, self._civ_addr, 0xFB)
+        return RecordedCivAnswer(
+            "reply", build_civ_frame(CONTROLLER_ADDR, self._civ_addr, 0xFB)
+        )
 
 
 @asynccontextmanager
@@ -82,7 +85,7 @@ async def _managed_civ_web(tmp_path: Path) -> AsyncIterator[SimpleNamespace]:
     """The composition order of ``rigplane web`` around an IC-7300."""
     profile = load_rig(_rigs_dir(tmp_path) / "ic7300.toml").to_profile()
     table = _HoldSecondFrame(civ_addr=0x94)
-    fake = CivSerialFake(recorded_answers=table)  # type: ignore[arg-type]
+    fake = CivSerialFake(recorded_answers=table)
     table.fake = fake
     link = SerialCivLink(
         device="civ-serial-fake", open_serial_connection=fake.open_serial_connection

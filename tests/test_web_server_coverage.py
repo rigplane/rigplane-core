@@ -502,14 +502,17 @@ async def test_managed_tx_start_still_registers_reconnect_recovery_pass() -> Non
         # The soft-reconnect recovery pass must stay registered.
         assert radio._reconnect_callback == srv._on_radio_reconnect
 
-        # Simulate the radio's post-soft_reconnect edge: the registered
-        # callback must refetch state and queue the scope re-enable.
+        # Simulate the radio's post-soft_reconnect edge: the radio layer
+        # owns the one initial fetch of the recovery (MOR-4382) and lands
+        # it before the registered callback runs; the callback must queue
+        # the scope re-enable — and must not fetch a second time.
         srv._scope_handlers.add(MagicMock())  # noqa: SLF001
         srv.scope_hub
         await srv._radio_scope_session.set_output(True)
         radio.enable_scope.reset_mock()
+        await radio._fetch_initial_state()
         radio._reconnect_callback()
-        await _await_condition(lambda: radio._fetch_initial_state.await_count == 1)
+        await _await_condition(lambda: radio.enable_scope.await_count == 1)
 
         radio._fetch_initial_state.assert_awaited_once()
         radio.enable_scope.assert_awaited_once()
@@ -3561,11 +3564,16 @@ async def test_on_radio_reconnect_enables_scope_without_waiting_for_broadcast() 
     await srv._radio_scope_session.set_output(True)
     radio.enable_scope.reset_mock()
     srv._on_radio_reconnect()  # noqa: SLF001
-    await _await_condition(lambda: radio._fetch_initial_state.await_count == 1)
+    # The scope re-enable is what must not wait: the Web reacquire queues
+    # it directly. MOR-4382: the initial fetch is the radio layer's, and
+    # with ``radio_ready`` False the radio layer skips it — it is never
+    # the Web's to run, so nothing here may wait on it.
+    await _await_condition(lambda: radio.enable_scope.await_count == 1)
 
     radio.enable_scope.assert_awaited_once()
     assert srv._radio_scope_session.enabled
     assert radio.radio_ready is False  # gate was bypassed, not flipped
+    radio._fetch_initial_state.assert_not_awaited()
 
 
 @pytest.mark.asyncio

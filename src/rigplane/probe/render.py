@@ -12,6 +12,12 @@ from dataclasses import dataclass
 from rigplane.commands import parse_civ_frame
 from rigplane.probe.model import TerminationInfo
 
+#: The display name of this command in every customer-facing hint.
+#: The Pro sidecar calls the probe under its own command name, so every
+#: hint takes a ``prog`` parameter defaulting to this instead of spelling
+#: the name inline. This is the one place the default is spelled.
+DEFAULT_PROBE_PROG = "rigplane probe"
+
 
 def termination_line(termination: TerminationInfo | None) -> str:
     """The plain-words stop line, or ``""`` when the run completed."""
@@ -21,17 +27,32 @@ def termination_line(termination: TerminationInfo | None) -> str:
 
 
 __all__ = [
+    "DEFAULT_PROBE_PROG",
     "AbsentAnswer",
     "absent_answered_line",
+    "bad_choice_message",
     "closing_line",
     "cannot_open_message",
+    "confirm_radio_prompt",
+    "discovery_announcement",
+    "found_line",
+    "human_read_name",
     "no_answers_message",
+    "no_profile_for_radio_message",
+    "no_radio_found_message",
     "not_supported_message",
+    "opening_folder_line",
+    "port_without_profile_message",
     "pre_save_summary",
     "present_missed_line",
     "probe_help",
     "progress_line",
+    "radio_choice_list",
+    "radio_choice_prompt",
+    "several_no_tty_message",
     "silent_stop_message",
+    "single_no_tty_message",
+    "skip_reason_text",
     "skipped_line",
     "start_screen",
     "termination_line",
@@ -45,6 +66,28 @@ _REASON_ORDER = (
     "no_unambiguous_bytes",
     "run_aborted",
 )
+
+#: Plain-words meaning of each skip reason enum in the file contract.
+#: The file keeps the enum; the screen shows the sentence.
+_SKIP_REASON_TEXT = {
+    "unsafe_family": "never asked: asking could change something on the radio",
+    "response_code": "not a question: this entry is an answer the radio gives",
+    "private": "stored memory, only read if you ask for it",
+    "no_unambiguous_bytes": "no safe way to ask it for this radio",
+    "run_aborted": "the run stopped before this question",
+}
+
+
+def skip_reason_text(reason: str) -> str:
+    """The plain-words meaning of one skip reason enum."""
+    return _SKIP_REASON_TEXT[reason]
+
+
+def human_read_name(name: str) -> str:
+    """The human name of one profile read (``get_auto_notch`` -> ``auto notch``)."""
+    short = name[4:] if name.startswith("get_") else name
+    return short.replace("_", " ")
+
 
 #: How many finding names print before the rest folds into "and N more".
 _MAX_FINDING_NAMES = 10
@@ -63,14 +106,21 @@ class AbsentAnswer:
     reply_hex: str | None
 
 
-def probe_help() -> str:
-    """The ``rigplane probe`` help text."""
-    return """rigplane probe — record how your radio answers, into one file you can send to us.
+def probe_help(prog: str = DEFAULT_PROBE_PROG) -> str:
+    """The probe help text, naming the command the user actually ran."""
+    return f"""{prog} - record how your radio answers, into one file you can send to us.
 
 By default this only READS. It asks the radio the questions its profile lists
 (frequency, mode, settings...) and writes the replies to a file. It does not
 change any setting, does not transmit, does not start the tuner and does not
 write to radio memory. Nothing is uploaded: you decide whether to send the file.
+
+With no arguments it scans USB serial ports for your radio and asks which
+one is yours. You can also name the model and port yourself:
+
+  {prog}
+  {prog} FT-991A
+  {prog} FT-991A --port /dev/ttyUSB0
 
   --include-private   also read stored memory contents (may hold callsigns/text)
 """
@@ -79,7 +129,7 @@ write to radio memory. Nothing is uploaded: you decide whether to send the file.
 def start_screen(profile_name: str, port_label: str, n_questions: int) -> str:
     """The screen shown before the read pass starts."""
     return (
-        "RigPlane radio probe \u2014 READ ONLY\n"
+        "RigPlane radio probe - READ ONLY\n"
         f"Radio profile: {profile_name}    Port: {port_label}\n"
         f"This run asks about {n_questions} read questions, one at a time, "
         "usually under a minute.\n"
@@ -120,8 +170,10 @@ def skipped_line(counts: dict[str, int]) -> str:
     total = sum(counts.values())
     if not total:
         return ""
-    parts = ", ".join(
-        f"{counts[reason]} {reason}" for reason in _REASON_ORDER if counts.get(reason)
+    parts = "; ".join(
+        f"{counts[reason]} {skip_reason_text(reason)}"
+        for reason in _REASON_ORDER
+        if counts.get(reason)
     )
     return (
         f"  - {total} reads were not sent ({parts}); "
@@ -166,7 +218,8 @@ def absent_answered_line(entries: Sequence[AbsentAnswer]) -> str:
         return ""
     reads = "read" if len(entries) == 1 else "reads"
     shown = [
-        f"{entry.name} ({_answer_value(entry.request_hex, entry.reply_hex)})"
+        f"{human_read_name(entry.name)}"
+        f" ({_answer_value(entry.request_hex, entry.reply_hex)})"
         for entry in entries
     ]
     return (
@@ -180,9 +233,10 @@ def present_missed_line(names: list[str]) -> str:
     if not names:
         return ""
     reads = "read" if len(names) == 1 else "reads"
+    shown = [human_read_name(name) for name in names]
     return (
         f"  - notable: the radio did not answer {len(names)} {reads} "
-        f"the profile declares present: {_short_names(names)}\n"
+        f"the profile declares present: {_short_names(shown)}\n"
     )
 
 
@@ -233,11 +287,109 @@ def pre_save_summary(
     )
 
 
-def closing_line() -> str:
-    """The line printed after the file is saved."""
+def closing_line(path: str) -> str:
+    """The line printed after the file is saved; it names the full path."""
     return (
-        "Done. Nothing was uploaded. Send the file to the person who asked you for it."
+        f"Saved to {path}. "
+        "Nothing was uploaded. Send the file to the person who asked you for it."
     )
+
+
+def discovery_announcement() -> str:
+    """The lines printed before scanning USB serial ports for the radio."""
+    return (
+        "Looking for your radio on USB serial ports...\n"
+        "This only asks each port a read-only identity question; "
+        "it changes nothing.\n"
+    )
+
+
+def found_line(model: str, port: str) -> str:
+    """The one-radio discovery result."""
+    return f"Found: {model} on {port}"
+
+
+def discovery_failed_message() -> str:
+    """The sentence when the USB scan itself fails (exit 3)."""
+    return "Could not scan the USB ports, so no radio was checked."
+
+
+def confirm_radio_prompt() -> str:
+    """The question after a one-radio discovery result."""
+    return "Is this your radio? [Y/n] "
+
+
+def radio_choice_list(entries: Sequence[tuple[str, str]]) -> str:
+    """The numbered list for a multi-radio discovery result."""
+    lines = [f"Found {len(entries)} radios:"]
+    lines.extend(
+        f"  {index}. {model} on {port}"
+        for index, (model, port) in enumerate(entries, 1)
+    )
+    return "\n".join(lines)
+
+
+def radio_choice_prompt(n: int) -> str:
+    """The question after a multi-radio discovery result."""
+    return f"Type the number of your radio (1-{n}), or press Enter to quit: "
+
+
+def bad_choice_message() -> str:
+    """The line for a number that is not on the discovery list."""
+    return "That is not one of the numbers above."
+
+
+def no_radio_found_message(profile: str | None, prog: str = DEFAULT_PROBE_PROG) -> str:
+    """The checklist when discovery found no usable radio (exit 3)."""
+    header = f"No {profile} found." if profile else "No radio found."
+    hand = profile if profile else "<model>"
+    return (
+        f"{header} Check that:\n"
+        "  - the radio is on\n"
+        "  - the USB cable is firmly connected\n"
+        "  - the USB driver is installed\n"
+        "  - RigPlane Pro is closed, if you use it\n"
+        "  - other programs that use the radio are closed\n"
+        "If you know the port, name the model and port by hand: "
+        f"{prog} {hand} --port <device>"
+    )
+
+
+def port_without_profile_message(prog: str = DEFAULT_PROBE_PROG) -> str:
+    """The sentence for ``--port`` without a profile (exit 2)."""
+    return (
+        "A port alone is not enough: name your radio model too, for example: "
+        f"{prog} FT-991A --port COM5. "
+        "Or drop --port to scan for it automatically."
+    )
+
+
+def single_no_tty_message(model: str, port: str, prog: str = DEFAULT_PROBE_PROG) -> str:
+    """The sentence for one radio with no terminal to confirm in (exit 2)."""
+    return (
+        f"Found {model} on {port}, but there is no terminal to confirm in. "
+        "Rerun with --yes to take this radio, or name it by hand: "
+        f"{prog} {model} --port {port}."
+    )
+
+
+def several_no_tty_message(prog: str = DEFAULT_PROBE_PROG) -> str:
+    """The sentence for several radios with no terminal to choose in (exit 2)."""
+    return (
+        "More than one radio found and there is no terminal to choose in. "
+        "Rerun naming your radio, for example: "
+        f"{prog} <model> --port <device>."
+    )
+
+
+def no_profile_for_radio_message(model: str) -> str:
+    """The sentence for a discovered radio with no shipped profile (exit 2)."""
+    return f"No shipped profile matches {model}, so the probe cannot run for it."
+
+
+def opening_folder_line(directory: str) -> str:
+    """The line printed when the save folder is opened after saving."""
+    return f"Opening the folder: {directory}"
 
 
 def not_supported_message(protocol: str) -> str:

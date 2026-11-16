@@ -28,11 +28,15 @@ describe('waterfall renderer public operations', () => {
     expect(f.named('deleteTexture').length).toBeGreaterThan(0);
     expect(f.named('deleteProgram').length).toBeGreaterThan(0);
   });
-  it('uploads the full producer buffer and carries the sample offset in row uniforms', () => {
+  it('uploads the full producer width (filtered bins after the offset prefix) and carries the sample offset in row uniforms', () => {
     const f = webglFixture(); const r = new WaterfallRenderer(f.canvas,
       { ...defaultWaterfallOptions, sampleOffset: 2, sampleAmplitudeMax: 160 });
     const pixels = new Uint8Array([255, 255, 40, 160]); r.pushRow(pixels);
-    expect(f.named('texSubImage2D').at(-1)!.args.slice(4)).toEqual([4, 1, f.gl.RED, f.gl.UNSIGNED_BYTE, pixels, 0]);
+    const upload = f.named('texSubImage2D').at(-1)!;
+    expect(upload.args.slice(4, 8)).toEqual([4, 1, f.gl.RED, f.gl.UNSIGNED_BYTE]);
+    // The offset prefix is carried verbatim; the bins are [1 2 1]-filtered:
+    // [(40+40+160)/4, (40+160+160)/4] = [70, 130].
+    expect(Array.from((upload.args[8] as Uint8Array).subarray(0, 4))).toEqual([255, 255, 70, 130]);
     expect((f.named('bufferSubData').at(-1)!.args[2] as Float32Array)[7]).toBe(2);
   });
 });

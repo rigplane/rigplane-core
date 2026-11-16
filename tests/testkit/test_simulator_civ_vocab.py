@@ -474,8 +474,20 @@ async def test_1a06_refusal_beats_recorded_ack_table(server, client):
     # A synthetic literal c2r/r2c pair (no recorded hardware data) whose
     # table would ACK the full-form DATA write ...
     rows = [
-        {"dir": "c2r", "transport": "synthetic", "frame": "fefe98e01a060102fd"},
-        {"dir": "r2c", "transport": "synthetic", "frame": "fefee098fbfd"},
+        {
+            "window": "w",
+            "transport": "synthetic",
+            "t": 0.0,
+            "dir": "c2r",
+            "frame": "fefe98e01a060102fd",
+        },
+        {
+            "window": "w",
+            "transport": "synthetic",
+            "t": 0.001,
+            "dir": "r2c",
+            "frame": "fefee098fbfd",
+        },
     ]
     table = RecordedAnswerTable.from_civ_pairs(rows, transport="synthetic")
     request = b"\xfe\xfe\x98\xe0\x1a\x06\x01\x02\xfd"

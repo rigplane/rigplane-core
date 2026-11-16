@@ -81,7 +81,7 @@ async def _prepare(monkeypatch: pytest.MonkeyPatch, peer: _PortPeer) -> CoreRadi
     monkeypatch.setattr(radio._civ_runtime, "start_pump", lambda: None)
     monkeypatch.setattr(radio._civ_runtime, "start_worker", lambda: None)
     monkeypatch.setattr(radio._civ_runtime, "start_data_watchdog", lambda: None)
-    monkeypatch.setattr(radio._control_phase, "_after_reconnect", AsyncMock())
+    monkeypatch.setattr(radio._control_phase, "_after_reconnect_parts", AsyncMock())
     return radio
 
 
@@ -98,7 +98,7 @@ async def test_transient_collision_retries_the_advertised_port(
         assert radio._civ_transport.local_port == peer.advertised_port
         assert radio._conn_state is RadioConnectionState.CONNECTED
         assert radio._session_lifecycle.state is LifecycleState.CONNECTED
-        radio._control_phase._after_reconnect.assert_awaited_once()
+        radio._control_phase._after_reconnect_parts.assert_awaited_once()
     finally:
         await radio._control_phase.release()
 
@@ -116,7 +116,7 @@ async def test_persistent_collision_exhausts_and_releases_without_port_change(
         assert peer.events == ["token-remove", "control-close"]
         assert radio._session_lifecycle.state is LifecycleState.DISCONNECTED
         assert radio._civ_transport is None
-        radio._control_phase._after_reconnect.assert_not_awaited()
+        radio._control_phase._after_reconnect_parts.assert_not_awaited()
     finally:
         if radio._ctrl_transport._udp_transport is not None:
             await radio._control_phase.release()
@@ -137,4 +137,4 @@ async def test_registered_watchdog_port_collision_completes_release(
     assert task.done() and not task.cancelled()
     assert radio._civ_runtime._reconnect_task is None
     assert radio._session_lifecycle._recover_task is None
-    radio._control_phase._after_reconnect.assert_not_awaited()
+    radio._control_phase._after_reconnect_parts.assert_not_awaited()
