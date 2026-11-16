@@ -17,6 +17,7 @@ and ``POST /api/v1/commands`` on top.
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import Any
 
 import aiohttp
@@ -80,6 +81,7 @@ class _DelayedAnswers:
         self._holding = False
         self._outbox: list[bytes] = []
         self._release_handle: Any = None
+        self.last_dispatch = 0.0
         self._dispatch = sim._dispatch_civ
         self._handle = sim._handle_civ_data
 
@@ -92,6 +94,7 @@ class _DelayedAnswers:
 
         def dispatch(cmd: int, payload: bytes, from_addr: int):
             reply = self._dispatch(cmd, payload, from_addr)
+            self.last_dispatch = time.monotonic()
             if reply is None or not self._armed:
                 return reply
             if (
@@ -195,6 +198,17 @@ async def test_delayed_read_refusal_does_not_fail_a_successful_http_tuning() -> 
             await _wait_until(
                 _state_has_frequency(session, base), "the poller to serve a frequency"
             )
+            # A radio that answers in order cannot answer the set before it
+            # has answered everything it was asked earlier, so the refusal
+            # can only overlap the set's wait when nothing else is in
+            # flight. The poller stays out of the way for the setup (the
+            # public external-CAT-session pause), then the queued set runs
+            # alone behind the held read.
+            radio.begin_external_cat_session()
+            await _wait_until(
+                lambda: time.monotonic() - delayed.last_dispatch > 0.4,
+                "the poller to go quiet",
+            )
             # From here the radio refuses the tuner-status read, and the
             # two scripted answers land past the drain cutoff.
             sim.refused_civ_commands.add(_TUNER_READ)
@@ -203,10 +217,19 @@ async def test_delayed_read_refusal_does_not_fail_a_successful_http_tuning() -> 
                 profile.civ_addr, CONTROLLER_ADDR, _TUNER_READ[0], sub=_TUNER_READ[1]
             )
             assert await radio._execute_civ_raw(tuner_read, wait_response=False) is None
-            async with session.post(
-                base + "/api/v1/commands",
-                json={"id": "tune-1", "name": "set_freq", "params": {"freq": _FREQ}},
-            ) as response:
+            post = asyncio.create_task(
+                session.post(
+                    base + "/api/v1/commands",
+                    json={
+                        "id": "tune-1",
+                        "name": "set_freq",
+                        "params": {"freq": _FREQ},
+                    },
+                )
+            )
+            await asyncio.sleep(0.1)
+            radio.end_external_cat_session()
+            async with await post as response:
                 assert response.status == 200, await response.text()
                 body = await response.json()
             assert body["ok"] is True, body
