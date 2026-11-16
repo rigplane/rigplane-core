@@ -31,9 +31,12 @@ backend runs — the ``ID;`` identity gate, then the ``IF;`` state seed
 (``backends/yaesu_cat/radio.py: YaesuCatRadio.connect``) — is answered
 from the profile's ``[identity].expected_ids``.
 
-State: frequency (``FA``), mode (``MD0``), PTT (``TX``), power (``PS``),
-auto-information mode (``AI``). Reads answer; writes apply silently, the
-way the transport's post-write drain expects a Yaesu set to behave.
+State: frequency (``FA``), mode (``MD0``), PTT (``TX``),
+auto-information mode (``AI``) — plus power on/off (``PS``) and the
+``IF;`` snapshot answer only when the profile declares them (a profile
+without them leaves those lines to the recording or ``?;``). Reads
+answer; writes apply silently, the way the transport's post-write drain
+expects a Yaesu set to behave.
 Unknown commands and out-of-domain SET values answer ``?;`` — the
 rejection ``YaesuCatTransport.query``/``write`` raise on.
 
@@ -42,7 +45,11 @@ With ``recorded_answers`` (a ``RecordedCatAnswerTable`` from
 fake has no handler for is answered the way the real radio answered it —
 the recorded data line, its ``?;`` refusal, or its silence; a request the
 recording never saw still answers ``?;``. The fake's own handlers (state)
-come first, so the recording never overrides a value a test has set.
+come first, so the recording never overrides a value a test has set. With
+``capture_replay=True`` (default False) the order flips: a request the
+recording knows is answered from it before any handler, so a replay of a
+capture reproduces the capture's lines; a request it never saw falls to the
+handlers, then ``?;``.
 
 Faults, each one method: ``garble_next_reply`` (the next matching reply
 carries a byte outside 0x20-0x7E, the ``CatGarbledFrameError`` case),
@@ -90,10 +97,17 @@ _REQUIRED_COMMANDS = (
     "set_mode",
     "get_ptt",
     "set_ptt",
-    "get_powerstat",
-    "set_powerstat",
     "get_auto_info",
     "set_auto_info",
+)
+
+#: Optional state modeling: power on/off and the IF snapshot answer, used
+#: only when the profile declares these commands. A profile without them
+#: (the FT-991A names its RF power level PC and has no IF read) skips
+#: that modeling: those lines fall through to the recording, else ``?;``.
+_OPTIONAL_COMMANDS = (
+    "get_powerstat",
+    "set_powerstat",
     "get_if_status",
 )
 
@@ -123,6 +137,7 @@ class FakeCatRadio:
         frequency_hz: int = 14_074_000,
         mode_code: str = "2",
         recorded_answers: RecordedCatAnswerTable | None = None,
+        capture_replay: bool = False,
     ) -> None:
         self._config: RigConfig = load_rig(_RIGS_DIR / f"{profile}.toml")
         if not self._config.expected_identity_ids:
@@ -150,12 +165,19 @@ class FakeCatRadio:
             )
 
         self._recorded = recorded_answers
+        self._capture_replay = capture_replay
         self._identity_id = self._config.expected_identity_ids[0]
         self._frequency_hz = frequency_hz
         self._mode_code = mode_code
         self._ptt = False
         self._power_on = True
         self._auto_info = False
+
+        self._optional: frozenset[str] = frozenset(
+            name
+            for name in _OPTIONAL_COMMANDS
+            if isinstance(self._config.commands.get(name), CatCommandSpec)
+        )
 
         self._write_parsers: dict[str, CatCommandParser] = {}
         for name in _REQUIRED_COMMANDS:
@@ -165,6 +187,12 @@ class FakeCatRadio:
             if write is None:
                 raise ValueError(f"profile command {name!r} has no write template")
             self._write_parsers[name] = CatCommandParser(write)
+        for name in self._optional:
+            if not name.startswith("set_"):
+                continue
+            write = self._spec(name).write
+            if write is not None:
+                self._write_parsers[name] = CatCommandParser(write)
 
         # Fault surface (all off by default).
         self._rejected_verbs: set[str] = set()
@@ -172,6 +200,7 @@ class FakeCatRadio:
         self._silent_until = 0.0
         self._echo = False
         self._pending_burst_verbs: list[str] = []
+        self._held: dict[str, tuple[str, dict[str, str]]] = {}
 
         self._server: asyncio.Server | None = None
         self._clients: set[asyncio.StreamWriter] = set()
@@ -280,6 +309,12 @@ class FakeCatRadio:
         """
         self._broadcast(self._info_line(verb))
 
+    def hold(self, key: str, value: str, stored: dict[str, str] | None = None) -> None:
+        """Model one setting as a register (MOR-4464 write checks): ``key;``
+        answers ``key + value;``; a write ``key + new`` of the same width
+        stores ``stored.get(new, new)`` silently (FT writes 2/3, reads 0/1)."""
+        self._held[key] = (value, dict(stored or {}))
+
     def auto_info_burst_on_next_request(self, *verbs: str) -> None:
         """Push the info lines for *verbs* on the next request the fake processes.
 
@@ -370,13 +405,31 @@ class FakeCatRadio:
 
     def _match_write(self, name: str, body: str) -> dict[str, Any] | None:
         """Decode *body* against the profile's write template, if it fits."""
+        parser = self._write_parsers.get(name)
+        if parser is None:
+            return None
         try:
-            return self._write_parsers[name].parse(body + ";")
+            return parser.parse(body + ";")
         except ValueError:
             return None
 
     def _reply_for(self, body: str) -> str | None:
-        """The reply for *body* (None = silence), applying any SET it carries."""
+        """The reply for *body* (None = silence), applying any SET it carries.
+
+        With ``capture_replay`` a request the mounted recording knows is
+        answered from it before any native handler.
+        """
+        if self._capture_replay and self._recorded is not None:
+            recorded = self._recorded.lookup(body + ";")
+            if recorded is not None:
+                return recorded.reply  # data line, refusal, or recorded silence
+        for key, (value, stored) in self._held.items():
+            if body == key:
+                return f"{key}{value};"
+            new = body[len(key) :]
+            if body.startswith(key) and len(new) == len(value):
+                self._held[key] = (stored.get(new, new), stored)
+                return None
         if body == self._read_cmd("get_id"):
             return format_command(
                 self._parse_tpl("get_id"), model=int(self._identity_id)
@@ -406,7 +459,9 @@ class FakeCatRadio:
             self._ptt = str(fields["state"]) == "1"
             self._push_auto_info("TX")
             return None
-        if body == self._read_cmd("get_powerstat"):
+        if "get_powerstat" in self._optional and body == self._read_cmd(
+            "get_powerstat"
+        ):
             return format_command(
                 self._parse_tpl("get_powerstat"), state="1" if self._power_on else "0"
             )
@@ -425,7 +480,9 @@ class FakeCatRadio:
                 return _REJECT
             self._auto_info = str(fields["state"]) == "1"
             return None
-        if body == self._read_cmd("get_if_status"):
+        if "get_if_status" in self._optional and body == self._read_cmd(
+            "get_if_status"
+        ):
             return format_command(
                 self._parse_tpl("get_if_status"),
                 chan=_IF_CHAN,

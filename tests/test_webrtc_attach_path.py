@@ -45,6 +45,7 @@ from rigplane.runtime.managed_tx_config import ManagedTxTotConfigStore
 from rigplane.runtime.managed_tx_state import ManagedTxIntentKind
 from rigplane.testing.timing import await_until
 from rigplane.web import server as server_module
+from rigplane.web.api_channel import api_channel_golden_documents_from_json
 from rigplane.web.protocol import (
     AUDIO_CODEC_PCM16,
     AUDIO_HEADER_SIZE,
@@ -77,6 +78,11 @@ _SILENT_LOSS_BUDGET_S = (
 )
 
 _GATE_TIMEOUT_S = 20.0
+
+_GOLDEN_JSON = (
+    Path(__file__).resolve().parents[1]
+    / "frontend/src/lib/transport/api-channel-golden.json"
+)
 
 
 # ---------------------------------------------------------------------------
@@ -1127,20 +1133,48 @@ class _LossyAckPeer:
         self._channels: dict[str, Any] = {}
         self.received: dict[str, list[Any]] = {}
         self._dropped: set[str] = set()
+        # Every channel ever opened, in order, label included: a label can
+        # appear more than once (re-created channels, same-label copies).
+        self.every_channel: list[tuple[str, Any]] = []
 
-    async def connect(self, web: WebServer, labels: tuple[str, ...]) -> None:
-        """Open one ordered data channel per label, then negotiate."""
+    def open_channel(self, label: str, *, lossy: bool = False) -> Any:
+        """Create (or re-create) the channel for ``label`` on this peer.
+
+        ``lossy`` is the production scope/audio configuration (unordered,
+        ``maxRetransmits=0``). A re-created label starts with an empty
+        inbox, so nothing from the closed channel is mistaken for it.
+        """
+        kwargs: dict[str, Any] = (
+            {"ordered": False, "maxRetransmits": 0} if lossy else {"ordered": True}
+        )
+        channel = self._pc.createDataChannel(label, **kwargs)
+        self._channels[label] = channel
+        self.received[label] = []
+        self.every_channel.append((label, channel))
+
+        @channel.on("message")  # type: ignore[misc, no-untyped-call]
+        def _on_message(message: Any, _label: str = label) -> None:
+            self.received[_label].append(message)
+
+        return channel
+
+    def close_channel(self, label: str) -> None:
+        """Close only this label's channel (the peer connection stays)."""
+        self._channels[label].close()
+
+    async def connect(
+        self,
+        web: WebServer,
+        labels: tuple[str, ...],
+        *,
+        lossy: tuple[str, ...] = (),
+    ) -> None:
+        """Open one data channel per label (``lossy`` ones unordered)."""
         from aiortc import RTCPeerConnection, RTCSessionDescription
 
         self._pc = RTCPeerConnection()
         for label in labels:
-            channel = self._pc.createDataChannel(label, ordered=True)
-            self._channels[label] = channel
-            self.received[label] = []
-
-            @channel.on("message")  # type: ignore[misc, no-untyped-call]
-            def _on_message(message: Any, _label: str = label) -> None:
-                self.received[_label].append(message)
+            self.open_channel(label, lossy=label in lossy)
 
         offer = await self._pc.createOffer()
         await self._pc.setLocalDescription(offer)
@@ -1298,4 +1332,353 @@ async def test_websocket_clients_receive_no_attach_ack(tmp_path: Path) -> None:
             with contextlib.suppress(Exception):
                 await _close_ws(writer)
     finally:
+        await _tear_down_stack(stack)
+
+
+def _attach_text(label: str, key: str) -> str:
+    """The golden ``attach_<label>`` document with a live controller key."""
+    docs = api_channel_golden_documents_from_json(
+        json.loads(_GOLDEN_JSON.read_text(encoding="utf-8"))
+    ).documents
+    return str(docs[f"attach_{label}"].text).replace("<SESSION-KEY>", key)
+
+
+def _golden_ack(label: str) -> dict[str, Any]:
+    docs = api_channel_golden_documents_from_json(
+        json.loads(_GOLDEN_JSON.read_text(encoding="utf-8"))
+    ).documents
+    return dict(json.loads(str(docs[f"attach_ack_{label}"].text)))
+
+
+def _registered(stack: _Stack, label: str) -> int:
+    """Channels of this label the server still tracks (its connection
+    registry: unregistered in ``serve_client_channel``'s finally, i.e.
+    only after the handler has ended and its own cleanup ran)."""
+    path = server_module._ATTACH_PATH_FOR_KIND[label]  # noqa: SLF001
+    registry = stack.web._conn_manager._connections  # noqa: SLF001
+    return sum(len(c) for (_, p), c in registry.items() if p == path)
+
+
+async def _frame(peer: _LossyAckPeer, label: str, want: str) -> dict[str, Any]:
+    """Next ``want``-typed text frame on ``label`` (others skipped)."""
+
+    def _next() -> dict[str, Any] | None:
+        while (frame := peer.take(label)) is not None:
+            if frame.get("type") == want:
+                return frame
+        return None
+
+    return await await_until(_next, timeout=10.0, description=f"{label} {want}")
+
+
+async def _control_alive(peer: _LossyAckPeer) -> None:
+    peer.send_text("control", json.dumps({"type": "controller_heartbeat"}))
+    await _frame(peer, "control", "controller_heartbeat")
+
+
+async def _attach_and_serve_label(peer: _LossyAckPeer, label: str, key: str) -> None:
+    """Attach ``label`` with the golden frame; assert its ack and service."""
+    peer.send_text(label, _attach_text(label, key))
+    ack = await await_until(
+        lambda: peer.take(label), timeout=10.0, description=f"{label} ack"
+    )
+    assert ack == _golden_ack(label) == {"type": "attached", "v": 1, "channel": label}
+    if label == "scope":
+        peer.send_text("scope", json.dumps({"type": "ping"}))
+        assert await _frame(peer, "scope", "pong") == {"type": "pong"}
+    else:
+        peer.send_text("audio", json.dumps({"type": "audio_start", "direction": "tx"}))
+        await _frame(peer, "audio", "audio_tx_format")
+
+
+async def _channel_closed(channel: Any, timeout: float = 10.0) -> None:
+    """Wait until ONE data channel reads ``closed`` client-side."""
+    await await_until(
+        lambda: channel.readyState == "closed" or None,
+        timeout=timeout,
+        description="channel closed",
+    )
+
+
+async def _release_session(port: int, key: str) -> int:
+    """End one controller session server-side (``DELETE /api/v1/controller``).
+
+    The endpoint calls ``ControllerAuthority.release`` → ``_end_session``,
+    the same session-loss path the expiry watchdog and the WebRTC
+    ``_fence_peer`` ICE fence use.
+    """
+    reader, writer = await asyncio.open_connection("127.0.0.1", port)
+    writer.write(
+        f"DELETE /api/v1/controller HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n"
+        f"X-RigPlane-Controller: {key}\r\n"
+        "Content-Length: 0\r\nConnection: close\r\n\r\n".encode()
+    )
+    await writer.drain()
+    head = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), timeout=10.0)
+    await asyncio.wait_for(reader.read(), timeout=10.0)
+    writer.close()
+    return int(head.split(b" ", 2)[1])
+
+
+@_webrtc
+@pytest.mark.parametrize("wait_for_cleanup", [True, False])
+@pytest.mark.parametrize("label", ["scope", "audio"])
+async def test_closed_channel_label_can_be_recreated_on_the_same_peer(
+    tmp_path: Path, label: str, wait_for_cleanup: bool
+) -> None:
+    """Close the scope/audio channel from the client, re-create the SAME
+    label on the SAME peer connection (production lossy config), attach
+    it with the same key: a fresh ack and normal service, while control
+    stays healthy. With ``wait_for_cleanup`` the first channel's server
+    handler must have ended and unregistered (the connection registry
+    drops it) before the second is created; without it the second is
+    created straight after the close."""
+    stack = await _stand_up_stack(tmp_path, audio=True)
+    peer = _LossyAckPeer()
+    try:
+        await peer.connect(stack.web, ("control", label), lossy=(label,))
+        key = await _acquire_session(stack.web.port)
+        peer.send_text("control", _attach_text("control", key))
+        assert (await _frame(peer, "control", "hello"))["type"] == "hello"
+        await _attach_and_serve_label(peer, label, key)
+        assert _registered(stack, label) == 1
+        if label == "scope":
+            assert len(stack.web._scope_handlers) == 1  # noqa: SLF001
+
+        peer.close_channel(label)
+        if wait_for_cleanup:
+            await await_until(
+                lambda: _registered(stack, label) == 0 or None,
+                timeout=10.0,
+                description=f"server {label} handler ended and unregistered",
+            )
+            if label == "scope":
+                assert not stack.web._scope_handlers  # noqa: SLF001
+            await _control_alive(peer)
+
+        channel = peer.open_channel(label, lossy=True)
+        await await_until(
+            lambda: channel.readyState == "open" or None,
+            timeout=15.0,
+            description=f"re-created {label} channel open",
+        )
+        await _attach_and_serve_label(peer, label, key)
+        await _control_alive(peer)
+        await await_until(
+            lambda: _registered(stack, label) == 1 or None,
+            timeout=10.0,
+            description=f"only the second {label} channel registered",
+        )
+        assert peer._pc.connectionState == "connected"  # noqa: SLF001
+    finally:
+        await peer.close()
+        await _tear_down_stack(stack)
+
+
+# ---------------------------------------------------------------------------
+# MOR-4498: closing ONE data channel closes only that channel — never the
+# peer connection, whose single owner is the WebRtcSessionManager.
+# ---------------------------------------------------------------------------
+
+
+@_webrtc
+async def test_attach_timeout_closes_only_that_channel(tmp_path: Path) -> None:
+    """A scope channel that never attaches is closed by the server's 5 s
+    attach timeout — and ONLY that channel: control keeps answering on the
+    same peer, which stays ``connected``."""
+    stack = await _stand_up_stack(tmp_path)
+    peer = _LossyAckPeer()
+    try:
+        await peer.connect(stack.web, ("control", "scope"), lossy=("scope",))
+        key = await _acquire_session(stack.web.port)
+        peer.send_text("control", _attach_text("control", key))
+        assert (await _frame(peer, "control", "hello"))["type"] == "hello"
+        # scope stays silent: no attach frame is ever sent on it.
+        opened_at = asyncio.get_running_loop().time()
+        await _channel_closed(peer._channels["scope"], timeout=5.0 + 2.0)  # noqa: SLF001
+        assert asyncio.get_running_loop().time() - opened_at <= 5.0 + 2.0
+        await _control_alive(peer)
+        assert peer._pc.connectionState == "connected"  # noqa: SLF001
+    finally:
+        await peer.close()
+        await _tear_down_stack(stack)
+
+
+@_webrtc
+async def test_refused_attach_closes_only_that_channel(tmp_path: Path) -> None:
+    """A refused attach (a well-formed but never-granted key on audio)
+    closes ONLY the refused channel: control keeps answering and the peer
+    stays ``connected``."""
+    stack = await _stand_up_stack(tmp_path)
+    peer = _LossyAckPeer()
+    try:
+        await peer.connect(stack.web, ("control", "audio"), lossy=("audio",))
+        key = await _acquire_session(stack.web.port)
+        peer.send_text("control", _attach_text("control", key))
+        assert (await _frame(peer, "control", "hello"))["type"] == "hello"
+        peer.send_text("audio", _attach_text("audio", "e" * 64))
+        await _channel_closed(peer._channels["audio"])  # noqa: SLF001
+        await _control_alive(peer)
+        assert peer._pc.connectionState == "connected"  # noqa: SLF001
+    finally:
+        await peer.close()
+        await _tear_down_stack(stack)
+
+
+@_webrtc
+async def test_audio_channel_close_while_tx_running_matches_ws_socket_close(
+    tmp_path: Path,
+) -> None:
+    """Closing the audio channel while TX audio runs ends exactly as the
+    WebSocket audio socket closing: the audio handler stops its own TX
+    audio, while the holder's PTT — keyed by control — stays keyed. That
+    is MOR-3562's rule, pinned for the WS lane by
+    ``test_path7_closing_an_auxiliary_control_channel_keeps_the_holders_tx``
+    and the reconnect-storm audio-channel kills in
+    tests/integration/test_multi_session_tx_lanes.py. Control stays up and
+    unkey still releases."""
+    stack = await _stand_up_stack(tmp_path, audio=True)
+    peer = _DcAvPeer()
+    try:
+        await peer.connect(stack.web)
+        key = await _acquire_session(stack.web.port)
+        await peer.attach_control(key)
+        await peer.attach_audio(key)
+        keyed = await peer.command("key-1", "ptt_on")
+        assert keyed.get("ok") is True, keyed
+        await await_until(
+            lambda: stack.sim.ptt_on is True, timeout=10.0, description="sim keyed"
+        )
+        await _stream_audio(peer, 480)
+        await _wait_air(stack)  # TX audio is really running
+        assert peer._audio is not None  # noqa: SLF001
+        peer._audio.close()  # noqa: SLF001 — ONLY the audio channel
+        # The WS socket-close release: the audio handler stops its own TX
+        # audio and unregisters. Once it has, the holder's PTT — keyed by
+        # control, not by the audio channel — must still be keyed (MOR-3562).
+        await await_until(
+            lambda: _registered(stack, "audio") == 0 or None,
+            timeout=10.0,
+            description="server audio handler ended and unregistered",
+        )
+        assert stack.sim.ptt_on is True
+        await peer.heartbeat()  # control still answers
+        unkeyed = await peer.command("unkey-1", "ptt_off")
+        assert unkeyed.get("ok") is True, unkeyed
+        await await_until(
+            lambda: stack.sim.ptt_on is False, timeout=5.0, description="sim unkeyed"
+        )
+        state = (await stack.composition.authority.snapshot()).state
+        assert state.intent.kind is ManagedTxIntentKind.RX
+    finally:
+        await peer.close()
+        await _tear_down_stack(stack)
+
+
+@_webrtc
+async def test_server_ended_session_closes_only_its_channels(tmp_path: Path) -> None:
+    """The server ending a controller session closes every channel that
+    session attached (control, scope, audio) and nothing else: the keyless
+    ``api`` channel holds no session, so it stays open on the same peer
+    (PR-B may build on it; nothing is built on it now), and the peer itself
+    stays ``connected``."""
+    stack = await _stand_up_stack(tmp_path, audio=True)
+    peer = _LossyAckPeer()
+    try:
+        await peer.connect(
+            stack.web,
+            ("control", "scope", "audio", "api"),
+            lossy=("scope", "audio"),
+        )
+        key = await _acquire_session(stack.web.port)
+        peer.send_text("control", _attach_text("control", key))
+        assert (await _frame(peer, "control", "hello"))["type"] == "hello"
+        for label in ("scope", "audio"):
+            await _attach_and_serve_label(peer, label, key)
+        peer.send_text("api", _attach_text("api", key))  # keyless by design
+        await _control_alive(peer)
+        assert await _release_session(stack.web.port, key) == 200
+        for label in ("control", "scope", "audio"):
+            await _channel_closed(peer._channels[label])  # noqa: SLF001
+            await await_until(
+                lambda bound=label: _registered(stack, bound) == 0 or None,
+                timeout=10.0,
+                description=f"server {label} handler ended and unregistered",
+            )
+        # Every server-side step of the session end has run: the keyless
+        # api channel holds no session, so nothing ended it — it stays
+        # attached (PR-B may build on it; nothing is built on it now), and
+        # the peer connection itself stays.
+        assert peer._channels["api"].readyState == "open"  # noqa: SLF001
+        assert _registered(stack, "api") == 1
+        assert peer._pc.connectionState == "connected"  # noqa: SLF001
+    finally:
+        await peer.close()
+        await _tear_down_stack(stack)
+
+
+@_webrtc
+async def test_close_all_closes_every_peer(tmp_path: Path) -> None:
+    """``WebRtcSessionManager.close_all`` tears down every live peer: both
+    peers' channels close and the manager holds no session afterwards."""
+    stack = await _stand_up_stack(tmp_path)
+    first = _DcControlClient()
+    second = _DcControlClient()
+    try:
+        await first.connect(stack.web)
+        await first.attach(await _acquire_session(stack.web.port))
+        await second.connect(stack.web)
+        await second.attach(await _acquire_session(stack.web.port))
+        manager = stack.web._webrtc_sessions  # noqa: SLF001
+        assert manager is not None
+        assert len(manager.active_session_ids) == 2
+        await manager.close_all()
+        assert manager.active_session_ids == []
+        await first.wait_closed()
+        await second.wait_closed()
+    finally:
+        await first.close()
+        await second.close()
+        await _tear_down_stack(stack)
+
+
+@_webrtc
+async def test_server_initiated_channel_close_reaches_client_as_that_channels_close(
+    tmp_path: Path,
+) -> None:
+    """A server-initiated close of ONE channel (the per-session connection
+    limit evicting the oldest scope channel, ``1001 replaced by newer
+    connection``) reaches the client as THAT channel's close event: the
+    evicted channel closes, the other nine and control stay open, and the
+    peer stays ``connected``."""
+    stack = await _stand_up_stack(tmp_path)
+    peer = _LossyAckPeer()
+    try:
+        # MAX_PER_IP_PER_CHANNEL is 9: the 10th scope channel's attach
+        # evicts the first — all on one peer, one negotiation.
+        await peer.connect(stack.web, ("control",) + ("scope",) * 10, lossy=("scope",))
+        key = await _acquire_session(stack.web.port)
+        peer.send_text("control", _attach_text("control", key))
+        assert (await _frame(peer, "control", "hello"))["type"] == "hello"
+        scope_channels = [
+            channel for label, channel in peer.every_channel if label == "scope"
+        ]
+        assert len(scope_channels) == 10
+        # Sequential: each ack lands before the next attach, so the server
+        # registers (and evicts) in this order.
+        for channel in scope_channels:
+            channel.send(_attach_text("scope", key))
+            assert await await_until(
+                lambda: peer.take("scope"), timeout=10.0, description="scope ack"
+            ) == {"type": "attached", "v": 1, "channel": "scope"}
+        await _channel_closed(scope_channels[0])
+        for channel in scope_channels[1:]:
+            assert channel.readyState == "open"
+        await _control_alive(peer)
+        assert peer._pc.connectionState == "connected"  # noqa: SLF001
+        # The surviving scope channel still serves.
+        scope_channels[-1].send(json.dumps({"type": "ping"}))
+        assert await _frame(peer, "scope", "pong") == {"type": "pong"}
+    finally:
+        await peer.close()
         await _tear_down_stack(stack)

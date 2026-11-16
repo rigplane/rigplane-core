@@ -3,6 +3,7 @@
   import {
     WaterfallRenderer, WaterfallRenderError,
     defaultWaterfallOptions,
+    type WaterfallFrameIdentity,
     type WaterfallOptions,
   } from '../../lib/renderers/waterfall-renderer';
   import { t } from '$lib/i18n';
@@ -18,7 +19,7 @@
     options?: WaterfallOptions;
     onFreqClick?: (hz: number) => void;
     trace?: ScopeRenderTrace | null;
-    onRegisterPush?: (fn: (data: Uint8Array, options?: WaterfallOptions, token?: TraceToken | null) => void) => void;
+    onRegisterPush?: (fn: (data: Uint8Array, options?: WaterfallOptions, token?: TraceToken | null, identity?: WaterfallFrameIdentity) => void) => void;
   }
 
   let { options = defaultWaterfallOptions, onFreqClick, onRegisterPush, trace = null }: Props = $props();
@@ -48,7 +49,7 @@
   const scheduler = new ScopeRenderScheduler(paint, { active: () => surface.visible && surface.sized && renderer !== null });
 
   const frame = { pixels: null as Uint8Array | null, options: undefined as WaterfallOptions | undefined,
-    token: null as TraceToken | null };
+    token: null as TraceToken | null, identity: null as WaterfallFrameIdentity | null };
   const paintOptions = { ...defaultWaterfallOptions };
   let pending = false;
 
@@ -70,17 +71,18 @@
       } else renderer.updateOptions(options);
       if (measuring) trace?.record('waterfall_options', frame.token, performance.now() - optionsStart);
       const pushStart = measuring ? performance.now() : 0;
-      if (pending && frame.pixels) renderer.pushRow(frame.pixels);
+      if (pending && frame.pixels) renderer.pushRow(frame.pixels, frame.identity ?? undefined);
       else renderer.draw();
       pending = false;
       if (measuring) trace?.record('waterfall_push', frame.token, performance.now() - pushStart);
     } catch (error) { failed(error); }
   }
 
-  function directPush(pixels: Uint8Array, frameOptions?: WaterfallOptions, token?: TraceToken | null): void {
+  function directPush(pixels: Uint8Array, frameOptions?: WaterfallOptions, token?: TraceToken | null, identity?: WaterfallFrameIdentity): void {
     if (!rendererReady) return;
     if (trace?.status === 'recording' && scheduler.pending && pending) trace.record('coalesced', frame.token, 0, true);
     frame.pixels = pixels; frame.options = frameOptions ?? options; frame.token = token ?? null;
+    frame.identity = identity ?? null;
     pending = true;
     scheduler.wake('frame');
   }

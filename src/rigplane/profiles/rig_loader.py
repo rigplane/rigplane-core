@@ -12,7 +12,10 @@ from fractions import Fraction
 from importlib import resources
 from importlib.resources.abc import Traversable
 from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
+
+if TYPE_CHECKING:
+    from rigplane.profiles.probe_checks import ProbeCheck
 
 from rigplane.core.capabilities import (
     CAP_FILTER_WIDTH_RADIO_DEFAULT,
@@ -44,6 +47,7 @@ from rigplane.profiles.control_domain import (
     _public_decimal,
     validate_control_raw_value,
 )
+from rigplane.profiles.probe_checks import RadioFacts, parse_probe_checks
 
 __all__ = [
     "RigConfig",
@@ -63,6 +67,7 @@ from rigplane.commands.command_spec import (
     CommandSpec,
 )
 from rigplane.profiles import (
+    selector_one_is_sub,
     BandInfo,
     CwTextSpec,
     ControlDomainSpec,
@@ -80,6 +85,7 @@ from rigplane.profiles import (
     PowerWriteQuantum,
     RadioProfile,
     RuleSpec,
+    SpanPresetSemantics,
     TxPolicy,
 )
 
@@ -887,6 +893,11 @@ class RigConfig:
     scope_ref_max_db: float | None = None
     scope_ref_step_db: float | None = None
     scope_span_presets_hz: tuple[int, ...] = ()
+    # MOR-4385: meaning of one preset entry on the radio's wire — see
+    # RadioProfile.scope_span_preset_semantics. Required (in the TOML)
+    # whenever span_presets_hz is declared; "half_width" for every
+    # shipped Icom profile.
+    scope_span_preset_semantics: SpanPresetSemantics = "half_width"
     scope_fixed_edge_ranges: tuple[ScopeFixedEdgeRange, ...] = field(
         default=(), kw_only=True
     )
@@ -936,6 +947,10 @@ class RigConfig:
     # non-Xiegu profile. Keyword-only so no positional argument shifts.
     xiegu_model_id: int | None = field(default=None, kw_only=True)
     iq_lan: IqLanSpec | None = field(default=None, kw_only=True)
+    # Typed ``[[probe.checks]]`` write checks (MOR-4464 B1), from the
+    # optional top-level ``[probe]`` section. Empty when not declared.
+    # Keyword-only so no positional argument shifts.
+    probe_checks: tuple[ProbeCheck, ...] = field(default=(), kw_only=True)
 
     def to_profile(self) -> RadioProfile:
         """Build a ``RadioProfile`` from this config."""
@@ -1153,6 +1168,7 @@ class RigConfig:
             scope_ref_max_db=self.scope_ref_max_db,
             scope_ref_step_db=self.scope_ref_step_db,
             scope_span_presets_hz=self.scope_span_presets_hz,
+            scope_span_preset_semantics=self.scope_span_preset_semantics,
             scope_fixed_edge_ranges=self.scope_fixed_edge_ranges,
             scope_fixed_edge_step_hz=self.scope_fixed_edge_step_hz,
             codec_preference=self.codec_preference,
@@ -3465,6 +3481,7 @@ def load_rig(path: Path) -> RigConfig:
     scope_ref_max_db: float | None = None
     scope_ref_step_db: float | None = None
     scope_span_presets_hz: tuple[int, ...] = ()
+    scope_span_preset_semantics: SpanPresetSemantics = "half_width"
     scope_fixed_edge_ranges: tuple[ScopeFixedEdgeRange, ...] = ()
     scope_fixed_edge_step_hz: int | None = None
     if scope_section:
@@ -3534,6 +3551,21 @@ def load_rig(path: Path) -> RigConfig:
                 raise RigLoadError(
                     f"{filename}: [scope].span_presets_hz must be strictly ascending"
                 )
+            # MOR-4385: presets alone are ambiguous — a number may be a
+            # +/- half-width (Icom CI-V 0x27 0x15) or a full display
+            # width — so the profile must state which one it means.
+            semantics = scope_section.get("span_preset_semantics")
+            if semantics is None:
+                raise RigLoadError(
+                    f"{filename}: [scope].span_presets_hz requires"
+                    " span_preset_semantics (half_width or full_width)"
+                )
+            if semantics not in ("half_width", "full_width"):
+                raise RigLoadError(
+                    f"{filename}: [scope].span_preset_semantics must be"
+                    " half_width or full_width"
+                )
+            scope_span_preset_semantics = semantics
 
     # Parse attenuator/preamp/agc (optional sections)
     att_section = data.get("attenuator", {})
@@ -4197,6 +4229,7 @@ def load_rig(path: Path) -> RigConfig:
         scope_ref_max_db=scope_ref_max_db,
         scope_ref_step_db=scope_ref_step_db,
         scope_span_presets_hz=scope_span_presets_hz,
+        scope_span_preset_semantics=scope_span_preset_semantics,
         scope_fixed_edge_ranges=scope_fixed_edge_ranges,
         scope_fixed_edge_step_hz=scope_fixed_edge_step_hz,
         codec_preference=codec_preference,
@@ -4218,6 +4251,24 @@ def load_rig(path: Path) -> RigConfig:
         cw_text=cw_text,
         usb_identity=usb_identity,
         iq_lan=iq_lan,
+        probe_checks=parse_probe_checks(
+            filename,
+            data.get("probe"),
+            facts=RadioFacts(
+                protocol=protocol_type,
+                commands=commands,
+                modes=tuple(modes),
+                mode_codes=None if mode_codes is None else tuple(mode_codes),
+                cmd29_routes=frozenset(cmd29_routes),
+                swap_ab=vfo_swap_ab,
+                swap_main_sub=vfo_swap_main_sub,
+                unselected_is_sub=selector_one_is_sub(receiver_count, split_tx_target),
+                data_modes=data_mode_count,
+                freq_ranges=tuple(
+                    (r["start_hz"], r["end_hz"]) for r in freq_ranges_data
+                ),
+            ),
+        ),
     )
 
 

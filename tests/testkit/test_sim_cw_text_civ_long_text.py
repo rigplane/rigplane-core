@@ -30,6 +30,7 @@ from rigplane.commands import CONTROLLER_ADDR, build_civ_frame, parse_civ_frame
 from rigplane.rig_loader import load_rig
 from rigplane.web.server import WebConfig, WebServer
 
+from rigplane_testkit.icom.replay import RecordedAnswerTable, RecordedCivAnswer
 from rigplane_testkit.serial import CivSerialFake
 from testkit.test_sim_cw_text_entry_points import _ws_command
 from testkit.test_sim_ftx1_send_cw_text import _request, _settle
@@ -43,21 +44,23 @@ _ALPHABET = string.ascii_uppercase + string.digits
 TEXT = "".join(_ALPHABET[i % len(_ALPHABET)] for i in range(513))
 
 
-class _AckSendCw:
+class _AckSendCw(RecordedAnswerTable):
     """Answer table for the fake: ACK each 0x17 frame and keep its payload."""
 
-    echo = True
-
     def __init__(self, civ_addr: int) -> None:
+        super().__init__()
+        self.echo = True
         self._civ_addr = civ_addr
         self.payloads: list[bytes] = []
 
-    def answer(self, frame: bytes) -> bytes | None:
+    def lookup(self, frame: bytes) -> RecordedCivAnswer | None:
         parsed = parse_civ_frame(frame)
         if parsed.command != _SEND_CW:
             return None
         self.payloads.append(bytes(frame[5:-1]))
-        return build_civ_frame(CONTROLLER_ADDR, self._civ_addr, 0xFB)
+        return RecordedCivAnswer(
+            "reply", build_civ_frame(CONTROLLER_ADDR, self._civ_addr, 0xFB)
+        )
 
 
 def _rigs_dir(tmp_path: Path) -> Path:
@@ -88,7 +91,7 @@ async def test_civ_profile_limit_above_512_sends_513_characters(
     profile = load_rig(_rigs_dir(tmp_path) / "ic7300.toml").to_profile()
     assert profile.cw_text.max_length == 600
     table = _AckSendCw(civ_addr=0x94)
-    fake = CivSerialFake(recorded_answers=table)  # type: ignore[arg-type]
+    fake = CivSerialFake(recorded_answers=table)
     link = SerialCivLink(
         device="civ-serial-fake", open_serial_connection=fake.open_serial_connection
     )
@@ -131,7 +134,7 @@ async def test_cli_civ_profile_limit_above_512_sends_513_characters(
 ) -> None:
     rigs = _rigs_dir(tmp_path)
     table = _AckSendCw(civ_addr=0x94)
-    fake = CivSerialFake(recorded_answers=table)  # type: ignore[arg-type]
+    fake = CivSerialFake(recorded_answers=table)
 
     async def _open_fake_port(**_kwargs: object) -> tuple[object, object]:
         return await fake.open_serial_connection()

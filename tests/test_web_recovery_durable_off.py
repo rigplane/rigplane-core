@@ -3,9 +3,10 @@
 ``soft_reconnect`` advances the CI-V generation, which poisons the bound
 managed TX port, so a release armed before the drop is re-armed against a fresh
 causal boundary only once the provider is rebound. The Web recovery hook is
-where that has to happen: everything else ``_on_radio_reconnect`` does — the
-state refetch, the poller readiness signal it gates, the scope re-enable — is
-ordinary recovered work that would otherwise reach a rig still keyed.
+where that has to happen: everything else a recovery does — the radio layer's
+state refetch (MOR-4382: owned by the reconnect completion, never by this
+hook), the poller readiness signal, the scope re-enable — is ordinary
+recovered work that would otherwise reach a rig still keyed.
 
 A real ``ManagedRadioRuntime`` over the real supervisor and the real effect
 service drives these tests; a scripted double would report whatever order it
@@ -213,8 +214,22 @@ async def _managed(
 
 
 async def _recover(server: WebServer) -> None:
+    """Drive one recovery: the Web hook, then the radio layer's fetch.
+
+    MOR-4382 made the radio layer the single owner of the post-recovery
+    initial fetch: ``_after_reconnect_parts`` awaits it after the re-arm,
+    gated on ``radio_ready``, and the Web reacquire only replays its
+    web-epoch facts. These cases drive the Web hook as the pass under test —
+    it performs the re-arm — so the radio layer's fetch is modelled behind
+    it, keeping the wire order the cases assert: the durable OFF, then the
+    refetch.
+    """
     server._on_radio_reconnect()  # noqa: SLF001
     await asyncio.gather(*list(server._bg_tasks))  # noqa: SLF001
+    radio = server._radio  # noqa: SLF001
+    fetch_initial_state = getattr(radio, "_fetch_initial_state", None)
+    if fetch_initial_state is not None and getattr(radio, "radio_ready", True):
+        await fetch_initial_state()
 
 
 def _warned(caplog, phrase: str) -> bool:
@@ -310,17 +325,26 @@ async def test_a_stalled_unmanaged_pass_does_not_hold_up_the_next_one() -> None:
     radio._fetch_initial_state = _wedge_the_first_refetch  # type: ignore[method-assign]
     server = WebServer(radio)  # type: ignore[arg-type]
     server._radio_poller = poller = _Poller()  # type: ignore[assignment]
+
+    # Pass one. The radio layer owns the post-recovery fetch (MOR-4382), and
+    # its first fetch stalls here; the Web reacquire must not be awaiting it.
     server._on_radio_reconnect()  # noqa: SLF001
-    await asyncio.sleep(0)
-    server._on_radio_reconnect()  # noqa: SLF001
+    first_fetch = asyncio.ensure_future(radio._fetch_initial_state())
     await asyncio.sleep(0)
 
-    # Serialising the pass rather than the rebind queues the second one behind
-    # the stall, and ``_refetch_and_reenable`` is the only thing in ``src/``
-    # that ever re-sets the gate — so the scope stays dark for good.
+    # Pass two runs its own radio-layer fetch to completion while the first
+    # is still stalled, and both Web passes finish regardless. A Web pass
+    # that fetched again would queue pass one behind the stall — and since
+    # ``_refetch_and_reenable`` is the only thing in ``src/`` that ever
+    # re-sets the gate, the scope would stay dark for good.
+    server._on_radio_reconnect()  # noqa: SLF001
+    await radio._fetch_initial_state()
+    await asyncio.wait_for(asyncio.gather(*list(server._bg_tasks)), 5.0)  # noqa: SLF001
+
     assert log == ["refetch", "refetch"]
     assert poller._initial_fetch_done.is_set()
     stalled.set()
+    await first_fetch
 
 
 async def test_a_supervisor_without_replace_provider_is_reported_not_ignored(
@@ -475,6 +499,11 @@ async def test_overlapping_reconnects_do_not_interleave() -> None:
     server._on_radio_reconnect()  # noqa: SLF001
     server._on_radio_reconnect()  # noqa: SLF001
     await asyncio.gather(*list(server._bg_tasks))  # noqa: SLF001
+    # The radio layer owns the post-recovery fetch (MOR-4382): one per
+    # recovery, behind the re-arm the Web passes above performed.
+    fetch_initial_state = getattr(server._radio, "_fetch_initial_state")  # noqa: SLF001
+    await fetch_initial_state()
+    await fetch_initial_state()
 
     # The first pass's OFF is written *and* confirmed before the second pass
     # touches the provider at all. Overlapped, ``retire[2]`` lands first and
@@ -691,7 +720,12 @@ async def test_a_re_arm_that_raises_does_not_fail_the_reconnect(
 async def test_reconnect_selects_a_after_refetch_once_per_real_epoch(
     read_only: bool,
 ) -> None:
-    from test_radio_poller_tx_interlock import connect_vfo_poller, _observe_ptt
+    from unittest.mock import AsyncMock
+    from test_radio_poller_tx_interlock import (
+        connect_vfo_poller,
+        _observe_ptt,
+        observe_connect_ptt_read,
+    )
     from rigplane.core.state_pipeline_contracts import FieldPath
 
     poller, radio, store = connect_vfo_poller()
@@ -700,28 +734,46 @@ async def test_reconnect_selects_a_after_refetch_once_per_real_epoch(
     server._config.read_only = read_only
     _observe_ptt(store, False)
     await poller.select_vfo_a_on_connect(read_only=read_only)
+
+    async def read(*args: object, **kwargs: object) -> None:
+        await observe_connect_ptt_read(radio, False)
+
+    radio.send_civ = AsyncMock(side_effect=read)
     for iteration in (1, 2):
         radio._civ_epoch += 1
         store.begin_provider_generation()
         radio.selected = "B"
         radio.wire.sent_frames.clear()
+        # The radio layer owns the one initial fetch of a recovery
+        # (MOR-4382) and lands it ahead of the Web reacquire, so its PTT
+        # observation predates the reacquire's connection mark and the
+        # select re-proves RX with its bounded connect PTT read before
+        # keying the VFO change — six frames, not five.
+        await radio._fetch_initial_state()
         server._on_radio_reconnect()
         server._on_radio_reconnect()
         await asyncio.gather(*list(server._bg_tasks))
-        assert radio.refetches == iteration * 3 - 1
+        assert radio.refetches == iteration
         assert poller._initial_fetch_done.is_set()
-        assert len(radio.wire.sent_frames) == (0 if read_only else 5)
+        assert len(radio.wire.sent_frames) == (0 if read_only else 6)
         if not read_only:
             assert store.snapshot().field(FieldPath.active_slot("0")).value == "A"
-        await _recover(server)
-        assert len(radio.wire.sent_frames) == (0 if read_only else 5)
+        # A same-epoch re-notification refetches nothing and re-selects nothing.
+        server._on_radio_reconnect()
+        await asyncio.gather(*list(server._bg_tasks))
+        assert radio.refetches == iteration
+        assert len(radio.wire.sent_frames) == (0 if read_only else 6)
         if not read_only:
             assert store.snapshot().field(FieldPath.active_slot("0")).value == "A"
 
 
 async def test_explicit_disconnect_connect_uses_the_same_new_epoch_policy() -> None:
     from unittest.mock import AsyncMock, MagicMock
-    from test_radio_poller_tx_interlock import connect_vfo_poller, _observe_ptt
+    from test_radio_poller_tx_interlock import (
+        connect_vfo_poller,
+        _observe_ptt,
+        observe_connect_ptt_read,
+    )
 
     poller, radio, store = connect_vfo_poller()
     server = WebServer(radio)
@@ -729,10 +781,20 @@ async def test_explicit_disconnect_connect_uses_the_same_new_epoch_policy() -> N
     _observe_ptt(store, False)
     await poller.select_vfo_a_on_connect(read_only=False)
 
+    async def read(*args: object, **kwargs: object) -> None:
+        await observe_connect_ptt_read(radio, False)
+
+    radio.send_civ = AsyncMock(side_effect=read)
+
     async def connect() -> None:
         radio._civ_epoch += 1
         store.begin_provider_generation()
         radio.selected = "B"
+        # Models CoreRadio.connect() -> _complete_connect: the granted
+        # connect completes in the radio layer, which owns the one initial
+        # fetch of the new epoch (MOR-4382); the Web reacquire that follows
+        # only replays its web-epoch facts and never fetches.
+        await radio._fetch_initial_state()
 
     radio.connect = connect
     radio.disconnect = AsyncMock()
@@ -741,7 +803,10 @@ async def test_explicit_disconnect_connect_uses_the_same_new_epoch_policy() -> N
     await server._handle_radio_control("/api/v1/radio/disconnect", writer)
     await server._handle_radio_control("/api/v1/radio/connect", writer)
     await asyncio.gather(*list(server._bg_tasks))
-    assert len(radio.wire.sent_frames) == 5
+    # The radio-layer fetch predates the reacquire's connection mark, so the
+    # select re-proves RX with its bounded connect PTT read before keying
+    # the VFO change — six frames, not five.
+    assert len(radio.wire.sent_frames) == 6
     assert radio.selected == "A"
     assert radio.refetches == 1
 
@@ -816,7 +881,12 @@ async def test_reconnect_with_ptt_aged_by_refetch_reads_rx_before_selecting_a() 
 
     radio._fetch_initial_state = refetch
     radio.send_civ = AsyncMock(side_effect=read)
-    await _recover(server)
+    # The radio layer owns the post-recovery fetch (MOR-4382) and lands it
+    # ahead of the Web reacquire: the aged PTT it publishes is exactly what
+    # the select below must re-prove before keying a VFO change.
+    await radio._fetch_initial_state()
+    server._on_radio_reconnect()
+    await asyncio.gather(*list(server._bg_tasks))
     assert store.snapshot().field(FieldPath.active_slot("0")).value == "A"
     assert radio.wire.sent_frames == [
         bytes.fromhex(frame)

@@ -178,7 +178,7 @@ def test_termination_round_trips_and_validates() -> None:
     from rigplane.probe.model import TERMINATION_STATUSES, TerminationInfo
 
     assert TERMINATION_STATUSES == frozenset(
-        {"completed", "silence_stop", "transport_error"}
+        {"completed", "silence_stop", "transport_error", "cancelled", "restore_failed"}
     )
     assert _sample().termination == TerminationInfo("completed")
     document = json.loads(_sample().to_json())

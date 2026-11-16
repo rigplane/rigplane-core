@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from rigplane.probe.classify import cat_reply_closes as reply_closes
+from rigplane_testkit.fixture_rows import CatPairRow, cat_rows
 
 REFUSAL = "?;"
 
@@ -48,24 +49,27 @@ class RecordedCatAnswerTable:
 
     @classmethod
     def from_cat_pairs(
-        cls, rows: Iterable[Mapping[str, Any]], window: str | None = None
+        cls,
+        rows: Iterable[CatPairRow | Mapping[str, Any]],
+        window: str | None = None,
     ) -> RecordedCatAnswerTable:
-        """Build the table from fixture rows (``window``, ``dir``, ``line``).
+        """Build the table from :class:`~rigplane_testkit.fixture_rows.CatPairRow`
+        rows (a JSON object is parsed through the same contract).
 
         Only rows of *window* are used when it is given. Row order is
         recording order; ``t`` is not read here.
         """
         table = cls()
         pending: str | None = None
-        for row in rows:
-            if window is not None and row.get("window") != window:
+        for row in cat_rows(rows):
+            if window is not None and row.window != window:
                 continue
-            line = str(row["line"])
-            if row["dir"] == "c2r":
+            line = row.line
+            if row.dir == "c2r":
                 if pending is not None:
                     table._answers[pending] = RecordedCatAnswer("silence", None)
                 pending = line
-            elif row["dir"] == "r2c":
+            elif row.dir == "r2c":
                 if pending is not None and reply_closes(pending, line):
                     kind = "refusal" if line == REFUSAL else "data"
                     table._answers[pending] = RecordedCatAnswer(kind, line)

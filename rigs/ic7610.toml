@@ -51,6 +51,12 @@ ref_min_db = -30.0
 ref_max_db = 10.0
 ref_step_db = 0.5
 span_presets_hz = [2500, 5000, 10000, 25000, 50000, 100000, 250000, 500000]
+# MOR-4385: the 27 15 numbers are ±half-widths — this radio's own CI-V
+# Reference Guide p.14 ("Scope waveform data") documents that the
+# center-mode payload carries the center and the SPAN value itself, with
+# the display spanning center ± value (quoted in runtime/_civ_rx.py:
+# CivRuntime._publish_scope_span_observation).
+span_preset_semantics = "half_width"
 # IC-7610 CI-V Reference Guide, printed p15, 27 1E fixed-edge table.
 # https://www.icomjapan.com/uploads/support/manual/IC-7610_ENG_CI-V_4.pdf
 # The radio ignores digits below 1 kHz.
