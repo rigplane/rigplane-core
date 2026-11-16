@@ -148,7 +148,7 @@ describe('transport factory', () => {
   });
 
   it('returns a WebSocket transport by default', () => {
-    const t = createMessageTransport();
+    const t = createMessageTransport('control');
     expect(t).toBeInstanceOf(WebSocketTransport);
     t.open('wss://station.test/api/v1/ws');
     expect(instances).toHaveLength(1);

@@ -54,7 +54,7 @@ function installMocks(): void {
   }));
 }
 
-function fakeChannels(): RemoteChannels {
+function fakeChannels(): { [K in keyof RemoteChannels]: FakeDataChannel } {
   return {
     control: new FakeDataChannel('control'),
     scope: new FakeDataChannel('scope'),

@@ -28,7 +28,7 @@ import {
 import { ATTACH_CLOSE_REASON } from '../datachannel-transport';
 import { createMessageTransport } from '../transport-factory';
 import { apiFetch } from '../../api/api-fetch';
-import type { MessageTransport } from '../message-transport';
+import type { MessageTransport, TransportAttach } from '../message-transport';
 import { FakeDataChannel, goldenFrame, goldenDocs, goldenAttachText } from './support/fake-datachannel';
 import { MockWebSocket, instances } from './support/fake-ws-backend';
 
@@ -126,7 +126,7 @@ interface BundleHarness {
   sentToPeer(): Array<string | ArrayBuffer>;
 }
 
-function fakeChannels(api = new FakeDataChannel('api')): RemoteChannels {
+function fakeChannels(api = new FakeDataChannel('api')): { [K in keyof RemoteChannels]: FakeDataChannel } {
   return {
     control: new FakeDataChannel('control'),
     scope: new FakeDataChannel('scope'),
@@ -151,7 +151,7 @@ function webSocketHarness(): BundleHarness {
   };
 }
 
-function dataChannelHarness(channels: RemoteChannels = fakeChannels()): BundleHarness {
+function dataChannelHarness(channels = fakeChannels()): BundleHarness {
   return {
     bundle: dataChannelBundle(channels),
     // The control hello proves the attach and is also an app frame.
@@ -247,10 +247,11 @@ describe('transport bundle seam (C5b)', () => {
     // Drive the real transport's refusals through the bundle; the reason
     // strings come from the transport's exported constants, so a drift in
     // either file changes this outcome.
-    const cases = [
-      ['keyless', { protocols: [], role: 'primary' as const }],
-      ['roleless', { protocols: ['rigplane-controller-v1.KEY'] }],
-    ] as const;
+    const cases: ReadonlyArray<readonly ['keyless' | 'roleless', TransportAttach]> = [
+      ['keyless', { protocols: [], role: 'primary' }],
+      // A caller that omits the role (the type forbids it; the transport refuses it anyway).
+      ['roleless', { protocols: ['rigplane-controller-v1.KEY'] } as unknown as TransportAttach],
+    ];
     for (const [name, attach] of cases) {
       const losses: string[] = [];
       const bundle = dataChannelBundle(fakeChannels(), (reason) => losses.push(reason));
