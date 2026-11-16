@@ -48,6 +48,7 @@ __all__ = [
     "found_line",
     "human_read_name",
     "journal_instruction_line",
+    "journal_set_back_prompt",
     "journal_unreadable_line",
     "no_answers_message",
     "no_checks_message",
@@ -468,9 +469,14 @@ def no_checks_message() -> str:
 def journal_unreadable_line(path: str) -> str:
     """A check journal left behind that cannot be read (start line, refusal)."""
     return (
-        f"A check journal from an earlier run cannot be read: {path}. "
-        "Check the radio's settings by hand."
+        "The file with the values an earlier check should have set back cannot "
+        f"be read: {path}. Check the radio's settings by hand."
     )
+
+
+def journal_set_back_prompt() -> str:
+    """The question after a leftover journal on a terminal (default no)."""
+    return "Are these set back on the radio now? [y/N] "
 
 
 def journal_instruction_line(path: str) -> str:
@@ -489,9 +495,9 @@ def checks_block_start(n: int) -> str:
         "program tells you what to set by hand. None of them transmits, starts the antenna tuner or writes to the radio's "
         "memory channels. You can say no to any check.\n"
         'Do not touch the knobs or buttons of the radio until this program says "done".\n'
-        "Nothing may key the radio while a check runs: no PTT, no CW key, no VOX or "
-        "microphone PTT, no digital program.\n"
-        "Do not close this window while a check is running: press Ctrl-C instead: "
+        "Do not transmit while a check runs: no PTT, no CW key, no VOX, "
+        "no digital-mode program.\n"
+        "Do not close this window while a check is running. Press Ctrl-C instead; "
         "the program then tries to put the settings back before it stops.\n"
         "If you close this window anyway, the radio may be left changed. Run the "
         "program again: it will show the values to set back.\n"
@@ -548,8 +554,8 @@ def check_result_line(index: int, record: CheckRecord) -> str:
     if record.status != "ran":
         return f"Check {index} not run: {error}. Nothing was changed."
     if not record.restored:
-        error = error or "could not put the settings back; please set them by hand"
-        return f"WARNING: {error}. This check never transmits."
+        error = error or "could not put the settings back"
+        return f"WARNING: {error}. Please set it by hand before you transmit."
     if not record.verified:
         return (
             f"Check {index} done: the settings were sent back, but the radio did not "

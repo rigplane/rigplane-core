@@ -34,7 +34,11 @@ from rigplane.core.serial_open import open_serial_port
 from rigplane.profiles.rig_loader import RigConfig
 from rigplane.probe import render
 from rigplane.probe.checks import ASK_TIMEOUT_S, ChecksRequest
-from rigplane.probe.journal import journal_path, leftover_journal_line
+from rigplane.probe.journal import (
+    journal_path,
+    leftover_journal_line,
+    remove_journal,
+)
 from rigplane.probe.model import ProbeFile
 from rigplane.probe.render import DEFAULT_PROBE_PROG
 from rigplane.probe.readlist import ReadRequest, build_read_plan
@@ -445,6 +449,14 @@ def _is_yes(answer: str) -> bool:
 def _is_strict_yes(answer: str) -> bool:
     """The checks questions default to no: only an explicit yes counts."""
     return answer.strip().lower() in ("y", "yes")
+
+
+def _answer(prompt: str) -> str:
+    """One terminal answer; end of input is an empty answer."""
+    try:
+        return input(prompt)
+    except EOFError:
+        return ""
 
 
 Lines = Callable[[str], Awaitable[str | None]]  # a prompt -> its answer (None: EOF)
@@ -896,7 +908,10 @@ def run(args: argparse.Namespace, prog: str = DEFAULT_PROBE_PROG) -> int:
     journal = journal_path()
     if (left := leftover_journal_line(journal)) is not None:
         print(left)
-        print(render.journal_instruction_line(str(journal)))
+        if not sys.stdin.isatty():
+            print(render.journal_instruction_line(str(journal)))
+        elif _is_strict_yes(_answer(render.journal_set_back_prompt())):
+            remove_journal(journal)  # set back by hand: the checks may run again
 
     try:
         rigs = discover_available_rigs(_rigs_dir())

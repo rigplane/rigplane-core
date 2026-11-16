@@ -338,7 +338,7 @@ async def _restore(run: _Run, state: _Check) -> tuple[bool, bool, str | None, Wi
         same = accepted and (await _send(run, state, key))[1] == value
         if not accepted:
             restored = verified = False
-            error = f"could not put {name} back to {text}; please set it by hand"
+            error = f"could not put {name} back to {text}"
         elif not same:
             verified = False
             error = error or f"{name} reads differently after the restore (was {text})"
