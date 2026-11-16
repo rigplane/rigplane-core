@@ -685,13 +685,25 @@ class CivRequestTracker:
             self._ack_waiters = [
                 w for w in self._ack_waiters if w.generation == current
             ]
-            winner = self._oldest_sent(
+            takers = [
                 w
                 for w in self._ack_waiters
-                if event.type is CivEventType.NAK
-                or (not w.nak_only and (w.future is not None or w.response_key is None))
-            )
+                if w.sent_monotonic is not None
+                and (
+                    event.type is CivEventType.NAK
+                    or (
+                        not w.nak_only
+                        and (w.future is not None or w.response_key is None)
+                    )
+                )
+            ]
+            winner = self._oldest_sent(takers)
             if winner is not None:
+                if len(takers) > 1:
+                    # A bare reply another open entry could own: if an older
+                    # answer was lost this one is its neighbour's, so a PTT
+                    # release must verify by readback (MOR-2860, MOR-4384).
+                    self.note_ack_unclaimed()
                 return self._claim(winner, event, ordered_ingress)
 
             # Park short-lived orphan ACK/NAK frames, bounded and TTL-pruned.
