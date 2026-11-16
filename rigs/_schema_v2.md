@@ -197,6 +197,68 @@ type does not normalize it.
 
 ---
 
+## Write checks (`[probe]`, MOR-4464 B)
+
+Optional top-level section declaring the named write checks
+`rigplane probe --checks` may run. Absent `[probe]` loads the same
+empty `RigConfig.probe_checks` tuple every existing profile keeps.
+Checks are profile DATA: the engine (`rigplane.probe.checks`) is one
+shared mechanism for CI-V and Yaesu CAT, never per-radio code. The
+write-policy allow-lists and never-lists live in
+`profiles/probe_checks.py` and are enforced at load (the verb is
+named) and again at send time.
+
+```toml
+[probe]
+
+[[probe.checks]]
+id = "synth-freq-mode"            # slug, unique per profile
+title = "Synthetic frequency and mode"   # customer words, ASCII
+explain_what = "Sets VFO-A to 7.074 MHz for a moment, then reads it back."
+explain_after = "Puts frequency and mode back exactly as they are now."
+warnings = []                     # optional extra customer lines, ASCII
+witness = ["get_freq", "get_mode"]  # profile reads snapshotted around the check
+
+[[probe.checks.preconditions]]    # all must hold before the first write
+read = "get_ptt"
+equals = "TX0;"                   # the reply that means VFO mode (CAT text, CI-V frame hex)
+
+[[probe.checks.steps]]
+kind = "write"                    # write | read | raw_read | raw_write | ask
+command = "set_freq"
+[probe.checks.steps.values]       # CAT: write-template fields; CI-V: exactly data_hex
+freq = 7074000
+
+[[probe.checks.steps]]
+kind = "ask"
+question = "Does the display look right?"
+
+[[probe.checks.restore]]          # the stack of originals, popped in reverse
+read = "get_freq"
+write = "set_freq"
+# map = { "0" = "2" }             # optional read-form -> write-form values
+# rehearse = false                # optional: skip the no-op rehearsal
+
+[[probe.checks]]
+id = "raw-speech"
+# ...
+[[probe.checks.steps]]
+kind = "raw_write"                # literal CAT line or CI-V body hex
+line = "PR1;"                     # CAT (CI-V uses body_hex instead)
+# raw_read uses line / body_hex the same way, without a restore need
+```
+
+Rules the loader enforces: `id` is a slug and unique; customer text
+(`title`, `explain_*`, `warnings`, `question`) is non-empty ASCII;
+every other key is rejected; a `write` names a profile write command
+whose verb is on the protocol allow-list; a `raw_write` additionally
+needs its own restore item for the same verb in the same check; a
+`raw_read` must avoid the never-list; a check with write steps must
+carry restore items. CI-V `07 A0`/`07 B1` writes additionally need
+two restore items on distinct reads (both VFOs are restored).
+
+---
+
 ## Layer 1: Capabilities
 
 ```toml
