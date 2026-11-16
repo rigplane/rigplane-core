@@ -121,6 +121,8 @@
   "core.scope.preset.follow": "Follow VFO",
   "core.scope.zoomIn": "Zoom in the panorama view",
   "core.scope.zoomOut": "Zoom out the panorama view",
+  "core.scope.stackedTrace.title": "3D view: recent spectrum history in depth",
+  "core.scope.stackedTrace.unavailable": "3D view is not available: this browser provides no WebGL2",
   "core.scope.hatch.outOfRange": "Frequency outside the fixed scope edges",
   "core.scope.hatch.noPixels": "No scope data",
   "core.scope.hatch.widerThanCoverage": "View wider than the delivered scope coverage",

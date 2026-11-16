@@ -121,6 +121,8 @@
   "core.scope.preset.follow": "Следовать за VFO",
   "core.scope.zoomIn": "Сузить обзор панорамы",
   "core.scope.zoomOut": "Расширить обзор панорамы",
+  "core.scope.stackedTrace.title": "3D-вид: недавняя история спектра в глубину",
+  "core.scope.stackedTrace.unavailable": "3D-вид недоступен: в этом браузере нет WebGL2",
   "core.scope.hatch.outOfRange": "Частота за пределами фиксированных границ панорамы",
   "core.scope.hatch.noPixels": "Нет данных панорамы",
   "core.scope.hatch.widerThanCoverage": "Обзор ширше доступного покрытия панорамы",
