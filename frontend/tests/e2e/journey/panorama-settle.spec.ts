@@ -97,27 +97,27 @@ for (const [index, [model, zoomMode]] of ([['IC-705', 0], ['IC-7300', 0], ['IC-7
         const before = { subscriptions: sent.length, writes: (await writes()).length, work: await work() };
         if (zoom === 'span') {
           if (zoomMode === 1) {
-            // MOR-4392 (coordinator ruling 2026-11-10): in FIX a SPAN step
-            // is a client crop — it writes NOTHING to the radio (no 0x14
-            // mode flip, no 0x15 span write) and the granted window is the
-            // request clipped to the radio's unchanged fixed window,
-            // including the final widening request that cannot outgrow it.
+            // MOR-4392 + MOR-4451 (radio-owned window, #4565 pre-review
+            // item 2): in FIX a SPAN step requests a follow width, but the
+            // radio owns the window — every grant and every frame stay the
+            // unchanged fixed window, the span readout keeps its width,
+            // and NOTHING is written (no 0x14 mode flip, no 0x15 span
+            // write), including for the final widening request that
+            // cannot outgrow it. Pinned zoom (the zoom arm above) keeps
+            // its own separate coverage.
             const fixed = [14_225_000, 14_275_000];
             const spanValue = page.getByTestId('scope-span-value').first();
             await expect(spanValue).toHaveText('±25k');
             expect((await writes()).filter(receipt => receipt.sub === 0x14).at(-1)?.data[1]).toBe(1);
             const receiptsAtFix = (await writes()).length;
-            for (const [step, action] of ['Decrease scope span', 'Increase scope span', ']'].entries()) {
-              const width = [20000, 50000, 100000][step]!;
-              const requested = [14_250_000 - width / 2, 14_250_000 + width / 2];
-              const bounds = [Math.max(requested[0], fixed[0]), Math.min(requested[1], fixed[1])];
+            for (const action of ['Decrease scope span', 'Increase scope span', ']']) {
               const mark = frames.length;
               if (action === ']') await page.keyboard.press(action);
               else await page.getByRole('button', { name: action, exact: true }).first().click();
-              await expect.poll(() => grants.at(-1)?.view).toEqual({ startHz: bounds[0], endHz: bounds[1] });
-              await expect.poll(() => frames.slice(mark).some(frame => frame.pixels && frame.view.every((hz, i) => hz === bounds[i])
-                && frame.coverage.every((hz, i) => hz === bounds[i]))).toBe(true);
-              await expect(spanValue).toHaveText(`±${(bounds[1] - bounds[0]) / 2000}k`);
+              await expect.poll(() => grants.at(-1)?.view).toEqual({ startHz: fixed[0], endHz: fixed[1] });
+              await expect.poll(() => frames.slice(mark).some(frame => frame.pixels && frame.view.every((hz, i) => hz === fixed[i])
+                && frame.coverage.every((hz, i) => hz === fixed[i]))).toBe(true);
+              await expect(spanValue).toHaveText('±25k');
               expect((await writes()).length).toBe(receiptsAtFix);
             }
           } else {
