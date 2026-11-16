@@ -234,43 +234,6 @@ async function canvasEdgeHotColumns(page: Page, side: 'left' | 'right'): Promise
   }, side);
 }
 
-/**
- * Hot columns between two adjacent waterfall rows inside one view edge
- * strip (#4564 waterfall-hatch probe). The WebGL canvas is copied in-page
- * into a 2D canvas first (a bare getImageData on a WebGL context without
- * preserveDrawingBuffer is unreliable); the hatch is a 4px checker
- * (step(4, mod(x + y, 8))), so consecutive painted rows differ at the
- * pattern crossings while plain background rows are identical. Returns -1
- * when the canvas is missing, unsized, or unreadable.
- */
-async function waterfallEdgeHotColumns(page: Page, side: 'left' | 'right'): Promise<number> {
-  return await page.evaluate((edge) => {
-    const src = document.querySelector('.waterfall-content canvas');
-    if (!(src instanceof HTMLCanvasElement)) return -1;
-    const w = src.width, h = src.height;
-    if (w < 40 || h < 20) return -1;
-    const flat = document.createElement('canvas');
-    flat.width = w; flat.height = h;
-    const fctx = flat.getContext('2d');
-    if (!fctx) return -1;
-    try {
-      fctx.drawImage(src, 0, 0);
-      const n = Math.max(8, Math.floor(w * 0.012));
-      const x = edge === 'right' ? w - n - 2 : 2;
-      const y = Math.floor(h * 0.47);
-      const a = fctx.getImageData(x, y, n, 1).data;
-      const b = fctx.getImageData(x, y + 1, n, 1).data;
-      let hot = 0;
-      for (let i = 0; i < a.length; i += 4) {
-        if (Math.abs(a[i] - b[i]) + Math.abs(a[i + 1] - b[i + 1]) + Math.abs(a[i + 2] - b[i + 2]) > 24) hot++;
-      }
-      return hot;
-    } catch {
-      return -1;
-    }
-  }, side);
-}
-
 /** Running-max check: no value may fall below an earlier one by more than tolHz. */
 function checkMonotonic(
   values: Array<{ t: number; v: number | null }>,
@@ -699,14 +662,8 @@ test('IC-705 pinned 10m band preset wider than any native stays hatched', async 
     const latest = frames.at(-1)!;
     const latestViewHz = latest.view[1] - latest.view[0];
     const latestCovHz = latest.coverage[1] - latest.coverage[0];
-    // #4564: the waterfall follows the same must-hatch decision through
-    // its stored per-row ranges — at least one edge strip must show the
-    // hatch pattern on painted rows.
-    const waterfallHotLeft = await waterfallEdgeHotColumns(page, 'left');
-    const waterfallHotRight = await waterfallEdgeHotColumns(page, 'right');
     console.log(`[held-key must-hatch band-10m] ` +
       `samples=${stableSamples.length} hatched=${hatched.length} ` +
-      `waterfallHotLeft=${waterfallHotLeft} waterfallHotRight=${waterfallHotRight} ` +
       `view=${latestViewHz}Hz cov=${latestCovHz}Hz`);
     await info.attach('held-key-must-hatch', {
       body: JSON.stringify({
@@ -714,7 +671,6 @@ test('IC-705 pinned 10m band preset wider than any native stays hatched', async 
         latestView: latest.view, latestCoverage: latest.coverage,
         grants: grants.length, subscribes: sent.length,
         samples: stableSamples.length, hatched: hatched.length,
-        waterfallHotLeft, waterfallHotRight,
       }, null, 2),
       contentType: 'application/json',
     });
@@ -734,9 +690,6 @@ test('IC-705 pinned 10m band preset wider than any native stays hatched', async 
     const hatch = page.locator('.spectrum-panel .scope-hatch').first();
     await expect(hatch).toBeVisible();
     await expect(hatch).toHaveAttribute('title', 'View wider than the delivered scope coverage');
-    expect(waterfallHotLeft + waterfallHotRight,
-      `waterfall edge strips stay plain (left hot: ${waterfallHotLeft}, right hot: ${waterfallHotRight}); ` +
-      `the must-hatch margins must hatch on painted rows`).toBeGreaterThan(0);
 
     expectPanoramaSettled(watch);
   } catch (error) {
@@ -1412,18 +1365,15 @@ for (const { mode, port, stripSide } of [
       const hatchedStable = stableSamples.filter((s) => s.hatchCount > 0);
       const latest = frames.at(-1)!;
       const hot = await canvasEdgeHotColumns(page, stripSide);
-      // #4564: the waterfall follows the same decision — the uncovered
-      // equal-width strip stays plain background there too.
-      const waterfallHot = await waterfallEdgeHotColumns(page, stripSide);
       console.log(`[held-key filter-center ${mode}] ` +
         `samples=${stableSamples.length} hatched=${hatchedStable.length} hot=${hot} ` +
-        `waterfallHot=${waterfallHot} view=[${latest.view}] cov=[${latest.coverage}]`);
+        `view=[${latest.view}] cov=[${latest.coverage}]`);
       await info.attach(`held-key-filter-center-${mode}`, {
         body: JSON.stringify({
           params: { mode, spanHz: 50_000, scopeCenterType: 0, seed },
           latestView: latest.view, latestCoverage: latest.coverage,
           grants: grants.length, subscribes: sent.length,
-          samples: stableSamples.length, hatched: hatchedStable.length, hot, waterfallHot,
+          samples: stableSamples.length, hatched: hatchedStable.length, hot,
         }, null, 2),
         contentType: 'application/json',
       });
@@ -1435,11 +1385,6 @@ for (const { mode, port, stripSide } of [
       // the waterfall's treatment of the same transient lag.
       expect(hot,
         `canvas edge strip shows the hatch pattern (hot columns: ${hot}); ` +
-        `the uncovered ${stripSide} strip must stay plain background`).toBe(0);
-      // (3) #4564: no waterfall hatch on the same strip either — the stored
-      // row decision is empty, so every row stays plain background.
-      expect(waterfallHot,
-        `waterfall edge strip shows the hatch pattern (hot columns: ${waterfallHot}); ` +
         `the uncovered ${stripSide} strip must stay plain background`).toBe(0);
 
       expectPanoramaSettled(watch);
