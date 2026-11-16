@@ -279,7 +279,7 @@ def test_ask_timeout_recorded_as_skipped_restore_still_runs(tmp_path: Path) -> N
         )
 
         async def hang(prompt: str):
-            await asyncio.sleep(60)
+            await asyncio.Event().wait()
 
         from rigplane.probe.checks import run_checks
 
@@ -395,7 +395,7 @@ def test_sigterm_during_check_restores_first(tmp_path: Path) -> None:
             ):
                 self._killed = True
                 os.kill(os.getpid(), signal.SIGTERM)
-                await asyncio.sleep(30)
+                await asyncio.Event().wait()
             return await super().__call__(request, timeout)
 
     async def scenario() -> None:
