@@ -14,6 +14,7 @@ import time
 import pytest
 
 from rigplane.tci.server import TciServer
+from rigplane.testing.timing import await_until
 from rigplane.ws import (
     WS_OP_BINARY,
     WS_OP_CLOSE,
@@ -195,19 +196,6 @@ async def _read_until_closed(client: "RawClient") -> None:
                 return
             if chunk == b"":
                 return
-
-
-async def _await_session_released(server: TciServer, handler: FakeHandler) -> None:
-    """Wait for the full teardown: ``on_disconnect`` ran AND the registry is empty.
-
-    ``finish()`` removes the session from the registry only after
-    ``on_disconnect`` returns (``stop()`` relies on that order), so a test that
-    saw the callback and read ``server.sessions`` at once could catch the
-    session in between (MOR-4413).
-    """
-    async with asyncio.timeout(5.0):
-        while handler.disconnect_calls == 0 or server.sessions:
-            await asyncio.sleep(0.005)
 
 
 async def test_start_stop_twice(tcp_available: None) -> None:
@@ -720,7 +708,11 @@ async def test_fragmented_bytes_overflow_bounded(
         assert opcode == WS_OP_CLOSE
         assert struct.unpack("!H", payload[:2])[0] == 1009
         await _read_until_closed(client)
-        await _await_session_released(server, handler)
+        # finish() drops the session only after on_disconnect returned
+        # (stop() relies on that order): wait for both (MOR-4413).
+        assert await await_until(
+            lambda: handler.disconnect_calls > 0 and not server.sessions, timeout=5.0
+        )
         assert handler.disconnect_calls == 1
         assert len(server.sessions) == 0
         other = await RawClient.connect(server.bound_port)
@@ -758,7 +750,11 @@ async def test_fragment_count_overflow_bounded(
         assert opcode == WS_OP_CLOSE
         assert struct.unpack("!H", payload[:2])[0] == 1009
         await _read_until_closed(client)
-        await _await_session_released(server, handler)
+        # finish() drops the session only after on_disconnect returned
+        # (stop() relies on that order): wait for both (MOR-4413).
+        assert await await_until(
+            lambda: handler.disconnect_calls > 0 and not server.sessions, timeout=5.0
+        )
         assert handler.disconnect_calls == 1
         assert len(server.sessions) == 0
         other = await RawClient.connect(server.bound_port)
