@@ -45,14 +45,24 @@
     active: () => surface.visible && surface.sized && renderer !== null,
   });
 
+  /** A typed renderer failure ends the view: the host falls back to the flat trace. */
+  function failed(error: unknown): void {
+    if (!(error instanceof StackedTraceRenderError)) throw error;
+    renderer?.destroy(); renderer = null;
+    onUnavailable();
+  }
+
   function paint(now: number): void {
     if (!renderer) return;
-    renderer.updateOptions(rowOptions(options, viewOptions));
-    if (frame.pending && frame.pixels) renderer.pushRow(frame.pixels, frame.options, now);
-    frame.pending = false;
-    // Rows glide back between commits: keep painting display frames meanwhile.
-    if (renderer.draw(now)) scheduler.wake('view');
-    if (renderer.historyRows !== historyRows) historyRows = renderer.historyRows;
+    try {
+      renderer.setPixelScale(surface.pixelScale);
+      renderer.updateOptions(rowOptions(options, viewOptions));
+      if (frame.pending && frame.pixels) renderer.pushRow(frame.pixels, frame.options, now);
+      frame.pending = false;
+      // Rows glide back between frames: keep painting display frames meanwhile.
+      if (renderer.draw(now)) scheduler.wake('view');
+      if (renderer.historyRows !== historyRows) historyRows = renderer.historyRows;
+    } catch (error) { failed(error); }
   }
 
   function push(pixels: Uint8Array): void {
@@ -81,7 +91,7 @@
     untrack(() => scheduler.wake('view'));
   });
   $effect(() => {
-    chromeOptions; surface.backingW; surface.backingH;
+    chromeOptions;
     untrack(paintChrome);
   });
   $effect(() => {
@@ -92,11 +102,7 @@
     renderer?.destroy(); renderer = null;
     try {
       renderer = new StackedTraceRenderer(scene, rowOptions(options, viewOptions));
-    } catch (error) {
-      if (!(error instanceof StackedTraceRenderError)) throw error;
-      onUnavailable();
-      return;
-    }
+    } catch (error) { failed(error); return; }
     frame.pending = frame.pixels !== null;
     scheduler.wake('size');
   }
@@ -114,9 +120,11 @@
     createRenderer();
     const unbindScene = surface.bindBacking(scene);
     const unbindChrome = surface.bindBacking(chrome);
-    // Sizing a canvas clears it, so the first chrome paint follows the binding.
+    // Sizing a canvas clears it — on a new size and on a new pixel scale
+    // alike — so the chrome is painted after the binding and after every
+    // size notification, which the bindings above have already applied.
     paintChrome();
-    const stopSize = surface.onSizeChanged(() => scheduler.wake('size'));
+    const stopSize = surface.onSizeChanged(() => { paintChrome(); scheduler.wake('size'); });
     onRegisterPush(push);
     return () => {
       scene.removeEventListener('webglcontextlost', contextLost);
