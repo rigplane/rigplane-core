@@ -280,6 +280,21 @@ def command_carries_sub(command: int) -> bool:
     return command in _COMMANDS_WITH_SUB
 
 
+def unwrap_receiver_prefix(body: bytes) -> bytes:
+    """Strip one leading ``0x29 <rx>`` receiver wrapper (MAIN 0x00 / SUB 0x01).
+
+    Shared by the probe read list and the probe write policy so both judge the
+    inner command of a wrapped body.
+    """
+    if (
+        len(body) >= 3
+        and body[0] == _CMD_RECEIVER_PREFIX
+        and body[1] in (RECEIVER_MAIN, RECEIVER_SUB)
+    ):
+        return body[2:]
+    return body
+
+
 def build_civ_frame(
     to_addr: int,
     from_addr: int,
