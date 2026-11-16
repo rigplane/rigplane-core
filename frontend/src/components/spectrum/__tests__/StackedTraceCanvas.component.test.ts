@@ -9,7 +9,7 @@ import { webglFixture } from '$lib/renderers/__tests__/webgl-fixture';
 import { RecordedPath } from '$lib/renderers/__tests__/canvas-layers-fixture';
 import Harness from './StackedTraceCanvasHarness.svelte';
 
-type Push = (pixels: Uint8Array) => void;
+type Push = (pixels: Uint8Array, token?: unknown) => void;
 type Fixture = ReturnType<typeof webglFixture>;
 
 let target: HTMLDivElement;
@@ -26,14 +26,14 @@ function flushFrames(now: number): void {
   for (const frame of due) frame(now);
 }
 
-function mountView(props: { centerHz?: number } = {}) {
+function mountView(props: { centerHz?: number; trace?: unknown } = {}) {
   let push: Push = () => {};
   const onUnavailable = vi.fn();
-  component = mount(Harness, { target, props: { ...props, onPush: (fn: Push) => { push = fn; }, onUnavailable } });
+  component = mount(Harness, { target, props: { ...props, onPush: (fn: Push) => { push = fn; }, onUnavailable } as never });
   flushSync();
   const root = target.querySelector('[data-testid="stacked-trace"]') as HTMLElement;
   const [scene, chrome] = Array.from(root.querySelectorAll('canvas'));
-  return { push: (pixels: Uint8Array) => push(pixels), onUnavailable, root, scene, chrome };
+  return { push: (pixels: Uint8Array, token?: unknown) => push(pixels, token), onUnavailable, root, scene, chrome };
 }
 
 beforeEach(() => {
@@ -169,6 +169,35 @@ describe('MOR-4463 StackedTraceCanvas', () => {
     view.push(new Uint8Array(475).fill(20));
     flushFrames(32);
     expect(gl[0].calls).toHaveLength(0);
+  });
+
+  it('reports the view unavailable when the WebGL context is lost', () => {
+    const view = mountView();
+    view.push(new Uint8Array(475).fill(20));
+    flushFrames(16);
+    view.scene.dispatchEvent(new Event('webglcontextlost'));
+    expect(view.onUnavailable).toHaveBeenCalledTimes(1);
+    gl[0].calls.length = 0;
+    view.push(new Uint8Array(475).fill(20));
+    flushFrames(32);
+    expect(gl[0].calls).toHaveLength(0);
+  });
+
+  it('records geometry, paints and coalesced frames on the host render trace', () => {
+    const trace = { status: 'recording', record: vi.fn(), recordGeometry: vi.fn() };
+    const view = mountView({ trace });
+    flushFrames(0);
+    trace.record.mockClear(); trace.recordGeometry.mockClear();
+    const first = { id: 1 }, second = { id: 2 };
+    view.push(new Uint8Array(475).fill(20), first);
+    view.push(new Uint8Array(475).fill(40), second);
+    expect(trace.record).toHaveBeenCalledWith('coalesced', first, 0, true);
+    flushFrames(16);
+    expect(trace.recordGeometry).toHaveBeenCalledWith('spectrum', 400, 200, 400, 200, 1);
+    const renders = trace.record.mock.calls.filter(call => call[0] === 'spectrum_render');
+    expect(renders).toHaveLength(1);
+    expect(renders[0][1]).toBe(second);
+    expect(renders[0][2]).toBeGreaterThanOrEqual(0);
   });
 
   it('releases the renderer and stops scheduling on unmount', async () => {
