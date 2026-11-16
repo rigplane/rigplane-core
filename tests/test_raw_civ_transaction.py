@@ -407,6 +407,9 @@ async def test_data_transaction_identity_does_not_steal_older_same_command(
     )
     older = radio._civ_request_tracker.register_response(key)
     transaction = radio._civ_runtime._register_civ_data_transaction(key)
+    # MOR-4384: both are on the wire, the older read first.
+    radio._civ_request_tracker.mark_sent(0.0, futures=(older,))
+    radio._civ_request_tracker.mark_sent(1.0, futures=transaction.futures)
     with pytest.raises(RuntimeError, match="already active"):
         radio._civ_runtime._register_civ_data_transaction(key)
 

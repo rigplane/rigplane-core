@@ -341,6 +341,35 @@ async def test_t1_every_in_order_answer_lands_on_its_own_request(
 
 
 @pytest.mark.timeout(30)
+async def test_t1_a_request_waiting_out_its_pacing_gap_claims_nothing(
+    link_factory: Callable[..., _Link],
+    virtual_clock: VirtualClock,
+) -> None:
+    """T1: registration is not sending; only the send stamp opens a claim.
+
+    Read A is answered; then a duplicate of A's answer (a retransmitted
+    LAN packet) arrives while the identical read B is registered but still
+    waiting out its pacing gap. B is not on the wire yet, so the duplicate
+    answers nothing: B settles on its own, later answer.
+    """
+    gap = 0.2
+    link = link_factory(ordered=False, min_interval=gap)
+    a = _read("af", 1, blocking=True, refused=False, delay=0.01)
+    b = _read("af", 2, blocking=True, refused=False, delay=0.01)
+    assert a.answer is not None
+
+    async def worker() -> tuple[object, object]:
+        outcome_a = await _send(link, a)
+        await link.wire.outbox.put((link.clock() + gap / 2, a.answer))
+        return outcome_a, await _send(link, b)
+
+    outcome_a, outcome_b = await link.run(worker())  # type: ignore[misc]
+
+    _assert_own_outcome(a, outcome_a)
+    _assert_own_outcome(b, outcome_b)
+
+
+@pytest.mark.timeout(30)
 async def test_t2_a_directed_keyed_answer_retires_every_older_entry(
     link_factory: Callable[..., _Link],
     virtual_clock: VirtualClock,

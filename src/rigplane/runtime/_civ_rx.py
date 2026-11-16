@@ -2225,7 +2225,9 @@ class CivRuntime:
             )
         claimed: _CivDataTransaction | None = None
         transport = self._host._civ_transport
-        self._cleanup_stale_civ_waiters()
+        self._host._civ_request_tracker.expire_ack_sinks(
+            answer_window=self._host._civ_get_timeout
+        )
         if self._host._civ_request_tracker.resolve(
             event,
             generation=generation,
@@ -4948,7 +4950,12 @@ class CivRuntime:
                 timeout=self._host._civ_get_timeout,
                 return_when=asyncio.FIRST_COMPLETED,
             )
-            if not done:
+            # A waiter failed with a timeout (an answer proven lost on an
+            # ordered link, MOR-4384, or stale cleanup) is a timeout too.
+            if not done or any(
+                not f.cancelled() and isinstance(f.exception(), asyncio.TimeoutError)
+                for f in done
+            ):
                 check_current()
                 tracker.note_timeout()
                 logger.debug(

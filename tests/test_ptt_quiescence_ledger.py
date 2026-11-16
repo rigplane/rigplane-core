@@ -466,6 +466,7 @@ async def test_reconnect_retains_debt_and_stale_generation_accounting(radio, sta
     waiter = radio._civ_request_tracker.register_response(
         request_key_from_frame(_request())
     )
+    radio._civ_request_tracker.mark_sent(0.0, futures=(waiter,))  # MOR-4384
     if stale:
         await _inject(radio, generation=radio._civ_epoch - 1)
         assert a.answered_by is not None and not waiter.done()
@@ -485,6 +486,7 @@ async def test_reconnect_retains_debt_and_stale_generation_accounting(radio, sta
 async def test_waiter_completion_charged_to_another_entry(radio):
     tracker = radio._civ_request_tracker
     earlier = tracker.register_response(request_key_from_frame(_request()))
+    tracker.mark_sent(0.0, futures=(earlier,))  # MOR-4384: on the wire first
     reading = asyncio.create_task(radio.read_transmit_state())
     while not radio._civ_transport.sent_packets:
         await asyncio.sleep(0)

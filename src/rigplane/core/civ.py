@@ -780,7 +780,6 @@ class CivRequestTracker:
             if entry.future is not None:
                 if not entry.future.done():
                     entry.future.set_exception(asyncio.TimeoutError("CI-V answer lost"))
-                    self._timeout_count += 1
             elif isinstance(entry, _AckWaiter) and entry.response_key is None:
                 self.note_ack_unclaimed()
 
