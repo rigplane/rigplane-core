@@ -1743,6 +1743,30 @@ describe('SpectrumPanel Observation authority and final-gesture intents', () => 
     expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledOnce();
   });
 
+  it('MOR-4463: in the 3D view a click tunes to what the scene draws under the pointer', async () => {
+    const stackedTrace = await import('$lib/stores/stacked-trace.svelte');
+    stackedTrace.setStackedTraceEnabled(true);
+    // The view's label layer runs the flat renderer for real.
+    recordCanvasLayers(noopCanvas as unknown as CanvasRenderingContext2D);
+    try {
+      const target = mountPanel();
+      emitFrame();
+      const { spectrum } = prepareGeometry(target);
+      expect(target.querySelector('[data-stacked-trace]')).not.toBeNull();
+      // The scene paints the frame into its 200 x 100 pane: level 64 of 80,
+      // so the front row stands from 16 to 64 px above the pane bottom.
+      await flushWaterfallPaint();
+      // On the front row's body the pointer's x is its frequency, as on the flat trace.
+      pointer(spectrum, 'pointerdown', 8, 104, { clientY: 80 }); pointer(spectrum, 'pointerup', 8, 104, { clientY: 80 });
+      expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledExactlyOnceWith(14_052_000, 0);
+      // Above every trace the pointer is on the last row, 1 / 2.5 of the
+      // pane wide: 2 % right of the middle there is 5 % of the view.
+      pointer(spectrum, 'pointerdown', 9, 104, { clientY: 20 }); pointer(spectrum, 'pointerup', 9, 104, { clientY: 20 });
+      expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledTimes(2);
+      expect(handlerHarness.vfo.onFreqChange).toHaveBeenLastCalledWith(14_055_000, 0);
+    } finally { stackedTrace.setStackedTraceEnabled(false); }
+  });
+
   it('matching drag cancel preserves the accepted move and never finalizes', () => {
     const target = mountPanel();
     emitFrame();

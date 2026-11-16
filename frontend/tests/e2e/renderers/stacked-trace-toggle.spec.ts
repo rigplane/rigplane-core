@@ -63,6 +63,46 @@ test('flat by default; the 3D key switches the pane, survives a reload and switc
   expect(errors).toEqual([]);
 });
 
+// The panel's own full-height marks read a flat trace. Over the scene they
+// would stand upright against rows drawn in perspective, so the 3D view hides
+// them (it draws the marker and the hatch itself) and keeps the passband
+// handle to the front rows, where it is exact.
+test('the upright marks of the flat trace give way to the scene in the 3D view and return with the flat one', async ({ page }) => {
+  const errors: string[] = []; page.on('pageerror', error => errors.push(error.message));
+  await page.goto('/fixtures/spectrum-witness.html');
+  const area = page.locator('.spectrum-area').first();
+  const box = (await area.boundingBox())!;
+  // Stand-ins carrying the panel's class names, so the test does not depend on the witness state.
+  await area.evaluate((element) => {
+    for (const name of ['tune-line', 'scope-hatch', 'passband-resize-zone']) {
+      const mark = document.createElement('div');
+      mark.className = name; mark.dataset.witness = name;
+      mark.style.cssText = 'position:absolute;left:10%;width:2px;bottom:0;pointer-events:none';
+      if (name !== 'passband-resize-zone') mark.style.top = '0';
+      element.append(mark);
+    }
+  });
+  const witness = (name: string) => page.locator(`[data-witness="${name}"]`);
+  const handleTop = () => witness('passband-resize-zone').evaluate(element => Number.parseFloat(getComputedStyle(element).top));
+  await expect(witness('tune-line')).toBeVisible();
+  await expect(witness('scope-hatch')).toBeVisible();
+  const flatTop = await handleTop();
+
+  await page.getByTestId('scope-3d-toggle').first().click();
+  await expect(page.getByTestId('stacked-trace')).toBeVisible();
+  await expect(witness('tune-line')).toBeHidden();
+  await expect(witness('scope-hatch')).toBeHidden();
+  expect(await handleTop()).toBeCloseTo(box.height * 0.6, 0);
+  expect(await handleTop()).toBeGreaterThan(flatTop + box.height * 0.3);
+
+  await page.getByTestId('scope-3d-toggle').first().click();
+  await expect(page.locator(flat)).toHaveCount(1);
+  await expect(witness('tune-line')).toBeVisible();
+  await expect(witness('scope-hatch')).toBeVisible();
+  expect(await handleTop()).toBe(flatTop);
+  expect(errors).toEqual([]);
+});
+
 test('a browser that refuses the 3D view keeps the flat spectrum and disables the key with the reason', async ({ page }) => {
   const errors: string[] = []; page.on('pageerror', error => errors.push(error.message));
   await page.addInitScript(() => {
