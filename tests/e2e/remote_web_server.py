@@ -66,6 +66,9 @@ class SimSnapshot:
     freq_hz: int
     #: ``MockIcomRadio.ptt_transitions`` as (unix seconds, keyed).
     ptt_transitions: tuple[tuple[float, bool], ...]
+    #: Client audio frames the simulator received with a non-silent payload
+    #: (``capture_tx_audio=True`` retains the payload bytes).
+    tx_audio_signal_frames: int
 
 
 def sim_snapshot(sim: Any) -> SimSnapshot:
@@ -81,6 +84,9 @@ def sim_snapshot(sim: Any) -> SimSnapshot:
         ptt_transitions=tuple(
             (stamp + wall_minus_monotonic, keyed)
             for stamp, keyed in sim.ptt_transitions
+        ),
+        tx_audio_signal_frames=sum(
+            1 for frame in sim.audio_tx_frames if any(frame.payload)
         ),
     )
 

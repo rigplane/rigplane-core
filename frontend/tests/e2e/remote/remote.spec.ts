@@ -125,6 +125,21 @@ test.describe('phone layout', () => {
     await page.mouse.down();
     await expect.poll(async () => (await simState()).ptt_on).toBe(true);
 
+    // MOR-4312: the page asked for RAW microphone capture (no browser voice
+    // processing), and the captured tone reached the simulated radio through
+    // the real page -> WebSocket -> Core -> radio path.
+    const requested = await page.evaluate(
+      () => (window as unknown as { __micConstraints?: Record<string, unknown> }).__micConstraints,
+    );
+    expect(requested).toMatchObject({
+      echoCancellation: false,
+      noiseSuppression: false,
+      autoGainControl: false,
+    });
+    await expect
+      .poll(async () => (await simState()).tx_audio_signal_frames, { timeout: 15_000 })
+      .toBeGreaterThan(0);
+
     // Release: the simulator must report unkeyed within 1 s of the mouse
     // release (same-host wall clocks). The helper correlates the simulator's
     // own journal with this press/release and requires the final state OFF.
