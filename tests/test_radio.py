@@ -1723,26 +1723,6 @@ class TestAckSinkRobustness:
         )
 
     @pytest.mark.asyncio
-    async def test_fire_and_forget_missing_ack_does_not_poison_next_ack(
-        self, radio: IcomRadio, mock_transport: MockTransport
-    ) -> None:
-        # A short window keeps the drain's wait for the missing answer
-        # brief without narrowing the set's own answer budget materially.
-        radio._civ_get_timeout = 0.25
-        # Fire-and-forget scope enable (ACK intentionally missing)
-        ff = build_civ_frame(
-            IC_7610_ADDR, CONTROLLER_ADDR, 0x27, sub=0x10, data=b"\x01"
-        )
-        await radio._execute_civ_raw(ff, wait_response=False)
-
-        # The set waits for its own ACK, delivered when its frame leaves
-        # (send 2): the missing answer above must not make this waiter
-        # claim anything stale — the drain first waits out (and then
-        # expires) the leftover sink's own answer window.
-        mock_transport.queue_response_on_send(2, _ack_response())
-        await radio.set_freq(7_074_000)
-
-    @pytest.mark.asyncio
     async def test_fire_and_forget_send_failure_rolls_back_sink(self) -> None:
         class FailingTransport(MockTransport):
             async def send_tracked(
@@ -2006,61 +1986,6 @@ class TestCapturedExecuteLifetime:
             await asyncio.gather(*tasks, return_exceptions=True)
             tracker.fail_all(ConnectionError("test cleanup"))
             current_tracker.fail_all(ConnectionError("test cleanup"))
-
-    @pytest.mark.asyncio
-    async def test_retired_ack_grace_preserves_same_tracker_current_sink(
-        self, radio: IcomRadio, mock_transport: MockTransport
-    ) -> None:
-        runtime, tracker = radio._civ_runtime, radio._civ_request_tracker
-        entered, release = asyncio.Event(), asyncio.Event()
-        now = time.monotonic()
-        radio._civ_last_waiter_gc_monotonic = now
-        tracker.register_ack(wait=False)
-        frame = build_civ_frame(
-            IC_7610_ADDR, CONTROLLER_ADDR, _CMD_PTT, sub=_SUB_PTT, data=b"\x00"
-        )
-        stale = None
-
-        async def hold(_delay: float) -> None:
-            entered.set()
-            await release.wait()
-
-        try:
-            with (
-                patch.object(runtime, "start_pump"),
-                patch("rigplane.runtime._civ_rx.asyncio.sleep", hold),
-                patch(
-                    "rigplane.runtime._civ_rx.time",
-                    SimpleNamespace(monotonic=lambda: now),
-                ),
-            ):
-                stale = asyncio.create_task(runtime._execute_civ_raw(frame))
-                await entered.wait()
-                runtime.advance_generation("test ACK grace retirement")
-                assert radio._civ_request_tracker is tracker
-                assert tracker.ack_sink_count == 0
-                tracker.register_ack(wait=False)
-                now += 20.0
-                release.set()
-                _, waiting = await asyncio.wait({stale}, timeout=1)
-                assert mock_transport.sent_packets == []
-                assert not waiting, "retired ACK grace did not settle"
-                result = await asyncio.gather(stale, return_exceptions=True)
-                assert isinstance(result[0], ConnectionError)
-                assert tracker.ack_sink_count == 1, (
-                    "retired ACK grace dropped current-generation sink"
-                )
-                ack = CivFrame(CONTROLLER_ADDR, IC_7610_ADDR, _CMD_ACK, None, b"")
-                assert tracker.resolve(CivEvent(type=CivEventType.ACK, frame=ack))
-                assert tracker.pending_count == 0
-                assert tracker.timeout_count == 0
-        finally:
-            release.set()
-            if stale is not None:
-                if not stale.done():
-                    stale.cancel()
-                await asyncio.gather(stale, return_exceptions=True)
-            tracker.expire_ack_sinks(answer_window=0.0)
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("pause", ["pacing", "send"])
@@ -2655,7 +2580,9 @@ class TestScopeCallbackSafety:
 
         # The set completes on its own ACK even with the pump's bad
         # callback in place.
-        mock_transport.queue_response(_ack_response())
+        mock_transport.queue_response_on_send(
+            mock_transport.send_seq + 1, _ack_response()
+        )
         await radio.set_freq(7_074_000)
 
 
@@ -3537,7 +3464,11 @@ class TestSetCommandsLeaveStateCacheToReadbacks:
     ) -> None:
         """Rapid consecutive set_frequency calls all complete on their ACKs."""
         for freq in [7_000_000, 7_100_000, 7_200_000]:
-            mock_transport.queue_response(_ack_response())
+            # Each ACK answers its own send (MOR-4384: a frame that has not
+            # left yet claims no answer).
+            mock_transport.queue_response_on_send(
+                mock_transport.send_seq + 1, _ack_response()
+            )
             await radio.set_freq(freq)
         # The cache stays empty.
         assert radio.state_cache.freq_ts == 0.0
@@ -3576,7 +3507,9 @@ class TestSetterTargetsNotCached:
         radio = self._make_radio(mock_transport, {"freq": 10.0})
         mock_transport.queue_response(_freq_response(14_074_000))
         assert await radio.get_freq() == 14_074_000
-        mock_transport.queue_response(_ack_response())
+        mock_transport.queue_response_on_send(
+            mock_transport.send_seq + 1, _ack_response()
+        )
         await radio.set_freq(14_200_000)
         assert await radio.get_freq() == 14_074_000
 

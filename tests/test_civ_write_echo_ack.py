@@ -109,6 +109,7 @@ async def test_fb_still_acks_and_fa_still_refuses_write_waiter(
         consume_backlog=False,
         write_identity=read_identity_from_frame(write),
     )
+    tracker.mark_sent(1.0, futures=(ack_future,))  # MOR-4384: on the wire
     assert isinstance(ack_future, asyncio.Future)
     assert (
         tracker.resolve(
@@ -126,6 +127,7 @@ async def test_fb_still_acks_and_fa_still_refuses_write_waiter(
         consume_backlog=False,
         write_identity=read_identity_from_frame(write),
     )
+    tracker.mark_sent(2.0, futures=(nak_future,))  # MOR-4384: on the wire
     assert isinstance(nak_future, asyncio.Future)
     assert (
         tracker.resolve(
@@ -288,13 +290,15 @@ async def test_nak_only_waiter_is_not_claimed_as_a_write(
 async def test_older_read_sink_wins_over_write_echo(radio_addr: int) -> None:
     tracker = CivRequestTracker()
     read = _frame(radio_addr, CONTROLLER_ADDR, 0x1C, 0x00)
-    tracker.register_ack(wait=False, response_key=request_key_from_frame(read))
+    sink = tracker.register_ack(wait=False, response_key=request_key_from_frame(read))
+    tracker.mark_sent(1.0, token=sink)  # MOR-4384: on the wire
     write = _write(radio_addr, 0x1C, 0x00, b"\x00")
     write_future = tracker.register_ack(
         wait=True,
         consume_backlog=False,
         write_identity=read_identity_from_frame(write),
     )
+    tracker.mark_sent(2.0, futures=(write_future,))  # MOR-4384: on the wire
     assert isinstance(write_future, asyncio.Future)
 
     assert (
@@ -325,9 +329,11 @@ async def test_newer_read_sink_wins_over_write_echo(radio_addr: int) -> None:
         consume_backlog=False,
         write_identity=read_identity_from_frame(write),
     )
+    tracker.mark_sent(1.0, futures=(write_future,))  # MOR-4384: on the wire
     assert isinstance(write_future, asyncio.Future)
     read = _frame(radio_addr, CONTROLLER_ADDR, 0x1C, 0x00)
-    tracker.register_ack(wait=False, response_key=request_key_from_frame(read))
+    sink = tracker.register_ack(wait=False, response_key=request_key_from_frame(read))
+    tracker.mark_sent(2.0, token=sink)  # MOR-4384: on the wire
 
     assert (
         tracker.resolve_write_echo(
@@ -357,9 +363,11 @@ async def test_blocking_read_waiter_wins_over_write_echo(radio_addr: int) -> Non
         consume_backlog=False,
         write_identity=read_identity_from_frame(write),
     )
+    tracker.mark_sent(1.0, futures=(write_future,))  # MOR-4384: on the wire
     assert isinstance(write_future, asyncio.Future)
     read = _frame(radio_addr, CONTROLLER_ADDR, 0x1C, 0x00)
     read_future = tracker.register_response(request_key_from_frame(read))
+    tracker.mark_sent(2.0, futures=(read_future,))  # MOR-4384: on the wire
 
     echo = _frame(CONTROLLER_ADDR, radio_addr, 0x1C, 0x00, b"\x00")
     assert tracker.resolve_write_echo(echo) is False
