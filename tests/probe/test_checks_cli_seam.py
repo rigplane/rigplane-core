@@ -43,9 +43,7 @@ def _synth_cat_check() -> ProbeCheck:
                 kind="write", command="set_freq", values=(("freq", 7074000),)
             ),
             ProbeCheckStep(kind="read", command="get_freq"),
-            ProbeCheckStep(
-                kind="write", command="set_mode", values=(("mode", "1"),)
-            ),
+            ProbeCheckStep(kind="write", command="set_mode", values=(("mode", "1"),)),
             ProbeCheckStep(kind="read", command="get_mode"),
         ),
         restore=(
@@ -148,7 +146,7 @@ def _cat_audit(radio, config, expected_writes: set[str]) -> None:
     """
     from rigplane.commands.command_spec import CatCommandSpec
 
-    from rigplane.probe.write_policy import YAESU_NEVER, YAESU_WRITE_ALLOW
+    from rigplane.profiles.probe_checks import YAESU_NEVER, YAESU_WRITE_ALLOW
 
     read_verbs = {
         spec.read[:2].upper()
@@ -175,8 +173,15 @@ def test_checks_without_terminal_is_exit_2(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(
         "sys.argv",
         [
-            "rigplane", "probe", "FTX-1", "--port", "fake",
-            "--yes", "--out", str(out), "--checks",
+            "rigplane",
+            "probe",
+            "FTX-1",
+            "--port",
+            "fake",
+            "--yes",
+            "--out",
+            str(out),
+            "--checks",
         ],
     )
 
@@ -201,9 +206,19 @@ async def test_yes_does_not_consent_to_checks(tmp_path, monkeypatch) -> None:
         _patch_rigs(monkeypatch, rigs)
         code = await _run_main_cat(
             monkeypatch,
-            ["probe", "FTX-1", "--port", radio.device_url,
-             "--yes", "--out", str(out), "--checks", "--label", "seam-n"],
-            ["y", "y", "n", "y"],
+            [
+                "probe",
+                "FTX-1",
+                "--port",
+                radio.device_url,
+                "--yes",
+                "--out",
+                str(out),
+                "--checks",
+                "--label",
+                "seam-n",
+            ],
+            ["n", "y"],
         )
     finally:
         await radio.stop()
@@ -226,8 +241,15 @@ async def test_per_check_default_is_no(tmp_path, monkeypatch) -> None:
         _patch_rigs(monkeypatch, rigs)
         code = await _run_main_cat(
             monkeypatch,
-            ["probe", "FTX-1", "--port", radio.device_url,
-             "--out", str(out), "--checks"],
+            [
+                "probe",
+                "FTX-1",
+                "--port",
+                radio.device_url,
+                "--out",
+                str(out),
+                "--checks",
+            ],
             ["y", "y", "", "y"],
         )
     finally:
@@ -251,8 +273,17 @@ async def test_full_cat_run_with_synthetic_check(tmp_path, monkeypatch) -> None:
         _patch_rigs(monkeypatch, rigs)
         code = await _run_main_cat(
             monkeypatch,
-            ["probe", "FTX-1", "--port", radio.device_url,
-             "--out", str(out), "--checks", "--label", "seam-y"],
+            [
+                "probe",
+                "FTX-1",
+                "--port",
+                radio.device_url,
+                "--out",
+                str(out),
+                "--checks",
+                "--label",
+                "seam-y",
+            ],
             ["y", "y", "y", "y"],
         )
     finally:
@@ -283,8 +314,15 @@ async def test_clamped_cat_write_is_unverified_exit_0(tmp_path, monkeypatch) -> 
         _patch_rigs(monkeypatch, rigs)
         code = await _run_main_cat(
             monkeypatch,
-            ["probe", "FTX-1", "--port", radio.device_url,
-             "--out", str(out), "--checks"],
+            [
+                "probe",
+                "FTX-1",
+                "--port",
+                radio.device_url,
+                "--out",
+                str(out),
+                "--checks",
+            ],
             ["y", "y", "y", "y"],
         )
     finally:
@@ -295,8 +333,9 @@ async def test_clamped_cat_write_is_unverified_exit_0(tmp_path, monkeypatch) -> 
     (record,) = document.checks
     assert record.verified is False
     assert record.restored is True
-    rows = {row.request_hex: row for row in record.steps}
-    assert rows["FA007074000;".encode("ascii").hex()].reply_text == "FA005000000;"
+    # A Yaesu set draws no reply: the clamped value shows on the read row.
+    rows = {row.request_hex: row for row in record.steps if row.kind == "read"}
+    assert rows["FA;".encode("ascii").hex()].reply_text == "FA005000000;"
     _cat_audit(radio, config, _WRITES_CAT)
 
 
@@ -313,8 +352,16 @@ async def test_link_dies_mid_check_leaves_journal_exit_4(tmp_path, monkeypatch) 
         monkeypatch.setattr(sys, "stdin", _FakeStdin(["y", "y", "y", "y"]))
         monkeypatch.setattr(
             "sys.argv",
-            ["rigplane", "probe", "FTX-1", "--port", radio.device_url,
-             "--out", str(out), "--checks"],
+            [
+                "rigplane",
+                "probe",
+                "FTX-1",
+                "--port",
+                radio.device_url,
+                "--out",
+                str(out),
+                "--checks",
+            ],
         )
         monkeypatch.setattr(probe_cli, "open_result_folder", lambda path: None)
 
@@ -386,8 +433,7 @@ def test_next_start_prints_pending_journal(tmp_path, monkeypatch, capsys) -> Non
     monkeypatch.setattr(probe_cli, "open_serial_port", fake_open)
     code = _run_main(
         monkeypatch,
-        ["probe", "FTX-1", "--port", "fake",
-         "--yes", "--out", str(out), "--checks"],
+        ["probe", "FTX-1", "--port", "fake", "--yes", "--out", str(out), "--checks"],
         [],
     )
     assert code == 0
@@ -399,11 +445,17 @@ def test_next_start_prints_pending_journal(tmp_path, monkeypatch, capsys) -> Non
 
 
 def test_full_civ_run_with_synthetic_check_no_network(tmp_path, monkeypatch) -> None:
+    from rigplane.commands import build_civ_frame, parse_civ_frame
     from rigplane.core.serial_open import open_serial_port as real_open
+    from rigplane.types import bcd_encode
     from rigplane_testkit.serial import CivSerialFake
 
     out = tmp_path / "probe.json"
+    rigs, config = _rigs_with("IC-7300", "ic7300", _synth_civ_check())
+    _patch_rigs(monkeypatch, rigs)
+    power_command, power_sub = config.commands["get_rf_power"].bytes
     fake = CivSerialFake(model="IC-7300", echo=False)
+    fake.set_level(power_sub, b"\x00\x00")
 
     async def fake_open(device: str, baudrate: int | None = None, **kwargs):
         return await real_open(device, baudrate=baudrate, opener=fake.opener)
@@ -414,12 +466,19 @@ def test_full_civ_run_with_synthetic_check_no_network(tmp_path, monkeypatch) -> 
         raise AssertionError("probe must not open network connections here")
 
     monkeypatch.setattr(socket, "create_connection", _refuse_network)
-    rigs, _config = _rigs_with("IC-7300", "ic7300", _synth_civ_check())
-    _patch_rigs(monkeypatch, rigs)
     code = _run_main(
         monkeypatch,
-        ["probe", "IC-7300", "--port", "fake-usb-serial",
-         "--out", str(out), "--checks", "--label", "seam-civ"],
+        [
+            "probe",
+            "IC-7300",
+            "--port",
+            "fake-usb-serial",
+            "--out",
+            str(out),
+            "--checks",
+            "--label",
+            "seam-civ",
+        ],
         ["y", "y", "y", "y"],
     )
     assert code == 0
@@ -430,14 +489,42 @@ def test_full_civ_run_with_synthetic_check_no_network(tmp_path, monkeypatch) -> 
     assert record.verified is True
     assert record.restored is True
     assert fake.frequency_hz == 14_074_000
-    from rigplane.probe.write_policy import CIV_NEVER_ANY, CIV_WRITE_ALLOW
+    from rigplane.commands.command_spec import CivCommandSpec
+    from rigplane.profiles.probe_checks import CIV_NEVER_ANY, CIV_WRITE_ALLOW
 
+    declared = {
+        bytes(spec.bytes)
+        for spec in config.commands.values()
+        if isinstance(spec, CivCommandSpec)
+    }
+
+    def shape(command: int, sub: int | None, data: bytes) -> tuple:
+        frame = parse_civ_frame(
+            build_civ_frame(0x94, 0xE0, command, sub=sub, data=data)
+        )
+        return frame.command, frame.sub, frame.data
+
+    expected_writes = {
+        shape(0x05, None, bcd_encode(7074000)),
+        shape(0x05, None, bcd_encode(14_074_000)),
+        shape(power_command, power_sub, b"\x64"),
+        shape(power_command, power_sub, b"\x00\x00"),
+    }
     for frame in fake.commands:
-        assert frame.command in CIV_WRITE_ALLOW, frame.command
         assert (frame.command, None) not in CIV_NEVER_ANY, frame.command
+        if (frame.command, frame.sub, frame.data) in expected_writes:
+            assert frame.command in CIV_WRITE_ALLOW, frame.command
+        else:
+            # Every other frame is a read: no data, or a declared read, or off the write list.
+            sub = b"" if frame.sub is None else bytes([frame.sub])
+            body = bytes([frame.command]) + sub + frame.data
+            data_free = not frame.data or body in declared
+            assert frame.command not in CIV_WRITE_ALLOW or data_free, frame
 
 
-def test_checks_on_profile_without_checks_says_so(tmp_path, monkeypatch, capsys) -> None:
+def test_checks_on_profile_without_checks_says_so(
+    tmp_path, monkeypatch, capsys
+) -> None:
     out = tmp_path / "probe.json"
     seen: list[bytes] = []
 
@@ -468,8 +555,7 @@ def test_checks_on_profile_without_checks_says_so(tmp_path, monkeypatch, capsys)
     monkeypatch.setattr(probe_cli, "open_serial_port", fake_open)
     code = _run_main(
         monkeypatch,
-        ["probe", "FTX-1", "--port", "fake",
-         "--yes", "--out", str(out), "--checks"],
+        ["probe", "FTX-1", "--port", "fake", "--yes", "--out", str(out), "--checks"],
         [],
     )
     assert code == 0

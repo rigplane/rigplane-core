@@ -10,7 +10,7 @@ reason from a closed enum, so a silent omission is impossible.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from typing import Any
 
 __all__ = [
@@ -84,15 +84,14 @@ SKIP_REASONS = frozenset(
 #: serial link. The parser refuses any other status.
 TERMINATION_STATUSES = frozenset({"completed", "silence_stop", "transport_error"})
 
-#: How a probe run ran: ``read`` is the read-only pass, ``read+checks``
-#: ran at least one consented write check after it. The parser refuses
-#: any other mode.
+#: Run modes: ``read+checks`` ran at least one consented write check.
 MODES = frozenset({"read", "read+checks"})
 
-#: What a check step did: a profile ``write``/``read`` by command name,
-#: a literal ``raw_read``/``raw_write`` outside the declared commands,
-#: or an ``ask`` put to the person (recorded in ``answers``, not here).
+#: Check step kinds recorded as wire rows (``ask`` goes to ``answers``).
 STEP_KINDS = frozenset({"write", "read", "raw_read", "raw_write"})
+
+#: Dataclass fields whose JSON key differs (the outcome class).
+_JSON_KEY = {"outcome": "class"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -203,11 +202,8 @@ class TerminationInfo:
 
 @dataclass(frozen=True, slots=True)
 class CheckStepRow:
-    """One wire step of a write check and the radio's exact reply.
-
-    ``outcome`` is the convenience class; the JSON key is ``class``.
-    ``reply_hex``/``reply_text`` are ``None`` when nothing arrived.
-    """
+    """One wire step of a check and the radio's exact reply (JSON key of
+    ``outcome`` is ``class``; ``reply_*`` are ``None`` when nothing arrived)."""
 
     kind: str
     name: str
@@ -231,32 +227,31 @@ class CheckAnswerRow:
 class CheckWitness:
     """Profile reads snapshotted before and after one check."""
 
-    before: dict[str, str | None]
-    after: dict[str, str | None]
-    changed: list[str]
+    before: dict[str, str | None] = field(default_factory=dict)
+    after: dict[str, str | None] = field(default_factory=dict)
+    changed: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True, slots=True)
 class CheckRecord:
-    """One consented write check: what changed, what was asked, and
-    whether the originals were put back and verified."""
+    """One consented write check: what was asked and changed, and whether
+    the originals were put back and verified."""
 
     id: str
     title: str
-    preconditions_ok: bool
-    steps: tuple[CheckStepRow, ...]
-    answers: tuple[CheckAnswerRow, ...]
-    originals: dict[str, str]
-    witness: CheckWitness
-    restored: bool
-    verified: bool
-    error: str | None
+    preconditions_ok: bool = True
+    steps: tuple[CheckStepRow, ...] = ()
+    answers: tuple[CheckAnswerRow, ...] = ()
+    originals: dict[str, str] = field(default_factory=dict)
+    witness: CheckWitness = field(default_factory=CheckWitness)
+    restored: bool = True
+    verified: bool = True
+    error: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class ProbeFile:
-    """One ``rigplane-probe-v1`` document. ``checks`` holds one typed
-    record per write check that ran (empty for a read-only run)."""
+    """One ``rigplane-probe-v1`` document."""
 
     tool: ToolInfo
     mode: str
@@ -353,40 +348,12 @@ def _to_plain(file: ProbeFile) -> dict[str, Any]:
 
 
 def _check_record_to_plain(record: CheckRecord) -> dict[str, Any]:
-    return {
-        "id": record.id,
-        "title": record.title,
-        "preconditions_ok": record.preconditions_ok,
-        "steps": [
-            {
-                "kind": row.kind,
-                "name": row.name,
-                "request_hex": row.request_hex,
-                "request_text": row.request_text,
-                "reply_hex": row.reply_hex,
-                "reply_text": row.reply_text,
-                "class": row.outcome,
-            }
-            for row in record.steps
-        ],
-        "answers": [
-            {
-                "question": row.question,
-                "answer": row.answer,
-                "skipped": row.skipped,
-            }
-            for row in record.answers
-        ],
-        "originals": dict(record.originals),
-        "witness": {
-            "before": dict(record.witness.before),
-            "after": dict(record.witness.after),
-            "changed": list(record.witness.changed),
-        },
-        "restored": record.restored,
-        "verified": record.verified,
-        "error": record.error,
-    }
+    plain = asdict(record)
+    plain["steps"] = [
+        {_JSON_KEY.get(key, key): value for key, value in step.items()}
+        for step in plain["steps"]
+    ]
+    return plain
 
 
 def _need_str(document: Any, path: str) -> str:
@@ -619,9 +586,7 @@ def _from_plain(document: Any) -> ProbeFile:
     checks = mapping["checks"]
     if not isinstance(checks, list):
         raise ValueError("field checks must be an array")
-    records = tuple(
-        _check_record(row, index) for index, row in enumerate(checks)
-    )
+    records = tuple(_check_record(row, index) for index, row in enumerate(checks))
     before = _need_mapping(snapshot["before"], "snapshot.before")
     after = _need_mapping(snapshot["after"], "snapshot.after")
     for label, side in (("before", before), ("after", after)):
@@ -661,133 +626,100 @@ def _from_plain(document: Any) -> ProbeFile:
     )
 
 
-def _check_step_row(document: Any, check: int, index: int) -> CheckStepRow:
-    mapping = _need_mapping(document, f"checks[{check}].steps[{index}]")
-    for key in (
-        "kind", "name", "request_hex", "request_text",
-        "reply_hex", "reply_text", "class",
-    ):
+def _need_fields(mapping: dict[str, Any], path: str, cls: type) -> None:
+    """Every field of dataclass *cls* is present under its JSON key."""
+    for item in fields(cls):
+        key = _JSON_KEY.get(item.name, item.name)
         if key not in mapping:
-            raise _missing(f"checks[{check}].steps[{index}].{key}")
-    kind = _need_str(mapping["kind"], f"checks[{check}].steps[{index}].kind")
-    if kind not in STEP_KINDS:
-        raise ValueError(
-            f"field checks[{check}].steps[{index}].kind "
-            f"must be one of {sorted(STEP_KINDS)}"
-        )
-    outcome = _need_str(mapping["class"], f"checks[{check}].steps[{index}].class")
-    if outcome not in OUTCOMES:
-        raise ValueError(
-            f"field checks[{check}].steps[{index}].class "
-            f"must be one of {sorted(OUTCOMES)}"
-        )
-    reply_hex = mapping["reply_hex"]
-    reply_text = mapping["reply_text"]
+            raise _missing(f"{path}.{key}")
+
+
+def _need_choice(value: Any, path: str, allowed: frozenset[str]) -> str:
+    text = _need_str(value, path)
+    if text not in allowed:
+        raise ValueError(f"field {path} must be one of {sorted(allowed)}")
+    return text
+
+
+def _need_opt_str(value: Any, path: str) -> str | None:
+    return value if value is None else _need_str(value, path)
+
+
+def _need_list(value: Any, path: str) -> list[Any]:
+    if not isinstance(value, list):
+        raise ValueError(f"field {path} must be an array")
+    return value
+
+
+def _need_str_map(value: Any, path: str, *, nullable: bool = False) -> dict[str, Any]:
+    mapping = _need_mapping(value, path)
+    need = _need_opt_str if nullable else _need_str
+    for key, item in mapping.items():
+        need(item, f"{path}.{key}")
+    return dict(mapping)
+
+
+def _check_step_row(document: Any, where: str) -> CheckStepRow:
+    row = _need_mapping(document, where)
+    _need_fields(row, where, CheckStepRow)
+    reply_hex = row["reply_hex"]
     if reply_hex is not None:
-        _need_hex(reply_hex, f"checks[{check}].steps[{index}].reply_hex")
-    if reply_text is not None and not isinstance(reply_text, str):
-        raise ValueError(
-            f"field checks[{check}].steps[{index}].reply_text "
-            "must be a string or null"
-        )
+        _need_hex(reply_hex, f"{where}.reply_hex")
     return CheckStepRow(
-        kind=kind,
-        name=_need_str(mapping["name"], f"checks[{check}].steps[{index}].name"),
-        request_hex=_need_hex(
-            mapping["request_hex"], f"checks[{check}].steps[{index}].request_hex"
-        ),
-        request_text=_need_str(
-            mapping["request_text"], f"checks[{check}].steps[{index}].request_text"
-        ),
+        kind=_need_choice(row["kind"], f"{where}.kind", STEP_KINDS),
+        name=_need_str(row["name"], f"{where}.name"),
+        request_hex=_need_hex(row["request_hex"], f"{where}.request_hex"),
+        request_text=_need_str(row["request_text"], f"{where}.request_text"),
         reply_hex=reply_hex,
-        reply_text=reply_text,
-        outcome=outcome,
+        reply_text=_need_opt_str(row["reply_text"], f"{where}.reply_text"),
+        outcome=_need_choice(row["class"], f"{where}.class", OUTCOMES),
     )
 
 
-def _check_answer_row(document: Any, check: int, index: int) -> CheckAnswerRow:
-    mapping = _need_mapping(document, f"checks[{check}].answers[{index}]")
-    for key in ("question", "answer", "skipped"):
-        if key not in mapping:
-            raise _missing(f"checks[{check}].answers[{index}].{key}")
-    answer = mapping["answer"]
-    if answer is not None and not isinstance(answer, str):
-        raise ValueError(
-            f"field checks[{check}].answers[{index}].answer must be a string or null"
-        )
+def _check_answer_row(document: Any, where: str) -> CheckAnswerRow:
+    row = _need_mapping(document, where)
+    _need_fields(row, where, CheckAnswerRow)
     return CheckAnswerRow(
-        question=_need_str(
-            mapping["question"], f"checks[{check}].answers[{index}].question"
-        ),
-        answer=answer,
-        skipped=_need_bool(
-            mapping["skipped"], f"checks[{check}].answers[{index}].skipped"
-        ),
+        question=_need_str(row["question"], f"{where}.question"),
+        answer=_need_opt_str(row["answer"], f"{where}.answer"),
+        skipped=_need_bool(row["skipped"], f"{where}.skipped"),
     )
 
 
 def _check_record(document: Any, index: int) -> CheckRecord:
-    mapping = _need_mapping(document, f"checks[{index}]")
-    for key in (
-        "id", "title", "preconditions_ok", "steps", "answers", "originals",
-        "witness", "restored", "verified", "error",
-    ):
-        if key not in mapping:
-            raise _missing(f"checks[{index}].{key}")
-    steps = mapping["steps"]
-    answers = mapping["answers"]
-    if not isinstance(steps, list):
-        raise ValueError(f"field checks[{index}].steps must be an array")
-    if not isinstance(answers, list):
-        raise ValueError(f"field checks[{index}].answers must be an array")
-    originals = mapping["originals"]
-    if not isinstance(originals, dict) or not all(
-        isinstance(name, str) and isinstance(value, str)
-        for name, value in originals.items()
-    ):
-        raise ValueError("field checks[{index}].originals must be an object of strings")
-    witness = _need_mapping(mapping["witness"], f"checks[{index}].witness")
-    for key in ("before", "after", "changed"):
-        if key not in witness:
-            raise _missing(f"checks[{index}].witness.{key}")
-    for label in ("before", "after"):
-        side = witness[label]
-        if not isinstance(side, dict) or not all(
-            isinstance(name, str) and (value is None or isinstance(value, str))
-            for name, value in side.items()
-        ):
-            raise ValueError(
-                f"field checks[{index}].witness.{label} "
-                "must be an object of strings or null"
-            )
-    changed = witness["changed"]
-    if not isinstance(changed, list) or not all(
-        isinstance(name, str) for name in changed
-    ):
-        raise ValueError(f"field checks[{index}].witness.changed must be an array")
-    error = mapping["error"]
-    if error is not None and not isinstance(error, str):
-        raise ValueError(f"field checks[{index}].error must be a string or null")
+    where = f"checks[{index}]"
+    row = _need_mapping(document, where)
+    _need_fields(row, where, CheckRecord)
+    witness = _need_mapping(row["witness"], f"{where}.witness")
+    _need_fields(witness, f"{where}.witness", CheckWitness)
     return CheckRecord(
-        id=_need_str(mapping["id"], f"checks[{index}].id"),
-        title=_need_str(mapping["title"], f"checks[{index}].title"),
+        id=_need_str(row["id"], f"{where}.id"),
+        title=_need_str(row["title"], f"{where}.title"),
         preconditions_ok=_need_bool(
-            mapping["preconditions_ok"], f"checks[{index}].preconditions_ok"
+            row["preconditions_ok"], f"{where}.preconditions_ok"
         ),
         steps=tuple(
-            _check_step_row(row, index, step) for step, row in enumerate(steps)
+            _check_step_row(step, f"{where}.steps[{i}]")
+            for i, step in enumerate(_need_list(row["steps"], f"{where}.steps"))
         ),
         answers=tuple(
-            _check_answer_row(row, index, answer)
-            for answer, row in enumerate(answers)
+            _check_answer_row(answer, f"{where}.answers[{i}]")
+            for i, answer in enumerate(_need_list(row["answers"], f"{where}.answers"))
         ),
-        originals=dict(originals),
+        originals=_need_str_map(row["originals"], f"{where}.originals"),
         witness=CheckWitness(
-            before=dict(witness["before"]),
-            after=dict(witness["after"]),
-            changed=list(changed),
+            before=_need_str_map(
+                witness["before"], f"{where}.witness.before", nullable=True
+            ),
+            after=_need_str_map(
+                witness["after"], f"{where}.witness.after", nullable=True
+            ),
+            changed=[
+                _need_str(name, f"{where}.witness.changed")
+                for name in _need_list(witness["changed"], f"{where}.witness.changed")
+            ],
         ),
-        restored=_need_bool(mapping["restored"], f"checks[{index}].restored"),
-        verified=_need_bool(mapping["verified"], f"checks[{index}].verified"),
-        error=error,
+        restored=_need_bool(row["restored"], f"{where}.restored"),
+        verified=_need_bool(row["verified"], f"{where}.verified"),
+        error=_need_opt_str(row["error"], f"{where}.error"),
     )

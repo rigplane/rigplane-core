@@ -35,7 +35,7 @@ from rigplane.profiles.rig_loader import RigConfig
 from rigplane.probe import render
 from rigplane.probe.checks import run_checks
 from rigplane.probe.journal import find_pending_journal, read_journal
-from rigplane.probe.model import ProbeFile
+from rigplane.probe.model import CheckRecord, ProbeFile
 from rigplane.probe.render import DEFAULT_PROBE_PROG
 from rigplane.probe.readlist import ReadRequest, build_read_plan
 from rigplane.probe.runner import (
@@ -439,30 +439,20 @@ def _is_yes(answer: str) -> bool:
     return answer.strip().lower() in ("", "y", "yes")
 
 
-async def _ask_async(
-    ask: Callable[[str], str], prompt: str
-) -> str | None:
-    """Ask on a daemon thread so a 60 s timeout never holds the process.
-
-    ``input()`` blocks until the person answers; after the engine times
-    the question out as skipped the thread stays blocked, and only a
-    daemon thread lets the run still exit.
-    """
+async def _ask_async(ask: Callable[[str], str], prompt: str) -> str | None:
+    """Ask on a daemon thread: after a timed-out question the blocked
+    ``input()`` must not keep the process from exiting."""
     loop = asyncio.get_running_loop()
     future: asyncio.Future[str | None] = loop.create_future()
 
     def target() -> None:
         try:
-            answer = ask(prompt)
+            answer: str | None = ask(prompt)
         except (EOFError, OSError):
-            loop.call_soon_threadsafe(future.set_result, None)
-        except BaseException as error:  # noqa: BLE001 -- ask runs user code
-            loop.call_soon_threadsafe(future.set_exception, error)
-        else:
-            loop.call_soon_threadsafe(future.set_result, answer)
+            answer = None
+        loop.call_soon_threadsafe(future.set_result, answer)
 
-    thread = threading.Thread(target=target, daemon=True)
-    thread.start()
+    threading.Thread(target=target, daemon=True).start()
     return await future
 
 
@@ -490,12 +480,11 @@ async def execute(
     """Run the probe end to end; return the process exit code.
 
     0 ok, 2 bad usage (unknown profile, unsupported protocol, refusing to
-    save without ``--yes`` outside a TTY, ``--checks`` without a
-    terminal), 3 the port cannot be opened or nothing answered at all, 4
-    a write check's restore did not verify. The file is written only
-    after the save answer. The tool itself records no port path, host,
-    or user - only what you type in ``--label``, plus the radio's
-    answers.
+    save without ``--yes`` outside a TTY), 3 the port cannot be opened or
+    nothing answered at all. The file is written only after the save
+    answer. The tool itself records no port path, host, or user - only
+    what you type in ``--label``, plus the radio's answers. With
+    ``checks``, 2 also means no terminal and 4 a restore that did not verify.
     """
     if config.protocol_type not in _SUPPORTED:
         emit(render.not_supported_message(config.protocol_type))
@@ -512,15 +501,14 @@ async def execute(
         )
         if pending is not None:
             try:
-                journal = read_journal(pending)
-                items = [
-                    f"{render.human_read_name(name)} {value}"
-                    for name, value in journal.originals.items()
-                ]
+                originals = read_journal(pending).originals
             except ValueError:
                 emit(render.journal_unreadable_message(str(pending)))
             else:
-                emit(render.journal_pending_message(items, str(pending)))
+                held = [
+                    f"{render.human_read_name(n)} {v}" for n, v in originals.items()
+                ]
+                emit(render.journal_pending_message(held, str(pending)))
 
     plan = build_read_plan(
         config, include_private=include_private, siblings=sibling_configs
@@ -620,7 +608,7 @@ async def _execute_after_open(
         # the file itself is created exclusively at save time below.
         saved_abs = _default_out_path(config.model, documents_dir)
         exclusive = True
-    check_records = ()
+    check_records: tuple[CheckRecord, ...] = ()
     checks_exit = 0
     checks_line: str | None = None
     if checks and report.file.termination.status == "completed":
@@ -630,46 +618,42 @@ async def _execute_after_open(
             emit(render.checks_intro(len(config.probe_checks)))
             # --yes never covers checks: every check asks, default no.
             if _is_yes(ask(render.checks_consent_prompt())):
-                journal_path = Path(f"{saved_abs}.checks-journal.json")
-
-                async def ask_one(prompt: str) -> str | None:
-                    return await _ask_async(ask, prompt)
-
                 result = await run_checks(
                     config=config,
                     exchange=exchange,
                     gap_s=gap_s,
                     timeout_s=window,
-                    journal_path=journal_path,
+                    journal_path=Path(f"{saved_abs}.checks-journal.json"),
                     consent=ask,
-                    ask=ask_one,
+                    ask=lambda prompt: _ask_async(ask, prompt),
                     emit=emit,
                 )
-                check_records = result.records
-                checks_exit = result.exit_code
+                check_records, checks_exit = result.records, result.exit_code
                 if check_records:
-                    changed: list[str] = []
-                    for record in check_records:
-                        for name in record.originals:
-                            human = render.human_read_name(name)
-                            if human not in changed:
-                                changed.append(human)
+                    changed = dict.fromkeys(
+                        render.human_read_name(name)
+                        for record in check_records
+                        for name in record.originals
+                    )
                     checks_line = render.checks_summary_line(
                         len(check_records),
-                        sum(1 for record in check_records if record.verified),
+                        sum(record.verified for record in check_records),
                         len(config.probe_checks) - len(check_records),
-                        changed,
+                        list(changed),
                     )
-    file = report.file
     if check_records:
-        file = replace(file, mode="read+checks", checks=check_records)
-    content = file.to_json()
-    identity = file.radio.identity_reported
+        report = replace(
+            report, file=replace(report.file, mode="read+checks", checks=check_records)
+        )
+    content = report.file.to_json()
+    identity = report.file.radio.identity_reported
     settings = [
-        f"{name} {value}" for name, value in file.snapshot.before.items() if value is not None
+        f"{name} {value}"
+        for name, value in report.file.snapshot.before.items()
+        if value is not None
     ]
     skipped_counts: dict[str, int] = {}
-    for entry in file.skipped:
+    for entry in report.file.skipped:
         skipped_counts[entry.reason] = skipped_counts.get(entry.reason, 0) + 1
     absent_answered = [
         render.AbsentAnswer(
@@ -677,21 +661,21 @@ async def _execute_after_open(
             request_hex=row.request_hex,
             reply_hex=row.reply_hex,
         )
-        for row in file.commands
+        for row in report.file.commands
         if row.expected == "absent"
         and row.outcome == "data"
         and not row.name.startswith("unknown:")
     ]
     present_missed = [
         row.name
-        for row in file.commands
+        for row in report.file.commands
         if row.expected == "present" and row.outcome in ("refused", "silent")
     ]
     emit(
         render.pre_save_summary(
             path=str(saved_abs),
             size_bytes=len(content.encode("utf-8")),
-            n_commands=len(file.commands),
+            n_commands=len(report.file.commands),
             identity_text=(
                 f"model code {identity.parsed}" if identity.parsed else "unknown model"
             ),
@@ -700,7 +684,7 @@ async def _execute_after_open(
             skipped_counts=skipped_counts,
             absent_answered=absent_answered,
             present_missed=present_missed,
-            termination=file.termination,
+            termination=report.file.termination,
             checks_line=checks_line,
         )
     )
@@ -719,7 +703,7 @@ async def _execute_after_open(
             opener(actual.parent)
         except Exception:
             pass  # an opening failure is never an error and is silent
-    if not _any_answer(file):
+    if not _any_answer(report.file):
         emit(render.no_answers_message())
         return 3
     return checks_exit

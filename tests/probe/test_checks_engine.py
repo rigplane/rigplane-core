@@ -159,8 +159,6 @@ async def _run(
     ask_timeout_s: float = 60.0,
     clamp: dict[str, str] | None = None,
 ):
-    from rigplane.probe.checks import run_checks
-
     wire = StatefulScriptedWire(script, clamp=clamp)
     emitted: list[str] = []
     answer_iter = iter(answers or [])

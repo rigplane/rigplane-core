@@ -60,7 +60,6 @@ __all__ = [
     "port_without_profile_message",
     "pre_save_summary",
     "precondition_abort_message",
-    "read_failed_message",
     "readback_mismatch_message",
     "rehearsal_failed_message",
     "present_missed_line",
@@ -77,6 +76,7 @@ __all__ = [
     "termination_line",
     "transport_error_message",
     "witness_changed_message",
+    "read_failed_message",
     "write_failed_message",
 ]
 
@@ -302,8 +302,7 @@ def pre_save_summary(
     if checks_line:
         head += checks_line + "\n"
     return (
-        head
-        + "The tool itself does not add your name, computer name, internet "
+        head + "The tool itself does not add your name, computer name, internet "
         "address, or any file from your computer.\n"
         "But the --label text is saved exactly as you typed it, and stored "
         "memory contents (only with --include-private) can hold text you "
@@ -436,7 +435,6 @@ def cannot_open_message(device: str) -> str:
 
 
 def checks_no_tty_message() -> str:
-    """The sentence for ``--checks`` with no terminal to ask in (exit 2)."""
     return (
         "--checks changes settings on your radio, so it needs a terminal "
         "to ask before each change. Rerun in a terminal."
@@ -444,7 +442,6 @@ def checks_no_tty_message() -> str:
 
 
 def checks_no_checks_message(model: str) -> str:
-    """The sentence for ``--checks`` on a profile without checks."""
     return (
         f"{model} has no write checks. "
         "The read-only part is the whole run; nothing was changed."
@@ -452,7 +449,6 @@ def checks_no_checks_message(model: str) -> str:
 
 
 def checks_intro(n: int) -> str:
-    """The block starting the optional write checks (ends asking)."""
     return (
         "The read-only part is done.\n"
         f"Next there are {n} optional checks. Each one CHANGES one setting "
@@ -468,7 +464,6 @@ def checks_intro(n: int) -> str:
 
 
 def checks_consent_prompt() -> str:
-    """The question starting the optional write checks."""
     return "Run the checks? [y/N]"
 
 
@@ -482,7 +477,6 @@ def check_consent_prompt(
     warnings: tuple[str, ...] = (),
     raw_verbs: tuple[str, ...] = (),
 ) -> str:
-    """The per-check question: what changes, what is now, what never."""
     lines = [
         f"Check {i} of {n}: {title}",
         f"  What it does: {explain_what}",
@@ -502,7 +496,6 @@ def check_consent_prompt(
 
 
 def ask_question_prompt(question: str) -> str:
-    """The question put to the person mid-check (60 s to answer)."""
     return (
         f"Look at the radio. {question} Type your answer, "
         "or press Enter to skip (it is skipped after 60 seconds):"
@@ -510,12 +503,10 @@ def ask_question_prompt(question: str) -> str:
 
 
 def check_running_line(i: int, n: int, title: str) -> str:
-    """The line opening one consented check."""
     return f"Running check {i} of {n}: {title}"
 
 
 def check_result_line(i: int, verified: bool) -> str:
-    """The per-check result: verified, or put back but different."""
     if verified:
         return f"Check {i} done: settings put back and verified."
     return (
@@ -525,7 +516,6 @@ def check_result_line(i: int, verified: bool) -> str:
 
 
 def check_restore_warning(name: str, value: str) -> str:
-    """The warning when one original could not be put back."""
     return (
         f"WARNING: could not put {name} back to {value}. "
         "Please set it by hand. This check never transmits."
@@ -533,7 +523,6 @@ def check_restore_warning(name: str, value: str) -> str:
 
 
 def precondition_abort_message() -> str:
-    """The abort when the radio is not in VFO mode."""
     return (
         "Switch the radio to VFO mode (not a memory channel) "
         "and run the check again. Nothing was changed."
@@ -541,57 +530,44 @@ def precondition_abort_message() -> str:
 
 
 def originals_unreadable_message(name: str) -> str:
-    """The abort when an original cannot be read before the first write."""
     return f"could not read {name} before the first write."
 
 
 def rehearsal_failed_message(name: str) -> str:
-    """The abort when the no-op rehearsal does not read back."""
     return f"check not run: {name} refused the rehearsal; nothing was changed."
 
 
 def write_failed_message(target: str, outcome: str) -> str:
-    """The record when a check write is refused, silent or malformed."""
     return f"write {target} was {outcome}."
 
 
 def read_failed_message(target: str, outcome: str) -> str:
-    """The record when a check read is refused, silent or malformed."""
     return f"read {target} was {outcome}."
 
 
 def readback_mismatch_message(name: str) -> str:
-    """The record when a read does not show the value just written."""
-    return (
-        f"readback for {name} differs: "
-        "the radio does not report the written value."
-    )
+    return f"readback for {name} differs: the radio does not report the written value."
 
 
 def witness_changed_message(name: str) -> str:
-    """The record when the witness moves outside the restore list."""
     return f"witness changed outside the restore list: {name}."
 
 
 def transport_error_message(detail: str) -> str:
-    """The record when the link breaks mid-check."""
     return f"transport error: {detail}."
 
 
 def cancelled_message(detail: str) -> str:
-    """The record when the person or a signal cancels a check."""
     return f"cancelled: {detail}."
 
 
 def check_failed_message(detail: str) -> str:
-    """The record when a check fails without changing anything."""
     return f"check failed: {detail}."
 
 
 def checks_summary_line(
     run: int, verified: int, skipped: int, changed: list[str]
 ) -> str:
-    """The pre-save one-liner over the checks that ran."""
     names = ", ".join(changed) if changed else "none"
     return (
         f"checks: {run} run ({verified} verified, {skipped} skipped by you); "
@@ -600,7 +576,6 @@ def checks_summary_line(
 
 
 def journal_pending_message(items: list[str], path: str) -> str:
-    """The next-start message for a journal an unfinished check left."""
     return (
         "A check did not finish last time. Before it the radio had: "
         f"{', '.join(items)}. Please set these by hand. "
@@ -609,7 +584,6 @@ def journal_pending_message(items: list[str], path: str) -> str:
 
 
 def journal_unreadable_message(path: str) -> str:
-    """The next-start message for a journal that does not parse."""
     return (
         f"A previous check journal {path} could not be read. "
         "Delete it once the radio is back the way it was."

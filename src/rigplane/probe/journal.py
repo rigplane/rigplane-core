@@ -1,19 +1,16 @@
-"""The write-check journal: the originals on disk before a first write.
-
-Before a check's first write the engine records the originals (name
-and exact reply text) next to the output file as
-``<out>.checks-journal.json`` and deletes that file after a verified
-restore. A journal left behind means the link died (or the program
-stopped) mid-check: the next ``rigplane probe`` run prints the
-originals and leaves the file until the user deletes it.
+"""The write-check journal: the originals on disk before a check's first
+write, next to the output file as ``<out>.checks-journal.json``. It is
+deleted after a verified restore; a journal left behind means the link
+died mid-check and the next ``rigplane probe`` run prints the originals.
 """
 
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any
+
+from rigplane.probe.model import _need_fields, _need_mapping, _need_str, _need_str_map
 
 __all__ = [
     "ChecksJournal",
@@ -34,19 +31,7 @@ class ChecksJournal:
     saved_utc: str
 
     def to_json(self) -> str:
-        """Pretty-printed JSON, one trailing newline."""
-        return (
-            json.dumps(
-                {
-                    "check_id": self.check_id,
-                    "check_title": self.check_title,
-                    "originals": dict(self.originals),
-                    "saved_utc": self.saved_utc,
-                },
-                indent=1,
-            )
-            + "\n"
-        )
+        return json.dumps(asdict(self), indent=1) + "\n"
 
     @classmethod
     def from_json(cls, text: str) -> ChecksJournal:
@@ -55,55 +40,32 @@ class ChecksJournal:
             document = json.loads(text)
         except json.JSONDecodeError as error:
             raise ValueError(f"not a checks journal: invalid JSON ({error})") from error
-        return _from_plain(document)
-
-
-def _from_plain(document: Any) -> ChecksJournal:
-    if not isinstance(document, dict):
-        raise ValueError("field journal must be an object")
-    for key in ("check_id", "check_title", "originals", "saved_utc"):
-        if key not in document:
-            raise ValueError(f"missing field {key}")
-    for key in ("check_id", "check_title", "saved_utc"):
-        if not isinstance(document[key], str):
-            raise ValueError(f"field {key} must be a string")
-    originals = document["originals"]
-    if not isinstance(originals, dict) or not all(
-        isinstance(name, str) and isinstance(value, str)
-        for name, value in originals.items()
-    ):
-        raise ValueError("field originals must be an object of strings")
-    return ChecksJournal(
-        check_id=document["check_id"],
-        check_title=document["check_title"],
-        originals=dict(originals),
-        saved_utc=document["saved_utc"],
-    )
+        mapping = _need_mapping(document, "journal")
+        _need_fields(mapping, "journal", cls)
+        return cls(
+            check_id=_need_str(mapping["check_id"], "check_id"),
+            check_title=_need_str(mapping["check_title"], "check_title"),
+            originals=_need_str_map(mapping["originals"], "originals"),
+            saved_utc=_need_str(mapping["saved_utc"], "saved_utc"),
+        )
 
 
 def write_journal(path: Path, journal: ChecksJournal) -> None:
-    """Write the originals before the check's first write."""
     path.write_text(journal.to_json(), encoding="utf-8")
 
 
 def read_journal(path: Path) -> ChecksJournal:
-    """Read and validate a journal left by an unfinished check."""
     return ChecksJournal.from_json(path.read_text(encoding="utf-8"))
 
 
 def delete_journal(path: Path) -> None:
-    """Remove the journal after a verified restore; missing is fine."""
     path.unlink(missing_ok=True)
 
 
 def find_pending_journal(out: str | None, default_dir: Path) -> Path | None:
-    """A journal left by the previous run, if any.
-
-    With ``--out`` the journal sits next to that path; otherwise the
-    default save folder is scanned for ``*.checks-journal.json``.
-    """
+    """A journal left by the previous run: next to ``--out``, else the first
+    ``*.checks-journal.json`` in the default save folder."""
     if out is not None:
         candidate = Path(f"{out}.checks-journal.json")
         return candidate if candidate.exists() else None
-    matches = sorted(default_dir.glob("*.checks-journal.json"))
-    return matches[0] if matches else None
+    return next(iter(sorted(default_dir.glob("*.checks-journal.json"))), None)

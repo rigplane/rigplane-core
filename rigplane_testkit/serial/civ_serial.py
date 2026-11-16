@@ -135,7 +135,7 @@ _CMD_SCOPE = 0x27  # scope: 00 wave packet, 10 panel on/off, 11 wave output on/o
 _SUB_SCOPE_WAVE = 0x00
 _SUB_SCOPE_PANEL = 0x10
 _SUB_SCOPE_OUTPUT = 0x11
-_CMD_LEVEL = 0x14  # Levels (RF power 0x0A, etc.): sub selects, one value byte
+_CMD_LEVEL = 0x14  # levels: the sub selects the level, the data is its value
 _CMD_VFO = 0x07  # VFO / receiver select; 07 D2 reads the selected receiver
 _CMD_MEMORY = 0x08  # bare: Memory mode; + channel / A0 + group: select
 _SUB_MEMORY_GROUP = 0xA0
@@ -321,7 +321,7 @@ class CivSerialFake:
         self._s_meter = s_meter
 
         # Fault surface (all off by default).
-        self._levels: dict[int, int] = {}
+        self._levels: dict[int, bytes] = {}
         self._clamped: dict[tuple[int, int | None], dict[bytes, bytes]] = {}
         self._identity_delay_s = 0.0
         self._identity_after_reconnect_only = False
@@ -612,21 +612,22 @@ class CivSerialFake:
         when_data: bytes,
         store_data: bytes,
     ) -> None:
-        """Store *store_data* instead of a write carrying *when_data*.
-
-        Only a write whose data bytes equal *when_data* is clamped; every
-        other write applies normally, so a restore of the original value
-        afterwards still verifies.
-        """
+        """Store *store_data* instead of a write carrying *when_data*; every
+        other write applies normally, so a restore still verifies."""
         self._clamped.setdefault((command, sub), {})[bytes(when_data)] = bytes(
             store_data
         )
 
-    def drop_now(self) -> None:
-        """Make the device vanish at once; the next exchange fails.
+    def set_level(self, sub: int, data: bytes) -> None:
+        """Hold a ``14`` level at *data*: reads answer it, writes store it.
 
-        The link dies mid-check and the journal is left behind.
+        Only seeded levels are modelled; every other ``14`` request keeps
+        its usual answer (the recorded table, else a NAK).
         """
+        self._levels[sub] = bytes(data)
+
+    def drop_now(self) -> None:
+        """Make the device vanish at once; the next exchange fails."""
         self._vanish_now()
 
     def silence(self, for_seconds: float) -> None:
@@ -879,18 +880,17 @@ class CivSerialFake:
                     self._filter_width = stored[1]
                 return self._ack()
             return self._nak()
-        if cmd == _CMD_LEVEL and parsed.sub is not None:
-            if not parsed.data:
-                return build_civ_frame(
-                    CONTROLLER_ADDR,
-                    self._civ_addr,
-                    _CMD_LEVEL,
-                    sub=parsed.sub,
-                    data=bytes([self._levels.get(parsed.sub, 0)]),
-                )
-            stored = self._stored(cmd, parsed.sub, parsed.data[:1])
-            self._levels[parsed.sub] = stored[0]
-            return self._ack()
+        if cmd == _CMD_LEVEL and parsed.sub is not None and parsed.sub in self._levels:
+            if parsed.data:
+                self._levels[parsed.sub] = self._stored(cmd, parsed.sub, parsed.data)
+                return self._ack()
+            return build_civ_frame(
+                CONTROLLER_ADDR,
+                self._civ_addr,
+                _CMD_LEVEL,
+                sub=parsed.sub,
+                data=self._levels[parsed.sub],
+            )
         if cmd == _CMD_PTT and parsed.sub == _SUB_PTT:
             if not parsed.data:
                 return build_civ_frame(
