@@ -21,8 +21,8 @@ from rigplane.cli._probe import build_probe_parser, execute
 from rigplane.probe import render
 from rigplane.probe.journal import journal_path, leftover_journal_line
 from rigplane.probe.model import CheckRecord, CheckWitness, ProbeFile
+from rigplane.profiles.rig_loader import discover_rigs
 from tests.probe.test_checks_engine import (
-    RIGS,
     SPLIT,
     cat_exchange,
     cat_radio,
@@ -31,6 +31,7 @@ from tests.probe.test_checks_engine import (
 )
 
 REPO = Path(__file__).resolve().parents[2]
+RIGS = discover_rigs(REPO / "rigs")
 QUESTION = "Does the display show TX on VFO-B?"
 POWER_SENTENCE = (
     "This check briefly sets the radio's RF power to 100 W on the 2 m band and "
