@@ -244,31 +244,41 @@ async function canvasEdgeHotColumns(page: Page, side: 'left' | 'right'): Promise
  * when the canvas is missing, unsized, or unreadable.
  */
 async function waterfallEdgeHotColumns(page: Page, side: 'left' | 'right'): Promise<number> {
-  return await page.evaluate((edge) => {
-    const src = document.querySelector('.waterfall-content canvas');
-    if (!(src instanceof HTMLCanvasElement)) return -1;
-    const w = src.width, h = src.height;
-    if (w < 40 || h < 20) return -1;
+  // Compositor screenshot: the WebGL canvas has no preserveDrawingBuffer, so
+  // an in-page drawImage reads the post-present cleared buffer (all zeros).
+  // The screenshot carries the presented frame; it is decoded in-page into
+  // a 2D canvas and the edge strip is probed exactly like canvasEdgeHotColumns.
+  const shot = await page.locator('.waterfall-content canvas').screenshot({ timeout: 15_000 });
+  return await page.evaluate(async ({ png, edge }: { png: string; edge: 'left' | 'right' }) => {
+    const bytes = Uint8Array.from(atob(png), (c) => c.charCodeAt(0));
+    const bitmap = await createImageBitmap(new Blob([bytes], { type: 'image/png' }));
     const flat = document.createElement('canvas');
-    flat.width = w; flat.height = h;
-    const fctx = flat.getContext('2d');
+    flat.width = bitmap.width; flat.height = bitmap.height;
+    const fctx = flat.getContext('2d', { willReadFrequently: true });
     if (!fctx) return -1;
-    try {
-      fctx.drawImage(src, 0, 0);
-      const n = Math.max(8, Math.floor(w * 0.012));
-      const x = edge === 'right' ? w - n - 2 : 2;
-      const y = Math.floor(h * 0.47);
-      const a = fctx.getImageData(x, y, n, 1).data;
-      const b = fctx.getImageData(x, y + 1, n, 1).data;
-      let hot = 0;
-      for (let i = 0; i < a.length; i += 4) {
-        if (Math.abs(a[i] - b[i]) + Math.abs(a[i + 1] - b[i + 1]) + Math.abs(a[i + 2] - b[i + 2]) > 24) hot++;
-      }
-      return hot;
-    } catch {
-      return -1;
+    fctx.drawImage(bitmap, 0, 0);
+    const w = flat.width, h = flat.height;
+    if (w < 40 || h < 20) return -1;
+    // The newest rows paint at the top (age 0 is the top line), but only
+    // the rows above the empty-history fill carry paint, so scan several
+    // top lines: a short history leaves the mid-canvas rows blank.
+    const n = Math.max(8, Math.floor(w * 0.012));
+    const x = edge === 'right' ? w - n - 2 : 2;
+    let best = -1;
+    for (const y of [3, 7, 15, 31, 63]) {
+      if (y + 1 >= h) continue;
+      try {
+        const a = fctx.getImageData(x, y, n, 1).data;
+        const b = fctx.getImageData(x, y + 1, n, 1).data;
+        let hot = 0;
+        for (let i = 0; i < a.length; i += 4) {
+          if (Math.abs(a[i] - b[i]) + Math.abs(a[i + 1] - b[i + 1]) + Math.abs(a[i + 2] - b[i + 2]) > 24) hot++;
+        }
+        best = Math.max(best, hot);
+      } catch { /* keep best */ }
     }
-  }, side);
+    return best;
+  }, { png: shot.toString('base64'), edge: side });
 }
 
 /** Running-max check: no value may fall below an earlier one by more than tolHz. */
