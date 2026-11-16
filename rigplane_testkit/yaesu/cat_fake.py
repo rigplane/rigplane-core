@@ -201,11 +201,9 @@ class FakeCatRadio:
         self._echo = False
         self._pending_burst_verbs: list[str] = []
         # Write-check faults (MOR-4464 B1): clamped writes store a canned
-        # body instead of the sent one; drop_after closes every client
-        # connection after N processed lines (the link dies mid-check).
+        # body instead of the sent one; drop_now closes every client
+        # connection at once (the link dies mid-check).
         self._clamped: dict[str, tuple[str, str]] = {}
-        self._drop_after: int | None = None
-        self._lines = 0
 
         self._server: asyncio.Server | None = None
         self._clients: set[asyncio.StreamWriter] = set()
@@ -323,15 +321,15 @@ class FakeCatRadio:
         """
         self._clamped[verb] = (when_body, store_body)
 
-    def drop_after(self, n: int) -> None:
-        """Close every client connection after *n* processed lines.
+    def drop_now(self) -> None:
+        """Close every client connection at once.
 
-        The next exchange then fails with an incomplete read: the link
-        dies mid-check.
+        The next exchange fails with an incomplete read: the link dies
+        mid-check and the journal is left behind.
         """
-        if n < 0:
-            raise ValueError("drop_after needs n >= 0")
-        self._drop_after = n
+        for writer in list(self._clients):
+            writer.close()
+        self._clients.clear()
 
     def auto_info_burst_on_next_request(self, *verbs: str) -> None:
         """Push the info lines for *verbs* on the next request the fake processes.
@@ -368,12 +366,6 @@ class FakeCatRadio:
                     continue  # garbage on the wire: a real radio ignores it
                 self._commands.append(line)
                 body = line[:-1]
-                self._lines += 1
-                if self._drop_after is not None and self._lines > self._drop_after:
-                    for writer in list(self._clients):
-                        writer.close()
-                    self._clients.clear()
-                    break
                 clamped = self._clamped.get(body[:2])
                 if clamped is not None and body == clamped[0]:
                     body = clamped[1]

@@ -323,8 +323,6 @@ class CivSerialFake:
         # Fault surface (all off by default).
         self._levels: dict[int, int] = {}
         self._clamped: dict[tuple[int, int | None], dict[bytes, bytes]] = {}
-        self._drop_after: int | None = None
-        self._frames = 0
         self._identity_delay_s = 0.0
         self._identity_after_reconnect_only = False
         self._model_id_override: bytes | None = None
@@ -624,15 +622,12 @@ class CivSerialFake:
             store_data
         )
 
-    def drop_after(self, n: int) -> None:
-        """Make the device vanish after *n* received frames.
+    def drop_now(self) -> None:
+        """Make the device vanish at once; the next exchange fails.
 
-        The next exchange then fails: the link dies mid-check and the
-        journal is left behind.
+        The link dies mid-check and the journal is left behind.
         """
-        if n < 0:
-            raise ValueError("drop_after needs n >= 0")
-        self._drop_after = n
+        self._vanish_now()
 
     def silence(self, for_seconds: float) -> None:
         """MOR-2861: the link stays open and nothing answers for the window.
@@ -716,10 +711,6 @@ class CivSerialFake:
 
     def _on_wire_frame(self, connection: "_Connection", frame: bytes) -> None:
         self._frame_bauds.append(connection.baud)
-        self._frames += 1
-        if self._drop_after is not None and self._frames > self._drop_after:
-            self._vanish_now()
-            return
         if not self._hears(connection):
             return  # wrong baud: line noise to the radio, no answer, no echo
         if self._vanished or time.monotonic() < self._silent_until:

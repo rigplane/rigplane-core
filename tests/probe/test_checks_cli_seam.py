@@ -70,13 +70,13 @@ def _synth_civ_check() -> ProbeCheck:
             ProbeCheckStep(
                 kind="write",
                 command="set_freq",
-                values=(("data_hex", bcd_encode(7074000).hex()),),
+                data_hex=bcd_encode(7074000).hex(),
             ),
             ProbeCheckStep(kind="read", command="get_freq"),
             ProbeCheckStep(
                 kind="write",
                 command="set_rf_power",
-                values=(("data_hex", "64"),),
+                data_hex="64",
             ),
             ProbeCheckStep(kind="read", command="get_rf_power"),
         ),
@@ -87,12 +87,15 @@ def _synth_civ_check() -> ProbeCheck:
     )
 
 
-def _rigs_with(model: str, profile: str, check: ProbeCheck) -> dict:
+def _rigs_with(model: str, profile: str, check: ProbeCheck) -> tuple[dict, object]:
     from rigplane.profiles.rig_loader import load_rig
 
     base = load_rig(REPO_ROOT / "rigs" / f"{profile}.toml")
     synth = dataclasses.replace(base, probe_checks=(check,))
-    return {model: synth}
+    return {model: synth}, synth
+
+
+_WRITES_CAT = {"FA007074000;", "MD01;", "FA014074000;", "MD02;"}
 
 
 class _FakeStdin:
@@ -136,18 +139,29 @@ def _patch_rigs(monkeypatch, rigs: dict) -> None:
     monkeypatch.setattr(cli_module, "_run_probe", probe_cli.run)
 
 
-def _cat_audit(radio) -> None:
-    """Every sent CAT line is allow-listed and never never-listed."""
+def _cat_audit(radio, config, expected_writes: set[str]) -> None:
+    """Every sent CAT line is a declared read or an allow-listed write.
+
+    Anything the run wrote must be on the protocol allow-list and never
+    on the never-list; anything else must carry a verb the profile
+    declares as a read.
+    """
+    from rigplane.commands.command_spec import CatCommandSpec
+
     from rigplane.probe.write_policy import YAESU_NEVER, YAESU_WRITE_ALLOW
 
+    read_verbs = {
+        spec.read[:2].upper()
+        for spec in config.commands.values()
+        if isinstance(spec, CatCommandSpec) and spec.read
+    }
     for line in radio.commands:
-        verb = line[:2]
-        if verb == "ID" or line in ("FA;", "MD0;", "TX;", "ST;", "IF;"):
-            continue
-        if line.endswith(";") and len(line) <= 4:
-            continue  # a read line
-        assert verb in YAESU_WRITE_ALLOW, line
-        assert verb not in YAESU_NEVER, line
+        verb = line[:2].upper()
+        if line in expected_writes:
+            assert verb in YAESU_WRITE_ALLOW, line
+            assert verb not in YAESU_NEVER, line
+        else:
+            assert verb in read_verbs, line
 
 
 def test_checks_without_terminal_is_exit_2(tmp_path, monkeypatch) -> None:
@@ -183,7 +197,8 @@ async def test_yes_does_not_consent_to_checks(tmp_path, monkeypatch) -> None:
     radio = FakeCatRadio(profile="ftx1", frequency_hz=14_074_000)
     await radio.start()
     try:
-        _patch_rigs(monkeypatch, _rigs_with("FTX-1", "ftx1", _synth_cat_check()))
+        rigs, config = _rigs_with("FTX-1", "ftx1", _synth_cat_check())
+        _patch_rigs(monkeypatch, rigs)
         code = await _run_main_cat(
             monkeypatch,
             ["probe", "FTX-1", "--port", radio.device_url,
@@ -207,7 +222,8 @@ async def test_per_check_default_is_no(tmp_path, monkeypatch) -> None:
     radio = FakeCatRadio(profile="ftx1", frequency_hz=14_074_000)
     await radio.start()
     try:
-        _patch_rigs(monkeypatch, _rigs_with("FTX-1", "ftx1", _synth_cat_check()))
+        rigs, config = _rigs_with("FTX-1", "ftx1", _synth_cat_check())
+        _patch_rigs(monkeypatch, rigs)
         code = await _run_main_cat(
             monkeypatch,
             ["probe", "FTX-1", "--port", radio.device_url,
@@ -221,7 +237,7 @@ async def test_per_check_default_is_no(tmp_path, monkeypatch) -> None:
     assert document.mode == "read"
     assert document.checks == ()
     assert not [line for line in radio.commands if line.startswith("FA0")]
-    _cat_audit(radio)
+    _cat_audit(radio, config, set())
 
 
 async def test_full_cat_run_with_synthetic_check(tmp_path, monkeypatch) -> None:
@@ -231,7 +247,8 @@ async def test_full_cat_run_with_synthetic_check(tmp_path, monkeypatch) -> None:
     radio = FakeCatRadio(profile="ftx1", frequency_hz=14_074_000)
     await radio.start()
     try:
-        _patch_rigs(monkeypatch, _rigs_with("FTX-1", "ftx1", _synth_cat_check()))
+        rigs, config = _rigs_with("FTX-1", "ftx1", _synth_cat_check())
+        _patch_rigs(monkeypatch, rigs)
         code = await _run_main_cat(
             monkeypatch,
             ["probe", "FTX-1", "--port", radio.device_url,
@@ -251,7 +268,7 @@ async def test_full_cat_run_with_synthetic_check(tmp_path, monkeypatch) -> None:
     assert record.preconditions_ok is True
     assert radio.frequency_hz == 14_074_000
     assert radio.mode_code == "2"
-    _cat_audit(radio)
+    _cat_audit(radio, config, _WRITES_CAT)
 
 
 async def test_clamped_cat_write_is_unverified_exit_0(tmp_path, monkeypatch) -> None:
@@ -262,7 +279,8 @@ async def test_clamped_cat_write_is_unverified_exit_0(tmp_path, monkeypatch) -> 
     radio.clamp_write("FA", "FA007074000", "FA005000000")
     await radio.start()
     try:
-        _patch_rigs(monkeypatch, _rigs_with("FTX-1", "ftx1", _synth_cat_check()))
+        rigs, config = _rigs_with("FTX-1", "ftx1", _synth_cat_check())
+        _patch_rigs(monkeypatch, rigs)
         code = await _run_main_cat(
             monkeypatch,
             ["probe", "FTX-1", "--port", radio.device_url,
@@ -279,23 +297,43 @@ async def test_clamped_cat_write_is_unverified_exit_0(tmp_path, monkeypatch) -> 
     assert record.restored is True
     rows = {row.request_hex: row for row in record.steps}
     assert rows["FA007074000;".encode("ascii").hex()].reply_text == "FA005000000;"
+    _cat_audit(radio, config, _WRITES_CAT)
 
 
 async def test_link_dies_mid_check_leaves_journal_exit_4(tmp_path, monkeypatch) -> None:
+    from rigplane.testing.timing import await_until
     from rigplane_testkit.yaesu import FakeCatRadio
 
     out = tmp_path / "probe.json"
     radio = FakeCatRadio(profile="ftx1", frequency_hz=14_074_000)
-    radio.drop_after(12)
     await radio.start()
     try:
-        _patch_rigs(monkeypatch, _rigs_with("FTX-1", "ftx1", _synth_cat_check()))
-        code = await _run_main_cat(
-            monkeypatch,
-            ["probe", "FTX-1", "--port", radio.device_url,
+        rigs, config = _rigs_with("FTX-1", "ftx1", _synth_cat_check())
+        _patch_rigs(monkeypatch, rigs)
+        monkeypatch.setattr(sys, "stdin", _FakeStdin(["y", "y", "y", "y"]))
+        monkeypatch.setattr(
+            "sys.argv",
+            ["rigplane", "probe", "FTX-1", "--port", radio.device_url,
              "--out", str(out), "--checks"],
-            ["y", "y", "y", "y"],
         )
+        monkeypatch.setattr(probe_cli, "open_result_folder", lambda path: None)
+
+        async def run() -> int:
+            with pytest.raises(SystemExit) as exc_info:
+                await asyncio.to_thread(main)
+            assert isinstance(exc_info.value.code, int)
+            return exc_info.value.code
+
+        task = asyncio.create_task(run())
+        # The step write is the first change on the wire: drop the link
+        # right after it, so the restore cannot be attempted.
+        await await_until(
+            lambda: "FA007074000;" in radio.commands,
+            timeout=30.0,
+            description="the check's first write on the wire",
+        )
+        radio.drop_now()
+        code = await task
     finally:
         await radio.stop()
     assert code == 4
@@ -376,7 +414,8 @@ def test_full_civ_run_with_synthetic_check_no_network(tmp_path, monkeypatch) -> 
         raise AssertionError("probe must not open network connections here")
 
     monkeypatch.setattr(socket, "create_connection", _refuse_network)
-    _patch_rigs(monkeypatch, _rigs_with("IC-7300", "ic7300", _synth_civ_check()))
+    rigs, _config = _rigs_with("IC-7300", "ic7300", _synth_civ_check())
+    _patch_rigs(monkeypatch, rigs)
     code = _run_main(
         monkeypatch,
         ["probe", "IC-7300", "--port", "fake-usb-serial",
