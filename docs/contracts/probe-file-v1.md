@@ -26,7 +26,7 @@ Pretty-printed JSON, one command per block, `jq`-friendly. Top level:
 | --- | --- | --- |
 | `schema` | string | Always `rigplane-probe-v1`. |
 | `tool` | object | `{rigplane_version, python, os, created_utc}` of the recorder. |
-| `mode` | string | `"read"`. The `read+checks` mode is reserved for write checks and not produced here. |
+| `mode` | string | `"read"`, or `"read+checks"` when at least one consented write check ran after the read pass. |
 | `radio` | object | `{profile, profile_sha256, protocol, port_kind, baud, identity_reported{raw, parsed}, identity_matches_profile}`. `profile_sha256` is the sha256 of the profile TOML bytes. |
 | `private_reads_included` | boolean | Whether memory-content reads were sent. |
 | `label` | string | The `--label` text, empty when not given. |
@@ -35,7 +35,7 @@ Pretty-printed JSON, one command per block, `jq`-friendly. Top level:
 | `unsolicited` | array | `{t_ms, hex, text}` pushes seen outside any answer slot. |
 | `snapshot` | object | `{before, after, changed}` profile state reads around the pass; `changed` lists the names that differ. |
 | `termination` | object | `{status, detail}` how the run ended (below). |
-| `checks` | array | Always empty here; reserved for write checks. |
+| `checks` | array | One typed record per write check that ran (below); empty for a read-only run. |
 
 One `commands` row:
 
@@ -54,10 +54,12 @@ One `commands` row:
 
 Outcome classes, shared by both protocols: `data` (the reply parses
 as the answer), `refused` (`?;` / CI-V NAK `0xFA`), `ack_only` (bare
-CI-V ACK `0xFB` with no data), `silent` (nothing arrived),
+CI-V ACK `0xFB` with no data), `sent` (a check write the radio
+accepted: a silent CAT set or a CI-V ACK), `silent` (nothing arrived),
 `malformed` (unattributable bytes), `unsolicited` (a push in the
 answer slot), `transport_error` (the run ends). Raw bytes are always
-kept; the class is a convenience, never the only record.
+kept; the class is a convenience, never the only record. `sent`
+appears only in check step rows, never in read-pass `commands` rows.
 
 One `skipped` row:
 
@@ -131,6 +133,38 @@ request row, `from_cat_pairs` records an overtaken or trailing request
 as silence, and `RecordedAnswerTable` records a CI-V request with no
 reply row as silence (the serial fake then sends nothing; a request the
 rows never saw still gets the NAK fallback).
+
+## Write checks
+
+With `mode: "read+checks"` the file carries one record per check the
+person consented to:
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `id` | string | The profile check id (`synth-freq-mode`). |
+| `title` | string | The customer-facing check title. |
+| `preconditions_ok` | boolean | Whether the VFO-mode gate held. |
+| `steps` | array | One row per wire step (below); `ask` answers live in `answers`. |
+| `answers` | array | `{question, answer, skipped}` per question put to the person. |
+| `originals` | object | Name to exact reply text before the first write. |
+| `witness` | object | `{before, after, changed}` profile reads around the check. |
+| `restored` | boolean | Every original was written back and reads back equal. |
+| `verified` | boolean | Restored, and no readback or witness mismatch. |
+| `error` | string or null | What stopped the check, if anything. |
+
+One step row (`kind` is `write`, `read`, `raw_read` or `raw_write`):
+
+| Key | Type | Meaning |
+| --- | --- | --- |
+| `kind` | string | How the body was named: profile command or literal. |
+| `name` | string | Profile command name, or the kind for raw steps. |
+| `request_hex` | string | The sent bytes, hex. |
+| `request_text` | string | CAT line, or empty on CI-V. |
+| `reply_hex` / `reply_text` | string or null | Exact reply, null when nothing arrived. |
+| `class` | string | One outcome class (`sent` for an accepted write). |
+
+Check rows are never fixture pairs: the converter reads `commands`
+only and ignores `checks`, pinned by its unit table.
 
 ## Relation to other formats
 

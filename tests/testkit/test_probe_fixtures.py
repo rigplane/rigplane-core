@@ -662,3 +662,78 @@ def test_convert_cli_merges_window(tmp_path) -> None:
     assert rows and all(row.window == "probe" for row in rows)
     assert all(row.transport == "usb" for row in rows)
     assert rows == probe_to_civ_pairs(_sample(), radio_addr=CIV_ADDR, window="probe")
+
+
+# --- B1: check rows are ignored by the converter --------------------------
+
+
+def _check_record():
+    from rigplane.probe.model import (
+        CheckAnswerRow,
+        CheckRecord,
+        CheckStepRow,
+        CheckWitness,
+    )
+
+    return CheckRecord(
+        id="synth",
+        title="Synthetic",
+        preconditions_ok=True,
+        steps=(
+            CheckStepRow(
+                kind="write",
+                name="set_freq",
+                request_hex="FA007074000;".encode("ascii").hex(),
+                request_text="FA007074000;",
+                reply_hex=None,
+                reply_text=None,
+                outcome="sent",
+            ),
+        ),
+        answers=(),
+        originals={"get_freq": "FA014074000;"},
+        witness=CheckWitness(before={}, after={}, changed=[]),
+        restored=True,
+        verified=True,
+        error=None,
+    )
+
+
+def test_converter_ignores_check_rows_cat() -> None:
+    probe = _file("yaesu_cat", [_cat_row("get_freq", "data", "FA;", "FA014074000;")])
+    with_checks = ProbeFile(
+        tool=probe.tool,
+        mode="read+checks",
+        radio=probe.radio,
+        private_reads_included=probe.private_reads_included,
+        label=probe.label,
+        commands=probe.commands,
+        skipped=probe.skipped,
+        snapshot=probe.snapshot,
+        termination=probe.termination,
+        checks=(_check_record(),),
+    )
+    assert probe_to_cat_pairs(with_checks, window="w") == probe_to_cat_pairs(
+        probe, window="w"
+    )
+
+
+def test_converter_ignores_check_rows_civ() -> None:
+    probe = _file(
+        "civ", [_civ_row("get_af_level", "data", "1401", "fefee0a014010000fd")]
+    )
+    with_checks = ProbeFile(
+        tool=probe.tool,
+        mode="read+checks",
+        radio=probe.radio,
+        private_reads_included=probe.private_reads_included,
+        label=probe.label,
+        commands=probe.commands,
+        skipped=probe.skipped,
+        snapshot=probe.snapshot,
+        termination=probe.termination,
+        checks=(_check_record(),),
+    )
+    assert probe_to_civ_pairs(
+        with_checks, radio_addr=CIV_ADDR, window="w"
+    ) == probe_to_civ_pairs(probe, radio_addr=CIV_ADDR, window="w")

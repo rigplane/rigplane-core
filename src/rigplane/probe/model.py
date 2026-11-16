@@ -48,6 +48,7 @@ OUTCOMES = frozenset(
         "data",
         "refused",
         "ack_only",
+        "sent",
         "silent",
         "malformed",
         "unsolicited",

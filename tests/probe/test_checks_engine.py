@@ -376,3 +376,53 @@ def test_verified_restore_deletes_the_journal(tmp_path: Path) -> None:
         assert not journal.exists()
 
     asyncio.run(scenario())
+
+
+def test_sigterm_during_check_restores_first(tmp_path: Path) -> None:
+    import os
+    import signal
+
+    class SigtermWire(ScriptedWire):
+        def __init__(self, script: dict[bytes, list]) -> None:
+            super().__init__(script)
+            self._killed = False
+
+        async def __call__(self, request: bytes | None, timeout: float):
+            if (
+                request is not None
+                and len(self.sent) == 1
+                and not self._killed
+            ):
+                self._killed = True
+                os.kill(os.getpid(), signal.SIGTERM)
+                await asyncio.sleep(30)
+            return await super().__call__(request, timeout)
+
+    async def scenario() -> None:
+        from rigplane.probe.checks import run_checks
+
+        wire = SigtermWire(_standard_script())
+        emitted: list[str] = []
+        journal = tmp_path / "probe.json.checks-journal.json"
+
+        async def ask(prompt: str):
+            return None
+
+        result = await run_checks(
+            config=_cat_config(_freq_mode_check()),
+            exchange=wire,
+            gap_s=0.0,
+            timeout_s=0.5,
+            journal_path=journal,
+            consent=lambda prompt: "y",
+            ask=ask,
+            emit=emitted.append,
+        )
+        (record,) = result.records
+        assert record.restored is True
+        assert record.verified is True
+        assert "cancel" in (record.error or "").lower()
+
+    if os.name != "posix":
+        pytest.skip("POSIX signals only")
+    asyncio.run(scenario())
