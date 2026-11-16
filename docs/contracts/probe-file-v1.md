@@ -93,6 +93,42 @@ Files written before this key existed parse as `completed`.
 The file must not contain the port path, hostname, username, or IP
 address. Port identity is reduced to `port_kind` (`"usb"`) and `baud`.
 
+## Replaying a capture
+
+A probe file converts to fixture `*_pairs.jsonl` rows with
+`rigplane_testkit/probe_fixtures.py`:
+
+```bash
+python -m rigplane_testkit.probe_fixtures convert \
+    --in capture.json --window probe --out-dir DIR [--radio-addr 0xNN]
+```
+
+The protocol comes from the file (`radio.protocol`); the CI-V radio
+address defaults to the profile named in the file (`radio.profile`,
+loaded from the shipped rigs) and `--radio-addr` overrides it. The
+converter replaces that window's rows in `DIR/civ_pairs.jsonl` (or
+`DIR/cat_pairs.jsonl` for CAT), with sorted keys and one trailing
+newline per row, so the same input always converts byte-identically.
+The rows mount as `RecordedAnswerTable.from_civ_pairs` /
+`RecordedCatAnswerTable.from_cat_pairs` for the serial/CAT fakes.
+
+Outcome to rows, true to the converter and pinned by its unit table:
+
+| Outcome | Rows |
+| --- | --- |
+| `data` | `c2r` + `r2c` |
+| `refused` | `c2r` + `r2c` |
+| `ack_only` | `c2r` + `r2c` |
+| `silent` | `c2r` alone |
+| `malformed` | none |
+| `unsolicited` | none |
+| `transport_error` | none |
+
+Skipped reads are never rows: only reads the run actually sent become
+rows, one per distinct request (first occurrence wins). A silent CAT
+read replays as silence: the converter emits the bare request row and
+`from_cat_pairs` records an overtaken or trailing request as silence.
+
 ## Relation to other formats
 
 The recorder JSONL is a byte-chunk log with no request/reply pairing;

@@ -166,7 +166,9 @@ def test_civ_skipped_reads_are_never_emitted() -> None:
         "civ",
         [_civ_row("get_freq", "data", "03", "fefee0a0030000fd")],
         skipped=[
-            SkippedRead("get_memory_contents", None, "private", "needs --include-private")
+            SkippedRead(
+                "get_memory_contents", None, "private", "needs --include-private"
+            )
         ],
     )
     rows = probe_to_civ_pairs(probe, radio_addr=CIV_ADDR, window="w")
@@ -243,7 +245,8 @@ def test_cat_trailing_silence_replays_as_silence() -> None:
     rows = probe_to_cat_pairs(probe, window="w")
     assert [row["dir"] for row in rows] == ["c2r", "r2c", "c2r"]
     table = RecordedCatAnswerTable.from_cat_pairs(rows, window="w")
-    assert table.lookup("FA;") is not None and table.lookup("FA;").kind == "data"  # type: ignore[union-attr]
+    data = table.lookup("FA;")
+    assert data is not None and data.kind == "data" and data.reply == "FA14074000;"
     silent = table.lookup("KP;")
     assert silent is not None and silent.kind == "silence" and silent.reply is None
 
@@ -263,7 +266,8 @@ def test_cat_mid_plan_silence_replays_as_silence() -> None:
     table = RecordedCatAnswerTable.from_cat_pairs(rows, window="w")
     silent = table.lookup("KP;")
     assert silent is not None and silent.kind == "silence"
-    assert table.lookup("MD0;") is not None and table.lookup("MD0;").kind == "data"  # type: ignore[union-attr]
+    mode = table.lookup("MD0;")
+    assert mode is not None and mode.kind == "data" and mode.reply == "MD02;"
 
 
 # --- The committed G7250 sample -------------------------------------------
@@ -301,7 +305,9 @@ def _request_frame(body_hex: str) -> bytes:
         sub, data = rest[0], rest[1:]
     else:
         sub, data = None, rest
-    return build_civ_frame(CIV_ADDR, CONTROLLER_ADDR, command, sub=sub, data=data or None)
+    return build_civ_frame(
+        CIV_ADDR, CONTROLLER_ADDR, command, sub=sub, data=data or None
+    )
 
 
 def test_sample_converts_to_answer_table() -> None:
@@ -581,7 +587,8 @@ def test_convert_cli_merges_window(tmp_path) -> None:
     first = merged.read_bytes()
     assert first.endswith(b"\n")
     assert all(
-        list(json.loads(line)) == sorted(json.loads(line)) for line in first.splitlines()
+        list(json.loads(line)) == sorted(json.loads(line))
+        for line in first.splitlines()
     )
     # Same input converts byte-identically and replaces the window's rows.
     assert (
