@@ -658,7 +658,7 @@ async def test_an_ask_that_raises_still_restores(tmp_path: Path) -> None:
 
     config = load(tmp_path, "ft991a", SPLIT)
     radio = await cat_radio()
-    req = ChecksRequest(tmp_path / "j.json", lambda check, originals: True, ask)
+    req = ChecksRequest(lambda c, o: True, ask, journal_path=tmp_path / "j.json")
     try:
         result = await run(config, req, await cat_exchange(radio))
     finally:
@@ -687,6 +687,130 @@ async def test_signal_handlers_installed_before_the_checks_work_afterwards(
     finally:
         signal.signal(signal.SIGHUP, previous)
     assert seen == [signal.SIGHUP]
+
+
+# --- round 2: leftover journal, restore silence, dead drain ---------------------
+
+
+async def test_a_leftover_journal_refuses_every_check_and_stays_byte_identical(
+    tmp_path: Path,
+) -> None:
+    from rigplane.probe.journal import leftover_journal_line
+
+    config = load(tmp_path, "ic705", CIV_POWER_FREQ)
+    fake = civ_fake("IC-705")
+    req = request(tmp_path)
+    for left in (
+        b'{"check_id": "x", "check_title": "X", "profile": "IC-705", "originals":'
+        b' {"RF power": "20 W"}, "saved_utc": "t", "now": {"RF power": "100 W"}}\n',
+        b"not json at all",
+    ):
+        req.journal_path.write_bytes(left)
+        sent_before = len(fake.commands)
+        result = await run(config, req, await civ_exchange(fake))
+        (record,) = result.records
+        assert record.status == "refused" and record.steps == ()
+        assert len(fake.commands) == sent_before  # no frame sent
+        assert req.journal_path.read_bytes() == left
+        if left.startswith(b"{"):
+            assert record.error == leftover_journal_line(req.journal_path)
+        else:
+            assert "cannot be read" in (record.error or "")
+
+
+async def test_the_journal_has_one_fixed_place_whatever_the_output_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import platformdirs
+
+    from rigplane.probe.checks import ChecksRequest
+    from rigplane.probe.journal import journal_path
+
+    monkeypatch.setattr(platformdirs, "user_state_path", lambda app: tmp_path / app)
+    first = ChecksRequest(lambda c, o: True, request(tmp_path).ask)
+    assert (
+        first.journal_path
+        == journal_path()
+        == tmp_path / "rigplane" / ("probe-checks-journal.json")
+    )
+    # run 1 (its own output file) leaves a journal; run 2 (another one) refuses
+    config = load(tmp_path, "ic705", CIV_POWER)
+    fake = civ_fake("IC-705", power=b"\x00\x64")
+
+    def events(name: str) -> None:
+        if name == "restore_begin":
+            fake.refuse_next(0x14)
+            fake.refuse_next(0x14)
+
+    failing = ChecksRequest(lambda c, o: True, first.ask, on_event=events)
+    assert (await run(config, failing, await civ_exchange(fake))).exit_code == 4
+    second = ChecksRequest(lambda c, o: True, first.ask)
+    result = await run(config, second, await civ_exchange(fake))
+    assert result.records[0].status == "refused"
+    assert "could not put the radio back" in (result.records[0].error or "")
+
+
+THREE = check_toml(
+    [
+        'kind = "write"\nentry = "rf_power"\nvalue = 64',
+        'kind = "read"\nentry = "freq_selected"',
+    ],
+    ["rf_power", "freq_selected", "mode_selected"],
+)
+
+
+async def test_silence_inside_the_restore_never_stops_the_later_originals(
+    tmp_path: Path,
+) -> None:
+    config = load(tmp_path, "ic705", THREE)
+    fake = civ_fake("IC-705")
+    fake.hold(b"\x26\x00", bytes((0x01, 0x00, 0x01)))
+    restoring: list[bool] = []
+
+    def rule(body, count, seen):
+        if body == b"\x25\x00" and count == 3:
+            return True, None  # the step read is silent
+        writes = (b"\x25\x00", b"\x26\x00")
+        silent = restoring and body[:2] in writes and len(body) > 2
+        return bool(silent), None  # the first two originals: silent writes
+
+    req = request(
+        tmp_path,
+        events=lambda name: restoring.append(True) if name == "restore_begin" else None,
+    )
+    result = await run(config, req, wrapped(await civ_exchange(fake), rule))
+    (record,) = result.records
+    assert not record.restored and result.exit_code == 4
+    sent = [
+        (f.command, (b"" if f.sub is None else bytes((f.sub,))) + bytes(f.data))
+        for f in fake.commands
+    ]
+    after_step = sent[sent.index((0x14, b"\x0a\x00\x64")) :]
+    assert (0x14, b"\x0a\x01\x28") in after_step  # the third original is on the wire
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX signals (Windows: MOR-4497)")
+async def test_a_dead_link_while_reading_out_a_cancel_is_exit_4_with_the_journal(
+    tmp_path: Path,
+) -> None:
+    config = load(tmp_path, "ic705", CIV_POWER_FREQ)
+    fake = civ_fake("IC-705")
+    inner = await civ_exchange(fake)
+
+    async def exchange(body: bytes | None, timeout: float):
+        if body is None:
+            raise OSError("the USB cable came out")
+        return await inner(body, timeout)
+
+    def events(name: str) -> None:
+        if name == "steps_begin":
+            os.kill(os.getpid(), signal.SIGTERM)
+
+    req = request(tmp_path, events=events)
+    result = await run(config, req, exchange)
+    (record,) = result.records
+    assert result.exit_code == 4 and not record.restored
+    assert req.journal_path.exists()
 
 
 # --- ask timeout, cancel ----------------------------------------------------------------
@@ -850,7 +974,7 @@ CHILD = textwrap.dedent(
         async def ask(question):
             return "yes"
 
-        request = ChecksRequest(Path(journal), lambda c, o: True, ask)
+        request = ChecksRequest(lambda c, o: True, ask, journal_path=Path(journal))
         await run_checks(load_rig(Path(profile)), request, exchange=exchange,
                          gap_s=0.0, timeout_s=0.5)
 
