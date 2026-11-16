@@ -13,10 +13,13 @@ server on --sim-port answers
 
     GET  /sim          -> SimSnapshot as JSON (ptt_on, freq_hz, ptt_transitions
                           [[unix_s, bool], ...]: the simulator's own PTT journal)
-    GET  /sim/contract -> the SimSnapshot field annotations; the Node consumer
-                          validates every /sim response against them
-    POST /sim/freq  -> {"hz": int} sets the simulator frequency silently
-                       (the radio's state poller picks it up, ~2 s cadence)
+    GET  /sim/contract -> the field annotations of SimSnapshot (the response)
+                          and SimFreqRequest (the request); the Node consumer
+                          validates every /sim response against the first and
+                          builds its /sim/freq body from the second
+    POST /sim/freq  -> SimFreqRequest {"hz": int} sets the simulator frequency
+                       silently (the radio's state poller picks it up, ~2 s
+                       cadence); a body that is not a SimFreqRequest is a 400
 
 so the harness never needs a test hook inside src/ to read "keyed".
 """
@@ -82,9 +85,36 @@ def sim_snapshot(sim: Any) -> SimSnapshot:
     )
 
 
-def sim_contract() -> dict[str, str]:
-    """Field name -> annotation text of :class:`SimSnapshot`."""
-    return {field.name: str(field.type) for field in dataclasses.fields(SimSnapshot)}
+@dataclasses.dataclass(frozen=True)
+class SimFreqRequest:
+    """The producer-owned shape of the ``POST /sim/freq`` body."""
+
+    hz: int
+
+
+def parse_freq_request(body: bytes) -> SimFreqRequest:
+    """Parse a ``POST /sim/freq`` body through :class:`SimFreqRequest`.
+
+    Raises ``ValueError`` for anything that is not exactly ``{"hz": <int>}``
+    with a positive integer (``bool`` is not an int here).
+    """
+    raw = json.loads(body)
+    names = {field.name for field in dataclasses.fields(SimFreqRequest)}
+    if not isinstance(raw, dict) or set(raw) != names:
+        raise ValueError(f"body must be an object with exactly {sorted(names)}")
+    hz = raw["hz"]
+    if type(hz) is not int or hz <= 0:
+        raise ValueError("hz must be a positive integer")
+    return SimFreqRequest(hz=hz)
+
+
+def sim_contract() -> dict[str, dict[str, str]]:
+    """Dataclass name -> field name -> annotation text, for the dataclasses
+    that cross the sidecar's HTTP boundary."""
+    return {
+        cls.__name__: {field.name: str(field.type) for field in dataclasses.fields(cls)}
+        for cls in (SimSnapshot, SimFreqRequest)
+    }
 
 
 def parse_args() -> argparse.Namespace:
@@ -143,9 +173,13 @@ class _SimSidecar:
         elif method == "GET" and path == "/sim/contract":
             await self._respond(writer, 200, sim_contract())
         elif method == "POST" and path == "/sim/freq":
-            hz = int(json.loads(body)["hz"])
-            self._sim.set_frequency(hz)
-            await self._respond(writer, 200, {"ok": True, "freq_hz": hz})
+            try:
+                request = parse_freq_request(body)
+            except ValueError as exc:
+                await self._respond(writer, 400, {"error": str(exc)})
+                return
+            self._sim.set_frequency(request.hz)
+            await self._respond(writer, 200, {"ok": True, "freq_hz": request.hz})
         else:
             await self._respond(writer, 404, {"error": "not found"})
 

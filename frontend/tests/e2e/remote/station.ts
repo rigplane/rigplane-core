@@ -23,23 +23,48 @@ export interface SimState {
 }
 
 /** The producer's field types, as the sidecar serves them at
- * `GET /sim/contract` (the SimSnapshot annotations). A change on either
- * side makes `parseSimState` throw instead of mis-reading. */
-const SIM_CONTRACT: Record<string, string> = {
-  ptt_on: 'bool',
-  freq_hz: 'int',
-  ptt_transitions: 'tuple[tuple[float, bool], ...]',
+ * `GET /sim/contract` (the annotations of its SimSnapshot response and
+ * SimFreqRequest request dataclasses). A change on either side makes the
+ * parser/builder throw instead of mis-reading or mis-sending. */
+const SIM_CONTRACT: Record<string, Record<string, string>> = {
+  SimSnapshot: {
+    ptt_on: 'bool',
+    freq_hz: 'int',
+    ptt_transitions: 'tuple[tuple[float, bool], ...]',
+  },
+  SimFreqRequest: { hz: 'int' },
 };
+
+/** The sidecar's `POST /sim/freq` body (producer: SimFreqRequest). */
+export interface SimFreqRequest {
+  hz: number;
+}
+
+function assertContract(contract: unknown, name: string): void {
+  const served =
+    typeof contract === 'object' && contract !== null
+      ? (contract as Record<string, unknown>)[name]
+      : undefined;
+  if (JSON.stringify(sortKeys(served)) !== JSON.stringify(sortKeys(SIM_CONTRACT[name]))) {
+    throw new Error(`sim contract drift in ${name}: sidecar serves ${JSON.stringify(served)}`);
+  }
+}
+
+/** Build the /sim/freq body, after checking the served request contract. */
+export function buildFreqRequest(contract: unknown, hz: number): SimFreqRequest {
+  assertContract(contract, 'SimFreqRequest');
+  if (!Number.isInteger(hz) || hz <= 0) throw new Error(`hz must be a positive integer: ${hz}`);
+  return { hz };
+}
 
 /** Validate a sidecar response against the served contract. */
 export function parseSimState(contract: unknown, value: unknown): SimState {
-  if (JSON.stringify(sortKeys(contract)) !== JSON.stringify(sortKeys(SIM_CONTRACT))) {
-    throw new Error(`sim contract drift: sidecar serves ${JSON.stringify(contract)}`);
-  }
+  assertContract(contract, 'SimSnapshot');
+  const fields = Object.keys(SIM_CONTRACT.SimSnapshot);
   const bad = (why: string) => new Error(`sim state violates its contract (${why}): ${JSON.stringify(value)}`);
   if (typeof value !== 'object' || value === null || Array.isArray(value)) throw bad('not an object');
   const record = value as Record<string, unknown>;
-  if (Object.keys(record).sort().join() !== Object.keys(SIM_CONTRACT).sort().join()) {
+  if (Object.keys(record).sort().join() !== fields.sort().join()) {
     throw bad('keys');
   }
   if (typeof record.ptt_on !== 'boolean') throw bad('ptt_on');
@@ -85,13 +110,17 @@ export async function expectControlLink(): Promise<void> {
 
 let simContract: Promise<unknown> | null = null;
 
+function servedSimContract(): Promise<unknown> {
+  return (simContract ??= fetch(`${SIM_ORIGIN}/sim/contract`).then((r) => r.json()));
+}
+
 /** The simulator's current observable state, from the sidecar, validated
  * against the contract the sidecar serves. */
 export async function simState(): Promise<SimState> {
-  simContract ??= fetch(`${SIM_ORIGIN}/sim/contract`).then((r) => r.json());
+  const contract = servedSimContract();
   const response = await fetch(`${SIM_ORIGIN}/sim`);
   if (!response.ok) throw new Error(`sidecar /sim answered ${response.status}`);
-  return parseSimState(await simContract, await response.json());
+  return parseSimState(await contract, await response.json());
 }
 
 /** Change the frequency on the station side (silent; the radio's ~2 s
@@ -100,7 +129,7 @@ export async function setStationFrequency(hz: number): Promise<void> {
   const response = await fetch(`${SIM_ORIGIN}/sim/freq`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ hz }),
+    body: JSON.stringify(buildFreqRequest(await servedSimContract(), hz)),
   });
   if (!response.ok) throw new Error(`sidecar /sim/freq answered ${response.status}`);
 }
