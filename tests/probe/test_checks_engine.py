@@ -821,6 +821,96 @@ async def test_a_dead_link_while_reading_out_a_cancel_is_exit_4_with_the_journal
     assert req.journal_path.exists()
 
 
+# --- round 3: typed ranges, exclusive journal, bounded settle -------------------
+
+
+@pytest.mark.parametrize("name", ["ft991a", "ic705", "ic7610"])
+def test_frequency_ranges_reach_the_facts_through_the_typed_profile(name: str) -> None:
+    from rigplane.probe.checks import radio_facts
+    from rigplane.profiles.rig_loader import load_rig
+
+    config = load_rig(RIGS / f"{name}.toml")
+    typed = tuple((r.start, r.end) for r in config.to_profile().freq_ranges)
+    assert typed and radio_facts(config).freq_ranges == typed
+    engine = (REPO / "src" / "rigplane" / "probe" / "checks.py").read_text()
+    assert "start_hz" not in engine and "end_hz" not in engine  # no raw dict keys
+
+
+ASK_POWER = check_toml(
+    [
+        'kind = "write"\nentry = "rf_power"\nvalue = 64',
+        'kind = "ask"\nquestion = "Ok?"',
+    ],
+    ["rf_power"],
+)
+
+
+async def test_two_runs_on_one_journal_path_only_one_writes(tmp_path: Path) -> None:
+    from rigplane.probe.checks import ChecksRequest
+
+    config = load(tmp_path, "ic705", ASK_POWER)
+    fakes = {"a": civ_fake("IC-705"), "b": civ_fake("IC-705")}
+    done = {"a": asyncio.Event(), "b": asyncio.Event()}
+    path = tmp_path / "shared-journal.json"
+    snapshots: list[bytes] = []
+
+    def request_for(name: str, other: str):
+        async def ask(question: str) -> str:
+            await done[other].wait()  # the winner waits until the loser is done
+            return "yes"
+
+        def events(event: str) -> None:
+            if event in ("journal_written", "restore_begin"):
+                snapshots.append(path.read_bytes())
+
+        return ChecksRequest(lambda c, o: True, ask, on_event=events, journal_path=path)
+
+    async def go(name: str, other: str):
+        exchange = await civ_exchange(fakes[name])
+        result = await run(config, request_for(name, other), exchange)
+        done[name].set()
+        return name, result
+
+    results = dict(await asyncio.gather(go("a", "b"), go("b", "a")))
+    ran = [n for n, r in results.items() if r.records[0].status == "ran"]
+    lost = [n for n, r in results.items() if r.records[0].status == "refused"]
+    assert len(ran) == 1 and len(lost) == 1
+    assert civ_writes(fakes[lost[0]], 0x14) == []  # the loser wrote nothing
+    assert "did not finish" in (results[lost[0]].records[0].error or "")
+    first, at_restore = snapshots  # only the winner journals
+    assert at_restore == first  # the loser never touched the winner's journal
+    assert results[ran[0]].records[0].verified and not path.exists()
+
+
+@pytest.mark.timeout(30)
+@pytest.mark.skipif(os.name != "posix", reason="POSIX signals (Windows: MOR-4497)")
+async def test_settling_a_cancel_ends_despite_continuous_pushes(tmp_path: Path) -> None:
+    from rigplane_testkit.serial import CivSerialFake
+
+    config = load(tmp_path, "ic705", CIV_POWER_FREQ)
+    fake = CivSerialFake(model="IC-705", model_id=b"\xa4", echo=False, ack_set_s=0.3)
+    fake.hold(b"\x14\x0a", b"\x01\x28")
+    fake.hold(b"\x25\x00", bcd_le(14_074_000))
+    inner = await civ_exchange(fake)
+    push = bytes.fromhex("fefee0a42700ff00fd")  # an unsolicited scope-style frame
+
+    async def exchange(body: bytes | None, timeout: float):
+        if body is None:  # the radio never stops pushing while we only listen
+            await asyncio.sleep(0)
+            return push
+        return await inner(body, timeout)
+
+    def events(name: str) -> None:
+        if name == "steps_begin":
+            os.kill(os.getpid(), signal.SIGTERM)
+
+    result = await run(config, request(tmp_path, events=events), exchange)
+    (record,) = result.records
+    assert record.restored and record.verified, record.error
+    assert civ_writes(fake, 0x14)[-1] == b"\x0a\x01\x28"
+    assert any(row.hex == push.hex() for row in result.unsolicited)
+
+
 # --- ask timeout, cancel ----------------------------------------------------------------
 
 
