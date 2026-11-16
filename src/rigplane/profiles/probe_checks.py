@@ -348,7 +348,9 @@ def _forbid(
 
 
 def _template_fields(template: str) -> tuple[str, ...]:
-    return tuple(_TEMPLATE_FIELD.findall(template))
+    return tuple(
+        field.split(":")[0].split("!")[0] for field in _TEMPLATE_FIELD.findall(template)
+    )
 
 
 def _parse_cat_step(
