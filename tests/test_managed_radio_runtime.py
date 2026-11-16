@@ -337,7 +337,9 @@ async def test_real_core_radio_fresh_read_preserves_healthy_generation() -> None
     radio._connected = True
     rt = runtime(lifecycle=radio)
     await rt.replace_provider(ready=True)
-    transport.queue_response(_ptt_response(False))
+    # MOR-4384: the answer rides on the read's own send (an answer before
+    # its request is on the wire claims nothing).
+    transport.queue_response_on_send(transport.send_seq + 1, _ptt_response(False))
     result = await rt.request_fresh_ptt()
 
     assert result.outcome is TxOutcome.APPLIED and len(transport.sent_packets) == 1

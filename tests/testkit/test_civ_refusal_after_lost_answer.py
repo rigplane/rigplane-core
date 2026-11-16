@@ -160,7 +160,11 @@ async def test_lan_answers_reach_the_tracker_in_the_radio_order(
     tracker = radio._civ_request_tracker
     named = _record_refusals(tracker)
     for key in (_FREQ, _S_METER, _TUNER):
-        tracker.register_ack(wait=False, response_key=key, refused_read=key)
+        sink = tracker.register_ack(wait=False, response_key=key, refused_read=key)
+        assert isinstance(sink, int)
+        # MOR-4384: on the wire in this order; their answer windows play no
+        # part here, so they never close.
+        tracker.mark_sent(float("inf"), token=sink)
     keepalive = lan.idle()
     freq = lan.packet(
         build_civ_frame(CONTROLLER_ADDR, radio_addr, 0x03, data=bcd_encode(14_074_000))
