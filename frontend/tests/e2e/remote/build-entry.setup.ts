@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 /**
  * Playwright globalSetup of the remote matrix (playwright.remote.config.ts):
@@ -10,9 +11,11 @@ import path from 'node:path';
  * `npm run build && npx playwright test -c ./playwright.remote.config.ts`).
  */
 export default function buildRemoteEntry(): void {
-  // tests/e2e/remote -> the frontend root (where node_modules and the
-  // real vite.config.ts live).
-  const frontend = path.resolve(__dirname, '../../..');
+  // Playwright loads a globalSetup as ESM (no __dirname); tests/e2e/remote
+  // -> the frontend root (where node_modules and the real vite.config.ts
+  // live).
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const frontend = path.resolve(here, '../../..');
   const vite = path.join(frontend, 'node_modules', '.bin', 'vite');
   execFileSync(
     vite,
