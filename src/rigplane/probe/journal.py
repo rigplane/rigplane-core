@@ -6,10 +6,6 @@ internal codes), flushed and fsynced together with their directory. It is
 removed only after a verified restore. A journal left behind means the
 previous run died mid-check; the next probe start prints the originals
 (``leftover_journal_line``) and restores nothing by itself.
-
-No existing repo helper writes an fsynced file plus its directory (the
-software-TOT store and usb-capture inline their own file fsync only), so
-this module owns the one write it needs.
 """
 
 from __future__ import annotations
@@ -31,23 +27,25 @@ __all__ = [
 ]
 
 _SUFFIX = ".checks-journal.json"
-_KEYS = ("check_id", "check_title", "profile", "originals", "saved_utc")
+_KEYS = ("check_id", "check_title", "profile", "originals", "saved_utc", "now")
 
 
 @dataclass(frozen=True, slots=True)
 class ChecksJournal:
-    """The originals of one unfinished check: ``originals`` maps a setting
-    name ("VFO-A", "mode") to the value to set by hand ("14.074 MHz")."""
+    """The originals of one unfinished check: setting name ("VFO-A") to the
+    value to set by hand ("14.074 MHz"); ``now`` (after a failed restore) is
+    the last value the check saw for each setting."""
 
     check_id: str
     check_title: str
     profile: str
     originals: tuple[tuple[str, str], ...]
     saved_utc: str
+    now: tuple[tuple[str, str], ...] = ()
 
     def to_json(self) -> str:
         plain = {key: getattr(self, key) for key in _KEYS}
-        plain["originals"] = dict(self.originals)
+        plain["originals"], plain["now"] = dict(self.originals), dict(self.now)
         return json.dumps(plain, indent=1) + "\n"
 
     @classmethod
@@ -59,16 +57,20 @@ class ChecksJournal:
             raise ValueError(f"not a checks journal: invalid JSON ({error})") from None
         if missing := [key for key in _KEYS if key not in document]:
             raise ValueError(f"missing field {missing[0]}")
-        originals = _need_mapping(document["originals"], "originals")
+        pairs = {
+            key: tuple(
+                (name, _need_str(value, f"{key}.{name}"))
+                for name, value in _need_mapping(document[key], key).items()
+            )
+            for key in ("originals", "now")
+        }
         return cls(
             check_id=_need_str(document["check_id"], "check_id"),
             check_title=_need_str(document["check_title"], "check_title"),
             profile=_need_str(document["profile"], "profile"),
-            originals=tuple(
-                (name, _need_str(value, f"originals.{name}"))
-                for name, value in originals.items()
-            ),
+            originals=pairs["originals"],
             saved_utc=_need_str(document["saved_utc"], "saved_utc"),
+            now=pairs["now"],
         )
 
 
@@ -114,6 +116,14 @@ def leftover_journal_line(path: Path) -> str | None:
     journal = read_journal(path)
     if journal is None:
         return None
+    now = dict(journal.now)
+    if changed := [(n, now[n], v) for n, v in journal.originals if now.get(n, v) != v]:
+        said = ". ".join(f"{n} is now {new}, it was {old}" for n, new, old in changed)
+        them = "it" if len(changed) == 1 else "them"
+        return (
+            f"A check could not put the radio back: {said}. "
+            f"Set {them} back by hand before transmitting."
+        )
     values = ", ".join(f"{name} {value}" for name, value in journal.originals)
     return (
         "A check did not finish last time. "

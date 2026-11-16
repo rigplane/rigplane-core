@@ -138,6 +138,12 @@ class _SendGate:
             self.stop_status = status
             self.stop_detail = detail
 
+    def resume(self) -> None:
+        """Let a write check's restore send after a silence stop; the stop
+        reason stays (a broken link stays stopped)."""
+        if self.stop_status == "silence_stop":
+            self.stopped, self.silent_run = False, 0
+
     def stop_transport(self, phase: str, error: BaseException) -> None:
         """Stop the run on a broken exchange, naming the phase and error."""
         self.stop("transport_error", f"Transport error in {phase}: {error}")
@@ -625,11 +631,12 @@ async def run_probe(
     from rigplane.probe.checks import run_checks
 
     result = await run_checks(
-        config, checks, exchange=exchange, gap_s=gap_s, timeout_s=window
+        config, checks, exchange=exchange, gap_s=gap_s, timeout_s=window, strays=strays
     )
     file = replace(
         file,
         mode="read+checks",
+        unsolicited=tuple(strays.rows),
         checks=result.records,
         termination=result.termination or file.termination,
     )

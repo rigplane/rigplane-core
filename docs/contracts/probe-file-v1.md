@@ -93,23 +93,14 @@ parse as `completed`.
 
 ## Write checks
 
-One `checks` record (frozen `CheckRecord`; every key required, no other
-key allowed): `id`, `title`, `status` (`ran`, `refused` before any write,
-or `declined` by the person), `steps` (`{kind: read|write, entry,
-request_hex, reply_hex|null, class, value|null}`: every check frame on the
-wire in send order, `entry` the table setting, `value` its hand-readable
-value), `answers` (`{question, answer|null, skipped}`), `originals`
-(setting name to the hand-settable value put back, e.g. `"VFO-A":
-"14.074 MHz"`), `witness` (`{before, after, changed}`, after = after the
-restore), `restored` (every restore write accepted), `verified` (each
-restored value read back equal and the witness unchanged), `error`
-(string or null). Check rows are not fixture pairs.
-
-Journal: before a check's first write byte the originals are written,
-flushed and fsynced (file and folder) to `<out>.checks-journal.json`
-(`{check_id, check_title, profile, originals, saved_utc}`), removed after
-a verified restore. A journal left behind is printed at the next start;
-nothing is restored automatically.
+A `checks` record (`CheckRecord`, every key required, no other allowed):
+`id`, `title`, `status` (`ran`, `refused` before any write, `declined`),
+`steps` (every frame sent: `{kind, entry, request_hex, reply_hex, class,
+value}`), `answers` (`{question, answer, skipped}`), `originals` (setting to
+hand-settable value), `witness` (`{before, after, changed}`), `restored`,
+`verified`, `error`. The fsynced journal `<out>.checks-journal.json`
+(`{check_id, check_title, profile, originals, saved_utc, now}`) is written
+before the first write and removed after a verified restore.
 
 ## Redaction
 

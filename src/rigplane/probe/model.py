@@ -80,20 +80,15 @@ SKIP_REASONS = frozenset(
 
 #: How a run ended. ``completed`` sent every planned read; ``silence_stop``
 #: is five unanswered reads in a row; ``transport_error`` is a broken
-#: serial link; ``cancelled`` is a signal or Ctrl-C during a write check
-#: (its restore ran); ``restore_failed`` is a write check whose settings
-#: could not be put back or verified (exit code 4). The parser refuses any
-#: other status.
+#: serial link; ``cancelled``: a signal stopped the write checks (restored);
+#: ``restore_failed``: a check not put back or verified (exit code 4).
 TERMINATION_STATUSES = frozenset(
     {"completed", "silence_stop", "transport_error", "cancelled", "restore_failed"}
 )
 
-#: ``read+checks``: the read pass ran and write checks were requested.
 MODES = frozenset({"read", "read+checks"})
 
-#: A check ``ran`` (wrote), was ``refused`` before any write (precondition,
-#: unreadable original, original the check could not put back) or was
-#: ``declined`` by the person.
+#: ``refused``: stopped before any write; ``declined`` by the person.
 CHECK_STATUSES = frozenset({"ran", "refused", "declined"})
 
 
@@ -205,10 +200,8 @@ class TerminationInfo:
 
 @dataclass(frozen=True, slots=True)
 class CheckStepRow:
-    """One check frame on the wire: ``kind`` is ``read`` or ``write``,
-    ``entry`` the table setting, ``value`` its hand-readable value (``None``
-    when the reply did not decode), ``outcome`` one of :data:`OUTCOMES`
-    (JSON key ``class``; a silent Yaesu write is the accepted one)."""
+    """One check frame sent: ``value`` hand-readable (``None``: no data),
+    ``outcome`` one of :data:`OUTCOMES` (JSON key ``class``)."""
 
     kind: str
     entry: str
@@ -220,7 +213,7 @@ class CheckStepRow:
 
 @dataclass(frozen=True, slots=True)
 class CheckAnswerRow:
-    """One question put to the person: the answer, or skipped (timeout)."""
+    """One question put to the person."""
 
     question: str
     answer: str | None
@@ -238,9 +231,7 @@ class CheckWitness:
 
 @dataclass(frozen=True, slots=True)
 class CheckRecord:
-    """One write check: what it sent and read, the originals it put back
-    (hand-settable text), and whether the restore was written (``restored``)
-    and read back equal with an unchanged witness (``verified``)."""
+    """One write check; ``verified``: read back equal, witness unchanged."""
 
     id: str
     title: str
@@ -647,10 +638,14 @@ def _optional(value: Any, path: str, need: Any) -> Any:
     return None if value is None else need(value, path)
 
 
-def _need_list(value: Any, path: str) -> list[Any]:
+def _need_list(value: Any, path: str, parse: Any = None) -> list[Any]:
     if not isinstance(value, list):
         raise ValueError(f"field {path} must be an array")
-    return value
+    return (
+        value
+        if parse is None
+        else [parse(v, f"{path}[{i}]") for i, v in enumerate(value)]
+    )
 
 
 def _text_map(value: Any, path: str, *, nullable: bool) -> dict[str, Any]:
@@ -689,26 +684,20 @@ def _check_record(document: Any, path: str) -> CheckRecord:
     witness = _need_fields(
         row["witness"], f"{path}.witness", ("before", "after", "changed")
     )
-    changed = _need_list(witness["changed"], f"{path}.witness.changed")
+    changed = _need_list(witness["changed"], f"{path}.witness.changed", _need_str)
     return CheckRecord(
         id=_need_str(row["id"], f"{path}.id"),
         title=_need_str(row["title"], f"{path}.title"),
         status=_need_choice(row["status"], f"{path}.status", CHECK_STATUSES),
-        steps=tuple(
-            _check_step(step, f"{path}.steps[{i}]")
-            for i, step in enumerate(_need_list(row["steps"], f"{path}.steps"))
-        ),
-        answers=tuple(
-            _check_answer(item, f"{path}.answers[{i}]")
-            for i, item in enumerate(_need_list(row["answers"], f"{path}.answers"))
-        ),
+        steps=tuple(_need_list(row["steps"], f"{path}.steps", _check_step)),
+        answers=tuple(_need_list(row["answers"], f"{path}.answers", _check_answer)),
         originals=_text_map(row["originals"], f"{path}.originals", nullable=False),
         witness=CheckWitness(
             before=_text_map(
                 witness["before"], f"{path}.witness.before", nullable=True
             ),
             after=_text_map(witness["after"], f"{path}.witness.after", nullable=True),
-            changed=[_need_str(n, f"{path}.witness.changed") for n in changed],
+            changed=changed,
         ),
         restored=_need_bool(row["restored"], f"{path}.restored"),
         verified=_need_bool(row["verified"], f"{path}.verified"),
