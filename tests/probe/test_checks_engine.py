@@ -118,7 +118,7 @@ def request(tmp_path: Path, *, answer="yes", events=None, ask_timeout_s=60.0):
 
     async def ask(question: str) -> str | None:
         if answer is None:
-            await asyncio.sleep(3600)
+            await asyncio.Event().wait()  # the person never answers
         return answer
 
     return ChecksRequest(
@@ -353,7 +353,8 @@ async def test_sigterm_cancels_into_restore_and_ctrl_c_during_restore_is_ignored
         result = await run(
             config, request(tmp_path, events=events), await cat_exchange(radio)
         )
-        await asyncio.sleep(0.05)  # a stray SIGINT would raise here
+        for _ in range(5):  # a stray SIGINT would raise here
+            await asyncio.sleep(0)
     finally:
         await radio.stop()
     (record,) = result.records
