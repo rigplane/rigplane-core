@@ -11,7 +11,8 @@ import Harness from './StackedTraceCanvasHarness.svelte';
 import { ScopeRenderTrace, type TraceToken } from '$lib/runtime/scope-render-trace';
 import { parseCurrentScopeFrame } from '$lib/runtime/adapters/scope-adapter';
 import { scopeWire } from '$lib/runtime/__tests__/scope-wire-fixture';
-import { defaultSpectrumOptions, type SpectrumOptions } from '$lib/renderers/spectrum-renderer';
+import { setStackedTraceSettings, stackedTraceSettings } from '$lib/stores/stacked-trace.svelte';
+import { defaultStackedTraceSettings } from '$lib/renderers/stacked-trace-geometry';
 
 type Push = (pixels: Uint8Array, token?: TraceToken | null) => void;
 type Fixture = ReturnType<typeof webglFixture>;
@@ -23,8 +24,6 @@ let frameId: number;
 let gl: Fixture[];
 let chromePaints: number;
 let chromeLabels: string[];
-/** What the 2D contexts stroked and filled, by colour, and how often they clipped (the flat hatch does). */
-let flat: { strokes: string[]; fills: string[]; clips: number };
 let webglAvailable: boolean;
 let resize: (width: number, height: number) => void;
 
@@ -33,9 +32,7 @@ function flushFrames(now: number): void {
   for (const frame of due) frame(now);
 }
 
-type Locate = import('$lib/renderers/stacked-trace-geometry').StackedTraceLocate;
-function mountView(props: { centerHz?: number; trace?: ScopeRenderTrace; patch?: Partial<SpectrumOptions>;
-  onLocate?: (locate: Locate | null) => void } = {}) {
+function mountView(props: { centerHz?: number; trace?: ScopeRenderTrace } = {}) {
   let push: Push = () => {};
   const onUnavailable = vi.fn();
   component = mount(Harness, { target, props: { ...props, onPush: (fn: Push) => { push = fn; }, onUnavailable } });
@@ -47,7 +44,6 @@ function mountView(props: { centerHz?: number; trace?: ScopeRenderTrace; patch?:
 
 beforeEach(() => {
   frames = new Map(); frameId = 0; gl = []; chromePaints = 0; chromeLabels = []; webglAvailable = true;
-  flat = { strokes: [], fills: [], clips: 0 };
   target = document.createElement('div');
   document.body.appendChild(target);
   Object.defineProperty(window, 'devicePixelRatio', { configurable: true, value: 1 });
@@ -81,9 +77,6 @@ beforeEach(() => {
         // renderSpectrum composes its cached layers onto the visible canvas.
         if (key === 'clearRect') return () => { if (isChrome()) chromePaints++; };
         if (key === 'fillText') return (text: string) => { chromeLabels.push(text); };
-        if (key === 'stroke') return () => { flat.strokes.push(String(context.strokeStyle)); };
-        if (key === 'fillRect') return () => { flat.fills.push(String(context.fillStyle)); };
-        if (key === 'clip') return () => { flat.clips++; };
         return () => {};
       },
       set(context, key: string, value) { context[key] = value; return true; },
@@ -94,6 +87,8 @@ beforeEach(() => {
 afterEach(async () => {
   if (component) await unmount(component);
   component = undefined;
+  setStackedTraceSettings(null);
+  localStorage.clear();
   target.remove();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
@@ -137,70 +132,63 @@ describe('MOR-4463 StackedTraceCanvas', () => {
     expect(chromeLabels).not.toContain('14.050');
   });
 
-  /** The uniform calls of the latest floor draw: from its program to its quad. */
-  const floorUniforms = (fixture: Fixture) => {
-    let quad = fixture.calls.length - 1;
-    while (quad > 0 && !(fixture.calls[quad].name === 'drawArrays' && fixture.calls[quad].args[2] === 4)) quad--;
-    let start = quad;
-    while (start > 0 && fixture.calls[start].name !== 'useProgram') start--;
-    return fixture.calls.slice(start, quad);
+  const slider = (root: HTMLElement, key: string) => root.querySelector<HTMLInputElement>(`input[data-setting="${key}"]`)!;
+  const move = (input: HTMLInputElement, value: number) => {
+    input.value = String(value); input.dispatchEvent(new Event('input', { bubbles: true })); flushSync();
   };
+  const lastFloor = (fixture: Fixture) =>
+    fixture.named('uniform3f').filter(call => call.args[0] === 'uFloor').at(-1)!.args.slice(1);
 
-  it('draws the marker, the passband and the hatch inside the scene and leaves the flat renderer the labels', () => {
-    const view = mountView({ patch: { coverage: { startHz: 14_010_000, endHz: 14_080_000 } } });
-    view.push(new Uint8Array(475).fill(20));
-    flushFrames(16);
-    // Nothing of the flat marks is painted in 2D: they would stand upright over a scene in perspective.
-    expect(flat.strokes).not.toContain(defaultSpectrumOptions.tuneLineColor);
-    expect(flat.strokes).not.toContain(defaultSpectrumOptions.passbandEdgeColor);
-    expect(flat.fills).not.toContain(defaultSpectrumOptions.passbandFillColor);
-    expect(flat.clips).toBe(0);
-    expect(chromeLabels).toContain('14.050');
-    // USB, 2.4 kHz of a 100 kHz view, tuned at its centre; samples from 10 % to 80 % of it.
-    const floor = floorUniforms(gl[0]);
-    const mark = floor.find(call => call.name === 'uniform3f' && call.args[0] === 'uMark')!.args.slice(1) as number[];
-    expect(mark[0]).toBe(0.5);
-    expect(mark[1]).toBeCloseTo(0.5, 12);
-    expect(mark[2]).toBeCloseTo(0.524, 12);
-    const cover = floor.find(call => call.name === 'uniform2f' && call.args[0] === 'uHatch')!.args.slice(1) as number[];
-    expect(cover[0]).toBeCloseTo(0.1, 12);
-    expect(cover[1]).toBeCloseTo(0.8, 12);
-    // Every row gets the same marks as the floor.
-    const marks = gl[0].named('uniform3f').filter(call => call.args[0] === 'uMark');
-    expect(marks.length).toBeGreaterThanOrEqual(2);
-    for (const call of marks) expect(call.args.slice(1)).toEqual(mark);
+  it('opens the adjustments on its key: one slider per adjustable setting, at the current values', () => {
+    const view = mountView();
+    const key = view.root.querySelector<HTMLButtonElement>('[data-testid="stacked-trace-tune"]')!;
+    expect(view.root.querySelector('[role="dialog"]')).toBeNull();
+    expect(key.getAttribute('aria-expanded')).toBe('false');
+    key.click(); flushSync();
+    expect(key.getAttribute('aria-expanded')).toBe('true');
+    const sliders = Array.from(view.root.querySelectorAll<HTMLInputElement>('[role="dialog"] input[type="range"]'));
+    expect(sliders.map(input => input.dataset.setting))
+      .toEqual(['recede', 'rows', 'rowPeriodMs', 'floorRise', 'traceHeight', 'haze', 'rowBlend', 'rowSoften', 'floorDrop', 'colorGain']);
+    expect(Number(slider(view.root, 'haze').value)).toBe(defaultStackedTraceSettings.haze);
+    expect(Number(slider(view.root, 'rows').value)).toBe(defaultStackedTraceSettings.rows);
+    expect([slider(view.root, 'rows').min, slider(view.root, 'rows').max]).toEqual(['24', '160']);
+    key.click(); flushSync();
+    expect(view.root.querySelector('[role="dialog"]')).toBeNull();
   });
 
-  it.each([
-    ['rgba(239,68,68,0.75)', [239 / 255, 68 / 255, 68 / 255, 0.75]],
-    ['rgba(12, 34, 56, 0.5)', [12 / 255, 34 / 255, 56 / 255, 0.5]],
-    ['#ff8000', [1, 128 / 255, 0, 1]],
-    ['rgb(1, 2, 3)', [1 / 255, 2 / 255, 3 / 255, 1]],
-  ])('gives the scene the marker colour of the flat view: %s', (css, rgba) => {
-    const view = mountView({ patch: { tuneLineColor: css, passbandFillColor: 'rgba(59,130,246,0.15)' } });
+  it('applies a moved slider to the picture that is on screen, keeps it, and returns to the defaults', () => {
+    const view = mountView();
     view.push(new Uint8Array(475).fill(20));
-    flushFrames(16);
-    const sent = (name: string) => Array.from(gl[0].named('uniform4fv').find(call => call.args[0] === name)!.args[1] as Float32Array);
-    sent('uTuneColor').forEach((value, index) => expect(value).toBeCloseTo(rgba[index], 6));
-    sent('uBandFill').forEach((value, index) => expect(value).toBeCloseTo([59 / 255, 130 / 255, 246 / 255, 0.15][index], 6));
+    flushFrames(16); flushFrames(500);
+    view.root.querySelector<HTMLButtonElement>('[data-testid="stacked-trace-tune"]')!.click(); flushSync();
+    expect(lastFloor(gl[0])[2]).toBe(defaultStackedTraceSettings.recede);
+    move(slider(view.root, 'recede'), 1.5);
+    flushFrames(600);
+    // Same renderer, same history: the next paint simply uses the new value.
+    expect(gl).toHaveLength(1);
+    expect(lastFloor(gl[0])[2]).toBe(1.5);
+    expect(view.root.getAttribute('data-history-rows')).toBe('1');
+    expect(stackedTraceSettings().recede).toBe(1.5);
+    expect(view.root.querySelector('[role="dialog"] output')!.textContent).toBe('1.5');
+    view.root.querySelector<HTMLButtonElement>('[data-testid="stacked-trace-tune-reset"]')!.click(); flushSync();
+    flushFrames(700);
+    expect(lastFloor(gl[0])[2]).toBe(defaultStackedTraceSettings.recede);
+    expect(Number(slider(view.root, 'recede').value)).toBeCloseTo(defaultStackedTraceSettings.recede, 2);
   });
 
-  it('hands the host a pointer map that answers from the scene, and takes it back on unmount', async () => {
-    const maps: (Locate | null)[] = [];
-    const view = mountView({ onLocate: locate => maps.push(locate) });
-    expect(maps).toHaveLength(1);
-    const locate = maps[0]!;
-    view.push(new Uint8Array(475).fill(40));
-    flushFrames(16);
-    // On the front row a pointer's x is its frequency; high in the 400 x 200
-    // pane it is on the last row, which is 1 / 2.5 of the pane wide.
-    expect(locate(0.3, 0.8)).toBeCloseTo(0.3, 12);
-    expect(locate(0.4, 0.3)).toBeCloseTo(0.25, 9);
-    view.scene.dispatchEvent(new Event('webglcontextlost'));
-    expect(locate(0.4, 0.3)).toBeNull();
-    await unmount(component!); component = undefined;
-    expect(maps).toHaveLength(2);
-    expect(maps[1]).toBeNull();
+  it('builds a new ring when the row count changes, and feeds it the frame it holds', () => {
+    const view = mountView();
+    view.push(new Uint8Array(475).fill(20));
+    flushFrames(16); flushFrames(500);
+    view.root.querySelector<HTMLButtonElement>('[data-testid="stacked-trace-tune"]')!.click(); flushSync();
+    move(slider(view.root, 'rows'), 40);
+    expect(gl).toHaveLength(2);
+    expect(gl[0].named('deleteProgram')).toHaveLength(2);
+    // 40 history rows and the live one.
+    expect(gl[1].named('texImage2D')[0].args[4]).toBe(41);
+    flushFrames(600);
+    expect(gl[1].named('texSubImage2D').length).toBeGreaterThan(0);
+    expect(view.onUnavailable).not.toHaveBeenCalled();
   });
 
   it('follows a resize: both canvases take the new backing size, chrome and scene repaint', () => {

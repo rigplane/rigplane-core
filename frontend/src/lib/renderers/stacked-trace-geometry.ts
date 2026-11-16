@@ -3,8 +3,6 @@
 // current view, and how depth recedes on screen. No DOM, no WebGL.
 
 import type { WaterfallOptions } from './waterfall-renderer';
-import type { SpectrumOptions } from './spectrum-renderer';
-import { getPassbandGeometry } from '../../components/spectrum/passband-geometry';
 
 export interface StackedTraceSettings {
   /** History rows kept behind the live trace. */
@@ -19,16 +17,62 @@ export interface StackedTraceSettings {
   readonly traceHeight: number;
   /** Perspective strength: the last row is drawn at 1 / (1 + recede) of the front size; 0 is no perspective. */
   readonly recede: number;
+  /** How far the last row dissolves into the background, 0..1. */
+  readonly haze: number;
+  /** Share of a new row in the history row it becomes; the rest is the row before it. 1 is no smoothing. */
+  readonly rowBlend: number;
+  /** How much a history row is smoothed across frequency: 1 is a quarter, a half, a quarter; 0 is none. */
+  readonly rowSoften: number;
+  /** How far below the noise floor the surface starts, in units of the 0..80 level scale. */
+  readonly floorDrop: number;
+  /** Colour gain, 0..100: 50 colours the levels evenly, more colours down to the noise, less only the peaks. */
+  readonly colorGain: number;
 }
 
 export const defaultStackedTraceSettings: StackedTraceSettings = {
-  rows: 60,
+  rows: 96,
   rowPeriodMs: 100,
   frontInsetPx: 16,
-  floorRise: 0.5,
-  traceHeight: 0.6,
-  recede: 1.5,
+  floorRise: 0.58,
+  traceHeight: 0.46,
+  recede: 2 / 3,
+  haze: 0.16,
+  rowBlend: 0.6,
+  rowSoften: 1,
+  floorDrop: 8,
+  colorGain: 70,
 };
+
+/** The settings a user may adjust, each with the range it may take. */
+export const stackedTraceTunables = [
+  { key: 'recede', min: 0, max: 2, step: 0.05 },
+  { key: 'rows', min: 24, max: 160, step: 8 },
+  { key: 'rowPeriodMs', min: 40, max: 250, step: 10 },
+  { key: 'floorRise', min: 0.2, max: 0.7, step: 0.02 },
+  { key: 'traceHeight', min: 0.2, max: 0.8, step: 0.02 },
+  { key: 'haze', min: 0, max: 0.9, step: 0.05 },
+  { key: 'rowBlend', min: 0.2, max: 1, step: 0.05 },
+  { key: 'rowSoften', min: 0, max: 1, step: 0.25 },
+  { key: 'floorDrop', min: 0, max: 24, step: 1 },
+  { key: 'colorGain', min: 0, max: 100, step: 5 },
+] as const satisfies readonly { key: keyof StackedTraceSettings; min: number; max: number; step: number }[];
+
+/**
+ * Reads stored or entered settings: the defaults, with every adjustable
+ * value that is a finite number taken and held inside its range. Anything
+ * else in `raw` is ignored.
+ */
+export function parseStackedTraceSettings(raw: unknown): StackedTraceSettings {
+  const settings: { -readonly [K in keyof StackedTraceSettings]: StackedTraceSettings[K] } = { ...defaultStackedTraceSettings };
+  if (typeof raw !== 'object' || raw === null) return settings;
+  for (const { key, min, max } of stackedTraceTunables) {
+    const value = (raw as Record<string, unknown>)[key];
+    if (typeof value !== 'number' || !Number.isFinite(value)) continue;
+    const held = Math.min(max, Math.max(min, value));
+    settings[key] = key === 'rows' ? Math.round(held) : held;
+  }
+  return settings;
+}
 
 /** Absolute-frequency placement of one stored row; Hz stay float64 here. */
 export interface StackedRowGeometry {
@@ -102,77 +146,17 @@ export interface StackedDepth {
 /**
  * Depth 0 is the live front row, depth 1 the oldest. One-point perspective:
  * a row shrinks toward the vanishing point above the middle of the pane, in
- * width and in height alike, so only the front row spans the pane and its
- * frequency axis; `stackedScreenX` and `unprojectStackedFloor` carry a view
- * fraction to the screen and back at any depth.
+ * width and in height alike. Only the front row spans exactly the view; the
+ * frequency axis, the tuning marker and click-to-tune read that row, as on
+ * the flat trace. A row further back shows `1 / scale` of the view across
+ * the pane, so it fills the pane edge to edge where it has the samples.
  */
 export function projectStackedDepth(depth: number, settings: StackedTraceSettings, out: StackedDepth): void {
   const z = depth < 0 ? 0 : depth > 1 ? 1 : depth;
   out.scale = 1 / (1 + settings.recede * z);
   out.baseline = settings.floorRise * z * (1 + settings.recede) * out.scale;
   const t = z <= 0.15 ? 0 : (z - 0.15) / 0.85;
-  out.fog = 0.9 * t * t * (3 - 2 * t);
-}
-
-/** Screen x (fraction of the pane width) of view fraction `fraction` on a row drawn at `scale`. */
-export function stackedScreenX(fraction: number, scale: number): number {
-  return 0.5 + (fraction - 0.5) * scale;
-}
-
-/** The floor point drawn at a screen point: its depth and its view fraction. */
-export interface StackedFloorPoint {
-  depth: number;
-  fraction: number;
-}
-
-/**
- * Inverse of the projection on the floor (the row baselines). `x` is a
- * fraction of the pane width, `rise` the height above the front baseline as
- * a fraction of the pane height; a point in front of the front row or beyond
- * the last one takes that row's depth.
- */
-export function unprojectStackedFloor(x: number, rise: number, settings: StackedTraceSettings, out: StackedFloorPoint): void {
-  const t = rise / (settings.floorRise * (1 + settings.recede));
-  out.depth = t <= 0 ? 0 : t * (1 + settings.recede) >= 1 ? 1 : t / (1 - settings.recede * t);
-  out.fraction = 0.5 + (x - 0.5) * (1 + settings.recede * out.depth);
-}
-
-/**
- * Pointer-to-frequency map of the scene: pane fractions (`y` downward) to the
- * view fraction 0..1 drawn there; null when the scene cannot answer.
- */
-export type StackedTraceLocate = (x: number, y: number) => number | null;
-
-/**
- * The tuning marker, the passband and the covered part of the view as view
- * fractions — where the flat renderer draws them on its full-width trace.
- */
-export interface StackedTraceMarkers {
-  /** Tuning marker; negative hides it. */
-  tune: number;
-  /** Passband edges; `bandHi <= bandLo` hides it. */
-  bandLo: number;
-  bandHi: number;
-  /** The view holds samples for fractions in [coverLo, coverHi). */
-  coverLo: number;
-  coverHi: number;
-}
-
-export function stackedTraceMarkers(options: SpectrumOptions, out: StackedTraceMarkers): void {
-  const { spanHz, centerHz, tuneHz } = options;
-  out.tune = -1; out.bandLo = out.bandHi = 0; out.coverLo = 0; out.coverHi = 1;
-  if (!(spanHz > 0)) return;
-  const startHz = centerHz - spanHz / 2, clamp = (v: number) => v < 0 ? 0 : v > 1 ? 1 : v;
-  if (options.showRfOverlays !== false) {
-    const fixed = options.scopeMode === 1 || options.scopeMode === 3;
-    const tune = fixed && tuneHz > 0 ? clamp((tuneHz - startHz) / spanHz) : 0.5;
-    const band = getPassbandGeometry(options.mode ?? '', options.passbandHz, options.passbandShiftHz, spanHz, 1, tune);
-    if (band && band.widthPx > 0) { out.bandLo = band.leftPx; out.bandHi = band.rightPx; }
-    if (options.showTuneIndicator !== false) out.tune = tune;
-  }
-  const sampleSpan = options.sampleSpanHz || spanHz, sourceCenter = centerHz - options.panoramaShiftHz;
-  out.coverLo = clamp(((options.coverage?.startHz ?? sourceCenter - sampleSpan / 2) - startHz) / spanHz);
-  out.coverHi = clamp(((options.coverage?.endHz ?? sourceCenter + sampleSpan / 2) - startHz) / spanHz);
+  out.fog = settings.haze * t * t * (3 - 2 * t);
 }
 
 /** Trace vertices per row: one per two backing pixels, bounded. */

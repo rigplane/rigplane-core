@@ -16,7 +16,9 @@ test('real GL: stacked history in depth, retune follows frequency', async ({ pag
     canvas.width = 400; canvas.height = 200; canvas.style.cssText = 'display:block;width:400px;height:200px';
     document.body.replaceChildren(canvas);
     const options = { ...defaultWaterfallOptions, colorScheme: 'grayscale', centerHz: 14_050_000, spanHz: 100_000 };
-    const settings = { ...defaultStackedTraceSettings, rows: 8, rowPeriodMs: 100 };
+    // A fixed look for the pixel positions below, whatever the defaults become.
+    const settings = { ...defaultStackedTraceSettings, rows: 8, rowPeriodMs: 100, floorRise: 0.5, traceHeight: 0.5,
+      recede: 2 / 3, rowSoften: 0 };
     const renderer = new StackedTraceRenderer(canvas, options, settings);
     const gl = canvas.getContext('webgl2')!;
     const luma = (x: number, y: number) => {
@@ -37,16 +39,16 @@ test('real GL: stacked history in depth, retune follows frequency', async ({ pag
     for (let i = 0; i < 8; i++) renderer.pushRow(i < 7 ? older : sparse, options, i * 100);
     const animating = renderer.draw(750);
     const rested = renderer.draw(5_000);
-    // Front row: inset 16 px, full-scale height 120 px. Sample under the crest.
-    const carrier = luma(200, 120), floorAtCarrierHeight = luma(60, 120), sky = rgb(200, 195);
-    // Above the front row's noise only the older rows' carrier can paint:
-    // history is visible in depth. The newest row that has it rests a
-    // quarter of the way back, at 1 / 1.375 of the front size, so its
-    // carrier stands at 200 + 100 / 1.375 = 272 px, not at the flat 300.
-    const depth = luma(272, 100), depthAside = luma(300, 100);
+    // Front row: inset 16 px, full-scale height 100 px. Sample under the crest.
+    const carrier = luma(200, 100), floorAtCarrierHeight = luma(60, 100), sky = rgb(200, 195);
+    // Above the noise of every row only an older row's carrier can paint:
+    // history is visible in depth. The row a quarter of the way back is
+    // drawn at 1 / (1 + 0.25 * 2 / 3) = 6 / 7 of the front size, so its
+    // carrier stands at 200 + 100 * 6 / 7 = 286 px — not at the flat 300.
+    const depth = luma(286, 125), depthAside = luma(300, 125);
     renderer.updateOptions({ centerHz: 14_060_000 });
     renderer.draw(5_000);
-    const movedTo = luma(160, 120), movedFrom = luma(200, 120);
+    const movedTo = luma(160, 100), movedFrom = luma(200, 100);
     renderer.updateOptions({ centerHz: 14_050_000 });
     return { empty, animating, rested, carrier, floorAtCarrierHeight, sky, depth, depthAside,
       movedTo, movedFrom, rows: renderer.historyRows, error: gl.getError() };
@@ -66,10 +68,10 @@ test('real GL: stacked history in depth, retune follows frequency', async ({ pag
   await page.locator('#stacked-witness').screenshot({ path: info.outputPath('stacked.png') });
 });
 
-// The perspective itself, on real pixels: every row is drawn at its own size
-// about the vanishing point, the markers follow it, and `locate` returns the
-// frequency of the signal that is actually painted under a pointer.
-test('real GL: rows converge, markers follow, and a pointer on any drawn signal is its frequency', async ({ page }) => {
+// The perspective itself, on real pixels: the view narrows toward the
+// vanishing point, every row is painted at its own size, and a row that has
+// samples wider than the view fills the pane beside it.
+test('real GL: rows converge on the vanishing point and fill the pane sides where they have samples', async ({ page }) => {
   const errors: string[] = []; page.on('pageerror', error => errors.push(error.message));
   await page.goto('/fixtures/spectrum-witness.html');
   const result = await page.evaluate(async () => {
@@ -79,81 +81,70 @@ test('real GL: rows converge, markers follow, and a pointer on any drawn signal 
       import('/src/lib/renderers/stacked-trace-geometry.ts' as string),
     ]);
     const WIDTH = 800, HEIGHT = 400;
-    const canvas = document.createElement('canvas');
-    canvas.width = WIDTH; canvas.height = HEIGHT; canvas.style.cssText = 'display:block;width:800px;height:400px';
-    document.body.replaceChildren(canvas);
-    const options = { ...defaultWaterfallOptions, colorScheme: 'grayscale', centerHz: 14_050_000, spanHz: 100_000 };
-    const settings = { ...geometry.defaultStackedTraceSettings, rows: 8, rowPeriodMs: 100 };
-    const renderer = new StackedTraceRenderer(canvas, options, settings);
-    const gl = canvas.getContext('webgl2')!;
-    const rgb = (x: number, y: number) => {
-      const value = new Uint8Array(4); gl.readPixels(Math.round(x), Math.round(y), 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, value);
-      return Array.from(value.subarray(0, 3));
-    };
-    const luma = (x: number, y: number) => rgb(x, y).reduce((sum, value) => sum + value, 0) / 3;
+    // A fixed look for the pixel positions below, whatever the defaults become.
+    const settings = { ...geometry.defaultStackedTraceSettings, rows: 8, rowPeriodMs: 100, floorRise: 0.5, traceHeight: 0.5,
+      recede: 2 / 3, rowSoften: 0 };
     const placed = { baseline: 0, scale: 0, fog: 0 };
     /** Backing pixel of view fraction `fraction` at `depth`, `above` front-row trace heights over the baseline. */
     const pixel = (fraction: number, depth: number, above: number) => {
       geometry.projectStackedDepth(depth, settings, placed);
-      return { x: WIDTH * geometry.stackedScreenX(fraction, placed.scale),
+      return { x: WIDTH * (0.5 + (fraction - 0.5) * placed.scale),
         y: settings.frontInsetPx + HEIGHT * (placed.baseline + above * settings.traceHeight * placed.scale) };
     };
-
-    // The empty scene: the marker runs along the floor to the vanishing
-    // point, and the floor is hatched where the view holds no samples.
-    const red = Float32Array.of(1, 0, 0, 1), blue = Float32Array.of(0, 0, 1, 0.5);
-    renderer.setMarkers({ tune: 0.3, bandLo: 0.3, bandHi: 0.36, coverLo: 0, coverHi: 0.85 }, { tune: red, bandFill: blue, bandEdge: blue });
-    renderer.draw(0);
-    const onFloor = pixel(0.3, 0.6, 0), inBand = pixel(0.33, 0.6, 0), hatch = pixel(0.93, 0.4, 0), plain = pixel(0.65, 0.4, 0);
-    const empty = {
-      strip: rgb(WIDTH * 0.3, 4), floorMarker: rgb(onFloor.x, onFloor.y), flatColumn: rgb(WIDTH * 0.3, onFloor.y),
-      band: rgb(inBand.x, inBand.y), hatch: rgb(hatch.x, hatch.y), plain: rgb(plain.x, plain.y),
-      sky: rgb(WIDTH * 0.3, HEIGHT - 5), beside: rgb(20, HEIGHT * 0.5),
+    /** Eight identical rows; `wide` gives every row twice the view, with a carrier 20 % beyond its right edge. */
+    const scene = (wide: boolean) => {
+      const canvas = document.createElement('canvas');
+      canvas.width = WIDTH; canvas.height = HEIGHT; canvas.style.cssText = 'display:block;width:800px;height:400px';
+      document.body.replaceChildren(canvas);
+      const options = { ...defaultWaterfallOptions, colorScheme: 'grayscale', centerHz: 14_050_000, spanHz: 100_000,
+        sampleSpanHz: wide ? 200_000 : 100_000 };
+      const renderer = new StackedTraceRenderer(canvas, options, settings);
+      const gl = canvas.getContext('webgl2')!;
+      // Sample coordinate of a view fraction: the wide row holds the view in its middle half.
+      const bins = 2000, at = (fraction: number) => Math.round((wide ? 0.25 + fraction / 2 : fraction) * bins);
+      const data = new Uint8Array(bins).fill(10);
+      for (const fraction of wide ? [0.15, 0.8, 1.2] : [0.15, 0.8]) data.fill(80, at(fraction) - 4, at(fraction) + 4);
+      for (let i = 0; i < 8; i++) renderer.pushRow(data, options, i * 100);
+      renderer.draw(60_000);
+      const luma = (x: number, y: number) => {
+        const value = new Uint8Array(4); gl.readPixels(Math.round(x), Math.round(y), 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, value);
+        return (value[0] + value[1] + value[2]) / 3;
+      };
+      return { luma, error: () => gl.getError() };
     };
-
-    // Eight rows, each with a carrier at 15 % and at 80 % of the view.
-    const CARRIERS = [0.15, 0.8];
-    const data = new Uint8Array(1000).fill(10);
-    for (const fraction of CARRIERS) data.fill(80, fraction * 1000 - 3, fraction * 1000 + 3);
-    for (let i = 0; i < 8; i++) renderer.pushRow(data, options, i * 100);
-    renderer.draw(60_000);
+    const wide = scene(true);
     // At rest the stream clock stands one frame interval past the last
     // frame: the row committed at t is (800 - t) / 800 deep.
-    const rows: { depth: number; fraction: number; bright: number; flat: number; located: number; middle: number }[] = [];
+    const rows: { depth: number; fraction: number; bright: number; flat: number }[] = [];
     for (const depth of [0, 0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875]) {
-      for (const fraction of CARRIERS) {
-        // Four fifths and half way up the carrier: above the noise of every nearer row.
-        const at = pixel(fraction, depth, 0.8), half = pixel(fraction, depth, 0.5);
-        rows.push({ depth, fraction, bright: luma(at.x, at.y), flat: luma(WIDTH * fraction, at.y),
-          located: renderer.locate(at.x / WIDTH, 1 - at.y / HEIGHT), middle: renderer.locate(half.x / WIDTH, 1 - half.y / HEIGHT) });
+      for (const fraction of [0.15, 0.8]) {
+        // Four fifths up the carrier: above the noise of every nearer row.
+        const at = pixel(fraction, depth, 0.8);
+        rows.push({ depth, fraction, bright: wide.luma(at.x, at.y), flat: wide.luma(WIDTH * fraction, at.y) });
       }
     }
-    const onRow = pixel(0.3, 0.25, 0.01);
-    const marked = { row: rgb(onRow.x, onRow.y), flatColumn: rgb(WIDTH * 0.3, onRow.y) };
-    return { empty, rows, marked, error: gl.getError() };
+    // The carrier beyond the view: on screen only where the view has narrowed enough.
+    const beyond = pixel(1.2, 0.75, 0.8), beside = pixel(1.1, 0.75, 0.8);
+    const side = { carrier: wide.luma(beyond.x, beyond.y), beside: wide.luma(beside.x, beside.y), x: beyond.x };
+    // The floor continues beside the narrowed view: a frequency division of the far floor.
+    const error = wide.error();
+    const narrow = scene(false);
+    return { rows, side, sideWithoutSamples: narrow.luma(beyond.x, beyond.y), error: error || narrow.error() };
   });
   expect(errors).toEqual([]);
   expect(result.error).toBe(0);
-  const isRed = ([r, g, b]: number[]) => r > 150 && g < 90 && b < 90;
-  expect(isRed(result.empty.strip)).toBe(true);
-  expect(isRed(result.empty.floorMarker)).toBe(true);
-  // The marker left its flat column: 30 % of the width is not 30 % of the view six tenths back.
-  expect(isRed(result.empty.flatColumn)).toBe(false);
-  expect(result.empty.band[2]).toBeGreaterThan(result.empty.band[0] + 60);
-  expect(result.empty.hatch[0]).toBeGreaterThan(result.empty.plain[0] + 6);
-  expect(result.empty.sky).toEqual([0, 16, 32]);
-  expect(result.empty.beside).toEqual([0, 16, 32]);
   for (const row of result.rows) {
     const where = `depth ${row.depth}, carrier at ${row.fraction}`;
-    expect(row.bright, where).toBeGreaterThan(110 * (1 - row.depth));
-    // One screen column of the 400-column trace is 1 / 399 of the view.
-    expect(Math.abs(row.located - row.fraction), where).toBeLessThan(0.006);
-    expect(Math.abs(row.middle - row.fraction), where).toBeLessThan(0.006);
+    expect(row.bright, where).toBeGreaterThan(90);
     // Above the front row's own carrier nothing is painted in the flat column.
-    if (row.depth === 0.5 || row.depth === 0.625) expect(row.flat, where).toBeLessThan(row.bright - 25);
+    if (row.depth === 0.5 || row.depth === 0.625) expect(row.flat, where).toBeLessThan(row.bright - 50);
   }
-  expect(isRed(result.marked.row)).toBe(true);
-  expect(isRed(result.marked.flatColumn)).toBe(false);
+  expect(result.side.x).toBeLessThan(800);
+  expect(result.side.x).toBeGreaterThan(700);
+  expect(result.side.carrier).toBeGreaterThan(90);
+  expect(result.side.beside).toBeLessThan(result.side.carrier - 50);
+  // A row that holds the view only leaves the side empty.
+  expect(result.sideWithoutSamples).toBeLessThan(40);
 });
 
 // A one-bin carrier on a dense row must be found wherever it sits inside a
@@ -170,7 +161,10 @@ for (const limit of [0, 4096]) {
         import('/src/lib/renderers/waterfall-renderer.ts' as string),
         import('/src/lib/renderers/stacked-trace-geometry.ts' as string),
       ]);
-      const WIDTH = 400, HEIGHT = 200, BINS = 8192, ROW_Y = 100;
+      // The probe row sits well under the crest (about 106 px with the default
+      // height): a carrier seen by one column is a spike between two pixel
+      // centres, and only its lower part is sure to cross a pixel.
+      const WIDTH = 400, HEIGHT = 200, BINS = 8192, ROW_Y = 70;
       const canvas = document.createElement('canvas');
       canvas.width = WIDTH; canvas.height = HEIGHT; canvas.style.cssText = 'display:block;width:400px;height:200px';
       document.body.replaceChildren(canvas);

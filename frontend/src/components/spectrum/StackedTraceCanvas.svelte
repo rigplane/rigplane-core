@@ -2,13 +2,15 @@
   // The stacked-trace ("3D") view of the spectrum pane (MOR-4463). It is fed
   // the same frames and the same options as the flat canvas it replaces.
   import { onMount, untrack } from 'svelte';
-  import { StackedTraceRenderer, StackedTraceRenderError, type StackedTraceMarkerColors } from '../../lib/renderers/stacked-trace-renderer';
-  import { stackedTraceMarkers, type StackedTraceLocate, type StackedTraceMarkers } from '../../lib/renderers/stacked-trace-geometry';
+  import { StackedTraceRenderer, StackedTraceRenderError } from '../../lib/renderers/stacked-trace-renderer';
   import { renderSpectrum, type SpectrumOptions } from '../../lib/renderers/spectrum-renderer';
   import { defaultWaterfallOptions, type ColorSchemeName, type WaterfallOptions } from '../../lib/renderers/waterfall-renderer';
   import type { CanvasSurface } from '../../lib/canvas/canvas-surface.svelte';
   import { ScopeRenderScheduler } from '../../lib/canvas/scope-render-scheduler';
   import type { ScopeRenderTrace, TraceToken } from '../../lib/runtime/scope-render-trace';
+  import { stackedTraceTunables } from '../../lib/renderers/stacked-trace-geometry';
+  import { setStackedTraceSettings, stackedTraceSettings } from '../../lib/stores/stacked-trace.svelte';
+  import { t } from '$lib/i18n';
 
   interface Props {
     options: SpectrumOptions;
@@ -19,16 +21,17 @@
     trace?: ScopeRenderTrace | null;
     /** The browser gave no usable WebGL2 context; the host falls back to the flat view. */
     onUnavailable: () => void;
-    /** Hands the host the pointer-to-frequency map of the scene; null when the view goes away. */
-    onRegisterLocate?: (locate: StackedTraceLocate | null) => void;
   }
 
-  let { options, colorScheme, surface, onRegisterPush, onUnavailable, onRegisterLocate, trace = null }: Props = $props();
+  let { options, colorScheme, surface, onRegisterPush, onUnavailable, trace = null }: Props = $props();
 
   let scene: HTMLCanvasElement;
   let chrome: HTMLCanvasElement;
   let renderer: StackedTraceRenderer | null = null;
   let historyRows = $state(0);
+  // The look of the view is the user's to adjust; the values are kept per browser.
+  let settings = $derived(stackedTraceSettings());
+  let tuning = $state(false);
 
   /** The sample placement and appearance the renderer needs, from the pane's own options. */
   function rowOptions(source: SpectrumOptions, target: WaterfallOptions): WaterfallOptions {
@@ -59,26 +62,6 @@
     onUnavailable();
   }
 
-  // The tuning marker, the passband and the coverage hatch are drawn inside
-  // the scene, at the depth of every row, in the colours of the flat view.
-  const markers: StackedTraceMarkers = { tune: -1, bandLo: 0, bandHi: 0, coverLo: 0, coverHi: 1 };
-  const markerColors: StackedTraceMarkerColors = {
-    tune: new Float32Array(4), bandFill: new Float32Array(4), bandEdge: new Float32Array(4),
-  };
-  const parsedColors = new Map<Float32Array, string>();
-  /** Reads a CSS colour the way a canvas normalises it: `#rrggbb` or `rgba(r, g, b, a)`. */
-  function parseColor(css: string, out: Float32Array): void {
-    if (parsedColors.get(out) === css) return;
-    parsedColors.set(out, css);
-    const ctx = chrome?.getContext('2d');
-    if (ctx) { ctx.fillStyle = '#000'; ctx.fillStyle = css; }
-    const normal = ctx ? String(ctx.fillStyle) : css, hex = /^#([0-9a-f]{6})$/i.exec(normal);
-    const parts = hex ? [0, 2, 4].map(i => Number.parseInt(hex[1].slice(i, i + 2), 16))
-      : (/\(([^)]+)\)/.exec(normal)?.[1] ?? '').split(/[\s,/]+/).filter(Boolean).map(Number);
-    for (let i = 0; i < 3; i++) out[i] = (parts[i] || 0) / 255;
-    out[3] = parts.length > 3 && Number.isFinite(parts[3]) ? parts[3] : 1;
-  }
-
   function paint(now: number): void {
     if (!renderer) return;
     const measuring = trace?.status === 'recording';
@@ -87,11 +70,6 @@
     try {
       renderer.setPixelScale(surface.pixelScale);
       renderer.updateOptions(rowOptions(options, viewOptions));
-      stackedTraceMarkers(options, markers);
-      parseColor(options.tuneLineColor, markerColors.tune);
-      parseColor(options.passbandFillColor, markerColors.bandFill);
-      parseColor(options.passbandEdgeColor, markerColors.bandEdge);
-      renderer.setMarkers(markers, markerColors);
       if (frame.pending && frame.pixels) renderer.pushRow(frame.pixels, frame.options, now);
       frame.pending = false;
       // Rows glide back between frames: keep painting display frames meanwhile.
@@ -112,14 +90,13 @@
     scheduler.wake('frame');
   }
 
-  // The frequency labels of the front row are painted by the flat renderer
-  // itself over the scene, with everything else it draws switched off: the
-  // front row spans the pane, so its axis is the flat one.
+  // The frequency labels, the tuning marker, the passband and the coverage
+  // hatch are painted by the flat renderer itself over the scene, with its
+  // trace and grid made transparent.
   const CHROME_SAMPLES = new Uint8Array(2);
   let chromeOptions = $derived<SpectrumOptions>({
     ...options, lineColor: 'transparent', fillColor: 'transparent', fillColorBottom: 'transparent',
-    gridColor: 'transparent', showTuneIndicator: false, passbandHz: 0,
-    coverage: undefined, sampleSpanHz: 0, panoramaShiftHz: 0,
+    gridColor: 'transparent',
   });
   function paintChrome(): void {
     const ctx = chrome?.getContext('2d');
@@ -139,10 +116,23 @@
     if (surface.visible) untrack(() => scheduler.wake('visibility'));
   });
 
+  let builtRows = 0;
+  // New settings apply to the rows already on screen; only another row
+  // count needs a new ring, and with it a new history.
+  $effect(() => {
+    const next = settings;
+    untrack(() => {
+      if (!renderer) return;
+      if (next.rows !== builtRows) createRenderer();
+      else { renderer.setSettings(next); scheduler.wake('view'); }
+    });
+  });
+
   function createRenderer(): void {
     renderer?.destroy(); renderer = null;
     try {
-      renderer = new StackedTraceRenderer(scene, rowOptions(options, viewOptions));
+      renderer = new StackedTraceRenderer(scene, rowOptions(options, viewOptions), settings);
+      builtRows = settings.rows;
     } catch (error) { failed(error); return; }
     frame.pending = frame.pixels !== null;
     scheduler.wake('size');
@@ -166,9 +156,7 @@
     paintChrome();
     const stopSize = surface.onSizeChanged(() => { paintChrome(); scheduler.wake('size'); });
     onRegisterPush(push);
-    onRegisterLocate?.((x, y) => renderer ? renderer.locate(x, y) : null);
     return () => {
-      onRegisterLocate?.(null);
       scene.removeEventListener('webglcontextlost', contextLost);
       unbindScene(); unbindChrome(); stopSize();
       scheduler.dispose();
@@ -180,6 +168,22 @@
 <div class="stacked-trace" data-testid="stacked-trace" data-stacked-trace data-history-rows={historyRows}>
   <canvas bind:this={scene}></canvas>
   <canvas bind:this={chrome} class="chrome"></canvas>
+  <button type="button" class="tune-key" data-testid="stacked-trace-tune" aria-expanded={tuning}
+    title={t('core.scope.stackedTrace.tune.title')} onclick={() => (tuning = !tuning)}>⚙</button>
+  {#if tuning}
+    <div class="tune-panel" role="dialog" aria-label={t('core.scope.stackedTrace.tune.title')}>
+      {#each stackedTraceTunables as item (item.key)}
+        <label>
+          <span>{t(`core.scope.stackedTrace.tune.${item.key}`)}</span>
+          <input type="range" min={item.min} max={item.max} step={item.step} value={settings[item.key]} data-setting={item.key}
+            oninput={(event) => setStackedTraceSettings({ [item.key]: Number(event.currentTarget.value) })} />
+          <output>{Number(settings[item.key].toFixed(2))}</output>
+        </label>
+      {/each}
+      <button type="button" data-testid="stacked-trace-tune-reset" onclick={() => setStackedTraceSettings(null)}>
+        {t('core.scope.stackedTrace.tune.reset')}</button>
+    </div>
+  {/if}
 </div>
 
 <style>
@@ -201,20 +205,52 @@
     pointer-events: none;
   }
 
-  /* The level scale beside the pane reads a flat trace; the stack has no
-     single level axis, so its ticks are hidden while this view is mounted. */
-  :global(.spectrum-with-scales:has([data-stacked-trace]) .db-scale .tick) {
-    visibility: hidden;
+  .tune-key {
+    position: absolute;
+    top: 22px;
+    right: 4px;
+    z-index: 7;
+    width: 22px;
+    height: 22px;
+    padding: 0;
+    border: 1px solid var(--panel-border, #24303c);
+    border-radius: 4px;
+    background: var(--panel, #10161d);
+    color: var(--text-muted, #8b98a6);
+    cursor: pointer;
+    opacity: 0.6;
   }
 
-  /* The host's own full-height marks read a flat trace too: the scene draws
-     the marker and the hatch in perspective, and the passband handle stays
-     where it is exact — on the front row. */
-  :global(.spectrum-area:has([data-stacked-trace]) > :is(.tune-line, .scope-hatch)) {
-    display: none;
+  .tune-key:hover, .tune-key[aria-expanded='true'] {
+    opacity: 1;
   }
 
-  :global(.spectrum-area:has([data-stacked-trace]) > .passband-resize-zone) {
-    top: 60%;
+  .tune-panel {
+    position: absolute;
+    top: 48px;
+    right: 4px;
+    z-index: 7;
+    display: grid;
+    gap: 4px;
+    padding: 8px;
+    border: 1px solid var(--panel-border, #24303c);
+    border-radius: 6px;
+    background: var(--panel, #10161d);
+    color: var(--text, #d6dde5);
+    font-size: 11px;
+    cursor: default;
   }
+
+  .tune-panel label {
+    display: grid;
+    grid-template-columns: 110px 120px 34px;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .tune-panel output {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+  }
+
 </style>

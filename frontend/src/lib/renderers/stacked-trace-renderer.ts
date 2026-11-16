@@ -5,19 +5,12 @@
 // the view retunes or zooms.
 
 import { COLOR_SCHEMES, type ColorSchemeName, type WaterfallOptions } from './waterfall-renderer';
+import { estimateNoiseFloor, followNoiseFloor } from './noise-floor';
 import {
   defaultStackedTraceSettings, projectStackedDepth, projectStackedRow, stackedColumnCount,
-  stackedGlidePhase, stackedRowGeometry, unprojectStackedFloor,
-  type StackedDepth, type StackedFloorPoint, type StackedRowGeometry, type StackedRowView,
-  type StackedTraceMarkers, type StackedTraceSettings,
+  stackedGlidePhase, stackedRowGeometry,
+  type StackedDepth, type StackedRowGeometry, type StackedRowView, type StackedTraceSettings,
 } from './stacked-trace-geometry';
-
-/** Colours of the tuning marker and the passband, RGBA 0..1. */
-export interface StackedTraceMarkerColors {
-  tune: Float32Array;
-  bandFill: Float32Array;
-  bandEdge: Float32Array;
-}
 
 export class StackedTraceRenderError extends Error {
   readonly code = 'webgl-required';
@@ -30,58 +23,24 @@ void main() {
   gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);
 }`;
 
-// What both shaders paint over a point of the scene that stands for view
-// fraction `f`: the passband, its edges and the tuning marker. `pixel` is
-// the width of one view fraction in backing pixels at that depth.
-const MARKERS = `
-uniform vec3 uMark;
-uniform vec4 uTuneColor;
-uniform vec4 uBandFill;
-uniform vec4 uBandEdge;
-vec3 marked(vec3 rgb, float f, float pixel, float line) {
-  if (uMark.z > uMark.y) {
-    float inside = step(uMark.y, f) * step(f, uMark.z);
-    rgb = mix(rgb, uBandFill.rgb, uBandFill.a * inside);
-    float edge = min(abs(f - uMark.y), abs(f - uMark.z)) * pixel;
-    rgb = mix(rgb, uBandEdge.rgb, uBandEdge.a * (1.0 - smoothstep(line * 0.5, line * 0.5 + 1.0, edge)));
-  }
-  if (uMark.x >= 0.0) {
-    float tune = abs(f - uMark.x) * pixel;
-    rgb = mix(rgb, uTuneColor.rgb, uTuneColor.a * (1.0 - smoothstep(line * 0.5, line * 0.5 + 1.0, tune)));
-  }
-  return rgb;
-}`;
-
 // The floor is the plane of the row baselines, drawn in the same perspective
-// as the rows: ten frequency divisions converging on the vanishing point,
-// the markers, and a hatch where the current view holds no samples. Below
-// the front baseline the label strip continues the front row.
+// as the rows: frequency divisions of a tenth of the view, converging on the
+// vanishing point and continuing beside the view where far rows reach.
 const BACKGROUND_FRAGMENT = `#version 300 es
 precision highp float;
 uniform vec2 uSize;
 uniform vec3 uFloor;
-uniform vec2 uHatch;
-uniform float uLine;
-${MARKERS}
 out vec4 color;
 void main() {
   vec3 base = vec3(0.0, 16.0, 32.0) / 255.0;
   float t = (gl_FragCoord.y - uFloor.x) / uFloor.y;
-  float z = t <= 0.0 ? 0.0 : t / max(1.0 - uFloor.z * t, 1e-6);
+  if (t <= 0.0 || t * (1.0 + uFloor.z) >= 1.0) { color = vec4(base, 1.0); return; }
+  float z = t / (1.0 - uFloor.z * t);
   float scale = 1.0 / (1.0 + uFloor.z * z);
   float f = 0.5 + (gl_FragCoord.x / uSize.x - 0.5) / scale;
-  if (z > 1.0 || t * (1.0 + uFloor.z) >= 1.0 || f < 0.0 || f > 1.0) { color = vec4(base, 1.0); return; }
-  float pixel = uSize.x * scale;
-  vec3 rgb = base;
-  if (t > 0.0) {
-    float cell = abs(f * 10.0 - floor(f * 10.0 + 0.5)) * pixel / 10.0;
-    rgb += vec3(0.03, 0.045, 0.065) * (1.0 - z) + (1.0 - smoothstep(0.5, 1.5, cell)) * mix(0.1, 0.02, z);
-    if (f < uHatch.x || f >= uHatch.y) {
-      float stripe = abs(fract(f * uSize.x / 12.0 + z * 24.0) - 0.5);
-      rgb = mix(rgb, vec3(20.0, 30.0, 40.0) / 255.0, 0.65) + step(stripe, 0.08) * 0.09;
-    }
-  }
-  color = vec4(marked(rgb, f, pixel, uLine), 1.0);
+  float cell = abs(f * 10.0 - floor(f * 10.0 + 0.5)) * uSize.x * scale / 10.0;
+  float grid = (1.0 - smoothstep(0.5, 1.5, cell)) * mix(0.1, 0.02, z);
+  color = vec4(base + vec3(0.03, 0.045, 0.065) * (1.0 - z) + grid, 1.0);
 }`;
 
 // One triangle strip per row: two vertices per column, baseline and crest.
@@ -89,6 +48,9 @@ void main() {
 // bin centres. A wider column takes the peak of every bin it spans: each ring
 // row stores the samples followed by their pairwise-maximum levels, and the
 // column reads the first level at which it spans at most eight entries.
+// Every row spans the pane: a row drawn at scale s shows 1 / s of the view,
+// so the view itself narrows toward the vanishing point and the row fills the
+// space beside it where it has samples.
 const ROW_VERTEX = `#version 300 es
 precision highp float;
 precision highp int;
@@ -99,9 +61,8 @@ uniform int uRow;
 uniform vec2 uSamples;
 uniform vec4 uPlace;
 uniform vec4 uFrame;
-uniform float uRef;
+uniform vec3 uLevel;
 out float vLevel;
-out float vX;
 out float vY;
 out float vCrest;
 out float vSlope;
@@ -134,37 +95,36 @@ float peakAt(float coordinate, float width) {
   }
   return peak;
 }
-// Height is linear in the calibrated amplitude, so signals stand clear of
-// the noise floor; colour takes the square root, the waterfall's own curve.
+// Height is measured from the noise floor (uLevel.x, a little below it), so
+// the surface stands on the noise whatever the band or the gain; the 0.7
+// power lifts weak signals off it.
 float level(float amplitude80) {
-  return clamp((amplitude80 + uRef * (40.0 / 60.0)) / 80.0, 0.0, 1.0);
+  return pow(clamp((amplitude80 - uLevel.x) / 80.0, 0.0, 1.0), 0.7);
 }
 void main() {
   float column = float(gl_VertexID >> 1), top = float(gl_VertexID & 1);
-  float x = column / (uFrame.x - 1.0);
+  float screen = column / (uFrame.x - 1.0);
+  float x = 0.5 + (screen - 0.5) / uPlace.w;
   float coordinate = uMap.y + uMap.x * x;
-  float width = uMap.x / (uFrame.x - 1.0);
+  float width = uMap.x / (uFrame.x - 1.0) / uPlace.w;
   vLevel = level(peakAt(coordinate, width));
   vCrest = vLevel * uPlace.z;
-  vSlope = uPlace.y <= 1.0 ? (level(sampleAt(coordinate + width)) - vLevel) * uPlace.z / (uFrame.y * uPlace.w) : 0.0;
+  vSlope = uPlace.y <= 1.0 ? (level(sampleAt(coordinate + width)) - vLevel) * uPlace.z / uFrame.y : 0.0;
   vCovered = x >= uCover.x && x < uCover.y && coordinate >= 0.0 && coordinate <= 1.0 ? 1.0 : 0.0;
   vY = top * (vCrest + uFrame.w * 0.5 + 1.0);
-  vX = x;
-  gl_Position = vec4((x * 2.0 - 1.0) * uPlace.w, uPlace.x + vY * uFrame.z, 0.0, 1.0);
+  gl_Position = vec4(screen * 2.0 - 1.0, uPlace.x + vY * uFrame.z, 0.0, 1.0);
 }`;
 
 // The body is opaque, so a nearer row hides what lies behind it; it is
 // coloured by the level each height stands for, and the crest line by the
 // level of the signal itself — both through the waterfall palette. Weak
 // crests are drawn dim, so the noise floor stays quiet under the signals.
-// Every row carries the markers at its own depth, so they run over the
-// surface of the stack and stay on their frequency on every row.
 const ROW_FRAGMENT = `#version 300 es
 precision highp float;
 uniform vec4 uPlace;
 uniform vec4 uFrame;
 uniform vec2 uShade;
-${MARKERS}
+uniform vec3 uLevel;
 uniform vec3 uColors[6];
 uniform float uStops[6];
 uniform int uColorCount;
@@ -173,7 +133,6 @@ in float vY;
 in float vCrest;
 in float vSlope;
 in float vCovered;
-in float vX;
 out vec4 color;
 vec3 palette(float t) {
   vec3 rgb = uColors[0];
@@ -183,24 +142,27 @@ vec3 palette(float t) {
   }
   return rgb / 255.0;
 }
+// Colour has its own window above the floor (uLevel.z), so a signal keeps
+// its colour whatever the height scale; uLevel.y is the colour gain's gamma.
+vec3 tint(float height) {
+  float above = pow(height, 1.0 / 0.7) * 80.0;
+  return palette(pow(clamp(above / uLevel.z, 0.0, 1.0), uLevel.y));
+}
 void main() {
   if (vCovered < 0.5) discard;
   float edge = vCrest - vY + uFrame.w * 0.5;
   float lineWidth = uFrame.w * min(sqrt(1.0 + vSlope * vSlope), 6.0);
   float line = (1.0 - smoothstep(lineWidth - 1.0, lineWidth, edge)) * uShade.y;
   float local = clamp(vY / max(uPlace.z, 1.0), 0.0, 1.0);
-  vec3 body = palette(sqrt(local)) * mix(0.3, 0.75, local);
-  float strength = sqrt(vLevel);
-  vec3 crest = mix(palette(strength) * mix(0.4, 1.0, strength), vec3(1.0), 0.3 * vLevel);
+  vec3 body = tint(local) * mix(0.35, 0.8, local);
+  vec3 crest = mix(tint(vLevel) * mix(0.5, 1.0, vLevel), vec3(1.0), 0.3 * vLevel);
   vec3 rgb = mix(mix(body, crest, line), vec3(0.0, 16.0, 32.0) / 255.0, uShade.x);
-  rgb = marked(rgb, vX, uFrame.y * (uFrame.x - 1.0) * uPlace.w, uFrame.w);
   color = vec4(rgb, clamp(edge + 1.0, 0.0, 1.0));
 }`;
 
-const MARKER_UNIFORMS = ['uMark', 'uTuneColor', 'uBandFill', 'uBandEdge'] as const;
-const BACKGROUND_UNIFORMS = ['uSize', 'uFloor', 'uHatch', 'uLine', ...MARKER_UNIFORMS] as const;
-const ROW_UNIFORMS = ['uRing', 'uMap', 'uCover', 'uRow', 'uSamples', 'uPlace', 'uFrame', 'uRef', 'uShade',
-  'uColors', 'uStops', 'uColorCount', ...MARKER_UNIFORMS] as const;
+const BACKGROUND_UNIFORMS = ['uSize', 'uFloor'] as const;
+const ROW_UNIFORMS = ['uRing', 'uMap', 'uCover', 'uRow', 'uSamples', 'uPlace', 'uFrame', 'uLevel', 'uShade',
+  'uColors', 'uStops', 'uColorCount'] as const;
 /** Longest gap between two frames that still counts as stream time. */
 const MAX_GAP_MS = 1000;
 
@@ -218,13 +180,13 @@ export class StackedTraceRenderer {
     startHz: 0, spanHz: 1, coverStartHz: 0, coverEndHz: 0, samples: 0, sampleOffset: 0, amplitudeMax: 80,
   };
   private peakValid = false;
-  /** The samples of every ring slot, `stride` apart: what a click is tested against. */
-  private held = new Uint8Array(0);
-  private stride = 0;
-  private readonly markers: StackedTraceMarkers = { tune: -1, bandLo: 0, bandHi: 0, coverLo: 0, coverHi: 1 };
-  private markerColors: StackedTraceMarkerColors | null = null;
-  private readonly floorPoint: StackedFloorPoint = { depth: 0, fraction: 0 };
-  private lastDrawAt = 0;
+  /** The last committed history row and its placement: what the next one is blended with. */
+  private blended = new Uint8Array(0);
+  private readonly blendedRow: StackedRowGeometry = {
+    startHz: 0, spanHz: 1, coverStartHz: 0, coverEndHz: 0, samples: 0, sampleOffset: 0, amplitudeMax: 80,
+  };
+  /** The noise floor the surface stands on, on the 0..80 level scale; null before the first frame. */
+  private floor: number | null = null;
   private maxTextureWidth = 0;
   private readonly rowView: StackedRowView = { scale: 1, offset: 0, coverLo: 0, coverHi: 1 };
   private readonly depth: StackedDepth = { baseline: 0, scale: 1, fog: 0 };
@@ -256,7 +218,7 @@ export class StackedTraceRenderer {
 
   constructor(
     private readonly canvas: HTMLCanvasElement, options: WaterfallOptions,
-    private readonly settings: StackedTraceSettings = defaultStackedTraceSettings,
+    private settings: StackedTraceSettings = defaultStackedTraceSettings,
   ) {
     const gl = canvas.getContext('webgl2', { alpha: false, antialias: true, depth: false, stencil: false });
     if (!gl) throw new StackedTraceRenderError();
@@ -387,14 +349,8 @@ export class StackedTraceRenderer {
   }
 
   private upload(slot: number, data: Uint8Array, offset: number): void {
-    const row = this.rows[slot], length = this.buildLevels(data, offset, row);
+    const length = this.buildLevels(data, offset, this.rows[slot]);
     if (length > this.textureWidth) this.growTexture(length);
-    if (row.samples > this.stride) {
-      const held = new Uint8Array(this.slots * row.samples);
-      for (let i = 0; i < this.slots; i++) held.set(this.held.subarray(i * this.stride, (i + 1) * this.stride), i * row.samples);
-      this.held = held; this.stride = row.samples;
-    }
-    for (let i = 0, at = slot * this.stride; i < row.samples; i++) this.held[at + i] = this.levels[i];
     const gl = this.gl;
     gl.bindTexture(gl.TEXTURE_2D, this.texture);
     gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, slot, length, 1, gl.RED, gl.UNSIGNED_BYTE, this.levels, 0);
@@ -421,6 +377,30 @@ export class StackedTraceRenderer {
   }
 
   /**
+   * Turns the held maximum into the next history row: smoothed across
+   * frequency, then blended with the row before it when both have the same
+   * placement, so the surface settles instead of flickering; a signal one
+   * row long still stands at `rowBlend` of its height. Returns the row to
+   * upload.
+   */
+  private blend(): Uint8Array {
+    const held = this.peakRow, last = this.blendedRow, samples = held.samples, share = this.settings.rowBlend;
+    const soften = this.settings.rowSoften / 4;
+    if (this.blended.length < samples) { this.blended = new Uint8Array(samples); last.samples = 0; }
+    const blended = this.blended, peak = this.peak;
+    const same = last.samples === samples && last.startHz === held.startHz && last.spanHz === held.spanHz
+      && last.coverStartHz === held.coverStartHz && last.coverEndHz === held.coverEndHz
+      && last.amplitudeMax === held.amplitudeMax;
+    for (let i = 0; i < samples; i++) {
+      const value = peak[i] + soften * (peak[i > 0 ? i - 1 : i] + peak[i < samples - 1 ? i + 1 : i] - 2 * peak[i]);
+      blended[i] = Math.round(same ? share * value + (1 - share) * blended[i] : value);
+    }
+    last.startHz = held.startHz; last.spanHz = held.spanHz; last.coverStartHz = held.coverStartHz;
+    last.coverEndHz = held.coverEndHz; last.samples = samples; last.amplitudeMax = held.amplitudeMax;
+    return blended;
+  }
+
+  /**
    * Stores one delivered frame. Every frame becomes the live front trace.
    * A history row is committed on a `rowPeriodMs` grid of stream time and
    * holds the per-bin maximum of the frames since the previous row, so a
@@ -434,6 +414,9 @@ export class StackedTraceRenderer {
     let live = (this.head + 1) % this.slots;
     const row = this.rows[live];
     if (!stackedRowGeometry(frame, data.length, row)) return;
+    // A change of 18 dB (24 of the 80 units) is another band, not drift.
+    this.floor = followNoiseFloor(this.floor,
+      estimateNoiseFloor(data, row.sampleOffset, row.samples) * 80 / row.amplitudeMax, 24);
     this.accumulate(data, row);
     if (this.pushed) {
       const gap = Math.min(Math.max(now - this.lastPushAt, 0), MAX_GAP_MS);
@@ -448,7 +431,7 @@ export class StackedTraceRenderer {
       row.startHz = held.startHz; row.spanHz = held.spanHz; row.coverStartHz = held.coverStartHz;
       row.coverEndHz = held.coverEndHz; row.samples = held.samples; row.amplitudeMax = held.amplitudeMax;
       row.sampleOffset = 0;
-      this.upload(live, this.peak, 0);
+      this.upload(live, this.blend(), 0);
       this.peakValid = false;
       this.head = live;
       this.count = Math.min(this.settings.rows, this.count + 1);
@@ -459,6 +442,14 @@ export class StackedTraceRenderer {
       stackedRowGeometry(frame, data.length, this.rows[live]);
     }
     this.upload(live, data, this.rows[live].sampleOffset);
+  }
+
+  /**
+   * Takes new settings for the rows already held. The ring keeps the size it
+   * was built with: a new row count needs a new renderer.
+   */
+  setSettings(settings: StackedTraceSettings): void {
+    this.settings = { ...settings, rows: this.settings.rows };
   }
 
   /** CSS-to-backing pixel ratio of the canvas; sizes the front inset and the line. */
@@ -488,68 +479,6 @@ export class StackedTraceRenderer {
     }
   }
 
-  /** Where the tuning marker, the passband and the uncovered part of the view are drawn, and in which colours. */
-  setMarkers(markers: StackedTraceMarkers, colors: StackedTraceMarkerColors): void {
-    Object.assign(this.markers, markers);
-    this.markerColors = colors;
-  }
-
-  private markerUniforms(locations: Map<string, WebGLUniformLocation | null>): void {
-    const gl = this.gl, m = this.markers, colors = this.markerColors;
-    gl.uniform3f(locations.get('uMark')!, colors ? m.tune : -1, m.bandLo, colors ? m.bandHi : m.bandLo);
-    if (!colors) return;
-    gl.uniform4fv(locations.get('uTuneColor')!, colors.tune);
-    gl.uniform4fv(locations.get('uBandFill')!, colors.bandFill);
-    gl.uniform4fv(locations.get('uBandEdge')!, colors.bandEdge);
-  }
-
-  /** Front baseline above the pane bottom, as a fraction of the pane height. */
-  private frontInset(): number {
-    return this.settings.frontInsetPx * this.pixelScale / this.height;
-  }
-
-  /** Crest of a stored row above its baseline at view fraction `fraction`, in front-row trace heights; -1 where the row has no samples. */
-  private crestAt(slot: number, fraction: number): number {
-    const row = this.rows[slot], view = this.rowView;
-    projectStackedRow(row, this.viewCenter - this.viewSpan / 2, this.viewSpan, view);
-    const coordinate = view.offset + view.scale * fraction;
-    if (fraction < view.coverLo || fraction >= view.coverHi || coordinate < 0 || coordinate > 1) return -1;
-    const half = Math.abs(view.scale) / (this.columns - 1) / 2, last = row.samples - 1;
-    const from = Math.max(0, Math.min(last, Math.floor((coordinate - half) * row.samples)));
-    const to = Math.max(0, Math.min(last, Math.floor((coordinate + half) * row.samples)));
-    let peak = 0;
-    for (let i = from, at = slot * this.stride; i <= to; i++) if (this.held[at + i] > peak) peak = this.held[at + i];
-    const amplitude = Math.min(peak, row.amplitudeMax) * 80 / row.amplitudeMax;
-    return Math.max(0, Math.min(1, (amplitude + this.options.refLevel * (40 / 60)) / 80));
-  }
-
-  /**
-   * The view fraction (0..1) a pointer at pane point (`x`, `y`) refers to;
-   * `x` and `y` are fractions of the pane, `y` downward from its top. It is
-   * the frequency of what is drawn there: the nearest trace whose body
-   * covers the point, at that trace's own depth. On the background it is
-   * the floor point under the pointer, and above the last row that row.
-   */
-  locate(x: number, y: number): number {
-    if (this.height <= 0) return x < 0 ? 0 : x > 1 ? 1 : x;
-    const s = this.settings, placed = this.depth, up = 1 - y, inset = this.frontInset();
-    const span = s.rows * s.rowPeriodMs, line = 1.25 * this.pixelScale / this.height;
-    const clock = this.streamTime + stackedGlidePhase(this.lastDrawAt, this.lastPushAt, this.lastInterval) * this.lastInterval;
-    for (let k = -1; k < this.count; k++) {
-      const slot = (this.head - k + this.slots) % this.slots;
-      const depth = k < 0 ? 0 : (clock - this.times[slot]) / span;
-      if (depth >= 1 || this.count === 0) continue;
-      projectStackedDepth(depth, s, placed);
-      const fraction = 0.5 + (x - 0.5) / placed.scale, base = inset + placed.baseline;
-      if (fraction < 0 || fraction > 1 || up < base) continue;
-      const crest = this.crestAt(slot, fraction);
-      if (crest >= 0 && up <= base + crest * s.traceHeight * placed.scale + line) return fraction;
-    }
-    unprojectStackedFloor(x, up - inset, s, this.floorPoint);
-    const fraction = this.floorPoint.fraction;
-    return fraction < 0 ? 0 : fraction > 1 ? 1 : fraction;
-  }
-
   private drawRow(slot: number, depth: number, front: boolean): void {
     const gl = this.gl, row = this.rows[slot], view = this.rowView, placed = this.depth, s = this.settings;
     projectStackedRow(row, this.viewCenter - this.viewSpan / 2, this.viewSpan, view);
@@ -565,7 +494,8 @@ export class StackedTraceRenderer {
     gl.uniform1i(this.row.get('uRow')!, slot);
     gl.uniform2f(this.row.get('uSamples')!, row.samples, row.amplitudeMax);
     gl.uniform4f(this.row.get('uPlace')!, basePx / this.height * 2 - 1,
-      Math.abs(view.scale) * row.samples / (this.columns - 1), s.traceHeight * placed.scale * this.height, placed.scale);
+      Math.abs(view.scale) * row.samples / (this.columns - 1) / placed.scale, s.traceHeight * placed.scale * this.height,
+      placed.scale);
     gl.uniform2f(this.row.get('uShade')!, placed.fog, lineGain);
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, this.columns * 2);
   }
@@ -579,16 +509,12 @@ export class StackedTraceRenderer {
     if (this.destroyed) return false;
     this.syncSize();
     if (this.width <= 0 || this.height <= 0) return false;
-    this.lastDrawAt = now;
     const gl = this.gl, s = this.settings;
     gl.disable(gl.BLEND);
     gl.useProgram(this.backgroundProgram);
     gl.uniform2f(this.background.get('uSize')!, this.width, this.height);
     gl.uniform3f(this.background.get('uFloor')!, s.frontInsetPx * this.pixelScale,
       s.floorRise * (1 + s.recede) * this.height, s.recede);
-    gl.uniform2f(this.background.get('uHatch')!, this.markers.coverLo, this.markers.coverHi);
-    gl.uniform1f(this.background.get('uLine')!, 1.25 * this.pixelScale);
-    this.markerUniforms(this.background);
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
     if (this.count === 0) return false;
     this.syncPalette();
@@ -596,11 +522,11 @@ export class StackedTraceRenderer {
     gl.enable(gl.BLEND);
     gl.uniform4f(this.row.get('uFrame')!, this.columns, this.width / (this.columns - 1), 2 / this.height,
       1.25 * this.pixelScale);
-    gl.uniform1f(this.row.get('uRef')!, this.options.refLevel);
+    // The colour window is 45 dB of the nominal 60 dB the 0..80 scale stands for.
+    gl.uniform3f(this.row.get('uLevel')!, (this.floor ?? 0) - s.floorDrop, 4 ** ((50 - s.colorGain) / 50), 60);
     gl.uniform3fv(this.row.get('uColors')!, this.colors);
     gl.uniform1fv(this.row.get('uStops')!, this.stops);
     gl.uniform1i(this.row.get('uColorCount')!, COLOR_SCHEMES[this.options.colorScheme].length);
-    this.markerUniforms(this.row);
     const phase = stackedGlidePhase(now, this.lastPushAt, this.lastInterval);
     const clock = this.streamTime + phase * this.lastInterval, span = s.rows * s.rowPeriodMs;
     for (let k = this.count - 1; k >= 0; k--) {
@@ -615,8 +541,7 @@ export class StackedTraceRenderer {
   /** Returns true when the change needs a repaint. */
   updateOptions(options: Partial<WaterfallOptions>): boolean {
     const o = this.options;
-    let changed = (options.colorScheme !== undefined && options.colorScheme !== o.colorScheme)
-      || (options.refLevel !== undefined && options.refLevel !== o.refLevel);
+    let changed = options.colorScheme !== undefined && options.colorScheme !== o.colorScheme;
     Object.assign(o, options);
     if (o.spanHz > 0 && Number.isFinite(o.centerHz)) {
       if (this.viewCenter !== o.centerHz || this.viewSpan !== o.spanHz) changed = true;
