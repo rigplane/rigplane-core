@@ -114,8 +114,16 @@ describe('MOR-4463 stacked-trace depth projection', () => {
     }
     const nearGap = steps[1].baseline - steps[0].baseline;
     const farGap = steps[10].baseline - steps[9].baseline;
-    expect(farGap).toBeLessThan(nearGap);
+    // Far rows sit several times closer together than near ones (a linear
+    // floor would give equal gaps).
+    expect(farGap).toBeLessThan(nearGap / 3);
     expect(steps[10].baseline).toBeCloseTo(settings.floorRise, 12);
+    // Near rows keep their full colour; the last one is almost dissolved.
+    expect(steps[0].fog).toBe(0);
+    expect(steps[1].fog).toBe(0);
+    expect(steps[5].fog).toBeGreaterThan(0.1);
+    expect(steps[5].fog).toBeLessThan(0.6);
+    expect(steps[10].fog).toBeCloseTo(0.9, 12);
   });
 
   it('keeps the whole scene inside the pane', () => {
