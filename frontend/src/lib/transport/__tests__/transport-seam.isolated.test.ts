@@ -531,7 +531,8 @@ describe('bootRemote handle (C5b)', () => {
     link.api.simulateOpen();
 
     handle.shutdown();
-    expect(unmount, 'the mounted App is unmounted').toHaveBeenCalledOnce();
+    // bootRemote unmounts through its own svelte import: one microtask later.
+    await vi.waitFor(() => expect(unmount, 'the mounted App is unmounted').toHaveBeenCalledOnce());
     expect(unmount.mock.calls[0][0]).toBe(mount.mock.results[0].value);
     expect(losses, 'shutdown reports no loss').toEqual([]);
     expect(link.api.readyState, 'the api channel is closed').toBe('closed');
