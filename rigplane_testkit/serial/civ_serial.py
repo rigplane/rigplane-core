@@ -322,7 +322,6 @@ class CivSerialFake:
 
         # Fault surface (all off by default).
         self._levels: dict[int, bytes] = {}
-        self._clamped: dict[tuple[int, int | None], dict[bytes, bytes]] = {}
         self._identity_delay_s = 0.0
         self._identity_after_reconnect_only = False
         self._model_id_override: bytes | None = None
@@ -605,19 +604,6 @@ class CivSerialFake:
         link. Writes and every other request are answered as usual."""
         self._lost_answers.append(command)
 
-    def clamp_write(
-        self,
-        command: int,
-        sub: int | None,
-        when_data: bytes,
-        store_data: bytes,
-    ) -> None:
-        """Store *store_data* instead of a write carrying *when_data*; every
-        other write applies normally, so a restore still verifies."""
-        self._clamped.setdefault((command, sub), {})[bytes(when_data)] = bytes(
-            store_data
-        )
-
     def set_level(self, sub: int, data: bytes) -> None:
         """Hold a ``14`` level at *data*: reads answer it, writes store it.
 
@@ -625,10 +611,6 @@ class CivSerialFake:
         its usual answer (the recorded table, else a NAK).
         """
         self._levels[sub] = bytes(data)
-
-    def drop_now(self) -> None:
-        """Make the device vanish at once; the next exchange fails."""
-        self._vanish_now()
 
     def silence(self, for_seconds: float) -> None:
         """MOR-2861: the link stays open and nothing answers for the window.
@@ -766,10 +748,6 @@ class CivSerialFake:
             return self._readback_s
         return self._reply_latency_s
 
-    def _stored(self, command: int, sub: int | None, data: bytes) -> bytes:
-        """The data a write stores: the clamped bytes when they match."""
-        return self._clamped.get((command, sub), {}).get(bytes(data), bytes(data))
-
     def _schedule_ptt_switch(self, on: bool) -> None:
         """Flip PTT *on* after the profile's switch delay; the latest write
         wins (a still-pending switch is cancelled), and a zero delay flips
@@ -862,7 +840,7 @@ class CivSerialFake:
             )
         if cmd == _CMD_FREQ_SET:
             if len(parsed.data) == 5:
-                self._frequency_hz = bcd_decode(self._stored(cmd, None, parsed.data))
+                self._frequency_hz = bcd_decode(parsed.data)
                 return self._ack()
             return self._nak()
         if cmd == _CMD_MODE_GET and not parsed.data:
@@ -874,15 +852,14 @@ class CivSerialFake:
             )
         if cmd == _CMD_MODE_SET:
             if parsed.data:
-                stored = self._stored(cmd, parsed.sub, parsed.data)
-                self._mode = stored[0]
-                if len(stored) > 1:
-                    self._filter_width = stored[1]
+                self._mode = parsed.data[0]
+                if len(parsed.data) > 1:
+                    self._filter_width = parsed.data[1]
                 return self._ack()
             return self._nak()
         if cmd == _CMD_LEVEL and parsed.sub is not None and parsed.sub in self._levels:
             if parsed.data:
-                self._levels[parsed.sub] = self._stored(cmd, parsed.sub, parsed.data)
+                self._levels[parsed.sub] = bytes(parsed.data)
                 return self._ack()
             return build_civ_frame(
                 CONTROLLER_ADDR,

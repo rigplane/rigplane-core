@@ -117,7 +117,6 @@ def _body_of(config: RigConfig, name: str, part: str = "read") -> bytes:
 
 
 def _cat_fields(config: RigConfig, name: str, part: str, text: bytes) -> dict[str, Any]:
-    """A CAT line parsed through the profile command's own template."""
     template = _body_of(config, name, part).decode("ascii")
     return dict(CatCommandParser(template).parse(text.decode("ascii")))
 
@@ -135,7 +134,6 @@ def _step_body(config: RigConfig, step: ProbeCheckStep) -> bytes:
 
 
 def _civ_data(config: RigConfig, read: str, reply: bytes) -> bytes:
-    """The data bytes of a CI-V reply, without the echoed command prefix."""
     declared = _body_of(config, read)
     data = bytes(parse_civ_frame(reply).data)
     return data[len(declared) :] if data.startswith(declared) else data
@@ -248,7 +246,6 @@ async def _read(ctx: _CheckContext, name: str, phase: str) -> tuple[bytes | None
 async def _snapshot(
     ctx: _CheckContext, names: tuple[str, ...]
 ) -> dict[str, str | None]:
-    """Read profile reads once; silence records ``None``."""
     protocol = ctx.config.protocol_type
     return {
         name: _snapshot_value(protocol, (await _read(ctx, name, "witness"))[0])
@@ -398,7 +395,6 @@ async def _restore(ctx: _CheckContext, number: int, state: _State) -> None:
 async def _run_one(
     ctx: _CheckContext, check: ProbeCheck, number: int
 ) -> CheckRecord | None:
-    """Run one check; ``None`` means the person skipped it."""
     protocol = ctx.config.protocol_type
     total = len(ctx.config.probe_checks)
     state = _State()
