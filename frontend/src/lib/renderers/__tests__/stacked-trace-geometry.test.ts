@@ -128,6 +128,9 @@ describe('MOR-4463 stacked-trace depth projection', () => {
     expect(steps[10].fog).toBeCloseTo(settings.haze, 12);
     // A light haze: the far rows stay readable.
     expect(settings.haze).toBeLessThanOrEqual(0.3);
+    // The haze starts past the nearest 15 % of the stack.
+    expect(at(0.15).fog).toBe(0);
+    expect(at(0.2).fog).toBeGreaterThan(0);
   });
 
   it('keeps the whole scene inside the pane', () => {
@@ -171,6 +174,11 @@ describe('MOR-4463 stacked-trace perspective', () => {
 });
 
 describe('MOR-4463 stacked-trace adjustable settings', () => {
+  it('starts from the agreed values', () => {
+    expect(defaultStackedTraceSettings).toEqual({ rows: 96, rowPeriodMs: 100, frontInsetPx: 16, floorRise: 0.58,
+      traceHeight: 0.46, recede: 2 / 3, haze: 0.16, rowBlend: 0.6, rowSoften: 1, floorDrop: 8, colorGain: 70 });
+  });
+
   it('offers every adjustable value a range that holds its default', () => {
     expect(stackedTraceTunables.map(item => item.key))
       .toEqual(['recede', 'rows', 'rowPeriodMs', 'floorRise', 'traceHeight', 'haze', 'rowBlend', 'rowSoften', 'floorDrop', 'colorGain']);
