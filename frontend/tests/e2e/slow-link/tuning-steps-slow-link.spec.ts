@@ -15,9 +15,9 @@ import type { ServerStatePublic } from '../../../src/lib/types/state';
  * cannot produce the unassociated echo this row needs.)
  *
  * Twelve ArrowRight presses (tuning step 1 kHz, USB default) build one live
- * burst, then an absolute entry-dialog jump releases it: the release starts
- * a fresh association window (keyboard steps carry no paced-drag flag), so a
- * delayed pre-release echo arriving with the next +1 kHz step is
+ * burst, then an absolute spectrum click releases it: the release starts a
+ * fresh association window (keyboard steps carry no paced-drag flag), so a
+ * delayed pre-release echo arriving with the next wheel-up step is
  * unassociated on the pre-fix code — it cold-resets onto the stale echo and
  * the emitted targets step backward. With the fix, the live replacement
  * inherits the anchor and the lifecycle-backed association still matches the
@@ -51,19 +51,21 @@ async function readoutHz(readout: Locator): Promise<number> {
   return Number((((await readout.textContent()) ?? '').replace(/\D/g, '')));
 }
 
-/** Tune the active VFO to an exact MHz value through the entry dialog (journey pattern). */
-async function tuneViaEntry(page: Page, mhz: string): Promise<void> {
-  await page.locator('.receiver-instrument [data-vfo-freq]').first().click();
-  await page.getByTestId('band-entry-input').fill(mhz);
-  await expect(page.getByTestId('band-entry-set')).toBeEnabled();
-  await page.getByTestId('band-entry-set').click();
+/** Absolute release: click-to-tune on the panorama at 85% width, which lands
+ * above every press target whether the view is fixed or VFO-following. The
+ * release target is read back from the captured set_freq frames, never
+ * predicted from the viewport. */
+async function spectrumClickRelease(page: Page): Promise<void> {
+  const area = page.locator('.spectrum-area').first();
+  await expect(area).toBeVisible({ timeout: 30_000 });
+  const box = await area.boundingBox();
+  expect(box).not.toBeNull();
+  await page.mouse.click(box!.x + box!.width * 0.85, box!.y + box!.height * 0.3);
 }
 
 test('IC-705 slow link: steps, absolute release, delayed echo, step lands on release + 1 kHz', async ({ page }, info) => {
   const port = Number(process.env.MOR4393_PORT ?? 18849);
   const base = 14_250_000;
-  const release = 14_300_000;
-  const expected = release + 1_000;
   const server = await startJourneyServer(port, base,
     ['--model', 'IC-705', '--evidence', info.outputPath('radio.jsonl'),
       '--response-delay', '0.5'], 'tests/e2e/panorama_web_server.py');
@@ -92,14 +94,21 @@ test('IC-705 slow link: steps, absolute release, delayed echo, step lands on rel
     // Readbacks lag the writes: wait until at least one press echo has
     // landed, so the final step below really carries a pre-release echo.
     await expect.poll(stateFreqHz, { timeout: 30_000 }).not.toBe(base);
-    // Absolute release through the entry dialog (fresh association window:
-    // keyboard steps carry no paced-drag flag to inherit).
-    await tuneViaEntry(page, '14.300');
-    // Let a delayed pre-release echo land, then step once from observed
-    // (confirmed radio truth — never the burst display) truth.
-    await readout.click();
+    const pressSends = sentFreqs.length;
+    // Absolute release (fresh association window: keyboard steps carry no
+    // paced-drag flag to inherit). The click emits synchronously.
+    await spectrumClickRelease(page);
+    await expect.poll(() => sentFreqs.length, { timeout: 10_000 }).toBeGreaterThan(pressSends);
+    const release = sentFreqs.at(-1)!;
+    // The release must land above every press target: only then does a
+    // backward cold reset violate the monotonicity asserted below.
+    for (const freq of sentFreqs) expect(release).toBeGreaterThanOrEqual(freq);
+    const expected = release + 1_000;
+    // Let a delayed pre-release echo land, then wheel up once over the
+    // panorama: a +1 step from observed (confirmed radio truth — never the
+    // burst display) truth. The mouse is already over the canvas.
     await page.waitForTimeout(700);
-    await page.keyboard.press('ArrowRight');
+    await page.mouse.wheel(0, -120);
     // The fixed code accumulates onto the release target; the pre-fix code
     // cold-resets onto the stale echo and steps backward.
     await expect
