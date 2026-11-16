@@ -587,8 +587,11 @@ test('job condition and concurrency group share one verdict-relevance predicate'
       concurrencyGroup(text).includes(`(${(predicate)}) && 'eval' || github.run_id`),
       `${name} concurrency group must route non-qualifying runs into a unique group`,
     );
-    assert.match(text, /cancel-in-progress: true/u, name);
   }
+  assert.match(gate, /cancel-in-progress: true/u, 'gate');
+  // v2 observation serializes eval runs so a cancelled publisher check run is
+  // not left on the PR head when a newer issue_comment leg starts.
+  assert.match(v2, /cancel-in-progress: false/u, 'v2');
   // The issue_comment leg is byte-identical in both workflows and appears
   // exactly twice in each: once in the job `if:`, once in the group.
   for (const [name, text] of [['gate', gate], ['v2', v2]]) {

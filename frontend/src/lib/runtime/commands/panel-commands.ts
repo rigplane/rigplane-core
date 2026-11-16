@@ -19,7 +19,7 @@ import {
   capabilitiesMatchGeneration,
   getCapabilities,
 } from '$lib/stores/capabilities.svelte';
-import { getFieldStatus, isFieldAvailable } from '$lib/state/field-status';
+import { getFieldStatus, isFieldAvailable, isFieldFreshlyObserved } from '$lib/state/field-status';
 import { runtime } from '../frontend-runtime';
 import { consumePendingFocus, setPendingFocus } from '$lib/radio/pending-focus';
 import { getModeFilter } from '$lib/radio/mode-filter-memory';
@@ -863,8 +863,13 @@ function activeFilterRule(receiver: Receiver): FilterModeConfig | null {
   const caps = getCapabilities();
   if (!state || !caps) return null;
   const rx = receiver === 1 ? state.sub : state.main;
+  const prefix = receiver === 1 ? 'sub' : 'main';
   // MOR-2513: null mode/dataMode (unobserved) resolves no config.
-  return resolveFilterModeConfig(caps, rx?.mode ?? undefined, rx?.dataMode ?? undefined);
+  // MOR-4434: the freshly observed narrow state selects the active table —
+  // an unobserved or stale narrow reading keeps the wide table, exactly as
+  // before and as the backend's admission hint reads it.
+  const narrow = isFieldFreshlyObserved(state, `${prefix}.narrow`) ? (rx?.narrow ?? null) : null;
+  return resolveFilterModeConfig(caps, rx?.mode ?? undefined, rx?.dataMode ?? undefined, narrow);
 }
 
 export function makeFilterHandlers() {
@@ -943,7 +948,15 @@ export function makeFilterHandlers() {
       const dataMode = supportsData ? observed.dataMode : 0;
       if (supportsData && (!observedAvailableField(context.state, `${key}.dataMode`)
         || !Number.isSafeInteger(dataMode) || (dataMode as number) < 0)) return;
-      const rule = resolveFilterModeConfig(context.caps, mode, dataMode as number);
+      // MOR-4434: the commit validates against the NARROW-selected table —
+      // a narrow-only width commits instead of dying in `table.includes`.
+      // Unobserved or stale narrow keeps the wide table, exactly as before
+      // and as the backend's admission hint reads it.
+      const narrow = knownA03cReceiver(context, active, 'narrow') === receiver
+        && isFieldFreshlyObserved(context.state, `${key}.narrow`)
+        ? (observed?.narrow ?? null)
+        : null;
+      const rule = resolveFilterModeConfig(context.caps, mode, dataMode as number, narrow);
       if (!validResolvedFilterWidth(width, rule)) return;
       dispatchRadioIntent({ name: 'set_filter_width', params: { width, receiver } });
     },

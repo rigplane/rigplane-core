@@ -21,6 +21,13 @@ The owner ruling, per radio:
   explicitly **empty** map. They are reachable only through the rigctld
   client, whose read is permanently ``verified_readback=False``, so they
   are fail-closed by provenance regardless of what the map says.
+* The FT-991A (MOR-4433) carries the FTX-1 map shape: the same Yaesu
+  three-valued ``TX;`` readback (``0`` receiving, ``1`` CAT-keyed, ``2``
+  self-keyed — FT-991A CAT manual p.18) with the FTX-1 bench-measured
+  ``refused_during_tx`` set (``mode``, ``vfo-topology``) copied over. The
+  map decodes from the manual, but transmit behaviour stays **unverified
+  on hardware** until the customer capture pass; the refusal copy is
+  marked UNVERIFIED in the profile.
 
 Nothing here may be left implicit: an absent ``[tx_policy]`` section loads to
 the same empty policy as a deliberately empty one, so
@@ -79,6 +86,25 @@ def test_ftx1_tx_policy_matches_the_bench_measurement():
     )
 
 
+def test_ft991a_tx_policy_declares_the_manual_map_with_unverified_refusals():
+    """FT-991A carries the Yaesu three-valued TX map; TX stays unverified.
+
+    The ``tx_state_map`` decodes the manual's ``TX;`` readback (CAT manual
+    p.18: ``0`` RX, ``1`` CAT-keyed TX, ``2`` self-keyed TX) — the same
+    shape the Yaesu backend interprets. ``refused_during_tx`` is copied
+    from the FTX-1 bench measurement (MOR-1912) and marked UNVERIFIED in
+    the profile until the customer capture pass exercises transmit on
+    this radio.
+    """
+    rigs = discover_rigs(RIGS_DIR)
+    profile = rigs["FT-991A"].to_profile()
+
+    assert profile.tx_policy == TxPolicy(
+        refused_during_tx=frozenset({"mode", "vfo-topology"}),
+        tx_state_map={"0": "rx", "1": "tx_cat", "2": "tx_other"},
+    )
+
+
 def test_ic7300_tx_policy_matches_the_bench_measurement():
     rigs = discover_rigs(RIGS_DIR)
     profile = rigs["IC-7300"].to_profile()
@@ -100,7 +126,7 @@ def test_every_shipped_profile_declares_a_tx_policy_section():
     contents are right is the business of the per-rig pins below.
     """
     rigs = discover_rigs(RIGS_DIR)
-    assert len(rigs) == 11, "shipped rig count changed; re-run the TX policy ruling"
+    assert len(rigs) == 12, "shipped rig count changed; re-run the TX policy ruling"
 
     undeclared = [
         path.name

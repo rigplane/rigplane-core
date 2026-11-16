@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import struct
+from collections.abc import Mapping
 from typing import Any, TypedDict
 
 from rigplane.scope.models import (
@@ -99,11 +100,13 @@ AUDIO_CODEC_OPUS: int = 0x01
 AUDIO_CODEC_PCM16: int = 0x02
 
 
-def encode_json(msg: dict[str, Any]) -> str:
-    """Serialize a JSON message dict to a string.
+def encode_json(msg: Mapping[str, Any]) -> str:
+    """Serialize a JSON message mapping to a string.
 
     Args:
-        msg: Message dict (must include 'type' field).
+        msg: Message mapping (must include 'type' field); a ``TypedDict``
+            payload carries its own key order, which becomes the wire
+            order.
 
     Returns:
         JSON string.

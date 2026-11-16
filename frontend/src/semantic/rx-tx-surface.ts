@@ -13,6 +13,7 @@
 import { t } from '$lib/i18n';
 import { BLOCKED_REASON_KEY } from '$lib/i18n/blocked-reasons';
 import type { DisabledReason, DisabledReasonCode, RadioViewModel, TxTargetViewModel } from './radio-view-model';
+import { isSourcelessPermitUnknown } from '$lib/utils/tx-permit';
 import { FAULT_REASON_CODES, KEY_BLOCKED_REASON_CODES } from './rx-tx-codes';
 
 /**
@@ -219,9 +220,24 @@ export function keyBlockedReasons(
   const add = (reason: KeyBlockedReason): void => {
     if (!reasons.includes(reason)) reasons.push(reason);
   };
-  if (view.txTarget.status !== 'known') add('tx-target-unknown');
+  // MOR-4433: a radio with no TX-target source (single transceiver, no
+  // readable target — the sourceless class: G7250 and the sourceless-Yaesu
+  // shape) projects `unsupported`, and an
+  // unresolvable target must not block transmit-adjacent controls: there is
+  // no source that a wait could resolve. Any other unknown reason (a source
+  // exists but is unobserved, stale, or contradictory) still blocks, as does
+  // an unconfigured band table.
+  // No source (`unsupported`) is a target fact, permit-independent: the
+  // target line stays suppressed for sourceless radios whatever the permit.
+  // The permit line uses the shared narrow decision below.
+  const targetUnsupported =
+    view.txTarget.status === 'unknown' && view.txTarget.reason === 'unsupported';
+  if (view.txTarget.status !== 'known' && !targetUnsupported) add('tx-target-unknown');
   if (view.txPermit.status === 'denied') add('tx-permit-denied');
-  if (view.txPermit.status === 'unknown') add('tx-permit-unknown');
+  if (view.txPermit.status === 'unknown'
+    && !isSourcelessPermitUnknown(view.txTarget, view.txPermit)) {
+    add('tx-permit-unknown');
+  }
   // MOR-1906. A 'failed' phase is a FAULT, not a session — and it blocks on the
   // phase itself, not on `fault` being non-null, so the verdict cannot go
   // missing should a future state ever reach 'failed' without a code.

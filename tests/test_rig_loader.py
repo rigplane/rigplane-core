@@ -212,6 +212,7 @@ class TestLoadRig:
                 "unexpected",
             ),
             ("receive_port = 50001\n", "", "receive_port"),
+            ("receive_port = 50001", "receive_port = 0", "receive_port"),
             ('protocol = "xiegu_udp"', 'protocol = "other"', "protocol"),
             ("sample_rate_hz = 48000", 'sample_rate_hz = "48000"', "sample_rate_hz"),
             ("tune_min_hz = 100000", "tune_min_hz = -1", "tune_min_hz"),
@@ -1779,6 +1780,15 @@ choices = [
     # exact validated form (the legacy raw_center shape fail-closes the
     # RIT/XIT control in the MOR-1730 frontend contract).
     _EXACT_DOMAIN_REGISTER = {
+        # MOR-4433: FT-991A declares three exact domains; unlike the FTX-1
+        # it has no [controls.rit] table (RIT/XIT ride the RT/XT/RU/RD/RC
+        # commands with no exact domain), so "rit" is absent here, and
+        # NB/NR are omitted from v1 (no [controls.nb*]/[controls.nr*]).
+        "ft991a.toml": {
+            "manual_notch_freq",
+            "if_shift",
+            "cw_pitch",
+        },
         "ftx1.toml": {
             "rit",
             "nr_level",
@@ -3548,6 +3558,11 @@ _SHIPPED_RIG_TOMLS = sorted(
 # profile cannot land with a receive-only row silently counting as a TX
 # band: its author must classify every row here first.
 _SHIPPED_RX_ONLY_BANDS = {
+    # MOR-4433: every FT-991A band row is a TX-capable ham band (160m..70cm,
+    # inside the manual/Hamlib TX ranges 1.8-54, 144-148, 430-450 MHz), so no
+    # row is flagged rx_only. The profile declares no general-coverage,
+    # air, WFM, or utility rows.
+    "ft991a.toml": (),
     "ftx1.toml": (),
     "g7250.toml": (),
     "ic705.toml": ("2200m", "630m", "WFM", "Air", "Gen"),

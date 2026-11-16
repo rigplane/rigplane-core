@@ -36,9 +36,10 @@ Walk this list against your own diff, then run the local pre-review, then push.
   mergeable and verifiable on its own.
 - A fix and its test stay in one PR.
 - This is a review-efficiency target below the limits in `CLAUDE.md` (soft
-  threshold 6 files and 600 changed lines, hard ceiling 10 files and 1,000
-  lines); it does not replace them. The exceptions above change the target
-  only, never the hard ceiling.
+  threshold 6 files and 600 product-code changed lines, hard ceiling 10 files
+  and 900 product-code changed lines; line counts exclude test paths per
+  `CLAUDE.md` §Guardrails); it does not replace them. The exceptions above
+  change the target only, never the hard ceiling.
 
 ## 2. Defect classes to walk, unit by unit
 

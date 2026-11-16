@@ -13,9 +13,9 @@ plus the profile's latency, baud gate and scope.
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
+from rigplane_testkit.fixture_rows import read_civ_rows
 from rigplane_testkit.icom.replay import RecordedAnswerTable
 from rigplane_testkit.serial import CivSerialFake
 
@@ -24,11 +24,7 @@ FIXTURES = REPO_ROOT / "tests" / "fixtures" / "ic7300"
 
 
 def ic7300_answer_table(fixtures: Path = FIXTURES) -> RecordedAnswerTable:
-    rows = [
-        json.loads(line)
-        for line in (fixtures / "civ_pairs.jsonl").read_text().splitlines()
-        if line
-    ]
+    rows = read_civ_rows(fixtures / "civ_pairs.jsonl")
     return RecordedAnswerTable.from_civ_pairs(rows, "usb")
 
 

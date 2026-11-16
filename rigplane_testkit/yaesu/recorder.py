@@ -21,11 +21,11 @@ capture needs on top of it, without a second recorder:
 from __future__ import annotations
 
 import json
-import re
 from collections.abc import Iterable, Iterator
 from pathlib import Path
 
 from rigplane.commands.command_spec import CatCommandSpec
+from rigplane.probe.readlist import compile_cat_template as _template_regex
 from rigplane.profiles.rig_loader import RigConfig
 
 _TERMINATOR = b";"
@@ -33,10 +33,6 @@ _TERMINATOR = b";"
 # The longest line any profile command produces is a few dozen bytes; a
 # longer unterminated run is garbage, not a line waiting for its ';'.
 _MAX_LINE = 64
-
-# A template field: ``{name}`` is one letter or digit, ``{name:09d}`` is
-# nine digits. Any other format spec does not match and so never allows a line.
-_FIELD = re.compile(r"\{[^{}:]*(?::0?(\d*)d)?\}")
 
 # The only writes a capture may be allowed to forward: re-tuning the receive
 # VFOs. Nothing here keys the transmitter or touches power or any setting.
@@ -47,22 +43,6 @@ RX_TUNING_WRITES = (
     "set_mode_sub",
     "set_filter_width",
 )
-
-
-def _template_regex(template: str) -> re.Pattern[str]:
-    """The regex matching exactly the wire lines one command template makes."""
-    parts: list[str] = []
-    pos = 0
-    for field in _FIELD.finditer(template):
-        parts.append(re.escape(template[pos : field.start()]))
-        width = field.group(1)
-        if field.group(0) == "{chan}":  # MR/MT memory slot: five digits (MOR-3628)
-            parts.append("[0-9]{5}")
-        else:
-            parts.append(f"[0-9]{{{width}}}" if width else "[0-9A-Za-z]")
-        pos = field.end()
-    parts.append(re.escape(template[pos:]))
-    return re.compile("".join(parts))
 
 
 def cat_lines(path: str | Path) -> Iterator[tuple[float, str, str]]:

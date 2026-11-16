@@ -72,6 +72,7 @@ class XieguUdpIqSource:
         self._dropped_datagrams = 0
 
         self._is_open = False
+        self._bound_receive_port: int | None = None
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._socket: socket.socket | None = None
@@ -95,6 +96,7 @@ class XieguUdpIqSource:
 
             now = self._clock()
             self._socket = sock
+            self._bound_receive_port = int(sock.getsockname()[1])
             self._peer_host = None
             self._opened_at_s = now
             self._last_valid_s = None
@@ -111,6 +113,7 @@ class XieguUdpIqSource:
                 thread.start()
             except BaseException:
                 self._is_open = False
+                self._bound_receive_port = None
                 self._thread = None
                 self._socket = None
                 self._stop.set()
@@ -120,6 +123,7 @@ class XieguUdpIqSource:
     def close(self) -> None:
         with self._lock:
             self._is_open = False
+            self._bound_receive_port = None
             self._center_freq = 0
             self._center_changed_s = self._clock()
             self._stop.set()
@@ -140,6 +144,16 @@ class XieguUdpIqSource:
     def is_open(self) -> bool:
         with self._lock:
             return self._is_open
+
+    @property
+    def bound_receive_port(self) -> int | None:
+        """Port the receive socket actually bound; ``None`` while closed.
+
+        With ``spec.receive_port = 0`` each :meth:`open` binds a fresh
+        OS-picked port and updates this value.
+        """
+        with self._lock:
+            return self._bound_receive_port
 
     @property
     def facts(self) -> IqSourceFacts:
@@ -331,9 +345,11 @@ class XieguUdpIqSource:
             if not stop.is_set():
                 logger.warning("UDP IQ reader failed: %s", exc)
         finally:
+            current_thread = threading.current_thread()
             with self._lock:
-                if self._thread is threading.current_thread() and self._socket is sock:
+                if self._thread is current_thread and self._socket is sock:
                     self._is_open = False
+                    self._bound_receive_port = None
                     self._center_freq = 0
                     self._center_changed_s = self._clock()
                     self._peer_host = None

@@ -20,6 +20,7 @@ from rigplane.profiles import get_radio_profile
 from rigplane.types import Mode
 from rigplane.web.radio_poller import RadioPoller
 from rigplane.web.server import WebConfig, WebServer
+from support.command_consumer import run_command_consumer
 from test_rigctld_split import _hold_commander_before_set, _pause_mode_preservation
 from test_rigctld_wsjtx_split_mk2 import MODELS, _exchange, _peer
 from test_web_server import (
@@ -63,15 +64,15 @@ async def _web_peer(model, *, profile=None):
         executed = asyncio.Event()
         entries = []
 
-        async def consume():
-            await web.command_queue.wait(2)
-            entry = web.command_queue.take_entry()
-            assert entry is not None
-            entries.append(entry)
-            await poller._execute_queued_entry(entry)
-            executed.set()
-
-        consumer = asyncio.create_task(consume())
+        consumer = asyncio.create_task(
+            run_command_consumer(
+                web.command_queue,
+                poller._execute_queued_entry,
+                entries=entries,
+                count=1,
+                executed=executed,
+            )
+        )
         try:
             yield web, peer, entries, executed, (radio, reader, writer)
         finally:
