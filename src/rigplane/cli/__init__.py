@@ -20,7 +20,7 @@ Usage:
     rigplane discover
 """
 
-__all__ = ["main", "check_ports_available"]
+__all__ = ["main", "check_ports_available", "probe_main"]
 
 import argparse
 import asyncio
@@ -109,8 +109,10 @@ from rigplane.cli._convert import (  # noqa: E402
 )
 from rigplane.cli._probe import (  # noqa: E402
     add_subparser as _add_probe_subparser,
+    build_probe_parser as _build_probe_parser,
     run as _run_probe,
 )
+from rigplane.probe.render import DEFAULT_PROBE_PROG  # noqa: E402
 from rigplane.cli._models import (  # noqa: E402
     add_subparser as _add_models_subparser,
     backend_for_protocol as _backend_for_protocol,
@@ -5461,6 +5463,28 @@ def _flush_stdio_before_forced_exit() -> None:
             stream.flush()
         except (ValueError, OSError):
             pass
+
+
+def probe_main(
+    argv: Sequence[str] | None = None, *, prog: str = DEFAULT_PROBE_PROG
+) -> int:
+    """Run the radio probe under the caller's command name.
+
+    The Pro sidecar hand-over calls this instead of spawning ``rigplane``:
+    ``argv`` holds the probe arguments (``None`` means ``sys.argv[1:]``),
+    and every hint, the usage line, and ``--help`` show ``prog``. Returns
+    the process exit code (0, 2, or 3); never raises ``SystemExit``.
+    """
+    parser = _build_probe_parser(prog=prog)
+    try:
+        args = parser.parse_args(argv)
+    except SystemExit as exc:
+        if exc.code is None:
+            return 0
+        if isinstance(exc.code, int):
+            return exc.code
+        return 2
+    return _run_probe(args, prog=prog)
 
 
 def main() -> None:
