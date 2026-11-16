@@ -1634,7 +1634,7 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
       .toEqual(Array.from({ length: 140 }, (_, index) => index % 2 === 0 ? start + 1_000 : start));
   });
 
-  it('MOR-1864: stale TTL preserves a known marker, while pending targets cannot explain changed truth', () => {
+  it('MOR-1864/MOR-4393: stale TTL preserves a known marker; an own pending-send readback continues the burst', () => {
     const vfo = makeVfoHandlers();
     const start = observedFreq();
     vfo.onMainFreqChange(start + 1_000);
@@ -1646,8 +1646,13 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     vi.advanceTimersByTime(60);
     expect(exactCalls().at(-1)).toEqual(['set_freq', { freq: start + 2_000, receiver: 0 }]);
 
-    // The latest target is still merely pending. A changed field value cannot
-    // be attributed to it and therefore starts cold, immediately.
+    // The latest target is still merely pending, yet the lifecycle-backed
+    // association matches it: the readback exactly equals this burst's own
+    // in-burst send, and an own sent value is intrinsically
+    // indistinguishable from its echo (see `acceptedTuningTarget`). The next
+    // press accumulates onto the pending target and waits for the pace
+    // rather than cold re-emitting; the radio still lands on the same
+    // start + 3_000.
     h.state = { ...h.state!, main: { ...h.state!.main!, freqHz: start + 2_000 }, fieldStatus: {
       ...h.state!.fieldStatus, 'main.freqHz': {
         ...freshStatus, storePath: 'main.freqHz', lastObservedMonotonic: 2,
@@ -1655,7 +1660,8 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     } };
     const count = h.sendCommand.mock.calls.length;
     vfo.onMainFreqChange(start + 3_000);
-    expect(h.sendCommand).toHaveBeenCalledTimes(count + 1);
+    expect(h.sendCommand).toHaveBeenCalledTimes(count);
+    vi.advanceTimersByTime(60);
     expect(exactCalls().at(-1)).toEqual(['set_freq', { freq: start + 3_000, receiver: 0 }]);
   });
 
@@ -1678,7 +1684,7 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     ]);
   });
 
-  it('MOR-1864: excludes pre-burst, pending, and failed records from changed-value association', () => {
+  it('MOR-1864/MOR-4393: pre-burst records stay unassociated; a failed send echo cold-resets', () => {
     const vfo = makeVfoHandlers();
     const start = observedFreq();
     const setObservation = (frequency: number, marker: number) => {
@@ -1690,7 +1696,9 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     };
 
     // Same fake-clock millisecond as the later burst anchor: registry order,
-    // not timestamp alone, keeps this accepted historical target out.
+    // not timestamp alone, keeps this accepted historical target out. The
+    // value start + 500 was never sent BY THIS BURST, so the MOR-4393 send
+    // ledger does not claim it either — the change stays foreign.
     vfo.onFreqChange(start + 500, 0, 'jump');
     let record = getCommandLifecycles().at(-1)!;
     acknowledgeCommand(record.id, record.originalEpoch, record.originalEpoch);
@@ -1701,12 +1709,76 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     vfo.onMainFreqChange(start + 1_500);
     expect(exactCalls().at(-1)).toEqual(['set_freq', { freq: start + 1_500, receiver: 0 }]);
 
-    // A failed current record is equally unable to explain a later change.
+    // A failed record stays excluded from association (`acceptedTuningTarget`
+    // matches pending/acknowledged/confirmed in-burst targets only): the
+    // NAKed write was refused, so its value reappearing reads as a foreign
+    // change and the next press cold-resets onto it with an immediate emit.
+    // (The MOR-4393 send ledger that used to continue the burst here is
+    // gone: one association mechanism.)
     record = getCommandLifecycles().at(-1)!;
     failCommand(record.id, record.originalEpoch, record.originalEpoch, 'NAK');
     setObservation(start + 1_500, 3);
+    const count = h.sendCommand.mock.calls.length;
     vfo.onMainFreqChange(start + 2_500);
+    expect(h.sendCommand).toHaveBeenCalledTimes(count + 1);
     expect(exactCalls().at(-1)).toEqual(['set_freq', { freq: start + 2_500, receiver: 0 }]);
+  });
+
+  it('MOR-4393: a delayed pre-release echo stays on the burst while its send is still pending', () => {
+    const vfo = makeVfoHandlers();
+    const start = observedFreq();
+    // A paced drag: two absolute moves, nothing acknowledged yet — the
+    // slow-link shape where the older send's association is unavailable.
+    vfo.onFreqChange(start + 1_000, 0, 'drag');
+    vfo.onFreqChange(start + 5_000, 0, 'drag');
+    vi.advanceTimersByTime(60); // paced flush emits start + 5_000
+    // Release lands an absolute jump; the still-live burst keeps its anchor.
+    vfo.onFreqChange(start + 10_000, 0);
+    // The delayed echo of the FIRST drag send arrives with the next +1 kHz
+    // step, read off observed (not burst-displayed) truth.
+    h.state = { ...h.state!, main: { ...h.state!.main!, freqHz: start + 1_000 }, fieldStatus: {
+      ...h.state!.fieldStatus, 'main.freqHz': {
+        ...freshStatus, storePath: 'main.freqHz', lastObservedMonotonic: 2,
+      },
+    } };
+    const count = h.sendCommand.mock.calls.length;
+    vfo.onMainFreqChange(start + 2_000);
+    // Hot continuation: no immediate cold re-emit of the stale echo + step;
+    // the paced flush lands on release + one step, never back on the echo.
+    expect(h.sendCommand).toHaveBeenCalledTimes(count);
+    vi.advanceTimersByTime(60);
+    expect(exactCalls().at(-1)).toEqual(['set_freq', { freq: start + 11_000, receiver: 0 }]);
+  });
+
+  it('MOR-4393: an absolute release after steps keeps earlier burst targets associable', () => {
+    const vfo = makeVfoHandlers();
+    const start = observedFreq();
+    // Two keyboard steps, both acknowledged at once (fast link): the burst
+    // carries no paced-drag flag, so the absolute release below cannot reuse
+    // the drag carve-out and starts a fresh association window on the head.
+    vfo.onMainFreqChange(start + 1_000);
+    vfo.onMainFreqChange(start + 1_000);
+    vi.advanceTimersByTime(60);
+    for (const command of getCommandLifecycles()) {
+      acknowledgeCommand(command.id, command.originalEpoch, command.originalEpoch);
+    }
+    // Absolute release (entry dialog / spectrum click shape).
+    vfo.onFreqChange(start + 50_000, 0);
+    // The delayed echo of the FIRST step send arrives with the next +1 kHz
+    // step, read off observed truth.
+    h.state = { ...h.state!, main: { ...h.state!.main!, freqHz: start + 1_000 }, fieldStatus: {
+      ...h.state!.fieldStatus, 'main.freqHz': {
+        ...freshStatus, storePath: 'main.freqHz', lastObservedMonotonic: 2,
+      },
+    } };
+    const count = h.sendCommand.mock.calls.length;
+    vfo.onMainFreqChange(start + 2_000);
+    // The echo matches an earlier target of the same live gesture, so the
+    // step accumulates onto the release target instead of cold-resetting
+    // onto the stale echo.
+    expect(h.sendCommand).toHaveBeenCalledTimes(count);
+    vi.advanceTimersByTime(60);
+    expect(exactCalls().at(-1)).toEqual(['set_freq', { freq: start + 51_000, receiver: 0 }]);
   });
 
   it('spectrum jump followed by keyboard up before readback continues from the jump target', () => {

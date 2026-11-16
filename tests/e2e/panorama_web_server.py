@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import json
 import logging
+import random
 import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -18,7 +19,14 @@ from rigplane.commands.scope import parse_scope_fixed_edge_response  # noqa: E40
 from rigplane.profiles import resolve_radio_profile  # noqa: E402
 from rigplane.runtime.radio import IcomRadio  # noqa: E402
 from rigplane.web.server import WebConfig, WebServer  # noqa: E402
-from rigplane_testkit.icom.simulator import MockIcomRadio  # noqa: E402
+from rigplane_testkit.icom.simulator import (  # noqa: E402
+    _CIV_HEADER_SIZE,
+    _CIV_PREAMBLE,
+    _CIV_TERM,
+    _CMD_FREQ_GET,
+    _CMD_FREQ_SET,
+    MockIcomRadio,
+)
 
 
 @dataclass(frozen=True)
@@ -32,7 +40,14 @@ class ScopeWriteReceipt:
 
 
 class PanoramaSimulator(MockIcomRadio):
-    def __init__(self, model: str, evidence: Path) -> None:
+    def __init__(
+        self,
+        model: str,
+        evidence: Path,
+        ack_delay: float = 0.0,
+        response_delay: float = 0.0,
+        response_jitter: float = 0.0,
+    ) -> None:
         self.profile = resolve_radio_profile(model=model)
         super().__init__(
             host="127.0.0.1",
@@ -41,12 +56,78 @@ class PanoramaSimulator(MockIcomRadio):
             dual_receiver=self.profile.receiver_count > 1,
         )
         self.evidence = evidence
+        # MOR-4393 slow-link knob: seconds the FB/01 ACK of a frequency SET
+        # lags behind the write itself. The write applies instantly, so the
+        # next poll readback carries the new frequency while the client-side
+        # command lifecycle is still pending — the owner's IC-705-over-Wi-Fi
+        # readback-lag shape.
+        self.ack_delay = ack_delay
+        # Downlink-lag knob: seconds every simulator CI-V response (writes,
+        # transceive echoes, poll readbacks) is held before dispatch, so the
+        # client observes older own-target frequencies while newer tuning
+        # intent already exists. Unlike ack_delay (one frame late), this lags
+        # the whole downlink the frontend reads.
+        self.response_delay = response_delay
+        self._response_jitter = response_jitter
         if self.profile.expected_identity_ids:
             self.model_id = bytes.fromhex(self.profile.expected_identity_ids[0])
         self.span_index = self.profile.scope_span_presets_hz.index(100_000)
         self.scope_mode = 0
         self.fixed = (14_200_000, 14_300_000)
         self.set_frequency(14_250_000)
+
+    def _receive(self, data, addr, label, proto) -> None:
+        # Per-datagram uniform jitter on top of the fixed downlink lag. The
+        # base class reads self.response_delay synchronously at schedule
+        # time, so a temporary adjustment is race-free on the event loop.
+        if self._response_jitter <= 0:
+            super()._receive(data, addr, label, proto)
+            return
+        original = self.response_delay
+        try:
+            self.response_delay = original + random.uniform(0.0, self._response_jitter)
+            super()._receive(data, addr, label, proto)
+        finally:
+            self.response_delay = original
+
+    def _handle_civ_data(self, data, addr, sender_id, proto):
+        if self.ack_delay > 0:
+            datalen = int.from_bytes(data[0x11:0x13], "little")
+            end = _CIV_HEADER_SIZE + datalen
+            civ = data[_CIV_HEADER_SIZE:end]
+            if (
+                end <= len(data)
+                and len(civ) == 11
+                and civ[:2] == _CIV_PREAMBLE
+                and civ[2] == self._radio_addr
+                and civ[4] == _CMD_FREQ_SET
+                and civ[-1:] == _CIV_TERM
+            ):
+                # Same effect as the native 0x05 handler (apply, then ACK),
+                # but the ACK leaves ack_delay seconds late — and a
+                # transceive-style unsolicited freq report leaves NOW, so
+                # the client observes the new frequency while the command
+                # lifecycle is still pending (the owner's IC-705-over-Wi-Fi
+                # readback-lag shape, MOR-4393).
+                self._frequency = bcd_decode(civ[5:10])
+                echo = self._civ_frame(
+                    0x00,
+                    self._radio_addr,
+                    _CMD_FREQ_GET,
+                    data=bcd_encode(self._frequency),
+                )
+                self._send(proto, self._wrap_civ(echo, sender_id), addr, "civ")
+                ack = self._civ_ack(civ[3], self._radio_addr)
+                asyncio.get_running_loop().call_later(
+                    self.ack_delay,
+                    self._send,
+                    proto,
+                    self._wrap_civ(ack, sender_id),
+                    addr,
+                    "civ",
+                )
+                return
+        super()._handle_civ_data(data, addr, sender_id, proto)
 
     def _dispatch_scope(self, payload: bytes, from_addr: int) -> bytes | None:
         reply = self._dispatch_scope_reply(payload, from_addr)
@@ -152,9 +233,39 @@ async def run() -> None:
     parser.add_argument("--freq", type=int, default=14_250_000)
     parser.add_argument("--model", default="IC-705")
     parser.add_argument("--evidence", type=Path, required=True)
+    parser.add_argument(
+        "--ack-delay",
+        type=float,
+        default=0.0,
+        help="seconds the ACK of a frequency SET lags the write itself "
+        "(PanoramaSimulator.ack_delay) — a readback-lag knob: the frequency "
+        "applies instantly and polls carry it while the command lifecycle "
+        "is still pending (MOR-4393)",
+    )
+    parser.add_argument(
+        "--response-delay",
+        type=float,
+        default=0.0,
+        help="seconds every simulator CI-V response is held before dispatch "
+        "(PanoramaSimulator.response_delay) — a downlink-lag knob: writes, "
+        "transceive echoes and poll readbacks all arrive late, so the "
+        "client observes older own-target frequencies while newer tuning "
+        "intent exists (MOR-4393)",
+    )
+    parser.add_argument(
+        "--response-jitter",
+        type=float,
+        default=0.0,
+        help="per-datagram uniform [0, jitter] seconds added to "
+        "--response-delay (PanoramaSimulator jitter) — nondeterministic; "
+        "the slow-link row keeps it at zero",
+    )
     args = parser.parse_args()
     logging.basicConfig(filename=args.evidence.with_suffix(".log"), level=logging.INFO)
     args.evidence.write_text("")
+    # Lag knobs stay off through the handshake: the client connect phase has
+    # sub-second deadlines a delayed simulator cannot meet. They shape the
+    # test phase only, activated once the radio link is up.
     simulator = PanoramaSimulator(args.model, args.evidence)
     await simulator.start()
     radio = IcomRadio(
@@ -167,6 +278,9 @@ async def run() -> None:
     try:
         await radio.connect()
         await radio.get_freq()
+        simulator.ack_delay = args.ack_delay
+        simulator.response_delay = args.response_delay
+        simulator._response_jitter = args.response_jitter
         server = WebServer(
             radio,
             WebConfig(
