@@ -56,8 +56,10 @@ async def _serve_icom(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[WebServe
         yield server
     finally:
         try:
-            await server.stop()
-            await radio.disconnect()
+            try:
+                await server.stop()
+            finally:
+                await radio.disconnect()
         finally:
             await endpoint.stop()
 
@@ -93,6 +95,13 @@ async def _serve_g7250_server(
         yield server
 
 
+def _leaf(state: ServerStatePublic, dotted: str) -> object:
+    value: Any = state
+    for part in dotted.split("."):
+        value = getattr(value, part)
+    return value
+
+
 async def _served_state(
     server: WebServer, published: tuple[str, ...]
 ) -> ServerStatePublic:
@@ -106,7 +115,7 @@ async def _served_state(
             state = ServerStatePublic.model_validate_json(raw, strict=True)
             observed = sum(1 for s in state.fieldStatus.values() if s.observed)
             if observed >= _MIN_OBSERVED and all(
-                getattr(state, name) is not None for name in published
+                _leaf(state, name) is not None for name in published
             ):
                 return state
             await asyncio.sleep(0.1)
@@ -115,12 +124,12 @@ async def _served_state(
 _PROFILES = [
     pytest.param(
         _serve_icom,
-        ("vdMeter",),
+        ("vdMeter", "main.freqHz"),
         marks=pytest.mark.skipif(not pty_supported(), reason="requires a PTY"),
         id="icom-ic7610",
     ),
-    pytest.param(_serve_ftx1, ("idMeter",), id="yaesu-ftx1"),
-    pytest.param(_serve_g7250_server, (), id="g7250"),
+    pytest.param(_serve_ftx1, ("idMeter", "main.freqHz"), id="yaesu-ftx1"),
+    pytest.param(_serve_g7250_server, ("main.freqHz",), id="g7250"),
 ]
 
 
