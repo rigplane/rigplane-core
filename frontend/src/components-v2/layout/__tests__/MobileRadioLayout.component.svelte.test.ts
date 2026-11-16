@@ -759,21 +759,6 @@ describe('MobileRadioLayout hides the AUTO toggle (MOR-1486 ruling B)', () => {
   });
 });
 
-// MOR-4383 seam: the mobile SMTH key must stay bound into the real panel —
-// removing the bind:enableSmooth wiring has to fail here (and in the
-// AVG/PEAK/BANDS flip test above, which drives the stub through the same
-// binding). Behaviour through the real panel is pinned by the SMTH test in
-// SpectrumPanel.component.test.ts.
-describe('MobileRadioLayout smoothing binding (MOR-4383 seam)', () => {
-  it('passes bind:enableSmooth into every SpectrumPanel mount', () => {
-    const matches = mobileLayoutSource.match(/<SpectrumPanel\b[^/]*\/>/g) ?? [];
-    expect(matches.length).toBeGreaterThan(0);
-    for (const tag of matches) {
-      expect(tag).toContain('bind:enableSmooth={scopeSmooth}');
-    }
-  });
-});
-
 describe('MOR-1409 local mobile meter selection', () => {
   it('changes only component-local presentation state', () => {
     tx.emitServerSnapshot({ intent: 'transmit', observedPtt: 'on', releaseRequired: true });
@@ -994,7 +979,12 @@ describe('MobileRadioLayout SCOPE chip tab (MOR-2851)', () => {
     }
   });
 
-  it('AVG / PEAK / BANDS clicks flip the values bound into SpectrumPanel', () => {
+  // MOR-4383 seam: SMTH here is the MobileRadioLayout -> SpectrumPanel
+  // `bind:enableSmooth` half of the chain (the stub mirrors the real prop);
+  // the SpectrumPanel -> renderer half runs through the real panel in
+  // SpectrumPanel.component.test.ts. Dropping the binding leaves the stub at
+  // its default and fails the flip below.
+  it('AVG / SMTH / PEAK / BANDS clicks flip the values bound into SpectrumPanel', () => {
     const restore = withSpectrumRadio();
     try {
       const t = mountMobile();
