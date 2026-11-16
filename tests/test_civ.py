@@ -583,3 +583,23 @@ def test_restore_refused_reads_requeues_undelivered_once() -> None:
     tracker.restore_refused_reads((_TUNER, _TUNER))
     assert tracker.take_refused_reads() == (_TUNER,)
     assert tracker.take_refused_reads() == ()
+
+
+@pytest.mark.asyncio
+async def test_a_released_read_keeps_its_late_refusal_port() -> None:
+    """MOR-4526 scenario ported to the MOR-4384 tracker: a background read
+    sent before a blocking read owns the next bare FA (oldest sent wins)."""
+    tracker = CivRequestTracker()
+    token = tracker.register_ack(wait=False, response_key=_TUNER, refused_read=_TUNER)
+    assert isinstance(token, int)
+    tracker.mark_sent(1.0, token=token)
+    blocking = tracker.register_ack(wait=True, consume_backlog=False, nak_only=True)
+    assert isinstance(blocking, asyncio.Future)
+    tracker.mark_sent(2.0, futures=(blocking,))
+
+    assert tracker.resolve(CivEvent(type=CivEventType.NAK, frame=_nak_frame()))
+
+    assert not blocking.done()
+    assert tracker.take_refused_reads() == (_TUNER,)
+    tracker.resolve(CivEvent(type=CivEventType.NAK, frame=_nak_frame()))
+    assert blocking.done()
