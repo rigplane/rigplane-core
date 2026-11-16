@@ -656,8 +656,9 @@ class CivRequestTracker:
         the oldest key match, FB to the oldest write, FA to the oldest of
         any kind. ``ordered_ingress`` is the transport's contract that
         frames arrive in the order the radio sent them; only then does a
-        directed data/FB answer prove every older entry's answer lost
-        (MOR-4209). An FA passes nobody; a broadcast proves nothing.
+        directed data/FB answer prove every older SINK's answer lost
+        (MOR-4209); blocking waiters leave only at their own window or when
+        claimed. An FA passes nobody; a broadcast proves nothing.
         """
         if generation is not None and generation != self._generation:
             return False
@@ -743,7 +744,7 @@ class CivRequestTracker:
             and frame.to_addr != _BROADCAST_ADDR
             and event.type is not CivEventType.NAK
         ):
-            self._lose_entries_older_than(winner.sent_order)
+            self._retire_sinks_older_than(winner.sent_order)
         if winner.future is not None:
             if not winner.future.done():
                 winner.future.set_result(frame)
@@ -764,24 +765,25 @@ class CivRequestTracker:
         if entry.pair is not None:
             self.unregister(entry.pair)
 
-    def _lose_entries_older_than(self, order: int) -> None:
-        """Retire every sent entry older than ``order``: its answer is lost.
+    def _retire_sinks_older_than(self, order: int) -> None:
+        """Retire every sent sink older than ``order``: its answer is lost.
 
-        A blocking request fails once as lost; a write sink notes that its
-        FB/FA can no longer be told from a later one.
+        A blocking waiter is never retired here: it leaves at its own
+        window or when an answer claims it (a raw transaction can reach the
+        radio after a later send). A write sink notes that its FB/FA can no
+        longer be told from a later one.
         """
-        entries: list[_Entry] = [*self._ack_waiters, *self._response_waiters]
-        for entry in entries:
-            if entry.sent_monotonic is None or entry.sent_order >= order:
-                continue
-            if entry not in self._ack_waiters and entry not in self._response_waiters:
-                continue  # left already, as the other half of a read
-            self._remove(entry)
-            if entry.future is not None:
-                if not entry.future.done():
-                    entry.future.set_exception(asyncio.TimeoutError("CI-V answer lost"))
-            elif isinstance(entry, _AckWaiter) and entry.response_key is None:
+        kept: list[_AckWaiter] = []
+        for waiter in self._ack_waiters:
+            if (
+                waiter.future is not None
+                or waiter.sent_monotonic is None
+                or waiter.sent_order >= order
+            ):
+                kept.append(waiter)
+            elif waiter.response_key is None:
                 self.note_ack_unclaimed()
+        self._ack_waiters = kept
 
     def resolve_write_echo(
         self, frame: CivFrame, *, generation: int | None = None

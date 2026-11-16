@@ -1477,10 +1477,13 @@ class CivRuntime:
             commander.note_foreign_dispatch(asyncio.current_task(), Priority.NORMAL)
 
         async def send() -> None:
+            # Stamped with no loop yield before the hand-over (MOR-4384).
+            if waiters:
+                self._host._civ_request_tracker.mark_sent(
+                    time.monotonic(), futures=waiters
+                )
             await self._send_ptt_accounted(transport, pkt, parse_civ_frame(civ_frame))
 
-        if waiters:
-            self._host._civ_request_tracker.mark_sent(time.monotonic(), futures=waiters)
         task = asyncio.create_task(send())
         tasks = None
         if token is not None:
@@ -4950,12 +4953,7 @@ class CivRuntime:
                 timeout=self._host._civ_get_timeout,
                 return_when=asyncio.FIRST_COMPLETED,
             )
-            # A waiter failed with a timeout (an answer proven lost on an
-            # ordered link, MOR-4384, or stale cleanup) is a timeout too.
-            if not done or any(
-                not f.cancelled() and isinstance(f.exception(), asyncio.TimeoutError)
-                for f in done
-            ):
+            if not done:
                 check_current()
                 tracker.note_timeout()
                 logger.debug(
