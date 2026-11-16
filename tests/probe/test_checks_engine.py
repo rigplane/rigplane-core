@@ -892,7 +892,10 @@ async def test_two_runs_on_one_journal_path_only_one_writes(tmp_path: Path) -> N
 
 @pytest.mark.timeout(30)
 @pytest.mark.skipif(os.name != "posix", reason="POSIX signals (Windows: MOR-4497)")
-async def test_settling_a_cancel_ends_despite_continuous_pushes(tmp_path: Path) -> None:
+@pytest.mark.parametrize("owed", ["late", "lost"])
+async def test_settling_a_cancel_ends_despite_continuous_pushes(
+    tmp_path: Path, owed: str
+) -> None:
     from rigplane_testkit.serial import CivSerialFake
 
     config = load(tmp_path, "ic705", CIV_POWER_FREQ)
@@ -912,6 +915,8 @@ async def test_settling_a_cancel_ends_despite_continuous_pushes(tmp_path: Path) 
     def events(name: str) -> None:
         if name == "steps_begin":
             os.kill(os.getpid(), signal.SIGTERM)
+            if owed == "lost":  # the cancelled write's answer never comes
+                fake.lose_next_answer(0x14)
 
     result = await run(config, request(tmp_path, events=events), exchange)
     (record,) = result.records
