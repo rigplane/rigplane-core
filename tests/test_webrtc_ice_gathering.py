@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import importlib
 import json
 import socket
 import struct
@@ -1216,6 +1217,74 @@ async def test_blackhole_stun_answer_within_bound() -> None:
     assert elapsed <= GATHER_TIMEOUT_S + 1.0, elapsed
     lines = _answer_candidate_lines(result["sdp"])
     assert any("typ host" in ln for ln in lines), lines
+
+
+class _FakeUdpProbe:
+    """A UDP socket whose default-route probe answers a fixed source IP (or fails)."""
+
+    def __init__(self, source_ip: str | None) -> None:
+        self._source_ip = source_ip
+
+    def __enter__(self) -> "_FakeUdpProbe":
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        return None
+
+    def connect(self, address: tuple[str, int]) -> None:
+        if self._source_ip is None:
+            raise OSError("network is unreachable")
+
+    def getsockname(self) -> tuple[str, int]:
+        assert self._source_ip is not None
+        return (self._source_ip, 40000)
+
+
+def _hostname_does_not_resolve(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A host whose own name has no address, without the ``ifaddr`` extra."""
+    from rigplane.web.transport import ice_gathering
+
+    def _unresolvable(*_args: object, **_kwargs: object) -> list[Any]:
+        raise socket.gaierror(8, "nodename nor servname provided, or not known")
+
+    def _no_ifaddr(name: str, *args: object, **kwargs: object) -> Any:
+        if name == "ifaddr":
+            raise ImportError("No module named 'ifaddr'")
+        return importlib.import_module(name, *args, **kwargs)
+
+    monkeypatch.setattr(socket, "getaddrinfo", _unresolvable)
+    monkeypatch.setattr(ice_gathering.importlib, "import_module", _no_ifaddr)
+
+
+def test_fallback_finds_default_route_when_hostname_does_not_resolve(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Without ``ifaddr`` and with an unresolvable hostname the fallback still
+    learns the default-route address (UDP-connect probe, no packet sent)."""
+    from rigplane.web.transport import ice_gathering
+
+    _hostname_does_not_resolve(monkeypatch)
+    monkeypatch.setattr(
+        ice_gathering.socket, "socket", lambda *a, **k: _FakeUdpProbe("192.0.2.7")
+    )
+    pairs = ice_gathering._adapter_addresses()
+    addresses = [ip for _name, ips in pairs for ip in ips]
+    assert "192.0.2.7" in addresses, pairs
+
+
+def test_fallback_still_returns_loopback_when_every_probe_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No ``ifaddr``, unresolvable hostname, no route: never an empty list."""
+    from rigplane.web.transport import ice_gathering
+
+    _hostname_does_not_resolve(monkeypatch)
+    monkeypatch.setattr(
+        ice_gathering.socket, "socket", lambda *a, **k: _FakeUdpProbe(None)
+    )
+    pairs = ice_gathering._adapter_addresses()
+    addresses = [ip for _name, ips in pairs for ip in ips]
+    assert addresses == ["127.0.0.1"], pairs
 
 
 def test_real_enumeration_table() -> None:
