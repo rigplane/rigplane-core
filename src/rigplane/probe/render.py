@@ -287,7 +287,7 @@ def pre_save_summary(
         memory_line = (
             "  - not included: stored memory contents (you did not ask for them)\n"
         )
-    return (
+    head = (
         f"Ready to save: {path}  ({_format_kb(size_bytes)})\n"
         "It contains:\n"
         f"  - the questions we asked and the radio's exact replies ({n_commands} of them)\n"
@@ -298,7 +298,11 @@ def pre_save_summary(
         f"{absent_answered_line(absent_answered or [])}"
         f"{present_missed_line(present_missed or [])}"
         f"{termination_line(termination)}"
-        + (checks_line + "\n" if checks_line else "")
+    )
+    if checks_line:
+        head += checks_line + "\n"
+    return (
+        head
         "The tool itself does not add your name, computer name, internet "
         "address, or any file from your computer.\n"
         "But the --label text is saved exactly as you typed it, and stored "
