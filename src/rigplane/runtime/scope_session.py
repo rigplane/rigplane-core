@@ -172,6 +172,21 @@ class ScopeSession:
         active = max(1, current.active) if enabled else 0
         await self.set_demand(ScopeDemand(subscribers, active))
 
+    async def set_span(self, span_hz: float, receiver: int) -> None:
+        """Span-only viewport write: the 0x27 0x15 preset and nothing else.
+
+        ``span_hz`` is the profile preset value (``spans``), like
+        ``set_center``'s — not the view width. No such writer existed:
+        the control layer refuses a direct ``set_scope_span`` ("use the
+        scope subscription view"), and ``set_center`` always pairs the
+        span with a mode-0 write that would flip SCROLL-C away — so the
+        subscription view's SCROLL-C follow branch (the only span-only
+        caller) needs this next to ``set_center``. Goes through the
+        same configure/reconcile mechanism, so it is captured for
+        restore like every other setting.
+        """
+        await self.configure(receiver=receiver, span=self._spans.index(int(span_hz)))
+
     async def set_center(self, center_hz: float, span_hz: float, receiver: int) -> None:
         """Center-mode viewport write.
 

@@ -707,7 +707,9 @@ const defaultRule: SpectrumFilterRule = Object.freeze({
   kind: 'step', minHz: 100, maxHz: 5_000, stepHz: 100,
 });
 
-function testScopeControls(modeValue = 2, spanValue = 3): ScopeControlsViewModel {
+// Default scope mode is CENTER (0): SCROLL-C (2) is a radio-owned window since #4565, so a test that wants
+// S-C/FIX/S-F must say so. (Until 2026-11-15 the default was 2 and silently stood in for CENTER.)
+function testScopeControls(modeValue = 0, spanValue = 3): ScopeControlsViewModel {
   const field = <T,>(value: T) => Object.freeze({
     reading: Object.freeze({ status: 'known' as const, value }),
     availability: Object.freeze({ structural: true, operational: true }),
@@ -1380,6 +1382,62 @@ describe('SpectrumPanel component', () => {
     expect(hatches[0]!.dataset.reason).toBe('view wider than coverage');
   });
 
+  it('passes no canvas hatch ranges when the native coverage is offset at equal width (MOR-4451)', async () => {
+    runtimeHarness.state.currentCaps = structuredClone(IC7300_CAPABILITIES);
+    authorityHarness.state.current = authority({ frequencyHz: 14_050_000 });
+    const target = mountPanel(); emitFrame(); await flushWaterfallPaint();
+    // The grant carries the truthful native coverage: 100 kHz at the panned
+    // position while the radio still delivers the old offset window.
+    const stream = scopeControllerHarness.stream('hardware');
+    stream.handleMessage({ type: 'granted', ...stream.subscription!,
+      view: { startHz: 14_010_000, endHz: 14_110_000 },
+      coverage: { startHz: 14_010_000, endHz: 14_110_000 }, fps: 20 });
+    flushSync();
+    authorityHarness.state.current = authority({ frequencyHz: 14_060_000 });
+    refreshSpectrumAuthority();
+    emitFrame({ startFreq: 14_000_000, endFreq: 14_100_000,
+      coverageStartHz: 14_000_000, coverageEndHz: 14_100_000, sequence: 2 });
+    await flushWaterfallPaint();
+    await vi.waitFor(() => {
+      const gates = JSON.parse(target.querySelector('.spectrum-panel')!
+        .getAttribute('data-passband-gates')!) as ScopePassbandDiagnostics;
+      expect([gates.viewStartHz, gates.viewEndHz]).toEqual([14_010_000, 14_110_000]);
+    }, { timeout: 5_000, interval: 25 });
+    // Offset but equal width: the DOM stays unhatched AND the canvas gets
+    // no ranges — the one decision reaches both consumers.
+    expect(target.querySelectorAll('.scope-hatch')).toHaveLength(0);
+    expect(spectrumRendererHarness.lastOptions.hatchRanges).toBeNull();
+  });
+
+  it('passes the DOM hatch ranges to the canvas when the native coverage is narrower (MOR-4451)', async () => {
+    runtimeHarness.state.currentCaps = structuredClone(IC7300_CAPABILITIES);
+    authorityHarness.state.current = authority({ frequencyHz: 14_050_000 });
+    const target = mountPanel(); emitFrame(); await flushWaterfallPaint();
+    const stream = scopeControllerHarness.stream('hardware');
+    stream.handleMessage({ type: 'granted', ...stream.subscription!,
+      view: { startHz: 14_010_000, endHz: 14_110_000 },
+      coverage: { startHz: 14_020_000, endHz: 14_100_000 }, fps: 20 });
+    flushSync();
+    authorityHarness.state.current = authority({ frequencyHz: 14_060_000 });
+    refreshSpectrumAuthority();
+    emitFrame({ startFreq: 14_000_000, endFreq: 14_100_000,
+      coverageStartHz: 14_000_000, coverageEndHz: 14_100_000, sequence: 2 });
+    await flushWaterfallPaint();
+    await vi.waitFor(() => {
+      const gates = JSON.parse(target.querySelector('.spectrum-panel')!
+        .getAttribute('data-passband-gates')!) as ScopePassbandDiagnostics;
+      expect([gates.viewStartHz, gates.viewEndHz]).toEqual([14_010_000, 14_110_000]);
+    }, { timeout: 5_000, interval: 25 });
+    const hatches = target.querySelectorAll<HTMLElement>('.scope-hatch');
+    expect(hatches).toHaveLength(1);
+    // The canvas ranges ARE the DOM ranges: same normalized fractions.
+    const ranges = spectrumRendererHarness.lastOptions.hatchRanges as { start: number; end: number }[];
+    expect(ranges).toHaveLength(1);
+    expect(ranges[0]!.start * 100).toBeCloseTo(parseFloat(hatches[0]!.style.left), 1);
+    expect((ranges[0]!.end - ranges[0]!.start) * 100)
+      .toBeCloseTo(parseFloat(hatches[0]!.style.width), 1);
+  });
+
   // ── MOR-4392: ZOOM is a client crop of the requested width ──
   it('crops below the narrowest span preset down to a floor of a few native bins (MOR-4392)', async () => {
     runtimeHarness.state.currentCaps = validateCapabilities({ ...IC7300_CAPABILITIES, ...spanCapabilities, model: 'IC-705' });
@@ -1549,6 +1607,130 @@ describe('SpectrumPanel component', () => {
     expect(read().view).toEqual({ follow: 'vfo', spanHz: 100_000 });
     expect(subscribes()).toHaveLength(sentBefore + 1);
     expect(subscribes().at(-1)).toMatchObject({ type: 'subscribe', view: { follow: 'vfo', spanHz: 100_000 } });
+  });
+
+  it.each(['readback-first', 'frames-first'] as const)('adopts a zoomed follow narrowing when the %s leg arrives first (MOR-4451)', async (order) => {
+    runtimeHarness.state.currentCaps = validateCapabilities({ ...IC7300_CAPABILITIES, ...spanCapabilities, model: 'IC-705' });
+    // Observed span index 6 names the 500 kHz published view width.
+    authorityHarness.state.current = authority({ frequencyHz: 14_050_000, scopeControls: testScopeControls(2, 6) });
+    const target = mountPanel(); emitFrame(); await flushWaterfallPaint();
+    const read = () => JSON.parse(target.querySelector('.spectrum-panel')!.getAttribute('data-scope-subscription')!);
+    // Two ZOOM− steps from the 100 kHz default follow width: 400 kHz.
+    target.querySelector<HTMLButtonElement>('[data-testid="scope-zoom-out"]')!.click(); flushSync();
+    target.querySelector<HTMLButtonElement>('[data-testid="scope-zoom-out"]')!.click(); flushSync();
+    expect(read().view).toEqual({ follow: 'vfo', spanHz: 400_000 });
+    // The grant answers the current 400 kHz follow request at full width.
+    const stream = scopeControllerHarness.stream('hardware');
+    stream.handleMessage({ type: 'granted', ...stream.subscription!,
+      view: { startHz: 13_850_000, endHz: 14_250_000 },
+      coverage: { startHz: 13_850_000, endHz: 14_250_000 }, fps: 20 });
+    flushSync();
+    emitFrame({ startFreq: 13_850_000, endFreq: 14_250_000,
+      coverageStartHz: 13_850_000, coverageEndHz: 14_250_000, sequence: 2 }); flushSync();
+    expect(read().view).toEqual({ follow: 'vfo', spanHz: 400_000 });
+    const subscribes = () => (harnessChannels.scope.sendRaw as unknown as Mock).mock.calls
+      .map(([message]) => message as { type?: unknown })
+      .filter((message) => message?.type === 'subscribe');
+    const sentBefore = subscribes().length;
+    const narrowReadback = () => {
+      authorityHarness.state.current = authority({ frequencyHz: 14_050_000, scopeControls: testScopeControls(2, 5) });
+      refreshSpectrumAuthority(); flushSync();
+    };
+    const clippedFrames = () => {
+      emitFrame({ startFreq: 13_950_000, endFreq: 14_150_000,
+        coverageStartHz: 13_950_000, coverageEndHz: 14_150_000, sequence: 3 }); flushSync();
+    };
+    if (order === 'readback-first') {
+      // The span-index readback narrows 500 kHz → 200 kHz while the
+      // frames still carry the full 400 kHz view: adoption fires at once.
+      narrowReadback();
+      expect(read().view).toEqual({ follow: 'vfo', spanHz: 200_000 });
+      // The clipped frames arriving next change nothing: the view is
+      // already the narrowed native, fully covered, never hatched.
+      clippedFrames();
+    } else {
+      // The clipped 200 kHz frames arrive BEFORE the span-index
+      // readback: the observed native is still the old 500 kHz, so
+      // nothing adopts yet — a narrowing that never happened must not
+      // clamp the follow width.
+      clippedFrames();
+      expect(read().view).toEqual({ follow: 'vfo', spanHz: 400_000 });
+      // The readback follows: the grant still answers the current
+      // 400 kHz follow request, so the observed 500 kHz → 200 kHz
+      // narrowing below the follow width adopts — with no requirement
+      // that the already-clipped frame view equal the follow width.
+      narrowReadback();
+      expect(read().view).toEqual({ follow: 'vfo', spanHz: 200_000 });
+      // One more narrowed frame after the adoption, so the paint below
+      // reflects the adopted state.
+      emitFrame({ startFreq: 13_950_000, endFreq: 14_150_000,
+        coverageStartHz: 13_950_000, coverageEndHz: 14_150_000, sequence: 4 }); flushSync();
+    }
+    await flushWaterfallPaint();
+    expect(subscribes()).toHaveLength(sentBefore + 1);
+    expect(subscribes().at(-1)).toMatchObject({ type: 'subscribe', view: { follow: 'vfo', spanHz: 200_000 } });
+    expect(target.querySelectorAll('.scope-hatch')).toHaveLength(0);
+    // The panel's hatch decision reaches the canvas with no ranges: the
+    // adopted view is fully covered, so nothing hatches anywhere.
+    expect(spectrumRendererHarness.lastOptions.hatchRanges).toBeNull();
+  });
+
+  it.each(['readback-first', 'frames-first'] as const)(
+    'adopts a zoomed follow narrowing without committing an intermediate hatch (MOR-4451)', async (order) => {
+    runtimeHarness.state.currentCaps = validateCapabilities({ ...IC7300_CAPABILITIES, ...spanCapabilities, model: 'IC-705' });
+    // Observed span index 6 names the 500 kHz published view width.
+    authorityHarness.state.current = authority({ frequencyHz: 14_050_000, scopeControls: testScopeControls(2, 6) });
+    const target = mountPanel(); emitFrame(); await flushWaterfallPaint();
+    const read = () => JSON.parse(target.querySelector('.spectrum-panel')!.getAttribute('data-scope-subscription')!);
+    // Two ZOOM− steps from the 100 kHz default follow width: 400 kHz.
+    target.querySelector<HTMLButtonElement>('[data-testid="scope-zoom-out"]')!.click(); flushSync();
+    target.querySelector<HTMLButtonElement>('[data-testid="scope-zoom-out"]')!.click(); flushSync();
+    expect(read().view).toEqual({ follow: 'vfo', spanHz: 400_000 });
+    // The grant answers the current 400 kHz follow request at full width.
+    const stream = scopeControllerHarness.stream('hardware');
+    stream.handleMessage({ type: 'granted', ...stream.subscription!,
+      view: { startHz: 13_850_000, endHz: 14_250_000 },
+      coverage: { startHz: 13_850_000, endHz: 14_250_000 }, fps: 20 });
+    flushSync();
+    const frame400 = () => emitFrame({ startFreq: 13_850_000, endFreq: 14_250_000,
+      coverageStartHz: 13_850_000, coverageEndHz: 14_250_000, sequence: 2 });
+    const frame200 = (sequence: number) => emitFrame({ startFreq: 13_950_000, endFreq: 14_150_000,
+      coverageStartHz: 13_950_000, coverageEndHz: 14_150_000, sequence });
+    frame400(); flushSync();
+    if (order === 'frames-first') {
+      // The clipped 200 kHz frames arrive BEFORE the span-index readback:
+      // the observed native is still the old 500 kHz, so nothing adopts yet.
+      frame200(3); flushSync();
+      expect(read().view).toEqual({ follow: 'vfo', spanHz: 400_000 });
+    }
+    // Watch the adoption flush itself: the hatch decision for the adopted
+    // view must use the adopted widths in the same tick, so no .scope-hatch
+    // node may be committed while the readback flush settles. A
+    // render-before-effect adoption commits the hatch first and removes it
+    // in the next commit — two DOM commits the rAF sampler can paint
+    // between (the e2e zoomed row caught ~3 such samples on the unfixed
+    // tree, flaky 1/2).
+    const hatchAdds: Element[] = [];
+    const observer = new MutationObserver((records) => {
+      for (const record of records) {
+        for (const node of record.addedNodes) {
+          if (!(node instanceof Element)) continue;
+          if (node.classList.contains('scope-hatch')) hatchAdds.push(node);
+          for (const el of node.querySelectorAll('.scope-hatch')) hatchAdds.push(el);
+        }
+      }
+    });
+    observer.observe(target, { childList: true, subtree: true });
+    authorityHarness.state.current = authority({ frequencyHz: 14_050_000, scopeControls: testScopeControls(2, 5) });
+    refreshSpectrumAuthority(); flushSync();
+    await flushWaterfallPaint();
+    observer.disconnect();
+    expect(read().view).toEqual({ follow: 'vfo', spanHz: 200_000 });
+    expect(hatchAdds).toEqual([]);
+    frame200(order === 'frames-first' ? 4 : 3); flushSync();
+    await flushWaterfallPaint();
+    expect(target.querySelectorAll('.scope-hatch')).toHaveLength(0);
+    expect(spectrumRendererHarness.lastOptions.hatchRanges).toBeNull();
   });
 
   it('hatches a genuinely narrower observed native even when the grant coverage is as wide as the view (MOR-4451)', async () => {
@@ -1868,6 +2050,9 @@ describe('SpectrumPanel component', () => {
   });
 
   it('shows the static CENTER reference from frequency evidence before any frame data', () => {
+    // True CENTER: in SCROLL-C the marker moves across the fixed window, so
+    // the stationary 50% reference needs scope mode 0, not the mode-2 default.
+    authorityHarness.state.current = authority({ scopeControls: testScopeControls(0) });
     const target = mountPanel();
     // No frame has arrived (span 0), but the radio's observed frequency is
     // evidence enough for the stationary CENTER reference in BOTH areas
@@ -3275,6 +3460,9 @@ describe('managed scope projection (MOR-2367)', () => {
     expect(mounted.target.querySelector('[data-testid="scope-out-of-range"]')).toBeNull();
   });
   it.each([null, 'current'] as const)('never acquires a raw hardware lease for managed %s', (kind) => {
+    // True CENTER (mode 0): the null case pins the stationary reference,
+    // which SCROLL-C (the fixture default) no longer shows.
+    authorityHarness.state.current = authority({ scopeControls: testScopeControls(0) });
     const { target } = managed(kind === null ? null : projection());
     expect(sharedLeaseAcquisitions).toHaveBeenCalledTimes(1);
     expect(streamSubscriptions.hardware).toHaveBeenCalledTimes(1);
@@ -3389,6 +3577,9 @@ describe('managed scope projection (MOR-2367)', () => {
     await vi.waitFor(() => expect(shifts().at(-1)).toBe(14_090_000 - 14_060_000));
   });
   it.each(['null', 'off'] as const)('clears pixels, coordinates and active captures on %s while shared health stays true', async (boundary) => {
+    // True CENTER (mode 0): the null case pins the stationary reference,
+    // which SCROLL-C (the fixture default) no longer shows.
+    authorityHarness.state.current = authority({ scopeControls: testScopeControls(0) });
     const { target, props, onScopeDemandChange } = managed(projection());
     const shared = harnessLeases.at(-1)!;
     expect(sharedLeaseAcquisitions).toHaveBeenCalledTimes(1);
@@ -3434,6 +3625,9 @@ describe('managed scope projection (MOR-2367)', () => {
     mockRuntime.releaseHardwareScope(shared);
   });
   it.each(['unknown', 'unsupported'] as const)('keeps the managed sample plane without raw RF fallback for %s passband', (state) => {
+    // True CENTER (mode 0): the stationary reference needs scope mode 0,
+    // not the SCROLL-C fixture default.
+    authorityHarness.state.current = authority({ scopeControls: testScopeControls(0) });
     const { target } = managed(projection(state));
     expect(target.querySelector('canvas')).not.toBeNull();
     expect(target.querySelector('.freq-axis')).not.toBeNull();
@@ -3446,6 +3640,9 @@ describe('managed scope projection (MOR-2367)', () => {
     expect(target.querySelector('.passband-resize-zone')).toBeNull();
   });
   it('keeps the static CENTER reference through a focus-like projection gap and restores passband on recovery', () => {
+    // True CENTER (mode 0): the stationary reference is CENTER-only since
+    // SCROLL-C keeps a fixed window with a moving marker.
+    authorityHarness.state.current = authority({ scopeControls: testScopeControls(0) });
     const { target, props } = managed(projection());
     expect(target.querySelectorAll('.tune-line')).toHaveLength(1);
     expect(target.querySelector('.spectrum-area .tune-line')).toBeNull();
@@ -3495,6 +3692,9 @@ describe('managed scope projection (MOR-2367)', () => {
     expectCenterReference(target, false);
   });
   it('keeps the static CENTER reference through a strict authority freshness gap in the same session', () => {
+    // True CENTER (mode 0) throughout: the stationary reference is
+    // CENTER-only since SCROLL-C keeps a fixed window with a moving marker.
+    authorityHarness.state.current = authority({ scopeControls: testScopeControls(0) });
     const { target, props } = managed(projection());
     expect(target.querySelector('.spectrum-area .tune-line')).toBeNull();
     expect(target.querySelector('.waterfall-content .tune-line')).not.toBeNull();
@@ -3505,12 +3705,14 @@ describe('managed scope projection (MOR-2367)', () => {
     authorityHarness.state.current = null; refreshSpectrumAuthority(); flushSync();
     expectCenterReference(target, true);
     // Refocus: frames and authority return; the normal path resumes.
-    authorityHarness.state.current = authority(); refreshSpectrumAuthority(); flushSync();
+    authorityHarness.state.current = authority({ scopeControls: testScopeControls(0) }); refreshSpectrumAuthority(); flushSync();
     props.set('projection', projection()); resumeFrames();
     expect(target.querySelector('.passband-overlay')).not.toBeNull();
     expect(target.querySelectorAll('.tune-line')).toHaveLength(1);
   });
   it('clears the remembered mode on a provider identity change', () => {
+    // True CENTER (mode 0): the remembered reference needs a center mode.
+    authorityHarness.state.current = authority({ scopeControls: testScopeControls(0) });
     const { target, props } = managed(projection());
     silenceFrames();
     authorityHarness.state.current = null;
@@ -3535,8 +3737,11 @@ describe('managed scope projection (MOR-2367)', () => {
     expectCenterReference(target, false);
   });
   it('retains whole stale geometry with no cue while strict fresh frequency still pans', () => {
+    // True CENTER (mode 0) throughout: CENTER-anchored geometry, and the
+    // SCROLL-C default would re-anchor proportionally instead.
+    authorityHarness.state.current = authority({ scopeControls: testScopeControls(0) });
     const { target, props } = managed(projection()); const original = target.querySelector('.passband-overlay')!.getAttribute('style');
-    authorityHarness.state.current = authority({ filterWidthHz: null, ifShiftHz: null }); refreshSpectrumAuthority();
+    authorityHarness.state.current = authority({ filterWidthHz: null, ifShiftHz: null, scopeControls: testScopeControls(0) }); refreshSpectrumAuthority();
     props.set('projection', projection('stale')); flushSync();
     expect(target.querySelector('.passband-overlay')!.getAttribute('style')).toBe(original);
     // MOR-2425/R41: the geometry is retained with NO cue at all.
@@ -3547,7 +3752,7 @@ describe('managed scope projection (MOR-2367)', () => {
     pointer(spectrum, 'pointerdown', 82, 100); pointer(spectrum, 'pointermove', 82, 120); pointer(spectrum, 'pointerup', 82, 120);
     expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledTimes(2);
     expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledWith(14_040_000, 0);
-    authorityHarness.state.current = authority({ frequencyHz: null }); refreshSpectrumAuthority(); flushSync();
+    authorityHarness.state.current = authority({ frequencyHz: null, scopeControls: testScopeControls(0) }); refreshSpectrumAuthority(); flushSync();
     pointer(spectrum, 'pointerdown', 83, 100); pointer(spectrum, 'pointermove', 83, 120); pointer(spectrum, 'pointerup', 83, 120);
     expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledTimes(2);
     props.set('projection', projection()); flushSync();
@@ -4434,7 +4639,9 @@ describe('drag-to-tune live preview (MOR-4256)', () => {
   it('retires the preview the moment the captured context changes and rejects the release', async () => {
     const restore = stubReducedMotion();
     try {
-      authorityHarness.state.current = authority({ frequencyHz: 14_050_000 });
+      // True CENTER (mode 0): the preview pans the panorama under a
+      // stationary center, which SCROLL-C (the fixture default) has no claim to.
+      authorityHarness.state.current = authority({ frequencyHz: 14_050_000, scopeControls: testScopeControls(0) });
       const target = mountPanel();
       emitFrame();
       const { spectrum } = prepareGeometry(target);
@@ -4444,7 +4651,7 @@ describe('drag-to-tune live preview (MOR-4256)', () => {
       await vi.waitFor(() => expect(spectrumRendererHarness.lastOptions?.panoramaShiftHz).toBe(-10_000));
       // A retune from another client lands mid-drag: the preview anchored
       // to the captured 14.050 MHz must not retarget the new observation.
-      authorityHarness.state.current = authority({ frequencyHz: 7_050_000 });
+      authorityHarness.state.current = authority({ frequencyHz: 7_050_000, scopeControls: testScopeControls(0) });
       refreshSpectrumAuthority();
       await flushPreviewPaint();
       await vi.waitFor(() => expect(spectrumRendererHarness.lastOptions?.centerHz).toBe(7_050_000));

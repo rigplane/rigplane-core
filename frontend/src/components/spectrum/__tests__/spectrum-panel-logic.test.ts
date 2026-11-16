@@ -7,10 +7,12 @@ import {
   formatFreqOffset,
   deriveFreqTicks,
   getDragInterval,
-  isFixedScope,
+  isRadioOwnedWindowScope,
   freqFromPixel,
   nativeWidthFromSpanChoice,
 } from '../spectrum-logic';
+import { isSpanApplicable } from '../spectrum-toolbar-logic';
+import fixture from '../../../../../contracts/scope-mode-families.json';
 
 describe('formatFreqOffset', () => {
   it('formats zero', () => expect(formatFreqOffset(0)).toBe('0'));
@@ -74,14 +76,35 @@ describe('getDragInterval — adaptive rate limiting', () => {
   });
 });
 
-describe('isFixedScope', () => {
-  it('CTR=0 and SCROLL-C=2 are not fixed', () => {
-    expect(isFixedScope(0)).toBe(false);
-    expect(isFixedScope(2)).toBe(false);
+describe('isRadioOwnedWindowScope', () => {
+  it('CTR=0 is client-centered', () => {
+    expect(isRadioOwnedWindowScope(0)).toBe(false);
   });
-  it('FIX=1 and SCROLL-F=3 are fixed', () => {
-    expect(isFixedScope(1)).toBe(true);
-    expect(isFixedScope(3)).toBe(true);
+  it('FIX=1, SCROLL-C=2 and SCROLL-F=3 are radio-owned', () => {
+    expect(isRadioOwnedWindowScope(1)).toBe(true);
+    expect(isRadioOwnedWindowScope(2)).toBe(true);
+    expect(isRadioOwnedWindowScope(3)).toBe(true);
+  });
+  it('agrees with the shared server fixture', () => {
+    const family: readonly number[] = fixture.radio_owned_window_scope_modes;
+    for (const mode of [0, 1, 2, 3]) {
+      expect(isRadioOwnedWindowScope(mode)).toBe(family.includes(mode));
+    }
+  });
+});
+
+describe('isSpanApplicable', () => {
+  it('CTR=0 and SCROLL-C=2 take the span preset, FIX=1 and SCROLL-F=3 the edge number', () => {
+    expect(isSpanApplicable(0)).toBe(true);
+    expect(isSpanApplicable(2)).toBe(true);
+    expect(isSpanApplicable(1)).toBe(false);
+    expect(isSpanApplicable(3)).toBe(false);
+  });
+  it('agrees with the shared server fixture', () => {
+    const family: readonly number[] = fixture.span_applicable_scope_modes;
+    for (const mode of [0, 1, 2, 3]) {
+      expect(isSpanApplicable(mode)).toBe(family.includes(mode));
+    }
   });
 });
 
