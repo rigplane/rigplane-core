@@ -41,11 +41,12 @@ function replay(ch: FakeDataChannel, doc: readonly { hex: string }[], id: number
 function b64(value: string): Uint8Array {
   return Uint8Array.from(atob(value), (c) => c.charCodeAt(0));
 }
-/** One attached `api` channel: the golden attach_api shape goes first. */
+/** One attached `api` channel: the golden attach_api shape goes first,
+ * opened as the real caller would — keyless acquire, its role named. */
 function openApiChannel() {
   const ch = new FakeDataChannel('api');
   const transport = new DataChannelTransport(ch);
-  transport.open('ignored://');
+  transport.open('ignored://', { protocols: [], role: 'primary' });
   ch.simulateOpen();
   expect(ch.textFrames().map((f) => JSON.parse(f as string))).toEqual([goldenDocs.attach_api.decoded]);
   return { ch, api: createApiChannelFetch(transport) };
