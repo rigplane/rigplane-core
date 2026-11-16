@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import json
 import logging
+import random
 import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -39,7 +40,14 @@ class ScopeWriteReceipt:
 
 
 class PanoramaSimulator(MockIcomRadio):
-    def __init__(self, model: str, evidence: Path, ack_delay: float = 0.0) -> None:
+    def __init__(
+        self,
+        model: str,
+        evidence: Path,
+        ack_delay: float = 0.0,
+        response_delay: float = 0.0,
+        response_jitter: float = 0.0,
+    ) -> None:
         self.profile = resolve_radio_profile(model=model)
         super().__init__(
             host="127.0.0.1",
@@ -54,12 +62,33 @@ class PanoramaSimulator(MockIcomRadio):
         # command lifecycle is still pending — the owner's IC-705-over-Wi-Fi
         # readback-lag shape.
         self.ack_delay = ack_delay
+        # Downlink-lag knob: seconds every simulator CI-V response (writes,
+        # transceive echoes, poll readbacks) is held before dispatch, so the
+        # client observes older own-target frequencies while newer tuning
+        # intent already exists. Unlike ack_delay (one frame late), this lags
+        # the whole downlink the frontend reads.
+        self.response_delay = response_delay
+        self._response_jitter = response_jitter
         if self.profile.expected_identity_ids:
             self.model_id = bytes.fromhex(self.profile.expected_identity_ids[0])
         self.span_index = self.profile.scope_span_presets_hz.index(100_000)
         self.scope_mode = 0
         self.fixed = (14_200_000, 14_300_000)
         self.set_frequency(14_250_000)
+
+    def _receive(self, data, addr, label, proto) -> None:
+        # Per-datagram uniform jitter on top of the fixed downlink lag. The
+        # base class reads self.response_delay synchronously at schedule
+        # time, so a temporary adjustment is race-free on the event loop.
+        if self._response_jitter <= 0:
+            super()._receive(data, addr, label, proto)
+            return
+        original = self.response_delay
+        try:
+            self.response_delay = original + random.uniform(0.0, self._response_jitter)
+            super()._receive(data, addr, label, proto)
+        finally:
+            self.response_delay = original
 
     def _handle_civ_data(self, data, addr, sender_id, proto):
         if self.ack_delay > 0:
@@ -213,10 +242,34 @@ async def run() -> None:
         "applies instantly and polls carry it while the command lifecycle "
         "is still pending (MOR-4393)",
     )
+    parser.add_argument(
+        "--response-delay",
+        type=float,
+        default=0.0,
+        help="seconds every simulator CI-V response is held before dispatch "
+        "(PanoramaSimulator.response_delay) — a downlink-lag knob: writes, "
+        "transceive echoes and poll readbacks all arrive late, so the "
+        "client observes older own-target frequencies while newer tuning "
+        "intent exists (MOR-4393)",
+    )
+    parser.add_argument(
+        "--response-jitter",
+        type=float,
+        default=0.0,
+        help="per-datagram uniform [0, jitter] seconds added to "
+        "--response-delay (PanoramaSimulator jitter) — nondeterministic; "
+        "the slow-link row keeps it at zero",
+    )
     args = parser.parse_args()
     logging.basicConfig(filename=args.evidence.with_suffix(".log"), level=logging.INFO)
     args.evidence.write_text("")
-    simulator = PanoramaSimulator(args.model, args.evidence, ack_delay=args.ack_delay)
+    simulator = PanoramaSimulator(
+        args.model,
+        args.evidence,
+        ack_delay=args.ack_delay,
+        response_delay=args.response_delay,
+        response_jitter=args.response_jitter,
+    )
     await simulator.start()
     radio = IcomRadio(
         host="127.0.0.1",
