@@ -441,11 +441,35 @@ def _ids(check) -> set[str]:
     return ids | {pre.entry for pre in check.preconditions}
 
 
-def test_t6_load_time_bytes_equal_the_single_build_and_judge_function() -> None:
+# Frames the loader must have judged, written out by hand from the wire protocol.
+LITERAL_FRAMES: dict[tuple[str, str, str, object], bytes] = {
+    ("ic705", "vfo_exchange", "write", ()): b"\x07\xb0",
+    ("ic705", "freq_selected", "read", None): b"\x25\x00",
+    ("ic705", "rf_power", "write", 128): b"\x14\x0a\x01\x28",
+    ("ft991a", "freq_a", "write", 7074000): b"FA007074000;",
+    ("ft991a", "freq_b", "write", 145000000): b"FB145000000;",
+    ("ft991a", "split", "read", None): b"FT;",
+}
+
+
+def test_t6_load_time_bytes_equal_the_single_build_and_judge_function(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Observe what the LOADER judged (not two identical direct calls)."""
+    from rigplane.profiles import probe_checks
     from rigplane.profiles.probe_checks import compile_table, judged_frame
     from rigplane.profiles.rig_loader import RigLoadError
 
+    observed: list[tuple[str, tuple[object, ...], bytes]] = []
+    real = probe_checks.judged_frame
+
+    def spy(table, *args):
+        frame = real(table, *args)
+        observed.append((table.protocol, args, frame))
+        return frame
+
     loaded: list[str] = []
+    literal_hits: set[tuple[str, str, str]] = set()
     for name in _shipped():
         protocol = _config(name).protocol_type
         texts = {"civ": (SYNTH_CIV,), "yaesu_cat": (SYNTH_SPLIT, SYNTH_PROC)}.get(
@@ -453,6 +477,8 @@ def test_t6_load_time_bytes_equal_the_single_build_and_judge_function() -> None:
         )
         for text in texts:
             facts_ = facts(name)
+            observed.clear()
+            monkeypatch.setattr(probe_checks, "judged_frame", spy)
             try:
                 (check,) = load_checks(facts_, text)
             except RigLoadError as error:
@@ -461,26 +487,32 @@ def test_t6_load_time_bytes_equal_the_single_build_and_judge_function() -> None:
                     error,
                 )
                 continue
+            finally:
+                monkeypatch.setattr(probe_checks, "judged_frame", real)
             loaded.append(f"{name}:{check.steps[0].entry}")
-            ids = tuple(sorted(_ids(check)))
-            load_time, engine = (
-                compile_table(facts_, ids),
-                compile_table(facts(name), ids),
-            )
+            assert observed, f"{name}: the loader judged nothing"
+            # a separately compiled table, judged by direct calls afterwards
+            engine = compile_table(facts(name), tuple(sorted(_ids(check))))
+            by_args = {
+                args[:4]: frame for _, args, frame in observed if args[1] != "restore"
+            }
             for step in check.steps:
                 if step.kind == "ask":
                     continue
-                args = (
-                    step.entry,
-                    step.kind,
-                    step.value,
-                    step.receiver,
-                    check.restored,
-                )
-                assert judged_frame(load_time, *args) == judged_frame(engine, *args)
+                key = (step.entry, step.kind, step.value, step.receiver)
+                assert key in by_args, (name, key, "the loader never judged this step")
+                direct = judged_frame(engine, *key, check.restored)
+                assert by_args[key] == direct, (name, key)
+            for (entry, kind, value, _), frame in by_args.items():
+                want = LITERAL_FRAMES.get((name, entry, kind, value))
+                if want is not None:
+                    literal_hits.add((name, entry, kind))
+                    assert frame == want, (name, entry, kind, frame, want)
     exchange = sorted(item for item in loaded if item.endswith("vfo_exchange"))
     assert exchange == ["ic705:vfo_exchange", "ic905:vfo_exchange"], loaded
     assert "ft991a:freq_a" in loaded and "ftx1:speech_processor" in loaded, loaded
+    # literal frames, specified independently of the code under test
+    assert {(n, e, k) for n, e, k, _ in LITERAL_FRAMES} <= literal_hits, literal_hits
 
 
 def test_t6_the_module_has_exactly_one_judging_path() -> None:
