@@ -319,10 +319,16 @@ def test_clamped_write_is_unverified_with_both_values_in_file(
         assert record.verified is False
         assert record.restored is True
         assert result.exit_code == 0
-        step = next(
+        written = next(
             row for row in record.steps if row.request_hex == b"FA007074000;".hex()
         )
-        assert step.reply_text == "FA014074000;"
+        assert written.outcome == "sent"
+        readback = next(
+            row
+            for row in record.steps
+            if row.kind == "read" and row.request_hex == b"FA;".hex()
+        )
+        assert readback.reply_text == "FA005000000;"
 
     asyncio.run(scenario())
 
