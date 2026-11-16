@@ -24,9 +24,11 @@ test('IC-705: SCROLL-C keeps the reported window across a span gesture and an in
     const frames: Array<{ view: number[]; pixels: boolean; receivedAt: number }> = [];
     const commands: WsCommand[] = [];
     const errors: string[] = [];
+    let controlFrames = 0;
     page.on('pageerror', error => errors.push(error.message));
     page.on('console', message => { if (message.type() === 'error') console.log('browser', message.text()); });
     page.on('websocket', socket => {
+      if (new URL(socket.url()).pathname === '/api/v1/ws') socket.on('framereceived', () => { controlFrames += 1; });
       if (new URL(socket.url()).pathname === '/api/v1/ws') socket.on('framesent', ({ payload }) => {
         if (typeof payload === 'string') {
           const command = JSON.parse(payload) as WsCommand;
@@ -56,6 +58,20 @@ test('IC-705: SCROLL-C keeps the reported window across a span gesture and an in
     // The app's first follow subscription writes CENTER + the covering
     // preset (±50k → the 100 kHz-wide window centred on the VFO).
     await expect.poll(() => frames.at(-1)?.view).toEqual([14_200_000, 14_300_000]);
+    // The client retires its passband tuple on the frame-mode boundary and
+    // proves it again only from geometry observed AFTER it. The regression
+    // needs that tuple (it supplies the confirmed frequency), so wait for
+    // the radio's filter-width and PBT observations to be newer than the
+    // ones taken at the switch (the server's own observation markers, the
+    // same ones the client qualifies against), then for a control-WS state
+    // broadcast received after that. No fixed sleep.
+    const geometryMarkers = async () => {
+      const { fieldStatus } = await (await page.request.get(`http://127.0.0.1:${port}/api/v1/state`)).json() as
+        { fieldStatus: Record<string, { lastObservedMonotonic: number }> };
+      return ['main.filterWidth', 'main.pbtInner', 'main.pbtOuter'].map(path => fieldStatus[path]?.lastObservedMonotonic ?? 0);
+    };
+    await expect.poll(async () => (await geometryMarkers()).every(marker => marker > 0)).toBe(true);
+    const atSwitch = await geometryMarkers();
     // SCROLL-C: the mode button in the More panel owns the mode write.
     await page.getByRole('button', { name: 'More scope controls' }).first().click();
     await page.getByTestId('scope-mode-2').first().click();
@@ -63,11 +79,14 @@ test('IC-705: SCROLL-C keeps the reported window across a span gesture and an in
     await expect.poll(async () => (await writes()).filter(receipt => receipt.sub === 0x14).at(-1)?.data[1]).toBe(2);
     // The radio keeps its own window in SCROLL-C (same edges here).
     await expect.poll(() => frames.at(-1)?.view).toEqual([14_200_000, 14_300_000]);
-    // The client retires its passband tuple on the frame-mode boundary and
-    // proves it again from geometry read afterwards (PBT polls on a 5 s
-    // cadence). The regression only exists with a defined confirmed
-    // frequency, so wait for the tuple to be re-proven before the gesture.
-    await page.waitForTimeout(7000);
+    await expect.poll(async () => (await geometryMarkers()).every((marker, index) => marker > atSwitch[index]),
+      { timeout: 30_000 }).toBe(true);
+    const framesAtReproof = controlFrames;
+    await expect.poll(() => controlFrames, { timeout: 10_000 }).toBeGreaterThan(framesAtReproof);
+    // The client qualifies the tuple against scope frames received after
+    // those observations: let fresh frames land on top of them.
+    const framesAtState = frames.length;
+    await expect.poll(() => frames.length, { timeout: 10_000 }).toBeGreaterThan(framesAtState + 5);
     const area = page.locator('.spectrum-area').first();
     const box = await area.boundingBox(); expect(box).not.toBeNull();
     // The span gesture: SPAN− selects the 50 kHz-wide view (the ±25k
