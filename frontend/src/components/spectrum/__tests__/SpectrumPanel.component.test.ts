@@ -1453,6 +1453,83 @@ describe('SpectrumPanel component', () => {
       .toBeCloseTo(parseFloat(hatches[0]!.style.width), 1);
   });
 
+  // #4564: the waterfall carries the same ONE decision the spectrum canvas
+  // gets — observed through the options the panel hands the renderer.
+  function lastWaterfallHatchRanges(update: Mock): { start: number; end: number }[] | null | undefined {
+    const calls = update.mock.calls;
+    expect(calls.length).toBeGreaterThan(0);
+    return (calls.at(-1)![0] as WaterfallOptions).hatchRanges as
+      { start: number; end: number }[] | null | undefined;
+  }
+
+  it('passes no waterfall hatch ranges when the native coverage is offset at equal width (MOR-4451 #4564)', async () => {
+    runtimeHarness.state.currentCaps = structuredClone(IC7300_CAPABILITIES);
+    authorityHarness.state.current = authority({ frequencyHz: 14_050_000 });
+    const target = mountPanel(); emitFrame(); await flushWaterfallPaint();
+    const stream = scopeControllerHarness.stream('hardware');
+    stream.handleMessage({ type: 'granted', ...stream.subscription!,
+      view: { startHz: 14_010_000, endHz: 14_110_000 },
+      coverage: { startHz: 14_010_000, endHz: 14_110_000 }, fps: 20 });
+    flushSync();
+    authorityHarness.state.current = authority({ frequencyHz: 14_060_000 });
+    refreshSpectrumAuthority();
+    emitFrame({ startFreq: 14_000_000, endFreq: 14_100_000,
+      coverageStartHz: 14_000_000, coverageEndHz: 14_100_000, sequence: 2 });
+    const update = vi.spyOn(WaterfallRenderer.prototype, 'updateOptions');
+    try {
+      emitFrame({ startFreq: 14_000_000, endFreq: 14_100_000,
+        coverageStartHz: 14_000_000, coverageEndHz: 14_100_000, sequence: 3 });
+      await flushWaterfallPaint();
+      await vi.waitFor(() => {
+        const gates = JSON.parse(target.querySelector('.spectrum-panel')!
+          .getAttribute('data-passband-gates')!) as ScopePassbandDiagnostics;
+        expect([gates.viewStartHz, gates.viewEndHz]).toEqual([14_010_000, 14_110_000]);
+      }, { timeout: 5_000, interval: 25 });
+      // Offset but equal width: the DOM stays unhatched AND both canvases get
+      // no ranges — the one decision reaches every consumer.
+      expect(target.querySelectorAll('.scope-hatch')).toHaveLength(0);
+      expect(spectrumRendererHarness.lastOptions.hatchRanges).toBeNull();
+      expect(lastWaterfallHatchRanges(update)).toBeNull();
+    } finally { update.mockRestore(); }
+  });
+
+  it('passes the DOM hatch ranges to the waterfall when the native coverage is narrower (MOR-4451 #4564)', async () => {
+    runtimeHarness.state.currentCaps = structuredClone(IC7300_CAPABILITIES);
+    authorityHarness.state.current = authority({ frequencyHz: 14_050_000 });
+    const target = mountPanel(); emitFrame(); await flushWaterfallPaint();
+    const stream = scopeControllerHarness.stream('hardware');
+    stream.handleMessage({ type: 'granted', ...stream.subscription!,
+      view: { startHz: 14_010_000, endHz: 14_110_000 },
+      coverage: { startHz: 14_020_000, endHz: 14_100_000 }, fps: 20 });
+    flushSync();
+    authorityHarness.state.current = authority({ frequencyHz: 14_060_000 });
+    refreshSpectrumAuthority();
+    emitFrame({ startFreq: 14_000_000, endFreq: 14_100_000,
+      coverageStartHz: 14_000_000, coverageEndHz: 14_100_000, sequence: 2 });
+    const update = vi.spyOn(WaterfallRenderer.prototype, 'updateOptions');
+    try {
+      emitFrame({ startFreq: 14_000_000, endFreq: 14_100_000,
+        coverageStartHz: 14_000_000, coverageEndHz: 14_100_000, sequence: 3 });
+      await flushWaterfallPaint();
+      await vi.waitFor(() => {
+        const gates = JSON.parse(target.querySelector('.spectrum-panel')!
+          .getAttribute('data-passband-gates')!) as ScopePassbandDiagnostics;
+        expect([gates.viewStartHz, gates.viewEndHz]).toEqual([14_010_000, 14_110_000]);
+      }, { timeout: 5_000, interval: 25 });
+      const hatches = target.querySelectorAll<HTMLElement>('.scope-hatch');
+      expect(hatches).toHaveLength(1);
+      // The waterfall ranges ARE the spectrum ranges ARE the DOM ranges: the
+      // same normalized fractions everywhere.
+      const spectrumRanges = spectrumRendererHarness.lastOptions.hatchRanges as { start: number; end: number }[];
+      const waterfallRanges = lastWaterfallHatchRanges(update);
+      expect(waterfallRanges).toEqual(spectrumRanges);
+      expect(waterfallRanges).toHaveLength(1);
+      expect(waterfallRanges![0]!.start * 100).toBeCloseTo(parseFloat(hatches[0]!.style.left), 1);
+      expect((waterfallRanges![0]!.end - waterfallRanges![0]!.start) * 100)
+        .toBeCloseTo(parseFloat(hatches[0]!.style.width), 1);
+    } finally { update.mockRestore(); }
+  });
+
   // ── MOR-4392: ZOOM is a client crop of the requested width ──
   it('crops below the narrowest span preset down to a floor of a few native bins (MOR-4392)', async () => {
     runtimeHarness.state.currentCaps = validateCapabilities({ ...IC7300_CAPABILITIES, ...spanCapabilities, model: 'IC-705' });
