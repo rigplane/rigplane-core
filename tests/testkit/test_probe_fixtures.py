@@ -344,12 +344,22 @@ def _identity_model_id(probe: ProbeFile) -> bytes:
     raise AssertionError("sample has no 19 00 identity row")
 
 
+#: Reads the 2026-11-14 capture predates: declared-absent borrows
+#: (``1e00``/``1e01``) the current plan asks and the capture never sent.
+#: The replay answers them with the fake's NAK fallback (unrecorded),
+#: so they compare as ``refused`` and are absent from the replay's
+#: skips. A future plan change fails here on purpose: extend this set
+#: consciously, never loosen the comparison.
+EXTRA_SINCE_CAPTURE = ("get_tx_band_count", "get_tx_band_edge")
+
+
 def test_civ_round_trip_through_real_cli(tmp_path, monkeypatch) -> None:
     """The customer capture replays as a regression test (CI-V).
 
     The converted sample mounts as recorded answers on a G7250 fake;
-    the real ``rigplane probe`` CLI runs against it; the new file asks
-    the same commands with the same classes and skips.
+    the real ``rigplane probe`` CLI runs against it; every command the
+    sample sent comes back with the same class, and every skip the
+    current plan still withholds comes back with the same reason.
     """
     import socket
 
@@ -395,14 +405,22 @@ def test_civ_round_trip_through_real_cli(tmp_path, monkeypatch) -> None:
         main()
     assert exc_info.value.code == 0
     replayed = ProbeFile.from_json(out.read_text(encoding="utf-8"))
-    assert [row.name for row in replayed.commands] == [
-        row.name for row in probe.commands
-    ]
-    assert [row.outcome for row in replayed.commands] == [
-        row.outcome for row in probe.commands
-    ]
+    replayed_names = [row.name for row in replayed.commands]
+    sample_names = [row.name for row in probe.commands]
+    assert [name for name in replayed_names if name not in EXTRA_SINCE_CAPTURE] == (
+        sample_names
+    )
+    assert {name for name in replayed_names if name not in sample_names} == set(
+        EXTRA_SINCE_CAPTURE
+    )
+    replayed_by_name = {row.name: row.outcome for row in replayed.commands}
+    for row in probe.commands:
+        assert replayed_by_name[row.name] == row.outcome, row.name
+    assert {replayed_by_name[name] for name in EXTRA_SINCE_CAPTURE} == {"refused"}
     assert [(row.name, row.reason) for row in replayed.skipped] == [
-        (row.name, row.reason) for row in probe.skipped
+        (row.name, row.reason)
+        for row in probe.skipped
+        if row.name not in EXTRA_SINCE_CAPTURE
     ]
     assert replayed.termination.status == "completed"
 

@@ -31,9 +31,12 @@ backend runs — the ``ID;`` identity gate, then the ``IF;`` state seed
 (``backends/yaesu_cat/radio.py: YaesuCatRadio.connect``) — is answered
 from the profile's ``[identity].expected_ids``.
 
-State: frequency (``FA``), mode (``MD0``), PTT (``TX``), power (``PS``),
-auto-information mode (``AI``). Reads answer; writes apply silently, the
-way the transport's post-write drain expects a Yaesu set to behave.
+State: frequency (``FA``), mode (``MD0``), PTT (``TX``),
+auto-information mode (``AI``) — plus power on/off (``PS``) and the
+``IF;`` snapshot answer only when the profile declares them (a profile
+without them leaves those lines to the recording or ``?;``). Reads
+answer; writes apply silently, the way the transport's post-write drain
+expects a Yaesu set to behave.
 Unknown commands and out-of-domain SET values answer ``?;`` — the
 rejection ``YaesuCatTransport.query``/``write`` raise on.
 
@@ -90,10 +93,17 @@ _REQUIRED_COMMANDS = (
     "set_mode",
     "get_ptt",
     "set_ptt",
-    "get_powerstat",
-    "set_powerstat",
     "get_auto_info",
     "set_auto_info",
+)
+
+#: Optional state modeling: power on/off and the IF snapshot answer, used
+#: only when the profile declares these commands. A profile without them
+#: (the FT-991A names its RF power level PC and has no IF read) skips
+#: that modeling: those lines fall through to the recording, else ``?;``.
+_OPTIONAL_COMMANDS = (
+    "get_powerstat",
+    "set_powerstat",
     "get_if_status",
 )
 
@@ -157,6 +167,12 @@ class FakeCatRadio:
         self._power_on = True
         self._auto_info = False
 
+        self._optional: frozenset[str] = frozenset(
+            name
+            for name in _OPTIONAL_COMMANDS
+            if isinstance(self._config.commands.get(name), CatCommandSpec)
+        )
+
         self._write_parsers: dict[str, CatCommandParser] = {}
         for name in _REQUIRED_COMMANDS:
             if not name.startswith("set_"):
@@ -165,6 +181,12 @@ class FakeCatRadio:
             if write is None:
                 raise ValueError(f"profile command {name!r} has no write template")
             self._write_parsers[name] = CatCommandParser(write)
+        for name in self._optional:
+            if not name.startswith("set_"):
+                continue
+            write = self._spec(name).write
+            if write is not None:
+                self._write_parsers[name] = CatCommandParser(write)
 
         # Fault surface (all off by default).
         self._rejected_verbs: set[str] = set()
@@ -370,8 +392,11 @@ class FakeCatRadio:
 
     def _match_write(self, name: str, body: str) -> dict[str, Any] | None:
         """Decode *body* against the profile's write template, if it fits."""
+        parser = self._write_parsers.get(name)
+        if parser is None:
+            return None
         try:
-            return self._write_parsers[name].parse(body + ";")
+            return parser.parse(body + ";")
         except ValueError:
             return None
 
@@ -406,7 +431,9 @@ class FakeCatRadio:
             self._ptt = str(fields["state"]) == "1"
             self._push_auto_info("TX")
             return None
-        if body == self._read_cmd("get_powerstat"):
+        if "get_powerstat" in self._optional and body == self._read_cmd(
+            "get_powerstat"
+        ):
             return format_command(
                 self._parse_tpl("get_powerstat"), state="1" if self._power_on else "0"
             )
@@ -425,7 +452,9 @@ class FakeCatRadio:
                 return _REJECT
             self._auto_info = str(fields["state"]) == "1"
             return None
-        if body == self._read_cmd("get_if_status"):
+        if "get_if_status" in self._optional and body == self._read_cmd(
+            "get_if_status"
+        ):
             return format_command(
                 self._parse_tpl("get_if_status"),
                 chan=_IF_CHAN,
