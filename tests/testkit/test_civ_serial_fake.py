@@ -399,3 +399,53 @@ async def test_without_a_table_the_fake_is_unchanged() -> None:
     echo, reply = await _roundtrip(fake, request)
     assert echo == request
     assert parse_civ_frame(reply).data == b"\x00\x40\x07\x14\x00"
+
+
+# Recorded silence: a request whose reply row is absent was recorded as
+# "the radio did not answer" -- the fake stays silent for it, and keeps the
+# NAK fallback for a request the recording never saw.
+_SILENT_TABLE_ROWS = [
+    {
+        "window": "w",
+        "transport": "usb",
+        "t": 0.1,
+        "dir": "c2r",
+        "frame": "fefe98e07ffd",  # a recorded request nothing answered
+    },
+    {
+        "window": "w",
+        "transport": "usb",
+        "t": 0.2,
+        "dir": "c2r",
+        "frame": "fefe98e0140afd",
+    },
+    {
+        "window": "w",
+        "transport": "usb",
+        "t": 0.201,
+        "dir": "r2c",
+        "frame": "fefee098140a0013fd",
+    },
+]
+
+
+@pytest.mark.realtime(
+    reason="asserts that nothing arrives: a negative wait only the real clock bounds"
+)
+async def test_recorded_silence_is_not_answered() -> None:
+    table = RecordedAnswerTable.from_civ_pairs(_SILENT_TABLE_ROWS, "usb")
+    fake = CivSerialFake(recorded_answers=table)
+    reader, writer = await fake.open_serial_connection()
+    writer.write(_to_fake(fake, "7f"))
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(reader.read(512), timeout=0.2)
+
+
+@pytest.mark.realtime(reason="serial reads are bounded by the real clock")
+async def test_unrecorded_request_is_still_naked_beside_recorded_silence() -> None:
+    table = RecordedAnswerTable.from_civ_pairs(_SILENT_TABLE_ROWS, "usb")
+    fake = CivSerialFake(recorded_answers=table)
+    (reply,) = await _roundtrip(fake, _to_fake(fake, "7e"), replies=1)
+    assert parse_civ_frame(reply).command == 0xFA
+    (recorded,) = await _roundtrip(fake, _to_fake(fake, "140a"), replies=1)
+    assert parse_civ_frame(recorded).data == b"\x00\x13"

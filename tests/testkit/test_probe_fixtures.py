@@ -286,7 +286,7 @@ def _request_frame(body_hex: str) -> bytes:
 
 
 def test_sample_converts_to_answer_table() -> None:
-    from rigplane_testkit.icom.replay import RecordedAnswerTable
+    from rigplane_testkit.icom.replay import RecordedAnswerTable, RecordedCivAnswer
 
     probe = _sample()
     rows = probe_to_civ_pairs(probe, radio_addr=CIV_ADDR, window="probe")
@@ -304,6 +304,9 @@ def test_sample_converts_to_answer_table() -> None:
             assert answer is not None and answer[4] == 0xFA, row.name
         elif row.outcome == "silent":
             assert answer is None, row.name
+            assert table.lookup(_request_frame(row.request_hex)) == (
+                RecordedCivAnswer("silence", None)
+            ), row.name
         else:  # pragma: no cover - the sample holds only these classes
             raise AssertionError(f"unexpected outcome {row.outcome!r}")
 
@@ -328,13 +331,13 @@ def _identity_model_id(probe: ProbeFile) -> bytes:
 EXTRA_SINCE_CAPTURE = ("get_tx_band_count", "get_tx_band_edge")
 
 
-def test_civ_round_trip_through_real_cli(tmp_path, monkeypatch) -> None:
-    """The customer capture replays as a regression test (CI-V).
+def _run_civ_replay(
+    tmp_path, monkeypatch, probe: ProbeFile, rows: list[CivPairRow]
+) -> ProbeFile:
+    """Run the real ``rigplane probe`` CLI against a G7250 fake answering *rows*.
 
-    The converted sample mounts as recorded answers on a G7250 fake;
-    the real ``rigplane probe`` CLI runs against it; every command the
-    sample sent comes back with the same class, and every skip the
-    current plan still withholds comes back with the same reason.
+    The rows mount as recorded answers and nothing else is scripted on the
+    fake: every answer, refusal and silence comes from the rows alone.
     """
     import socket
 
@@ -344,22 +347,12 @@ def test_civ_round_trip_through_real_cli(tmp_path, monkeypatch) -> None:
     from rigplane_testkit.icom.replay import RecordedAnswerTable
     from rigplane_testkit.serial import CivSerialFake
 
-    probe = _sample()
-    table = RecordedAnswerTable.from_civ_pairs(
-        probe_to_civ_pairs(probe, radio_addr=CIV_ADDR, window="probe"), "usb"
-    )
     fake = CivSerialFake(
         model="G7250",
         civ_addr=CIV_ADDR,
         model_id=_identity_model_id(probe),
-        recorded_answers=table,
+        recorded_answers=RecordedAnswerTable.from_civ_pairs(rows, "usb"),
     )
-    # civ_pairs rows cannot encode silence (a missing reply row is also
-    # "never recorded"), so the sample's silence facts ride along as the
-    # fake's scripted one-shot answer loss, derived from the sample itself.
-    for row in probe.commands:
-        if row.outcome == "silent":
-            fake.lose_next_answer(bytes.fromhex(row.request_hex)[0])
 
     async def fake_open(device: str, baudrate: int | None = None, **kwargs):
         return await real_open(device, baudrate=baudrate, opener=fake.opener)
@@ -389,7 +382,25 @@ def test_civ_round_trip_through_real_cli(tmp_path, monkeypatch) -> None:
     with pytest.raises(SystemExit) as exc_info:
         main()
     assert exc_info.value.code == 0
-    replayed = ProbeFile.from_json(out.read_text(encoding="utf-8"))
+    return ProbeFile.from_json(out.read_text(encoding="utf-8"))
+
+
+def test_civ_round_trip_through_real_cli(tmp_path, monkeypatch) -> None:
+    """The customer capture replays as a regression test (CI-V).
+
+    The converted sample mounts as recorded answers on a G7250 fake;
+    the real ``rigplane probe`` CLI runs against it; every command the
+    sample sent comes back with the same class (silence included, from
+    the converted rows alone), and every skip the current plan still
+    withholds comes back with the same reason.
+    """
+    probe = _sample()
+    replayed = _run_civ_replay(
+        tmp_path,
+        monkeypatch,
+        probe,
+        probe_to_civ_pairs(probe, radio_addr=CIV_ADDR, window="probe"),
+    )
     replayed_names = [row.name for row in replayed.commands]
     sample_names = [row.name for row in probe.commands]
     assert [name for name in replayed_names if name not in EXTRA_SINCE_CAPTURE] == (
@@ -401,6 +412,7 @@ def test_civ_round_trip_through_real_cli(tmp_path, monkeypatch) -> None:
     replayed_by_name = {row.name: row.outcome for row in replayed.commands}
     for row in probe.commands:
         assert replayed_by_name[row.name] == row.outcome, row.name
+    assert sum(row.outcome == "silent" for row in probe.commands) == 2
     assert {replayed_by_name[name] for name in EXTRA_SINCE_CAPTURE} == {"refused"}
     assert [(row.name, row.reason) for row in replayed.skipped] == [
         (row.name, row.reason)
@@ -408,6 +420,23 @@ def test_civ_round_trip_through_real_cli(tmp_path, monkeypatch) -> None:
         if row.name not in EXTRA_SINCE_CAPTURE
     ]
     assert replayed.termination.status == "completed"
+
+
+def test_civ_round_trip_fails_when_the_silent_requests_are_dropped(
+    tmp_path, monkeypatch
+) -> None:
+    """The round trip is sensitive to the silence rows: without the two
+    request-only rows the sample's silent reads come back as refusals."""
+    probe = _sample()
+    rows = probe_to_civ_pairs(probe, radio_addr=CIV_ADDR, window="probe")
+    silent = [row for row in probe.commands if row.outcome == "silent"]
+    silent_frames = {_request_frame(row.request_hex) for row in silent}
+    assert len(silent_frames) == 2
+    kept = [row for row in rows if row.frame not in silent_frames]
+    assert len(kept) == len(rows) - 2
+    replayed = _run_civ_replay(tmp_path, monkeypatch, probe, kept)
+    replayed_by_name = {row.name: row.outcome for row in replayed.commands}
+    assert {replayed_by_name[row.name] for row in silent} == {"refused"}
 
 
 async def _run_cat_probe(monkeypatch, port: str, out, label: str) -> ProbeFile:
