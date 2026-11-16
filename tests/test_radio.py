@@ -41,7 +41,12 @@ from rigplane.exceptions import (
     TimeoutError,
 )
 from rigplane.core import tx_safety as tx
-from rigplane.core.civ import CivEvent, CivEventType, CivRequestTracker
+from rigplane.core.civ import (
+    CivEvent,
+    CivEventType,
+    CivRequestTracker,
+    read_identity_from_frame,
+)
 from rigplane.radio import IcomRadio
 from rigplane.types import (
     AgcMode,
@@ -1346,7 +1351,11 @@ class TestPtt:
             raise asyncio.CancelledError("observer")
 
         radio._bind_authoritative_ptt_observer(provider_generation=10, observer=broken)
-        mock_transport.queue_response(_ptt_response(True))
+        # MOR-4384: the answer rides on the read's own send (an answer before
+        # its request is on the wire claims nothing).
+        mock_transport.queue_response_on_send(
+            mock_transport.send_seq + 1, _ptt_response(True)
+        )
         with pytest.raises(CommandError, match="authoritative"):
             await radio._request_authoritative_ptt_read(
                 provider_generation=10, observer=broken
@@ -1440,6 +1449,12 @@ class TestConnectedProperty:
         assert not radio.connected
 
 
+#: MOR-4384 late-refusal coverage runs on an Icom LAN profile and a USB one.
+_MOR4384_MODELS = pytest.mark.parametrize(
+    "model", ["IC-705", "IC-7300"], ids=["ic705-lan", "ic7300-usb"]
+)
+
+
 class TestAckSinkRobustness:
     """Regression tests for fire-and-forget ACK sink behavior."""
 
@@ -1514,8 +1529,8 @@ class TestAckSinkRobustness:
         """
         runtime = radio._civ_runtime
         radio._civ_min_interval = 0.0
-        # Only the read's answer, not the grace, may release the write.
-        radio._civ_ack_sink_grace = 10.0
+        # Only the read's answer, not the drain's window timeout, may
+        # release the write.
         read = bytes.fromhex("FEFE98E029001656FD")
         refusal = parse_civ_frame(bytes.fromhex("FEFEE098FAFD"))
         write = build_civ_frame(
@@ -1553,13 +1568,12 @@ class TestAckSinkRobustness:
 
         The background read is the ``cmd29-sub`` case of the same exchange,
         which the radio answers with data; the ``FA`` after it is the
-        write's own.  With the grace this long, a write that kept waiting on
-        the read once the read was answered fails here instead of only
-        running late.
+        write's own.  With the read's answer retired before the write
+        starts, a write that kept waiting on the read fails here instead
+        of only running late.
         """
         runtime = radio._civ_runtime
         radio._civ_min_interval = 0.0
-        radio._civ_ack_sink_grace = 10.0
         read = bytes.fromhex("FEFE98E029011656FD")
         answer = parse_civ_frame(bytes.fromhex("FEFEE0982901165600FD"))
         refusal = parse_civ_frame(bytes.fromhex("FEFEE098FAFD"))
@@ -1588,21 +1602,129 @@ class TestAckSinkRobustness:
 
         assert result is refusal
 
+    @_MOR4384_MODELS
+    @pytest.mark.realtime(
+        reason="the late refusal must land after the retired fixed 120 ms "
+        "drain grace; a real delay stands in for the wire latency that "
+        "carried the answer late"
+    )
     @pytest.mark.asyncio
-    async def test_fire_and_forget_missing_ack_does_not_poison_next_ack(
-        self, radio: IcomRadio, mock_transport: MockTransport
+    async def test_late_read_refusal_does_not_reject_the_next_write(
+        self, mock_transport: MockTransport, model: str
     ) -> None:
-        # Fire-and-forget scope enable (ACK intentionally missing)
-        ff = build_civ_frame(
-            IC_7610_ADDR, CONTROLLER_ADDR, 0x27, sub=0x10, data=b"\x01"
-        )
-        await radio._execute_civ_raw(ff, wait_response=False)
+        """MOR-4384: a background read's late refusal is not the write's.
 
-        # The set waits for its own ACK, delivered when its frame leaves
-        # (send 2): the missing answer above must not make this waiter
-        # claim anything stale — the drain drops the leftover sink first.
-        mock_transport.queue_response_on_send(2, _ack_response())
-        await radio.set_freq(7_074_000)
+        A refusal is a bare ``FA`` that names no command. The drain before
+        a blocking command used to drop every open fire-and-forget sink
+        after a fixed 120 ms grace, so on a link slower than that the
+        read's refusal arrived once the write's own waiter was registered
+        and settled it: ``set_freq`` failed with "Radio rejected MAIN
+        set_frequency(...)" although the radio tuned (its own ``FB``
+        follows here). The read's sink must stay open for its own answer
+        window — send time + ``_civ_get_timeout`` — so the refusal retires
+        the read it answers and the write settles on its own ``FB``.
+        """
+        radio = IcomRadio("192.168.1.100", model=model)
+        radio._ctrl_transport = mock_transport
+        radio._civ_transport = mock_transport
+        fake_connected(radio)
+        observe_selected_receiver(radio, 0)
+        runtime = radio._civ_runtime
+        radio._civ_min_interval = 0.0
+        radio._civ_get_timeout = 10.0
+        addr = radio._radio_addr
+        # A background read the radio refuses (tuner status): the FA it is
+        # answered with names no command.
+        refused_read = build_civ_frame(addr, CONTROLLER_ADDR, 0x1C, sub=0x01)
+        late_refusal = parse_civ_frame(build_civ_frame(CONTROLLER_ADDR, addr, 0xFA))
+        write_ack = parse_civ_frame(build_civ_frame(CONTROLLER_ADDR, addr, 0xFB))
+        with patch.object(runtime, "start_pump"):
+            assert (
+                await runtime._execute_civ_raw(refused_read, wait_response=False)
+                is None
+            )
+            task = asyncio.create_task(radio.set_freq(7_218_000))
+            try:
+                # Later than the retired fixed grace (120 ms): on the old
+                # code the read's sink was already dropped when this FA
+                # landed, and it settled the write's fresh waiter.
+                await asyncio.sleep(0.2)
+                await runtime._route_civ_frame(
+                    late_refusal, generation=radio._civ_epoch
+                )
+                await await_until(
+                    lambda: len(mock_transport.sent_packets) >= 2,
+                    description="the blocking write to go out",
+                )
+                await runtime._route_civ_frame(write_ack, generation=radio._civ_epoch)
+                await asyncio.wait_for(task, timeout=3.0)
+            finally:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+            # The refusal went to the read it answered.
+            assert radio._civ_request_tracker.take_refused_reads() == (
+                read_identity_from_frame(parse_civ_frame(refused_read)),
+            )
+
+    @_MOR4384_MODELS
+    @pytest.mark.realtime(
+        reason="the late refusal must land after the retired fixed 120 ms "
+        "drain grace; a real delay stands in for the wire latency that "
+        "carried the answer late"
+    )
+    @pytest.mark.asyncio
+    async def test_late_read_refusal_does_not_refuse_the_next_read(
+        self, mock_transport: MockTransport, model: str
+    ) -> None:
+        """MOR-4384: a background read's late refusal is not the next read's.
+
+        Same wire shape as the write case above, but the blocking command
+        is a read: on the old code the dropped read's late ``FA`` settled
+        the ``get_mode`` read's NAK-only waiter and the read failed with
+        "CI-V command 0x04 refused (NAK)" instead of its own answer.
+        """
+        radio = IcomRadio("192.168.1.100", model=model)
+        radio._ctrl_transport = mock_transport
+        radio._civ_transport = mock_transport
+        fake_connected(radio)
+        observe_selected_receiver(radio, 0)
+        runtime = radio._civ_runtime
+        radio._civ_min_interval = 0.0
+        radio._civ_get_timeout = 10.0
+        addr = radio._radio_addr
+        refused_read = build_civ_frame(addr, CONTROLLER_ADDR, 0x1C, sub=0x01)
+        late_refusal = parse_civ_frame(build_civ_frame(CONTROLLER_ADDR, addr, 0xFA))
+        mode_answer = parse_civ_frame(
+            build_civ_frame(CONTROLLER_ADDR, addr, 0x04, data=bytes([Mode.USB, 0x01]))
+        )
+        with patch.object(runtime, "start_pump"):
+            assert (
+                await runtime._execute_civ_raw(refused_read, wait_response=False)
+                is None
+            )
+            task = asyncio.create_task(radio.get_mode_info())
+            try:
+                await asyncio.sleep(0.2)
+                await runtime._route_civ_frame(
+                    late_refusal, generation=radio._civ_epoch
+                )
+                # Let a waiter the refusal wrongly settled fail before the
+                # real answer can also resolve it (``asyncio.wait`` checks
+                # the response future first).
+                await asyncio.sleep(0.05)
+                await await_until(
+                    lambda: len(mock_transport.sent_packets) >= 2,
+                    description="the blocking read to go out",
+                )
+                await runtime._route_civ_frame(mode_answer, generation=radio._civ_epoch)
+                result = await asyncio.wait_for(task, timeout=3.0)
+            finally:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+        assert result == (Mode.USB, 1)
+        assert radio._civ_request_tracker.take_refused_reads() == (
+            read_identity_from_frame(parse_civ_frame(refused_read)),
+        )
 
     @pytest.mark.asyncio
     async def test_fire_and_forget_send_failure_rolls_back_sink(self) -> None:
@@ -1668,8 +1790,8 @@ class TestCapturedExecuteLifetime:
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
         "pause,wait_response",
-        [("pacing", False), ("pacing", True), ("ack-grace", True)],
-        ids=["pacing-ff", "pacing-blocking", "ack-grace"],
+        [("pacing", False), ("pacing", True)],
+        ids=["pacing-ff", "pacing-blocking"],
     )
     @pytest.mark.parametrize("change", ["transport", "epoch", "transport-and-tracker"])
     async def test_stale_execute_refuses_before_formatter_and_preserves_tracker(
@@ -1689,9 +1811,6 @@ class TestCapturedExecuteLifetime:
         radio._last_civ_send_monotonic = now
         radio._civ_last_waiter_gc_monotonic = now
         radio._civ_min_interval = 10.0 if pause == "pacing" else 0.0
-        radio._civ_ack_sink_grace = 10.0
-        if pause == "ack-grace":
-            tracker.register_ack(wait=False)
         frame = build_civ_frame(
             IC_7610_ADDR, CONTROLLER_ADDR, _CMD_PTT, sub=_SUB_PTT, data=b"\x00"
         )
@@ -1745,11 +1864,11 @@ class TestCapturedExecuteLifetime:
                         )
                     if change == "transport-and-tracker":
                         assert radio._civ_request_tracker.ack_sink_count == 1, (
-                            "stale grace dropped replacement sink"
+                            "stale execute dropped replacement sink"
                         )
-                tracker.drop_ack_sinks()
+                tracker.expire_ack_sinks(answer_window=0.0)
                 current_tracker = radio._civ_request_tracker
-                current_tracker.drop_ack_sinks()
+                current_tracker.expire_ack_sinks(answer_window=0.0)
                 radio._civ_min_interval = 0.0
                 current = asyncio.create_task(
                     runtime._execute_civ_raw(frame, wait_response)
@@ -1848,7 +1967,7 @@ class TestCapturedExecuteLifetime:
                     assert tracker.timeout_count == current_tracker.timeout_count == 0
                     assert tracker.pending_count == 0, "retired waiter leaked"
                     assert current_tracker.ack_sink_count == 1
-                current_tracker.drop_ack_sinks()
+                current_tracker.expire_ack_sinks(answer_window=0.0)
                 radio._last_civ_send_monotonic = 0.0
                 current = asyncio.create_task(runtime._execute_civ_raw(frame))
                 tasks.append(current)
@@ -1871,62 +1990,6 @@ class TestCapturedExecuteLifetime:
             await asyncio.gather(*tasks, return_exceptions=True)
             tracker.fail_all(ConnectionError("test cleanup"))
             current_tracker.fail_all(ConnectionError("test cleanup"))
-
-    @pytest.mark.asyncio
-    async def test_retired_ack_grace_preserves_same_tracker_current_sink(
-        self, radio: IcomRadio, mock_transport: MockTransport
-    ) -> None:
-        runtime, tracker = radio._civ_runtime, radio._civ_request_tracker
-        entered, release = asyncio.Event(), asyncio.Event()
-        now = time.monotonic()
-        radio._civ_last_waiter_gc_monotonic = now
-        radio._civ_ack_sink_grace = 10.0
-        tracker.register_ack(wait=False)
-        frame = build_civ_frame(
-            IC_7610_ADDR, CONTROLLER_ADDR, _CMD_PTT, sub=_SUB_PTT, data=b"\x00"
-        )
-        stale = None
-
-        async def hold(_delay: float) -> None:
-            entered.set()
-            await release.wait()
-
-        try:
-            with (
-                patch.object(runtime, "start_pump"),
-                patch("rigplane.runtime._civ_rx.asyncio.sleep", hold),
-                patch(
-                    "rigplane.runtime._civ_rx.time",
-                    SimpleNamespace(monotonic=lambda: now),
-                ),
-            ):
-                stale = asyncio.create_task(runtime._execute_civ_raw(frame))
-                await entered.wait()
-                runtime.advance_generation("test ACK grace retirement")
-                assert radio._civ_request_tracker is tracker
-                assert tracker.ack_sink_count == 0
-                tracker.register_ack(wait=False)
-                now += 20.0
-                release.set()
-                _, waiting = await asyncio.wait({stale}, timeout=1)
-                assert mock_transport.sent_packets == []
-                assert not waiting, "retired ACK grace did not settle"
-                result = await asyncio.gather(stale, return_exceptions=True)
-                assert isinstance(result[0], ConnectionError)
-                assert tracker.ack_sink_count == 1, (
-                    "retired ACK grace dropped current-generation sink"
-                )
-                ack = CivFrame(CONTROLLER_ADDR, IC_7610_ADDR, _CMD_ACK, None, b"")
-                assert tracker.resolve(CivEvent(type=CivEventType.ACK, frame=ack))
-                assert tracker.pending_count == 0
-                assert tracker.timeout_count == 0
-        finally:
-            release.set()
-            if stale is not None:
-                if not stale.done():
-                    stale.cancel()
-                await asyncio.gather(stale, return_exceptions=True)
-            tracker.drop_ack_sinks()
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("pause", ["pacing", "send"])
@@ -1989,7 +2052,7 @@ class TestCapturedExecuteLifetime:
                     assert not pending_response._log_traceback, (
                         "retired blocking waiter exception was not retrieved"
                     )
-                tracker.drop_ack_sinks()
+                tracker.expire_ack_sinks(answer_window=0.0)
                 radio._last_civ_send_monotonic = 0.0
                 radio._civ_min_interval = 0.0
                 current = asyncio.create_task(runtime._execute_civ_raw(frame))
@@ -2062,7 +2125,7 @@ class TestCapturedExecuteLifetime:
                 if not task.done():
                     task.cancel()
                 await asyncio.gather(task, return_exceptions=True)
-            tracker.drop_ack_sinks()
+            tracker.expire_ack_sinks(answer_window=0.0)
 
 
 class TestResponseDeadlineOpensAtSend:
@@ -2221,7 +2284,6 @@ class TestCivPacingIsSendToSend:
         reply = 0.040
         clock = _install_pacing_clock(monkeypatch, gap=gap)
         radio._civ_min_interval = gap
-        radio._civ_ack_sink_grace = 0.0
         _guard_radio_against_clock_jumps(radio, clock)
         radio._last_civ_send_monotonic = 0.0
         first_civ = build_civ_frame(IC_7610_ADDR, CONTROLLER_ADDR, 0x03)
@@ -2281,7 +2343,6 @@ class TestCivPacingIsSendToSend:
         gap = 0.025
         clock = _install_pacing_clock(monkeypatch, gap=gap)
         radio._civ_min_interval = gap
-        radio._civ_ack_sink_grace = 0.0
         _guard_radio_against_clock_jumps(radio, clock)
         radio._last_civ_send_monotonic = 0.0
         cmd = build_civ_frame(IC_7610_ADDR, CONTROLLER_ADDR, 0x03)
@@ -2328,7 +2389,6 @@ class TestCivPacingIsSendToSend:
         gap = 0.025
         clock = _install_pacing_clock(monkeypatch, gap=gap)
         radio._civ_min_interval = gap
-        radio._civ_ack_sink_grace = 0.0
         _guard_radio_against_clock_jumps(radio, clock)
         radio._last_civ_send_monotonic = 0.0
         current = [True]
@@ -2381,7 +2441,6 @@ class TestCivPacingIsSendToSend:
         gap = 0.025
         clock = _install_pacing_clock(monkeypatch, gap=gap)
         radio._civ_min_interval = gap
-        radio._civ_ack_sink_grace = 0.0
         _guard_radio_against_clock_jumps(radio, clock)
         radio._last_civ_send_monotonic = 0.0
         observer: list[tx.ProviderPttObservation] = []
@@ -2439,7 +2498,6 @@ class TestCivPacingIsSendToSend:
         gap = 0.010
         clock = _install_pacing_clock(monkeypatch, gap=gap)
         radio._civ_min_interval = gap
-        radio._civ_ack_sink_grace = 0.0
         _guard_radio_against_clock_jumps(radio, clock)
         radio._last_civ_send_monotonic = 0.0
         radio._civ_runtime.start_worker()
@@ -2526,7 +2584,9 @@ class TestScopeCallbackSafety:
 
         # The set completes on its own ACK even with the pump's bad
         # callback in place.
-        mock_transport.queue_response(_ack_response())
+        mock_transport.queue_response_on_send(
+            mock_transport.send_seq + 1, _ack_response()
+        )
         await radio.set_freq(7_074_000)
 
 
@@ -3408,7 +3468,11 @@ class TestSetCommandsLeaveStateCacheToReadbacks:
     ) -> None:
         """Rapid consecutive set_frequency calls all complete on their ACKs."""
         for freq in [7_000_000, 7_100_000, 7_200_000]:
-            mock_transport.queue_response(_ack_response())
+            # Each ACK answers its own send (MOR-4384: a frame that has not
+            # left yet claims no answer).
+            mock_transport.queue_response_on_send(
+                mock_transport.send_seq + 1, _ack_response()
+            )
             await radio.set_freq(freq)
         # The cache stays empty.
         assert radio.state_cache.freq_ts == 0.0
@@ -3447,7 +3511,9 @@ class TestSetterTargetsNotCached:
         radio = self._make_radio(mock_transport, {"freq": 10.0})
         mock_transport.queue_response(_freq_response(14_074_000))
         assert await radio.get_freq() == 14_074_000
-        mock_transport.queue_response(_ack_response())
+        mock_transport.queue_response_on_send(
+            mock_transport.send_seq + 1, _ack_response()
+        )
         await radio.set_freq(14_200_000)
         assert await radio.get_freq() == 14_074_000
 

@@ -190,6 +190,9 @@ supported_controls = [
     "receiver.main.active.freq_mode.mode",
 ]
 unsupported = ["global.tx_state.power_on"]
+# MOR-4454: get_swr is declared below but the profile has no [meters.swr]
+# scale and no polled PTT to gate on, so SWR is classified, not polled.
+unknown = ["global.meters.swr"]
 
 [modes]
 list = ["USB", "LSB", "CW", "CW-R", "AM", "FM", "RTTY", "DIGI"]

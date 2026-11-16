@@ -493,6 +493,12 @@ jobs:
         if: needs.classify.outputs.core == 'true' || needs.classify.outputs.web == 'true'
         run: uv python install 3.11
 
+      - name: Lockfile matches pyproject.toml
+        if: needs.classify.outputs.core == 'true' || needs.classify.outputs.web == 'true'
+        # MOR-4341: `uv sync` re-resolves silently, so a pyproject change
+        # without a regenerated uv.lock never failed CI. Fails when they drift.
+        run: uv lock --check
+
       - name: Install dependencies
         if: needs.classify.outputs.core == 'true' || needs.classify.outputs.web == 'true'
         # --all-extras (not --extra dev --extra bridge, MOR-1978): `dev`
