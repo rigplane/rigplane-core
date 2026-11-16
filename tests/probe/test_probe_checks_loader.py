@@ -1,15 +1,23 @@
-"""Typed [[probe.checks]] profile data (MOR-4464 B1, RED first).
+"""Typed [[probe.checks]] profile data (MOR-4464 B1a).
 
-The loader parses checks into frozen dataclasses on
-``RigConfig.probe_checks`` (empty when absent), rejects unknown keys,
-and enforces the write policy at load with the verb named.
+The loader parses checks into frozen dataclasses on ``RigConfig.probe_checks``
+(empty when absent), rejects unknown keys, and builds every step's bytes from
+the closed table at load. Check data names table entries and values only.
 """
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 
 import pytest
+
+from tests.probe.test_probe_table_closure import (
+    CAT_EXTRA,
+    check_toml,
+    facts,
+    load_checks,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 RIGS = REPO_ROOT / "rigs"
@@ -21,335 +29,185 @@ id = "synth-freq-mode"
 title = "Synthetic frequency and mode"
 explain_what = "Sets VFO-A to 7.074 MHz and mode to USB for a moment, then reads it back."
 explain_after = "Puts frequency and mode back exactly as they are now."
-witness = ["get_freq", "get_mode"]
+witness = ["freq_a", "mode_main"]
+[[probe.checks.preconditions]]
+entry = "freq_a"
+equals = "FA007074000;"
 [[probe.checks.steps]]
 kind = "write"
-command = "set_freq"
-[probe.checks.steps.values]
-freq = 7074000
+entry = "freq_a"
+value = 7074000
 [[probe.checks.steps]]
 kind = "read"
-command = "get_freq"
+entry = "freq_a"
 [[probe.checks.steps]]
 kind = "ask"
 question = "Does the display look right?"
 [[probe.checks.restore]]
-read = "get_freq"
-write = "set_freq"
+entry = "freq_a"
 [[probe.checks.restore]]
-read = "get_mode"
-write = "set_mode"
+entry = "mode_main"
+rehearse = false
 """
 
 
-def _load_with_probe(tmp_path: Path, base_name: str, probe_toml: str):
-    import shutil
-
+def _load_with_probe(
+    tmp_path: Path, base_name: str, probe_toml: str, old: str = "", new: str = ""
+):
     from rigplane.profiles.rig_loader import load_rig
 
     for helper in ("_ctcss_tables_v1.toml", "_keyboard-default.toml"):
         shutil.copy(RIGS / helper, tmp_path / helper)
     base = (RIGS / base_name).read_text(encoding="utf-8")
+    if old:
+        assert base.count(old) == 1
+        base = base.replace(old, new)
     path = tmp_path / "synth.toml"
     path.write_text(base + "\n" + probe_toml, encoding="utf-8")
     return load_rig(path)
 
 
-def test_profile_without_probe_section_loads_unchanged() -> None:
-    from rigplane.profiles.rig_loader import load_rig
-
-    config = load_rig(RIGS / "ft991a.toml")
-    assert config.probe_checks == ()
-
-
-def test_cat_check_loads_into_typed_records(tmp_path: Path) -> None:
-    config = _load_with_probe(tmp_path, "ftx1.toml", CAT_CHECK)
-    (check,) = config.probe_checks
-    assert check.id == "synth-freq-mode"
-    assert check.title == "Synthetic frequency and mode"
-    assert check.witness == ("get_freq", "get_mode")
-    assert [step.kind for step in check.steps] == ["write", "read", "ask"]
-    assert check.steps[0].command == "set_freq"
-    assert dict(check.steps[0].values) == {"freq": 7074000}
-    assert check.steps[2].question == "Does the display look right?"
-    assert [(item.read, item.write) for item in check.restore] == [
-        ("get_freq", "set_freq"),
-        ("get_mode", "set_mode"),
-    ]
-    assert all(item.rehearse for item in check.restore)
-
-
-def test_never_list_verb_fails_at_load_naming_the_verb(tmp_path: Path) -> None:
-    from rigplane.profiles.rig_loader import RigLoadError
-
-    bad = CAT_CHECK.replace(
-        'command = "set_freq"\n[probe.checks.steps.values]\nfreq = 7074000',
-        'command = "set_ptt"\n[probe.checks.steps.values]\nstate = "1"',
-        1,
-    )
-    with pytest.raises(RigLoadError, match="TX"):
-        _load_with_probe(tmp_path, "ftx1.toml", bad)
-
-
-def test_raw_write_without_restore_item_fails(tmp_path: Path) -> None:
-    from rigplane.profiles.rig_loader import RigLoadError
-
-    bad = CAT_CHECK.replace(
-        'kind = "ask"\nquestion = "Does the display look right?"',
-        'kind = "raw_write"\nline = "PR1;"',
-    )
-    with pytest.raises(RigLoadError, match="restore"):
-        _load_with_probe(tmp_path, "ftx1.toml", bad)
-
-
-def test_write_verb_off_the_allow_list_fails(tmp_path: Path) -> None:
-    from rigplane.profiles.rig_loader import RigLoadError
-
-    bad = CAT_CHECK.replace(
-        'command = "set_freq"\n[probe.checks.steps.values]\nfreq = 7074000',
-        'command = "set_auto_info"\n[probe.checks.steps.values]\nstate = "1"',
-        1,
-    )
-    with pytest.raises(RigLoadError, match="AI"):
-        _load_with_probe(tmp_path, "ftx1.toml", bad)
-
-
-def test_unknown_keys_rejected(tmp_path: Path) -> None:
-    from rigplane.profiles.rig_loader import RigLoadError
-
-    bad = CAT_CHECK.replace('id = "synth-freq-mode"', 'id = "x"\nbogus = 1')
-    with pytest.raises(RigLoadError, match="bogus"):
-        _load_with_probe(tmp_path, "ftx1.toml", bad)
-
-
-def test_non_ascii_title_rejected(tmp_path: Path) -> None:
-    from rigplane.profiles.rig_loader import RigLoadError
-
-    bad = CAT_CHECK.replace("Synthetic frequency and mode", "Synthétique")
-    with pytest.raises(RigLoadError, match="[Aa][Ss][Cc][Ii][Ii]"):
-        _load_with_probe(tmp_path, "ftx1.toml", bad)
-
-
-CIV_BASE = """
-[probe]
-[[probe.checks]]
-id = "synth"
-title = "Synthetic"
-explain_what = "Changes a setting for a moment."
-explain_after = "Puts it back."
-{extra}
-{steps}
-{restore}
-"""
-
-
-def _civ(steps: str, restore: str, extra: str = "") -> str:
-    return CIV_BASE.format(steps=steps, restore=restore, extra=extra)
-
-
-def _restore(*pairs: tuple[str, str]) -> str:
-    return "\n".join(
-        f'[[probe.checks.restore]]\nread = "{r}"\nwrite = "{w}"' for r, w in pairs
-    )
-
-
-def _raw(kind: str, key: str, value: str) -> str:
-    return f'[[probe.checks.steps]]\nkind = "{kind}"\n{key} = "{value}"'
-
-
-SELECTED = (("get_freq", "set_freq"), ("get_mode", "set_mode"))
-UNSELECTED = (
-    ("get_unselected_freq", "set_unselected_freq"),
-    ("get_unselected_mode", "set_unselected_mode"),
-)
-CIV_RIGS = ("ic7300.toml", "ic705.toml", "ic7610.toml")
-
-
-def _fails(tmp_path: Path, rig: str, toml: str, match: str) -> None:
+def _fails(
+    toml: str, match: str, name: str = "ft991a", extra: dict | None = None
+) -> None:
     from rigplane.profiles.rig_loader import RigLoadError
 
     with pytest.raises(RigLoadError, match=match):
-        _load_with_probe(tmp_path, rig, toml)
+        load_checks(facts(name, extra), toml)
 
 
-def test_cat_injected_value_cannot_smuggle_a_second_command(tmp_path: Path) -> None:
-    bad = CAT_CHECK.replace(
-        'command = "set_freq"\n[probe.checks.steps.values]\nfreq = 7074000',
-        'command = "set_mode"\n[probe.checks.steps.values]\nmode = "2;TX1"',
-        1,
+def test_profile_without_probe_section_loads_unchanged() -> None:
+    from rigplane.profiles.rig_loader import load_rig
+
+    for name in ("ft991a", "ic7300", "ic705"):
+        assert load_rig(RIGS / f"{name}.toml").probe_checks == ()
+
+
+def test_cat_check_loads_into_typed_records(tmp_path: Path) -> None:
+    config = _load_with_probe(tmp_path, "ft991a.toml", CAT_CHECK)
+    (check,) = config.probe_checks
+    assert check.id == "synth-freq-mode"
+    assert check.title == "Synthetic frequency and mode"
+    assert check.witness == ("freq_a", "mode_main")
+    assert [(p.entry, p.equals) for p in check.preconditions] == [
+        ("freq_a", "FA007074000;")
+    ]
+    assert [step.kind for step in check.steps] == ["write", "read", "ask"]
+    assert (check.steps[0].entry, check.steps[0].value) == ("freq_a", 7074000)
+    assert check.steps[0].frame == b"FA007074000;"
+    assert check.steps[1].frame == b"FA;"
+    assert check.steps[2].question == "Does the display look right?"
+    assert [(item.entry, item.rehearse) for item in check.restore] == [
+        ("freq_a", True),
+        ("mode_main", False),
+    ]
+    assert check.restored == frozenset({("freq_a", None), ("mode_main", None)})
+
+
+def test_unknown_keys_rejected() -> None:
+    _fails(CAT_CHECK.replace('id = "synth-freq-mode"', 'id = "x"\nbogus = 1'), "bogus")
+    _fails(
+        CAT_CHECK.replace(
+            'entry = "mode_main"', 'entry = "mode_main"\nread = "get_mode"'
+        ),
+        "read",
     )
-    _fails(tmp_path, "ftx1.toml", bad, "TX|one command|';'")
-
-
-@pytest.mark.parametrize("rig", ["ftx1.toml", "ft991a.toml"])
-def test_cat_raw_write_with_second_command_is_refused(tmp_path: Path, rig: str) -> None:
-    bad = CAT_CHECK.replace(
-        'kind = "ask"\nquestion = "Does the display look right?"',
-        'kind = "raw_write"\nline = "FA007074000;TX1;"',
-    )
-    _fails(tmp_path, rig, bad, "one command|';'")
-
-
-@pytest.mark.parametrize("rig", CIV_RIGS)
-def test_civ_raw_write_with_a_second_frame_is_refused(tmp_path: Path, rig: str) -> None:
-    body = "050000740700fdfefe94e01c0001"
-    toml = _civ(_raw("raw_write", "body_hex", body), _restore(*SELECTED))
-    _fails(tmp_path, rig, toml, "delimiter|one command|frame")
-
-
-@pytest.mark.parametrize("rig", CIV_RIGS)
-@pytest.mark.parametrize("body", ["29001c0001", "29002800", "29011c0001"])
-def test_civ_wrapped_never_listed_raw_write_is_refused(
-    tmp_path: Path, rig: str, body: str
-) -> None:
-    toml = _civ(_raw("raw_write", "body_hex", body), _restore(*SELECTED))
-    _fails(tmp_path, rig, toml, "allow-list")
-
-
-def _vfo_step(data: str) -> str:
-    return (
-        '[[probe.checks.steps]]\nkind = "write"\ncommand = "set_vfo"\n'
-        f'[probe.checks.steps.values]\ndata_hex = "{data}"'
+    _fails(
+        CAT_CHECK.replace("value = 7074000", 'value = 7074000\ncommand = "set_freq"'),
+        "command",
     )
 
 
-@pytest.mark.parametrize("rig", CIV_RIGS)
-@pytest.mark.parametrize("data", ["a0", "b1", "b0"])
-def test_vfo_operations_need_selected_and_unselected_restores(
-    tmp_path: Path, rig: str, data: str
-) -> None:
-    for pairs in (SELECTED, SELECTED + UNSELECTED[:1]):
-        _fails(tmp_path, rig, _civ(_vfo_step(data), _restore(*pairs)), "restore item")
-    (check,) = _load_with_probe(
-        tmp_path, rig, _civ(_vfo_step(data), _restore(*SELECTED, *UNSELECTED))
-    ).probe_checks
-    assert check.steps[0].data_hex == data
+def test_non_ascii_title_rejected() -> None:
+    _fails(
+        CAT_CHECK.replace("Synthetic frequency and mode", "Synthétique"),
+        "[Aa][Ss][Cc][Ii][Ii]",
+    )
+
+
+@pytest.mark.parametrize("kind", ["raw_write", "raw_read", "send"])
+def test_only_write_read_and_ask_are_step_kinds(kind: str) -> None:
+    _fails(CAT_CHECK.replace('kind = "ask"', f'kind = "{kind}"'), "kind")
 
 
 @pytest.mark.parametrize(
-    ("rig", "read", "where"),
+    ("name", "entry"),
     [
-        ("ftx1.toml", "get_ptt", "TX"),
-        ("ft991a.toml", "get_ptt", "TX"),
-        ("ic7300.toml", "ptt_on", "never-listed"),
-        ("ic7610.toml", "ptt_on", "never-listed"),
+        ("ft991a", "band"),
+        ("ft991a", "set_freq"),
+        ("ic705", "duplex"),
+        ("ic705", "mic_gain"),
     ],
 )
-def test_never_listed_reads_fail_in_every_read_position(
-    tmp_path: Path, rig: str, read: str, where: str
-) -> None:
-    step = f'[[probe.checks.steps]]\nkind = "read"\ncommand = "{read}"'
-    restore = _restore(("get_freq", "set_freq"))
-    safe = step.replace(read, "get_freq")
-    _fails(tmp_path, rig, _civ(step, restore), where)
-    _fails(tmp_path, rig, _civ(safe, restore, f'witness = ["{read}"]'), where)
-    pre = f'[[probe.checks.preconditions]]\nread = "{read}"\nequals = "x"\n'
-    _fails(tmp_path, rig, _civ(safe, restore, pre), where)
-    _fails(tmp_path, rig, _civ(safe, _restore((read, "set_freq"))), where)
+def test_an_entry_outside_the_table_fails(name: str, entry: str) -> None:
+    toml = check_toml([("read", entry)], [])
+    _fails(toml, "not in the table", name)
 
 
-def test_precondition_with_missing_command_fails(tmp_path: Path) -> None:
-    pre = '[[probe.checks.preconditions]]\nread = "get_nothing"\nequals = "x"\n'
-    steps = '[[probe.checks.steps]]\nkind = "read"\ncommand = "get_freq"'
-    _fails(tmp_path, "ic7300.toml", _civ(steps, "", pre), "get_nothing")
-    _fails(tmp_path, "ftx1.toml", _civ(steps, "", pre), "get_nothing")
+def test_an_entry_the_profile_does_not_declare_fails() -> None:
+    toml = check_toml([("read", "speech_processor")], [])
+    _fails(toml, "not available")
+    assert load_checks(facts("ft991a", CAT_EXTRA), toml)
 
 
-@pytest.mark.parametrize("rig", CIV_RIGS)
-def test_civ_raw_restore_matches_the_specific_setting(tmp_path: Path, rig: str) -> None:
-    raw = _raw("raw_write", "body_hex", "14010000")
+def test_a_declared_template_of_the_wrong_shape_fails() -> None:
+    """FTX-1 split is ST, not FT; its power carries a head field."""
+    _fails(check_toml([("read", "split")], []), "ST", "ftx1")
+    _fails(check_toml([("read", "power")], []), "power", "ftx1")
+
+
+def test_a_value_outside_the_domain_fails() -> None:
+    for value in (1_000_000_000, "7074000", -1):
+        _fails(check_toml([("write", "freq_a", value)], ["freq_a"]), "domain")
+    _fails(check_toml([("write", "split", "2")], ["split"]), "domain")
+
+
+def test_a_read_needs_a_read_form_and_a_restore_item_needs_both() -> None:
+    _fails(check_toml([("read", "vfo_exchange")], []), "read", "ic705")
+    _fails(check_toml([("read", "freq_a")], ["info"]), "info", "ft991a", CAT_EXTRA)
     _fails(
-        tmp_path, rig, _civ(raw, _restore(("get_rf_gain", "set_rf_gain"))), "restore"
+        check_toml([("read", "freq_a")], [], 'witness = ["vfo_exchange"]'),
+        "read",
+        "ic705",
     )
-    config = _load_with_probe(
-        tmp_path, rig, _civ(raw, _restore(("get_af_level", "set_af_level")))
-    )
-    assert config.probe_checks[0].steps[0].body_hex == "14010000"
-    wrapped = _raw("raw_write", "body_hex", "290114010000")
+
+
+def test_receiver_is_civ_only_and_only_on_routed_entries() -> None:
+    _fails(check_toml([("read", "freq_a", None, "sub")], []), "receiver")
     _fails(
-        tmp_path,
-        rig,
-        _civ(wrapped, _restore(("get_af_level", "set_af_level"))),
-        "restore",
+        check_toml([("write", "rf_power", 1, "sub")], ["rf_power@sub"]),
+        "receiver",
+        "ic7610",
     )
-
-
-def test_cat_raw_restore_matches_the_selector(tmp_path: Path) -> None:
-    sub = _raw("raw_write", "line", "MD12;")
-    main = _restore(("get_mode", "set_mode"))
-    _fails(tmp_path, "ftx1.toml", _civ(sub, main), "restore")
     _fails(
-        tmp_path,
-        "ftx1.toml",
-        _civ(
-            _raw("raw_write", "line", "FB007074000;"),
-            _restore(("get_freq", "set_freq")),
-        ),
-        "restore",
+        check_toml([("write", "af_level", 1, "left")], ["af_level"]),
+        "receiver",
+        "ic7610",
     )
-    ok = _load_with_probe(
-        tmp_path, "ftx1.toml", _civ(sub, _restore(("get_mode_sub", "set_mode_sub")))
-    )
-    assert ok.probe_checks[0].steps[0].line == "MD12;"
-    ok = _load_with_probe(
-        tmp_path, "ft991a.toml", _civ(_raw("raw_write", "line", "MD02;"), main)
-    )
-    assert ok.probe_checks
 
 
-def test_non_ascii_cat_template_is_a_load_error(tmp_path: Path) -> None:
-    from rigplane.commands.command_spec import CatCommandSpec
-    from rigplane.profiles.probe_checks import parse_probe_checks
-    from rigplane.profiles.rig_loader import RigLoadError, load_rig
-
-    config = load_rig(RIGS / "ftx1.toml")
-    spec = CatCommandSpec(read="F\u00e9;", write="F\u00e9{x};", parse="F\u00e9{x};")
-    commands = {**config.commands, "get_odd": spec, "set_odd": spec}
-    step = '[probe.checks.steps.values]\nx = "1"\n'
-    pieces = {
-        "read": '[[probe.checks.steps]]\nkind = "read"\ncommand = "get_odd"',
-        "write": '[[probe.checks.steps]]\nkind = "write"\ncommand = "set_odd"\n' + step,
-        "restore": _restore(("get_odd", "set_odd")),
-    }
-    import tomllib
-
-    for steps, restore in (
-        (pieces["read"], ""),
-        (pieces["write"], _restore(("get_freq", "set_freq"))),
-        (pieces["read"], pieces["restore"]),
-    ):
-        raw = tomllib.loads(_civ(steps, restore))["probe"]
-        with pytest.raises(RigLoadError, match="ASCII"):
-            parse_probe_checks(
-                "t.toml",
-                raw,
-                commands=commands,
-                protocol_type="yaesu_cat",
-                modes=config.modes,
-                mode_codes=None,
-            )
+def test_write_steps_need_restore_items() -> None:
+    _fails(check_toml([("write", "freq_a", 7074000)], []), "restore")
 
 
-def _non_ascii_c4fm(tmp_path: Path, probe_toml: str):
-    import shutil
+def test_repeated_check_ids_fail() -> None:
+    body = CAT_CHECK.split("[probe]\n", 1)[1]
+    _fails(CAT_CHECK + body, "repeats")
 
-    from rigplane.profiles.rig_loader import load_rig
 
-    for helper in ("_ctcss_tables_v1.toml", "_keyboard-default.toml"):
-        shutil.copy(RIGS / helper, tmp_path / helper)
-    base = (RIGS / "ft991a.toml").read_text(encoding="utf-8")
-    old = '"B", "C", "D", "E",'
-    assert base.count(old) == 1
-    path = tmp_path / "synth.toml"
-    text = base.replace(old, '"B", "C", "D", "É",') + "\n" + probe_toml
-    path.write_text(text, encoding="utf-8")
-    return load_rig(path)
+def test_probe_checks_need_civ_or_yaesu_cat(tmp_path: Path) -> None:
+    from rigplane.profiles.rig_loader import RigLoadError
+
+    with pytest.raises(RigLoadError, match="CI-V or Yaesu CAT"):
+        _load_with_probe(tmp_path, "tx500.toml", CAT_CHECK)
 
 
 def test_profile_without_probe_ignores_probe_only_mode_code_rules(
     tmp_path: Path,
 ) -> None:
-    config = _non_ascii_c4fm(tmp_path, "")
+    config = _load_with_probe(
+        tmp_path, "ft991a.toml", "", '"B", "C", "D", "E",', '"B", "C", "D", "É",'
+    )
     assert config.probe_checks == ()
     assert config.mode_codes is not None and config.mode_codes[-1] == "É"
 
@@ -358,4 +216,10 @@ def test_non_ascii_c4fm_code_with_probe_checks_is_a_load_error(tmp_path: Path) -
     from rigplane.profiles.rig_loader import RigLoadError
 
     with pytest.raises(RigLoadError, match="ASCII"):
-        _non_ascii_c4fm(tmp_path, CAT_CHECK)
+        _load_with_probe(
+            tmp_path,
+            "ft991a.toml",
+            CAT_CHECK,
+            '"B", "C", "D", "E",',
+            '"B", "C", "D", "É",',
+        )
