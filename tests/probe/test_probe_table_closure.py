@@ -556,6 +556,52 @@ def test_t6_the_module_has_exactly_one_judging_path() -> None:
         assert not hasattr(probe_checks, gone), gone
 
 
+def test_t6_the_engine_reaches_the_port_only_through_its_judging_send() -> None:
+    """MOR-4464 B1b contract line 1: in ``probe/checks.py`` the exchange, the
+    gate and the send helpers are touched only inside ``_send``, and
+    ``_send`` calls ``judged_frame`` before it sends."""
+    engine = REPO / "src" / "rigplane" / "probe" / "checks.py"
+    tree = ast.parse(engine.read_text(encoding="utf-8"))
+    reached: dict[str, set[str]] = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for inner in ast.walk(node):
+            name = None
+            if isinstance(inner, ast.Attribute) and inner.attr == "exchange":
+                name = "exchange"  # the port object itself
+            elif isinstance(inner, ast.Call):
+                func = inner.func
+                if isinstance(func, ast.Name) and func.id in ("_gated_ask", "_ask"):
+                    name = func.id
+                elif isinstance(func, ast.Attribute) and func.attr in (
+                    "send",
+                    "write",
+                    "write_frame",
+                ):
+                    name = func.attr
+            if name is not None:
+                reached.setdefault(node.name, set()).add(name)
+    assert set(reached) == {"_send"}, reached
+    send = next(
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.AsyncFunctionDef) and n.name == "_send"
+    )
+    calls = [
+        c.func.id
+        for c in ast.walk(send)
+        if isinstance(c, ast.Call) and isinstance(c.func, ast.Name)
+    ]
+    assert calls.index("judged_frame") < calls.index("_gated_ask"), calls
+    module_calls = {
+        c.func.id
+        for c in ast.walk(tree)
+        if isinstance(c, ast.Call) and isinstance(c.func, ast.Name)
+    }
+    assert "build_frame" not in module_calls and "parse_frame" not in module_calls
+
+
 # --- T7 digital-voice domains -------------------------------------------------------
 
 CIV_VOICE = (0x17, 0x22)
