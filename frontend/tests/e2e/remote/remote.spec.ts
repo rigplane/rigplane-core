@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test';
-import { readFileSync } from 'node:fs';
+import wire from '../../../src/lib/transport/api-channel-wire.json' with { type: 'json' };
+import golden from '../../../src/lib/transport/api-channel-golden.json' with { type: 'json' };
 import {
   expectControlLink,
   expectReadoutHz,
@@ -23,15 +24,8 @@ const BASELINE_HZ = 14_074_000;
 const TUNED_HZ = 7_100_000;
 const STATION_HZ = 14_100_000;
 
-// The committed wire/golden contract documents, read from the source of
-// truth (Node ESM needs no JSON import attributes this way).
-const TRANSPORT_DIR = '../../../src/lib/transport';
-const wire = JSON.parse(
-  readFileSync(new URL(`${TRANSPORT_DIR}/api-channel-wire.json`, import.meta.url), 'utf8'),
-) as { payloads: Record<string, { fields: unknown[][] }> };
-const golden = JSON.parse(
-  readFileSync(new URL(`${TRANSPORT_DIR}/api-channel-golden.json`, import.meta.url), 'utf8'),
-) as { documents: Record<string, { text: string; decoded: Record<string, unknown> }> };
+// The committed wire/golden contract documents are imported from the source
+// of truth (src/lib/transport), never re-typed here.
 
 /**
  * Validate a payload against a wire-contract payload's `fields` rows, the
@@ -63,6 +57,13 @@ function payloadMatchesWireContract(
     if (typeof name !== 'string' || typeof kind !== 'string') return false;
     return Object.hasOwn(record, name) ? kindOk(kind, record[name]) : row[2] !== true;
   });
+}
+
+/** The station's reply to POST /api/v1/transport/webrtc/offer, as relayed. */
+interface RelayedAnswer {
+  status?: string;
+  sdp: string;
+  type: RTCSdpType;
 }
 
 test('L1: the ordinary page talks only to the station', async ({ page }) => {
@@ -152,7 +153,13 @@ const CHANNELS: readonly ChannelSpec[] = [
   { label: 'api', ordered: true, maxRetransmits: null },
 ] as const;
 
-const ATTACH_DOCUMENTS = golden.documents;
+// The golden documents the harness reads are the ones with frame text and a
+// decoded form; the file also holds request/response documents of other shapes.
+const ATTACH_DOCUMENTS = (
+  golden as unknown as {
+    documents: Record<string, { text: string; decoded: Record<string, unknown> }>;
+  }
+).documents;
 
 /** The attach frame texts for the four labels, from the golden documents
  * keyed attach_<label>; their <SESSION-KEY> placeholder takes the live key. */
@@ -198,7 +205,7 @@ test('P0: a bare page connects four data channels and reaches control_hello', as
   const outcome = await page.evaluate(
     async ({ channels, attachText }) => {
       const relayWindow = window as typeof window & {
-        __relayOffer: (sdp: string, type: string) => Promise<{ status?: string }>;
+        __relayOffer: (sdp: string, type: string) => Promise<RelayedAnswer>;
         __controllerKey: () => Promise<string>;
       };
       const pc = new RTCPeerConnection();

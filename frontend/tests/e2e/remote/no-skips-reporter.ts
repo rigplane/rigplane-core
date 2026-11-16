@@ -4,7 +4,7 @@ import type {
   Suite,
   TestCase,
   TestResult,
-} from '@playwright/test';
+} from '@playwright/test/reporter';
 
 /**
  * The no-skips gate of the remote E2E matrix (playwright.remote.config.ts):
@@ -67,7 +67,7 @@ export default class NoSkipsReporter implements Reporter {
     this.results.push({ testId: test.id, status: result.status });
   }
 
-  onEnd(): { status: 'failed'; message: string } | undefined {
+  async onEnd(): Promise<{ status: 'failed' } | undefined> {
     const problems = noSkipProblems(this.planned, this.results);
     if (problems.length === 0) return undefined;
     const message = [
@@ -75,6 +75,6 @@ export default class NoSkipsReporter implements Reporter {
       ...problems,
     ].join('\n');
     console.error(message);
-    return { status: 'failed', message };
+    return { status: 'failed' };
   }
 }
