@@ -466,17 +466,20 @@ class _CableBackend(FakeAudioBackend):
     def list_devices(self):
         cable = dict(name="RigPlane Virtual Cable", input_channels=2, output_channels=2)
         if device_scan_generation() == self._scan:
-            return [AudioDeviceInfo(id=AudioDeviceId(1), **cable)]
-        # The returned radio's codec now sorts in front of the cable.
-        return [
-            AudioDeviceInfo(
-                id=AudioDeviceId(1),
-                name="USB Audio CODEC",
-                input_channels=1,
-                output_channels=1,
-            ),
-            AudioDeviceInfo(id=AudioDeviceId(2), **cable),
-        ]
+            devices = [AudioDeviceInfo(id=AudioDeviceId(1), **cable)]
+        else:
+            # The returned radio's codec now sorts in front of the cable.
+            devices = [
+                AudioDeviceInfo(
+                    id=AudioDeviceId(1),
+                    name="USB Audio CODEC",
+                    input_channels=1,
+                    output_channels=1,
+                ),
+                AudioDeviceInfo(id=AudioDeviceId(2), **cable),
+            ]
+        self._devices = devices  # the fake validates opens against this list
+        return devices
 
     def open_tx(self, device, **kwargs):
         self.opened.append(("playback", int(device)))
