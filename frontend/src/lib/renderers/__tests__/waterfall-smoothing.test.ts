@@ -120,6 +120,33 @@ describe('MOR-4383 waterfall smoothing', () => {
     expectBytes(f, [[0, 0, 0], [0, 0, 0], [0, 0, 0]]);
   });
 
+  it('keeps painting across a MAIN→SUB switch when the new receiver restarts its counter', () => {
+    const f = webglFixture(100, 50);
+    const r = new WaterfallRenderer(f.canvas, options);
+    // Qualified stream identity: hub sequences are per receiver and radio
+    // wire epochs stay 0, so only (source, receiver, epoch) tells a new
+    // stream from a replay. Extra fields stay assignable to the legacy
+    // { seq, epoch } identity, so this test compiles before the fix.
+    const on = (receiver: number, seq: number) => ({
+      source: 'radio', sourceId: 'radio', receiver, epoch: 0, seq,
+    });
+    r.pushRow(new Uint8Array([80, 80, 80]), on(0, 1000));
+    expect(f.named('texSubImage2D')).toHaveLength(3);
+    f.calls.length = 0;
+    // SUB restarts its own counter at 20 < MAIN's 1000: a different stream,
+    // so a new row group — not a replay.
+    r.pushRow(new Uint8Array([0, 0, 0]), on(1, 20));
+    expect(f.named('texSubImage2D')).toHaveLength(3);
+    // The stream switch resets the smoothing state like a geometry change:
+    // raw zeros through the spatial filter, no blend from MAIN's rows.
+    expectBytes(f, [[0, 0, 0], [0, 0, 0], [0, 0, 0]]);
+    // A valid seq 0 on a fresh stream is a real row, never a replay.
+    const g = webglFixture(100, 50);
+    const fresh = new WaterfallRenderer(g.canvas, options);
+    fresh.pushRow(new Uint8Array([80, 80, 80]), on(0, 0));
+    expect(g.named('texSubImage2D')).toHaveLength(3);
+  });
+
   it('allocates no typed arrays per frame after warm-up', () => {
     const f = webglFixture();
     const r = new WaterfallRenderer(f.canvas, options);
