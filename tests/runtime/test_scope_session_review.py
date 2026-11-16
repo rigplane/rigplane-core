@@ -1361,6 +1361,87 @@ async def test_scroll_c_external_span_change_via_waveform_then_cached_preset_wri
             assert sim.views[0][0] == 2
 
 
+async def test_held_span_ack_survives_new_report_then_late_older_waveform(
+    windowed_sdk, monkeypatch
+):
+    """MOR-4507 over the real scope WebSocket: a follow resubscribe's 27 15
+    SET reaches the radio but its ACK is held. While it is held the radio
+    streams the new width (a report of the new span), then an OLDER
+    waveform at the old width finishes assembling. That late frame must
+    not be adopted as an external change: once the ACK lands the stream
+    keeps the requested width, reconciliation writes no reversing SET, and
+    the last unsubscribe still restores the captured original span."""
+    radio, sim = windowed_sdk
+    sim.capture_civ_frames = True
+    sim.set_frequency(14_100_000)
+    radio._radio_state.main.freq = 14_100_000
+    presets = radio._profile.scope_span_presets_hz
+    original, old, new = (
+        presets.index(25_000),
+        presets.index(50_000),
+        presets.index(250_000),
+    )
+    sim.views[0] = (2, original, 1)
+    async with web(radio) as (_, client, base, protocols, _):
+        ws = await client.ws_connect(base + "/api/v1/scope", protocols=protocols)
+        await _subscribe(
+            ws, Subscription("radio", 0, FollowView("vfo", 100_000), 475, 20)
+        )
+        await _frame_with(ws, (14_050_000, 14_150_000))
+        session = radio.scope_session()
+        assert await await_until(lambda: session._applied.get((0, "span")) == old)
+        assert session._previous.get((0, "span")) == original
+        # Hold the answer to the new span SET after the radio applied it.
+        send = radio._send_civ_raw
+        held = asyncio.Event()
+        release = asyncio.Event()
+
+        async def held_span_ack(payload, **kwargs):
+            response = await send(payload, **kwargs)
+            frame = parse_civ_frame(payload)
+            if (
+                frame.command == 0x27
+                and frame.sub == 0x15
+                and frame.data == b"\x00" + bcd_encode(250_000)
+            ):
+                held.set()
+                await release.wait()
+            return response
+
+        monkeypatch.setattr(radio, "_send_civ_raw", held_span_ack)
+        widen = asyncio.create_task(
+            _subscribe(
+                ws, Subscription("radio", 0, FollowView("vfo", 500_000), 475, 20)
+            )
+        )
+        await asyncio.wait_for(held.wait(), 5)
+        assert sim.views[0] == (2, new, 1)
+        # The radio already streams the new width: a report of the new span.
+        assert await await_until(lambda: session._applied.get((0, "span")) == new)
+        # An older waveform at the old width finishes assembling late.
+        sim.views[0] = (2, old, 1)
+        assert await await_until(lambda: session._applied.get((0, "span")) == old)
+        sim.views[0] = (2, new, 1)
+        assert await await_until(lambda: session._applied.get((0, "span")) == new)
+        release.set()
+        await asyncio.wait_for(widen, 5)
+        assert session._desired.get((0, "span")) == new
+        assert session._previous.get((0, "span")) == original
+        sim.civ_frames_received.clear()
+        await session.reconcile()
+        assert [w for w in _viewport_writes(sim) if w.sub == 0x15] == []
+        widened = await _frame_with(ws, (14_100_000 - 250_000, 14_100_000 + 250_000))
+        assert (widened.coverage_start_hz, widened.coverage_end_hz) == (
+            14_100_000 - 250_000,
+            14_100_000 + 250_000,
+        )
+        assert [w for w in _viewport_writes(sim) if w.sub == 0x15] == []
+        # The last unsubscribe restores the captured original span.
+        await ws.close()
+        assert await await_until(lambda: not session.active)
+        assert sim.views[0] == (2, original, 1)
+
+
 async def test_restore_keeps_span_adopted_after_span_rewrite(windowed_sdk, monkeypatch):
     """Pre-review round 1 (P2): an external span change landing BETWEEN two
     restore writes (after the span rewrite, before the held mode write)

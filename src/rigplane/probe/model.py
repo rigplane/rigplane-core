@@ -10,7 +10,7 @@ reason from a closed enum, so a silent omission is impossible.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from typing import Any
 
 __all__ = [
@@ -19,6 +19,8 @@ __all__ = [
     "EXPECTED",
     "SKIP_REASONS",
     "TERMINATION_STATUSES",
+    "MODES",
+    "CHECK_STATUSES",
     "ToolInfo",
     "IdentityReport",
     "RadioInfo",
@@ -27,6 +29,10 @@ __all__ = [
     "TerminationInfo",
     "UnsolicitedRow",
     "Snapshot",
+    "CheckStepRow",
+    "CheckAnswerRow",
+    "CheckWitness",
+    "CheckRecord",
     "ProbeFile",
 ]
 
@@ -74,8 +80,16 @@ SKIP_REASONS = frozenset(
 
 #: How a run ended. ``completed`` sent every planned read; ``silence_stop``
 #: is five unanswered reads in a row; ``transport_error`` is a broken
-#: serial link. The parser refuses any other status.
-TERMINATION_STATUSES = frozenset({"completed", "silence_stop", "transport_error"})
+#: serial link; ``cancelled``: a signal stopped the write checks (restored);
+#: ``restore_failed``: a check not put back or verified (exit code 4).
+TERMINATION_STATUSES = frozenset(
+    {"completed", "silence_stop", "transport_error", "cancelled", "restore_failed"}
+)
+
+MODES = frozenset({"read", "read+checks"})
+
+#: ``refused``: stopped before any write; ``declined`` by the person.
+CHECK_STATUSES = frozenset({"ran", "refused", "declined"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -185,8 +199,55 @@ class TerminationInfo:
 
 
 @dataclass(frozen=True, slots=True)
+class CheckStepRow:
+    """One check frame sent: ``value`` hand-readable (``None``: no data),
+    ``outcome`` one of :data:`OUTCOMES` (JSON key ``class``)."""
+
+    kind: str
+    entry: str
+    request_hex: str
+    reply_hex: str | None
+    outcome: str
+    value: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class CheckAnswerRow:
+    """One question put to the person."""
+
+    question: str
+    answer: str | None
+    skipped: bool
+
+
+@dataclass(frozen=True, slots=True)
+class CheckWitness:
+    """Witness reads before the check and after its restore."""
+
+    before: dict[str, str | None]
+    after: dict[str, str | None]
+    changed: list[str]
+
+
+@dataclass(frozen=True, slots=True)
+class CheckRecord:
+    """One write check; ``verified``: read back equal, witness unchanged."""
+
+    id: str
+    title: str
+    status: str
+    steps: tuple[CheckStepRow, ...] = ()
+    answers: tuple[CheckAnswerRow, ...] = ()
+    originals: dict[str, str] = field(default_factory=dict)
+    witness: CheckWitness = field(default_factory=lambda: CheckWitness({}, {}, []))
+    restored: bool = True
+    verified: bool = True
+    error: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class ProbeFile:
-    """One ``rigplane-probe-v1`` document. ``checks`` stays empty in PR A."""
+    """One ``rigplane-probe-v1`` document."""
 
     tool: ToolInfo
     mode: str
@@ -200,7 +261,7 @@ class ProbeFile:
     termination: TerminationInfo = field(
         default_factory=lambda: TerminationInfo("completed")
     )
-    checks: tuple[Any, ...] = ()
+    checks: tuple[CheckRecord, ...] = ()
     schema: str = SCHEMA
 
     def to_json(self) -> str:
@@ -278,8 +339,15 @@ def _to_plain(file: ProbeFile) -> dict[str, Any]:
             "status": file.termination.status,
             "detail": file.termination.detail,
         },
-        "checks": list(file.checks),
+        "checks": [_check_to_plain(record) for record in file.checks],
     }
+
+
+def _check_to_plain(record: CheckRecord) -> dict[str, Any]:
+    plain = asdict(record)
+    for step in plain["steps"]:
+        step["class"] = step.pop("outcome")
+    return plain
 
 
 def _need_str(document: Any, path: str) -> str:
@@ -526,10 +594,11 @@ def _from_plain(document: Any) -> ProbeFile:
     ):
         raise ValueError("field snapshot.changed must be an array of strings")
     termination = _termination_info(mapping.get("termination"))
+    mode = _need_choice(mapping["mode"], "mode", MODES)
     return ProbeFile(
         schema=_check_schema(mapping["schema"]),
         tool=_tool_info(mapping["tool"]),
-        mode=_need_str(mapping["mode"], "mode"),
+        mode=mode,
         radio=_radio_info(mapping["radio"]),
         private_reads_included=_need_bool(
             mapping["private_reads_included"], "private_reads_included"
@@ -544,5 +613,93 @@ def _from_plain(document: Any) -> ProbeFile:
             before=dict(before), after=dict(after), changed=list(changed)
         ),
         termination=termination,
-        checks=tuple(checks),
+        checks=tuple(
+            _check_record(row, f"checks[{i}]") for i, row in enumerate(checks)
+        ),
+    )
+
+
+def _need_choice(value: Any, path: str, allowed: frozenset[str]) -> str:
+    if _need_str(value, path) not in allowed:
+        raise ValueError(f"field {path} must be one of {sorted(allowed)}")
+    return str(value)
+
+
+def _need_fields(document: Any, path: str, keys: tuple[str, ...]) -> dict[str, Any]:
+    mapping = _need_mapping(document, path)
+    if missing := [key for key in keys if key not in mapping]:
+        raise _missing(f"{path}.{missing[0]}")
+    if extra := sorted(set(mapping) - set(keys)):
+        raise ValueError(f"field {path}.{extra[0]} is not part of the contract")
+    return mapping
+
+
+def _optional(value: Any, path: str, need: Any) -> Any:
+    return None if value is None else need(value, path)
+
+
+def _need_list(value: Any, path: str, parse: Any = None) -> list[Any]:
+    if not isinstance(value, list):
+        raise ValueError(f"field {path} must be an array")
+    return (
+        value
+        if parse is None
+        else [parse(v, f"{path}[{i}]") for i, v in enumerate(value)]
+    )
+
+
+def _text_map(value: Any, path: str, *, nullable: bool) -> dict[str, Any]:
+    mapping = _need_mapping(value, path)
+    for key, item in mapping.items():
+        if not (nullable and item is None):
+            _need_str(item, f"{path}.{key}")
+    return dict(mapping)
+
+
+def _check_step(document: Any, path: str) -> CheckStepRow:
+    keys = ("kind", "entry", "request_hex", "reply_hex", "class", "value")
+    row = _need_fields(document, path, keys)
+    return CheckStepRow(
+        kind=_need_choice(row["kind"], f"{path}.kind", frozenset({"read", "write"})),
+        entry=_need_str(row["entry"], f"{path}.entry"),
+        request_hex=_need_hex(row["request_hex"], f"{path}.request_hex"),
+        reply_hex=_optional(row["reply_hex"], f"{path}.reply_hex", _need_hex),
+        outcome=_need_choice(row["class"], f"{path}.class", OUTCOMES),
+        value=_optional(row["value"], f"{path}.value", _need_str),
+    )
+
+
+def _check_answer(document: Any, path: str) -> CheckAnswerRow:
+    row = _need_fields(document, path, ("question", "answer", "skipped"))
+    return CheckAnswerRow(
+        question=_need_str(row["question"], f"{path}.question"),
+        answer=_optional(row["answer"], f"{path}.answer", _need_str),
+        skipped=_need_bool(row["skipped"], f"{path}.skipped"),
+    )
+
+
+def _check_record(document: Any, path: str) -> CheckRecord:
+    keys = tuple(name for name in CheckRecord.__dataclass_fields__)
+    row = _need_fields(document, path, keys)
+    witness = _need_fields(
+        row["witness"], f"{path}.witness", ("before", "after", "changed")
+    )
+    changed = _need_list(witness["changed"], f"{path}.witness.changed", _need_str)
+    return CheckRecord(
+        id=_need_str(row["id"], f"{path}.id"),
+        title=_need_str(row["title"], f"{path}.title"),
+        status=_need_choice(row["status"], f"{path}.status", CHECK_STATUSES),
+        steps=tuple(_need_list(row["steps"], f"{path}.steps", _check_step)),
+        answers=tuple(_need_list(row["answers"], f"{path}.answers", _check_answer)),
+        originals=_text_map(row["originals"], f"{path}.originals", nullable=False),
+        witness=CheckWitness(
+            before=_text_map(
+                witness["before"], f"{path}.witness.before", nullable=True
+            ),
+            after=_text_map(witness["after"], f"{path}.witness.after", nullable=True),
+            changed=changed,
+        ),
+        restored=_need_bool(row["restored"], f"{path}.restored"),
+        verified=_need_bool(row["verified"], f"{path}.verified"),
+        error=_optional(row["error"], f"{path}.error", _need_str),
     )
