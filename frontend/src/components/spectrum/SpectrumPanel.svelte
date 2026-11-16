@@ -2,6 +2,7 @@
   import { resolveScopeSourceId, audioScopeFactsRevision, audioScopeProjection } from '$lib/runtime/adapters/scope-adapter';
   import { onDestroy, untrack, type Snippet } from 'svelte';
   import { ScopeRenderTrace, type TraceToken, type TraceSource, type TraceStatus } from '../../lib/runtime/scope-render-trace';
+  import type { StackedTraceLocate } from '../../lib/renderers/stacked-trace-geometry';
   import SpectrumCanvas from './SpectrumCanvas.svelte';
   import WaterfallCanvas from './WaterfallCanvas.svelte';
   import DxOverlay from './DxOverlay.svelte';
@@ -207,6 +208,8 @@
   let brtLevel = $state(0);
   let colorScheme = $state<ColorSchemeName>('classic');
   let spectrumPush: ((data: Uint8Array, token?: TraceToken | null) => void) | null = null;
+  /** MOR-4463: set while the spectrum pane shows the 3D view, where a point is not a frequency by its x alone. */
+  let spectrumLocate: StackedTraceLocate | null = null;
   let waterfallPush: ((data: Uint8Array, options?: WaterfallOptions, token?: TraceToken | null) => void) | null = null;
   const traceCandidate = import.meta.env.VITE_SCOPE_TRACE_CANDIDATE === '1';
   let trace: ScopeRenderTrace | null = $state(null);
@@ -1291,6 +1294,7 @@
     // event has no listener, so one physical click emits one command.
     const clickTune = !dragging && candidate === null && stable && dragSurface === spectrumArea;
     const clickView = capture.view;
+    const clickRect = clickTune ? dragSurface.getBoundingClientRect() : null;
     dragging = false;
     dragCapture = null;
     dragSurface = null;
@@ -1299,8 +1303,11 @@
     // viewport from here; the preview belongs to the gesture only.
     clearDragPreview();
     if (clickTune) {
-      const fraction = Math.min(1, Math.max(0,
+      const flat = Math.min(1, Math.max(0,
         (event.clientX - capture.elementLeft) / capture.geometry.elementWidth));
+      // In the 3D view the click tunes to the trace drawn under the pointer, at that trace's depth.
+      const fraction = (clickRect && clickRect.height > 0
+        ? spectrumLocate?.(flat, (event.clientY - clickRect.top) / clickRect.height) : null) ?? flat;
       handleTune(clickView ? clickView.startHz + fraction * (clickView.endHz - clickView.startHz)
         : viewportStartFreq + fraction * viewportSpanHz);
       return;
@@ -1574,7 +1581,7 @@
           ? runtime.scope.stream(audioFft ? 'audio_fft' : 'hardware')
             .latest(scopeSlotKey(geometry.sourceId, geometry.receiver)) : null;
         if (frame?.pixels) fn(frame.pixels);
-      }} {colorScheme} />
+      }} {colorScheme} onRegisterLocate={(fn) => { spectrumLocate = fn; }} />
       {/if}
       {#if scopeTraceLive && scopeContentState !== 'out-of-range'}
       {#each coverageHatched as hatched (hatched.reason + hatched.start)}
