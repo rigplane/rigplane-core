@@ -32,8 +32,12 @@ __all__ = [
     "absent_answered_line",
     "ask_question_prompt",
     "bad_choice_message",
+    "cancelled_message",
     "check_consent_prompt",
+    "check_failed_message",
     "check_restore_warning",
+    "check_running_line",
+    "originals_unreadable_message",
     "check_result_line",
     "checks_consent_prompt",
     "checks_intro",
@@ -47,6 +51,7 @@ __all__ = [
     "found_line",
     "human_read_name",
     "journal_pending_message",
+    "journal_unreadable_message",
     "no_answers_message",
     "no_profile_for_radio_message",
     "no_radio_found_message",
@@ -55,6 +60,9 @@ __all__ = [
     "port_without_profile_message",
     "pre_save_summary",
     "precondition_abort_message",
+    "read_failed_message",
+    "readback_mismatch_message",
+    "rehearsal_failed_message",
     "present_missed_line",
     "probe_help",
     "progress_line",
@@ -67,6 +75,9 @@ __all__ = [
     "skipped_line",
     "start_screen",
     "termination_line",
+    "transport_error_message",
+    "witness_changed_message",
+    "write_failed_message",
 ]
 
 #: Skip reasons in the order the summary counts them.
@@ -263,6 +274,7 @@ def pre_save_summary(
     absent_answered: Sequence[AbsentAnswer] | None = None,
     present_missed: list[str] | None = None,
     termination: TerminationInfo | None = None,
+    checks_line: str | None = None,
 ) -> str:
     """The summary shown before the file exists on disk."""
     settings = ", ".join(settings_lines)
@@ -286,6 +298,7 @@ def pre_save_summary(
         f"{absent_answered_line(absent_answered or [])}"
         f"{present_missed_line(present_missed or [])}"
         f"{termination_line(termination)}"
+        f"{checks_line}\n" if checks_line else ""
         "The tool itself does not add your name, computer name, internet "
         "address, or any file from your computer.\n"
         "But the --label text is saved exactly as you typed it, and stored "
@@ -492,6 +505,11 @@ def ask_question_prompt(question: str) -> str:
     )
 
 
+def check_running_line(i: int, n: int, title: str) -> str:
+    """The line opening one consented check."""
+    return f"Running check {i} of {n}: {title}"
+
+
 def check_result_line(i: int, verified: bool) -> str:
     """The per-check result: verified, or put back but different."""
     if verified:
@@ -518,6 +536,54 @@ def precondition_abort_message() -> str:
     )
 
 
+def originals_unreadable_message(name: str) -> str:
+    """The abort when an original cannot be read before the first write."""
+    return f"could not read {name} before the first write."
+
+
+def rehearsal_failed_message(name: str) -> str:
+    """The abort when the no-op rehearsal does not read back."""
+    return f"check not run: {name} refused the rehearsal; nothing was changed."
+
+
+def write_failed_message(target: str, outcome: str) -> str:
+    """The record when a check write is refused, silent or malformed."""
+    return f"write {target} was {outcome}."
+
+
+def read_failed_message(target: str, outcome: str) -> str:
+    """The record when a check read is refused, silent or malformed."""
+    return f"read {target} was {outcome}."
+
+
+def readback_mismatch_message(name: str) -> str:
+    """The record when a read does not show the value just written."""
+    return (
+        f"readback for {name} differs: "
+        "the radio does not report the written value."
+    )
+
+
+def witness_changed_message(name: str) -> str:
+    """The record when the witness moves outside the restore list."""
+    return f"witness changed outside the restore list: {name}."
+
+
+def transport_error_message(detail: str) -> str:
+    """The record when the link breaks mid-check."""
+    return f"transport error: {detail}."
+
+
+def cancelled_message(detail: str) -> str:
+    """The record when the person or a signal cancels a check."""
+    return f"cancelled: {detail}."
+
+
+def check_failed_message(detail: str) -> str:
+    """The record when a check fails without changing anything."""
+    return f"check failed: {detail}."
+
+
 def checks_summary_line(
     run: int, verified: int, skipped: int, changed: list[str]
 ) -> str:
@@ -535,6 +601,14 @@ def journal_pending_message(items: list[str], path: str) -> str:
         "A check did not finish last time. Before it the radio had: "
         f"{', '.join(items)}. Please set these by hand. "
         f"The journal file is left in place until you delete it: {path}"
+    )
+
+
+def journal_unreadable_message(path: str) -> str:
+    """The next-start message for a journal that does not parse."""
+    return (
+        f"A previous check journal {path} could not be read. "
+        "Delete it once the radio is back the way it was."
     )
 
 

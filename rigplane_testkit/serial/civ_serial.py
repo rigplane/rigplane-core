@@ -135,6 +135,7 @@ _CMD_SCOPE = 0x27  # scope: 00 wave packet, 10 panel on/off, 11 wave output on/o
 _SUB_SCOPE_WAVE = 0x00
 _SUB_SCOPE_PANEL = 0x10
 _SUB_SCOPE_OUTPUT = 0x11
+_CMD_LEVEL = 0x14  # Levels (RF power 0x0A, etc.): sub selects, one value byte
 _CMD_VFO = 0x07  # VFO / receiver select; 07 D2 reads the selected receiver
 _CMD_MEMORY = 0x08  # bare: Memory mode; + channel / A0 + group: select
 _SUB_MEMORY_GROUP = 0xA0
@@ -320,6 +321,10 @@ class CivSerialFake:
         self._s_meter = s_meter
 
         # Fault surface (all off by default).
+        self._levels: dict[int, int] = {}
+        self._clamped: dict[tuple[int, int | None], dict[bytes, bytes]] = {}
+        self._drop_after: int | None = None
+        self._frames = 0
         self._identity_delay_s = 0.0
         self._identity_after_reconnect_only = False
         self._model_id_override: bytes | None = None
@@ -602,6 +607,33 @@ class CivSerialFake:
         link. Writes and every other request are answered as usual."""
         self._lost_answers.append(command)
 
+    def clamp_write(
+        self,
+        command: int,
+        sub: int | None,
+        when_data: bytes,
+        store_data: bytes,
+    ) -> None:
+        """Store *store_data* instead of a write carrying *when_data*.
+
+        Only a write whose data bytes equal *when_data* is clamped; every
+        other write applies normally, so a restore of the original value
+        afterwards still verifies.
+        """
+        self._clamped.setdefault((command, sub), {})[bytes(when_data)] = bytes(
+            store_data
+        )
+
+    def drop_after(self, n: int) -> None:
+        """Make the device vanish after *n* received frames.
+
+        The next exchange then fails: the link dies mid-check and the
+        journal is left behind.
+        """
+        if n < 0:
+            raise ValueError("drop_after needs n >= 0")
+        self._drop_after = n
+
     def silence(self, for_seconds: float) -> None:
         """MOR-2861: the link stays open and nothing answers for the window.
 
@@ -684,6 +716,10 @@ class CivSerialFake:
 
     def _on_wire_frame(self, connection: "_Connection", frame: bytes) -> None:
         self._frame_bauds.append(connection.baud)
+        self._frames += 1
+        if self._drop_after is not None and self._frames > self._drop_after:
+            self._vanish_now()
+            return
         if not self._hears(connection):
             return  # wrong baud: line noise to the radio, no answer, no echo
         if self._vanished or time.monotonic() < self._silent_until:
@@ -737,6 +773,10 @@ class CivSerialFake:
         if ptt and not parsed.data:
             return self._readback_s
         return self._reply_latency_s
+
+    def _stored(self, command: int, sub: int | None, data: bytes) -> bytes:
+        """The data a write stores: the clamped bytes when they match."""
+        return self._clamped.get((command, sub), {}).get(bytes(data), bytes(data))
 
     def _schedule_ptt_switch(self, on: bool) -> None:
         """Flip PTT *on* after the profile's switch delay; the latest write
@@ -830,7 +870,7 @@ class CivSerialFake:
             )
         if cmd == _CMD_FREQ_SET:
             if len(parsed.data) == 5:
-                self._frequency_hz = bcd_decode(parsed.data)
+                self._frequency_hz = bcd_decode(self._stored(cmd, None, parsed.data))
                 return self._ack()
             return self._nak()
         if cmd == _CMD_MODE_GET and not parsed.data:
@@ -842,11 +882,24 @@ class CivSerialFake:
             )
         if cmd == _CMD_MODE_SET:
             if parsed.data:
-                self._mode = parsed.data[0]
-                if len(parsed.data) > 1:
-                    self._filter_width = parsed.data[1]
+                stored = self._stored(cmd, parsed.sub, parsed.data)
+                self._mode = stored[0]
+                if len(stored) > 1:
+                    self._filter_width = stored[1]
                 return self._ack()
             return self._nak()
+        if cmd == _CMD_LEVEL and parsed.sub is not None:
+            if not parsed.data:
+                return build_civ_frame(
+                    CONTROLLER_ADDR,
+                    self._civ_addr,
+                    _CMD_LEVEL,
+                    sub=parsed.sub,
+                    data=bytes([self._levels.get(parsed.sub, 0)]),
+                )
+            stored = self._stored(cmd, parsed.sub, parsed.data[:1])
+            self._levels[parsed.sub] = stored[0]
+            return self._ack()
         if cmd == _CMD_PTT and parsed.sub == _SUB_PTT:
             if not parsed.data:
                 return build_civ_frame(

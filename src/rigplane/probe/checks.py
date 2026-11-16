@@ -496,7 +496,7 @@ async def _run_one(
                 ctx.gate.allow(body)
             reply, outcome = await _send_read(ctx, body, phase="originals")
             if reply is None or outcome in ("refused", "malformed"):
-                error = f"could not read {item.read} before the first write."
+                error = render.originals_unreadable_message(item.read)
                 ctx.emit(error)
                 return record(True, CheckWitness(before={}, after={}, changed={})), False
             display = _display(protocol, reply)
@@ -534,7 +534,7 @@ async def _run_one(
         if consent(prompt).strip().lower() not in ("y", "yes"):
             return None, True
         ran = True
-        ctx.emit(f"Running check {number} of {total}: {check.title}")
+        ctx.emit(render.check_running_line(number, total, check.title))
         write_journal(
             ctx.journal_path,
             ChecksJournal(
@@ -558,10 +558,7 @@ async def _run_one(
             if outcome != "sent" or reread is None or bytes(reread) != bytes(
                 entry.reply
             ):
-                error = (
-                    f"check not run: {entry.item_read} refused the rehearsal; "
-                    "nothing was changed."
-                )
+                error = render.rehearsal_failed_message(entry.item_read)
                 ctx.emit(error)
                 delete_journal(ctx.journal_path)
                 rehearsed = False
@@ -602,7 +599,7 @@ async def _run_one(
                         )
                     )
                     if outcome != "sent":
-                        error = f"write {step.command or step.line} was {outcome}."
+                        error = render.write_failed_message(step.command or step.kind, outcome)
                         verified = False
                         break
                     last_write[_check_target(protocol, body)] = (body, step.command)
@@ -619,7 +616,7 @@ async def _run_one(
                     )
                 )
                 if reply is None or outcome in ("refused", "malformed"):
-                    error = f"read {step.command or step.kind} was {outcome}."
+                    error = render.read_failed_message(step.command or step.kind, outcome)
                     verified = False
                     break
                 target = _check_target(protocol, body)
@@ -630,10 +627,7 @@ async def _run_one(
                         reply, step.command,
                     ):
                         verified = False
-                        error = (
-                            f"readback for {step.command} differs: the radio "
-                            "does not report the written value."
-                        )
+                        error = render.readback_mismatch_message(step.command)
             witness_after = await _read_snapshot(ctx, check.witness, phase="witness")
             restore_reads = {item.read for item in check.restore}
             changed = sorted(
@@ -644,18 +638,18 @@ async def _run_one(
             outside = [name for name in changed if name not in restore_reads]
             if outside:
                 verified = False
-                error = f"witness changed outside the restore list: {outside[0]}."
+                error = render.witness_changed_message(outside[0])
     except (KeyboardInterrupt, CheckCancelled) as cancelled:
-        error = f"cancelled: {cancelled}."
+        error = render.cancelled_message(str(cancelled))
     except asyncio.CancelledError:
-        error = "cancelled."
+        error = render.cancelled_message("cancelled")
         task_cancelled = True
     except OSError as transport:
-        error = f"transport error: {transport}."
+        error = render.transport_error_message(str(transport))
         verified = False
         restored = False
     except Exception as failed:  # noqa: BLE001 -- a broken check records, never crashes
-        error = f"check failed: {failed}."
+        error = render.check_failed_message(str(failed))
         ctx.emit(error)
     if ran:
         if ctx.on_event is not None:
@@ -697,7 +691,7 @@ async def _run_one(
                 restored = False
                 verified = False
                 if error is None:
-                    error = "transport error during restore."
+                    error = render.transport_error_message("during restore")
         if restored:
             delete_journal(ctx.journal_path)
         if restored and verified and error is None:
@@ -808,7 +802,7 @@ async def run_checks(
                         witness=CheckWitness(before={}, after={}, changed=[]),
                         restored=True,
                         verified=True,
-                        error=f"cancelled: {cancelled}.",
+                        error=render.cancelled_message(str(cancelled)),
                     )
                 )
                 break
@@ -824,7 +818,7 @@ async def run_checks(
                         witness=CheckWitness(before={}, after={}, changed=[]),
                         restored=False,
                         verified=False,
-                        error=f"transport error: {transport}.",
+                        error=render.transport_error_message(str(transport)),
                     )
                 )
                 break
