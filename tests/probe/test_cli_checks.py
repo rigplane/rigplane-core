@@ -515,6 +515,7 @@ async def test_a_differing_restore_readback_is_not_called_put_back(tmp_path) -> 
 async def test_missing_witness_data_never_claims_a_different_value(tmp_path) -> None:
     config = load(tmp_path, "ft991a", WITNESSED)
     radio = await cat_radio()
+    radio.hold("PC", "020")
 
     def mute_witness() -> str:
         radio.reject("FA")  # the witness read after the restore gets no data
