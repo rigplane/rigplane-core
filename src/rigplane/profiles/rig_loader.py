@@ -12,7 +12,10 @@ from fractions import Fraction
 from importlib import resources
 from importlib.resources.abc import Traversable
 from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
+
+if TYPE_CHECKING:
+    from rigplane.profiles.probe_checks import ProbeCheck
 
 from rigplane.core.capabilities import (
     CAP_FILTER_WIDTH_RADIO_DEFAULT,
@@ -44,6 +47,7 @@ from rigplane.profiles.control_domain import (
     _public_decimal,
     validate_control_raw_value,
 )
+from rigplane.profiles.probe_checks import RadioFacts, parse_probe_checks
 
 __all__ = [
     "RigConfig",
@@ -63,6 +67,7 @@ from rigplane.commands.command_spec import (
     CommandSpec,
 )
 from rigplane.profiles import (
+    selector_one_is_sub,
     BandInfo,
     CwTextSpec,
     ControlDomainSpec,
@@ -942,6 +947,10 @@ class RigConfig:
     # non-Xiegu profile. Keyword-only so no positional argument shifts.
     xiegu_model_id: int | None = field(default=None, kw_only=True)
     iq_lan: IqLanSpec | None = field(default=None, kw_only=True)
+    # Typed ``[[probe.checks]]`` write checks (MOR-4464 B1), from the
+    # optional top-level ``[probe]`` section. Empty when not declared.
+    # Keyword-only so no positional argument shifts.
+    probe_checks: tuple[ProbeCheck, ...] = field(default=(), kw_only=True)
 
     def to_profile(self) -> RadioProfile:
         """Build a ``RadioProfile`` from this config."""
@@ -4242,6 +4251,24 @@ def load_rig(path: Path) -> RigConfig:
         cw_text=cw_text,
         usb_identity=usb_identity,
         iq_lan=iq_lan,
+        probe_checks=parse_probe_checks(
+            filename,
+            data.get("probe"),
+            facts=RadioFacts(
+                protocol=protocol_type,
+                commands=commands,
+                modes=tuple(modes),
+                mode_codes=None if mode_codes is None else tuple(mode_codes),
+                cmd29_routes=frozenset(cmd29_routes),
+                swap_ab=vfo_swap_ab,
+                swap_main_sub=vfo_swap_main_sub,
+                unselected_is_sub=selector_one_is_sub(receiver_count, split_tx_target),
+                data_modes=data_mode_count,
+                freq_ranges=tuple(
+                    (r["start_hz"], r["end_hz"]) for r in freq_ranges_data
+                ),
+            ),
+        ),
     )
 
 

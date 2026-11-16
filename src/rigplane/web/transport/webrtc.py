@@ -131,19 +131,20 @@ class WebRtcDataChannelConnection:
         self._channel.send(data)
 
     async def close(self, code: int = 1000, reason: str = "") -> None:
-        """Close the DataChannel and its peer connection.
+        """Close ONLY this connection's DataChannel (MOR-4498).
+
+        The peer connection outlives each of its channels: its single
+        owner — the WebRTC session manager — closes it (``_Session.close``,
+        where ``pc.close()`` stays shielded per MOR-1431) when the peer
+        itself ends. Closing one channel closes exactly its own stream,
+        like ``abort()`` and like a WebSocket ``close()`` closes one
+        socket; sibling channels on the same peer keep working.
 
         ``code`` and ``reason`` are accepted for protocol parity with the
         WebSocket transport; WebRTC has no equivalent close frame.
-
-        ``pc.close()`` runs under ``asyncio.shield``: aiortc arms its
-        internal "closed" future first and resolves it only at the end of
-        teardown, so cancelling this await mid-teardown would leave every
-        later ``pc.close()`` hanging on the never-resolved future (MOR-1431).
         """
         self._mark_closed()
         self._channel.close()
-        await asyncio.shield(self._pc.close())
 
     def abort(self) -> None:
         """Synchronously mark the channel closed, for ``Connection`` parity.
@@ -154,7 +155,7 @@ class WebRtcDataChannelConnection:
         ``WebRtcDataChannelConnection`` keeps satisfying the ``Connection``
         protocol now that a bounded-close fallback caller may call
         ``.abort()`` on any ``Connection``. ``close()`` remains the normal
-        (awaited, full) teardown path.
+        awaited teardown of this channel.
         """
         self._mark_closed()
         try:
