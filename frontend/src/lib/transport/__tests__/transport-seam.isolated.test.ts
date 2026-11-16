@@ -118,6 +118,8 @@ describe('transport seam guards', () => {
 interface BundleHarness {
   readonly bundle: TransportBundle;
   openControl(transport: MessageTransport): void;
+  /** Text frames the producer itself delivers to the app during open. */
+  readonly handshakeTexts: readonly string[];
   deliverText(text: string): void;
   deliverBinary(data: ArrayBuffer): void;
   sentToPeer(): Array<string | ArrayBuffer>;
@@ -137,6 +139,7 @@ function webSocketHarness(): BundleHarness {
   vi.stubGlobal('WebSocket', MockWebSocket);
   return {
     bundle: webSocketBundle(),
+    handshakeTexts: [],
     openControl: (transport) => {
       transport.open('ws://ignored/', { protocols: ['rigplane-controller-v1.KEY'], role: 'primary' });
       instances[0].simulateOpen();
@@ -150,6 +153,8 @@ function webSocketHarness(): BundleHarness {
 function dataChannelHarness(channels: RemoteChannels = fakeChannels()): BundleHarness {
   return {
     bundle: dataChannelBundle(channels),
+    // The control hello proves the attach and is also an app frame.
+    handshakeTexts: [goldenDocs.control_hello.text as string],
     openControl: (transport) => {
       transport.open('ws://ignored/', { protocols: ['rigplane-controller-v1.KEY'], role: 'primary' });
       channels.control.simulateOpen();
@@ -190,7 +195,7 @@ describe('transport bundle seam (C5b)', () => {
     harness.deliverText('{"type":"hello"}');
     const outgoing = Uint8Array.of(1, 2, 3).buffer;
     harness.deliverBinary(outgoing);
-    expect(texts).toEqual(['{"type":"hello"}']);
+    expect(texts).toEqual([...harness.handshakeTexts, '{"type":"hello"}']);
     expect(bins).toEqual([outgoing]);
     transport.send('{"type":"command"}');
     expect(harness.sentToPeer()).toContain('{"type":"command"}');
@@ -231,7 +236,7 @@ describe('transport bundle seam (C5b)', () => {
       const transport = createMessageTransport(label);
       transport.open('ws://ignored/', { protocols: ['rigplane-controller-v1.KEY'], role: 'primary' });
       channel.simulateOpen();
-      expect(channel.textFrames()[0], `${label} attach frame`).toBe(attachText);
+      expect(JSON.parse(channel.textFrames()[0]), `${label} attach frame`).toEqual(JSON.parse(attachText));
       channel.simulateMessage(ackText);
       expect(transport.state, `${label} opens on its ack`).toBe('open');
     }

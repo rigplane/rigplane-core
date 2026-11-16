@@ -137,7 +137,8 @@ describe('one boot path (C5b)', () => {
     control2.onOpen(() => { opened2 += 1; });
     control2.open('ws://ignored/', { protocols: ['rigplane-controller-v1.KEY'], role: 'primary' });
     next.control.simulateOpen();
-    expect(next.control.textFrames()[0]).toBe(goldenAttachText('attach_control', 'KEY'));
+    // JSON spacing is not contractual: compare the decoded documents.
+    expect(JSON.parse(next.control.textFrames()[0])).toEqual(JSON.parse(goldenAttachText('attach_control', 'KEY')));
     next.control.simulateMessage(goldenDocs.control_hello.text as string);
     expect(opened2).toBe(1);
     expect(losses, 'no second loss from the swap').toEqual(['channel_closed']);
