@@ -1351,7 +1351,7 @@ class RadioPoller:
     @staticmethod
     def _requestable(scheduler: AcquisitionScheduler, path: FieldPath) -> bool:
         capability = scheduler._profile.capability_for(path)
-        return capability.can_poll or capability.command_response_observable
+        return bool(capability.can_poll or capability.command_response_observable)
 
     def _geometry_readback_paths(
         self, scheduler: AcquisitionScheduler, receiver_id: str
