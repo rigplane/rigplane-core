@@ -51,19 +51,28 @@ async function readoutHz(readout: Locator): Promise<number> {
   return Number((((await readout.textContent()) ?? '').replace(/\D/g, '')));
 }
 
-/** Absolute release: click-to-tune on the panorama at 85% width, which lands
- * above every press target whether the view is fixed or VFO-following. The
- * release target is read back from the captured set_freq frames, never
- * predicted from the viewport. */
-async function spectrumClickRelease(page: Page): Promise<void> {
+/** Real paced drag on the panorama: press, slide left (raises the tuned
+ * frequency) in slow increments, release. Every move past the pacing
+ * interval emits an intermediate set_freq; the release emits the final
+ * absolute target. The targets are read back from the captured frames,
+ * never predicted from the viewport. */
+async function dragRelease(page: Page): Promise<void> {
   const area = page.locator('.spectrum-area').first();
   await expect(area).toBeVisible({ timeout: 30_000 });
   const box = await area.boundingBox();
   expect(box).not.toBeNull();
-  await page.mouse.click(box!.x + box!.width * 0.85, box!.y + box!.height * 0.3);
+  const y = box!.y + box!.height * 0.3;
+  const startX = box!.x + box!.width * 0.6;
+  await page.mouse.move(startX, y);
+  await page.mouse.down();
+  for (let move = 1; move <= 8; move++) {
+    await page.mouse.move(startX - move * 25, y, { steps: 3 });
+    await page.waitForTimeout(150);
+  }
+  await page.mouse.up();
 }
 
-test('IC-705 slow link: steps, absolute release, delayed echo, step lands on release + 1 kHz', async ({ page }, info) => {
+test('IC-705 slow link: paced drag, release, delayed own-target echo, step lands on release + 1 kHz', async ({ page }, info) => {
   const port = Number(process.env.MOR4393_PORT ?? 18849);
   const base = 14_250_000;
   const server = await startJourneyServer(port, base,
@@ -71,8 +80,18 @@ test('IC-705 slow link: steps, absolute release, delayed echo, step lands on rel
       '--response-delay', '0.5'], 'tests/e2e/panorama_web_server.py');
   try {
     const sentFreqs: number[] = [];
+    let scopeFrames = 0;
     page.on('websocket', socket => {
-      if (new URL(socket.url()).pathname !== '/api/v1/ws') return;
+      const path = new URL(socket.url()).pathname;
+      // Scope frames are binary on /api/v1/scope; the panel's drag gesture is
+      // inert until the live scope plane (and its geometry) exists.
+      if (path === '/api/v1/scope') {
+        socket.on('framereceived', ({ payload }) => {
+          if (typeof payload !== 'string') scopeFrames++;
+        });
+        return;
+      }
+      if (path !== '/api/v1/ws') return;
       socket.on('framesent', ({ payload }) => {
         if (typeof payload !== 'string') return;
         const command: unknown = JSON.parse(payload) as unknown;
@@ -83,41 +102,32 @@ test('IC-705 slow link: steps, absolute release, delayed echo, step lands on rel
       (await fetchState(page, port)).main.freqHz;
     const readout = page.locator('.receiver-instrument [data-vfo-freq]').first();
     await page.goto(`http://127.0.0.1:${port}/?ui=v2`);
-    // The keyboard tune path reads the observed freqHz from radio state —
-    // wait until the browser itself shows the base before pressing.
+    // The tune path reads the observed freqHz from radio state — wait until
+    // the browser itself shows the base before gesturing.
     await expect.poll(stateFreqHz, { timeout: 30_000 }).toBe(base);
     await expect(readout).toHaveText(/14\s*\.\s*250/, { timeout: 30_000 });
-    for (let press = 0; press < 12; press++) {
-      await page.keyboard.press('ArrowRight');
-      await page.waitForTimeout(150);
-    }
-    // Readbacks lag the writes: wait until at least one press echo has
-    // landed, so the final step below really carries a pre-release echo.
-    await expect.poll(stateFreqHz, { timeout: 30_000 }).not.toBe(base);
-    const pressSends = sentFreqs.length;
-    // Absolute release (fresh association window: keyboard steps carry no
-    // paced-drag flag to inherit). The click emits synchronously.
-    await spectrumClickRelease(page);
-    await expect.poll(() => sentFreqs.length, { timeout: 10_000 }).toBeGreaterThan(pressSends);
+    await expect.poll(() => scopeFrames, { timeout: 30_000 }).toBeGreaterThan(10);
+    await dragRelease(page);
+    // At least one intermediate drag target plus the release target.
+    expect(sentFreqs.length).toBeGreaterThan(2);
     const release = sentFreqs.at(-1)!;
-    // The release must land above every press target: only then does a
-    // backward cold reset violate the monotonicity asserted below.
+    // The release must land above every intermediate target: only then does
+    // a backward cold reset onto a stale own-target echo violate the
+    // monotonicity asserted below.
     for (const freq of sentFreqs) expect(release).toBeGreaterThanOrEqual(freq);
+    expect(sentFreqs[0]).toBeGreaterThan(base);
     const expected = release + 1_000;
-    // Let a delayed pre-release echo land, then wheel up once over the
-    // panorama: a +1 step from observed (confirmed radio truth — never the
-    // burst display) truth. The mouse is already over the canvas.
-    await page.waitForTimeout(700);
+    // One wheel-up step right after the release, while the delayed echoes of
+    // the intermediate drag targets are still in flight to the browser.
     await page.mouse.wheel(0, -120);
     // The fixed code accumulates onto the release target; the pre-fix code
-    // cold-resets onto the stale echo and steps backward.
+    // cold-resets onto a stale intermediate echo and steps backward.
     await expect
       .poll(async () => readoutHz(readout), { timeout: 20_000 })
       .toBe(expected);
     await expect
       .poll(stateFreqHz, { timeout: 30_000, intervals: [500] })
       .toBe(expected);
-    expect(sentFreqs.length).toBeGreaterThan(1);
     expect(sentFreqs.at(-1)).toBe(expected);
     for (let index = 1; index < sentFreqs.length; index++) {
       expect(sentFreqs[index]!).toBeGreaterThanOrEqual(sentFreqs[index - 1]!);
