@@ -42,7 +42,6 @@ def _bcd_level_decode(data: bytes) -> int:
 
 
 from rigplane.commands import parse_civ_frame  # noqa: E402
-from rigplane.commands._codec import bcd_encode_value  # noqa: E402
 from rigplane.commands.scope import parse_scope_fixed_edge_response  # noqa: E402
 from rigplane.profiles import resolve_radio_profile  # noqa: E402
 from rigplane.runtime.radio import IcomRadio  # noqa: E402
