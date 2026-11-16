@@ -193,9 +193,7 @@ async def test_swr_is_read_only_while_keyed_and_published(
     # No transmit behaviour change: the SWR lane adds exactly one query frame
     # (0x15 0x12, empty payload), and the poller never writes the transmit
     # state: no PTT (0x1C 0x00) or tuner (0x1C 0x01) write frame is sent.
-    assert {f for f in rig.sent if f[:2] == (0x15, SWR_SUB)} == {
-        (0x15, SWR_SUB, b"")
-    }
+    assert {f for f in rig.sent if f[:2] == (0x15, SWR_SUB)} == {(0x15, SWR_SUB, b"")}
     for command, sub, data in rig.sent:
         assert not (command == 0x1C and data), (command, sub, data)
 
