@@ -200,7 +200,17 @@ class ScopeHub:
                         request.source_id,
                         request.receiver,
                         grant.view,
-                        _intersection(grant.view, grant.coverage),
+                        # MOR-4392 gate round 1: a follow grant carries the
+                        # truthful native coverage from the start — the same
+                        # semantics _on_frame publishes on every regrant, so
+                        # initial and subsequent granted documents agree
+                        # (the consumer contract accepts native coverage
+                        # outside the cropped view; the binary frame keeps
+                        # its in-view intersection). Pinned views keep the
+                        # in-view crop.
+                        grant.coverage
+                        if isinstance(request.view, FollowView)
+                        else _intersection(grant.view, grant.coverage),
                         # No upsampling: a request wider than the source's
                         # native bins is granted at native resolution, and
                         # the granted message reports the actual width.
@@ -317,17 +327,39 @@ class ScopeHub:
                 if native_width is not None
                 else client._request.width,
             )
-            if client.granted.max_fps == 0:
-                continue
             grant = client.granted
-            view = (
-                source.plugin.resolve_view(client._request.view, frame.receiver)
-                if isinstance(client._request.view, FollowView)
-                else grant.view
-            )
-            coverage = _intersection(view, frame.coverage)
+            if isinstance(client._request.view, FollowView):
+                # MOR-4392: the follow grant's view is the source's own
+                # follow semantics (ScopeSourcePlugin.resolve_follow) —
+                # the radio reports the requested window clipped to the
+                # live native coverage, an FFT source keeps the requested
+                # crop — while the granted coverage stays the truthful
+                # native coverage. Following never writes back. Frames
+                # without real data keep the resolved view.
+                if frame.out_of_range:
+                    view = source.plugin.resolve_view(
+                        client._request.view, frame.receiver
+                    )
+                    coverage = _intersection(view, frame.coverage)
+                else:
+                    view = source.plugin.resolve_follow(
+                        client._request.view, frame.coverage, frame.receiver
+                    )
+                    coverage = frame.coverage
+            else:
+                view = grant.view
+                coverage = _intersection(view, frame.coverage)
             client.granted = replace(grant, view=view, coverage=coverage)
-            key = grant.width, view, coverage
+            if grant.max_fps == 0:
+                # Passive attach (MOR-4385): the grant tracks the source
+                # without set_view writes, but no frames are encoded or
+                # delivered.
+                continue
+            # The wire frame always carries the in-view intersection
+            # (ScopeWireFrame requires coverage inside view) while the
+            # grant above keeps the truthful native coverage.
+            wire_coverage = _intersection(view, frame.coverage)
+            key = grant.width, view, wire_coverage
             if key not in encoded:
                 pixels = (
                     max_hold(frame.pixels, frame.coverage, view, grant.width)
@@ -341,8 +373,8 @@ class ScopeHub:
                         frame.receiver,
                         view.start_hz,
                         view.end_hz,
-                        coverage.start_hz if coverage else view.start_hz,
-                        coverage.end_hz if coverage else view.start_hz,
+                        wire_coverage.start_hz if wire_coverage else view.start_hz,
+                        wire_coverage.end_hz if wire_coverage else view.start_hz,
                         grant.width,
                         pixels,
                         frame.out_of_range,

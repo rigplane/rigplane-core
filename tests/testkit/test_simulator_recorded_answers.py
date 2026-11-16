@@ -14,6 +14,8 @@ measurement of the same order is the conformance answer-class replay
 
 from __future__ import annotations
 
+import pytest
+
 from rigplane.core.types import bcd_encode
 from rigplane_testkit.icom import MockIcomRadio
 from rigplane_testkit.icom.replay import RecordedAnswerTable, extract_civ_frame
@@ -127,3 +129,52 @@ async def test_recorded_set_answer_becomes_echo_in_echo_mode() -> None:
     assert reply is not None
     assert reply != _ACK_REPLY
     assert reply == bytes.fromhex("fefee0982200fd")
+
+
+# A request row with no reply row is recorded silence: the LAN simulator
+# sends nothing after the echo, unlike a request the recording never saw.
+_SILENT = bytes.fromhex("fefe98e07ffd")
+
+
+def _silent_table() -> RecordedAnswerTable:
+    rows = [
+        {
+            "window": "w",
+            "transport": "lan",
+            "t": 0.1,
+            "dir": "c2r",
+            "frame": _SILENT.hex(),
+        },
+        {
+            "window": "w",
+            "transport": "lan",
+            "t": 0.2,
+            "dir": "c2r",
+            "frame": _SPLIT_READ.hex(),
+        },
+        {
+            "window": "w",
+            "transport": "lan",
+            "t": 0.201,
+            "dir": "r2c",
+            "frame": _SPLIT_READ_OFF_REPLY.hex(),
+        },
+    ]
+    return RecordedAnswerTable.from_civ_pairs(rows, "lan")
+
+
+@pytest.mark.realtime(reason="asserts that nothing arrives on the real clock")
+async def test_recorded_silence_is_not_answered_on_the_lan() -> None:
+    sim = MockIcomRadio(recorded_answers=_silent_table())
+    async with _lan_sim(sim) as (server, client):
+        pkt = _civ_packet(_SILENT, seq=1)
+        client.send(pkt, server.civ_port)
+        assert _is_echo_of(await client.recv(), pkt)
+        await client.expect_silence()
+
+
+async def test_unrecorded_request_beside_recorded_silence_is_naked_on_the_lan() -> None:
+    sim = MockIcomRadio(recorded_answers=_silent_table())
+    async with _lan_sim(sim) as (server, client):
+        reply = await _ask_frame(client, server.civ_port, _UNRECORDED, seq=1)
+        assert reply == _NAK_REPLY

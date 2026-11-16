@@ -75,7 +75,10 @@ _BENCH_ROWS = [
 def _bench_answer_table(
     extra_rows: list[dict[str, str]] | None = None,
 ) -> RecordedAnswerTable:
-    rows = [{"transport": "usb", **row} for row in [*_BENCH_ROWS, *(extra_rows or [])]]
+    rows = [
+        {"window": "bench", "transport": "usb", "t": 0.0, **row}
+        for row in [*_BENCH_ROWS, *(extra_rows or [])]
+    ]
     return RecordedAnswerTable.from_civ_pairs(rows, "usb")
 
 

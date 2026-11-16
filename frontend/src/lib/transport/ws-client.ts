@@ -325,7 +325,7 @@ export class WsChannel {
     const ws = createMessageTransport();
     let socketEpoch = 0;
     this.ws = ws;
-    ws.open(target, protocols.length > 0 ? { protocols } : undefined);
+    ws.open(target, protocols.length > 0 ? { protocols, role: controllerClient.role } : undefined);
 
     ws.onOpen(() => {
       if (protocols.length > 0) {

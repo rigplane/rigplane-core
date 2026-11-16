@@ -979,18 +979,24 @@ describe('MobileRadioLayout SCOPE chip tab (MOR-2851)', () => {
     }
   });
 
-  it('AVG / PEAK / BANDS clicks flip the values bound into SpectrumPanel', () => {
+  // MOR-4383 seam: SMTH here is the MobileRadioLayout -> SpectrumPanel
+  // `bind:enableSmooth` half of the chain (the stub mirrors the real prop);
+  // the SpectrumPanel -> renderer half runs through the real panel in
+  // SpectrumPanel.component.test.ts. Dropping the binding leaves the stub at
+  // its default and fails the flip below.
+  it('AVG / SMTH / PEAK / BANDS clicks flip the values bound into SpectrumPanel', () => {
     const restore = withSpectrumRadio();
     try {
       const t = mountMobile();
       const stub = () => t.querySelector<HTMLElement>('.spectrum-panel-stub')!;
       expect(stub().dataset.enableAvg).toBe('true');
       expect(stub().dataset.enablePeakHold).toBe('true');
+      expect(stub().dataset.enableSmooth).toBe('true');
       expect(stub().dataset.showBandPlan).toBe('true');
       scopeChip(t)!.click();
       flushSync();
       for (const [key, attr] of [
-        ['avg', 'enableAvg'], ['peak', 'enablePeakHold'], ['bands', 'showBandPlan'],
+        ['avg', 'enableAvg'], ['peak', 'enablePeakHold'], ['smooth', 'enableSmooth'], ['bands', 'showBandPlan'],
       ] as const) {
         t.querySelector<HTMLButtonElement>(`[data-testid="scope-key-${key}"]`)!.click();
         flushSync();
