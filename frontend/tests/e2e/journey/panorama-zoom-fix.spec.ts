@@ -169,6 +169,39 @@ test('IC-7610: FIX names the disabled SPAN reason and returns to CTR in one tap 
   }
 });
 
+test('IC-7610: the real SPAN key in SCROLL-C writes the span only, no mode write (MOR-4451)', async ({ page }, info) => {
+  const port = 18950;
+  const evidence = info.outputPath('radio.jsonl');
+  const server = await startJourneyServer(port, 14_250_000,
+    ['--model', 'IC-7610', '--evidence', evidence], 'tests/e2e/panorama_web_server.py');
+  const watch = watchPanoramaErrors(page);
+  const frames = watchScopeFrames(page);
+  try {
+    await page.goto(`http://127.0.0.1:${port}/?ui=v2`);
+    await expect.poll(() => frames.length, { timeout: 30_000 }).toBeGreaterThan(10);
+    // S-C lives in the More panel's mode choice.
+    await page.getByRole('button', { name: 'More scope controls' }).first().click();
+    await page.getByRole('radio', { name: 'S-C' }).first().click();
+    await expect.poll(async () => (await scopeWriteReceipts(evidence)).filter(
+      (receipt) => receipt.sub === 0x14).at(-1)?.data[1]).toBe(2);
+    // The press must meet the OBSERVED mode: wait for the radio read-back.
+    await expect(page.getByRole('radio', { name: 'S-C' }).first()).toBeChecked();
+    await page.keyboard.press('Escape');
+    const spanDown = page.getByRole('button', { name: 'Decrease scope span', exact: true }).first();
+    await expect(spanDown).toBeEnabled();
+    const before = await scopeWriteReceipts(evidence);
+    await spanDown.click();
+    await expect.poll(async () => (await scopeWriteReceipts(evidence)).length - before.length,
+      { timeout: 15_000 }).toBeGreaterThan(0);
+    const fresh = (await scopeWriteReceipts(evidence)).slice(before.length);
+    expect(fresh.filter((receipt) => receipt.sub === 0x15)).toHaveLength(1);
+    expect(fresh.filter((receipt) => receipt.sub === 0x14)).toHaveLength(0);
+    expectPanoramaClean(watch);
+  } finally {
+    await server.kill();
+  }
+});
+
 test('IC-7610: passband overlay survives CTR↔FIX at ±250k, LSB 3 kHz, after a reload (MOR-4392)', async ({ page }, info) => {
   const port = 18916;
   const evidence = info.outputPath('radio.jsonl');

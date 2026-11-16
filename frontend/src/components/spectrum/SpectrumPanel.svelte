@@ -1026,11 +1026,11 @@
           ? geometry.view.endHz - geometry.view.startHz : null;
       },
       step(delta: -1 | 1): void {
-        // MOR-4392 (coordinator ruling 2026-11-10): span is a CENTER-mode
-        // setting — in a fixed-edges mode (FIX/S-F) the window is wire-owned
-        // and a step writes nothing, so the step is refused outright (the
-        // keys render disabled; never silently inert).
-        if (isRadioOwnedWindow) return;
+        // MOR-4392 (coordinator ruling 2026-11-10): SPAN applies in CENTER and
+        // SCROLL-C. In FIX/SCROLL-F the edges are wire-owned and a step writes
+        // nothing, so it is refused outright (the keys render disabled).
+        // MOR-4451: SCROLL-C owns its window but still accepts SPAN.
+        if (isSpanDisabledScope(scopeMode)) return;
         const current = requestedView !== null ? requestedView.endHz - requestedView.startHz
           : followSpanHz ?? control.spanHz;
         const choices = runtime.caps?.span_choices_hz ?? [];
