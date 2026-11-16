@@ -23,8 +23,8 @@ from rigplane.profiles.probe_checks import (
 
 FA_HOME = b"FA014074000;"
 FA_NEW = b"FA007074000;"
-MODE_HOME = b"MD2;"
-MODE_NEW = b"MD1;"
+MODE_HOME = b"MD02;"
+MODE_NEW = b"MD01;"
 
 
 def _freq_mode_check(**overrides) -> ProbeCheck:
