@@ -101,8 +101,10 @@ describe('MOR-4463 StackedTraceCanvas', () => {
     view.push(new Uint8Array(475).fill(20));
     view.push(new Uint8Array(101).fill(40));
     flushFrames(16);
+    // Only the latest of the two frames reaches the renderer: 101 samples
+    // plus their levels, once as the first history row and once as the live trace.
     const uploads = gl[0].named('texSubImage2D');
-    expect(uploads).toHaveLength(1);
+    expect(uploads.map(upload => upload.args[4])).toEqual([205, 205]);
     expect((uploads[0].args[8] as Uint8Array)[0]).toBe(40);
     flushSync();
     expect(view.root.getAttribute('data-history-rows')).toBe('1');
