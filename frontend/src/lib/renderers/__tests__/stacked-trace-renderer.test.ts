@@ -18,10 +18,12 @@ describe('MOR-4463 stacked-trace renderer', () => {
     // 30 ms cadence: frames at 0..270 ms.
     for (let i = 0; i < 10; i++) r.pushRow(frame(), options, i * 30);
     const slots = f.named('texSubImage2D').map(call => call.args[3]);
-    // Frame 0 commits slot 0. Commits follow a 100 ms grid: the frame at
-    // 120 ms (grid 100) commits slot 1, the frame at 210 ms (grid 200)
-    // commits slot 2; the frames between rewrite the live slot.
-    expect(slots).toEqual([0, 1, 1, 1, 1, 2, 2, 2, 3, 3]);
+    // A committing frame writes the history row and then the live trace in
+    // the next slot. Frame 0 commits slot 0 (live: 1). Commits follow a
+    // 100 ms grid: the frame at 120 ms commits slot 1 (live: 2), the frame
+    // at 210 ms commits slot 2 (live: 3); the frames between rewrite the
+    // live slot.
+    expect(slots).toEqual([0, 1, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3]);
     expect(r.historyRows).toBe(3);
     expect(f.getContext).toHaveBeenCalledWith('webgl2', expect.any(Object));
   });
@@ -32,7 +34,9 @@ describe('MOR-4463 stacked-trace renderer', () => {
     f.calls.length = 0;
     for (let i = 0; i < 12; i++) r.pushRow(frame(), options, i * 100);
     expect(r.historyRows).toBe(4);
-    expect(f.named('texSubImage2D').map(call => call.args[3])).toEqual([0, 1, 2, 3, 4, 0, 1, 2, 3, 4, 0, 1]);
+    // Every frame commits here: history row, then the live trace one slot on.
+    expect(f.named('texSubImage2D').map(call => call.args[3]))
+      .toEqual(Array.from({ length: 12 }, (_, i) => [i % 5, (i + 1) % 5]).flat());
   });
 
   it('draws the background, then the history back to front, then the live trace', () => {
@@ -223,19 +227,25 @@ describe('MOR-4463 stacked-trace peak levels', () => {
     const f = webglFixture(200, 100);
     const r = new StackedTraceRenderer(f.canvas, options);
     f.calls.length = 0;
+    const uploaded: number[][] = [];
+    (f.gl as unknown as Record<string, unknown>).texSubImage2D = (...args: unknown[]) => {
+      uploaded.push(Array.from((args[8] as Uint8Array).subarray(0, args[4] as number)));
+    };
     r.pushRow(Uint8Array.of(1, 9, 3, 4, 7), options, 0);
-    const upload = f.named('texSubImage2D')[0];
-    expect(upload.args[4]).toBe(11);
-    expect(Array.from((upload.args[8] as Uint8Array).subarray(0, 11))).toEqual([1, 9, 3, 4, 7, 9, 4, 7, 9, 7, 9]);
+    expect(uploaded[0]).toEqual([1, 9, 3, 4, 7, 9, 4, 7, 9, 7, 9]);
   });
 
   it('skips the sample offset when it builds the levels', () => {
     const f = webglFixture(200, 100);
     const r = new StackedTraceRenderer(f.canvas, options);
     f.calls.length = 0;
+    const uploaded: number[][] = [];
+    (f.gl as unknown as Record<string, unknown>).texSubImage2D = (...args: unknown[]) => {
+      uploaded.push(Array.from((args[8] as Uint8Array).subarray(0, args[4] as number)));
+    };
     r.pushRow(Uint8Array.of(77, 77, 2, 5, 3), { ...options, sampleOffset: 2 }, 0);
-    const upload = f.named('texSubImage2D')[0];
-    expect(Array.from((upload.args[8] as Uint8Array).subarray(0, upload.args[4] as number))).toEqual([2, 5, 3, 5, 3, 5]);
+    // The history row and the live trace both start at the offset.
+    expect(uploaded).toEqual([[2, 5, 3, 5, 3, 5], [2, 5, 3, 5, 3, 5]]);
   });
 
   it('reduces a frame denser than the device texture width by maxima instead of failing', () => {
@@ -253,7 +263,70 @@ describe('MOR-4463 stacked-trace peak levels', () => {
   });
 });
 
+describe('MOR-4463 stacked-trace peaks in time', () => {
+  /** Captures each upload as [slot, level-0 samples]. */
+  function uploads(f: ReturnType<typeof webglFixture>, samples: number) {
+    const seen: { slot: number; data: number[] }[] = [];
+    (f.gl as unknown as Record<string, unknown>).texSubImage2D = (...args: unknown[]) => {
+      seen.push({ slot: args[3] as number, data: Array.from((args[8] as Uint8Array).subarray(0, samples)) });
+    };
+    return seen;
+  }
+
+  it('commits a history row holding the peak of the frames since the previous row', () => {
+    const f = webglFixture(200, 100);
+    const r = new StackedTraceRenderer(f.canvas, options, settings);
+    const quiet = Uint8Array.of(10, 10, 10, 10), click = Uint8Array.of(10, 80, 10, 10), tail = Uint8Array.of(10, 10, 10, 30);
+    r.pushRow(quiet, options, 0);
+    const seen = uploads(f, 4);
+    r.pushRow(click, options, 30);   // a click one frame long
+    r.pushRow(quiet, options, 60);
+    r.pushRow(tail, options, 120);   // the frame that reaches the 100 ms grid
+    // Live trace follows every frame; the committed row (slot 1) keeps the click.
+    expect(seen.map(upload => upload.slot)).toEqual([1, 1, 1, 2]);
+    expect(seen[2]).toEqual({ slot: 1, data: [10, 80, 10, 30] });
+    expect(seen[3]).toEqual({ slot: 2, data: [10, 10, 10, 30] });
+    // The next row starts its own peak: the click does not leak forward.
+    r.pushRow(quiet, options, 220);
+    expect(seen[4]).toEqual({ slot: 2, data: [10, 10, 10, 10] });
+  });
+
+  it('never mixes frames of different placement or size into one row', () => {
+    const f = webglFixture(200, 100);
+    const r = new StackedTraceRenderer(f.canvas, options, settings);
+    r.pushRow(Uint8Array.of(10, 10, 10, 10), options, 0);
+    const seen = uploads(f, 4);
+    r.pushRow(Uint8Array.of(80, 10, 10, 10), options, 30);
+    r.pushRow(Uint8Array.of(10, 10, 10, 20), { ...options, centerHz: 14_060_000 }, 60);   // retuned source
+    r.pushRow(Uint8Array.of(10, 30, 10, 10), { ...options, centerHz: 14_060_000 }, 120);
+    expect(seen[2]).toEqual({ slot: 1, data: [10, 30, 10, 20] });
+    f.calls.length = 0;
+    r.draw(120);
+    // The committed row carries the placement of the frames it was built from.
+    const maps = f.named('uniform2f').filter(call => call.args[0] === 'uMap').map(call => call.args.slice(1));
+    expect(maps[1]).toEqual([1, -0.1]);
+  });
+});
+
 describe('MOR-4463 stacked-trace resources', () => {
+  it('fits a row into a small device texture by reducing it, peaks kept', () => {
+    const f = webglFixture(200, 100);
+    const gl = f.gl as unknown as Record<string, (...args: never[]) => unknown>;
+    const base = gl.getParameter;
+    gl.getParameter = ((name: unknown) => name === (f.gl as unknown as Record<string, unknown>).MAX_TEXTURE_SIZE ? 1024 : base(name as never)) as never;
+    const r = new StackedTraceRenderer(f.canvas, options);
+    const data = new Uint8Array(8192).fill(10); data[5000] = 80;
+    f.calls.length = 0;
+    expect(() => r.pushRow(data, options, 0)).not.toThrow();
+    for (const upload of f.named('texSubImage2D')) expect(upload.args[4]).toBeLessThanOrEqual(1024);
+    for (const allocation of f.named('texImage2D')) expect(allocation.args[3]).toBeLessThanOrEqual(1024);
+    // 8192 points become 512 (1023 texels with the levels); bin 5000 lands in entry 312.
+    expect((f.named('texSubImage2D')[0].args[8] as Uint8Array)[5000 >> 4]).toBe(80);
+    f.calls.length = 0;
+    r.draw(0);
+    expect(f.named('uniform2f').find(call => call.args[0] === 'uSamples')!.args.slice(1)).toEqual([512, 80]);
+  });
+
   it('deletes the program and shaders when the vertex shader does not compile', () => {
     const f = webglFixture(200, 100);
     const gl = f.gl as unknown as Record<string, unknown>;
