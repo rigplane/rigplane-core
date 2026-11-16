@@ -10,8 +10,6 @@ import subprocess
 import tempfile
 import unittest
 
-import yaml
-
 
 ROOT = Path(__file__).resolve().parents[2]
 CLASSIFIER_PATH = Path(__file__).with_name("classify-quick-paths.py")
@@ -777,13 +775,12 @@ new AsyncFunction('github', 'context', 'core', script)(github, context, core)
         self.assertNotIn("actions/checkout", docs_quick)
 
     def test_docs_only_quick_concurrency_is_per_pull_request(self) -> None:
-        docs_quick = yaml.safe_load(DOCS_QUICK_YML.read_text(encoding="utf-8"))
-        self.assertEqual(
-            docs_quick["concurrency"],
-            {
-                "group": "docs-only-quick-${{ github.event.pull_request.number }}",
-                "cancel-in-progress": True,
-            },
+        docs_quick = DOCS_QUICK_YML.read_text(encoding="utf-8")
+        self.assertIn(
+            "concurrency:\n"
+            "  group: docs-only-quick-${{ github.event.pull_request.number }}\n"
+            "  cancel-in-progress: true\n",
+            docs_quick,
         )
 
     def test_docs_only_publisher_succeeds_only_for_complete_stable_docs(self) -> None:
