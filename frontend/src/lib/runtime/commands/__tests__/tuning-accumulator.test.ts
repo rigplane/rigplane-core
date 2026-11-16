@@ -402,15 +402,18 @@ describe('MOR-2464 display-only tuning-burst publication', () => {
   it('extends the hold on every accepted step, including an unchanged-command repeat', () => {
     const acc = createTuningAccumulator({
       emit, paceMs: 60, quietWindowMs: 4_000, visualHoldMs: 200,
+      // The mock stands in for the lifecycle-backed association, which
+      // matches this burst's own still-pending send.
+      acceptedTarget: ({ frequency }) => emit.mock.calls.some(([, target]) => target === frequency),
     });
     const confirmed = 14_074_000;
     acc.step(0, confirmed, confirmed + 1_000, 1);
     vi.advanceTimersByTime(150);
-    // The echo confirms the first write (unassociated marker). MOR-4393: the
-    // echo of our own still-pending send continues the burst through the send
-    // ledger instead of cold-starting it, so the unchanged target waits for
-    // the pace rather than re-emitting immediately. It is still local input:
-    // the visual latch refreshes.
+    // The echo confirms the first write. MOR-4393: the echo of our own
+    // still-pending send continues the burst through the single
+    // lifecycle-backed association instead of cold-starting it, so the
+    // unchanged target waits for the pace rather than re-emitting
+    // immediately. It is still local input: the visual latch refreshes.
     acc.step(0, confirmed + 1_000, confirmed + 1_000, 2);
     expect(emit).toHaveBeenCalledTimes(1);
     expect(emit).toHaveBeenLastCalledWith(0, confirmed + 1_000);
