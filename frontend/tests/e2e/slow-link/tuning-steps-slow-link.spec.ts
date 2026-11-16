@@ -1,7 +1,7 @@
 import { expect, test, type Locator, type Page } from '@playwright/test';
 import { startJourneyServer } from '../journey/server-process';
 import type { RadioIntent } from '../../../src/lib/runtime/commands/radio-intents';
-import type { WsCommand } from '../../../src/lib/types/protocol';
+import type { WsCommand, WsIncoming } from '../../../src/lib/types/protocol';
 import type { ServerStatePublic } from '../../../src/lib/types/state';
 
 /**
@@ -10,11 +10,13 @@ import type { ServerStatePublic } from '../../../src/lib/types/state';
  * tests/e2e/panorama_web_server.py): every CI-V response — writes,
  * transceive echoes, poll readbacks — arrives late, so the client observes
  * older own-target frequencies while newer tuning intent already exists.
- * (The WebServer answers WS-queued set_freq at enqueue, so delaying only
- * the radio-side CI-V ACK never leaves a frontend lifecycle pending and
- * cannot produce the unassociated echo this row needs.)
+ * The WebServer answers WS-queued set_freq at enqueue, so delaying only the
+ * radio-side CI-V ACK never leaves a frontend lifecycle pending; the row
+ * additionally holds the command responses on the browser's control socket
+ * (Playwright routeWebSocket), so an echo of an own target reaches the client
+ * while that command's lifecycle is still pending — no ACK marker yet.
  *
- * Eight ArrowRight presses build one command burst; the operator then
+ * Eight ArrowLeft presses build one command burst; the operator then
  * grabs the panorama and drags before any echo is back. The drag starts a
  * new gesture (absolute target) and the release a further one, while poll
  * readbacks of the OLDER press and drag targets keep reaching the browser —
@@ -29,6 +31,11 @@ import type { ServerStatePublic } from '../../../src/lib/types/state';
  * Kept out of tests/e2e/journey/ on purpose: the journey playwright config
  * sweeps every `*.spec.ts` in that directory.
  */
+
+/** Delay of command responses on the browser's control socket. Longer than the
+ * poll-readback echo of the radio (about 0.7 s at the harness delay), shorter
+ * than the 5 s command timeout. */
+const ACK_LAG_MS = 2_500;
 
 type SetFreqParams = Extract<RadioIntent, { name: 'set_freq' }>['params'];
 type SetFreqWireCommand = WsCommand & { name: 'set_freq'; params: SetFreqParams };
@@ -62,21 +69,31 @@ test('IC-705 slow link: paced drag, release, delayed own-target echo, step lands
   try {
     const sentFreqs: number[] = [];
     let scopeFrames = 0;
+    // Scope frames are binary on /api/v1/scope; the panel's drag gesture is
+    // inert until the live scope plane (and its geometry) exists.
     page.on('websocket', socket => {
-      const path = new URL(socket.url()).pathname;
-      // Scope frames are binary on /api/v1/scope; the panel's drag gesture is
-      // inert until the live scope plane (and its geometry) exists.
-      if (path === '/api/v1/scope') {
-        socket.on('framereceived', ({ payload }) => {
-          if (typeof payload !== 'string') scopeFrames++;
-        });
-        return;
-      }
-      if (path !== '/api/v1/ws') return;
-      socket.on('framesent', ({ payload }) => {
-        if (typeof payload !== 'string') return;
-        const command: unknown = JSON.parse(payload) as unknown;
-        if (isSetFreqWireCommand(command)) sentFreqs.push(command.params.freq);
+      if (new URL(socket.url()).pathname !== '/api/v1/scope') return;
+      socket.on('framereceived', ({ payload }) => {
+        if (typeof payload !== 'string') scopeFrames++;
+      });
+    });
+    // Slow ACK path: the command responses reach the browser ACK_LAG_MS late
+    // (everything else on the control socket passes through unchanged), so
+    // the radio readbacks of our own targets arrive while their command
+    // lifecycles are still pending — the association-unavailable window.
+    await page.routeWebSocket(/\/api\/v1\/ws(\?.*)?$/, ws => {
+      const upstream = ws.connectToServer();
+      ws.onMessage(message => {
+        if (typeof message === 'string') {
+          const command: unknown = JSON.parse(message) as unknown;
+          if (isSetFreqWireCommand(command)) sentFreqs.push(command.params.freq);
+        }
+        upstream.send(message);
+      });
+      upstream.onMessage(message => {
+        const incoming = typeof message === 'string' ? (JSON.parse(message) as WsIncoming) : null;
+        if (incoming?.type === 'response') setTimeout(() => ws.send(message), ACK_LAG_MS);
+        else ws.send(message);
       });
     });
     const stateFreqHz = async (): Promise<number | null> =>
@@ -88,18 +105,19 @@ test('IC-705 slow link: paced drag, release, delayed own-target echo, step lands
     await expect.poll(stateFreqHz, { timeout: 30_000 }).toBe(base);
     await expect(readout).toHaveText(/14\s*\.\s*250/, { timeout: 30_000 });
     await expect.poll(() => scopeFrames, { timeout: 30_000 }).toBeGreaterThan(10);
-    // Eight ArrowRight presses (tuning step 1 kHz) build a live burst; the
+    // Eight ArrowLeft presses (tuning step 1 kHz) lower the frequency in one live burst; the
     // operator then grabs the panorama before the first echo is back.
     for (let press = 0; press < 8; press++) {
-      await page.keyboard.press('ArrowRight');
+      await page.keyboard.press('ArrowLeft');
       await page.waitForTimeout(150);
     }
     const pressTargets = [...sentFreqs];
     expect(pressTargets.length).toBeGreaterThan(1);
     const pressMax = Math.max(...pressTargets);
+    expect(pressMax).toBeLessThan(base);
     // Real paced drag: slide left (raises the frequency) in 25 px moves, each
-    // past the pacing interval, until the drag target is above every press
-    // target and an own-target echo has reached the radio state during the
+    // past the pacing interval, until the drag target is well above the base
+    // (every press target lies below it) and an own-target echo has reached the radio state during the
     // drag, then three more moves, then release.
     const area = page.locator('.spectrum-area').first();
     await expect(area).toBeVisible({ timeout: 30_000 });
@@ -122,7 +140,7 @@ test('IC-705 slow link: paced drag, release, delayed own-target echo, step lands
       const now = await stateFreqHz();
       if (now !== seen) echoDuringDrag = true;
       seen = now;
-      if (echoDuringDrag && sentFreqs.at(-1)! > pressMax + 2_000) break;
+      if (echoDuringDrag && sentFreqs.at(-1)! > base + 2_000) break;
     }
     expect(echoDuringDrag).toBe(true);
     for (let move = 0; move < 3; move++) await slide();
@@ -139,7 +157,6 @@ test('IC-705 slow link: paced drag, release, delayed own-target echo, step lands
       expect(dragSends[index]!).toBeGreaterThanOrEqual(dragSends[index - 1]!);
     }
     for (const freq of sentFreqs) expect(release).toBeGreaterThanOrEqual(freq);
-    expect(pressMax).toBeGreaterThan(base);
     const expected = release + 1_000;
     // Wait for the stale echo: an OLDER own target, strictly below the
     // release, reaching the browser after the release while the release
