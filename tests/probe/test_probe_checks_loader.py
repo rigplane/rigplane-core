@@ -325,7 +325,8 @@ def test_non_ascii_cat_template_is_a_load_error(tmp_path: Path) -> None:
                 raw,
                 commands=commands,
                 protocol_type="yaesu_cat",
-                voice_codes=None,
+                modes=config.modes,
+                mode_codes=None,
             )
 
 

@@ -584,17 +584,25 @@ def parse_probe_checks(
     *,
     commands: Mapping[str, CommandSpec],
     protocol_type: str,
-    voice_codes: frozenset[bytes] | None,
+    modes: Sequence[str],
+    mode_codes: Sequence[str] | None,
 ) -> tuple[ProbeCheck, ...]:
     """Parse ``[probe]`` into typed checks; ``()`` when absent. Structure,
     unknown keys, non-ASCII customer text and write-policy violations fail
     here with the verb or key named."""
     if raw is None:
         return ()
-    loader = _Loader(filename, commands, protocol_type, voice_codes)
+    loader = _Loader(filename, commands, protocol_type, None)
     section = loader.table("[probe]", raw, frozenset({"checks"}))
-    if section.get("checks") and protocol_type not in _PROTOCOLS:
+    if not section.get("checks"):
+        return ()
+    if protocol_type not in _PROTOCOLS:
         raise loader.fail(f"[probe]: {_NEED_PROTOCOL}")
+    try:
+        voice = digital_voice_codes(protocol_type, modes, mode_codes)
+    except UnicodeEncodeError:
+        raise loader.fail("[modes].codes must be ASCII for probe checks") from None
+    loader = replace(loader, voice_codes=voice)
     checks = loader.each("[probe].checks", section.get("checks", []), loader.check)
     ids = [check.id for check in checks]
     if repeated := next((name for name in ids if ids.count(name) > 1), None):
