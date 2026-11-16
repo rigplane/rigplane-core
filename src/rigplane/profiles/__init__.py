@@ -43,6 +43,7 @@ from rigplane.core.types import (
 from rigplane.core.usb_identity import UsbAudioIdentity
 
 __all__ = [
+    "selector_one_is_sub",
     "CwTextSendCancelledError",
     "CwTextSpec",
     "CwTextUnsupportedError",
@@ -1024,6 +1025,17 @@ def _ensure_loaded() -> dict[str, RadioProfile]:
         )
 
     return _profiles
+
+
+def selector_one_is_sub(receiver_count: int, split_tx_target: str) -> bool:
+    """Whether CI-V 0x25/0x26 selector 01 is the physical SUB receiver.
+
+    Profile data, not a model check: ``split_tx_target = "sub_receiver"``
+    declares that selector 01 is the SUB band (IC-7610 CI-V Reference Guide
+    Rev.4 p.9/p.13). ``main_unselected`` -- selector 01 is the unselected
+    VFO inside MAIN, never SUB -- and any other value fail closed (MOR-3591).
+    """
+    return receiver_count >= 2 and split_tx_target == "sub_receiver"
 
 
 def get_radio_profile(name_or_id: str) -> RadioProfile:

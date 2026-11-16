@@ -78,14 +78,26 @@ async def _cancel_mid_teardown(close_coro: Any) -> None:
 
 @pytest.mark.asyncio
 async def test_cancelled_conn_close_does_not_poison_pc_close() -> None:
-    """Cancelling ``WebRtcDataChannelConnection.close()`` keeps pc usable."""
+    """``WebRtcDataChannelConnection.close()`` closes only its own channel.
+
+    The peer connection has a single owner — ``WebRtcSessionManager`` —
+    so a channel close must never call ``pc.close()`` (MOR-4498): there is
+    no pc teardown in the channel close to cancel, so nothing can poison
+    aiortc's internal "closed" future, and the pc stays exactly as usable
+    as before.
+    """
     pc = _PoisonableFakePC()
-    conn = WebRtcDataChannelConnection(_FakeChannel(), pc)  # type: ignore[arg-type]
+    channel = _FakeChannel()
+    conn = WebRtcDataChannelConnection(channel, pc)  # type: ignore[arg-type]
 
-    await _cancel_mid_teardown(conn.close())
+    await conn.close()
 
-    # A subsequent pc.close() must complete instead of hanging on the
-    # poisoned internal future.
+    assert channel.closed  # its own channel closed…
+    assert pc._closed_future is None  # …and pc.close() was never called
+    assert pc.connectionState == "connected"
+
+    # The pc remains fully usable: a later owner-driven close completes
+    # instead of hanging on a poisoned internal future.
     await asyncio.wait_for(pc.close(), timeout=2.0)
     assert pc.teardown_completed
 

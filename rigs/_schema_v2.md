@@ -197,6 +197,68 @@ type does not normalize it.
 
 ---
 
+## Write checks (`[probe]`, MOR-4464 B)
+
+Optional top-level section declaring the named write checks; absent `[probe]`
+loads an empty `RigConfig.probe_checks`. Checks are profile DATA: they name
+entries of a closed table of settings in `profiles/probe_checks.py` (`TABLE`)
+and values, never bytes or command names. B1a ships the table, the loader and
+the judge only; the CLI (`rigplane probe --checks`), the engine and the
+send-time integration come in B1b/B1c.
+
+```toml
+[[probe.checks]]
+id = "synth-split"                # slug, unique per profile
+title = "Synthetic cross-band split"     # customer words, ASCII
+explain_what = "Sets VFO-A and VFO-B and switches split on for a moment."
+explain_after = "Puts both VFOs and split back exactly as they are now."
+warnings = []                     # optional extra customer lines, ASCII
+witness = ["freq_a", "freq_b"]    # entries read before and after the check
+
+[[probe.checks.preconditions]]    # all must hold before the first write
+entry = "info"
+equals = "..."                    # the reply that allows the check
+
+[[probe.checks.steps]]            # write | read | ask
+kind = "write"
+entry = "freq_b"
+value = 145000000                 # CI-V 26: value = ["USB", 0, 1]
+# receiver = "sub"                # CI-V only, on entries the profile routes via 0x29
+
+[[probe.checks.steps]]
+kind = "ask"
+question = "Does the display show TX on VFO-B?"
+
+[[probe.checks.restore]]          # one entry: its read before, its write after
+entry = "freq_b"
+# rehearse = false                # optional: skip the no-op rehearsal
+```
+
+The loader rejects unknown keys; customer text is non-empty ASCII. At load
+each named entry is compiled against this profile's own commands (CAT read
+and write templates, CI-V command bytes, `[vfo]` swap code, `[cmd29]` routes,
+`[modes]`): an entry the profile does not declare is "not available", a
+declared template of another shape is a load error. Mode values are the
+profile's mode names; digital-voice modes (CI-V DV/DD, Yaesu C4FM) are not in
+any mode domain; the CI-V DATA field runs 0..`[data_mode].count`. The
+selected VFO is written only through `25 00`/`26 00` (`03`/`04` stay
+read-only: `05`/`06` cannot put DATA back). `vfo_exchange` comes from
+`[vfo].swap_ab`, or from `swap_main_sub` only where `25/26 01` is the
+physical SUB (`split_tx_target = "sub_receiver"`), and only where every
+frequency and mode it changes is writable on this radio; `[0xB0]` and
+`[0x07, 0xB0]` are the same swap.
+
+Every step's bytes are built by the entry's encoder and judged at load by
+the same function the engine runs again right before writing (checks carry
+no bytes): the bytes must parse back to the
+same entry and form (one CAT command ending in its only `;`; CI-V at most one
+`29 <rx>` wrapper and a value that uses every remaining byte), and a write
+needs restore items for every entry it changes on its receiver (`vfo_exchange`
+changes frequency and mode of both VFOs). Not having RF power above its
+original value is an engine run-time rule (B1b).
+
+---
+
 ## Layer 1: Capabilities
 
 ```toml
