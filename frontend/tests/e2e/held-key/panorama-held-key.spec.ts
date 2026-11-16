@@ -816,9 +816,7 @@ test(`IC-705 external span narrowing adopts without a write and without hatch (c
   // Span-set receipts in the evidence file: 0x15 scope writes whose data
   // carries the 6-byte span value (a 1-byte 0x15 is a span read, not a
   // write). The simulator appends one line per write, same machine clock.
-  // Each receipt carries the radio preset after the write. A same-value
-  // SET to the preset the radio is already on is not a write-back
-  // (see assertion (1) below).
+  // Each receipt carries the radio preset after the write.
   const spanSetReceipts = async () =>
     (await readScopeWriteReceipts(evidence))
       .filter((receipt) => receipt.sub === 0x15 && receipt.data.length === 6);
@@ -996,7 +994,8 @@ test(`IC-705 external span narrowing adopts without a write and without hatch (c
     const spanSetsAfter = receiptsAfter.length;
     const postChangeSets = receiptsAfter.slice(receiptsBefore.length);
     console.log(`[held-key control ${order} owner-rule] ` +
-      `setupS=${setupElapsedS.toFixed(0)} clipT=${rel(firstClipT)} adoptionT=${rel(adoptionT)} firstHatchT=${rel(firstHatchT)} ` +
+      `setupS=${setupElapsedS.toFixed(0)} clipT=${rel(firstClipT)} adoptionT=${rel(adoptionT)} ` +
+      `adoptionMinusClipMs=${firstClipT !== null && adoptionT !== null ? Math.round(adoptionT - firstClipT) : 'n/a'} firstHatchT=${rel(firstHatchT)} ` +
       `samples=${adoptedSamples.length} hatched=${hatchedAdopted.length} ` +
       `view=${latestViewHz}Hz cov=${latestCovHz}Hz ` +
       `spanSetsBefore=${spanSetsBefore} spanSetsAfter=${spanSetsAfter} ` +
@@ -1023,40 +1022,39 @@ test(`IC-705 external span narrowing adopts without a write and without hatch (c
     // the old rule in frames-first order there is no adoption at all,
     // which is exactly the red proof defect 2 requires.
     if (order === 'frames-first') {
-      // The adoption and the first clipped frame are two channel legs of
-      // the SAME switched wave: the harness server derives a span
-      // observation from the wave edges (product code, also true on a
-      // real bench radio) which reaches the client over the state
-      // channel, while the clipped pixels arrive as a binary frame — so
-      // the adoption may precede the clip by that channel race (measured
-      // 1 ms once in three runs on the integrated tree). The knob already
-      // holds every simulator-side span path (the polled 0x15 reply and
-      // the wave templates share the one scheduled change; the simulator
-      // sends no pushed span notification — there is no push_scope_setting
-      // or transceive span path in the simulator or the testkit base, only
-      // the server's wave-derived observation, which is inherent to the
-      // leading wave leg). The 20 s skew still separates the legs: the
-      // adoption must not precede the clip by more than the race budget.
-      expect(adopted && firstClipT !== null && adoptionT !== null && firstClipT - adoptionT <= 5_000,
+      // The order of the two legs cannot be separated strictly here, by
+      // design of the product: the span observation reaches the client
+      // from the streamed wave itself. Every scope frame the server parses
+      // (runtime/_civ_rx.py: _publish_scope_span_observation) feeds
+      // session.observe("span", ...) from the frame's edge width, and
+      // publishes the span to the state store (state channel) while the
+      // same frame's pixels go out as a binary frame (scope channel) —
+      // two channels of ONE event, so the adoption may land a few ms
+      // before the first clipped frame (measured: 1 ms before, 1 of 3 runs).
+      // The knob holds every OTHER path: the polled 0x15 reply (the
+      // lagging "readback" leg) keeps the old preset for the whole skew,
+      // and the simulator pushes no unsolicited span report. So what is
+      // meaningful and asserted: the adoption happens before the held
+      // readback leg can have switched (clip + skew), i.e. it was learned
+      // from the wave, and it does happen at all (the old rule never
+      // adopts here). The measured delta is printed in the row log.
+      expect(adopted && firstClipT !== null && adoptionT !== null
+        && adoptionT < firstClipT + skew * 1000,
         `frames-first order broken (clipT=${rel(firstClipT)} adoptionT=${rel(adoptionT)} ` +
-        `firstHatchT=${rel(firstHatchT)}): the old rule never adopts here`).toBe(true);
+        `firstHatchT=${rel(firstHatchT)}): the old rule never adopts here; the adoption ` +
+        `must be wave-derived, before the held readback leg (${skew} s after the clip)`).toBe(true);
     } else {
       expect(adopted && firstClipT !== null && adoptionT !== null && adoptionT < firstClipT,
         `readback-first order broken (clipT=${rel(firstClipT)} adoptionT=${rel(adoptionT)} ` +
         `firstHatchT=${rel(firstHatchT)})`).toBe(true);
     }
-    // TEMPORARY (MOR-4451 landing blocker): restore "zero span writes after the external change" once set_center/set_span skip a same-value span write.
-    // (1) NO radio span write-BACK after the external change: the setup
-    // snapshot predates the change and no gesture follows the zoom pin.
-    // A same-value SET to the narrowed preset the radio is already on is
-    // benign, not a write-back — the rig layer only learns the front-panel
-    // switch through its lazy reconciliation, so an adoption that lands
-    // first (readback-first) still carries the SET the covering-preset
-    // pick produces. Every post-change SET must still target the narrowed
-    // 25000 preset, never a wider write-back.
-    const writeBacks = postChangeSets.filter((receipt) => receipt.span !== 25_000);
-    expect(writeBacks,
-      `radio span written back off the narrowed preset: ${JSON.stringify(writeBacks)}`).toEqual([]);
+    // (1) ZERO radio span writes after the external change (owner rule: a
+    // front-panel change is adopted, never re-asserted): the setup snapshot
+    // predates the change and no gesture follows the zoom pin, and the
+    // session skips a same-value SET to the preset the radio already
+    // reports (#4565).
+    expect(postChangeSets,
+      `radio span written after the external change: ${JSON.stringify(postChangeSets)}`).toEqual([]);
     // (2) the pinned 100 kHz follow adopted the narrowed native: the
     // follow subscription itself moved to the 50 kHz native
     // (pinned by the adoption poll above), and the wire frames carry view
