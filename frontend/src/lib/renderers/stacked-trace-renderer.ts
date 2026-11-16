@@ -42,8 +42,9 @@ void main() {
 
 // One triangle strip per row: two vertices per column, baseline and crest.
 // A column narrower than a bin interpolates the two adjacent bins about the
-// bin centres; a column spanning several bins takes their peak (up to 64
-// bins), so a one-bin carrier keeps its height on a dense source.
+// bin centres. A wider column takes the peak of every bin it spans: each ring
+// row stores the samples followed by their pairwise-maximum levels, and the
+// column reads the first level at which it spans at most eight entries.
 const ROW_VERTEX = `#version 300 es
 precision highp float;
 precision highp int;
@@ -51,7 +52,7 @@ uniform highp sampler2D uRing;
 uniform vec2 uMap;
 uniform vec2 uCover;
 uniform int uRow;
-uniform vec3 uSamples;
+uniform vec2 uSamples;
 uniform vec3 uPlace;
 uniform vec4 uFrame;
 uniform float uRef;
@@ -60,9 +61,9 @@ out float vY;
 out float vCrest;
 out float vSlope;
 out float vCovered;
-float amplitude(float bin) {
-  float value = texelFetch(uRing, ivec2(int(bin) + int(uSamples.y), uRow), 0).r * 255.0;
-  return uSamples.z == 80.0 ? value : min(value, uSamples.z) * 80.0 / uSamples.z;
+float amplitude(float index) {
+  float value = texelFetch(uRing, ivec2(int(index), uRow), 0).r * 255.0;
+  return uSamples.y == 80.0 ? value : min(value, uSamples.y) * 80.0 / uSamples.y;
 }
 float sampleAt(float coordinate) {
   float position = clamp(coordinate * uSamples.x - 0.5, 0.0, uSamples.x - 1.0);
@@ -71,12 +72,20 @@ float sampleAt(float coordinate) {
 }
 float peakAt(float coordinate, float width) {
   if (uPlace.y <= 1.0) return sampleAt(coordinate);
-  float first = floor((coordinate - 0.5 * abs(width)) * uSamples.x);
-  float count = min(ceil(uPlace.y) + 1.0, 64.0);
+  float low = (coordinate - 0.5 * abs(width)) * uSamples.x;
+  float high = (coordinate + 0.5 * abs(width)) * uSamples.x;
+  float start = 0.0, count = uSamples.x, scale = 1.0;
+  for (int i = 0; i < 24; i++) {
+    if ((high - low) / scale <= 8.0 || count <= 1.0) break;
+    start += count; count = ceil(count / 2.0); scale *= 2.0;
+  }
+  float first = clamp(floor(low / scale), 0.0, count - 1.0);
+  float last = clamp(floor(high / scale), 0.0, count - 1.0);
   float peak = 0.0;
-  for (int i = 0; i < 64; i++) {
-    if (float(i) >= count) break;
-    peak = max(peak, amplitude(clamp(first + float(i), 0.0, uSamples.x - 1.0)));
+  for (int i = 0; i < 10; i++) {
+    float bin = first + float(i);
+    if (bin > last) break;
+    peak = max(peak, amplitude(start + bin));
   }
   return peak;
 }
@@ -140,13 +149,18 @@ void main() {
 const BACKGROUND_UNIFORMS = ['uSize', 'uFloor'] as const;
 const ROW_UNIFORMS = ['uRing', 'uMap', 'uCover', 'uRow', 'uSamples', 'uPlace', 'uFrame', 'uRef', 'uShade',
   'uColors', 'uStops', 'uColorCount'] as const;
-const MAX_GLIDE_MS = 1000;
+/** Longest gap between two frames that still counts as stream time. */
+const MAX_GAP_MS = 1000;
 
 export class StackedTraceRenderer {
   private readonly gl: WebGL2RenderingContext;
   private readonly options: WaterfallOptions;
   private readonly slots: number;
   private readonly rows: StackedRowGeometry[];
+  /** Stream time at which each ring slot was committed. */
+  private readonly times: Float64Array;
+  private levels = new Uint8Array(0);
+  private maxTextureWidth = 0;
   private readonly rowView: StackedRowView = { scale: 1, offset: 0, coverLo: 0, coverHi: 1 };
   private readonly depth: StackedDepth = { baseline: 0, scale: 1, fog: 0 };
   private readonly colors = new Float32Array(18);
@@ -165,8 +179,13 @@ export class StackedTraceRenderer {
   private head = -1;
   private count = 0;
   private liveValid = false;
-  private committedAt = 0;
-  private glideMs: number;
+  // Stream time runs only while frames arrive (gaps count up to MAX_GAP_MS),
+  // so a paused source keeps its picture instead of ageing out.
+  private streamTime = 0;
+  private lastPushAt = 0;
+  private lastInterval: number;
+  private nextCommitAt = 0;
+  private pushed = false;
   private viewCenter: number;
   private viewSpan: number;
   private destroyed = false;
@@ -182,7 +201,8 @@ export class StackedTraceRenderer {
     this.viewCenter = options.centerHz;
     this.viewSpan = options.spanHz > 0 ? options.spanHz : 1;
     this.slots = settings.rows + 1;
-    this.glideMs = settings.rowPeriodMs;
+    this.lastInterval = settings.rowPeriodMs;
+    this.times = new Float64Array(this.slots);
     this.rows = Array.from({ length: this.slots }, () => ({
       startHz: 0, spanHz: 1, coverStartHz: 0, coverEndHz: 0, samples: 0, sampleOffset: 0, amplitudeMax: 80,
     }));
@@ -192,6 +212,7 @@ export class StackedTraceRenderer {
       gl.useProgram(this.rowProgram);
       gl.uniform1i(this.row.get('uRing')!, 0);
       gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+      this.maxTextureWidth = gl.getParameter(gl.MAX_TEXTURE_SIZE);
       this.texture = this.createTexture(1);
       this.textureWidth = 1;
     } catch (error) { this.destroy(); throw error; }
@@ -214,9 +235,9 @@ export class StackedTraceRenderer {
     locations: Map<string, WebGLUniformLocation | null>): WebGLProgram {
     const gl = this.gl, program = gl.createProgram();
     if (!program) throw new StackedTraceRenderError();
-    const vertex = this.shader(gl.VERTEX_SHADER, vertexSource);
-    let fragment: WebGLShader | null = null;
+    let vertex: WebGLShader | null = null, fragment: WebGLShader | null = null;
     try {
+      vertex = this.shader(gl.VERTEX_SHADER, vertexSource);
       fragment = this.shader(gl.FRAGMENT_SHADER, fragmentSource);
       gl.attachShader(program, vertex); gl.attachShader(program, fragment); gl.linkProgram(program);
       if (!gl.getProgramParameter(program, gl.LINK_STATUS)) throw new StackedTraceRenderError();
@@ -228,7 +249,7 @@ export class StackedTraceRenderer {
 
   private createTexture(width: number): WebGLTexture {
     const gl = this.gl;
-    if (width > gl.getParameter(gl.MAX_TEXTURE_SIZE)) throw new StackedTraceRenderError();
+    if (width > this.maxTextureWidth) throw new StackedTraceRenderError();
     const texture = gl.createTexture();
     if (!texture) throw new StackedTraceRenderError();
     gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, texture);
@@ -259,28 +280,86 @@ export class StackedTraceRenderer {
   }
 
   /**
+   * Writes the row's samples and their pairwise-maximum levels into
+   * `levels` and returns the length used. A frame too dense for the device's
+   * texture width is first reduced by pairwise maxima, and `row.samples`
+   * becomes the reduced count.
+   */
+  private buildLevels(data: Uint8Array, row: StackedRowGeometry): number {
+    const total = (count: number): number => {
+      let sum = count;
+      while (count > 1) { count = (count + 1) >> 1; sum += count; }
+      return sum;
+    };
+    let samples = row.samples, reductions = 0;
+    while (total(samples) > this.maxTextureWidth && samples > 1) { samples = (samples + 1) >> 1; reductions++; }
+    const need = total(samples) + (reductions > 0 ? row.samples : 0);
+    if (this.levels.length < need) this.levels = new Uint8Array(need);
+    const levels = this.levels;
+    // Reduce in the tail of the buffer, then lay the kept level at index 0.
+    let length = row.samples, from = need - row.samples;
+    if (reductions === 0) from = 0;
+    for (let i = 0; i < length; i++) levels[from + i] = data[row.sampleOffset + i];
+    for (let r = 0; r < reductions; r++) {
+      const next = (length + 1) >> 1;
+      for (let i = 0; i < next; i++) {
+        const a = levels[from + 2 * i], b = 2 * i + 1 < length ? levels[from + 2 * i + 1] : 0;
+        levels[from + i] = a > b ? a : b;
+      }
+      length = next;
+    }
+    if (from !== 0) for (let i = 0; i < length; i++) levels[i] = levels[from + i];
+    row.samples = length;
+    let source = 0, target = length;
+    while (length > 1) {
+      const next = (length + 1) >> 1;
+      for (let i = 0; i < next; i++) {
+        const a = levels[source + 2 * i], b = 2 * i + 1 < length ? levels[source + 2 * i + 1] : 0;
+        levels[target + i] = a > b ? a : b;
+      }
+      source = target; target += next; length = next;
+    }
+    return target;
+  }
+
+  /**
    * Stores one delivered frame. Every frame replaces the live front trace;
-   * a history row is committed once per `rowPeriodMs`, so the depth of the
-   * stack is a time span that does not depend on the source frame rate.
+   * a history row is committed on a `rowPeriodMs` grid of stream time, and
+   * each row keeps its commit time, so depth is elapsed time: the stack
+   * spans `rows * rowPeriodMs` whatever the source frame rate.
    * `frame` carries the options the frame was delivered under.
    */
   pushRow(data: Uint8Array, frame: WaterfallOptions, now: number): void {
     if (this.destroyed) return;
     const live = (this.head + 1) % this.slots;
     if (!stackedRowGeometry(frame, data.length, this.rows[live])) return;
-    if (data.length > this.textureWidth) this.growTexture(data.length);
+    const length = this.buildLevels(data, this.rows[live]);
+    if (length > this.textureWidth) this.growTexture(length);
     const gl = this.gl;
     gl.bindTexture(gl.TEXTURE_2D, this.texture);
-    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, live, data.length, 1, gl.RED, gl.UNSIGNED_BYTE, data, 0);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, live, length, 1, gl.RED, gl.UNSIGNED_BYTE, this.levels, 0);
     this.liveValid = true;
-    const elapsed = now - this.committedAt, period = this.settings.rowPeriodMs;
-    if (this.count === 0 || elapsed >= period) {
-      this.glideMs = this.count === 0 ? period : Math.min(elapsed, MAX_GLIDE_MS);
+    if (this.pushed) {
+      const gap = Math.min(Math.max(now - this.lastPushAt, 0), MAX_GAP_MS);
+      this.streamTime += gap;
+      this.lastInterval = Math.max(gap, 1);
+    }
+    this.pushed = true;
+    this.lastPushAt = now;
+    const period = this.settings.rowPeriodMs;
+    if (this.count === 0 || this.streamTime >= this.nextCommitAt) {
       this.head = live;
       this.count = Math.min(this.settings.rows, this.count + 1);
-      this.committedAt = now;
+      this.times[live] = this.streamTime;
+      this.nextCommitAt += period;
+      if (this.nextCommitAt <= this.streamTime) this.nextCommitAt = this.streamTime + period;
       this.liveValid = false;
     }
+  }
+
+  /** CSS-to-backing pixel ratio of the canvas; sizes the front inset and the line. */
+  setPixelScale(scale: number): void {
+    if (scale > 0) this.pixelScale = scale;
   }
 
   private syncSize(): void {
@@ -288,8 +367,6 @@ export class StackedTraceRenderer {
     if (width === this.width && height === this.height) return;
     this.width = width; this.height = height;
     this.columns = stackedColumnCount(width);
-    const cssWidth = this.canvas.clientWidth;
-    this.pixelScale = cssWidth > 0 ? width / cssWidth : 1;
     this.gl.viewport(0, 0, width, height);
   }
 
@@ -320,7 +397,7 @@ export class StackedTraceRenderer {
     gl.uniform2f(this.row.get('uMap')!, view.scale, view.offset);
     gl.uniform2f(this.row.get('uCover')!, view.coverLo, view.coverHi);
     gl.uniform1i(this.row.get('uRow')!, slot);
-    gl.uniform3f(this.row.get('uSamples')!, row.samples, row.sampleOffset, row.amplitudeMax);
+    gl.uniform2f(this.row.get('uSamples')!, row.samples, row.amplitudeMax);
     gl.uniform3f(this.row.get('uPlace')!, basePx / this.height * 2 - 1,
       Math.abs(view.scale) * row.samples / (this.columns - 1), s.traceHeight * placed.scale * this.height);
     gl.uniform2f(this.row.get('uShade')!, placed.fog, lineGain);
@@ -328,8 +405,9 @@ export class StackedTraceRenderer {
   }
 
   /**
-   * Paints the stack for `now`. Returns true while committed rows are still
-   * gliding back, i.e. while the caller should paint the next display frame.
+   * Paints the stack for `now`. Between frames the rows keep gliding back
+   * for one frame interval; returns true while they do, i.e. while the
+   * caller should paint the next display frame.
    */
   draw(now: number): boolean {
     if (this.destroyed) return false;
@@ -352,10 +430,12 @@ export class StackedTraceRenderer {
     gl.uniform3fv(this.row.get('uColors')!, this.colors);
     gl.uniform1fv(this.row.get('uStops')!, this.stops);
     gl.uniform1i(this.row.get('uColorCount')!, COLOR_SCHEMES[this.options.colorScheme].length);
-    const phase = stackedGlidePhase(now, this.committedAt, this.glideMs);
+    const phase = stackedGlidePhase(now, this.lastPushAt, this.lastInterval);
+    const clock = this.streamTime + phase * this.lastInterval, span = s.rows * s.rowPeriodMs;
     for (let k = this.count - 1; k >= 0; k--) {
-      const depth = (k + phase) / s.rows;
-      if (depth < 1) this.drawRow((this.head - k + this.slots) % this.slots, depth, false);
+      const slot = (this.head - k + this.slots) % this.slots;
+      const depth = (clock - this.times[slot]) / span;
+      if (depth < 1) this.drawRow(slot, depth, false);
     }
     this.drawRow(this.liveValid ? (this.head + 1) % this.slots : this.head, 0, true);
     return phase < 1;
@@ -374,7 +454,7 @@ export class StackedTraceRenderer {
     return changed;
   }
 
-  clear(): void { this.head = -1; this.count = 0; this.liveValid = false; }
+  clear(): void { this.head = -1; this.count = 0; this.liveValid = false; this.pushed = false; }
 
   destroy(): void {
     if (this.destroyed) return;
