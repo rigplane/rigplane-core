@@ -1029,8 +1029,13 @@
         // nothing, so it is refused outright (the keys render disabled).
         // MOR-4451: SCROLL-C owns its window but still accepts SPAN.
         if (isSpanDisabledScope(scopeMode)) return;
-        const current = requestedView !== null ? requestedView.endHz - requestedView.startHz
-          : followSpanHz ?? control.spanHz;
+        // The only radio-owned scope the guard above lets through is
+        // SCROLL-C: its SPAN steps from the OBSERVED radio window width, never
+        // from a client ZOOM crop (which would re-pick the existing width and
+        // write nothing). CENTER keeps its crop/follow base.
+        const observedHz = isRadioOwnedWindow ? nativeScopeWidthHz : null;
+        const current = observedHz ?? (requestedView !== null ? requestedView.endHz - requestedView.startHz
+          : followSpanHz ?? control.spanHz);
         const choices = runtime.caps?.span_choices_hz ?? [];
         if (current === null) return;
         const next = delta > 0 ? choices.find(span => span > current)
