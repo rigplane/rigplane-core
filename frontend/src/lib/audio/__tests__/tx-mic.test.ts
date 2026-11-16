@@ -228,6 +228,14 @@ describe('TxMic', () => {
     const header = new DataView(packet);
     expect(header.getUint8(1)).toBe(CODEC_PCM16);
     expect(packet.byteLength).toBe(AUDIO_HEADER_SIZE + 960 * 2);
+    // MOR-4312: the raw capture request and the captured samples reaching the
+    // frame sink (the WebSocket send) in one pass.
+    expect(navigator.mediaDevices.getUserMedia).toHaveBeenCalledWith({
+      audio: expect.objectContaining({
+        echoCancellation: false, noiseSuppression: false, autoGainControl: false,
+      }),
+    });
+    expect(header.getInt16(AUDIO_HEADER_SIZE, true)).toBe(Math.round(0.25 * 0x7fff));
     m.stop();
     expect(context.close).toHaveBeenCalled();
   });
