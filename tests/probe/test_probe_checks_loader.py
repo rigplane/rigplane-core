@@ -43,8 +43,12 @@ write = "set_mode"
 
 
 def _load_with_probe(tmp_path: Path, base_name: str, probe_toml: str):
+    import shutil
+
     from rigplane.profiles.rig_loader import load_rig
 
+    for helper in ("_ctcss_tables_v1.toml", "_keyboard-default.toml"):
+        shutil.copy(RIGS / helper, tmp_path / helper)
     base = (RIGS / base_name).read_text(encoding="utf-8")
     path = tmp_path / "synth.toml"
     path.write_text(base + "\n" + probe_toml, encoding="utf-8")
