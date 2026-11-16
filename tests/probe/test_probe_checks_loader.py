@@ -70,11 +70,13 @@ def _load_with_probe(
 
 def _fails(
     toml: str, match: str, name: str = "ft991a", extra: dict | None = None
-) -> None:
+) -> str:
+    """Return the load error text; callers ``assert`` it so the test body asserts."""
     from rigplane.profiles.rig_loader import RigLoadError
 
-    with pytest.raises(RigLoadError, match=match):
+    with pytest.raises(RigLoadError, match=match) as raised:
         load_checks(facts(name, extra), toml)
+    return str(raised.value)
 
 
 def test_profile_without_probe_section_loads_unchanged() -> None:
@@ -111,21 +113,23 @@ def test_cat_check_loads_into_typed_records(tmp_path: Path) -> None:
 
 
 def test_unknown_keys_rejected() -> None:
-    _fails(CAT_CHECK.replace('id = "synth-freq-mode"', 'id = "x"\nbogus = 1'), "bogus")
-    _fails(
+    assert _fails(
+        CAT_CHECK.replace('id = "synth-freq-mode"', 'id = "x"\nbogus = 1'), "bogus"
+    )
+    assert _fails(
         CAT_CHECK.replace(
             'entry = "mode_main"', 'entry = "mode_main"\nread = "get_mode"'
         ),
         "read",
     )
-    _fails(
+    assert _fails(
         CAT_CHECK.replace("value = 7074000", 'value = 7074000\ncommand = "set_freq"'),
         "command",
     )
 
 
 def test_non_ascii_title_rejected() -> None:
-    _fails(
+    assert _fails(
         CAT_CHECK.replace("Synthetic frequency and mode", "Synthétique"),
         "[Aa][Ss][Cc][Ii][Ii]",
     )
@@ -133,7 +137,7 @@ def test_non_ascii_title_rejected() -> None:
 
 @pytest.mark.parametrize("kind", ["raw_write", "raw_read", "send"])
 def test_only_write_read_and_ask_are_step_kinds(kind: str) -> None:
-    _fails(CAT_CHECK.replace('kind = "ask"', f'kind = "{kind}"'), "kind")
+    assert _fails(CAT_CHECK.replace('kind = "ask"', f'kind = "{kind}"'), "kind")
 
 
 @pytest.mark.parametrize(
@@ -147,31 +151,33 @@ def test_only_write_read_and_ask_are_step_kinds(kind: str) -> None:
 )
 def test_an_entry_outside_the_table_fails(name: str, entry: str) -> None:
     toml = check_toml([("read", entry)], [])
-    _fails(toml, "not in the table", name)
+    assert _fails(toml, "not in the table", name)
 
 
 def test_an_entry_the_profile_does_not_declare_fails() -> None:
     toml = check_toml([("read", "speech_processor")], [])
-    _fails(toml, "not available")
+    assert _fails(toml, "not available")
     assert load_checks(facts("ft991a", CAT_EXTRA), toml)
 
 
 def test_a_declared_template_of_the_wrong_shape_fails() -> None:
     """FTX-1 split is ST, not FT; its power carries a head field."""
-    _fails(check_toml([("read", "split")], []), "ST", "ftx1")
-    _fails(check_toml([("read", "power")], []), "power", "ftx1")
+    assert _fails(check_toml([("read", "split")], []), "ST", "ftx1")
+    assert _fails(check_toml([("read", "power")], []), "power", "ftx1")
 
 
 def test_a_value_outside_the_domain_fails() -> None:
     for value in (1_000_000_000, "7074000", -1):
-        _fails(check_toml([("write", "freq_a", value)], ["freq_a"]), "domain")
-    _fails(check_toml([("write", "split", "2")], ["split"]), "domain")
+        assert _fails(check_toml([("write", "freq_a", value)], ["freq_a"]), "domain")
+    assert _fails(check_toml([("write", "split", "2")], ["split"]), "domain")
 
 
 def test_a_read_needs_a_read_form_and_a_restore_item_needs_both() -> None:
-    _fails(check_toml([("read", "vfo_exchange")], []), "read", "ic705")
-    _fails(check_toml([("read", "freq_a")], ["info"]), "info", "ft991a", CAT_EXTRA)
-    _fails(
+    assert _fails(check_toml([("read", "vfo_exchange")], []), "read", "ic705")
+    assert _fails(
+        check_toml([("read", "freq_a")], ["info"]), "info", "ft991a", CAT_EXTRA
+    )
+    assert _fails(
         check_toml([("read", "freq_selected")], [], 'witness = ["vfo_exchange"]'),
         "read",
         "ic705",
@@ -179,13 +185,13 @@ def test_a_read_needs_a_read_form_and_a_restore_item_needs_both() -> None:
 
 
 def test_receiver_is_civ_only_and_only_on_routed_entries() -> None:
-    _fails(check_toml([("read", "freq_a", None, "sub")], []), "receiver")
-    _fails(
+    assert _fails(check_toml([("read", "freq_a", None, "sub")], []), "receiver")
+    assert _fails(
         check_toml([("write", "rf_power", 1, "sub")], ["rf_power@sub"]),
         "receiver",
         "ic7610",
     )
-    _fails(
+    assert _fails(
         check_toml([("write", "af_level", 1, "left")], ["af_level"]),
         "receiver",
         "ic7610",
@@ -193,12 +199,12 @@ def test_receiver_is_civ_only_and_only_on_routed_entries() -> None:
 
 
 def test_write_steps_need_restore_items() -> None:
-    _fails(check_toml([("write", "freq_a", 7074000)], []), "restore")
+    assert _fails(check_toml([("write", "freq_a", 7074000)], []), "restore")
 
 
 def test_repeated_check_ids_fail() -> None:
     body = CAT_CHECK.split("[probe]\n", 1)[1]
-    _fails(CAT_CHECK + body, "repeats")
+    assert _fails(CAT_CHECK + body, "repeats")
 
 
 def test_probe_checks_need_civ_or_yaesu_cat(tmp_path: Path) -> None:
@@ -249,7 +255,7 @@ STEP = '[[probe.checks.steps]]\nkind = "read"\nentry = "freq_a"\n'
     ],
 )
 def test_malformed_shapes_are_load_errors_not_type_errors(toml: str) -> None:
-    _fails(toml, ".")
+    assert _fails(toml, ".")
 
 
 def test_an_absent_checks_field_is_no_checks() -> None:
