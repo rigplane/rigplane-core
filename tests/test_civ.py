@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import itertools
 import time
 
 import pytest
@@ -107,6 +108,7 @@ async def test_tracker_distinguishes_response_data_prefixes(
     pending = tracker.register_response(
         CivRequestKey(command=command, sub=None, data_prefix=expected_prefix)
     )
+    _sent(tracker, pending)
 
     wrong = CivEvent(
         type=CivEventType.RESPONSE,
@@ -124,6 +126,7 @@ async def test_tracker_distinguishes_response_data_prefixes(
 async def test_tracker_empty_data_prefix_preserves_legacy_matching() -> None:
     tracker = CivRequestTracker()
     pending = tracker.register_response(CivRequestKey(command=0x25, sub=None))
+    _sent(tracker, pending)
     response = _response_frame(0x25, b"\x01\xaa")
 
     assert tracker.resolve(CivEvent(type=CivEventType.RESPONSE, frame=response)) is True
@@ -164,6 +167,7 @@ async def test_tracker_generation_rejects_old_epoch_responses() -> None:
     assert tracker.resolve(event, generation=old_gen) is False
 
     fresh = tracker.register_ack(wait=True)
+    _sent(tracker, fresh)
     assert tracker.resolve(event, generation=new_gen) is True
     assert fresh.done()
 
@@ -231,6 +235,23 @@ def _nak_frame() -> CivFrame:
     return CivFrame(to_addr=0xE0, from_addr=0x98, command=0xFA, sub=None, data=b"")
 
 
+def _sent(tracker: CivRequestTracker, entry: object) -> None:
+    """Stamp a registered sink token or blocking future as on the wire.
+
+    MOR-4384: an entry claims an answer only once its frame has left
+    (``CivRequestTracker.mark_sent``); the runtime stamps at the send.
+    """
+    sent_at = float(next(_SEND_STAMPS))
+    if isinstance(entry, int):
+        tracker.mark_sent(sent_at, token=entry)
+    else:
+        tracker.mark_sent(sent_at, futures=(entry,))  # type: ignore[arg-type]
+
+
+#: Send stamps for ``_sent``: only their order matters to these tests.
+_SEND_STAMPS = itertools.count(1)
+
+
 @pytest.mark.asyncio
 async def test_refusal_names_the_oldest_open_read_sink() -> None:
     """MOR-4058: a FA that retires a read's sink names that read."""
@@ -239,7 +260,10 @@ async def test_refusal_names_the_oldest_open_read_sink() -> None:
     refused = CivRequestKey(command=0x1C, sub=0x01)
     later = CivRequestKey(command=0x1C, sub=0x03)
     for key in (answered, refused, later):
-        tracker.register_ack(wait=False, response_key=key, refused_read=key)
+        _sent(
+            tracker,
+            tracker.register_ack(wait=False, response_key=key, refused_read=key),
+        )
     tracker.resolve(
         CivEvent(type=CivEventType.RESPONSE, frame=_response_frame(0x03, b"\x00"))
     )
@@ -272,7 +296,10 @@ def _nak_from(radio_addr: int) -> CivFrame:
 
 def _register_reads(tracker: CivRequestTracker, *keys: CivRequestKey) -> None:
     for key in keys:
-        tracker.register_ack(wait=False, response_key=key, refused_read=key)
+        _sent(
+            tracker,
+            tracker.register_ack(wait=False, response_key=key, refused_read=key),
+        )
 
 
 _FREQ = CivRequestKey(command=0x03, sub=None)
@@ -349,7 +376,7 @@ async def test_an_answer_also_retires_an_older_write_sink(radio_addr: int) -> No
     answer, so that answer retires the older write sink too (its ACK is
     lost), and the next FA reaches the read the radio is answering."""
     tracker = CivRequestTracker()
-    tracker.register_ack(wait=False)  # a fire-and-forget write, ACK lost
+    _sent(tracker, tracker.register_ack(wait=False))  # fire-and-forget write, ACK lost
     _register_reads(tracker, _FREQ, _TUNER)
 
     tracker.resolve(
@@ -406,38 +433,14 @@ async def test_a_broadcast_takes_no_sink(radio_addr: int) -> None:
     assert tracker.ack_sink_count == 0
 
 
-@_RADIO_ADDRS
-@pytest.mark.asyncio
-async def test_an_answer_leaves_an_older_blocking_waiter_alone(radio_addr: int) -> None:
-    """MOR-4209: only fire-and-forget sinks follow the wire order the
-    commander gives them; a blocking waiter (a raw transaction registers
-    before its own pacing gap) is never retired by someone else's answer."""
-    tracker = CivRequestTracker()
-    blocking = tracker.register_ack(wait=True, consume_backlog=False)
-    assert isinstance(blocking, asyncio.Future)
-    _register_reads(tracker, _FREQ)
-
-    tracker.resolve(
-        CivEvent(
-            type=CivEventType.RESPONSE,
-            frame=_directed_response(radio_addr, 0x03, b"\x00\x40\x07\x14\x00"),
-        ),
-        ordered_ingress=True,
-    )
-    assert not blocking.done()
-    tracker.resolve(
-        CivEvent(type=CivEventType.ACK, frame=_ack_frame_from(radio_addr)),
-        ordered_ingress=True,
-    )
-    assert blocking.done()
-
-
 @pytest.mark.asyncio
 async def test_only_a_refused_read_sink_is_named() -> None:
     tracker = CivRequestTracker()
-    tracker.register_ack(wait=False)  # a fire-and-forget write
+    _sent(tracker, tracker.register_ack(wait=False))  # a fire-and-forget write
     read = CivRequestKey(command=0x03, sub=None)
-    tracker.register_ack(wait=False, response_key=read, refused_read=read)
+    _sent(
+        tracker, tracker.register_ack(wait=False, response_key=read, refused_read=read)
+    )
     tracker.resolve(CivEvent(type=CivEventType.NAK, frame=_nak_frame()))
     tracker.resolve(CivEvent(type=CivEventType.ACK, frame=_ack_frame()))
 
@@ -448,7 +451,10 @@ async def test_only_a_refused_read_sink_is_named() -> None:
 async def test_generation_advance_forgets_refused_reads() -> None:
     tracker = CivRequestTracker()
     tuner = CivRequestKey(command=0x1C, sub=0x01)
-    tracker.register_ack(wait=False, response_key=tuner, refused_read=tuner)
+    _sent(
+        tracker,
+        tracker.register_ack(wait=False, response_key=tuner, refused_read=tuner),
+    )
     tracker.resolve(CivEvent(type=CivEventType.NAK, frame=_nak_frame()))
     tracker.advance_generation(RuntimeError("reconnect"))
 
@@ -465,8 +471,8 @@ def test_expire_ack_sinks_drops_only_what_each_window_closed() -> None:
     tracker = CivRequestTracker()
     read = tracker.register_ack(wait=False, response_key=_TUNER, refused_read=_TUNER)
     write = tracker.register_ack(wait=False)
-    tracker.mark_ack_sink_sent(read, sent_monotonic=100.0)
-    tracker.mark_ack_sink_sent(write, sent_monotonic=90.0)
+    tracker.mark_sent(100.0, token=read)
+    tracker.mark_sent(90.0, token=write)
 
     assert tracker.expire_ack_sinks(answer_window=5.0, now_monotonic=96.0) == 1
     assert tracker.ack_unclaimed_at is not None  # the write's FB can still arrive
@@ -488,7 +494,7 @@ def test_an_expired_read_sink_also_flags_an_unclaimed_answer() -> None:
     sink = tracker.register_ack(
         wait=False, response_key=_S_METER, refused_read=_S_METER
     )
-    tracker.mark_ack_sink_sent(sink, sent_monotonic=100.0)
+    tracker.mark_sent(100.0, token=sink)
     assert tracker.ack_unclaimed_at is None
 
     assert tracker.expire_ack_sinks(answer_window=5.0, now_monotonic=105.0) == 1
@@ -506,8 +512,8 @@ async def test_a_read_within_its_window_keeps_the_refusal_off_the_next_write() -
     s_meter = tracker.register_ack(
         wait=False, response_key=_S_METER, refused_read=_S_METER
     )
-    tracker.mark_ack_sink_sent(tuner, sent_monotonic=100.0)
-    tracker.mark_ack_sink_sent(s_meter, sent_monotonic=100.0)
+    tracker.mark_sent(100.0, token=tuner)
+    tracker.mark_sent(100.0, token=s_meter)
     write = tracker.register_ack(wait=True, consume_backlog=False)
 
     assert tracker.expire_ack_sinks(answer_window=5.0, now_monotonic=101.0) == 0
@@ -533,8 +539,9 @@ async def test_broadcast_answer_settles_its_waiter_but_never_retires_sinks() -> 
     """
     tracker = CivRequestTracker()
     tuner = tracker.register_ack(wait=False, response_key=_TUNER, refused_read=_TUNER)
-    tracker.mark_ack_sink_sent(tuner, sent_monotonic=100.0)
+    tracker.mark_sent(100.0, token=tuner)
     waiter = tracker.register_response(_PTT)
+    tracker.mark_sent(101.0, futures=(waiter,))
 
     broadcast = CivFrame(
         to_addr=0x00,
@@ -562,7 +569,10 @@ def test_restore_refused_reads_requeues_undelivered_once() -> None:
     for the owner. A repeatedly refused read still keeps one entry.
     """
     tracker = CivRequestTracker()
-    tracker.register_ack(wait=False, response_key=_TUNER, refused_read=_TUNER)
+    _sent(
+        tracker,
+        tracker.register_ack(wait=False, response_key=_TUNER, refused_read=_TUNER),
+    )
     assert tracker.resolve(CivEvent(type=CivEventType.NAK, frame=_nak_frame()))
 
     taken = tracker.take_refused_reads()

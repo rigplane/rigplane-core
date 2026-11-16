@@ -1806,8 +1806,8 @@ class TestCapturedExecuteLifetime:
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
         "pause,wait_response",
-        [("pacing", False), ("pacing", True), ("sink-drain", True)],
-        ids=["pacing-ff", "pacing-blocking", "sink-drain"],
+        [("pacing", False), ("pacing", True)],
+        ids=["pacing-ff", "pacing-blocking"],
     )
     @pytest.mark.parametrize("change", ["transport", "epoch", "transport-and-tracker"])
     async def test_stale_execute_refuses_before_formatter_and_preserves_tracker(
@@ -1827,11 +1827,6 @@ class TestCapturedExecuteLifetime:
         radio._last_civ_send_monotonic = now
         radio._civ_last_waiter_gc_monotonic = now
         radio._civ_min_interval = 10.0 if pause == "pacing" else 0.0
-        if pause == "sink-drain":
-            # An open fire-and-forget sink parks the blocking command in
-            # ``_drain_ack_sinks_before_blocking`` (MOR-4384); the clock
-            # stays frozen there, so its window never closes on its own.
-            tracker.register_ack(wait=False)
         frame = build_civ_frame(
             IC_7610_ADDR, CONTROLLER_ADDR, _CMD_PTT, sub=_SUB_PTT, data=b"\x00"
         )
@@ -1885,7 +1880,7 @@ class TestCapturedExecuteLifetime:
                         )
                     if change == "transport-and-tracker":
                         assert radio._civ_request_tracker.ack_sink_count == 1, (
-                            "stale drain dropped replacement sink"
+                            "stale execute dropped replacement sink"
                         )
                 tracker.expire_ack_sinks(answer_window=0.0)
                 current_tracker = radio._civ_request_tracker

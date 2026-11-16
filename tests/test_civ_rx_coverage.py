@@ -21,7 +21,6 @@ Covers missing lines:
 - 628-632: _notify_change with callback
 - 640-643: _publish_scope_frame queue full
 - 726: _start_civ_worker commander already exists
-- 759-768: _drain_ack_sinks_before_blocking
 - 823: pre-send timeout check
 - 833: ACK sink token error path
 - 851: post-register remaining <= 0 timeout
@@ -36,7 +35,7 @@ import time
 from collections.abc import Generator
 from contextlib import contextmanager
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from rigplane.testing.timing import VirtualClock, await_until
@@ -6266,35 +6265,32 @@ async def test_start_civ_worker_reuses_existing_commander(radio: IcomRadio) -> N
 
 
 # ---------------------------------------------------------------------------
-# _drain_ack_sinks_before_blocking
+# ACK-sink answer windows (MOR-4384)
 # ---------------------------------------------------------------------------
 
 
-async def test_drain_ack_sinks_returns_early_when_no_sinks(radio: IcomRadio) -> None:
-    """Returns immediately when ack_sink_count == 0."""
-    # ack_sink_count is a read-only property; must patch via PropertyMock on the class
-    tracker_type = type(radio._civ_request_tracker)
-    with patch.object(
-        tracker_type, "ack_sink_count", new_callable=PropertyMock, return_value=0
-    ):
-        # Should return instantly without any sleeping
-        await radio._civ_runtime._drain_ack_sinks_before_blocking()
+async def test_cleanup_expires_a_sink_whose_answer_window_closed(
+    radio: IcomRadio,
+) -> None:
+    """A sent sink leaves once its own answer window from the send closed.
 
-
-async def test_drain_expires_sinks_their_window_closed(radio: IcomRadio) -> None:
-    """Waits out each open sink's own answer window, then expires it.
-
-    MOR-4384: the drain returns only once no open sink is still owed an
-    answer. A never-answered sink (send stamp pending, registration at
-    ~now) is owed its window of ``_civ_get_timeout`` and no longer.
+    MOR-4384: nothing drains or presumes sinks lost before a blocking
+    command; the runtime's housekeeping expires a sink only when its
+    window (``_civ_get_timeout`` from its send stamp) is over, and records
+    that its late FB/FA could still arrive unclaimed.
     """
-    radio._civ_get_timeout = 0.001
-    radio._civ_request_tracker.register_ack(wait=False)
+    tracker = radio._civ_request_tracker
+    closed = tracker.register_ack(wait=False)
+    open_ = tracker.register_ack(wait=False)
+    assert isinstance(closed, int) and isinstance(open_, int)
+    radio._civ_get_timeout = 2.0
+    tracker.mark_sent(0.0, token=closed)
+    tracker.mark_sent(float("inf"), token=open_)
 
-    await radio._civ_runtime._drain_ack_sinks_before_blocking()
+    radio._civ_runtime._cleanup_stale_civ_waiters()
 
-    assert radio._civ_request_tracker.ack_sink_count == 0
-    assert radio._civ_request_tracker.ack_unclaimed_at is not None
+    assert tracker.ack_sink_count == 1
+    assert tracker.ack_unclaimed_at is not None
 
 
 # ---------------------------------------------------------------------------

@@ -258,8 +258,9 @@ async def test_delayed_read_refusal_does_not_fail_a_successful_http_tuning() -> 
     frequency is the requested one.
     """
     status, body, frequency = await _tune_behind_held_answer(
-        lambda cmd, payload: cmd == _TUNER_READ[0]
-        and payload == bytes([_TUNER_READ[1]]),
+        lambda cmd, payload: (
+            cmd == _TUNER_READ[0] and payload == bytes([_TUNER_READ[1]])
+        ),
         _FA_DELAY_S,
         lambda addr: build_civ_frame(
             addr, CONTROLLER_ADDR, _TUNER_READ[0], sub=_TUNER_READ[1]
@@ -281,7 +282,9 @@ async def test_t4_delayed_write_ack_does_not_hide_a_refused_http_tuning() -> Non
     radio's refusal, and the radio's frequency is unchanged.
     """
     status, body, frequency = await _tune_behind_held_answer(
-        lambda cmd, payload: cmd == _AF_WRITE[0] and payload[:1] == bytes([_AF_WRITE[1]]),
+        lambda cmd, payload: (
+            cmd == _AF_WRITE[0] and payload[:1] == bytes([_AF_WRITE[1]])
+        ),
         _FB_DELAY_S,
         lambda addr: build_civ_frame(
             addr, CONTROLLER_ADDR, _AF_WRITE[0], sub=_AF_WRITE[1], data=b"\x01\x28"

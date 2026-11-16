@@ -330,8 +330,11 @@ async def test_t1_every_in_order_answer_lands_on_its_own_request(
 
     for op, outcome in outcomes:  # type: ignore[attr-defined]
         _assert_own_outcome(op, outcome)
+    # Refused reads are recorded once per identity (``restore_refused_reads``).
     assert link.tracker.take_refused_reads() == tuple(
-        op.identity for op in ops if op.read and op.refused and not op.blocking
+        dict.fromkeys(
+            op.identity for op in ops if op.read and op.refused and not op.blocking
+        )
     )
     assert link.tracker.timeout_count == 0
     assert link.tracker.pending_count == 0

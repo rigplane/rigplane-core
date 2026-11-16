@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -65,11 +64,6 @@ class _QueueItem:
     # Task that queued the frame.  Frames whose task differs from an
     # interference scope's owner mark that scope at dispatch (MOR-3743).
     enqueued_by: asyncio.Task[Any] | None = None
-    # Monotonic instant at which the caller stops waiting (``send``'s
-    # ``timeout`` counted from enqueue), or ``None`` for an open-ended wait.
-    # Transported to the executor so its own scheduling waits (the ACK-sink
-    # drain) can stay clear of it instead of eating the caller's deadline.
-    deadline: float | None = None
 
 
 class InterferenceScope:
@@ -250,11 +244,6 @@ class IcomCommander:
             fire_and_forget=not wait_dispatch,
             is_current=is_current,
             enqueued_by=asyncio.current_task(),
-            deadline=(
-                time.monotonic() + timeout
-                if timeout is not None and wait_dispatch
-                else None
-            ),
         )
 
         if key is not None:
@@ -365,16 +354,14 @@ class IcomCommander:
                     # in-flight command and the worker can move on, instead
                     # of blocking on a dropped reply while the rest of the
                     # queue piles up with pre-cancelled futures (#1188).
-                    # Optional context travels as keywords only when present,
-                    # so a plain two-argument executor keeps working.
-                    execute_kwargs: dict[str, Any] = {}
-                    if item.is_current is not None:
-                        execute_kwargs["is_current"] = item.is_current
-                    if item.deadline is not None:
-                        execute_kwargs["deadline"] = item.deadline
-                    execution = self._execute(
-                        item.payload, item.wait_response, **execute_kwargs
-                    )
+                    if item.is_current is None:
+                        execution = self._execute(item.payload, item.wait_response)
+                    else:
+                        execution = self._execute(
+                            item.payload,
+                            item.wait_response,
+                            is_current=item.is_current,
+                        )
                     execute_task = asyncio.ensure_future(execution)
                     inflight = execute_task
 

@@ -624,9 +624,7 @@ async def test_caller_timeout_cancels_inflight_and_unblocks_queue() -> None:
     started = asyncio.Event()
     block = asyncio.Event()
 
-    async def execute(
-        cmd: bytes, wait_response: bool = True, *, deadline: float | None = None
-    ) -> CivFrame | None:
+    async def execute(cmd: bytes, wait_response: bool = True) -> CivFrame | None:
         seen.append(cmd)
         if cmd == b"slow":
             started.set()
@@ -762,9 +760,7 @@ async def test_stop_returns_after_send_timeout_without_yield() -> None:
     """
     hang = asyncio.Event()
 
-    async def execute(
-        cmd: bytes, wait_response: bool = True, *, deadline: float | None = None
-    ) -> CivFrame | None:
+    async def execute(cmd: bytes, wait_response: bool = True) -> CivFrame | None:
         await hang.wait()
         return None
 
