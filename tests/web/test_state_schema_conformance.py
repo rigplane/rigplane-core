@@ -13,6 +13,7 @@ core runtime install (which excludes pydantic) is unaffected.
 
 from __future__ import annotations
 
+import json
 from typing import Any, get_args
 
 import pytest
@@ -339,6 +340,38 @@ def test_snapshot_path_normalized_level_fields_conform() -> None:
     # The payload must validate against ServerStatePublic (would raise
     # int_from_float ValidationError under old int typing).
     ServerStatePublic.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    ("name", "public_key", "value"),
+    [
+        ("comp", "compMeter", 3.5),
+        ("vd", "vdMeter", 13.4),
+        ("id", "idMeter", 1.25),
+        ("power", "powerMeter", 62.5),
+        ("swr", "swrMeter", 2.375),
+        ("alc", "alcMeter", 0.4),
+    ],
+)
+def test_snapshot_path_float_meter_leaves_conform_strictly(
+    name: str, public_key: str, value: float
+) -> None:
+    """MOR-4515: calibrated global meters (volts, amps, W, SWR, dB) are floats.
+
+    Each leaf is observed with a float through the snapshot producer and the
+    JSON the server would send must parse under ``strict=True``. Reverting
+    that one declaration to ``int | None`` fails only its own case.
+    """
+    clock = FreshnessClock()
+    store = StateStore(freshness_clock=clock)
+    store.apply(_observation(FieldPath.global_("meters", name), value, at=clock.now()))
+    payload = build_public_state_payload_from_snapshot(
+        store.snapshot(), radio=None, receiver_count=1
+    )
+    assert payload[public_key] == value, payload.get(public_key)
+
+    state = ServerStatePublic.model_validate_json(json.dumps(payload), strict=True)
+    assert getattr(state, public_key) == value
 
 
 def test_snapshot_path_unobserved_null_leaves_conform() -> None:

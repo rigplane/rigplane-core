@@ -1385,7 +1385,7 @@ async def test_disable_scope_strict_nak_raises(
     mock_transport.queue_response_on_send(1, _ack_response())
     mock_transport.queue_response_on_send(2, _ack_response())
     await radio.enable_scope(policy=ScopeCompletionPolicy.STRICT)
-    mock_transport.queue_response(_nak_response())
+    mock_transport.queue_response_on_send(3, _nak_response())
     with pytest.raises(CommandError, match="scope scope_on"):
         await radio.disable_scope(policy=ScopeCompletionPolicy.STRICT)
 

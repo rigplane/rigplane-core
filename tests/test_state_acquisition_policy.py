@@ -2172,6 +2172,8 @@ def test_available_when_is_declared_only_where_a_probe_established_it() -> None:
         ("FT-991A", "global.meters.comp"),
         ("FT-991A", "global.meters.power"),
         ("FT-991A", "global.meters.swr"),
+        # MOR-4454: SWR takes the same gate once the profile polls it.
+        ("G7250", "global.meters.swr"),
         ("IC-705", "global.meters.alc"),
         ("IC-705", "global.meters.comp"),
         ("IC-705", "global.meters.power"),

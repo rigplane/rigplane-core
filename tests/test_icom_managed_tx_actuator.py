@@ -11,6 +11,7 @@ import pytest
 from rigplane.backends.icom7610 import Icom7610SerialRadio
 from rigplane.backends.icom7610.drivers.serial_session import SerialCivTransport
 from rigplane.command_map import CommandMap
+from rigplane.core.civ import CivRequestKey
 from rigplane.commands import CONTROLLER_ADDR, build_civ_frame, parse_civ_frame
 from rigplane.commands.bound import BoundCommands
 from rigplane.commands.commander import IcomCommander, Priority
@@ -232,6 +233,87 @@ async def test_an_unkey_after_a_dropped_write_sink_stays_uncertain() -> None:
         await radio.disconnect()
 
     assert result is ActuationResult.UNCERTAIN
+
+
+@pytest.mark.asyncio
+async def test_an_unkey_after_an_expired_read_sink_is_confirmed_by_its_fb() -> None:
+    """MOR-4384: an expired READ sink leaves the unkey's FB unambiguous.
+
+    A read is never answered with FB, so a background read whose answer
+    window closed unanswered (a poll lost while the link dropped) cannot
+    own the FB in the unkey's window: the release is confirmed, not left
+    uncertain. Only an unanswered WRITE makes that FB ambiguous (the case
+    above). Under the TX fault matrix's silent drop, dozens of poll reads
+    expire at once; flagging each one kept every release uncertain.
+    """
+    link = _FakeSerialCivLink()
+    radio = Icom7610SerialRadio(device="/dev/ttyUSB0", civ_link=link)
+    radio._civ_get_timeout = 0.2
+    await radio.connect()
+    try:
+        tracker = radio._civ_request_tracker
+        key = CivRequestKey(command=0x15, sub=0x02)
+        sink = tracker.register_ack(wait=False, response_key=key, refused_read=key)
+        assert isinstance(sink, int)
+        tracker.mark_sent(1.0, token=sink)  # its window closed long ago
+        radio._civ_runtime._cleanup_stale_civ_waiters()
+        assert tracker.ack_sink_count == 0
+        result = await _force_receive(radio)
+    finally:
+        await radio.disconnect()
+
+    assert result is ActuationResult.ACCEPTED
+
+
+@pytest.mark.asyncio
+async def test_a_refused_unkey_after_a_lost_write_fb_is_never_accepted_blind() -> None:
+    """MOR-4384 P0: a bare reply settling a sink while the unkey waits is ambiguous.
+
+    1. Write A (fire-and-forget) loses its FB -- in the field the key-on.
+    2. The unkey B is refused with FA (the radio stays keyed); A's sink is
+       the oldest open entry and takes that FA.
+    3. A concurrent raw transaction C (expect="ack") is accepted with FB;
+       B, older than C, takes C's FB.
+    B "succeeded" on somebody else's answer. The release must not be
+    ACCEPTED without the PTT readback.
+    """
+    link = _FakeSerialCivLink(ptt_off_answer=0xFA)
+    radio = Icom7610SerialRadio(device="/dev/ttyUSB0", civ_link=link)
+    radio._civ_get_timeout = 0.5
+    await radio.connect()
+    try:
+        runtime, tracker = radio._civ_runtime, radio._civ_request_tracker
+        await radio._send_civ_raw(
+            build_civ_frame(radio._radio_addr, CONTROLLER_ADDR, 0x0F, data=b"\x01"),
+            wait_response=False,
+        )  # A: the fake never answers it
+        sent_before = len(link.sent_frames)
+        release = asyncio.ensure_future(_force_receive(radio))
+        while tracker.ack_sink_count:  # B's FA has taken A's sink
+            await asyncio.sleep(0)
+        transaction = asyncio.ensure_future(
+            runtime.execute_civ_transaction(
+                build_civ_frame(radio._radio_addr, CONTROLLER_ADDR, 0x17, data=b"\xff"),
+                expect="ack",
+                timeout=0.5,
+            )
+        )
+        result = await release
+        await asyncio.gather(transaction, return_exceptions=True)
+        readbacks = [
+            frame
+            for frame in link.sent_frames[sent_before:]
+            if parse_civ_frame(frame).command == 0x1C
+            and parse_civ_frame(frame).sub == 0x00
+            and not parse_civ_frame(frame).data
+        ]
+    finally:
+        await radio.disconnect()
+
+    assert result is not ActuationResult.ACCEPTED or readbacks, (
+        "the refused unkey was accepted on another command's FB, unverified"
+    )
+    assert result is not ActuationResult.ACCEPTED
 
 
 @pytest.mark.asyncio
@@ -503,7 +585,7 @@ async def release_radio(request, monkeypatch):
     script["ptt"] = (lambda: sim.ptt_on) if sim is not None else (lambda: fake.ptt)
     radio._civ_get_timeout = 0.03
     monkeypatch.setattr(CoreRadio, "_PTT_READBACK_SETTLE_S", 0.001)
-    radio._civ_min_interval = radio._civ_ack_sink_grace = 0
+    radio._civ_min_interval = 0
     radio._civ_runtime._ptt_ledger = None
     assert radio.connected
     runtime = radio._civ_runtime
@@ -613,7 +695,7 @@ async def test_two_read_release_matrix(
             ledger._owed[0] is a and a.answered_by is None and ledger.orphan_count == 0
         )
         if prior == "sink":
-            radio._civ_request_tracker.drop_ack_sinks()
+            radio._civ_request_tracker.expire_ack_sinks(answer_window=0.0)
         if prior == "generation":
             runtime.advance_generation("test replacement")
     if prior == "orphan":
@@ -626,7 +708,7 @@ async def test_two_read_release_matrix(
         assert (await radio.read_transmit_state()).value is False
         assert ledger.eligible() and ledger.orphan_count == 0
     if answer in ("stale", "re-emitted"):
-        radio._civ_request_tracker.drop_ack_sinks()
+        radio._civ_request_tracker.expire_ack_sinks(answer_window=0.0)
         await radio.actuate(
             _token(), ActuationOperation.PTT_ON, is_current=lambda: True
         )
