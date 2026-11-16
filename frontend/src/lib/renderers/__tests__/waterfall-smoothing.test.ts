@@ -103,7 +103,7 @@ describe('MOR-4383 waterfall smoothing', () => {
     const f = webglFixture(100, 50);
     const r = new WaterfallRenderer(f.canvas, options);
     const stream = (seq: number, epoch: number): WaterfallFrameIdentity => ({
-      source: 'radio', sourceId: 'radio', receiver: 0, seq, epoch,
+      slot: 'radio:0', seq, epoch,
     });
     r.pushRow(new Uint8Array([0, 80, 0]), stream(26_218, 1));
     expect(f.named('texSubImage2D')).toHaveLength(3);
@@ -127,11 +127,10 @@ describe('MOR-4383 waterfall smoothing', () => {
     const f = webglFixture(100, 50);
     const r = new WaterfallRenderer(f.canvas, options);
     // Qualified stream identity: hub sequences are per receiver and radio
-    // wire epochs stay 0, so only (source, receiver, epoch) tells a new
-    // stream from a replay. Extra fields stay assignable to the legacy
-    // { seq, epoch } identity, so this test compiles before the fix.
-    const on = (receiver: number, seq: number) => ({
-      source: 'radio', sourceId: 'radio', receiver, epoch: 0, seq,
+    // wire epochs stay 0, so only (slot, epoch) tells a new stream from a
+    // replay.
+    const on = (receiver: number, seq: number): WaterfallFrameIdentity => ({
+      slot: `radio:${receiver}`, epoch: 0, seq,
     });
     r.pushRow(new Uint8Array([80, 80, 80]), on(0, 1000));
     expect(f.named('texSubImage2D')).toHaveLength(3);

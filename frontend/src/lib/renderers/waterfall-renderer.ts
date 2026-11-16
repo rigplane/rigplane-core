@@ -63,11 +63,12 @@ export const defaultWaterfallOptions: WaterfallOptions = {
 /** Frame identity for the per-frame dedupe (MOR-4383): one row group per NEW
  * frame on the SAME qualified stream. A repeated or stale identity is a
  * registration replay, never a new row; a new stream restarts the sequence
- * AND the smoothing state like a geometry change. A Pick of the ScopeFrame
- * contract the delivery maps from: hub sequences are per receiver while
- * radio wire epochs stay 0, so only the qualified (source, sourceId,
- * receiver, epoch) stream tells a new row from a replay. */
-export type WaterfallFrameIdentity = Pick<ScopeFrame, 'source' | 'sourceId' | 'receiver' | 'epoch' | 'seq'>;
+ * AND the smoothing state like a geometry change. `epoch` and `seq` are the
+ * ScopeFrame contract fields; `slot` is the qualified display slot
+ * (`scopeSlotKey(sourceId, receiver)`) the scope adapter derives: hub
+ * sequences are per receiver while radio wire epochs stay 0, so only
+ * (slot, epoch) tells a new row from a replay. */
+export type WaterfallFrameIdentity = Pick<ScopeFrame, 'epoch' | 'seq'> & { readonly slot: string };
 
 export class WaterfallRenderError extends Error {
   readonly code = 'webgl-required';
@@ -197,7 +198,7 @@ export class WaterfallRenderer {
   private previousValid = false;
   // MOR-4383 frame dedupe: the last delivered stream (null = none seen, so
   // a valid seq 0 is a real row, never a replay) and its latest sequence.
-  private lastStream: Omit<WaterfallFrameIdentity, 'seq'> | null = null;
+  private lastStream: { slot: string; epoch: number } | null = null;
   private lastSeq = -1;
 
   constructor(private readonly canvas: HTMLCanvasElement, options: WaterfallOptions) {
@@ -353,10 +354,8 @@ export class WaterfallRenderer {
     // keep the legacy always-process behaviour.
     if (identity !== undefined) {
       const stream = this.lastStream;
-      if (stream === null || stream.source !== identity.source || stream.sourceId !== identity.sourceId
-        || stream.receiver !== identity.receiver || stream.epoch !== identity.epoch) {
-        this.lastStream = { source: identity.source, sourceId: identity.sourceId,
-          receiver: identity.receiver, epoch: identity.epoch };
+      if (stream === null || stream.slot !== identity.slot || stream.epoch !== identity.epoch) {
+        this.lastStream = { slot: identity.slot, epoch: identity.epoch };
         this.lastSeq = -1;
         this.smoothBins = 0;
         this.previousValid = false;

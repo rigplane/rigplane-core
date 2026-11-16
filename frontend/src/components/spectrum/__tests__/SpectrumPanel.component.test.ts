@@ -3323,7 +3323,7 @@ describe('managed scope projection (MOR-2367)', () => {
       await flushWaterfallPaint();
       // MOR-4383: the raw pixels still flow unfiltered; the delivery now
       // carries the frame identity (wire defaults seq 1, epoch 1).
-      expect(push).toHaveBeenCalledWith(frame.pixels, { source: 'radio', sourceId: 'radio', receiver: 0, seq: 1, epoch: 1 });
+      expect(push).toHaveBeenCalledWith(frame.pixels, { slot: 'radio:0', seq: 1, epoch: 1 });
     } finally { push.mockRestore(); }
   });
   it('consolidates backlog handling into the rAF pump: a burst before one animation frame paints only the latest delivery (MOR-4206)', async () => {
@@ -5213,7 +5213,7 @@ describe('SpectrumPanel waterfall stream identity (MOR-4383)', () => {
         emitFrame({ receiver: 1, sequence: 21 });
         await flushWaterfallPaint();
         expect(capture.uploads()).toBeGreaterThan(painted);
-        expect(push.mock.calls.at(-1)?.[1]).toMatchObject({ receiver: 1 });
+        expect(push.mock.calls.at(-1)?.[1]).toMatchObject({ slot: 'radio:1', seq: 21 });
       } finally {
         push.mockRestore();
       }

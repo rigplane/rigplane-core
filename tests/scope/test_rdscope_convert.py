@@ -50,7 +50,12 @@ def _recording(frames: list[bytes]) -> bytes:
     out = bytearray(MAGIC)
     out += b"\x01" + struct.pack("<d", 0.0) + struct.pack("<I", len(granted)) + granted
     for index, frame in enumerate(frames):
-        out += b"\x02" + struct.pack("<d", float(index)) + struct.pack("<I", len(frame)) + frame
+        out += (
+            b"\x02"
+            + struct.pack("<d", float(index))
+            + struct.pack("<I", len(frame))
+            + frame
+        )
     return bytes(out)
 
 
@@ -81,7 +86,9 @@ def test_build_fixture_keeps_producer_bytes_and_contract_fields() -> None:
 
 
 def test_read_rdscope_round_trip_through_encoder(tmp_path: Path) -> None:
-    wire = [encode_scope_frame_v2(_frame(seq, bytes([seq, seq + 1]))) for seq in (3, 4, 5)]
+    wire = [
+        encode_scope_frame_v2(_frame(seq, bytes([seq, seq + 1]))) for seq in (3, 4, 5)
+    ]
     recording = tmp_path / "bench.rdscope"
     recording.write_bytes(_recording(wire))
     _granted, frames = read_rdscope(recording)
@@ -104,7 +111,11 @@ def test_rejects_non_v2_payload() -> None:
 
 def test_committed_bench_frames_rebuild_byte_identical() -> None:
     """The committed .frames fixtures survive the new code path untouched."""
-    for stem in ("ic705_bench_antenna_20s", "ic705_air_20m_ref-10", "ic705_air_20m_ref+10"):
+    for stem in (
+        "ic705_bench_antenna_20s",
+        "ic705_air_20m_ref-10",
+        "ic705_air_20m_ref+10",
+    ):
         raw = (ROOT / f"{stem}.frames").read_bytes()
         frames: list[bytes] = []
         offset = 0
