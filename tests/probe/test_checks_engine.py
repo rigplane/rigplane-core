@@ -320,6 +320,36 @@ async def test_precondition_pattern_refuses_before_any_write(tmp_path: Path) -> 
     assert list(radio.commands) == ["FT;"]
 
 
+async def test_every_original_is_judged_as_its_restore_write_before_any_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Contract line 2: the explicit pre-write encoding of every original, not
+    only the rehearsal of the first one, happens before the first write byte."""
+    from rigplane.probe import checks
+
+    config = load(tmp_path, "ic705", CIV_POWER_FREQ)
+    fake = civ_fake("IC-705")
+    judged: list[tuple[str, str, object]] = []
+    real = checks.judged_frame
+
+    def spy(table, entry, form, value, receiver, restored):
+        judged.append((entry, form, value))
+        return real(table, entry, form, value, receiver, restored)
+
+    monkeypatch.setattr(checks, "judged_frame", spy)
+    inner = await civ_exchange(fake)
+    at_first_write: list[set] = []
+
+    async def exchange(body: bytes | None, timeout: float):
+        if body and body not in (b"\x14\x0a", b"\x25\x00") and not at_first_write:
+            at_first_write.append({(e, v) for e, f, v in judged if f == "write"})
+        return await inner(body, timeout)
+
+    result = await run(config, request(tmp_path), exchange)
+    assert result.records[0].restored and result.records[0].verified
+    assert at_first_write == [{("rf_power", 128), ("freq_selected", 14_074_000)}]
+
+
 # --- ask timeout, cancel ----------------------------------------------------------------
 
 

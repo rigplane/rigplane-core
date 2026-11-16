@@ -1,24 +1,15 @@
-"""The write-check engine (MOR-4464 B1b): one mechanism for CI-V and Yaesu CAT.
+"""The write-check engine (MOR-4464 B1b), one mechanism for CI-V and Yaesu CAT.
 
-A check (profile data, ``profiles/probe_checks.py``) names table entries and
-values, never bytes. Every frame of a check is built and judged by
-``judged_frame`` inside :func:`_send`, immediately before the port, and
-``_send`` is the only function here that reaches the port.
+Checks name table entries and values, never bytes: every frame is built and
+judged by ``judged_frame`` inside :func:`_send`, the only path to the port.
+Before any write: preconditions (shell pattern over the reply text), witness,
+originals, each original encoded as its restore write (outside the domain:
+refused, so a restore is always possible), consent, the fsynced journal.
+Then rehearsal, steps (power never above the original), and the restore in
+reverse order (judged, retried once, read back), witness after. SIGINT,
+SIGTERM, SIGHUP cancel into the restore and are ignored during it.
 
-Per check, before any write: preconditions (a shell-style pattern over the
-reply text), witness reads, the originals of every restore item, and each
-original encoded through ``judged_frame`` as the write that puts it back: an
-original outside its entry's domain (a digital-voice mode, a frequency
-outside the profile's ranges) refuses the check, so a restore is always
-possible. Then the person's consent, then the write-ahead journal (fsynced),
-then the no-op rehearsal of each restore write, the steps, and the restore:
-originals in reverse order, each write judged again, retried once, read back
-and compared; witness reads after. A power write above its original is
-refused at run time. SIGINT/SIGTERM/SIGHUP cancel into the same restore,
-and a signal during the restore is ignored. An ``ask`` waits 60 s at most.
-
-Known gap: no Windows console-close handler here (MOR-4497, its own PR
-before B2 reaches any customer); the journal covers a closed window.
+Known gap: no Windows console-close handler (MOR-4497, own PR before B2).
 """
 
 from __future__ import annotations
@@ -31,6 +22,7 @@ from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from rigplane.commands import parse_civ_frame
 from rigplane.probe.journal import ChecksJournal, remove_journal, write_journal
@@ -62,21 +54,11 @@ from rigplane.profiles.probe_checks import (
 )
 from rigplane.profiles.rig_loader import RigConfig
 
-__all__ = [
-    "ASK_TIMEOUT_S",
-    "ChecksRequest",
-    "ChecksResult",
-    "radio_facts",
-    "run_checks",
-]
+__all__ = ["ASK_TIMEOUT_S", "ChecksRequest", "ChecksResult", "run_checks"]
 
-#: How long an ``ask`` waits for the person before it is skipped.
-ASK_TIMEOUT_S = 60.0
-
-#: Entries whose writes may never exceed the value read before the check.
+ASK_TIMEOUT_S = 60.0  # an unanswered ask is skipped after this
 _POWER = frozenset({"power", "rf_power"})
 
-#: Hand-settable names of the table entries (the journal and the file).
 _LABELS = {
     "freq_a": "VFO-A",
     "freq_b": "VFO-B",
@@ -97,10 +79,9 @@ Key = tuple[str, int | None]
 
 @dataclass(frozen=True, slots=True)
 class ChecksRequest:
-    """What the CLI hands the runner when ``--checks`` was asked for:
-    ``consent(check, originals)`` decides each check, ``ask`` puts a question
-    (``None``: skipped), ``on_event`` sees ``journal_written``,
-    ``steps_begin`` and ``restore_begin``."""
+    """``--checks``: ``consent(check, originals)`` per check, ``ask`` a question
+    (``None``: skipped); ``on_event`` gets journal_written, steps_begin and
+    restore_begin."""
 
     journal_path: Path
     consent: Callable[[ProbeCheck, dict[str, str]], bool]
@@ -111,8 +92,7 @@ class ChecksRequest:
 
 @dataclass(frozen=True, slots=True)
 class ChecksResult:
-    """Every check record; ``exit_code`` 4 when a check could not be put back
-    or verified; ``termination`` when the checks ended the run differently."""
+    """``exit_code`` 4: a check not put back or not verified."""
 
     records: tuple[CheckRecord, ...]
     exit_code: int
@@ -120,7 +100,7 @@ class ChecksResult:
 
 
 class _Stop(Exception):
-    """A check stops here: refused before writing, or a step failed."""
+    """Refused before writing, or a step failed."""
 
 
 @dataclass(slots=True)
@@ -146,7 +126,7 @@ class _Check:
 
 
 def radio_facts(config: RigConfig) -> RadioFacts:
-    """The facts the loader compiled the checks against, from the config."""
+    """The facts the loader compiled the checks against."""
     return RadioFacts(
         protocol=config.protocol_type,
         commands=config.commands,
@@ -174,8 +154,7 @@ def _hand(entry: str, receiver: int | None, value: object) -> tuple[str, str]:
 
 
 def _value(run: _Run, entry: Entry, reply: bytes | None) -> object | None:
-    """Decode a read reply with the entry's own codec (the FT; read answer
-    goes through the profile's ``[vfo.split].read_map``)."""
+    """A read reply through the entry's codec (FT; via ``[vfo.split]``)."""
     if reply is None or entry.write is None or entry.codec is None:
         return None
     if run.config.protocol_type == "yaesu_cat":
@@ -201,8 +180,7 @@ async def _send(
     value: object = None,
     receiver: int | None = None,
 ) -> tuple[bytes, bytes | None, str]:
-    """The ONLY path to the port for check traffic: judge the exact bytes
-    with ``judged_frame``, then send them once through the read pass gate."""
+    """The ONLY path to the port: judge the exact bytes, send them once."""
     body = judged_frame(state.table, entry, form, value, receiver, state.check.restored)
     protocol = run.config.protocol_type
     cat = protocol == "yaesu_cat"
@@ -219,8 +197,7 @@ async def _send(
         garbled=_garble_check(protocol),
     )
     if answer is None:  # the gate already stopped: nothing was sent
-        stop = run.gate.stop_status
-        return body, None, "silent" if stop == "silence_stop" else "transport_error"
+        return body, None, "transport_error"
     if answer.broken is not None:
         run.gate.stop_transport("write check", answer.broken)
         return body, None, "transport_error"
@@ -231,39 +208,19 @@ async def _send(
     return body, answer.reply, _outcome(protocol, item, answer)
 
 
-def _accepted(run: _Run, outcome: str) -> bool:
+async def _io(run: _Run, state: _Check, key: Key, *write: object) -> object:
+    """Read (the decoded value) or write ``write[0]`` (accepted?); one row."""
+    form, sent = ("write", write[0]) if write else ("read", None)
+    body, reply, outcome = await _send(run, state, key[0], form, sent, key[1])
+    value = sent if write else _value(run, state.table.entry(key[0]), reply)
+    shown = None if value is None else _hand(*key, value)[1]
+    hexed = None if reply is None else reply.hex()
+    state.steps.append(CheckStepRow(form, key[0], body.hex(), hexed, outcome, shown))
+    if not write:
+        return value
     return outcome == (
         "silent" if run.config.protocol_type == "yaesu_cat" else "ack_only"
     )
-
-
-def _hex(reply: bytes | None) -> str | None:
-    return None if reply is None else reply.hex()
-
-
-async def _read(run: _Run, state: _Check, key: Key) -> object | None:
-    body, reply, outcome = await _send(run, state, key[0], "read", None, key[1])
-    value = _value(run, state.table.entry(key[0]), reply)
-    shown = None if value is None else _hand(*key, value)[1]
-    state.steps.append(
-        CheckStepRow("read", key[0], body.hex(), _hex(reply), outcome, shown)
-    )
-    return value
-
-
-async def _write(run: _Run, state: _Check, key: Key, value: object) -> bool:
-    body, reply, outcome = await _send(run, state, key[0], "write", value, key[1])
-    state.steps.append(
-        CheckStepRow(
-            "write",
-            key[0],
-            body.hex(),
-            _hex(reply),
-            outcome,
-            _hand(*key, value)[1],
-        )
-    )
-    return _accepted(run, outcome)
 
 
 async def _witness(run: _Run, state: _Check) -> dict[str, str | None]:
@@ -275,7 +232,7 @@ async def _witness(run: _Run, state: _Check) -> dict[str, str | None]:
 
 
 async def _prepare(run: _Run, state: _Check) -> None:
-    """Everything before the first write; ``_Stop`` refuses the check."""
+    """Everything before the first write."""
     for pre in state.check.preconditions:
         _, reply, _ = await _send(run, state, pre.entry, "read")
         text = _snapshot_value(run.config.protocol_type, reply) or ""
@@ -284,7 +241,7 @@ async def _prepare(run: _Run, state: _Check) -> None:
     state.before = await _witness(run, state)
     for item in state.check.restore:
         key = (item.entry, item.receiver)
-        value = await _read(run, state, key)
+        value = await _io(run, state, key)
         try:
             if value is None:
                 raise ValueError("unreadable")
@@ -303,9 +260,9 @@ async def _steps(run: _Run, state: _Check) -> None:
     originals = dict(state.originals)
     for item in (o for o in state.check.restore if o.rehearse):
         key = (item.entry, item.receiver)
-        if not await _write(run, state, key, originals[key]):
+        if not await _io(run, state, key, originals[key]):
             raise _Stop(f"the radio refused to keep its own {_hand(*key, 0)[0]}")
-        if await _read(run, state, key) != originals[key]:
+        if await _io(run, state, key) != originals[key]:
             raise _Stop(f"{_hand(*key, 0)[0]} changed on a write of its own value")
     if run.request.on_event:
         run.request.on_event("steps_begin")
@@ -320,19 +277,13 @@ async def _steps(run: _Run, state: _Check) -> None:
                 answer = None
             state.answers.append(CheckAnswerRow(step.question, answer, answer is None))
         elif step.kind == "read":
-            await _read(run, state, key)
+            await _io(run, state, key)
         else:
-            original, value = originals.get(key), step.value
-            if (
-                step.entry in _POWER
-                and isinstance(value, int)
-                and isinstance(original, int)
-            ):
-                if value > original:
-                    raise _Stop(
-                        f"a write of {value} is above the original power {original}"
-                    )
-            if not await _write(run, state, key, step.value):
+            old, new = originals.get(key), step.value
+            if step.entry in _POWER and isinstance(new, int) and isinstance(old, int):
+                if new > old:
+                    raise _Stop(f"a write of {new} is above the original power {old}")
+            if not await _io(run, state, key, step.value):
                 raise _Stop(f"the radio did not accept {step.entry} = {step.value!r}")
 
 
@@ -344,14 +295,14 @@ async def _restore(run: _Run, state: _Check) -> tuple[bool, bool, str | None]:
     restored = verified = True
     error = None
     for key, value in reversed(state.originals):
-        accepted = await _write(run, state, key, value) or await _write(
+        accepted = await _io(run, state, key, value) or await _io(
             run, state, key, value
         )
         name, text = _hand(*key, value)
         if not accepted:
             restored = verified = False
             error = f"could not put {name} back to {text}; please set it by hand"
-        elif await _read(run, state, key) != value:
+        elif await _io(run, state, key) != value:
             verified = False
             error = error or f"{name} reads differently after the restore (was {text})"
     return restored, verified, error
@@ -363,25 +314,9 @@ async def _run_one(run: _Run, check: ProbeCheck) -> CheckRecord:
     state = _Check(check, compile_table(radio_facts(run.config), ids))
     originals: dict[str, str] = {}
 
-    def record(
-        status: str,
-        error: str | None = None,
-        witness: CheckWitness | None = None,
-        restored: bool = True,
-        verified: bool = True,
-    ) -> CheckRecord:
-        return CheckRecord(
-            check.id,
-            check.title,
-            status,
-            tuple(state.steps),
-            tuple(state.answers),
-            originals,
-            witness or CheckWitness({}, {}, []),
-            restored,
-            verified,
-            error,
-        )
+    def record(status: str, error: str | None = None, **ran: Any) -> CheckRecord:
+        done = (tuple(state.steps), tuple(state.answers), originals)
+        return CheckRecord(check.id, check.title, status, *done, error=error, **ran)
 
     try:
         await _prepare(run, state)
@@ -392,13 +327,10 @@ async def _run_one(run: _Run, check: ProbeCheck) -> CheckRecord:
         return record("refused", error="cancelled before any write")
     if not run.request.consent(check, dict(originals)):
         return record("declined")
-    journal = run.request.journal_path
-    saved = datetime.now(timezone.utc).isoformat()
+    journal, now = run.request.journal_path, datetime.now(timezone.utc).isoformat()
+    noted = (*originals.items(),)
     write_journal(
-        journal,
-        ChecksJournal(
-            check.id, check.title, run.config.model, tuple(originals.items()), saved
-        ),
+        journal, ChecksJournal(check.id, check.title, run.config.model, noted, now)
     )
     if run.request.on_event:
         run.request.on_event("journal_written")
@@ -446,11 +378,9 @@ def _install_signals(run: _Run) -> Callable[[], None]:
 
     installed: list[int] = []
     for name in ("SIGINT", "SIGTERM", "SIGHUP"):
-        number = getattr(signal, name, None)
-        with suppress(NotImplementedError, RuntimeError, ValueError):
-            if number is not None:
-                loop.add_signal_handler(number, cancel)
-                installed.append(number)
+        with suppress(AttributeError, NotImplementedError, RuntimeError, ValueError):
+            loop.add_signal_handler(getattr(signal, name), cancel)
+            installed.append(getattr(signal, name))
 
     def remove() -> None:
         for number in installed:
@@ -466,16 +396,15 @@ async def run_checks(
     exchange: Exchange,
     gap_s: float,
     timeout_s: float,
-    checks: tuple[ProbeCheck, ...] | None = None,
 ) -> ChecksResult:
-    """Run the profile's checks (or *checks*) after the read pass."""
+    """Run the profile's checks after the read pass."""
     run = _Run(
         config, exchange, _SendGate(gap_s, allowed=frozenset()), timeout_s, request
     )
     remove = _install_signals(run)
     records: list[CheckRecord] = []
     try:
-        for check in config.probe_checks if checks is None else checks:
+        for check in config.probe_checks:
             records.append(await _run_one(run, check))
             if run.cancelled or run.gate.stopped:
                 break
@@ -484,14 +413,11 @@ async def run_checks(
     failed = [
         r for r in records if r.status == "ran" and not (r.restored and r.verified)
     ]
+    termination = None
     if failed:
         termination = TerminationInfo("restore_failed", failed[0].error or failed[0].id)
     elif run.cancelled:
-        termination = TerminationInfo(
-            "cancelled", "a signal or Ctrl-C stopped the checks"
-        )
+        termination = TerminationInfo("cancelled", "a signal or Ctrl-C stopped them")
     elif run.gate.stopped:
         termination = TerminationInfo(run.gate.stop_status, run.gate.stop_detail)
-    else:
-        termination = None
     return ChecksResult(tuple(records), 4 if failed else 0, termination)
