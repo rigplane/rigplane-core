@@ -199,11 +199,11 @@ def test_civ_raw_write_with_a_second_frame_is_refused(tmp_path: Path, rig: str) 
 
 @pytest.mark.parametrize("rig", CIV_RIGS)
 @pytest.mark.parametrize("body", ["29001c0001", "29002800", "29011c0001"])
-def test_civ_wrapped_never_listed_raw_read_is_refused(
+def test_civ_wrapped_never_listed_raw_write_is_refused(
     tmp_path: Path, rig: str, body: str
 ) -> None:
-    toml = _civ(_raw("raw_read", "body_hex", body), "")
-    _fails(tmp_path, rig, toml, "never-listed")
+    toml = _civ(_raw("raw_write", "body_hex", body), _restore(*SELECTED))
+    _fails(tmp_path, rig, toml, "allow-list")
 
 
 def _vfo_step(data: str) -> str:
@@ -219,7 +219,7 @@ def test_vfo_operations_need_selected_and_unselected_restores(
     tmp_path: Path, rig: str, data: str
 ) -> None:
     for pairs in (SELECTED, SELECTED + UNSELECTED[:1]):
-        _fails(tmp_path, rig, _civ(_vfo_step(data), _restore(*pairs)), "both VFOs")
+        _fails(tmp_path, rig, _civ(_vfo_step(data), _restore(*pairs)), "restore item")
     (check,) = _load_with_probe(
         tmp_path, rig, _civ(_vfo_step(data), _restore(*SELECTED, *UNSELECTED))
     ).probe_checks
@@ -321,5 +321,9 @@ def test_non_ascii_cat_template_is_a_load_error(tmp_path: Path) -> None:
         raw = tomllib.loads(_civ(steps, restore))["probe"]
         with pytest.raises(RigLoadError, match="ASCII"):
             parse_probe_checks(
-                "t.toml", raw, commands=commands, protocol_type="yaesu_cat"
+                "t.toml",
+                raw,
+                commands=commands,
+                protocol_type="yaesu_cat",
+                voice_codes=None,
             )
