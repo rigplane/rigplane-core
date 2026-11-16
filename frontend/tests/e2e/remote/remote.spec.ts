@@ -114,34 +114,12 @@ test.describe('phone layout', () => {
     await expect(ptt).toBeVisible();
 
     // Press and hold: the page starts the (stubbed) microphone, then keys.
-    // With the fake's MOD input frozen on ACC (the recorded LAN table does
-    // not model the 0x1A 05 00 0x91 MOD-input menu SET, so the write-through
-    // readback answers ACC again) the browser voice-TX path never arms: the
-    // UI offers its production "Set LAN" fix (MOR-617) and the row applies
-    // it, but the fake cannot take it. This row is the harness's honest RED
-    // until the LAN fake models stateful MOD input (see the MOR-4493 notes);
-    // a raw control-channel ptt_on keys this same fake in milliseconds.
+    // The fake radio keys whether or not its MOD input is LAN (the page
+    // only shows its advisory "Set LAN" banner), so the row holds PTT
+    // without touching the banner: with one mouse the pointer is captured
+    // by the held button, so a second click cannot reach another control.
     await ptt.hover();
     await page.mouse.down();
-    const setLan = page.getByTestId('mod-input-set-lan');
-    await expect
-      .poll(
-        async () =>
-          (await simState()).ptt_on
-            ? 'keyed'
-            : (await setLan.isVisible().catch(() => false))
-              ? 'fix'
-              : 'wait',
-        { timeout: 10_000 },
-      )
-      .not.toBe('wait');
-    if (await setLan.isVisible().catch(() => false)) {
-      await setLan.click();
-      await page.mouse.up();
-      await expect(page.getByTestId('mod-input-tx-warning')).toBeHidden();
-      await ptt.hover();
-      await page.mouse.down();
-    }
     await expect.poll(async () => (await simState()).ptt_on).toBe(true);
 
     // Release: the simulator must report unkeyed within 1 s of the mouse

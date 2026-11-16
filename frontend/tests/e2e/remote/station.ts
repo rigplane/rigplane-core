@@ -92,15 +92,31 @@ export async function stubMicrophone(page: Page): Promise<void> {
   await page.addInitScript(() => {
     const media = navigator.mediaDevices;
     if (!media) throw new Error('navigator.mediaDevices is missing');
-    media.getUserMedia = async () => {
-      const context = new AudioContext();
+    // Define it on the prototype: WebKit may recreate the navigator
+    // .mediaDevices wrapper object, which would drop an instance property.
+    const stub = async (constraints?: MediaStreamConstraints) => {
+      // Honour the audio constraints the page asks for, as a real device
+      // does: the page's Opus encoder is configured for that rate and
+      // channel count and refuses a stream that differs (a default
+      // AudioContext rate and the 2-channel destination fail it).
+      const audio = constraints?.audio;
+      const wanted = typeof audio === 'object' && audio !== null ? audio : {};
+      const rate = (wanted.sampleRate as number | undefined) ?? undefined;
+      const channels = (wanted.channelCount as number | undefined) ?? undefined;
+      const context = rate ? new AudioContext({ sampleRate: rate }) : new AudioContext();
       const oscillator = context.createOscillator();
       const destination = context.createMediaStreamDestination();
+      if (channels) destination.channelCount = channels;
       oscillator.frequency.value = 1000;
       oscillator.connect(destination);
       oscillator.start();
       return destination.stream;
     };
+    Object.defineProperty(Object.getPrototypeOf(media), 'getUserMedia', {
+      value: stub,
+      configurable: true,
+      writable: true,
+    });
   });
 }
 
