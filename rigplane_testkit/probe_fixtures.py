@@ -64,9 +64,10 @@ def _civ_request_frame(body: bytes, radio_addr: int) -> bytes:
         sub, data = rest[0], rest[1:]
     else:
         sub, data = None, rest
-    return build_civ_frame(
+    frame: bytes = build_civ_frame(
         radio_addr, CONTROLLER_ADDR, command, sub=sub, data=data or None
     )
+    return frame
 
 
 def probe_to_civ_pairs(
@@ -189,7 +190,8 @@ def _merge_window_rows(
 
 
 def _profile_default_addr(profile: str) -> int:
-    return resolve_radio_profile(model=profile).civ_addr
+    addr: int = resolve_radio_profile(model=profile).civ_addr
+    return addr
 
 
 def main(argv: list[str] | None = None) -> int:
