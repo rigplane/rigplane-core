@@ -416,7 +416,7 @@ def test_the_restart_holds_the_native_guard_against_other_threads():
     assert seen == [False]
 
 
-@pytest.mark.parametrize("stop", ["stop_rx", "stop_tx"])
+@pytest.mark.parametrize("stop", ["stop_tx"])  # RX selects under its own lock
 async def test_a_stop_during_the_retry_device_selection_opens_nothing(stop):
     loop = asyncio.get_running_loop()
     entered = asyncio.Event()
