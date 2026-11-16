@@ -1203,11 +1203,6 @@
     spanHz: viewportSpanHz,
     sampleSpanHz: spanHz,
     coverage: audioFft ? undefined : frameGeometry?.coverage,
-    // #4564: the same ONE decision the spectrum canvas gets — the
-    // waterfall stores it per row at ingest and hatches only it.
-    hatchRanges: coverageHatched.length > 0
-      ? coverageHatched.map(({ start, end }) => ({ start, end }))
-      : null,
     sampleOffset: audioFft && !audioProjection ? Math.floor((frameGeometry?.width ?? 0) / 2) : 0,
     sampleWindow: audioSampleWindow,
     sampleAmplitudeMax: audioFft ? 160 : 80,
