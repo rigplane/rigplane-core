@@ -32,15 +32,19 @@ test('real GL: stacked history in depth, retune follows frequency, dense rows ke
     const spike = (x: number, y: number) => Math.max(...[-2, -1, 0, 1, 2].map(dx => luma(x + dx, y)));
     renderer.draw(0);
     const empty = rgb(200, 190);
-    // 475 points: a noise floor with a carrier at the view centre.
+    // 475 points: a noise floor with a carrier at the view centre. The seven
+    // older rows also carry one at three quarters of the view that the
+    // newest row — the live front trace — does not have.
     const sparse = new Uint8Array(475).fill(10); sparse[236] = 80; sparse[237] = 80; sparse[238] = 80;
-    for (let i = 0; i < 8; i++) renderer.pushRow(sparse, options, i * 100);
+    const older = sparse.slice(); older[355] = 80; older[356] = 80; older[357] = 80;
+    for (let i = 0; i < 8; i++) renderer.pushRow(i < 7 ? older : sparse, options, i * 100);
     const animating = renderer.draw(750);
     const rested = renderer.draw(5_000);
     // Front row: inset 16 px, full-scale height 120 px. Sample under the crest.
     const carrier = luma(200, 120), floorAtCarrierHeight = luma(60, 120), sky = rgb(200, 195);
-    // The oldest rows sit higher than any front-row noise: history is visible in depth.
-    const depth = luma(200, 135), depthAside = luma(60, 160);
+    // Above the front row's noise at x=300 only the older rows' carrier can
+    // paint: history is visible in depth.
+    const depth = luma(300, 100), depthAside = luma(60, 100);
     renderer.updateOptions({ centerHz: 14_060_000 });
     renderer.draw(5_000);
     const movedTo = luma(160, 120), movedFrom = luma(200, 120);
