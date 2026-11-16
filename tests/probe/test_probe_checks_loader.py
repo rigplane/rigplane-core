@@ -82,7 +82,11 @@ def test_cat_check_loads_into_typed_records(tmp_path: Path) -> None:
 def test_never_list_verb_fails_at_load_naming_the_verb(tmp_path: Path) -> None:
     from rigplane.profiles.rig_loader import RigLoadError
 
-    bad = CAT_CHECK.replace('command = "set_freq"', 'command = "set_ptt"', 1)
+    bad = CAT_CHECK.replace(
+        'command = "set_freq"\n[probe.checks.steps.values]\nfreq = 7074000',
+        'command = "set_ptt"\n[probe.checks.steps.values]\nstate = "1"',
+        1,
+    )
     with pytest.raises(RigLoadError, match="TX"):
         _load_with_probe(tmp_path, "ftx1.toml", bad)
 
@@ -102,7 +106,9 @@ def test_write_verb_off_the_allow_list_fails(tmp_path: Path) -> None:
     from rigplane.profiles.rig_loader import RigLoadError
 
     bad = CAT_CHECK.replace(
-        'command = "set_freq"', 'command = "set_auto_info"', 1
+        'command = "set_freq"\n[probe.checks.steps.values]\nfreq = 7074000',
+        'command = "set_auto_info"\n[probe.checks.steps.values]\nstate = "1"',
+        1,
     )
     with pytest.raises(RigLoadError, match="AI"):
         _load_with_probe(tmp_path, "ftx1.toml", bad)
