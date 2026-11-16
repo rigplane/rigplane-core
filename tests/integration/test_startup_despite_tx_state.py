@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import json
 import logging
 from typing import Any
 from unittest.mock import patch
@@ -29,6 +28,7 @@ from rigplane.testing.timing import await_until
 from rigplane.web import web_startup
 from rigplane.web.radio_poller import PttOn
 from rigplane.web.server import WebConfig, WebServer
+from rigplane.web.state_schema import FieldStatusPublic, ServerStatePublic
 from rigplane.web.web_startup import _observed_paths
 from rigplane_testkit.serial.endpoints import PtyEndpoint, pty_supported
 from testkit.ic7300_fakes import ic7300_usb_fake
@@ -58,8 +58,9 @@ _ICOM_COMMANDS = {
 _SHORT_DEADLINE = 3.0
 
 
-async def _http_state(port: int) -> dict[str, Any]:
-    """The user-visible ``/api/v1/state`` over a real socket."""
+async def _http_state(port: int) -> ServerStatePublic:
+    """The user-visible ``/api/v1/state`` over a real socket, parsed strictly
+    through the producer's ``ServerStatePublic`` contract."""
     reader, writer = await asyncio.open_connection("127.0.0.1", port)
     try:
         writer.write(
@@ -74,7 +75,15 @@ async def _http_state(port: int) -> dict[str, Any]:
             await writer.wait_closed()
     head, _, body = raw.partition(b"\r\n\r\n")
     assert int(head.split(b" ", 2)[1]) == 200, head
-    return json.loads(body)
+    return ServerStatePublic.model_validate_json(body, strict=True)
+
+
+def _served(
+    state: ServerStatePublic, path_name: str
+) -> tuple[bool | None, FieldStatusPublic]:
+    """The served leaf value and its freshness entry, by typed fields."""
+    value = state.ptt if path_name == "ptt" else state.split
+    return value, state.fieldStatus[path_name]
 
 
 def _ptt_actuations(fake: Any) -> list[Any]:
@@ -110,43 +119,40 @@ async def test_icom_unanswered_tx_state_still_serves_with_tx_unknown(
     endpoint = PtyEndpoint(fake)
     await endpoint.start()
     radio = radio_cls(device=endpoint.device, _enumerate_serial_ports_fn=lambda: [])
+    web: WebServer | None = None
     try:
         await asyncio.wait_for(radio.connect(), 30)
-    except BaseException:
-        await endpoint.stop()
-        raise
-    real_answer = fake._answer  # noqa: SLF001
-    fault = {"on": True}
+        real_answer = fake._answer  # noqa: SLF001
+        fault = {"on": True}
 
-    def _answer_adverse(parsed: Any, connection: Any, frame: bytes) -> Any:
-        if fault["on"] and parsed.command == command and parsed.sub == sub:
-            if fate == "silent":
-                return None  # the radio stays silent on this read only
-            return fake._nak()  # noqa: SLF001
-        return real_answer(parsed, connection, frame)
+        def _answer_adverse(parsed: Any, connection: Any, frame: bytes) -> Any:
+            if fault["on"] and parsed.command == command and parsed.sub == sub:
+                if fate == "silent":
+                    return None  # the radio stays silent on this read only
+                return fake._nak()  # noqa: SLF001
+            return real_answer(parsed, connection, frame)
 
-    fake._answer = _answer_adverse  # noqa: SLF001
-    web = WebServer(
-        radio,
-        WebConfig(
-            host="127.0.0.1",
-            port=0,
-            discovery=False,
-            radio_model=model,
-            await_initial_state=True,
-        ),
-    )
-    scheduler = radio._acquisition_scheduler  # noqa: SLF001
-    deadline = (
-        patch.object(
-            web_startup,
-            "_STARTUP_GATE_NON_CRITICAL_DEADLINE_SECONDS",
-            _SHORT_DEADLINE,
+        fake._answer = _answer_adverse  # noqa: SLF001
+        web = WebServer(
+            radio,
+            WebConfig(
+                host="127.0.0.1",
+                port=0,
+                discovery=False,
+                radio_model=model,
+                await_initial_state=True,
+            ),
         )
-        if fate == "silent"
-        else contextlib.nullcontext()
-    )
-    try:
+        scheduler = radio._acquisition_scheduler  # noqa: SLF001
+        deadline = (
+            patch.object(
+                web_startup,
+                "_STARTUP_GATE_NON_CRITICAL_DEADLINE_SECONDS",
+                _SHORT_DEADLINE,
+            )
+            if fate == "silent"
+            else contextlib.nullcontext()
+        )
         with deadline, caplog.at_level(logging.INFO):
             await asyncio.wait_for(web.start(), 60)
 
@@ -163,9 +169,9 @@ async def test_icom_unanswered_tx_state_still_serves_with_tx_unknown(
             description="answering reads observed, adverse still out",
         )
         port = int(web._server.sockets[0].getsockname()[1])  # noqa: SLF001
-        body = await _http_state(port)
-        assert body[path_name] is None, body.get(path_name)
-        assert body["fieldStatus"][path_name]["observed"] is False
+        value, status = _served(await _http_state(port), path_name)
+        assert value is None, value
+        assert status.observed is False
         if fate == "silent":
             warnings = [
                 record.getMessage()
@@ -228,9 +234,9 @@ async def test_icom_unanswered_tx_state_still_serves_with_tx_unknown(
             timeout=30.0,
             description="late adverse-read answer observed",
         )
-        body = await _http_state(port)
-        assert body["fieldStatus"][path_name]["observed"] is True
-        assert body[path_name] is not None
+        value, status = _served(await _http_state(port), path_name)
+        assert status.observed is True
+        assert value is not None
         if path_name == "ptt":
             poller = web._radio_poller  # noqa: SLF001
             await await_until(
@@ -244,7 +250,10 @@ async def test_icom_unanswered_tx_state_still_serves_with_tx_unknown(
                 description="key path allows on fresh RX",
             )
     finally:
-        with contextlib.suppress(Exception):
-            await web.stop()
-        await radio.disconnect()
-        await endpoint.stop()
+        try:
+            if web is not None:
+                with contextlib.suppress(Exception):
+                    await web.stop()
+            await radio.disconnect()
+        finally:
+            await endpoint.stop()
