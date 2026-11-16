@@ -4,13 +4,13 @@
 //
 // `main.ts` — the station-served page — boots `webSocketBundle()`.
 // `bootRemote` — the remote-link shell's entry — installs a
-// `dataChannelBundle` over four injected native channels and reports link
-// loss through `onLinkLost` (attach refusal/timeout, channel closed; PTT
-// release and the notification are PR-B). A closed `RTCDataChannel` cannot
-// be reopened, so recovery is the shell negotiating a fresh link and
-// calling `replaceChannels` on the returned handle; until then the bundle
-// hands out channels that close at once with the loss reason.
-import type { LinkLostReason, RemoteChannels, TransportBundle } from './lib/transport/transport-bundle'
+// `dataChannelBundle` over an injected `RemoteLink` and reports link loss
+// through `onLinkLost` (attach refusal/timeout, channel closed; PTT release
+// and the notification are PR-B). A closed `RTCDataChannel` cannot be
+// reopened, so recovery is the shell negotiating a fresh link and booting
+// again on it; until then the bundle hands out channels that close at once
+// with the loss reason.
+import type { LinkLostReason, RemoteLink, TransportBundle } from './lib/transport/transport-bundle'
 import { dataChannelBundle, installBundle } from './lib/transport/transport-bundle'
 
 export const REMOTE_BOOT_API = 1
@@ -20,13 +20,12 @@ export interface RemoteBootOptions {
 }
 
 export interface RemoteHandle {
-  replaceChannels(channels: RemoteChannels): void
   shutdown(): void
 }
 
-export type { LinkLostReason, RemoteChannels } from './lib/transport/transport-bundle'
+export type { LinkLostReason, RemoteLink } from './lib/transport/transport-bundle'
 
-export async function startApp(bundle: TransportBundle) {
+export async function startApp(bundle: TransportBundle, stillWanted: () => boolean = () => true) {
   installBundle(bundle)
   try {
     const [{ default: config }, { activateComponentKits }] = await Promise.all([
@@ -40,6 +39,7 @@ export async function startApp(bundle: TransportBundle) {
       import('./app.css'),
       import('./App.svelte'),
     ])
+    if (!stillWanted()) return null // shutdown outran the async chain: never mount
     const target = document.getElementById('app')
     if (!target) throw new Error('Application root #app was not found.')
     return mount(App, { target })
@@ -57,15 +57,32 @@ export async function startApp(bundle: TransportBundle) {
   }
 }
 
-// Boot the same UI over an injected remote link. The handle's methods are
-// the bundle's own: recovery swaps the channels, shutdown drops them.
-export function bootRemote(channels: RemoteChannels, opts: RemoteBootOptions): RemoteHandle {
-  const bundle = dataChannelBundle(channels, opts.onLinkLost)
+// Boot the same UI over an injected remote link. `shutdown` drops the link
+// (the bundle's own teardown) and unmounts the App; a start still in flight
+// — async kit activation or imports — never mounts after it.
+export function bootRemote(link: RemoteLink, opts: RemoteBootOptions): RemoteHandle {
+  const bundle = dataChannelBundle(link, opts.onLinkLost)
+  let down = false
+  let app: Awaited<ReturnType<typeof startApp>> = null
+  const unmountApp = (): void => {
+    if (app === null) return
+    const mounted = app
+    app = null
+    void import('svelte').then(({ unmount }) => unmount(mounted))
+  }
   // A startup failure renders startApp's own failure surface and logs;
   // onLinkLost carries link problems, not component-kit ones.
-  void startApp(bundle).catch(() => {})
+  void startApp(bundle, () => !down).then((mounted) => {
+    if (mounted === null) return
+    app = mounted
+    if (down) unmountApp() // shutdown arrived while the mount was resolving
+  }).catch(() => {})
   return {
-    replaceChannels: (channels) => bundle.replaceChannels(channels),
-    shutdown: () => bundle.shutdown(),
+    shutdown: () => {
+      if (down) return
+      down = true
+      bundle.shutdown()
+      unmountApp()
+    },
   }
 }
