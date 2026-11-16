@@ -27,7 +27,9 @@ from rigplane.core.radio_protocol import RadioIdentityStatus
 from rigplane.exceptions import CommandRejectedError
 from rigplane.rig_loader import load_rig
 
+from rigplane_testkit.fixture_rows import CatPairRow
 from rigplane_testkit.yaesu import FakeCatRadio
+from rigplane_testkit.yaesu.replay import RecordedCatAnswerTable
 
 _RIGS_DIR = Path(__file__).parents[2] / "rigs"
 
@@ -365,3 +367,67 @@ async def test_garbled_fault_surfaces_as_garbled_frame_error(
         assert await radio.get_freq() == 14_074_000  # one-shot, then clean
     finally:
         await radio.disconnect()
+
+
+# ---------------------------------------------------------------------------
+# A mounted recording answers before the native handlers
+# ---------------------------------------------------------------------------
+
+
+def _recorded(*pairs: tuple[str, str]) -> RecordedCatAnswerTable:
+    return RecordedCatAnswerTable.from_cat_pairs(
+        [CatPairRow("w", "usb", 0.0, d, line) for d, line in pairs]  # type: ignore[arg-type]
+    )
+
+
+async def _client_of(radio: FakeCatRadio) -> _CatClient:
+    await radio.start()
+    cat = _CatClient()
+    await cat.connect(radio)
+    return cat
+
+
+@pytest.mark.asyncio
+async def test_recorded_frequency_reply_beats_the_native_state() -> None:
+    radio = FakeCatRadio(recorded_answers=_recorded(("c2r", "FA;"), ("r2c", "FA014211000;")))
+    cat = await _client_of(radio)
+    try:
+        assert await cat.ask("FA;") == "FA014211000"  # native would say 014074000
+    finally:
+        cat.close()
+        await radio.stop()
+
+
+@pytest.mark.asyncio
+async def test_recorded_refusal_of_a_native_read_is_reproduced() -> None:
+    radio = FakeCatRadio(recorded_answers=_recorded(("c2r", "FA;"), ("r2c", "?;")))
+    cat = await _client_of(radio)
+    try:
+        assert await cat.ask("FA;") == "?"
+    finally:
+        cat.close()
+        await radio.stop()
+
+
+@pytest.mark.realtime(reason="asserts that nothing arrives on the real clock")
+@pytest.mark.asyncio
+async def test_recorded_silence_of_a_native_read_is_reproduced() -> None:
+    radio = FakeCatRadio(recorded_answers=_recorded(("c2r", "MD0;")))
+    cat = await _client_of(radio)
+    try:
+        await cat.send("MD0;")
+        await cat.assert_silent()
+    finally:
+        cat.close()
+        await radio.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_native_read_the_recording_never_saw_is_answered_natively() -> None:
+    radio = FakeCatRadio(recorded_answers=_recorded(("c2r", "KS;"), ("r2c", "?;")))
+    cat = await _client_of(radio)
+    try:
+        assert await cat.ask("FA;") == "FA014074000"
+    finally:
+        cat.close()
+        await radio.stop()

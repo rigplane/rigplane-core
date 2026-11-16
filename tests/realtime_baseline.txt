@@ -1429,7 +1429,6 @@ tests/testkit/test_civ_serial_fake.py::test_frame_for_another_address_is_not_ans
 tests/testkit/test_civ_serial_fake.py::test_frequency_get_set_roundtrip
 tests/testkit/test_civ_serial_fake.py::test_identity_answer_is_profile_derived
 tests/testkit/test_civ_serial_fake.py::test_mode_and_filter_roundtrip
-tests/testkit/test_civ_serial_fake.py::test_native_frequency_read_keeps_precedence_over_the_table
 tests/testkit/test_civ_serial_fake.py::test_profile_without_expected_ids_must_not_guess_a_model_id
 tests/testkit/test_civ_serial_fake.py::test_ptt_get_and_set
 tests/testkit/test_civ_serial_fake.py::test_s_meter_read

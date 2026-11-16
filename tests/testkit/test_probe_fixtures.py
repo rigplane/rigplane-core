@@ -410,8 +410,13 @@ def test_civ_round_trip_through_real_cli(tmp_path, monkeypatch) -> None:
         EXTRA_SINCE_CAPTURE
     )
     replayed_by_name = {row.name: row.outcome for row in replayed.commands}
+    replayed_by_row = {row.name: row for row in replayed.commands}
     for row in probe.commands:
         assert replayed_by_name[row.name] == row.outcome, row.name
+        # The bytes too, not just the class: the capture's own reply comes back.
+        assert replayed_by_row[row.name].reply_hex == row.reply_hex, row.name
+    freq = replayed_by_row["get_freq"]
+    assert freq.reply_hex == "fefee0a0030010211400fd"  # the capture's 14.211 MHz
     assert sum(row.outcome == "silent" for row in probe.commands) == 2
     assert {replayed_by_name[name] for name in EXTRA_SINCE_CAPTURE} == {"refused"}
     assert [(row.name, row.reason) for row in replayed.skipped] == [
@@ -598,6 +603,10 @@ async def test_cat_round_trip_through_real_cli(tmp_path, monkeypatch) -> None:
     assert [row.name for row in third.commands] == [row.name for row in second.commands]
     assert [row.outcome for row in third.commands] == [
         row.outcome for row in second.commands
+    ]
+    # The recorded reply lines, not just their classes, come back.
+    assert [row.reply_text for row in third.commands] == [
+        row.reply_text for row in second.commands
     ]
     assert [(row.name, row.reason) for row in third.skipped] == [
         (row.name, row.reason) for row in second.skipped
