@@ -242,6 +242,7 @@ export const SOURCE_TEXT_PIN_BASELINE = Object.freeze([
   "src/lib/runtime/props/__tests__/panel-props.no-fabricated-defaults.test.ts::panel-props.ts batch-A/batch-B functions carry no fabricated-default literal (MOR-1409 A11/A12) > toFilterProps.filterWidth no longer fabricates 2400 (A12 fix — was deferred at A11)",
   "src/lib/transport/__tests__/transport-seam.isolated.test.ts::transport seam guards > every /api/v1 fetch goes through apiFetch",
   "src/lib/transport/__tests__/transport-seam.isolated.test.ts::transport seam guards > no `new WebSocket(` outside lib/transport/",
+  "src/lib/transport/__tests__/transport-seam.isolated.test.ts::transport seam guards > reads the transport kind nowhere outside transport-bundle.ts and boot.ts",
   "src/presentation/groups/__tests__/contract.test.ts::the fixture harness sources the peer-split canvas from the group (ADR §4 / F1) > sources canvasW/canvasH from peerSplitGlassGroup.canvas, never a literal",
   "src/presentation/groups/__tests__/contract.test.ts::the native canvas is declared exactly once in production source (ADR §4) > %s declares no duplicate native-canvas literal",
   "src/presentation/groups/__tests__/contract.test.ts::the native canvas is declared exactly once in production source (ADR §4) > the derivation rule yields exactly the hand-written contour",
