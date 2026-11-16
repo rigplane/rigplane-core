@@ -30,6 +30,7 @@ from rigplane.commands import CONTROLLER_ADDR, build_civ_frame, parse_civ_frame
 from rigplane.rig_loader import load_rig
 from rigplane.web.server import WebConfig, WebServer
 
+from rigplane_testkit.icom.replay import RecordedAnswerTable, RecordedCivAnswer
 from rigplane_testkit.serial import CivSerialFake
 from rigplane_testkit.sim.__main__ import build_parser
 from rigplane_testkit.sim.serve import build_stack
@@ -94,27 +95,29 @@ async def test_yaesu_profile_without_section_publishes_and_refuses_the_same(
         stack.trace.close()
 
 
-class _AckSendCw:
+class _AckSendCw(RecordedAnswerTable):
     """Answer table for the fake: ACK each 0x17 frame and keep its text."""
 
-    echo = True
-
     def __init__(self, civ_addr: int) -> None:
+        super().__init__()
+        self.echo = True
         self._civ_addr = civ_addr
         self.texts: list[bytes] = []
 
-    def answer(self, frame: bytes) -> bytes | None:
+    def lookup(self, frame: bytes) -> RecordedCivAnswer | None:
         parsed = parse_civ_frame(frame)
         if parsed.command != _SEND_CW:
             return None
         self.texts.append(bytes(frame[5:-1]))
-        return build_civ_frame(CONTROLLER_ADDR, self._civ_addr, 0xFB)
+        return RecordedCivAnswer(
+            "reply", build_civ_frame(CONTROLLER_ADDR, self._civ_addr, 0xFB)
+        )
 
 
 @pytest.mark.asyncio
 async def test_icom_profile_publishes_support_and_sends() -> None:
     table = _AckSendCw(civ_addr=0x94)
-    fake = CivSerialFake(recorded_answers=table)  # type: ignore[arg-type]
+    fake = CivSerialFake(recorded_answers=table)
     link = SerialCivLink(
         device="civ-serial-fake", open_serial_connection=fake.open_serial_connection
     )

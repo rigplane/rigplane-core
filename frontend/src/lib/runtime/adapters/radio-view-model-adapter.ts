@@ -43,11 +43,13 @@ import type { TxAuthoritySnapshot } from '../../../semantic/rx-tx-surface';
 import { qualifyDisplayObservation, qualifyRadioDisplayObservation } from './display-observation';
 import { deriveFilterWidthDisplay } from './filter-width-display';
 import { refRangeFromCaps } from '../../../components/spectrum/spectrum-toolbar-logic';
-import { isFieldAvailable } from '$lib/state/field-status';
+import { isFieldAvailable, isFieldFreshlyObserved } from '$lib/state/field-status';
 import { modInputStateKey } from '$lib/radio/mod-input';
 import { flattenBands, findActiveBand, receiverInRepeaterBand } from '$lib/radio/band-plan';
 import { shiftFromDirection } from '$lib/radio/repeater-transitions';
-import { getFrequencyPermit, type FrequencyPermit, type TxPermit } from '$lib/utils/tx-permit';
+import {
+  getFrequencyPermit, isSourcelessPermitUnknown, type FrequencyPermit, type TxPermit,
+} from '$lib/utils/tx-permit';
 import {
   relativeVfoIdentityUnknown,
   resolveFilterModeConfig,
@@ -579,14 +581,21 @@ function deriveModeFilter(
   // The active mode-keyed filter config, resolved by the ONE shipped
   // derivation (`resolveFilterModeConfig`) — see the doc comment above.
   // MOR-2513: null mode/dataMode (unobserved) resolves no config.
-  const filterConfig = resolveFilterModeConfig(caps, rx?.mode ?? undefined, rx?.dataMode ?? undefined);
+  // MOR-4434: the freshly observed narrow state selects the active table,
+  // for the displayed receiver and for the configuration receiver alike —
+  // unobserved or stale narrow keeps the wide table, exactly as before
+  // and as the backend's admission hint reads it.
+  const narrow = isFieldFreshlyObserved(state, `${base}narrow`) ? (rx?.narrow ?? null) : null;
+  const filterConfig = resolveFilterModeConfig(caps, rx?.mode ?? undefined, rx?.dataMode ?? undefined, narrow);
   const activeBase = activeId === 'SUB' ? 'sub' : 'main';
   const activeRx = activeId === null ? undefined : state?.[activeBase];
   const dataValue = activeRx?.dataMode;
   const configObserved = activeId !== null && strictFieldAvailable(state, activeBase + '.mode')
     && (!hasCap(caps, 'data_mode') || (isDataModeValue(dataValue) && strictFieldAvailable(state, activeBase + '.dataMode')));
+  const activeNarrow = activeId !== null && isFieldFreshlyObserved(state, `${activeBase}.narrow`)
+    ? (activeRx?.narrow ?? null) : null;
   const activeFilterConfiguration = configObserved
-    ? copyFilterConfiguration(resolveFilterModeConfig(caps, activeRx?.mode ?? undefined, activeRx?.dataMode ?? undefined), filterChoices) : null;
+    ? copyFilterConfiguration(resolveFilterModeConfig(caps, activeRx?.mode ?? undefined, activeRx?.dataMode ?? undefined, activeNarrow), filterChoices) : null;
   const widthMin = filterConfig?.minHz ?? filterConfig?.table?.[0] ?? caps.filterWidthMin;
   const widthMax = filterConfig?.maxHz
     ?? (filterConfig?.table?.length ? filterConfig.table[filterConfig.table.length - 1] : undefined)
@@ -1685,12 +1694,19 @@ function deriveCwKeyer(state: ServerState | null, caps: Capabilities | null): Cw
  * (invariant R9). The reason CODES mirror the model-level `txPermit` entries
  * `toRadioViewModel` already emits, so there is one vocabulary for one
  * permit. Anything other than a positively `'allowed'` permit — denied,
- * ranges-unconfigured, tx-target-unknown — disables break-in; that
- * fail-closed pairing is additionally enforced by `validateRadioViewModel`.
+ * ranges-unconfigured, tx-target-unknown — disables break-in, EXCEPT the
+ * permit unknown that follows from a sourceless target (MOR-4433:
+ * `txTarget` `unsupported` — the sourceless class (G7250 and the
+ * sourceless-Yaesu shape) — has no source a wait
+ * could resolve, so blocking break-in on it prohibits transmit with no
+ * condition to wait out). The unknown permit still disables break-in while
+ * a source exists (not-observed/stale/contradiction) and while no band table
+ * is configured; that fail-closed pairing is additionally enforced by
+ * `validateRadioViewModel`.
  */
 function deriveCwKeyerReasons(
   cwKeyer: CwKeyerViewModel | undefined, modeFilter: ModeFilterViewModel | undefined,
-  txPermit: FrequencyPermit,
+  txPermit: FrequencyPermit, txTarget: TxTargetViewModel,
 ): Reason[] {
   if (!cwKeyer) return [];
   const modeReading = modeFilter?.currentMode.reading;
@@ -1702,7 +1718,11 @@ function deriveCwKeyerReasons(
   if (cwKeyer.twinPeak.availability.structural && mode !== 'RTTY' && mode !== 'RTTY-R') {
     reasons.push({ field: 'cwKeyer.twinPeak', code: 'mutually-exclusive-control' });
   }
-  if (cwKeyer.breakIn.availability.structural && txPermit.status !== 'allowed') {
+  // MOR-4433: the permit unknown that follows from a SOURCED target still
+  // disables break-in; only the unknown that follows from NO source does not
+  // — the shared `isSourcelessPermitUnknown` decision, no local copy.
+  if (cwKeyer.breakIn.availability.structural && txPermit.status !== 'allowed'
+    && !isSourcelessPermitUnknown(txTarget, txPermit)) {
     reasons.push({
       field: 'cwKeyer.breakIn',
       code: txPermit.status === 'denied' ? 'out-of-band'
@@ -2316,7 +2336,7 @@ function deriveRadioViewModel(
       disabledReasons.push({ field: 'rfFrontEnd.preamp', code: 'receiver-lacks-control' });
     }
   }
-  disabledReasons.push(...deriveCwKeyerReasons(cwKeyer, modeFilter, txPermit));
+  disabledReasons.push(...deriveCwKeyerReasons(cwKeyer, modeFilter, txPermit, txTarget));
 
   return {
     topologyId: `${topology.structuralCount}/${topology.scheme}`,

@@ -249,9 +249,11 @@ author.
 
 ## Guardrail exceptions
 
-The hard ceiling is 10 files · 1000 changed lines, per PR, at the head you
-push. Under the owner's delegation of 2026-09-03 you may grant a **file-count**
-exception yourself; the line ceiling stays the owner's (CLAUDE.md §Guardrails).
+The hard ceiling is 10 files · 900 product-code changed lines, per PR, at the
+head you push (test paths are excluded from the line count; see `CLAUDE.md`
+§Guardrails). Under the owner's delegation of 2026-09-03 you may grant a
+**file-count** exception yourself; the line ceiling stays the owner's
+(CLAUDE.md §Guardrails).
 
 Grant when the overflow is one change spilling into files that cannot be
 separated: regenerated baselines (PNGs count as files), census tests, profile

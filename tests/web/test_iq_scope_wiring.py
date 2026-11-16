@@ -1,18 +1,61 @@
 """The hub IQ source composes existing RF-follow and TX policy."""
 
 import asyncio
+from dataclasses import dataclass
 
 import pytest
 
 from rigplane.core.tx_observation import OBSERVED_PTT_PATH
 from rigplane.core.tx_observation import ObservedPtt
 from rigplane.scope.models import FollowView, Subscription, View
+from rigplane.sdr import runtime as sdr_runtime
 from rigplane.sdr.fake import FakeIqSource
-from rigplane.sdr.types import SdrConfig
+from rigplane.sdr.runtime import register_source_kind
+from rigplane.sdr.types import SdrConfig, SoapySourceSpec
 from rigplane.testing.timing import await_until
 from rigplane.web.server import WebConfig, WebServer
 from test_audio_scope_dispatch import _seed_audio_facts
 from test_web_server_coverage import _store_observation
+
+
+@dataclass(frozen=True)
+class _RegisteredSourceSpec:
+    kind: str = "test-web"
+
+
+def test_web_config_derives_soapy_source_spec() -> None:
+    config = SdrConfig(device_args="driver=fake")
+
+    assert WebConfig(sdr_config=config).iq_source == SoapySourceSpec(config)
+
+
+def test_web_config_rejects_mismatched_soapy_source_config() -> None:
+    with pytest.raises(ValueError, match="iq_source"):
+        WebConfig(
+            sdr_config=SdrConfig(device_args="driver=one"),
+            iq_source=SoapySourceSpec(SdrConfig(device_args="driver=two")),
+        )
+
+
+async def test_registered_source_kind_builds_iq_scope_provider() -> None:
+    provider = FakeIqSource(sample_rate_hz=48_000)
+    spec = _RegisteredSourceSpec()
+    register_source_kind(spec.kind, lambda received: provider)
+    try:
+        server = WebServer(
+            None,
+            WebConfig(
+                radio_model="IC-7610",
+                sdr_config=SdrConfig(device_args="driver=fake"),
+                iq_source=spec,  # type: ignore[arg-type]
+            ),
+        )
+
+        server.scope_hub.capabilities("iq_fft")
+
+        assert server._iq_scope_source._provider is provider
+    finally:
+        sdr_runtime._SOURCE_FACTORIES.pop(spec.kind, None)
 
 
 def make_server(provider, *, invert=False):

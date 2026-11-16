@@ -14,8 +14,11 @@ measurement of the same order is the conformance answer-class replay
 
 from __future__ import annotations
 
+import pytest
+
 from rigplane.core.types import bcd_encode
-from rigplane_testkit.icom.replay import extract_civ_frame
+from rigplane_testkit.icom import MockIcomRadio
+from rigplane_testkit.icom.replay import RecordedAnswerTable, extract_civ_frame
 
 from testkit.ic7610_fakes import ic7610_lan_fake
 from testkit.test_ic7610_conformance import _civ_packet, _lan_sim
@@ -95,3 +98,83 @@ async def test_without_a_table_the_split_read_answers_natively() -> None:
     async with _lan_sim() as (server, client):
         reply = await _ask_frame(client, server.civ_port, _SPLIT_READ, seq=1)
         assert reply == _SPLIT_READ_OFF_REPLY
+
+
+async def test_recorded_set_answer_becomes_echo_in_echo_mode() -> None:
+    # A recorded SET whose table answer is a bare FB: in
+    # ``write_confirmation="echo"`` mode the reply must be the addressed
+    # echo of the SET — never the FB. Command 0x22 has no native handler,
+    # so the reply comes from the recorded table, exercising the
+    # native-or-recorded choice the echo applies after.
+    rows = [
+        {
+            "window": "w",
+            "transport": "lan",
+            "t": 0.1,
+            "dir": "c2r",
+            "frame": _UNRECORDED.hex(),
+        },
+        {
+            "window": "w",
+            "transport": "lan",
+            "t": 0.101,
+            "dir": "r2c",
+            "frame": _ACK_REPLY.hex(),
+        },
+    ]
+    table = RecordedAnswerTable.from_civ_pairs(rows, "lan")
+    sim = MockIcomRadio(write_confirmation="echo", recorded_answers=table)
+    async with _lan_sim(sim) as (server, client):
+        reply = await _ask_frame(client, server.civ_port, _UNRECORDED, seq=1)
+    assert reply is not None
+    assert reply != _ACK_REPLY
+    assert reply == bytes.fromhex("fefee0982200fd")
+
+
+# A request row with no reply row is recorded silence: the LAN simulator
+# sends nothing after the echo, unlike a request the recording never saw.
+_SILENT = bytes.fromhex("fefe98e07ffd")
+
+
+def _silent_table() -> RecordedAnswerTable:
+    rows = [
+        {
+            "window": "w",
+            "transport": "lan",
+            "t": 0.1,
+            "dir": "c2r",
+            "frame": _SILENT.hex(),
+        },
+        {
+            "window": "w",
+            "transport": "lan",
+            "t": 0.2,
+            "dir": "c2r",
+            "frame": _SPLIT_READ.hex(),
+        },
+        {
+            "window": "w",
+            "transport": "lan",
+            "t": 0.201,
+            "dir": "r2c",
+            "frame": _SPLIT_READ_OFF_REPLY.hex(),
+        },
+    ]
+    return RecordedAnswerTable.from_civ_pairs(rows, "lan")
+
+
+@pytest.mark.realtime(reason="asserts that nothing arrives on the real clock")
+async def test_recorded_silence_is_not_answered_on_the_lan() -> None:
+    sim = MockIcomRadio(recorded_answers=_silent_table())
+    async with _lan_sim(sim) as (server, client):
+        pkt = _civ_packet(_SILENT, seq=1)
+        client.send(pkt, server.civ_port)
+        assert _is_echo_of(await client.recv(), pkt)
+        await client.expect_silence()
+
+
+async def test_unrecorded_request_beside_recorded_silence_is_naked_on_the_lan() -> None:
+    sim = MockIcomRadio(recorded_answers=_silent_table())
+    async with _lan_sim(sim) as (server, client):
+        reply = await _ask_frame(client, server.civ_port, _UNRECORDED, seq=1)
+        assert reply == _NAK_REPLY

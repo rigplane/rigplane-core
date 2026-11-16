@@ -12,7 +12,7 @@ import threading
 import time
 from typing import Any, Callable, Sequence
 
-from .types import IqBlock
+from .types import IqBlock, IqSourceFacts
 
 __all__ = ["FakeIqSource"]
 
@@ -46,6 +46,7 @@ class FakeIqSource:
         seed: Noise RNG seed.
         background_interval_s: When not ``None``, ``open()`` starts a
             daemon reader thread that emits one block per interval.
+        facts: Source tuning facts; default is independent tuning.
     """
 
     def __init__(
@@ -59,11 +60,13 @@ class FakeIqSource:
         frequency_range: tuple[int, int] = (0, 6_000_000_000),
         seed: int = 0,
         background_interval_s: float | None = None,
+        facts: IqSourceFacts | None = None,
     ) -> None:
         np = _import_numpy()
         self._np = np
         self._rng = np.random.default_rng(seed)
 
+        self._facts = facts if facts is not None else IqSourceFacts()
         self._center_freq = int(center_freq_hz)
         self._sample_rate = int(sample_rate_hz)
         self._block_size = int(block_size)
@@ -114,6 +117,11 @@ class FakeIqSource:
     def is_open(self) -> bool:
         """Whether the source is open."""
         return self._is_open
+
+    @property
+    def facts(self) -> IqSourceFacts:
+        """Return the source facts supplied at construction."""
+        return self._facts
 
     # -- IqSource configuration ----------------------------------------------
 

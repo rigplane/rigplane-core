@@ -43,6 +43,7 @@ from rigplane.types import MemoryChannel
 from rigplane.web.radio_poller import RadioPoller
 from rigplane.web.server import WebConfig, WebServer
 from _helpers import CIV_HEADER_SIZE, wrap_civ_in_udp
+from support.command_consumer import run_command_consumer
 from test_memory_write_layouts import _MemoryAckTransport as MockTransport
 from test_web_server import _addr, _http_get
 from test_web_split_writes import _request
@@ -490,18 +491,14 @@ async def _memory_http_peer(
     )
     completed = asyncio.Event()
 
-    async def consume() -> None:
-        while True:
-            await web.command_queue.wait(8)
-            entry = web.command_queue.take_entry()
-            assert entry is not None
-            try:
-                await poller._execute_queued_entry(entry)
-            except (CommandError, RigplaneTimeoutError):
-                pass
-            completed.set()
-
-    consumer = asyncio.create_task(consume())
+    consumer = asyncio.create_task(
+        run_command_consumer(
+            web.command_queue,
+            poller._execute_queued_entry,
+            executed=completed,
+            suppress=(CommandError, RigplaneTimeoutError),
+        )
+    )
     try:
         yield web, completed
     finally:
@@ -758,14 +755,14 @@ async def test_http_seam_still_writes_for_the_opted_in_profile() -> None:
     web._server = await asyncio.start_server(web._accept_client, "127.0.0.1", 0)
     consumed = asyncio.Event()
 
-    async def consume() -> None:
-        await web.command_queue.wait(2)
-        entry = web.command_queue.take_entry()
-        consumed.set()
-        assert entry is not None
-        await poller._execute_queued_entry(entry)
-
-    consumer = asyncio.create_task(consume())
+    consumer = asyncio.create_task(
+        run_command_consumer(
+            web.command_queue,
+            poller._execute_queued_entry,
+            count=1,
+            taken=consumed,
+        )
+    )
     try:
         status, body = await _request(
             web,
@@ -828,15 +825,16 @@ async def test_http_seam_writes_the_manual_layouts(model: str) -> None:
     web._server = await asyncio.start_server(web._accept_client, "127.0.0.1", 0)
     done = asyncio.Event()
 
-    async def consume() -> None:
-        for _ in range(2):
-            await web.command_queue.wait(2)
-            entry = web.command_queue.take_entry()
-            assert entry is not None
-            await poller._execute_queued_entry(entry)
-        done.set()
-
-    consumer = asyncio.create_task(consume())
+    # ``done`` fires after each execution; the test still awaits the consumer
+    # itself, so both entries are executed before the wire assertions run.
+    consumer = asyncio.create_task(
+        run_command_consumer(
+            web.command_queue,
+            poller._execute_queued_entry,
+            count=2,
+            executed=done,
+        )
+    )
     mem = _layout_mem(model)
     try:
         status, body = await _request(web, "http", "set_memory_contents", mem.__dict__)
@@ -893,14 +891,14 @@ async def test_http_seam_writes_the_ic7610_data_modes(datamode: int) -> None:
     web._server = await asyncio.start_server(web._accept_client, "127.0.0.1", 0)
     consumed = asyncio.Event()
 
-    async def consume() -> None:
-        await web.command_queue.wait(2)
-        entry = web.command_queue.take_entry()
-        consumed.set()
-        assert entry is not None
-        await poller._execute_queued_entry(entry)
-
-    consumer = asyncio.create_task(consume())
+    consumer = asyncio.create_task(
+        run_command_consumer(
+            web.command_queue,
+            poller._execute_queued_entry,
+            count=1,
+            taken=consumed,
+        )
+    )
     try:
         status, body = await _request(
             web,

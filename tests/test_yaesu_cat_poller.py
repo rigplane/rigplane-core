@@ -239,6 +239,7 @@ def _canonical_ptt_path(
     *,
     state_map: dict[str, str] | None = None,
     later_field: bool = False,
+    extra_paths: tuple[FieldPath, ...] = (),
 ) -> tuple[
     YaesuCatRadio, YaesuCatPoller, StateStore, FreshnessClock, list[Observation]
 ]:
@@ -253,14 +254,21 @@ def _canonical_ptt_path(
         capabilities=tuple(
             item
             for item in acquisition.capabilities
-            if item.path == legacy or (later_field and item.path == width)
+            if item.path == legacy
+            or (later_field and item.path == width)
+            or item.path in extra_paths
         ),
         field_policies={
             legacy: replace(
                 acquisition.policy_for(legacy),
                 freshness_ttl_seconds=2.0,
                 meter_coalescing=None,
-            )
+            ),
+            **{
+                path: acquisition.policy_for(path)
+                for path in extra_paths
+                if path != legacy
+            },
         },
     )
     radio._profile_cache = replace(  # noqa: SLF001
@@ -553,15 +561,15 @@ async def test_canonical_ptt_read_error_reaches_store_even_if_later_field_fails(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "error", [CatTimeoutError("TX timeout"), CatTransportError("TX link")]
-)
 async def test_canonical_ptt_transport_failure_preserves_reconnect_path(
-    monkeypatch: pytest.MonkeyPatch, error: Exception
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # MOR-4456: only transport failures still raise out of the PTT lane — a
+    # PTT-only timeout is contained now (see
+    # test_canonical_ptt_timeout_is_contained_without_reconnect).
     radio, poller, store, clock, emitted = _canonical_ptt_path(monkeypatch)
     _seed_canonical_ptt(radio, store, clock, ObservedPtt.ON)
-    radio._transport.query.side_effect = error  # noqa: SLF001
+    radio._transport.query.side_effect = CatTransportError("TX link")  # noqa: SLF001
     poller._try_reconnect = AsyncMock(side_effect=asyncio.CancelledError)  # noqa: SLF001
     with pytest.raises(asyncio.CancelledError):
         await poller._run_poll_cycle("medium", poller._poll_medium, 0.1)  # noqa: SLF001
@@ -575,21 +583,224 @@ async def test_canonical_ptt_transport_failure_preserves_reconnect_path(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("failure", ["timeout", "transport"])
+async def test_canonical_ptt_timeout_is_contained_without_reconnect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """MOR-4456: a PTT-only timeout publishes unknown and the cycle continues.
+
+    Three production medium cycles with a silent ``TX;``: no raise, no
+    reconnect, the control after the PTT field still reaches the store
+    every cycle, and the critical-path counting still reaches the gate
+    threshold (the unchanged gate's abort on that threshold is pinned by
+    test_yaesu_unanswered_ptt_read_still_fails_startup).
+    """
+    from rigplane.backends.yaesu_cat.observations import _PTT
+
+    radio, poller, store, clock, emitted = _canonical_ptt_path(
+        monkeypatch, later_field=True
+    )
+    _seed_canonical_ptt(radio, store, clock, ObservedPtt.ON)
+    radio.read_filter_width = AsyncMock(return_value=2400)
+    radio._transport.query.side_effect = CatTimeoutError("TX timeout")  # noqa: SLF001
+    radio._transport.reconnect = AsyncMock()  # noqa: SLF001
+    for _ in range(3):
+        await poller._poll_medium()
+    radio._transport.reconnect.assert_not_awaited()  # noqa: SLF001
+    assert [call.args[0] for call in radio._transport.query.await_args_list] == [  # noqa: SLF001
+        "TX;"
+    ] * 3
+    assert [item.value for item in emitted if item.path == OBSERVED_PTT_PATH] == [
+        ObservedPtt.UNKNOWN
+    ] * 3
+    assert store.snapshot().field(OBSERVED_PTT_PATH).value is ObservedPtt.UNKNOWN
+    assert not any(str(item.path) == "global.tx_state.ptt" for item in emitted)
+    assert radio._critical_read_timeouts == {_PTT: 3}  # noqa: SLF001
+    widths = [item for item in emitted if str(item.path).endswith("filter_width")]
+    assert len(widths) == 3, "the control after PTT must reach the store every cycle"
+
+
+@pytest.mark.asyncio
+async def test_canonical_split_timeout_is_contained_without_reconnect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """MOR-4456: an unanswered split read is served absent and counted.
+
+    Three production slow cycles with a silent ``ST;``: no raise, no
+    reconnect, the controls after split (clarifier) still reach the store
+    every cycle, and the critical-path accounting is kept (the unchanged
+    gate's abort on the third attempt is pinned by
+    test_never_answered_split_path_fails_startup_after_three_attempts and
+    the new gate test below).
+    """
+    from rigplane.backends.yaesu_cat.observations import (
+        _RIT_FREQ,
+        _RIT_ON,
+        _RIT_TX,
+        _SPLIT,
+    )
+
+    radio, poller, store, clock, emitted = _canonical_ptt_path(
+        monkeypatch, extra_paths=(_SPLIT, _RIT_ON, _RIT_TX, _RIT_FREQ)
+    )
+    _seed_canonical_ptt(radio, store, clock, ObservedPtt.ON)
+    radio.read_clarifier = AsyncMock(return_value=(True, False))  # noqa: SLF001
+    radio.read_clarifier_freq = AsyncMock(return_value=-250)  # noqa: SLF001
+    # Runtime-only-gated slow reads the reduced caps do not cover: answer
+    # them locally so the capped lane asks the wire for nothing but ST;.
+    radio.read_nb_level = AsyncMock(return_value=0)  # noqa: SLF001
+    radio.read_nr_level = AsyncMock(return_value=0)  # noqa: SLF001
+    radio.read_sql_type = AsyncMock(return_value=0)  # noqa: SLF001
+    radio.read_ctcss_tone_index = AsyncMock(return_value=8)  # noqa: SLF001
+
+    async def _answer(command: str) -> str:
+        assert command == "ST;", (
+            f"the capped slow lane must ask nothing else: {command}"
+        )
+        raise CatTimeoutError("ST timeout", command="ST;")
+
+    radio._transport.query.side_effect = _answer  # noqa: SLF001
+    radio._transport.reconnect = AsyncMock()  # noqa: SLF001
+    for _ in range(3):
+        await poller._poll_slow()
+    radio._transport.reconnect.assert_not_awaited()  # noqa: SLF001
+    assert [  # noqa: SLF001
+        call.args[0] for call in radio._transport.query.await_args_list
+    ] == ["ST;"] * 3
+    assert not any(item.path == _SPLIT for item in emitted)
+    assert radio._critical_read_timeouts == {_SPLIT: 3}  # noqa: SLF001
+    by_path = [item.path for item in emitted]
+    for path in (_RIT_ON, _RIT_TX, _RIT_FREQ):
+        assert by_path.count(path) == 3, (
+            "the controls after split must reach the store every cycle"
+        )
+
+
+@pytest.mark.asyncio
+async def test_canonical_split_refusal_then_timeout_stays_contained(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """MOR-4456: a refused split with a silent re-read is served absent and counted.
+
+    Three production slow cycles where ``ST;`` first answers ``?;`` and the
+    single re-read stays silent: the retry timeout gets the same
+    containment flag and critical-read accounting as a plain timeout — no
+    raise, no reconnect, split absent, the controls after split
+    (clarifier) still reach the store every cycle, and the tally reaches
+    the gate threshold on the third cycle exactly like three plain
+    timeouts.
+    """
+    from rigplane.backends.yaesu_cat.observations import (
+        _RIT_FREQ,
+        _RIT_ON,
+        _RIT_TX,
+        _SPLIT,
+    )
+
+    radio, poller, store, clock, emitted = _canonical_ptt_path(
+        monkeypatch, extra_paths=(_SPLIT, _RIT_ON, _RIT_TX, _RIT_FREQ)
+    )
+    _seed_canonical_ptt(radio, store, clock, ObservedPtt.ON)
+    radio.read_clarifier = AsyncMock(return_value=(True, False))  # noqa: SLF001
+    radio.read_clarifier_freq = AsyncMock(return_value=-250)  # noqa: SLF001
+    # Runtime-only-gated slow reads the reduced caps do not cover: answer
+    # them locally so the capped lane asks the wire for nothing but ST;.
+    radio.read_nb_level = AsyncMock(return_value=0)  # noqa: SLF001
+    radio.read_nr_level = AsyncMock(return_value=0)  # noqa: SLF001
+    radio.read_sql_type = AsyncMock(return_value=0)  # noqa: SLF001
+    radio.read_ctcss_tone_index = AsyncMock(return_value=8)  # noqa: SLF001
+
+    async def _answer(command: str) -> str:
+        assert command == "ST;", (
+            f"the capped slow lane must ask nothing else: {command}"
+        )
+        if len(radio._transport.query.await_args_list) % 2 == 1:  # noqa: SLF001
+            raise CatCommandRejected("?;", command="ST;")
+        raise CatTimeoutError("ST timeout", command="ST;")
+
+    radio._transport.query.side_effect = _answer  # noqa: SLF001
+    radio._transport.reconnect = AsyncMock()  # noqa: SLF001
+    for _ in range(3):
+        await poller._poll_slow()
+    radio._transport.reconnect.assert_not_awaited()  # noqa: SLF001
+    assert [  # noqa: SLF001
+        call.args[0] for call in radio._transport.query.await_args_list
+    ] == ["ST;"] * 6
+    assert not any(item.path == _SPLIT for item in emitted)
+    assert radio._critical_read_timeouts == {_SPLIT: 3}  # noqa: SLF001
+    by_path = [item.path for item in emitted]
+    for path in (_RIT_ON, _RIT_TX, _RIT_FREQ):
+        assert by_path.count(path) == 3, (
+            "the controls after split must reach the store every cycle"
+        )
+
+
+@pytest.mark.asyncio
+async def test_canonical_split_refusal_skips_retry_count_and_continues(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """MOR-4456: a twice-refused split records the defect and stays in-cycle.
+
+    The refusal is re-issued once (MOR-2584) without touching the timeout
+    tally; the slow cycle completes with no reconnect and the controls
+    after split still publish. The defect the lane records is what the
+    unchanged gate aborts on (new gate test below).
+    """
+    from rigplane.backends.yaesu_cat.observations import (
+        _RIT_FREQ,
+        _RIT_ON,
+        _RIT_TX,
+        _SPLIT,
+    )
+
+    radio, poller, store, clock, emitted = _canonical_ptt_path(
+        monkeypatch, extra_paths=(_SPLIT, _RIT_ON, _RIT_TX, _RIT_FREQ)
+    )
+    _seed_canonical_ptt(radio, store, clock, ObservedPtt.ON)
+    radio.read_clarifier = AsyncMock(return_value=(True, False))  # noqa: SLF001
+    radio.read_clarifier_freq = AsyncMock(return_value=-250)  # noqa: SLF001
+    # Runtime-only-gated slow reads the reduced caps do not cover: answer
+    # them locally so the capped lane asks the wire for nothing but ST;.
+    radio.read_nb_level = AsyncMock(return_value=0)  # noqa: SLF001
+    radio.read_nr_level = AsyncMock(return_value=0)  # noqa: SLF001
+    radio.read_sql_type = AsyncMock(return_value=0)  # noqa: SLF001
+    radio.read_ctcss_tone_index = AsyncMock(return_value=8)  # noqa: SLF001
+
+    async def _answer(command: str) -> str:
+        assert command == "ST;", (
+            f"the capped slow lane must ask nothing else: {command}"
+        )
+        raise CatCommandRejected("?;", command="ST;")
+
+    radio._transport.query.side_effect = _answer  # noqa: SLF001
+    radio._transport.reconnect = AsyncMock()  # noqa: SLF001
+    await poller._poll_slow()
+    radio._transport.reconnect.assert_not_awaited()  # noqa: SLF001
+    assert [  # noqa: SLF001
+        call.args[0] for call in radio._transport.query.await_args_list
+    ] == ["ST;", "ST;"]
+    assert not any(item.path == _SPLIT for item in emitted)
+    assert radio._critical_read_timeouts == {}  # noqa: SLF001
+    by_path = [item.path for item in emitted]
+    for path in (_RIT_ON, _RIT_TX, _RIT_FREQ):
+        assert path in by_path, "the controls after split must still publish"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("sink_error", [RuntimeError, asyncio.CancelledError])
 async def test_canonical_ptt_error_sink_failure_preserves_reconnect(
     monkeypatch: pytest.MonkeyPatch,
-    failure: str,
     sink_error: type[BaseException],
 ) -> None:
+    # MOR-4456: transport failures still raise out of the PTT lane — only
+    # the timeout half moved (see
+    # test_canonical_ptt_timeout_sink_failure_stays_contained).
     radio, poller, _, _, _ = _canonical_ptt_path(monkeypatch)
     radio.read_transmit_state = AsyncMock(
-        return_value=TxStateReading(None, failure=failure)
+        return_value=TxStateReading(None, failure="transport")
     )
     sink = MagicMock(side_effect=sink_error("sink failed"))
     poller._observation_callback = sink  # noqa: SLF001
-    error_type = CatTimeoutError if failure == "timeout" else CatTransportError
-    with pytest.raises(error_type, match=f"PTT read failed: {failure}"):
+    with pytest.raises(CatTransportError, match="PTT read failed: transport"):
         await poller._emit_medium_observations()  # noqa: SLF001
     poller._try_reconnect = AsyncMock(side_effect=asyncio.CancelledError)  # noqa: SLF001
     with pytest.raises(asyncio.CancelledError):
@@ -599,6 +810,28 @@ async def test_canonical_ptt_error_sink_failure_preserves_reconnect(
         ObservedPtt.UNKNOWN,
         ObservedPtt.UNKNOWN,
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sink_error", [RuntimeError, asyncio.CancelledError])
+async def test_canonical_ptt_timeout_sink_failure_stays_contained(
+    monkeypatch: pytest.MonkeyPatch,
+    sink_error: type[BaseException],
+) -> None:
+    # MOR-4456: a failing error sink no longer re-arms the reconnect path
+    # for PTT-only timeouts — the contained cycle completes anyway.
+    radio, poller, _, _, _ = _canonical_ptt_path(monkeypatch)
+    radio.read_transmit_state = AsyncMock(
+        return_value=TxStateReading(None, failure="timeout")
+    )
+    sink = MagicMock(side_effect=sink_error("sink failed"))
+    poller._observation_callback = sink  # noqa: SLF001
+    # The PTT error publication swallows the sink failure, but the batch
+    # publish still reports it — containment means the CatTimeoutError is
+    # what no longer escapes.
+    with pytest.raises(sink_error):
+        await poller._emit_medium_observations()  # noqa: SLF001
+    assert sink.call_args_list[0].args[0][0].value is ObservedPtt.UNKNOWN
 
 
 @pytest.mark.asyncio
@@ -931,6 +1164,9 @@ def make_radio(
     radio.get_cw_spot = AsyncMock(return_value=False)
     radio.get_rx_func = AsyncMock(return_value=0)
     radio.get_tx_func = AsyncMock(return_value=0)
+    # MOR-4433 PR1: the FT answer map lives on the profile; the mock
+    # stands in for an FTX-1, so it carries the real FTX-1 map.
+    radio.profile.tx_func = get_radio_profile("FTX-1").tx_func
     return radio
 
 

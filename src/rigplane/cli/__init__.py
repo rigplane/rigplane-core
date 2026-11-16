@@ -20,7 +20,7 @@ Usage:
     rigplane discover
 """
 
-__all__ = ["main", "check_ports_available"]
+__all__ = ["main", "check_ports_available", "probe_main"]
 
 import argparse
 import asyncio
@@ -107,6 +107,12 @@ from rigplane.cli._convert import (  # noqa: E402
     add_subparser as _add_convert_subparser,
     run as _run_convert,
 )
+from rigplane.cli._probe import (  # noqa: E402
+    add_subparser as _add_probe_subparser,
+    build_probe_parser as _build_probe_parser,
+    run as _run_probe,
+)
+from rigplane.probe.render import DEFAULT_PROBE_PROG  # noqa: E402
 from rigplane.cli._models import (  # noqa: E402
     add_subparser as _add_models_subparser,
     backend_for_protocol as _backend_for_protocol,
@@ -207,7 +213,8 @@ async def _auto_discover_lan(timeout: float = _DISCOVER_TIMEOUT) -> str:
         print(
             "Error: no radios found on LAN.\n"
             "  Check: radio powered on? LAN remote enabled? Same subnet?\n"
-            "  Or specify --host <IP> explicitly.",
+            "  Or specify --host <IP> explicitly.\n"
+            "  Connected by USB instead? Use --serial-port <device> (or --backend serial to scan USB ports).",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -403,6 +410,7 @@ _COMMAND_NAMES = {
     "radio-validate",
     "convert",
     "models",
+    "probe",
 }
 
 _GLOBAL_CONNECTION_OPTIONS = {
@@ -1719,6 +1727,13 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Enable the gated WebRTC transport entrypoint (requires the [webrtc] extra)",
     )
     web_p.add_argument(
+        "--webrtc-include-vpn",
+        dest="webrtc_include_vpn",
+        action="store_true",
+        default=False,
+        help="Admit VPN/tunnel interfaces as WebRTC ICE host candidates (default host-only excludes them)",
+    )
+    web_p.add_argument(
         "--allowed-host",
         dest="allowed_hosts",
         action="append",
@@ -1999,6 +2014,9 @@ def _build_parser() -> argparse.ArgumentParser:
 
     # models — list supported radio profiles and exact --model values
     _add_models_subparser(sub)
+
+    # probe — record how your radio answers, into one file you can send to us
+    _add_probe_subparser(sub)
 
     return p
 
@@ -4845,6 +4863,7 @@ async def _cmd_web(
 
     config_kwargs["discovery"] = getattr(args, "web_discovery", True)
     config_kwargs["webrtc_enabled"] = getattr(args, "webrtc_enabled", False)
+    config_kwargs["webrtc_include_vpn"] = getattr(args, "webrtc_include_vpn", False)
     allowed_hosts = getattr(args, "allowed_hosts", None)
     if allowed_hosts:
         config_kwargs["allowed_hosts"] = tuple(allowed_hosts)
@@ -5446,6 +5465,28 @@ def _flush_stdio_before_forced_exit() -> None:
             pass
 
 
+def probe_main(
+    argv: Sequence[str] | None = None, *, prog: str = DEFAULT_PROBE_PROG
+) -> int:
+    """Run the radio probe under the caller's command name.
+
+    The Pro sidecar hand-over calls this instead of spawning ``rigplane``:
+    ``argv`` holds the probe arguments (``None`` means ``sys.argv[1:]``),
+    and every hint, the usage line, and ``--help`` show ``prog``. Returns
+    the process exit code (0, 2, or 3); never raises ``SystemExit``.
+    """
+    parser = _build_probe_parser(prog=prog)
+    try:
+        args = parser.parse_args(argv)
+    except SystemExit as exc:
+        if exc.code is None:
+            return 0
+        if isinstance(exc.code, int):
+            return exc.code
+        return 2
+    return _run_probe(args, prog=prog)
+
+
 def main() -> None:
     import logging
 
@@ -5586,6 +5627,8 @@ def main() -> None:
         sys.exit(_run_convert(args))
     elif args.command == "models":
         sys.exit(_run_models(args))
+    elif args.command == "probe":
+        sys.exit(_run_probe(args))
     elif args.command is None:
         parser.print_help()
         sys.exit(0)

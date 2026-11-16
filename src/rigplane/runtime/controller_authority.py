@@ -248,6 +248,26 @@ class ControllerAuthority:
             raise ControllerError("controller_invalid")
         return ControllerTicket(self, self.generation, True)
 
+    def channel_ticket(self, key: object) -> ControllerTicket:
+        """Distinct non-primary ticket for one channel on an existing key.
+
+        Liveness only (the ``credential`` check): never primary, never
+        requires or installs a primary, and never revokes, detaches, or
+        ends anything — so two channels on one key stay independent.
+        Each ticket is a distinct dict key, where the shared
+        ``credential`` value would collide and one channel's detach would
+        drop the other's lifecycle entry.
+        """
+        grant = self.credential(key)
+        return ControllerTicket(
+            self,
+            grant.generation,
+            grant.remote,
+            f"channel-{secrets.token_hex(8)}",
+            False,
+            grant.tx_owner,
+        )
+
     def attach(self, key: object, role: str, session_id: str) -> ControllerTicket:
         grant = self.credential(key)
         if role not in ("primary", "auxiliary"):

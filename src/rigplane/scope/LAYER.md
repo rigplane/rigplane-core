@@ -34,6 +34,11 @@ domain-specific in-band estimation region (e.g. `audio/fft_scope.py`'s
 50 Hz…passband/3.5 kHz audio rule) compute it themselves and pass it in
 as the bin range.
 
+`scope/n1mm_spectrum.py` exports the pure N1MM+ spectrum datagram
+parser/emitter (MOR-4394): `parse_n1mm_spectrum` never raises,
+`emit_n1mm_spectrum` builds the canonical XML for tests and replay
+fixtures.
+
 ## Allowed dependencies
 
 `core` (plan §3 matrix row `scope`) plus the external `numpy` dependency

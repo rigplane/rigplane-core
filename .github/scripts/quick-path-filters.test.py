@@ -250,7 +250,13 @@ new AsyncFunction('github', 'context', 'core', script)(github, context, core)
         # guard jobs; the full suite and the Playwright jobs belong on build pools.
         workflows = ROOT / ".github" / "workflows"
         for name, pools in (
-            ("full.yml", ["[self-hosted, Linux, X64, build]", "[self-hosted, Linux, ARM64, build]"]),
+            (
+                "full.yml",
+                [
+                    "[self-hosted, Linux, X64, build]",
+                    "[self-hosted, Linux, ARM64, build]",
+                ],
+            ),
             ("visual.yml", ["[self-hosted, Linux, ARM64, build]"]),
         ):
             with self.subTest(workflow=name):
@@ -261,7 +267,9 @@ new AsyncFunction('github', 'context', 'core', script)(github, context, core)
 
     def test_frontend_check_step_sets_the_node_heap_svelte_check_needs(self) -> None:
         quick = QUICK_YML.read_text(encoding="utf-8")
-        step = quick.split("      - name: Frontend install + check + tests + build\n", 1)[1]
+        step = quick.split(
+            "      - name: Frontend install + check + tests + build\n", 1
+        )[1]
         step = step.split("      - name:", 1)[0]
         self.assertIn("NODE_OPTIONS: --max-old-space-size=3072", step)
         self.assertIn("npm run check", step)
@@ -472,18 +480,30 @@ new AsyncFunction('github', 'context', 'core', script)(github, context, core)
         # in series (~28-30 min). The halves now run on separate build runners,
         # each inside 25 minutes, and the required `quick` context is a light
         # aggregator, so branch protection keeps the same context name.
+        # MOR-4373: each half additionally has a sharded matrix tier
+        # (`quick-python-tests`, `quick-frontend-e2e`) for the heavy test runs.
         quick = QUICK_YML.read_text(encoding="utf-8")
         body = quick.split("\njobs:\n", 1)[1]
         jobs = dict(re.findall(r"(?ms)^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)", body))
         self.assertEqual(
-            set(jobs), {"classify", "quick-frontend", "quick-python", "quick"}
+            set(jobs),
+            {
+                "classify",
+                "quick-frontend",
+                "quick-frontend-e2e",
+                "quick-python",
+                "quick-python-tests",
+                "quick",
+            },
         )
         # MOR-4214: both halves need more memory than the 2 GiB gate pool gives.
         pools = {
             "quick-frontend": "[self-hosted, Linux, ARM64, build]",
+            "quick-frontend-e2e": "[self-hosted, Linux, ARM64, build]",
             "quick-python": "[self-hosted, Linux, X64, build]",
+            "quick-python-tests": "[self-hosted, Linux, X64, build]",
         }
-        for half in ("quick-frontend", "quick-python"):
+        for half in pools:
             with self.subTest(job=half):
                 block = jobs[half]
                 self.assertIn("    needs: classify\n", block)
@@ -493,16 +513,101 @@ new AsyncFunction('github', 'context', 'core', script)(github, context, core)
                 self.assertIn("needs.classify.outputs.reuse != 'true'", block)
         self.assertIn("npm ci", jobs["quick-frontend"])
         self.assertNotIn("uv run pytest tests/ ", jobs["quick-frontend"])
-        self.assertIn("uv run pytest tests/ ", jobs["quick-python"])
+        # vitest shells out to `uv run python tests/liveness_ws_trace.py`
+        # (ws-client-store.integration.isolated.test.ts), so quick-frontend
+        # keeps uv, Python 3.11 and the synced environment (trial PR #4557
+        # showed the failure when they were dropped).
+        for needle in (
+            '      UV_PYTHON: "3.11"\n',
+            "      - name: Install uv\n",
+            "        run: uv python install 3.11\n",
+            "        run: uv sync --all-extras\n",
+        ):
+            with self.subTest(needle=needle):
+                self.assertIn(needle, jobs["quick-frontend"])
+        # The Playwright tiers moved to quick-frontend-e2e (MOR-4373); the
+        # lint/check/vitest/build job keeps no e2e step.
+        self.assertNotIn("test:e2e:i18n", jobs["quick-frontend"])
+        self.assertNotIn("playwright.journey.config.ts", jobs["quick-frontend"])
+        self.assertIn("test:e2e:i18n", jobs["quick-frontend-e2e"])
+        self.assertIn("playwright.journey.config.ts", jobs["quick-frontend-e2e"])
+        # The full pytest suite moved to quick-python-tests (MOR-4373).
+        self.assertNotIn("uv run pytest tests/ ", jobs["quick-python"])
+        self.assertIn("uv run pytest tests/ ", jobs["quick-python-tests"])
         self.assertNotIn("npm ci", jobs["quick-python"])
         aggregator = jobs["quick"]
-        self.assertIn("    needs: [classify, quick-frontend, quick-python]\n", aggregator)
+        self.assertIn(
+            "    needs: [classify, quick-frontend, quick-frontend-e2e, "
+            "quick-python, quick-python-tests]\n",
+            aggregator,
+        )
         self.assertIn("    runs-on: [self-hosted, Linux, ARM64, light]\n", aggregator)
         self.assertIn("    timeout-minutes: 5\n", aggregator)
         self.assertIn("needs.classify.outputs.reuse != 'true'", aggregator)
         self.assertNotIn("actions/checkout", aggregator)
-        for result in ("quick-frontend.result", "quick-python.result"):
+        for result in (
+            "quick-frontend.result",
+            "quick-frontend-e2e.result",
+            "quick-python.result",
+            "quick-python-tests.result",
+        ):
             self.assertIn(f"${{{{ needs.{result} }}}}", aggregator)
+
+    def test_sharded_tiers_are_pinned_to_the_workflow_constants(self) -> None:
+        # MOR-4373: the matrix lists are literal, so this pin ties them to the
+        # single workflow-level constant each; the quick-v2 observer's expected
+        # leg names (base-controlled-gates-v1.test.js) must move with them.
+        quick = QUICK_YML.read_text(encoding="utf-8")
+        shards = re.search(r'^  QUICK_PYTHON_SHARDS: "(\d+)"$', quick, re.M)
+        self.assertIsNotNone(shards, "quick.yml must define QUICK_PYTHON_SHARDS")
+        legs = re.search(r'^  QUICK_FRONTEND_E2E_LEGS: "([a-z0-9- ]+)"$', quick, re.M)
+        self.assertIsNotNone(legs, "quick.yml must define QUICK_FRONTEND_E2E_LEGS")
+        body = quick.split("\njobs:\n", 1)[1]
+        jobs = dict(re.findall(r"(?ms)^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)", body))
+        shard_matrix = re.search(
+            r"^        shard: \[([\d, ]+)\]$", jobs["quick-python-tests"], re.M
+        )
+        self.assertIsNotNone(shard_matrix)
+        assert shards is not None and shard_matrix is not None
+        self.assertEqual(
+            [int(value) for value in shard_matrix.group(1).split(",")],
+            list(range(1, int(shards.group(1)) + 1)),
+        )
+        group_matrix = re.search(
+            r"^        group: \[([a-z0-9-, ]+)\]$", jobs["quick-frontend-e2e"], re.M
+        )
+        self.assertIsNotNone(group_matrix)
+        assert legs is not None and group_matrix is not None
+        self.assertEqual(
+            [value.strip() for value in group_matrix.group(1).split(",")],
+            legs.group(1).split(),
+        )
+        for job in ("quick-python-tests", "quick-frontend-e2e"):
+            with self.subTest(job=job):
+                self.assertIn("      fail-fast: false\n", jobs[job])
+                # No `name:` template: GitHub names the legs `<job-id> (<leg>)`
+                # and a job-level skip collapses to one bare entry, which the
+                # quick-v2 observer's topology rules depend on.
+                self.assertNotIn("\n    name:", jobs[job])
+        tests_job = jobs["quick-python-tests"]
+        self.assertIn(
+            '-p pytest_shard --shard "$SHARD/$QUICK_PYTHON_SHARDS"', tests_job
+        )
+        self.assertIn("SHARD: ${{ matrix.shard }}", tests_job)
+        self.assertIn("worker-diagnostics-quick-${{ matrix.shard }}", tests_job)
+        # upload-artifact v7 rejects duplicate names, so every upload in the
+        # sharded jobs carries its leg suffix.
+        for job in ("quick-python-tests", "quick-frontend-e2e"):
+            for artifact_name in re.findall(r"^          name: (.+)$", jobs[job], re.M):
+                with self.subTest(job=job, artifact=artifact_name):
+                    self.assertIn("${{ matrix.", artifact_name)
+        # quick-python-tests is selected by the core route alone; the CI-only
+        # route still runs quick-python's control tests without the suite.
+        self.assertIn("needs.classify.outputs.core == 'true'", tests_job)
+        # The python legs keep xdist capped (MOR-2830) and the shard plugin
+        # rides the same PYTHONPATH as the worker diagnostics.
+        self.assertIn("PYTHONPATH: ${{ github.workspace }}/.github/scripts", tests_job)
+        self.assertIn("--maxprocesses 4", tests_job)
 
     def test_workflows_pin_docs_skip_ready_guard_and_visual_exclusions(self) -> None:
         quick = QUICK_YML.read_text(encoding="utf-8")
@@ -836,9 +941,8 @@ new AsyncFunction('github', 'context', 'core', script)(github, context, core)
                     all(self.ignored_by_block(path, block) for block in blocks)
                 )
 
-    def test_docs_only_does_not_trigger_citation_or_rebrand_jobs(self) -> None:
+    def test_docs_only_does_not_trigger_citation_job(self) -> None:
         citation = DOC_CITATION_YML.read_text(encoding="utf-8")
-        rebrand = REBRAND_YML.read_text(encoding="utf-8")
 
         self.assertNotIn('      - "**/*.md"', citation)
         self.assertNotIn('      - "docs/**"', citation)
@@ -848,23 +952,62 @@ new AsyncFunction('github', 'context', 'core', script)(github, context, core)
         self.assertEqual(
             citation.count('      - ".github/workflows/doc-citation-gate.yml"'), 1
         )
-        for ignored in (
-            '      - "!docs/**"',
-            '      - "!**/*.md"',
-            '      - "!**/*.rst"',
-            '      - "!.claude/**"',
-            '      - "!.github/**"',
-            '      - "!tests/test_ci_path_filters.py"',
-        ):
-            with self.subTest(ignored=ignored):
-                self.assertEqual(rebrand.count(ignored), 1)
-        for control in (
-            '      - ".github/scripts/check-rebrand-allowlist.sh"',
-            '      - ".github/workflows/rebrand-gate.yml"',
-        ):
-            with self.subTest(control=control):
-                self.assertEqual(rebrand.count(control), 1)
 
+    def test_rebrand_gate_reports_on_every_pr_and_merge_group(self) -> None:
+        # grep-gate is meant to be a required context on main: a path filter
+        # would leave the context missing on docs/CI-only PRs, and a missing
+        # merge_group trigger would stall the merge queue.
+        rebrand = REBRAND_YML.read_text(encoding="utf-8")
+        on_block = "\n" + rebrand.split("\non:\n", 1)[1].split("\nconcurrency:", 1)[0]
+
+        self.assertNotIn("paths:", on_block)
+        self.assertNotIn("paths-ignore:", on_block)
+        self.assertIn("\n  pull_request:\n    branches: [main]\n", on_block)
+        self.assertIn("\n  merge_group:\n    types: [checks_requested]\n", on_block)
+        self.assertIn("\n  workflow_call:\n", on_block)
+        self.assertNotIn("\n  push:", on_block)
+        self.assertIn("\n  grep-gate:\n", rebrand)
+
+    def test_rebrand_gate_merge_queue_checkout_recovery_contract(self) -> None:
+        # merge_group run 43649024650: hung checkout + short job timeout ejected a
+        # PR from the queue. The gate pins job/checkout timeouts, merge_queue
+        # concurrency, checkout retry keyed on outcome (not conclusion — a step
+        # with continue-on-error keeps conclusion success on failure), and a grep
+        # step that cannot run without a successful checkout attempt.
+        rebrand = REBRAND_YML.read_text(encoding="utf-8")
+        full = (ROOT / ".github" / "workflows" / "full.yml").read_text(encoding="utf-8")
+
+        self.assertIn("    timeout-minutes: 10\n", rebrand)
+        self.assertIn(
+            "concurrency:\n"
+            "  group: rebrand-gate-${{ github.workflow }}-${{ github.ref }}\n"
+            "  cancel-in-progress: ${{ github.event_name != 'merge_group' }}\n",
+            rebrand,
+        )
+        grep_job = rebrand.split("\n  grep-gate:\n", 1)[1]
+        self.assertIn("        id: checkout\n", grep_job)
+        self.assertIn("        timeout-minutes: 4\n", grep_job)
+        self.assertIn("        continue-on-error: true\n", grep_job)
+        self.assertIn("        id: checkout_retry\n", grep_job)
+        self.assertIn("        if: steps.checkout.outcome == 'failure'\n", grep_job)
+        self.assertNotIn("steps.checkout.conclusion", grep_job)
+        self.assertNotIn("failure() && steps.checkout", grep_job)
+        self.assertIn(
+            "      - name: Wave 2 rebrand grep gate\n"
+            "        if: >-\n"
+            "          steps.checkout.outcome == 'success' ||\n"
+            "          steps.checkout_retry.outcome == 'success'\n"
+            "        run: .github/scripts/check-rebrand-allowlist.sh",
+            rebrand,
+        )
+        self.assertIn(
+            "  rebrand-gate:\n"
+            "    needs: fresh\n"
+            "    if: needs.fresh.outputs.run == 'true'\n"
+            "    uses: ./.github/workflows/rebrand-gate.yml\n",
+            full,
+        )
+        self.assertNotIn("cancel-in-progress", full[full.index("rebrand-gate:") :])
 
 if __name__ == "__main__":
     unittest.main()

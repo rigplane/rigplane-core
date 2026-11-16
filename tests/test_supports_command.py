@@ -58,6 +58,11 @@ def ic7300_radio(ic7300_profile):
 
 
 _EXPECTED_COUNTS = {
+    # FT-991A (MOR-4433): the FTX-1 partition — single-receiver Yaesu CAT
+    # with no scope, antenna-relay, or typed-CW surface. The profile's facts
+    # drive it: no [cw_text] section, no scope/antenna builders in the map,
+    # audio capability present, CI-V protocol relation absent.
+    "FT-991A": (13, 21),
     # MOR-3678: send_cw_text is unsupported while [cw_text].supported = false.
     "FTX-1": (13, 21),
     "IC-705": (27, 7),

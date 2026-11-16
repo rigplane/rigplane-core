@@ -258,14 +258,20 @@ CI evidence and verifies exact-head required statuses immediately before merge.
 
 ### Guardrails
 
-Size is measured per PR, at the head you push; "changed lines" is additions +
-deletions. Each pair below is two independent limits: crossing **either**
-number crosses that guardrail.
+Size is measured per PR, at the head you push. For **line** guardrails,
+"changed lines" is additions + deletions in **product code** only. For **file**
+guardrails, the count is every path on the PR's file list at the head (PNGs
+included; test paths are not excluded). Each pair below is two independent
+limits: crossing **either** number crosses that guardrail.
+
+Test paths (excluded from the line limit): any path with a directory segment named tests, test, __tests__, testkit, fixtures or test_fixtures/test-fixtures (e.g. tests/fixtures/...), plus spec/test files by name: *_test.*, test_*.py, *.test.*, *.spec.*, *_spec.*, conftest.py.
+
+The canonical matcher is `PR_TEST_PATH_RE` in `.github/scripts/pr-guardrail.js`.
 
 | Guardrail | Value | Effect |
 |---|---|---|
-| **Hard ceiling** | 10 files · 1000 changed lines | Do not cross; decompose first (`/decompose-issue`). Not author-waivable — the owner grants an exception, or the coordinating session does under the owner's delegation of 2026-09-03 (file count only; the line ceiling stays the owner's); either way the exception is recorded as the first line of the PR body before merge, with the count stated as `N code + M regenerated baselines = K files` (the PR's file list at the head, PNGs included). |
-| **Soft threshold** | 6 files · 600 changed lines | Forbids nothing; the PR body must say why this is one unit of work. |
+| **Hard ceiling** | 10 files · 900 product-code changed lines | Do not cross; decompose first (`/decompose-issue`). Not author-waivable — the owner grants an exception, or the coordinating session does under the owner's delegation of 2026-09-03 (file count only; the line ceiling stays the owner's); either way the exception is recorded as the first line of the PR body before merge, with the count stated as `N code + M regenerated baselines = K files` (the PR's file list at the head, PNGs included). |
+| **Soft threshold** | 6 files · 600 product-code changed lines | Forbids nothing; the PR body must say why this is one unit of work. |
 | New abstractions/layers | forbidden unless issue requires | |
 | Speculative improvements | forbidden | |
 

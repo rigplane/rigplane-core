@@ -16,6 +16,7 @@ from pathlib import Path
 
 from rigplane.profiles.rig_loader import load_rig
 
+from rigplane_testkit.fixture_rows import read_cat_rows
 from rigplane_testkit.sim.adapters.yaesu_cat import (
     unledgered_divergences,
 )
@@ -38,11 +39,9 @@ ORACLE = ROOT / "tests" / "golden" / "wire_oracle" / "ftx1.toml"
 
 
 def _table() -> RecordedCatAnswerTable:
-    rows = [
-        json.loads(line)
-        for line in (FIXTURES / "cat_pairs.jsonl").read_text().splitlines()
-    ]
-    return RecordedCatAnswerTable.from_cat_pairs(rows)
+    return RecordedCatAnswerTable.from_cat_pairs(
+        read_cat_rows(FIXTURES / "cat_pairs.jsonl")
+    )
 
 
 def _build(recorded: RecordedCatAnswerTable | None) -> YaesuCatModel:

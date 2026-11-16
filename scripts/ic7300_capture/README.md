@@ -1,9 +1,10 @@
 # IC-7300 bench capture (receive side only)
 
 Tooling for the read-only USB CI-V capture of the bench IC-7300 (Linear
-MOR-3595, simulator epic MOR-3496). The IC-7610 capture
-(`scripts/ic7610_capture/`) is the model; its probe list and driver are reused
-unchanged for this radio (`--model IC-7300 --radio-addr 0x94`).
+MOR-3595, simulator epic MOR-3496). The read-only probe
+(`rigplane probe`, package `src/rigplane/probe/`) holds the profile
+read list and allow-list this bridge reuses for this radio
+(`--model IC-7300 --radio-addr 0x94`).
 
 ## Pieces
 
@@ -19,7 +20,7 @@ unchanged for this radio (`--model IC-7300 --radio-addr 0x94`).
   panel/wave-output state (reads), enable the scope, count completed scope
   frames for N seconds, restore the exact state read, read it back. Output is
   the per-radio scope-rate baseline (frames/s, interval median/p95/max).
-- `../ic7610_capture/probe.py` — the paced read-only probe of every profile
+- `rigplane probe` — the paced read-only probe of every profile
   GET plus four unknown commands (answer class per command and latency).
 - `python -m rigplane_testkit.serial.fixtures extract` — trims a bridge
   recording into `civ_pairs.jsonl` rows (first occurrence per request, echo,
@@ -33,9 +34,8 @@ scripts/bench/bench-lock.sh acquire ic7300 "$TOKEN"
 # 1. bridge for the window (device name from `ls /dev/cu.*`)
 python scripts/ic7300_capture/bridge.py --device DEV --out probe.rec.jsonl
 # 2. in another shell, drive it through the bridge
-python scripts/ic7610_capture/probe.py --backend serial \
-  --serial-port socket://127.0.0.1:PORT --baud 115200 \
-  --model IC-7300 --radio-addr 0x94 --out probe_answers.json
+rigplane probe IC-7300 --port socket://127.0.0.1:PORT --baud 115200 \
+  --address 0x94 --out probe_answers.json
 # 3. stop the bridge (SIGINT), repeat for readonly_session / scope / ...
 # 4. extract + redact-check
 python -m rigplane_testkit.serial.fixtures extract --in probe.rec.jsonl \

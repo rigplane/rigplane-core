@@ -34,7 +34,7 @@ function stableAssessment(value) { const ordered = (item) => { if (Array.isArray
   };
   return JSON.stringify(ordered(value));
 }
-function statusDescription(code) { const descriptions = { admitted: 'Metadata/policy observation: waiting for canonical legacy quick.', draft: 'Metadata/policy observation: draft; substantive quick is not expected.', terminal_match: 'Metadata/policy observation: canonical legacy quick matched.', fork: 'Unknown: fork execution is outside this metadata observation.', stale_base: 'Unknown: pull request base is not the live main head.', stale_head: 'Unknown: legacy quick belongs to a stale pull request head.', stale_run: 'Unknown: legacy quick is not the latest run and attempt.', ambiguous_pull: 'Unknown: legacy quick has no unique current pull request.', control_diff: 'Unknown: candidate changes trusted quick observation controls.', route_mismatch: 'Unknown: trusted route and observed legacy jobs disagree.', skipped_substantive: 'Unknown: legacy quick succeeded while its worker was skipped.', terminal_failure: 'Metadata observation: canonical legacy quick did not succeed.', invalid_binding: 'Unknown: canonical legacy quick metadata did not bind.', };
+function statusDescription(code) { const descriptions = { admitted: 'Metadata/policy observation: waiting for canonical legacy quick.', draft: 'Metadata/policy observation: draft; substantive quick is not expected.', terminal_match: 'Metadata/policy observation: canonical legacy quick matched.', fork: 'Unknown: fork execution is outside this metadata observation.', stale_base: 'Unknown: pull request base is not the live main head.', stale_head: 'Unknown: legacy quick belongs to a stale pull request head.', stale_run: 'Unknown: legacy quick is not the latest run and attempt.', ambiguous_pull: 'Unknown: legacy quick has no unique current pull request.', closed_pull: 'Metadata/policy observation: pull request closed; nothing to observe.', control_diff: 'Unknown: candidate changes trusted quick observation controls.', route_mismatch: 'Unknown: trusted route and observed legacy jobs disagree.', skipped_substantive: 'Unknown: legacy quick succeeded while its worker was skipped.', terminal_failure: 'Metadata observation: canonical legacy quick did not succeed.', invalid_binding: 'Unknown: canonical legacy quick metadata did not bind.', };
   return descriptions[code] ?? descriptions.invalid_binding;
 }
 function assessment({kind, code, state = null, publish = false, targetSha = null, pullNumber = null, baseSha = null, headSha = null, runId = null, runAttempt = null, runConclusion = null, routes = null, jobTopology = null, metrics = null}) { return { kind, code, state, publish, targetSha, pullNumber, baseSha, headSha, runId, runAttempt, runConclusion, routes, jobTopology, description: statusDescription(code), metrics: metrics ?? { route_job_concordance: null, terminal_binding_coverage: false, false_success_publications: 0, stale_head_publications: 0, }, };
@@ -125,6 +125,8 @@ function bindRunPullRequest(run, liveBaseSha) { const liveMain = assertSha(liveB
 function bindPull(pull, liveBaseSha, expectedHeadSha = null) { const headSha = assertSha(pull.head?.sha, 'pull request head');
   const baseSha = assertSha(pull.base?.sha, 'pull request base');
   if (expectedHeadSha !== null && headSha !== expectedHeadSha) { throw new ObservationError('stale_head', 'run head is no longer current', { publish: false, targetSha: headSha, }); }
+  // A pull request merged or closed while the observation ran has nothing left to observe: skip without posting.
+  if (pull.state === 'closed' && pull.base?.ref === 'main' && pull.base?.repo?.id === REPOSITORY.id && pull.base?.repo?.full_name === REPOSITORY.fullName) { throw new ObservationError('closed_pull', 'pull request closed before publication', {publish: false, targetSha: headSha}); }
   if ( pull.state !== 'open' || pull.base?.ref !== 'main' || pull.base?.repo?.id !== REPOSITORY.id || pull.base?.repo?.full_name !== REPOSITORY.fullName ) { throw new ObservationError('invalid_binding', 'pull request target is not canonical main', { publish: true, targetSha: headSha, }); }
   if (baseSha !== liveBaseSha) { throw new ObservationError('stale_base', 'pull request base is not live main', { publish: true, targetSha: headSha, }); }
   return { headSha, baseSha, sameRepository: pull.head?.repo?.id === REPOSITORY.id && pull.head?.repo?.full_name === REPOSITORY.fullName, };
@@ -155,32 +157,64 @@ async function listAttemptJobs(github, owner, repo, runId, runAttempt) { const j
 // MOR-3875: legacy quick runs classify, two parallel worker halves, and the
 // `quick` aggregator on the light pool. classify sits on the light pool. The
 // halves run on build pools (MOR-4214), not on the 2 GiB gate pool.
+// MOR-4373: each half additionally has a sharded matrix tier —
+// `quick-python-tests (1)`..`(4)` beside quick-python and
+// `quick-frontend-e2e (visual|guards|journey)` beside quick-frontend. A
+// matrix job whose job-level `if` is false collapses to exactly ONE entry
+// named after the job id (verified on Pro's skipped pytest matrix), so each
+// tier's topology is valid either as its full leg set or as that single
+// skipped entry. The frontend tier is required exactly by the frontend route
+// (base frontend implies classifier frontend); no base route pins the python
+// suite tier, because the base core route also covers unknown roots whose
+// runs legitimately skip it — the aggregator's own selection check is what
+// fails a skipped selected tier there.
 const FRONTEND_LABELS = Object.freeze(['self-hosted', 'Linux', 'ARM64', 'build']);
 const PYTHON_LABELS = Object.freeze(['self-hosted', 'Linux', 'X64', 'build']);
 const LIGHT_LABELS = Object.freeze(['self-hosted', 'Linux', 'ARM64', 'light']);
+const PYTHON_TEST_LEGS = Object.freeze(['quick-python-tests (1)', 'quick-python-tests (2)', 'quick-python-tests (3)', 'quick-python-tests (4)']);
+const FRONTEND_E2E_LEGS = Object.freeze(['quick-frontend-e2e (visual)', 'quick-frontend-e2e (guards)', 'quick-frontend-e2e (journey)']);
 function hasLabels(job, labels) { return Array.isArray(job?.labels) && labels.every((label) => job.labels.includes(label)); }
 function ranOnRunner(job) { return job !== undefined && job.conclusion !== 'skipped' && typeof job.runner_name === 'string' && job.runner_name.length > 0; }
-function evaluateJobTopology(run, jobs, routes, draft) { const names = jobs.map((job) => job.name);
-  const expectedNames = ['classify', 'quick-frontend', 'quick-python', 'quick'];
-  const topologyMatches = jobs.length === expectedNames.length && expectedNames.every((name) => names.filter((candidate) => candidate === name).length === 1) && jobs.every((job) => job.run_attempt === run.run_attempt && job.status === 'completed');
-  const classify = jobs.find((job) => job.name === 'classify');
-  const frontend = jobs.find((job) => job.name === 'quick-frontend');
-  const python = jobs.find((job) => job.name === 'quick-python');
-  const quick = jobs.find((job) => job.name === 'quick');
-  const workers = [[frontend, FRONTEND_LABELS], [python, PYTHON_LABELS]];
+function tierShape(jobs, legs, bareName) {
+  const bare = jobs.filter((job) => job.name === bareName);
+  const legJobs = legs.map((name) => jobs.filter((job) => job.name === name));
+  const ranInFull = bare.length === 0 && legJobs.every((found) => found.length === 1);
+  return {
+    ranInFull,
+    skipped: bare.length === 1 && legJobs.every((found) => found.length === 0),
+    // Empty unless the tier ran in full, so a skipped tier contributes no
+    // worker to bind to a runner.
+    legs: ranInFull ? legJobs.map((found) => found[0]) : [],
+    bare: bare[0],
+  };
+}
+function evaluateJobTopology(run, jobs, routes, draft) {
+  const singleNames = ['classify', 'quick-frontend', 'quick-python', 'quick'];
+  const singles = singleNames.map((name) => jobs.filter((job) => job.name === name));
+  const pythonTests = tierShape(jobs, PYTHON_TEST_LEGS, 'quick-python-tests');
+  const frontendE2e = tierShape(jobs, FRONTEND_E2E_LEGS, 'quick-frontend-e2e');
+  const expectedCount = singleNames.length + (pythonTests.ranInFull ? PYTHON_TEST_LEGS.length : 1) + (frontendE2e.ranInFull ? FRONTEND_E2E_LEGS.length : 1);
+  const topologyMatches = singles.every((found) => found.length === 1) && (pythonTests.ranInFull || pythonTests.skipped) && (frontendE2e.ranInFull || frontendE2e.skipped) && jobs.length === expectedCount && jobs.every((job) => job.run_attempt === run.run_attempt && job.status === 'completed');
+  const [classify, frontend, python, quick] = singles.map((found) => found[0]);
+  const workers = [[frontend, FRONTEND_LABELS], [python, PYTHON_LABELS], ...pythonTests.legs.map((job) => [job, PYTHON_LABELS]), ...frontendE2e.legs.map((job) => [job, FRONTEND_LABELS])];
   const frontendRequired = routes.frontend === true;
   const pythonRequired = routes.ci === true;
   const classifyMatches = classify?.conclusion === 'success' && hasLabels(classify, LIGHT_LABELS);
   const workersBound = workers.every(([job, labels]) => job?.conclusion === 'skipped' || (ranOnRunner(job) && hasLabels(job, labels)));
-  const skippedWork = quick?.conclusion === 'skipped' || (frontendRequired && frontend?.conclusion === 'skipped') || (pythonRequired && python?.conclusion === 'skipped');
-  const quickWasSubstantive = ranOnRunner(quick) && (!frontendRequired || ranOnRunner(frontend)) && (!pythonRequired || ranOnRunner(python));
+  const skippedWork = quick?.conclusion === 'skipped' || (frontendRequired && frontend?.conclusion === 'skipped') || (frontendRequired && frontendE2e.skipped && frontendE2e.bare?.conclusion === 'skipped') || (pythonRequired && python?.conclusion === 'skipped');
+  const quickWasSubstantive = ranOnRunner(quick) && (!frontendRequired || (ranOnRunner(frontend) && frontendE2e.legs.every((job) => ranOnRunner(job)))) && (!pythonRequired || ranOnRunner(python));
   const labelsMatch = hasLabels(quick, LIGHT_LABELS) && workersBound;
   const routeConcordance = topologyMatches && classifyMatches && labelsMatch && routes.docs === false && draft === false && quickWasSubstantive;
+  // A draft pull request runs only classify: quick.yml skips every worker and the aggregator by its draft condition.
+  // That is the expected draft shape, observed as pending (as the lifecycle leg does), not a skipped-substantive failure.
+  const draftShape = draft === true && run.conclusion === 'success' && topologyMatches && classifyMatches && jobs.every((job) => job.name === 'classify' || job.conclusion === 'skipped');
+  if (draftShape) { return {ok: false, pending: true, code: 'draft', routeConcordance: false};
+  }
   if (run.conclusion === 'success' && skippedWork) { return {ok: false, code: 'skipped_substantive', routeConcordance: false};
   }
   if (!routeConcordance) { return {ok: false, code: 'route_mismatch', routeConcordance: false};
   }
-  if (run.conclusion !== 'success' || quick.conclusion !== 'success' || workers.some(([job]) => job.conclusion !== 'success' && job.conclusion !== 'skipped')) { return {ok: false, code: 'terminal_failure', routeConcordance: true};
+  if (run.conclusion !== 'success' || quick.conclusion !== 'success' || workers.some(([job]) => job.conclusion !== 'success' && job.conclusion !== 'skipped') || (pythonTests.skipped && pythonTests.bare.conclusion !== 'skipped') || (frontendE2e.skipped && frontendE2e.bare.conclusion !== 'skipped')) { return {ok: false, code: 'terminal_failure', routeConcordance: true};
   }
   return {ok: true, code: 'terminal_match', routeConcordance: true};
 }
@@ -197,7 +231,9 @@ async function assessLifecycle({github, context, liveBaseSha}) { if (!relevantLi
     const routes = await classifyPull( github, REPOSITORY.owner, REPOSITORY.repo, binding.baseSha, pull, );
     const code = pull.draft ? 'draft' : 'admitted';
     return assessment({ kind: 'lifecycle', code, state: 'pending', publish: true, targetSha: binding.headSha, pullNumber: pull.number, baseSha: binding.baseSha, headSha: binding.headSha, routes, });
-  } catch (error) { if (error instanceof ObservationError) { if (error.code === 'stale_base') { return assessment({ kind: 'lifecycle', code: 'stale_base', state: 'pending', publish: true, targetSha: error.targetSha, pullNumber: pull.number, baseSha: binding?.baseSha ?? pull.base?.sha ?? null, headSha: binding?.headSha ?? pull.head?.sha ?? null, });
+  } catch (error) { if (error instanceof ObservationError) { if (error.code === 'closed_pull') { return assessment({ kind: 'lifecycle', code: 'closed_pull', state: 'success', publish: false, targetSha: error.targetSha, pullNumber: pull.number, baseSha: pull.base?.sha ?? null, headSha: pull.head?.sha ?? null, });
+      }
+      if (error.code === 'stale_base') { return assessment({ kind: 'lifecycle', code: 'stale_base', state: 'pending', publish: true, targetSha: error.targetSha, pullNumber: pull.number, baseSha: binding?.baseSha ?? pull.base?.sha ?? null, headSha: binding?.headSha ?? pull.head?.sha ?? null, });
       }
       return assessment({ kind: 'lifecycle', code: error.code, state: 'failure', publish: error.publish, targetSha: error.targetSha, pullNumber: pull.number, baseSha: binding?.baseSha ?? pull.base?.sha ?? null, headSha: binding?.headSha ?? pull.head?.sha ?? null, });
     }
@@ -206,6 +242,9 @@ async function assessLifecycle({github, context, liveBaseSha}) { if (!relevantLi
 }
 async function assertUniqueCurrentPullMatchesRun(github, owner, repo, runBinding) { const associated = await github.paginate( 'GET /repos/{owner}/{repo}/commits/{commit_sha}/pulls', {owner, repo, commit_sha: runBinding.headSha, per_page: 100}, );
   const matches = associated.filter((pull) => pull.state === 'open' && pull.head?.sha === runBinding.headSha && pull.base?.ref === 'main' && pull.base?.repo?.id === REPOSITORY.id && pull.base?.repo?.full_name === REPOSITORY.fullName, );
+  // The run's own pull request merged or closed before the observation finished (for example #4582 merged by the queue
+  // between the producer and the publisher): no open pull request is left to observe, so skip without posting.
+  if (matches.length === 0 && associated.some((pull) => pull.number === runBinding.pullNumber && pull.state === 'closed' && pull.head?.sha === runBinding.headSha && pull.base?.ref === 'main' && pull.base?.repo?.id === REPOSITORY.id && pull.base?.repo?.full_name === REPOSITORY.fullName)) { throw new ObservationError('closed_pull', 'run pull request closed before observation', {publish: false, targetSha: runBinding.headSha}); }
   if (matches.length !== 1) { throw new ObservationError('ambiguous_pull', 'run has no unique current pull request', { publish: true, targetSha: runBinding.headSha, }); } if (matches[0].number !== runBinding.pullNumber || matches[0].base?.sha !== runBinding.baseSha) { throw new ObservationError('ambiguous_pull', 'unique current pull request does not match the run association', { publish: true, targetSha: runBinding.headSha, }); }
 }
 async function assertCanonicalRun(github, context, run, payloadRun, liveBaseSha) { assertRepository(context, run.repository);
@@ -244,8 +283,8 @@ async function assessWorkflowRun({github, context, liveBaseSha}) { const payload
     await assertMergeParents( github, REPOSITORY.owner, REPOSITORY.repo, pull, binding.baseSha, headSha, );
     const jobs = await listAttemptJobs( github, REPOSITORY.owner, REPOSITORY.repo, run.id, run.run_attempt, );
     const result = evaluateJobTopology(run, jobs, routes, pull.draft);
-    return assessment({ kind: 'workflow_run', code: result.code, state: result.ok ? 'success' : 'failure', publish: true, targetSha: headSha, pullNumber: runBinding.pullNumber, baseSha: binding.baseSha, headSha, runId: run.id, runAttempt: run.run_attempt, runConclusion: run.conclusion, routes, jobTopology: jobTopologySnapshot(jobs), metrics: { route_job_concordance: result.routeConcordance, terminal_binding_coverage: true, false_success_publications: result.ok ? 0 : 0, stale_head_publications: 0, }, });
-  } catch (error) { if (error instanceof ObservationError) { if (error.code === 'stale_base' || (error.code === 'stale_head' && !error.publish)) { return assessment({ kind: 'workflow_run', code: error.code, state: 'success', publish: false, targetSha: error.targetSha, pullNumber: runBinding?.pullNumber ?? null, baseSha: runBinding?.baseSha ?? null, headSha, runId: run.id, runAttempt: run.run_attempt, runConclusion: run.conclusion, }); }
+    return assessment({ kind: 'workflow_run', code: result.code, state: result.ok ? 'success' : (result.pending === true ? 'pending' : 'failure'), publish: true, targetSha: headSha, pullNumber: runBinding.pullNumber, baseSha: binding.baseSha, headSha, runId: run.id, runAttempt: run.run_attempt, runConclusion: run.conclusion, routes, jobTopology: jobTopologySnapshot(jobs), metrics: { route_job_concordance: result.routeConcordance, terminal_binding_coverage: true, false_success_publications: result.ok ? 0 : 0, stale_head_publications: 0, }, });
+  } catch (error) { if (error instanceof ObservationError) { if (error.code === 'stale_base' || error.code === 'closed_pull' || (error.code === 'stale_head' && !error.publish)) { return assessment({ kind: 'workflow_run', code: error.code, state: 'success', publish: false, targetSha: error.targetSha, pullNumber: runBinding?.pullNumber ?? null, baseSha: runBinding?.baseSha ?? null, headSha, runId: run.id, runAttempt: run.run_attempt, runConclusion: run.conclusion, }); }
       return assessment({ kind: 'workflow_run', code: error.code, state: 'failure', publish: error.publish, targetSha: error.targetSha, pullNumber: runBinding?.pullNumber ?? null, baseSha: runBinding?.baseSha ?? null, headSha, runId: run.id, runAttempt: run.run_attempt, runConclusion: run.conclusion, }); }
     throw error;
   }
@@ -262,7 +301,8 @@ async function rebindForPublication({github, result}) { if (!result.publish) { r
     const [branchResponse, pullResponse] = await Promise.all([ github.request('GET /repos/{owner}/{repo}/branches/{branch}', {owner: REPOSITORY.owner, repo: REPOSITORY.repo, branch: 'main'}), github.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {owner: REPOSITORY.owner, repo: REPOSITORY.repo, pull_number: result.pullNumber}), ]);
     const liveBaseSha = assertSha(branchResponse.data.commit?.sha, 'final live main'); if (liveBaseSha !== result.baseSha) { throw new ObservationError('stale_base', 'live main moved before publication', {publish: true, targetSha: headSha}); } bindPullToRun(pullResponse.data, liveBaseSha, runBinding);
     return result;
-  } catch (error) { if (error instanceof ObservationError) { if (error.code === 'stale_base') { return { ...result, code: 'stale_base', state: 'pending', publish: true, description: statusDescription('stale_base'), metrics: {...result.metrics, false_success_publications: 0}, }; }
+  } catch (error) { if (error instanceof ObservationError) { if (error.code === 'closed_pull') { return { ...result, code: 'closed_pull', state: 'success', publish: false, description: statusDescription('closed_pull'), metrics: {...result.metrics, false_success_publications: 0}, }; }
+      if (error.code === 'stale_base') { return { ...result, code: 'stale_base', state: 'pending', publish: true, description: statusDescription('stale_base'), metrics: {...result.metrics, false_success_publications: 0}, }; }
       return publicationFailure(result, error.code, true); }
     return publicationFailure(result, 'invalid_binding', true);
   }

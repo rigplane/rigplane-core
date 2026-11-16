@@ -282,6 +282,61 @@ default = 0
 "420-1000MHz" = [0, 7, 10, 13, 16, 19, 22, 25, 31, 34]
 ```
 
+### Narrow-state filter-width variant (MOR-4428)
+
+On `table_index` radios (Yaesu SH), the same width code can map to a
+different Hz value depending on the NARROW state. A per-mode rule may
+declare the narrow variant alongside the wide table:
+
+```toml
+[filters.width.SSB]
+defaults = [2400, 1800, 500]
+table = [2400, 2600, 3000, 3200, 4000]
+narrow_table = [1500, 1800, 2000]
+```
+
+While NARROW is on, an SH code maps through `narrow_table` instead of
+`table`. The backend reads the narrow state
+(`get_narrow`/`get_narrow_sub`) before mapping SH in both the width read
+and the width write — but only for modes whose rule declares the
+variant; modes without one issue no extra narrow query.
+
+Loader rules (`rig_loader.py: _validate_filter_narrow_variant`): a narrow
+variant is rejected unless `[filters].encoding` is `"table_index"`, the
+rule is not `fixed`, the rule has a non-empty `table`, `narrow_table` is
+non-empty and strictly increasing, and the profile declares the narrow read (`[commands].get_narrow`, plus
+`get_narrow_sub` on a multi-receiver profile). Absent narrow data keeps
+today's single-table behavior.
+
+### Per-table wire-code bases (MOR-4433)
+
+The narrow and wide tables may sit at DIFFERENT code ranges of one code
+space (FT-991A SH table: SSB narrow codes 01-09 but wide codes 09-21, CW
+narrow 01-10 but wide 10-17). A per-mode rule may therefore declare the
+wide table's base alongside it:
+
+```toml
+[filters.width.SSB]
+table = [1800, 1950, 2100, 2200, 2300, 2400, 2500, 2600, 2700, 2800, 2900, 3000, 3200]
+narrow_table = [200, 400, 600, 850, 1100, 1350, 1500, 1650, 1800]
+first_code = 9          # the wide table counts from code 09
+narrow_first_code = 1   # the narrow table counts from code 01
+```
+
+Both fields are optional: an absent field falls back to the profile-level
+`[filters] first_code`, which is the behavior every pre-MOR-4433 profile
+keeps. The backend resolves the base for the table in effect (narrow
+state first, as for the table itself) in both the width read and the
+width write; a code outside the active table's range keeps today's
+out-of-table handling.
+
+Loader rules (`rig_loader.py: _validate_filter_table_first_codes`): the
+fields need `[filters].encoding` `"table_index"`, are rejected on a
+`fixed` rule, `first_code` needs a `table`, `narrow_first_code` needs a
+`narrow_table`, each present value must be a non-negative integer, and
+each present base must sit above `[filters].radio_default_code` (the same
+below-the-table rule the profile-level `first_code` follows).
+
 ### RF power write quantum
 
 `[controls.rf_power]` may declare `write_quantum_w` — the fixed watt lattice
@@ -442,6 +497,31 @@ scheme = "ab"
 swap_ab  = [0xB0]   # VFO A ↔ B
 equal_ab = [0xA0]   # VFO A = B
 ```
+
+### CAT split value maps
+
+`[vfo.split]` is parsed into `RigConfig.split` (`SplitSpec`) by
+`src/rigplane/profiles/rig_loader.py: _parse_split`. The existing
+`get_split` / `set_split` CAT command templates define the wire verbs and
+the `state` field. The split spec maps that field to and from booleans.
+Omitting the section (or either map) uses write values off/on = `"0"`/`"1"`
+and read values `"0"`/`"1"` = off/on (the `ST` encoding). An explicitly supplied write map must contain
+exactly `off` and `on`, with distinct non-empty string values. A read map
+must map non-empty string keys to `off` or `on` and cover both states.
+
+```toml
+[vfo.split]
+write_map = { off = "2", on = "3" }
+read_map = { "0" = "off", "1" = "on" }
+```
+
+For Yaesu CAT `scheme = "ab"`, `FA`/`FB` templates can address A/B directly
+without `get_vfo_select` / `set_vfo_select`. Those commands determine whether
+slot reading and selection are available. `get_active_receiver` returns
+receiver index zero for a single receiver; it does not report an A/B slot.
+The `vfo_swap`, `vfo_a_to_b`, and `vfo_b_to_a` command templates supply swap
+and directional copies. See `tests/test_yaesu_split_vfo_profile.py` for the
+non-product fixture, maps, missing selection and simulator roundtrip cases.
 
 ### Deprecated legacy keys
 

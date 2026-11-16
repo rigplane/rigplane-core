@@ -7,13 +7,14 @@ import logging
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Protocol, TypeVar
+from typing import TYPE_CHECKING, Protocol, TypeVar, cast
 
 from rigplane.core.acquisition_scheduler import (
     AcquisitionScheduler,
     DeclaredCommandDefect,
     resolve_available_when,
 )
+from rigplane.core.exceptions import CommandError
 from rigplane.core.observation_adapter import ProviderObservationAdapter
 from rigplane.core.state_acquisition_policy import RadioAcquisitionProfile
 from rigplane.core.state_pipeline_contracts import (
@@ -27,7 +28,13 @@ from rigplane.core.tx_observation import (
     TxStateReading,
     normalize_observed_ptt,
 )
-from rigplane.core.tx_target import KnownTxTarget, TxTarget, UnknownTxTarget
+from rigplane.core.tx_target import (
+    KnownTxTarget,
+    TxReceiver,
+    TxSlot,
+    TxTarget,
+    UnknownTxTarget,
+)
 from rigplane.core.types import ctcss_booleans_for_tone_squelch_type
 from rigplane.runtime.meter_cal import interpolate_meter
 
@@ -463,6 +470,21 @@ class YaesuObservationAdapter:
                     native_id="get_tx_func",
                 )
             )
+        else:
+            # No pollable tx_target source declared (sourceless-Yaesu
+            # class: the profile carries no TX-function read verb, so a
+            # pollable target would make _read_tx_target raise out of
+            # _query and discard the whole medium batch). Publish the
+            # sticky ``unsupported`` fact through this same path, with no
+            # CAT I/O here, so downstream gates read "no source exists"
+            # instead of "not yet read" (MOR-4433).
+            observations.append(
+                adapter.observation(
+                    _TX_TARGET,
+                    UnknownTxTarget(reason="unsupported"),
+                    native_id="get_tx_func",
+                )
+            )
         if self._can_poll(_PTT):
 
             def publish_ptt_error() -> None:
@@ -502,14 +524,17 @@ class YaesuObservationAdapter:
                 if reading.failure is not None:
                     publish_ptt_error()
                     if reading.failure == "timeout":
-                        # MOR-2757: ``read_transmit_state`` reports the
-                        # transport timeout as a failure tag; the raised
-                        # ``CatTimeoutError`` below is built here, so the
-                        # count is taken here. The tag does not carry the
-                        # wire command, so this defect names the field only.
+                        # MOR-4456: a PTT-only timeout is contained in the
+                        # lane — unknown is already published above and the
+                        # cycle continues — but the critical-path COUNT is
+                        # kept, so the unchanged gate still ends startup
+                        # after the three reads. Only transport failures
+                        # still raise below. (MOR-2757: the count is taken
+                        # here because the raised ``CatTimeoutError`` used
+                        # to be built here; the tag carries no wire
+                        # command, so the defect names the field only.)
                         exc = CatTimeoutError("PTT read failed: timeout")
                         self._count_critical_read_timeouts("ptt", exc, (_PTT,))
-                        raise exc
                     if reading.failure == "transport":
                         raise CatTransportError("PTT read failed: transport")
                 else:
@@ -686,15 +711,29 @@ class YaesuObservationAdapter:
         method = getattr(self.radio, "get_tx_func", None)
         if not callable(method):
             return UnknownTxTarget(reason="unsupported")
+        # MOR-4433: the ``FT;`` read is the TX target's own read, and the TX
+        # target is not safety-critical — an unanswered read counts toward
+        # nothing. The timeout stays uncaught here; ``_read_tx_target``
+        # contains it as ``not-observed`` so the medium cycle survives.
         try:
             tx_func = await method()
-        except CatTimeoutError as exc:
-            # MOR-2757: the ``FT;`` read is the TX target's own read — an
-            # unanswered one counts toward that critical path, then re-raises
-            # so the poller's reconnect path still fires.
-            self._count_critical_read_timeouts("tx_target", exc, (_TX_TARGET,))
-            raise
-        except (AttributeError, NotImplementedError, CatCommandRejected):
+        except CatCommandRejected:
+            # Gate P2 (MOR-4433): the profile declares the source and the
+            # radio refused the read (?;), so the source exists and only
+            # the answer is missing. It reports not-observed — never
+            # unsupported, which is reserved for a source that does not
+            # exist at all — instead of aborting the whole medium poll
+            # batch.
+            return UnknownTxTarget(reason="not-observed")
+        except (
+            AttributeError,
+            NotImplementedError,
+            CommandError,
+        ):
+            # CommandError is the absent/unsupported-command refusal: _query
+            # raises it before any wire traffic when the profile declares
+            # no get_tx_func. It reports unsupported instead of aborting
+            # the whole medium poll batch.
             return UnknownTxTarget(reason="unsupported")
         except (CatParseError, CatFormatError, ValueError, KeyError):
             return UnknownTxTarget(reason="contradiction")
@@ -702,11 +741,22 @@ class YaesuObservationAdapter:
             return UnknownTxTarget(reason="not-observed")
         if type(tx_func) is not int or tx_func not in (0, 1):
             return UnknownTxTarget(reason="contradiction")
-        self._note_critical_read_answers((_TX_TARGET,))
         return tx_func
 
     async def _read_tx_target(self) -> TxTarget:
-        """Bracket the selected frequency with stable native FT authority."""
+        """Bracket the selected frequency with stable native FT authority.
+
+        MOR-4433: the TX target is not startup-critical — a timeout of any
+        of its own reads (either ``FT;`` bracket, the bracketed frequency)
+        is contained here as ``not-observed``. The medium cycle then keeps
+        the observations it already accumulated and still reads PTT. A
+        genuinely dead link needs no new counting here: the cycle's earlier
+        critical reads re-raise (and count) their own timeouts through
+        ``_safe_read``, and the transport's own error streak — the one the
+        poller's reconnect reads — is never grown by a lone silent ``FT;``
+        (a timeout only bumps ``timeouts``; every answered read resets the
+        streak), so a silent TX target can neither abort nor wedge startup.
+        """
         if not self._has_runtime_capability("tx"):
             return UnknownTxTarget(reason="unsupported")
         stats = getattr(getattr(self.radio, "_transport", None), "stats", None)
@@ -715,15 +765,18 @@ class YaesuObservationAdapter:
             self.profile.provider,
             reconnects if type(reconnects) is int else 0,
         )
-        before = await self._read_tx_func()
-        if isinstance(before, UnknownTxTarget):
-            return before
-        ok, raw_frequency = await self._safe_read(
-            "tx_target.freq",
-            self.radio.read_freq(before),
-            lambda: self.radio.read_freq(before),
-        )
-        after = await self._read_tx_func()
+        try:
+            before = await self._read_tx_func()
+            if isinstance(before, UnknownTxTarget):
+                return before
+            ok, raw_frequency = await self._safe_read(
+                "tx_target.freq",
+                self.radio.read_freq(before),
+                lambda: self.radio.read_freq(before),
+            )
+            after = await self._read_tx_func()
+        except CatTimeoutError:
+            return UnknownTxTarget(reason="not-observed")
         current_reconnects = getattr(stats, "reconnects", 0)
         current_generation = (
             self.profile.provider,
@@ -740,9 +793,18 @@ class YaesuObservationAdapter:
             if ok and type(raw_frequency) is int and raw_frequency > 0
             else None
         )
+        # The FT answer's meaning is profile-declared ([vfo.tx_func]):
+        # MAIN/SUB on dual-receiver profiles, MAIN with the A/B slot on
+        # single-receiver ab profiles. No hard-coded mapping lives here.
+        spec = self.radio.profile.tx_func
+        if spec is None:
+            return UnknownTxTarget(reason="unsupported")
+        mapping = spec.read_map.get(str(before))
+        if mapping is None:
+            return UnknownTxTarget(reason="contradiction")
         return KnownTxTarget(
-            receiver="MAIN" if before == 0 else "SUB",
-            slot=None,
+            receiver=cast(TxReceiver, mapping.receiver),
+            slot=cast(TxSlot | None, mapping.slot),
             frequency_hz=frequency,
         )
 
@@ -1735,13 +1797,19 @@ class YaesuObservationAdapter:
                 )
         # split (MOR-446) — GLOBAL tx_state bool (CAT ``ST``), gated on the
         # ``split`` runtime capability, mirroring the legacy poller's
-        # ``"split" in caps`` gate.
+        # ``"split" in caps`` gate. MOR-4456: an unanswered split read is
+        # contained as an absent observation within its field (the
+        # MOR-4433 ``_read_tx_target`` containment shape) — the completed
+        # fields and the reads after split still reach the store — with
+        # its critical-path accounting kept, so the unchanged gate still
+        # ends startup after three attempts.
         if self._has_runtime_capability("split") and self._can_poll(_SPLIT):
             ok, value = await self._safe_read(
                 "split",
                 self.radio.read_split(),
                 lambda: self.radio.read_split(),
                 paths=(_SPLIT,),
+                contain_timeout=True,
             )
             if ok:
                 observations.append(
@@ -1910,6 +1978,7 @@ class YaesuObservationAdapter:
         remake: Callable[[], Awaitable[_T]],
         *,
         paths: tuple[FieldPath, ...] = (),
+        contain_timeout: bool = False,
     ) -> tuple[bool, _T | None]:
         """Await one field read, classifying a FIELD-level CAT failure.
 
@@ -1947,11 +2016,23 @@ class YaesuObservationAdapter:
         toward that path's consecutive-unread tally (any answer resets it),
         so the 3rd unanswered read records the declared-command defect that
         ends startup. The re-raise keeps the reconnect path unchanged.
+
+        MOR-4456: ``contain_timeout`` serves a contained lane's unanswered
+        read as absent for the cycle — completed fields still reach the
+        store and the reads after this one still run — while the
+        critical-path accounting above is kept, so the unchanged gate
+        still ends startup after three attempts. Only timeouts are
+        contained — a timeout on the refusal re-read counts and contains
+        exactly like a first-read timeout; a refused or malformed read
+        keeps the defect record below, and transport failures still raise
+        untouched.
         """
         try:
             value = await read
         except CatTimeoutError as exc:
             self._count_critical_read_timeouts(label, exc, paths)
+            if contain_timeout:
+                return False, None
             raise
         except (CatParseError, CatFormatError, ValueError, KeyError) as exc:
             # ValueError covers _read_meter / int() malformed-frame failures;
@@ -1967,6 +2048,11 @@ class YaesuObservationAdapter:
         except CatCommandRejected:
             try:
                 value = await remake()
+            except CatTimeoutError as retry_exc:
+                self._count_critical_read_timeouts(label, retry_exc, paths)
+                if contain_timeout:
+                    return False, None
+                raise
             except CatCommandRejected as retry_exc:
                 if paths:
                     self._record_declared_defect(label, retry_exc, paths)
