@@ -493,9 +493,7 @@ def _parse_civ_step(
                 f"{where}.command {name!r} writes 0x{declared[0]:02X} "
                 "which is not on the check allow-list",
             )
-        return ProbeCheckStep(
-            kind=kind, command=name, data_hex=data_hex.lower()
-        )
+        return ProbeCheckStep(kind=kind, command=name, data_hex=data_hex.lower())
     if declared is None:
         raise _fail(filename, f"{where}.command {name!r} declares no CI-V bytes")
     return ProbeCheckStep(kind=kind, command=name)
