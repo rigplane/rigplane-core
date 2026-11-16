@@ -192,7 +192,7 @@ def test_cat_raw_write_with_second_command_is_refused(tmp_path: Path, rig: str) 
 
 @pytest.mark.parametrize("rig", CIV_RIGS)
 def test_civ_raw_write_with_a_second_frame_is_refused(tmp_path: Path, rig: str) -> None:
-    body = "0500007407" "00" "fdfefe94e01c0001"
+    body = "050000740700fdfefe94e01c0001"
     toml = _civ(_raw("raw_write", "body_hex", body), _restore(*SELECTED))
     _fails(tmp_path, rig, toml, "delimiter|one command|frame")
 
@@ -240,11 +240,12 @@ def test_never_listed_reads_fail_in_every_read_position(
 ) -> None:
     step = f'[[probe.checks.steps]]\nkind = "read"\ncommand = "{read}"'
     restore = _restore(("get_freq", "set_freq"))
+    safe = step.replace(read, "get_freq")
     _fails(tmp_path, rig, _civ(step, restore), where)
-    _fails(tmp_path, rig, _civ(_vfo_step("00"), restore, f'witness = ["{read}"]'), where)
+    _fails(tmp_path, rig, _civ(safe, restore, f'witness = ["{read}"]'), where)
     pre = f'[[probe.checks.preconditions]]\nread = "{read}"\nequals = "x"\n'
-    _fails(tmp_path, rig, _civ(step.replace(read, "get_freq"), restore, pre), where)
-    _fails(tmp_path, rig, _civ(_vfo_step("00"), _restore((read, "set_freq"))), where)
+    _fails(tmp_path, rig, _civ(safe, restore, pre), where)
+    _fails(tmp_path, rig, _civ(safe, _restore((read, "set_freq"))), where)
 
 
 def test_precondition_with_missing_command_fails(tmp_path: Path) -> None:
@@ -255,27 +256,37 @@ def test_precondition_with_missing_command_fails(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("rig", CIV_RIGS)
-def test_civ_raw_restore_matches_the_specific_setting(
-    tmp_path: Path, rig: str
-) -> None:
+def test_civ_raw_restore_matches_the_specific_setting(tmp_path: Path, rig: str) -> None:
     raw = _raw("raw_write", "body_hex", "14010000")
-    _fails(tmp_path, rig, _civ(raw, _restore(("get_rf_gain", "set_rf_gain"))), "restore")
+    _fails(
+        tmp_path, rig, _civ(raw, _restore(("get_rf_gain", "set_rf_gain"))), "restore"
+    )
     config = _load_with_probe(
         tmp_path, rig, _civ(raw, _restore(("get_af_level", "set_af_level")))
     )
     assert config.probe_checks[0].steps[0].body_hex == "14010000"
-    wrapped = _raw("raw_write", "body_hex", "29011401" "0000")
-    config = _load_with_probe(
-        tmp_path, rig, _civ(wrapped, _restore(("get_af_level", "set_af_level")))
+    wrapped = _raw("raw_write", "body_hex", "290114010000")
+    _fails(
+        tmp_path,
+        rig,
+        _civ(wrapped, _restore(("get_af_level", "set_af_level"))),
+        "restore",
     )
-    assert config.probe_checks
 
 
 def test_cat_raw_restore_matches_the_selector(tmp_path: Path) -> None:
     sub = _raw("raw_write", "line", "MD12;")
     main = _restore(("get_mode", "set_mode"))
     _fails(tmp_path, "ftx1.toml", _civ(sub, main), "restore")
-    _fails(tmp_path, "ftx1.toml", _civ(_raw("raw_write", "line", "FB007074000;"), _restore(("get_freq", "set_freq"))), "restore")
+    _fails(
+        tmp_path,
+        "ftx1.toml",
+        _civ(
+            _raw("raw_write", "line", "FB007074000;"),
+            _restore(("get_freq", "set_freq")),
+        ),
+        "restore",
+    )
     ok = _load_with_probe(
         tmp_path, "ftx1.toml", _civ(sub, _restore(("get_mode_sub", "set_mode_sub")))
     )
@@ -294,9 +305,7 @@ def test_non_ascii_cat_template_is_a_load_error(tmp_path: Path) -> None:
     config = load_rig(RIGS / "ftx1.toml")
     spec = CatCommandSpec(read="F\u00e9;", write="F\u00e9{x};", parse="F\u00e9{x};")
     commands = {**config.commands, "get_odd": spec, "set_odd": spec}
-    step = (
-        '[probe.checks.steps.values]\nx = "1"\n'
-    )
+    step = '[probe.checks.steps.values]\nx = "1"\n'
     pieces = {
         "read": '[[probe.checks.steps]]\nkind = "read"\ncommand = "get_odd"',
         "write": '[[probe.checks.steps]]\nkind = "write"\ncommand = "set_odd"\n' + step,
@@ -311,4 +320,6 @@ def test_non_ascii_cat_template_is_a_load_error(tmp_path: Path) -> None:
     ):
         raw = tomllib.loads(_civ(steps, restore))["probe"]
         with pytest.raises(RigLoadError, match="ASCII"):
-            parse_probe_checks("t.toml", raw, commands=commands, protocol_type="yaesu_cat")
+            parse_probe_checks(
+                "t.toml", raw, commands=commands, protocol_type="yaesu_cat"
+            )

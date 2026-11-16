@@ -227,11 +227,15 @@ freq = 7074000
 
 [[probe.checks.steps]]            # raw: line (CAT) or body_hex (CI-V)
 kind = "raw_write"
-line = "PR1;"
+line = "PR01;"
 
 [[probe.checks.restore]]          # originals, popped in reverse
 read = "get_freq"
 write = "set_freq"
+
+[[probe.checks.restore]]          # the raw_write's own setting
+read = "get_processor"
+write = "set_processor"
 # map = { "0" = "2" }             # optional read-form -> write-form values
 # rehearse = false                # optional: skip the no-op rehearsal
 ```
@@ -240,9 +244,14 @@ The loader rejects unknown keys. `id` is a slug; customer text (`title`,
 `explain_*`, `warnings`, `question`) is non-empty ASCII. A write names a
 profile write command, or a `raw_write`, whose verb is on the protocol
 allow-list and not on the never-list; a `raw_read` must avoid the never-list;
-a `raw_write` needs its own restore item for the same verb in the check; a
-check with write steps needs restore items. CI-V `07 A0`/`07 B1` writes
-additionally need two restore items on distinct reads.
+a `raw_write` needs its own restore item for the same setting and receiver (the restore write's
+prefix, e.g. `MD0` vs `MD1`, `14 01` vs `14 02`) in the check; a
+check with write steps needs restore items. CI-V `07 A0`/`07 B0`/`07 B1` writes
+additionally need restore writes for frequency and mode of both the selected
+and the unselected VFO. A CAT line is exactly one command ending in `;`; a CI-V
+body has no frame delimiters; a `29 <rx>` wrapper is judged by its inner
+command; every declared read (steps, preconditions, witness, restore) passes the
+read policy.
 
 ---
 

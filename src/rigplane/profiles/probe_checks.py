@@ -16,6 +16,7 @@ from collections.abc import Callable, Mapping
 from typing import Any, TypeVar
 
 from rigplane.commands import command_carries_sub
+from rigplane.commands._frame import unwrap_receiver_prefix
 from rigplane.commands.command_spec import CatCommandSpec, CivCommandSpec, CommandSpec
 
 __all__ = [
@@ -66,9 +67,19 @@ CIV_NEVER_ANY = _civ_pairs("28 16:46 16:47 22 12 08 09 0A 0B 0E 17 18 1C 1A:00")
 #: CI-V pairs refused only as writes: menu configuration, TX band, filters.
 CIV_NEVER_WRITE = _civ_pairs("1A:05 1A:01 1A:02 1E 1F")
 
-#: VFO exchange/equalize writes: allowed only when the check restores both
-#: VFOs (two restore items on distinct reads).
-CIV_CONDITIONAL_VFO = _civ_pairs("07:A0 07:B1")
+#: VFO equalize/exchange writes (A=B, swap, B=A): allowed only when the check
+#: restores frequency and mode of both VFOs (``CIV_VFO_RESTORE``).
+CIV_CONDITIONAL_VFO = _civ_pairs("07:A0 07:B0 07:B1")
+
+#: What "both VFOs restored" means: each group needs a restore write whose
+#: declared bytes start with one of its prefixes (selected/unselected freq,
+#: selected/unselected mode).
+CIV_VFO_RESTORE = (
+    (b"\x05", b"\x25\x00"),
+    (b"\x25\x01",),
+    (b"\x06", b"\x26\x00"),
+    (b"\x26\x01",),
+)
 
 _T = TypeVar("_T")
 _PROTOCOLS = ("yaesu_cat", "civ")
@@ -143,12 +154,43 @@ class ProbeCheck:
 
 
 def _civ_sub_of(body: bytes) -> int | None:
-    return body[1] if len(body) >= 2 and command_carries_sub(body[0]) else None
+    """The sub byte; ``0x07`` carries its VFO operation byte for policy only."""
+    carries = body[0] == 0x07 or command_carries_sub(body[0])
+    return body[1] if len(body) >= 2 and carries else None
 
 
-def both_vfos(restore: tuple[ProbeRestoreItem, ...]) -> bool:
-    """Whether a check restores both VFOs (two distinct restore reads)."""
-    return len({item.read for item in restore}) >= 2
+def _target(protocol: str, body: bytes) -> tuple[int | None, bytes]:
+    """What a write addresses: (receiver, bytes up to the value). CAT keeps the
+    template text before the first field (``MD0`` of ``MD0{mode};``)."""
+    if protocol == "yaesu_cat":
+        return None, body.split(b"{")[0].upper()
+    inner = unwrap_receiver_prefix(body)
+    return (body[1] if inner is not body else None), inner
+
+
+def _covers(protocol: str, restore: bytes, raw: bytes) -> bool:
+    """Whether a restore write's declared bytes cover the raw write's target."""
+    (rx_restore, head), (rx_raw, body) = (_target(protocol, x) for x in (restore, raw))
+    return rx_restore == rx_raw and body.startswith(head)
+
+
+def both_vfos(
+    restore: tuple[ProbeRestoreItem, ...],
+    commands: Mapping[str, CommandSpec],
+    protocol: str,
+) -> bool:
+    """Whether the restore writes put back frequency and mode of both VFOs."""
+    if protocol != "civ":
+        return False
+    writes = [
+        _target(protocol, bytes(spec.bytes))[1]
+        for item in restore
+        if isinstance(spec := commands.get(item.write), CivCommandSpec)
+    ]
+    return all(
+        any(w.startswith(prefix) for w in writes for prefix in group)
+        for group in CIV_VFO_RESTORE
+    )
 
 
 def command_key(protocol: str, body: bytes) -> str | int:
@@ -170,13 +212,18 @@ def policy_refusal(
     """
     if not body or protocol not in _PROTOCOLS:
         return "empty body" if not body else _NEED_PROTOCOL
-    key = command_key(protocol, body)
     if protocol == "yaesu_cat":
+        if not body.endswith(b";") or b";" in body[:-1]:
+            return "a CAT line must be exactly one command ending in ';'"
+        key = command_key(protocol, body)
         if key in YAESU_NEVER:
             return f"never-listed CAT verb {key!r}"
         if write and key not in YAESU_WRITE_ALLOW:
             return f"CAT verb {key!r} is not on the allow-list"
         return None
+    body = unwrap_receiver_prefix(body)
+    if not body or body[0] == 0x29 or 0xFD in body or b"\xfe\xfe" in body:
+        return "CI-V body must be one command without frame delimiters"
     sub = _civ_sub_of(body)
     keys = {(body[0], sub), (body[0], None)}
     name = f"0x{body[0]:02X}"
@@ -276,10 +323,18 @@ class _Loader:
             raise self.fail(f"{where} must not be empty")
         return body
 
+    def declared(self, where: str, name: str, part: str) -> bytes | None:
+        try:
+            return declared_body(self.commands.get(name), self.protocol, part)
+        except UnicodeEncodeError:
+            raise self.fail(f"{where} {name!r} template must be ASCII") from None
+
     def read_capable(self, where: str, name: str) -> None:
-        body = declared_body(self.commands.get(name), self.protocol)
+        """A declared concrete read that also passes the shared read policy."""
+        body = self.declared(where, name, "read")
         if body is None or (self.cat and b"{" in body):
             raise self.fail(f"{where} {name!r} declares no concrete read")
+        self.refuse(f"{where} {name!r}", body, write=False, vfos=False)
 
     def refuse(self, where: str, body: bytes, *, write: bool, vfos: bool) -> None:
         if why := policy_refusal(self.protocol, body, write=write, both_vfos=vfos):
@@ -288,7 +343,7 @@ class _Loader:
     def write_step(
         self, where: str, mapping: dict[str, Any], name: str, vfos: bool
     ) -> ProbeCheckStep:
-        template = declared_body(self.commands.get(name), self.protocol, "write")
+        template = self.declared(f"{where}.command", name, "write")
         if template is None:
             raise self.fail(f"{where}.command {name!r} declares no write")
         values = mapping.get("values", {})
@@ -374,34 +429,35 @@ class _Loader:
 
     def precondition(self, where: str, raw: object) -> ProbePrecondition:
         mapping = self.table(where, raw, frozenset({"read", "equals"}))
+        read = self.text(f"{where}.read", mapping.get("read"))
+        self.read_capable(f"{where}.read", read)
         return ProbePrecondition(
-            self.text(f"{where}.read", mapping.get("read")),
-            self.text(f"{where}.equals", mapping.get("equals")),
+            read, self.text(f"{where}.equals", mapping.get("equals"))
         )
 
     def validate(self, check: ProbeCheck) -> None:
         """Restore items obey the write policy; every raw write has its own
-        restore item (same verb or command) in the check."""
-        vfos = both_vfos(check.restore)
-        own: set[str | int] = set()
+        restore item for the same setting and receiver in the check."""
+        vfos = both_vfos(check.restore, self.commands, self.protocol)
+        writes: list[bytes] = []
         for item in check.restore:
             where = f"check {check.id!r} restore {item.write!r}"
             self.read_capable(f"check {check.id!r} restore", item.read)
-            write = declared_body(self.commands.get(item.write), self.protocol, "write")
+            write = self.declared(where, item.write, "write")
             if write is None:
                 raise self.fail(f"{where} declares no write")
             self.refuse(where, write, write=True, vfos=vfos)
-            read = declared_body(self.commands.get(item.read), self.protocol, "parse")
+            read = self.declared(where, item.read, "parse")
             if read is None:
                 raise self.fail(
                     f"check {check.id!r} restore {item.read!r} declares no parse"
                 )
-            own |= {command_key(self.protocol, write), command_key(self.protocol, read)}
+            writes.append(write)
         for step in (s for s in check.steps if s.kind == "raw_write"):
             raw = (
                 step.line.encode("ascii") if self.cat else bytes.fromhex(step.body_hex)
             )
-            if command_key(self.protocol, raw) not in own:
+            if not any(_covers(self.protocol, w, raw) for w in writes):
                 raise self.fail(
                     f"check {check.id!r} raw_write needs its own restore item"
                 )
@@ -421,7 +477,9 @@ class _Loader:
         steps = self.each(
             f"{where}.steps",
             mapping.get("steps", []),
-            lambda path, step: self.step(path, step, both_vfos(restore)),
+            lambda path, step: self.step(
+                path, step, both_vfos(restore, self.commands, self.protocol)
+            ),
             nonempty=True,
         )
         if not restore and any(step.kind in ("write", "raw_write") for step in steps):

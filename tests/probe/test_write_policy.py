@@ -7,6 +7,8 @@ and that no allow-list entry is also on the never-list.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 
 def test_yaesu_write_allow_list_is_exact() -> None:
     from rigplane.profiles.probe_checks import YAESU_WRITE_ALLOW
@@ -92,7 +94,7 @@ def test_cat_compound_or_unterminated_line_is_refused() -> None:
 
 
 def test_civ_body_with_frame_delimiters_is_refused() -> None:
-    tail = bytes.fromhex("0500007407" "00" "fdfefe94e01c0001")
+    tail = bytes.fromhex("050000740700fdfefe94e01c0001")
     assert _refusal("civ", tail, write=True)
     assert _refusal("civ", bytes.fromhex("03fd"), write=False)
     assert _refusal("civ", bytes.fromhex("03fefe"), write=False)
@@ -104,7 +106,7 @@ def test_civ_receiver_wrapper_is_unwrapped_before_the_never_list() -> None:
     assert _refusal("civ", bytes.fromhex("29002800"), write=True)
     assert _refusal("civ", bytes.fromhex("290029001c0001"), write=False)
     assert _refusal("civ", bytes.fromhex("29000300"), write=False) is None
-    assert _refusal("civ", bytes.fromhex("29011401" "0000"), write=True) is None
+    assert _refusal("civ", bytes.fromhex("290114010000"), write=True) is None
 
 
 def test_civ_vfo_operations_need_both_vfos_including_swap() -> None:
