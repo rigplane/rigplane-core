@@ -1191,7 +1191,7 @@ def _flap_span_once(sim):
     in-flight uncertainty while the desired value stays pending.
     """
     real_write = sim.write
-    armed = {"span": True}
+    armed = {"span": False}
 
     async def flaky_write(name, value, receiver):
         if name == "span" and armed["span"]:
@@ -1200,6 +1200,7 @@ def _flap_span_once(sim):
         await real_write(name, value, receiver)
 
     sim.write = flaky_write  # bound by _sim_session below, like sim.read
+    return armed
 
 
 @pytest.mark.parametrize("model", ["ic705", "ic7610"])
@@ -1216,7 +1217,7 @@ async def test_4565_center_resubscribe_matching_observed_span_writes_no_span(mod
     profile = load_rig(Path("rigs") / f"{model}.toml").to_profile()
     presets = profile.scope_span_presets_hz
     sim = _SimRadio(profile)
-    _flap_span_once(sim)
+    flap = _flap_span_once(sim)
     session = _sim_session(sim, profile)
     source = RadioScopeSource(profile, session)
     hub, _, Subscription = _sim_hub(source)
@@ -1226,6 +1227,7 @@ async def test_4565_center_resubscribe_matching_observed_span_writes_no_span(mod
     try:
         # Decoy write to a wider preset fails mid-write (link flap): the
         # span key stays uncertain with the wider preset still desired.
+        flap["span"] = True
         with pytest.raises(RuntimeError, match="link flap"):
             await source.set_view(FollowView("vfo", 900_000), 0)
         # Front panel moves the radio to that same wider preset behind
@@ -1261,7 +1263,7 @@ async def test_4565_scroll_c_gesture_matching_observed_span_writes_no_span(model
     profile = load_rig(Path("rigs") / f"{model}.toml").to_profile()
     presets = profile.scope_span_presets_hz
     sim = _SimRadio(profile)
-    _flap_span_once(sim)
+    flap = _flap_span_once(sim)
     session = _sim_session(sim, profile)
     source = RadioScopeSource(profile, session)
     hub, _, Subscription = _sim_hub(source)
@@ -1281,6 +1283,7 @@ async def test_4565_scroll_c_gesture_matching_observed_span_writes_no_span(model
         # Decoy gesture to a narrower preset fails mid-write; front
         # panel moves the radio to that same preset; the session
         # observes it while the key stays uncertain.
+        flap["span"] = True
         with pytest.raises(RuntimeError, match="link flap"):
             await source.set_view(FollowView("vfo", 50_000), 0)
         narrow_index = presets.index(25_000)
