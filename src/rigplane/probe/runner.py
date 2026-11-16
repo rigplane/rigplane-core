@@ -14,9 +14,9 @@ import asyncio
 import platform
 import time
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from rigplane import __version__ as _rigplane_version
 from rigplane.commands import parse_civ_frame
@@ -46,6 +46,9 @@ from rigplane.probe.readlist import (
     identity_requests,
     snapshot_names,
 )
+
+if TYPE_CHECKING:
+    from rigplane.probe.checks import ChecksRequest
 
 __all__ = ["Exchange", "ProbeRun", "run_probe"]
 
@@ -81,10 +84,12 @@ class Exchange(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class ProbeRun:
-    """The finished pass: the probe file plus why the run stopped early."""
+    """The finished pass: the probe file plus why the run stopped early;
+    ``exit_code`` 4 when a write check could not be put back or verified."""
 
     file: ProbeFile
     aborted: str | None
+    exit_code: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,6 +137,12 @@ class _SendGate:
             self.stopped = True
             self.stop_status = status
             self.stop_detail = detail
+
+    def resume(self) -> None:
+        """Let a write check's restore send after a silence stop; the stop
+        reason stays (a broken link stays stopped)."""
+        if self.stop_status == "silence_stop":
+            self.stopped, self.silent_run = False, 0
 
     def stop_transport(self, phase: str, error: BaseException) -> None:
         """Stop the run on a broken exchange, naming the phase and error."""
@@ -522,6 +533,7 @@ async def run_probe(
     items: list[ReadRequest] | None = None,
     siblings: Iterable[RigConfig] | None = None,
     progress: Callable[[int, int], None] | None = None,
+    checks: ChecksRequest | None = None,
 ) -> ProbeRun:
     """Run one read pass over *items* (default: the whole read plan).
 
@@ -532,7 +544,8 @@ async def run_probe(
     pass still stop the run. A transport break stops everything.
     Identity mismatch never stops. Declared-absent CI-V reads borrow
     bytes from *siblings*, the other shipped profiles; without them
-    those reads are recorded as skipped.
+    those reads are recorded as skipped. With *checks* (``--checks``) the
+    profile's write checks run after the pass on the same link.
     """
     protocol = config.protocol_type
     if protocol not in ("civ", "yaesu_cat"):
@@ -613,7 +626,22 @@ async def run_probe(
         termination=TerminationInfo(status=gate.stop_status, detail=gate.stop_detail),
         checks=(),
     )
-    return ProbeRun(file=file, aborted=aborted)
+    if checks is None or gate.stopped:
+        return ProbeRun(file=file, aborted=aborted)
+    from rigplane.probe.checks import run_checks
+
+    result = await run_checks(
+        config, checks, exchange=exchange, gap_s=gap_s, timeout_s=window, strays=strays
+    )
+    file = replace(
+        file,
+        mode="read+checks",
+        unsolicited=tuple(strays.rows),
+        checks=result.records,
+        termination=result.termination or file.termination,
+    )
+    detail = result.termination.detail if result.termination else None
+    return ProbeRun(file=file, aborted=detail, exit_code=result.exit_code)
 
 
 def _default_timeout(protocol: str) -> float:
