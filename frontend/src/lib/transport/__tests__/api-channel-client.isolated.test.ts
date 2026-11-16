@@ -6,6 +6,7 @@
  * server stack by the Python counterpart
  * `tests/test_api_channel_golden.py::test_golden_documents_replay_through_real_handlers`.
  */
+import { runInNewContext } from 'node:vm';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { FakeDataChannel, goldenFrame, goldenDocs } from './support/fake-datachannel';
 import { DataChannelTransport } from '../datachannel-transport';
@@ -50,6 +51,15 @@ function openApiChannel() {
   ch.simulateOpen();
   expect(ch.textFrames().map((f) => JSON.parse(f as string))).toEqual([goldenDocs.attach_api.decoded]);
   return { ch, api: createApiChannelFetch(transport) };
+}
+
+/** An ArrayBuffer of another realm: what a channel created in a parent window
+ * delivers when the UI runs inside an iframe (`instanceof ArrayBuffer` is false). */
+function foreignBuffer(bytes: Uint8Array): ArrayBuffer {
+  const Foreign = runInNewContext('ArrayBuffer') as ArrayBufferConstructor;
+  const out = new Foreign(bytes.length);
+  new Uint8Array(out).set(bytes);
+  return out;
 }
 
 describe('createApiChannelFetch', () => {
@@ -239,6 +249,20 @@ describe('createApiChannelFetch', () => {
       headers: { 'x-rigplane-controller': 'k' },
     });
     replay(ch, goldenDocs.api_ok.reply ?? [], 1);
+    expect((await pending).status).toBe(200);
+  });
+  it('handles binary frames and request bodies that come from another realm', async () => {
+    const { ch, api } = openApiChannel();
+    const body = foreignBuffer(utf8.encode('hello'));
+    expect(body instanceof ArrayBuffer).toBe(false);
+    const pending = api('/api/v1/controller', { method: 'POST', body });
+    await vi.advanceTimersByTimeAsync(0);
+    const sent = frames(ch);
+    expect(sent.map((f) => f.type)).toEqual([T.REQ_HEAD, T.REQ_BODY, T.END]);
+    expect(new TextDecoder().decode(sent[1].payload)).toBe('hello');
+    for (const f of goldenDocs.api_ok.reply ?? []) {
+      ch.simulateMessage(foreignBuffer(new Uint8Array(goldenFrame(f.hex, 1))));
+    }
     expect((await pending).status).toBe(200);
   });
 });
