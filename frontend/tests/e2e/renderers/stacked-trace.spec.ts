@@ -47,8 +47,16 @@ test('real GL: stacked history in depth, retune follows frequency, dense rows ke
     renderer.pushRow(dense, options, 6_000);
     renderer.draw(20_000);
     const needle = luma(100, 120), besideNeedle = luma(110, 120);
+    // Zoomed out 2x, a column spans about 82 bins: a one-bin carrier anywhere
+    // in the column must still be found (bin 2110 sits between the 64-bin
+    // windows the first version read). The row fills the middle half of the view.
+    const gap = new Uint8Array(8192).fill(10); gap[2110] = 80;
+    renderer.pushRow(gap, options, 21_000);
+    renderer.updateOptions({ spanHz: 200_000 });
+    renderer.draw(40_000);
+    const wide = luma(150, 100), besideWide = luma(140, 100);
     return { empty, animating, rested, carrier, floorAtCarrierHeight, sky, depth, depthAside,
-      movedTo, movedFrom, needle, besideNeedle, rows: renderer.historyRows, error: gl.getError() };
+      movedTo, movedFrom, needle, besideNeedle, wide, besideWide, rows: renderer.historyRows, error: gl.getError() };
   });
   expect(errors).toEqual([]);
   expect(result.error).toBe(0);
@@ -64,5 +72,7 @@ test('real GL: stacked history in depth, retune follows frequency, dense rows ke
   expect(result.movedFrom).toBeLessThan(result.movedTo - 60);
   expect(result.needle).toBeGreaterThan(120);
   expect(result.besideNeedle).toBeLessThan(result.needle - 60);
+  expect(result.wide).toBeGreaterThan(100);
+  expect(result.besideWide).toBeLessThan(result.wide - 60);
   await page.locator('#stacked-witness').screenshot({ path: info.outputPath('stacked.png') });
 });
