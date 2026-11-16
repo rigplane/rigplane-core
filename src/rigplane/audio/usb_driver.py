@@ -1392,6 +1392,9 @@ class UsbAudioDriver:
 
         self._selected_rx: UsbAudioDevice | None = None
         self._selection_generation = 0
+        # Counts stop_* calls so a start retrying after a device re-scan can
+        # see that teardown ran meanwhile (MOR-4338).
+        self._stop_epoch = 0
         self._selected_tx: UsbAudioDevice | None = None
 
         self._rx_stream: RxStream | None = None
@@ -2099,15 +2102,18 @@ class UsbAudioDriver:
         absent from, or at a stale position in, that list, so the start that
         follows its return fails until PortAudio is restarted (MOR-4338). The
         re-scan only runs when no stream is open anywhere in the process; a
-        failure that is not about devices (lifecycle, busy device, timeout)
-        is raised unchanged.
+        failure that is not about devices (already started, busy device,
+        timeout) is raised unchanged. A stop that arrives while the re-scan
+        runs ends the start: teardown must not be followed by a reopen.
         """
+        epoch = self._stop_epoch
         try:
             await start()
             return
         except (
             asyncio.CancelledError,
-            AudioDriverLifecycleError,
+            AudioAlreadyStartedError,
+            AudioCaptureOpenTimeoutError,
             AudioDeviceBusyError,
         ):
             raise
@@ -2125,8 +2131,8 @@ class UsbAudioDriver:
             except Exception:
                 logger.warning("usb-audio: device refresh failed", exc_info=True)
                 raise first from None
-            if not refreshed:
-                raise
+            if not refreshed or self._stop_epoch != epoch:
+                raise first
             logger.info(
                 "usb-audio: %s start failed (%s); retrying after a device re-scan",
                 direction.upper(),
@@ -2369,6 +2375,7 @@ class UsbAudioDriver:
         RX callback (frames drain); :meth:`stop_tx` owns the duplex
         teardown.
         """
+        self._stop_epoch += 1
         async with self._rx_lock:
             self._rx_callback = None
             if self._duplex_stream is not None and self.tx_running:
@@ -2670,6 +2677,7 @@ class UsbAudioDriver:
 
     async def stop_duplex(self) -> None:
         """Stop and close the full-duplex stream."""
+        self._stop_epoch += 1
         async with self._rx_lock, self._tx_lock:
             await self._close_owned_stream("_duplex_stream", direction="duplex")
 
@@ -2694,6 +2702,7 @@ class UsbAudioDriver:
         RX callback is still wired (:meth:`stop_rx` unwires it first).
         Separate-device (``full``) behaviour is unchanged.
         """
+        self._stop_epoch += 1
         async with self._rx_lock, self._tx_lock:
             duplex_stream = self._duplex_stream
             if duplex_stream is None:

@@ -778,10 +778,17 @@ class _OpenStreamCount:
         with self._lock:
             self._count = max(0, self._count - 1)
 
-    @property
-    def open_streams(self) -> int:
+    def restart_if_idle(self, restart: Callable[[], None]) -> bool:
+        """Run *restart* only while no stream is open, holding the lock.
+
+        A stream cannot take its lease while the restart runs, so none can
+        open (and then be closed by it) in between.
+        """
         with self._lock:
-            return self._count
+            if self._count:
+                return False
+            restart()
+            return True
 
 
 _open_streams = _OpenStreamCount()
@@ -2148,15 +2155,20 @@ class PortAudioBackend:
         nothing changes and ``False`` is returned.
         """
         sd, _ = self._ensure_deps()
-        if _open_streams.open_streams:
-            return False
         terminate = getattr(sd, "_terminate", None)
         initialize = getattr(sd, "_initialize", None)
         if not callable(terminate) or not callable(initialize):
             return False
-        terminate()
-        initialize()
-        return True
+
+        def restart() -> None:
+            try:
+                terminate()
+            except Exception:
+                # Already stopped: an earlier restart's initialize failed.
+                logger.debug("portaudio: terminate failed", exc_info=True)
+            initialize()
+
+        return _open_streams.restart_if_idle(restart)
 
     @property
     def sounddevice_module(self) -> Any | None:
