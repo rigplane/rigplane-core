@@ -1712,6 +1712,63 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     expect(exactCalls().at(-1)).toEqual(['set_freq', { freq: start + 2_500, receiver: 0 }]);
   });
 
+  it('MOR-4393: a delayed pre-release echo stays on the burst while its send is still pending', () => {
+    const vfo = makeVfoHandlers();
+    const start = observedFreq();
+    // A paced drag: two absolute moves, nothing acknowledged yet — the
+    // slow-link shape where the older send's association is unavailable.
+    vfo.onFreqChange(start + 1_000, 0, 'drag');
+    vfo.onFreqChange(start + 5_000, 0, 'drag');
+    vi.advanceTimersByTime(60); // paced flush emits start + 5_000
+    // Release lands an absolute jump; the still-live burst keeps its anchor.
+    vfo.onFreqChange(start + 10_000, 0);
+    // The delayed echo of the FIRST drag send arrives with the next +1 kHz
+    // step, read off observed (not burst-displayed) truth.
+    h.state = { ...h.state!, main: { ...h.state!.main!, freqHz: start + 1_000 }, fieldStatus: {
+      ...h.state!.fieldStatus, 'main.freqHz': {
+        ...freshStatus, storePath: 'main.freqHz', lastObservedMonotonic: 2,
+      },
+    } };
+    const count = h.sendCommand.mock.calls.length;
+    vfo.onMainFreqChange(start + 2_000);
+    // Hot continuation: no immediate cold re-emit of the stale echo + step;
+    // the paced flush lands on release + one step, never back on the echo.
+    expect(h.sendCommand).toHaveBeenCalledTimes(count);
+    vi.advanceTimersByTime(60);
+    expect(exactCalls().at(-1)).toEqual(['set_freq', { freq: start + 11_000, receiver: 0 }]);
+  });
+
+  it('MOR-4393: an absolute release after steps keeps earlier burst targets associable', () => {
+    const vfo = makeVfoHandlers();
+    const start = observedFreq();
+    // Two keyboard steps, both acknowledged at once (fast link): the burst
+    // carries no paced-drag flag, so the absolute release below cannot reuse
+    // the drag carve-out and starts a fresh association window on the head.
+    vfo.onMainFreqChange(start + 1_000);
+    vfo.onMainFreqChange(start + 1_000);
+    vi.advanceTimersByTime(60);
+    for (const command of getCommandLifecycles()) {
+      acknowledgeCommand(command.id, command.originalEpoch, command.originalEpoch);
+    }
+    // Absolute release (entry dialog / spectrum click shape).
+    vfo.onFreqChange(start + 50_000, 0);
+    // The delayed echo of the FIRST step send arrives with the next +1 kHz
+    // step, read off observed truth.
+    h.state = { ...h.state!, main: { ...h.state!.main!, freqHz: start + 1_000 }, fieldStatus: {
+      ...h.state!.fieldStatus, 'main.freqHz': {
+        ...freshStatus, storePath: 'main.freqHz', lastObservedMonotonic: 2,
+      },
+    } };
+    const count = h.sendCommand.mock.calls.length;
+    vfo.onMainFreqChange(start + 2_000);
+    // The echo matches an earlier target of the same live gesture, so the
+    // step accumulates onto the release target instead of cold-resetting
+    // onto the stale echo.
+    expect(h.sendCommand).toHaveBeenCalledTimes(count);
+    vi.advanceTimersByTime(60);
+    expect(exactCalls().at(-1)).toEqual(['set_freq', { freq: start + 51_000, receiver: 0 }]);
+  });
+
   it('spectrum jump followed by keyboard up before readback continues from the jump target', () => {
     h.state = { ...h.state!, main: { ...h.state!.main!, freqHz: 7_047_500 }, fieldStatus: {
       ...h.state!.fieldStatus, 'main.freqHz': {
