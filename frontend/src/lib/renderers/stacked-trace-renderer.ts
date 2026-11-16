@@ -160,6 +160,12 @@ export class StackedTraceRenderer {
   /** Stream time at which each ring slot was committed. */
   private readonly times: Float64Array;
   private levels = new Uint8Array(0);
+  /** Per-bin maximum of the frames since the last committed row, and their placement. */
+  private peak = new Uint8Array(0);
+  private readonly peakRow: StackedRowGeometry = {
+    startHz: 0, spanHz: 1, coverStartHz: 0, coverEndHz: 0, samples: 0, sampleOffset: 0, amplitudeMax: 80,
+  };
+  private peakValid = false;
   private maxTextureWidth = 0;
   private readonly rowView: StackedRowView = { scale: 1, offset: 0, coverLo: 0, coverHi: 1 };
   private readonly depth: StackedDepth = { baseline: 0, scale: 1, fog: 0 };
@@ -178,7 +184,6 @@ export class StackedTraceRenderer {
   private columns = 64;
   private head = -1;
   private count = 0;
-  private liveValid = false;
   // Stream time runs only while frames arrive (gaps count up to MAX_GAP_MS),
   // so a paused source keeps its picture instead of ageing out.
   private streamTime = 0;
@@ -280,12 +285,12 @@ export class StackedTraceRenderer {
   }
 
   /**
-   * Writes the row's samples and their pairwise-maximum levels into
-   * `levels` and returns the length used. A frame too dense for the device's
-   * texture width is first reduced by pairwise maxima, and `row.samples`
-   * becomes the reduced count.
+   * Writes the row's samples (`data` from `offset`) and their
+   * pairwise-maximum levels into `levels` and returns the length used. A
+   * frame too dense for the device's texture width is first reduced by
+   * pairwise maxima, and `row.samples` becomes the reduced count.
    */
-  private buildLevels(data: Uint8Array, row: StackedRowGeometry): number {
+  private buildLevels(data: Uint8Array, offset: number, row: StackedRowGeometry): number {
     const total = (count: number): number => {
       let sum = count;
       while (count > 1) { count = (count + 1) >> 1; sum += count; }
@@ -299,7 +304,7 @@ export class StackedTraceRenderer {
     // Reduce in the tail of the buffer, then lay the kept level at index 0.
     let length = row.samples, from = need - row.samples;
     if (reductions === 0) from = 0;
-    for (let i = 0; i < length; i++) levels[from + i] = data[row.sampleOffset + i];
+    for (let i = 0; i < length; i++) levels[from + i] = data[offset + i];
     for (let r = 0; r < reductions; r++) {
       const next = (length + 1) >> 1;
       for (let i = 0; i < next; i++) {
@@ -322,23 +327,49 @@ export class StackedTraceRenderer {
     return target;
   }
 
+  private upload(slot: number, data: Uint8Array, offset: number): void {
+    const length = this.buildLevels(data, offset, this.rows[slot]);
+    if (length > this.textureWidth) this.growTexture(length);
+    const gl = this.gl;
+    gl.bindTexture(gl.TEXTURE_2D, this.texture);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, slot, length, 1, gl.RED, gl.UNSIGNED_BYTE, this.levels, 0);
+  }
+
   /**
-   * Stores one delivered frame. Every frame replaces the live front trace;
-   * a history row is committed on a `rowPeriodMs` grid of stream time, and
-   * each row keeps its commit time, so depth is elapsed time: the stack
-   * spans `rows * rowPeriodMs` whatever the source frame rate.
+   * Folds a frame into the per-bin maximum since the last committed row.
+   * A frame with another placement or sample count starts the maximum anew.
+   */
+  private accumulate(data: Uint8Array, row: StackedRowGeometry): void {
+    const held = this.peakRow, samples = row.samples, offset = row.sampleOffset;
+    if (this.peak.length < samples) { this.peak = new Uint8Array(samples); this.peakValid = false; }
+    const peak = this.peak;
+    if (this.peakValid && held.samples === samples && held.startHz === row.startHz && held.spanHz === row.spanHz
+      && held.coverStartHz === row.coverStartHz && held.coverEndHz === row.coverEndHz
+      && held.amplitudeMax === row.amplitudeMax) {
+      for (let i = 0; i < samples; i++) { const value = data[offset + i]; if (value > peak[i]) peak[i] = value; }
+      return;
+    }
+    for (let i = 0; i < samples; i++) peak[i] = data[offset + i];
+    held.startHz = row.startHz; held.spanHz = row.spanHz; held.coverStartHz = row.coverStartHz;
+    held.coverEndHz = row.coverEndHz; held.samples = samples; held.amplitudeMax = row.amplitudeMax;
+    this.peakValid = true;
+  }
+
+  /**
+   * Stores one delivered frame. Every frame becomes the live front trace.
+   * A history row is committed on a `rowPeriodMs` grid of stream time and
+   * holds the per-bin maximum of the frames since the previous row, so a
+   * signal shorter than a row period still enters history. Each row keeps
+   * its commit time: depth is elapsed time, and the stack spans
+   * `rows * rowPeriodMs` whatever the source frame rate.
    * `frame` carries the options the frame was delivered under.
    */
   pushRow(data: Uint8Array, frame: WaterfallOptions, now: number): void {
     if (this.destroyed) return;
-    const live = (this.head + 1) % this.slots;
-    if (!stackedRowGeometry(frame, data.length, this.rows[live])) return;
-    const length = this.buildLevels(data, this.rows[live]);
-    if (length > this.textureWidth) this.growTexture(length);
-    const gl = this.gl;
-    gl.bindTexture(gl.TEXTURE_2D, this.texture);
-    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, live, length, 1, gl.RED, gl.UNSIGNED_BYTE, this.levels, 0);
-    this.liveValid = true;
+    let live = (this.head + 1) % this.slots;
+    const row = this.rows[live];
+    if (!stackedRowGeometry(frame, data.length, row)) return;
+    this.accumulate(data, row);
     if (this.pushed) {
       const gap = Math.min(Math.max(now - this.lastPushAt, 0), MAX_GAP_MS);
       this.streamTime += gap;
@@ -348,13 +379,21 @@ export class StackedTraceRenderer {
     this.lastPushAt = now;
     const period = this.settings.rowPeriodMs;
     if (this.count === 0 || this.streamTime >= this.nextCommitAt) {
+      const held = this.peakRow;
+      row.startHz = held.startHz; row.spanHz = held.spanHz; row.coverStartHz = held.coverStartHz;
+      row.coverEndHz = held.coverEndHz; row.samples = held.samples; row.amplitudeMax = held.amplitudeMax;
+      row.sampleOffset = 0;
+      this.upload(live, this.peak, 0);
+      this.peakValid = false;
       this.head = live;
       this.count = Math.min(this.settings.rows, this.count + 1);
       this.times[live] = this.streamTime;
       this.nextCommitAt += period;
       if (this.nextCommitAt <= this.streamTime) this.nextCommitAt = this.streamTime + period;
-      this.liveValid = false;
+      live = (this.head + 1) % this.slots;
+      stackedRowGeometry(frame, data.length, this.rows[live]);
     }
+    this.upload(live, data, this.rows[live].sampleOffset);
   }
 
   /** CSS-to-backing pixel ratio of the canvas; sizes the front inset and the line. */
@@ -437,7 +476,7 @@ export class StackedTraceRenderer {
       const depth = (clock - this.times[slot]) / span;
       if (depth < 1) this.drawRow(slot, depth, false);
     }
-    this.drawRow(this.liveValid ? (this.head + 1) % this.slots : this.head, 0, true);
+    this.drawRow((this.head + 1) % this.slots, 0, true);
     return phase < 1;
   }
 
