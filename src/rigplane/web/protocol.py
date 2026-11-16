@@ -44,6 +44,9 @@ __all__ = [
 class ScopeSourceCapabilities(TypedDict):
     scopeSources: list[SourceKind]
     scopeDefaultSourceId: SourceKind | None
+    # Full view widths in Hz (end - start), NOT radio presets: on CENTER a
+    # half-width (Icom CI-V) preset appears as twice its number. The client
+    # reads span_choices_hz[i] as the native width with no further ×2.
     span_choices_hz: list[int]
 
 

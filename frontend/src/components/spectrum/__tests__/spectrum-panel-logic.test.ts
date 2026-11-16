@@ -9,6 +9,7 @@ import {
   getDragInterval,
   isRadioOwnedWindowScope,
   freqFromPixel,
+  nativeWidthFromSpanChoice,
 } from '../spectrum-logic';
 import { isSpanApplicable } from '../spectrum-toolbar-logic';
 import fixture from '../../../../../contracts/scope-mode-families.json';
@@ -104,6 +105,24 @@ describe('isSpanApplicable', () => {
     for (const mode of [0, 1, 2, 3]) {
       expect(isSpanApplicable(mode)).toBe(family.includes(mode));
     }
+  });
+});
+
+describe('nativeWidthFromSpanChoice (MOR-4451)', () => {
+  // span_choices_hz states FULL view widths: the reader returns the published
+  // value unchanged — reintroducing a client ×2 breaks this test.
+  const viewWidths = [5000, 10000, 20000, 50000, 100000, 200000, 500000, 1000000];
+  it('returns the published view width unchanged', () => {
+    expect(nativeWidthFromSpanChoice(viewWidths, { status: 'known', value: 5 })).toBe(200000);
+    expect(nativeWidthFromSpanChoice(viewWidths, { status: 'known', value: 0 })).toBe(5000);
+  });
+  it('returns null for unknown/out-of-range/invalid readings', () => {
+    expect(nativeWidthFromSpanChoice(viewWidths, { status: 'stale', value: 5 })).toBeNull();
+    expect(nativeWidthFromSpanChoice(viewWidths, { status: 'known', value: 8 })).toBeNull();
+    expect(nativeWidthFromSpanChoice(viewWidths, { status: 'known', value: -1 })).toBeNull();
+    expect(nativeWidthFromSpanChoice([], { status: 'known', value: 0 })).toBeNull();
+    expect(nativeWidthFromSpanChoice(undefined, { status: 'known', value: 0 })).toBeNull();
+    expect(nativeWidthFromSpanChoice(viewWidths, undefined)).toBeNull();
   });
 });
 

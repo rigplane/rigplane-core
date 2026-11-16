@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { get } from 'svelte/store';
 import { scopeFixtures as fixtures } from './scope-wire-fixture';
 import { ScopeStream } from '../scope-stream';
 import type { ScopeMessageSource } from '../scope-stream';
@@ -185,5 +186,32 @@ it('advances selected geometry receipt only on a matching valid-session frame an
   stream.setSessionEpoch(8); input.emit(fixtures.audio); expect(stream.geometryReceipt).toBe(1);
   const next = vi.fn(); stream.subscribeNextGeometry(stream.geometryReceipt, next);
   input.emit(); expect(stream.geometryReceipt).toBe(5); expect(next).toHaveBeenCalledTimes(1);
+  stream.dispose();
+});
+
+it('exposes selected cached pixel presence through grants, health ticks and pixel gaps', () => {
+  const input = source(); const stream = new ScopeStream(input.port, context, 'borrowed');
+  stream.setSlotFilter(scopeSlotKey('scope-1', 0));
+  expect(stream.lastFrameHasPixels).toBe(false);
+  input.emit(); input.emit();
+  expect(stream.lastFrameHasPixels).toBe(true);
+  stream.handleMessage({ type: 'granted', sourceId: 'scope-1', receiver: 0,
+    view: { startHz: 14_000_000, endHz: 14_050_000 },
+    coverage: { startHz: 14_000_000, endHz: 14_050_000 }, width: 3, fps: 20 });
+  expect(get(stream.granted)).toMatchObject({ type: 'granted', sourceId: 'scope-1', receiver: 0,
+    view: { startHz: 14_000_000, endHz: 14_050_000 },
+    coverage: { startHz: 14_000_000, endHz: 14_050_000 }, width: 3, fps: 20 });
+  const grantGeometry = get(stream.geometry);
+  expect(grantGeometry).toMatchObject({ view: { startHz: 14_000_000, endHz: 14_050_000 },
+    coverage: { startHz: 14_000_000, endHz: 14_050_000 }, hasPixels: false });
+  expect(grantGeometry).not.toHaveProperty('pixels');
+  stream.setFreshness('fresh');
+  expect(stream.lastFrameHasPixels).toBe(true);
+  input.emit(fixtures.outOfRange);
+  expect(stream.lastFrameHasPixels).toBe(true); // Unselected SUB cannot retire MAIN.
+  stream.setSlotFilter(scopeSlotKey('scope-1', 1));
+  input.emit(fixtures.outOfRange);
+  expect(stream.lastFrameHasPixels).toBe(false);
+  stream.reset(); expect(stream.lastFrameHasPixels).toBe(false);
   stream.dispose();
 });

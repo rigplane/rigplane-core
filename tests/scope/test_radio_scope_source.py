@@ -124,6 +124,36 @@ async def test_full_width_semantics_profile_grants_half_of_each_preset(tmp_path)
     assert writer.writes[-1] == (14_100_000, 10000, 0)
 
 
+@pytest.mark.parametrize("model", ["ic7300", "ic705"])
+async def test_streamed_scope_mode_change_is_reported_once_per_switch(model):
+    """MOR-4451: the frame stream is where a scope-mode switch becomes
+    visible (UI click or front panel); the source reports each change with
+    the receiver, after the first frame of the new mode was handed on."""
+    changes = []
+    frames = []
+    source = RadioScopeSource(
+        load_rig(Path("rigs") / f"{model}.toml").to_profile(),
+        Writer(),
+        on_mode_change=lambda receiver, mode: changes.append(
+            (receiver, mode, len(frames))
+        ),
+    )
+    source.on_frame(frames.append)
+    await source.start()
+    source.feed_frame(ScopeFrame(0, 0, 14_050_000, 14_150_000, bytes(475), False))
+    source.feed_frame(ScopeFrame(0, 0, 14_050_000, 14_150_000, bytes(475), False))
+    assert changes == []  # first frame and an unchanged mode are no change
+    source.feed_frame(ScopeFrame(0, 1, 14_000_000, 14_100_000, bytes(475), False))
+    source.feed_frame(ScopeFrame(0, 1, 14_000_000, 14_100_000, bytes(475), False))
+    assert changes == [(0, 1, 3)]
+    source.feed_frame(ScopeFrame(0, 0, 14_050_000, 14_150_000, bytes(475), False))
+    assert changes == [(0, 1, 3), (0, 0, 5)]
+    await source.stop()
+    await source.start()
+    source.feed_frame(ScopeFrame(0, 1, 14_000_000, 14_100_000, bytes(475), False))
+    assert len(changes) == 2  # a new stream starts without a remembered mode
+
+
 async def test_native_frame_and_unsubscribe():
     source = RadioScopeSource(load_rig(Path("rigs/ic7300.toml")).to_profile(), Writer())
     frames = []

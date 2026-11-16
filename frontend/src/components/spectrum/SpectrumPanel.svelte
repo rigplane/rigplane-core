@@ -25,6 +25,7 @@
     getFilterHandlers,
     getFilterWidthCommandLifecycle,
     getPendingFrequencyHz,
+    hasPendingScopeModeChange,
     getTuningBurstFrequencyHz,
     isTuningBurstObservation,
     getVfoHandlers,
@@ -35,13 +36,14 @@
     toSpectrumAuthority,
     type SpectrumAuthority,
   } from '../../lib/runtime/adapters/scope-adapter';
+  import type { ScopePassbandDiagnostics } from '../../lib/runtime/adapters/scope-passband-display';
   import type { ManagedScopeRegion } from '../../lib/runtime/adapters/scope-display-projection';
   import type { ScopeFrame, ScopeGeometry } from '../../lib/runtime/scope-frame';
   import { projectScopeCoverage, type ScopeCoverageProjection } from '../../lib/runtime/scope-frame';
   import { scopeSlotKey } from '../../lib/runtime/adapters/scope-adapter';
   import {
-    createScopeView, panView, viewCenterHz, zoomView, scopeSubscription, scopeSubscriptionSurface,
-    type View,
+    createScopeView, confirmedFollowLegView, panView, viewCenterHz, zoomView, scopeSubscription, scopeSubscriptionSurface,
+    type View, type ScopeGranted,
   } from '../../lib/runtime/scope-view';
   import { ScopeRenderScheduler } from '../../lib/canvas/scope-render-scheduler';
   import { CanvasSurface } from '../../lib/canvas/canvas-surface.svelte';
@@ -64,6 +66,8 @@
     formatFreqOffset,
     deriveFreqTicks,
     isRadioOwnedWindowScope as isRadioOwnedWindowScopeFn,
+    isSpanDisabledScope,
+    nativeWidthFromSpanChoice,
   } from './spectrum-logic';
   import { PanoramaViewportCenter } from './panorama-motion';
   import { hasCommandModifier } from '../../components-v2/layout/keyboard-map';
@@ -166,6 +170,7 @@
   // MOR-4270: the stream's geometry store is the one reactive scope surface;
   // pixels reach the renderers through the stream sinks, never `$state`.
   let frameGeometry = $state.raw<ScopeGeometry | null>(null);
+  let frameGrant = $state.raw<ScopeGranted | null>(null);
   // One availability fact for overlays, gestures and the trace: frames for
   // THIS display are flowing (transport + liveness + qualified geometry).
   let scopeConnected = $derived((audioFft
@@ -302,7 +307,12 @@
     }
   }
 
-  onDestroy(() => { unsubscribeTrace?.(); trace?.dispose(); panoramaScheduler.dispose(); });
+  onDestroy(() => {
+    unsubscribeTrace?.();
+    trace?.dispose();
+    panoramaScheduler.dispose();
+    if (zoomFixedHintTimer !== null) clearTimeout(zoomFixedHintTimer);
+  });
   // RF geometry stays wire-owned. AF axes use observed carrier/polarity;
   // the legacy symmetric fallback is presentation-only.
   let audioProjection = $derived(audioFft ? audioScopeProjection(displayGeometry, runtime.state) : null);
@@ -527,7 +537,7 @@
     ? scopeRegion.passband.tuple : null);
   let displayStale = $derived(displayTuple !== null && scopeRegion?.passband.state === 'stale');
   // MOR-2464: in CENTER the anchor stays at 50%, the panorama glides under it.
-  let explicitView = $state(false);
+  let explicitView = $state<View | null>(null);
   let requestedView = $state.raw<View | null>(null);
   let proportionalIndicator = $derived(isRadioOwnedWindow || requestedView !== null);
   let displayFrequencyHz = $derived(managed ? displayTuple?.frequencyHz : spectrumAuthority?.frequencyHz);
@@ -703,6 +713,54 @@
   // the drag writes `gesture`, the tuning legs write their own. Pan/zoom
   // presets edit the View directly (display-only until R4 grants views).
   let followSpanHz = $state<number | null>(null);
+  // MOR-4451: the last OBSERVED native width, for the adoption clamp —
+  // only a narrowing of the radio's own native window can be an external
+  // change to adopt, never a shrinking frame intersection.
+  let lastNativeWidthHz: number | null = null;
+  // MOR-4451 defect 1: the ONE adoption rule, shared by the follow
+  // adoption in the coordination effect below and the hatch input. The
+  // adoption write lands in a post-render $effect while the hatch DOM
+  // commits in the render phase, so the hatch input must predict the
+  // adoption with this same rule instead of reading the still-stale
+  // follow width — otherwise every frames-first adoption commits
+  // hatch-then-clean (two DOM commits the rAF sampler can paint
+  // between). Returns the adopted width, or null when this tick adopts
+  // nothing. Pure: no latch update, so the effect and the hatch derived
+  // always agree in the same tick. (`lastNativeWidthHz` is intentionally
+  // a plain read here: it is only ever assigned the current native
+  // width, so whenever it differs all other inputs already changed and
+  // re-ran this rule's readers.)
+  function adoptedFollowWidth(input: {
+    follow: number | null;
+    geometry: ScopeGeometry | null;
+    grant: ScopeGranted | null;
+    nativeWidthHz: number | null;
+    lastNativeWidthHz: number | null;
+    fixed: boolean;
+    changingMode: boolean;
+    requestedView: View | null;
+  }): number | null {
+    const { follow, geometry, grant, nativeWidthHz, lastNativeWidthHz, fixed, changingMode, requestedView } = input;
+    // A late response to an earlier zoom cannot adopt over newer intent:
+    // the grant still answers the current follow request when its width
+    // matches the requested follow width. The frame view is NOT part of
+    // the guard — the server clips follow frames to a narrowed native
+    // before the span-index readback arrives, so demanding frame view
+    // width == follow width misses the adoption forever (MOR-4451).
+    const currentGrant = follow !== null && geometry !== null && grant !== null
+      && geometry.receiver === grant.receiver
+      && Math.abs(grant.view.endHz - grant.view.startHz - follow) < 1;
+    // The 1 Hz epsilon keeps the clamp from firing on wire/view
+    // reconstruction jitter (a freq±span/2 window rebuilds 1 ulp off
+    // the requested width); real adoptions are thousands of times
+    // larger.
+    if (!fixed && !changingMode && requestedView === null && currentGrant && nativeWidthHz !== null
+      && follow !== null && lastNativeWidthHz !== null
+      && nativeWidthHz < lastNativeWidthHz - 1 && follow > nativeWidthHz + 1) {
+      return nativeWidthHz;
+    }
+    return null;
+  }
   const scopeView = createScopeView({ startHz: 0, endHz: 0 });
   let coordinatingView = false;
   let effectiveView = $state.raw<View>({ startHz: 0, endHz: 0 });
@@ -713,19 +771,47 @@
     });
     return stop;
   });
+  // MOR-4451: one source of truth for the radio's NATIVE width in Hz, shared
+  // by the follow adoption below and the hatch input. span_choices_hz[i] is
+  // already the FULL view width (CENTER: 2 × the radio's ±half-width
+  // preset — the server publishes view widths since #4565), so the observed
+  // scope-span index names the native width with no client ×2. The cached
+  // grant coverage is only a subscription-time intersection the server
+  // republishes on pixel-width changes — after a front-panel span reduction
+  // it still claims the old width — so it is the fallback only while the
+  // observed span is unknown. Unknown both ways keeps today's hatch, as before.
+  let nativeScopeWidthHz = $derived.by(() => {
+    if (!audioFft && !sdrSource) {
+      const widthHz = nativeWidthFromSpanChoice(
+        runtime.caps?.span_choices_hz, spectrumAuthority?.scopeControls?.span.reading);
+      if (widthHz !== null) return widthHz;
+    }
+    if (frameGrant !== null && displayGeometry !== null
+      && frameGrant.receiver === displayGeometry.receiver
+      && Math.abs(frameGrant.view.endHz - frameGrant.view.startHz
+        - (effectiveView.endHz - effectiveView.startHz)) < 1
+      && frameGrant.coverage !== null) {
+      return frameGrant.coverage.endHz - frameGrant.coverage.startHz;
+    }
+    return null;
+  });
   $effect(() => {
     const geometry = frameGeometry;
+    const grant = frameGrant;
     const frequency = displayFrequencyHz;
     const authority = spectrumAuthority;
     const nativeRadio = !audioFft && !sdrSource;
     const center = scopeControlsMode !== null ? !isRadioOwnedWindowScopeFn(scopeControlsMode) : null;
     const sessionEpoch = runtime.controlSession.epoch;
-    const radioOwned = isRadioOwnedWindow;
+    const fixed = isRadioOwnedWindow;
+    const changingMode = authority !== null && hasPendingScopeModeChange(authority.providerGeneration, sessionEpoch);
     const follow = followSpanHz;
     const requested = requestedView;
-    const active = panoramaActive;
-    const burst = active && requested === null && authority !== null ? getTuningBurstFrequencyHz(authority.receiver) : null;
-    const pending = active && requested === null && authority !== null ? getPendingFrequencyHz(authority.receiver) : null;
+    const fixedCrop = fixed && requested !== null && (explicitView === null
+      || requested.startHz !== explicitView.startHz || requested.endHz !== explicitView.endHz);
+    const active = (panoramaActive && requested === null) || fixedCrop;
+    const burst = active && authority !== null ? getTuningBurstFrequencyHz(authority.receiver) : null;
+    const pending = active && authority !== null ? getPendingFrequencyHz(authority.receiver) : null;
     const key = panoramaResetKey;
     untrack(() => {
       coordinatingView = true;
@@ -738,16 +824,65 @@
             sessionEpoch,
           } : null;
         }
+        // MOR-4387: the view follows the VFO unless the user explicitly
+        // pinned a window. A pinned band/segment preset stops serving its
+        // purpose the moment the confirmed VFO lies outside it — every path
+        // that moves the VFO beyond the edge (arrow/wheel/digit tuning,
+        // click-to-tune, band change, another client) needs follow back, so
+        // the pin retires on POSITION, not on which action moved it. The
+        // confirmed VFO is the authority frequency, falling back to the
+        // managed tuple. CENTER scope only: in FIX the radio itself owns
+        // the fixed window.
+        const confirmedHz = authority?.frequencyHz ?? frequency;
+        if (!fixed && requested !== null && (explicitView === null
+          || requested.startHz !== explicitView.startHz || requested.endHz !== explicitView.endHz)) {
+          // MOR-4392: a non-explicit requested view in CENTER can only be a
+          // FIX zoom crop outliving its excursion — clear it so the follow
+          // view (and the CENTER marker reference) resumes at once.
+          requestedView = null;
+          explicitView = null;
+        }
+        if (!fixed && requestedView !== null && confirmedHz !== null && confirmedHz !== undefined
+          && (confirmedHz < requestedView.startHz || confirmedHz > requestedView.endHz)) {
+          requestedView = null;
+          explicitView = null;
+        }
         if (geometry && geometry.view.endHz > geometry.view.startHz) {
-          const span = follow ?? geometry.view.endHz - geometry.view.startHz;
-          // #4565: a radio-owned window (FIX/SCROLL-C/SCROLL-F) is always the
-          // reported geometry — a span gesture's follow width never re-centres it.
-          scopeView.set('confirmed', requested ?? (radioOwned || frequency === null || frequency === undefined ? geometry.view
-            : { startHz: frequency - span / 2, endHz: frequency + span / 2 }));
+          // MOR-4451: adopt external NATIVE-width changes without a
+          // write-back. The frame coverage is the intersection of the delayed
+          // pixels with the requested view — during tuning lag it shrinks
+          // (100→90 kHz) while the radio's native window is unchanged, so an
+          // intersection shrink must never adopt. Only an OBSERVED narrowing
+          // of the native width below the follow width clamps it to the new
+          // native width; anything else keeps it. Only a narrowing can be
+          // adoption — our own zoom/step gestures ask the server for a
+          // covering preset, never for less than requested.
+          const nativeWidthHz = nativeScopeWidthHz;
+          const adopted = adoptedFollowWidth({ follow, geometry, grant, nativeWidthHz,
+            lastNativeWidthHz, fixed, changingMode, requestedView });
+          if (adopted !== null) followSpanHz = adopted;
+          lastNativeWidthHz = nativeWidthHz;
+          const span = followSpanHz ?? (geometry.view.endHz - geometry.view.startHz);
+          // MOR-4392: in FIX the displayed window is the fixed window (or a
+          // requested crop inside it) — a leftover CENTER follow width must
+          // never replace it, or marker/passband/click math runs against a
+          // window that is not the one drawn.
+          const crop = fixedCrop && confirmedHz !== null && confirmedHz !== undefined
+            ? panView(requested!, confirmedHz - viewCenterHz(requested!), geometry.view) : requestedView;
+          // MOR-4451: the follow view's confirmed leg centres on the
+          // radio's CONFIRMED frequency (the spectrum authority), not the
+          // passband tuple's frequency — the tuple deliberately holds the
+          // last proven frequency (stale/held for seconds during a burst),
+          // so centring on it retargets the glide backwards every time the
+          // pending leg clears. Marker/overlay keep using the tuple.
+          scopeView.set('confirmed', confirmedFollowLegView({
+            fixed, authorityFrequencyHz: authority?.frequencyHz, displayFrequencyHz: frequency,
+            spanHz: span, geometryView: geometry.view, crop,
+          }));
         }
         const confirmed = scopeView.confirmed;
         const panFrom = (hz: number | null) => hz === null || confirmed.endHz <= confirmed.startHz
-          ? null : panView(confirmed, hz - viewCenterHz(confirmed));
+          ? null : panView(confirmed, hz - viewCenterHz(confirmed), fixedCrop ? geometry?.view : undefined);
         scopeView.set('tuningBurst', panFrom(burst));
         scopeView.set('pending', panFrom(pending));
       } finally {
@@ -815,8 +950,39 @@
   let spectrumGeometryKey = $derived(`${spectrumAuthority?.providerGeneration ?? 'x'}|${displayGeometry?.receiver ?? 'legacy'}|${startFreq}|${endFreq}|${frameGeometry?.width ?? 0}|${audioProjection?.zero ?? 'legacy'}|${audioProjection?.perHz ?? 0}`);
   // MOR-4270: the coverage projection hatches the requested view's
   // uncovered columns with the typed reason — never stretched pixels.
+  // MOR-4451: the hatch reads the same native width as the follow adoption
+  // above (the reviewer's P2: the cached grant coverage is a stale
+  // subscription-time intersection, not the current native window). Only the
+  // span feeds the gap decision, so the width rides a span-only view here.
+  // An uncovered column against an as-wide-or-wider native is a transient lag
+  // (plain background, the waterfall's treatment), never a hatch block; only
+  // a truly narrower native hatches.
+  let nativeScopeCoverage = $derived(nativeScopeWidthHz !== null
+    ? { startHz: 0, endHz: nativeScopeWidthHz } : null);
+  // MOR-4451 defect 1: the hatch input predicts the adoption with the
+  // same rule the coordination effect applies, so the hatch decision for
+  // the adopted view uses the adopted width in the same tick the readback
+  // arrives — not the still-stale follow width the post-render effect has
+  // yet to write. Null (no adoption this tick) keeps the displayed view,
+  // so every other tick is byte-identical to before.
+  let adoptedFollowSpanHz = $derived(adoptedFollowWidth({
+    follow: followSpanHz,
+    geometry: frameGeometry,
+    grant: frameGrant,
+    nativeWidthHz: nativeScopeWidthHz,
+    lastNativeWidthHz,
+    fixed: isRadioOwnedWindow,
+    changingMode: spectrumAuthority !== null
+      && hasPendingScopeModeChange(spectrumAuthority.providerGeneration, runtime.controlSession.epoch),
+    requestedView,
+  }));
+  let hatchRequestedView = $derived.by(() => {
+    if (adoptedFollowSpanHz === null || effectiveView.endHz <= effectiveView.startHz) return effectiveView;
+    const centerHz = viewCenterHz(effectiveView);
+    return { startHz: centerHz - adoptedFollowSpanHz / 2, endHz: centerHz + adoptedFollowSpanHz / 2 };
+  });
   let coverageProjection = $derived(!audioFft && displayGeometry !== null && scopeDemandOn
-    ? projectScopeCoverage(displayGeometry, effectiveView) : null);
+    ? projectScopeCoverage(displayGeometry, hatchRequestedView, nativeScopeCoverage) : null);
   let coverageHatched = $derived(coverageProjection?.hatched.filter(
     (range) => range.end - range.start > 0.001) ?? []);
   function hatchReasonText(reason: ScopeCoverageProjection['hatched'][number]['reason']): string {
@@ -832,8 +998,12 @@
   });
   let scopeSubscriptionValue = $derived.by(() => {
     const stream = runtime.scope.stream(audioFft ? 'audio_fft' : 'hardware');
-    const view = !audioFft && requestedView !== null
-      ? requestedView
+    // MOR-4392: in FIX the zoom crop stays client-side — the subscription
+    // must not carry it: an absolute view in FIX makes the server rewrite
+    // the radio's fixed edges (a radio write for a pure display crop). An
+    // explicit band/segment preset keeps the absolute subscription — there
+    // the fixed-window change IS the user's intent.
+    const view = !audioFft && explicitView !== null ? explicitView
       : { follow: 'vfo' as const, spanHz: followSpanHz ?? (audioFft ? 48000 : 100000) };
     const facts = spectrumFacts;
     return scopeSubscription({
@@ -856,14 +1026,24 @@
           ? geometry.view.endHz - geometry.view.startHz : null;
       },
       step(delta: -1 | 1): void {
-        const current = requestedView !== null ? requestedView.endHz - requestedView.startHz
-          : followSpanHz ?? control.spanHz;
+        // MOR-4392 (coordinator ruling 2026-11-10): SPAN applies in CENTER and
+        // SCROLL-C. In FIX/SCROLL-F the edges are wire-owned and a step writes
+        // nothing, so it is refused outright (the keys render disabled).
+        // MOR-4451: SCROLL-C owns its window but still accepts SPAN.
+        if (isSpanDisabledScope(scopeMode)) return;
+        // The only radio-owned scope the guard above lets through is
+        // SCROLL-C: its SPAN steps from the OBSERVED radio window width, never
+        // from a client ZOOM crop (which would re-pick the existing width and
+        // write nothing). CENTER keeps its crop/follow base.
+        const observedHz = isRadioOwnedWindow ? nativeScopeWidthHz : null;
+        const current = observedHz ?? (requestedView !== null ? requestedView.endHz - requestedView.startHz
+          : followSpanHz ?? control.spanHz);
         const choices = runtime.caps?.span_choices_hz ?? [];
         if (current === null) return;
         const next = delta > 0 ? choices.find(span => span > current)
           : [...choices].reverse().find(span => span < current);
         if (next === undefined) return;
-        explicitView = false;
+        explicitView = null;
         requestedView = null;
         followSpanHz = next;
         scopeView.set('gesture', null);
@@ -882,23 +1062,111 @@
   });
   function applyScopePreset(preset: ScopePreset): void {
     if (preset.kind === 'follow') {
-      explicitView = false;
+      explicitView = null;
       requestedView = null;
       followSpanHz = 'spanHz' in preset.view ? preset.view.spanHz : spanHz;
       scopeView.set('gesture', null);
       return;
     }
     if ('startHz' in preset.view && 'endHz' in preset.view) {
-      followSpanHz = null;
-      explicitView = true;
       requestedView = { startHz: preset.view.startHz, endHz: preset.view.endHz };
+      explicitView = requestedView;
       scopeView.set('gesture', null);
     }
   }
+  // MOR-4392: ZOOM is a client crop of the requested visible width, never a
+  // bare radio SPAN write. Below the narrowest preset the crop keeps going
+  // down to a floor of a few native bins — fewer bins than that interpolate
+  // to a single smeared peak with no shape left to inspect.
+  const ZOOM_FLOOR_BINS = 4;
+
+  // MOR-4387 (owner build-4): the ZOOM−-at-fixed-edges no-op explains
+  // itself — one transient chip with the reason and the one-tap CTR return
+  // (the same vocabulary as the out-of-range overlay's CTR button). The
+  // chip also dies on its own after a few seconds; leaving FIX hides it
+  // via the render condition.
+  let zoomFixedHint = $state(false);
+  let zoomFixedHintTimer: ReturnType<typeof setTimeout> | null = null;
+  function showZoomFixedHint(): void {
+    zoomFixedHint = true;
+    if (zoomFixedHintTimer !== null) clearTimeout(zoomFixedHintTimer);
+    zoomFixedHintTimer = setTimeout(() => { zoomFixedHint = false; zoomFixedHintTimer = null; }, 6000);
+  }
+
+  // MOR-4451: the declared zoom floor in Hz — a few bins of the NARROWEST
+  // span choice. Below it the radio cannot deliver more bins, and the wire
+  // view may already be the clipped crop (never the native coverage) on
+  // either grant contract, so the narrowest published choice is the honest
+  // source. Shared by the CENTER and FIX zoom branches; 0 while unknown.
+  function zoomFloorHz(): number {
+    const geometry = frameGeometry;
+    const choices = runtime.caps?.span_choices_hz;
+    const narrowestHz = choices?.length ? Math.min(...choices)
+      : (geometry !== null ? geometry.view.endHz - geometry.view.startHz : 0);
+    const binHz = geometry !== null && geometry.width > 0 && narrowestHz > 0
+      ? narrowestHz / geometry.width : 0;
+    return binHz > 0 ? ZOOM_FLOOR_BINS * binHz : 0;
+  }
+
   function nudgeScopeZoom(factor: number): void {
     if (effectiveView.endHz <= effectiveView.startHz) return;
-    followSpanHz = null;
-    requestedView = zoomView(effectiveView, factor);
+    if (isRadioOwnedWindow) {
+      // FIX scope: the window is wire-owned. Zoom crops inside it and clips
+      // to the fixed edges — a crop that reaches the edges is no crop. The
+      // CENTER requested width (followSpanHz) is not touched here, so it
+      // never leaks into FIX and survives the excursion.
+      const geometry = frameGeometry;
+      if (!geometry || geometry.view.endHz <= geometry.view.startHz) return;
+      const zoomed = zoomView(effectiveView, factor);
+      const frequency = spectrumAuthority?.frequencyHz ?? displayFrequencyHz ?? viewCenterHz(effectiveView);
+      const clipped = panView(zoomed, frequency - viewCenterHz(zoomed), geometry.view);
+      // MOR-4451: the declared floor binds FIX crops too — a crop narrower
+      // than the floor recentres a floor-wide window on the same centre
+      // (still clipped to the fixed edges). Reaching the floor is an exact
+      // no-op: without it repeated ZOOM+ collapses the crop until float
+      // rounding equalises both edges and ZOOM− sticks.
+      let crop = clipped;
+      const floorHz = zoomFloorHz();
+      if (floorHz > 0 && clipped.endHz - clipped.startHz < floorHz) {
+        const centerHz = viewCenterHz(clipped);
+        crop = panView({ startHz: centerHz - floorHz / 2, endHz: centerHz + floorHz / 2 }, 0, geometry.view);
+      }
+      const coversWindow = crop.startHz <= geometry.view.startHz && crop.endHz >= geometry.view.endHz;
+      // MOR-4387 (owner build-4): ZOOM− already AT the fixed edges changes
+      // nothing — say so instead of reading as "ZOOM stopped working". The
+      // hint fires before the exact no-op return below: it is the press's
+      // only observable effect on a settled window.
+      if (factor > 1 && coversWindow && requestedView === null) showZoomFixedHint();
+      const nextCrop = coversWindow && explicitView === null ? null : crop;
+      if (nextCrop === null ? requestedView === null : requestedView !== null
+        && nextCrop.startHz === requestedView.startHz && nextCrop.endHz === requestedView.endHz) return;
+      requestedView = nextCrop;
+      // Preserve the negotiated preset (if any); only its display crop moves.
+      scopeView.set('gesture', null);
+      return;
+    }
+    // MOR-4387 + MOR-4392: zoom edits ONE state — the requested visible
+    // width centred on the VFO. It drives the subscription (the server
+    // picks the smallest covering preset) and the crop alike, so a press
+    // inside one preset is a pure client crop with no radio write. The
+    // chain reads the exact requested width, not the freq±span/2 view
+    // reconstruction, so the floor/cap no-op is exact (1-ulp idempotence).
+    const current = requestedView !== null ? requestedView.endHz - requestedView.startHz
+      : followSpanHz ?? (effectiveView.endHz - effectiveView.startHz);
+    let next = current * factor;
+    if (factor < 1) {
+      // The floor is a few bins of the NARROWEST span choice (see
+      // zoomFloorHz above).
+      const floorHz = zoomFloorHz();
+      if (floorHz > 0) next = Math.max(next, floorHz);
+    } else {
+      const choices = runtime.caps?.span_choices_hz;
+      if (choices?.length) next = Math.min(next, Math.max(...choices));
+    }
+    if (next === current) return; // the bin floor / widest preset is a no-op
+    requestedView = null;
+    explicitView = null;
+    followSpanHz = next;
     scopeView.set('gesture', null);
   }
 
@@ -913,6 +1181,14 @@
     spanHz: viewportSpanHz,
     sampleSpanHz: spanHz,
     coverage: audioFft ? undefined : frameGeometry?.coverage,
+    // MOR-4451: the ONE hatch decision — the same projectScopeCoverage
+    // ranges the DOM overlay renders (empty when the native is as wide as
+    // the view, whatever the offset). The renderer paints only these; its
+    // private outside-coverage fill is deleted, so coverage above feeds the
+    // trace gap alone and can never hatch a second time.
+    hatchRanges: coverageHatched.length > 0
+      ? coverageHatched.map(({ start, end }) => ({ start, end }))
+      : null,
     sampleOffset: audioFft && !audioProjection ? Math.floor((frameGeometry?.width ?? 0) / 2) : 0,
     sampleWindow: audioSampleWindow,
     sampleAmplitudeMax: audioFft ? 160 : 80,
@@ -971,6 +1247,41 @@
   let pbWidthPct = $derived(passbandOverlay?.widthPx ?? 0);
   let pbLeftPct = $derived(passbandOverlay?.leftPx ?? 0);
   let pbRightPct = $derived(passbandOverlay?.rightPx ?? 0);
+
+  // MOR-4387 owner build-4: the passband overlay blinked ~1 s during a
+  // tuning burst and across a ZOOM preset switch. The overlay renders only
+  // while `tuneVisible && spanHz > 0 && pbWidthPct > 0`, each of which
+  // gates on a chain of derived facts (authority mode/width/shift, the
+  // managed passband tuple state, the viewport containment). This JSON
+  // diagnostic attribute is the one place the whole gate chain is
+  // observable per frame — the panorama passband-hold spec samples it on
+  // every animation frame to pin WHICH gate drops instead of guessing.
+  // Same diagnostic family as `data-passband-state` /
+  // `data-scope-subscription` on the panel root below.
+  let passbandGatesJson = $derived(JSON.stringify({
+    tuneVisible,
+    confirmed: confirmedPassband,
+    freqHz: displayFrequencyHz ?? null,
+    viewStartHz: viewportStartFreq,
+    viewEndHz: viewportEndFreq,
+    inView: !proportionalIndicator
+      || (displayFrequencyHz !== null && displayFrequencyHz !== undefined
+        && frequencyInView(displayFrequencyHz)),
+    proportional: proportionalIndicator,
+    mode: spectrumAuthority?.mode ?? null,
+    widthHz: spectrumAuthority?.filterWidthHz ?? null,
+    shiftHz: spectrumAuthority?.ifShiftHz ?? null,
+    tuple: displayTuple !== null,
+    tupleState: managed ? scopeRegion?.passband.state ?? 'unavailable' : 'legacy',
+    tupleReason: (() => {
+      const passband = managed ? scopeRegion?.passband : undefined;
+      return passband?.state === 'unknown' ? passband.reason : null;
+    })(),
+    tupleStale: displayStale,
+    passbandHz,
+    spanPositive: spanHz > 0,
+    overlay: tuneVisible && spanHz > 0 && pbWidthPct > 0,
+  } satisfies ScopePassbandDiagnostics));
 
   function readAuthority(): SpectrumAuthority | null {
     return audioFft ? null : toSpectrumAuthority(runtime.state, runtime.caps);
@@ -1272,10 +1583,11 @@
     const changed = dragCandidate !== null || gestureCandidateHz !== null;
     gestureCandidateHz = dragCandidate;
     if (changed && candidate !== null) vfoHandlers.onFreqChange(candidate, capture.authority.receiver, 'drag');
-    if (panoramaActive) {
+    if (panoramaActive || (isRadioOwnedWindow && requestedView !== null)) {
       const base = capture.view ?? untrack(() => scopeView.confirmed);
       scopeView.set('gesture', dragCandidate !== null && base.endHz > base.startHz
-        ? panView(base, dragCandidate - capture.authority.frequencyHz!) : base);
+        ? panView(base, dragCandidate - (isRadioOwnedWindow ? viewCenterHz(base) : capture.authority.frequencyHz!),
+          isRadioOwnedWindow ? frameGeometry?.view : undefined) : base);
     }
   }
 
@@ -1393,6 +1705,7 @@
       if (sourceIsAudio) runtime.scope.registerPresentationDriver(presentationResources);
       const scopeStream = runtime.scope.stream(sourceIsAudio ? 'audio_fft' : 'hardware');
       const stopError = scopeStream.error.subscribe(error => { scopeError = error; });
+      const stopGrant = scopeStream.granted.subscribe((grant) => { frameGrant = grant; });
       const stopGeometry = scopeStream.geometry.subscribe((geometry) => { frameGeometry = geometry; });
       cachedWhileOff = false;
       const acceptFrame = (frame: ScopeFrame, slotKey: string) => {
@@ -1438,6 +1751,7 @@
         cachedWhileOff = false;
         stopError();
         stopGeometry();
+        stopGrant();
         stopFrames();
         unsubDx();
         releaseScopeDemand();
@@ -1491,6 +1805,7 @@
   data-passband-state={managed ? scopeRegion?.passband?.state ?? 'unavailable' : 'legacy'}
   data-scope-subscription={JSON.stringify(scopeSubscriptionValue)}
   data-passband-resizable={canResizePassband}
+  data-passband-gates={passbandGatesJson}
   data-filter-rule={spectrumAuthority?.rule?.kind ?? 'none'}
   tabindex="-1"
   onwheel={handleWheel}
@@ -1576,7 +1891,7 @@
       {/if}
       {#if !audioFft}<BandPlanOverlay startFreq={viewportStartFreq} endFreq={viewportEndFreq} visible={showBandPlan} {hiddenLayers} region={bandPlanRegion} />{/if}
       {#if scopeTraceLive && scopeContentState !== 'out-of-range' && frameGeometry?.hasPixels !== false}
-      <SpectrumCanvas data={null} options={spectrumOptions} spanHz={viewportSpanHz} absoluteLabels={explicitView || isRadioOwnedWindow} {enableAvg} {enablePeakHold} trace={traceStatus === 'recording' ? trace : null} surface={spectrumSurface} onRegisterPush={(fn) => {
+      <SpectrumCanvas data={null} options={spectrumOptions} spanHz={viewportSpanHz} absoluteLabels={explicitView !== null || isRadioOwnedWindow} {enableAvg} {enablePeakHold} trace={traceStatus === 'recording' ? trace : null} surface={spectrumSurface} onRegisterPush={(fn) => {
         spectrumPush = fn;
         const geometry = frameGeometry;
         const frame = geometry && scopeDemandOn && samplePlaneLive && geometry.freshness === 'fresh'
@@ -1708,6 +2023,19 @@
           data-state={passbandMarker}
           title={passbandMarkerTitle}
         >{passbandMarkerText}</div>
+      {/if}
+      <!-- MOR-4387 (owner build-4): a ZOOM− that is a no-op at the fixed
+           edges says why and offers the one-tap CTR return — the same
+           reason the disabled SPAN keys carry in FIX. -->
+      {#if zoomFixedHint && isSpanDisabledScope(scopeMode)}
+        <div class="passband-unknown scope-zoom-hint" data-testid="zoom-fixed-hint" role="status">
+          <span>{t('core.scope.spanWorksInCtr')}</span>
+          <button
+            type="button"
+            data-testid="zoom-fixed-ctr"
+            onclick={() => { zoomFixedHint = false; scopeHandlers.onModeChange(0); }}
+          >{t('core.overlay.scopeSwitchToCtr')}</button>
+        </div>
       {/if}
     </div>
   </div>
@@ -1944,6 +2272,24 @@
     border: 1px solid var(--panel-border);
     border-radius: var(--radius);
     pointer-events: none;
+  }
+  /* MOR-4387: the ZOOM hint is the same chip, but its CTR return key is
+     interactive. */
+  .scope-zoom-hint {
+    pointer-events: auto;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .scope-zoom-hint button {
+    pointer-events: auto;
+    font: inherit;
+    color: var(--text);
+    background: transparent;
+    border: 1px solid var(--panel-border);
+    border-radius: var(--radius);
+    padding: 0 6px;
+    cursor: pointer;
   }
 
   .passband-resize-zone {
