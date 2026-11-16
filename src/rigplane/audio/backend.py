@@ -390,13 +390,13 @@ class DuplexStream(Protocol):
 
 
 @runtime_checkable
-@runtime_checkable
 class DeviceRefreshingBackend(Protocol):
     """A backend whose device list can go stale and be re-scanned (MOR-4338)."""
 
     def refresh_devices(self) -> bool: ...
 
 
+@runtime_checkable
 class AudioBackend(Protocol):
     """Abstract audio backend capable of listing devices and opening streams.
 
