@@ -453,3 +453,60 @@ async def test_generation_advance_forgets_refused_reads() -> None:
     tracker.advance_generation(RuntimeError("reconnect"))
 
     assert tracker.take_refused_reads() == ()
+
+
+@pytest.mark.asyncio
+async def test_a_late_refusal_of_a_released_read_never_settles_a_blocking_read() -> None:
+    """MOR-4526: a read released from the drain still owns its late refusal.
+
+    Before a blocking command the runtime gives fire-and-forget sinks a
+    short grace (``_drain_ack_sinks_before_blocking``) and then releases
+    them, so the blocking command never waits on them. On a link slower
+    than that grace the released reads' answers are still on the way. The
+    radio answers in order, so a bare FA arriving next is the refusal of an
+    older released read — never the blocking read's own answer. Before the
+    fix the release forgot the read: the late FA settled the blocking read
+    as refused (the scope session's startup read, so the panorama never
+    started) and the refused read stayed unnamed.
+    """
+    tracker = CivRequestTracker()
+    _register_reads(tracker, _TUNER)
+    tracker.drop_ack_sinks()
+    assert tracker.ack_sink_count == 0  # the drain no longer waits on it
+    blocking = tracker.register_ack(wait=True, consume_backlog=False, nak_only=True)
+    assert isinstance(blocking, asyncio.Future)
+
+    assert tracker.resolve(CivEvent(type=CivEventType.NAK, frame=_nak_frame()))
+
+    assert not blocking.done()
+    assert tracker.take_refused_reads() == (_TUNER,)
+    # The blocking read's own refusal still reaches it.
+    tracker.resolve(CivEvent(type=CivEventType.NAK, frame=_nak_frame()))
+    assert blocking.done()
+
+
+@pytest.mark.asyncio
+async def test_a_released_read_takes_neither_an_ack_nor_a_second_answer() -> None:
+    """MOR-4526: a released read is answered by data or FA, never FB.
+
+    A write's FB after the release still reaches the blocking write, and the
+    released read's own data answer retires it, so a later FA refuses only
+    the blocking read.
+    """
+    tracker = CivRequestTracker()
+    _register_reads(tracker, _FREQ)
+    tracker.drop_ack_sinks()
+    write = tracker.register_ack(wait=True, consume_backlog=False)
+    assert isinstance(write, asyncio.Future)
+    tracker.resolve(CivEvent(type=CivEventType.ACK, frame=_ack_frame()))
+    assert write.done()
+
+    read = tracker.register_ack(wait=True, consume_backlog=False, nak_only=True)
+    assert isinstance(read, asyncio.Future)
+    tracker.resolve(
+        CivEvent(type=CivEventType.RESPONSE, frame=_response_frame(0x03, b"\x00"))
+    )
+    tracker.resolve(CivEvent(type=CivEventType.NAK, frame=_nak_frame()))
+
+    assert read.done()
+    assert tracker.take_refused_reads() == ()
