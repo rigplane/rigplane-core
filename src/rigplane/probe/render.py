@@ -303,7 +303,7 @@ def pre_save_summary(
         head += checks_line + "\n"
     return (
         head
-        "The tool itself does not add your name, computer name, internet "
+        + "The tool itself does not add your name, computer name, internet "
         "address, or any file from your computer.\n"
         "But the --label text is saved exactly as you typed it, and stored "
         "memory contents (only with --include-private) can hold text you "
