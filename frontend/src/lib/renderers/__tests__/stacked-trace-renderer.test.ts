@@ -346,7 +346,12 @@ describe('MOR-4463 stacked-trace resources', () => {
     for (const upload of f.named('texSubImage2D')) expect(upload.args[4]).toBeLessThanOrEqual(1024);
     for (const allocation of f.named('texImage2D')) expect(allocation.args[3]).toBeLessThanOrEqual(1024);
     // 8192 points become 512 (1023 texels with the levels); bin 5000 lands in entry 312.
-    expect((f.named('texSubImage2D')[0].args[8] as Uint8Array)[5000 >> 4]).toBe(80);
+    // The first upload is the committed history row, smoothed across frequency
+    // by the default setting (10 + (80 - 10) / 2); the second is the live row, raw.
+    const uploads = f.named('texSubImage2D');
+    expect(uploads).toHaveLength(2);
+    expect((uploads[0].args[8] as Uint8Array)[5000 >> 4]).toBe(45);
+    expect((uploads[1].args[8] as Uint8Array)[5000 >> 4]).toBe(80);
     f.calls.length = 0;
     r.draw(0);
     expect(f.named('uniform2f').find(call => call.args[0] === 'uSamples')!.args.slice(1)).toEqual([512, 80]);
