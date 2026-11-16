@@ -314,8 +314,12 @@ class CivRequestTracker:
 
     @property
     def ack_sink_count(self) -> int:
-        """Number of fire-and-forget ACK sink waiters currently tracked."""
-        return sum(1 for w in self._ack_waiters if w.future is None)
+        """Number of fire-and-forget ACK sinks the drain still waits for.
+
+        A read released by :meth:`drop_ack_sinks` is not counted: it stays
+        tracked only to own its own late refusal.
+        """
+        return sum(1 for w in self._ack_waiters if w.future is None and not w.nak_only)
 
     @property
     def generation(self) -> int:
@@ -471,17 +475,37 @@ class CivRequestTracker:
         return False
 
     def drop_ack_sinks(self) -> int:
-        """Drop all fire-and-forget ACK sinks.
+        """Release all fire-and-forget ACK sinks before a blocking command.
+
+        A write's sink (no ``response_key``, answered by FB/FA) is dropped.
+        A read's sink is kept as refusal-only (``nak_only``) — MOR-4526: a
+        read is answered by its data or by a bare FA, never by FB, and on a
+        link slower than the drain grace that answer is still on the way.
+        The radio answers in order, so the next FA belongs to the oldest
+        released read, not to the blocking command registered after it;
+        dropping the read let its late refusal settle the blocking read.
+        A released read leaves like any sink: by its data answer, by a later
+        answer on an ordered transport (:meth:`_retire_sinks_passed_by`) or
+        by :meth:`cleanup_stale`.
 
         Returns:
-            Number of dropped sink entries.
+            Number of released sink entries.
         """
-        before = len(self._ack_waiters)
-        # A sink without ``response_key`` belongs to a write, answered by FB/FA.
-        if any(w.future is None and w.response_key is None for w in self._ack_waiters):
-            self.note_ack_unclaimed()
-        self._ack_waiters = [w for w in self._ack_waiters if w.future is not None]
-        return before - len(self._ack_waiters)
+        released = 0
+        kept: list[_AckWaiter] = []
+        for waiter in self._ack_waiters:
+            if waiter.future is not None:
+                kept.append(waiter)
+                continue
+            if not waiter.nak_only:
+                released += 1
+            if waiter.response_key is None:
+                self.note_ack_unclaimed()
+                continue
+            waiter.nak_only = True
+            kept.append(waiter)
+        self._ack_waiters = kept
+        return released
 
     def drop_ack_backlog(self) -> int:
         """Drop orphan ACK/NAK backlog without touching active waiters."""
