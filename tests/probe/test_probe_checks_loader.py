@@ -327,3 +327,34 @@ def test_non_ascii_cat_template_is_a_load_error(tmp_path: Path) -> None:
                 protocol_type="yaesu_cat",
                 voice_codes=None,
             )
+
+
+def _non_ascii_c4fm(tmp_path: Path, probe_toml: str):
+    import shutil
+
+    from rigplane.profiles.rig_loader import load_rig
+
+    for helper in ("_ctcss_tables_v1.toml", "_keyboard-default.toml"):
+        shutil.copy(RIGS / helper, tmp_path / helper)
+    base = (RIGS / "ft991a.toml").read_text(encoding="utf-8")
+    old = '"B", "C", "D", "E",'
+    assert base.count(old) == 1
+    path = tmp_path / "synth.toml"
+    text = base.replace(old, '"B", "C", "D", "É",') + "\n" + probe_toml
+    path.write_text(text, encoding="utf-8")
+    return load_rig(path)
+
+
+def test_profile_without_probe_ignores_probe_only_mode_code_rules(
+    tmp_path: Path,
+) -> None:
+    config = _non_ascii_c4fm(tmp_path, "")
+    assert config.probe_checks == ()
+    assert config.mode_codes is not None and config.mode_codes[-1] == "É"
+
+
+def test_non_ascii_c4fm_code_with_probe_checks_is_a_load_error(tmp_path: Path) -> None:
+    from rigplane.profiles.rig_loader import RigLoadError
+
+    with pytest.raises(RigLoadError, match="ASCII"):
+        _non_ascii_c4fm(tmp_path, CAT_CHECK)
