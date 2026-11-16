@@ -3321,7 +3321,9 @@ describe('managed scope projection (MOR-2367)', () => {
     try {
       mountPanel(); const frame = emitFrame();
       await flushWaterfallPaint();
-      expect(push).toHaveBeenCalledWith(frame.pixels);
+      // MOR-4383: the raw pixels still flow unfiltered; the delivery now
+      // carries the frame identity (wire defaults seq 1, epoch 1).
+      expect(push).toHaveBeenCalledWith(frame.pixels, { slot: 'radio:0', seq: 1, epoch: 1 });
     } finally { push.mockRestore(); }
   });
   it('consolidates backlog handling into the rAF pump: a burst before one animation frame paints only the latest delivery (MOR-4206)', async () => {
@@ -5152,5 +5154,109 @@ describe('review corrections for requested View and sample retirement', () => {
     const target = mountPanel(); emitFrame();
     expect(target.querySelector('[data-testid="scope-preset-select"]')!.classList.contains('toolbar-select')).toBe(true);
     expect(target.querySelector('[data-testid="scope-zoom-in"]')!.classList.contains('toolbar-btn')).toBe(true);
+  });
+});
+
+// MOR-4383: the MAIN→SUB waterfall freeze. Hub sequences are per receiver
+// while radio wire epochs stay 0, so after MAIN reaches seq 1000 a SUB frame
+// at seq 20 is a NEW row — never a replay. Both tests below run the real
+// delivery path: wire bytes → fake WS channel → real ScopeController →
+// SpectrumPanel → renderer uploads.
+describe('SpectrumPanel waterfall stream identity (MOR-4383)', () => {
+  /** Capture every WebGL fixture the canvases create so uploads stay readable. */
+  function captureWaterfallFixtures(): {
+    uploads: () => number; lastGroupBytes: () => number[][]; restore: () => void;
+  } {
+    const created: ReturnType<typeof webglFixture>[] = [];
+    const previous = HTMLCanvasElement.prototype.getContext;
+    HTMLCanvasElement.prototype.getContext = vi.fn(function (this: HTMLCanvasElement, type: string) {
+      if (type === 'webgl2') {
+        const fixture = webglFixture(this.width, this.height);
+        created.push(fixture);
+        return fixture.gl;
+      }
+      return (previous as (...args: unknown[]) => unknown).call(this, type);
+    }) as unknown as typeof HTMLCanvasElement.prototype.getContext;
+    const calls = () => created.flatMap((fixture) => fixture.named('texSubImage2D'));
+    return {
+      uploads: () => calls().length,
+      // One pushRow writes one 3-row blended group; the rowUpload buffer is
+      // reused, so snapshot the bytes synchronously before the next frame.
+      lastGroupBytes: () => calls().slice(-3).map((call) => {
+        const src = call.args[8] as Uint8Array;
+        const offset = call.args[9] as number;
+        return Array.from(src.subarray(offset, offset + (call.args[4] as number)));
+      }),
+      restore: () => { HTMLCanvasElement.prototype.getContext = previous; },
+    };
+  }
+
+  it('keeps scrolling rows across a MAIN→SUB switch with a restarted counter', async () => {
+    const capture = captureWaterfallFixtures();
+    try {
+      authorityHarness.state.current = authority({ receiver: 0 });
+      const target = mountPanel();
+      expect(target.querySelector('.waterfall-content')).not.toBeNull();
+      const push = vi.spyOn(WaterfallRenderer.prototype, 'pushRow');
+      try {
+        emitFrame({ receiver: 0, sequence: 1000 });
+        await flushWaterfallPaint();
+        expect(push).toHaveBeenCalled();
+        const painted = capture.uploads();
+        expect(painted).toBeGreaterThan(0);
+        // SUB runs its own per-receiver counter: lower seqs on the new
+        // receiver are NEW rows, not replays of MAIN's history.
+        authorityHarness.state.current = authority({ receiver: 1 });
+        refreshSpectrumAuthority(); flushSync();
+        emitFrame({ receiver: 1, sequence: 20 });
+        await flushWaterfallPaint();
+        emitFrame({ receiver: 1, sequence: 21 });
+        await flushWaterfallPaint();
+        expect(capture.uploads()).toBeGreaterThan(painted);
+        expect(push.mock.calls.at(-1)?.[1]).toMatchObject({ slot: 'radio:1', seq: 21 });
+      } finally {
+        push.mockRestore();
+      }
+    } finally {
+      capture.restore();
+    }
+  });
+
+  it('SMTH toggles the temporal smoothing of subsequently rendered rows', async () => {
+    const capture = captureWaterfallFixtures();
+    try {
+      const target = mountPanel();
+      const update = vi.spyOn(WaterfallRenderer.prototype, 'updateOptions');
+      try {
+        const pixels = (value: number): Uint8Array => new Uint8Array(475).fill(value);
+        emitFrame({ pixels: pixels(0), sequence: 1 });
+        await flushWaterfallPaint();
+        emitFrame({ pixels: pixels(80), sequence: 2 });
+        await flushWaterfallPaint();
+        expect(capture.uploads()).toBeGreaterThan(0);
+        // IIR at alpha 0.5: state 40, spatial [1 2 1]/4 stays 40, blended
+        // against the previous all-zero row as 1/3, 2/3, 1.
+        const solid = (value: number): number[] => new Array(475).fill(value);
+        expect(capture.lastGroupBytes()).toEqual([solid(13), solid(27), solid(40)]);
+        expect(update.mock.calls.at(-1)?.[0]).toMatchObject({ temporalSmoothing: true });
+        // The panel toolbar carries the SMTH key bound to enableSmooth.
+        const smth = [...target.querySelectorAll('button')]
+          .find((button) => button.textContent?.trim() === 'SMTH');
+        expect(smth).toBeDefined();
+        smth!.click(); flushSync();
+        emitFrame({ pixels: pixels(80), sequence: 3 });
+        await flushWaterfallPaint();
+        // Disabling smoothing reaches the renderer through the enableSmooth
+        // → temporalSmoothing binding: raw 80s, blended against the
+        // previous smoothed row (all 40) as 53, 67, 80 — never the
+        // smoothed 13, 27, 40 above.
+        expect(update.mock.calls.at(-1)?.[0]).toMatchObject({ temporalSmoothing: false });
+        expect(capture.lastGroupBytes()).toEqual([solid(53), solid(67), solid(80)]);
+      } finally {
+        update.mockRestore();
+      }
+    } finally {
+      capture.restore();
+    }
   });
 });

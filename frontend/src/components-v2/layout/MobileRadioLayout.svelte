@@ -108,6 +108,7 @@
   // bind into the portrait SpectrumPanel's `$bindable` props, so the phone
   // layout — not the panel — holds them once the toolbar is hidden.
   let scopeAvg = $state(true);
+  let scopeSmooth = $state(true);
   let scopePeakHold = $state(true);
   let scopeBandPlan = $state(true);
 
@@ -765,7 +766,7 @@
         {#if hasSpectrum()}
           <section class="m-spectrum">
             <SpectrumPanel hideAutoStepToggle={true} hideToolbar={true}
-              bind:enableAvg={scopeAvg} bind:enablePeakHold={scopePeakHold} bind:showBandPlan={scopeBandPlan}
+              bind:enableAvg={scopeAvg} bind:enableSmooth={scopeSmooth} bind:enablePeakHold={scopePeakHold} bind:showBandPlan={scopeBandPlan}
               scopeRegion={managedScopeRegion ?? undefined}
               scopeDemanded={managedScopeRegion?.demanded ?? true}
               onScopeDemandChange={managedScopeRegion?.setDemand} />
@@ -837,6 +838,8 @@
             {/if}
             <ScopeFlatKey label="AVG" testid="scope-key-avg"
               lit={scopeAvg} onclick={() => (scopeAvg = !scopeAvg)} />
+            <ScopeFlatKey label="SMTH" testid="scope-key-smooth"
+              lit={scopeSmooth} onclick={() => (scopeSmooth = !scopeSmooth)} />
             <ScopeFlatKey label="PEAK" testid="scope-key-peak"
               lit={scopePeakHold} onclick={() => (scopePeakHold = !scopePeakHold)} />
             <ScopeFlatKey label="BANDS" testid="scope-key-bands"
