@@ -9,7 +9,9 @@ as `completed`.
 It holds only the bench radio's own settings: profile-state answers
 (frequency, mode, level readings), the refusal/silence facts of its
 command set, and the radio's identity answer. No port path, host name,
-user name, or IP address: the redaction gate
+user name, or IP address, and the capture label is empty. Customer
+captures never go into this repository: this sample comes from our own
+bench radio. The redaction gate
 (`python -m rigplane_testkit.redaction_gate`) is clean over this file.
 
 ## Files
