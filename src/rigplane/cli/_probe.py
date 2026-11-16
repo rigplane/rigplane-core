@@ -623,7 +623,7 @@ async def _execute_after_open(
     check_records = ()
     checks_exit = 0
     checks_line: str | None = None
-    if checks and report.termination.status == "completed":
+    if checks and report.file.termination.status == "completed":
         if not config.probe_checks:
             emit(render.checks_no_checks_message(config.model))
         else:
