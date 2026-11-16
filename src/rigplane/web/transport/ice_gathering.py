@@ -373,20 +373,37 @@ def _adapter_addresses() -> list[tuple[str, list[str]]]:
         return _fallback_addresses()
 
 
-def _fallback_addresses() -> list[tuple[str, list[str]]]:
-    """Best-effort address list without ``ifaddr`` (all UNKNOWN kind)."""
+def _default_route_source_ip() -> str:
+    """Source IP of the default route (a UDP connect sends no packets)."""
     try:
-        infos = socket.getaddrinfo(socket.gethostname(), None)
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+            probe.connect(("8.8.8.8", 53))
+            return str(probe.getsockname()[0])
     except OSError:
-        return []
+        return ""
+
+
+def _fallback_addresses() -> list[tuple[str, list[str]]]:
+    """Best-effort address list without ``ifaddr`` (all UNKNOWN kind).
+
+    The host name may not resolve (a plain ``uv sync`` host without the
+    webrtc extra), so the default-route source address is learned with the
+    UDP-connect probe and loopback is always present: the list is never
+    empty, and the peer still gets a host candidate.
+    """
     ips: list[str] = []
-    for info in infos:
-        addr = info[4][0]
-        if isinstance(addr, str) and addr not in ips:
-            ips.append(addr)
-    if not ips:
-        return []
-    return [(socket.gethostname(), ips)]
+    name = socket.gethostname()
+    with contextlib.suppress(OSError):
+        for info in socket.getaddrinfo(name, None):
+            addr = info[4][0]
+            if isinstance(addr, str) and addr not in ips:
+                ips.append(addr)
+    default_ip = _default_route_source_ip()
+    if default_ip and default_ip not in ips:
+        ips.insert(0, default_ip)
+    if "127.0.0.1" not in ips:
+        ips.append("127.0.0.1")
+    return [(name, ips)]
 
 
 def _read_sysfs_entries(ifname: str) -> dict[str, str | None]:
@@ -812,16 +829,6 @@ def _windows_hardware_interface(iphlpapi: Any, luid: int, if_index: int) -> bool
     return bool(int(row.InterfaceAndOperStatusFlags) & _HARDWARE_INTERFACE_FLAG)
 
 
-def _windows_default_route_source_ip() -> str:
-    """Source IP of the default route (a UDP connect sends no packets)."""
-    try:
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
-            probe.connect(("8.8.8.8", 53))
-            return str(probe.getsockname()[0])
-    except OSError:
-        return ""
-
-
 def _enumerate_windows() -> list[AddressInfo]:
     """Enumerate local addresses with IfType + hardware-flag signals.
 
@@ -833,7 +840,7 @@ def _enumerate_windows() -> list[AddressInfo]:
     enumeration propagates and the hook keeps every address.
     """
     iphlpapi = _load_iphlpapi()
-    default_ip = _windows_default_route_source_ip()
+    default_ip = _default_route_source_ip()
     infos: list[AddressInfo] = []
     for entry in _windows_adapter_entries(iphlpapi):
         oper_up = entry.oper_status == _IF_OPER_STATUS_UP

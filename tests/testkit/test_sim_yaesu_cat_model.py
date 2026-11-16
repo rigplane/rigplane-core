@@ -17,6 +17,7 @@ import pytest
 
 from rigplane.profiles.rig_loader import load_rig
 
+from rigplane_testkit.fixture_rows import CatPairRow, Direction
 from rigplane_testkit.sim.engine import (
     ManualClock,
     Ok,
@@ -45,6 +46,11 @@ def _engine_with(**profile_changes: object) -> SimEngine:
     rig = load_rig(ROOT / "rigs" / "ftx1.toml")
     profile = replace(load_sim_profile(PROFILE_PATH, root=ROOT), **profile_changes)
     return build_ftx1_engine(profile, rig, clock=ManualClock(), seed=7)
+
+
+def _row(direction: Direction, line: str) -> CatPairRow:
+    """One recorded CAT line (window and time are not read by the table)."""
+    return CatPairRow("w", "usb", 0.0, direction, line)
 
 
 def _model(
@@ -191,13 +197,13 @@ def test_s_meters_are_per_receiver_and_read_zero_while_agc_is_off() -> None:
 
 def test_unserved_verb_falls_to_the_recorded_table() -> None:
     rows = [
-        {"dir": "c2r", "line": "FR;"},
-        {"dir": "r2c", "line": "FR01;"},
-        {"dir": "c2r", "line": "RA0;"},
-        {"dir": "r2c", "line": "?;"},
-        {"dir": "c2r", "line": "ZZ;"},  # overtaken by the next request: silence
-        {"dir": "c2r", "line": "PC;"},
-        {"dir": "r2c", "line": "PC2015;"},
+        _row("c2r", "FR;"),
+        _row("r2c", "FR01;"),
+        _row("c2r", "RA0;"),
+        _row("r2c", "?;"),
+        _row("c2r", "ZZ;"),  # overtaken by the next request: silence
+        _row("c2r", "PC;"),
+        _row("r2c", "PC2015;"),
     ]
     model = _model(recorded=RecordedCatAnswerTable.from_cat_pairs(rows))
     assert model.handle("FR;") == "FR01;"  # recorded data
@@ -208,8 +214,8 @@ def test_unserved_verb_falls_to_the_recorded_table() -> None:
 
 def test_native_handler_wins_over_the_recorded_table() -> None:
     rows = [
-        {"dir": "c2r", "line": "FA;"},
-        {"dir": "r2c", "line": "FA999999999;"},
+        _row("c2r", "FA;"),
+        _row("r2c", "FA999999999;"),
     ]
     model = _model(recorded=RecordedCatAnswerTable.from_cat_pairs(rows))
     assert model.handle("FA;") == "FA147225000;"  # engine state, not the table
@@ -220,11 +226,11 @@ def test_native_refusal_falls_through_to_the_recorded_table() -> None:
     # recording. GT05;/PA03; are refused natively (AUTO-speed readback /
     # preamp 0-2), so the recorded answer decides.
     rows = [
-        {"dir": "c2r", "line": "GT05;"},
-        {"dir": "r2c", "line": "GT05;"},  # recorded data for a refused line
-        {"dir": "c2r", "line": "PA03;"},  # overtaken below: recorded silence
-        {"dir": "c2r", "line": "FA;"},
-        {"dir": "r2c", "line": "FA147225000;"},
+        _row("c2r", "GT05;"),
+        _row("r2c", "GT05;"),  # recorded data for a refused line
+        _row("c2r", "PA03;"),  # overtaken below: recorded silence
+        _row("c2r", "FA;"),
+        _row("r2c", "FA147225000;"),
     ]
     model = _model(recorded=RecordedCatAnswerTable.from_cat_pairs(rows))
     assert model.handle("GT05;") == "GT05;"  # recorded data beats ?;
@@ -297,9 +303,9 @@ def test_recorded_answers_win_over_unimplemented_forms(
     line: str, reply: str | None
 ) -> None:
     expected = line if reply == "data" else reply
-    rows = [{"dir": "c2r", "line": line}]
+    rows = [_row("c2r", line)]
     if expected is not None:
-        rows.append({"dir": "r2c", "line": expected})
+        rows.append(_row("r2c", expected))
     seen: list[str] = []
     model = _model(
         recorded=RecordedCatAnswerTable.from_cat_pairs(rows),
@@ -381,8 +387,8 @@ def test_malformed_bodies_are_never_counted_reported_or_looked_up(
     # (the table below even holds an answer to the very line asked).
     seen: list[str] = []
     rows = [
-        {"dir": "c2r", "line": line},
-        {"dir": "r2c", "line": "QQ1;"},
+        _row("c2r", line),
+        _row("r2c", "QQ1;"),
     ]
     model = _model(
         recorded=RecordedCatAnswerTable.from_cat_pairs(rows),
@@ -409,8 +415,8 @@ def test_a_due_scheduled_op_is_not_drained_by_a_gap() -> None:
 
 def test_handle_with_outcome_names_every_reply_class() -> None:
     rows = [
-        {"dir": "c2r", "line": "FR;"},
-        {"dir": "r2c", "line": "FR01;"},
+        _row("c2r", "FR;"),
+        _row("r2c", "FR01;"),
     ]
     model = _model(recorded=RecordedCatAnswerTable.from_cat_pairs(rows))
     assert model.handle_with_outcome("FA;") == ("FA147225000;", Ok())  # native data
@@ -455,8 +461,8 @@ def test_a_served_set_never_replies() -> None:
 def test_seed_from_recording_uses_the_own_codec() -> None:
     model = _model()
     rows = [
-        {"dir": "c2r", "line": "IF;"},
-        {"dir": "r2c", "line": "IF00025147225000+000000412003;"},
+        _row("c2r", "IF;"),
+        _row("r2c", "IF00025147225000+000000412003;"),
     ]
     seed_from_recording(model, RecordedCatAnswerTable.from_cat_pairs(rows))
     assert model.handle("IF;") == "IF00025147225000+000000412003;"
@@ -469,8 +475,8 @@ def test_seed_from_recording_uses_the_own_codec() -> None:
 
 def test_seeding_an_if_reply_with_a_wire_safe_tail() -> None:
     rows = [
-        {"dir": "c2r", "line": "IF;"},
-        {"dir": "r2c", "line": "IF00025147225000+000000412XYZ;"},
+        _row("c2r", "IF;"),
+        _row("r2c", "IF00025147225000+000000412XYZ;"),
     ]
     model = _model()
     seed_from_recording(model, RecordedCatAnswerTable.from_cat_pairs(rows))
@@ -482,8 +488,8 @@ def test_seeding_ignores_an_if_tail_that_breaks_the_wire_field() -> None:
     # The recorded tail would inject a CAT terminator: it is not seeded, so
     # the validated default stays.
     rows = [
-        {"dir": "c2r", "line": "IF;"},
-        {"dir": "r2c", "line": "IF00025147225000+000000412A;B;"},
+        _row("c2r", "IF;"),
+        _row("r2c", "IF00025147225000+000000412A;B;"),
     ]
     model = _model()
     seed_from_recording(model, RecordedCatAnswerTable.from_cat_pairs(rows))
@@ -507,10 +513,10 @@ def test_s_meter_wire_value_is_clamped_but_the_engine_keeps_what_was_set() -> No
 
 def test_seeding_ignores_an_s_meter_reading_outside_the_wire_domain() -> None:
     rows = [
-        {"dir": "c2r", "line": "SM0;"},
-        {"dir": "r2c", "line": "SM0300;"},  # outside 000-255: not seeded
-        {"dir": "c2r", "line": "SM1;"},
-        {"dir": "r2c", "line": "SM0255;"},  # top of the domain: seeded
+        _row("c2r", "SM0;"),
+        _row("r2c", "SM0300;"),  # outside 000-255: not seeded
+        _row("c2r", "SM1;"),
+        _row("r2c", "SM0255;"),  # top of the domain: seeded
     ]
     model = _model()
     seed_from_recording(model, RecordedCatAnswerTable.from_cat_pairs(rows))

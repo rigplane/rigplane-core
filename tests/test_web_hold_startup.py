@@ -271,6 +271,11 @@ class _BusyRadio:
         self.connected = True
         self.control_connected = True
         self.radio_ready = True
+        # Models CoreRadio.connect() -> _complete_connect: the granted
+        # connect completes in the radio layer, which owns the one initial
+        # fetch; the web late completion (finish_startup_busy_hold) only
+        # reacquires its web-epoch facts and never fetches (MOR-4382).
+        await self._fetch_initial_state()
         self.connection_identity = RadioIdentity(
             status=RadioIdentityStatus.VERIFIED,
             expected_model="IC-7610",
@@ -1153,9 +1158,9 @@ async def test_granted_busy_hold_becomes_ready_and_marks_transport_once() -> Non
     """After the grant the hold clears and the late completion runs.
 
     The background managed-session enter runs ``transport_ready`` exactly
-    once, the busy signal clears, the late-connect completion refetches
-    state and selects VFO A, and /readyz reports ready honestly with
-    ``connection.session`` back to not-busy.
+    once, the busy signal clears, the granted connect fetches state once
+    in the radio layer while the late completion selects VFO A, and /readyz
+    reports ready honestly with ``connection.session`` back to not-busy.
     """
 
     from rigplane.cli import _ManagedTxRadioSession

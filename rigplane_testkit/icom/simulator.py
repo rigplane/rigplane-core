@@ -530,6 +530,15 @@ class MockIcomRadio(AudioPortMixin):
             0x26 SET with a non-zero data byte for a mode outside the set
             is NAKed with no state change, and so is a 0x1A 06 DATA-on SET
             while the current mode is outside the set (MOR-4036).
+        civ_tx_seq_jump: offset added to the sequence number of the open
+            marker — the first numbered CI-V packet of each OpenClose(open)
+            — while the radio's own counter advances unchanged, so the
+            stream continues from its real numbers right behind it. Models
+            a fresh client whose first packet carries a number far ahead of
+            the stream that follows: a number from the session that just
+            ended (the radio may track numbering per client across
+            processes, MOR-3418; owner's IC-705 field log, MOR-4416).
+            0 (default) keeps the marker numbered like any other packet.
         substream_discovery: which discovery the CI-V and audio ports
             answer (default ``"i_am_here"`` keeps the recorded IC-7610
             behaviour byte for byte). ``"ping"`` models the Xiegu G7250
@@ -619,6 +628,7 @@ class MockIcomRadio(AudioPortMixin):
         *,
         single_owner: bool = False,
         keepalive_hold_s: float = _DEFAULT_KEEPALIVE_HOLD_S,
+        civ_silent_after_open_s: float = 0.0,
         drop_rate: float = 0.0,
         lan_civ_echo: bool = True,
         write_confirmation: Literal["ack", "echo"] = "ack",
@@ -642,6 +652,7 @@ class MockIcomRadio(AudioPortMixin):
         rx_source: RxSource | None = None,
         require_control_discovery: bool = False,
         data_capable_modes: frozenset[int] | None = None,
+        civ_tx_seq_jump: int = 0,
         substream_discovery: Literal["i_am_here", "ping"] = "i_am_here",
         ignored_civ_commands: Iterable[tuple[int, int | None]] | None = None,
         span_preset_semantics: Literal["half_width", "full_width"] | None = None,
@@ -729,6 +740,9 @@ class MockIcomRadio(AudioPortMixin):
         # DATA-on SET while the current mode is outside the set — the bench
         # IC-705 behaviour (26 00 03 01 01 = CW+DATA is NAKed).
         self._data_capable_modes: frozenset[int] | None = data_capable_modes
+        # See the ctor docstring: the open marker's sequence number carries
+        # this offset; the counter itself advances by one regardless.
+        self.civ_tx_seq_jump: int = civ_tx_seq_jump
         # Modelling of the 0x1A 05 menu items the startup reader reads;
         # current values (defaults and byte widths live in the table above).
         self._ctl_mem_menu: dict[bytes, int] = {
@@ -881,6 +895,17 @@ class MockIcomRadio(AudioPortMixin):
         # so turning standby off resumes cleanly; discovery,
         # pings and OpenClose still work, and the control port is unaffected.
         self._civ_standby: bool = False
+        # CI-V data not yet delivered after a LAN connect: for this many
+        # seconds after the first accepted OpenClose(open) of each login the
+        # simulator answers nothing on CI-V while pings and discovery still
+        # work (a radio that is off, busy or still starting). The 12-14 s
+        # "silence" once seen on the bench IC-705 was client-side, the
+        # ordered-ingress stale anchor fixed in MOR-4416, not recorded radio
+        # behaviour. Reusable for any smoke of the connect path; 0 keeps
+        # replies prompt.
+        self.civ_silent_after_open_s: float = max(0.0, civ_silent_after_open_s)
+        self._civ_silent_armed_for: object = None
+        self._civ_silence_token = 0
         # Power-off notice window (recording w2): after the 0x90 notice the
         # radio still answers discovery/pings until this deadline, then goes dark.
         self._poweroff_notice_until: float = 0.0
@@ -1175,6 +1200,27 @@ class MockIcomRadio(AudioPortMixin):
         """
         self._release_session(reason)
         self._retire_token()
+
+    def _arm_civ_silence_after_open(self) -> None:
+        """Start the ``civ_silent_after_open_s`` window once per login."""
+        if self.civ_silent_after_open_s <= 0:
+            return
+        login = self._owner if self._owner is not None else self._last_login
+        if login is None or login == self._civ_silent_armed_for:
+            return
+        self._civ_silent_armed_for = login
+        self._civ_silence_token += 1
+        self.civ_standby(True)
+        asyncio.get_running_loop().call_later(
+            self.civ_silent_after_open_s,
+            self._end_civ_silence,
+            self._civ_silence_token,
+        )
+
+    def _end_civ_silence(self, token: int) -> None:
+        """End the window, unless a later login replaced it."""
+        if token == self._civ_silence_token:
+            self.civ_standby(False)
 
     def civ_standby(self, on: bool) -> None:
         """Turn the CI-V standby scenario on or off (test helper).
@@ -2108,9 +2154,15 @@ class MockIcomRadio(AudioPortMixin):
                 # the previous session's orphan state when one is kept
                 # (MOR-3418 slice G).
                 self._seed_tracker_from_orphan((addr, sender_id))
+                self._arm_civ_silence_after_open()
                 if not self._civ_standby:
                     civ = self._civ_frame(to=0x00, frm=self._radio_addr, cmd=0x00)
-                    self._send(proto, self._wrap_civ(civ, sender_id), addr, "civ")
+                    self._send(
+                        proto,
+                        self._wrap_civ(civ, sender_id, seq_shift=self.civ_tx_seq_jump),
+                        addr,
+                        "civ",
+                    )
                 key = (addr, sender_id)
                 if self._civ_gap_gate(
                     key, "openclose", data, addr, sender_id, seq, proto
@@ -2587,13 +2639,16 @@ class MockIcomRadio(AudioPortMixin):
                 # would disagree.
                 reply = native
             else:
-                reply = None
-                if self.recorded_answers is not None:
-                    reply = self.recorded_answers.answer(
+                recorded = (
+                    self.recorded_answers.lookup(
                         self._civ_frame(frm, to, cmd, data=payload)
                     )
-                if reply is None:
-                    reply = native
+                    if self.recorded_answers is not None
+                    else None
+                )
+                # None: the recording never saw it, keep the native NAK;
+                # otherwise its reply, or no reply for recorded silence.
+                reply = native if recorded is None else recorded.reply
         if (
             self._write_confirmation == "echo"
             and reply is not None
@@ -3289,18 +3344,26 @@ class MockIcomRadio(AudioPortMixin):
     def _civ_nak(self, to: int, frm: int) -> bytes:
         return self._civ_frame(to, frm, _CMD_NAK)
 
-    def _wrap_civ(self, civ_frame: bytes, client_id: int) -> bytes:
-        """Wrap a CI-V frame in a 0x15-byte DATA header for the CI-V port."""
+    def _wrap_civ(
+        self, civ_frame: bytes, client_id: int, *, seq_shift: int = 0
+    ) -> bytes:
+        """Wrap a CI-V frame in a 0x15-byte DATA header for the CI-V port.
+
+        ``seq_shift`` moves THIS packet's sequence number only (header and
+        the echoed big-endian copy at 0x13); the counter advances by one
+        regardless. The open marker uses it for ``civ_tx_seq_jump``.
+        """
         total = _CIV_HEADER_SIZE + len(civ_frame)
         pkt = bytearray(total)
+        seq = (self._civ_seq + seq_shift) & 0xFFFF
         struct.pack_into("<I", pkt, 0x00, total)
         struct.pack_into("<H", pkt, 0x04, _PT_DATA)
-        struct.pack_into("<H", pkt, 0x06, self._civ_seq)
+        struct.pack_into("<H", pkt, 0x06, seq)
         struct.pack_into("<I", pkt, 0x08, self.radio_id)
         struct.pack_into("<I", pkt, 0x0C, client_id)
         pkt[0x10] = 0xC1
         struct.pack_into("<H", pkt, 0x11, len(civ_frame))
-        struct.pack_into(">H", pkt, 0x13, self._civ_seq)
+        struct.pack_into(">H", pkt, 0x13, seq)
         pkt[_CIV_HEADER_SIZE:] = civ_frame
         self._civ_seq = (self._civ_seq + 1) & 0xFFFF
         return bytes(pkt)

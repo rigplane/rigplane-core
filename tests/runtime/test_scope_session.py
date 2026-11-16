@@ -1,6 +1,7 @@
 import pytest
 import asyncio
 
+from rigplane.core.exceptions import CommandRejectedError, TimeoutError
 from rigplane.core.types import ScopeFixedEdge
 from rigplane.runtime.scope_session import ScopeSession, ScopeState
 from rigplane.scope.models import ScopeDemand
@@ -400,3 +401,384 @@ async def test_fixed_readback_updates_the_shared_slot_across_receivers():
     session.observe("fixed_edge", ScopeFixedEdge(6, 1, 14100000, 14300000), 0)
     await session.configure(receiver=1, fixed_edge=desired)
     assert writer.views == [("fixed_edge", desired, 1), ("fixed_edge", desired, 1)]
+
+
+# ── MOR-4385 gate round 2 (fix-4565): a retired snapshot must not outlive
+# the desired key. configure() pops desired keys (FIX/CENTER switches, a
+# same-slot retirement under another receiver) and _put() failure paths pop
+# desired keys while the restore snapshot stays behind; a later external
+# change that supersedes Core's last applied value must release that
+# snapshot, or the last unsubscribe restores the stale value over the
+# operator's own («следовать за рацией»).
+
+
+async def test_external_span_releases_snapshot_retired_by_fix_configure():
+    """Path a: configure(mode=1, fixed_edge=...) pops desired span while the
+    span restore snapshot stays behind; an external span change that
+    supersedes Core's last applied span releases it, so the last unsubscribe
+    never restores the stale span."""
+    writer = Writer()
+    writer.state = ScopeState(True, True, 0, 3, 1)
+    session = ScopeSession(writer.read, writer.write, writer.read_fixed)
+    await session.set_inputs(ready=True, tx=False)
+    await session.set_demand(ScopeDemand(1, 1))
+    await session.configure(span=4)
+    assert writer.views[-1] == ("span", 4, 0)
+    fixed = ScopeFixedEdge(6, 1, 14050000, 14150000)
+    await session.configure(mode=1, fixed_edge=fixed, edge=1)
+    assert (0, "span") not in session._desired
+    assert session._previous.get((0, "span")) == 3
+    session.observe("span", 5)
+    assert (0, "span") not in session._previous
+    await session.set_demand(ScopeDemand(0, 0))
+    assert ("span", 3, 0) not in writer.views
+
+
+async def test_external_edge_releases_snapshot_retired_by_center_configure():
+    """Path b: configure(mode=0, span=...) pops desired fixed_edge/edge while
+    the edge restore snapshot stays behind; an external edge change that
+    supersedes Core's last applied edge releases it."""
+    writer = Writer()
+    writer.state = ScopeState(True, True, 0, 3, 1)
+    session = ScopeSession(writer.read, writer.write, writer.read_fixed)
+    await session.set_inputs(ready=True, tx=False)
+    await session.set_demand(ScopeDemand(1, 1))
+    fixed = ScopeFixedEdge(6, 1, 14050000, 14150000)
+    await session.configure(mode=1, fixed_edge=fixed, edge=2)
+    assert (0, "edge") in session._desired
+    await session.configure(mode=0, span=4)
+    assert (0, "edge") not in session._desired
+    assert (0, "fixed_edge") not in session._desired
+    assert session._previous.get((0, "edge")) == 1
+    session.observe("edge", 3)
+    assert (0, "edge") not in session._previous
+    await session.set_demand(ScopeDemand(0, 0))
+    assert ("edge", 1, 0) not in writer.views
+
+
+async def test_external_rewrite_releases_slot_retired_for_other_receiver():
+    """Path c: configuring the same fixed slot under receiver 1 deletes
+    receiver 0's desired key while the shared per-slot snapshot and receiver
+    0's applied value stay behind; an external rewrite of that slot still
+    releases the slot snapshot."""
+    writer = Writer()
+    writer.state = ScopeState(True, True, 0, 3, 1)
+
+    async def write(name, value, receiver):
+        if name == "fixed_edge" and receiver == 1:
+            raise CommandRejectedError("refused")
+        await writer.write(name, value, receiver)
+
+    session = ScopeSession(writer.read, write, writer.read_fixed)
+    await session.set_inputs(ready=True, tx=False)
+    await session.set_demand(ScopeDemand(1, 1))
+    slot_value = ScopeFixedEdge(6, 1, 14050000, 14150000)
+    await session.configure(receiver=0, fixed_edge=slot_value, edge=1, mode=1)
+    assert session._fixed.get((6, 1)) is not None
+    with pytest.raises(CommandRejectedError, match="refused"):
+        await session.configure(receiver=1, fixed_edge=slot_value)
+    # Path c retired receiver 0's desired key; the rejected receiver-1 write
+    # left receiver 0's applied value and the shared slot snapshot behind.
+    assert (0, "fixed_edge") not in session._desired
+    assert session._fixed.get((6, 1)) is not None
+    session.observe("fixed_edge", ScopeFixedEdge(6, 1, 14060000, 14160000), 0)
+    assert (6, 1) not in session._fixed
+    await session.set_demand(ScopeDemand(0, 0))
+    assert ScopeFixedEdge(6, 1, 14000000, 14350000) not in [
+        value for name, value, _ in writer.views if name == "fixed_edge"
+    ]
+
+
+async def test_ambiguous_span_write_keeps_snapshot_despite_later_observation():
+    """Path d: a timed-out (ambiguous) write pops desired but keeps
+    _uncertain; a later observation differing from the last applied value
+    must NOT release the restore snapshot, so the last unsubscribe still
+    restores it."""
+    writer = Writer()
+    writer.state = ScopeState(True, True, 0, 3, 1)
+    failing = True
+
+    async def write(name, value, receiver):
+        if failing and name == "span":
+            raise TimeoutError("no ack")
+        await writer.write(name, value, receiver)
+
+    session = ScopeSession(writer.read, write, writer.read_fixed)
+    await session.set_inputs(ready=True, tx=False)
+    await session.set_demand(ScopeDemand(1, 1))
+    with pytest.raises(TimeoutError, match="no ack"):
+        await session.configure(span=4)
+    assert (0, "span") not in session._desired
+    assert (0, "span") in session._uncertain
+    assert session._previous.get((0, "span")) == 3
+    failing = False
+    session.observe("span", 5)
+    assert session._previous.get((0, "span")) == 3
+    await session.set_demand(ScopeDemand(0, 0))
+    assert ("span", 3, 0) in writer.views
+
+
+class _LosingAckSpanWriter(Writer):
+    """A writer whose first span SET lands on the radio but loses its ACK.
+
+    The write is applied to the radio state BEFORE the raise, so the radio
+    sits on the written value while Core never sees the acknowledgement —
+    the exact ambiguous-write shape of the #4565 pre-review (item 4).
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.state = ScopeState(True, True, 0, 3, 1)
+        self.span_writes: list[tuple[object, int]] = []
+        self.lost = True
+
+    async def write(self, name, value, receiver):
+        if name != "span":
+            await super().write(name, value, receiver)
+            return
+        self.span_writes.append((value, receiver))
+        self.state = replace(self.state, span=value)
+        if self.lost:
+            raise TimeoutError("ack lost")
+        self.views.append((name, value, receiver))
+
+
+async def test_lost_span_ack_keeps_cached_preset_untrusted():
+    """#4565 pre-review (scope_session._put): a SET that reaches the radio
+    but loses its ACK leaves the cached span stale — the cache predates the
+    ambiguous write, so a later request for that cached preset must still
+    write instead of trusting it (the radio may sit on the unacknowledged
+    value). The resent SET re-establishes certainty."""
+    writer = _LosingAckSpanWriter()
+    session = ScopeSession(writer.read, writer.write, writer.read_fixed)
+    await session.set_inputs(ready=True, tx=False)
+    await session.set_demand(ScopeDemand(1, 1))
+    with pytest.raises(TimeoutError, match="ack lost"):
+        await session.configure(span=4)
+    assert writer.state.span == 4  # the radio moved; Core never saw the ACK
+    assert session._applied.get((0, "span")) == 3  # the stale cache
+    assert (0, "span") in session._uncertain
+    # Requesting the CACHED preset must not trust it: the SET goes out
+    # (and its acknowledgement re-establishes certainty).
+    writer.lost = False
+    await session.configure(span=3)
+    assert writer.span_writes == [(4, 0), (3, 0)]
+    assert writer.state.span == 3
+    assert (0, "span") not in session._uncertain
+
+
+async def test_lost_span_ack_restore_writes_despite_stale_cache():
+    """#4565 pre-review (restore loop): with observations withheld after a
+    lost ACK, the last unsubscribe must still send the snapshot's span SET
+    instead of reporting a clean restore while the radio keeps the
+    unacknowledged value."""
+    writer = _LosingAckSpanWriter()
+    session = ScopeSession(writer.read, writer.write, writer.read_fixed)
+    await session.set_inputs(ready=True, tx=False)
+    await session.set_demand(ScopeDemand(1, 1))
+    with pytest.raises(TimeoutError, match="ack lost"):
+        await session.configure(span=4)
+    writer.lost = False
+    await session.set_demand(ScopeDemand(0, 0))
+    assert writer.span_writes == [(4, 0), (3, 0)]
+    assert writer.state.span == 3
+
+
+async def test_stale_span_echo_after_lost_ack_still_writes():
+    """A report equal to the stale cache cannot prove the ambiguous write
+    did not land (it may be a pre-write echo), so the cached span stays
+    untrusted and the same-value request still writes."""
+    writer = _LosingAckSpanWriter()
+    session = ScopeSession(writer.read, writer.write, writer.read_fixed)
+    await session.set_inputs(ready=True, tx=False)
+    await session.set_demand(ScopeDemand(1, 1))
+    with pytest.raises(TimeoutError, match="ack lost"):
+        await session.configure(span=4)
+    session.observe("span", 3)  # a stale echo of the pre-write state
+    assert (0, "span") in session._uncertain
+    writer.lost = False
+    await session.configure(span=3)
+    assert writer.span_writes == [(4, 0), (3, 0)]
+    assert writer.state.span == 3
+
+
+async def test_post_ambiguity_span_report_renews_cached_currency():
+    """A report that DIFFERS from the stale cache cannot be a pre-write
+    echo — the ambiguous write landed (or the radio moved on by itself) —
+    so it renews the cache's currency: the key leaves _uncertain at
+    observation time and the same-value request writes nothing (the
+    adopted value is never re-asserted). RED on the old head, which never
+    renews currency before a same-value _put."""
+    writer = _LosingAckSpanWriter()
+    session = ScopeSession(writer.read, writer.write, writer.read_fixed)
+    await session.set_inputs(ready=True, tx=False)
+    await session.set_demand(ScopeDemand(1, 1))
+    with pytest.raises(TimeoutError, match="ack lost"):
+        await session.configure(span=4)
+    session.observe("span", 4)  # fresh report: the radio shows the value
+    assert (0, "span") not in session._uncertain
+    await session.configure(span=4)
+    assert writer.span_writes == [(4, 0)]
+
+
+async def test_external_fixed_rewrite_releases_slot_after_center_retires_it():
+    """Path e: the per-slot _fixed snapshot follows the same rule as
+    _previous — once CENTER retires the desired fixed_edge key, an external
+    rewrite of that slot releases the slot snapshot so close restores
+    nothing for it."""
+    writer = Writer()
+    writer.state = ScopeState(True, True, 0, 3, 1)
+    session = ScopeSession(writer.read, writer.write, writer.read_fixed)
+    await session.set_inputs(ready=True, tx=False)
+    await session.set_demand(ScopeDemand(1, 1))
+    requested = ScopeFixedEdge(6, 1, 14050000, 14150000)
+    await session.configure(mode=1, fixed_edge=requested, edge=1)
+    assert session._fixed.get((6, 1)) == ScopeFixedEdge(6, 1, 14000000, 14350000)
+    await session.configure(mode=0, span=4)
+    assert (0, "fixed_edge") not in session._desired
+    assert session._fixed.get((6, 1)) is not None
+    session.observe("fixed_edge", ScopeFixedEdge(6, 1, 14060000, 14160000))
+    assert (6, 1) not in session._fixed
+    await session.set_demand(ScopeDemand(0, 0))
+    assert ScopeFixedEdge(6, 1, 14000000, 14350000) not in [
+        value for name, value, _ in writer.views if name == "fixed_edge"
+    ]
+
+
+async def test_in_flight_write_blocks_external_release_until_it_lands():
+    """Ambiguous-write guard: an observation arriving while the span write is
+    still in flight (uncertain) keeps the snapshot; once the write lands, the
+    new value is owned and close still restores the pre-write snapshot."""
+    writer = Writer()
+    writer.state = ScopeState(True, True, 0, 3, 1)
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def write(name, value, receiver):
+        if name == "span":
+            entered.set()
+            await release.wait()
+        await writer.write(name, value, receiver)
+
+    session = ScopeSession(writer.read, write, writer.read_fixed)
+    await session.set_inputs(ready=True, tx=False)
+    await session.set_demand(ScopeDemand(1, 1))
+    task = asyncio.create_task(session.configure(span=4))
+    await asyncio.wait_for(entered.wait(), 5)
+    assert (0, "span") in session._uncertain
+    session.observe("span", 3)
+    assert session._previous.get((0, "span")) == 3
+    release.set()
+    await task
+    assert session._applied.get((0, "span")) == 4
+    assert session._previous.get((0, "span")) == 3
+    await session.set_demand(ScopeDemand(0, 0))
+    assert ("span", 3, 0) in writer.views
+
+
+async def test_in_flight_write_keeps_protection_through_a_late_older_report():
+    """MOR-4507: while a span SET awaits its answer, a report of the new
+    value must not clear the write's protection — otherwise an older
+    multi-packet waveform that finishes assembling afterwards (reporting
+    the pre-write span) is adopted as external: the restore snapshot is
+    dropped, desired falls back to the old span, and the next reconcile
+    reverses the user's acknowledged request."""
+    writer = Writer()
+    writer.state = ScopeState(True, True, 0, 3, 1)
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def write(name, value, receiver):
+        if name == "span":
+            entered.set()
+            await release.wait()
+        await writer.write(name, value, receiver)
+
+    session = ScopeSession(writer.read, write, writer.read_fixed)
+    await session.set_inputs(ready=True, tx=False)
+    await session.set_demand(ScopeDemand(1, 1))
+    task = asyncio.create_task(session.configure(span=4))
+    await asyncio.wait_for(entered.wait(), 5)
+    session.observe("span", 4)  # the radio already shows the new span
+    session.observe("span", 3)  # a late, older waveform finishes assembling
+    release.set()
+    await task
+    assert session._applied.get((0, "span")) == 4
+    assert session._desired.get((0, "span")) == 4
+    assert session._previous.get((0, "span")) == 3
+    await session.reconcile()
+    assert [view for view in writer.views if view[0] == "span"] == [("span", 4, 0)]
+
+
+async def test_reconnect_unchanged_mode_keeps_restore():
+    """Gate round 2 P1 (fix-4565): an unchanged mode report after a
+    connection loss keeps restore ownership — the cleared applied map
+    must not read as an external change."""
+    writer = Writer()
+    writer.state = ScopeState(True, True, 2, 3, 1)
+    session = ScopeSession(writer.read, writer.write, writer.read_fixed)
+    await session.set_inputs(ready=True, tx=False)
+    await session.set_demand(ScopeDemand(1, 1))
+    await session.configure(receiver=0, mode=0)
+    assert session._previous.get((0, "mode")) == 2
+    session.invalidate_now()
+    assert session._applied.get((0, "mode")) is None
+    session.observe("mode", 0)
+    assert session._previous.get((0, "mode")) == 2
+    await session.set_inputs(ready=True, tx=False)
+    await session.set_demand(ScopeDemand(0, 0))
+    assert ("mode", 2, 0) in writer.views
+
+
+async def test_reconnect_unchanged_edge_and_fixed_edge_keep_restore():
+    """Gate round 2 P1 (fix-4565): unchanged edge and fixed-edge reports
+    after a connection loss keep restore ownership, same as span/mode."""
+    writer = Writer()
+    writer.state = ScopeState(True, True, 0, 3, 1)
+    session = ScopeSession(writer.read, writer.write, writer.read_fixed)
+    await session.set_inputs(ready=True, tx=False)
+    await session.set_demand(ScopeDemand(1, 1))
+    await session.configure(receiver=0, edge=2)
+    assert session._previous.get((0, "edge")) == 1
+    session.invalidate_now()
+    session.observe("edge", 2)
+    assert session._previous.get((0, "edge")) == 1
+    await session.set_inputs(ready=True, tx=False)
+    await session.set_demand(ScopeDemand(0, 0))
+    assert ("edge", 1, 0) in writer.views
+
+    fixed_writer = Writer()
+    fixed_writer.state = ScopeState(True, True, 0, 3, 1)
+    fixed = ScopeFixedEdge(6, 1, 14_050_000, 14_150_000)
+    captured = ScopeFixedEdge(6, 1, 14_000_000, 14_350_000)
+    fixed_session = ScopeSession(
+        fixed_writer.read, fixed_writer.write, fixed_writer.read_fixed
+    )
+    await fixed_session.set_inputs(ready=True, tx=False)
+    await fixed_session.set_demand(ScopeDemand(1, 1))
+    await fixed_session.configure(receiver=0, fixed_edge=fixed)
+    assert fixed_session._fixed.get((6, 1)) == captured
+    fixed_session.invalidate_now()
+    fixed_session.observe("fixed_edge", fixed)
+    assert fixed_session._fixed.get((6, 1)) == captured
+    await fixed_session.set_inputs(ready=True, tx=False)
+    await fixed_session.set_demand(ScopeDemand(0, 0))
+    assert ("fixed_edge", captured, 0) in fixed_writer.views
+
+
+async def test_reconnect_unchanged_dual_keeps_restore():
+    """Gate round 2 P1 (fix-4565): an unchanged dual report after a
+    connection loss keeps restore ownership under the radio-global key."""
+    writer = Writer()
+    writer.state = ScopeState(True, True, 0, 3, 1)
+    session = ScopeSession(writer.read, writer.write, writer.read_fixed)
+    await session.set_inputs(ready=True, tx=False)
+    await session.set_demand(ScopeDemand(1, 1))
+    await session.configure(receiver=0, dual=True)
+    assert session._previous.get((0, "dual")) is False
+    session.invalidate_now()
+    session.observe("dual", True)
+    assert session._previous.get((0, "dual")) is False
+    await session.set_inputs(ready=True, tx=False)
+    await session.set_demand(ScopeDemand(0, 0))
+    assert ("dual", False, 0) in writer.views

@@ -45,6 +45,7 @@ from typing import TYPE_CHECKING
 
 from rigplane.profiles.rig_loader import load_rig
 
+from rigplane_testkit.fixture_rows import read_cat_rows
 from rigplane_testkit.sim.engine import ManualClock, Ok, SetFrequency
 from rigplane_testkit.sim.model.yaesu_cat import (
     YaesuCatModel,
@@ -82,9 +83,7 @@ def _recorded_table(root: Path, profile: SimProfile) -> RecordedCatAnswerTable:
         raise ValueError(f"{profile.sim.id}: an [answers] recorded entry is required")
     file, _transport = profile.answers.recorded[0]
     path = root / file
-    lines = path.read_text(encoding="utf-8").splitlines()
-    rows = [json.loads(line) for line in lines if line.strip()]
-    table = RecordedCatAnswerTable.from_cat_pairs(rows)
+    table = RecordedCatAnswerTable.from_cat_pairs(read_cat_rows(path))
     if not any(
         (answer := table.lookup(request)) is not None and answer.reply is not None
         for request in table.requests()

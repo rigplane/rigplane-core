@@ -30,7 +30,7 @@ from collections.abc import Collection, Iterable
 from dataclasses import dataclass
 
 from rigplane.commands import RECEIVER_MAIN, RECEIVER_SUB
-from rigplane.commands._frame import decode_wire_tuple
+from rigplane.commands._frame import decode_wire_tuple, unwrap_receiver_prefix
 from rigplane.commands.command_spec import (
     AbsentCommandSpec,
     CatCommandSpec,
@@ -254,17 +254,6 @@ def _plan_cat_list(config: RigConfig, *, include_private: bool) -> ReadPlan:
                 )
             )
     return ReadPlan(tuple(asked), tuple(skipped))
-
-
-def _unwrap_cmd29(frame_body: bytes) -> bytes:
-    """Strip one leading ``0x29 <rx>`` prefix (rx = MAIN 0x00 / SUB 0x01)."""
-    if (
-        len(frame_body) >= 3
-        and frame_body[0] == _CMD29
-        and frame_body[1] in (RECEIVER_MAIN, RECEIVER_SUB)
-    ):
-        return frame_body[2:]
-    return frame_body
 
 
 def _excluded_from_probes(body: bytes, *, include_private: bool) -> bool:
@@ -551,7 +540,7 @@ def is_forbidden(frame_body: bytes, allowed: frozenset[bytes] | set[bytes]) -> b
     """
     if not frame_body:
         return True
-    body = _unwrap_cmd29(frame_body)
+    body = unwrap_receiver_prefix(frame_body)
     if body[0] in _REFUSED_COMMANDS:
         return True
     return body not in allowed
