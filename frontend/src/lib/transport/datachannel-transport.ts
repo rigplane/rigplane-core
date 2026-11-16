@@ -23,8 +23,15 @@ export const ATTACH_TIMEOUT_MS = 5000; // give-up bound for the attach step
 /** The `RTCDataChannel` surface this transport consumes. */
 export type DataChannelLike = Pick<RTCDataChannel, 'label' | 'readyState' | 'bufferedAmount' | 'binaryType' | 'onopen' | 'onmessage' | 'onclose' | 'onerror' | 'send' | 'close'>;
 
+/** Realm-safe `ArrayBuffer` check: a channel created in a parent window hands a
+ * UI running in an iframe an `ArrayBuffer` of the other realm, for which
+ * `instanceof ArrayBuffer` is false. */
+export function isArrayBuffer(value: unknown): value is ArrayBuffer {
+  return Object.prototype.toString.call(value) === '[object ArrayBuffer]';
+}
+
 /** A wire payload contract: its `fields` rows (name, kind, required, note). */
-interface PayloadContract { readonly fields: readonly (string | boolean)[][] }
+export interface PayloadContract { readonly fields: readonly (string | boolean)[][] }
 /** The typed, contract-validated `attach_ack` payload. */
 interface AttachAck { readonly type: 'attached'; readonly v: number; readonly channel: string }
 const CONTROLLER_PROTOCOL_PREFIX = 'rigplane-controller-v1.';
@@ -62,7 +69,7 @@ export function payloadMatchesContract(contract: PayloadContract, value: unknown
 }
 
 /** Build a payload carrying exactly the contract's fields. */
-function buildContractPayload(contract: PayloadContract, parts: Record<string, unknown>): string {
+export function buildContractPayload(contract: PayloadContract, parts: Record<string, unknown>): string {
   const payload: Record<string, unknown> = {};
   for (const row of contract.fields) {
     const [name, kind] = row;
@@ -78,7 +85,7 @@ function buildContractPayload(contract: PayloadContract, parts: Record<string, u
   return JSON.stringify(payload);
 }
 /** Decode a payload text against a contract; null when it violates it. */
-function decodeContractPayload<T>(contract: PayloadContract, text: string): T | null {
+export function decodeContractPayload<T>(contract: PayloadContract, text: string): T | null {
   let value: unknown;
   try {
     value = JSON.parse(text);
@@ -217,7 +224,7 @@ export class DataChannelTransport implements MessageTransport {
     }
     if (typeof data === 'string') {
       for (const handler of [...this.textHandlers]) handler(data);
-    } else if (data instanceof ArrayBuffer) {
+    } else if (isArrayBuffer(data)) {
       for (const handler of [...this.binaryHandlers]) handler(data);
     }
   }
