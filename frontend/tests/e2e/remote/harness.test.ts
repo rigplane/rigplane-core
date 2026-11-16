@@ -268,14 +268,16 @@ describe('producer contracts consumed by the harness', () => {
     expect(() => parseSimState(contract, { ptt_on: true })).toThrow('keys');
   });
 
-  it('accepts only an ok SDP answer', () => {
-    expect(parseRelayedAnswer({ status: 'ok', sdp: 'v=0', type: 'answer', extra: 1 })).toEqual({
-      status: 'ok',
-      sdp: 'v=0',
-      type: 'answer',
-    });
+  it('types the relayed answer by its status alone; the browser validates the SDP', () => {
+    // sdp/type are the W3C RTCSessionDescriptionInit pair: setRemoteDescription
+    // is their validator, so the harness does not second-guess them.
+    const real = { status: 'ok', sessionId: 's1', sdp: 'v=0', type: 'answer' };
+    expect(parseRelayedAnswer(real)).toEqual(real);
+    const odd = { status: 'ok', sdp: 'not even sdp', type: 'pranswer' };
+    expect(parseRelayedAnswer(odd)).toEqual(odd);
     expect(() => parseRelayedAnswer({ status: 'error', code: 'sdp_error' })).toThrow('refused');
-    expect(() => parseRelayedAnswer({ status: 'ok', sdp: 'v=0', type: 'offer' })).toThrow();
+    expect(() => parseRelayedAnswer(null)).toThrow('refused');
+    expect(() => parseRelayedAnswer('ok')).toThrow('refused');
   });
 
   describe('controller grant, consumed by the production ControllerClient', () => {
