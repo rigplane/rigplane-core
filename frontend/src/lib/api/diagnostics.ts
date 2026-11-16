@@ -15,6 +15,8 @@
  * See `docs/plans/2026-05-03-diagnostic-data-collection-design.md` §4.9.
  */
 
+import { apiFetch } from './api-fetch';
+
 const BASE = '/api/v1/diagnose';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -108,7 +110,7 @@ async function raiseFromResponse(
  * so the dialog can render the file list and redaction summary.
  */
 export async function previewBundle(req: PreviewRequest): Promise<PreviewResponse> {
-  const res = await fetch(`${BASE}/preview`, {
+  const res = await apiFetch(`${BASE}/preview`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(req),
@@ -128,7 +130,7 @@ export async function sendBundle(
   previewId: string,
   csrfToken: string,
 ): Promise<ReportSubmitted> {
-  const res = await fetch(`${BASE}/send`, {
+  const res = await apiFetch(`${BASE}/send`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -148,7 +150,7 @@ export async function saveBundle(
   previewId: string,
   csrfToken: string,
 ): Promise<Blob> {
-  const res = await fetch(`${BASE}/save`, {
+  const res = await apiFetch(`${BASE}/save`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -169,7 +171,7 @@ export async function deletePreview(
   previewId: string,
   csrfToken: string,
 ): Promise<void> {
-  const res = await fetch(`${BASE}/preview/${previewId}`, {
+  const res = await apiFetch(`${BASE}/preview/${previewId}`, {
     method: 'DELETE',
     headers: { 'X-Diagnostic-CSRF': csrfToken },
   });

@@ -12,7 +12,18 @@ import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 from collections.abc import Awaitable, Callable
-from typing import Literal, Never, NotRequired, Required, TypedDict, cast
+from typing import (
+    Literal,
+    Never,
+    NotRequired,
+    Required,
+    TypedDict,
+    cast,
+    TYPE_CHECKING,
+)
+
+if TYPE_CHECKING:
+    from rigplane.profiles.rig_loader import TxFuncSpec
 
 from rigplane.commands._codec import (
     bcd_encode_value,
@@ -32,6 +43,7 @@ from rigplane.core.types import (
 from rigplane.core.usb_identity import UsbAudioIdentity
 
 __all__ = [
+    "selector_one_is_sub",
     "CwTextSendCancelledError",
     "CwTextSpec",
     "CwTextUnsupportedError",
@@ -674,6 +686,14 @@ class RadioProfile:
     # Optional radio-LAN IQ wire facts from ``[iq_lan]`` (MOR-4398). The
     # dataclass stays in profiles to preserve the profiles/sdr independence.
     iq_lan: IqLanSpec | None = field(default=None, kw_only=True)
+    # Profile-declared FT (TX function) answer/write map
+    # (``rig_loader.TxFuncSpec``): which receiver (and A/B slot) each
+    # ``get_tx_func`` answer digit names, and which wire digit each
+    # ``set_tx_func`` selector writes. ``None`` when the profile declares
+    # no TX-function commands (single-receiver radios without an FT verb).
+    # Keyword-only and appended so no positional argument shifts
+    # (tests/test_discovery_probe_baud_order.py).
+    tx_func: TxFuncSpec | None = field(default=None, kw_only=True)
 
     @property
     def vfo_swap_code(self) -> int | None:
@@ -1005,6 +1025,17 @@ def _ensure_loaded() -> dict[str, RadioProfile]:
         )
 
     return _profiles
+
+
+def selector_one_is_sub(receiver_count: int, split_tx_target: str) -> bool:
+    """Whether CI-V 0x25/0x26 selector 01 is the physical SUB receiver.
+
+    Profile data, not a model check: ``split_tx_target = "sub_receiver"``
+    declares that selector 01 is the SUB band (IC-7610 CI-V Reference Guide
+    Rev.4 p.9/p.13). ``main_unselected`` -- selector 01 is the unselected
+    VFO inside MAIN, never SUB -- and any other value fail closed (MOR-3591).
+    """
+    return receiver_count >= 2 and split_tx_target == "sub_receiver"
 
 
 def get_radio_profile(name_or_id: str) -> RadioProfile:

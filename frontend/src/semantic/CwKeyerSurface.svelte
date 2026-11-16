@@ -23,8 +23,11 @@
       READ, never re-derived: no `getFrequencyPermit` call, no band-plan
       lookup, no second permit. Anything other than a positively `'allowed'`
       permit — denied, ranges-unconfigured, tx-target-unknown — disables every
-      break-in choice, `unknown` INCLUDED. That over-disable is deliberate
-      (MOR-1296 O2) and must never be "fixed" back to v2's optimism.
+      break-in choice, `unknown` INCLUDED, with exactly ONE exception (MOR-4433):
+      the unknown that follows from NO source (`isSourcelessPermitUnknown` —
+      the shared narrow decision the adapter, the validator and the key gate
+      read too). That over-disable is otherwise deliberate (MOR-1296 O2) and
+      must never be "fixed" back to v2's optimism.
 
       Including "break-in OFF". Unlike RxTxSurface's unkey — which is never
       gated because it STOPS transmission — `set_break_in 0` is an ordinary
@@ -56,6 +59,9 @@
   import { CW_CONTINUOUS_LEVELS } from './CwKeyerInstrumentHost.svelte';
   import type { BreakInChoice } from '$lib/types/capabilities';
   import type { BreakInMode, CwKeyerField, DisabledReasonCode } from './radio-view-model';
+  /** MOR-4433: the ONE shared sourceless-target decision (see rule 2) — a
+   *  predicate READ, never a second permit derivation. */
+  import { isSourcelessPermitUnknown } from '$lib/utils/tx-permit';
   import { pressedOf } from './pressed-of';
   import { readingText } from '../primitives/reading-text';
 
@@ -194,9 +200,15 @@
     }
     return longest > 5 ? `${longest}ch` : undefined;
   });
-  /** Rule 2. The model's ONE permit, READ. No second derivation exists here —
-   *  `getFrequencyPermit`, `txBands` and `band` are not imported at all. */
-  let permitAllowed = $derived(view.txPermit.status === 'allowed');
+  /** Rule 2. The model's ONE permit, READ — plus the single MOR-4433
+   *  sourceless exception, through the shared predicate (never a second
+   *  derivation: `getFrequencyPermit`, `txBands` and `band` stay unimported).
+   *  The renderer AND the handler below read THIS derivation, so both gates
+   *  are the same decision. */
+  let breakInPermitted = $derived(
+    view.txPermit.status === 'allowed'
+      || isSourcelessPermitUnknown(view.txTarget, view.txPermit),
+  );
   /** Rule 3. Guaranteed present by the validator whenever break-in is blocked. */
   let breakInReason = $derived(
     view.disabledReasons.find((r) => r.field === 'cwKeyer.breakIn')?.code,
@@ -241,7 +253,7 @@
    *  language may restyle these controls, and a programmatic click must not
    *  set what the widget refused. */
   function setBreakIn(mode: number): void {
-    if (cw && usable(cw.breakIn) && permitAllowed) onBreakInMode?.(mode);
+    if (cw && usable(cw.breakIn) && breakInPermitted) onBreakInMode?.(mode);
   }
   function toggleBreakIn(decode: string, mode: number): void {
     setBreakIn(
@@ -420,7 +432,7 @@
       <div
         class="cw-keyer-block" data-testid="cw-keyer-break-in"
         data-posture={breakInPosture(cw.breakIn)}
-        data-permitted={permitAllowed}
+        data-permitted={breakInPermitted}
       >
         <div class="cw-keyer-row" role="group" aria-label="Break-in">
           {#if standard}
@@ -448,9 +460,9 @@
               aria-pressed={cw.breakIn.reading.status === 'known'
                 ? cw.breakIn.reading.value === decode : undefined}
               aria-describedby={breakInPosture(cw.breakIn) === 'unknown'
-                ? (!permitAllowed && breakInReason ? breakInReasonId : undefined)
-                : `${breakInPostureId}${!permitAllowed && breakInReason ? ` ${breakInReasonId}` : ''}`}
-              disabled={!usable(cw.breakIn) || !permitAllowed}
+                ? (!breakInPermitted && breakInReason ? breakInReasonId : undefined)
+                : `${breakInPostureId}${!breakInPermitted && breakInReason ? ` ${breakInReasonId}` : ''}`}
+              disabled={!usable(cw.breakIn) || !breakInPermitted}
               onclick={() => (standard && decode !== 'off'
                 ? toggleBreakIn(decode!, choice.value) : setBreakIn(choice.value))}
             >{standard ? choice.label.toUpperCase() : choice.label}</button>
@@ -467,7 +479,7 @@
         <p id={breakInPostureId} class="cw-keyer-sentence cw-keyer-posture-line" class:sr-only={standard}>
           <output data-testid="cw-keyer-posture">{POSTURE_LABEL[breakInPosture(cw.breakIn)]}</output>
         </p>
-        {#if !permitAllowed && breakInReason}
+        {#if !breakInPermitted && breakInReason}
           <p id={breakInReasonId} class="cw-keyer-sentence" class:sr-only={standard}>
             <output data-testid="cw-keyer-break-in-blocked" data-reason={breakInReason}
             >{breakInBlockedLabel(breakInReason)}</output>

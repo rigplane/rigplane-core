@@ -12,7 +12,10 @@ from fractions import Fraction
 from importlib import resources
 from importlib.resources.abc import Traversable
 from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
+
+if TYPE_CHECKING:
+    from rigplane.profiles.probe_checks import ProbeCheck
 
 from rigplane.core.capabilities import (
     CAP_FILTER_WIDTH_RADIO_DEFAULT,
@@ -44,6 +47,7 @@ from rigplane.profiles.control_domain import (
     _public_decimal,
     validate_control_raw_value,
 )
+from rigplane.profiles.probe_checks import RadioFacts, parse_probe_checks
 
 __all__ = [
     "RigConfig",
@@ -63,6 +67,7 @@ from rigplane.commands.command_spec import (
     CommandSpec,
 )
 from rigplane.profiles import (
+    selector_one_is_sub,
     BandInfo,
     CwTextSpec,
     ControlDomainSpec,
@@ -651,6 +656,29 @@ def _parse_control_spec(
 
 
 @dataclass(frozen=True, slots=True)
+class TxFuncTarget:
+    """One FT (TX function) answer's meaning: receiver + optional A/B slot."""
+
+    receiver: str
+    slot: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class TxFuncSpec:
+    """Profile-declared FT answer and write encodings.
+
+    ``read_map`` translates the ``get_tx_func`` answer digit to the
+    transmitting receiver (and, on single-receiver ``ab`` profiles, the
+    A/B slot whose frequency was read). ``write_map`` translates the
+    ``set_tx_func`` 0/1 selector to the wire digit (identity on radios
+    like the FTX-1, ``2``/``3`` on the FT-991A).
+    """
+
+    read_map: dict[str, TxFuncTarget]
+    write_map: dict[int, str]
+
+
+@dataclass(frozen=True, slots=True)
 class SplitSpec:
     """CAT split value encodings, separate from command templates."""
 
@@ -691,6 +719,74 @@ def _parse_split(filename: str, raw: object) -> SplitSpec:
     return SplitSpec(
         write_map={False: cast(str, write["off"]), True: cast(str, write["on"])},
         read_map={cast(str, key): value == "on" for key, value in read.items()},
+    )
+
+
+def _parse_tx_func(filename: str, raw: object, scheme: str) -> TxFuncSpec | None:
+    """Parse the optional ``[vfo.tx_func]`` FT answer/write map."""
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise RigLoadError(f"{filename}: [vfo.tx_func] must be a table")
+    _reject_unknown_keys(
+        filename, "[vfo.tx_func]", raw, frozenset({"read_map", "write_map"})
+    )
+    read = raw.get("read_map")
+    if (
+        not isinstance(read, dict)
+        or set(read) != {"0", "1"}
+        or not all(isinstance(value, str) and value for value in read.values())
+    ):
+        raise RigLoadError(
+            f"{filename}: [vfo.tx_func].read_map must map "
+            '"0" and "1" to non-empty targets'
+        )
+    targets: dict[str, TxFuncTarget] = {}
+    for answer, target in read.items():
+        parts = cast(str, target).split(":")
+        receiver, slot = (parts[0], None) if len(parts) == 1 else (parts[0], parts[1])
+        if (
+            len(parts) not in (1, 2)
+            or receiver not in ("MAIN", "SUB")
+            or (slot is not None and slot not in ("A", "B"))
+        ):
+            raise RigLoadError(
+                f"{filename}: [vfo.tx_func].read_map[{answer!r}] must be "
+                '"MAIN", "SUB", "MAIN:A" or "MAIN:B", '
+                f"got {target!r}"
+            )
+        if scheme == "ab":
+            if receiver != "MAIN" or slot is None:
+                raise RigLoadError(
+                    f"{filename}: [vfo.tx_func] on the ab scheme names "
+                    f"MAIN with an A/B slot, got {target!r}"
+                )
+        elif scheme in ("ab_shared", "main_sub"):
+            if slot is not None:
+                raise RigLoadError(
+                    f"{filename}: [vfo.tx_func] on the {scheme} scheme names "
+                    f"MAIN/SUB with no slot, got {target!r}"
+                )
+        elif receiver != "MAIN" or slot is not None:
+            raise RigLoadError(
+                f"{filename}: [vfo.tx_func] on the {scheme} scheme names "
+                f"MAIN with no slot, got {target!r}"
+            )
+        targets[cast(str, answer)] = TxFuncTarget(receiver=receiver, slot=slot)
+    write = raw.get("write_map")
+    if (
+        not isinstance(write, dict)
+        or set(write) != {"0", "1"}
+        or not all(isinstance(value, str) and value for value in write.values())
+        or write["0"] == write["1"]
+    ):
+        raise RigLoadError(
+            f"{filename}: [vfo.tx_func].write_map must map "
+            '"0" and "1" to distinct non-empty wire digits'
+        )
+    return TxFuncSpec(
+        read_map=targets,
+        write_map={0: cast(str, write["0"]), 1: cast(str, write["1"])},
     )
 
 
@@ -821,6 +917,7 @@ class RigConfig:
     state_acquisition: RadioAcquisitionProfile | None = None
     tx_policy: TxPolicy = field(default_factory=TxPolicy)
     split: SplitSpec = field(default_factory=SplitSpec)
+    tx_func: TxFuncSpec | None = None
     ctcss_tones_centihz: tuple[int, ...] | None = None
     tone_squelch_types: dict[int, ToneSquelchType] | None = None
     # Protocol-native expected identity tokens (MOR-3064), from the optional
@@ -844,6 +941,10 @@ class RigConfig:
     # non-Xiegu profile. Keyword-only so no positional argument shifts.
     xiegu_model_id: int | None = field(default=None, kw_only=True)
     iq_lan: IqLanSpec | None = field(default=None, kw_only=True)
+    # Typed ``[[probe.checks]]`` write checks (MOR-4464 B1), from the
+    # optional top-level ``[probe]`` section. Empty when not declared.
+    # Keyword-only so no positional argument shifts.
+    probe_checks: tuple[ProbeCheck, ...] = field(default=(), kw_only=True)
 
     def to_profile(self) -> RadioProfile:
         """Build a ``RadioProfile`` from this config."""
@@ -971,6 +1072,7 @@ class RigConfig:
             vfo_readback=self.vfo_readback,
             tx_receiver_rule=self.tx_receiver_rule,
             split_tx_target=self.split_tx_target,
+            tx_func=self.tx_func,
             has_lan=self.has_lan,
             freq_ranges=ranges,
             modes=tuple(self.modes),
@@ -3091,6 +3193,7 @@ def load_rig(path: Path) -> RigConfig:
             f"{filename}: [vfo].scheme must be one of {VALID_VFO_SCHEMES}, "
             f"got {scheme!r}"
         )
+    tx_func = _parse_tx_func(filename, vfo.get("tx_func"), scheme)
     vfo_readback = vfo.get("readback", "none")
     if vfo_readback not in VALID_VFO_READBACK:
         raise RigLoadError(
@@ -3255,6 +3358,18 @@ def load_rig(path: Path) -> RigConfig:
         # Apply overrides
         for key, value in overrides.items():
             commands[key] = _parse_command_value(filename, key, value)
+    # The FT answer/write map and its commands come as a pair, either way:
+    # a command without the map has no declared meaning, and a map with no
+    # command has no caller.
+    has_tx_func_commands = "get_tx_func" in commands or "set_tx_func" in commands
+    if has_tx_func_commands and tx_func is None:
+        raise RigLoadError(
+            f"{filename}: get/set_tx_func is declared without [vfo.tx_func]"
+        )
+    if tx_func is not None and not has_tx_func_commands:
+        raise RigLoadError(
+            f"{filename}: [vfo.tx_func] is declared without get/set_tx_func"
+        )
     tone_squelch_types = _resolve_tone_squelch_types(path, data, commands)
 
     # Parse freq_ranges
@@ -4106,11 +4221,30 @@ def load_rig(path: Path) -> RigConfig:
         state_acquisition=state_acquisition,
         tx_policy=tx_policy,
         split=split,
+        tx_func=tx_func,
         expected_identity_ids=expected_identity_ids,
         memory=memory,
         cw_text=cw_text,
         usb_identity=usb_identity,
         iq_lan=iq_lan,
+        probe_checks=parse_probe_checks(
+            filename,
+            data.get("probe"),
+            facts=RadioFacts(
+                protocol=protocol_type,
+                commands=commands,
+                modes=tuple(modes),
+                mode_codes=None if mode_codes is None else tuple(mode_codes),
+                cmd29_routes=frozenset(cmd29_routes),
+                swap_ab=vfo_swap_ab,
+                swap_main_sub=vfo_swap_main_sub,
+                unselected_is_sub=selector_one_is_sub(receiver_count, split_tx_target),
+                data_modes=data_mode_count,
+                freq_ranges=tuple(
+                    (r["start_hz"], r["end_hz"]) for r in freq_ranges_data
+                ),
+            ),
+        ),
     )
 
 

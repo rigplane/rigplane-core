@@ -14,6 +14,7 @@ import { setRadioStatus } from '$lib/stores/connection.svelte';
 import { resetRadioState } from '$lib/stores/radio.svelte';
 import { setRxError, setTxError } from '$lib/stores/audio.svelte';
 import { getAuthHeaders } from '$lib/auth';
+import { apiFetch } from '$lib/api/api-fetch';
 
 export interface EibiStation {
   name?: string;
@@ -66,7 +67,7 @@ export class SystemController {
 
   async powerOn(): Promise<void> {
     controllerClient.assertHostAction();
-    const resp = await fetch('/api/v1/radio/power', {
+    const resp = await apiFetch('/api/v1/radio/power', {
       method: 'POST',
       headers: { ...getAuthHeaders(), 'Content-Type': 'application/json' },
       body: JSON.stringify({ state: 'on' }),
@@ -76,7 +77,7 @@ export class SystemController {
 
   async powerOff(): Promise<void> {
     controllerClient.assertHostAction();
-    const resp = await fetch('/api/v1/radio/power', {
+    const resp = await apiFetch('/api/v1/radio/power', {
       method: 'POST',
       headers: { ...getAuthHeaders(), 'Content-Type': 'application/json' },
       body: JSON.stringify({ state: 'off' }),
@@ -198,7 +199,7 @@ export class SystemController {
 
   async identifyFrequency(freqHz: number): Promise<EibiResult | null> {
     try {
-      const resp = await fetch(`/api/v1/eibi/identify?freq=${freqHz}`, {
+      const resp = await apiFetch(`/api/v1/eibi/identify?freq=${freqHz}`, {
         headers: getAuthHeaders(),
       });
       if (!resp.ok) return null;

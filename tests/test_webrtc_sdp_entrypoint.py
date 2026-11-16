@@ -15,12 +15,17 @@ extra is missing.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 from typing import Any
 from unittest.mock import patch
 
 import pytest
 
+from _perf_helpers import fast_connect
+from testkit.ic7610_fakes import ic7610_lan_fake
+
+from rigplane.radio import IcomRadio
 from rigplane.web.server import WebConfig, WebServer
 from rigplane.web.transport.webrtc import webrtc_available
 
@@ -147,7 +152,27 @@ async def test_full_session_negotiates_control_scope_audio() -> None:
         add_scope_channel,
     )
 
-    server = WebServer(None, WebConfig(webrtc_enabled=True))
+    # A keyed control channel runs the real ControlHandler, which needs a
+    # radio to survive past hello: with radio=None it refuses aloud (no
+    # profile identifies the radio) and the primary loss ends the session,
+    # refusing the scope/audio attaches. The LAN fake keeps the handler up.
+    sim = ic7610_lan_fake(single_owner=True)
+    await sim.start()
+    radio = IcomRadio(
+        host="127.0.0.1",
+        port=sim.control_port,
+        username="testuser",
+        password="testpass",
+        timeout=5.0,
+        model="IC-7610",
+        auto_reconnect=True,
+        reconnect_delay=0.2,
+        reconnect_max_delay=0.5,
+        watchdog_timeout=1.5,
+    )
+    with fast_connect():
+        await radio.connect()
+    server = WebServer(radio, WebConfig(webrtc_enabled=True))
     client_pc = RTCPeerConnection()
 
     # Browser side opens the three channels via the production factories.
@@ -185,6 +210,27 @@ async def test_full_session_negotiates_control_scope_audio() -> None:
         await asyncio.sleep(0.05)
     assert all(c.readyState == "open" for c in client_ch.values())
 
+    # Attach every channel through the shared attach path (first text
+    # frame). Data channels admit only keyed peers, so acquire a session
+    # first. All three attaches go out back to back right after open, as
+    # before: each channel must send its attach within 5 s of dispatch,
+    # and a hello wait between them would push scope/audio past that
+    # window on slow ICE. Control is sent first — scope/audio join as
+    # auxiliaries and need the primary in place — then the control
+    # channel's handler sends its hello.
+    grant = server._controller.acquire("pro")  # noqa: SLF001
+    key = grant["controller_key"]
+    for label, channel in client_ch.items():
+        channel.send(
+            json.dumps(
+                {
+                    "type": "attach",
+                    "controller_key": key,
+                    "state_delta": 2,
+                    "role": "primary" if label == "control" else "auxiliary",
+                }
+            )
+        )
     # control: ControlHandler.run() sends a hello frame to the browser.
     for _ in range(100):
         if control_hello:
@@ -212,6 +258,11 @@ async def test_full_session_negotiates_control_scope_audio() -> None:
 
     await server._webrtc_sessions.close_all()  # type: ignore[union-attr]
     await client_pc.close()
+    with contextlib.suppress(Exception):
+        with fast_connect():
+            await asyncio.wait_for(radio.disconnect(), 10.0)
+    with contextlib.suppress(Exception):
+        await sim.stop()
 
 
 @pytest.mark.asyncio

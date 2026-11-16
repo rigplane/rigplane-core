@@ -151,6 +151,15 @@ from .api_contract import (  # noqa: TID251
     ConnectionSessionRecord,
     ManagedTransmitDocument,
 )
+from .api_channel import ApiChannelHandler  # noqa: TID251
+from .channel_attach import (  # noqa: TID251
+    ATTACH_ACK_KINDS,
+    ChannelAttachedAck,
+    ChannelKind,
+    ClientChannelParams,
+    ReAckingConnection,
+    TransportKind,
+)
 from .discovery import DiscoveryResponder  # noqa: TID251
 from .dx_cluster import DXClusterClient, SpotBuffer  # noqa: TID251
 from .handlers import (  # noqa: TID251
@@ -209,6 +218,7 @@ if TYPE_CHECKING:
     from ..profiles import RadioProfile
     from ..radio_protocol import Radio
     from ..runtime.managed_tx_composition import ManagedTxCompositionPort
+    from .transport.connection import Connection  # noqa: TID251
     from .transport.webrtc_session import WebRtcSessionManager  # noqa: TID251
 
 __all__ = ["WebConfig", "WebServer", "run_web_server"]
@@ -1022,6 +1032,9 @@ class WebConfig:
     # backend filling the store leave it off.
     await_initial_state: bool = False
     webrtc_enabled: bool = False  # enable the gated WebRTC transport entrypoint
+    webrtc_include_vpn: bool = (
+        False  # admit VPN/tunnel interfaces as ICE host candidates
+    )
     state_diagnostics: bool = False  # enable behavior-neutral state diagnostics
     # Adaptive per-client egress codec controller (MOR-588, ADR §3.6):
     # PCM16↔Opus switching on detected slow/lossy links. Off (default) =
@@ -1089,18 +1102,18 @@ class ConnectionManager:
     MAX_PER_IP_PER_CHANNEL: int = 9  # Three tabs across control, scope and audio.
 
     def __init__(self) -> None:
-        self._connections: dict[tuple[str, str], list[WebSocketConnection]] = {}
-        self._owners: dict[WebSocketConnection, str] = {}
+        self._connections: dict[tuple[str, str], list[Connection]] = {}
+        self._owners: dict[Connection, str] = {}
 
     def register(
         self,
         scope: str,
         channel: str,
-        ws: WebSocketConnection,
+        ws: Connection,
         *,
         owner: str | None = None,
         holder: str | None = None,
-    ) -> list[WebSocketConnection]:
+    ) -> list[Connection]:
         """Register ws for (scope, channel) and return any evicted excess connections.
 
         ``owner`` is the channel's TX owner, ``holder`` the current TX holder.
@@ -1110,7 +1123,7 @@ class ConnectionManager:
         conns.append(ws)
         if owner is not None:
             self._owners[ws] = owner
-        evicted: list[WebSocketConnection] = []
+        evicted: list[Connection] = []
         while len(conns) > self.MAX_PER_IP_PER_CHANNEL:
             victim = next(
                 (
@@ -1136,7 +1149,7 @@ class ConnectionManager:
             )
         return evicted
 
-    def unregister(self, scope: str, channel: str, ws: WebSocketConnection) -> None:
+    def unregister(self, scope: str, channel: str, ws: Connection) -> None:
         """Remove ws from (scope, channel) tracking."""
         key = (scope, channel)
         conns = self._connections.get(key, [])
@@ -1148,9 +1161,9 @@ class ConnectionManager:
         if not conns:
             self._connections.pop(key, None)
 
-    def reap_dead(self) -> list[WebSocketConnection]:
+    def reap_dead(self) -> list[Connection]:
         """Remove and return all tracked connections where ws.is_alive() == False."""
-        dead: list[WebSocketConnection] = []
+        dead: list[Connection] = []
         for key in list(self._connections):
             conns = self._connections[key]
             alive = [ws for ws in conns if ws.is_alive()]
@@ -1163,6 +1176,29 @@ class ConnectionManager:
             else:
                 self._connections.pop(key, None)
         return dead
+
+
+# Channel kind (``serve_client_channel``) to WebSocket path: the connection
+# manager tracks channels by their WebSocket path, so the shared serve
+# translates back to it for registration, eviction and logging.
+_ATTACH_PATH_FOR_KIND: dict[str, str] = {
+    "control": "/api/v1/ws",
+    "scope": "/api/v1/scope",
+    "audio": "/api/v1/audio",
+    "rigctl": "/api/v1/rigctl",
+    # The api channel has no WebSocket path; this label only scopes its
+    # connection-bucket registration, eviction, and logging.
+    "api": "/api/v1/api",
+}
+
+# WebSocket path to channel kind for the upgrade adapter; anything else
+# keeps the historical "unknown channel" close after the handshake.
+_WS_KIND_FOR_PATH: dict[str, str] = {
+    "/api/v1/ws": "control",
+    "/api/v1/scope": "scope",
+    "/api/v1/audio": "audio",
+    "/api/v1/rigctl": "rigctl",
+}
 
 
 def _log_late_managed_tx_rebind(task: "asyncio.Task[Any]") -> None:
@@ -5467,7 +5503,6 @@ class WebServer:
             self._controller_installed
             and not self._config.read_only
             and not self._stopping
-            and self._webrtc_sessions is None
             and self._audio_bridge is None
             and self._controller_native_ready()
             and isinstance(authority, ManagedTxAuthority)
@@ -7219,6 +7254,9 @@ class WebServer:
         """Return the lazily-built WebRTC session manager for this server."""
         if self._webrtc_sessions is None:
             from .transport.webrtc_session import WebRtcSessionManager  # noqa: TID251
+            from .transport.ice_gathering import (  # noqa: TID251
+                IceGatheringPolicy,
+            )
 
             raw_model = (
                 getattr(self._radio, "model", None) if self._radio is not None else None
@@ -7226,7 +7264,14 @@ class WebServer:
             model = (
                 raw_model if isinstance(raw_model, str) else self._config.radio_model
             )
-            self._webrtc_sessions = WebRtcSessionManager(self._radio, self, model)
+            self._webrtc_sessions = WebRtcSessionManager(
+                self._radio,
+                self,
+                model,
+                gather_policy=IceGatheringPolicy(
+                    include_vpn=self._config.webrtc_include_vpn
+                ),
+            )
         return self._webrtc_sessions
 
     async def _webrtc_unavailable(
@@ -7288,9 +7333,29 @@ class WebServer:
             return
 
         from .transport.webrtc_session import WebRtcSessionError  # noqa: TID251
+        from .transport.ice_gathering import parse_ice_servers  # noqa: TID251
+
+        ice_servers_raw = payload.get("ice_servers", None)
+        try:
+            ice_servers = parse_ice_servers(ice_servers_raw)
+        except ValueError as exc:
+            err = json.dumps(
+                {
+                    "status": "error",
+                    "code": "invalid_ice_servers",
+                    "message": str(exc),
+                },
+                separators=(",", ":"),
+            ).encode()
+            await _send_response(
+                writer, 400, "Bad Request", err, {"Content-Type": "application/json"}
+            )
+            return
 
         try:
-            result = await self._webrtc_session_manager().negotiate(sdp, offer_type)
+            result = await self._webrtc_session_manager().negotiate(
+                sdp, offer_type, ice_servers
+            )
         except WebRtcSessionError as exc:
             err = json.dumps(
                 {"status": "error", "code": "sdp_error", "message": str(exc)},
@@ -7802,6 +7867,308 @@ class WebServer:
         )
 
     # ------------------------------------------------------------------
+    # One client-channel attach path (WebSocket + data channels)
+    # ------------------------------------------------------------------
+
+    def _resolve_client_ticket(
+        self, params: ClientChannelParams, kind: str
+    ) -> ControllerTicket | None:
+        """Capture or attach the controller ticket for a channel.
+
+        Shared by the WebSocket upgrade (before the 101 response, so a
+        refusal stays a JSON error) and the data-channel adapter (a
+        refusal closes the channel). Local mode with no key captures the
+        ambient sessionless ticket; anywhere else the key attaches
+        exactly as the historical upgrade did. The rigctl restriction is
+        applied here after both capture and keyed attachment, so every
+        transport answers today's pre-upgrade JSON 403 for a sessionless
+        rigctl channel. Raises :class:`ControllerError` on refusal.
+
+        The ``api`` channel is the exception: a keyless attach is
+        admitted in every mode (it returns ``None`` — the channel holds
+        no ticket and every request runs the shared HTTP controller gate
+        with its own key), because it is how a browser acquires its
+        first key. A keyed ``api`` attach mints one distinct
+        non-primary channel ticket per channel with ``channel_ticket``
+        — liveness only, no primary/auxiliary side effects — so two
+        channels on one key stay independent while session end and peer
+        loss fence each like the other channels.
+        """
+        if kind == "api":
+            if params.controller_key is None:
+                return None
+            return self._controller.channel_ticket(params.controller_key)
+        if params.controller_key is None:
+            if self._controller.mode != "local":
+                raise ControllerError("controller_invalid")
+            ticket = self._controller.capture()
+        else:
+            ticket = self._controller.attach(
+                params.controller_key,
+                params.controller_role if kind == "control" else "auxiliary",
+                f"controller-{time.monotonic_ns()}",
+            )
+        if kind == "rigctl" and ticket.tx_owner is None:
+            # MOR-3536: rigctl lines key as the session the channel
+            # joined, so a channel without a multi-client session is
+            # refused — whether it captured the ambient sessionless ticket
+            # or attached with a key that carries no session. A sessionless
+            # rigctld client has the TCP port; this channel exists to tie
+            # a remote client's keying to its own session's audio.
+            self._controller.detach(ticket)
+            raise ControllerError("controller_session_required")
+        return ticket
+
+    async def attach_client_channel(
+        self,
+        conn: Connection,
+        kind: ChannelKind,
+        params: ClientChannelParams,
+        peer: tuple[str, int],
+        *,
+        transport: TransportKind,
+        track_owners: set[str] | None = None,
+    ) -> None:
+        """Attach one client channel through the single shared mechanism.
+
+        Resolves the controller ticket from ``params``, then serves the
+        channel (handler construction, registration, caps, keepalive,
+        cleanup) via :meth:`serve_client_channel`. The data-channel
+        adapter calls this directly with ``transport="datachannel"``;
+        the WebSocket upgrade calls :meth:`_resolve_client_ticket` and
+        :meth:`serve_client_channel` with ``transport="ws"`` around the
+        101 handshake, which must stay between the refusal decision and
+        the first handler byte. A lossy data-channel attach (scope/audio,
+        the only channels that can lose the attach frame) is acknowledged
+        there with one ``ChannelAttachedAck`` text frame; control/api and
+        the WebSocket lane never send one. When ``track_owners`` is given,
+        the attached session owner is recorded in it for the channel's        lifetime, so a transport-loss signal can fence that session
+        through the existing session-loss path. A keyless ``api`` attach
+        resolves to no ticket (``None``): nothing is tracked and the
+        channel holds no session.
+        """
+        ticket = self._resolve_client_ticket(params, kind)
+        if (
+            track_owners is not None
+            and ticket is not None
+            and ticket.tx_owner is not None
+        ):
+            track_owners.add(ticket.tx_owner)
+        if transport == "datachannel" and kind in ATTACH_ACK_KINDS:
+            # The ack, before the first handler byte (a dead send must
+            # not kill the attach). The wrapper re-acknowledges a REPEAT
+            # attach: the retry never reaches the handler and builds no
+            # new ticket or handler.
+            conn = ReAckingConnection(conn, kind)
+            try:
+                await conn.send_text(ChannelAttachedAck(kind).encode())
+            except Exception:
+                logger.debug("attach ack send failed on %r", kind, exc_info=True)
+
+        try:
+            await self.serve_client_channel(
+                conn, kind, ticket, params, peer, transport=transport
+            )
+        finally:
+            if (
+                track_owners is not None
+                and ticket is not None
+                and ticket.tx_owner is not None
+            ):
+                track_owners.discard(ticket.tx_owner)
+
+    async def serve_client_channel(
+        self,
+        conn: Connection,
+        kind: str,
+        ticket: ControllerTicket | None,
+        params: ClientChannelParams,
+        peer: tuple[str, int],
+        *,
+        transport: TransportKind,
+    ) -> None:
+        """Serve one attached channel: handlers, caps, keepalive, cleanup.
+
+        The one mechanism every transport shares. ``kind`` is
+        ``control`` / ``scope`` / ``audio`` / ``api`` (``rigctl`` and
+        anything else arrive only from the WebSocket lane and keep their
+        historical early close). ``ticket`` is ``None`` only for a
+        keyless ``api`` attach: that channel holds no session, so it
+        skips ticket validation, session abort registration, and the
+        ambient bind (every request carries and validates its own key
+        through the shared HTTP controller gate instead). ``peer`` is
+        the ``(host, port)`` pair the WebSocket lane passes to
+        connection tracking; a data-channel peer passes its WebRTC
+        session id so each peer scopes its own connection bucket.
+        ``transport`` is the adapter-declared ``"ws"`` /
+        ``"datachannel"`` tag used for logging and keepalive selection;
+        the shared path never branches on the connection's concrete
+        type.
+        """
+        raw_model = (
+            getattr(self._radio, "model", None) if self._radio is not None else None
+        )
+        model = raw_model if isinstance(raw_model, str) else self._config.radio_model
+
+        handler: Any
+        if ticket is None:
+            # Only a keyless api attach resolves to no ticket.
+            assert kind == "api"
+            handler = ApiChannelHandler(conn, self, peer)
+        elif kind == "control":
+            if ticket.remote:
+                self._controller.register_control(ticket)
+            handler = ControlHandler(
+                conn,
+                self._radio,
+                __version__,
+                model,
+                server=self,
+                read_only=self._config.read_only,
+                managed_tx_authority=self._managed_tx_authority(),
+                session_id=ticket.session_id,
+                tx_owner=ticket.tx_owner,
+                leaf_state_deltas=params.state_delta == 2,
+            )
+        elif kind == "api":
+            handler = ApiChannelHandler(conn, self, peer)
+        elif kind == "scope":
+            handler = ScopeHandler(conn, server=self)
+        elif kind == "audio":
+            audio_source = object()
+            handler = AudioHandler(
+                conn,
+                self._radio,
+                self._audio_broadcaster,
+                tx_gate=lambda: self._controller_audio_gate(ticket, audio_source),
+                controller=self._controller,
+                controller_ticket=ticket,
+                controller_audio_source=audio_source,
+                controller_audio_loss=self._controller_audio_loss,
+                controller_track_stop=self._controller_track_audio_stop,
+                managed_tx_authority=self._managed_tx_authority(),
+            )
+        elif kind == "rigctl":
+            owner = ticket.tx_owner
+            assert owner is not None  # refused before the upgrade otherwise
+            if self._rigctl_channel is None:
+                self._controller.detach(ticket)
+                await conn.close(1008, "rigctl channel not available")
+                return
+            handler = RigctlChannelHandler(
+                conn,
+                self._rigctl_channel,
+                owner,
+                peer,
+            )
+        else:
+            self._controller.detach(ticket)
+            await conn.close(1008, "unknown channel")
+            return
+
+        ip = str(peer[0])
+        transport_tag = transport
+
+        # Register with connection manager; evict oldest excess connections.
+        # MOR-3534: a session-attached channel counts against its session, not
+        # the shared IP. The holder session's channels, and the control channel
+        # of a sessionless socket that keyed PTT, are never evicted.
+        # A keyless api channel holds no session: it counts against its peer.
+        scope = ip if ticket is None or ticket.tx_owner is None else ticket.tx_owner
+        managed = self._managed_tx_authority()
+        evicted = self._conn_manager.register(
+            scope,
+            _ATTACH_PATH_FOR_KIND[kind],
+            conn,
+            owner=(ticket.tx_owner if ticket is not None else None)
+            or getattr(handler, "_tx_owner", None),
+            holder=managed.tx_holder_nowait()
+            if isinstance(managed, ManagedTxAuthority)
+            else None,
+        )
+        for old_conn in evicted:
+            logger.info(
+                "%s: evicting old connection from %s on %s (per-client limit)",
+                transport_tag,
+                ip,
+                _ATTACH_PATH_FOR_KIND[kind],
+            )
+            try:
+                await old_conn.close(1001, "replaced by newer connection")
+            except Exception:
+                pass
+
+        logger.info(
+            "%s connect: %s %s:%s (active=%d)",
+            transport_tag,
+            _ATTACH_PATH_FOR_KIND[kind],
+            peer[0],
+            peer[1],
+            len(self._client_tasks),
+        )
+        if ticket is not None:
+            try:
+                self._controller.validate(ticket)
+            except ControllerError:
+                self._controller.detach(ticket)
+                self._conn_manager.unregister(scope, _ATTACH_PATH_FOR_KIND[kind], conn)
+                conn.abort()
+                return
+        # WebSocket channels keep their historical ping/pong; data channels
+        # have no keepalive task — the controller session watchdog is the
+        # one expiry mechanism (it aborts the registered channel).
+        keepalive: asyncio.Task[Any] | None = None
+        if transport == "ws":
+            keepalive = asyncio.create_task(
+                cast(Any, conn).keepalive_loop(self._config.keepalive_interval)
+            )
+        if ticket is not None:
+            if ticket.tx_owner is not None:
+                self._controller.add_channel(ticket, conn.abort)
+            if ticket.remote:
+                self._controller.add_channel(ticket, conn.abort)
+                task = asyncio.current_task()
+                assert task is not None
+                self._controller_handler_tasks[ticket] = task
+        try:
+            if ticket is None or kind == "api":
+                # No ambient session on the api channel — keyless or keyed:
+                # every request carries and validates its own key through
+                # the shared HTTP gate (the per-request credential, or the
+                # ordinary sessionless ticket, exactly like HTTP), so
+                # request tasks never inherit the attachment ticket.
+                await handler.run()
+            else:
+                with self._controller.bind(ticket):
+                    await handler.run()
+        except Exception as exc:
+            logger.debug(
+                "%s handler error on %s: %s",
+                transport_tag,
+                _redact_token_in_path(_ATTACH_PATH_FOR_KIND[kind]),
+                exc,
+            )
+        finally:
+            if ticket is not None:
+                self._controller.detach(ticket)
+                self._controller_handler_tasks.pop(ticket, None)
+            if keepalive is not None:
+                keepalive.cancel()
+                try:
+                    await keepalive
+                except asyncio.CancelledError:
+                    pass
+            self._conn_manager.unregister(scope, _ATTACH_PATH_FOR_KIND[kind], conn)
+            logger.info(
+                "%s disconnect: %s %s:%s (active=%d)",
+                transport_tag,
+                _ATTACH_PATH_FOR_KIND[kind],
+                peer[0],
+                peer[1],
+                len(self._client_tasks) - 1,
+            )
+
+    # ------------------------------------------------------------------
     # WebSocket upgrade + routing
     # ------------------------------------------------------------------
 
@@ -7859,43 +8226,21 @@ class WebServer:
             for part in headers.get("sec-websocket-protocol", "").split(",")
             if part.strip().startswith("rigplane-controller-v1.")
         ]
-        # Local mode: a channel that names a controller session attaches to
-        # it (MOR-3534); one that names none stays sessionless, as before.
-        ticket = (
-            self._controller.capture()
-            if self._controller.mode == "local" and not protocols
-            else None
-        )
-        selected_protocol = ""
-        if ticket is None:
-            try:
-                if len(protocols) != 1:
-                    raise ControllerError("controller_invalid")
-                selected_protocol = protocols[0]
-                role = (query or {}).get("controller_role", ["primary"])
-                if path == "/api/v1/ws" and len(role) != 1:
-                    raise ControllerError("invalid_request", 400)
-                ticket = self._controller.attach(
-                    selected_protocol.split(".", 1)[1],
-                    role[0] if path == "/api/v1/ws" else "auxiliary",
-                    f"controller-{time.monotonic_ns()}",
-                )
-            except ControllerError as exc:
-                await self._send_json(
-                    writer, exc.status, "Forbidden", {"error": exc.code}
-                )
-                return
-        assert ticket is not None
-        if path == "/api/v1/rigctl" and ticket.tx_owner is None:
-            # MOR-3536: rigctl lines key as the session the channel joined, so
-            # a channel without a multi-client session is refused. A sessionless
-            # rigctld client has the TCP port; this channel exists to tie a
-            # remote client's keying to its own session's audio.
-            self._controller.detach(ticket)
-            await self._send_json(
-                writer, 403, "Forbidden", {"error": "controller_session_required"}
-            )
+        # Thin adapter: parse the transport framing into ClientChannelParams
+        # (exactly the historical rules), then resolve the ticket through
+        # the one shared resolver before the 101 response, so a refusal is
+        # still a JSON error, never an upgrade. An absent key is
+        # represented in the params; the resolver captures the ambient
+        # sessionless ticket in local mode and refuses it anywhere else,
+        # exactly as the historical upgrade did.
+        kind = _WS_KIND_FOR_PATH.get(path, "unknown")
+        try:
+            params = ClientChannelParams.from_ws(query, protocols, path)
+            ticket = self._resolve_client_ticket(params, kind)
+        except ControllerError as exc:
+            await self._send_json(writer, exc.status, "Forbidden", {"error": exc.code})
             return
+        selected_protocol = protocols[0] if protocols else ""
         # Key check, accept header and 101 response bytes come from the
         # shared lowest-layer implementation (rigplane.ws).
         upgrade = _make_upgrade_response(headers, protocol=selected_protocol)
@@ -7914,134 +8259,8 @@ class WebServer:
             raise
 
         ws = WebSocketConnection(reader, writer, deflate=upgrade.deflate)
-        raw_model = (
-            getattr(self._radio, "model", None) if self._radio is not None else None
-        )
-        model = raw_model if isinstance(raw_model, str) else self._config.radio_model
-
-        if path == "/api/v1/ws":
-            if ticket.remote:
-                self._controller.register_control(ticket)
-            handler: Any = ControlHandler(
-                ws,
-                self._radio,
-                __version__,
-                model,
-                server=self,
-                read_only=self._config.read_only,
-                managed_tx_authority=self._managed_tx_authority(),
-                session_id=ticket.session_id,
-                tx_owner=ticket.tx_owner,
-                leaf_state_deltas=(query or {}).get("state_delta") == ["2"],
-            )
-        elif path == "/api/v1/scope":
-            handler = ScopeHandler(ws, server=self)
-        elif path == "/api/v1/audio":
-            audio_source = object()
-            handler = AudioHandler(
-                ws,
-                self._radio,
-                self._audio_broadcaster,
-                tx_gate=lambda: self._controller_audio_gate(ticket, audio_source),
-                controller=self._controller,
-                controller_ticket=ticket,
-                controller_audio_source=audio_source,
-                controller_audio_loss=self._controller_audio_loss,
-                controller_track_stop=self._controller_track_audio_stop,
-                managed_tx_authority=self._managed_tx_authority(),
-            )
-        elif path == "/api/v1/rigctl":
-            owner = ticket.tx_owner
-            assert owner is not None  # refused before the upgrade otherwise
-            if self._rigctl_channel is None:
-                self._controller.detach(ticket)
-                await ws.close(1008, "rigctl channel not available")
-                return
-            handler = RigctlChannelHandler(
-                ws,
-                self._rigctl_channel,
-                owner,
-                writer.get_extra_info("peername", ("?", 0)),
-            )
-        else:
-            self._controller.detach(ticket)
-            await ws.close(1008, "unknown channel")
-            return
-
         peer = writer.get_extra_info("peername", ("?", 0))
-        ip = str(peer[0])
-
-        # Register with connection manager; evict oldest excess connections.
-        # MOR-3534: a session-attached channel counts against its session, not
-        # the shared IP. The holder session's channels, and the control channel
-        # of a sessionless socket that keyed PTT, are never evicted.
-        scope = ip if ticket.tx_owner is None else ticket.tx_owner
-        managed = self._managed_tx_authority()
-        evicted = self._conn_manager.register(
-            scope,
-            path,
-            ws,
-            owner=ticket.tx_owner or getattr(handler, "_tx_owner", None),
-            holder=managed.tx_holder_nowait()
-            if isinstance(managed, ManagedTxAuthority)
-            else None,
-        )
-        for old_ws in evicted:
-            logger.info(
-                "ws: evicting old connection from %s on %s (per-client limit)",
-                ip,
-                path,
-            )
-            try:
-                await old_ws.close(1001, "replaced by newer connection")
-            except Exception:
-                pass
-
-        logger.info(
-            "ws connect: %s %s:%s (active=%d)",
-            path,
-            peer[0],
-            peer[1],
-            len(self._client_tasks),
-        )
-        try:
-            self._controller.validate(ticket)
-        except ControllerError:
-            self._controller.detach(ticket)
-            self._conn_manager.unregister(scope, path, ws)
-            ws.abort()
-            return
-        keepalive = asyncio.create_task(
-            ws.keepalive_loop(self._config.keepalive_interval)
-        )
-        if ticket.tx_owner is not None:
-            self._controller.add_channel(ticket, ws.abort)
-        if ticket.remote:
-            self._controller.add_channel(ticket, ws.abort)
-            task = asyncio.current_task()
-            assert task is not None
-            self._controller_handler_tasks[ticket] = task
-        try:
-            with self._controller.bind(ticket):
-                await handler.run()
-        except Exception as exc:
-            logger.debug("ws handler error on %s: %s", _redact_token_in_path(path), exc)
-        finally:
-            self._controller.detach(ticket)
-            self._controller_handler_tasks.pop(ticket, None)
-            keepalive.cancel()
-            try:
-                await keepalive
-            except asyncio.CancelledError:
-                pass
-            self._conn_manager.unregister(scope, path, ws)
-            logger.info(
-                "ws disconnect: %s %s:%s (active=%d)",
-                path,
-                peer[0],
-                peer[1],
-                len(self._client_tasks) - 1,
-            )
+        await self.serve_client_channel(ws, kind, ticket, params, peer, transport="ws")
 
 
 # ------------------------------------------------------------------

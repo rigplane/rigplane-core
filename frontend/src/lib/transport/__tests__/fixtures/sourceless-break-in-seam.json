@@ -1,0 +1,40 @@
+{
+  "envelope": {
+    "id": "sourceless-break-in-1",
+    "name": "set_break_in",
+    "params": {
+      "mode": 2
+    },
+    "type": "cmd"
+  },
+  "format": 1,
+  "profile": "rigs/ic7300.toml",
+  "recording": "tests/fixtures/ic7300/civ_pairs.jsonl",
+  "reply": {
+    "id": "sourceless-break-in-1",
+    "ok": true,
+    "result": {
+      "mode": 2
+    },
+    "type": "response"
+  },
+  "request": {
+    "name": "set_break_in",
+    "params": {
+      "mode": 2
+    }
+  },
+  "state": {
+    "breakIn": 2
+  },
+  "synthetic": {
+    "vfo_readback": "none"
+  },
+  "txTarget": {
+    "reason": "unsupported",
+    "status": "unknown"
+  },
+  "wire": [
+    "fefe94e0164702fd"
+  ]
+}

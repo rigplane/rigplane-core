@@ -10,6 +10,7 @@ from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Sequence
 
 from ...exceptions import CommandError
+from ...exceptions import ConnectionError as RadioConnectionError
 from ...exceptions import TimeoutError as RadioTimeoutError
 from ...core.command_dispatch import ManagedWriteAdmission, execute_command_intent
 from ...core.radio_protocol import (
@@ -245,29 +246,46 @@ class RigctldClientObservationPoller:
         observations: list["Observation"] = list(
             await adapter.read_freq_mode_controls()
         )
+
+        def _publish_unknown_ptt() -> None:
+            if not self._provider_generation_is_current(provider_generation):
+                return
+            unknown = adapter.observed_ptt_observation(None)
+            try:
+                self._callback(
+                    self._stamp_provider_generation((unknown,), provider_generation)
+                )
+            except Exception:
+                logger.warning(
+                    "rigctld-client PTT error observation publication failed",
+                    exc_info=True,
+                )
+
+        ptt: Observation | None = None
         try:
             ptt = await adapter.read_ptt()
-        except Exception:
-            if self._provider_generation_is_current(provider_generation):
-                unknown = adapter.observed_ptt_observation(None)
-                try:
-                    self._callback(
-                        self._stamp_provider_generation((unknown,), provider_generation)
-                    )
-                except Exception:
-                    logger.warning(
-                        "rigctld-client PTT error observation publication failed",
-                        exc_info=True,
-                    )
+        except (asyncio.TimeoutError, RadioTimeoutError, RadioConnectionError):
+            _publish_unknown_ptt()
             raise
-        if self._provider_generation_is_current(provider_generation):
+        except CommandError:
+            # MOR-4456: a refused (or malformed) `t` is an answer, not a
+            # link failure — publish unknown for this cycle and keep the
+            # cycle: the VFO and web-command readbacks still run and
+            # publish below. Only timeouts and transport errors raise, as
+            # before (a `t` timeout still closes the connection, still
+            # reconnects, and still counts in `_critical_read_timeouts`).
+            _publish_unknown_ptt()
+        if ptt is not None and self._provider_generation_is_current(
+            provider_generation
+        ):
             observed_ptt = adapter.observed_ptt_observation(
                 ptt.value, timestamp_monotonic=ptt.timestamp_monotonic
             )
             self._callback(
                 self._stamp_provider_generation((observed_ptt,), provider_generation)
             )
-        observations.append(ptt)
+        if ptt is not None:
+            observations.append(ptt)
         active_vfo = await adapter.read_active_vfo()
         if active_vfo is not None:
             observations.append(active_vfo)

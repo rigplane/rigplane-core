@@ -6,9 +6,9 @@ import asyncio
 import logging
 import math
 import time
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, ClassVar, cast
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, TypedDict, cast
 
 from ..._bounded_queue import BoundedQueue
 from ...commands._frame import build_civ_frame
@@ -219,7 +219,7 @@ from ...radio_protocol import (
     PowerControlCapable,
 )
 
-__all__ = ["ControlHandler"]
+__all__ = ["ControlHello", "ControlHandler", "control_hello_message"]
 
 logger = logging.getLogger(__name__)
 # Intent param carrying the TX owner `_enqueue_command` checked (MOR-3537).
@@ -231,6 +231,50 @@ _PTT_HOLDER_CONFLICT = "another client is transmitting"
 _QUEUE_ADMISSION_REJECTED = "positive TX admission was rejected"
 # Refusal wording when a rejected PTT receipt proves a release is owed (MOR-3810).
 _PTT_RELEASING = "the previous transmission is still being released"
+
+
+class ControlHello(TypedDict):
+    """The control-channel ``hello`` (server -> client) as ONE typed
+    producer output: the handler sends it, and the api-channel payload
+    contract and golden documents commit the same keys in the same
+    order (key order is the wire order —
+    :func:`control_hello_message` builds it, nothing else)."""
+
+    type: Literal["hello"]
+    proto: int
+    server: str
+    version: str
+    radio: str
+    connected: bool
+    radio_ready: bool
+    capabilities: list[str]
+
+
+def control_hello_message(
+    *,
+    version: str,
+    radio: str,
+    connected: bool,
+    radio_ready: bool,
+    capabilities: Iterable[str],
+) -> ControlHello:
+    """Build the control-channel ``hello`` payload (MOR-4489).
+
+    The first server text frame on the control channel: it proves the
+    attach (the control channel has no separate ack). ``capabilities``
+    is the active radio's projected tag set; the builder sorts it, so
+    the wire list is stable.
+    """
+    return ControlHello(
+        type="hello",
+        proto=1,
+        server="rigplane",
+        version=version,
+        radio=radio,
+        connected=connected,
+        radio_ready=radio_ready,
+        capabilities=sorted(capabilities),
+    )
 
 
 def _ptt_refusal_names_holder(submission: object, owner: str | None) -> bool:
@@ -708,6 +752,31 @@ def is_typed_transmission_end_command(name: str, params: Mapping[str, Any]) -> b
     )
 
 
+def starts_transmission(name: str, params: Mapping[str, Any]) -> bool:
+    """True when a typed command can key the transmitter, never just end one.
+
+    The single shared classifier for "this command starts TX": a command
+    that only ends a transmission (see
+    :func:`is_typed_transmission_end_command`) never starts one; a raw
+    ``send_civ`` or ``transmit_on`` is transmit-capable (the remote control
+    seat refuses both); otherwise the managed-TX admission set — CW text,
+    VOX enable, tuner start, break-in enable. The control seat uses it for
+    its remote refusal, and the ``api`` data channel uses it (via
+    :func:`rigplane.web.web_routing.api_channel_tx_refusal`) to refuse
+    TX-capable REST before dispatch.
+    """
+    if is_typed_transmission_end_command(name, params):
+        return False
+    if name in ("send_civ", "transmit_on"):
+        return True
+    return (
+        name == "send_cw_text"
+        or (name == "set_vox" and params.get("on", params.get("value")) is not False)
+        or (name == "set_tuner_status" and params.get("value") == 2)
+        or (name == "set_break_in" and params.get("mode") != 0)
+    )
+
+
 def _strict_memory_address(
     params: Mapping[str, Any], memory: MemoryProfile
 ) -> tuple[int, int]:
@@ -1178,17 +1247,13 @@ class ControlHandler:
         raw_connected = (
             getattr(self._radio, "connected", False) if self._radio else False
         )
-        caps = sorted(self._capabilities())
-        msg = {
-            "type": "hello",
-            "proto": 1,
-            "server": "rigplane",
-            "version": self._version,
-            "radio": self._radio_model,
-            "connected": raw_connected if isinstance(raw_connected, bool) else False,
-            "radio_ready": self._radio_ready(),
-            "capabilities": caps,
-        }
+        msg = control_hello_message(
+            version=self._version,
+            radio=self._radio_model,
+            connected=raw_connected if isinstance(raw_connected, bool) else False,
+            radio_ready=self._radio_ready(),
+            capabilities=self._capabilities(),
+        )
         await self._ws.send_text(encode_json(msg))
 
     def _capabilities(self) -> set[str]:
@@ -1801,6 +1866,10 @@ class ControlHandler:
             return None
         ticket = controller.capture()
         # Break-in arms CW keying (MOR-3537), so enabling it is a TX start.
+        # The remote refusal uses the shared classifier (identical verdict:
+        # none of the admission names below ever ends a transmission, and
+        # a transmission end returns above); the managed-TX admission below
+        # keeps its own four-case set — send_civ/transmit_on never enter it.
         starts_tx = (
             name == "send_cw_text"
             or (
@@ -1809,7 +1878,7 @@ class ControlHandler:
             or (name == "set_tuner_status" and params.get("value") == 2)
             or (name == "set_break_in" and params.get("mode") != 0)
         )
-        if ticket.remote and (name in {"send_civ", "transmit_on"} or starts_tx):
+        if ticket.remote and starts_transmission(name, params):
             raise ControllerError("controller_tx_unsupported")
         # MOR-3534: while one owner holds the transmitter, CW text, VOX,
         # TUNE and break-in from any other owner are refused like the remote

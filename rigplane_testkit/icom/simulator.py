@@ -2605,13 +2605,16 @@ class MockIcomRadio(AudioPortMixin):
                 # would disagree.
                 reply = native
             else:
-                reply = None
-                if self.recorded_answers is not None:
-                    reply = self.recorded_answers.answer(
+                recorded = (
+                    self.recorded_answers.lookup(
                         self._civ_frame(frm, to, cmd, data=payload)
                     )
-                if reply is None:
-                    reply = native
+                    if self.recorded_answers is not None
+                    else None
+                )
+                # None: the recording never saw it, keep the native NAK;
+                # otherwise its reply, or no reply for recorded silence.
+                reply = native if recorded is None else recorded.reply
         if (
             self._write_confirmation == "echo"
             and reply is not None
