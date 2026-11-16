@@ -98,8 +98,9 @@ test('IC-705: SCROLL-C keeps the reported window across a span gesture and an in
     const receipts = (await writes()).slice(writesAtGesture);
     expect(receipts.filter(receipt => receipt.sub === 0x15).at(-1)?.span).toBe(25_000);
     expect(receipts.filter(receipt => receipt.sub === 0x14)).toEqual([]);
-    // Settle, then snapshot the axes.
-    await page.waitForTimeout(1500);
+    // Settle on observed frames (not a fixed sleep), then snapshot the axes.
+    const settled = frames.length;
+    await expect.poll(() => frames.length).toBeGreaterThan(settled + 30);
     const axisBefore = await page.locator('.freq-axis .tick').allInnerTexts();
     expect(axisBefore.length).toBeGreaterThanOrEqual(5);
     expect(axisBefore[0]).toBe('14.225');
@@ -113,8 +114,9 @@ test('IC-705: SCROLL-C keeps the reported window across a span gesture and an in
     await expect.poll(async () => (await page.request.get(`http://127.0.0.1:${port}/api/v1/state`)).json())
       .toMatchObject({ main: { freqHz: 14_255_000 } });
     // The reported window never moved: every frame since the gesture
-    // still carries the radio's edges.
-    await page.waitForTimeout(1500);
+    // still carries the radio's edges (wait for observed frames after the tune).
+    const tuned = frames.length;
+    await expect.poll(() => frames.length).toBeGreaterThan(tuned + 30);
     const since = frames.slice(mark);
     expect(since.filter(frame => frame.pixels).length).toBeGreaterThan(5);
     expect(since.every(frame => frame.view[0] === 14_225_000 && frame.view[1] === 14_275_000)).toBe(true);
