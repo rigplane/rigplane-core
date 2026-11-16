@@ -5,6 +5,15 @@ import { test, expect } from '@playwright/test';
 // view and back, and the choice is kept per browser.
 const flat = '.spectrum-container > canvas';
 
+// WebKit reports a request that a navigation cut off as a page error, and
+// the panel's band-plan overlay fetches on every view change. Let the
+// network settle before reloading, so the strict "no page errors" check
+// below only ever sees errors of the page itself.
+async function reloadQuietly(page: import('@playwright/test').Page): Promise<void> {
+  await page.waitForLoadState('networkidle');
+  await page.reload();
+}
+
 test('flat by default; the 3D key switches the pane, survives a reload and switches back', async ({ page }) => {
   const errors: string[] = []; page.on('pageerror', error => errors.push(error.message));
   await page.goto('/fixtures/spectrum-witness.html');
@@ -38,7 +47,7 @@ test('flat by default; the 3D key switches the pane, survives a reload and switc
   expect(view).toEqual(pane);
   await expect(page.locator('.waterfall-history canvas')).toHaveCount(1);
 
-  await page.reload();
+  await reloadQuietly(page);
   await expect(page.getByTestId('stacked-trace')).toBeVisible();
   await expect(page.getByTestId('scope-3d-toggle').first()).toHaveAttribute('aria-pressed', 'true');
 
@@ -47,7 +56,7 @@ test('flat by default; the 3D key switches the pane, survives a reload and switc
   await expect(page.locator(flat)).toHaveCount(1);
   await expect(page.getByRole('button', { name: 'AVG', exact: true }).first()).toBeVisible();
   await expect(page.getByRole('button', { name: 'PEAK', exact: true }).first()).toBeVisible();
-  await page.reload();
+  await reloadQuietly(page);
   await expect(page.locator(flat)).toHaveCount(1);
   await expect(page.getByTestId('stacked-trace')).toHaveCount(0);
   expect(errors).toEqual([]);
