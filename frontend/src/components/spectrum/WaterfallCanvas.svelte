@@ -65,6 +65,9 @@
         paintOptions.sampleOffset = frame.options.sampleOffset;
         paintOptions.sampleAmplitudeMax = frame.options.sampleAmplitudeMax;
         paintOptions.coverage = frame.options.coverage;
+        // #4564: the panel's hatch decision rides with the frame, like
+        // coverage — pushRow stores it per row, the shader hatches only it.
+        paintOptions.hatchRanges = frame.options.hatchRanges;
         paintOptions.panoramaShiftHz = options.centerHz - (frame.options.centerHz - frame.options.panoramaShiftHz);
         renderer.updateOptions(paintOptions);
       } else renderer.updateOptions(options);

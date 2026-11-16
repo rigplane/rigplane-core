@@ -1,4 +1,5 @@
 import type { View } from '../runtime/scope-view';
+import type { SpectrumHatchRange } from './spectrum-renderer';
 
 interface ColorStop {
   stop: number;
@@ -31,6 +32,16 @@ export type ColorSchemeName = keyof typeof COLOR_SCHEMES;
 
 export interface WaterfallOptions {
   coverage?: View;
+  /**
+   * #4564: the ONE hatch decision, stored per row at pushRow time. The panel
+   * computes these normalized view fractions from projectScopeCoverage (the
+   * same ranges the DOM overlay and the spectrum canvas render); the shader
+   * paints the hatch only inside the stored ranges for that row, plain
+   * background otherwise. Null/undefined/empty stores no ranges. Same type
+   * as SpectrumOptions.hatchRanges — reused, not redeclared. `coverage`
+   * stays for the trace gap only and never decides the hatch.
+   */
+  hatchRanges?: readonly SpectrumHatchRange[] | null;
   colorScheme: ColorSchemeName;
   refLevel: number;  // -30 to +30 dB brightness offset
   speed: number;     // rows scrolled per pushRow call (1 = normal)
@@ -54,6 +65,48 @@ export const defaultWaterfallOptions: WaterfallOptions = {
   panoramaShiftHz: 0,
 };
 
+/** Maximum hatch ranges stored per waterfall row (projectScopeCoverage emits at most edge strips). */
+export const WATERFALL_HATCH_RANGES = 2;
+
+/**
+ * Stored per-row hatch record: two absolute-Hz [start, end) offsets from the
+ * row's sample start. Zero-initialized metadata hatches nothing.
+ */
+export type WaterfallHatchRecord = readonly [number, number, number, number];
+
+export const EMPTY_WATERFALL_HATCH: WaterfallHatchRecord = [0, 0, 0, 0];
+
+/**
+ * #4564: converts the panel's normalized hatch fractions to absolute Hz
+ * offsets from the row's sample start — the same translation the existing
+ * row geometry (coverage) uses, so each history row stays truthful after a
+ * pan/glide/zoom. Clamps to the first two ranges.
+ */
+export function waterfallHatchOffsets(
+  ranges: readonly SpectrumHatchRange[] | null | undefined,
+  viewStartHz: number,
+  viewSpanHz: number,
+  sampleStartHz: number,
+): WaterfallHatchRecord {
+  if (!ranges || ranges.length === 0 || !(viewSpanHz > 0)) return EMPTY_WATERFALL_HATCH;
+  const out: [number, number, number, number] = [0, 0, 0, 0];
+  for (let i = 0; i < Math.min(ranges.length, WATERFALL_HATCH_RANGES); i++) {
+    const range = ranges[i]!;
+    out[i * 2] = Math.fround(viewStartHz + range.start * viewSpanHz - sampleStartHz);
+    out[i * 2 + 1] = Math.fround(viewStartHz + range.end * viewSpanHz - sampleStartHz);
+  }
+  return out;
+}
+
+/**
+ * #4564: pure TS mirror of the fragment shader's stored-range hatch test
+ * (start-inclusive, end-exclusive; an empty range never hatches).
+ */
+export function waterfallRowHatches(localHz: number, stored: WaterfallHatchRecord): boolean {
+  return (localHz >= stored[0] && localHz < stored[1])
+    || (localHz >= stored[2] && localHz < stored[3]);
+}
+
 export class WaterfallRenderError extends Error {
   readonly code = 'webgl-required';
   constructor() { super('WebGL required for the waterfall'); }
@@ -69,8 +122,8 @@ function fragmentShader(height: number, blockRows: number): string {
   const blocks = Math.ceil(height / blockRows);
   let declarations = '', lookup = '';
   for (let i = 0; i < blocks; i++) {
-    declarations += `layout(std140) uniform Rows${i} { vec4 rows${i}[${blockRows * 3}]; };\n`;
-    lookup += `if (row < ${(i + 1) * blockRows}) return rows${i}[(row - ${i * blockRows}) * 3 + part];\n`;
+    declarations += `layout(std140) uniform Rows${i} { vec4 rows${i}[${blockRows * 4}]; };\n`;
+    lookup += `if (row < ${(i + 1) * blockRows}) return rows${i}[(row - ${i * blockRows}) * 4 + part];\n`;
   }
   return `#version 300 es
 precision highp float;
@@ -101,8 +154,16 @@ void main() {
   vec4 info = rowInfo(row, 0), extra = rowInfo(row, 1);
   float delta = (uView.x - info.x) + (uViewLow - info.y);
   float localHz = delta + floor(gl_FragCoord.x) / uSize.x * uView.y;
-  float coordinate = localHz / info.z;
-  if (coordinate < 0.0 || coordinate >= 1.0 || localHz < info.w || localHz >= extra.x) {
+  // #4564: the ONE hatch decision — hatch only inside this row's stored
+  // ranges (absolute Hz offsets from the row's sample start, recorded at
+  // pushRow from the panel's hatchRanges). The private coverage-based test
+  // is gone. Anything else — including history rows whose samples do not
+  // reach this pixel after a pan/glide/zoom, and transient-lag columns —
+  // falls through to the profile path: profile() returns 0 outside [0, 1),
+  // i.e. the plain empty-history background, never a hatch.
+  vec4 hatchRanges = rowInfo(row, 3);
+  if ((localHz >= hatchRanges.x && localHz < hatchRanges.y)
+    || (localHz >= hatchRanges.z && localHz < hatchRanges.w)) {
     float hatch = step(4.0, mod(floor(gl_FragCoord.x) + floor(uSize.y - gl_FragCoord.y), 8.0));
     color = vec4(mix(vec3(0.0, 16.0, 32.0), vec3(36.0, 48.0, 60.0), hatch) / 255.0, 1.0);
     return;
@@ -132,7 +193,7 @@ export class WaterfallRenderer {
   private texture: WebGLTexture | null = null;
   private readonly blocks: WebGLBuffer[] = [];
   private readonly uniforms = new Map<string, WebGLUniformLocation | null>();
-  private readonly row = new Float32Array(12);
+  private readonly row = new Float32Array(16);
   private metadata = new Float32Array(0);
   private readonly colors = new Float32Array(18);
   private readonly stops = new Float32Array(6);
@@ -212,7 +273,7 @@ export class WaterfallRenderer {
       if (!buffer) throw new WaterfallRenderError();
       this.blocks.push(buffer);
       gl.bindBuffer(gl.UNIFORM_BUFFER, buffer);
-      gl.bufferData(gl.UNIFORM_BUFFER, this.blockRows * 48, gl.DYNAMIC_DRAW);
+      gl.bufferData(gl.UNIFORM_BUFFER, this.blockRows * 64, gl.DYNAMIC_DRAW);
       gl.bindBufferBase(gl.UNIFORM_BUFFER, i, buffer);
       gl.uniformBlockBinding(program, gl.getUniformBlockIndex(program, `Rows${i}`), i);
     }
@@ -222,9 +283,9 @@ export class WaterfallRenderer {
   private uploadMetadata(): void {
     const gl = this.gl;
     for (let i = 0; i < this.blocks.length; i++) {
-      const offset = i * this.blockRows * 12;
+      const offset = i * this.blockRows * 16;
       gl.bindBuffer(gl.UNIFORM_BUFFER, this.blocks[i]);
-      gl.bufferSubData(gl.UNIFORM_BUFFER, 0, this.metadata, offset, Math.min(this.blockRows * 12, this.metadata.length - offset));
+      gl.bufferSubData(gl.UNIFORM_BUFFER, 0, this.metadata, offset, Math.min(this.blockRows * 16, this.metadata.length - offset));
     }
   }
 
@@ -262,20 +323,20 @@ export class WaterfallRenderer {
     this.sizeDirty = true;
     if (width <= 0 || height <= 0 || height === this.rows) return;
     const gl = this.gl;
-    this.blockRows = Math.floor(gl.getParameter(gl.MAX_UNIFORM_BLOCK_SIZE) / 48);
+    this.blockRows = Math.floor(gl.getParameter(gl.MAX_UNIFORM_BLOCK_SIZE) / 64);
     if (height > gl.getParameter(gl.MAX_TEXTURE_SIZE)
       || Math.ceil(height / this.blockRows) > gl.getParameter(gl.MAX_FRAGMENT_UNIFORM_BLOCKS)) throw new WaterfallRenderError();
-    const metadata = new Float32Array(height * 12), retained = Math.min(this.count, height);
+    const metadata = new Float32Array(height * 16), retained = Math.min(this.count, height);
     const texture = this.createTexture(Math.max(1, this.textureWidth), height);
     try {
       if (this.texture && retained > 0) this.copyTexture(this.texture, () => {
         const oldest = (this.head - retained + 1 + this.rows) % this.rows;
         const first = Math.min(retained, this.rows - oldest), second = retained - first;
         gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, oldest, this.textureWidth, first);
-        metadata.set(this.metadata.subarray(oldest * 12, (oldest + first) * 12));
+        metadata.set(this.metadata.subarray(oldest * 16, (oldest + first) * 16));
         if (second > 0) {
           gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, first, 0, 0, this.textureWidth, second);
-          metadata.set(this.metadata.subarray(0, second * 12), first * 12);
+          metadata.set(this.metadata.subarray(0, second * 16), first * 16);
         }
       });
     } catch (error) { gl.deleteTexture(texture); throw error; }
@@ -312,9 +373,15 @@ export class WaterfallRenderer {
     this.row[4] = (o.coverage?.endHz ?? Math.max(sampleStart, sampleStart + span / range)) - sampleStart;
     this.row[5] = o.sampleAmplitudeMax ?? 80; this.row[6] = samples; this.row[7] = offset;
     this.row[8] = this.width; this.row[9] = start; this.row[10] = range;
-    this.metadata.set(this.row, this.head * 12);
+    // #4564: the stored hatch decision — the panel's normalized fractions as
+    // absolute Hz offsets from this row's sample start, so the row stays
+    // truthful across later pan/glide/zoom repaints. No decision ⇒ zeros.
+    const hatch = waterfallHatchOffsets(o.hatchRanges,
+      o.centerHz - o.spanHz / 2, o.spanHz, sampleStart);
+    this.row[12] = hatch[0]; this.row[13] = hatch[1]; this.row[14] = hatch[2]; this.row[15] = hatch[3];
+    this.metadata.set(this.row, this.head * 16);
     gl.bindBuffer(gl.UNIFORM_BUFFER, this.blocks[Math.floor(this.head / this.blockRows)]);
-    gl.bufferSubData(gl.UNIFORM_BUFFER, (this.head % this.blockRows) * 48, this.row);
+    gl.bufferSubData(gl.UNIFORM_BUFFER, (this.head % this.blockRows) * 64, this.row);
     gl.bindTexture(gl.TEXTURE_2D, this.texture);
     gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, this.head, data.length, 1, gl.RED, gl.UNSIGNED_BYTE, data, 0);
     this.draw();
