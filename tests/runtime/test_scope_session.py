@@ -518,6 +518,105 @@ async def test_ambiguous_span_write_keeps_snapshot_despite_later_observation():
     assert ("span", 3, 0) in writer.views
 
 
+class _LosingAckSpanWriter(Writer):
+    """A writer whose first span SET lands on the radio but loses its ACK.
+
+    The write is applied to the radio state BEFORE the raise, so the radio
+    sits on the written value while Core never sees the acknowledgement —
+    the exact ambiguous-write shape of the #4565 pre-review (item 4).
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.state = ScopeState(True, True, 0, 3, 1)
+        self.span_writes: list[tuple[object, int]] = []
+        self.lost = True
+
+    async def write(self, name, value, receiver):
+        if name != "span":
+            await super().write(name, value, receiver)
+            return
+        self.span_writes.append((value, receiver))
+        self.state = replace(self.state, span=value)
+        if self.lost:
+            raise TimeoutError("ack lost")
+        self.views.append((name, value, receiver))
+
+
+async def test_lost_span_ack_keeps_cached_preset_untrusted():
+    """#4565 pre-review (scope_session._put): a SET that reaches the radio
+    but loses its ACK leaves the cached span stale — the cache predates the
+    ambiguous write, so a later request for that cached preset must still
+    write instead of trusting it (the radio may sit on the unacknowledged
+    value). The resent SET re-establishes certainty."""
+    writer = _LosingAckSpanWriter()
+    session = ScopeSession(writer.read, writer.write, writer.read_fixed)
+    await session.set_inputs(ready=True, tx=False)
+    await session.set_demand(ScopeDemand(1, 1))
+    with pytest.raises(TimeoutError, match="ack lost"):
+        await session.configure(span=4)
+    assert writer.state.span == 4  # the radio moved; Core never saw the ACK
+    assert session._applied.get((0, "span")) == 3  # the stale cache
+    assert (0, "span") in session._uncertain
+    # Requesting the CACHED preset must not trust it: the SET goes out.
+    await session.configure(span=3)
+    assert writer.span_writes == [(4, 0), (3, 0)]
+    assert writer.state.span == 3
+    assert (0, "span") not in session._uncertain
+
+
+async def test_lost_span_ack_restore_writes_despite_stale_cache():
+    """#4565 pre-review (restore loop): with observations withheld after a
+    lost ACK, the last unsubscribe must still send the snapshot's span SET
+    instead of reporting a clean restore while the radio keeps the
+    unacknowledged value."""
+    writer = _LosingAckSpanWriter()
+    session = ScopeSession(writer.read, writer.write, writer.read_fixed)
+    await session.set_inputs(ready=True, tx=False)
+    await session.set_demand(ScopeDemand(1, 1))
+    with pytest.raises(TimeoutError, match="ack lost"):
+        await session.configure(span=4)
+    await session.set_demand(ScopeDemand(0, 0))
+    assert writer.span_writes == [(4, 0), (3, 0)]
+    assert writer.state.span == 3
+
+
+async def test_stale_span_echo_after_lost_ack_still_writes():
+    """A report equal to the stale cache cannot prove the ambiguous write
+    did not land (it may be a pre-write echo), so the cached span stays
+    untrusted and the same-value request still writes."""
+    writer = _LosingAckSpanWriter()
+    session = ScopeSession(writer.read, writer.write, writer.read_fixed)
+    await session.set_inputs(ready=True, tx=False)
+    await session.set_demand(ScopeDemand(1, 1))
+    with pytest.raises(TimeoutError, match="ack lost"):
+        await session.configure(span=4)
+    session.observe("span", 3)  # a stale echo of the pre-write state
+    assert (0, "span") in session._uncertain
+    await session.configure(span=3)
+    assert writer.span_writes == [(4, 0), (3, 0)]
+    assert writer.state.span == 3
+
+
+async def test_post_ambiguity_span_report_renews_cached_currency():
+    """A report that DIFFERS from the stale cache cannot be a pre-write
+    echo — the ambiguous write landed (or the radio moved on by itself) —
+    so it renews the cache's currency: the key leaves _uncertain at
+    observation time and the same-value request writes nothing (the
+    adopted value is never re-asserted). RED on the old head, which never
+    renews currency before a same-value _put."""
+    writer = _LosingAckSpanWriter()
+    session = ScopeSession(writer.read, writer.write, writer.read_fixed)
+    await session.set_inputs(ready=True, tx=False)
+    await session.set_demand(ScopeDemand(1, 1))
+    with pytest.raises(TimeoutError, match="ack lost"):
+        await session.configure(span=4)
+    session.observe("span", 4)  # fresh report: the radio shows the value
+    assert (0, "span") not in session._uncertain
+    await session.configure(span=4)
+    assert writer.span_writes == [(4, 0)]
+
+
 async def test_external_fixed_rewrite_releases_slot_after_center_retires_it():
     """Path e: the per-slot _fixed snapshot follows the same rule as
     _previous — once CENTER retires the desired fixed_edge key, an external
