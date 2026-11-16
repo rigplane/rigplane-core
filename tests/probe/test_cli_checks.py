@@ -599,6 +599,7 @@ async def test_two_checks_a_late_yes_does_not_authorize_the_second(
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX signals (Windows: MOR-4497)")
+@pytest.mark.realtime(reason="a real SIGINT on a real pseudo-terminal, bounded in time")
 async def test_ctrl_c_at_the_check_question_ends_with_no_write(tmp_path) -> None:
     config = load(tmp_path, "ft991a", SPLIT)
     radio = await cat_radio()
@@ -608,6 +609,7 @@ async def test_ctrl_c_at_the_check_question_ends_with_no_write(tmp_path) -> None
         return None
 
     term = Terminal({render.checks_prompt(): "y\n", render.check_prompt(): ctrl_c})
+    started = time.monotonic()
     try:
         code, out = await asyncio.wait_for(
             drive(tmp_path, config, radio, Person(), yes=True, lines=term.lines()), 60
@@ -615,6 +617,8 @@ async def test_ctrl_c_at_the_check_question_ends_with_no_write(tmp_path) -> None
     finally:
         term.close()
         await radio.stop()
+    # the Ctrl-C itself ends the wait, not the 60 s safety limit above
+    assert time.monotonic() - started < 30
     (record,) = saved(out).checks
     assert code == 0
     assert (record.status, record.error) == ("refused", "cancelled before any write")
