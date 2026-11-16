@@ -23,6 +23,8 @@ from ..core.acquisition_scheduler import (
 )
 from ..core.radio_protocol import (
     ObservationPollable,
+    RadioIdentity,
+    RadioIdentityStatus,
     StatePollable,
     StateStoreCapable,
     serial_identity_hold,
@@ -332,16 +334,30 @@ def _serial_port_unopened(server: WebServer) -> bool:
 
 
 def _serial_identity_pending(server: WebServer) -> bool:
-    """Whether the serial identity gate holds the open link (MOR-3071).
+    """Whether the radio has not answered its identity read at start-up.
 
-    MOR-3078: one shared predicate — ``core.radio_protocol:
-    serial_identity_hold``. The identity read is in flight
-    (``checking``) or has heard nothing (``no_response``) while the
-    radio is not connected; a ``checking`` status left on a connected
-    radio is not a hold.
+    Serial and Yaesu (MOR-3071/3078): one shared predicate,
+    ``core.radio_protocol: serial_identity_hold`` — the read is in flight
+    (``checking``) or has heard nothing (``no_response``) while the radio is
+    not connected.
+
+    Icom LAN (MOR-4382): the connect no longer waits for the read, so a radio
+    that answers nothing on CI-V yet (a stale session still held, a radio
+    still starting) is connected but not ready, with the identity still
+    ``checking`` / ``no_response``. It is served in the same
+    radio-not-answering state; the connect tail runs on its first answer.
     """
 
-    return serial_identity_hold(server._radio) is not None
+    radio = server._radio
+    if serial_identity_hold(radio) is not None:
+        return True
+    identity = getattr(radio, "connection_identity", None)
+    return (
+        isinstance(identity, RadioIdentity)
+        and identity.status
+        in (RadioIdentityStatus.CHECKING, RadioIdentityStatus.NO_RESPONSE)
+        and getattr(radio, "radio_ready", None) is False
+    )
 
 
 def _startup_busy_hold_pending(server: WebServer) -> bool:

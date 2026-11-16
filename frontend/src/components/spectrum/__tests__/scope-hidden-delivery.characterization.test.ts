@@ -192,7 +192,8 @@ describe('same-session scope delivery across hidden rendering', () => {
       // history the later gap is measured against.
       for (const id of baselineIds) { deliver(frame(id)); advance(83); }
       expect(pushed.mock.calls.map(([pixels]) => pixels[0])).toEqual(baselineIds);
-      expect(paint).toHaveBeenCalledTimes(3);
+      // MOR-4383: one paint per delivered frame uploads its 3-row group.
+      expect(paint).toHaveBeenCalledTimes(3 * 3);
 
       resizeCallback?.([{ target: observed!, contentRect: { width: 301, height: 150 } } as ResizeObserverEntry],
         {} as ResizeObserver);
@@ -212,7 +213,7 @@ describe('same-session scope delivery across hidden rendering', () => {
       expect(accepted.map((value) => value.id)).toEqual([...baselineIds, ...hiddenIds]);
       expect(accepted.map((value) => value.sequence)).toEqual([...baselineIds, ...hiddenIds]);
       expect(pushed).toHaveBeenCalledTimes(3);
-      expect(paint).toHaveBeenCalledTimes(3);
+      expect(paint).toHaveBeenCalledTimes(3 * 3);
       expect(raf.mock.calls.length - rafRequestsBeforeHiddenBurst).toBe(0);
       expect(rafCallbacks.size).toBe(0);
 
@@ -228,7 +229,7 @@ describe('same-session scope delivery across hidden rendering', () => {
       flushPaint();
       expect(pushed).toHaveBeenCalledTimes(4);
       expect(pushed.mock.calls.at(-1)![0][0]).toBe(hiddenIds.at(-1));
-      expect(paint).toHaveBeenCalledTimes(4);
+      expect(paint).toHaveBeenCalledTimes(4 * 3);
 
       // Live frames after the return: each paints in its own animation frame.
       for (const id of liveIds) { advance(83); deliver(frame(id)); }
