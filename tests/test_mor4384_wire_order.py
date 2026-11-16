@@ -568,6 +568,67 @@ async def test_t1_an_echo_before_the_write_is_sent_confirms_nothing() -> None:
 
 
 @pytest.mark.timeout(30)
+@pytest.mark.parametrize("ordered", [True, False], ids=["ordered", "unordered"])
+async def test_t3_must_not_a_false_failure_outlive_the_sink_window(
+    link_factory: Callable[..., _Link],
+    virtual_clock: VirtualClock,
+    ordered: bool,
+) -> None:
+    """T3 must-not (a): the off-by-one ends with the lost sink's window.
+
+    Write sink A loses its FB. A blocking write B sent just after A's
+    window (2 s from A's send) has closed gets its own FB: no false
+    failure survives the window.
+    """
+    link = link_factory(ordered=ordered)
+    a = _write(1, blocking=False, refused=False, delay=0.0)
+    b = _write(2, blocking=True, refused=False, delay=0.05)
+
+    await link.run(_send(link, a, lost=True))
+    sent_a = link.wire.sent[-1][0]
+    await link.clock.elapse(_WINDOW + 0.01)
+    outcome_b = await link.run(_send(link, b))
+
+    assert link.wire.sent[-1][0] - sent_a > _WINDOW
+    _assert_own_outcome(b, outcome_b)
+    assert link.tracker.timeout_count == 0
+    assert link.tracker.pending_count == 0
+
+
+@pytest.mark.timeout(30)
+@pytest.mark.parametrize("ordered", [True, False], ids=["ordered", "unordered"])
+async def test_t3_must_not_a_late_sink_answer_misattribute(
+    link_factory: Callable[..., _Link],
+    virtual_clock: VirtualClock,
+    ordered: bool,
+) -> None:
+    """T3 must-not (b): a late (not lost) sink answer lands on the sink.
+
+    Write sink A's FB arrives 1.5 s late, after blocking write B is on the
+    wire but inside A's window. A's FB settles A, B's own answer settles
+    B: a refused B reports its refusal, an accepted B its FB.
+    """
+    link = link_factory(ordered=ordered)
+    a = _write(1, blocking=False, refused=False, delay=1.5)
+    b_refused = _write(2, blocking=True, refused=True, delay=0.05)
+    c = _write(3, blocking=False, refused=False, delay=1.5)
+    d_acked = _write(4, blocking=True, refused=False, delay=0.05)
+
+    async def worker() -> tuple[object, object]:
+        await _send(link, a)
+        outcome_b = await _send(link, b_refused)
+        await _send(link, c)
+        return outcome_b, await _send(link, d_acked)
+
+    outcome_b, outcome_d = await link.run(worker())  # type: ignore[misc]
+
+    _assert_own_outcome(b_refused, outcome_b)
+    _assert_own_outcome(d_acked, outcome_d)
+    assert link.tracker.timeout_count == 0
+    assert link.tracker.pending_count == 0
+
+
+@pytest.mark.timeout(30)
 @pytest.mark.parametrize("b_blocking", [True, False], ids=["b-blocking", "b-sink"])
 async def test_t5_lost_read_then_acked_write_then_refused_write(
     link_factory: Callable[..., _Link],
