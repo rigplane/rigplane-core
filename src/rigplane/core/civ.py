@@ -352,15 +352,34 @@ class CivRequestTracker:
         """Number of fire-and-forget ACK sink waiters currently tracked."""
         return sum(1 for w in self._ack_waiters if w.future is None)
 
+    @property
+    def ack_sink_read_count(self) -> int:
+        """Open read sinks a bare ``FA`` refusal could still retire.
+
+        A read sink's refusal answer is a bare ``FA`` that names no
+        command, so a NAK-terminal blocking read registering behind one
+        can have its own refusal stolen by it (MOR-4384 round 3). Write
+        sinks owe an ``FB`` (or an ``FA`` for a refused write), which a
+        NAK-only waiter never claims, so they are not counted here.
+        """
+        return sum(
+            1
+            for w in self._ack_waiters
+            if w.future is None and w.response_key is not None
+        )
+
     def ack_sink_count_matching(self, key: CivRequestKey) -> int:
         """Open read sinks whose owed answer would also match ``key``.
 
         Two reads of one command share a request key, so the answer the
         radio still owes an older fire-and-forget read would settle a new
         blocking read's waiter if it registered now (``resolve`` tries
-        response waiters before sinks). A data-expecting command drains
-        only these sinks; sinks of other commands cannot eat its keyed
-        answer and are skipped (MOR-4384 round 2).
+        response waiters before sinks). A pure data read (no NAK waiter,
+        ``nak_terminal=False``) drains only these sinks; sinks of other
+        commands cannot eat its keyed answer and are skipped (MOR-4384
+        round 2). A NAK-terminal read drains every open read sink instead
+        (``ack_sink_read_count``): its bare-FA refusal is unkeyed and any
+        older read sink would steal it (round 3).
         """
         return sum(
             1
@@ -557,6 +576,8 @@ class CivRequestTracker:
         answer_window: float,
         now_monotonic: float | None = None,
         only_key: CivRequestKey | None = None,
+        read_sinks: bool = True,
+        write_sinks: bool = True,
     ) -> int:
         """Drop fire-and-forget sinks whose own answer window has closed.
 
@@ -569,6 +590,15 @@ class CivRequestTracker:
         ``only_key`` scopes the expiry to sinks whose answer would match
         that request key (``_keys_overlap``): the data-read drain waits
         only for those, so at its budget's end it presumes only them lost.
+
+        ``read_sinks``/``write_sinks`` scope the expiry by sink kind at a
+        drain-budget cutoff (MOR-4384 round 3): the answer a still-open
+        sink is owed keeps landing on it, so the cutoff presumes lost only
+        the sinks whose late answer the upcoming command cannot already
+        place — write sinks before a blocking write (their bare FB/FA
+        would otherwise be eaten), read sinks before a NAK-terminal read
+        (their bare FA would steal its refusal). A sink of the other kind
+        keeps its window and stays claimable.
 
         A sink dropped here never got that answer, so whatever the radio
         still sends for it — an FB for a write, an FA for a refused read
@@ -592,6 +622,12 @@ class CivRequestTracker:
                 waiter.response_key is not None
                 and _keys_overlap(waiter.response_key, only_key)
             ):
+                kept.append(waiter)
+                continue
+            if waiter.response_key is not None and not read_sinks:
+                kept.append(waiter)
+                continue
+            if waiter.response_key is None and not write_sinks:
                 kept.append(waiter)
                 continue
             opened_at = (
@@ -721,6 +757,18 @@ class CivRequestTracker:
                 if waiter.nak_only and event.type != CivEventType.NAK:
                     index += 1
                     continue
+                if (
+                    event.type is CivEventType.ACK
+                    and waiter.response_key is not None
+                    and waiter.future is None
+                ):
+                    # A read sink is answered with its data frame or a bare
+                    # FA (a refusal), never an FB (MOR-4384 round 3). An FB
+                    # reaching it while it is still open belongs to a newer
+                    # write: taking it would report somebody else's success
+                    # as this read's answer and leave the write to time out.
+                    index += 1
+                    continue
                 self._ack_waiters.pop(index)
                 if waiter.future is not None and not waiter.future.done():
                     waiter.future.set_result(frame)
@@ -768,14 +816,17 @@ class CivRequestTracker:
                     continue
                 if self._matches(pending.key, frame):
                     self._response_waiters.pop(i)
-                    if ordered_ingress:
-                        # The radio answers in order, so a directed answer to
-                        # this newer request proves every older sink's answer
-                        # (data, FB or FA) was lost on the wire: retire them
-                        # by evidence instead of waiting out their windows
-                        # (MOR-4384 round 2). Same proof as
-                        # ``_retire_sinks_passed_by`` below, for a waiter that
-                        # lives outside the ACK list.
+                    if ordered_ingress and frame.to_addr != _BROADCAST_ADDR:
+                        # The radio answers in order, so a directed answer
+                        # to this newer request proves every older sink's
+                        # answer (data, FB or FA) was lost on the wire:
+                        # retire them by evidence instead of waiting out
+                        # their windows (MOR-4384 round 2). Same proof as
+                        # ``_retire_sinks_passed_by`` below, for a waiter
+                        # that lives outside the ACK list. A broadcast is
+                        # exempt (MOR-4384 round 3): the radio sent it on
+                        # its own, so it settles the waiter it happens to
+                        # match but proves nothing about older sinks.
                         passed = sum(
                             1
                             for waiter in self._ack_waiters

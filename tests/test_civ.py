@@ -519,6 +519,40 @@ async def test_a_read_within_its_window_keeps_the_refusal_off_the_next_write() -
     write.cancel()
 
 
+@pytest.mark.asyncio
+async def test_broadcast_answer_settles_its_waiter_but_never_retires_sinks() -> None:
+    """MOR-4384 round 3: a broadcast proves nothing about older sinks.
+
+    A transceive broadcast (``to`` = 0x00) that happens to match a pending
+    blocking read settles that read — the data is the data — but the radio
+    sent it on its own, so it is not a directed answer and cannot prove
+    that an older sink's answer was lost on the wire. Evidence-based
+    retirement must skip broadcasts, or the older tuner read's eventual
+    refusal finds its sink gone and parks in the orphan backlog instead of
+    naming the read the radio refused.
+    """
+    tracker = CivRequestTracker()
+    tuner = tracker.register_ack(wait=False, response_key=_TUNER, refused_read=_TUNER)
+    tracker.mark_ack_sink_sent(tuner, sent_monotonic=100.0)
+    waiter = tracker.register_response(_PTT)
+
+    broadcast = CivFrame(
+        to_addr=0x00,
+        from_addr=0x98,
+        command=0x1C,
+        sub=0x00,
+        data=b"\x00",
+    )
+    assert tracker.resolve(
+        CivEvent(type=CivEventType.RESPONSE, frame=broadcast), ordered_ingress=True
+    )
+    assert waiter.done() and waiter.result() is broadcast
+    assert tracker.ack_sink_count == 1, "a broadcast retired the older sink by evidence"
+
+    assert tracker.resolve(CivEvent(type=CivEventType.NAK, frame=_nak_frame()))
+    assert tracker.take_refused_reads() == (_TUNER,)
+
+
 def test_restore_refused_reads_requeues_undelivered_once() -> None:
     """MOR-4384: a taken refusal no consumer took is not lost.
 

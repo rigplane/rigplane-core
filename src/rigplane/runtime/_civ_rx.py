@@ -1285,7 +1285,9 @@ class CivRuntime:
             return RawCivTransactionResult(status="sent")
 
         await self._drain_ack_sinks_before_blocking(
-            expects_data=expect == "data", request_key=request_key
+            expects_data=expect == "data",
+            request_key=request_key,
+            consumes_nak=expect == "data" and nak_terminal,
         )
         dropped_backlog = self._host._civ_request_tracker.drop_ack_backlog()
         if dropped_backlog:
@@ -4724,44 +4726,62 @@ class CivRuntime:
         check_current: Callable[[], None] | None = None,
         expects_data: bool = False,
         request_key: CivRequestKey | None = None,
+        consumes_nak: bool = False,
     ) -> None:
         """Let fire-and-forget ACK sinks drain before a blocking command.
 
         A bare FB/FA names no command, and ``CivRequestTracker.resolve``
-        hands it to the oldest eligible waiter, so a blocking write must
-        not register its waiter while an earlier fire-and-forget sink is
-        still owed an answer: the answer retiring that sink — an FB, or
-        the FA of a refused read — would settle the new waiter instead,
-        and the write's own FB could be eaten by the older sink (MOR-4384).
+        hands it to the oldest eligible waiter, so a blocking command must
+        not register its waiter while an earlier sink whose answer it could
+        take is still owed that answer: the answer retiring that sink would
+        settle the new waiter instead, and the new command's own answer
+        could be eaten by the older sink (MOR-4384).
 
-        A data answer IS attributed by its request key, so a
-        data-expecting command drains only the sinks whose owed answer
-        would match that same key (``CivRequestTracker.ack_sink_count_matching``)
-        and skips the rest. The skip is safe only across keys: two reads of
-        one command share the key, and ``resolve`` consults response
-        waiters before sinks, so a late answer owed to an older identical
-        fire-and-forget read would settle the new read's waiter if it
-        registered now — the PTT-release readback then rejects its own
-        real reply as unverifiable (tests/integration/
-        test_ptt_release_readback_api.py). Draining the identical sink
-        first keeps the late answer on the sink it belongs to.
+        Which sinks a command must wait for follows what its waiter(s)
+        consume (round 3):
+
+        - a blocking write, or an ``expect="ack"`` transaction, consumes
+          every bare FB/FA, so it drains *all* open sinks; at the drain
+          budget it presumes only *write* sinks lost — a read sink keeps
+          its window, its data answer is keyed, its refusal is an FA, and
+          an FB can no longer reach it (``resolve`` skips read sinks for
+          FB), so a late read answer lands on the sink it belongs to;
+        - a NAK-terminal read (``consumes_nak``) consumes bare FAs, so it
+          drains every open *read* sink — an older read sink's refusal FA
+          would otherwise steal its own refusal and mark the healthy older
+          field refused. Write sinks are skipped: their FB cannot settle a
+          NAK-only waiter, and waiting them out would spend the tight TX
+          read deadline (300 ms) on a sink that cannot take its answer;
+        - a pure data read (``nak_terminal=False``) registers no NAK
+          waiter, so only a *same-key* sink can confuse it: two reads of
+          one command share the key, and ``resolve`` consults response
+          waiters before sinks, so a late answer owed to an older
+          identical fire-and-forget read would settle the new read's
+          waiter if it registered now — the PTT-release readback then
+          rejects its own real reply as unverifiable (tests/integration/
+          test_ptt_release_readback_api.py). It drains only those.
 
         The remaining wait is bounded by its own separate budget
         (``_ACK_SINK_DRAIN_BUDGET_S``), never by each sink's whole answer
         window and never by the next command's answer budget. Sinks whose
         window closes during the wait expire as before; whatever is still
-        open when the budget is spent is presumed lost — its FB/FA can no
-        longer be told from a later command's — and expired with the same
-        ambiguity recorded. A late answer for a sink retired inside the
-        budget still lands on that sink, so the round-1 attribution holds.
+        open when the budget is spent is presumed lost — but only the
+        kinds listed above, whose late answer the new waiter would
+        otherwise take. The other sinks keep their real window and stay
+        claimable, so a late answer retires the sink it belongs to instead
+        of settling this command (round 3). A late answer for a sink
+        retired inside the budget still lands on that sink, so the round-1
+        attribution holds.
         """
         tracker = self._host._civ_request_tracker
 
         def open_sinks() -> int:
             if expects_data:
-                if request_key is None:
-                    return 0
-                return tracker.ack_sink_count_matching(request_key)
+                if not consumes_nak:
+                    if request_key is None:
+                        return 0
+                    return tracker.ack_sink_count_matching(request_key)
+                return tracker.ack_sink_read_count
             return tracker.ack_sink_count
 
         deadline = time.monotonic() + _ACK_SINK_DRAIN_BUDGET_S
@@ -4781,9 +4801,25 @@ class CivRuntime:
             await asyncio.sleep(0.005)
             if check_current is not None:
                 check_current()
-        presumed = tracker.expire_ack_sinks(
-            answer_window=0.0, only_key=request_key if expects_data else None
-        )
+        if expects_data:
+            if consumes_nak:
+                # A NAK-terminal read's refusal FA collides with an older
+                # read sink's FA; write sinks cannot take it (a NAK-only
+                # waiter never claims an FB) and keep their windows.
+                presumed = tracker.expire_ack_sinks(
+                    answer_window=0.0, read_sinks=True, write_sinks=False
+                )
+            else:
+                presumed = tracker.expire_ack_sinks(
+                    answer_window=0.0, only_key=request_key
+                )
+        else:
+            # A blocking write consumes every bare FB/FA, but only a write
+            # sink's FB could be told from its own; a read sink keeps its
+            # window and stays claimable for its data answer or its FA.
+            presumed = tracker.expire_ack_sinks(
+                answer_window=0.0, read_sinks=False, write_sinks=True
+            )
         if presumed:
             logger.debug(
                 "Presumed %d ACK sink waiter(s) lost at the drain budget",
@@ -4805,14 +4841,14 @@ class CivRuntime:
         (NAK)`` and raises
         :class:`~rigplane.core.exceptions.CommandRejectedError` instead of
         waiting out ``_civ_get_timeout`` and reporting a timeout. A refusal
-        names no command, so a data-expecting read skips
-        ``_drain_ack_sinks_before_blocking`` (its keyed answer cannot be
-        eaten by an older sink) while the earlier fire-and-forget sink stays
-        open and the refusal retires that sink instead of this command's
-        waiter (MOR-4384). A refusal arriving after the drain budget spent
-        can still settle a later waiter — the residual exposure the
-        blocking write branch and the raw transaction path's
-        ``nak_terminal=True`` default carry as well.
+        names no command, and a NAK-terminal read registers that NAK waiter
+        only after ``_drain_ack_sinks_before_blocking`` has waited out (or
+        presumed lost) every open read sink: an older read sink left ahead
+        of the waiter would take the read's own refusal FA and mark the
+        healthy older field refused (MOR-4384 round 3). A refusal arriving
+        after the drain budget spent can still settle a later waiter — the
+        residual exposure the blocking write branch and the raw transaction
+        path's ``nak_terminal=True`` default carry as well.
         """
         if self._host._civ_transport is None:
             raise ConnectionError("Not connected to radio")
@@ -4945,6 +4981,7 @@ class CivRuntime:
             check_current=check_current_pre_wire,
             expects_data=expects_response,
             request_key=request_key,
+            consumes_nak=expects_response,
         )
         check_current(pre_wire=True)
 

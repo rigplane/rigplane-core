@@ -35,6 +35,8 @@ from rigplane.commands import (
     build_civ_frame,
     parse_civ_frame,
 )
+from rigplane.core.civ import read_identity_from_frame
+from rigplane.core.exceptions import CommandRejectedError
 from rigplane.radio import IcomRadio
 from rigplane.rigctld.contract import RigctldConfig
 from rigplane.rigctld.server import RigctldServer
@@ -500,3 +502,179 @@ class TestConnectBudget:
         assert elapsed < 2.8, (
             f"connect stalled {elapsed:.2f}s on unanswered sweep reads"
         )
+
+
+def _nak(addr: int):
+    return parse_civ_frame(build_civ_frame(CONTROLLER_ADDR, addr, 0xFA))
+
+
+def _ack(addr: int):
+    return parse_civ_frame(build_civ_frame(CONTROLLER_ADDR, addr, 0xFB))
+
+
+async def _stop(radio) -> None:
+    radio._civ_transport = None
+    pump = radio._civ_rx_task
+    if pump is not None:
+        await pump
+    radio._connected = False
+
+
+class TestUnkeyedNakAttribution:
+    """A NAK-terminal read must not register behind an unrelated read sink.
+
+    MOR-4384 round 3: ``ack_sink_count_matching`` sees only data-answer
+    collisions, but a blocking read also registers a NAK-only waiter that
+    consumes bare FAs. Background read A loses its answer; unrelated read B
+    is explicitly refused. The bypass left A's sink ahead of B's NAK waiter,
+    so B's FA retired A — marking healthy field A refused (the acquisition
+    scheduler then fails A's current acquisition) while B ran out its whole
+    answer window and failed as a timeout.
+    """
+
+    @pytest.mark.realtime(
+        reason="pins the all-read-sink drain budget and B's 2 s answer window"
+    )
+    @pytest.mark.asyncio
+    async def test_refused_read_keeps_its_own_refusal_off_the_older_sink(
+        self,
+    ) -> None:
+        """Through ``_execute_civ_raw``: B is refused, A stays unrefused."""
+        transport = _MockTransport()
+        radio = _make_radio(transport)
+        try:
+            runtime = radio._civ_runtime
+            tuner_read = build_civ_frame(IC_7610_ADDR, CONTROLLER_ADDR, 0x1C, sub=0x01)
+            assert (
+                await runtime._execute_civ_raw(tuner_read, wait_response=False) is None
+            )
+            assert radio._civ_request_tracker.ack_sink_count == 1
+
+            mode_get = build_civ_frame(IC_7610_ADDR, CONTROLLER_ADDR, 0x04)
+            task = asyncio.create_task(runtime._execute_civ_raw(mode_get))
+            try:
+                for _ in range(2000):
+                    if len(transport.sent_packets) >= 2:
+                        break
+                    await asyncio.sleep(0.001)
+                assert len(transport.sent_packets) == 2, "the read never went out"
+                await runtime._route_civ_frame(
+                    _nak(IC_7610_ADDR), generation=radio._civ_epoch
+                )
+                with pytest.raises(CommandRejectedError):
+                    await asyncio.wait_for(task, timeout=4.0)
+            finally:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+            assert radio._civ_request_tracker.take_refused_reads() == (), (
+                "B's refusal was attributed to the older read A"
+            )
+        finally:
+            await _stop(radio)
+
+    @pytest.mark.realtime(
+        reason="pins the all-read-sink drain budget and B's 2 s answer window"
+    )
+    @pytest.mark.asyncio
+    async def test_refused_transaction_keeps_its_own_refusal_off_the_older_sink(
+        self,
+    ) -> None:
+        """Same wire through ``execute_civ_transaction`` (``nak_terminal``)."""
+        transport = _MockTransport()
+        radio = _make_radio(transport)
+        try:
+            runtime = radio._civ_runtime
+            tuner_read = build_civ_frame(IC_7610_ADDR, CONTROLLER_ADDR, 0x1C, sub=0x01)
+            assert (
+                await runtime._execute_civ_raw(tuner_read, wait_response=False) is None
+            )
+            assert radio._civ_request_tracker.ack_sink_count == 1
+
+            mode_get = build_civ_frame(IC_7610_ADDR, CONTROLLER_ADDR, 0x04)
+            task = asyncio.create_task(
+                runtime.execute_civ_transaction(mode_get, expect="data")
+            )
+            try:
+                for _ in range(2000):
+                    if len(transport.sent_packets) >= 2:
+                        break
+                    await asyncio.sleep(0.001)
+                assert len(transport.sent_packets) == 2, (
+                    "the transaction never went out"
+                )
+                await runtime._route_civ_frame(
+                    _nak(IC_7610_ADDR), generation=radio._civ_epoch
+                )
+                result = await asyncio.wait_for(task, timeout=4.0)
+            finally:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+            assert result.status == "nak", (
+                "the transaction did not report its own refusal"
+            )
+            assert radio._civ_request_tracker.take_refused_reads() == (), (
+                "the transaction's refusal was attributed to the older read A"
+            )
+        finally:
+            await _stop(radio)
+
+
+class TestLiveReadSinkOutlivesTheDrainBudget:
+    """A read sink lives until its answer window closes (round 3)."""
+
+    @pytest.mark.realtime(
+        reason="the read's refusal must land past the 500 ms drain cutoff "
+        "but inside the 2 s answer window"
+    )
+    @pytest.mark.asyncio
+    async def test_late_read_refusal_within_window_does_not_reject_a_successful_set(
+        self,
+    ) -> None:
+        """A background read's FA at 600 ms retires the read, not the setter.
+
+        The drain's 500 ms cutoff used to force-expire every open sink with
+        ``answer_window=0.0``, recreating the round-1 defect inside the
+        configured 2 s window: the read's late refusal then landed on the
+        blocking set's fresh waiter and ``set_freq`` failed with "Radio
+        rejected MAIN set_frequency(...)" although the radio tuned (its FB
+        follows here). The read sink must stay claimable until its real
+        window closes, so the FA retires the read it answers and the set
+        settles on its own FB.
+        """
+        transport = _MockTransport()
+        radio = _make_radio(transport)
+        try:
+            runtime = radio._civ_runtime
+            refused_read = build_civ_frame(
+                IC_7610_ADDR, CONTROLLER_ADDR, 0x1C, sub=0x01
+            )
+            assert (
+                await runtime._execute_civ_raw(refused_read, wait_response=False)
+                is None
+            )
+            task = asyncio.create_task(radio.set_freq(7_074_000))
+            try:
+                # Past the drain budget (500 ms), inside the answer window
+                # (2 s): on the unfixed head the sink was already presumed
+                # lost and this FA rejected the set.
+                await asyncio.sleep(0.65)
+                await runtime._route_civ_frame(
+                    _nak(IC_7610_ADDR), generation=radio._civ_epoch
+                )
+                for _ in range(2000):
+                    if len(transport.sent_packets) >= 2:
+                        break
+                    await asyncio.sleep(0.001)
+                assert len(transport.sent_packets) == 2, "the set never went out"
+                await runtime._route_civ_frame(
+                    _ack(IC_7610_ADDR), generation=radio._civ_epoch
+                )
+                await asyncio.wait_for(task, timeout=3.0)
+            finally:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+            assert radio._civ_request_tracker.take_refused_reads() == (
+                read_identity_from_frame(parse_civ_frame(refused_read)),
+            ), "the late refusal did not retire the read it answers"
+        finally:
+            await _stop(radio)
