@@ -7,17 +7,20 @@
   import { defaultWaterfallOptions, type ColorSchemeName, type WaterfallOptions } from '../../lib/renderers/waterfall-renderer';
   import type { CanvasSurface } from '../../lib/canvas/canvas-surface.svelte';
   import { ScopeRenderScheduler } from '../../lib/canvas/scope-render-scheduler';
+  import type { ScopeRenderTrace, TraceToken } from '../../lib/runtime/scope-render-trace';
 
   interface Props {
     options: SpectrumOptions;
     colorScheme: ColorSchemeName;
     surface: CanvasSurface;
-    onRegisterPush: (fn: (data: Uint8Array) => void) => void;
+    onRegisterPush: (fn: (data: Uint8Array, token?: TraceToken | null) => void) => void;
+    /** Diagnostic render trace of the host pane; records this view's geometry, paints and coalesced frames. */
+    trace?: ScopeRenderTrace | null;
     /** The browser gave no usable WebGL2 context; the host falls back to the flat view. */
     onUnavailable: () => void;
   }
 
-  let { options, colorScheme, surface, onRegisterPush, onUnavailable }: Props = $props();
+  let { options, colorScheme, surface, onRegisterPush, onUnavailable, trace = null }: Props = $props();
 
   let scene: HTMLCanvasElement;
   let chrome: HTMLCanvasElement;
@@ -40,7 +43,8 @@
   }
 
   const viewOptions = { ...defaultWaterfallOptions };
-  const frame = { pixels: null as Uint8Array | null, options: { ...defaultWaterfallOptions }, pending: false };
+  const frame = { pixels: null as Uint8Array | null, options: { ...defaultWaterfallOptions }, pending: false,
+    token: null as TraceToken | null };
   const scheduler = new ScopeRenderScheduler(paint, {
     active: () => surface.visible && surface.sized && renderer !== null,
   });
@@ -54,6 +58,9 @@
 
   function paint(now: number): void {
     if (!renderer) return;
+    const measuring = trace?.status === 'recording';
+    if (measuring) trace?.recordGeometry('spectrum', surface.cssW, surface.cssH, scene.width, scene.height, window.devicePixelRatio || 1);
+    const paintAt = measuring ? performance.now() : 0;
     try {
       renderer.setPixelScale(surface.pixelScale);
       renderer.updateOptions(rowOptions(options, viewOptions));
@@ -62,10 +69,15 @@
       // Rows glide back between frames: keep painting display frames meanwhile.
       if (renderer.draw(now)) scheduler.wake('view');
       if (renderer.historyRows !== historyRows) historyRows = renderer.historyRows;
+      if (measuring) trace?.record('spectrum_render', frame.token, performance.now() - paintAt);
     } catch (error) { failed(error); }
   }
 
-  function push(pixels: Uint8Array): void {
+  function push(pixels: Uint8Array, token?: TraceToken | null): void {
+    if (trace?.status === 'recording' && frame.pending && frame.token && token && frame.token !== token) {
+      trace.record('coalesced', frame.token, 0, true);
+    }
+    frame.token = token ?? null;
     frame.pixels = pixels;
     rowOptions(options, frame.options);
     frame.pending = true;
@@ -107,14 +119,13 @@
     scheduler.wake('size');
   }
 
-  function contextLost(event: Event): void {
-    event.preventDefault();
-    renderer?.destroy(); renderer = null;
+  /** A lost context ends the view like any other renderer failure. */
+  function contextLost(): void {
+    failed(new StackedTraceRenderError());
   }
 
   onMount(() => {
     scene.addEventListener('webglcontextlost', contextLost);
-    scene.addEventListener('webglcontextrestored', createRenderer);
     // The WebGL2 context must exist before the surface sizes the canvas:
     // the surface's sizing asks a canvas for a 2D context.
     createRenderer();
@@ -128,7 +139,6 @@
     onRegisterPush(push);
     return () => {
       scene.removeEventListener('webglcontextlost', contextLost);
-      scene.removeEventListener('webglcontextrestored', createRenderer);
       unbindScene(); unbindChrome(); stopSize();
       scheduler.dispose();
       renderer?.destroy(); renderer = null;
