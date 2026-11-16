@@ -510,6 +510,64 @@ async def test_t3_without_keyed_traffic_the_off_by_one_ends_with_the_window(
 
 
 @pytest.mark.timeout(30)
+async def test_t5_echo_confirmed_write_retires_the_older_lost_read(
+    link_factory: Callable[..., _Link],
+    virtual_clock: VirtualClock,
+) -> None:
+    """T5 echo: an echo names its write, so it is ordered evidence too.
+
+    On an echo-confirming LAN radio the write's answer is its own frame
+    sent back. Read sink A loses its answer; blocking write B is confirmed
+    by its directed echo, which on an ordered link retires A; blocking
+    write C's FA, inside A's window, then lands on C, and A is not marked
+    refused.
+    """
+    link = link_factory(ordered=True)
+    a = _read("af", 1, blocking=False, refused=False, delay=0.0)
+    b = _write(2, blocking=True, refused=False, delay=0.05)
+    b.answer = _answer(*_WRITE, data=_level(2))  # the radio echoes the SET
+    c = _write(3, blocking=True, refused=True, delay=0.05)
+
+    async def worker() -> tuple[object, int, object]:
+        await _send(link, a, lost=True)
+        outcome_b = await _send(link, b)
+        open_after_b = link.tracker.ack_sink_count
+        return outcome_b, open_after_b, await _send(link, c)
+
+    outcome_b, open_after_b, outcome_c = await link.run(worker())  # type: ignore[misc]
+
+    assert isinstance(outcome_b, CivFrame) and outcome_b.command == 0xFB, outcome_b
+    assert open_after_b == 0, "B's echo left the older lost read sink open"
+    _assert_own_outcome(c, outcome_c)
+    assert link.tracker.take_refused_reads() == ()
+
+
+@pytest.mark.asyncio
+async def test_t1_an_echo_before_the_write_is_sent_confirms_nothing() -> None:
+    """T1 echo: an entry not yet sent claims nothing, an echo included.
+
+    A delayed echo identical to write B arrives while B is registered but
+    still in its pacing gap: it does not confirm B.
+    """
+    tracker = CivRequestTracker()
+    write = _request(*_WRITE, data=_level(7))
+    pending = tracker.register_ack(
+        wait=True,
+        consume_backlog=False,
+        write_identity=read_identity_from_frame(parse_civ_frame(write)),
+    )
+    assert isinstance(pending, asyncio.Future)
+
+    echo = _answer(*_WRITE, data=_level(7))
+    assert tracker.resolve_write_echo(echo, ordered_ingress=True) is False
+    assert not pending.done()
+
+    tracker.mark_sent(1.0, futures=(pending,))
+    assert tracker.resolve_write_echo(echo, ordered_ingress=True) is True
+    assert pending.result().command == 0xFB
+
+
+@pytest.mark.timeout(30)
 @pytest.mark.parametrize("b_blocking", [True, False], ids=["b-blocking", "b-sink"])
 async def test_t5_lost_read_then_acked_write_then_refused_write(
     link_factory: Callable[..., _Link],
