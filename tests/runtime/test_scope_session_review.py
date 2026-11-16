@@ -461,14 +461,28 @@ class _ScopeWindowSimulator(ScopeControlSimulator):
     The base class replays a fixed recording; here every pump reshapes the
     templates the way the panorama journey simulator does: the mode byte
     tracks ``views[receiver][0]``, and the window is ``windows[receiver]``
-    in FIX/SCROLL-F or center ± span preset in CENTER. A receiver in
-    ``muted`` does not stream (e.g. a radio streaming only SUB at startup).
+    in FIX/SCROLL-F, a radio-owned scroll window (VFO ± span preset,
+    rebuilt on VFO exit or span change) in SCROLL-C, or center ± span
+    preset in CENTER. A receiver in ``muted`` does not stream (e.g. a
+    radio streaming only SUB at startup).
     """
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.windows: dict[int, tuple[int, int]] = {}
         self.muted: set[int] = set()
+        # SCROLL-C windows the "radio" owns, keyed by receiver, plus the
+        # span preset each window was built at (#4565 pre-review item 5).
+        self._scroll: dict[int, tuple[int, int]] = {}
+        self._scroll_span: dict[int, int] = {}
+        # 27 15 GET reads the "radio" does not answer: the waveform edges
+        # are then the only evidence of an external span change.
+        self.withhold_span_reads = False
+
+    def _dispatch_scope(self, payload: bytes, from_addr: int) -> bytes | None:
+        if self.withhold_span_reads and payload[0] == 0x15 and len(payload) == 2:
+            return None
+        return super()._dispatch_scope(payload, from_addr)
 
     def _scope_streaming_receivers(self) -> list[int]:
         return [
@@ -484,9 +498,30 @@ class _ScopeWindowSimulator(ScopeControlSimulator):
                 # Center mode carries (center, span); the assembler expands.
                 first = self._frequency
                 last = self.profile.scope_span_presets_hz[span]
+            elif mode == 2:
+                # SCROLL-C: the radio owns the window, keeps the VFO
+                # inside it and sizes it to the SPAN preset — so an
+                # acknowledged span change must show in the following
+                # waveform edges (#4565 pre-review item 5). The window
+                # rebuilds when it is absent, when the VFO leaves it, or
+                # when the span preset changed; the same model the
+                # panorama journey simulator uses.
+                preset = self.profile.scope_span_presets_hz[span]
+                tuned = self._frequency if receiver == 0 else self._unselected_frequency
+                window = self._scroll.get(receiver)
+                if (
+                    window is None
+                    or self._scroll_span.get(receiver) != span
+                    or not window[0] <= tuned < window[1]
+                ):
+                    window = (tuned - preset, tuned + preset)
+                    self._scroll[receiver] = window
+                    self._scroll_span[receiver] = span
+                first, last = window
             else:
-                # Every other mode carries edges (ScopeAssembler expands
-                # only mode 0).
+                # FIX/SCROLL-F carry configured edges; the radio never
+                # moves them on its own (ScopeAssembler expands only
+                # mode 0).
                 first, last = self.windows.get(receiver, (14_000_000, 14_350_000))
             self._scope_templates[receiver] = [
                 template[:9]
@@ -1226,7 +1261,9 @@ async def test_scroll_c_span_step_writes_only_span_preset_over_ws(windowed_sdk):
     """#4565 journey: the MORE-menu S-C button's set_scope_mode(2), then a
     follow SPAN+ resubscribe — exactly one 27 15 receipt with the covering
     preset, zero 0x14 receipts after the S-C switch. The radio stays in
-    SCROLL-C and the grant stays the reported window.
+    SCROLL-C, and the acknowledged span change shows in the following
+    waveform edges: the visible window widens to the granted preset
+    (#4565 pre-review item 5) instead of silently keeping the old one.
     """
     radio, sim = windowed_sdk
     sim.capture_civ_frames = True
@@ -1239,22 +1276,89 @@ async def test_scroll_c_span_step_writes_only_span_preset_over_ws(windowed_sdk):
                 ws, Subscription("radio", 0, FollowView("vfo", 100_000), 475, 20)
             )
             # The S-C button: an explicit mode command (its own 0x14 is
-            # expected) — the session owns mode 2 from here on.
+            # expected) — the session owns mode 2 from here on. The
+            # radio-owned window starts at the subscription's preset.
             await radio.set_scope_mode(2)
             assert sim.views[0][0] == 2
-            sim.windows[0] = (14_000_000, 14_100_000)
-            await _frame_with(ws, sim.windows[0])
+            await _frame_with(ws, (14_050_000, 14_150_000))
             sim.civ_frames_received.clear()
             # SPAN+: a wider follow resubscribe must write only the
             # covering span preset, never a mode write.
-            granted = await _subscribe(
+            await _subscribe(
                 ws, Subscription("radio", 0, FollowView("vfo", 500_000), 475, 20)
             )
-            assert (granted.view.start_hz, granted.view.end_hz) == sim.windows[0]
             receipts = _viewport_writes(sim)
             assert len([w for w in receipts if w.sub == 0x15]) == 1
             assert [w for w in receipts if w.sub == 0x14] == []
             assert sim.views[0] == (2, presets.index(250_000), 1)
+            # The user-visible SPAN outcome: later frames carry the changed
+            # visible width (VFO ± the written preset) while the mode stays
+            # SCROLL-C — the old window is no longer accepted.
+            widened = await _frame_with(
+                ws, (14_100_000 - 250_000, 14_100_000 + 250_000)
+            )
+            assert widened.pixels
+            assert (widened.coverage_start_hz, widened.coverage_end_hz) == (
+                14_100_000 - 250_000,
+                14_100_000 + 250_000,
+            )
+            assert sim.views[0][0] == 2
+
+
+@pytest.mark.parametrize("windowed_sdk", ["IC-7610", "IC-705"], indirect=True)
+async def test_scroll_c_external_span_change_via_waveform_then_cached_preset_writes(
+    windowed_sdk,
+):
+    """#4565 pre-review item 3, over the real scope WebSocket on two radio
+    profiles: a front-panel span change in SCROLL-C must reach the session
+    through the waveform edges (the reported window width maps back to the
+    span preset), so a later request for the PREVIOUSLY CACHED preset is
+    not suppressed by the same-value skip — the 27 15 SET goes out and the
+    streamed window changes while the mode stays SCROLL-C.
+    """
+    radio, sim = windowed_sdk
+    sim.capture_civ_frames = True
+    sim.set_frequency(14_100_000)
+    radio._radio_state.main.freq = 14_100_000
+    presets = radio._profile.scope_span_presets_hz
+    async with web(radio) as (_, client, base, protocols, _):
+        async with client.ws_connect(base + "/api/v1/scope", protocols=protocols) as ws:
+            await _subscribe(
+                ws, Subscription("radio", 0, FollowView("vfo", 100_000), 475, 20)
+            )
+            await radio.set_scope_mode(2)
+            assert sim.views[0][0] == 2
+            # The subscription cached the covering preset (50k): the
+            # session's span is observed from the streamed width.
+            await _frame_with(ws, (14_050_000, 14_150_000))
+            session = radio.scope_session()
+            assert await await_until(
+                lambda: session._applied.get((0, "span")) == presets.index(50_000)
+            )
+            # External span change (front panel) while SCROLL-C: no write
+            # leaves Core and no readback answers, so the following
+            # waveform edges are the only evidence — the session adopts
+            # the new preset from them.
+            sim.withhold_span_reads = True
+            sim.views[0] = (2, presets.index(100_000), 1)
+            await _frame_with(ws, (14_000_000, 14_200_000))
+            assert await await_until(
+                lambda: session._applied.get((0, "span")) == presets.index(100_000)
+            )
+            sim.civ_frames_received.clear()
+            # Requesting the PREVIOUSLY CACHED preset must reach the radio:
+            # the stale cache must not suppress the SET.
+            await _subscribe(
+                ws, Subscription("radio", 0, FollowView("vfo", 100_000), 475, 20)
+            )
+            span_sets = [w for w in _viewport_writes(sim) if w.sub == 0x15]
+            assert len(span_sets) == 1 and span_sets[0].data[0] == 0
+            assert sim.views[0] == (2, presets.index(50_000), 1)
+            assert [w for w in _viewport_writes(sim) if w.sub == 0x14] == []
+            # The window changes back to the requested preset's width.
+            narrowed = await _frame_with(ws, (14_050_000, 14_150_000))
+            assert narrowed.pixels
+            assert sim.views[0][0] == 2
 
 
 async def test_restore_keeps_span_adopted_after_span_rewrite(windowed_sdk, monkeypatch):
@@ -1279,7 +1383,10 @@ async def test_restore_keeps_span_adopted_after_span_rewrite(windowed_sdk, monke
         await _subscribe(
             ws, Subscription("radio", 0, FollowView("vfo", 100_000), 475, 20)
         )
-        await _frame_with(ws, (14_000_000, 14_350_000))
+        # The window simulator sizes the SCROLL-C window to the written
+        # preset (#4565 pre-review item 5): VFO ± 50k, no longer the
+        # arbitrary default edge pair the span-ignoring pump streamed.
+        await _frame_with(ws, (14_050_000, 14_150_000))
         assert sim.views[0] == (2, presets.index(50_000), 1)
         assert [w.sub for w in _viewport_writes(sim)] == [0x15]
         await radio.set_scope_mode(0)

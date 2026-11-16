@@ -974,6 +974,23 @@ describe('SpectrumPanel component', () => {
     });
   });
 
+  // #4565 pre-review item 1. Guards the `radioOwned || frequency === null`
+  // term of the confirmed-view effect in SpectrumPanel.svelte: after a span
+  // gesture `followSpanHz` is set, and a radio-owned mode (SCROLL-C) must still
+  // show the REPORTED window, not a VFO-centred one. The VFO sits 5 kHz off the
+  // window centre here, so a VFO-centred view would shift every axis label.
+  it.each([2, 1, 3])('keeps the reported window after a span gesture in radio-owned mode %s', async (mode) => {
+    runtimeHarness.state.currentCaps = validateCapabilities({ ...IC7300_CAPABILITIES, ...spanCapabilities, model: 'IC-7610' });
+    authorityHarness.state.current = authority({ frequencyHz: 14_055_000, scopeControls: testScopeControls(mode) });
+    const target = mountPanel();
+    emitFrame({ mode, startFreq: 14_000_000, endFreq: 14_100_000 }); await flushWaterfallPaint();
+    mockRuntime.scope.spanControl!.step(-1); flushSync();
+    emitFrame({ mode, startFreq: 14_025_000, endFreq: 14_075_000, sequence: 2 }); await flushWaterfallPaint();
+    const ticks = [...target.querySelectorAll('.freq-axis .tick')].map((tick) => tick.textContent);
+    expect([ticks[0], ticks.at(-1)]).toEqual(['14.025', '14.075']);
+    expect(target.querySelector('.scope-hatch')).toBeNull();
+  });
+
   it('labels and steps from granted FIXED edges without a legacy index', async () => {
     runtimeHarness.state.currentCaps = validateCapabilities({ ...IC7300_CAPABILITIES, ...spanCapabilities, model: 'IC-7610' });
     const target = mountPanel();

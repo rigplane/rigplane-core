@@ -42,6 +42,7 @@ def _bcd_level_decode(data: bytes) -> int:
 
 
 from rigplane.commands import parse_civ_frame  # noqa: E402
+from rigplane.commands._codec import bcd_encode_value  # noqa: E402
 from rigplane.commands.scope import parse_scope_fixed_edge_response  # noqa: E402
 from rigplane.profiles import resolve_radio_profile  # noqa: E402
 from rigplane.runtime.radio import IcomRadio  # noqa: E402
@@ -133,11 +134,16 @@ class PanoramaSimulator(MockIcomRadio):
         # of the same scheduled change, never a second mechanism.
         self._external_hold: tuple[str, int, float] | None = None
         self.scope_mode = 0
+        self._active_slot = 0  # single-receiver A/B: 0 = A, 1 = B
         self.fixed = (14_200_000, 14_300_000)
         # SCROLL-C window, radio-owned: the radio scrolls its own edges
         # when the VFO leaves the window (CI-V 27 15 SPAN applies in
         # Center and SCROLL-C). None until the first SCROLL-C pump.
         self.scroll: tuple[int, int] | None = None
+        # The span preset the scroll window was built at: an acknowledged
+        # span change must resize the streamed window (#4565 pre-review
+        # item 5) — None until the first SCROLL-C pump.
+        self.scroll_span: int | None = None
         self.set_frequency(14_250_000)
         # CI-V 1A 03 (DSP filter width): the shared simulator does not model
         # it, so the panorama harness never observed main.filterWidth and no
@@ -188,6 +194,28 @@ class PanoramaSimulator(MockIcomRadio):
                     from_addr, self._radio_addr, 0x14, sub=sub, data=data
                 ),
             )
+        if cmd == 0x07 and payload in (b"\x00", b"\x01") and not self._dual_receiver:
+            # A/B slot select on a single-receiver radio: the connection
+            # policy selects VFO A and the passband identity needs the
+            # confirmed slot. Exchanging slots swaps the selected and
+            # unselected sets, exactly as the dual-receiver select does.
+            target = payload[0]
+            if target != self._active_slot:
+                self._frequency, self._unselected_frequency = (
+                    self._unselected_frequency,
+                    self._frequency,
+                )
+                self._mode, self._unselected_mode = self._unselected_mode, self._mode
+                self._data_mode, self._unselected_data_mode = (
+                    self._unselected_data_mode,
+                    self._data_mode,
+                )
+                self._filter, self._unselected_filter = (
+                    self._unselected_filter,
+                    self._filter,
+                )
+                self._active_slot = target
+            return self._civ_ack(from_addr, self._radio_addr)
         return super()._dispatch_civ_native(cmd, payload, from_addr)
 
     def _dispatch_cmd29(
@@ -338,6 +366,7 @@ class PanoramaSimulator(MockIcomRadio):
             return self._frequency
         return self._frequency + sign * (width_hz // 2)
 
+
     def pump_scope_stream(self) -> int:
         if self.evidence.with_suffix(".pause").exists():
             return 0
@@ -349,12 +378,17 @@ class PanoramaSimulator(MockIcomRadio):
         elif self.scope_mode == 2:
             # SCROLL-C: the radio owns the window and scrolls it to keep
             # the VFO inside, at the SPAN width. Recentering on exit is
-            # the test-infra model of that scroll.
+            # the test-infra model of that scroll, and an acknowledged
+            # span change rebuilds the window at the new width so the
+            # following waveform edges carry the change (#4565 pre-review
+            # item 5).
             if (
                 self.scroll is None
+                or self.scroll_span != span
                 or not self.scroll[0] <= self._frequency < self.scroll[1]
             ):
                 self.scroll = (self._frequency - span, self._frequency + span)
+                self.scroll_span = span
             first, last = self.scroll
         else:
             first, last = self._scope_wave_center_hz(), span
