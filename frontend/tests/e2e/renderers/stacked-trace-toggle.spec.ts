@@ -16,11 +16,19 @@ test('flat by default; the 3D key switches the pane, survives a reload and switc
   await expect(key).toHaveAttribute('aria-pressed', 'false');
   await expect(key).toHaveAttribute('title', '3D view: recent spectrum history in depth');
   await expect(page.locator('.db-scale .tick').first()).toBeVisible();
+  // AVG and PEAK shape the flat trace only: shown with it, hidden in 3D.
+  const avg = page.getByRole('button', { name: 'AVG', exact: true }).first();
+  const peak = page.getByRole('button', { name: 'PEAK', exact: true }).first();
+  await expect(avg).toBeVisible();
+  await expect(peak).toBeVisible();
 
   await key.click();
   await expect(stacked).toBeVisible();
   await expect(page.locator(flat)).toHaveCount(0);
   await expect(key).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.locator('button', { hasText: /^AVG$/ }).first()).toBeHidden();
+  await expect(page.locator('button', { hasText: /^PEAK$/ }).first()).toBeHidden();
+  await expect(page.locator('button', { hasText: /^BANDS$/ }).first()).toBeVisible();
   // The frame the panel already holds reaches the new view.
   await expect.poll(async () => Number(await stacked.getAttribute('data-history-rows'))).toBeGreaterThan(0);
   await expect(page.locator('.db-scale .tick').first()).toBeHidden();
@@ -37,6 +45,8 @@ test('flat by default; the 3D key switches the pane, survives a reload and switc
   await page.getByTestId('scope-3d-toggle').first().click();
   await expect(page.getByTestId('stacked-trace')).toHaveCount(0);
   await expect(page.locator(flat)).toHaveCount(1);
+  await expect(page.getByRole('button', { name: 'AVG', exact: true }).first()).toBeVisible();
+  await expect(page.getByRole('button', { name: 'PEAK', exact: true }).first()).toBeVisible();
   await page.reload();
   await expect(page.locator(flat)).toHaveCount(1);
   await expect(page.getByTestId('stacked-trace')).toHaveCount(0);

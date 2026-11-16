@@ -64,7 +64,7 @@
   // palette; every other case keeps the flat trace.
   let stacked = $derived(isStackedTraceEnabled() && !isStackedTraceUnavailable()
     && colorScheme !== undefined && suppliedSurface !== undefined && options.showRfOverlays !== false);
-  let stackedPush: ((pixels: Uint8Array) => void) | null = null;
+  let stackedPush: ((pixels: Uint8Array, token?: TraceToken | null) => void) | null = null;
 
   // Latest scope pixels — updated directly from WS binary, not via Svelte props
   let latestPixels: Uint8Array | null = null;
@@ -137,7 +137,7 @@
       latestPixels = pixels;
       latestToken = token ?? null;
       if (measuring) trace?.record('spectrum_push', latestToken);
-      if (stacked && stackedPush) stackedPush(pixels);
+      if (stacked && stackedPush) stackedPush(pixels, latestToken);
       else wake('frame');
     });
     return () => {
@@ -149,10 +149,10 @@
 
 <div class="spectrum-container">
   {#if stacked && colorScheme !== undefined}
-    <StackedTraceCanvas {options} {colorScheme} {surface} onUnavailable={markStackedTraceUnavailable}
+    <StackedTraceCanvas {options} {colorScheme} {surface} {trace} onUnavailable={markStackedTraceUnavailable}
       onRegisterPush={(fn) => {
         stackedPush = fn;
-        if (latestPixels) fn(latestPixels);
+        if (latestPixels) fn(latestPixels, latestToken);
       }} />
   {:else}
     <canvas bind:this={canvas}></canvas>
