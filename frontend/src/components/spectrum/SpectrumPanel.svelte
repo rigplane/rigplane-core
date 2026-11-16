@@ -738,7 +738,9 @@
         }
         if (geometry && geometry.view.endHz > geometry.view.startHz) {
           const span = follow ?? geometry.view.endHz - geometry.view.startHz;
-          scopeView.set('confirmed', requested ?? ((radioOwned && follow === null) || frequency === null || frequency === undefined ? geometry.view
+          // #4565: a radio-owned window (FIX/SCROLL-C/SCROLL-F) is always the
+          // reported geometry — a span gesture's follow width never re-centres it.
+          scopeView.set('confirmed', requested ?? (radioOwned || frequency === null || frequency === undefined ? geometry.view
             : { startHz: frequency - span / 2, endHz: frequency + span / 2 }));
         }
         const confirmed = scopeView.confirmed;
