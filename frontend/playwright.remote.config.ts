@@ -1,4 +1,5 @@
 import { defineConfig } from '@playwright/test';
+import { REQUIRED_MATRIX } from './tests/e2e/remote/no-skips-reporter';
 
 /**
  * Remote/browser E2E matrix (C5b PR-0, MOR-4493): the rows run in BOTH
@@ -20,16 +21,17 @@ export default defineConfig({
   fullyParallel: false,
   workers: 1,
   retries: 0,
-  repeatEach: 2,
+  repeatEach: REQUIRED_MATRIX.repeatEach,
   timeout: 60_000,
   expect: { timeout: 10_000 },
   outputDir: '../.playwright-output/remote',
   forbidOnly: true,
   reporter: [['list'], ['./tests/e2e/remote/no-skips-reporter.ts']],
-  projects: [
-    { name: 'chromium', use: { browserName: 'chromium' } },
-    { name: 'webkit', use: { browserName: 'webkit' } },
-  ],
+  // The browsers of the required matrix (the reporter checks the same list).
+  projects: REQUIRED_MATRIX.projects.map((name) => ({
+    name,
+    use: { browserName: name },
+  })),
   webServer: {
     // --extra webrtc: aiortc backs the P0 answerer (WebConfig.webrtc_enabled).
     command: `uv run --extra webrtc python tests/e2e/remote_web_server.py --port ${PORT}`,

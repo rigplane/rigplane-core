@@ -1,31 +1,13 @@
-import type {
-  FullConfig,
-  Reporter,
-  Suite,
-  TestCase,
-  TestResult,
-} from '@playwright/test/reporter';
+import type { Reporter, TestCase, TestResult } from '@playwright/test/reporter';
 
 /**
  * The no-skips gate of the remote E2E matrix (playwright.remote.config.ts):
- * a run is failing unless every test the config planned ran and passed.
- * A skipped or `fixme` row, and a planned test missing from the results
- * (filtered away, e.g. by a project mismatch that kept it out of one
- * browser), both count as failures — softened rows are forbidden (C5b
- * adviser brief §6).
+ * a run is failing unless every required (project x row x repetition)
+ * case ran and passed. A skipped or `fixme` row, and a required case
+ * missing from the results (filtered away by `--project`, `--grep` or
+ * `--repeat-each`), both count as failures — softened rows are forbidden
+ * (C5b adviser brief §6).
  */
-
-/** What the run planned: every test case onBegin saw. */
-export interface PlannedTest {
-  id: string;
-  title: string;
-}
-
-/** What the run recorded for one test case. */
-export interface RecordedResult {
-  testId: string;
-  status: 'passed' | 'failed' | 'timedOut' | 'interrupted' | 'skipped' | 'didNotRun';
-}
 
 /** The matrix the remote config requires, independent of any CLI filter
  * (`--project`, `--grep`, `--repeat-each`): every row in every project,
@@ -38,49 +20,67 @@ export const REQUIRED_MATRIX = {
 
 const PASSED = 'passed';
 
-/** The problems of a run: empty means every planned test ran and passed. */
-export function noSkipProblems(
-  planned: PlannedTest[],
-  results: RecordedResult[],
-): string[] {
+/** What the run recorded for one executed test case. */
+export interface RecordedCase {
+  row: string;
+  project: string;
+  repeat: number;
+  status: 'passed' | 'failed' | 'timedOut' | 'interrupted' | 'skipped';
+}
+
+/** The row id ("L1", "P0") a test title starts with, or null. */
+export function rowOf(title: string): string | null {
+  return /^([A-Z]\d+):/.exec(title)?.[1] ?? null;
+}
+
+/**
+ * The problems of a run: empty means every required (project x row x
+ * repetition) combination ran and passed. The requirement comes from
+ * REQUIRED_MATRIX, never from the suite Playwright hands the reporter,
+ * which is already filtered by `--project`, `--grep` and `--repeat-each`.
+ */
+export function matrixProblems(recorded: RecordedCase[]): string[] {
   const problems: string[] = [];
-  for (const test of planned) {
-    const recorded = results.filter((result) => result.testId === test.id);
-    if (recorded.length === 0) {
-      problems.push(`${test.title}: no result (filtered out or never ran)`);
-      continue;
-    }
-    const bad = recorded.find((result) => result.status !== PASSED);
-    if (!bad) continue;
-    if (bad.status === 'skipped') {
-      problems.push(`${test.title}: skipped (skip/fixme rows are forbidden)`);
-    } else {
-      problems.push(`${test.title}: ${bad.status} (did not complete)`);
+  for (const project of REQUIRED_MATRIX.projects) {
+    for (const row of REQUIRED_MATRIX.rows) {
+      for (let repeat = 0; repeat < REQUIRED_MATRIX.repeatEach; repeat += 1) {
+        const label = `${project} › ${row} #${repeat + 1}`;
+        const found = recorded.filter(
+          (c) => c.project === project && c.row === row && c.repeat === repeat,
+        );
+        if (found.length === 0) {
+          problems.push(`${label}: no result (filtered out or never ran)`);
+        } else if (found.some((c) => c.status === 'skipped')) {
+          problems.push(`${label}: skipped (skip/fixme rows are forbidden)`);
+        } else {
+          const bad = found.find((c) => c.status !== PASSED);
+          if (bad) problems.push(`${label}: ${bad.status} (did not complete)`);
+        }
+      }
     }
   }
   return problems;
 }
 
 export default class NoSkipsReporter implements Reporter {
-  private planned: PlannedTest[] = [];
-  private results: RecordedResult[] = [];
-
-  onBegin(_config: FullConfig, suite: Suite): void {
-    this.planned = suite.allTests().map((test) => ({
-      id: test.id,
-      title: test.titlePath().slice(1).join(' › '),
-    }));
-  }
+  private recorded: RecordedCase[] = [];
 
   onTestEnd(test: TestCase, result: TestResult): void {
-    this.results.push({ testId: test.id, status: result.status });
+    const row = rowOf(test.titlePath().at(-1) ?? '');
+    if (row === null) return;
+    this.recorded.push({
+      row,
+      project: test.parent.project()?.name ?? '',
+      repeat: test.repeatEachIndex,
+      status: result.status as RecordedCase['status'],
+    });
   }
 
   async onEnd(): Promise<{ status: 'failed' } | undefined> {
-    const problems = noSkipProblems(this.planned, this.results);
+    const problems = matrixProblems(this.recorded);
     if (problems.length === 0) return undefined;
     const message = [
-      'no-skips gate: the run is failing because planned tests did not run and pass:',
+      'no-skips gate: the run is failing because required matrix cases did not run and pass:',
       ...problems,
     ].join('\n');
     console.error(message);
