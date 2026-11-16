@@ -192,7 +192,10 @@ What the IC-7610 fakes reproduce and what they do not: `docs/internals/ic7610-fa
   requests, a Command29-wrapped request is answered only from the table or
   NAKed (never unwrapped into a native handler), and any other unknown
   request falls to the table then a NAK (a controller's own ACK/NAK gets no
-  reply); a request the table records as unanswered stays unanswered. The echo default comes from the table's `echo` fact unless
+  reply); a request the table records as unanswered stays unanswered.
+  `capture_replay=True` (default off; `FakeCatRadio` has the same keyword)
+  answers a request the recording knows from the recording before any
+  native handler, for replays that must reproduce a capture's bytes. The echo default comes from the table's `echo` fact unless
   `echo=` is passed explicitly. The implementation lives
   in `rigplane_testkit/serial/civ_serial.py`.
 - `rigplane_testkit.serial.recorder` — `SerialCivRecorder`, a TCP↔serial

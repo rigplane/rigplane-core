@@ -40,7 +40,12 @@ handler; an UNWRAPPED request keeps its native handler if it has one
 (frequency, mode, PTT, S-meter and identity keep their state); a
 controller's own ACK/NAK gets no reply; any other request falls to the
 table, then to a NAK; a request the table records as unanswered (a request
-row with no reply row) stays unanswered instead of being NAKed. The echo default then comes from the table's ``echo``
+row with no reply row) stays unanswered instead of being NAKed.
+``capture_replay=True`` (default False) moves the table first: a request
+the table knows — a recorded reply, a recorded NAK or recorded silence — is
+answered from the table before any native handler, so a replay of a capture
+reproduces the capture's bytes; a request it never saw falls to the native
+handler, then to a NAK. The echo default then comes from the table's ``echo``
 fact unless ``echo=`` is passed explicitly; without a table the default
 stays on.
 
@@ -241,6 +246,7 @@ class CivSerialFake:
         model_id: bytes | None = None,
         echo: bool | None = None,
         recorded_answers: RecordedAnswerTable | None = None,
+        capture_replay: bool = False,
         frequency_hz: int = 14_074_000,
         mode: int = 0x01,  # USB (§19 mode table)
         filter_width: int = 1,
@@ -300,6 +306,7 @@ class CivSerialFake:
             None if xiegu_model_id is None else xiegu_model_id.to_bytes(2, "big")
         )
         self._recorded_answers = recorded_answers
+        self._capture_replay = capture_replay
         if echo is not None:
             self.echo = echo
         elif recorded_answers is not None:
@@ -757,10 +764,19 @@ class CivSerialFake:
         if cmd in self._refused and parsed.to_addr == self._civ_addr:
             self._refused.remove(cmd)
             return self._nak()
-        if self._recorded_answers is not None and parsed.receiver is not None:
-            # Command29-wrapped: answered from the recording or NAKed, never
-            # unwrapped into a native handler.
-            return self._recorded_or_nak(self._recorded_answers, frame)
+        if self._recorded_answers is not None and (
+            self._capture_replay or parsed.receiver is not None
+        ):
+            # Capture replay: a request the recording knows is answered as
+            # the radio answered it (reply, NAK, or no answer at all) before
+            # any native handler. A Command29-wrapped request is always
+            # answered from the recording or NAKed, never unwrapped into a
+            # native handler.
+            recorded = self._recorded_answers.lookup(frame)
+            if recorded is not None:
+                return recorded.reply
+            if parsed.receiver is not None:
+                return self._nak()
         if cmd == _CMD_TRANSCEIVER_ID and parsed.sub == _SUB_TRANSCEIVER_ID:
             if self._identity_after_reconnect_only and connection.ordinal < 2:
                 return None
@@ -865,16 +881,10 @@ class CivSerialFake:
         if parsed.to_addr == _BROADCAST_ADDR:
             return None  # unknown broadcast: silence, as on a real bus
         if self._recorded_answers is not None:
-            return self._recorded_or_nak(self._recorded_answers, frame)
+            recorded = self._recorded_answers.lookup(frame)
+            if recorded is not None:
+                return recorded.reply  # None: the recording shows silence
         return self._nak()
-
-    def _recorded_or_nak(
-        self, table: RecordedAnswerTable, frame: bytes
-    ) -> bytes | None:
-        """The table's reply; ``None`` (no reply at all) for a request the
-        recording shows unanswered; a NAK for a request it never saw."""
-        recorded = table.lookup(frame)
-        return self._nak() if recorded is None else recorded.reply
 
     def _memory_select(self, data: bytes) -> bytes:
         """``08``: the Memory mode, a channel or (``08 A0``) a group."""

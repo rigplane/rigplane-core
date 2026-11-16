@@ -45,7 +45,11 @@ With ``recorded_answers`` (a ``RecordedCatAnswerTable`` from
 fake has no handler for is answered the way the real radio answered it —
 the recorded data line, its ``?;`` refusal, or its silence; a request the
 recording never saw still answers ``?;``. The fake's own handlers (state)
-come first, so the recording never overrides a value a test has set.
+come first, so the recording never overrides a value a test has set. With
+``capture_replay=True`` (default False) the order flips: a request the
+recording knows is answered from it before any handler, so a replay of a
+capture reproduces the capture's lines; a request it never saw falls to the
+handlers, then ``?;``.
 
 Faults, each one method: ``garble_next_reply`` (the next matching reply
 carries a byte outside 0x20-0x7E, the ``CatGarbledFrameError`` case),
@@ -133,6 +137,7 @@ class FakeCatRadio:
         frequency_hz: int = 14_074_000,
         mode_code: str = "2",
         recorded_answers: RecordedCatAnswerTable | None = None,
+        capture_replay: bool = False,
     ) -> None:
         self._config: RigConfig = load_rig(_RIGS_DIR / f"{profile}.toml")
         if not self._config.expected_identity_ids:
@@ -160,6 +165,7 @@ class FakeCatRadio:
             )
 
         self._recorded = recorded_answers
+        self._capture_replay = capture_replay
         self._identity_id = self._config.expected_identity_ids[0]
         self._frequency_hz = frequency_hz
         self._mode_code = mode_code
@@ -401,7 +407,15 @@ class FakeCatRadio:
             return None
 
     def _reply_for(self, body: str) -> str | None:
-        """The reply for *body* (None = silence), applying any SET it carries."""
+        """The reply for *body* (None = silence), applying any SET it carries.
+
+        With ``capture_replay`` a request the mounted recording knows is
+        answered from it before any native handler.
+        """
+        if self._capture_replay and self._recorded is not None:
+            recorded = self._recorded.lookup(body + ";")
+            if recorded is not None:
+                return recorded.reply  # data line, refusal, or recorded silence
         if body == self._read_cmd("get_id"):
             return format_command(
                 self._parse_tpl("get_id"), model=int(self._identity_id)
