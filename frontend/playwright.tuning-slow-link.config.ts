@@ -2,9 +2,9 @@ import { defineConfig } from '@playwright/test';
 
 /**
  * MOR-4393 slow-link tuning repro. The spec owns its server process
- * (startJourneyServer on tests/e2e/panorama_web_server.py, downlink lag via
- * --response-delay; --ack-delay and --response-jitter stay available on the
- * harness for other shapes), so no webServer block here.
+ * (startJourneyServer on tests/e2e/panorama_web_server.py, request-leg lag
+ * via --uplink-delay; --ack-delay and --response-delay/--response-jitter stay
+ * available on the harness for other shapes), so no webServer block here.
  * Serves frontend/dist — build first:
  *
  *   npm run build
