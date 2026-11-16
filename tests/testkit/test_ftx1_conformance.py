@@ -20,6 +20,7 @@ import pytest
 
 from rigplane.core.serial_open import open_serial_port
 
+from rigplane_testkit.fixture_rows import read_cat_rows
 from rigplane_testkit.yaesu import FakeCatRadio
 from rigplane_testkit.yaesu.replay import RecordedCatAnswerTable
 
@@ -28,11 +29,9 @@ LEDGER = FIXTURES / "conformance_ledger.json"
 
 
 def _table() -> RecordedCatAnswerTable:
-    rows = [
-        json.loads(line)
-        for line in (FIXTURES / "cat_pairs.jsonl").read_text().splitlines()
-    ]
-    return RecordedCatAnswerTable.from_cat_pairs(rows)
+    return RecordedCatAnswerTable.from_cat_pairs(
+        read_cat_rows(FIXTURES / "cat_pairs.jsonl")
+    )
 
 
 async def _ask(reader, writer, request: str) -> str | None:

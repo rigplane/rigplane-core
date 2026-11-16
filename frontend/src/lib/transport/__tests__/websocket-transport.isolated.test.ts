@@ -38,7 +38,7 @@ describe('WebSocketTransport', () => {
     const t = new WebSocketTransport();
     const onOpen = vi.fn();
     t.onOpen(onOpen);
-    t.open('wss://station.test/api/v1/ws', { protocols: ['rigplane-controller-v1.abc'] });
+    t.open('wss://station.test/api/v1/ws', { protocols: ['rigplane-controller-v1.abc'], role: 'primary' });
     expect(instances[0].protocol).toBe('rigplane-controller-v1.abc');
     instances[0].simulateOpen();
     expect(onOpen).toHaveBeenCalledTimes(1);

@@ -14,6 +14,7 @@ import { SAMPLE_RATE, TX_PCM_SAMPLE_RATES } from './constants';
 import { setAudioConnected } from '../stores/connection.svelte';
 import { setRxEnabled, setTxEnabled, setTxCodecFallback, setRxError, setTxError } from '../stores/audio.svelte';
 import { authenticatedWsUrl } from '../transport/ws-url';
+import type { ControllerRole } from '../transport/message-transport';
 import type { MessageTransport } from '../transport/message-transport';
 import { createMessageTransport } from '../transport/transport-factory';
 import { getCapabilities, subscribeCapabilities } from '$lib/stores/capabilities.svelte';
@@ -79,6 +80,9 @@ export interface AudioControllerBinding {
   epoch(): number;
   current(epoch: number): boolean;
   protocols(): string[];
+  /** The controller session's role — the attach's `role` (an auxiliary
+   *  client attaches as auxiliary; an attach without one is refused). */
+  role(): ControllerRole;
 }
 
 /** Stable per-page-context token so the server can coalesce this audio
@@ -485,11 +489,14 @@ class AudioManager {
 
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
     const url = `${proto}//${location.host}/api/v1/audio`;
-    const protocols = this.controller?.protocols() ?? [];
-    const epoch = this.controller?.epoch() ?? 0;
+    const controller = this.controller;
+    const protocols = controller?.protocols() ?? [];
+    const epoch = controller?.epoch() ?? 0;
     const ws = createMessageTransport();
     this.ws = ws;
-    ws.open(authenticatedWsUrl(url), protocols.length > 0 ? { protocols } : undefined);
+    ws.open(authenticatedWsUrl(url), controller !== null && protocols.length > 0
+      ? { protocols, role: controller.role() }
+      : undefined);
 
     ws.onOpen(() => {
       if (protocols.length > 0

@@ -743,7 +743,7 @@ class CivRuntime:
         # Past that point the host state is not CONNECTED, so "this task is
         # the recorded one AND the host is CONNECTED again" means the session
         # is re-established and the task is only running its tail
-        # (identity revalidation, TX re-arm, audio re-arm). Cleared when the
+        # (TX re-arm, audio re-arm). Cleared when the
         # recorded task ends. A busy=0 notice in that state means the radio
         # dropped the session AGAIN, so the tail gives way to a fresh
         # recovery (MOR-3350); anything earlier is still re-establishing.
@@ -1097,11 +1097,6 @@ class CivRuntime:
 
     def start_data_watchdog(self) -> None:
         """Start CI-V data watchdog task."""
-        identity_pending = getattr(
-            self._host, "_lan_identity_unanswered_for_current_epoch", None
-        )
-        if identity_pending is not None and identity_pending():
-            return
         task = self._host._civ_data_watchdog_task
         if task is not None and not task.done():
             return
@@ -1800,8 +1795,7 @@ class CivRuntime:
         """Start the detached recovery now, unless one is already under way.
 
         A radio "session free" notice calls this from the datagram callback.
-        It is a no-op unless the session is CONNECTED or held by the identity
-        phase (``_lan_identity_phase_owns_open_link``), no recovery is already
+        It is a no-op unless the session is CONNECTED, no recovery is already
         flagged, and no recovery task is still running — with one exception: a
         notice that arrives while a live recovery has already re-established
         the session (``_conn_state`` CONNECTED again while the recorded task
@@ -1809,10 +1803,7 @@ class CivRuntime:
         dropped the session AGAIN, so the tail gives way to a fresh recovery.
         Every ignored notice logs exactly one line carrying the reason.
         """
-        owns_hold = getattr(self._host, "_lan_identity_phase_owns_open_link", None)
-        if self._host._conn_state != RadioConnectionState.CONNECTED and not (
-            owns_hold is not None and owns_hold()
-        ):
+        if self._host._conn_state != RadioConnectionState.CONNECTED:
             logger.info(
                 "civ-data-watchdog: notice ignored (%s): "
                 "no session to recover (state=%s)",
@@ -1874,9 +1865,8 @@ class CivRuntime:
         cancelled run finishes). The slot already holds the new task — the old
         run's ``finally`` only clears the slot when it still holds itself.
 
-        Re-arms in ``finally`` after uncancelled recovery (#1217). An identity
-        hold keeps it paused until acceptance; a released control session has
-        no stream to watch.
+        Re-arms in ``finally`` after uncancelled recovery (#1217). A released
+        control session has no stream to watch.
         """
         owner_stop_epoch = self._host._owner_stop_epoch
         escalate = full_reconnect_reason is not None or (
@@ -1983,7 +1973,7 @@ class CivRuntime:
         no-op when a healthy watchdog was already re-armed by a successful
         ``soft_reconnect``/``connect``, so this is safe to call unconditionally.
 
-        A released control session or an identity hold prevents re-arming.
+        A released control session prevents re-arming.
         """
         current = asyncio.current_task()
         if self._reconnect_task is current:
@@ -3515,7 +3505,9 @@ class CivRuntime:
         session = getattr(self._host, "_control_scope_session", None)
         if isinstance(session, ScopeSession):
             for name, value in pairs:
-                if name in ("mode", "span", "edge", "fixed_edge"):
+                # dual (0x13) parses without a receiver — it is radio-global —
+                # so it forwards under the one radio-global key, receiver 0.
+                if name in ("mode", "span", "edge", "fixed_edge", "dual"):
                     session.observe(cast(ScopeSetting, name), value, receiver or 0)
         if (
             receiver is not None
@@ -4393,9 +4385,14 @@ class CivRuntime:
         tuple) never matches, so this is a silent no-op for any rig that
         hasn't declared ``[scope].span_presets_hz``.
 
-        Fixed mode (``scope_frame.mode != 0``) publishes nothing: unlike
-        span, there is no declared table of legal (start_hz, end_hz) pairs
-        to match a fixed-mode frame's edges against —
+        SCROLL-C (mode 2) reports the same VFO +/- span window as CENTER,
+        so its edges map back to a preset the same way (#4565 pre-review:
+        a front-panel span change in SCROLL-C must renew the session's
+        cached span, or a later request for the old preset is suppressed).
+
+        FIX and SCROLL-F (modes 1 and 3) publish nothing: span does not
+        apply there, and unlike span, there is no declared table of legal
+        (start_hz, end_hz) pairs to match a fixed-mode frame's edges against —
         profile ``scope_fixed_edge_ranges`` only maps edges to a legal
         *band*, not to a specific stored (range, edge) preset, and a
         preset's actual edges are radio-side user-configured memory, not
@@ -4405,7 +4402,7 @@ class CivRuntime:
         Same generation-binding and cache-after-ACCEPTED-apply ordering
         as ``_publish_scope_mode_observation`` above — see its docstring.
         """
-        if scope_frame.mode != 0 or scope_frame.out_of_range:
+        if scope_frame.mode not in (0, 2) or scope_frame.out_of_range:
             return
         width_hz = scope_frame.end_freq_hz - scope_frame.start_freq_hz
         if width_hz % 2 != 0:

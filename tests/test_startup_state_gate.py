@@ -76,6 +76,7 @@ from rigplane.web.web_startup import (
 )
 from rigplane.testing.timing import await_until
 from test_icom7610_serial_radio import _FakeSerialCivLink
+from rigplane_testkit.fixture_rows import CatPairRow, read_cat_rows
 from rigplane_testkit.leaked_radio_guard import fake_connected
 from rigplane_testkit.yaesu import FakeCatRadio
 from rigplane_testkit.yaesu.replay import RecordedCatAnswerTable, reply_closes
@@ -1732,28 +1733,26 @@ def _ftx1_table_silent_on_ft() -> RecordedCatAnswerTable:
     session never re-asked — while this scenario needs the read answered
     like every other non-TX-target read.
     """
-    rows = [
-        json.loads(line) for line in _FTX1_CAT_PAIRS.read_text().splitlines() if line
-    ]
-    kept: list[dict[str, object]] = []
+    rows = read_cat_rows(_FTX1_CAT_PAIRS)
+    kept: list[CatPairRow] = []
     pending: str | None = None
     for row in rows:
-        if row["dir"] == "c2r":
-            pending = str(row["line"])
+        if row.dir == "c2r":
+            pending = row.line
             kept.append(row)
-        elif pending == "FT;" and reply_closes(pending, str(row["line"])):
+        elif pending == "FT;" and reply_closes(pending, row.line):
             pending = None  # swallow the FT0; reply: FT; stays silent
         else:
-            if row["dir"] == "r2c" and row["line"] in ("BP01F35;", "BP11F35;"):
-                row = {**row, "line": str(row["line"])[:4] + "150;"}
+            if row.dir == "r2c" and row.line in ("BP01F35;", "BP11F35;"):
+                row = replace(row, line=row.line[:4] + "150;")
             elif (
                 pending == "RA0;"
-                and row["line"] == "?;"
-                and reply_closes(pending, str(row["line"]))
+                and row.line == "?;"
+                and reply_closes(pending, row.line)
             ):
                 # Bench probe refused the attenuator read; this scenario
                 # answers it OFF (see the docstring).
-                row = {**row, "line": "RA00;"}
+                row = replace(row, line="RA00;")
             pending = None
             kept.append(row)
     table = RecordedCatAnswerTable.from_cat_pairs(kept)
@@ -1778,31 +1777,29 @@ def _ftx1_table_refused_tx() -> RecordedCatAnswerTable:
     the ``?;`` refusal, replaying a radio that refuses only the PTT read.
     """
 
-    rows = [
-        json.loads(line) for line in _FTX1_CAT_PAIRS.read_text().splitlines() if line
-    ]
-    kept: list[dict[str, object]] = []
+    rows = read_cat_rows(_FTX1_CAT_PAIRS)
+    kept: list[CatPairRow] = []
     pending: str | None = None
     for row in rows:
-        if row["dir"] == "c2r":
-            pending = str(row["line"])
+        if row.dir == "c2r":
+            pending = row.line
             kept.append(row)
         else:
-            if row["dir"] == "r2c" and row["line"] in ("BP01F35;", "BP11F35;"):
-                row = {**row, "line": str(row["line"])[:4] + "150;"}
+            if row.dir == "r2c" and row.line in ("BP01F35;", "BP11F35;"):
+                row = replace(row, line=row.line[:4] + "150;")
             elif (
                 pending == "RA0;"
-                and row["line"] == "?;"
-                and reply_closes(pending, str(row["line"]))
+                and row.line == "?;"
+                and reply_closes(pending, row.line)
             ):
-                row = {**row, "line": "RA00;"}
+                row = replace(row, line="RA00;")
             elif (
                 pending == "TX;"
-                and reply_closes(pending, str(row["line"]))
-                and row["line"] != "?;"
+                and reply_closes(pending, row.line)
+                and row.line != "?;"
             ):
                 # Bench answered TX0; (receiving); this scenario refuses it.
-                row = {**row, "line": "?;"}
+                row = replace(row, line="?;")
             pending = None
             kept.append(row)
     table = RecordedCatAnswerTable.from_cat_pairs(kept)

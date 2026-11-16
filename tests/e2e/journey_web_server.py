@@ -180,11 +180,17 @@ async def run() -> None:
             raise SystemExit("--panorama-audio requires --host 127.0.0.1")
         from rigplane.core.types import AudioCodec
         from rigplane.runtime.radio import IcomRadio
-        from rigplane_testkit.icom.simulator import MockIcomRadio
+        from rigplane_testkit.icom.scope_control import ScopeControlSimulator
 
-        simulator = MockIcomRadio(
-            host="127.0.0.1", scope_stream=True, enable_audio=True, dual_receiver=True
+        simulator = ScopeControlSimulator(
+            host="127.0.0.1",
+            scope_stream=True,
+            enable_audio=True,
+            dual_receiver=True,
         )
+        # The mixed journey exercises a refused pinned view while the
+        # existing MAIN/SUB streams and PCM keep advancing.
+        simulator.refused_civ_commands = {(0x27, 0x1E)}
         # Recorded headers/cadence remain intact; their all-zero amplitude
         # payloads cannot witness rendering. Give only this opt-in simulator a
         # synthetic nonconstant wave, carried through its normal CI-V sender.

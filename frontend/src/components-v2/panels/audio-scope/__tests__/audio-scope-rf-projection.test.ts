@@ -92,7 +92,12 @@ describe.each(audioScopeGoldenNames)('actual PCM → hub RF frame %s', name => {
         colorScheme: 'grayscale', sampleWindow, sampleAmplitudeMax: 160 });
     waterfall.pushRow(frame.pixels!);
     const upload = f.named('texSubImage2D').at(-1)!;
-    expect(upload.args[8]).toBe(frame.pixels);
+    // MOR-4383: the ring stores the [1 2 1]-filtered row in a reused upload
+    // buffer (fresh renderer: the IIR restarts from raw, no blend).
+    const bins = frame.pixels!;
+    const expectedRow = Array.from(bins, (_, i) => Math.round(
+      (bins[i > 0 ? i - 1 : 0] + 2 * bins[i] + bins[i + 1 < bins.length ? i + 1 : bins.length - 1]) / 4));
+    expect(Array.from((upload.args[8] as Uint8Array).subarray(0, bins.length))).toEqual(expectedRow);
     const mapping = f.named('bufferSubData').at(-1)!.args[2] as Float32Array;
     const bin = (expected.input.toneHz - projection.spanHz / 2 - mapping[0] - mapping[1]) / mapping[2];
     const peakBin = frame.pixels!.indexOf(Math.max(...frame.pixels!)) / frame.width;
