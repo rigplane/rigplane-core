@@ -1351,7 +1351,11 @@ class TestPtt:
             raise asyncio.CancelledError("observer")
 
         radio._bind_authoritative_ptt_observer(provider_generation=10, observer=broken)
-        mock_transport.queue_response(_ptt_response(True))
+        # MOR-4384: the answer rides on the read's own send (an answer before
+        # its request is on the wire claims nothing).
+        mock_transport.queue_response_on_send(
+            mock_transport.send_seq + 1, _ptt_response(True)
+        )
         with pytest.raises(CommandError, match="authoritative"):
             await radio._request_authoritative_ptt_read(
                 provider_generation=10, observer=broken
