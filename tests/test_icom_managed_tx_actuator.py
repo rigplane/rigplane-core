@@ -11,6 +11,7 @@ import pytest
 from rigplane.backends.icom7610 import Icom7610SerialRadio
 from rigplane.backends.icom7610.drivers.serial_session import SerialCivTransport
 from rigplane.command_map import CommandMap
+from rigplane.core.civ import CivRequestKey
 from rigplane.commands import CONTROLLER_ADDR, build_civ_frame, parse_civ_frame
 from rigplane.commands.bound import BoundCommands
 from rigplane.commands.commander import IcomCommander, Priority
@@ -232,6 +233,36 @@ async def test_an_unkey_after_a_dropped_write_sink_stays_uncertain() -> None:
         await radio.disconnect()
 
     assert result is ActuationResult.UNCERTAIN
+
+
+@pytest.mark.asyncio
+async def test_an_unkey_after_an_expired_read_sink_is_confirmed_by_its_fb() -> None:
+    """MOR-4384: an expired READ sink leaves the unkey's FB unambiguous.
+
+    A read is never answered with FB, so a background read whose answer
+    window closed unanswered (a poll lost while the link dropped) cannot
+    own the FB in the unkey's window: the release is confirmed, not left
+    uncertain. Only an unanswered WRITE makes that FB ambiguous (the case
+    above). Under the TX fault matrix's silent drop, dozens of poll reads
+    expire at once; flagging each one kept every release uncertain.
+    """
+    link = _FakeSerialCivLink()
+    radio = Icom7610SerialRadio(device="/dev/ttyUSB0", civ_link=link)
+    radio._civ_get_timeout = 0.2
+    await radio.connect()
+    try:
+        tracker = radio._civ_request_tracker
+        key = CivRequestKey(command=0x15, sub=0x02)
+        sink = tracker.register_ack(wait=False, response_key=key, refused_read=key)
+        assert isinstance(sink, int)
+        tracker.mark_sent(1.0, token=sink)  # its window closed long ago
+        radio._civ_runtime._cleanup_stale_civ_waiters()
+        assert tracker.ack_sink_count == 0
+        result = await _force_receive(radio)
+    finally:
+        await radio.disconnect()
+
+    assert result is ActuationResult.ACCEPTED
 
 
 @pytest.mark.asyncio

@@ -481,25 +481,24 @@ def test_expire_ack_sinks_drops_only_what_each_window_closed() -> None:
     assert tracker.ack_sink_count == 0
 
 
-def test_an_expired_read_sink_also_flags_an_unclaimed_answer() -> None:
-    """MOR-4384: a refused read is answered with a bare ``FA`` too.
+def test_an_expired_read_sink_leaves_the_unkey_fb_unambiguous() -> None:
+    """MOR-4384: only an expired WRITE sink flags an unclaimed FB/FA.
 
-    An expired sink never got the answer the radio owed it. For a write
-    that answer is a bare FB/FA; for a read it is the data answer, or an
-    ``FA`` when the radio refuses it. Whichever arrives late names no
-    command and can settle a later waiter, so a dropped read sink must
-    record the ambiguity just like a write's.
+    ``ack_unclaimed_at`` tells the PTT-release check that an FB in its
+    window may be somebody else's. A read is never answered with FB, so a
+    read sink whose window closed unanswered cannot own that FB; flagging
+    it kept every release uncertain after a silent link drop expired the
+    poll reads (tests/integration/test_tx_under_fault_matrix.py).
     """
     tracker = CivRequestTracker()
     sink = tracker.register_ack(
         wait=False, response_key=_S_METER, refused_read=_S_METER
     )
     tracker.mark_sent(100.0, token=sink)
-    assert tracker.ack_unclaimed_at is None
 
     assert tracker.expire_ack_sinks(answer_window=5.0, now_monotonic=105.0) == 1
 
-    assert tracker.ack_unclaimed_at is not None
+    assert tracker.ack_unclaimed_at is None
 
 
 @pytest.mark.asyncio
