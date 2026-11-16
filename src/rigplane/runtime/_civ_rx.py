@@ -4395,9 +4395,14 @@ class CivRuntime:
         tuple) never matches, so this is a silent no-op for any rig that
         hasn't declared ``[scope].span_presets_hz``.
 
-        Fixed mode (``scope_frame.mode != 0``) publishes nothing: unlike
-        span, there is no declared table of legal (start_hz, end_hz) pairs
-        to match a fixed-mode frame's edges against —
+        SCROLL-C (mode 2) reports the same VFO +/- span window as CENTER,
+        so its edges map back to a preset the same way (#4565 pre-review:
+        a front-panel span change in SCROLL-C must renew the session's
+        cached span, or a later request for the old preset is suppressed).
+
+        FIX and SCROLL-F (modes 1 and 3) publish nothing: span does not
+        apply there, and unlike span, there is no declared table of legal
+        (start_hz, end_hz) pairs to match a fixed-mode frame's edges against —
         profile ``scope_fixed_edge_ranges`` only maps edges to a legal
         *band*, not to a specific stored (range, edge) preset, and a
         preset's actual edges are radio-side user-configured memory, not
@@ -4407,7 +4412,7 @@ class CivRuntime:
         Same generation-binding and cache-after-ACCEPTED-apply ordering
         as ``_publish_scope_mode_observation`` above — see its docstring.
         """
-        if scope_frame.mode != 0 or scope_frame.out_of_range:
+        if scope_frame.mode not in (0, 2) or scope_frame.out_of_range:
             return
         width_hz = scope_frame.end_freq_hz - scope_frame.start_freq_hz
         if width_hz % 2 != 0:

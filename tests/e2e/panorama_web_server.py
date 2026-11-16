@@ -50,6 +50,10 @@ class PanoramaSimulator(MockIcomRadio):
         # when the VFO leaves the window (CI-V 27 15 SPAN applies in
         # Center and SCROLL-C). None until the first SCROLL-C pump.
         self.scroll: tuple[int, int] | None = None
+        # The span preset the scroll window was built at: an acknowledged
+        # span change must resize the streamed window (#4565 pre-review
+        # item 5) — None until the first SCROLL-C pump.
+        self.scroll_span: int | None = None
         self.set_frequency(14_250_000)
 
     def _dispatch_scope(self, payload: bytes, from_addr: int) -> bytes | None:
@@ -139,12 +143,17 @@ class PanoramaSimulator(MockIcomRadio):
         elif self.scope_mode == 2:
             # SCROLL-C: the radio owns the window and scrolls it to keep
             # the VFO inside, at the SPAN width. Recentering on exit is
-            # the test-infra model of that scroll.
+            # the test-infra model of that scroll, and an acknowledged
+            # span change rebuilds the window at the new width so the
+            # following waveform edges carry the change (#4565 pre-review
+            # item 5).
             if (
                 self.scroll is None
+                or self.scroll_span != span
                 or not self.scroll[0] <= self._frequency < self.scroll[1]
             ):
                 self.scroll = (self._frequency - span, self._frequency + span)
+                self.scroll_span = span
             first, last = self.scroll
         else:
             first, last = self._frequency, span
