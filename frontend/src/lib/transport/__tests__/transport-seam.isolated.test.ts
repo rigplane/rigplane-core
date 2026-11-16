@@ -151,6 +151,7 @@ function dataChannelHarness(channels: RemoteChannels = fakeChannels()): BundleHa
   return {
     bundle: dataChannelBundle(channels),
     openControl: (transport) => {
+      transport.open('ws://ignored/', { protocols: ['rigplane-controller-v1.KEY'], role: 'primary' });
       channels.control.simulateOpen();
       channels.control.simulateMessage(goldenDocs.control_hello.text as string);
     },

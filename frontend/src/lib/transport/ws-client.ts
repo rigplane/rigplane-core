@@ -322,7 +322,7 @@ export class WsChannel {
     if (this.control && controllerClient.session) {
       target = withWsSearchParam(target, 'controller_role', controllerClient.role);
     }
-    const ws = createMessageTransport();
+    const ws = createMessageTransport(this.control ? 'control' : 'scope');
     let socketEpoch = 0;
     this.ws = ws;
     ws.open(target, protocols.length > 0 ? { protocols, role: controllerClient.role } : undefined);

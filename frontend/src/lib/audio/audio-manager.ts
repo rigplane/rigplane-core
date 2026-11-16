@@ -492,7 +492,7 @@ class AudioManager {
     const controller = this.controller;
     const protocols = controller?.protocols() ?? [];
     const epoch = controller?.epoch() ?? 0;
-    const ws = createMessageTransport();
+    const ws = createMessageTransport('audio');
     this.ws = ws;
     ws.open(authenticatedWsUrl(url), controller !== null && protocols.length > 0
       ? { protocols, role: controller.role() }

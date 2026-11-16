@@ -10,6 +10,8 @@
 // is evaluated.
 import './lib/migrate-legacy-storage'
 import { unregisterStaleServiceWorkers } from './lib/unregister-stale-service-workers'
+import { startApp } from './boot'
+import { webSocketBundle } from './lib/transport/transport-bundle'
 
 // Stale pre-2.x Service Workers hijack fetch (see
 // unregister-stale-service-workers.ts); drop them before the app mounts.
@@ -18,36 +20,9 @@ void unregisterStaleServiceWorkers().catch((error: unknown) => {
   console.warn('[rigplane] service-worker cleanup failed:', error)
 })
 
-async function startApp() {
-  try {
-    const [{ default: config }, { activateComponentKits }] = await Promise.all([
-      import('../component-kits.config'),
-      import('./component-kits/activation'),
-    ])
-    await activateComponentKits(config)
-
-    const [{ mount }, , { default: App }] = await Promise.all([
-      import('svelte'),
-      import('./app.css'),
-      import('./App.svelte'),
-    ])
-    const target = document.getElementById('app')
-    if (!target) throw new Error('Application root #app was not found.')
-    return mount(App, { target })
-  } catch (error) {
-    console.error('[rigplane] startup failed:', error)
-    const target = document.getElementById('app')
-    if (target) {
-      const alert = document.createElement('p')
-      alert.dataset.componentKitStartupError = ''
-      alert.setAttribute('role', 'alert')
-      alert.textContent = 'RigPlane could not start. Check the console for component kit configuration details.'
-      target.replaceChildren(alert)
-    }
-    throw error
-  }
-}
-
-const app = startApp()
+// The station page rides WebSockets (C5b): the entry decides only the
+// bundle; the boot sequence itself is boot.ts's one startApp, shared with
+// bootRemote.
+const app = startApp(webSocketBundle())
 
 export default app
