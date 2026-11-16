@@ -473,23 +473,25 @@ async def _silence_one(
     watcher observes has always passed the fake's silence check, so
     only later requests are affected.
     """
-    import time as _time
+    from rigplane.testing.timing import await_until
 
-    deadline = _time.monotonic() + timeout_s
-    while _time.monotonic() < deadline:
-        if trigger in radio.commands:
-            break
-        await asyncio.sleep(0)
-    else:  # pragma: no cover - the plan always sends the trigger
-        raise AssertionError(f"trigger line {trigger!r} never sent")
-    seen = sum(1 for line in radio.commands if line == target)
+    def target_count() -> int:
+        return sum(1 for line in radio.commands if line == target)
+
+    await await_until(
+        lambda: trigger in radio.commands,
+        timeout_s,
+        interval=0.002,
+        description=f"trigger line {trigger!r} sent",
+    )
+    seen = target_count()
     radio.silence(30.0)
-    while _time.monotonic() < deadline:
-        if sum(1 for line in radio.commands if line == target) > seen:
-            break
-        await asyncio.sleep(0)
-    else:  # pragma: no cover - the plan always sends the target next
-        raise AssertionError(f"target line {target!r} never sent")
+    await await_until(
+        lambda: target_count() > seen,
+        timeout_s,
+        interval=0.002,
+        description=f"target line {target!r} sent",
+    )
     radio.silence(0)
 
 
