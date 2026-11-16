@@ -1,0 +1,343 @@
+import { expect, test } from '@playwright/test';
+import { readFileSync } from 'node:fs';
+import {
+  expectControlLink,
+  expectReadoutHz,
+  openRemoteUi,
+  setStationFrequency,
+  simState,
+  simUnkeyedAt,
+  STATION_ORIGIN,
+  trackRequests,
+} from './station';
+
+/**
+ * The remote/browser E2E matrix (C5b PR-0, MOR-4493). Every row runs in
+ * both projects (chromium, webkit) and is declared twice (repeatEach: 2 in
+ * playwright.remote.config.ts); the no-skips reporter fails the run when a
+ * row is skipped or missing. Frames and channel labels come from the
+ * committed golden documents (api-channel-golden.json), never re-typed.
+ */
+
+const BASELINE_HZ = 14_074_000;
+const TUNED_HZ = 7_100_000;
+const STATION_HZ = 14_100_000;
+
+// The committed wire/golden contract documents, read from the source of
+// truth (Node ESM needs no JSON import attributes this way).
+const TRANSPORT_DIR = '../../../src/lib/transport';
+const wire = JSON.parse(
+  readFileSync(new URL(`${TRANSPORT_DIR}/api-channel-wire.json`, import.meta.url), 'utf8'),
+) as { payloads: Record<string, { fields: unknown[][] }> };
+const golden = JSON.parse(
+  readFileSync(new URL(`${TRANSPORT_DIR}/api-channel-golden.json`, import.meta.url), 'utf8'),
+) as { documents: Record<string, { text: string; decoded: Record<string, unknown> }> };
+
+/**
+ * Validate a payload against a wire-contract payload's `fields` rows, the
+ * same semantics as the production `payloadMatchesContract`
+ * (src/lib/transport/datachannel-transport.ts), which Playwright's Node
+ * runtime cannot import (its JSON import needs an ESM import attribute
+ * that would mean changing src/). Restricted on purpose to the kinds the
+ * control_hello contract uses; any other kind row is an error, so a future
+ * contract change cannot pass silently.
+ */
+function payloadMatchesWireContract(
+  contract: { fields: unknown[][] },
+  value: unknown,
+): boolean {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  const kindOk = (kind: string, field: unknown): boolean => {
+    if (kind === 'string') return typeof field === 'string';
+    if (kind === 'integer') return typeof field === 'number' && Number.isInteger(field);
+    if (kind === 'boolean') return typeof field === 'boolean';
+    if (kind === 'array of strings')
+      return Array.isArray(field) && field.every((item) => typeof item === 'string');
+    if (kind.length > 2 && kind.startsWith('"') && kind.endsWith('"'))
+      return field === kind.slice(1, -1);
+    throw new Error(`wire contract kind not known to the harness: ${kind}`);
+  };
+  return contract.fields.every((row) => {
+    const [name, kind] = row as [string, string];
+    if (typeof name !== 'string' || typeof kind !== 'string') return false;
+    return Object.hasOwn(record, name) ? kindOk(kind, record[name]) : row[2] !== true;
+  });
+}
+
+test('L1: the ordinary page talks only to the station', async ({ page }) => {
+  // Rows share one station: reset the simulator to the baseline frequency
+  // so this row does not depend on what an earlier row tuned.
+  await setStationFrequency(BASELINE_HZ);
+  const requests = trackRequests(page);
+  await openRemoteUi(page);
+
+  // The UI is up: the control link connects and the baseline is shown.
+  await expectControlLink();
+  await expectReadoutHz(page, BASELINE_HZ);
+
+  const foreignOrigins = requests()
+    .map((url) => new URL(url).origin)
+    .filter((origin) => origin !== STATION_ORIGIN);
+  expect(foreignOrigins, 'requests to non-station origins').toEqual([]);
+});
+
+test('L2: tuning follows both ways between the UI and the simulator', async ({ page }) => {
+  await setStationFrequency(BASELINE_HZ);
+  await openRemoteUi(page);
+  await expectControlLink();
+  await expectReadoutHz(page, BASELINE_HZ);
+
+  // UI → station: tune 7.100 MHz through the frequency entry dialog.
+  const readout = page.locator('.receiver-instrument [data-vfo-freq]').first();
+  await readout.click();
+  await page.getByTestId('band-entry-input').fill('7.100');
+  await page.getByTestId('band-entry-set').click();
+  await expect.poll(async () => (await simState()).freq_hz).toBe(TUNED_HZ);
+  await expectReadoutHz(page, TUNED_HZ);
+
+  // Station → UI: change the frequency on the station side; the simulator
+  // holds it and the UI follows over the state poll.
+  await setStationFrequency(STATION_HZ);
+  await expect.poll(async () => (await simState()).freq_hz).toBe(STATION_HZ);
+  await expectReadoutHz(page, STATION_HZ, 20_000);
+});
+
+test.describe('phone layout', () => {
+  test.use({ viewport: { width: 430, height: 932 } });
+
+  test('L3: holding PTT keys the simulator and releasing unkeys within 1 s', async ({ page }) => {
+    await openRemoteUi(page);
+    await expectControlLink();
+
+    const ptt = page.getByRole('button', { name: 'Push to talk' });
+    await expect(ptt).toBeVisible();
+
+    // Press and hold: the page starts the (stubbed) microphone, then keys.
+    // With the fake's MOD input frozen on ACC (the recorded LAN table does
+    // not model the 0x1A 05 00 0x91 MOD-input menu SET, so the write-through
+    // readback answers ACC again) the browser voice-TX path never arms: the
+    // UI offers its production "Set LAN" fix (MOR-617) and the row applies
+    // it, but the fake cannot take it. This row is the harness's honest RED
+    // until the LAN fake models stateful MOD input (see the MOR-4493 notes);
+    // a raw control-channel ptt_on keys this same fake in milliseconds.
+    await ptt.hover();
+    await page.mouse.down();
+    const setLan = page.getByTestId('mod-input-set-lan');
+    await expect
+      .poll(
+        async () =>
+          (await simState()).ptt_on
+            ? 'keyed'
+            : (await setLan.isVisible().catch(() => false))
+              ? 'fix'
+              : 'wait',
+        { timeout: 10_000 },
+      )
+      .not.toBe('wait');
+    if (await setLan.isVisible().catch(() => false)) {
+      await setLan.click();
+      await page.mouse.up();
+      await expect(page.getByTestId('mod-input-tx-warning')).toBeHidden();
+      await ptt.hover();
+      await page.mouse.down();
+    }
+    await expect.poll(async () => (await simState()).ptt_on).toBe(true);
+
+    // Release: the simulator must report unkeyed within 1 s of the mouse
+    // release (same-host wall clocks; 250 ms guards scheduling skew).
+    const releasedAtMs = Date.now();
+    await page.mouse.up();
+    const unkeyedAtMs = await simUnkeyedAt(releasedAtMs - 250);
+    expect(unkeyedAtMs - releasedAtMs).toBeLessThanOrEqual(1000);
+  });
+});
+
+// The four data-channel labels come from the committed golden documents
+// (the attach_api/attach_scope/... document set); the ordered/lossy split
+// mirrors the production factories the answerer serves
+// (src/rigplane/web/transport/webrtc.py: add_control_channel and
+// add_api_channel are ordered+reliable, _add_lossy_channel is unordered
+// with maxRetransmits=0). The readback in the row pins the table against
+// the negotiated channels. maxRetransmits is null where the browser
+// default (reliable) applies.
+interface ChannelSpec {
+  label: string;
+  ordered: boolean;
+  maxRetransmits: number | null;
+}
+
+const CHANNELS: readonly ChannelSpec[] = [
+  { label: 'control', ordered: true, maxRetransmits: null },
+  { label: 'scope', ordered: false, maxRetransmits: 0 },
+  { label: 'audio', ordered: false, maxRetransmits: 0 },
+  { label: 'api', ordered: true, maxRetransmits: null },
+] as const;
+
+const ATTACH_DOCUMENTS = golden.documents;
+
+/** The attach frame texts for the four labels, from the golden documents
+ * keyed attach_<label>; their <SESSION-KEY> placeholder takes the live key. */
+function attachTexts(): Record<string, string> {
+  const texts: Record<string, string> = {};
+  for (const { label } of CHANNELS) {
+    const document = ATTACH_DOCUMENTS[`attach_${label}`];
+    if (!document) throw new Error(`no attach_${label} golden document`);
+    texts[label] = document.text;
+  }
+  return texts;
+}
+
+test('P0: a bare page connects four data channels and reaches control_hello', async ({ page }) => {
+  // A bare page on the station's origin (a secure context; about:blank is
+  // not one in WebKit, where WebRTC then gathers nothing). Every page
+  // request is intercepted and answered locally, so the page itself never
+  // talks to the station over HTTP: the Node test relays the offer and the
+  // controller-key acquisition.
+  await page.route('*', (route) =>
+    route.fulfill({ contentType: 'text/html', body: '<!doctype html><html></html>' }),
+  );
+  await page.goto(`${STATION_ORIGIN}/bare`);
+  await page.exposeFunction('__relayOffer', async (sdp: string, type: string) => {
+    const response = await fetch(`${STATION_ORIGIN}/api/v1/transport/webrtc/offer`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ sdp, type }),
+    });
+    return await response.json();
+  });
+  await page.exposeFunction('__controllerKey', async () => {
+    const response = await fetch(`${STATION_ORIGIN}/api/v1/controller`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ kind: 'pro' }),
+    });
+    const grant = (await response.json()) as { controller_key?: string };
+    if (!grant.controller_key) throw new Error(`controller grant: ${JSON.stringify(grant)}`);
+    return grant.controller_key;
+  });
+
+  const outcome = await page.evaluate(
+    async ({ channels, attachText }) => {
+      const relayWindow = window as typeof window & {
+        __relayOffer: (sdp: string, type: string) => Promise<{ status?: string }>;
+        __controllerKey: () => Promise<string>;
+      };
+      const pc = new RTCPeerConnection();
+      const created: Record<string, RTCDataChannel> = {};
+      for (const channel of channels) {
+        created[channel.label] =
+          channel.maxRetransmits === null
+            ? pc.createDataChannel(channel.label, { ordered: channel.ordered })
+            : pc.createDataChannel(channel.label, {
+                ordered: channel.ordered,
+                maxRetransmits: channel.maxRetransmits,
+              });
+      }
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      // Wait for ICE gathering to complete: no trickle.
+      let candidateCount = 0;
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => {
+          reject(
+            new Error(
+              `ICE gathering did not complete (state=${pc.iceGatheringState}, candidates=${candidateCount})`,
+            ),
+          );
+        }, 10_000);
+        const done = () => {
+          clearTimeout(timer);
+          resolve();
+        };
+        pc.addEventListener('icecandidate', (event) => {
+          if (event.candidate) candidateCount += 1;
+        });
+        if (pc.iceGatheringState === 'complete') done();
+        else
+          pc.addEventListener('icegatheringstatechange', () => {
+            if (pc.iceGatheringState === 'complete') done();
+          });
+      });
+      const answer = await relayWindow.__relayOffer(
+        pc.localDescription!.sdp,
+        pc.localDescription!.type,
+      );
+      if (!answer || answer.status !== 'ok') {
+        throw new Error(`offer refused: ${JSON.stringify(answer)}`);
+      }
+      await pc.setRemoteDescription({ sdp: answer.sdp, type: answer.type });
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(
+          () => reject(new Error('data channels did not open')),
+          15_000,
+        );
+        const check = () => {
+          if (Object.values(created).every((channel) => channel.readyState === 'open')) {
+            clearTimeout(timer);
+            resolve();
+          }
+        };
+        Object.values(created).forEach((channel) => {
+          channel.onopen = check;
+        });
+        check();
+      });
+      // Every channel attaches as its FIRST text frame (the golden
+      // document), all sent at once right after open — the server closes
+      // a channel whose attach lands more than 5 s after dispatch.
+      const key = await relayWindow.__controllerKey();
+      for (const { label } of channels) {
+        created[label].send(attachText[label].replaceAll('<SESSION-KEY>', key));
+      }
+      const frames: Record<string, string> = {};
+      const firstText = (label: string) =>
+        new Promise<void>((resolve) => {
+          const channel = created[label];
+          const onMessage = (event: MessageEvent) => {
+            if (typeof event.data !== 'string') return;
+            frames[label] = event.data;
+            channel.removeEventListener('message', onMessage);
+            resolve();
+          };
+          channel.addEventListener('message', onMessage);
+        });
+      const deadline = (ms: number, what: string) =>
+        new Promise<void>((_, reject) =>
+          setTimeout(() => reject(new Error(`${what} timed out`)), ms),
+        );
+      await Promise.race([firstText('control'), deadline(10_000, 'control_hello')]);
+      await Promise.race([
+        Promise.all([firstText('scope'), firstText('audio')]),
+        deadline(5_000, 'lossy attach acks'),
+      ]);
+      const readback = channels.map(({ label }) => ({
+        label: created[label].label,
+        ordered: created[label].ordered,
+        maxRetransmits: created[label].maxRetransmits,
+      }));
+      const result = {
+        hello: frames.control!,
+        scopeAck: frames.scope!,
+        audioAck: frames.audio!,
+        channels: readback,
+      };
+      pc.close();
+      return result;
+    },
+    { channels: CHANNELS, attachText: attachTexts() },
+  );
+
+  // The negotiated channels carry the pinned labels/ordering/reliability.
+  expect(outcome.channels).toEqual(CHANNELS.map((channel) => ({ ...channel })));
+  // The control channel delivered the server's control_hello, validated
+  // against the committed wire contract (payloads.control_hello).
+  const hello = JSON.parse(outcome.hello) as Record<string, unknown>;
+  expect(hello.type).toBe('hello');
+  expect(payloadMatchesWireContract(wire.payloads.control_hello, hello)).toBe(true);
+  expect(hello.radio).toBe('IC-7610');
+  // The lossy channels' first frames are their attach acks, exactly the
+  // golden documents.
+  expect(JSON.parse(outcome.scopeAck)).toEqual(ATTACH_DOCUMENTS.attach_ack_scope.decoded);
+  expect(JSON.parse(outcome.audioAck)).toEqual(ATTACH_DOCUMENTS.attach_ack_audio.decoded);
+});
