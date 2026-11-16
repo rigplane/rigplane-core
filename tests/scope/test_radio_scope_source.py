@@ -1181,3 +1181,158 @@ async def test_follow_span_gesture_in_family_mode_writes_span_only_in_scroll_c(
                 assert sim.writes == []
     finally:
         await sub.close()
+
+
+def _flap_span_once(sim):
+    """Make the next span write fail like a link flap mid-write.
+
+    The failure is a RuntimeError — outside the CommandError/TimeoutError
+    types ``ScopeSession._put`` handles — so the span key keeps its
+    in-flight uncertainty while the desired value stays pending.
+    """
+    real_write = sim.write
+    armed = {"span": True}
+
+    async def flaky_write(name, value, receiver):
+        if name == "span" and armed["span"]:
+            armed["span"] = False
+            raise RuntimeError("simulated link flap mid span write")
+        await real_write(name, value, receiver)
+
+    sim.write = flaky_write  # bound by _sim_session below, like sim.read
+
+
+@pytest.mark.parametrize("model", ["ic705", "ic7610"])
+async def test_4565_center_resubscribe_matching_observed_span_writes_no_span(model):
+    """#4565: a covering-preset pick equal to the observed span writes
+    nothing — CENTER follow resubscribe.
+
+    Front-panel narrowing is adopted (the session observes the narrower
+    preset the radio already shows), then the client resubscribes with a
+    follow width covered by exactly that preset. The mode write keeps its
+    own logic (already CENTER here); only the span part must be skipped,
+    so zero 0x15 writes go out while the grant still covers the request.
+    """
+    profile = load_rig(Path("rigs") / f"{model}.toml").to_profile()
+    presets = profile.scope_span_presets_hz
+    sim = _SimRadio(profile)
+    _flap_span_once(sim)
+    session = _sim_session(sim, profile)
+    source = RadioScopeSource(profile, session)
+    hub, _, Subscription = _sim_hub(source)
+    sub = await hub.subscribe(
+        Subscription("radio", 0, FollowView("vfo", 500_000), 475, 20)
+    )
+    try:
+        # Decoy write to a wider preset fails mid-write (link flap): the
+        # span key stays uncertain with the wider preset still desired.
+        with pytest.raises(RuntimeError, match="link flap"):
+            await source.set_view(FollowView("vfo", 900_000), 0)
+        # Front panel moves the radio to that same wider preset behind
+        # our back: adopted while the key is uncertain, so the session
+        # observes it without retiring the pending desire.
+        wide_index = presets.index(500_000)
+        sim.span_index = wide_index
+        session.observe("span", wide_index, 0)
+        # The client resubscribes; the covering preset is the observed
+        # one, so the resubscribe must not re-assert it on the wire.
+        sim.writes.clear()
+        resub = await hub.subscribe(
+            Subscription("radio", 0, FollowView("vfo", 900_000), 475, 20)
+        )
+        try:
+            assert resub.granted.coverage == Coverage(13_600_000, 14_600_000)
+            assert [w for w in sim.writes if w[0] == "span"] == []
+        finally:
+            await resub.close()
+    finally:
+        await sub.close()
+
+
+@pytest.mark.parametrize("model", ["ic705", "ic7610"])
+async def test_4565_scroll_c_gesture_matching_observed_span_writes_no_span(model):
+    """#4565: a covering-preset pick equal to the observed span writes
+    nothing — SCROLL-C span-only gesture.
+
+    Same adoption-then-gesture shape as the CENTER case, through the
+    SCROLL-C span-only path (``set_span``): no 0x15 write, and no mode
+    write either — the radio stays in SCROLL-C.
+    """
+    profile = load_rig(Path("rigs") / f"{model}.toml").to_profile()
+    presets = profile.scope_span_presets_hz
+    sim = _SimRadio(profile)
+    _flap_span_once(sim)
+    session = _sim_session(sim, profile)
+    source = RadioScopeSource(profile, session)
+    hub, _, Subscription = _sim_hub(source)
+    sub = await hub.subscribe(
+        Subscription("radio", 0, FollowView("vfo", 100_000), 475, 20)
+    )
+    try:
+        source.feed_frame(ScopeFrame(0, 0, 14_050_000, 14_150_000, bytes(475), False))
+        await sub.receive()
+        sim.mode = 2
+        session.observe("mode", 2, 0)
+        window = Coverage(14_075_000, 14_125_000)
+        source.feed_frame(
+            ScopeFrame(0, 2, window.start_hz, window.end_hz, bytes(475), False)
+        )
+        await sub.receive()
+        # Decoy gesture to a narrower preset fails mid-write; front
+        # panel moves the radio to that same preset; the session
+        # observes it while the key stays uncertain.
+        with pytest.raises(RuntimeError, match="link flap"):
+            await source.set_view(FollowView("vfo", 50_000), 0)
+        narrow_index = presets.index(25_000)
+        sim.span_index = narrow_index
+        session.observe("span", narrow_index, 0)
+        # The retry of the same gesture must be fully quiet: the span
+        # part is skipped (observed == chosen) and SCROLL-C never takes
+        # a mode write.
+        sim.writes.clear()
+        grant = await source.set_view(FollowView("vfo", 50_000), 0)
+        assert grant.view == View(window.start_hz, window.end_hz)
+        assert grant.coverage == window
+        assert sim.writes == []
+    finally:
+        await sub.close()
+
+
+@pytest.mark.parametrize("model", ["ic705", "ic7610"])
+async def test_4565_covering_preset_change_still_writes_once(model):
+    """#4565 pin: a covering preset that DIFFERS from the observed span
+    still writes exactly one 0x15 (unchanged behaviour)."""
+    profile = load_rig(Path("rigs") / f"{model}.toml").to_profile()
+    presets = profile.scope_span_presets_hz
+    sim = _SimRadio(profile)
+    session = _sim_session(sim, profile)
+    source = RadioScopeSource(profile, session)
+    hub, _, Subscription = _sim_hub(source)
+    sub = await hub.subscribe(
+        Subscription("radio", 0, FollowView("vfo", 100_000), 475, 20)
+    )
+    try:
+        narrow_index = presets.index(25_000)
+        sim.span_index = narrow_index
+        session.observe("span", narrow_index, 0)
+        sim.writes.clear()
+        grant = await source.set_view(FollowView("vfo", 200_000), 0)
+        assert grant.coverage == Coverage(14_000_000, 14_200_000)
+        assert sim.writes == [("span", presets.index(100_000), 0)]
+    finally:
+        await sub.close()
+
+
+@pytest.mark.parametrize("model", ["ic705", "ic7610"])
+async def test_4565_unknown_observed_span_writes_once(model):
+    """#4565 pin: with no span ever read or observed, the write goes out
+    as today — a single 0x15 (and the mode write keeps working)."""
+    profile = load_rig(Path("rigs") / f"{model}.toml").to_profile()
+    sim = _SimRadio(profile)
+    session = _sim_session(sim, profile)
+    await session.set_center(14_100_000, 25_000, 0)
+    assert ("span", profile.scope_span_presets_hz.index(25_000), 0) in sim.writes
+    assert [w for w in sim.writes if w[0] == "span"] == [
+        ("span", profile.scope_span_presets_hz.index(25_000), 0)
+    ]
+    assert ("mode", 0, 0) in sim.writes
