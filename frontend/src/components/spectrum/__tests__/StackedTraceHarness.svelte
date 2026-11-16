@@ -13,10 +13,12 @@
   interface Props {
     colorScheme?: ColorSchemeName;
     showRfOverlays?: boolean;
+    /** False for a host that leaves the canvas to size itself. */
+    hostSurface?: boolean;
     onPush: (fn: (pixels: Uint8Array) => void) => void;
   }
 
-  let { colorScheme, showRfOverlays = true, onPush }: Props = $props();
+  let { colorScheme, showRfOverlays = true, hostSurface = true, onPush }: Props = $props();
 
   const surface = new CanvasSurface();
   let host = $state<HTMLDivElement>();
@@ -28,5 +30,5 @@
 </script>
 
 <div bind:this={host}>
-  <SpectrumCanvas data={null} {options} spanHz={100_000} {surface} {colorScheme} onRegisterPush={onPush} />
+  <SpectrumCanvas data={null} {options} spanHz={100_000} surface={hostSurface ? surface : undefined} {colorScheme} onRegisterPush={onPush} />
 </div>
