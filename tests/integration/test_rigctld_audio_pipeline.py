@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncGenerator
-from typing import Any
+from typing import Any, ClassVar
 from unittest.mock import AsyncMock
 
 import pytest
@@ -14,6 +14,7 @@ from rigplane.audio.lan_stream import AudioStream, TX_IDENT
 from rigplane.audio.route import resolve_audio_route, rigctld_wsjtx_policy
 from rigplane.audio_bridge import AudioBridge, FRAME_BYTES, SAMPLES_PER_FRAME
 from rigplane.commands.commander import Priority
+from rigplane.core.transport import IcomCivTransport
 from rigplane.radio import IcomRadio
 from rigplane.rigctld.contract import RigctldConfig
 from rigplane.rigctld.server import RigctldServer
@@ -50,6 +51,10 @@ class _RecordingAudioTransport:
 
 
 class _IdleCivTransport:
+    #: The LAN CI-V transport's typed ingress-order contract (MOR-4209); the
+    #: CI-V ingress reads it before claiming any answer.
+    ordered_ingress: ClassVar[bool] = IcomCivTransport.ordered_ingress
+
     async def receive_packet(self, *, timeout: float = 0.2) -> bytes:
         await asyncio.sleep(timeout)
         raise asyncio.TimeoutError
