@@ -25,7 +25,7 @@
  */
 import type { MessageTransport, MessageTransportState, TransportCloseInfo } from './message-transport';
 import { WebSocketTransport } from './websocket-transport';
-import { DataChannelTransport, type DataChannelLike } from './datachannel-transport';
+import { ATTACH_CLOSE_REASON, DataChannelTransport, type DataChannelLike } from './datachannel-transport';
 import { createApiChannelFetch } from './api-channel-client';
 
 /** The transport choice. Never "remote": that word already means the host
@@ -71,8 +71,8 @@ export interface DataChannelBundle extends TransportBundle {
  * refusals and timeout the transport itself reports, everything else a
  * closed channel. */
 function linkLostReason(info: TransportCloseInfo): LinkLostReason {
-  if (info.reason.includes('refused')) return 'attach_refused';
-  if (info.reason === 'attach timeout') return 'attach_timeout';
+  if (info.reason === ATTACH_CLOSE_REASON.keyless || info.reason === ATTACH_CLOSE_REASON.roleless) return 'attach_refused';
+  if (info.reason === ATTACH_CLOSE_REASON.timeout) return 'attach_timeout';
   return 'channel_closed';
 }
 

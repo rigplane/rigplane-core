@@ -20,6 +20,15 @@ import type {
 export const ATTACH_RESEND_MS = 250; // resend until the ack arrives
 export const ATTACH_TIMEOUT_MS = 5000; // give-up bound for the attach step
 
+/** The close reasons this transport itself reports; consumers classify a
+ * close by comparing against these, never against copied strings. */
+export const ATTACH_CLOSE_REASON = {
+  keyless: 'keyless attach refused',
+  roleless: 'roleless attach refused',
+  timeout: 'attach timeout',
+  none: '',
+} as const;
+
 /** The `RTCDataChannel` surface this transport consumes. */
 export type DataChannelLike = Pick<RTCDataChannel, 'label' | 'readyState' | 'bufferedAmount' | 'binaryType' | 'onopen' | 'onmessage' | 'onclose' | 'onerror' | 'send' | 'close'>;
 
@@ -130,7 +139,7 @@ export class DataChannelTransport implements MessageTransport {
     if (key === null && this.channel.label !== 'api') {
       // Keyless is only the api label's acquire path; the server refuses a
       // null key on a keyed label, and an attach-less open offers none.
-      this.refuseAttach('keyless attach refused');
+      this.refuseAttach(ATTACH_CLOSE_REASON.keyless);
       return;
     }
     // Every label — the keyless api acquire included — carries the caller's
@@ -138,14 +147,14 @@ export class DataChannelTransport implements MessageTransport {
     // would steal the session), so a missing attach or role is refused.
     const role = attach?.role;
     if (role !== 'primary' && role !== 'auxiliary') {
-      this.refuseAttach('roleless attach refused');
+      this.refuseAttach(ATTACH_CLOSE_REASON.roleless);
       return;
     }
     this.attachFrame = buildContractPayload(wire.payloads.attach_frame, { type: 'attach', controller_key: key, role, state_delta: 2 });
     this.channel.binaryType = 'arraybuffer';
     this.channel.onopen = () => this.onChannelOpen();
     this.channel.onmessage = (event) => this.onChannelMessage(event.data);
-    this.channel.onclose = () => this.finish({ code: 1006, reason: '', wasClean: false });
+    this.channel.onclose = () => this.finish({ code: 1006, reason: ATTACH_CLOSE_REASON.none, wasClean: false });
     this.channel.onerror = () => {
       for (const handler of [...this.errorHandlers]) handler();
     };
@@ -162,7 +171,7 @@ export class DataChannelTransport implements MessageTransport {
     if (typeof data === 'string') this.channel.send(data);
     else this.channel.send(data);
   }
-  close(): void { this.finish({ code: 1000, reason: '', wasClean: true }); }
+  close(): void { this.finish({ code: 1000, reason: ATTACH_CLOSE_REASON.none, wasClean: true }); }
   private subscribe<T>(handlers: Set<T>, handler: T): () => void {
     handlers.add(handler);
     return () => handlers.delete(handler);
@@ -194,7 +203,7 @@ export class DataChannelTransport implements MessageTransport {
       }, ATTACH_RESEND_MS);
       this.deadlineTimer = setTimeout(() => {
         for (const handler of [...this.errorHandlers]) handler();
-        this.finish({ code: 1006, reason: 'attach timeout', wasClean: false });
+        this.finish({ code: 1006, reason: ATTACH_CLOSE_REASON.timeout, wasClean: false });
       }, ATTACH_TIMEOUT_MS);
     }
   }

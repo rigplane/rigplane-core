@@ -25,6 +25,7 @@ import {
   installBundle, webSocketBundle, dataChannelBundle,
   type RemoteChannels, type TransportBundle,
 } from '../transport-bundle';
+import { ATTACH_CLOSE_REASON } from '../datachannel-transport';
 import { createMessageTransport } from '../transport-factory';
 import { apiFetch } from '../../api/api-fetch';
 import type { MessageTransport } from '../message-transport';
@@ -240,6 +241,37 @@ describe('transport bundle seam (C5b)', () => {
       channel.simulateMessage(ackText);
       expect(transport.state, `${label} opens on its ack`).toBe('open');
     }
+  });
+
+  it('classifies the transport\'s own close reasons: an attach refusal is reported as attach_refused', async () => {
+    // Drive the real transport's refusals through the bundle; the reason
+    // strings come from the transport's exported constants, so a drift in
+    // either file changes this outcome.
+    const cases = [
+      ['keyless', { protocols: [], role: 'primary' as const }],
+      ['roleless', { protocols: ['rigplane-controller-v1.KEY'] }],
+    ] as const;
+    for (const [name, attach] of cases) {
+      const losses: string[] = [];
+      const bundle = dataChannelBundle(fakeChannels(), (reason) => losses.push(reason));
+      const closes: string[] = [];
+      const transport = bundle.openChannel('control');
+      transport.onClose((info) => closes.push(info.reason));
+      transport.open('ws://ignored/', attach);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(closes, name).toEqual([ATTACH_CLOSE_REASON[name]]);
+      expect(losses, name).toEqual(['attach_refused']);
+    }
+  });
+
+  it('a clean channel close (empty reason) is reported as channel_closed', () => {
+    const channels = fakeChannels();
+    const losses: string[] = [];
+    const bundle = dataChannelBundle(channels, (reason) => losses.push(reason));
+    bundle.openChannel('control').open('ws://ignored/', { protocols: ['rigplane-controller-v1.KEY'], role: 'primary' });
+    channels.control.close();
+    expect(losses).toEqual(['channel_closed']);
+    expect(ATTACH_CLOSE_REASON.none).toBe('');
   });
 
   it('delivers binary frames from another realm (a channel created in the parent window) through the bundle', () => {
