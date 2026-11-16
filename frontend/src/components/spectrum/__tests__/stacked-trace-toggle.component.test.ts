@@ -38,7 +38,7 @@ function flushFrames(now: number): void {
   for (const frame of due) frame(now);
 }
 
-async function mountPane(props: { colorScheme?: 'classic'; showRfOverlays?: boolean } = { colorScheme: 'classic' }) {
+async function mountPane(props: { colorScheme?: 'classic'; showRfOverlays?: boolean; hostSurface?: boolean } = { colorScheme: 'classic' }) {
   svelte = await import('svelte');
   const store = await import('$lib/stores/stacked-trace.svelte');
   const { default: Harness } = await import('./StackedTraceHarness.svelte');
@@ -145,11 +145,15 @@ describe('MOR-4463 stacked-trace toggle', () => {
     expect(pane.stacked()).not.toBeNull();
   });
 
-  it('keeps the flat trace for a host without a palette and for a pane without RF overlays', async () => {
+  it('keeps the flat trace for a host without a palette, without its own surface, or without RF overlays', async () => {
     localStorage.setItem('rigplane-spectrum-stacked-trace', '1');
     const bare = await mountPane({});
     expect(bare.stacked()).toBeNull();
     expect(bare.flat()).not.toBeNull();
+    await svelte.unmount(component!);
+    const unsized = await mountPane({ colorScheme: 'classic', hostSurface: false });
+    expect(unsized.stacked()).toBeNull();
+    expect(unsized.flat()).not.toBeNull();
     await svelte.unmount(component!);
     const audio = await mountPane({ colorScheme: 'classic', showRfOverlays: false });
     expect(audio.stacked()).toBeNull();

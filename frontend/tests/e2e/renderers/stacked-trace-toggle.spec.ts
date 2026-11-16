@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import en from '../../../src/lib/i18n/locales/en-US.json' with { type: 'json' };
 
 // MOR-4463: the real SpectrumPanel with its real toolbar. The flat spectrum
 // is the default; the 3D key switches the spectrum pane to the stacked-trace
@@ -23,7 +24,7 @@ test('flat by default; the 3D key switches the pane, survives a reload and switc
   await expect(stacked).toHaveCount(0);
   await expect(key).toHaveText('3D');
   await expect(key).toHaveAttribute('aria-pressed', 'false');
-  await expect(key).toHaveAttribute('title', '3D view: recent spectrum history in depth');
+  await expect(key).toHaveAttribute('title', en['core.scope.stackedTrace.title']);
   await expect(page.locator('.db-scale .tick').first()).toBeVisible();
   // AVG and PEAK shape the flat trace only: shown with it, hidden in 3D.
   const avg = page.getByRole('button', { name: 'AVG', exact: true }).first();
@@ -78,6 +79,6 @@ test('a browser that refuses the 3D view keeps the flat spectrum and disables th
   await expect(page.getByTestId('stacked-trace')).toHaveCount(0);
   await expect(key).toBeDisabled();
   await expect(key).toHaveAttribute('aria-pressed', 'false');
-  await expect(key).toHaveAttribute('title', '3D view is not available: this browser provides no WebGL2');
+  await expect(key).toHaveAttribute('title', en['core.scope.stackedTrace.unavailable']);
   expect(errors).toEqual([]);
 });
