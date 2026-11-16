@@ -11,18 +11,18 @@ profile entry written by a developer, never the radio or its owner.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
-from collections.abc import Callable, Mapping
+from dataclasses import dataclass, replace
+from collections.abc import Callable, Collection, Mapping, Sequence
 from typing import Any, TypeVar
 
 from rigplane.commands import command_carries_sub
 from rigplane.commands._frame import unwrap_receiver_prefix
 from rigplane.commands.command_spec import CatCommandSpec, CivCommandSpec, CommandSpec
+from rigplane.core.types import Mode
 
 __all__ = [
-    "CIV_CONDITIONAL_VFO",
-    "CIV_NEVER_ANY",
-    "CIV_NEVER_WRITE",
+    "CIV_DIGITAL_VOICE",
+    "CIV_READ_REFUSED",
     "CIV_WRITE_ALLOW",
     "YAESU_NEVER",
     "YAESU_WRITE_ALLOW",
@@ -30,13 +30,22 @@ __all__ = [
     "ProbeCheckStep",
     "ProbePrecondition",
     "ProbeRestoreItem",
-    "both_vfos",
     "check_send_allowed",
     "command_key",
     "declared_body",
+    "digital_voice_codes",
+    "excluded_from_probes",
     "parse_probe_checks",
     "policy_refusal",
+    "restored_settings",
+    "setting_of",
 ]
+
+#: What one write changes and one read returns: CAT, the template text before
+#: the first field (``MD0`` of ``MD0{mode};``, or a whole raw line); CI-V,
+#: ``(receiver, command, sub)`` with the read and write forms of one setting
+#: folded together (``_CIV_SAME``).
+Setting = bytes | tuple[int | None, int, int | None]
 
 
 def _civ_pairs(spec: str) -> frozenset[tuple[int, int | None]]:
@@ -50,36 +59,92 @@ def _civ_pairs(spec: str) -> frozenset[tuple[int, int | None]]:
 #: Yaesu CAT verbs a check may write: receive-side settings only.
 YAESU_WRITE_ALLOW = frozenset("FA FB MD FT PC BS PR".split())
 
-#: CI-V commands a check may write: freq/mode set, VFO select, levels.
-CIV_WRITE_ALLOW = frozenset(c for c, _ in _civ_pairs("05 06 07 0F 14 25 26"))
-
-#: Yaesu verbs never sent by a check: transmit/PTT keys, memory writes,
-#: keyer/CW, voice memory, scan, tuner-adjacent writes.
+#: Yaesu verbs never sent by a check, not even as reads: transmit/PTT keys,
+#: memory writes, keyer/CW, voice memory, scan, tuner-adjacent writes.
 YAESU_NEVER = frozenset(
     "TX MX AC KY KM PS MW MC EX PB LM AM MT QI MA QR VM CH SC VX BI DT".split()
 )
 
-#: CI-V pairs never sent in any form (no sub: the whole command): voice TX
-#: memory, VOX/BK-IN, DV TX data, and the read pass's refused memory, scan,
-#: power, PTT and VFO families.
-CIV_NEVER_ANY = _civ_pairs("28 16:46 16:47 22 12 08 09 0A 0B 0E 17 18 1C 1A:00")
-
-#: CI-V pairs refused only as writes: menu configuration, TX band, filters.
-CIV_NEVER_WRITE = _civ_pairs("1A:05 1A:01 1A:02 1E 1F")
-
-#: VFO equalize/exchange writes (A=B, swap, B=A): allowed only when the check
-#: restores frequency and mode of both VFOs (``CIV_VFO_RESTORE``).
-CIV_CONDITIONAL_VFO = _civ_pairs("07:A0 07:B0 07:B1")
-
-#: What "both VFOs restored" means: each group needs a restore write whose
-#: declared bytes start with one of its prefixes (selected/unselected freq,
-#: selected/unselected mode).
-CIV_VFO_RESTORE = (
-    (b"\x05", b"\x25\x00"),
-    (b"\x25\x01",),
-    (b"\x06", b"\x26\x00"),
-    (b"\x26\x01",),
+#: CI-V settings a check may write (after ``_CIV_SAME``): selected/unselected
+#: frequency and mode, split on/off, VFO equalize/exchange, and the receive
+#: levels AF, RF gain, SQL, NR, PBT, CW pitch, RF power, notch, NB. Mic gain,
+#: compressor, break-in delay, monitor, VOX and anti-VOX stay off until a
+#: check needs them; duplex (``0F 10..12``) and VFO/receiver select are off.
+CIV_WRITE_ALLOW = _civ_pairs(
+    "25:00 25:01 26:00 26:01 0F 07:A0 07:B0 07:B1 "
+    "14:01 14:02 14:03 14:06 14:07 14:08 14:09 14:0A 14:0D 14:12"
 )
+
+#: Read and write forms of one CI-V setting: operating freq/mode (03/05,
+#: 04/06) are the selected VFO's (25 00, 26 00); split off/on are values of
+#: the one split setting read by a bare ``0F``.
+_CIV_SAME = {
+    (0x03, None): (0x25, 0x00),
+    (0x05, None): (0x25, 0x00),
+    (0x04, None): (0x26, 0x00),
+    (0x06, None): (0x26, 0x00),
+    (0x0F, 0x00): (0x0F, None),
+    (0x0F, 0x01): (0x0F, None),
+}
+
+#: Writes that change settings other than their own, and the settings the
+#: restore list must then hold: VFO equalize/exchange moves frequency and
+#: mode of both VFOs; Yaesu band select moves frequency and mode of its
+#: receiver (CAT keys match the longest prefix, so a raw ``BS1x`` takes the
+#: stricter sub-receiver entry).
+_BOTH_VFOS = ((0x25, 0x00), (0x25, 0x01), (0x26, 0x00), (0x26, 0x01))
+_ALSO_RESTORE: dict[object, tuple[Any, ...]] = {
+    (0x07, 0xA0): _BOTH_VFOS,
+    (0x07, 0xB0): _BOTH_VFOS,
+    (0x07, 0xB1): _BOTH_VFOS,
+    b"BS": (b"FA", b"MD0"),
+    b"BS0": (b"FA", b"MD0"),
+    b"BS1": (b"FB", b"MD1"),
+}
+
+#: CI-V mode bytes with unattended transmit (auto reply, GPS beacon): DV and
+#: DD (0x22, the IC-905/IC-9700 mode notes).
+CIV_DIGITAL_VOICE = frozenset((bytes((Mode.DV,)), b"\x22"))
+
+#: CI-V command bytes no probe read sends, whatever follows (checked after
+#: unwrapping cmd29): send/set-only commands (send freq/mode 0x00/0x01, set
+#: freq/mode 0x05/0x06, MEM select/write/clear 0x08/0x09/0x0B, scan 0x0E, CW
+#: send 0x17) plus the power, PTT/tuner and VFO-selection families
+#: (0x18/0x1C/0x07). 0x07 is not read-only on Icom radios: a bare ``07``
+#: selects VFO mode, ``07 D0/D1`` select MAIN/SUB, ``07 A0/B0/B1`` exchange or
+#: equalise VFOs. Shared with ``rigplane.probe.readlist``: one read rule.
+CIV_READ_REFUSED = frozenset(
+    (0x00, 0x01, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0B, 0x0E, 0x17, 0x18, 0x1C)
+)
+
+
+def excluded_from_probes(body: bytes, *, include_private: bool) -> bool:
+    """Whether a declared CI-V GET body is excluded from every probe read.
+
+    The refused command bytes (their read forms included) are always out;
+    the 0x1A 0x00 memory-contents pair, a (command, sub) pair because 0x1A
+    carries legal scope/control reads, is out unless ``include_private``.
+    The bare 0xFA/0xFB bytes are the radio's NAK/ACK replies, never requests.
+    """
+    if not body or body[0] in CIV_READ_REFUSED or body[0] in (0xFA, 0xFB):
+        return True
+    if body[0] == 0x1A and body[1:2] == b"\x00":
+        return not include_private
+    return False
+
+
+def digital_voice_codes(
+    protocol: str, modes: Sequence[str], mode_codes: Sequence[str] | None
+) -> frozenset[bytes] | None:
+    """Mode values a check must not write: CI-V DV/DD, Yaesu the profile's
+    C4FM codes; ``None`` when a CAT profile declares no mode codes."""
+    if protocol != "yaesu_cat":
+        return CIV_DIGITAL_VOICE
+    if mode_codes is None:
+        return None
+    pairs = zip(modes, mode_codes, strict=True)
+    return frozenset(code.encode("ascii") for name, code in pairs if "C4FM" in name)
+
 
 _T = TypeVar("_T")
 _PROTOCOLS = ("yaesu_cat", "civ")
@@ -95,7 +160,6 @@ _STEP_KEYS = {
     "write": ("command", "values"),
     "read": ("command",),
 }
-_RAW_KINDS = ("raw_read", "raw_write")
 
 #: One template field: ``{name}`` or ``{name:09d}``.
 _TEMPLATE_FIELD = re.compile(r"\{([^{}]*)\}")
@@ -105,7 +169,7 @@ _TEMPLATE_FIELD = re.compile(r"\{([^{}]*)\}")
 class ProbeCheckStep:
     """One engine step. ``write``/``read`` name a profile command (a CAT
     write fills ``values`` into the profile's template; CI-V appends
-    ``data_hex``); ``raw_*`` carry a literal CAT ``line`` or CI-V
+    ``data_hex``); ``raw_write`` carries a literal CAT ``line`` or CI-V
     ``body_hex``; ``ask`` carries the question put to the person."""
 
     kind: str
@@ -153,44 +217,42 @@ class ProbeCheck:
     restore: tuple[ProbeRestoreItem, ...] = ()
 
 
-def _civ_sub_of(body: bytes) -> int | None:
-    """The sub byte; ``0x07`` carries its VFO operation byte for policy only."""
-    carries = body[0] == 0x07 or command_carries_sub(body[0])
-    return body[1] if len(body) >= 2 and carries else None
-
-
-def _target(protocol: str, body: bytes) -> tuple[int | None, bytes]:
-    """What a write addresses: (receiver, bytes up to the value). CAT keeps the
-    template text before the first field (``MD0`` of ``MD0{mode};``)."""
+def setting_of(protocol: str, body: bytes) -> Setting:
+    """The setting a declared entry, template or wire body reads or writes."""
     if protocol == "yaesu_cat":
-        return None, body.split(b"{")[0].upper()
+        return body.split(b"{")[0].removesuffix(b";").upper()
     inner = unwrap_receiver_prefix(body)
-    return (body[1] if inner is not body else None), inner
+    rx = body[1] if inner is not body else None
+    has_sub = inner[0] in (0x07, 0x0F, 0x25, 0x26) or command_carries_sub(inner[0])
+    key = (inner[0], inner[1] if has_sub and len(inner) >= 2 else None)
+    command, sub = _CIV_SAME.get(key, key)
+    return rx, command, sub
 
 
-def _covers(protocol: str, restore: bytes, raw: bytes) -> bool:
-    """Whether a restore write's declared bytes cover the raw write's target."""
-    (rx_restore, head), (rx_raw, body) = (_target(protocol, x) for x in (restore, raw))
-    return rx_restore == rx_raw and body.startswith(head)
+def _restore_missing(setting: Setting, restored: Collection[Setting]) -> bool:
+    """Whether the restore list lacks a setting the write changes."""
+    if isinstance(setting, bytes):
+        keys = [
+            k for k in _ALSO_RESTORE if isinstance(k, bytes) and setting.startswith(k)
+        ]
+        if keys:
+            return not set(_ALSO_RESTORE[max(keys, key=len)]) <= set(restored)
+        return not any(isinstance(r, bytes) and setting.startswith(r) for r in restored)
+    rx, command, sub = setting
+    pairs = _ALSO_RESTORE.get((command, sub), ((command, sub),))
+    return not {(rx, *pair) for pair in pairs} <= set(restored)
 
 
-def both_vfos(
-    restore: tuple[ProbeRestoreItem, ...],
+def restored_settings(
+    restore: Sequence[ProbeRestoreItem],
     commands: Mapping[str, CommandSpec],
     protocol: str,
-) -> bool:
-    """Whether the restore writes put back frequency and mode of both VFOs."""
-    if protocol != "civ":
-        return False
-    writes = [
-        _target(protocol, bytes(spec.bytes))[1]
-        for item in restore
-        if isinstance(spec := commands.get(item.write), CivCommandSpec)
-    ]
-    return all(
-        any(w.startswith(prefix) for w in writes for prefix in group)
-        for group in CIV_VFO_RESTORE
+) -> frozenset[Setting]:
+    """The settings a check's restore writes put back."""
+    bodies = (
+        declared_body(commands.get(item.write), protocol, "write") for item in restore
     )
+    return frozenset(setting_of(protocol, body) for body in bodies if body)
 
 
 def command_key(protocol: str, body: bytes) -> str | int:
@@ -203,46 +265,55 @@ def command_key(protocol: str, body: bytes) -> str | int:
 
 
 def policy_refusal(
-    protocol: str, body: bytes, *, write: bool, both_vfos: bool = False
+    protocol: str,
+    body: bytes,
+    *,
+    restored: Collection[Setting],
+    voice_codes: Collection[bytes] | None,
+    setting: Setting | None = None,
 ) -> str | None:
-    """Why a body must not be sent, naming the verb; ``None`` when allowed.
+    """Why a write must not be sent, naming the verb; ``None`` when allowed.
 
-    ``write`` adds the allow-list, the write-only never-list and the
-    both-VFOs rule; a read only has to avoid the never-list.
+    ``restored`` holds what the check's restore list puts back: the write's
+    ``setting`` (default: of ``body``; a CAT profile write passes its
+    template's) and every setting in ``_ALSO_RESTORE`` must be in it.
+    ``voice_codes`` are the refused digital-voice mode values (``None``:
+    unknown, so every mode write is refused).
     """
     if not body or protocol not in _PROTOCOLS:
         return "empty body" if not body else _NEED_PROTOCOL
+    setting = setting_of(protocol, body) if setting is None else setting
     if protocol == "yaesu_cat":
         if not body.endswith(b";") or b";" in body[:-1]:
             return "a CAT line must be exactly one command ending in ';'"
         key = command_key(protocol, body)
-        if key in YAESU_NEVER:
-            return f"never-listed CAT verb {key!r}"
-        if write and key not in YAESU_WRITE_ALLOW:
+        if key in YAESU_NEVER or key not in YAESU_WRITE_ALLOW:
             return f"CAT verb {key!r} is not on the allow-list"
-        return None
-    body = unwrap_receiver_prefix(body)
-    if not body or body[0] == 0x29 or 0xFD in body or b"\xfe\xfe" in body:
-        return "CI-V body must be one command without frame delimiters"
-    sub = _civ_sub_of(body)
-    keys = {(body[0], sub), (body[0], None)}
-    name = f"0x{body[0]:02X}"
-    if keys & CIV_NEVER_ANY:
-        return f"never-listed CI-V command {name}"
-    if (body[0], sub) in CIV_CONDITIONAL_VFO and not (write and both_vfos):
-        return f"CI-V {name} {sub:02X} needs both VFOs in the restore list"
-    if write and keys & CIV_NEVER_WRITE:
-        return f"never-listed CI-V write {name}"
-    if write and body[0] not in CIV_WRITE_ALLOW:
-        return f"CI-V {name} is not on the allow-list"
+        mode = body[3:4] if key == "MD" else b""
+    else:
+        inner = unwrap_receiver_prefix(body)
+        if not inner or inner[0] == 0x29 or 0xFD in inner or b"\xfe\xfe" in inner:
+            return "CI-V body must be one command without frame delimiters"
+        assert not isinstance(setting, bytes)
+        if setting[1:] not in CIV_WRITE_ALLOW:
+            return f"CI-V 0x{inner[0]:02X} {inner[1:2].hex()} is not on the allow-list"
+        mode = inner[1 + (inner[0] == 0x26) :][:1] if setting[1] == 0x26 else b""
+    if mode and (voice_codes is None or mode in voice_codes):
+        return f"mode {mode!r} is digital voice or unknown (may transmit unattended)"
+    if _restore_missing(setting, restored):
+        return f"write {body!r} needs a restore item for the setting it changes"
     return None
 
 
 def check_send_allowed(
-    protocol: str, body: bytes, *, write: bool = True, both_vfos: bool = False
+    protocol: str,
+    body: bytes,
+    *,
+    restored: Collection[Setting],
+    voice_codes: Collection[bytes] | None,
 ) -> None:
-    """Refuse a body the engine must never send (``ValueError`` names it)."""
-    why = policy_refusal(protocol, body, write=write, both_vfos=both_vfos)
+    """Refuse a write the engine must never send (``ValueError`` names it)."""
+    why = policy_refusal(protocol, body, restored=restored, voice_codes=voice_codes)
     if why is not None:
         raise ValueError(f"refusing to send: {why}")
 
@@ -269,6 +340,8 @@ class _Loader:
     filename: str
     commands: Mapping[str, CommandSpec]
     protocol: str
+    voice_codes: frozenset[bytes] | None
+    restored: frozenset[Setting] = frozenset()
 
     @property
     def cat(self) -> bool:
@@ -330,18 +403,35 @@ class _Loader:
             raise self.fail(f"{where} {name!r} template must be ASCII") from None
 
     def read_capable(self, where: str, name: str) -> None:
-        """A declared concrete read that also passes the shared read policy."""
+        """Only what the shipped read pass sends: a CI-V ``get_*`` entry outside
+        the refused read families, or a concrete CAT read template off the
+        never-list and off the private memory reads."""
+        spec, why = self.commands.get(name), ""
         body = self.declared(where, name, "read")
         if body is None or (self.cat and b"{" in body):
-            raise self.fail(f"{where} {name!r} declares no concrete read")
-        self.refuse(f"{where} {name!r}", body, write=False, vfos=False)
+            why = "declares no concrete read"
+        elif self.cat and command_key(self.protocol, body) in YAESU_NEVER | {"MR"}:
+            why = f"never-listed CAT verb {command_key(self.protocol, body)!r}"
+        elif not self.cat and excluded_from_probes(body, include_private=False):
+            why = f"never-listed CI-V read 0x{unwrap_receiver_prefix(body)[0]:02X}"
+        elif isinstance(spec, CivCommandSpec) and not name.startswith("get_"):
+            why = "is not a get_* read"
+        if why:
+            raise self.fail(f"{where} {name!r} {why}")
 
-    def refuse(self, where: str, body: bytes, *, write: bool, vfos: bool) -> None:
-        if why := policy_refusal(self.protocol, body, write=write, both_vfos=vfos):
+    def refuse(self, where: str, body: bytes, setting: Setting | None = None) -> None:
+        why = policy_refusal(
+            self.protocol,
+            body,
+            restored=self.restored,
+            voice_codes=self.voice_codes,
+            setting=setting,
+        )
+        if why:
             raise self.fail(f"{where}: {why}")
 
     def write_step(
-        self, where: str, mapping: dict[str, Any], name: str, vfos: bool
+        self, where: str, mapping: dict[str, Any], name: str
     ) -> ProbeCheckStep:
         template = self.declared(f"{where}.command", name, "write")
         if template is None:
@@ -365,7 +455,8 @@ class _Loader:
         except (KeyError, ValueError) as error:
             raise self.fail(f"{where}.values do not fit {name!r} ({error})") from error
         body = self.wire(f"{where}.command", line)
-        self.refuse(f"{where}.command {name!r}", body, write=True, vfos=vfos)
+        own = setting_of(self.protocol, template) if self.cat else None
+        self.refuse(f"{where}.command {name!r}", body, own)
         if self.cat:
             return ProbeCheckStep(
                 "write", command=name, values=tuple(sorted(values.items()))
@@ -374,14 +465,14 @@ class _Loader:
             "write", command=name, data_hex=values["data_hex"].lower()
         )
 
-    def step(self, where: str, raw: object, vfos: bool) -> ProbeCheckStep:
+    def step(self, where: str, raw: object) -> ProbeCheckStep:
         raw_key = "line" if self.cat else "body_hex"
         keys = frozenset({"kind", "question", "command", "values", "line", "body_hex"})
         mapping = self.table(where, raw, keys)
         kind = mapping.get("kind")
-        if kind not in (*_STEP_KEYS, *_RAW_KINDS):
+        if kind not in (*_STEP_KEYS, "raw_write"):
             raise self.fail(
-                f"{where}.kind must be one of {sorted((*_STEP_KEYS, *_RAW_KINDS))}"
+                f"{where}.kind must be one of {sorted((*_STEP_KEYS, 'raw_write'))}"
             )
         if extra := sorted(set(mapping) - {"kind", *_STEP_KEYS.get(kind, (raw_key,))}):
             raise self.fail(f"{where} must not carry {extra!r}")
@@ -389,20 +480,15 @@ class _Loader:
             return ProbeCheckStep(
                 kind, question=self.text(f"{where}.question", mapping.get("question"))
             )
-        if kind in _RAW_KINDS:
+        if kind == "raw_write":
             text = self.text(f"{where}.{raw_key}", mapping.get(raw_key))
-            body = self.wire(f"{where}.{raw_key}", text)
-            self.refuse(
-                f"{where}.{raw_key}", body, write=kind == "raw_write", vfos=vfos
-            )
-            return (
-                ProbeCheckStep(kind, line=text)
-                if self.cat
-                else ProbeCheckStep(kind, body_hex=text.lower())
-            )
+            self.refuse(f"{where}.{raw_key}", self.wire(f"{where}.{raw_key}", text))
+            if self.cat:
+                return ProbeCheckStep(kind, line=text)
+            return ProbeCheckStep(kind, body_hex=text.lower())
         name = self.text(f"{where}.command", mapping.get("command"))
         if kind == "write":
-            return self.write_step(where, mapping, name, vfos)
+            return self.write_step(where, mapping, name)
         self.read_capable(f"{where}.command", name)
         return ProbeCheckStep("read", command=name)
 
@@ -435,32 +521,26 @@ class _Loader:
             read, self.text(f"{where}.equals", mapping.get("equals"))
         )
 
-    def validate(self, check: ProbeCheck) -> None:
-        """Restore items obey the write policy; every raw write has its own
-        restore item for the same setting and receiver in the check."""
-        vfos = both_vfos(check.restore, self.commands, self.protocol)
-        writes: list[bytes] = []
-        for item in check.restore:
-            where = f"check {check.id!r} restore {item.write!r}"
-            self.read_capable(f"check {check.id!r} restore", item.read)
+    def validate(self, restore: tuple[ProbeRestoreItem, ...]) -> _Loader:
+        """Each restore item reads and writes one setting the policy allows;
+        returns the loader that judges writes against these restores."""
+        writes = []
+        for item in restore:
+            where = f"restore {item.read!r} -> {item.write!r}"
+            self.read_capable(where, item.read)
             write = self.declared(where, item.write, "write")
-            if write is None:
-                raise self.fail(f"{where} declares no write")
-            self.refuse(where, write, write=True, vfos=vfos)
             read = self.declared(where, item.read, "parse")
-            if read is None:
-                raise self.fail(
-                    f"check {check.id!r} restore {item.read!r} declares no parse"
-                )
-            writes.append(write)
-        for step in (s for s in check.steps if s.kind == "raw_write"):
-            raw = (
-                step.line.encode("ascii") if self.cat else bytes.fromhex(step.body_hex)
-            )
-            if not any(_covers(self.protocol, w, raw) for w in writes):
-                raise self.fail(
-                    f"check {check.id!r} raw_write needs its own restore item"
-                )
+            if write is None or read is None:
+                raise self.fail(f"{where} declares no write or no parse")
+            if setting_of(self.protocol, read) != setting_of(self.protocol, write):
+                raise self.fail(f"{where} must read and write the same setting")
+            writes.append((where, write))
+        loader = replace(
+            self, restored=restored_settings(restore, self.commands, self.protocol)
+        )
+        for where, write in writes:
+            loader.refuse(where, write)
+        return loader
 
     def check(self, where: str, raw: object) -> ProbeCheck:
         mapping = self.table(where, raw, _CHECK_KEYS)
@@ -474,18 +554,14 @@ class _Loader:
         restore = self.each(
             f"{where}.restore", mapping.get("restore", []), self.restore
         )
+        loader = self.validate(restore)
         steps = self.each(
-            f"{where}.steps",
-            mapping.get("steps", []),
-            lambda path, step: self.step(
-                path, step, both_vfos(restore, self.commands, self.protocol)
-            ),
-            nonempty=True,
+            f"{where}.steps", mapping.get("steps", []), loader.step, nonempty=True
         )
         if not restore and any(step.kind in ("write", "raw_write") for step in steps):
             raise self.fail(f"{where} has write steps but no restore items")
         text = self.text
-        check = ProbeCheck(
+        return ProbeCheck(
             id=mapping["id"],
             title=text(f"{where}.title", mapping.get("title")),
             explain_what=text(f"{where}.explain_what", mapping.get("explain_what")),
@@ -500,8 +576,6 @@ class _Loader:
             steps=steps,
             restore=restore,
         )
-        self.validate(check)
-        return check
 
 
 def parse_probe_checks(
@@ -510,13 +584,14 @@ def parse_probe_checks(
     *,
     commands: Mapping[str, CommandSpec],
     protocol_type: str,
+    voice_codes: frozenset[bytes] | None,
 ) -> tuple[ProbeCheck, ...]:
     """Parse ``[probe]`` into typed checks; ``()`` when absent. Structure,
     unknown keys, non-ASCII customer text and write-policy violations fail
     here with the verb or key named."""
     if raw is None:
         return ()
-    loader = _Loader(filename, commands, protocol_type)
+    loader = _Loader(filename, commands, protocol_type, voice_codes)
     section = loader.table("[probe]", raw, frozenset({"checks"}))
     if section.get("checks") and protocol_type not in _PROTOCOLS:
         raise loader.fail(f"[probe]: {_NEED_PROTOCOL}")

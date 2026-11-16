@@ -219,7 +219,7 @@ witness = ["get_freq", "get_mode"]  # profile reads snapshotted around the check
 read = "get_ptt"
 equals = "TX0;"                   # CAT reply text, or CI-V frame hex
 
-[[probe.checks.steps]]            # write | read | raw_read | raw_write | ask
+[[probe.checks.steps]]            # write | read | raw_write | ask
 kind = "write"
 command = "set_freq"
 [probe.checks.steps.values]       # CAT: template fields; CI-V: exactly data_hex
@@ -241,17 +241,24 @@ write = "set_processor"
 ```
 
 The loader rejects unknown keys. `id` is a slug; customer text (`title`,
-`explain_*`, `warnings`, `question`) is non-empty ASCII. A write names a
-profile write command, or a `raw_write`, whose verb is on the protocol
-allow-list and not on the never-list; a `raw_read` must avoid the never-list;
-a `raw_write` needs its own restore item for the same setting and receiver (the restore write's
-prefix, e.g. `MD0` vs `MD1`, `14 01` vs `14 02`) in the check; a
-check with write steps needs restore items. CI-V `07 A0`/`07 B0`/`07 B1` writes
-additionally need restore writes for frequency and mode of both the selected
-and the unselected VFO. A CAT line is exactly one command ending in `;`; a CI-V
-body has no frame delimiters; a `29 <rx>` wrapper is judged by its inner
-command; every declared read (steps, preconditions, witness, restore) passes the
-read policy.
+`explain_*`, `warnings`, `question`) is non-empty ASCII.
+
+A read (steps, preconditions, witness, `restore.read`) is only what the probe
+read pass itself sends: a CI-V `get_*` entry outside the refused read families
+(`0x07`, set/send, memory, scan, power, PTT/tuner) or a concrete CAT read
+template off the never-list. There is no raw read.
+
+A write (`write` or `raw_write`) must be on the protocol allow-list (CI-V by
+command and sub: `25`/`26` 00/01 and `05`/`06`, split `0F 00/01`, `07 A0/B0/B1`,
+`14` 01 02 03 06 07 08 09 0A 0D 12; CAT `FA FB MD FT PC BS PR`), must not set a
+digital-voice mode (CI-V DV `17`, DD `22`; CAT the profile's C4FM codes from
+`[modes].codes`), and needs a restore item for the very setting it changes:
+the same receiver, command, sub and selector (CAT: the template text before the
+first field, e.g. `MD0` vs `MD1`). `07 A0/B0/B1` need frequency and mode of both
+VFOs restored; `BS` needs `FA`+`MD0` (`BS1`: `FB`+`MD1`). Each restore item reads
+and writes the same setting. A CAT line is exactly one command ending in `;`; a
+CI-V body has no frame delimiters; a `29 <rx>` wrapper is judged by its inner
+command and keeps its receiver.
 
 ---
 

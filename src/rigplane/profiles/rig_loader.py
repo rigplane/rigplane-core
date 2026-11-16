@@ -47,7 +47,7 @@ from rigplane.profiles.control_domain import (
     _public_decimal,
     validate_control_raw_value,
 )
-from rigplane.profiles.probe_checks import parse_probe_checks
+from rigplane.profiles.probe_checks import digital_voice_codes, parse_probe_checks
 
 __all__ = [
     "RigConfig",
@@ -4227,7 +4227,11 @@ def load_rig(path: Path) -> RigConfig:
         usb_identity=usb_identity,
         iq_lan=iq_lan,
         probe_checks=parse_probe_checks(
-            filename, data.get("probe"), commands=commands, protocol_type=protocol_type
+            filename,
+            data.get("probe"),
+            commands=commands,
+            protocol_type=protocol_type,
+            voice_codes=digital_voice_codes(protocol_type, modes, mode_codes),
         ),
     )
 
