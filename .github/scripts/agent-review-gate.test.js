@@ -31,9 +31,12 @@ const ISSUE_COMMENT_PREDICATE =
 // fires no event, as a manual dispatch.
 const CODEX_COMMENT_PREDICATE =
   "github.event.issue.pull_request && github.event.comment.user.login == 'chatgpt-codex-connector[bot]'";
-const GATE_PREDICATE = `github.event_name == 'pull_request' || github.event_name == 'pull_request_review' || github.event_name == 'workflow_dispatch' || (${ISSUE_COMMENT_PREDICATE}) || (${CODEX_COMMENT_PREDICATE})`;
+// MOR-4524: events on a closed or merged PR (label, edit, review, comment) evaluate
+// nothing; workflow_dispatch has neither object and stays open.
+const OPEN_PR_PREDICATE = "(github.event.pull_request.state || github.event.issue.state || 'open') == 'open'";
+const GATE_PREDICATE = `${OPEN_PR_PREDICATE} && (github.event_name == 'pull_request' || github.event_name == 'pull_request_review' || github.event_name == 'workflow_dispatch' || (${ISSUE_COMMENT_PREDICATE}) || (${CODEX_COMMENT_PREDICATE}))`;
 const V2_PREDICATE =
-  `github.event_name == 'pull_request_target' && (github.event.action != 'edited' || github.event.changes.base) || (${ISSUE_COMMENT_PREDICATE})`;
+  `${OPEN_PR_PREDICATE} && (github.event_name == 'pull_request_target' && (github.event.action != 'edited' || github.event.changes.base) || (${ISSUE_COMMENT_PREDICATE}))`;
 
 function directive(result, sha = HEAD) {
   return `Agent Review: ${result} ${sha}`;
