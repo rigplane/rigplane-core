@@ -85,7 +85,7 @@ import type { JourneyServerHandle } from '../journey/server-process';
 import { expectPanoramaSettled, watchPanoramaErrors } from '../journey/panorama-guards';
 import {
   checkAdvanceAndSettle,
-  classifyHeldKeyCatch,
+  heldKeyCatchError,
   requirePopulatedSeries,
 } from './held-key-analysis';
 
@@ -543,20 +543,12 @@ for (const zoom of ZOOMS) {
 
           expectPanoramaSettled(watch);
         } catch (error) {
-          // A skip is allowed ONLY for a genuine connect failure: the
-          // server never starts, or no scope frames arrive at all within
-          // the existing timeout. A setup expectation that fails after
-          // frames flow is a FAILURE with the original error, never a skip.
-          const verdict = classifyHeldKeyCatch({
+          // Server-start failure and zero frames are FAILURES (never a skip).
+          throw heldKeyCatchError({
             setupDone, serverReady, framesObserved: frames.length, error,
             row: `${zoom.name}, ${latency.name} delay=${latency.delay}s ` +
               `jitter=${latency.jitter}s, step ${stepHz}Hz`,
           });
-          if (verdict.disposition === 'skip') {
-            test.skip(true, verdict.reason);
-            return;
-          }
-          throw verdict.error;
         } finally {
           await server?.kill();
         }
@@ -693,15 +685,10 @@ test('IC-705 pinned 10m band preset wider than any native stays hatched', async 
 
     expectPanoramaSettled(watch);
   } catch (error) {
-    const verdict = classifyHeldKeyCatch({
+    throw heldKeyCatchError({
       setupDone, serverReady, framesObserved: frames.length, error,
       row: 'must-hatch (pinned 10m band view wider than the widest native)',
     });
-    if (verdict.disposition === 'skip') {
-      test.skip(true, verdict.reason);
-      return;
-    }
-    throw verdict.error;
   } finally {
     await server?.kill();
   }
@@ -1015,15 +1002,10 @@ test(`IC-705 external span narrowing adopts without a write and without hatch (c
 
     expectPanoramaSettled(watch);
   } catch (error) {
-    const verdict = classifyHeldKeyCatch({
+    throw heldKeyCatchError({
       setupDone, serverReady, framesObserved: frames.length, error,
       row: `owner-rule control ${order} (external span 25kHz under a 100kHz follow view)`,
     });
-    if (verdict.disposition === 'skip') {
-      test.skip(true, verdict.reason);
-      return;
-    }
-    throw verdict.error;
   } finally {
     await server?.kill();
   }
@@ -1234,15 +1216,10 @@ test('IC-705 zoomed follow adopts a front-panel narrowing without a write and wi
 
     expectPanoramaSettled(watch);
   } catch (error) {
-    const verdict = classifyHeldKeyCatch({
+    throw heldKeyCatchError({
       setupDone, serverReady, framesObserved: frames.length, error,
       row: 'zoomed adoption (external span 100kHz under a 400kHz follow view)',
     });
-    if (verdict.disposition === 'skip') {
-      test.skip(true, verdict.reason);
-      return;
-    }
-    throw verdict.error;
   } finally {
     await server?.kill();
   }
@@ -1389,15 +1366,10 @@ for (const { mode, port, stripSide } of [
 
       expectPanoramaSettled(watch);
     } catch (error) {
-      const verdict = classifyHeldKeyCatch({
+      throw heldKeyCatchError({
         setupDone, serverReady, framesObserved: frames.length, error,
         row: `Filter Center ${mode} idle CTR (offset coverage at equal width, no hatch)`,
       });
-      if (verdict.disposition === 'skip') {
-        test.skip(true, verdict.reason);
-        return;
-      }
-      throw verdict.error;
     } finally {
       await server?.kill();
     }
@@ -1654,15 +1626,10 @@ test('IC-705 FIX unzoomed held ArrowRight keeps the fixed window with a forward 
 
     expectPanoramaSettled(watch);
   } catch (error) {
-    const verdict = classifyHeldKeyCatch({
+    throw heldKeyCatchError({
       setupDone, serverReady, framesObserved: frames.length, error,
       row: 'FIX unzoomed (held ArrowRight inside the radio window)',
     });
-    if (verdict.disposition === 'skip') {
-      test.skip(true, verdict.reason);
-      return;
-    }
-    throw verdict.error;
   } finally {
     await server?.kill();
   }
@@ -1923,15 +1890,10 @@ test('IC-705 FIX zoomed crop follows the VFO centred, clamps at the window edge,
 
     expectPanoramaSettled(watch);
   } catch (error) {
-    const verdict = classifyHeldKeyCatch({
+    throw heldKeyCatchError({
       setupDone, serverReady, framesObserved: frames.length, error,
       row: 'FIX zoomed crop INTERIM (held ArrowRight, centred then clamped)',
     });
-    if (verdict.disposition === 'skip') {
-      test.skip(true, verdict.reason);
-      return;
-    }
-    throw verdict.error;
   } finally {
     await server?.kill();
   }

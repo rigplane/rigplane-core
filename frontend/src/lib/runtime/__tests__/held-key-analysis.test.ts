@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   checkAdvanceAndSettle,
-  classifyHeldKeyCatch,
+  heldKeyCatchError,
   requirePopulatedSeries,
   requireTransientSeamObserved,
 } from '../../../../tests/e2e/held-key/held-key-analysis';
@@ -71,36 +71,36 @@ describe('held-key analysis', () => {
       responseDelayS: 0, partialCount: 0, hatchedCount: 0,
     })).toBeUndefined();
   });
-  it('classifies a server-start failure as a skip carrying the reason', () => {
+  it('fails (never skips) on a server-start failure, keeping the cause', () => {
     const error = new Error('journey server on port 21500 exited with code 1 before it answered');
-    const verdict = classifyHeldKeyCatch({
+    const out = heldKeyCatchError({
       setupDone: false, serverReady: false, framesObserved: 0, error, row: 'zoomed, d0',
     });
-    expect(verdict.disposition).toBe('skip');
-    if (verdict.disposition !== 'skip') throw new Error('unreachable');
-    expect(verdict.reason).toContain('server');
-    expect(verdict.reason).toContain('exited with code 1');
+    expect(out).toBeInstanceOf(Error);
+    expect((out as Error).message).toContain('failed to start');
+    expect((out as Error).message).toContain('exited with code 1');
+    expect((out as Error).cause).toBe(error);
   });
-  it('classifies zero frames after start as a skip carrying the reason', () => {
+  it('fails (never skips) on zero scope frames, keeping the cause', () => {
     const error = new Error('expect.poll Timeout 30000ms exceeded');
-    const verdict = classifyHeldKeyCatch({
+    const out = heldKeyCatchError({
       setupDone: false, serverReady: true, framesObserved: 0, error, row: 'zoomed, d0',
     });
-    expect(verdict.disposition).toBe('skip');
-    if (verdict.disposition !== 'skip') throw new Error('unreachable');
-    expect(verdict.reason).toContain('zero');
-    expect(verdict.reason).toContain('Timeout');
+    expect(out).toBeInstanceOf(Error);
+    expect((out as Error).message).toContain('zero scope frames');
+    expect((out as Error).message).toContain('Timeout');
+    expect((out as Error).cause).toBe(error);
   });
-  it('fails with the original error when setup breaks after frames arrive', () => {
+  it('rethrows the original error when setup breaks after frames arrive', () => {
     const error = new Error('boom');
-    expect(classifyHeldKeyCatch({
+    expect(heldKeyCatchError({
       setupDone: false, serverReady: true, framesObserved: 12, error, row: 'zoomed, d0',
-    })).toEqual({ disposition: 'fail', error });
+    })).toBe(error);
   });
-  it('fails with the original error after setup completed', () => {
+  it('rethrows the original error after setup completed', () => {
     const error = new Error('boom');
-    expect(classifyHeldKeyCatch({
+    expect(heldKeyCatchError({
       setupDone: true, serverReady: true, framesObserved: 300, error, row: 'zoomed, d0',
-    })).toEqual({ disposition: 'fail', error });
+    })).toBe(error);
   });
 });

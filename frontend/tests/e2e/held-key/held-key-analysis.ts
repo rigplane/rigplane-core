@@ -6,8 +6,8 @@
  * centre at rAF rate while ArrowRight is held. `checkMonotonic` alone cannot
  * reject a run that measured nothing (empty or all-missing series) or a
  * viewport that never moved (frozen series): both are trivially monotonic.
- * These helpers close those gaps, and `classifyHeldKeyCatch` keeps the
- * spec's skip rules explicit and unit-pinned.
+ * These helpers close those gaps, and `heldKeyCatchError` makes server-start
+ * and zero-frame failures fail the run (never a skip), unit-pinned.
  */
 
 export interface HeldKeyPoint {
@@ -111,31 +111,27 @@ export interface HeldKeyCatchInput {
   row: string;
 }
 
-export type HeldKeyCatchVerdict =
-  | { disposition: 'skip'; reason: string }
-  | { disposition: 'fail'; error: unknown };
-
 /**
- * Skip only for a genuine connect failure (the server never started, or no
- * scope frames arrived at all). Anything else fails with the original error.
+ * Never a skip. A journey-server start failure or zero scope frames is a
+ * product or harness regression and must fail the acceptance run. Both cases
+ * are wrapped with row context (original error kept as `cause`); anything
+ * else rethrows the original error unchanged.
  */
-export function classifyHeldKeyCatch(input: HeldKeyCatchInput): HeldKeyCatchVerdict {
+export function heldKeyCatchError(input: HeldKeyCatchInput): unknown {
   const detail = input.error instanceof Error ? input.error.message.split('\n')[0] : String(input.error);
   if (!input.serverReady) {
-    return {
-      disposition: 'skip',
-      reason:
-        `MOR-4451 held-key acceptance (${input.row}): the journey server failed to ` +
-        `start on this tree (${detail})`,
-    };
+    return new Error(
+      `MOR-4451 held-key acceptance (${input.row}): the journey server failed to ` +
+      `start on this tree (${detail})`,
+      { cause: input.error },
+    );
   }
   if (!input.setupDone && input.framesObserved === 0) {
-    return {
-      disposition: 'skip',
-      reason:
-        `MOR-4451 held-key acceptance (${input.row}): zero scope frames arrived ` +
-        `within the timeout on this tree (${detail})`,
-    };
+    return new Error(
+      `MOR-4451 held-key acceptance (${input.row}): zero scope frames arrived ` +
+      `within the timeout on this tree (${detail})`,
+      { cause: input.error },
+    );
   }
-  return { disposition: 'fail', error: input.error };
+  return input.error;
 }
