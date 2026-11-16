@@ -72,7 +72,7 @@ WITNESSED = check_toml(
         'kind = "ask"\nquestion = "Did the meter move?"',
     ],
     ["power"],
-    'witness = ["info"]',
+    'witness = ["freq_a"]',
 )
 SECOND_POWER = """
 [[probe.checks]]
@@ -489,7 +489,8 @@ async def test_a_differing_restore_readback_is_not_called_put_back(tmp_path) -> 
     radio.hold("PC", "020")
 
     def drift() -> str:
-        radio.hold("PC", "050")  # the restore is accepted, the read-back differs
+        # the restore write of 020 is accepted but stores 050: the read-back differs
+        radio.hold("PC", "100", {"020": "050"})
         return ""
 
     person = Person(
@@ -516,7 +517,7 @@ async def test_missing_witness_data_never_claims_a_different_value(tmp_path) -> 
     radio = await cat_radio()
 
     def mute_witness() -> str:
-        radio.reject("IF")  # the witness read after the restore gets no data
+        radio.reject("FA")  # the witness read after the restore gets no data
         return ""
 
     person = Person(
@@ -532,7 +533,7 @@ async def test_missing_witness_data_never_claims_a_different_value(tmp_path) -> 
         await radio.stop()
     (record,) = saved(out).checks
     assert code == 4 and (record.restored, record.verified) == (True, False)
-    assert record.witness.after.get("info") is None
+    assert record.witness.after.get("freq_a") is None
     assert person.said(render.check_result_line(1, record))
     assert not person.said("different value") and not person.said("put back and")
 
@@ -567,6 +568,7 @@ async def test_two_checks_a_late_yes_does_not_authorize_the_second(
     monkeypatch.setattr(_probe, "ASK_TIMEOUT_S", 0.3)
     config = load(tmp_path, "ft991a", SPLIT + SECOND_POWER)
     radio = await cat_radio()
+    radio.hold("PC", "020")
     consents = iter(["y\n", "n\n"])
 
     def too_late() -> str:
