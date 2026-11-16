@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from collections import deque
 from collections.abc import Callable, Iterable, Iterator
@@ -185,6 +186,15 @@ class _PendingRequest:
 
 
 _Entry = _AckWaiter | _PendingRequest
+
+logger = logging.getLogger(__name__)
+
+
+def _log_sink(event: str, waiter: _AckWaiter, now: float) -> None:
+    """Debug record of how a sink left: ``civ.sink.answered|expired|retired``."""
+    key = waiter.refused_read or waiter.write_identity or waiter.response_key
+    sent = waiter.sent_monotonic if waiter.sent_monotonic is not None else now
+    logger.debug("%s key=%s age_s=%.3f", event, key, now - sent)
 
 
 @dataclass(slots=True)
@@ -556,6 +566,7 @@ class CivRequestTracker:
             if waiter.future is not None or now < sent + answer_window:
                 kept.append(waiter)
             else:
+                _log_sink("civ.sink.expired", waiter, now)
                 self.note_ack_unclaimed()
         expired = len(self._ack_waiters) - len(kept)
         self._ack_waiters = kept
@@ -745,6 +756,8 @@ class CivRequestTracker:
             and event.type is not CivEventType.NAK
         ):
             self._retire_sinks_older_than(winner.sent_order)
+        if isinstance(winner, _AckWaiter) and winner.future is None:
+            _log_sink("civ.sink.answered", winner, time.monotonic())
         if winner.future is not None:
             if not winner.future.done():
                 winner.future.set_result(frame)
@@ -781,12 +794,18 @@ class CivRequestTracker:
                 or waiter.sent_order >= order
             ):
                 kept.append(waiter)
-            elif waiter.response_key is None:
+                continue
+            _log_sink("civ.sink.retired", waiter, time.monotonic())
+            if waiter.response_key is None:
                 self.note_ack_unclaimed()
         self._ack_waiters = kept
 
     def resolve_write_echo(
-        self, frame: CivFrame, *, generation: int | None = None
+        self,
+        frame: CivFrame,
+        *,
+        generation: int | None = None,
+        ordered_ingress: bool = False,
     ) -> bool:
         """Claim a pending write with the radio's byte-identical echo.
 
@@ -798,7 +817,8 @@ class CivRequestTracker:
 
         Any pending read wins: when the frame matches a blocking
         response waiter or a sink carrying ``response_key``, it is not
-        an echo and this returns False.
+        an echo and this returns False. An echo names its write: it is
+        settled through ``_claim`` like any directed answer (MOR-4384).
         """
         if generation is not None and generation != self._generation:
             return False
@@ -818,29 +838,23 @@ class CivRequestTracker:
                 and self._matches(waiter.response_key, frame)
             ):
                 return False
-        for index, waiter in enumerate(self._ack_waiters):
-            if waiter.generation != self._generation or waiter.nak_only:
-                continue
-            identity = waiter.write_identity
-            if identity is None:
-                continue
-            if (
-                frame.command == identity.command
-                and frame.sub == identity.sub
-                and frame.receiver == identity.receiver
-                and frame.data == identity.data_prefix
-            ):
-                del self._ack_waiters[index]
-                if waiter.future is not None and not waiter.future.done():
-                    waiter.future.set_result(
-                        CivFrame(
-                            to_addr=frame.to_addr,
-                            from_addr=frame.from_addr,
-                            command=0xFB,
-                        )
-                    )
-                return True
-        return False
+        winner = self._oldest_sent(
+            w
+            for w in self._ack_waiters
+            if w.generation == self._generation
+            and not w.nak_only
+            and (identity := w.write_identity) is not None
+            and frame.command == identity.command
+            and frame.sub == identity.sub
+            and frame.receiver == identity.receiver
+            and frame.data == identity.data_prefix
+        )
+        if winner is None:
+            return False
+        ack = CivFrame(to_addr=frame.to_addr, from_addr=frame.from_addr, command=0xFB)
+        return self._claim(
+            winner, CivEvent(type=CivEventType.ACK, frame=ack), ordered_ingress
+        )
 
     def fail_all(self, exc: Exception) -> None:
         """Fail all pending requests and clear the tracker."""

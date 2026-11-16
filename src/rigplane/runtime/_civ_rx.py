@@ -2197,11 +2197,17 @@ class CivRuntime:
                 self._publish_scope_frame(scope_frame)
             return
 
+        self._host._civ_request_tracker.expire_ack_sinks(
+            answer_window=self._host._civ_get_timeout
+        )
+        transport = self._host._civ_transport
         if frame.command not in (
             0xFB,
             0xFA,
         ) and self._host._civ_request_tracker.resolve_write_echo(
-            frame, generation=generation
+            frame,
+            generation=generation,
+            ordered_ingress=transport is not None and transport.ordered_ingress is True,
         ):
             logger.debug(
                 "civ-rx: write confirmed by echo cmd=0x%02X sub=0x%02X",
@@ -2228,9 +2234,6 @@ class CivRuntime:
             )
         claimed: _CivDataTransaction | None = None
         transport = self._host._civ_transport
-        self._host._civ_request_tracker.expire_ack_sinks(
-            answer_window=self._host._civ_get_timeout
-        )
         if self._host._civ_request_tracker.resolve(
             event,
             generation=generation,

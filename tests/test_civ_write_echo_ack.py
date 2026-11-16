@@ -85,6 +85,7 @@ async def test_exact_echo_resolves_blocking_write_waiter_as_ack(
         consume_backlog=False,
         write_identity=read_identity_from_frame(write),
     )
+    tracker.mark_sent(1.0, futures=(future,))  # MOR-4384: on the wire
     assert isinstance(future, asyncio.Future)
 
     assert (
@@ -155,11 +156,13 @@ async def test_echo_of_second_write_resolves_only_second_future(
         consume_backlog=False,
         write_identity=read_identity_from_frame(first),
     )
+    tracker.mark_sent(1.0, futures=(first_future,))  # MOR-4384: on the wire
     second_future = tracker.register_ack(
         wait=True,
         consume_backlog=False,
         write_identity=read_identity_from_frame(second),
     )
+    tracker.mark_sent(2.0, futures=(second_future,))  # MOR-4384: on the wire
     assert isinstance(first_future, asyncio.Future)
     assert isinstance(second_future, asyncio.Future)
 
@@ -175,8 +178,11 @@ def test_echo_of_second_write_retires_only_second_sink(radio_addr: int) -> None:
     tracker = CivRequestTracker()
     first = _write(radio_addr, 0x14, 0x01, b"\x01\x00")
     second = _write(radio_addr, 0x14, 0x01, b"\x01\x10")
-    tracker.register_ack(wait=False, write_identity=read_identity_from_frame(first))
-    tracker.register_ack(wait=False, write_identity=read_identity_from_frame(second))
+    for sent_at, write in enumerate((first, second)):
+        sink = tracker.register_ack(
+            wait=False, write_identity=read_identity_from_frame(write)
+        )
+        tracker.mark_sent(float(sent_at), token=sink)  # MOR-4384: on the wire
     assert tracker.ack_sink_count == 2
 
     assert (
@@ -415,6 +421,7 @@ async def test_receiver_mismatch_is_not_an_echo(radio_addr: int) -> None:
         consume_backlog=False,
         write_identity=read_identity_from_frame(outgoing),
     )
+    tracker.mark_sent(1.0, futures=(future,))  # MOR-4384: on the wire
     assert isinstance(future, asyncio.Future)
 
     other_receiver = parse_civ_frame(
