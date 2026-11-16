@@ -5,9 +5,9 @@ or a write -- is stamped when its frame leaves this side, and an inbound
 answer goes to the oldest stamped open entry that can accept it: a data
 frame to the oldest entry whose key matches, an ``FB`` to the oldest write,
 an ``FA`` to the oldest entry of any kind. An entry leaves only when its own
-answer window (from its stamp) closes, or, on an ordered transport, when a
-newer entry claims a directed answer: then every older stamped entry is
-lost. Nothing drains, nothing is presumed lost on a budget.
+answer window (from its stamp) closes, when it is claimed, or -- a sink
+only -- on an ordered transport when a newer entry claims a directed
+answer. Nothing drains, nothing is presumed lost on a budget.
 
 T1 is the model property (no loss: every answer lands on its own request),
 T2 and T3 pin the one-loss cases with and without a keyed answer, T5 the
@@ -401,12 +401,12 @@ async def test_t2_a_directed_keyed_answer_retires_every_older_entry(
 
 
 @pytest.mark.asyncio
-async def test_t2_an_older_blocking_waiter_passed_by_an_answer_is_lost() -> None:
-    """T2: the rule covers blocking waiters too, not only sinks.
+async def test_t2_an_older_blocking_waiter_passed_by_an_answer_stays_open() -> None:
+    """T2: ordered evidence retires sinks only, never a blocking waiter.
 
-    A raw transaction's ACK waiter W went out before read sink R; R's
-    directed answer on an ordered transport proves W's answer was lost,
-    so W fails as lost instead of later taking somebody else's FB.
+    A raw transaction's ACK waiter W went out before read sink R. R's
+    directed answer on an ordered transport retires nothing blocking: W
+    stays open until its own window ends, and its late FB still settles it.
     """
     tracker = CivRequestTracker()
     waiter = tracker.register_ack(wait=True, consume_backlog=False)
@@ -422,7 +422,50 @@ async def test_t2_an_older_blocking_waiter_passed_by_an_answer_is_lost() -> None
         ordered_ingress=True,
     )
 
-    assert waiter.done() and isinstance(waiter.exception(), asyncio.TimeoutError)
+    assert not waiter.done()
+    late = _fb()
+    assert tracker.resolve(
+        CivEvent(type=CivEventType.ACK, frame=late), ordered_ingress=True
+    )
+    assert waiter.result() is late
+    assert tracker.pending_count == 0
+
+
+@pytest.mark.asyncio
+async def test_t2_a_newer_writes_fb_does_not_fail_an_older_blocking_read() -> None:
+    """T2 must-not: the shape of a raw transaction overtaking a held read.
+
+    Blocking read A (data and NAK waiters) went out first; a newer write
+    B's FB arrives first on an ordered link (A's frame was held on the way
+    to the radio). B takes its FB, A stays pending, and A's late data
+    settles A (``test_http_raw_transaction_competitor_keeps_bs_newer_fields``
+    at tracker level).
+    """
+    tracker = CivRequestTracker()
+    key = CivRequestKey(command=0x26, sub=None, data_prefix=b"\x01")
+    data = tracker.register_response(key)
+    nak = tracker.register_ack(
+        wait=True, consume_backlog=False, nak_only=True, paired_with=data
+    )
+    assert isinstance(nak, asyncio.Future)
+    tracker.mark_sent(10.0, futures=(data, nak))
+    write = tracker.register_ack(wait=True, consume_backlog=False)
+    assert isinstance(write, asyncio.Future)
+    tracker.mark_sent(11.0, futures=(write,))
+
+    fb = _fb()
+    assert tracker.resolve(
+        CivEvent(type=CivEventType.ACK, frame=fb), ordered_ingress=True
+    )
+    assert write.result() is fb
+    assert not data.done() and not nak.done()
+
+    late = _answer(0x26, None, b"\x01\x05\x01\x01")
+    assert tracker.resolve(
+        CivEvent(type=CivEventType.RESPONSE, frame=late), ordered_ingress=True
+    )
+    assert data.result() is late
+    assert not nak.done()
     assert tracker.pending_count == 0
 
 
