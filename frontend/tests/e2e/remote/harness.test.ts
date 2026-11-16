@@ -1,10 +1,11 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import hostWire from '../../../../tests/fixtures/host-api-v3-wire.json' with { type: 'json' };
 import type { TestCase, TestResult } from '@playwright/test/reporter';
 import NoSkipsReporter, { REQUIRED_MATRIX } from './no-skips-reporter';
 import {
   collectFirstTexts,
   foreignDestinations,
-  parseControllerGrant,
+  acquireControllerKey,
   parseRelayedAnswer,
   parseSimState,
   unkeyLatencyMs,
@@ -277,14 +278,46 @@ describe('producer contracts consumed by the harness', () => {
     expect(() => parseRelayedAnswer({ status: 'ok', sdp: 'v=0', type: 'offer' })).toThrow();
   });
 
-  it('accepts only a well-formed controller grant', () => {
-    const key = 'a'.repeat(64);
-    expect(parseControllerGrant({ controller_key: key, generation: 3 })).toEqual({
-      controller_key: key,
-      generation: 3,
+  describe('controller grant, consumed by the production ControllerClient', () => {
+    // The producer-built golden document (tests/fixtures/host-api-v3-wire.json,
+    // asserted equal to ControllerAuthority's reply by
+    // tests/test_host_api_v3_wire_contract.py), never a re-typed grant.
+    const grant = hostWire.controllerGrant;
+
+    /** A station answering GET (status) and POST (grant) of /api/v1/controller. */
+    function station(mode: 'local' | 'remote', body: unknown, code = 201) {
+      const fetcher = vi.fn(async (_url: string, init?: RequestInit) =>
+        init?.method === 'POST'
+          ? new Response(JSON.stringify(body), { status: code })
+          : new Response(JSON.stringify({ ...hostWire.controllerStatus, mode })),
+      );
+      vi.stubGlobal('fetch', fetcher);
+      return fetcher;
+    }
+
+    afterEach(() => vi.unstubAllGlobals());
+
+    it('yields the key of the producer grant, against the station origin', async () => {
+      for (const mode of ['local', 'remote'] as const) {
+        const fetcher = station(mode, grant);
+        expect(await acquireControllerKey()).toBe(grant.controller_key);
+        expect(fetcher.mock.calls.every(([url]) => url.startsWith('http://127.0.0.1:'))).toBe(true);
+      }
     });
-    expect(() => parseControllerGrant({ controller_key: 'short', generation: 3 })).toThrow();
-    expect(() => parseControllerGrant({ controller_key: key })).toThrow();
-    expect(() => parseControllerGrant({ error: 'controller_busy' })).toThrow();
+
+    it('rejects a grant missing any producer field, in both modes', async () => {
+      for (const mode of ['local', 'remote'] as const) {
+        for (const field of Object.keys(grant)) {
+          const { [field as keyof typeof grant]: _dropped, ...partial } = grant;
+          station(mode, partial);
+          await expect(acquireControllerKey()).rejects.toThrow();
+        }
+      }
+    });
+
+    it('rejects a refusal', async () => {
+      station('remote', { error: 'controller_busy' }, 409);
+      await expect(acquireControllerKey()).rejects.toThrow();
+    });
   });
 });
