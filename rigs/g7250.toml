@@ -155,6 +155,8 @@ polling_only = [
     "global.operator_controls.mic_gain",
     "global.operator_controls.monitor_gain",
     "global.tx_state.ptt",
+    # MOR-4454: SWR is read like the IC-7300's, TX only (policy below).
+    "global.meters.swr",
 ]
 stream_like_meters = [
     "receiver.main.meters.s_meter",
@@ -171,11 +173,15 @@ supported_controls = [
     "receiver.main.active.freq_mode.freq_hz",
     "receiver.main.active.freq_mode.mode",
 ]
-# 0x15 0x12 (SWR) and 0x15 0x13 (ALC) answer 00 00 at idle (LIVE G7250
-# 2026-11-09) — the getters exist but the scale is unconfirmed, so they
-# stay unknown, not polled.
+# 0x15 0x13 (ALC) answers 00 00 at idle (LIVE G7250 2026-11-09) and has no
+# getter in [commands], so it stays unknown, not polled.
+# 0x15 0x12 (SWR) is polled (MOR-4454): CI-V Reference Rev 1.2 Table 2-4
+# gives the scale ([meters.swr] below) and the getter answers LIVE.
+# If a keyed bench run shows the radio reports no usable SWR in TX, move
+# "global.meters.swr" back to `unknown`: the web state then carries null
+# with availability "undeclared", never a zero.
 unsupported = ["global.tx_state.power_on"]
-unknown = ["global.meters.swr", "global.meters.alc"]
+unknown = ["global.meters.alc"]
 
 [state_acquisition.field_policies."receiver.main.active.freq_mode.mode"]
 cadence_seconds = 1.0
@@ -218,6 +224,19 @@ cadence_seconds = 0.25
 freshness_ttl_seconds = 1.0
 adaptive_decay = false
 meter_coalescing_window_seconds = 0.25
+
+# MOR-4454: same TX-only gate as the IC-7300/IC-705 swr entry (the shared
+# tx_only + ptt available_when shape, tests/test_state_acquisition_policy.py):
+# zero serial cost in RX, and the last TX reading is discarded on dekey.
+[state_acquisition.field_policies."global.meters.swr"]
+reason = "available_when: absent while PTT reads false, so the last TX reading is discarded on dekey (MOR-4454)"
+cadence_seconds = 1.0
+freshness_ttl_seconds = 2.0
+adaptive_decay = false
+tx_only = true
+available_when = [
+    { field = "global.tx_state.ptt", equals = true },
+]
 
 # Xiegu G7250 CI-V Reference Rev 1.2 (2026-11-06), Table 2-1 / page 2:
 # LSB/USB/AM/CW/FM are [Real]. RTTY (04), CW-R (07) and RTTY-R (08) are
