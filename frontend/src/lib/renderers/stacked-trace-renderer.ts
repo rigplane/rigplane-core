@@ -454,8 +454,6 @@ export class StackedTraceRenderer {
     return changed;
   }
 
-  clear(): void { this.head = -1; this.count = 0; this.liveValid = false; this.pushed = false; }
-
   destroy(): void {
     if (this.destroyed) return;
     this.destroyed = true;
