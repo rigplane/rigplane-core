@@ -7,14 +7,16 @@
   import StackedTraceCanvas from '../StackedTraceCanvas.svelte';
   import { CanvasSurface } from '../../../lib/canvas/canvas-surface.svelte';
   import { defaultSpectrumOptions } from '../../../lib/renderers/spectrum-renderer';
+  import type { ScopeRenderTrace, TraceToken } from '../../../lib/runtime/scope-render-trace';
 
   interface Props {
     centerHz?: number;
-    onPush: (fn: (pixels: Uint8Array) => void) => void;
+    trace?: ScopeRenderTrace | null;
+    onPush: (fn: (pixels: Uint8Array, token?: TraceToken | null) => void) => void;
     onUnavailable: () => void;
   }
 
-  let { centerHz = 14_050_000, onPush, onUnavailable }: Props = $props();
+  let { centerHz = 14_050_000, trace = null, onPush, onUnavailable }: Props = $props();
 
   const surface = new CanvasSurface();
   let host = $state<HTMLDivElement>();
@@ -26,5 +28,5 @@
 </script>
 
 <div bind:this={host}>
-  <StackedTraceCanvas {options} colorScheme="classic" {surface} onRegisterPush={onPush} {onUnavailable} />
+  <StackedTraceCanvas {options} colorScheme="classic" {surface} {trace} onRegisterPush={onPush} {onUnavailable} />
 </div>
