@@ -45,6 +45,7 @@ from rigplane.runtime.managed_tx_config import ManagedTxTotConfigStore
 from rigplane.runtime.managed_tx_state import ManagedTxIntentKind
 from rigplane.testing.timing import await_until
 from rigplane.web import server as server_module
+from rigplane.web.api_channel import api_channel_golden_documents_from_json
 from rigplane.web.protocol import (
     AUDIO_CODEC_PCM16,
     AUDIO_HEADER_SIZE,
@@ -77,6 +78,11 @@ _SILENT_LOSS_BUDGET_S = (
 )
 
 _GATE_TIMEOUT_S = 20.0
+
+_GOLDEN_JSON = (
+    Path(__file__).resolve().parents[1]
+    / "frontend/src/lib/transport/api-channel-golden.json"
+)
 
 
 # ---------------------------------------------------------------------------
@@ -1128,19 +1134,43 @@ class _LossyAckPeer:
         self.received: dict[str, list[Any]] = {}
         self._dropped: set[str] = set()
 
-    async def connect(self, web: WebServer, labels: tuple[str, ...]) -> None:
-        """Open one ordered data channel per label, then negotiate."""
+    def open_channel(self, label: str, *, lossy: bool = False) -> Any:
+        """Create (or re-create) the channel for ``label`` on this peer.
+
+        ``lossy`` is the production scope/audio configuration (unordered,
+        ``maxRetransmits=0``). A re-created label starts with an empty
+        inbox, so nothing from the closed channel is mistaken for it.
+        """
+        kwargs: dict[str, Any] = (
+            {"ordered": False, "maxRetransmits": 0} if lossy else {"ordered": True}
+        )
+        channel = self._pc.createDataChannel(label, **kwargs)
+        self._channels[label] = channel
+        self.received[label] = []
+
+        @channel.on("message")  # type: ignore[misc, no-untyped-call]
+        def _on_message(message: Any, _label: str = label) -> None:
+            self.received[_label].append(message)
+
+        return channel
+
+    def close_channel(self, label: str) -> None:
+        """Close only this label's channel (the peer connection stays)."""
+        self._channels[label].close()
+
+    async def connect(
+        self,
+        web: WebServer,
+        labels: tuple[str, ...],
+        *,
+        lossy: tuple[str, ...] = (),
+    ) -> None:
+        """Open one data channel per label (``lossy`` ones unordered)."""
         from aiortc import RTCPeerConnection, RTCSessionDescription
 
         self._pc = RTCPeerConnection()
         for label in labels:
-            channel = self._pc.createDataChannel(label, ordered=True)
-            self._channels[label] = channel
-            self.received[label] = []
-
-            @channel.on("message")  # type: ignore[misc, no-untyped-call]
-            def _on_message(message: Any, _label: str = label) -> None:
-                self.received[_label].append(message)
+            self.open_channel(label, lossy=label in lossy)
 
         offer = await self._pc.createOffer()
         await self._pc.setLocalDescription(offer)
@@ -1298,4 +1328,117 @@ async def test_websocket_clients_receive_no_attach_ack(tmp_path: Path) -> None:
             with contextlib.suppress(Exception):
                 await _close_ws(writer)
     finally:
+        await _tear_down_stack(stack)
+
+
+def _attach_text(label: str, key: str) -> str:
+    """The golden ``attach_<label>`` document with a live controller key."""
+    docs = api_channel_golden_documents_from_json(
+        json.loads(_GOLDEN_JSON.read_text(encoding="utf-8"))
+    ).documents
+    return str(docs[f"attach_{label}"].text).replace("<SESSION-KEY>", key)
+
+
+def _golden_ack(label: str) -> dict[str, Any]:
+    docs = api_channel_golden_documents_from_json(
+        json.loads(_GOLDEN_JSON.read_text(encoding="utf-8"))
+    ).documents
+    return dict(json.loads(str(docs[f"attach_ack_{label}"].text)))
+
+
+def _registered(stack: _Stack, label: str) -> int:
+    """Channels of this label the server still tracks (its connection
+    registry: unregistered in ``serve_client_channel``'s finally, i.e.
+    only after the handler has ended and its own cleanup ran)."""
+    path = server_module._ATTACH_PATH_FOR_KIND[label]  # noqa: SLF001
+    registry = stack.web._conn_manager._connections  # noqa: SLF001
+    return sum(len(c) for (_, p), c in registry.items() if p == path)
+
+
+async def _frame(peer: _LossyAckPeer, label: str, want: str) -> dict[str, Any]:
+    """Next ``want``-typed text frame on ``label`` (others skipped)."""
+
+    def _next() -> dict[str, Any] | None:
+        while (frame := peer.take(label)) is not None:
+            if frame.get("type") == want:
+                return frame
+        return None
+
+    return await await_until(_next, timeout=10.0, description=f"{label} {want}")
+
+
+async def _control_alive(peer: _LossyAckPeer) -> None:
+    peer.send_text("control", json.dumps({"type": "controller_heartbeat"}))
+    await _frame(peer, "control", "controller_heartbeat")
+
+
+async def _attach_and_serve_label(
+    peer: _LossyAckPeer, label: str, key: str
+) -> None:
+    """Attach ``label`` with the golden frame; assert its ack and service."""
+    peer.send_text(label, _attach_text(label, key))
+    ack = await await_until(
+        lambda: peer.take(label), timeout=10.0, description=f"{label} ack"
+    )
+    assert ack == _golden_ack(label) == {"type": "attached", "v": 1, "channel": label}
+    if label == "scope":
+        peer.send_text("scope", json.dumps({"type": "ping"}))
+        assert await _frame(peer, "scope", "pong") == {"type": "pong"}
+    else:
+        peer.send_text("audio", json.dumps({"type": "audio_start", "direction": "tx"}))
+        await _frame(peer, "audio", "audio_tx_format")
+
+
+@_webrtc
+@pytest.mark.parametrize("wait_for_cleanup", [True, False])
+@pytest.mark.parametrize("label", ["scope", "audio"])
+async def test_closed_channel_label_can_be_recreated_on_the_same_peer(
+    tmp_path: Path, label: str, wait_for_cleanup: bool
+) -> None:
+    """Close the scope/audio channel from the client, re-create the SAME
+    label on the SAME peer connection (production lossy config), attach
+    it with the same key: a fresh ack and normal service, while control
+    stays healthy. With ``wait_for_cleanup`` the first channel's server
+    handler must have ended and unregistered (the connection registry
+    drops it) before the second is created; without it the second is
+    created straight after the close."""
+    stack = await _stand_up_stack(tmp_path, audio=True)
+    peer = _LossyAckPeer()
+    try:
+        await peer.connect(stack.web, ("control", label), lossy=(label,))
+        key = await _acquire_session(stack.web.port)
+        peer.send_text("control", _attach_text("control", key))
+        assert (await _frame(peer, "control", "hello"))["type"] == "hello"
+        await _attach_and_serve_label(peer, label, key)
+        assert _registered(stack, label) == 1
+        if label == "scope":
+            assert len(stack.web._scope_handlers) == 1  # noqa: SLF001
+
+        peer.close_channel(label)
+        if wait_for_cleanup:
+            await await_until(
+                lambda: _registered(stack, label) == 0 or None,
+                timeout=10.0,
+                description=f"server {label} handler ended and unregistered",
+            )
+            if label == "scope":
+                assert not stack.web._scope_handlers  # noqa: SLF001
+            await _control_alive(peer)
+
+        channel = peer.open_channel(label, lossy=True)
+        await await_until(
+            lambda: channel.readyState == "open" or None,
+            timeout=15.0,
+            description=f"re-created {label} channel open",
+        )
+        await _attach_and_serve_label(peer, label, key)
+        await _control_alive(peer)
+        await await_until(
+            lambda: _registered(stack, label) == 1 or None,
+            timeout=10.0,
+            description=f"only the second {label} channel registered",
+        )
+        assert peer._pc.connectionState == "connected"  # noqa: SLF001
+    finally:
+        await peer.close()
         await _tear_down_stack(stack)
