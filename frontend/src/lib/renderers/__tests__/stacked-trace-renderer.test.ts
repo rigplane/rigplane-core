@@ -306,6 +306,27 @@ describe('MOR-4463 stacked-trace peaks in time', () => {
     const maps = f.named('uniform2f').filter(call => call.args[0] === 'uMap').map(call => call.args.slice(1));
     expect(maps[1]).toEqual([1, -0.1]);
   });
+
+  // Each property that places or scales a frame separates rows on its own:
+  // a loud frame taken under the old value must not reach the committed row.
+  const covered = { ...options, coverage: { startHz: 14_000_000, endHz: 14_100_000 } };
+  it.each([
+    ['sample count', options, options, 4, 5],
+    ['source centre', covered, { ...covered, centerHz: 14_060_000 }, 4, 4],
+    // Half the span around a centre that keeps the first sample on its frequency.
+    ['source span', covered, { ...covered, sampleSpanHz: 50_000, centerHz: 14_025_000 }, 4, 4],
+    ['amplitude range', options, { ...options, sampleAmplitudeMax: 160 }, 4, 4],
+    ['coverage', covered, { ...covered, coverage: { startHz: 14_010_000, endHz: 14_090_000 } }, 4, 4],
+  ] as const)('starts the row peak anew when the %s changes', (_name, first, changed, length, firstLength) => {
+    const f = webglFixture(200, 100);
+    const r = new StackedTraceRenderer(f.canvas, options, settings);
+    r.pushRow(new Uint8Array(firstLength).fill(10), first, 0);
+    const seen = uploads(f, length);
+    r.pushRow(new Uint8Array(firstLength).fill(80), first, 30);
+    r.pushRow(new Uint8Array(length).fill(10), changed, 60);
+    r.pushRow(new Uint8Array(length).fill(20), changed, 120);
+    expect(seen[2]).toEqual({ slot: 1, data: new Array(length).fill(20) });
+  });
 });
 
 describe('MOR-4463 stacked-trace resources', () => {

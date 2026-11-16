@@ -17,7 +17,8 @@ type Fixture = ReturnType<typeof webglFixture>;
 
 let target: HTMLDivElement;
 let component: Record<string, unknown> | undefined;
-let frames: ((now: number) => void)[];
+let frames: Map<number, (now: number) => void>;
+let frameId: number;
 let gl: Fixture[];
 let chromePaints: number;
 let chromeLabels: string[];
@@ -25,7 +26,7 @@ let webglAvailable: boolean;
 let resize: (width: number, height: number) => void;
 
 function flushFrames(now: number): void {
-  const due = frames; frames = [];
+  const due = [...frames.values()]; frames.clear();
   for (const frame of due) frame(now);
 }
 
@@ -40,12 +41,12 @@ function mountView(props: { centerHz?: number; trace?: ScopeRenderTrace } = {}) 
 }
 
 beforeEach(() => {
-  frames = []; gl = []; chromePaints = 0; chromeLabels = []; webglAvailable = true;
+  frames = new Map(); frameId = 0; gl = []; chromePaints = 0; chromeLabels = []; webglAvailable = true;
   target = document.createElement('div');
   document.body.appendChild(target);
   Object.defineProperty(window, 'devicePixelRatio', { configurable: true, value: 1 });
-  vi.stubGlobal('requestAnimationFrame', (callback: (now: number) => void) => frames.push(callback));
-  vi.stubGlobal('cancelAnimationFrame', () => {});
+  vi.stubGlobal('requestAnimationFrame', (callback: (now: number) => void) => { frames.set(++frameId, callback); return frameId; });
+  vi.stubGlobal('cancelAnimationFrame', (id: number) => { frames.delete(id); });
   vi.stubGlobal('Path2D', RecordedPath);
   vi.stubGlobal('ResizeObserver', class {
     constructor(private readonly callback: ResizeObserverCallback) {}
@@ -109,9 +110,9 @@ describe('MOR-4463 StackedTraceCanvas', () => {
     flushSync();
     expect(view.root.getAttribute('data-history-rows')).toBe('1');
     // The stack keeps painting display frames while its rows glide, then rests.
-    expect(frames.length).toBe(1);
+    expect(frames.size).toBe(1);
     flushFrames(500);
-    expect(frames.length).toBe(0);
+    expect(frames.size).toBe(0);
   });
 
   it('paints the chrome of the flat renderer over the scene, for whatever view it is given', async () => {
@@ -121,9 +122,10 @@ describe('MOR-4463 StackedTraceCanvas', () => {
     const before = chromePaints;
     chromeLabels = [];
     await unmount(component!); component = undefined;
-    mountView({ centerHz: 14_060_000 });
+    mountView({ centerHz: 14_200_000 });
     expect(chromePaints).toBeGreaterThan(before);
-    expect(chromeLabels).toContain('14.060');
+    expect(chromeLabels).toContain('14.200');
+    expect(chromeLabels).not.toContain('14.050');
   });
 
   it('follows a resize: both canvases take the new backing size, chrome and scene repaint', () => {
@@ -222,12 +224,15 @@ describe('MOR-4463 StackedTraceCanvas', () => {
     const view = mountView();
     view.push(new Uint8Array(475).fill(20));
     flushFrames(16);
+    // The stack is gliding: one display frame is pending, and unmount cancels it.
+    expect(frames.size).toBe(1);
     await unmount(component!); component = undefined;
+    expect(frames.size).toBe(0);
     expect(gl[0].named('deleteProgram')).toHaveLength(2);
     expect(gl[0].named('deleteTexture').length).toBeGreaterThanOrEqual(1);
     gl[0].calls.length = 0;
     flushFrames(32);
     expect(gl[0].calls).toHaveLength(0);
-    expect(frames).toHaveLength(0);
+    expect(frames.size).toBe(0);
   });
 });
