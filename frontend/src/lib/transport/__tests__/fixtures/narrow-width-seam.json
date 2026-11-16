@@ -1,0 +1,78 @@
+{
+  "cases": {
+    "narrow": {
+      "readbackHz": 1500,
+      "reply": {
+        "admitted_width": 1500,
+        "receiver": 0,
+        "width": 1500
+      },
+      "request": {
+        "receiver": 0,
+        "width": 1500
+      },
+      "state": {
+        "filterWidth": 1500,
+        "mode": "USB",
+        "narrow": true
+      },
+      "wire": [
+        "MD02;",
+        "MD0;",
+        "NA01;",
+        "MD0;",
+        "NA0;",
+        "SH0000;",
+        "MD0;",
+        "SH0;",
+        "NA0;"
+      ]
+    },
+    "unknown": {
+      "reply": {
+        "receiver": 0,
+        "width": 1500
+      },
+      "request": {
+        "receiver": 0,
+        "width": 1500
+      },
+      "state": {
+        "filterWidth": 2600,
+        "mode": "USB",
+        "narrow": null
+      }
+    },
+    "wide": {
+      "readbackHz": 2600,
+      "reply": {
+        "admitted_width": 2600,
+        "receiver": 0,
+        "width": 2600
+      },
+      "request": {
+        "receiver": 0,
+        "width": 2600
+      },
+      "state": {
+        "filterWidth": 2600,
+        "mode": "USB",
+        "narrow": false
+      },
+      "wire": [
+        "MD02;",
+        "MD0;",
+        "NA00;",
+        "MD0;",
+        "NA0;",
+        "SH0001;",
+        "MD0;",
+        "SH0;",
+        "NA0;"
+      ]
+    }
+  },
+  "format": 1,
+  "profile": "tests/fixtures/rigs/yaesu_single_rx_fixture.toml",
+  "simProfile": "rigplane_testkit/sim/profiles/yaesu-single-rx-fixture.toml"
+}

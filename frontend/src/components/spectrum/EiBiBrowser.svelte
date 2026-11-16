@@ -3,6 +3,7 @@
     bindVfoTunerContext, getVfoHandlers,
   } from '$lib/runtime/adapters/panel-adapters';
   import { getAuthHeaders } from '$lib/auth';
+  import { apiFetch } from '$lib/api/api-fetch';
   import { activeTuneReceiver } from '../../components-v2/wiring/dual-receiver-strips';
 
   const vfoHandlers = getVfoHandlers();
@@ -75,7 +76,7 @@
 
   async function checkStatus() {
     try {
-      const resp = await fetch('/api/v1/eibi/status', { headers: getAuthHeaders() });
+      const resp = await apiFetch('/api/v1/eibi/status', { headers: getAuthHeaders() });
       if (resp.ok) {
         statusInfo = await resp.json();
         loaded = statusInfo.loaded;
@@ -86,7 +87,7 @@
   async function fetchEiBi() {
     fetching = true;
     try {
-      const resp = await fetch('/api/v1/eibi/fetch', {
+      const resp = await apiFetch('/api/v1/eibi/fetch', {
         method: 'POST',
         headers: { ...getAuthHeaders(), 'Content-Type': 'application/json' },
         body: JSON.stringify({ force: false }),
@@ -103,7 +104,7 @@
 
   async function loadBands() {
     try {
-      const resp = await fetch('/api/v1/eibi/bands', { headers: getAuthHeaders() });
+      const resp = await apiFetch('/api/v1/eibi/bands', { headers: getAuthHeaders() });
       if (resp.ok) {
         const data = await resp.json();
         availableBands = data.bands ?? [];
@@ -123,7 +124,7 @@
     params.set('limit', String(limit));
 
     try {
-      const resp = await fetch(`/api/v1/eibi/stations?${params}`, {
+      const resp = await apiFetch(`/api/v1/eibi/stations?${params}`, {
         headers: getAuthHeaders(),
       });
       if (resp.ok) {

@@ -24,9 +24,9 @@ before its reply.
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
+from rigplane_testkit.fixture_rows import read_civ_rows
 from rigplane_testkit.icom import MockIcomRadio
 from rigplane_testkit.icom.replay import RecordedAnswerTable
 from rigplane_testkit.serial import CivSerialFake
@@ -39,11 +39,7 @@ MODEL_ID = b"\xa4"
 
 def _answer_table(transport: str) -> RecordedAnswerTable:
     """The recorded answer table of one civ_pairs transport."""
-    rows = [
-        json.loads(line)
-        for line in (FIXTURES / "civ_pairs.jsonl").read_text().splitlines()
-        if line
-    ]
+    rows = read_civ_rows(FIXTURES / "civ_pairs.jsonl")
     return RecordedAnswerTable.from_civ_pairs(rows, transport)
 
 

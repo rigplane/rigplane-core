@@ -6,9 +6,9 @@ import asyncio
 import logging
 import math
 import time
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, ClassVar, cast
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, TypedDict, cast
 
 from ..._bounded_queue import BoundedQueue
 from ...commands._frame import build_civ_frame
@@ -219,7 +219,7 @@ from ...radio_protocol import (
     PowerControlCapable,
 )
 
-__all__ = ["ControlHandler"]
+__all__ = ["ControlHello", "ControlHandler", "control_hello_message"]
 
 logger = logging.getLogger(__name__)
 # Intent param carrying the TX owner `_enqueue_command` checked (MOR-3537).
@@ -231,6 +231,50 @@ _PTT_HOLDER_CONFLICT = "another client is transmitting"
 _QUEUE_ADMISSION_REJECTED = "positive TX admission was rejected"
 # Refusal wording when a rejected PTT receipt proves a release is owed (MOR-3810).
 _PTT_RELEASING = "the previous transmission is still being released"
+
+
+class ControlHello(TypedDict):
+    """The control-channel ``hello`` (server -> client) as ONE typed
+    producer output: the handler sends it, and the api-channel payload
+    contract and golden documents commit the same keys in the same
+    order (key order is the wire order —
+    :func:`control_hello_message` builds it, nothing else)."""
+
+    type: Literal["hello"]
+    proto: int
+    server: str
+    version: str
+    radio: str
+    connected: bool
+    radio_ready: bool
+    capabilities: list[str]
+
+
+def control_hello_message(
+    *,
+    version: str,
+    radio: str,
+    connected: bool,
+    radio_ready: bool,
+    capabilities: Iterable[str],
+) -> ControlHello:
+    """Build the control-channel ``hello`` payload (MOR-4489).
+
+    The first server text frame on the control channel: it proves the
+    attach (the control channel has no separate ack). ``capabilities``
+    is the active radio's projected tag set; the builder sorts it, so
+    the wire list is stable.
+    """
+    return ControlHello(
+        type="hello",
+        proto=1,
+        server="rigplane",
+        version=version,
+        radio=radio,
+        connected=connected,
+        radio_ready=radio_ready,
+        capabilities=sorted(capabilities),
+    )
 
 
 def _ptt_refusal_names_holder(submission: object, owner: str | None) -> bool:
@@ -547,12 +591,43 @@ def _observed_receiver_mode(server: Any, receiver: int) -> str | None:
     return None
 
 
+def _observed_receiver_narrow(server: Any, receiver: int) -> bool | None:
+    """The state store's fresh observed narrow flag for *receiver*, if any.
+
+    Sibling of :func:`_observed_receiver_mode`: snapshots key the primary
+    receiver under "0" (legacy Icom poller) or "main" (Yaesu CAT, rigctld),
+    and the same receiver-id order is probed. A stale or absent narrow
+    observation reads as unknown (``None``) rather than as wide — the
+    caller keeps today's wide-table mapping then, exactly as before narrow
+    data existed. The narrow flag lives on a receiver-scoped path
+    (``FieldPath.receiver``, no VFO slot — the same path the command
+    service resolves for ``set_narrow``): a slotted
+    ``FieldPath.active`` lookup is invalid here outside ``freq_mode``.
+    """
+    state_store = getattr(server, "command_state_store", None)
+    if not isinstance(state_store, StateStore):
+        return None
+    snapshot = state_store.snapshot()
+    receiver_ids = primary_receiver_snapshot_ids() if receiver == 0 else ("1", "sub")
+    for receiver_id in receiver_ids:
+        try:
+            field = snapshot.field(
+                FieldPath.receiver(receiver_id, "operator_toggles", "narrow")
+            )
+        except KeyError:
+            continue
+        if field.freshness is FreshnessState.FRESH and isinstance(field.value, bool):
+            return field.value
+    return None
+
+
 def _with_admitted_width(
     intent: CommandIntent,
     details: dict[str, Any],
     *,
     profile: RadioProfile | None,
     mode: str | None,
+    narrow: bool | None = None,
 ) -> dict[str, Any]:
     """Attach the profile-admitted width to a ``set_filter_width`` response.
 
@@ -562,6 +637,15 @@ def _with_admitted_width(
     table, non-table profile) leaves *details* untouched; the client then
     confirms on plain equality with the requested width. Pinned by
     tests/test_filter_width_admitted_width.py.
+
+    When the narrow state is freshly observed (MOR-4428/MOR-4433), the hint
+    maps through the mode's narrow table — the same table the backend
+    write uses — so NARROW-on writes confirm exactly. Freshly observed
+    off keeps today's wide-table mapping. When the narrow state is unknown
+    or stale (MOR-4434) and the resolved rule declares a narrow variant,
+    neither table is trustworthy, so the hint is omitted and the client
+    confirms on plain equality with the requested width. Rules without a
+    narrow variant keep today's hints byte-for-byte.
     """
     if intent.name != "set_filter_width":
         return details
@@ -573,7 +657,11 @@ def _with_admitted_width(
         or "admitted_width" in details
     ):
         return details
-    admitted = profile.admitted_filter_width(mode, width)
+    if narrow is None:
+        rule = profile.resolve_filter_rule(mode)
+        if rule is not None and rule.narrow_table:
+            return details
+    admitted = profile.admitted_filter_width(mode, width, narrow=narrow is True)
     if not isinstance(admitted, int):
         return details
     return {**details, "admitted_width": admitted}
@@ -661,6 +749,31 @@ def is_typed_transmission_end_command(name: str, params: Mapping[str, Any]) -> b
         name == "ptt_off"
         or (name == "ptt" and params.get("state") is False)
         or (name == "send_civ" and _send_civ_params_end_transmission(params))
+    )
+
+
+def starts_transmission(name: str, params: Mapping[str, Any]) -> bool:
+    """True when a typed command can key the transmitter, never just end one.
+
+    The single shared classifier for "this command starts TX": a command
+    that only ends a transmission (see
+    :func:`is_typed_transmission_end_command`) never starts one; a raw
+    ``send_civ`` or ``transmit_on`` is transmit-capable (the remote control
+    seat refuses both); otherwise the managed-TX admission set — CW text,
+    VOX enable, tuner start, break-in enable. The control seat uses it for
+    its remote refusal, and the ``api`` data channel uses it (via
+    :func:`rigplane.web.web_routing.api_channel_tx_refusal`) to refuse
+    TX-capable REST before dispatch.
+    """
+    if is_typed_transmission_end_command(name, params):
+        return False
+    if name in ("send_civ", "transmit_on"):
+        return True
+    return (
+        name == "send_cw_text"
+        or (name == "set_vox" and params.get("on", params.get("value")) is not False)
+        or (name == "set_tuner_status" and params.get("value") == 2)
+        or (name == "set_break_in" and params.get("mode") != 0)
     )
 
 
@@ -1134,17 +1247,13 @@ class ControlHandler:
         raw_connected = (
             getattr(self._radio, "connected", False) if self._radio else False
         )
-        caps = sorted(self._capabilities())
-        msg = {
-            "type": "hello",
-            "proto": 1,
-            "server": "rigplane",
-            "version": self._version,
-            "radio": self._radio_model,
-            "connected": raw_connected if isinstance(raw_connected, bool) else False,
-            "radio_ready": self._radio_ready(),
-            "capabilities": caps,
-        }
+        msg = control_hello_message(
+            version=self._version,
+            radio=self._radio_model,
+            connected=raw_connected if isinstance(raw_connected, bool) else False,
+            radio_ready=self._radio_ready(),
+            capabilities=self._capabilities(),
+        )
         await self._ws.send_text(encode_json(msg))
 
     def _capabilities(self) -> set[str]:
@@ -1757,6 +1866,10 @@ class ControlHandler:
             return None
         ticket = controller.capture()
         # Break-in arms CW keying (MOR-3537), so enabling it is a TX start.
+        # The remote refusal uses the shared classifier (identical verdict:
+        # none of the admission names below ever ends a transmission, and
+        # a transmission end returns above); the managed-TX admission below
+        # keeps its own four-case set — send_civ/transmit_on never enter it.
         starts_tx = (
             name == "send_cw_text"
             or (
@@ -1765,7 +1878,7 @@ class ControlHandler:
             or (name == "set_tuner_status" and params.get("value") == 2)
             or (name == "set_break_in" and params.get("mode") != 0)
         )
-        if ticket.remote and (name in {"send_civ", "transmit_on"} or starts_tx):
+        if ticket.remote and starts_transmission(name, params):
             raise ControllerError("controller_tx_unsupported")
         # MOR-3534: while one owner holds the transmitter, CW text, VOX,
         # TUNE and break-in from any other owner are refused like the remote
@@ -2082,13 +2195,13 @@ class ControlHandler:
         )
         details = _with_admitted_level(intent, result)
         if intent.name == "set_filter_width":
+            receiver = int(params.get("receiver", 0))
             details = _with_admitted_width(
                 intent,
                 details,
                 profile=getattr(self._radio, "profile", None),
-                mode=_observed_receiver_mode(
-                    self._server, int(params.get("receiver", 0))
-                ),
+                mode=_observed_receiver_mode(self._server, receiver),
+                narrow=_observed_receiver_narrow(self._server, receiver),
             )
         return CommandExecutionResult(details=details)
 
@@ -2813,24 +2926,10 @@ class ControlHandler:
                         profile = None
                 declared = False
                 if isinstance(profile, RadioProfile):
-                    if profile.vfo_scheme == "ab":
-                        declared = (
-                            profile.swap_ab_code
-                            if name == "vfo_swap"
-                            else profile.equal_ab_code
-                        ) is not None
-                    elif profile.vfo_scheme == "main_sub":
-                        declared = (
-                            profile.swap_main_sub_code
-                            if name == "vfo_swap"
-                            else profile.equal_main_sub_code
-                        ) is not None
-                    elif profile.vfo_scheme == "ab_shared":
-                        # Yaesu dual-RX CAT rigs (FTX-1, MOR-2531) declare
-                        # the MAIN↔SUB primitives as native CAT commands
-                        # (vfo_swap = SV;, vfo_equalize = AB;, OM 2508-C),
-                        # not CI-V opcode bytes.
-                        declared = profile.supports_command(name)
+                    # One shared rule with capability projection
+                    # (``web/runtime_helpers.py:
+                    # projected_vfo_capability_tags``).
+                    declared = profile.supports_vfo_command(name)
                 if not declared:
                     raise ValueError(
                         f"command {name!r} is not supported by active profile"

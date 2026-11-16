@@ -18,6 +18,7 @@
     type RemoteSegment,
   } from './band-plan-logic';
   import { getAuthHeaders } from '$lib/auth';
+  import { apiFetch } from '$lib/api/api-fetch';
 
   interface Props {
     startFreq: number;
@@ -113,7 +114,7 @@
         const margin = Math.round(span * 0.5);
         const fetchStart = Math.max(0, start - margin);
         const fetchEnd = end + margin;
-        const resp = await fetch(
+        const resp = await apiFetch(
           `/api/v1/band-plan/segments?start=${fetchStart}&end=${fetchEnd}`,
           { headers: getAuthHeaders() },
         );

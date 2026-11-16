@@ -76,6 +76,30 @@ export function isFieldAvailable(
 }
 
 /**
+ * Whether the field carries a freshly observed reading (MOR-4434).
+ *
+ * The narrow-state table selection must not ride a stale reading: the
+ * server already treats a stale narrow observation as unknown
+ * (`_observed_receiver_narrow` in `src/rigplane/web/handlers/control.py`
+ * returns `None` unless freshness is FRESH), so a frontend that validated
+ * against a held stale value would disagree with the backend's admission
+ * hint. Same fresh-only predicate `panel-commands.ts`:
+ * `observedAvailableField` already uses for dispatch identity — this is
+ * its neutral, cross-layer home (`props`, `adapters` and `commands`
+ * all read narrow through it; none may import the command layer).
+ * Display facts keep the R29 stale-showing `isFieldAvailable` gate;
+ * only table selection uses this one.
+ */
+export function isFieldFreshlyObserved(
+  state: ServerState | null,
+  publicPath: string,
+): boolean {
+  const status = getFieldStatus(state, publicPath);
+  return status?.observed === true && status.freshness === 'fresh'
+    && status.availability === 'available';
+}
+
+/**
  * Whether resolved availability is `available` or `stale`.
  *
  * `missing`, `unavailable` and `undeclared` all resolve to false. This

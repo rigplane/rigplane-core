@@ -1,0 +1,15 @@
+# TEST FIXTURE — not a product profile; derived from the FT-991A CAT manual facts above; the product consumer is the future FT-991A profile ticket
+schema = "rigplane-sim-profile/1"
+
+[sim]
+id = "yaesu-single-rx-fixture"
+radio = "Yaesu single RX fixture"
+fidelity = "C"
+gaps = ["Synthetic fixture: no hardware recording; split, frequency, swap, directional copy, narrow-state (NA) and raw filter-width-code (SH) verbs only."]
+
+[transport.yaesu_cat]
+baud = 38400
+
+[initial]
+frequency_hz = 14074000
+mode = "USB"

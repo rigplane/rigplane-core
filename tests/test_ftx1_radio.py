@@ -1597,10 +1597,8 @@ def test_transceiver_count_ftx1(radio):
 
 
 def test_transceiver_count_non_ftx1(radio):
-    """Non-FTX-1 Yaesu CAT rigs default to a single transceiver."""
-    # FTX-1 is currently the only Yaesu CAT profile in-tree; simulate a
-    # non-FTX-1 rig by swapping the loaded config id.
-    object.__setattr__(radio._config, "id", "yaesu_other")
+    """The transceiver count comes from the profile field, not the model id."""
+    object.__setattr__(radio._config, "transceiver_count", 1)
     assert radio.transceiver_count == 1
 
 
@@ -1630,6 +1628,16 @@ async def test_set_tx_source_rejects_out_of_range(connected_radio):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("xcvr", [-1, 2, 3])
+async def test_set_tx_source_rejects_outside_the_declared_bank(connected_radio, xcvr):
+    """set_tx_source rejects indices outside the declared bank (count=2)."""
+    connected_radio._transport.write = AsyncMock()
+    with pytest.raises(ValueError, match="transceiver_count=2"):
+        await connected_radio.set_tx_source(xcvr)
+    connected_radio._transport.write.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_get_tx_source_sub(connected_radio):
     """get_tx_source parses FT1; and returns 1 (SUB-side active)."""
     connected_radio._transport.query = AsyncMock(return_value="FT1")
@@ -1642,6 +1650,39 @@ async def test_get_tx_source_main(connected_radio):
     """get_tx_source parses FT0; and returns 0 (MAIN-side active)."""
     connected_radio._transport.query = AsyncMock(return_value="FT0")
     assert await connected_radio.get_tx_source() == 0
+
+
+@pytest.mark.asyncio
+async def test_set_tx_func_writes_identity_ft_bytes(connected_radio):
+    """MOR-4433 PR1: FTX-1 set_tx_func writes FT0;/FT1; (identity map)."""
+    connected_radio._transport.write = AsyncMock()
+    await connected_radio.set_tx_func(0)
+    await connected_radio.set_tx_func(1)
+    assert [c.args[0] for c in connected_radio._transport.write.call_args_list] == [
+        "FT0;",
+        "FT1;",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_get_tx_func_parses_ft_answers(connected_radio):
+    """MOR-4433 PR1: FTX-1 get_tx_func parses FT0;/FT1; to 0/1."""
+    connected_radio._transport.query = AsyncMock(side_effect=["FT1", "FT0"])
+    assert await connected_radio.get_tx_func() == 1
+    assert await connected_radio.get_tx_func() == 0
+
+
+def test_ftx1_tx_func_map_names_main_sub_without_slots(radio):
+    """MOR-4433 PR1: the FTX-1 declares its FT answer map in the profile."""
+    from rigplane.profiles.rig_loader import TxFuncTarget
+
+    assert radio._config.tx_func is not None
+    assert radio._config.tx_func.read_map == {
+        "0": TxFuncTarget(receiver="MAIN", slot=None),
+        "1": TxFuncTarget(receiver="SUB", slot=None),
+    }
+    assert radio._config.tx_func.write_map == {0: "0", 1: "1"}
+    assert radio.profile.tx_func == radio._config.tx_func
 
 
 # ---------------------------------------------------------------------------
@@ -4108,10 +4149,12 @@ async def test_set_get_vfo_slot_roundtrip(single_rx_radio):
 
 
 @pytest.mark.asyncio
-async def test_swap_vfo_ab_raises_on_single_rx(single_rx_radio):
-    """Yaesu CAT has no A↔B swap primitive even on single-RX rigs."""
-    with pytest.raises(NotImplementedError, match="no symmetric"):
-        await single_rx_radio.swap_vfo_ab()
+async def test_swap_vfo_ab_writes_profile_command_on_single_rx(single_rx_radio):
+    """A single-RX ``ab`` profile that declares ``vfo_swap`` swaps A/B through
+    it (data-driven, MOR-4427); the profile-less case raises, see FTX-1."""
+    single_rx_radio._transport.write = AsyncMock()
+    await single_rx_radio.swap_vfo_ab()
+    single_rx_radio._transport.write.assert_called_once_with("SV;")
 
 
 @pytest.mark.asyncio

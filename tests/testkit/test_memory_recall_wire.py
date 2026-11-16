@@ -38,6 +38,7 @@ from rigplane.core.state_pipeline_contracts import (
 from rigplane.web.radio_poller import RadioPoller
 from rigplane.web.server import WebConfig, WebServer
 from rigplane_testkit.serial import CivSerialFake
+from support.command_consumer import run_command_consumer
 from test_web_split_writes import _request
 
 _DEVICE = "civ-serial-fake"  # synthetic node name; no real path is opened
@@ -105,14 +106,11 @@ async def _station(
     web._server = await asyncio.start_server(web._accept_client, "127.0.0.1", 0)
     entries: list[Any] = []
 
-    async def consume() -> None:
-        await web.command_queue.wait(2)
-        entry = web.command_queue.take_entry()
-        assert entry is not None
-        entries.append(entry)
-        await poller._execute_queued_entry(entry)
-
-    consumer = asyncio.create_task(consume())
+    consumer = asyncio.create_task(
+        run_command_consumer(
+            web.command_queue, poller._execute_queued_entry, entries=entries, count=1
+        )
+    )
     try:
         yield web, radio, fake, entries, consumer
     finally:

@@ -213,6 +213,62 @@ test('terminal topology refuses skipped success and injected or incomplete jobs'
   assert.equal(observer.evaluateJobTopology(run, valid, {...routes, docs: true}, false).code, 'route_mismatch');
 });
 
+test('draft legacy quick (classify only, everything else skipped) is observed as pending, not skipped-substantive', () => {
+  // Runs 43615827602 / 43617025915: draft PRs #4583 / #4584 failed the observer with skipped_substantive.
+  const run = {conclusion: 'success', run_attempt: 1};
+  const routes = {core: true, frontend: true, ci: false, docs: false};
+  const light = ['self-hosted', 'Linux', 'ARM64', 'light'];
+  const frontendPool = ['self-hosted', 'Linux', 'ARM64', 'build'];
+  const pythonPool = ['self-hosted', 'Linux', 'X64', 'build'];
+  const skipped = (name, labels) => ({name, status: 'completed', conclusion: 'skipped', run_attempt: 1, runner_name: null, labels});
+  const draftJobs = [
+    {name: 'classify', status: 'completed', conclusion: 'success', run_attempt: 1, runner_name: 'mm-light-core-1', labels: light},
+    skipped('quick-frontend', frontendPool),
+    skipped('quick-frontend-e2e', frontendPool),
+    skipped('quick-python', pythonPool),
+    skipped('quick-python-tests', pythonPool),
+    skipped('quick', light),
+  ];
+  assert.deepEqual(observer.evaluateJobTopology(run, draftJobs, routes, true), {ok: false, pending: true, code: 'draft', routeConcordance: false});
+  // The same shape on a ready pull request is still a skipped-substantive failure.
+  assert.equal(observer.evaluateJobTopology(run, draftJobs, routes, false).code, 'skipped_substantive');
+  // A draft run that did not succeed, or whose classify did not succeed, is not the draft shape.
+  assert.notEqual(observer.evaluateJobTopology({...run, conclusion: 'failure'}, draftJobs, routes, true).code, 'draft');
+  const badClassify = structuredClone(draftJobs); badClassify[0].conclusion = 'failure';
+  assert.notEqual(observer.evaluateJobTopology(run, badClassify, routes, true).code, 'draft');
+  // A draft run with any worker that actually ran is not the draft shape either.
+  const ranWorker = structuredClone(draftJobs); ranWorker[3] = {...ranWorker[3], conclusion: 'success', runner_name: 'nsu-build-core-1'};
+  assert.notEqual(observer.evaluateJobTopology(run, ranWorker, routes, true).code, 'draft');
+});
+
+test('a run whose own pull request closed (merged) before publication skips green without posting', async () => {
+  // Run 43612813657: #4582 merged by the queue between the producer and the publisher -> ambiguous_pull failure.
+  const base = 'b'.repeat(40); const head = 'a'.repeat(40);
+  const binding = {pullNumber: 41, headSha: head, baseSha: base};
+  const closed = {...canonicalPull(41, head, base), state: 'closed'};
+  await assert.rejects(
+    observer.assertUniqueCurrentPullMatchesRun({paginate: async () => [closed]}, observer.REPOSITORY.owner, observer.REPOSITORY.repo, binding),
+    (error) => error.code === 'closed_pull' && error.publish === false,
+  );
+  // A closed pull request with another number does not excuse a missing open one.
+  await assert.rejects(
+    observer.assertUniqueCurrentPullMatchesRun({paginate: async () => [{...closed, number: 42}]}, observer.REPOSITORY.owner, observer.REPOSITORY.repo, binding),
+    (error) => error.code === 'ambiguous_pull' && error.publish === true,
+  );
+  assert.throws(() => observer.bindPull(closed, base, head), (error) => error.code === 'closed_pull' && error.publish === false);
+  // A closed pull request against another branch still fails closed.
+  assert.throws(() => observer.bindPull({...closed, base: {...closed.base, ref: 'release'}}, base, head), (error) => error.code === 'invalid_binding');
+  const result = {kind: 'lifecycle', code: 'admitted', state: 'pending', publish: true, targetSha: head, pullNumber: 41, baseSha: base, headSha: head, runId: null, runAttempt: null, jobTopology: null, metrics: {false_success_publications: 0}};
+  const github = {request: async (route) => {
+    if (route.startsWith('POST ')) throw new Error('must not post');
+    if (route.includes('/branches/')) return {data: {commit: {sha: base}}};
+    if (route.includes('/pulls/')) return {data: closed};
+    throw new Error(`unexpected route ${route}`);
+  }};
+  const rebound = await observer.rebindForPublication({github, result});
+  assert.deepEqual([rebound.code, rebound.state, rebound.publish], ['closed_pull', 'success', false]);
+});
+
 test('legacy attempt jobs consume the normalized pagination shape', async () => {
   const light = ['self-hosted', 'Linux', 'ARM64', 'light'];
   const classify = {name: 'classify', status: 'completed', conclusion: 'success', run_attempt: 1, runner_name: 'mm-light-core-1', labels: light};

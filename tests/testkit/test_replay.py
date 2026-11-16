@@ -22,6 +22,7 @@ from rigplane_testkit.icom import (
 )
 from rigplane_testkit.icom.replay import (
     RecordedAnswerTable,
+    RecordedCivAnswer,
     extract_civ_frame,
     request_key,
 )
@@ -387,3 +388,49 @@ class TestRecordedAnswerTable:
             _pair_rows([(_READ, _READ_REPLY)], transport="lan", echo=True), "lan"
         )
         assert table.answer(bytes.fromhex(_READ)) == bytes.fromhex(_READ_REPLY)
+
+
+class TestRecordedSilence:
+    """A request with no reply row is a recorded fact (silence), not a miss."""
+
+    def test_request_without_a_reply_row_is_recorded_silence(self) -> None:
+        table = RecordedAnswerTable.from_civ_pairs(
+            _pair_rows([(_READ, _READ_REPLY), (_UNKNOWN_REQUEST, None)]), "usb"
+        )
+        silent = table.lookup(bytes.fromhex(_UNKNOWN_REQUEST))
+        assert silent == RecordedCivAnswer("silence", None)
+        assert table.answer(bytes.fromhex(_UNKNOWN_REQUEST)) is None
+
+    def test_an_unseen_body_is_a_miss_not_silence(self) -> None:
+        table = RecordedAnswerTable.from_civ_pairs(
+            _pair_rows([(_READ, _READ_REPLY), (_UNKNOWN_REQUEST, None)]), "usb"
+        )
+        assert table.lookup(bytes.fromhex(_NAKED_REQUEST)) is None
+
+    def test_a_recorded_reply_is_a_reply_result(self) -> None:
+        table = RecordedAnswerTable.from_civ_pairs(
+            _pair_rows([(_READ, _READ_REPLY)]), "usb"
+        )
+        assert table.lookup(bytes.fromhex(_READ)) == RecordedCivAnswer(
+            "reply", bytes.fromhex(_READ_REPLY)
+        )
+
+    def test_silence_is_per_body_not_per_address(self) -> None:
+        table = RecordedAnswerTable.from_civ_pairs(
+            _pair_rows([(_UNKNOWN_REQUEST, None)]), "usb"
+        )
+        other_address = bytes.fromhex("fefe94e00700fd")
+        assert table.lookup(other_address) == RecordedCivAnswer("silence", None)
+
+    def test_a_reply_recorded_for_the_same_body_wins_over_silence(self) -> None:
+        table = RecordedAnswerTable.from_civ_pairs(
+            _pair_rows([(_READ, None), (_READ, _READ_REPLY)]), "usb"
+        )
+        assert table.lookup(bytes.fromhex(_READ)) == RecordedCivAnswer(
+            "reply", bytes.fromhex(_READ_REPLY)
+        )
+
+    def test_silence_follows_the_selected_transport_only(self) -> None:
+        rows = _pair_rows([(_UNKNOWN_REQUEST, None)], transport="lan")
+        table = RecordedAnswerTable.from_civ_pairs(rows, "usb")
+        assert table.lookup(bytes.fromhex(_UNKNOWN_REQUEST)) is None

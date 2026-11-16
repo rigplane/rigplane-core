@@ -391,6 +391,7 @@ class FrontendRuntime {
       epoch: () => controllerClient.epoch,
       current: (epoch) => controllerClient.active && controllerClient.current(epoch),
       protocols: () => controllerClient.protocols(),
+      role: () => controllerClient.role,
     });
     const previous = this._bootstrapTeardown;
     if (previous) {

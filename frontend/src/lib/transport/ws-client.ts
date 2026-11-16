@@ -10,6 +10,8 @@ import { fetchCapabilities } from './http-client';
 import { authenticatedWsUrl, withoutWsAuthToken, withWsSearchParam } from './ws-url';
 import { controllerClient, ControllerClientError } from './controller-client';
 import { applyStateDelta, stateDeltaOps } from './state-delta';
+import type { MessageTransport } from './message-transport';
+import { createMessageTransport } from './transport-factory';
 
 export type ConnectionState = 'disconnected' | 'connecting' | 'connected' | 'reconnecting';
 export interface ControlSessionTransition {
@@ -155,7 +157,7 @@ export function getLastCloseInfo(): WsCloseInfo | null {
 }
 
 export class WsChannel {
-  private ws: WebSocket | null = null;
+  private ws: MessageTransport | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private heartbeatTimer: ReturnType<typeof setTimeout> | null = null;
   /** `performance.now()` of the newest frame from the current socket. */
@@ -220,7 +222,7 @@ export class WsChannel {
   /** JSON controls are not command envelopes and are never queued across sessions. */
   sendRaw(message: Record<string, unknown>): boolean {
     if ((controllerClient.remote || controllerClient.session) && !controllerClient.current(this.controllerEpoch)) return false;
-    if (this.ws?.readyState !== WebSocket.OPEN || this._state !== 'connected') return false;
+    if (this.ws?.state !== 'open' || this._state !== 'connected') return false;
     this.ws.send(JSON.stringify(message));
     return true;
   }
@@ -271,8 +273,8 @@ export class WsChannel {
   }
 
   connect(url: string) {
-    const rs = this.ws?.readyState;
-    if (rs === WebSocket.OPEN || rs === WebSocket.CONNECTING) return;
+    const st = this.ws?.state;
+    if (st === 'open' || st === 'connecting') return;
     this.url = withoutWsAuthToken(url);
     this.intentionalClose = false;
     // A fresh explicit connect supersedes any stale "reconnect once visible"
@@ -282,8 +284,8 @@ export class WsChannel {
   }
 
   private _open() {
-    const readyState = this.ws?.readyState;
-    if (readyState === WebSocket.OPEN || readyState === WebSocket.CONNECTING) return;
+    const transportState = this.ws?.state;
+    if (transportState === 'open' || transportState === 'connecting') return;
     if (!controllerClient.sessionMode) { this._openSocket(); return; }
     const opening = ++this.opening;
     this.setState(this.attempt === 0 ? 'connecting' : 'reconnecting');
@@ -320,14 +322,14 @@ export class WsChannel {
     if (this.control && controllerClient.session) {
       target = withWsSearchParam(target, 'controller_role', controllerClient.role);
     }
-    const ws = protocols.length ? new WebSocket(target, protocols) : new WebSocket(target);
+    const ws = createMessageTransport();
     let socketEpoch = 0;
-    ws.binaryType = 'arraybuffer';
     this.ws = ws;
+    ws.open(target, protocols.length > 0 ? { protocols, role: controllerClient.role } : undefined);
 
-    ws.onopen = () => {
+    ws.onOpen(() => {
       if (protocols.length > 0) {
-        if (!controllerClient.valid(epoch) || ws.protocol !== protocols[0]) { ws.close(); return; }
+        if (!controllerClient.valid(epoch) || ws.attachedProtocol !== protocols[0]) { ws.close(); return; }
         if (this.control) controllerClient.controlOpened((message) => ws.send(JSON.stringify(message)));
       }
       socketEpoch = ++this.transportEpoch;
@@ -335,7 +337,7 @@ export class WsChannel {
       this.setState('connected');
       if (
         this.ws !== ws
-        || ws.readyState !== WebSocket.OPEN
+        || ws.state !== 'open'
         || this._state !== 'connected'
         || socketEpoch !== this.transportEpoch
       ) return;
@@ -349,17 +351,20 @@ export class WsChannel {
       for (const pending of queued) this._sendNonPtt(ws, pending, socketEpoch);
       // Re-send subscribe on every (re)connect so server pushes state immediately
       if (this._subscribeMsg) ws.send(JSON.stringify(this._subscribeMsg));
-    };
+    });
 
-    ws.onmessage = (event: MessageEvent) => {
+    ws.onBinary((data: ArrayBuffer) => {
+      if (this.ws !== ws) return;
+      this._resetHeartbeat();
+      this.binaryHandlers.forEach((h) => h(data));
+    });
+
+    ws.onText((text: string) => {
       if (protocols.length > 0 && (this.ws !== ws || !controllerClient.current(epoch))) return;
       if (this.ws === ws) this._resetHeartbeat();
-      if (event.data instanceof ArrayBuffer) {
-        if (this.ws !== ws) return;
-        this.binaryHandlers.forEach((h) => h(event.data as ArrayBuffer));
-      } else {
+      {
         try {
-          const raw = JSON.parse(event.data as string) as Record<string, unknown>;
+          const raw = JSON.parse(text) as Record<string, unknown>;
           if (this.control && controllerClient.acknowledge(raw)) return;
           if (raw['type'] === 'command_lifecycle') {
             this._emitCommandLifecycle(raw, socketEpoch);
@@ -393,13 +398,15 @@ export class WsChannel {
           // ignore malformed frames
         }
       }
-    };
+    });
 
-    ws.onclose = (event: CloseEvent) => {
+    // An error closes the socket inside the transport, so the close path
+    // below (and the reconnect policy on it) runs — no handler needed here.
+    ws.onClose((info) => {
       _lastCloseInfo = {
-        code: event?.code ?? 0,
-        reason: event?.reason ?? '',
-        wasClean: event?.wasClean ?? false,
+        code: info.code,
+        reason: info.reason,
+        wasClean: info.wasClean,
         url: this.url,
         timestamp: Date.now(),
       };
@@ -429,11 +436,7 @@ export class WsChannel {
           }, delay);
         }
       }
-    };
-
-    ws.onerror = () => {
-      ws.close();
-    };
+    });
   }
 
   /** Reconnect using the last-known URL (no-op if never connected or already open). */
@@ -450,15 +453,9 @@ export class WsChannel {
     this.ws = null;
     this.trackedNonPttCommands.clear();
     this.trackedLifecycleCommands.clear();
-    if (ws) {
-      if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CLOSING) {
-        ws.close();
-      } else if (ws.readyState === WebSocket.CONNECTING) {
-        // WS not yet open — close silently after open to avoid console error
-        ws.onopen = () => ws.close();
-        ws.onerror = () => {}; // suppress error log
-      }
-    }
+    // A channel still connecting is closed silently after open, inside the
+    // transport — the old disconnect-CONNECTING branch, unchanged.
+    if (ws) ws.close();
     this.setState('disconnected');
     this.attempt = 0;
     if (this.control && controllerClient.remote && controllerClient.valid(this.controllerEpoch)) controllerClient.lose();
@@ -467,9 +464,9 @@ export class WsChannel {
   send(cmd: WsCommand): boolean {
     if (controllerClient.remote || controllerClient.session) {
       if (!controllerClient.current(this.controllerEpoch)) return false;
-      if (controllerClient.remote && this.ws?.readyState !== WebSocket.OPEN) return false;
+      if (controllerClient.remote && this.ws?.state !== 'open') return false;
     }
-    if (this.ws?.readyState === WebSocket.OPEN) {
+    if (this.ws?.state === 'open') {
       const intent = pttIntent(cmd.name, cmd.params);
       if (intent) {
         return this._sendPtt(
@@ -512,7 +509,7 @@ export class WsChannel {
   }
 
   isConnected(): boolean {
-    return this.ws?.readyState === WebSocket.OPEN;
+    return this.ws?.state === 'open';
   }
 
   onMessage(handler: MessageHandler): () => void {
@@ -587,7 +584,7 @@ export class WsChannel {
     this.trackedLifecycleCommands.clear();
   }
 
-  private _sendPtt(ws: WebSocket, pending: PendingPttRelease, eventEpoch: number): boolean {
+  private _sendPtt(ws: MessageTransport, pending: PendingPttRelease, eventEpoch: number): boolean {
     try {
       ws.send(JSON.stringify(pending.command));
     } catch (error) {
@@ -609,7 +606,7 @@ export class WsChannel {
     return true;
   }
 
-  private _sendNonPtt(ws: WebSocket, pending: PendingNonPttCommand, eventEpoch: number): boolean {
+  private _sendNonPtt(ws: MessageTransport, pending: PendingNonPttCommand, eventEpoch: number): boolean {
     if (this.trackedNonPttCommands.size >= MAX_TRACKED_NON_PTT_COMMANDS) {
       this._rejectNonPtt(
         pending.command.id, pending.originalEpoch, 'delivery tracking capacity exceeded', eventEpoch,
@@ -823,7 +820,7 @@ export class WsChannel {
   private _startKeepalive() {
     this._stopKeepalive();
     this.keepaliveTimer = setInterval(() => {
-      if (this.ws?.readyState === WebSocket.OPEN) {
+      if (this.ws?.state === 'open') {
         this.ws.send(JSON.stringify({ type: 'ping' }));
       }
     }, KEEPALIVE_INTERVAL_MS);
