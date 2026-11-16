@@ -89,10 +89,9 @@ from __future__ import annotations
 
 import asyncio
 import errno
-import json
 import math
 import time
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -102,6 +101,7 @@ from rigplane.profiles import resolve_radio_profile
 from rigplane.profiles.rig_loader import load_rig
 from rigplane.types import CivFrame, bcd_decode, bcd_encode
 
+from rigplane_testkit.fixture_rows import CivPairRow, civ_rows, read_civ_rows
 from rigplane_testkit.icom import (
     _level_bcd_encode,
 )
@@ -175,7 +175,7 @@ class ScopeSource:
     @classmethod
     def from_civ_pairs(
         cls,
-        rows: Iterable[dict[str, Any]],
+        rows: Iterable[CivPairRow | Mapping[str, Any]],
         transport: str,
         *,
         rate_hz: float,
@@ -189,10 +189,10 @@ class ScopeSource:
         """
         whole: list[tuple[tuple[float, bytes], ...]] = []
         current: list[tuple[float, bytes]] = []
-        for row in rows:
-            if row["transport"] != transport or row["dir"] != "r2c":
+        for row in civ_rows(rows):
+            if row.transport != transport or row.dir != "r2c":
                 continue
-            frame = bytes.fromhex(row["frame"])
+            frame = row.frame
             if frame[4:6] != bytes([_CMD_SCOPE, _SUB_SCOPE_WAVE]) or len(frame) < 10:
                 continue
             seq, seq_max = _bcd_byte(frame[7]), _bcd_byte(frame[8])
@@ -201,7 +201,7 @@ class ScopeSource:
             elif len(current) != seq - 1:
                 current = []  # a packet is missing: the partial sweep is dropped
                 continue
-            current.append((float(row["t"]), frame))
+            current.append((row.t, frame))
             if seq == seq_max:
                 whole.append(tuple((t - current[0][0], f) for t, f in current))
                 current = []
@@ -388,11 +388,7 @@ class CivSerialFake:
                 f"{path.name}: exactly one [answers] recorded entry is required"
             )
         file, transport = profile.answers.recorded[0]
-        rows = [
-            json.loads(line)
-            for line in (root / file).read_text(encoding="utf-8").splitlines()
-            if line
-        ]
+        rows = read_civ_rows(root / file)
         initial = profile.initial
         mode = _CIV_MODE_CODES.get(initial.mode) if initial.mode is not None else 0x01
         if mode is None:

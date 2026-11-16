@@ -24,6 +24,7 @@ from rigplane.probe.model import (
     TerminationInfo,
     ToolInfo,
 )
+from rigplane_testkit.fixture_rows import CatPairRow, CivPairRow, read_civ_rows
 from rigplane_testkit.probe_fixtures import probe_to_cat_pairs, probe_to_civ_pairs
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -109,20 +110,8 @@ def test_civ_data_gives_request_plus_reply_pair() -> None:
         "civ", [_civ_row("get_af_level", "data", "1401", "fefee0a014010000fd")]
     )
     assert probe_to_civ_pairs(probe, radio_addr=CIV_ADDR, window="w") == [
-        {
-            "dir": "c2r",
-            "frame": "fefea0e01401fd",
-            "t": 0.0,
-            "transport": "usb",
-            "window": "w",
-        },
-        {
-            "dir": "r2c",
-            "frame": "fefee0a014010000fd",
-            "t": 0.01,
-            "transport": "usb",
-            "window": "w",
-        },
+        CivPairRow("w", "usb", 0.0, "c2r", bytes.fromhex("fefea0e01401fd")),
+        CivPairRow("w", "usb", 0.01, "r2c", bytes.fromhex("fefee0a014010000fd")),
     ]
 
 
@@ -135,21 +124,15 @@ def test_civ_refused_and_ack_only_give_pairs() -> None:
         ],
     )
     rows = probe_to_civ_pairs(probe, radio_addr=CIV_ADDR, window="w")
-    assert [row["dir"] for row in rows] == ["c2r", "r2c", "c2r", "r2c"]
-    assert rows[1]["frame"] == "fefee0a0fafd"
-    assert rows[3]["frame"] == "fefee0a0fbfd"
+    assert [row.dir for row in rows] == ["c2r", "r2c", "c2r", "r2c"]
+    assert rows[1].frame == bytes.fromhex("fefee0a0fafd")
+    assert rows[3].frame == bytes.fromhex("fefee0a0fbfd")
 
 
 def test_civ_silent_gives_request_row_alone() -> None:
     probe = _file("civ", [_civ_row("unknown:7f", "silent", "7f", None)])
     assert probe_to_civ_pairs(probe, radio_addr=CIV_ADDR, window="w") == [
-        {
-            "dir": "c2r",
-            "frame": "fefea0e07ffd",
-            "t": 0.0,
-            "transport": "usb",
-            "window": "w",
-        }
+        CivPairRow("w", "usb", 0.0, "c2r", bytes.fromhex("fefea0e07ffd"))
     ]
 
 
@@ -182,7 +165,7 @@ def test_civ_first_occurrence_wins() -> None:
         ],
     )
     rows = probe_to_civ_pairs(probe, radio_addr=CIV_ADDR, window="w")
-    assert [row["dir"] for row in rows] == ["c2r", "r2c"]
+    assert [row.dir for row in rows] == ["c2r", "r2c"]
 
 
 # --- Unit: CAT outcome -> rows --------------------------------------------
@@ -198,17 +181,11 @@ def test_cat_data_and_refused_give_pairs_silent_gives_request() -> None:
         ],
     )
     assert probe_to_cat_pairs(probe, window="w") == [
-        {"dir": "c2r", "line": "FA;", "t": 0.0, "transport": "usb", "window": "w"},
-        {
-            "dir": "r2c",
-            "line": "FA14074000;",
-            "t": 0.01,
-            "transport": "usb",
-            "window": "w",
-        },
-        {"dir": "c2r", "line": "KS;", "t": 0.01, "transport": "usb", "window": "w"},
-        {"dir": "r2c", "line": "?;", "t": 0.02, "transport": "usb", "window": "w"},
-        {"dir": "c2r", "line": "KP;", "t": 0.02, "transport": "usb", "window": "w"},
+        CatPairRow("w", "usb", 0.0, "c2r", "FA;"),
+        CatPairRow("w", "usb", 0.01, "r2c", "FA14074000;"),
+        CatPairRow("w", "usb", 0.01, "c2r", "KS;"),
+        CatPairRow("w", "usb", 0.02, "r2c", "?;"),
+        CatPairRow("w", "usb", 0.02, "c2r", "KP;"),
     ]
 
 
@@ -227,7 +204,7 @@ def test_cat_first_occurrence_wins() -> None:
         ],
     )
     rows = probe_to_cat_pairs(probe, window="w")
-    assert [row["line"] for row in rows] == ["FA;", "FA14074000;"]
+    assert [row.line for row in rows] == ["FA;", "FA14074000;"]
 
 
 def test_cat_trailing_silence_replays_as_silence() -> None:
@@ -241,7 +218,7 @@ def test_cat_trailing_silence_replays_as_silence() -> None:
         ],
     )
     rows = probe_to_cat_pairs(probe, window="w")
-    assert [row["dir"] for row in rows] == ["c2r", "r2c", "c2r"]
+    assert [row.dir for row in rows] == ["c2r", "r2c", "c2r"]
     table = RecordedCatAnswerTable.from_cat_pairs(rows, window="w")
     data = table.lookup("FA;")
     assert data is not None and data.kind == "data" and data.reply == "FA14074000;"
@@ -638,6 +615,7 @@ def test_convert_cli_merges_window(tmp_path) -> None:
         == 0
     )
     assert merged.read_bytes() == first
-    rows = [json.loads(line) for line in first.splitlines()]
-    assert rows and all(row["window"] == "probe" for row in rows)
-    assert all(row["transport"] == "usb" for row in rows)
+    rows = read_civ_rows(merged)
+    assert rows and all(row.window == "probe" for row in rows)
+    assert all(row.transport == "usb" for row in rows)
+    assert rows == probe_to_civ_pairs(_sample(), radio_addr=CIV_ADDR, window="probe")

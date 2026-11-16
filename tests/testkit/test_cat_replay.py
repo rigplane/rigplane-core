@@ -11,7 +11,7 @@ from rigplane_testkit.yaesu.replay import RecordedCatAnswer, RecordedCatAnswerTa
 
 def _rows(*pairs: tuple[str, str], window: str = "w") -> list[dict]:
     return [
-        {"window": window, "t": i * 0.1, "dir": d, "line": line}
+        {"window": window, "transport": "usb", "t": i * 0.1, "dir": d, "line": line}
         for i, (d, line) in enumerate(pairs)
     ]
 

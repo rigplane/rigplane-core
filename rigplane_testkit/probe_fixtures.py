@@ -41,12 +41,20 @@ from __future__ import annotations
 
 import argparse
 import json
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import TypeVar
 
 from rigplane.commands import CONTROLLER_ADDR, build_civ_frame, command_carries_sub
 from rigplane.probe.model import ProbeFile
 from rigplane.profiles import resolve_radio_profile
+from rigplane_testkit.fixture_rows import (
+    CatPairRow,
+    CivPairRow,
+    dump_rows,
+    read_cat_rows,
+    read_civ_rows,
+)
 
 #: Outcomes that carry a reply and become a request/reply pair.
 _PAIR_OUTCOMES = frozenset({"data", "refused", "ack_only"})
@@ -72,9 +80,9 @@ def _civ_request_frame(body: bytes, radio_addr: int) -> bytes:
 
 def probe_to_civ_pairs(
     probe: ProbeFile, *, radio_addr: int, window: str
-) -> list[dict[str, Any]]:
+) -> list[CivPairRow]:
     """Trim one CI-V probe file to ``civ_pairs`` fixture rows."""
-    rows: list[dict[str, Any]] = []
+    rows: list[CivPairRow] = []
     seen: set[bytes] = set()
     elapsed_ms = 0.0
     for row in probe.commands:
@@ -88,13 +96,7 @@ def probe_to_civ_pairs(
         started_s = round(elapsed_ms / 1000.0, 3)
         elapsed_ms += row.latency_ms
         rows.append(
-            {
-                "dir": "c2r",
-                "frame": request.hex(),
-                "t": started_s,
-                "transport": probe.radio.port_kind,
-                "window": window,
-            }
+            CivPairRow(window, probe.radio.port_kind, started_s, "c2r", request)
         )
         if row.outcome == "silent":
             continue
@@ -106,20 +108,20 @@ def probe_to_civ_pairs(
         if len(reply) < 6 or reply[:2] != b"\xfe\xfe" or reply[-1:] != b"\xfd":
             raise ValueError(f"probe row {row.name!r} reply is not a CI-V frame")
         rows.append(
-            {
-                "dir": "r2c",
-                "frame": reply.hex(),
-                "t": round(elapsed_ms / 1000.0, 3),
-                "transport": probe.radio.port_kind,
-                "window": window,
-            }
+            CivPairRow(
+                window,
+                probe.radio.port_kind,
+                round(elapsed_ms / 1000.0, 3),
+                "r2c",
+                reply,
+            )
         )
     return rows
 
 
-def probe_to_cat_pairs(probe: ProbeFile, *, window: str) -> list[dict[str, Any]]:
+def probe_to_cat_pairs(probe: ProbeFile, *, window: str) -> list[CatPairRow]:
     """Trim one CAT probe file to ``cat_pairs`` fixture rows."""
-    rows: list[dict[str, Any]] = []
+    rows: list[CatPairRow] = []
     seen: set[str] = set()
     elapsed_ms = 0.0
     for row in probe.commands:
@@ -131,15 +133,7 @@ def probe_to_cat_pairs(probe: ProbeFile, *, window: str) -> list[dict[str, Any]]
         seen.add(line)
         started_s = round(elapsed_ms / 1000.0, 3)
         elapsed_ms += row.latency_ms
-        rows.append(
-            {
-                "dir": "c2r",
-                "line": line,
-                "t": started_s,
-                "transport": probe.radio.port_kind,
-                "window": window,
-            }
-        )
+        rows.append(CatPairRow(window, probe.radio.port_kind, started_s, "c2r", line))
         if row.outcome == "silent":
             continue
         if row.reply_text is not None:
@@ -151,41 +145,33 @@ def probe_to_cat_pairs(probe: ProbeFile, *, window: str) -> list[dict[str, Any]]
                 f"probe row {row.name!r} pairs {row.outcome!r} with no reply"
             )
         rows.append(
-            {
-                "dir": "r2c",
-                "line": reply_line,
-                "t": round(elapsed_ms / 1000.0, 3),
-                "transport": probe.radio.port_kind,
-                "window": window,
-            }
+            CatPairRow(
+                window,
+                probe.radio.port_kind,
+                round(elapsed_ms / 1000.0, 3),
+                "r2c",
+                reply_line,
+            )
         )
     return rows
 
 
-def _dump(rows: list[dict[str, Any]]) -> str:
-    return "".join(
-        json.dumps(row, sort_keys=True, separators=(",", ":")) + "\n" for row in rows
-    )
-
-
-def _read_rows(path: Path) -> list[dict[str, Any]]:
-    if not path.exists():
-        return []
-    return [
-        json.loads(line)
-        for line in path.read_text(encoding="utf-8").splitlines()
-        if line
-    ]
+_Row = TypeVar("_Row", CivPairRow, CatPairRow)
 
 
 def _merge_window_rows(
-    out_dir: Path, filename: str, window: str, rows: list[dict[str, Any]]
+    out_dir: Path,
+    filename: str,
+    window: str,
+    rows: list[_Row],
+    read: Callable[[Path], list[_Row]],
 ) -> Path:
     """Replace ``window`` in ``filename``; rewrite sorted, newline-terminated."""
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / filename
-    kept = [row for row in _read_rows(path) if row.get("window") != window]
-    path.write_text(_dump(kept + rows), encoding="utf-8")
+    existing = read(path) if path.exists() else []
+    kept = [row for row in existing if row.window != window]
+    path.write_text(dump_rows(kept + rows), encoding="utf-8")
     return path
 
 
@@ -216,19 +202,21 @@ def main(argv: list[str] | None = None) -> int:
             radio_addr = _profile_default_addr(probe.radio.profile)
         if not 0x00 <= radio_addr <= 0xFF:
             parser.error(f"--radio-addr {radio_addr!r} is not one address byte")
-        rows = probe_to_civ_pairs(probe, radio_addr=radio_addr, window=args.window)
+        civ = probe_to_civ_pairs(probe, radio_addr=radio_addr, window=args.window)
         path = _merge_window_rows(
-            Path(args.out_dir), "civ_pairs.jsonl", args.window, rows
+            Path(args.out_dir), "civ_pairs.jsonl", args.window, civ, read_civ_rows
         )
+        count = len(civ)
     elif probe.radio.protocol == "yaesu_cat":
-        rows = probe_to_cat_pairs(probe, window=args.window)
+        cat = probe_to_cat_pairs(probe, window=args.window)
         path = _merge_window_rows(
-            Path(args.out_dir), "cat_pairs.jsonl", args.window, rows
+            Path(args.out_dir), "cat_pairs.jsonl", args.window, cat, read_cat_rows
         )
+        count = len(cat)
     else:
         parser.error(f"unsupported probe protocol {probe.radio.protocol!r}")
         raise AssertionError("unreachable")
-    print(json.dumps({"window": args.window, "rows": len(rows), "file": str(path)}))
+    print(json.dumps({"window": args.window, "rows": count, "file": str(path)}))
     return 0
 
 

@@ -135,7 +135,9 @@ def test_committed_cat_fixture_parses_and_round_trips() -> None:
     file = FIXTURES / "ftx1" / "cat_pairs.jsonl"
     rows = read_cat_rows(file)
     assert rows
-    assert [CatPairRow.from_json(json.loads(line)) for line in dump_rows(rows).splitlines()] == rows
+    assert [
+        CatPairRow.from_json(json.loads(line)) for line in dump_rows(rows).splitlines()
+    ] == rows
 
 
 def test_a_bad_file_row_names_the_file_and_line(tmp_path: Path) -> None:

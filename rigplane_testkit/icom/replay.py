@@ -12,9 +12,12 @@ from __future__ import annotations
 
 import json
 import struct
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterator
+from typing import Any, Iterator
+
+from rigplane_testkit.fixture_rows import CivPairRow, civ_rows
 
 _CIV_HEADER_SIZE = 0x15  # bytes before the CI-V frame in a DATA packet
 _CIV_PREAMBLE = b"\xfe\xfe"
@@ -234,9 +237,12 @@ class RecordedAnswerTable:
 
     @classmethod
     def from_civ_pairs(
-        cls, rows: Iterator[dict] | list[dict], transport: str
+        cls, rows: Iterable[CivPairRow | Mapping[str, Any]], transport: str
     ) -> RecordedAnswerTable:
         """Build the table from the civ_pairs rows of one ``transport``.
+
+        ``rows`` are :class:`~rigplane_testkit.fixture_rows.CivPairRow`
+        objects; a JSON object is parsed through the same contract.
 
         Pairing walks the selected rows in order: each ``c2r`` row, its echo
         row when the transport echoes, and the next ``r2c`` row — the reply
@@ -244,9 +250,7 @@ class RecordedAnswerTable:
         next client request.
         """
         frames = [
-            (row["dir"], bytes.fromhex(row["frame"]))
-            for row in rows
-            if row["transport"] == transport
+            (row.dir, row.frame) for row in civ_rows(rows) if row.transport == transport
         ]
         table = cls()
         table.echo = any(
