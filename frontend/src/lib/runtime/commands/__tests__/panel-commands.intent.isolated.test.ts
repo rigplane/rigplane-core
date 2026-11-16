@@ -1633,13 +1633,13 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     vi.advanceTimersByTime(60);
     expect(exactCalls().at(-1)).toEqual(['set_freq', { freq: start + 2_000, receiver: 0 }]);
 
-    // The latest target is still merely pending, so registry association
-    // cannot explain the changed value — but the MOR-4393 send ledger can:
-    // the readback exactly equals this burst's own send, and an own sent
-    // value is intrinsically indistinguishable from its echo (see
-    // `acceptedTuningTarget`). The next press accumulates onto the pending
-    // target and waits for the pace rather than cold re-emitting; the radio
-    // still lands on the same start + 3_000.
+    // The latest target is still merely pending, yet the lifecycle-backed
+    // association matches it: the readback exactly equals this burst's own
+    // in-burst send, and an own sent value is intrinsically
+    // indistinguishable from its echo (see `acceptedTuningTarget`). The next
+    // press accumulates onto the pending target and waits for the pace
+    // rather than cold re-emitting; the radio still lands on the same
+    // start + 3_000.
     h.state = { ...h.state!, main: { ...h.state!.main!, freqHz: start + 2_000 }, fieldStatus: {
       ...h.state!.fieldStatus, 'main.freqHz': {
         ...freshStatus, storePath: 'main.freqHz', lastObservedMonotonic: 2,
@@ -1671,7 +1671,7 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     ]);
   });
 
-  it('MOR-1864/MOR-4393: pre-burst records stay unassociated; an own send-ledger echo continues the burst', () => {
+  it('MOR-1864/MOR-4393: pre-burst records stay unassociated; a failed send echo cold-resets', () => {
     const vfo = makeVfoHandlers();
     const start = observedFreq();
     const setObservation = (frequency: number, marker: number) => {
@@ -1696,19 +1696,18 @@ describe('MOR-1409 A03a/A03b1 canonical receive-control intent handlers', () => 
     vfo.onMainFreqChange(start + 1_500);
     expect(exactCalls().at(-1)).toEqual(['set_freq', { freq: start + 1_500, receiver: 0 }]);
 
-    // A failed record stays excluded from REGISTRY association
-    // (`acceptedTuningTarget` requires acknowledged/confirmed — unchanged).
-    // But its exact target is in this burst's MOR-4393 send ledger, so a
-    // later readback equal to it reads as our own late echo: the next press
-    // continues the burst at the pace instead of cold re-emitting, and the
-    // radio still lands on the same start + 2_500.
+    // A failed record stays excluded from association (`acceptedTuningTarget`
+    // matches pending/acknowledged/confirmed in-burst targets only): the
+    // NAKed write was refused, so its value reappearing reads as a foreign
+    // change and the next press cold-resets onto it with an immediate emit.
+    // (The MOR-4393 send ledger that used to continue the burst here is
+    // gone: one association mechanism.)
     record = getCommandLifecycles().at(-1)!;
     failCommand(record.id, record.originalEpoch, record.originalEpoch, 'NAK');
     setObservation(start + 1_500, 3);
     const count = h.sendCommand.mock.calls.length;
     vfo.onMainFreqChange(start + 2_500);
-    expect(h.sendCommand).toHaveBeenCalledTimes(count);
-    vi.advanceTimersByTime(60);
+    expect(h.sendCommand).toHaveBeenCalledTimes(count + 1);
     expect(exactCalls().at(-1)).toEqual(['set_freq', { freq: start + 2_500, receiver: 0 }]);
   });
 

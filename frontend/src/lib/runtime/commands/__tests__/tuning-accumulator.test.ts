@@ -303,7 +303,7 @@ describe('MOR-1425 tuning accumulator', () => {
     }
   });
 
-  it('MOR-1864/MOR-4393 preserves a repolled equal value; a changed value queries registry association, then the send ledger', () => {
+  it('MOR-1864/MOR-4393 preserves a repolled equal value; a denied changed value is foreign', () => {
     const acceptedTarget = vi.fn(() => false);
     const local = createTuningAccumulator({ emit, paceMs: 60, acceptedTarget });
     local.step(0, 14_074_000, 14_075_000, 1);
@@ -312,11 +312,14 @@ describe('MOR-1425 tuning accumulator', () => {
     expect(emit).toHaveBeenLastCalledWith(0, 14_076_000);
     expect(acceptedTarget).not.toHaveBeenCalled();
 
-    // A changed value still queries the registry association FIRST; it
-    // matches nothing there, but it exactly equals this burst's own first
-    // send — the MOR-4393 send ledger attributes it as our own echo, so the
-    // burst continues at the pace instead of cold re-emitting.
+    // A changed value still queries the single lifecycle-backed association;
+    // it matches nothing there, so the value is foreign even though it
+    // equals this burst's own first send — cold reset with an immediate
+    // re-emit, never a paced continuation. (The MOR-4393 send ledger that
+    // used to claim this echo is gone: one association mechanism.)
+    const calls = emit.mock.calls.length;
     local.step(0, 14_075_000, 14_076_000, 3);
+    expect(emit).toHaveBeenCalledTimes(calls + 1);
     expect(emit).toHaveBeenLastCalledWith(0, 14_076_000);
     expect(acceptedTarget).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
       frequency: 14_075_000, observationMarker: 3,
@@ -522,22 +525,19 @@ describe('MOR-2464 display-only tuning-burst publication', () => {
 
 describe('MOR-4393 step tuning under CI-V readback latency', () => {
   let emit: ReturnType<typeof vi.fn<(receiver: number, freq: number) => { status: string }>>;
-  let acknowledged: Set<number>;
 
   beforeEach(() => {
     vi.useFakeTimers();
-    acknowledged = new Set();
     emit = vi.fn((_receiver: number, _freq: number) => ({ status: 'pending' }));
   });
 
   function slowLinkAccumulator() {
-    // Production `acceptedTuningTarget` only associates an observation with a
-    // command once that command is acknowledged/confirmed. On a slow link the
-    // echo of an older send arrives while its lifecycle is still pending, so
-    // nothing is acknowledged here — exactly the failing association.
+    // The mock stands in for the extended lifecycle-backed association,
+    // which matches an exact in-burst target while its send is still pending
+    // or once acknowledged — never for a value this burst did not send.
     return createTuningAccumulator({
       emit, paceMs: 60, quietWindowMs: 4_000,
-      acceptedTarget: ({ frequency }) => acknowledged.has(frequency),
+      acceptedTarget: ({ frequency }) => emit.mock.calls.some(([, target]) => target === frequency),
     });
   }
 

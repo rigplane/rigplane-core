@@ -1327,9 +1327,12 @@ function currentTuningMarker(receiver: number): number | null {
 function acceptedTuningTarget(query: AcceptedTargetQuery): boolean {
   // Practical association, not causal proof: a changed radio observation may
   // continue this burst only when it exactly equals an accepted local target
-  // and advances that command's frequency-field ACK marker. A physical move
-  // to the same still-relevant target is intrinsically indistinguishable and
-  // is intentionally treated as the local echo.
+  // and advances that command's frequency-field ACK marker. A still-pending
+  // send carries no ACK marker yet, so it associates by exact in-burst target
+  // instead — its echo on a slow link arrives before any acknowledgement
+  // (MOR-4393). A physical move to the same still-relevant target is
+  // intrinsically indistinguishable and is intentionally treated as the local
+  // echo.
   if (currentTuningContext(query.receiver) !== query.context) return false;
   const receiverPath = tuningReceiverPath(query.receiver);
   if (receiverPath === null) return false;
@@ -1343,16 +1346,22 @@ function acceptedTuningTarget(query: AcceptedTargetQuery): boolean {
       : record.createdAt > query.anchor.createdAt;
     const params = record.params;
     const boundary = record.ackFieldObservationTimes?.[path];
+    const markerAdvanced = typeof boundary === 'number' && Number.isFinite(boundary)
+      && query.observationMarker > boundary;
+    // Pending sends carry no ACK marker yet — exact in-burst target match is
+    // the whole claim. Acknowledged/confirmed sends additionally require a
+    // post-ACK readback.
+    const associated = record.status === 'pending' ? boundary === undefined : markerAdvanced;
     return inBurst
       && record.name === 'set_freq'
-      && (record.status === 'acknowledged' || record.status === 'confirmed')
+      && (record.status === 'acknowledged' || record.status === 'confirmed'
+        || record.status === 'pending')
       && record.originalEpoch === currentControlSessionEpoch()
       && record.providerGeneration === getCapabilities()?.providerGeneration
       && Reflect.ownKeys(params).length === 2
       && params.receiver === query.receiver
       && params.freq === query.frequency
-      && typeof boundary === 'number' && Number.isFinite(boundary)
-      && query.observationMarker > boundary;
+      && associated;
   });
 }
 

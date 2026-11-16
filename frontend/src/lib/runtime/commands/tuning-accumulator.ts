@@ -47,15 +47,6 @@ interface PendingTuning {
   lastObservationMarker: number;
   lastObservedFrequency: number;
   anchor: BurstAnchor;
-  /**
-   * Every frequency this burst handed to `emit`, in send order (MOR-4393).
-   * A readback that equals a previously SENT target is our own late echo —
-   * even while its command lifecycle is still pending and lifecycle
-   * association cannot see it — so it rebases the burst instead of resetting
-   * it. A changed value matching neither our sends nor an associated target
-   * is still a foreign change (MOR-1864 fail-closed stays).
-   */
-  sentTargets: number[];
 }
 
 export interface TuningAccumulatorOptions {
@@ -187,7 +178,6 @@ export function createTuningAccumulator(options: TuningAccumulatorOptions): Tuni
     state.flushTimer = null;
     state.lastEmitAt = t;
     state.lastLifecycle = emit(receiver, state.target) ?? null;
-    state.sentTargets.push(state.target);
     // The publication must judge liveness by the FRESHEST emitted
     // lifecycle, not stay tied to the one captured at the last input: a
     // terminal failure of the just-flushed target invalidates the
@@ -216,6 +206,14 @@ export function createTuningAccumulator(options: TuningAccumulatorOptions): Tuni
     requestedFreq: number,
     observationMarker: number | null,
   ): void {
+    // A live replacement continues the same gesture, so it inherits the
+    // previous anchor: lifecycle-backed association must still recognise
+    // echoes of targets sent before this reset (MOR-4393 drag release). Only
+    // a dead boundary — expiry, terminal lifecycle, epoch/generation/context
+    // change — starts a fresh association window.
+    const previous = pending.get(receiver);
+    const inheritedAnchor = previous !== undefined && stillLive(receiver, previous, t)
+      && previous.context === getContext(receiver) ? previous.anchor : null;
     clear(receiver);
     const context = getContext(receiver);
     const lifecycle = emit(receiver, requestedFreq) ?? null;
@@ -233,11 +231,10 @@ export function createTuningAccumulator(options: TuningAccumulatorOptions): Tuni
       context,
       lastObservationMarker: observationMarker,
       lastObservedFrequency: confirmedFreq,
-      anchor: {
+      anchor: inheritedAnchor ?? {
         id: typeof lifecycle?.id === 'string' ? lifecycle.id : null,
         createdAt: typeof lifecycle?.createdAt === 'number' ? lifecycle.createdAt : t,
       },
-      sentTargets: [requestedFreq],
     });
   }
 
@@ -249,11 +246,11 @@ export function createTuningAccumulator(options: TuningAccumulatorOptions): Tuni
   ): boolean {
     if (!validMarker(marker) || marker < state.lastObservationMarker) return false;
     if (marker === state.lastObservationMarker) return frequency === state.lastObservedFrequency;
-    // MOR-4393: lifecycle association first (the stronger causal claim when
-    // the command is already acknowledged), our own send ledger second — a
-    // late echo of an older, still-pending send continues the burst instead
-    // of cold-resetting it and wiping unsent steps. Every changed value still
-    // queries the association; MOR-1864 stays: matching neither source is a
+    // MOR-4393: the single lifecycle-backed association decides — a late
+    // echo of one of our own earlier targets in the same gesture, including
+    // a still-pending send, continues the burst instead of cold-resetting it
+    // and wiping unsent steps. Every changed value still queries the
+    // association; MOR-1864 stays: matching no associated target is a
     // foreign change.
     if (frequency !== state.lastObservedFrequency && !acceptedTarget({
       receiver,
@@ -261,7 +258,7 @@ export function createTuningAccumulator(options: TuningAccumulatorOptions): Tuni
       frequency,
       observationMarker: marker,
       anchor: state.anchor,
-    }) && !state.sentTargets.includes(frequency)) return false;
+    })) return false;
     state.lastObservationMarker = marker;
     state.lastObservedFrequency = frequency;
     return true;
@@ -289,11 +286,11 @@ export function createTuningAccumulator(options: TuningAccumulatorOptions): Tuni
       const state = pending.get(receiver);
       if (!state || !stillLive(receiver, state, now()) || !validMarker(observationMarker)
         || observationMarker < state.lastObservationMarker) return false;
-      // MOR-4393: same two-source association as the step path, so a late
+      // MOR-4393: same single-source association as the step path, so a late
       // echo of our own still-pending send still reads as burst observation.
       return frequency === state.lastObservedFrequency || acceptedTarget({
         receiver, context: state.context, frequency, observationMarker, anchor: state.anchor,
-      }) || state.sentTargets.includes(frequency);
+      });
     },
     jump(receiver, freq, confirmedFreq, observationMarker = null, paced = false) {
       const state = pending.get(receiver);
@@ -310,15 +307,14 @@ export function createTuningAccumulator(options: TuningAccumulatorOptions): Tuni
       }
       // A known pre-jump observation anchors subsequent relative intent;
       // the jump target remains command intent, never confirmed state.
+      // `beginFresh` itself inherits the anchor across a live replacement,
+      // so no caller-side preservation is needed here.
       if (typeof confirmedFreq === 'number' && Number.isSafeInteger(confirmedFreq)
         && confirmedFreq > 0 && validMarker(observationMarker)) {
-        const anchor = !paced && state?.absolutePaced && stillLive(receiver, state, t)
-          && observationContinues(receiver, state, confirmedFreq, observationMarker) ? state.anchor : null;
         beginFresh(receiver, t, confirmedFreq, freq, observationMarker);
         const next = pending.get(receiver);
         if (next) {
           next.absolutePaced = paced;
-          if (anchor) next.anchor = anchor;
         }
         return;
       }
