@@ -168,7 +168,8 @@ def unselected_selector_is_sub(profile: RadioProfile) -> bool:
     """Whether CI-V 0x25/0x26 selector 01 is the physical SUB receiver
     (:func:`rigplane.profiles.selector_one_is_sub`)."""
     target = getattr(profile, "split_tx_target", "none")
-    return selector_one_is_sub(profile.receiver_count, target)
+    is_sub: bool = selector_one_is_sub(profile.receiver_count, target)
+    return is_sub
 
 
 def _validate_relations(
