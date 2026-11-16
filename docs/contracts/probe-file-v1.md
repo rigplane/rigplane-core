@@ -26,7 +26,7 @@ Pretty-printed JSON, one command per block, `jq`-friendly. Top level:
 | --- | --- | --- |
 | `schema` | string | Always `rigplane-probe-v1`. |
 | `tool` | object | `{rigplane_version, python, os, created_utc}` of the recorder. |
-| `mode` | string | `"read"`. The `read+checks` mode is reserved for write checks and not produced here. |
+| `mode` | string | `"read"`, or `"read+checks"` when write checks were requested (the parser refuses anything else). |
 | `radio` | object | `{profile, profile_sha256, protocol, port_kind, baud, identity_reported{raw, parsed}, identity_matches_profile}`. `profile_sha256` is the sha256 of the profile TOML bytes. |
 | `private_reads_included` | boolean | Whether memory-content reads were sent. |
 | `label` | string | The `--label` text, empty when not given. |
@@ -35,7 +35,7 @@ Pretty-printed JSON, one command per block, `jq`-friendly. Top level:
 | `unsolicited` | array | `{t_ms, hex, text}` pushes seen outside any answer slot. |
 | `snapshot` | object | `{before, after, changed}` profile state reads around the pass; `changed` lists the names that differ. |
 | `termination` | object | `{status, detail}` how the run ended (below). |
-| `checks` | array | Always empty here; reserved for write checks. |
+| `checks` | array | One record per write check (below); empty in `read` mode. |
 
 One `commands` row:
 
@@ -84,9 +84,32 @@ Termination, an object the parser validates: `status` is one of
 `completed` (every planned read was sent), `silence_stop` (five
 unanswered reads in a row: anywhere while nothing answered yet,
 otherwise inside the main pass), `transport_error` (the serial link
-broke); `detail` is the plain-words reason shown to the customer
-(the silence message, or the phase and error for a transport break).
-Files written before this key existed parse as `completed`.
+broke), `cancelled` (a signal or Ctrl-C stopped the write checks after
+their restore), `restore_failed` (a write check could not put its
+settings back or verify them; exit code 4); `detail` is the plain-words
+reason shown to the customer (the silence message, or the phase and
+error for a transport break). Files written before this key existed
+parse as `completed`.
+
+## Write checks
+
+One `checks` record (frozen `CheckRecord`; every key required, no other
+key allowed): `id`, `title`, `status` (`ran`, `refused` before any write,
+or `declined` by the person), `steps` (`{kind: read|write, entry,
+request_hex, reply_hex|null, class, value|null}`: every check frame on the
+wire in send order, `entry` the table setting, `value` its hand-readable
+value), `answers` (`{question, answer|null, skipped}`), `originals`
+(setting name to the hand-settable value put back, e.g. `"VFO-A":
+"14.074 MHz"`), `witness` (`{before, after, changed}`, after = after the
+restore), `restored` (every restore write accepted), `verified` (each
+restored value read back equal and the witness unchanged), `error`
+(string or null). Check rows are not fixture pairs.
+
+Journal: before a check's first write byte the originals are written,
+flushed and fsynced (file and folder) to `<out>.checks-journal.json`
+(`{check_id, check_title, profile, originals, saved_utc}`), removed after
+a verified restore. A journal left behind is printed at the next start;
+nothing is restored automatically.
 
 ## Redaction
 

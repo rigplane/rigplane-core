@@ -44,6 +44,8 @@ def load(tmp_path: Path, name: str, toml: str):
     """The shipped profile plus a check, through the real loader."""
     from rigplane.profiles.rig_loader import load_rig
 
+    for shared in RIGS.glob("_*.toml"):  # catalogs the profile refers to
+        (tmp_path / shared.name).write_bytes(shared.read_bytes())
     path = tmp_path / f"{name}.toml"
     path.write_text((RIGS / f"{name}.toml").read_text(encoding="utf-8") + toml)
     return load_rig(path)
@@ -107,7 +109,8 @@ async def civ_exchange(fake):
 def civ_fake(model: str, power: bytes = b"\x01\x28"):
     from rigplane_testkit.serial import CivSerialFake
 
-    fake = CivSerialFake(model=model, echo=False)
+    # IC-705 declares no identity id; the engine never asks it anyway.
+    fake = CivSerialFake(model=model, model_id=b"\xa4", echo=False)
     fake.hold(b"\x14\x0a", power)
     fake.hold(b"\x25\x00", bcd_le(14_074_000))
     return fake
@@ -460,7 +463,7 @@ CHILD = textwrap.dedent(
     os.fsync = fsync
 
     async def main():
-        fake = CivSerialFake(model="IC-705", echo=False)
+        fake = CivSerialFake(model="IC-705", model_id=b"\\xa4", echo=False)
         fake.hold(b"\\x14\\x0a", b"\\x01\\x28")
         fake.hold(b"\\x25\\x00", bytes.fromhex("0014074000")[::-1])
         reader, writer = await open_serial_port("fake", baudrate=115200, opener=fake.opener)
@@ -494,10 +497,8 @@ def test_sigkill_around_the_first_write_leaves_a_journal_with_exact_originals(
 ) -> None:
     from rigplane.probe.journal import leftover_journal_line
 
+    load(tmp_path, "ic705", CIV_POWER_FREQ)  # writes the profile and its catalogs
     profile = tmp_path / "ic705.toml"
-    profile.write_text(
-        (RIGS / "ic705.toml").read_text(encoding="utf-8") + CIV_POWER_FREQ
-    )
     journal = tmp_path / "out.json.checks-journal.json"
     env = {**os.environ, "PYTHONPATH": os.pathsep.join([str(REPO), str(REPO / "src")])}
     child = subprocess.Popen(
