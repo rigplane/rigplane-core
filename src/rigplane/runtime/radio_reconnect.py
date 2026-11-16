@@ -112,7 +112,7 @@ async def watchdog_loop(radio: IcomRadio) -> None:
                 logger.info(
                     "Transport health: ctrl_rx=%d civ_rx=%d audio_rx=%d audio_errors=%d "
                     "civ_reordered=%d civ_duplicate=%d civ_lost=%d civ_late=%d "
-                    "idle=%.1fs",
+                    "civ_reanchored=%d idle=%.1fs",
                     ctrl_count,
                     civ_count,
                     audio_rx,
@@ -121,6 +121,7 @@ async def watchdog_loop(radio: IcomRadio) -> None:
                     order.duplicate,
                     order.lost,
                     order.late,
+                    order.reanchored,
                     idle,
                 )
                 last_health_log = now
