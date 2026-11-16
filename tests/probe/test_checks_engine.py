@@ -247,6 +247,10 @@ async def test_link_lost_during_restore_is_exit_4_and_keeps_the_journal(
     assert result.termination.status == "restore_failed"
     assert "please set it by hand" in (record.error or "")
     assert req.journal_path.exists()
+    # the one attempted restore write is recorded; suppressed sends are not
+    restore = record.steps[-1:]
+    assert [(r.kind, r.outcome) for r in restore] == [("write", "transport_error")]
+    assert sum(r.outcome == "transport_error" for r in record.steps) == 1
 
 
 # --- refusals before any write --------------------------------------------------------
@@ -290,17 +294,87 @@ async def test_civ_original_in_dv_refuses_to_start_without_a_write(
     assert civ_writes(fake, 0x14) == [] and civ_writes(fake, 0x26) == []
 
 
-async def test_ic7610_write_above_original_power_is_refused_before_sending(
+CAT_POWER = check_toml(['kind = "write"\nentry = "power"\nvalue = 100'], ["power"])
+CIV_POWER = check_toml(
+    ['kind = "write"\nentry = "rf_power"\nvalue = 128'], ["rf_power"]
+)
+
+
+async def test_cat_consented_power_increase_executes_and_restores(
     tmp_path: Path,
 ) -> None:
-    toml = check_toml(['kind = "write"\nentry = "rf_power"\nvalue = 128'], ["rf_power"])
-    config = load(tmp_path, "ic7610", toml)
+    config = load(tmp_path, "ft991a", CAT_POWER)
+    radio = await cat_radio()
+    radio.hold("PC", "020")
+    try:
+        result = await run(config, request(tmp_path), await cat_exchange(radio))
+        held = await (await cat_exchange(radio))(b"PC;", 0.5)
+    finally:
+        await radio.stop()
+    (record,) = result.records
+    assert record.restored and record.verified and result.exit_code == 0
+    assert "PC100;" in radio.commands and held == b"PC020;"
+    assert record.originals == {"RF power": "20 W"}
+
+
+async def test_civ_consented_power_increase_executes_and_restores(
+    tmp_path: Path,
+) -> None:
+    config = load(tmp_path, "ic7610", CIV_POWER)
     fake = civ_fake("IC-7610", power=b"\x00\x64")
     result = await run(config, request(tmp_path), await civ_exchange(fake))
     (record,) = result.records
-    assert "above the original power" in (record.error or "")
-    assert b"\x0a\x01\x28" not in civ_writes(fake, 0x14)
-    assert record.restored and record.verified
+    assert record.restored and record.verified and result.exit_code == 0
+    assert b"\x0a\x01\x28" in civ_writes(fake, 0x14)
+    assert civ_writes(fake, 0x14)[-1] == b"\x0a\x00\x64"
+    assert record.originals == {"RF power": "25% (about 25.1 W)"}
+
+
+async def test_cat_failed_restore_of_raised_power_keeps_journal_and_says_now_vs_was(
+    tmp_path: Path,
+) -> None:
+    from rigplane.probe.journal import leftover_journal_line
+
+    config = load(tmp_path, "ft991a", CAT_POWER)
+    radio = await cat_radio()
+    radio.hold("PC", "020")
+
+    def events(name: str) -> None:
+        if name == "restore_begin":
+            radio.reject("PC")
+
+    req = request(tmp_path, events=events)
+    try:
+        result = await run(config, req, await cat_exchange(radio))
+    finally:
+        await radio.stop()
+    assert result.exit_code == 4 and req.journal_path.exists()
+    assert leftover_journal_line(req.journal_path) == (
+        "A check could not put the radio back: RF power is now 100 W, it was 20 W. "
+        "Set it back by hand before transmitting."
+    )
+
+
+async def test_civ_failed_restore_of_raised_power_keeps_journal_and_says_now_vs_was(
+    tmp_path: Path,
+) -> None:
+    from rigplane.probe.journal import leftover_journal_line
+
+    config = load(tmp_path, "ic7610", CIV_POWER)
+    fake = civ_fake("IC-7610", power=b"\x00\x64")
+
+    def events(name: str) -> None:
+        if name == "restore_begin":
+            fake.refuse_next(0x14)
+            fake.refuse_next(0x14)
+
+    req = request(tmp_path, events=events)
+    result = await run(config, req, await civ_exchange(fake))
+    assert result.exit_code == 4 and req.journal_path.exists()
+    assert leftover_journal_line(req.journal_path) == (
+        "A check could not put the radio back: RF power is now 50% (about 50.2 W), "
+        "it was 25% (about 25.1 W). Set it back by hand before transmitting."
+    )
 
 
 async def test_precondition_pattern_refuses_before_any_write(tmp_path: Path) -> None:
@@ -348,6 +422,242 @@ async def test_every_original_is_judged_as_its_restore_write_before_any_write(
     result = await run(config, request(tmp_path), exchange)
     assert result.records[0].restored and result.records[0].verified
     assert at_first_write == [{("rf_power", 128), ("freq_selected", 14_074_000)}]
+
+
+# --- pre-review round 1 regressions -------------------------------------------------
+
+
+def wrapped(inner, rule):
+    """An exchange whose answers *rule(body, count)* may replace: it returns
+    ``(True, reply)`` to answer without the radio, else the radio answers."""
+    seen: dict[bytes, int] = {}
+
+    async def exchange(body: bytes | None, timeout: float):
+        if body is not None:
+            seen[body] = seen.get(body, 0) + 1
+            done, reply = rule(body, seen[body], seen)
+            if done:
+                return reply
+        return await inner(body, timeout)
+
+    return exchange
+
+
+SILENT_READS = check_toml(
+    ['kind = "write"\nentry = "rf_power"\nvalue = 64']
+    + ['kind = "read"\nentry = "freq_selected"'] * 5,
+    ["rf_power"],
+)
+
+
+async def test_five_silent_reads_end_the_check_but_the_restore_still_sends(
+    tmp_path: Path,
+) -> None:
+    config = load(tmp_path, "ic705", SILENT_READS)
+    fake = civ_fake("IC-705")
+
+    def rule(body, count, seen):
+        silent = body == b"\x25\x00" and seen.get(b"\x14\x0a\x00\x64", 0) and count <= 5
+        return bool(silent), None
+
+    result = await run(
+        config, request(tmp_path), wrapped(await civ_exchange(fake), rule)
+    )
+    (record,) = result.records
+    assert record.restored and record.verified, record.error
+    assert civ_writes(fake, 0x14)[-1] == b"\x0a\x01\x28"
+    assert result.termination is not None
+    assert result.termination.status == "silence_stop"
+
+
+async def test_every_transmission_is_recorded_at_the_send_boundary(
+    tmp_path: Path,
+) -> None:
+    toml = check_toml(
+        ['kind = "write"\nentry = "freq_a"\nvalue = 7074000'],
+        ["freq_a"],
+        'witness = ["freq_b"]\n'
+        '[[probe.checks.preconditions]]\nentry = "split"\nequals = "FT0;"',
+    )
+    config = load(tmp_path, "ft991a", toml)
+    radio = await cat_radio()
+    try:
+        result = await run(config, request(tmp_path), await cat_exchange(radio))
+    finally:
+        await radio.stop()
+    (record,) = result.records
+    rows = [(r.kind, r.entry) for r in record.steps]
+    assert rows == [
+        ("read", "split"),  # precondition
+        ("read", "freq_b"),  # witness before
+        ("read", "freq_a"),  # original
+        ("write", "freq_a"),  # rehearsal
+        ("read", "freq_a"),
+        ("write", "freq_a"),  # step
+        ("write", "freq_a"),  # restore
+        ("read", "freq_a"),
+        ("read", "freq_b"),  # witness after
+    ]
+    assert [line for line in radio.commands] == [
+        bytes.fromhex(r.request_hex).decode() for r in record.steps
+    ]
+
+
+async def test_auto_information_pushes_do_not_fail_cat_writes(tmp_path: Path) -> None:
+    config = load(tmp_path, "ft991a", SPLIT)
+    radio = await cat_radio()
+    window = 0.3
+    try:
+        exchange = await cat_exchange(radio)
+        await exchange(b"AI1;", window)  # the radio now pushes FA/MD on changes
+        result = await run(config, request(tmp_path), exchange)
+    finally:
+        await radio.stop()
+    (record,) = result.records
+    assert record.restored and record.verified, record.error
+    assert any(row.text.startswith("FA007074000") for row in result.unsolicited)
+    assert radio.frequency_hz == 14_074_000
+
+
+@pytest.mark.parametrize("which", [3, 4], ids=["step-read", "first-restore-readback"])
+async def test_a_malformed_read_reply_never_skips_the_restore(
+    tmp_path: Path, which: int
+) -> None:
+    config = load(tmp_path, "ic705", CIV_POWER_FREQ)
+    fake = civ_fake("IC-705")
+
+    def rule(body, count, seen):
+        return body == b"\x25\x00" and count == which, b"\xfe\xfe\xfd"
+
+    req = request(tmp_path)
+    result = await run(config, req, wrapped(await civ_exchange(fake), rule))
+    (record,) = result.records
+    assert "malformed" in [r.outcome for r in record.steps]
+    assert record.restored  # every original was written back
+    assert civ_writes(fake, 0x14)[-1] == b"\x0a\x01\x28"
+    assert civ_writes(fake, 0x25)[-1] == b"\x00" + bcd_le(14_074_000)
+    assert record.verified is (which == 3)
+    assert req.journal_path.exists() is (which == 4)
+
+
+@pytest.mark.parametrize(
+    "answer", [None, b"?;", b"FB\xff;"], ids=["silent", "refused", "malformed"]
+)
+async def test_a_witness_without_data_is_not_verified(tmp_path: Path, answer) -> None:
+    toml = check_toml(
+        ['kind = "write"\nentry = "freq_a"\nvalue = 7074000'],
+        ["freq_a"],
+        'witness = ["freq_b"]',
+    )
+    config = load(tmp_path, "ft991a", toml)
+    radio = await cat_radio()
+    req = request(tmp_path)
+    try:
+        exchange = wrapped(
+            await cat_exchange(radio), lambda b, c, s: (b == b"FB;", answer)
+        )
+        result = await run(config, req, exchange)
+    finally:
+        await radio.stop()
+    (record,) = result.records
+    assert record.restored and not record.verified
+    assert record.witness.changed == ["freq_b"]
+    assert result.exit_code == 4 and req.journal_path.exists()
+
+
+async def test_a_check_left_unrestored_ends_the_batch_and_keeps_its_journal(
+    tmp_path: Path,
+) -> None:
+    from rigplane.probe.journal import read_journal
+
+    first = check_toml(['kind = "write"\nentry = "rf_power"\nvalue = 64'], ["rf_power"])
+    second = (
+        check_toml(
+            ['kind = "write"\nentry = "freq_selected"\nvalue = 7074000'],
+            ["freq_selected"],
+        )
+        .replace("[probe]\n", "")
+        .replace('id = "synthetic"', 'id = "second"')
+    )
+    config = load(tmp_path, "ic705", first + second)
+    fake = civ_fake("IC-705")
+
+    def events(name: str) -> None:
+        if name == "restore_begin":
+            fake.refuse_next(0x14)
+            fake.refuse_next(0x14)
+
+    req = request(tmp_path, events=events)
+    result = await run(config, req, await civ_exchange(fake))
+    assert [r.id for r in result.records] == ["synthetic"] and result.exit_code == 4
+    assert civ_writes(fake, 0x25) == []  # the second check sent nothing
+    journal = read_journal(req.journal_path)
+    assert journal is not None and journal.check_id == "synthetic"
+    assert dict(journal.originals) == {"RF power": "50% (about 5.0 W)"}
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX signals (Windows: MOR-4497)")
+async def test_a_late_ack_of_a_cancelled_write_does_not_spoil_the_restore(
+    tmp_path: Path,
+) -> None:
+    from rigplane_testkit.serial import CivSerialFake
+
+    config = load(tmp_path, "ic705", CIV_POWER_FREQ)
+    fake = CivSerialFake(model="IC-705", model_id=b"\xa4", echo=False, ack_set_s=0.3)
+    fake.hold(b"\x14\x0a", b"\x01\x28")
+    fake.hold(b"\x25\x00", bcd_le(14_074_000))
+
+    def events(name: str) -> None:
+        if name == "steps_begin":
+            os.kill(os.getpid(), signal.SIGTERM)
+
+    result = await run(
+        config, request(tmp_path, events=events), await civ_exchange(fake)
+    )
+    (record,) = result.records
+    assert "cancelled" in (record.error or "")
+    assert record.restored and record.verified, record.steps
+
+
+async def test_task_cancel_during_the_restore_still_puts_every_original_back(
+    tmp_path: Path,
+) -> None:
+    config = load(tmp_path, "ic705", CIV_POWER_FREQ)
+    fake = civ_fake("IC-705")
+    exchange = await civ_exchange(fake)
+    box: list[asyncio.Task] = []
+
+    def events(name: str) -> None:
+        if name == "restore_begin":
+            asyncio.get_running_loop().call_soon(box[0].cancel)
+
+    box.append(
+        asyncio.ensure_future(run(config, request(tmp_path, events=events), exchange))
+    )
+    with pytest.raises(asyncio.CancelledError):
+        await box[0]
+    assert civ_writes(fake, 0x14)[-1] == b"\x0a\x01\x28"
+    assert civ_writes(fake, 0x25)[-1] == b"\x00" + bcd_le(14_074_000)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX signals")
+async def test_signal_handlers_installed_before_the_checks_work_afterwards(
+    tmp_path: Path,
+) -> None:
+    config = load(tmp_path, "ic705", CIV_POWER_FREQ)
+    fake = civ_fake("IC-705")
+    seen: list[int] = []
+    previous = signal.signal(signal.SIGHUP, lambda number, frame: seen.append(number))
+    try:
+        await run(config, request(tmp_path), await civ_exchange(fake))
+        os.kill(os.getpid(), signal.SIGHUP)
+        for _ in range(100):
+            if seen:
+                break
+            await asyncio.sleep(0)
+    finally:
+        signal.signal(signal.SIGHUP, previous)
+    assert seen == [signal.SIGHUP]
 
 
 # --- ask timeout, cancel ----------------------------------------------------------------
@@ -550,7 +860,8 @@ def test_sigkill_around_the_first_write_leaves_a_journal_with_exact_originals(
     assert journal.stat().st_ino in synced, "journal not fsynced before the write"
     assert tmp_path.stat().st_ino in synced, "journal folder not fsynced"
     assert leftover_journal_line(journal) == (
-        "A check did not finish last time. Before it the radio had: RF power 128, "
+        "A check did not finish last time. Before it the radio had: RF power 50% "
+        "(about 5.0 W), "
         "frequency of the selected VFO 14.074 MHz. Please set these by hand."
     )
 
