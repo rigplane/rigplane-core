@@ -121,7 +121,7 @@
   let { hideSourceControls = false, hideScopeControls = false, hideAutoStepToggle = false, hideToolbar = false,
     enableAvg = $bindable(true), enablePeakHold = $bindable(true), enableSmooth = $bindable(true), showBandPlan = $bindable(true), scopeControls,
     scopeStatusIndicator, scopeRegion, scopeDemanded = true, onScopeDemandChange, colorRoles,
-    captureTraceTimeline = false, onTraceComplete }: {
+    captureTraceTimeline = false, onTraceComplete, defaultSplitRatio = 0.3 }: {
     hideSourceControls?: boolean; hideScopeControls?: boolean; hideAutoStepToggle?: boolean; hideToolbar?: boolean;
     enableAvg?: boolean; enablePeakHold?: boolean; enableSmooth?: boolean; showBandPlan?: boolean;
     scopeControls?: Snippet<[allowBare?: boolean, screenGroup?: Snippet]>;
@@ -129,6 +129,8 @@
     scopeRegion?: ManagedScopeRegion | null;
     scopeDemanded?: boolean; onScopeDemandChange?: (enabled: boolean) => void;
     colorRoles?: Partial<SpectrumColorRoles>;
+    /** Spectrum share of the split until the user drags it (MOR-4463: the phone gives the spectrum more). */
+    defaultSplitRatio?: number;
     /** Diagnostic candidates only; ordinary rendering never invokes these hooks. */
     captureTraceTimeline?: boolean;
     onTraceComplete?: (contents: string) => void;
@@ -350,7 +352,6 @@
   let splitRegion = $state<HTMLDivElement | null>(null);
   let splitRegionHeight = $state(0);
   const SPLIT_STORAGE_KEY = 'rigplane-spectrum-split-ratio';
-  const DEFAULT_SPLIT_RATIO = 0.3;
   const MIN_SPLIT_RATIO = 0.2;
   const MAX_SPLIT_RATIO = 0.8;
   const SPLIT_KEY_STEP = 0.05;
@@ -363,19 +364,19 @@
     return Math.max(MIN_SPLIT_RATIO, Math.min(MAX_SPLIT_RATIO, value));
   }
 
-  function readSplitRatio(): number {
-    if (typeof localStorage === 'undefined') return DEFAULT_SPLIT_RATIO;
+  function readSplitRatio(fallback: number): number {
+    if (typeof localStorage === 'undefined') return fallback;
     try {
       const stored = localStorage.getItem(SPLIT_STORAGE_KEY);
-      if (stored === null || stored.trim() === '') return DEFAULT_SPLIT_RATIO;
+      if (stored === null || stored.trim() === '') return fallback;
       const value = Number(stored);
-      return Number.isFinite(value) ? normalizeSplitRatio(value) : DEFAULT_SPLIT_RATIO;
+      return Number.isFinite(value) ? normalizeSplitRatio(value) : fallback;
     } catch {
-      return DEFAULT_SPLIT_RATIO;
+      return fallback;
     }
   }
 
-  let splitRatio = $state(readSplitRatio());
+  let splitRatio = $state(readSplitRatio(normalizeSplitRatio(untrack(() => defaultSplitRatio))));
   type SplitBounds = Readonly<{ min: number; max: number }>;
 
   function resolveSplitBounds(regionHeight: number): SplitBounds {
@@ -2147,6 +2148,25 @@
     cursor: ns-resize;
     touch-action: none;
     user-select: none;
+  }
+
+  /* MOR-4463: a finger cannot hit an 8px line. On touch screens the divider
+     takes a 32px band around itself and shows a grip, so it can be found
+     and dragged. */
+  @media (pointer: coarse) {
+    .spectrum-split-separator::before {
+      content: '';
+      position: absolute;
+      left: 0;
+      right: 0;
+      top: -12px;
+      bottom: -12px;
+      background:
+        linear-gradient(var(--accent, var(--panel-border)), var(--accent, var(--panel-border)))
+        center / 44px 4px no-repeat;
+      border-radius: 2px;
+      opacity: 0.7;
+    }
   }
 
   /* MOR-2562: hover-intent overlay. A thin translucent accent line appears
