@@ -11,7 +11,7 @@
  * one is a protocol error, never a routed response.
  */
 import wire from './api-channel-wire.json';
-import { buildContractPayload, decodeContractPayload, type DataChannelTransport, type PayloadContract } from './datachannel-transport';
+import { buildContractPayload, decodeContractPayload, isArrayBuffer, type DataChannelTransport, type PayloadContract } from './datachannel-transport';
 
 const HEADER_SIZE = wire.header.size_bytes;
 const TYPES = wire.message_types;
@@ -75,7 +75,7 @@ function encodeFrame(type: number, id: number, payload: Uint8Array): ArrayBuffer
 function bodyBytes(body: BodyInit | null | undefined): Uint8Array {
   if (body === null || body === undefined) return new Uint8Array(0);
   if (typeof body === 'string') return utf8.encode(body);
-  if (body instanceof ArrayBuffer) return new Uint8Array(body.slice(0));
+  if (isArrayBuffer(body)) return new Uint8Array(body.slice(0));
   if (ArrayBuffer.isView(body)) return new Uint8Array(body.buffer.slice(body.byteOffset, body.byteOffset + body.byteLength));
   throw new TypeError('api channel: unsupported request body type');
 }

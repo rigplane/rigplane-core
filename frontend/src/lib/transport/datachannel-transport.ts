@@ -23,6 +23,13 @@ export const ATTACH_TIMEOUT_MS = 5000; // give-up bound for the attach step
 /** The `RTCDataChannel` surface this transport consumes. */
 export type DataChannelLike = Pick<RTCDataChannel, 'label' | 'readyState' | 'bufferedAmount' | 'binaryType' | 'onopen' | 'onmessage' | 'onclose' | 'onerror' | 'send' | 'close'>;
 
+/** Realm-safe `ArrayBuffer` check: a channel created in a parent window hands a
+ * UI running in an iframe an `ArrayBuffer` of the other realm, for which
+ * `instanceof ArrayBuffer` is false. */
+export function isArrayBuffer(value: unknown): value is ArrayBuffer {
+  return Object.prototype.toString.call(value) === '[object ArrayBuffer]';
+}
+
 /** A wire payload contract: its `fields` rows (name, kind, required, note). */
 export interface PayloadContract { readonly fields: readonly (string | boolean)[][] }
 /** The typed, contract-validated `attach_ack` payload. */
@@ -217,7 +224,7 @@ export class DataChannelTransport implements MessageTransport {
     }
     if (typeof data === 'string') {
       for (const handler of [...this.textHandlers]) handler(data);
-    } else if (data instanceof ArrayBuffer) {
+    } else if (isArrayBuffer(data)) {
       for (const handler of [...this.binaryHandlers]) handler(data);
     }
   }
