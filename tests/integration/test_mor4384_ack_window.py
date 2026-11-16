@@ -40,11 +40,15 @@ _MODEL = "IC-7610"
 _FREQ = 14_074_000
 _TUNER_READ = (0x1C, 0x01)
 _SET_FREQ = 0x05
-#: The tuner-status refusal lands past the drain cutoff (0.5 s) but inside
-#: the answer window (2 s); the set's own FB follows it, as on an ordered
-#: wire (both delays are anchored at each frame's own dispatch).
-_FA_DELAY_S = 0.9
-_FB_DELAY_S = 0.65
+#: The tuner-status refusal must land past the drain cutoff (0.5 s after
+#: the set starts, plus the web command queue's own dispatch latency) but
+#: inside the answer window (2 s). It is scheduled from its read and then
+#: re-anchored to the set's actual dispatch (always post-cutoff), so queue
+#: latency cannot drop it inside the drain. The set's own FB follows the
+#: FA's actual delivery.
+_FA_DELAY_S = 1.6
+_FA_AFTER_SET_DISPATCH_S = 0.25
+_FB_AFTER_FA_S = 0.1
 
 
 async def _wait_until(predicate, description: str, timeout_s: float = 10.0) -> None:
@@ -59,10 +63,11 @@ async def _wait_until(predicate, description: str, timeout_s: float = 10.0) -> N
 class _DelayedAnswers:
     """Hold two answers back so they land past the drain cutoff.
 
-    The tuner-status refusal is delivered ``_FA_DELAY_S`` after its read,
-    and every frequency SET's confirmation ``_FB_DELAY_S`` after its write
-    — both through the simulator's own outbound funnel, so the wire sees
-    them in the order the radio would have sent them.
+    The tuner-status refusal is delivered ``_FA_DELAY_S`` after its read;
+    the frequency SET's confirmation follows the FA's actual delivery by
+    ``_FB_AFTER_FA_S`` — both through the simulator's own outbound funnel,
+    so the wire sees them in the order the radio would have sent them
+    whatever the web command queue's dispatch latency is.
     """
 
     def __init__(self, sim: MockIcomRadio) -> None:
@@ -70,6 +75,10 @@ class _DelayedAnswers:
         self._wire: dict[str, Any] = {}
         self._armed = False
         self._first_read_delayed = False
+        self._fa_delivered = False
+        self._fa_reply: bytes | None = None
+        self._fa_handle: Any = None
+        self._pending_fb: bytes | None = None
         self._dispatch = sim._dispatch_civ
         self._handle = sim._handle_civ_data
 
@@ -84,26 +93,49 @@ class _DelayedAnswers:
             reply = self._dispatch(cmd, payload, from_addr)
             if reply is None or not self._armed:
                 return reply
-            delay = None
             if (
                 cmd == _TUNER_READ[0]
                 and payload == bytes([_TUNER_READ[1]])
                 and not self._first_read_delayed
             ):
                 self._first_read_delayed = True
-                delay = _FA_DELAY_S
-            elif cmd == _SET_FREQ and payload:
-                delay = _FB_DELAY_S
-            if delay is None:
-                return reply
-            self._deliver_later(reply, delay)
-            return None
+                self._fa_reply = reply
+                self._schedule_fa(_FA_DELAY_S)
+                return None
+            if cmd == _SET_FREQ and payload:
+                # The set's dispatch is always past the drain cutoff (the
+                # cutoff gates the send), so re-anchor a still-pending FA
+                # just behind it: the refusal then provably lands while
+                # the set's waiter is registered, not inside the drain.
+                if self._fa_handle is not None:
+                    self._fa_handle.cancel()
+                    self._fa_handle = None
+                    self._schedule_fa(_FA_AFTER_SET_DISPATCH_S)
+                # The set's own FB must arrive after the read's FA, as on
+                # an ordered wire: chain it to the FA's real delivery (or
+                # deliver it promptly when the FA has already landed).
+                if self._fa_delivered:
+                    self._deliver_later(reply, _FB_AFTER_FA_S)
+                else:
+                    self._pending_fb = reply
+                return None
+            return reply
 
         sim._handle_civ_data = handle
         sim._dispatch_civ = dispatch
 
     def arm(self) -> None:
         self._armed = True
+
+    def _schedule_fa(self, delay: float) -> None:
+        loop = asyncio.get_running_loop()
+        self._fa_handle = loop.call_later(delay, self._fire_fa)
+
+    def _fire_fa(self) -> None:
+        self._fa_handle = None
+        reply, self._fa_reply = self._fa_reply, None
+        if reply is not None:
+            self._deliver(reply)
 
     def _deliver_later(self, reply: bytes, delay: float) -> None:
         loop = asyncio.get_running_loop()
@@ -113,12 +145,19 @@ class _DelayedAnswers:
         sim = self._sim
         if not self._wire:
             return
+        # The first delayed delivery is the read's FA by construction: the
+        # set's FB is only ever chained behind it.
+        is_fa = not self._fa_delivered
+        self._fa_delivered = True
         sim._send(
             self._wire["proto"],
             sim._wrap_civ(reply, self._wire["sender_id"]),
             self._wire["addr"],
             "civ",
         )
+        pending, self._pending_fb = self._pending_fb, None
+        if is_fa and pending is not None:
+            self._deliver_later(pending, _FB_AFTER_FA_S)
 
 
 def _state_has_frequency(session: aiohttp.ClientSession, base: str):
@@ -135,9 +174,10 @@ def _state_has_frequency(session: aiohttp.ClientSession, base: str):
 async def test_delayed_read_refusal_does_not_fail_a_successful_http_tuning() -> None:
     """A ``set_freq`` the radio accepts reports success, not the read's FA.
 
-    The refused tuner read's ``FA`` lands ~0.9 s after its send — past the
-    drain's 500 ms cutoff, inside the 2 s answer window — and the set's own
-    ``FB`` follows it. The read sink must still be claimable then, so the
+    The refused tuner read's ``FA`` lands past the drain's 500 ms cutoff
+    and inside the 2 s answer window (re-anchored just behind the set's
+    own dispatch, which the cutoff gates), and the set's own ``FB``
+    follows it. The read sink must still be claimable then, so the
     refusal retires the read it answers and the set settles on its own
     confirmation: the HTTP tuning reports success and the radio's frequency
     is the requested one.
