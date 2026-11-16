@@ -1,0 +1,643 @@
+{
+ "schema": "rigplane-probe-v1",
+ "tool": {
+  "rigplane_version": "3.1.2rc4",
+  "python": "3.13.14",
+  "os": "Darwin",
+  "created_utc": "2026-11-14T23:52:04.226134+00:00"
+ },
+ "mode": "read",
+ "radio": {
+  "profile": "G7250",
+  "profile_sha256": "0cee518a67fa0b4f970abf4068e76652042ce5286a95f9af168cb7a106de30af",
+  "protocol": "civ",
+  "port_kind": "usb",
+  "baud": 115200,
+  "identity_reported": {
+   "raw": "fefee0a01900a0fd",
+   "parsed": "a0"
+  },
+  "identity_matches_profile": true
+ },
+ "private_reads_included": false,
+ "label": "",
+ "commands": [
+  {
+   "name": "get_af_level",
+   "template": "1401",
+   "request_hex": "1401",
+   "request_text": "",
+   "reply_hex": "fefee0a014010000fd",
+   "reply_text": null,
+   "class": "data",
+   "latency_ms": 42.8,
+   "expected": "present",
+   "note": ""
+  },
+  {
+   "name": "get_agc",
+   "template": "1612",
+   "request_hex": "1612",
+   "request_text": "",
+   "reply_hex": "fefee0a0161202fd",
+   "reply_text": null,
+   "class": "data",
+   "latency_ms": 18.3,
+   "expected": "present",
+   "note": ""
+  },
+  {
+   "name": "get_attenuator",
+   "template": "11",
+   "request_hex": "11",
+   "request_text": "",
+   "reply_hex": "fefee0a01100fd",
+   "reply_text": null,
+   "class": "data",
+   "latency_ms": 20.3,
+   "expected": "present",
+   "note": ""
+  },
+  {
+   "name": "get_auto_notch",
+   "template": "1641",
+   "request_hex": "1641",
+   "request_text": "",
+   "reply_hex": "fefee0a0164102fd",
+   "reply_text": null,
+   "class": "data",
+   "latency_ms": 18.8,
+   "expected": "absent",
+   "note": "bytes from profile(s): IC-705, IC-7300, IC-7300MK2, IC-7610, IC-905, IC-9700, X6100, X6200"
+  },
+  {
+   "name": "get_band_edge_freq",
+   "template": "02",
+   "request_hex": "02",
+   "request_text": "",
+   "reply_hex": "fefee0a00200005000002d0000000801fd",
+   "reply_text": null,
+   "class": "data",
+   "latency_ms": 19.5,
+   "expected": "present",
+   "note": ""
+  },
+  {
+   "name": "get_band_spectrum_display",
+   "template": "1a01",
+   "request_hex": "1a01",
+   "request_text": "",
+   "reply_hex": "fefee0a0fafd",
+   "reply_text": null,
+   "class": "refused",
+   "latency_ms": 17.3,
+   "expected": "absent",
+   "note": "bytes from profile(s): X6100, X6200"
+  },
+  {
+   "name": "get_break_in",
+   "template": "1647",
+   "request_hex": "1647",
+   "request_text": "",
+   "reply_hex": "fefee0a0fafd",
+   "reply_text": null,
+   "class": "refused",
+   "latency_ms": 20.3,
+   "expected": "absent",
+   "note": "bytes from profile(s): IC-705, IC-7300, IC-7300MK2, IC-7610, IC-905, IC-9700"
+  },
+  {
+   "name": "get_bsr",
+   "template": "1a01",
+   "request_hex": "1a01",
+   "request_text": "",
+   "reply_hex": "fefee0a0fafd",
+   "reply_text": null,
+   "class": "refused",
+   "latency_ms": 18.5,
+   "expected": "absent",
+   "note": "bytes from profile(s): IC-705, IC-7300, IC-7300MK2, IC-7610, IC-905, IC-9700"
+  },
+  {
+   "name": "get_comp_meter",
+   "template": "1514",
+   "request_hex": "1514",
+   "request_text": "",
+   "reply_hex": "fefee0a0fafd",
+   "reply_text": null,
+   "class": "refused",
+   "latency_ms": 20.5,
+   "expected": "absent",
+   "note": "bytes from profile(s): IC-705, IC-7300, IC-7300MK2, IC-7610, IC-905, IC-9700"
+  },
+  {
+   "name": "get_compressor",
+   "template": "1644",
+   "request_hex": "1644",
+   "request_text": "",
+   "reply_hex": "fefee0a0164402fd",
+   "reply_text": null,
+   "class": "data",
+   "latency_ms": 18.8,
+   "expected": "absent",
+   "note": "bytes from profile(s): IC-705, IC-7300, IC-7300MK2, IC-7610, IC-905, IC-9700, X6100, X6200"
+  },
+  {
+   "name": "get_cw_pitch",
+   "template": "1409",
+   "request_hex": "1409",
+   "request_text": "",
+   "reply_hex": "fefee0a014090000fd",
+   "reply_text": null,
+   "class": "data",
+   "latency_ms": 18.8,
+   "expected": "present",
+   "note": ""
+  },
+  {
+   "name": "get_data_mode",
+   "template": "1a06",
+   "request_hex": "1a06",
+   "request_text": "",
+   "reply_hex": "fefee0a0fafd",
+   "reply_text": null,
+   "class": "refused",
+   "latency_ms": 18.6,
+   "expected": "absent",
+   "note": "bytes from profile(s): IC-705, IC-7300, IC-7300MK2, IC-7610, IC-905, IC-9700"
+  },
+  {
+   "name": "get_dial_lock",
+   "template": "1650",
+   "request_hex": "1650",
+   "request_text": "",
+   "reply_hex": "fefee0a0165002fd",
+   "reply_text": null,
+   "class": "data",
+   "latency_ms": 18.9,
+   "expected": "absent",
+   "note": "bytes from profile(s): IC-705, IC-7300, IC-7300MK2, IC-7610, IC-905, IC-9700, X6100, X6200"
+  },
+  {
+   "name": "get_filter_width",
+   "template": "1a03",
+   "request_hex": "1a03",
+   "request_text": "",
+   "reply_hex": "fefee0a01a0328fd",
+   "reply_text": null,
+   "class": "data",
+   "latency_ms": 19.8,
+   "expected": "present",
+   "note": ""
+  },
+  {
+   "name": "get_freq",
+   "template": "03",
+   "request_hex": "03",
+   "request_text": "",
+   "reply_hex": "fefee0a0030010211400fd",
+   "reply_text": null,
+   "class": "data",
+   "latency_ms": 20.5,
+   "expected": "present",
+   "note": ""
+  },
+  {
+   "name": "get_id_meter",
+   "template": "1516",
+   "request_hex": "1516",
+   "request_text": "",
+   "reply_hex": "fefee0a0fafd",
+   "reply_text": null,
+   "class": "refused",
+   "latency_ms": 17.5,
+   "expected": "absent",
+   "note": "bytes from profile(s): IC-705, IC-7300, IC-7300MK2, IC-7610, IC-905, IC-9700"
+  },
+  {
+   "name": "get_key_speed",
+   "template": "140c",
+   "request_hex": "140c",
+   "request_text": "",
+   "reply_hex": "fefee0a0140c0141fd",
+   "reply_text": null,
+   "class": "data",
+   "latency_ms": 19.1,
+   "expected": "present",
+   "note": ""
+  },
+  {
+   "name": "get_manual_notch",
+   "template": "1648",
+   "request_hex": "1648",
+   "request_text": "",
+   "reply_hex": "fefee0a0fafd",
+   "reply_text": null,
+   "class": "refused",
+   "latency_ms": 19.5,
+   "expected": "absent",
+   "note": "bytes from profile(s): IC-705, IC-7300, IC-7300MK2, IC-7610, IC-905, IC-9700"
+  },
+  {
+   "name": "get_mic_gain",
+   "template": "140b",
+   "request_hex": "140b",
+   "request_text": "",
+   "reply_hex": "fefee0a0140b0119fd",
+   "reply_text": null,
+   "class": "data",
+   "latency_ms": 18.9,
+   "expected": "present",
+   "note": ""
+  },
+  {
+   "name": "get_mode",
+   "template": "04",
+   "request_hex": "04",
+   "request_text": "",
+   "reply_hex": "fefee0a0040102fd",
+   "reply_text": null,
+   "class": "data",
+   "latency_ms": 19.8,
+   "expected": "present",
+   "note": ""
+  },
+  {
+   "name": "get_monitor_gain",
+   "template": "1415",
+   "request_hex": "1415",
+   "request_text": "",
+   "reply_hex": "fefee0a014150000fd",
+   "reply_text": null,
+   "class": "data",
+   "latency_ms": 19.5,
+   "expected": "present",
+   "note": ""
+  },
+  {
+   "name": "get_nb",
+   "template": "1622",
+   "request_hex": "1622",
+   "request_text": "",
+   "reply_hex": "fefee0a0162201fd",
+   "reply_text": null,
+   "class": "data",
+   "latency_ms": 19.6,
+   "expected": "present",
+   "note": ""
+  },
+  {
+   "name": "get_nb_level",
+   "template": "1412",
+   "request_hex": "1412",
+   "request_text": "",
+   "reply_hex": "fefee0a014120187fd",
+   "reply_text": null,
+   "class": "data",
+   "latency_ms": 20.1,
+   "expected": "present",
+   "note": ""
+  },
+  {
+   "name": "get_nr",
+   "template": "1640",
+   "request_hex": "1640",
+   "request_text": "",
+   "reply_hex": "fefee0a0164001fd",
+   "reply_text": null,
+   "class": "data",
+   "latency_ms": 18.9,
+   "expected": "present",
+   "note": ""
+  },
+  {
+   "name": "get_nr_level",
+   "template": "1406",
+   "request_hex": "1406",
+   "request_text": "",
+   "reply_hex": "fefee0a014060160fd",
+   "reply_text": null,
+   "class": "data",
+   "latency_ms": 18.5,
+   "expected": "present",
+   "note": ""
+  },
+  {
+   "name": "get_power_meter",
+   "template": "1511",
+   "request_hex": "1511",
+   "request_text": "",
+   "reply_hex": "fefee0a015110000fd",
+   "reply_text": null,
+   "class": "data",
+   "latency_ms": 18.5,
+   "expected": "present",
+   "note": ""
+  },
+  {
+   "name": "get_preamp",
+   "template": "1602",
+   "request_hex": "1602",
+   "request_text": "",
+   "reply_hex": "fefee0a0160201fd",
+   "reply_text": null,
+   "class": "data",
+   "latency_ms": 19.7,
+   "expected": "present",
+   "note": ""
+  },
+  {
+   "name": "get_repeater_tone",
+   "template": "1642",
+   "request_hex": "1642",
+   "request_text": "",
+   "reply_hex": "fefee0a0fafd",
+   "reply_text": null,
+   "class": "refused",
+   "latency_ms": 20.2,
+   "expected": "absent",
+   "note": "bytes from profile(s): IC-705, IC-7300, IC-7300MK2, IC-905, IC-9700"
+  },
+  {
+   "name": "get_repeater_tsql",
+   "template": "1643",
+   "request_hex": "1643",
+   "request_text": "",
+   "reply_hex": "fefee0a0fafd",
+   "reply_text": null,
+   "class": "refused",
+   "latency_ms": 17.3,
+   "expected": "absent",
+   "note": "bytes from profile(s): IC-705, IC-7300, IC-7300MK2, IC-905, IC-9700"
+  },
+  {
+   "name": "get_rf_gain",
+   "template": "1402",
+   "request_hex": "1402",
+   "request_text": "",
+   "reply_hex": "fefee0a014020255fd",
+   "reply_text": null,
+   "class": "data",
+   "latency_ms": 18.7,
+   "expected": "present",
+   "note": ""
+  },
+  {
+   "name": "get_rf_power",
+   "template": "140a",
+   "request_hex": "140a",
+   "request_text": "",
+   "reply_hex": "fefee0a0140a0255fd",
+   "reply_text": null,
+   "class": "data",
+   "latency_ms": 18.6,
+   "expected": "present",
+   "note": ""
+  },
+  {
+   "name": "get_s_meter",
+   "template": "1502",
+   "request_hex": "1502",
+   "request_text": "",
+   "reply_hex": "fefee0a015020068fd",
+   "reply_text": null,
+   "class": "data",
+   "latency_ms": 20.2,
+   "expected": "present",
+   "note": ""
+  },
+  {
+   "name": "get_selected_freq",
+   "template": "2500",
+   "request_hex": "2500",
+   "request_text": "",
+   "reply_hex": "fefee0a025000010211400fd",
+   "reply_text": null,
+   "class": "data",
+   "latency_ms": 18.7,
+   "expected": "present",
+   "note": ""
+  },
+  {
+   "name": "get_selected_mode",
+   "template": "2600",
+   "request_hex": "2600",
+   "request_text": "",
+   "reply_hex": "fefee0a02600010002fd",
+   "reply_text": null,
+   "class": "data",
+   "latency_ms": 19.1,
+   "expected": "present",
+   "note": ""
+  },
+  {
+   "name": "get_squelch",
+   "template": "1403",
+   "request_hex": "1403",
+   "request_text": "",
+   "reply_hex": "fefee0a014030000fd",
+   "reply_text": null,
+   "class": "data",
+   "latency_ms": 18.8,
+   "expected": "present",
+   "note": ""
+  },
+  {
+   "name": "get_swr",
+   "template": "1512",
+   "request_hex": "1512",
+   "request_text": "",
+   "reply_hex": "fefee0a015120000fd",
+   "reply_text": null,
+   "class": "data",
+   "latency_ms": 18.4,
+   "expected": "present",
+   "note": ""
+  },
+  {
+   "name": "get_transceiver_id",
+   "template": "1900",
+   "request_hex": "1900",
+   "request_text": "",
+   "reply_hex": "fefee0a01900a0fd",
+   "reply_text": null,
+   "class": "data",
+   "latency_ms": 18.8,
+   "expected": "present",
+   "note": ""
+  },
+  {
+   "name": "get_twin_peak_filter",
+   "template": "164f",
+   "request_hex": "164f",
+   "request_text": "",
+   "reply_hex": "fefee0a0fafd",
+   "reply_text": null,
+   "class": "refused",
+   "latency_ms": 19.1,
+   "expected": "absent",
+   "note": "bytes from profile(s): IC-705, IC-7300, IC-7300MK2, IC-7610, IC-905, IC-9700"
+  },
+  {
+   "name": "get_unselected_freq",
+   "template": "2501",
+   "request_hex": "2501",
+   "request_text": "",
+   "reply_hex": "fefee0a025010000050700fd",
+   "reply_text": null,
+   "class": "data",
+   "latency_ms": 19.4,
+   "expected": "present",
+   "note": ""
+  },
+  {
+   "name": "get_unselected_mode",
+   "template": "2601",
+   "request_hex": "2601",
+   "request_text": "",
+   "reply_hex": "fefee0a02601000001fd",
+   "reply_text": null,
+   "class": "data",
+   "latency_ms": 18.7,
+   "expected": "present",
+   "note": ""
+  },
+  {
+   "name": "get_vd_meter",
+   "template": "1515",
+   "request_hex": "1515",
+   "request_text": "",
+   "reply_hex": "fefee0a015150154fd",
+   "reply_text": null,
+   "class": "data",
+   "latency_ms": 18.2,
+   "expected": "present",
+   "note": ""
+  },
+  {
+   "name": "get_xiegu_model_id",
+   "template": "1d19",
+   "request_hex": "1d19",
+   "request_text": "",
+   "reply_hex": "fefee0a01d197250fd",
+   "reply_text": null,
+   "class": "data",
+   "latency_ms": 19.1,
+   "expected": "present",
+   "note": ""
+  },
+  {
+   "name": "unknown:1a050999",
+   "template": "1a050999",
+   "request_hex": "1a050999",
+   "request_text": "",
+   "reply_hex": "fefee0a0fafd",
+   "reply_text": null,
+   "class": "refused",
+   "latency_ms": 18.4,
+   "expected": "absent",
+   "note": ""
+  },
+  {
+   "name": "unknown:7f",
+   "template": "7f",
+   "request_hex": "7f",
+   "request_text": "",
+   "reply_hex": null,
+   "reply_text": null,
+   "class": "silent",
+   "latency_ms": 501.9,
+   "expected": "absent",
+   "note": ""
+  },
+  {
+   "name": "unknown:147e",
+   "template": "147e",
+   "request_hex": "147e",
+   "request_text": "",
+   "reply_hex": "fefee0a0147e0255fd",
+   "reply_text": null,
+   "class": "data",
+   "latency_ms": 6.3,
+   "expected": "absent",
+   "note": ""
+  },
+  {
+   "name": "unknown:277f",
+   "template": "277f",
+   "request_hex": "277f",
+   "request_text": "",
+   "reply_hex": null,
+   "reply_text": null,
+   "class": "silent",
+   "latency_ms": 502.2,
+   "expected": "absent",
+   "note": ""
+  }
+ ],
+ "skipped": [
+  {
+   "name": "get_command_error_fa",
+   "request_hex": "fa",
+   "reason": "response_code",
+   "detail": "0xFA is the radio's reply code, never a request"
+  },
+  {
+   "name": "get_command_ok_fb",
+   "request_hex": "fb",
+   "reason": "response_code",
+   "detail": "0xFB is the radio's reply code, never a request"
+  },
+  {
+   "name": "get_memory_contents",
+   "request_hex": "1a00",
+   "reason": "private",
+   "detail": "stored memory contents need --include-private"
+  },
+  {
+   "name": "get_memory_mode",
+   "request_hex": null,
+   "reason": "no_unambiguous_bytes",
+   "detail": "no sibling profile declares get_memory_mode"
+  },
+  {
+   "name": "get_transceiver_status",
+   "request_hex": "1c00",
+   "reason": "unsafe_family",
+   "detail": "command byte 0x1C is never sent (refused family)"
+  },
+  {
+   "name": "get_tuner_status",
+   "request_hex": "1c01",
+   "reason": "unsafe_family",
+   "detail": "command byte 0x1C is never sent (refused family)"
+  },
+  {
+   "name": "get_tx_band_count",
+   "request_hex": "1e00",
+   "reason": "unsafe_family",
+   "detail": "command byte 0x1E is not borrow-safe"
+  },
+  {
+   "name": "get_tx_band_edge",
+   "request_hex": "1e01",
+   "reason": "unsafe_family",
+   "detail": "command byte 0x1E is not borrow-safe"
+  }
+ ],
+ "unsolicited": [],
+ "snapshot": {
+  "before": {
+   "get_freq": "fefee0a0030010211400fd",
+   "get_mode": "fefee0a0040102fd",
+   "get_rf_power": "fefee0a0140a0255fd"
+  },
+  "after": {
+   "get_freq": "fefee0a0030010211400fd",
+   "get_mode": "fefee0a0040102fd",
+   "get_rf_power": "fefee0a0140a0255fd"
+  },
+  "changed": []
+ },
+ "checks": []
+}
