@@ -1,4 +1,5 @@
 import type { Reporter, TestCase, TestResult } from '@playwright/test/reporter';
+import { REQUIRED_MATRIX, rowOf } from '../remote-matrix';
 
 /**
  * The no-skips gate of the remote E2E matrix (playwright.remote.config.ts):
@@ -11,12 +12,9 @@ import type { Reporter, TestCase, TestResult } from '@playwright/test/reporter';
 
 /** The matrix the remote config requires, independent of any CLI filter
  * (`--project`, `--grep`, `--repeat-each`): every row in every project,
- * `repeatEach` times. playwright.remote.config.ts is built from it. */
-export const REQUIRED_MATRIX = {
-  projects: ['chromium', 'webkit'],
-  rows: ['L1', 'L2', 'L3', 'P0', 'R-A1'],
-  repeatEach: 2,
-} as const;
+ * `repeatEach` times. playwright.remote.config.ts is built from it
+ * (tests/e2e/remote-matrix.ts is the one copy, shared with the config). */
+export { REQUIRED_MATRIX, rowOf } from '../remote-matrix';
 
 const PASSED = 'passed';
 
@@ -26,17 +24,6 @@ export interface RecordedCase {
   project: string;
   repeat: number;
   status: 'passed' | 'failed' | 'timedOut' | 'interrupted' | 'skipped';
-}
-
-/** The row id ("L1", "P0", "R-A1") a test title starts with, or null.
- * The REQUIRED_MATRIX rows are the authority: a title carrying any other
- * prefix is not a row of this suite (the matrix check below fails a run
- * whose required rows are missing, so a mistyped row cannot pass). */
-export function rowOf(title: string): string | null {
-  for (const row of REQUIRED_MATRIX.rows) {
-    if (title.startsWith(`${row}:`)) return row;
-  }
-  return null;
 }
 
 /**

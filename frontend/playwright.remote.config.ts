@@ -1,5 +1,5 @@
 import { defineConfig } from '@playwright/test';
-import { REQUIRED_MATRIX } from './tests/e2e/remote/no-skips-reporter';
+import { REQUIRED_MATRIX } from './tests/e2e/remote-matrix';
 
 /**
  * Remote/browser E2E matrix (C5b PR-0, MOR-4493): the rows run in BOTH

@@ -11,10 +11,15 @@ import { fileURLToPath } from 'node:url';
  * `npm run build && npx playwright test -c ./playwright.remote.config.ts`).
  */
 export default function buildRemoteEntry(): void {
-  // Playwright loads a globalSetup as ESM (no __dirname); tests/e2e/remote
-  // -> the frontend root (where node_modules and the real vite.config.ts
-  // live).
-  const here = path.dirname(fileURLToPath(import.meta.url));
+  // Playwright loads this setup in the harness directory's CommonJS scope
+  // (tests/e2e/remote/package.json): __dirname exists there, and the ESM
+  // fallback keeps the file correct if that scope ever changes.
+  // tests/e2e/remote -> the frontend root (where node_modules and the
+  // real vite.config.ts live).
+  const here =
+    typeof __dirname !== 'undefined'
+      ? __dirname
+      : path.dirname(fileURLToPath(import.meta.url));
   const frontend = path.resolve(here, '../../..');
   const vite = path.join(frontend, 'node_modules', '.bin', 'vite');
   execFileSync(
