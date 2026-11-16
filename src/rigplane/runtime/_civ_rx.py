@@ -1269,7 +1269,6 @@ class CivRuntime:
             self._host._civ_request_tracker.note_ack_unclaimed()
             return RawCivTransactionResult(status="sent")
 
-        await self._drain_ack_sinks_before_blocking()
         dropped_backlog = self._host._civ_request_tracker.drop_ack_backlog()
         if dropped_backlog:
             logger.debug(
@@ -1297,7 +1296,9 @@ class CivRuntime:
                 pending_waiters.extend(data_transaction.futures)
 
             self.start_pump()
-            await self._send_civ_frame_now(civ_frame, owner=owner)
+            await self._send_civ_frame_now(
+                civ_frame, owner=owner, waiters=tuple(pending_waiters)
+            )
             done, _ = await asyncio.wait(
                 pending_waiters,
                 timeout=answer_timeout,
@@ -1360,6 +1361,7 @@ class CivRuntime:
                 wait=True,
                 consume_backlog=False,
                 nak_only=True,
+                paired_with=response,
             )
             if isinstance(nak_or_token, int):
                 tracker.unregister(response)
@@ -1428,9 +1430,17 @@ class CivRuntime:
         )
 
     async def _send_civ_frame_now(
-        self, civ_frame: bytes, *, owner: object | None = None
+        self,
+        civ_frame: bytes,
+        *,
+        owner: object | None = None,
+        waiters: tuple[asyncio.Future[CivFrame], ...] = (),
     ) -> None:
-        """Send one CI-V frame directly through the runtime transport."""
+        """Send one CI-V frame directly through the runtime transport.
+
+        ``waiters`` are stamped as sent as the frame is handed over
+        (``CivRequestTracker.mark_sent``, MOR-4384).
+        """
         assert self._host._civ_transport is not None
         now = time.monotonic()
         delta = now - self._host._last_civ_send_monotonic
@@ -1462,6 +1472,11 @@ class CivRuntime:
             commander.note_foreign_dispatch(asyncio.current_task(), Priority.NORMAL)
 
         async def send() -> None:
+            # Stamped with no loop yield before the hand-over (MOR-4384).
+            if waiters:
+                self._host._civ_request_tracker.mark_sent(
+                    time.monotonic(), futures=waiters
+                )
             await self._send_ptt_accounted(transport, pkt, parse_civ_frame(civ_frame))
 
         task = asyncio.create_task(send())
@@ -1530,8 +1545,11 @@ class CivRuntime:
     # ------------------------------------------------------------------
 
     def _cleanup_stale_civ_waiters(self) -> None:
-        """Run periodic stale waiter GC on request tracker."""
+        """Expire sinks whose answer window closed; run periodic stale GC."""
         now = time.monotonic()
+        self._host._civ_request_tracker.expire_ack_sinks(
+            answer_window=self._host._civ_get_timeout, now_monotonic=now
+        )
         if (
             now - self._host._civ_last_waiter_gc_monotonic
             < self._host._civ_waiter_ttl_gc_interval
@@ -2169,11 +2187,17 @@ class CivRuntime:
                 self._publish_scope_frame(scope_frame)
             return
 
+        self._host._civ_request_tracker.expire_ack_sinks(
+            answer_window=self._host._civ_get_timeout
+        )
+        transport = self._host._civ_transport
         if frame.command not in (
             0xFB,
             0xFA,
         ) and self._host._civ_request_tracker.resolve_write_echo(
-            frame, generation=generation
+            frame,
+            generation=generation,
+            ordered_ingress=transport is not None and transport.ordered_ingress is True,
         ):
             logger.debug(
                 "civ-rx: write confirmed by echo cmd=0x%02X sub=0x%02X",
@@ -2777,25 +2801,44 @@ class CivRuntime:
         (``CivRequestTracker.take_refused_reads``). Every declared path whose
         query goes out under that read's request key is refused; the
         scheduler records it as a terminal answer for both polling seats.
+
+        A refusal no installed scheduler — or no declared path — can take
+        is re-queued on the tracker instead of dropped (MOR-4384), so the
+        record of which read the radio refused survives for the owner.
         """
-        refused = self._host._civ_request_tracker.take_refused_reads()
+        tracker = self._host._civ_request_tracker
+        refused = tracker.take_refused_reads()
+        if not refused:
+            return
         scheduler = getattr(self._host, "_acquisition_scheduler", None)
-        if not refused or not isinstance(scheduler, AcquisitionScheduler):
+        if not isinstance(scheduler, AcquisitionScheduler):
+            # No consumer to hand them to: keep the record for the owner
+            # instead of dropping it (MOR-4384). The take above still
+            # ran, so spies on ``take_refused_reads`` keep seeing the
+            # handoff.
+            tracker.restore_refused_reads(refused)
             return
         profile = self._host._profile
         resolve = acquisition_query_resolver_for_profile(profile)
         scope_receiver = self._host._radio_state.scope_controls.receiver
+        refused_set = set(refused)
         paths = []
+        delivered = set()
         for path in scheduler.declared_paths():
             query = resolve(path)
-            if (
-                query is not None
-                and read_identity_for_query(
-                    query, scope_receiver, profile.supports_cmd29
-                )
-                in refused
-            ):
+            identity = (
+                read_identity_for_query(query, scope_receiver, profile.supports_cmd29)
+                if query is not None
+                else None
+            )
+            if identity is not None and identity in refused_set:
                 paths.append(path)
+                delivered.add(identity)
+        unmapped = [key for key in refused if key not in delivered]
+        if unmapped:
+            # A refusal naming no declared path is still the only record
+            # of which read the radio refused: re-queue it (MOR-4384).
+            tracker.restore_refused_reads(unmapped)
         if paths:
             scheduler.record_read_refusal(paths, now=time.monotonic())
             self._record_state_diagnostic(
@@ -4684,26 +4727,6 @@ class CivRuntime:
             return len(frame.data) == 0
         return len(frame.data) == 0
 
-    async def _drain_ack_sinks_before_blocking(
-        self, *, check_current: Callable[[], None] | None = None
-    ) -> None:
-        """Give fire-and-forget ACK sinks a short chance to drain."""
-        tracker = self._host._civ_request_tracker
-        if tracker.ack_sink_count == 0:
-            return
-
-        deadline = time.monotonic() + self._host._civ_ack_sink_grace
-        while tracker.ack_sink_count > 0 and time.monotonic() < deadline:
-            await asyncio.sleep(0.005)
-            if check_current is not None:
-                check_current()
-
-        dropped = tracker.drop_ack_sinks()
-        if dropped:
-            logger.debug(
-                "Dropped %d stale ACK sink waiter(s) before blocking command", dropped
-            )
-
     async def _execute_civ_raw(
         self,
         civ_frame: bytes,
@@ -4761,12 +4784,6 @@ class CivRuntime:
             if error := current_error(pre_wire=pre_wire):
                 raise error
 
-        def check_current_pre_wire() -> None:
-            # Currency checks this side of the send raise the pre-wire
-            # subclass (MOR-3743): when one of them fires, the frame
-            # provably never reached the transport.
-            check_current(pre_wire=True)
-
         def write_is_current() -> bool:
             return current_error() is None
 
@@ -4782,8 +4799,8 @@ class CivRuntime:
             ack_sink_token: "int | None" = None
 
             # Reads take a sink as well as writes: a refusal is a bare FA that
-            # names no command, and ``_drain_ack_sinks_before_blocking`` waits
-            # only for answers that a sink is registered for (MOR-2748).
+            # names no command, and it must land on the read it answers
+            # (MOR-2748, MOR-4384).
             token_or_future = tracker.register_ack(
                 wait=False,
                 response_key=request_key if expects_response else None,
@@ -4818,6 +4835,8 @@ class CivRuntime:
                 # ``CommandError`` before it writes anything — which
                 # proves the frame never left this side.
                 sent = True
+                if ack_sink_token is not None:
+                    tracker.mark_sent(time.monotonic(), token=ack_sink_token)
                 try:
                     await self._send_ptt_accounted(
                         transport,
@@ -4845,9 +4864,6 @@ class CivRuntime:
 
             return None
 
-        await self._drain_ack_sinks_before_blocking(
-            check_current=check_current_pre_wire
-        )
         check_current(pre_wire=True)
 
         pending: "asyncio.Future[CivFrame] | None" = None
@@ -4868,6 +4884,7 @@ class CivRuntime:
                     wait=True,
                     consume_backlog=False,
                     nak_only=True,
+                    paired_with=pending,
                 )
                 if isinstance(nak_or_token, int):
                     raise RuntimeError("ACK waiter registration returned sink token")
@@ -4903,6 +4920,11 @@ class CivRuntime:
             # refusal (``CommandError`` before it writes) is provably
             # pre-wire.
             sent = True
+            assert pending is not None
+            tracker.mark_sent(
+                time.monotonic(),
+                futures=(pending,) if nak_pending is None else (pending, nak_pending),
+            )
             try:
                 await self._send_ptt_accounted(
                     transport, pkt, parsed_frame, is_current, guard.get("is_current")
@@ -4917,8 +4939,7 @@ class CivRuntime:
             assert pending is not None
             # The answer window is spent from here, not from method entry:
             # ``_civ_get_timeout`` bounds how long the *radio* may take,
-            # while the ``_civ_min_interval`` gap above and
-            # ``_drain_ack_sinks_before_blocking`` are this side's own
+            # while the ``_civ_min_interval`` gap above is this side's own
             # scheduling.  Charging them to one budget cost a command sent
             # inside the pacing gap that whole gap of answer window, and all
             # of it whenever the pacing sleep overshot the remainder --
