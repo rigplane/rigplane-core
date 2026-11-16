@@ -624,20 +624,49 @@ async def test_task_cancel_during_the_restore_still_puts_every_original_back(
 ) -> None:
     config = load(tmp_path, "ic705", CIV_POWER_FREQ)
     fake = civ_fake("IC-705")
-    exchange = await civ_exchange(fake)
+    inner = await civ_exchange(fake)
     box: list[asyncio.Task] = []
+    restoring: list[bool] = []
 
-    def events(name: str) -> None:
-        if name == "restore_begin":
-            asyncio.get_running_loop().call_soon(box[0].cancel)
+    async def exchange(body: bytes | None, timeout: float):
+        if restoring:  # a cancel lands on every exchange of the restore
+            box[0].cancel()
+        return await inner(body, timeout)
 
-    box.append(
-        asyncio.ensure_future(run(config, request(tmp_path, events=events), exchange))
+    req = request(
+        tmp_path,
+        events=lambda name: restoring.append(True) if name == "restore_begin" else None,
     )
+    box.append(asyncio.ensure_future(run(config, req, exchange)))
     with pytest.raises(asyncio.CancelledError):
         await box[0]
-    assert civ_writes(fake, 0x14)[-1] == b"\x0a\x01\x28"
-    assert civ_writes(fake, 0x25)[-1] == b"\x00" + bcd_le(14_074_000)
+    sent = [
+        (f.command, (b"" if f.sub is None else bytes((f.sub,))) + bytes(f.data))
+        for f in fake.commands
+    ]
+    restore = sent[sent.index((0x14, b"\x0a\x00\x64")) :]  # after the step write
+    assert (0x14, b"\x0a\x01\x28") in restore  # RF power written back
+    assert (0x25, b"\x00" + bcd_le(14_074_000)) in restore  # and the frequency
+    assert not req.journal_path.exists()  # verified, so the journal is gone
+
+
+async def test_an_ask_that_raises_still_restores(tmp_path: Path) -> None:
+    from rigplane.probe.checks import ChecksRequest
+
+    async def ask(question: str) -> str | None:
+        raise EOFError("the console closed its input")
+
+    config = load(tmp_path, "ft991a", SPLIT)
+    radio = await cat_radio()
+    req = ChecksRequest(tmp_path / "j.json", lambda check, originals: True, ask)
+    try:
+        result = await run(config, req, await cat_exchange(radio))
+    finally:
+        await radio.stop()
+    (record,) = result.records
+    assert "console closed" in (record.error or "")
+    assert record.restored and record.verified
+    assert radio.frequency_hz == 14_074_000
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX signals")

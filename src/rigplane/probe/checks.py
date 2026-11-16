@@ -172,10 +172,7 @@ def _value(run: _Run, entry: Entry, reply: bytes) -> object | None:
     if run.config.protocol_type == "yaesu_cat":
         payload = reply[:-1] if reply.endswith(b";") else b""
     else:
-        try:
-            frame = parse_civ_frame(reply)
-        except ValueError:
-            return None
+        frame = parse_civ_frame(reply)  # a data reply always parses
         sub = b"" if frame.sub is None else bytes((frame.sub,))
         payload = bytes((frame.command,)) + sub + bytes(frame.data)
     if not payload.startswith(entry.write):
@@ -310,8 +307,8 @@ Witness = dict[str, str | None]
 
 
 async def _restore(run: _Run, state: _Check) -> tuple[bool, bool, str | None, Witness]:
-    """Every original back in reverse order, each on its own (a failure never
-    skips the next), then the witness: (restored, verified, error, after)."""
+    """Every original back in reverse order (a refusal or a lost link never
+    raises, so no item skips the next), then the witness."""
     run.restoring = True
     run.gate.resume()
     if run.request.on_event:
@@ -320,22 +317,17 @@ async def _restore(run: _Run, state: _Check) -> tuple[bool, bool, str | None, Wi
     error = None
     for key, value in reversed(state.originals):
         name, text = _hand(run.config, key, value)
-        try:
-            accepted = (await _send(run, state, key, value))[1] is not None or (
-                await _send(run, state, key, value)
-            )[1] is not None
-            same = accepted and (await _send(run, state, key))[1] == value
-        except Exception:  # noqa: BLE001 -- one item never skips the others
-            accepted = same = False
+        accepted = (await _send(run, state, key, value))[1] is not None or (
+            await _send(run, state, key, value)
+        )[1] is not None
+        same = accepted and (await _send(run, state, key))[1] == value
         if not accepted:
             restored = verified = False
             error = f"could not put {name} back to {text}; please set it by hand"
         elif not same:
             verified = False
             error = error or f"{name} reads differently after the restore (was {text})"
-    with suppress(Exception):
-        return restored, verified, error, await _witness(run, state)
-    return restored, verified, error, {}
+    return restored, verified, error, await _witness(run, state)
 
 
 async def _run_one(run: _Run, check: ProbeCheck) -> CheckRecord:
