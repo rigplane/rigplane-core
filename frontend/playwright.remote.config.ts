@@ -21,7 +21,7 @@ export default defineConfig({
   // Builds the R-A1 test-only boot entry into frontend/dist/remote-entry
   // (the station serves it); runs once per invocation, after `npm run
   // build` — the real build empties dist/, so it must come first.
-  globalSetup: './tests/e2e/remote/build-entry.setup.ts',
+  globalSetup: './tests/e2e/remote-build-entry.setup',
   fullyParallel: false,
   workers: 1,
   retries: 0,

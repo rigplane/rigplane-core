@@ -9,18 +9,16 @@ import { fileURLToPath } from 'node:url';
  * after `npm run build` has produced the real UI build — the real build
  * empties `dist/`, so this one must come second (the documented run order:
  * `npm run build && npx playwright test -c ./playwright.remote.config.ts`).
+ *
+ * It lives OUTSIDE tests/e2e/remote/ (the frontend's ESM scope, like
+ * remote-matrix.ts) on purpose: that harness directory is CommonJS-scoped
+ * for the spec graph, and Playwright compiles a globalSetup there to CJS
+ * while evaluating it as ESM ("exports is not defined").
  */
 export default function buildRemoteEntry(): void {
-  // Playwright loads this setup in the harness directory's CommonJS scope
-  // (tests/e2e/remote/package.json): __dirname exists there, and the ESM
-  // fallback keeps the file correct if that scope ever changes.
-  // tests/e2e/remote -> the frontend root (where node_modules and the
-  // real vite.config.ts live).
-  const here =
-    typeof __dirname !== 'undefined'
-      ? __dirname
-      : path.dirname(fileURLToPath(import.meta.url));
-  const frontend = path.resolve(here, '../../..');
+  // tests/e2e -> the frontend root (node_modules, the real vite.config.ts).
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const frontend = path.resolve(here, '../..');
   const vite = path.join(frontend, 'node_modules', '.bin', 'vite');
   execFileSync(
     vite,
