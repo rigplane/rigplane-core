@@ -1555,6 +1555,16 @@ describe('SpectrumPanel spectrum/waterfall separator (MOR-2461)', () => {
     expect(region.style.gridTemplateRows).toContain('20px 8px');
   });
 
+  it('MOR-4463: starts from the share its host asks for, until the user has dragged the divider', () => {
+    const { region, separator } = splitElements(mountPanel({ defaultSplitRatio: 0.38 }));
+    expect(separator.getAttribute('aria-valuenow')).toBe('38');
+    expect(region.style.gridTemplateRows).toContain('0.38fr');
+
+    storageMap.set('rigplane-spectrum-split-ratio', '0.62');
+    const dragged = splitElements(mountPanel({ defaultSplitRatio: 0.38 }));
+    expect(dragged.separator.getAttribute('aria-valuenow')).toBe('62');
+  });
+
   it('restores a normalized persisted ratio without remounting either canvas', () => {
     storageMap.set('rigplane-spectrum-split-ratio', '0.62');
     const target = mountPanel();

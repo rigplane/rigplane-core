@@ -768,7 +768,7 @@
              MobileRadioLayout.component.svelte.test.ts. -->
         {#if hasSpectrum()}
           <section class="m-spectrum">
-            <SpectrumPanel hideAutoStepToggle={true} hideToolbar={true}
+            <SpectrumPanel hideAutoStepToggle={true} hideToolbar={true} defaultSplitRatio={0.38}
               bind:enableAvg={scopeAvg} bind:enableSmooth={scopeSmooth} bind:enablePeakHold={scopePeakHold} bind:showBandPlan={scopeBandPlan}
               scopeRegion={managedScopeRegion ?? undefined}
               scopeDemanded={managedScopeRegion?.demanded ?? true}
