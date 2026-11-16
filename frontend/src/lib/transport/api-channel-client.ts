@@ -5,7 +5,10 @@
  * validated against its `payloads` contracts (a violating payload is a
  * protocol error). A wire id is allocated when the HEAD is emitted, so ids
  * leave in increasing order under backpressure; drain waits end when the
- * request settles, so a cancelled request sends nothing further.
+ * request settles, so a cancelled request sends nothing further. The
+ * channel's close fails every outstanding request with a connection error
+ * before any deadline can; a frame whose version byte is not the committed
+ * one is a protocol error, never a routed response.
  */
 import wire from './api-channel-wire.json';
 import { buildContractPayload, decodeContractPayload, type DataChannelTransport, type PayloadContract } from './datachannel-transport';
@@ -93,12 +96,14 @@ function errorResponse(code: string, message: string): Response {
   });
 }
 export function createApiChannelFetch(
-  transport: Pick<DataChannelTransport, 'send' | 'onBinary' | 'bufferedAmount'>
+  transport: Pick<DataChannelTransport, 'send' | 'onBinary' | 'onClose' | 'bufferedAmount'>
 ) {
   const pending = new Map<number, PendingRequest>();
+  const outstanding = new Set<PendingRequest>(); // every unsettled request, HEAD sent or not
   let nextId = 0;
   const cleanup = (request: PendingRequest): void => {
     request.settled = true;
+    outstanding.delete(request);
     if (request.id !== null) pending.delete(request.id);
     clearTimeout(request.deadline);
     request.onAbort?.();
@@ -156,12 +161,24 @@ export function createApiChannelFetch(
       }
     }
   };
+  transport.onClose(() => {
+    // The channel is gone: every outstanding request — stalled before its
+    // HEAD or awaiting the reply — fails now with a connection error (the
+    // fetch network-error analogue), never a later TimeoutError.
+    for (const request of [...outstanding]) fail(request, new TypeError('api channel closed'));
+  });
   transport.onBinary((data) => {
     const frame = new Uint8Array(data);
     if (frame.length < HEADER_SIZE) return;
     const view = new DataView(frame.buffer, frame.byteOffset, frame.byteLength);
     const request = pending.get(view.getUint32(OFFSETS.request_id, false));
     if (request === undefined) return; // an unknown id is a no-op
+    if (view.getUint8(OFFSETS.version) !== wire.version) {
+      // The committed wire contract cannot explain this frame: a protocol
+      // error for the request it names, never a routed response.
+      settleWith(request, errorResponse('bad_version', 'unsupported api channel frame version'));
+      return;
+    }
     try {
       routeFrame(request, frame);
     } catch {
@@ -201,6 +218,7 @@ export function createApiChannelFetch(
         ),
         onAbort: null,
       };
+      outstanding.add(request);
       const signal = init?.signal;
       if (signal) {
         const onAbortEvent = () => {
