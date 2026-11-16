@@ -1788,7 +1788,7 @@ async def test_managed_startup_with_silent_t_probes_once_and_keeps_local_ptt(
 
 
 @pytest.mark.asyncio
-async def test_managed_unkey_refused_t0_keeps_release_owed(
+async def test_managed_release_refused_t0_keeps_release_owed(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
     """MOR-4456 B3: a refused ``T 0`` is never a silent success.
@@ -1840,7 +1840,7 @@ async def test_managed_unkey_refused_t0_keeps_release_owed(
 
 
 @pytest.mark.asyncio
-async def test_managed_unkey_unanswered_t0_keeps_release_owed(
+async def test_managed_release_unanswered_t0_keeps_release_owed(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
     """MOR-4456 B3: an unanswered ``T 0`` is never a silent success.
@@ -1888,7 +1888,301 @@ async def test_managed_unkey_unanswered_t0_keeps_release_owed(
 
 
 @pytest.mark.asyncio
-async def test_managed_unkey_verifies_with_t_only_while_not_demoted() -> None:
+async def test_managed_release_skips_verification_while_t_refused(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """MOR-4456 #4607: a REFUSED ``t`` skips the managed unkey verification.
+
+    Full production managed composition on the real TCP fake refusing
+    ``t`` with ``RPRT 1``: the key is admitted and reaches the wire; the
+    unkey ``T 0`` is answered (``RPRT 0``) so the release settles
+    ``ACCEPTED`` from that answer alone — no verification ``t`` is sent
+    while the read is unanswerable. Without the rule the verification
+    ``t`` below is refused, the settlement is ``UNCERTAIN`` and the
+    release stays owed. The authority returns to idle, a second key/unkey
+    cycle is admitted, and shutdown completes with the termination event
+    UNSET (proving the release drained instead of hanging the drain).
+    """
+    from rigplane.runtime.managed_tx_state import (
+        ActuationResult,
+        ManagedTxIntentKind,
+        ManagedTxOutcome,
+    )
+
+    fake = _TcpRigctldServer(refuse="t")
+    await fake.start()
+    try:
+        radio, composition, server, _binds = await _bind_managed_tx_and_start(
+            fake, tmp_path, caplog
+        )
+        try:
+            assert fake.refused_requests >= 1  # really asked, really refused
+            assert fake.connections == 1  # a refusal never retires the link
+            pressed = await composition.authority.submit_ptt(True, "memory-primary")
+            assert pressed.outcome is ManagedTxOutcome.ACCEPTED
+            await pressed.wait_settlement()
+            assert "T 1" in fake.tx_commands
+            released = await composition.authority.submit_force_off()
+            await await_until(
+                lambda: "T 0" in fake.tx_commands,
+                timeout=30.0,
+                description="the unkey reaching the rig",
+            )
+            settlement = await released.wait_settlement()
+            assert settlement is not None
+            assert settlement.result is ActuationResult.ACCEPTED
+            assert released.outcome is ManagedTxOutcome.ACCEPTED
+            projection = await composition.authority.snapshot()
+            assert projection.state.intent.kind is ManagedTxIntentKind.RX
+            assert not projection.state.release_required
+            pressed_again = await composition.authority.submit_ptt(
+                True, "memory-primary"
+            )
+            assert pressed_again.outcome is ManagedTxOutcome.ACCEPTED
+            await pressed_again.wait_settlement()
+            released_again = await composition.authority.submit_force_off()
+            settlement_again = await released_again.wait_settlement()
+            assert settlement_again is not None
+            assert settlement_again.result is ActuationResult.ACCEPTED
+            assert fake.connections == 1
+            await server.stop()
+        finally:
+            # The release drained: shutdown needs no termination event.
+            with suppress(Exception):
+                await server.stop()
+            await asyncio.wait_for(composition.shutdown(asyncio.Event()), timeout=30.0)
+            await radio.disconnect()
+    finally:
+        await fake.stop()
+
+
+@pytest.mark.asyncio
+async def test_managed_release_t0_refused_while_t_refused_keeps_release_owed(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """MOR-4456 #4607: a refused ``T 0`` stays owed while ``t`` is refused.
+
+    Same refused-``t`` composition as above, but the unkey write itself
+    is refused (``fake.refuse`` flips to ``T 0`` after the admitted key):
+    the write raises before any verification question, so the release
+    stays owed (``UNCERTAIN`` settlement, ``release_required`` still
+    set) — never a silent success.
+    """
+    from rigplane.runtime.managed_tx_state import (
+        ActuationResult,
+        ManagedTxOutcome,
+    )
+
+    fake = _TcpRigctldServer(refuse="t")
+    await fake.start()
+    try:
+        radio, composition, server, _binds = await _bind_managed_tx_and_start(
+            fake, tmp_path, caplog
+        )
+        termination = asyncio.Event()
+        try:
+            pressed = await composition.authority.submit_ptt(True, "memory-primary")
+            assert pressed.outcome is ManagedTxOutcome.ACCEPTED
+            await pressed.wait_settlement()
+            assert "T 1" in fake.tx_commands
+            fake.refuse = "T 0"
+            released = await composition.authority.submit_force_off()
+            settlement = await released.wait_settlement()
+            assert "T 0" in fake.tx_commands
+            assert settlement is not None
+            assert settlement.result is ActuationResult.UNCERTAIN
+            projection = await composition.authority.snapshot()
+            assert projection.state.release_required
+            await server.stop()
+        finally:
+            termination.set()
+            with suppress(Exception):
+                await server.stop()
+            await composition.shutdown(termination)
+            await radio.disconnect()
+    finally:
+        await fake.stop()
+
+
+@pytest.mark.asyncio
+async def test_managed_release_t0_unanswered_while_t_refused_keeps_release_owed(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """MOR-4456 #4607: an unanswered ``T 0`` stays owed while ``t`` is refused.
+
+    Refused ``t`` plus a silent ``T 0``: the unkey write times out, so
+    the release stays owed (``UNCERTAIN`` settlement, ``release_required``
+    still set) — only the *answer* settles, never the attempt.
+    """
+    from rigplane.runtime.managed_tx_state import (
+        ActuationResult,
+        ManagedTxOutcome,
+    )
+
+    fake = _TcpRigctldServer(refuse="t", silent="T 0")
+    await fake.start()
+    try:
+        radio, composition, server, _binds = await _bind_managed_tx_and_start(
+            fake, tmp_path, caplog
+        )
+        termination = asyncio.Event()
+        try:
+            pressed = await composition.authority.submit_ptt(True, "memory-primary")
+            assert pressed.outcome is ManagedTxOutcome.ACCEPTED
+            await pressed.wait_settlement()
+            assert "T 1" in fake.tx_commands
+            released = await composition.authority.submit_force_off()
+            settlement = await released.wait_settlement()
+            assert "T 0" in fake.tx_commands
+            assert settlement is not None
+            assert settlement.result is ActuationResult.UNCERTAIN
+            projection = await composition.authority.snapshot()
+            assert projection.state.release_required
+            await server.stop()
+        finally:
+            termination.set()
+            with suppress(Exception):
+                await server.stop()
+            await composition.shutdown(termination)
+            await radio.disconnect()
+    finally:
+        await fake.stop()
+
+
+@pytest.mark.asyncio
+async def test_managed_release_heals_to_t_verification_after_refusal_answers(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """MOR-4456 #4607: polling heals answerability; the unkey stays settled.
+
+    The refused-``t`` composition settles its first release from ``T 0``
+    alone; once the rig answers ``t`` again (``fake.refuse`` cleared) the
+    still-asking poll cycle observes an answered ``t`` and the single
+    answerability flips back — the next key/unkey cycle settles
+    ``ACCEPTED`` with the read answerable again (the exact re-read count
+    is pinned at the actuator level below; here the poller shares ``t``).
+    """
+    from rigplane.runtime.managed_tx_state import (
+        ActuationResult,
+        ManagedTxOutcome,
+    )
+
+    fake = _TcpRigctldServer(refuse="t")
+    await fake.start()
+    try:
+        radio, composition, server, _binds = await _bind_managed_tx_and_start(
+            fake, tmp_path, caplog
+        )
+        try:
+            assert fake.refused_requests >= 1
+            assert not radio._ptt_read_answerable  # noqa: SLF001
+            pressed = await composition.authority.submit_ptt(True, "memory-primary")
+            assert pressed.outcome is ManagedTxOutcome.ACCEPTED
+            await pressed.wait_settlement()
+            released = await composition.authority.submit_force_off()
+            settlement = await released.wait_settlement()
+            assert settlement is not None
+            assert settlement.result is ActuationResult.ACCEPTED
+            # The rig starts answering ``t`` again: the poll cycle keeps
+            # asking a refused ``t`` every cycle, so answerability heals
+            # with no reconnect.
+            fake.refuse = None
+            await await_until(
+                lambda: radio._ptt_read_answerable,  # noqa: SLF001
+                timeout=30.0,
+                description="the refused t answering again",
+            )
+            pressed_again = await composition.authority.submit_ptt(
+                True, "memory-primary"
+            )
+            assert pressed_again.outcome is ManagedTxOutcome.ACCEPTED
+            await pressed_again.wait_settlement()
+            released_again = await composition.authority.submit_force_off()
+            settlement_again = await released_again.wait_settlement()
+            assert settlement_again is not None
+            assert settlement_again.result is ActuationResult.ACCEPTED
+            assert fake.connections == 1  # healing never reconnects
+            await server.stop()
+        finally:
+            with suppress(Exception):
+                await server.stop()
+            await asyncio.wait_for(composition.shutdown(asyncio.Event()), timeout=30.0)
+            await radio.disconnect()
+    finally:
+        await fake.stop()
+
+
+@pytest.mark.asyncio
+async def test_release_verification_returns_to_t_after_refusal_heals() -> None:
+    """MOR-4456 #4607: the actuator skips ``t`` while refused, re-reads it healed.
+
+    Straight at the rigctld-client actuator over the real TCP fake, no
+    poller running, so every ``t`` counted is the unkey verification
+    itself. Fresh radio, ``t`` refused: the first ``FORCE_RECEIVE``
+    verification still runs (the read was answerable), is refused, and
+    settles ``UNCERTAIN`` while latching the refusal; the second unkey
+    settles from the ``T 0`` answer alone (zero new ``t``). Once a
+    solicited ``t`` answers again the refusal clears and the third unkey
+    reads ``t`` back (one more ``t``) and settles ``ACCEPTED``.
+    """
+    from rigplane.runtime.managed_tx_state import (
+        ActuationOperation,
+        ActuationResult,
+        EffectToken,
+    )
+
+    fake = _TcpRigctldServer(refuse="t")
+    await fake.start()
+    try:
+        radio = _real_rigctld_radio(fake)
+        await radio.connect()
+        try:
+            assert radio._ptt_read_answerable  # noqa: SLF001
+            first = await radio.actuate(
+                EffectToken(
+                    provider_generation=1, effect_epoch=1, attempt_id="refused-1"
+                ),
+                ActuationOperation.FORCE_RECEIVE,
+                is_current=lambda: True,
+            )
+            assert first is ActuationResult.UNCERTAIN
+            assert fake.t_commands == 1
+            assert not radio._ptt_read_answerable  # noqa: SLF001
+            second = await radio.actuate(
+                EffectToken(
+                    provider_generation=1, effect_epoch=2, attempt_id="refused-2"
+                ),
+                ActuationOperation.FORCE_RECEIVE,
+                is_current=lambda: True,
+            )
+            assert second is ActuationResult.ACCEPTED
+            assert fake.tx_commands.count("T 0") == 2
+            assert fake.t_commands == 1
+            # A solicited ``t`` still asks while refused: once it
+            # answers, the latch clears without a reconnect.
+            fake.refuse = None
+            assert await radio.get_ptt() is False
+            assert radio._ptt_read_answerable  # noqa: SLF001
+            third = await radio.actuate(
+                EffectToken(
+                    provider_generation=1, effect_epoch=3, attempt_id="healed-3"
+                ),
+                ActuationOperation.FORCE_RECEIVE,
+                is_current=lambda: True,
+            )
+            assert third is ActuationResult.ACCEPTED
+            assert fake.tx_commands.count("T 0") == 3
+            # first verification (1) + the healing solicited read (2) +
+            # the third unkey's verification read (3)
+            assert fake.t_commands == 3
+        finally:
+            await radio.disconnect()
+    finally:
+        await fake.stop()
+
+
+@pytest.mark.asyncio
+async def test_managed_release_verifies_with_t_only_while_not_demoted() -> None:
     """MOR-4456 B3: a working ``t`` still verifies the unkey; a demoted one is skipped.
 
     Straight at the rigctld-client actuator over the real TCP fake, no

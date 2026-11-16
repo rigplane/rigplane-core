@@ -39,7 +39,7 @@ from ...runtime.managed_tx_state import (
     ActuationResult,
     EffectToken,
 )
-from .transport import RigctldTransport
+from .transport import RigctldCommandError, RigctldTransport
 
 if TYPE_CHECKING:
     from ..._poller_types import CommandQueue, CommandQueueEntry
@@ -786,8 +786,16 @@ class RigctldClientRadio:
         # survives the reconnect the first timeout causes; only a fresh
         # radio object (server restart, explicit reconnect/reconfigure)
         # asks ``t`` again. A refused ``t`` never demotes: ``RPRT``
-        # answers keep being asked every cycle.
+        # answers keep being asked every cycle — the refusal is tracked
+        # separately below (``_ptt_read_refused``), and the single
+        # ``_ptt_read_answerable`` property is the one concept both
+        # facts feed.
         self._ptt_read_demoted = False
+        # MOR-4456 #4607: the most recent ``t`` was REFUSED (an ``RPRT``
+        # error answer, not silence). Unlike the timeout demotion this is
+        # not sticky: any answered ``t`` clears it, so the managed unkey
+        # verification returns to the read as soon as the rig answers.
+        self._ptt_read_refused = False
         # The same intentional-disconnect idiom as IcomRadio: set by
         # disconnect(), cleared by connect(), checked by the poller's
         # reconnect so an operator's disconnect is never undone.
@@ -826,7 +834,10 @@ class RigctldClientRadio:
         # again. The client's own recovery (``_reconnect_transport``) and
         # the probe-timeout reopen (``read_transmit_state``) reuse
         # ``transport.connect()`` and never touch this latch.
+        # MOR-4456 #4607: the refusal latch resets with it — one
+        # answerability, one reset.
         self._ptt_read_demoted = False
+        self._ptt_read_refused = False
         await self._probe_vfo_support()
 
     async def disconnect(self) -> None:
@@ -1001,6 +1012,20 @@ class RigctldClientRadio:
                 "External rigctld backend does not support RigPlane data mode."
             )
 
+    @property
+    def _ptt_read_answerable(self) -> bool:
+        """One transmit-state answerability (MOR-4456 #4607).
+
+        False while the read is demoted after a TIMEOUT (sticky until an
+        explicit connect) OR while the most recent ``t`` was REFUSED (an
+        ``RPRT`` error — an answer, not silence). A refused ``t`` keeps
+        being asked every poll cycle, so the first answered ``t`` flips
+        this back with no reconnect. Malformed ``t`` values, transport
+        errors and stale reads leave the refusal fact untouched: only an
+        ``RPRT`` refusal sets it, only an answered ``t`` clears it.
+        """
+        return not self._ptt_read_demoted and not self._ptt_read_refused
+
     def _demote_ptt_read_after_timeout(self) -> None:
         """Latch the medium-lane transmit-state read off (MOR-4456).
 
@@ -1008,10 +1033,11 @@ class RigctldClientRadio:
         publish PTT as unknown without sending ``t``. Idempotent, so the
         single named warning below fires exactly once per radio object.
         Solicited reads (:meth:`get_ptt`, :meth:`read_transmit_state`)
-        still ask — only the poll cycle stops asking — with one B3
+        still ask — only the poll cycle stops asking — with one B3/#4607
         exception: the managed-TX unkey verification read
-        (:meth:`actuate`) is skipped while demoted and settles from the
-        ``T 0`` answer instead.
+        (:meth:`actuate`) is skipped while the read is not answerable
+        (demoted here, or the most recent ``t`` refused) and settles
+        from the ``T 0`` answer instead.
         """
         if self._ptt_read_demoted:
             return
@@ -1035,13 +1061,31 @@ class RigctldClientRadio:
         is_current: Callable[[], bool] | None = None,
         urgent: bool = False,
     ) -> bool:
-        return await self._transport.query_decoded(
-            "t",
-            response_lines=1,
-            decode=_decode_ptt,
-            is_current=is_current,
-            urgent=urgent,
-        )
+        # MOR-4456 #4607: every ``t`` outcome lands here — the poll-cycle
+        # read (via ``get_ptt``), the solicited probes and the managed
+        # unkey verification below — so the single answerability tracks
+        # the latest outcome wherever it was observed.
+        try:
+            value = await self._transport.query_decoded(
+                "t",
+                response_lines=1,
+                decode=_decode_ptt,
+                is_current=is_current,
+                urgent=urgent,
+            )
+        except RigctldCommandError:
+            # An ``RPRT`` refusal: an answer, not silence — polling keeps
+            # asking every cycle, but the unkey verification skips the
+            # read while refused. Narrow: a malformed ``t`` (plain
+            # ``CommandError`` from the decode) or a stale read leaves
+            # the refusal fact untouched.
+            self._ptt_read_refused = True
+            raise
+        except (asyncio.TimeoutError, RadioTimeoutError):
+            self._demote_ptt_read_after_timeout()
+            raise
+        self._ptt_read_refused = False
+        return value
 
     async def set_ptt(self, on: bool) -> None:
         await self._set_ptt(on)
@@ -1088,19 +1132,23 @@ class RigctldClientRadio:
         # or a raised read is UNCERTAIN, which keeps the release owed
         # (``managed_tx_state.py: _settle``). A refused write keeps
         # propagating for the lane to normalize, as today.
-        # MOR-4456 B3: while the transmit-state read is demoted (the
-        # first unanswered ``t`` latched ``_ptt_read_demoted``), this
-        # solicited verification read is NOT sent — on a rigctld whose
-        # ``t`` is silent it would time out, retire the transport,
-        # advance the provider generation and strand the owed release.
-        # The release settles from the radio's own answer to the unkey
-        # command instead: the ``RPRT 0`` above already confirmed the
-        # unkey reached the daemon. A failed or unanswered ``T 0`` keeps
-        # today's path (the write raises before this line, the lane
-        # normalizes to UNCERTAIN, the release stays owed) — never a
-        # silent success.
+        # MOR-4456 B3 + #4607: while the transmit-state read is not
+        # answerable — demoted after its first unanswered ``t``, or with
+        # the most recent ``t`` REFUSED (``_ptt_read_answerable`` is the
+        # one concept) — this solicited verification read is NOT sent.
+        # On a rigctld whose ``t`` is silent it would time out, retire
+        # the transport, advance the provider generation and strand the
+        # owed release; on one refusing ``t`` it would settle
+        # ``UNCERTAIN`` and strand the release the same way. The release
+        # settles from the radio's own answer to the unkey command
+        # instead: the ``RPRT 0`` above already confirmed the unkey
+        # reached the daemon. A refused ``t`` keeps being asked by the
+        # poll cycle, so verification returns to the read as soon as the
+        # rig answers. A failed or unanswered ``T 0`` keeps today's path
+        # (the write raises before this line, the lane normalizes to
+        # UNCERTAIN, the release stays owed) — never a silent success.
         await self._set_ptt(False, is_current=is_current, urgent=True)
-        if self._ptt_read_demoted:
+        if not self._ptt_read_answerable:
             return ActuationResult.ACCEPTED
         try:
             transmitting = await self._read_ptt(is_current=is_current, urgent=True)
@@ -1137,8 +1185,9 @@ class RigctldClientRadio:
             # the first poll cycle does not ask ``t`` again (a second
             # unanswered request whose timeout would retire the provider
             # the probe just published). This solicited read itself still
-            # asks; only the poll cycle and (B3) the managed-TX unkey
-            # verification stop asking while demoted.
+            # asks; only the poll cycle and (B3/#4607) the managed-TX
+            # unkey verification stop asking while unanswerable
+            # (demoted, or the most recent ``t`` refused).
             if not self._intentional_disconnect and not self._transport.connected:
                 try:
                     await self._transport.connect()
