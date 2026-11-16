@@ -849,7 +849,14 @@ async def test_two_runs_on_one_journal_path_only_one_writes(tmp_path: Path) -> N
     from rigplane.probe.checks import ChecksRequest
 
     config = load(tmp_path, "ic705", ASK_POWER)
-    fakes = {"a": civ_fake("IC-705"), "b": civ_fake("IC-705")}
+    from rigplane_testkit.serial import CivSerialFake
+
+    fakes = {}
+    for name in ("a", "b"):  # answers that take a moment, so the runs interleave
+        fakes[name] = CivSerialFake(
+            model="IC-705", model_id=b"\xa4", echo=False, reply_latency_s=0.01
+        )
+        fakes[name].hold(b"\x14\x0a", b"\x01\x28")
     done = {"a": asyncio.Event(), "b": asyncio.Event()}
     path = tmp_path / "shared-journal.json"
     snapshots: list[bytes] = []
@@ -865,9 +872,10 @@ async def test_two_runs_on_one_journal_path_only_one_writes(tmp_path: Path) -> N
 
         return ChecksRequest(lambda c, o: True, ask, on_event=events, journal_path=path)
 
-    async def go(name: str, other: str):
-        exchange = await civ_exchange(fakes[name])
-        result = await run(config, request_for(name, other), exchange)
+    exchanges = {name: await civ_exchange(fake) for name, fake in fakes.items()}
+
+    async def go(name: str, other: str):  # both start before either prepares
+        result = await run(config, request_for(name, other), exchanges[name])
         done[name].set()
         return name, result
 
