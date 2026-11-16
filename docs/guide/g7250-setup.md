@@ -4,7 +4,8 @@ description: Connect a Xiegu G7250 to RigPlane over USB or, with firmware V1.0.1
 
 # G7250 USB and Network Setup
 
-RigPlane drives the Xiegu G7250 over CI-V. TX, PTT and TX audio have not
+RigPlane drives the Xiegu G7250 over CI-V. Over USB the serial port works
+and RX polling is clean. TX, PTT and TX audio have not
 been verified on this radio.
 
 ## USB
@@ -40,8 +41,6 @@ searches the network.
 
 ## Network (wfview mode)
 
-<!-- PENDING: L1+L2+L3 — this whole section waits for the network work to merge -->
-
 ### What You Need
 
 - Radio firmware **V1.0.1 or later**.
@@ -49,12 +48,18 @@ searches the network.
 
 ### On the Radio
 
-1. In the radio's network menu, set the network mode to **wfview**. The other
-   mode, **HDSDR**, is an IQ stream and is not used for control. The
-   radio offers one mode at a time. The radio does not report the mode over
-   CI-V, so if the connection fails, check it first. Whether a mode change
-   needs a power cycle is not verified.
-2. Set a user name and password in the same menu.
+The radio's network menu has two modes, and only one can be active at a time:
+
+- **wfview**: Icom LAN control. This is the mode RigPlane uses.
+- **HDSDR**: a proprietary IQ stream over UDP. In this mode the radio refuses
+  Icom LAN control.
+
+1. Set the network mode to **wfview**. Check it again after every radio
+   restart: the radio can come back in HDSDR mode, or switch to it on its
+   own. The radio does not report its mode over CI-V, so if the connection
+   fails, check the mode first.
+2. Use the network login set in the same menu. RigPlane signs in with the
+   radio's own user name and password.
 
 ### Connect
 
@@ -68,17 +73,20 @@ rigplane --model G7250 --backend lan --host RADIO_IP --user RADIO_USER \
 (control), 50002 (CI-V) and 50003 (audio); allow them through any firewall
 between you and the radio.
 
-- Network discovery finds the radio but does not name the model. Pass
-  `--model G7250` yourself. With several radios on the network, give the
-  radio's address with `--host`. <!-- PENDING: L1+L3 -->
+- Pass `--model G7250` yourself. With several radios on the network, give the
+  radio's address with `--host`.
 - Over the network only CI-V address `0xA0` answers; the G7250 profile uses
-  it. <!-- PENDING: L3 -->
-- Panorama over the network: the radio sends scope data in wfview mode
-  (spans 48, 96, 192 and 384 kHz). RigPlane shows it in a later release than network control. In wfview mode the
-  HDSDR IQ stream is not available.
-  <!-- PENDING: scope-PR (alt: "Panorama works over the network.") -->
+  it.
+- Frequency, mode and S-meter polling works over the network.
+- Do not use USB and network control of the same radio at the same time.
+- Panorama (scope and waterfall) over the network is not supported yet: the
+  shipped profile declares no scope. The audio-derived panorama is available.
 - TX and TX audio over the network are not verified.
-  <!-- PENDING: TX-check (alt: verified result) -->
+
+## Not Exposed
+
+The 1D 17, 1D 18 and 1D 20 controls and the firmware readout are not exposed
+by RigPlane.
 
 ## Firmware
 

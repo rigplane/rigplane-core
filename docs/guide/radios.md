@@ -141,7 +141,7 @@ broader coverage than maintaining a bespoke backend for each dialect.
 - **Protocol:** CI-V (Xiegu/Icom-compatible subset), per the Xiegu G7250 CI-V
   Reference Rev 1.2
 - **Connectivity:** USB (CI-V serial + USB audio); network control in the
-  radio's "wfview" mode, firmware V1.0.1 or later <!-- PENDING: L1+L2+L3 -->
+  radio's "wfview" mode, firmware V1.0.1 or later
 - **Rig profile:** `rigs/g7250.toml`
 - **Setup guide:** [G7250 USB and network setup](g7250-setup.md)
 
@@ -158,27 +158,29 @@ broader coverage than maintaining a bespoke backend for each dialect.
 
 - **USB:** frequency, mode, levels including volume, meters, and RX audio
   through the radio's USB audio device.
-- **Network (wfview mode):** connecting with the user name and password set
-  in the radio, frequency, mode, meters, RX audio with its own level control,
-  and CW pitch. <!-- PENDING: L1+L2+L3 (network); CW pitch also waits for the profile PR -->
+- **Network (wfview mode):** signing in with the radio's own network login,
+  and polling of frequency, mode and S-meter.
 
 **Not verified, not claimed:** TX, PTT and TX audio, over either connection.
-<!-- PENDING: TX-check (alt: replace with the verified result per connection) -->
 
 **Panorama.** A USB-connected G7250 gets the audio-derived panorama only; the
-radio does not answer the CI-V scope commands over serial. In wfview mode the
-radio sends scope data (spans 48, 96, 192 and 384 kHz); showing it ships in a
-later release than network control. <!-- PENDING: scope-PR (alt: "Panorama works over the network, spans 48 to 384 kHz.") -->
+radio does not answer the CI-V scope commands over serial. Scope and waterfall
+over the network are not supported yet: the shipped profile declares no scope.
+
+**Not exposed:** the 1D 17, 1D 18 and 1D 20 controls and the firmware readout.
+
+**Network modes.** The radio's network menu has two exclusive modes:
+**wfview** (Icom LAN control) and **HDSDR** (an IQ stream). In HDSDR mode Icom
+LAN control is refused. The radio can end up in HDSDR mode after a restart or
+on its own, so select **wfview** on the radio before connecting. Do not use USB
+and network control of the same radio at the same time.
 
 **Connecting.** Over USB the radio shows a serial port for CI-V (115200 baud)
 and a USB audio device; pass `--serial-port` on the command line. Without
 `--serial-port` or `--host`, `--model G7250` searches the network. For network
-control, set the radio's network mode to **wfview** (the other mode, HDSDR, is
-an IQ stream, and the radio offers one mode at a time) and set a user name
-and password in its network menu. Network discovery finds the radio but does
-not name the model, so pass `--model G7250`; with several radios on the
+control, set the radio's network mode to **wfview** and use the network login
+set in its network menu. Pass `--model G7250`; with several radios on the
 network, give the radio's address with `--host`.
-<!-- PENDING: L1+L3 (discovery and model choice) -->
 
 ### Lab599 TX-500
 
