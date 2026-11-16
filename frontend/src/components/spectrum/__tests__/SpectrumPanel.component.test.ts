@@ -1748,6 +1748,7 @@ describe('SpectrumPanel Observation authority and final-gesture intents', () => 
     stackedTrace.setStackedTraceEnabled(true);
     // The view's label layer runs the flat renderer for real.
     recordCanvasLayers(noopCanvas as unknown as CanvasRenderingContext2D);
+    noopCanvas.setLineDash ??= () => {};
     try {
       const target = mountPanel();
       emitFrame();

@@ -93,7 +93,8 @@ test('the upright marks of the flat trace give way to the scene in the 3D view a
   await expect(witness('tune-line')).toBeHidden();
   await expect(witness('scope-hatch')).toBeHidden();
   expect(await handleTop()).toBeCloseTo(box.height * 0.6, 0);
-  expect(await handleTop()).toBeGreaterThan(flatTop + box.height * 0.3);
+  // The stand-in has no top of its own: only the 3D view's rule puts it there.
+  expect(Math.abs(flatTop - box.height * 0.6)).toBeGreaterThan(box.height * 0.3);
 
   await page.getByTestId('scope-3d-toggle').first().click();
   await expect(page.locator(flat)).toHaveCount(1);

@@ -208,8 +208,6 @@
   let brtLevel = $state(0);
   let colorScheme = $state<ColorSchemeName>('classic');
   let spectrumPush: ((data: Uint8Array, token?: TraceToken | null) => void) | null = null;
-  /** MOR-4463: set while the spectrum pane shows the 3D view, where a point is not a frequency by its x alone. */
-  let spectrumLocate: StackedTraceLocate | null = null;
   let waterfallPush: ((data: Uint8Array, options?: WaterfallOptions, token?: TraceToken | null) => void) | null = null;
   const traceCandidate = import.meta.env.VITE_SCOPE_TRACE_CANDIDATE === '1';
   let trace: ScopeRenderTrace | null = $state(null);
@@ -1220,6 +1218,8 @@
   }
 
   const DRAG_THRESHOLD_PX = 5;
+  /** MOR-4463: set while the spectrum pane shows the 3D view, where a point is not a frequency by its x alone. */
+  let spectrumLocate: StackedTraceLocate | null = null;
 
   function clearDragPreview(): void {
     gestureCandidateHz = null;
