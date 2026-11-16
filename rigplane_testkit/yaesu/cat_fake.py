@@ -200,6 +200,7 @@ class FakeCatRadio:
         self._silent_until = 0.0
         self._echo = False
         self._pending_burst_verbs: list[str] = []
+        self._held: dict[str, tuple[str, dict[str, str]]] = {}
 
         self._server: asyncio.Server | None = None
         self._clients: set[asyncio.StreamWriter] = set()
@@ -307,6 +308,12 @@ class FakeCatRadio:
         change; here it is scriptable on its own.
         """
         self._broadcast(self._info_line(verb))
+
+    def hold(self, key: str, value: str, stored: dict[str, str] | None = None) -> None:
+        """Model one setting as a register (MOR-4464 write checks): ``key;``
+        answers ``key + value;``; a write ``key + new`` of the same width
+        stores ``stored.get(new, new)`` silently (FT writes 2/3, reads 0/1)."""
+        self._held[key] = (value, dict(stored or {}))
 
     def auto_info_burst_on_next_request(self, *verbs: str) -> None:
         """Push the info lines for *verbs* on the next request the fake processes.
@@ -416,6 +423,13 @@ class FakeCatRadio:
             recorded = self._recorded.lookup(body + ";")
             if recorded is not None:
                 return recorded.reply  # data line, refusal, or recorded silence
+        for key, (value, stored) in self._held.items():
+            if body == key:
+                return f"{key}{value};"
+            new = body[len(key) :]
+            if body.startswith(key) and len(new) == len(value):
+                self._held[key] = (stored.get(new, new), stored)
+                return None
         if body == self._read_cmd("get_id"):
             return format_command(
                 self._parse_tpl("get_id"), model=int(self._identity_id)

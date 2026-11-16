@@ -303,7 +303,7 @@ describe('MOR-1425 tuning accumulator', () => {
     }
   });
 
-  it('MOR-1864 preserves a repolled equal value, but requires association for a changed value', () => {
+  it('MOR-1864/MOR-4393 preserves a repolled equal value; a denied changed value is foreign', () => {
     const acceptedTarget = vi.fn(() => false);
     const local = createTuningAccumulator({ emit, paceMs: 60, acceptedTarget });
     local.step(0, 14_074_000, 14_075_000, 1);
@@ -312,7 +312,14 @@ describe('MOR-1425 tuning accumulator', () => {
     expect(emit).toHaveBeenLastCalledWith(0, 14_076_000);
     expect(acceptedTarget).not.toHaveBeenCalled();
 
-    local.step(0, 14_075_000, 14_076_000, 3); // changed, unmatched value
+    // A changed value still queries the single lifecycle-backed association;
+    // it matches nothing there, so the value is foreign even though it
+    // equals this burst's own first send — cold reset with an immediate
+    // re-emit, never a paced continuation. (The MOR-4393 send ledger that
+    // used to claim this echo is gone: one association mechanism.)
+    const calls = emit.mock.calls.length;
+    local.step(0, 14_075_000, 14_076_000, 3);
+    expect(emit).toHaveBeenCalledTimes(calls + 1);
     expect(emit).toHaveBeenLastCalledWith(0, 14_076_000);
     expect(acceptedTarget).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
       frequency: 14_075_000, observationMarker: 3,
@@ -395,15 +402,20 @@ describe('MOR-2464 display-only tuning-burst publication', () => {
   it('extends the hold on every accepted step, including an unchanged-command repeat', () => {
     const acc = createTuningAccumulator({
       emit, paceMs: 60, quietWindowMs: 4_000, visualHoldMs: 200,
+      // The mock stands in for the lifecycle-backed association, which
+      // matches this burst's own still-pending send.
+      acceptedTarget: ({ frequency }) => emit.mock.calls.some(([, target]) => target === frequency),
     });
     const confirmed = 14_074_000;
     acc.step(0, confirmed, confirmed + 1_000, 1);
     vi.advanceTimersByTime(150);
-    // The echo confirms the first write (unassociated marker), so the next
-    // press of the same gesture re-emits the SAME target — an unchanged
-    // command emit. It is still local input: the visual latch refreshes.
+    // The echo confirms the first write. MOR-4393: the echo of our own
+    // still-pending send continues the burst through the single
+    // lifecycle-backed association instead of cold-starting it, so the
+    // unchanged target waits for the pace rather than re-emitting
+    // immediately. It is still local input: the visual latch refreshes.
     acc.step(0, confirmed + 1_000, confirmed + 1_000, 2);
-    expect(emit).toHaveBeenCalledTimes(2);
+    expect(emit).toHaveBeenCalledTimes(1);
     expect(emit).toHaveBeenLastCalledWith(0, confirmed + 1_000);
     vi.advanceTimersByTime(100); // 250ms past the FIRST input, 100ms past the second
     expect(getTuningBurstTargetHz(0)).toBe(confirmed + 1_000);
@@ -511,6 +523,80 @@ describe('MOR-2464 display-only tuning-burst publication', () => {
     vi.advanceTimersByTime(100); // timer/Date clock: only 100ms elapsed
     clock += 250; // the injected clock says the input is already 250ms old
     expect(getTuningBurstTargetHz(0)).toBeNull();
+  });
+});
+
+describe('MOR-4393 step tuning under CI-V readback latency', () => {
+  let emit: ReturnType<typeof vi.fn<(receiver: number, freq: number) => { status: string }>>;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    emit = vi.fn((_receiver: number, _freq: number) => ({ status: 'pending' }));
+  });
+
+  function slowLinkAccumulator() {
+    // The mock stands in for the extended lifecycle-backed association,
+    // which matches an exact in-burst target while its send is still pending
+    // or once acknowledged — never for a value this burst did not send.
+    return createTuningAccumulator({
+      emit, paceMs: 60, quietWindowMs: 4_000,
+      acceptedTarget: ({ frequency }) => emit.mock.calls.some(([, target]) => target === frequency),
+    });
+  }
+
+  it('12 presses with the readback lagging past the pace window land at base + 12 steps', () => {
+    const acc = slowLinkAccumulator();
+    const base = 14_250_000;
+    const step = 1_000;
+    acc.step(0, base, base + step, 1); // press 1: cold, immediate emit base+1k
+    for (let i = 0; i < 4; i++) acc.step(0, base, base + step, 1); // presses 2-5, stale readback
+    vi.advanceTimersByTime(60); // paced flush carries base+5k
+    expect(emit.mock.calls.at(-1)).toEqual([0, base + 5 * step]);
+    // The echo of send #1 lands mid-burst while nothing is acknowledged yet:
+    acc.step(0, base + step, base + 2 * step, 2); // press 6
+    expect(emit).toHaveBeenCalledTimes(2); // hot continuation — no cold re-emit
+    for (let i = 0; i < 3; i++) acc.step(0, base + step, base + 2 * step, 2); // presses 7-9
+    // A late echo of the superseded base+5k flush must not pull the target back:
+    acc.step(0, base + 5 * step, base + 6 * step, 3); // press 10
+    for (let i = 0; i < 2; i++) acc.step(0, base + 5 * step, base + 6 * step, 3); // presses 11-12
+    vi.advanceTimersByTime(60);
+    const targets = emit.mock.calls.map(([, freq]) => freq);
+    for (let i = 1; i < targets.length; i++) expect(targets[i]).toBeGreaterThanOrEqual(targets[i - 1]!);
+    expect(targets.at(-1)).toBe(base + 12 * step);
+  });
+
+  it('attributes an unacknowledged own-send echo to the burst, but not a foreign value', () => {
+    const acc = slowLinkAccumulator();
+    acc.step(0, 14_250_000, 14_251_000, 1);
+    vi.advanceTimersByTime(60);
+    expect(acc.acceptsObservation(0, 14_251_000, 2)).toBe(true);
+    expect(acc.acceptsObservation(0, 14_900_000, 2)).toBe(false);
+  });
+
+  it('adopts a genuine external change after the last send and steps from it', () => {
+    const acc = slowLinkAccumulator();
+    const base = 14_250_000;
+    acc.step(0, base, base + 1_000, 1);
+    vi.advanceTimersByTime(60);
+    // The front panel moves the VFO somewhere this burst never sent:
+    acc.step(0, 14_900_000, 14_901_000, 2);
+    expect(emit).toHaveBeenLastCalledWith(0, 14_901_000);
+    expect(emit).toHaveBeenCalledTimes(2); // lone cold sends once; cold adopt, one immediate emit
+    acc.step(0, 14_900_000, 14_901_000, 2); // next press steps from the new truth
+    vi.advanceTimersByTime(60);
+    expect(emit).toHaveBeenLastCalledWith(0, 14_902_000);
+  });
+
+  it('reconciles once to the final readback after the burst settles', () => {
+    const acc = slowLinkAccumulator();
+    const base = 14_250_000;
+    for (let i = 0; i < 12; i++) acc.step(0, base, base + 1_000, 1);
+    vi.advanceTimersByTime(60);
+    expect(emit.mock.calls.at(-1)).toEqual([0, base + 12_000]);
+    vi.advanceTimersByTime(4_000); // burst settles — the radio readback is the truth
+    acc.step(0, base + 12_000, base + 13_000, 2);
+    expect(emit).toHaveBeenLastCalledWith(0, base + 13_000);
+    expect(emit).toHaveBeenCalledTimes(3); // no corrective emit beyond the press
   });
 });
 

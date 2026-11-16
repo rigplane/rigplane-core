@@ -47,7 +47,14 @@ from rigplane.profiles import resolve_radio_profile  # noqa: E402
 from rigplane.runtime.radio import IcomRadio  # noqa: E402
 from rigplane.web.server import WebConfig, WebServer  # noqa: E402
 from rigplane_testkit.icom.faults import FaultPlan, FaultRule  # noqa: E402
-from rigplane_testkit.icom.simulator import MockIcomRadio  # noqa: E402
+from rigplane_testkit.icom.simulator import (  # noqa: E402
+    _CIV_HEADER_SIZE,
+    _CIV_PREAMBLE,
+    _CIV_TERM,
+    _CMD_FREQ_GET,
+    _CMD_FREQ_SET,
+    MockIcomRadio,
+)
 
 
 # CI-V 27 1C scope center type (MOR-4451): Filter Center (0) streams the
@@ -88,31 +95,13 @@ class PanoramaSimulator(MockIcomRadio):
             vfo_ab=self.profile.vfo_scheme == "ab",
         )
         self.evidence = evidence
-        # MOR-4451 held-key acceptance: realistic CI-V readback latency.
-        # EVERY reply or unsolicited frame on the CI-V port leaves
-        # ``response_delay + uniform(0, response_jitter)`` seconds late, ORDER
-        # PRESERVED (``preserve_order``) — a real link delays but does not
-        # reorder. Seeded (``seed``) so a latency case replays exactly.
-        # This is the shared outbound CI-V FaultPlan (the same mechanism
-        # ``simulator.py``'s funnel already serves), never a parallel queue:
-        # the inherited ``response_delay`` carries only the uplink knob
-        # (``uplink_delay`` below), never a second copy of this downlink delay.
-        self.fault_plan = FaultPlan(
-            civ_to_client=FaultRule(
-                delay_s=response_delay,
-                jitter_s=response_jitter,
-                preserve_order=True,
-            ),
-            seed=seed,
-        )
-        # MOR-4451 one-way UPLINK latency: the inherited ``response_delay``
-        # dispatch delay (applied in ``_receive``) holds every inbound
-        # datagram before parsing — the request leg. That mechanism has no
-        # per-port scoping (one float for every label), so this also holds
-        # control-port session traffic, not just CI-V requests; the panorama
-        # path only depends on the CI-V request leg. Kept as is — no second
-        # mechanism beside it.
-        self.response_delay = uplink_delay
+        self.set_link_lag(response_delay, response_jitter, uplink_delay, seed)
+        # MOR-4393 slow-link knob: seconds the FB/01 ACK of a frequency SET
+        # lags behind the write itself. The write applies instantly, so the
+        # next poll readback carries the new frequency while the client-side
+        # command lifecycle is still pending — the owner's IC-705-over-Wi-Fi
+        # readback-lag shape.
+        self.ack_delay = 0.0
         if self.profile.expected_identity_ids:
             self.model_id = bytes.fromhex(self.profile.expected_identity_ids[0])
         # CI-V 27 1C scope center type (MOR-4451): Carrier Point Center (1,
@@ -151,6 +140,78 @@ class PanoramaSimulator(MockIcomRadio):
         # CI-V 14 07/08 (PBT inner/outer, BCD level 0-255): the passband
         # tuple's shift leg. Both pots parked at center (128 = no shift).
         self._pbt = {0x07: 128, 0x08: 128}
+
+    def set_link_lag(
+        self,
+        response_delay: float,
+        response_jitter: float,
+        uplink_delay: float,
+        seed: int,
+    ) -> None:
+        # MOR-4451 held-key acceptance: realistic CI-V readback latency.
+        # EVERY reply or unsolicited frame on the CI-V port leaves
+        # ``response_delay + uniform(0, response_jitter)`` seconds late, ORDER
+        # PRESERVED (``preserve_order``) — a real link delays but does not
+        # reorder. Seeded (``seed``) so a latency case replays exactly.
+        # This is the shared outbound CI-V FaultPlan (the same mechanism
+        # ``simulator.py``'s funnel already serves), never a parallel queue:
+        # the inherited ``response_delay`` carries only the uplink knob
+        # (``uplink_delay`` below), never a second copy of this downlink delay.
+        self.fault_plan = FaultPlan(
+            civ_to_client=FaultRule(
+                delay_s=response_delay,
+                jitter_s=response_jitter,
+                preserve_order=True,
+            ),
+            seed=seed,
+        )
+        # MOR-4451 one-way UPLINK latency: the inherited ``response_delay``
+        # dispatch delay (applied in ``_receive``) holds every inbound
+        # datagram before parsing — the request leg. That mechanism has no
+        # per-port scoping (one float for every label), so this also holds
+        # control-port session traffic, not just CI-V requests; the panorama
+        # path only depends on the CI-V request leg. Kept as is — no second
+        # mechanism beside it.
+        self.response_delay = uplink_delay
+
+    def _handle_civ_data(self, data, addr, sender_id, proto):
+        if self.ack_delay > 0:
+            datalen = int.from_bytes(data[0x11:0x13], "little")
+            end = _CIV_HEADER_SIZE + datalen
+            civ = data[_CIV_HEADER_SIZE:end]
+            if (
+                end <= len(data)
+                and len(civ) == 11
+                and civ[:2] == _CIV_PREAMBLE
+                and civ[2] == self._radio_addr
+                and civ[4] == _CMD_FREQ_SET
+                and civ[-1:] == _CIV_TERM
+            ):
+                # Same effect as the native 0x05 handler (apply, then ACK),
+                # but the ACK leaves ack_delay seconds late — and a
+                # transceive-style unsolicited freq report leaves NOW, so
+                # the client observes the new frequency while the command
+                # lifecycle is still pending (the owner's IC-705-over-Wi-Fi
+                # readback-lag shape, MOR-4393).
+                self._frequency = bcd_decode(civ[5:10])
+                echo = self._civ_frame(
+                    0x00,
+                    self._radio_addr,
+                    _CMD_FREQ_GET,
+                    data=bcd_encode(self._frequency),
+                )
+                self._send(proto, self._wrap_civ(echo, sender_id), addr, "civ")
+                ack = self._civ_ack(civ[3], self._radio_addr)
+                asyncio.get_running_loop().call_later(
+                    self.ack_delay,
+                    self._send,
+                    proto,
+                    self._wrap_civ(ack, sender_id),
+                    addr,
+                    "civ",
+                )
+                return
+        super()._handle_civ_data(data, addr, sender_id, proto)
 
     def _dispatch_filter_width(
         self, rest: bytes, from_addr: int, reply
@@ -391,6 +452,15 @@ async def run() -> None:
     parser.add_argument("--model", default="IC-705")
     parser.add_argument("--evidence", type=Path, required=True)
     parser.add_argument(
+        "--ack-delay",
+        type=float,
+        default=0.0,
+        help="seconds the ACK of a frequency SET lags the write itself "
+        "(PanoramaSimulator.ack_delay) — a readback-lag knob: the frequency "
+        "applies instantly and polls carry it while the command lifecycle "
+        "is still pending (MOR-4393)",
+    )
+    parser.add_argument(
         "--response-delay",
         type=float,
         default=0.0,
@@ -476,12 +546,12 @@ async def run() -> None:
     args = parser.parse_args()
     logging.basicConfig(filename=args.evidence.with_suffix(".log"), level=logging.INFO)
     args.evidence.write_text("")
+    # Lag knobs stay off through the handshake: the client connect phase has
+    # sub-second deadlines a delayed simulator cannot meet (MOR-4393). They
+    # shape the test phase only, activated once the radio link is up.
     simulator = PanoramaSimulator(
         args.model,
         args.evidence,
-        response_delay=args.response_delay,
-        response_jitter=args.response_jitter,
-        uplink_delay=args.uplink_delay,
         span_hz=args.span_hz,
         seed=args.seed,
         scope_center_type=args.scope_center_type,
@@ -529,6 +599,10 @@ async def run() -> None:
     try:
         await radio.connect()
         await radio.get_freq()
+        simulator.set_link_lag(
+            args.response_delay, args.response_jitter, args.uplink_delay, args.seed
+        )
+        simulator.ack_delay = args.ack_delay
         server = WebServer(
             radio,
             WebConfig(
