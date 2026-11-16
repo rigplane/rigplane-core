@@ -380,7 +380,8 @@ async def test_data_transaction_first_terminal_frame_wins(
     task = asyncio.create_task(
         radio.send_civ_transaction(0x1C, sub=0x00, expect="data", timeout=1.0)
     )
-    while not captured:
+    # MOR-4384: answers arrive once the request is on the wire.
+    while not captured or not radio._civ_transport.sent_packets:
         await asyncio.sleep(0)
     await runtime._route_civ_frame(parse_civ_frame(first), generation=radio._civ_epoch)
     if close_between:
