@@ -14,15 +14,16 @@ import type { ServerStatePublic } from '../../../src/lib/types/state';
  * the radio-side CI-V ACK never leaves a frontend lifecycle pending and
  * cannot produce the unassociated echo this row needs.)
  *
- * Twelve ArrowRight presses (tuning step 1 kHz, USB default) build one live
- * burst, then an absolute spectrum click releases it: the release starts a
- * fresh association window (keyboard steps carry no paced-drag flag), so a
- * delayed pre-release echo arriving with the next wheel-up step is
- * unassociated on the pre-fix code — it cold-resets onto the stale echo and
- * the emitted targets step backward. With the fix, the live replacement
- * inherits the anchor and the lifecycle-backed association still matches the
- * earlier in-burst target: the step accumulates onto the release target and
- * every emitted target is non-decreasing.
+ * A real paced drag on the panorama sends one set_freq per pacing tick; the
+ * release then sends the absolute target and starts a fresh command burst.
+ * With lag, a poll readback of an OLDER own drag target reaches the browser
+ * after the release, while the release target is still in flight. The next
+ * wheel step must accumulate onto the release target (release + 1 kHz); a
+ * client that cannot associate the older echo with the same gesture
+ * cold-resets onto it and steps backward. The drag keeps sliding until the
+ * first echo has arrived (a user sees the lag and keeps going), then
+ * releases a few ticks later, so the next echo is provably older than the
+ * release.
  *
  * Kept out of tests/e2e/journey/ on purpose: the journey playwright config
  * sweeps every `*.spec.ts` in that directory.
@@ -49,27 +50,6 @@ async function fetchState(page: Page, port: number): Promise<ServerStatePublic> 
 
 async function readoutHz(readout: Locator): Promise<number> {
   return Number((((await readout.textContent()) ?? '').replace(/\D/g, '')));
-}
-
-/** Real paced drag on the panorama: press, slide left (raises the tuned
- * frequency) in slow increments, release. Every move past the pacing
- * interval emits an intermediate set_freq; the release emits the final
- * absolute target. The targets are read back from the captured frames,
- * never predicted from the viewport. */
-async function dragRelease(page: Page): Promise<void> {
-  const area = page.locator('.spectrum-area').first();
-  await expect(area).toBeVisible({ timeout: 30_000 });
-  const box = await area.boundingBox();
-  expect(box).not.toBeNull();
-  const y = box!.y + box!.height * 0.3;
-  const startX = box!.x + box!.width * 0.6;
-  await page.mouse.move(startX, y);
-  await page.mouse.down();
-  for (let move = 1; move <= 8; move++) {
-    await page.mouse.move(startX - move * 25, y, { steps: 3 });
-    await page.waitForTimeout(150);
-  }
-  await page.mouse.up();
 }
 
 test('IC-705 slow link: paced drag, release, delayed own-target echo, step lands on release + 1 kHz', async ({ page }, info) => {
@@ -107,7 +87,28 @@ test('IC-705 slow link: paced drag, release, delayed own-target echo, step lands
     await expect.poll(stateFreqHz, { timeout: 30_000 }).toBe(base);
     await expect(readout).toHaveText(/14\s*\.\s*250/, { timeout: 30_000 });
     await expect.poll(() => scopeFrames, { timeout: 30_000 }).toBeGreaterThan(10);
-    await dragRelease(page);
+    // Real paced drag: slide left (raises the frequency) in 25 px moves, each
+    // past the pacing interval, until the first own-target echo reaches the
+    // radio state, then three more moves, then release.
+    const area = page.locator('.spectrum-area').first();
+    await expect(area).toBeVisible({ timeout: 30_000 });
+    const box = await area.boundingBox();
+    expect(box).not.toBeNull();
+    const y = box!.y + box!.height * 0.3;
+    const startX = box!.x + box!.width * 0.7;
+    await page.mouse.move(startX, y);
+    await page.mouse.down();
+    let moves = 0;
+    const slide = async (): Promise<void> => {
+      moves += 1;
+      await page.mouse.move(startX - moves * 25, y, { steps: 3 });
+      await page.waitForTimeout(150);
+    };
+    for (let move = 0; move < 3; move++) await slide();
+    for (let guard = 0; guard < 40 && (await stateFreqHz()) === base; guard++) await slide();
+    expect(await stateFreqHz()).not.toBe(base);
+    for (let move = 0; move < 3; move++) await slide();
+    await page.mouse.up();
     // At least one intermediate drag target plus the release target.
     expect(sentFreqs.length).toBeGreaterThan(2);
     const release = sentFreqs.at(-1)!;
@@ -117,11 +118,19 @@ test('IC-705 slow link: paced drag, release, delayed own-target echo, step lands
     for (const freq of sentFreqs) expect(release).toBeGreaterThanOrEqual(freq);
     expect(sentFreqs[0]).toBeGreaterThan(base);
     const expected = release + 1_000;
-    // One wheel-up step right after the release, while the delayed echoes of
-    // the intermediate drag targets are still in flight to the browser.
+    // Wait for the stale echo: an OLDER own target, strictly below the
+    // release, reaching the browser after the release while the release
+    // target is still in flight.
+    await expect.poll(async () => {
+      const freq = await stateFreqHz();
+      return freq !== null && freq < release && sentFreqs.includes(freq);
+    }, { timeout: 15_000, intervals: [50] }).toBe(true);
+    await page.waitForTimeout(100);
+    // The condition must still hold at the moment of the step.
+    expect((await stateFreqHz()) ?? Infinity).toBeLessThan(release);
     await page.mouse.wheel(0, -120);
     // The fixed code accumulates onto the release target; the pre-fix code
-    // cold-resets onto a stale intermediate echo and steps backward.
+    // cold-resets onto the stale echo and steps backward.
     await expect
       .poll(async () => readoutHz(readout), { timeout: 20_000 })
       .toBe(expected);
