@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-from rigplane.commands.command_spec import CatCommandSpec
+from rigplane.commands.command_spec import CatCommandSpec, CivCommandSpec
 
 REPO = Path(__file__).resolve().parents[2]
 RIGS = REPO / "rigs"
@@ -64,20 +64,29 @@ def _config(name: str):
     return load_rig(RIGS / f"{name}.toml")
 
 
-def facts(name: str, extra: dict | None = None):
+def facts(name: str, extra: dict | None = None, **override):
     """The producer's own facts type, filled from a shipped profile."""
+    from dataclasses import replace
+
+    from rigplane.profiles import selector_one_is_sub
     from rigplane.profiles.probe_checks import RadioFacts
 
     config = _config(name)
-    return RadioFacts(
+    made = RadioFacts(
         protocol=config.protocol_type,
         commands={**config.commands, **(extra or {})},
         modes=tuple(config.modes),
         mode_codes=None if config.mode_codes is None else tuple(config.mode_codes),
         cmd29_routes=frozenset(config.cmd29_routes),
-        vfo_swap=config.vfo_swap_ab or config.vfo_swap_main_sub,
+        swap_ab=config.vfo_swap_ab,
+        swap_main_sub=config.vfo_swap_main_sub,
+        unselected_is_sub=selector_one_is_sub(
+            config.receiver_count, config.split_tx_target
+        ),
+        data_modes=config.data_mode_count,
         freq_ranges=tuple((r["start_hz"], r["end_hz"]) for r in config.freq_ranges),
     )
+    return replace(made, **override)
 
 
 def _facts_for(name: str):
@@ -106,7 +115,7 @@ SAMPLES: dict[str, tuple[object, ...]] = {
     "freq_selected": (7074000, 145000000),
     "freq_unselected": (14250000, 145000000),
     "mode_selected": (("USB", 0, 1), ("FM", 1, 2), ("USB", 1), ("CW", 3)),
-    "mode_unselected": (("USB", 0, 1), ("LSB", 1, 3)),
+    "mode_unselected": (("USB", 0, 1), ("LSB", 1, 3), ("USB", 2, 1)),
     "vfo_exchange": ((),),
     "rf_power": (0, 128, 255),
     "af_level": (0, 77),
@@ -352,7 +361,12 @@ def load_checks(facts_, toml: str):
 def test_t5_a_write_without_every_changed_restore_fails_and_is_not_sendable(
     protocol: str, entry_id: str
 ) -> None:
-    from rigplane.profiles.probe_checks import compile_table, parse_frame, sendable
+    from rigplane.profiles.probe_checks import (
+        compile_table,
+        judged_frame,
+        parse_frame,
+        sendable,
+    )
     from rigplane.profiles.rig_loader import RigLoadError
 
     facts_ = _facts_for("ft991a+" if protocol == "yaesu_cat" else "ic705")
@@ -367,7 +381,7 @@ def test_t5_a_write_without_every_changed_restore_fails_and_is_not_sendable(
     full = list(entry.changes)
     assert full and (entry_id in full or entry.read is None)
     (check,) = load_checks(facts_, check_toml([("write", entry_id, value)], full))
-    assert check.steps[0].frame == frame
+    assert judged_frame(table, entry_id, "write", value, None, check.restored) == frame
     assert sendable(parse_frame(table, frame), {(c, None) for c in full})
     for missing in full:
         partial = [c for c in full if c != missing]
@@ -448,32 +462,45 @@ def test_t6_load_time_bytes_equal_the_single_build_and_judge_function() -> None:
                 )
                 continue
             loaded.append(f"{name}:{check.steps[0].entry}")
-            table = compile_table(facts_, tuple(sorted(_ids(check))))
+            ids = tuple(sorted(_ids(check)))
+            load_time, engine = (
+                compile_table(facts_, ids),
+                compile_table(facts(name), ids),
+            )
             for step in check.steps:
                 if step.kind == "ask":
-                    assert step.frame == b""
                     continue
-                again = judged_frame(
-                    table,
+                args = (
                     step.entry,
                     step.kind,
                     step.value,
                     step.receiver,
                     check.restored,
                 )
-                assert again == step.frame, (name, step)
-    assert sum(item.endswith("vfo_exchange") for item in loaded) >= 3, loaded
+                assert judged_frame(load_time, *args) == judged_frame(engine, *args)
+    exchange = sorted(item for item in loaded if item.endswith("vfo_exchange"))
+    assert exchange == ["ic705:vfo_exchange", "ic905:vfo_exchange"], loaded
     assert "ft991a:freq_a" in loaded and "ftx1:speech_processor" in loaded, loaded
 
 
 def test_t6_the_module_has_exactly_one_judging_path() -> None:
-    """parse_frame and sendable are called only by judged_frame.
+    """parse_frame and sendable are called only by judged_frame, and no check
+    record carries bytes (a stored frame would be an unjudged send).
 
     B1b hook: the engine test asserting every write reaches the port only
     through ``judged_frame`` belongs next to this one when the engine exists.
     """
+    from dataclasses import fields
+
     from rigplane.profiles import probe_checks
 
+    for record in (
+        probe_checks.ProbeCheck,
+        probe_checks.ProbeCheckStep,
+        probe_checks.ProbeRestoreItem,
+        probe_checks.ProbePrecondition,
+    ):
+        assert all("bytes" not in str(f.type) for f in fields(record)), record
     tree = ast.parse(MODULE.read_text(encoding="utf-8"))
     callers: dict[str, set[str]] = {}
     for node in ast.walk(tree):
@@ -506,7 +533,7 @@ CAT_VOICE = {"ft991a+": ("E", "H", "I"), "ftx1": ("H", "I")}
 def _mode_frames(table, code: int) -> list[bytes]:
     out = []
     for entry in table.entries:
-        if entry.id not in ("mode_selected", "mode_unselected"):
+        if entry.id not in ("mode_selected", "mode_unselected") or not entry.write:
             continue
         tail = (code, 0x00, 0x01) if entry.write[0] == 0x26 else (code, 0x01)
         out.append(entry.write + bytes(tail))
@@ -598,18 +625,21 @@ def test_receiver_wrapper_is_unwrapped_once_and_only_where_the_profile_routes_it
 
 
 def test_sub_receiver_write_needs_the_sub_receiver_restore() -> None:
+    from rigplane.profiles.probe_checks import judged_frame
     from rigplane.profiles.rig_loader import RigLoadError
 
     steps = [("write", "af_level", 77, "sub")]
     with pytest.raises(RigLoadError, match="restore"):
         load_checks(facts("ic7610"), check_toml(steps, ["af_level"]))
     (check,) = load_checks(facts("ic7610"), check_toml(steps, ["af_level@sub"]))
-    assert check.steps[0].frame == bytes.fromhex("290114010077")
+    table = table_for("ic7610")
+    frame = judged_frame(table, "af_level", "write", 77, 1, check.restored)
+    assert frame == bytes.fromhex("290114010077")
     with pytest.raises(RigLoadError, match="receiver"):
         load_checks(facts("ic705"), check_toml(steps, ["af_level@sub"]))
 
 
-@pytest.mark.parametrize("name", ("ic705", "ic7300", "ic7610", "ic9700"))
+@pytest.mark.parametrize("name", ("ic705", "ic905"))
 def test_vfo_exchange_changes_frequency_and_mode_of_both_vfos(name: str) -> None:
     table = table_for(name)
     (entry,) = [e for e in table.entries if e.id == "vfo_exchange"]
@@ -621,7 +651,7 @@ def test_vfo_exchange_changes_frequency_and_mode_of_both_vfos(name: str) -> None
     }
     assert entry.read is None and entry.write == b"\x07\xb0"
     (check,) = load_checks(facts(name), SYNTH_CIV)
-    assert check.steps[0].frame == b"\x07\xb0"
+    assert check.steps[0].entry == "vfo_exchange"
 
 
 def test_selected_vfo_mode_26_is_one_entry_of_mode_data_and_filter() -> None:
@@ -642,15 +672,15 @@ def test_selected_vfo_mode_26_is_one_entry_of_mode_data_and_filter() -> None:
     ("name", "read", "write"),
     [
         ("ic705", b"\x26\x00", b"\x26\x00"),
-        ("ic7300", b"\x04", b"\x06"),
-        ("ic7610", b"\x04", b"\x06"),
+        ("ic7300", b"\x04", None),
+        ("ic7610", b"\x04", None),
     ],
 )
 def test_selected_mode_compiles_from_what_the_profile_declares(
     name: str, read: bytes, write: bytes
 ) -> None:
-    """IC-7300/IC-7610 declare no 26 00 write: the selected-VFO mode entry is
-    built from their 04/06 commands instead."""
+    """IC-7300/IC-7610 declare no 26 00 write: their selected-VFO mode is
+    read-only (04), never written through 06, which cannot restore DATA."""
     (entry,) = [e for e in table_for(name).entries if e.id == "mode_selected"]
     assert (entry.read, entry.write) == (read, write)
 
@@ -666,3 +696,193 @@ def test_rf_power_is_restorable(name: str, steps: list, restore: list) -> None:
     """Never above the original is a B1b engine run-time rule, not a load rule."""
     (check,) = load_checks(facts(name), check_toml(steps, restore))
     assert check.restored == frozenset({(restore[0], None)})
+
+
+# --- A3: literal pins of what parses (not derived from build_frame) -----------------
+
+CAT_TAILS = ("", "0", "1", "2", "3", "00", "01", "02", "050", "100")
+CAT_TAILS += ("007074000", "014250000", "145000000", "0;", "1;")
+
+
+def test_a3_ft991a_parseable_verbs_are_exactly_the_written_set() -> None:
+    from rigplane.profiles.probe_checks import parse_frame
+
+    table = table_for("ft991a+")
+    verbs = [a + b for a in string.ascii_uppercase for b in string.ascii_uppercase]
+    lines = [(verb + tail + ";").encode() for verb in verbs for tail in CAT_TAILS]
+    parsed = {line[:2].decode() for line in lines if parse_frame(table, line)}
+    assert parsed == {"FA", "FB", "MD", "FT", "PC", "PR", "IF"}
+
+
+IC705_WRITES = (
+    "25000040070700",
+    "25010050420100",
+    "2600010001",
+    "2601000101",
+    "07b0",
+    "140a0128",
+    "14010077",
+)
+IC705_PAIRS = (
+    {
+        (cmd, sub, form)
+        for cmd, sub in ((0x25, 0x00), (0x25, 0x01), (0x26, 0x00), (0x26, 0x01))
+        for form in ("read", "write")
+    }
+    | {(0x14, s, f) for s in (0x0A, 0x01) for f in ("read", "write")}
+    | {(0x07, 0xB0, "write")}
+)
+
+
+def test_a3_ic705_parseable_command_pairs_are_exactly_the_written_set() -> None:
+    from rigplane.profiles.probe_checks import parse_frame
+
+    table = table_for("ic705")
+    heads = [bytes((cmd,)) for cmd in range(256)]
+    heads += [bytes((cmd, sub)) for cmd in range(256) for sub in range(256)]
+    bodies = [head + data for head in heads for data in (b"", b"\x01", b"\x00\x01")]
+    bodies += [bytes.fromhex(h) for h in IC705_WRITES]
+    seen = set()
+    for wrap in (b"", b"\x29\x00", b"\x29\x01"):
+        for body in bodies:
+            got = parse_frame(table, wrap + body)
+            if got is not None:
+                assert not wrap, (wrap, body)
+                seen.add((body[0], body[1], got.form))
+    assert seen == IC705_PAIRS
+
+
+def test_the_cat_line_rule_alone_refuses_a_second_semicolon() -> None:
+    """A test-only entry whose codec accepts ';X': the whole-line rule refuses."""
+    from rigplane.profiles.probe_checks import Entry, Table, _Choice, parse_frame
+
+    def table(raw: bytes):
+        odd = Entry("odd", None, b"ZZ", _Choice((("x", raw),)), ("odd",), False)
+        return Table("yaesu_cat", (odd,))
+
+    assert parse_frame(table(b"QX"), b"ZZQX;") is not None
+    assert parse_frame(table(b";X"), b"ZZ;X;") is None
+
+
+# --- pre-review: LSB, DATA domain, complete mode restore, exchange topology ----------
+
+
+@pytest.mark.parametrize(
+    ("name", "entry", "hexed"),
+    [
+        ("ic705", "mode_selected", "2600000001"),
+        ("ic705", "mode_unselected", "2601000001"),
+        ("ic7300", "mode_unselected", "2601000101"),
+        ("ic9700", "mode_unselected", "2601000003"),
+    ],
+)
+def test_lsb_the_zero_mode_byte_is_in_the_domain(
+    name: str, entry: str, hexed: str
+) -> None:
+    from rigplane.profiles.probe_checks import judged_frame, parse_frame
+
+    table = table_for(name)
+    got = parse_frame(table, bytes.fromhex(hexed))
+    assert (got.entry.id, got.form, got.value[0]) == (entry, "write", "LSB")
+    (check,) = load_checks(
+        facts(name), check_toml([("write", entry, got.value)], [entry])
+    )
+    frame = judged_frame(table, entry, "write", got.value, None, check.restored)
+    assert frame == bytes.fromhex(hexed)
+
+
+def test_data_field_domain_comes_from_the_profile() -> None:
+    from rigplane.profiles.probe_checks import parse_frame
+
+    ic7610 = table_for("ic7610")
+    for data in (0, 1, 2, 3):
+        got = parse_frame(ic7610, bytes((0x26, 0x01, 0x01, data, 0x01)))
+        assert got.value == ("USB", data, 1), data
+    assert parse_frame(ic7610, bytes.fromhex("2601010401")) is None
+    for name in ("ic705", "ic7300"):
+        assert parse_frame(table_for(name), bytes.fromhex("2601010101")) is not None
+        assert parse_frame(table_for(name), bytes.fromhex("2601010201")) is None
+    g7250 = compile_table_for("g7250")
+    assert parse_frame(g7250, bytes.fromhex("2601010001")) is not None
+    assert parse_frame(g7250, bytes.fromhex("2601010101")) is None
+
+
+def compile_table_for(name: str, **override):
+    from rigplane.profiles.probe_checks import compile_table
+
+    return compile_table(facts(name, **override))
+
+
+@pytest.mark.parametrize("name", ("ic7300", "ic7300mk2", "ic7610", "ic9700"))
+def test_exchange_is_unavailable_without_complete_mode_restore(name: str) -> None:
+    from rigplane.profiles.rig_loader import RigLoadError
+
+    assert "vfo_exchange" not in {e.id for e in table_for(name).entries}
+    with pytest.raises(RigLoadError, match="not available"):
+        load_checks(facts(name), SYNTH_CIV)
+
+
+def test_exchange_restores_unequal_data_states_on_both_vfos() -> None:
+    from rigplane.profiles.probe_checks import judged_frame
+
+    table = table_for("ic705")
+    (check,) = load_checks(facts("ic705"), SYNTH_CIV)
+    restored = check.restored
+    before = {"mode_selected": ("USB", 1, 1), "mode_unselected": ("USB", 0, 2)}
+    for entry, value in before.items():
+        frame = judged_frame(table, entry, "write", value, None, restored)
+        sub = 0x00 if entry == "mode_selected" else 0x01
+        assert frame == bytes((0x26, sub, 0x01, value[1], value[2])), entry
+    for entry in table.entry("vfo_exchange").changes:
+        assert table.entry(entry).write is not None, entry
+
+
+SELECTED_WRITES = {
+    "set_selected_freq": CivCommandSpec(bytes=(0x25, 0x00)),
+    "set_selected_mode": CivCommandSpec(bytes=(0x26, 0x00)),
+}
+
+
+def test_main_sub_exchange_needs_selector_01_to_be_the_physical_sub() -> None:
+    """IC-7610: 25/26 01 is the SUB band, so MAIN/SUB swap is restorable once
+    the profile declares the 00 writes; IC-9700: 01 is MAIN's other VFO, so
+    the swap changes SUB that no entry captures."""
+    from rigplane.profiles.rig_loader import RigLoadError
+
+    ic7610 = facts("ic7610", SELECTED_WRITES)
+    (check,) = load_checks(ic7610, SYNTH_CIV)
+    assert check.steps[0].entry == "vfo_exchange"
+    ic9700 = facts("ic9700", SELECTED_WRITES)
+    with pytest.raises(RigLoadError, match="not available"):
+        load_checks(ic9700, SYNTH_CIV)
+    with pytest.raises(RigLoadError, match="not available"):
+        load_checks(
+            facts("ic7610", SELECTED_WRITES, unselected_is_sub=False), SYNTH_CIV
+        )
+
+
+def test_ab_exchange_comes_only_from_the_ab_swap() -> None:
+    from rigplane.profiles.rig_loader import RigLoadError
+
+    for override in (
+        {"swap_ab": None},
+        {"swap_ab": None, "swap_main_sub": (0xB0,)},
+    ):
+        with pytest.raises(RigLoadError, match="not available"):
+            load_checks(facts("ic705", **override), SYNTH_CIV)
+
+
+@pytest.mark.parametrize("swap", [(0xB0,), (0x07, 0xB0)])
+@pytest.mark.parametrize(
+    ("name", "key", "extra"),
+    [
+        ("ic705", "swap_ab", None),
+        ("ic905", "swap_ab", None),
+        ("ic7610", "swap_main_sub", SELECTED_WRITES),
+    ],
+)
+def test_short_and_complete_swap_tuples_compile_alike(name, key, extra, swap) -> None:
+    from rigplane.profiles.probe_checks import compile_table
+
+    table = compile_table(facts(name, extra, **{key: swap}))
+    assert table.entry("vfo_exchange").write == b"\x07\xb0"

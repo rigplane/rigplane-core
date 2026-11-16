@@ -14,6 +14,7 @@ import pytest
 
 from tests.probe.test_probe_table_closure import (
     CAT_EXTRA,
+    CHECK_HEAD,
     check_toml,
     facts,
     load_checks,
@@ -84,6 +85,8 @@ def test_profile_without_probe_section_loads_unchanged() -> None:
 
 
 def test_cat_check_loads_into_typed_records(tmp_path: Path) -> None:
+    from rigplane.profiles.probe_checks import compile_table, judged_frame
+
     config = _load_with_probe(tmp_path, "ft991a.toml", CAT_CHECK)
     (check,) = config.probe_checks
     assert check.id == "synth-freq-mode"
@@ -94,8 +97,11 @@ def test_cat_check_loads_into_typed_records(tmp_path: Path) -> None:
     ]
     assert [step.kind for step in check.steps] == ["write", "read", "ask"]
     assert (check.steps[0].entry, check.steps[0].value) == ("freq_a", 7074000)
-    assert check.steps[0].frame == b"FA007074000;"
-    assert check.steps[1].frame == b"FA;"
+    table = compile_table(facts("ft991a"), ("freq_a", "mode_main"))
+    step0, step1 = check.steps[:2]
+    write = (step0.entry, step0.kind, step0.value, None, check.restored)
+    assert judged_frame(table, *write) == b"FA007074000;"
+    assert judged_frame(table, step1.entry, step1.kind, None, None, ()) == b"FA;"
     assert check.steps[2].question == "Does the display look right?"
     assert [(item.entry, item.rehearse) for item in check.restore] == [
         ("freq_a", True),
@@ -223,3 +229,28 @@ def test_non_ascii_c4fm_code_with_probe_checks_is_a_load_error(tmp_path: Path) -
             '"B", "C", "D", "E",',
             '"B", "C", "D", "É",',
         )
+
+
+STEP = '[[probe.checks.steps]]\nkind = "read"\nentry = "freq_a"\n'
+
+
+@pytest.mark.parametrize(
+    "toml",
+    [
+        CAT_CHECK.replace('witness = ["freq_a", "mode_main"]', "witness = 1"),
+        CHECK_HEAD + "steps = false\n",
+        CHECK_HEAD + "restore = 7\n" + STEP,
+        CHECK_HEAD + 'preconditions = "x"\n' + STEP,
+        CHECK_HEAD + STEP + "receiver = []\n",
+        CHECK_HEAD + STEP.replace('entry = "freq_a"', "entry = []"),
+        CHECK_HEAD + "witness = [[1]]\n" + STEP,
+        "[probe]\nchecks = false\n",
+        "[probe]\nchecks = {}\n",
+    ],
+)
+def test_malformed_shapes_are_load_errors_not_type_errors(toml: str) -> None:
+    _fails(toml, ".")
+
+
+def test_an_absent_checks_field_is_no_checks() -> None:
+    assert load_checks(facts("ft991a"), "[probe]\n") == ()
