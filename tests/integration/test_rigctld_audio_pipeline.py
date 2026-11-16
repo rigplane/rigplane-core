@@ -252,6 +252,31 @@ async def rigctld_audio_setup() -> AsyncGenerator[
         radio._connected = False
 
 
+async def test_ptt_reread_reply_routes_through_the_lan_double_without_error(
+    rigctld_audio_setup: tuple[
+        RecordingLanRadio,
+        RigctldServer,
+        AudioBridge,
+        FakeAudioBackend,
+        _RecordingAudioTransport,
+    ],
+) -> None:
+    """MOR-4384: the rigctld PTT re-read reply reaches the PTT state.
+
+    The reply goes through the real CI-V ingress, which reads the CI-V
+    transport's typed ``ordered_ingress`` contract (MOR-4209) before it
+    claims any answer. A transport double without that attribute made the
+    route raise -- swallowed by the re-read caller -- so the managed-TX
+    seam never learnt the key state and rigctld's RF state stayed UNKNOWN.
+    The reply must route without error and land as the PTT observation.
+    """
+    radio, _server, _bridge, _backend, _transport = rigctld_audio_setup
+    await answer_ptt_reread(radio, transmitting=True)
+    assert radio.state_cache.ptt is True
+    await answer_ptt_reread(radio, transmitting=False)
+    assert radio.state_cache.ptt is False
+
+
 async def test_defer_split_is_dropped_while_the_radio_transmits(
     rigctld_audio_setup: tuple[
         RecordingLanRadio,
