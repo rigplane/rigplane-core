@@ -1,4 +1,5 @@
 import { expect, type Page } from '@playwright/test';
+import { ControllerClient } from '../../../src/lib/transport/controller-client';
 import type { ServerStatePublic } from '../../../src/lib/types/state';
 
 /**
@@ -274,26 +275,31 @@ export function parseRelayedAnswer(value: unknown): RelayedAnswer {
   return { status: 'ok', sdp: record.sdp, type: 'answer' };
 }
 
-/** The controller grant of POST /api/v1/controller. The frontend's own
- * `Grant` type is private to controller-client.ts (not exported), so the
- * fields the probe uses are checked here exactly as its `adopt()` does. */
-export interface ControllerGrant {
-  controller_key: string;
-  generation: number;
-}
-
-export function parseControllerGrant(value: unknown): ControllerGrant {
-  const record = value as Record<string, unknown> | null;
-  if (
-    typeof record !== 'object' ||
-    record === null ||
-    typeof record.controller_key !== 'string' ||
-    !/^[0-9a-f]{64}$/.test(record.controller_key) ||
-    typeof record.generation !== 'number' ||
-    !Number.isSafeInteger(record.generation) ||
-    record.generation < 0
-  ) {
-    throw new Error(`controller grant malformed: ${JSON.stringify(value)}`);
+/**
+ * A controller key for the station, acquired through the PRODUCTION
+ * `ControllerClient` (src/lib/transport/controller-client.ts): it POSTs
+ * /api/v1/controller, and its own `adopt()` is the only validator of the
+ * grant (key shape, generation, ttl_ms, heartbeat_ms, role), so the harness
+ * keeps no copy of the grant shape. The client's relative `/api/v1/...`
+ * calls are pointed at the station for the duration of the call.
+ */
+export async function acquireControllerKey(): Promise<string> {
+  const original = globalThis.fetch;
+  globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) =>
+    original(
+      typeof input === 'string' && input.startsWith('/') ? `${STATION_ORIGIN}${input}` : input,
+      init,
+    )) as typeof fetch;
+  const client = new ControllerClient();
+  try {
+    await client.prepare();
+    // A local-mode station whose grant the client rejects leaves it
+    // sessionless instead of throwing (its own tolerance for older cores).
+    const key = client.headers()['X-RigPlane-Controller'];
+    if (!key) throw new Error('the station granted no session the ControllerClient accepts');
+    return key;
+  } finally {
+    globalThis.fetch = original;
+    client.lose(); // stops the heartbeat timer; no DELETE, the TTL reaps it
   }
-  return { controller_key: record.controller_key, generation: record.generation };
 }

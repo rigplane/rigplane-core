@@ -7,7 +7,7 @@ import {
   expectReadoutHz,
   foreignDestinations,
   openRemoteUi,
-  parseControllerGrant,
+  acquireControllerKey,
   parseRelayedAnswer,
   setStationFrequency,
   simState,
@@ -201,14 +201,7 @@ test('P0: a bare page connects four data channels and reaches control_hello', as
     });
     return parseRelayedAnswer(await response.json());
   });
-  await page.exposeFunction('__controllerKey', async () => {
-    const response = await fetch(`${STATION_ORIGIN}/api/v1/controller`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ kind: 'pro' }),
-    });
-    return parseControllerGrant(await response.json()).controller_key;
-  });
+  await page.exposeFunction('__controllerKey', acquireControllerKey);
 
   const outcome = await page.evaluate(
     async ({ channels, attachText, collectSource }) => {
