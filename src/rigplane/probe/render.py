@@ -298,7 +298,7 @@ def pre_save_summary(
         f"{absent_answered_line(absent_answered or [])}"
         f"{present_missed_line(present_missed or [])}"
         f"{termination_line(termination)}"
-        f"{checks_line}\n" if checks_line else ""
+        + (checks_line + "\n" if checks_line else "")
         "The tool itself does not add your name, computer name, internet "
         "address, or any file from your computer.\n"
         "But the --label text is saved exactly as you typed it, and stored "

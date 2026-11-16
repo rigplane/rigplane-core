@@ -117,6 +117,18 @@ def _run_main(monkeypatch, argv: list[str], answers: list[str]) -> int:
     return exc_info.value.code
 
 
+async def _run_main_cat(monkeypatch, argv: list[str], answers: list[str]) -> int:
+    """CAT runs in a worker thread: the fake's socket server is bound to
+    the test's event loop, while main() runs its own asyncio.run."""
+    monkeypatch.setattr(sys, "stdin", _FakeStdin(answers))
+    monkeypatch.setattr("sys.argv", ["rigplane", *argv])
+    opened: list[Path] = []
+    monkeypatch.setattr(probe_cli, "open_result_folder", opened.append)
+    with pytest.raises(SystemExit) as exc_info:
+        await asyncio.to_thread(main)
+    return exc_info.value.code
+
+
 def _patch_rigs(monkeypatch, rigs: dict) -> None:
     monkeypatch.setattr(
         "rigplane.rig_loader.discover_available_rigs", lambda *a, **k: rigs
@@ -164,22 +176,22 @@ def test_checks_without_terminal_is_exit_2(tmp_path, monkeypatch) -> None:
     assert not out.exists()
 
 
-def test_yes_does_not_consent_to_checks(tmp_path, monkeypatch) -> None:
+async def test_yes_does_not_consent_to_checks(tmp_path, monkeypatch) -> None:
     from rigplane_testkit.yaesu import FakeCatRadio
 
     out = tmp_path / "probe.json"
     radio = FakeCatRadio(profile="ftx1", frequency_hz=14_074_000)
-    asyncio.run(radio.start())
+    await radio.start()
     try:
         _patch_rigs(monkeypatch, _rigs_with("FTX-1", "ftx1", _synth_cat_check()))
-        code = _run_main(
+        code = await _run_main_cat(
             monkeypatch,
             ["probe", "FTX-1", "--port", radio.device_url,
              "--yes", "--out", str(out), "--checks", "--label", "seam-n"],
             ["y", "y", "n", "y"],
         )
     finally:
-        asyncio.run(radio.stop())
+        await radio.stop()
     assert code == 0
     document = ProbeFile.from_json(out.read_text(encoding="utf-8"))
     assert document.mode == "read"
@@ -188,22 +200,22 @@ def test_yes_does_not_consent_to_checks(tmp_path, monkeypatch) -> None:
     assert radio.mode_code == "2"
 
 
-def test_per_check_default_is_no(tmp_path, monkeypatch) -> None:
+async def test_per_check_default_is_no(tmp_path, monkeypatch) -> None:
     from rigplane_testkit.yaesu import FakeCatRadio
 
     out = tmp_path / "probe.json"
     radio = FakeCatRadio(profile="ftx1", frequency_hz=14_074_000)
-    asyncio.run(radio.start())
+    await radio.start()
     try:
         _patch_rigs(monkeypatch, _rigs_with("FTX-1", "ftx1", _synth_cat_check()))
-        code = _run_main(
+        code = await _run_main_cat(
             monkeypatch,
             ["probe", "FTX-1", "--port", radio.device_url,
              "--out", str(out), "--checks"],
             ["y", "y", "", "y"],
         )
     finally:
-        asyncio.run(radio.stop())
+        await radio.stop()
     assert code == 0
     document = ProbeFile.from_json(out.read_text(encoding="utf-8"))
     assert document.mode == "read"
@@ -212,22 +224,22 @@ def test_per_check_default_is_no(tmp_path, monkeypatch) -> None:
     _cat_audit(radio)
 
 
-def test_full_cat_run_with_synthetic_check(tmp_path, monkeypatch) -> None:
+async def test_full_cat_run_with_synthetic_check(tmp_path, monkeypatch) -> None:
     from rigplane_testkit.yaesu import FakeCatRadio
 
     out = tmp_path / "probe.json"
     radio = FakeCatRadio(profile="ftx1", frequency_hz=14_074_000)
-    asyncio.run(radio.start())
+    await radio.start()
     try:
         _patch_rigs(monkeypatch, _rigs_with("FTX-1", "ftx1", _synth_cat_check()))
-        code = _run_main(
+        code = await _run_main_cat(
             monkeypatch,
             ["probe", "FTX-1", "--port", radio.device_url,
              "--out", str(out), "--checks", "--label", "seam-y"],
             ["y", "y", "y", "y"],
         )
     finally:
-        asyncio.run(radio.stop())
+        await radio.stop()
     assert code == 0
     document = ProbeFile.from_json(out.read_text(encoding="utf-8"))
     assert document.mode == "read+checks"
@@ -242,23 +254,23 @@ def test_full_cat_run_with_synthetic_check(tmp_path, monkeypatch) -> None:
     _cat_audit(radio)
 
 
-def test_clamped_cat_write_is_unverified_exit_0(tmp_path, monkeypatch) -> None:
+async def test_clamped_cat_write_is_unverified_exit_0(tmp_path, monkeypatch) -> None:
     from rigplane_testkit.yaesu import FakeCatRadio
 
     out = tmp_path / "probe.json"
     radio = FakeCatRadio(profile="ftx1", frequency_hz=14_074_000)
     radio.clamp_write("FA", "FA007074000", "FA005000000")
-    asyncio.run(radio.start())
+    await radio.start()
     try:
         _patch_rigs(monkeypatch, _rigs_with("FTX-1", "ftx1", _synth_cat_check()))
-        code = _run_main(
+        code = await _run_main_cat(
             monkeypatch,
             ["probe", "FTX-1", "--port", radio.device_url,
              "--out", str(out), "--checks"],
             ["y", "y", "y", "y"],
         )
     finally:
-        asyncio.run(radio.stop())
+        await radio.stop()
     assert code == 0
     document = ProbeFile.from_json(out.read_text(encoding="utf-8"))
     assert document.mode == "read+checks"
@@ -269,23 +281,23 @@ def test_clamped_cat_write_is_unverified_exit_0(tmp_path, monkeypatch) -> None:
     assert rows["FA007074000;".encode("ascii").hex()].reply_text == "FA005000000;"
 
 
-def test_link_dies_mid_check_leaves_journal_exit_4(tmp_path, monkeypatch) -> None:
+async def test_link_dies_mid_check_leaves_journal_exit_4(tmp_path, monkeypatch) -> None:
     from rigplane_testkit.yaesu import FakeCatRadio
 
     out = tmp_path / "probe.json"
     radio = FakeCatRadio(profile="ftx1", frequency_hz=14_074_000)
     radio.drop_after(12)
-    asyncio.run(radio.start())
+    await radio.start()
     try:
         _patch_rigs(monkeypatch, _rigs_with("FTX-1", "ftx1", _synth_cat_check()))
-        code = _run_main(
+        code = await _run_main_cat(
             monkeypatch,
             ["probe", "FTX-1", "--port", radio.device_url,
              "--out", str(out), "--checks"],
             ["y", "y", "y", "y"],
         )
     finally:
-        asyncio.run(radio.stop())
+        await radio.stop()
     assert code == 4
     document = ProbeFile.from_json(out.read_text(encoding="utf-8"))
     assert document.mode == "read+checks"
