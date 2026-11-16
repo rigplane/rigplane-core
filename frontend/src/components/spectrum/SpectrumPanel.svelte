@@ -1574,7 +1574,7 @@
           ? runtime.scope.stream(audioFft ? 'audio_fft' : 'hardware')
             .latest(scopeSlotKey(geometry.sourceId, geometry.receiver)) : null;
         if (frame?.pixels) fn(frame.pixels);
-      }} />
+      }} {colorScheme} />
       {/if}
       {#if scopeTraceLive && scopeContentState !== 'out-of-range'}
       {#each coverageHatched as hatched (hatched.reason + hatched.start)}
