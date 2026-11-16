@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from rigplane.core.types import bcd_decode, bcd_encode  # noqa: E402
 from rigplane.commands import parse_civ_frame  # noqa: E402
+from rigplane.commands._codec import bcd_encode_value  # noqa: E402
 from rigplane.commands.scope import parse_scope_fixed_edge_response  # noqa: E402
 from rigplane.profiles import resolve_radio_profile  # noqa: E402
 from rigplane.runtime.radio import IcomRadio  # noqa: E402
@@ -45,6 +46,7 @@ class PanoramaSimulator(MockIcomRadio):
             self.model_id = bytes.fromhex(self.profile.expected_identity_ids[0])
         self.span_index = self.profile.scope_span_presets_hz.index(100_000)
         self.scope_mode = 0
+        self._active_slot = 0  # single-receiver A/B: 0 = A, 1 = B
         self.fixed = (14_200_000, 14_300_000)
         # SCROLL-C window, radio-owned: the radio scrolls its own edges
         # when the VFO leaves the window (CI-V 27 15 SPAN applies in
@@ -131,6 +133,82 @@ class PanoramaSimulator(MockIcomRadio):
                 reply = super()._dispatch_scope(payload, from_addr)
             return reply
         return super()._dispatch_scope(payload, from_addr)
+
+    # Passband geometry the radio reports (#4565 journey): the filter width
+    # and PBT reads, with the wire bytes taken from the profile's command
+    # map. Without them the panel never gets a passband tuple, so its
+    # frequency is undefined and radio-owned windows are never exercised
+    # against a VFO-centred branch. Values: a mid filter index, PBT centred.
+    _PASSBAND_READS = (
+        ("get_filter_width", 10),
+        ("get_pbt_inner", 128),
+        ("get_pbt_outer", 128),
+    )
+
+    def _passband_read_reply(
+        self, wire: tuple[int, ...], from_addr: int, receiver: int | None
+    ) -> bytes | None:
+        """The reply to a passband read, wrapped in Command29 when it was."""
+        command_map = self.profile.command_map
+        if command_map is None:
+            return None
+        for name, value in self._PASSBAND_READS:
+            if command_map.has(name) and command_map.get(name) == wire:
+                if name == "get_filter_width" and (
+                    self.profile.filter_width_encoding == "raw_byte_index"
+                ):
+                    data = bytes([value])
+                else:
+                    data = bcd_encode_value(value, byte_count=2)
+                if receiver is None:
+                    return self._civ_frame(
+                        from_addr,
+                        self._radio_addr,
+                        wire[0],
+                        data=bytes(wire[1:]) + data,
+                    )
+                return self._civ_frame(
+                    from_addr,
+                    self._radio_addr,
+                    0x29,
+                    data=bytes([receiver, *wire]) + data,
+                )
+        return None
+
+    def _dispatch_civ_native(
+        self, cmd: int, payload: bytes, from_addr: int
+    ) -> bytes | None:
+        if cmd == 0x29 and len(payload) >= 2:
+            reply = self._passband_read_reply(
+                (payload[1], *payload[2:]), from_addr, payload[0]
+            )
+        else:
+            reply = self._passband_read_reply((cmd, *payload), from_addr, None)
+        if reply is not None:
+            return reply
+        if cmd == 0x07 and payload in (b"\x00", b"\x01") and not self._dual_receiver:
+            # A/B slot select on a single-receiver radio: the connection
+            # policy selects VFO A and the passband identity needs the
+            # confirmed slot. Exchanging slots swaps the selected and
+            # unselected sets, exactly as the dual-receiver select does.
+            target = payload[0]
+            if target != self._active_slot:
+                self._frequency, self._unselected_frequency = (
+                    self._unselected_frequency,
+                    self._frequency,
+                )
+                self._mode, self._unselected_mode = self._unselected_mode, self._mode
+                self._data_mode, self._unselected_data_mode = (
+                    self._unselected_data_mode,
+                    self._data_mode,
+                )
+                self._filter, self._unselected_filter = (
+                    self._unselected_filter,
+                    self._filter,
+                )
+                self._active_slot = target
+            return self._civ_ack(from_addr, self._radio_addr)
+        return super()._dispatch_civ_native(cmd, payload, from_addr)
 
     def pump_scope_stream(self) -> int:
         if self.evidence.with_suffix(".pause").exists():

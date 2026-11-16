@@ -63,6 +63,11 @@ test('IC-705: SCROLL-C keeps the reported window across a span gesture and an in
     await expect.poll(async () => (await writes()).filter(receipt => receipt.sub === 0x14).at(-1)?.data[1]).toBe(2);
     // The radio keeps its own window in SCROLL-C (same edges here).
     await expect.poll(() => frames.at(-1)?.view).toEqual([14_200_000, 14_300_000]);
+    // The client retires its passband tuple on the frame-mode boundary and
+    // proves it again from geometry read afterwards (PBT polls on a 5 s
+    // cadence). The regression only exists with a defined confirmed
+    // frequency, so wait for the tuple to be re-proven before the gesture.
+    await page.waitForTimeout(7000);
     const area = page.locator('.spectrum-area').first();
     const box = await area.boundingBox(); expect(box).not.toBeNull();
     // The span gesture: SPAN− selects the 50 kHz-wide view (the ±25k
