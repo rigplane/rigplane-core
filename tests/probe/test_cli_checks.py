@@ -540,6 +540,7 @@ async def test_missing_witness_data_never_claims_a_different_value(tmp_path) -> 
 # --- the terminal reader: one answer per prompt, Ctrl-C reaches the engine -------------
 
 
+@pytest.mark.realtime(reason="a real pseudo-terminal and a real question time-out")
 async def test_a_late_answer_to_a_timed_out_question_never_answers_the_next() -> None:
     term = Terminal({})
     try:
@@ -557,6 +558,9 @@ async def test_a_late_answer_to_a_timed_out_question_never_answers_the_next() ->
         term.close()
 
 
+@pytest.mark.realtime(
+    reason="a real pseudo-terminal, a real question time-out and a late answer"
+)
 async def test_two_checks_a_late_yes_does_not_authorize_the_second(
     tmp_path, monkeypatch
 ) -> None:
