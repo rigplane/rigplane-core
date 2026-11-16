@@ -79,9 +79,15 @@ def test_digital_voice_mode_values_are_refused() -> None:
         assert why and "digital voice" in why, body
     assert _refusal("civ", b"\x06\x01", restored=_everything("civ", b"\x06")) is None
     md = b"MD0H;"
-    assert "digital voice" in _refusal("yaesu_cat", md, restored={b"MD0"}, voice_codes={b"H"})
-    assert "digital voice" in _refusal("yaesu_cat", md, restored={b"MD0"}, voice_codes=None)
-    assert _refusal("yaesu_cat", b"MD0E;", restored={b"MD0"}, voice_codes={b"H"}) is None
+    assert "digital voice" in _refusal(
+        "yaesu_cat", md, restored={b"MD0"}, voice_codes={b"H"}
+    )
+    assert "digital voice" in _refusal(
+        "yaesu_cat", md, restored={b"MD0"}, voice_codes=None
+    )
+    assert (
+        _refusal("yaesu_cat", b"MD0E;", restored={b"MD0"}, voice_codes={b"H"}) is None
+    )
 
 
 def test_digital_voice_codes_come_from_the_profile() -> None:
