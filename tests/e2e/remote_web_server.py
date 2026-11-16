@@ -76,7 +76,8 @@ def sim_snapshot(sim: Any) -> SimSnapshot:
         # and the CI-V handlers share, as journey_web_server.py does.
         freq_hz=int(sim._frequency),  # noqa: SLF001
         ptt_transitions=tuple(
-            (stamp + wall_minus_monotonic, keyed) for stamp, keyed in sim.ptt_transitions
+            (stamp + wall_minus_monotonic, keyed)
+            for stamp, keyed in sim.ptt_transitions
         ),
     )
 
@@ -136,7 +137,9 @@ class _SimSidecar:
         body = await reader.readexactly(length) if length else b""
 
         if method == "GET" and path == "/sim":
-            await self._respond(writer, 200, dataclasses.asdict(sim_snapshot(self._sim)))
+            await self._respond(
+                writer, 200, dataclasses.asdict(sim_snapshot(self._sim))
+            )
         elif method == "GET" and path == "/sim/contract":
             await self._respond(writer, 200, sim_contract())
         elif method == "POST" and path == "/sim/freq":
