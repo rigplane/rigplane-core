@@ -114,6 +114,49 @@ describe('createApiChannelFetch', () => {
     replay(ch, goldenDocs.api_ok.reply ?? [], 4);
     expect((await live).status).toBe(200);
   });
+  it('fails outstanding requests with a connection error when the channel closes', async () => {
+    const { ch, api } = openApiChannel();
+    const base = vi.getTimerCount();
+    // Stalled before its HEAD (above the high-water mark) and awaiting a
+    // reply: both must fail on close, not on their later deadlines.
+    ch.bufferedAmount = wire.limits.send_high_water_bytes + 1;
+    const stalled = api('/api/v1/info').catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(100);
+    ch.bufferedAmount = 0;
+    const waiting = api('/api/v1/info').catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(frames(ch).map((f) => f.type)).toEqual([T.REQ_HEAD, T.END]);
+    ch.close();
+    await vi.advanceTimersByTimeAsync(wire.limits.request_deadline_s * 1000 + 1); // past every deadline
+    await expect(stalled).resolves.toMatchObject({ name: 'TypeError' }); // a connection error
+    await expect(waiting).resolves.toMatchObject({ name: 'TypeError' }); // not a TimeoutError
+    expect(vi.getTimerCount()).toBe(base); // deadlines and drain polls cleared
+    expect(frames(ch)).toHaveLength(2); // nothing more was sent on the dead channel
+  });
+  it('rejects golden frames whose version byte is not the committed one', async () => {
+    const { ch, api } = openApiChannel();
+    const reply = goldenDocs.api_ok.reply ?? [];
+    // A wrong-version RES_HEAD is a protocol error, never the golden 200 head.
+    const first = api('/api/v1/info');
+    await vi.advanceTimersByTimeAsync(0);
+    const badHead = new Uint8Array(goldenFrame(reply[0].hex, 1));
+    badHead[0] = wire.version + 1;
+    ch.simulateMessage(badHead.buffer);
+    ch.simulateMessage(goldenFrame(reply[reply.length - 1].hex, 1)); // the golden END
+    const res = await first;
+    expect(res.status).toBe(502);
+    expect(res.headers.get('X-RigPlane-Api-Error')).toBe('bad_version');
+    // A wrong-version END never settles the request as a normal response.
+    const second = api('/api/v1/info');
+    await vi.advanceTimersByTimeAsync(0);
+    ch.simulateMessage(goldenFrame(reply[0].hex, 2)); // routed: the golden 200 head
+    const badEnd = new Uint8Array(goldenFrame(reply[reply.length - 1].hex, 2));
+    badEnd[0] = 0;
+    ch.simulateMessage(badEnd.buffer);
+    const res2 = await second;
+    expect(res2.status).toBe(502);
+    expect(res2.headers.get('X-RigPlane-Api-Error')).toBe('bad_version');
+  });
   it('aborts like api_cancel: HEAD then CANCEL, and nothing after', async () => {
     const { ch, api } = openApiChannel();
     const ctrl = new AbortController();
