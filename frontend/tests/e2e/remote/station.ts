@@ -1,4 +1,5 @@
 import { expect, type Page } from '@playwright/test';
+import type { ServerStatePublic } from '../../../src/lib/types/state';
 
 /**
  * The station both browsers' rows run against: the Core WebServer over
@@ -11,20 +12,66 @@ export const STATION_PORT = 18780;
 export const STATION_ORIGIN = `http://127.0.0.1:${STATION_PORT}`;
 const SIM_ORIGIN = `http://127.0.0.1:${STATION_PORT + 1}`;
 
+/** The sidecar's `GET /sim` payload (producer: SimSnapshot in
+ * tests/e2e/remote_web_server.py). */
 export interface SimState {
   ptt_on: boolean;
   freq_hz: number;
-  /** PTT transitions as [unix seconds, keyed]. */
-  ptt_timeline: [number, boolean][];
+  /** The simulator's own PTT journal as [unix seconds, keyed]. */
+  ptt_transitions: [number, boolean][];
 }
 
-/** The server's own view (``GET /api/v1/state`` from Node, not the page). */
-export async function stationState(): Promise<{
-  wsClients?: { control?: number };
-}> {
+/** The producer's field types, as the sidecar serves them at
+ * `GET /sim/contract` (the SimSnapshot annotations). A change on either
+ * side makes `parseSimState` throw instead of mis-reading. */
+const SIM_CONTRACT: Record<string, string> = {
+  ptt_on: 'bool',
+  freq_hz: 'int',
+  ptt_transitions: 'tuple[tuple[float, bool], ...]',
+};
+
+/** Validate a sidecar response against the served contract. */
+export function parseSimState(contract: unknown, value: unknown): SimState {
+  if (JSON.stringify(sortKeys(contract)) !== JSON.stringify(sortKeys(SIM_CONTRACT))) {
+    throw new Error(`sim contract drift: sidecar serves ${JSON.stringify(contract)}`);
+  }
+  const bad = (why: string) => new Error(`sim state violates its contract (${why}): ${JSON.stringify(value)}`);
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) throw bad('not an object');
+  const record = value as Record<string, unknown>;
+  if (Object.keys(record).sort().join() !== Object.keys(SIM_CONTRACT).sort().join()) {
+    throw bad('keys');
+  }
+  if (typeof record.ptt_on !== 'boolean') throw bad('ptt_on');
+  if (!Number.isInteger(record.freq_hz)) throw bad('freq_hz');
+  const transitions = record.ptt_transitions;
+  if (
+    !Array.isArray(transitions) ||
+    !transitions.every(
+      (row) =>
+        Array.isArray(row) &&
+        row.length === 2 &&
+        typeof row[0] === 'number' &&
+        typeof row[1] === 'boolean',
+    )
+  ) {
+    throw bad('ptt_transitions');
+  }
+  return record as unknown as SimState;
+}
+
+function sortKeys(value: unknown): unknown {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return value;
+  return Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)));
+}
+
+/** The server's own view (``GET /api/v1/state`` from Node, not the page),
+ * typed with the generated ServerStatePublic contract. */
+export async function stationState(): Promise<ServerStatePublic> {
   const response = await fetch(`${STATION_ORIGIN}/api/v1/state`);
   if (!response.ok) throw new Error(`/api/v1/state answered ${response.status}`);
-  return (await response.json()) as { wsClients?: { control?: number } };
+  const state: unknown = await response.json();
+  if (typeof state !== 'object' || state === null) throw new Error('/api/v1/state: not an object');
+  return state as ServerStatePublic;
 }
 
 /** Wait until the UI's control link is up, read from the server's
@@ -35,11 +82,15 @@ export async function expectControlLink(): Promise<void> {
     .toBeGreaterThan(0);
 }
 
-/** The simulator's current observable state, from the sidecar. */
+let simContract: Promise<unknown> | null = null;
+
+/** The simulator's current observable state, from the sidecar, validated
+ * against the contract the sidecar serves. */
 export async function simState(): Promise<SimState> {
+  simContract ??= fetch(`${SIM_ORIGIN}/sim/contract`).then((r) => r.json());
   const response = await fetch(`${SIM_ORIGIN}/sim`);
   if (!response.ok) throw new Error(`sidecar /sim answered ${response.status}`);
-  return (await response.json()) as SimState;
+  return parseSimState(await simContract, await response.json());
 }
 
 /** Change the frequency on the station side (silent; the radio's ~2 s
@@ -53,20 +104,35 @@ export async function setStationFrequency(hz: number): Promise<void> {
   if (!response.ok) throw new Error(`sidecar /sim/freq answered ${response.status}`);
 }
 
-/** The wall-clock time (ms) at which the simulator last keyed OFF at or
- * after `sinceMs` (unix seconds in the timeline are same-host wall clock);
- * rejects if it does not happen within `timeoutMs`. */
-export async function simUnkeyedAt(
-  sinceMs: number,
+/** Latency (ms) between the release and the simulator's final unkey, or
+ * null while the simulator has not settled unkeyed for this press/release:
+ * it must be OFF now, its last journal entry must be an OFF at or after the
+ * release, and it must have been keyed between press and release. */
+export function unkeyLatencyMs(
+  state: SimState,
+  pressedAtMs: number,
+  releasedAtMs: number,
+): number | null {
+  if (state.ptt_on) return null;
+  const last = state.ptt_transitions.at(-1);
+  if (!last || last[1] || last[0] * 1000 < releasedAtMs) return null;
+  const keyedByThisPress = state.ptt_transitions.some(
+    ([at, keyed]) => keyed && at * 1000 >= pressedAtMs && at * 1000 <= releasedAtMs,
+  );
+  return keyedByThisPress ? last[0] * 1000 - releasedAtMs : null;
+}
+
+/** Wait until the simulator has unkeyed for this press/release and return
+ * the latency in ms; rejects if it does not within `timeoutMs`. */
+export async function simUnkeyLatencyMs(
+  pressedAtMs: number,
+  releasedAtMs: number,
   timeoutMs = 10_000,
 ): Promise<number> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
-    const state = await simState();
-    const unkey = state.ptt_timeline
-      .filter(([at, keyed]) => !keyed && at * 1000 >= sinceMs)
-      .at(0);
-    if (unkey) return unkey[0] * 1000;
+    const latency = unkeyLatencyMs(await simState(), pressedAtMs, releasedAtMs);
+    if (latency !== null) return latency;
     if (Date.now() > deadline) {
       throw new Error(`simulator did not unkey within ${timeoutMs} ms`);
     }
@@ -74,11 +140,27 @@ export async function simUnkeyedAt(
   }
 }
 
-/** Every request the page issued so far (all origins). */
-export function trackRequests(page: Page): () => string[] {
-  const urls: string[] = [];
-  page.on('request', (request) => urls.push(request.url()));
-  return () => urls;
+/** The origin a destination compares by: ws/wss are the http/https
+ * equivalents of the station origin. */
+function httpOrigin(url: string): string {
+  const parsed = new URL(url);
+  if (parsed.protocol === 'ws:') return `http://${parsed.host}`;
+  if (parsed.protocol === 'wss:') return `https://${parsed.host}`;
+  return parsed.origin;
+}
+
+/** Origins of every http(s)/ws(s) destination that is not the station. */
+export function foreignDestinations(urls: readonly string[]): string[] {
+  return urls.map(httpOrigin).filter((origin) => origin !== STATION_ORIGIN);
+}
+
+/** Every HTTP request and WebSocket the page opened so far (all origins). */
+export function trackDestinations(page: Page): () => { requests: string[]; sockets: string[] } {
+  const requests: string[] = [];
+  const sockets: string[] = [];
+  page.on('request', (request) => requests.push(request.url()));
+  page.on('websocket', (socket) => sockets.push(socket.url()));
+  return () => ({ requests, sockets });
 }
 
 /**
@@ -144,24 +226,6 @@ export async function expectReadoutHz(
     .toBe(hz);
 }
 
-/** Origins (as `origin`) of every destination that is not the station. */
-export function foreignDestinations(urls: readonly string[]): string[] {
-  return urls.map((url) => new URL(url).origin).filter((origin) => origin !== STATION_ORIGIN);
-}
-
-/** Latency (ms) of the unkey that answers this press/release, or null while
- * the simulator has not (finally) unkeyed. */
-export function unkeyLatencyMs(
-  state: SimState,
-  _pressedAtMs: number,
-  releasedAtMs: number,
-): number | null {
-  const unkey = state.ptt_timeline
-    .filter(([at, keyed]) => !keyed && at * 1000 >= releasedAtMs - 250)
-    .at(0);
-  return unkey ? unkey[0] * 1000 - releasedAtMs : null;
-}
-
 /** Register a first-text-frame listener per channel, send the attaches,
  * resolve with every channel's first text frame. Self-contained: shipped
  * into the page via toString(). */
@@ -182,12 +246,54 @@ export async function collectFirstTexts(
       };
       channels[label].addEventListener('message', onMessage);
     });
-  const frames: Record<string, string> = {};
-  const control = first('control');
+  // Every listener exists BEFORE any attach goes out: the channels are
+  // independent and unordered, so scope/audio may answer before control.
+  const labels = Object.keys(channels);
+  const pending = labels.map((label) => first(label));
   send();
-  frames.control = await control;
-  const [scope, audio] = await Promise.all([first('scope'), first('audio')]);
-  frames.scope = scope;
-  frames.audio = audio;
-  return frames;
+  const texts = await Promise.all(pending);
+  return Object.fromEntries(labels.map((label, index) => [label, texts[index]]));
+}
+
+/** The station's reply to POST /api/v1/transport/webrtc/offer (producer:
+ * WebServer._handle_webrtc_offer, `{"status": "ok", sdp, type}`); the SDP
+ * pair is the W3C RTCSessionDescriptionInit. */
+export type RelayedAnswer = RTCSessionDescriptionInit & { status: 'ok'; sdp: string };
+
+export function parseRelayedAnswer(value: unknown): RelayedAnswer {
+  const record = value as Record<string, unknown> | null;
+  if (
+    typeof record !== 'object' ||
+    record === null ||
+    record.status !== 'ok' ||
+    typeof record.sdp !== 'string' ||
+    record.type !== 'answer'
+  ) {
+    throw new Error(`offer refused or malformed answer: ${JSON.stringify(value)}`);
+  }
+  return { status: 'ok', sdp: record.sdp, type: 'answer' };
+}
+
+/** The controller grant of POST /api/v1/controller. The frontend's own
+ * `Grant` type is private to controller-client.ts (not exported), so the
+ * fields the probe uses are checked here exactly as its `adopt()` does. */
+export interface ControllerGrant {
+  controller_key: string;
+  generation: number;
+}
+
+export function parseControllerGrant(value: unknown): ControllerGrant {
+  const record = value as Record<string, unknown> | null;
+  if (
+    typeof record !== 'object' ||
+    record === null ||
+    typeof record.controller_key !== 'string' ||
+    !/^[0-9a-f]{64}$/.test(record.controller_key) ||
+    typeof record.generation !== 'number' ||
+    !Number.isSafeInteger(record.generation) ||
+    record.generation < 0
+  ) {
+    throw new Error(`controller grant malformed: ${JSON.stringify(value)}`);
+  }
+  return { controller_key: record.controller_key, generation: record.generation };
 }

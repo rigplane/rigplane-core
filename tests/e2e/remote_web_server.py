@@ -11,7 +11,10 @@ like the journey fake plus the gated WebRTC answerer for the P0 probe.
 Simulator observation sidecar (test-only, same process): a minimal HTTP
 server on --sim-port answers
 
-    GET  /sim       -> {"ptt_on": bool, "freq_hz": int, "ptt_timeline": [[unix_s, bool], ...]}
+    GET  /sim          -> SimSnapshot as JSON (ptt_on, freq_hz, ptt_transitions
+                          [[unix_s, bool], ...]: the simulator's own PTT journal)
+    GET  /sim/contract -> the SimSnapshot field annotations; the Node consumer
+                          validates every /sim response against them
     POST /sim/freq  -> {"hz": int} sets the simulator frequency silently
                        (the radio's state poller picks it up, ~2 s cadence)
 
@@ -23,6 +26,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+import dataclasses
 import json
 import sys
 import tempfile
@@ -48,8 +52,38 @@ from rigplane.web.web_startup import (  # noqa: E402
     prepare_managed_tx_observation_generation,
 )
 
-_TIMELINE_POLL_S = 0.025
-_TIMELINE_KEEP = 128
+
+@dataclasses.dataclass(frozen=True)
+class SimSnapshot:
+    """The producer-owned shape of ``GET /sim`` (one definition, serialised
+    with ``dataclasses.asdict``; the Node harness validates against the
+    annotations served at ``/sim/contract``)."""
+
+    ptt_on: bool
+    freq_hz: int
+    #: ``MockIcomRadio.ptt_transitions`` as (unix seconds, keyed).
+    ptt_transitions: tuple[tuple[float, bool], ...]
+
+
+def sim_snapshot(sim: Any) -> SimSnapshot:
+    """Read the simulator; its journal's monotonic stamps become wall-clock
+    seconds (the clock the Node side compares) with one offset per read."""
+    wall_minus_monotonic = time.time() - time.monotonic()
+    return SimSnapshot(
+        ptt_on=bool(sim.ptt_on),
+        # The simulator keeps the current frequency private (set_frequency
+        # exists, no public getter); read the slot the recorded answer table
+        # and the CI-V handlers share, as journey_web_server.py does.
+        freq_hz=int(sim._frequency),  # noqa: SLF001
+        ptt_transitions=tuple(
+            (stamp + wall_minus_monotonic, keyed) for stamp, keyed in sim.ptt_transitions
+        ),
+    )
+
+
+def sim_contract() -> dict[str, str]:
+    """Field name -> annotation text of :class:`SimSnapshot`."""
+    return {field.name: str(field.type) for field in dataclasses.fields(SimSnapshot)}
 
 
 def parse_args() -> argparse.Namespace:
@@ -66,18 +100,6 @@ class _SimSidecar:
 
     def __init__(self, sim: Any) -> None:
         self._sim = sim
-        self._timeline: list[list[float | bool]] = []
-
-    async def observe(self) -> None:
-        """Record simulator PTT transitions with wall-clock timestamps."""
-        last: bool | None = None
-        while True:
-            keyed = bool(self._sim.ptt_on)
-            if keyed != last:
-                self._timeline.append([time.time(), keyed])
-                del self._timeline[:-_TIMELINE_KEEP]
-                last = keyed
-            await asyncio.sleep(_TIMELINE_POLL_S)
 
     async def serve(self, host: str, port: int) -> asyncio.AbstractServer:
         async def handler(
@@ -114,20 +136,9 @@ class _SimSidecar:
         body = await reader.readexactly(length) if length else b""
 
         if method == "GET" and path == "/sim":
-            await self._respond(
-                writer,
-                200,
-                {
-                    "ptt_on": bool(self._sim.ptt_on),
-                    # The simulator keeps the current frequency private
-                    # (set_frequency exists, no public getter); read the
-                    # slot the recorded answer table and the CI-V handlers
-                    # share — same pattern as journey_web_server.py's
-                    # scope-template shaping.
-                    "freq_hz": self._sim._frequency,  # noqa: SLF001
-                    "ptt_timeline": self._timeline,
-                },
-            )
+            await self._respond(writer, 200, dataclasses.asdict(sim_snapshot(self._sim)))
+        elif method == "GET" and path == "/sim/contract":
+            await self._respond(writer, 200, sim_contract())
         elif method == "POST" and path == "/sim/freq":
             hz = int(json.loads(body)["hz"])
             self._sim.set_frequency(hz)
@@ -182,7 +193,6 @@ async def run() -> None:
     )
     composition: ManagedTxComposition | None = None
     sidecar = _SimSidecar(sim)
-    observe_task = asyncio.create_task(sidecar.observe())
     sim_server: asyncio.AbstractServer | None = None
     web: WebServer | None = None
     try:
@@ -218,9 +228,6 @@ async def run() -> None:
     finally:
         if sim_server is not None:
             sim_server.close()
-        observe_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await observe_task
         if web is not None:
             with contextlib.suppress(Exception):
                 await web.stop()

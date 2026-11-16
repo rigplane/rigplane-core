@@ -3,13 +3,18 @@ import wire from '../../../src/lib/transport/api-channel-wire.json' with { type:
 import golden from '../../../src/lib/transport/api-channel-golden.json' with { type: 'json' };
 import {
   expectControlLink,
+  collectFirstTexts,
   expectReadoutHz,
+  foreignDestinations,
   openRemoteUi,
+  parseControllerGrant,
+  parseRelayedAnswer,
   setStationFrequency,
   simState,
-  simUnkeyedAt,
+  simUnkeyLatencyMs,
   STATION_ORIGIN,
-  trackRequests,
+  trackDestinations,
+  type RelayedAnswer,
 } from './station';
 
 /**
@@ -31,7 +36,7 @@ const STATION_HZ = 14_100_000;
  * Validate a payload against a wire-contract payload's `fields` rows, the
  * same semantics as the production `payloadMatchesContract`
  * (src/lib/transport/datachannel-transport.ts), which Playwright's Node
- * runtime cannot import (its JSON import needs an ESM import attribute
+ * runtime cannot import and which is not re-exported without a src/ change (its JSON import needs an ESM import attribute
  * that would mean changing src/). Restricted on purpose to the kinds the
  * control_hello contract uses; any other kind row is an error, so a future
  * contract change cannot pass silently.
@@ -59,28 +64,24 @@ function payloadMatchesWireContract(
   });
 }
 
-/** The station's reply to POST /api/v1/transport/webrtc/offer, as relayed. */
-interface RelayedAnswer {
-  status?: string;
-  sdp: string;
-  type: RTCSdpType;
-}
-
 test('L1: the ordinary page talks only to the station', async ({ page }) => {
   // Rows share one station: reset the simulator to the baseline frequency
   // so this row does not depend on what an earlier row tuned.
   await setStationFrequency(BASELINE_HZ);
-  const requests = trackRequests(page);
+  const destinations = trackDestinations(page);
   await openRemoteUi(page);
 
   // The UI is up: the control link connects and the baseline is shown.
   await expectControlLink();
   await expectReadoutHz(page, BASELINE_HZ);
 
-  const foreignOrigins = requests()
-    .map((url) => new URL(url).origin)
-    .filter((origin) => origin !== STATION_ORIGIN);
-  expect(foreignOrigins, 'requests to non-station origins').toEqual([]);
+  // HTTP requests and WebSockets (the UI's principal transport) alike.
+  const { requests, sockets } = destinations();
+  expect(sockets.length, 'the UI opened its WebSocket to the station').toBeGreaterThan(0);
+  expect(
+    foreignDestinations([...requests, ...sockets]),
+    'requests or sockets to non-station origins',
+  ).toEqual([]);
 });
 
 test('L2: tuning follows both ways between the UI and the simulator', async ({ page }) => {
@@ -120,15 +121,17 @@ test.describe('phone layout', () => {
     // without touching the banner: with one mouse the pointer is captured
     // by the held button, so a second click cannot reach another control.
     await ptt.hover();
+    const pressedAtMs = Date.now();
     await page.mouse.down();
     await expect.poll(async () => (await simState()).ptt_on).toBe(true);
 
     // Release: the simulator must report unkeyed within 1 s of the mouse
-    // release (same-host wall clocks; 250 ms guards scheduling skew).
+    // release (same-host wall clocks). The helper correlates the simulator's
+    // own journal with this press/release and requires the final state OFF.
     const releasedAtMs = Date.now();
     await page.mouse.up();
-    const unkeyedAtMs = await simUnkeyedAt(releasedAtMs - 250);
-    expect(unkeyedAtMs - releasedAtMs).toBeLessThanOrEqual(1000);
+    const latencyMs = await simUnkeyLatencyMs(pressedAtMs, releasedAtMs);
+    expect(latencyMs).toBeLessThanOrEqual(1000);
   });
 });
 
@@ -179,17 +182,24 @@ test('P0: a bare page connects four data channels and reaches control_hello', as
   // request is intercepted and answered locally, so the page itself never
   // talks to the station over HTTP: the Node test relays the offer and the
   // controller-key acquisition.
-  await page.route('*', (route) =>
-    route.fulfill({ contentType: 'text/html', body: '<!doctype html><html></html>' }),
+  await page.route('**/*', (route) =>
+    route.fulfill({
+      contentType: 'text/html',
+      body: '<!doctype html><html><head><title>bare-page</title></head></html>',
+    }),
   );
-  await page.goto(`${STATION_ORIGIN}/bare`);
+  const navigation = await page.goto(`${STATION_ORIGIN}/bare`);
+  // The fulfilled document, not Core's static-file 404: bypassing the
+  // interception fails the row here.
+  expect(navigation?.status()).toBe(200);
+  expect(await page.title()).toBe('bare-page');
   await page.exposeFunction('__relayOffer', async (sdp: string, type: string) => {
     const response = await fetch(`${STATION_ORIGIN}/api/v1/transport/webrtc/offer`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ sdp, type }),
     });
-    return await response.json();
+    return parseRelayedAnswer(await response.json());
   });
   await page.exposeFunction('__controllerKey', async () => {
     const response = await fetch(`${STATION_ORIGIN}/api/v1/controller`, {
@@ -197,13 +207,11 @@ test('P0: a bare page connects four data channels and reaches control_hello', as
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ kind: 'pro' }),
     });
-    const grant = (await response.json()) as { controller_key?: string };
-    if (!grant.controller_key) throw new Error(`controller grant: ${JSON.stringify(grant)}`);
-    return grant.controller_key;
+    return parseControllerGrant(await response.json()).controller_key;
   });
 
   const outcome = await page.evaluate(
-    async ({ channels, attachText }) => {
+    async ({ channels, attachText, collectSource }) => {
       const relayWindow = window as typeof window & {
         __relayOffer: (sdp: string, type: string) => Promise<RelayedAnswer>;
         __controllerKey: () => Promise<string>;
@@ -272,30 +280,19 @@ test('P0: a bare page connects four data channels and reaches control_hello', as
       // document), all sent at once right after open — the server closes
       // a channel whose attach lands more than 5 s after dispatch.
       const key = await relayWindow.__controllerKey();
-      for (const { label } of channels) {
-        created[label].send(attachText[label].replaceAll('<SESSION-KEY>', key));
-      }
-      const frames: Record<string, string> = {};
-      const firstText = (label: string) =>
-        new Promise<void>((resolve) => {
-          const channel = created[label];
-          const onMessage = (event: MessageEvent) => {
-            if (typeof event.data !== 'string') return;
-            frames[label] = event.data;
-            channel.removeEventListener('message', onMessage);
-            resolve();
-          };
-          channel.addEventListener('message', onMessage);
-        });
-      const deadline = (ms: number, what: string) =>
-        new Promise<void>((_, reject) =>
-          setTimeout(() => reject(new Error(`${what} timed out`)), ms),
-        );
-      await Promise.race([firstText('control'), deadline(10_000, 'control_hello')]);
-      await Promise.race([
-        Promise.all([firstText('scope'), firstText('audio')]),
-        deadline(5_000, 'lossy attach acks'),
-      ]);
+      // Receive listeners for all three acknowledgement channels exist
+      // before any attach goes out (scope/audio are unordered and can
+      // answer before control_hello); then await them together.
+      const collect = new Function(`return ${collectSource}`)() as typeof collectFirstTexts;
+      const frames = await collect(
+        { control: created.control, scope: created.scope, audio: created.audio },
+        () => {
+          for (const { label } of channels) {
+            created[label].send(attachText[label].replaceAll('<SESSION-KEY>', key));
+          }
+        },
+        { control: 10_000, scope: 5_000, audio: 5_000 },
+      );
       const readback = channels.map(({ label }) => ({
         label: created[label].label,
         ordered: created[label].ordered,
@@ -310,7 +307,7 @@ test('P0: a bare page connects four data channels and reaches control_hello', as
       pc.close();
       return result;
     },
-    { channels: CHANNELS, attachText: attachTexts() },
+    { channels: CHANNELS, attachText: attachTexts(), collectSource: collectFirstTexts.toString() },
   );
 
   // The negotiated channels carry the pinned labels/ordering/reliability.

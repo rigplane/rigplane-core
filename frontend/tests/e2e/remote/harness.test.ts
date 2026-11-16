@@ -1,9 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import type { FullConfig, Suite, TestCase, TestResult } from '@playwright/test/reporter';
+import type { TestCase, TestResult } from '@playwright/test/reporter';
 import NoSkipsReporter, { REQUIRED_MATRIX } from './no-skips-reporter';
 import {
   collectFirstTexts,
   foreignDestinations,
+  parseControllerGrant,
+  parseRelayedAnswer,
+  parseSimState,
   unkeyLatencyMs,
   type SimState,
 } from './station';
@@ -34,12 +37,11 @@ interface Executed {
   status?: Status;
 }
 
-/** What a run does: onBegin with the (possibly filtered) suite, one
- * onTestEnd per executed case, then the verdict from onEnd. */
+/** What a (possibly filtered) run does: one onTestEnd per executed case,
+ * then the verdict from onEnd. */
 async function verdict(executed: Executed[]): Promise<{ status: 'failed' } | undefined> {
   const reporter = new NoSkipsReporter();
   const tests = executed.map((e) => fakeTest(e.project, e.row, e.repeat));
-  reporter.onBegin({} as FullConfig, { allTests: () => tests } as unknown as Suite);
   executed.forEach((e, index) =>
     reporter.onTestEnd(tests[index], { status: e.status ?? 'passed' } as TestResult),
   );
@@ -100,7 +102,7 @@ describe('NoSkipsReporter: the required matrix, not the filtered suite', () => {
 const state = (keyed: boolean, timeline: [number, boolean][]): SimState => ({
   ptt_on: keyed,
   freq_hz: 14_074_000,
-  ptt_timeline: timeline,
+  ptt_transitions: timeline,
 });
 
 describe('unkeyLatencyMs: the unkey that answers this press/release', () => {
@@ -231,5 +233,58 @@ describe('collectFirstTexts: every listener exists before any attach is sent', (
         deadlines,
       ),
     ).rejects.toThrow('scope timed out');
+  });
+});
+
+describe('producer contracts consumed by the harness', () => {
+  const contract = {
+    ptt_on: 'bool',
+    freq_hz: 'int',
+    ptt_transitions: 'tuple[tuple[float, bool], ...]',
+  };
+  const good = { ptt_on: false, freq_hz: 14_074_000, ptt_transitions: [[1.5, true]] };
+
+  it('accepts a sidecar response that matches the served contract', () => {
+    expect(parseSimState(contract, good)).toEqual(good);
+  });
+
+  it('throws when the producer changed a field type', () => {
+    expect(() => parseSimState({ ...contract, freq_hz: 'float' }, good)).toThrow('contract drift');
+  });
+
+  it('throws when the producer dropped or renamed a field', () => {
+    const { ptt_on: _dropped, ...rest } = contract;
+    expect(() => parseSimState(rest, good)).toThrow('contract drift');
+  });
+
+  it('throws when a response violates the contract', () => {
+    expect(() => parseSimState(contract, { ...good, ptt_on: 'yes' })).toThrow('ptt_on');
+    expect(() => parseSimState(contract, { ...good, freq_hz: 1.5 })).toThrow('freq_hz');
+    expect(() => parseSimState(contract, { ...good, ptt_transitions: [[1, 2]] })).toThrow(
+      'ptt_transitions',
+    );
+    expect(() => parseSimState(contract, { ...good, extra: 1 })).toThrow('keys');
+    expect(() => parseSimState(contract, { ptt_on: true })).toThrow('keys');
+  });
+
+  it('accepts only an ok SDP answer', () => {
+    expect(parseRelayedAnswer({ status: 'ok', sdp: 'v=0', type: 'answer', extra: 1 })).toEqual({
+      status: 'ok',
+      sdp: 'v=0',
+      type: 'answer',
+    });
+    expect(() => parseRelayedAnswer({ status: 'error', code: 'sdp_error' })).toThrow('refused');
+    expect(() => parseRelayedAnswer({ status: 'ok', sdp: 'v=0', type: 'offer' })).toThrow();
+  });
+
+  it('accepts only a well-formed controller grant', () => {
+    const key = 'a'.repeat(64);
+    expect(parseControllerGrant({ controller_key: key, generation: 3 })).toEqual({
+      controller_key: key,
+      generation: 3,
+    });
+    expect(() => parseControllerGrant({ controller_key: 'short', generation: 3 })).toThrow();
+    expect(() => parseControllerGrant({ controller_key: key })).toThrow();
+    expect(() => parseControllerGrant({ error: 'controller_busy' })).toThrow();
   });
 });
