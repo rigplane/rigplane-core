@@ -117,16 +117,15 @@ describe('MOR-4463 stacked-trace toggle', () => {
     expect(gl).toHaveLength(1);
     // The frame delivered before the switch is replayed into the new view.
     flushFrames(32);
-    expect(gl[0].named('texSubImage2D')).toHaveLength(1);
-    // 475 samples plus their pairwise-maximum levels.
-    expect(gl[0].named('texSubImage2D')[0].args[4]).toBe(952);
+    // 475 samples plus their pairwise-maximum levels: the first history row
+    // and the live trace.
+    expect(gl[0].named('texSubImage2D').map(call => call.args[4])).toEqual([952, 952]);
 
     // A later frame of another size goes to the stacked view, not the flat one.
     const flatBefore = flatDraws;
     pane.push(new Uint8Array(2048).fill(20));
     flushFrames(200);
-    expect(gl[0].named('texSubImage2D')).toHaveLength(2);
-    expect(gl[0].named('texSubImage2D')[1].args[4]).toBe(4095);
+    expect(gl[0].named('texSubImage2D').map(call => call.args[4])).toEqual([952, 952, 4095, 4095]);
     expect(flatDraws).toBe(flatBefore);
     svelte.flushSync();
     expect(pane.stacked()!.getAttribute('data-history-rows')).toBe('2');
