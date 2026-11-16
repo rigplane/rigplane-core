@@ -8,8 +8,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { webglFixture } from '$lib/renderers/__tests__/webgl-fixture';
 import { RecordedPath } from '$lib/renderers/__tests__/canvas-layers-fixture';
 import Harness from './StackedTraceCanvasHarness.svelte';
+import { ScopeRenderTrace, type TraceToken } from '$lib/runtime/scope-render-trace';
+import { parseCurrentScopeFrame } from '$lib/runtime/adapters/scope-adapter';
+import { scopeWire } from '$lib/runtime/__tests__/scope-wire-fixture';
 
-type Push = (pixels: Uint8Array, token?: unknown) => void;
+type Push = (pixels: Uint8Array, token?: TraceToken | null) => void;
 type Fixture = ReturnType<typeof webglFixture>;
 
 let target: HTMLDivElement;
@@ -26,14 +29,14 @@ function flushFrames(now: number): void {
   for (const frame of due) frame(now);
 }
 
-function mountView(props: { centerHz?: number; trace?: unknown } = {}) {
+function mountView(props: { centerHz?: number; trace?: ScopeRenderTrace } = {}) {
   let push: Push = () => {};
   const onUnavailable = vi.fn();
-  component = mount(Harness, { target, props: { ...props, onPush: (fn: Push) => { push = fn; }, onUnavailable } as never });
+  component = mount(Harness, { target, props: { ...props, onPush: (fn: Push) => { push = fn; }, onUnavailable } });
   flushSync();
   const root = target.querySelector('[data-testid="stacked-trace"]') as HTMLElement;
   const [scene, chrome] = Array.from(root.querySelectorAll('canvas'));
-  return { push: (pixels: Uint8Array, token?: unknown) => push(pixels, token), onUnavailable, root, scene, chrome };
+  return { push: (pixels: Uint8Array, token?: TraceToken | null) => push(pixels, token), onUnavailable, root, scene, chrome };
 }
 
 beforeEach(() => {
@@ -184,20 +187,33 @@ describe('MOR-4463 StackedTraceCanvas', () => {
   });
 
   it('records geometry, paints and coalesced frames on the host render trace', () => {
-    const trace = { status: 'recording', record: vi.fn(), recordGeometry: vi.fn() };
-    const view = mountView({ trace });
-    flushFrames(0);
-    trace.record.mockClear(); trace.recordGeometry.mockClear();
-    const first = { id: 1 }, second = { id: 2 };
-    view.push(new Uint8Array(475).fill(20), first);
-    view.push(new Uint8Array(475).fill(40), second);
-    expect(trace.record).toHaveBeenCalledWith('coalesced', first, 0, true);
-    flushFrames(16);
-    expect(trace.recordGeometry).toHaveBeenCalledWith('spectrum', 400, 200, 400, 200, 1);
-    const renders = trace.record.mock.calls.filter(call => call[0] === 'spectrum_render');
-    expect(renders).toHaveLength(1);
-    expect(renders[0][1]).toBe(second);
-    expect(renders[0][2]).toBeGreaterThanOrEqual(0);
+    const trace = new ScopeRenderTrace();
+    try {
+      const view = mountView({ trace });
+      flushFrames(0);
+      // Two frames through the production parser, accepted by the real trace.
+      const tokens = [0, 1].map((index) => {
+        const parsed = parseCurrentScopeFrame(scopeWire({ source: 'audio_fft', sourceId: 'audio_fft', receiver: null,
+          viewStartHz: 0, viewEndHz: 3_000, pixels: new Uint8Array(475).fill(20 + index) }),
+          { source: 'audio_fft', sourceId: 'audio_fft', epoch: 1 });
+        if (!parsed.ok || parsed.frame.pixels === null) throw new Error('scope fixture did not decode');
+        trace.observe({ kind: 'accepted', frame: parsed.frame, token: { source: 'audio_fft', transportEpoch: 1,
+          wireSequence: index, acceptedSequence: index + 1 }, callbackAt: performance.now(), acceptedAt: performance.now() });
+        return { pixels: parsed.frame.pixels, token: trace.tokenForFrame(parsed.frame)! };
+      });
+      for (const { pixels, token } of tokens) view.push(pixels, token);
+      flushFrames(16);
+      trace.stop();
+      const output = JSON.parse(trace.export()!);
+      const stages = output.buckets[0].stages;
+      // The first frame was replaced before it was painted; the second was painted.
+      expect(stages.coalesced.count).toBe(1);
+      expect(stages.coalesced.firstSequence).toBe(1);
+      expect(output.burst.some((event: { stage: string; acceptedSequence?: number }) =>
+        event.stage === 'coalesced' && event.acceptedSequence === 1)).toBe(true);
+      expect(stages.spectrum_render.lastSequence).toBe(2);
+      expect(output.geometry.spectrum).toBeDefined();
+    } finally { trace.dispose(); }
   });
 
   it('releases the renderer and stops scheduling on unmount', async () => {
