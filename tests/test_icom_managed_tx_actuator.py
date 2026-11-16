@@ -266,6 +266,57 @@ async def test_an_unkey_after_an_expired_read_sink_is_confirmed_by_its_fb() -> N
 
 
 @pytest.mark.asyncio
+async def test_a_refused_unkey_after_a_lost_write_fb_is_never_accepted_blind() -> None:
+    """MOR-4384 P0: a bare reply settling a sink while the unkey waits is ambiguous.
+
+    1. Write A (fire-and-forget) loses its FB -- in the field the key-on.
+    2. The unkey B is refused with FA (the radio stays keyed); A's sink is
+       the oldest open entry and takes that FA.
+    3. A concurrent raw transaction C (expect="ack") is accepted with FB;
+       B, older than C, takes C's FB.
+    B "succeeded" on somebody else's answer. The release must not be
+    ACCEPTED without the PTT readback.
+    """
+    link = _FakeSerialCivLink(ptt_off_answer=0xFA)
+    radio = Icom7610SerialRadio(device="/dev/ttyUSB0", civ_link=link)
+    radio._civ_get_timeout = 0.5
+    await radio.connect()
+    try:
+        runtime, tracker = radio._civ_runtime, radio._civ_request_tracker
+        await radio._send_civ_raw(
+            build_civ_frame(radio._radio_addr, CONTROLLER_ADDR, 0x0F, data=b"\x01"),
+            wait_response=False,
+        )  # A: the fake never answers it
+        sent_before = len(link.sent_frames)
+        release = asyncio.ensure_future(_force_receive(radio))
+        while tracker.ack_sink_count:  # B's FA has taken A's sink
+            await asyncio.sleep(0)
+        transaction = asyncio.ensure_future(
+            runtime.execute_civ_transaction(
+                build_civ_frame(radio._radio_addr, CONTROLLER_ADDR, 0x17, data=b"\xff"),
+                expect="ack",
+                timeout=0.5,
+            )
+        )
+        result = await release
+        await asyncio.gather(transaction, return_exceptions=True)
+        readbacks = [
+            frame
+            for frame in link.sent_frames[sent_before:]
+            if parse_civ_frame(frame).command == 0x1C
+            and parse_civ_frame(frame).sub == 0x00
+            and not parse_civ_frame(frame).data
+        ]
+    finally:
+        await radio.disconnect()
+
+    assert result is not ActuationResult.ACCEPTED or readbacks, (
+        "the refused unkey was accepted on another command's FB, unverified"
+    )
+    assert result is not ActuationResult.ACCEPTED
+
+
+@pytest.mark.asyncio
 async def test_force_release_overtakes_queued_abort_without_preempting_active() -> None:
     entered = asyncio.Event()
     release = asyncio.Event()

@@ -628,6 +628,53 @@ async def test_t3_must_not_a_late_sink_answer_misattribute(
     assert link.tracker.pending_count == 0
 
 
+@pytest.mark.asyncio
+async def test_a_bare_reply_with_a_newer_open_entry_is_flagged_ambiguous() -> None:
+    """P0: a bare FB/FA that a newer open entry could also take is ambiguous.
+
+    Write sink A (its FB lost), blocking unkey B, blocking raw write C, sent
+    in that order. B's FA lands on A while B is open; C's FB lands on B
+    while C is open. Each attribution may be wrong by one, so each flags
+    ``ack_unclaimed_at`` -- what makes the PTT release verify by readback.
+    """
+    tracker = CivRequestTracker()
+    sink = tracker.register_ack(wait=False)
+    assert isinstance(sink, int)
+    tracker.mark_sent(1.0, token=sink)
+    b = tracker.register_ack(wait=True, consume_backlog=False)
+    c = tracker.register_ack(wait=True, consume_backlog=False)
+    assert isinstance(b, asyncio.Future) and isinstance(c, asyncio.Future)
+    tracker.mark_sent(2.0, futures=(b,))
+    tracker.mark_sent(3.0, futures=(c,))
+
+    assert tracker.resolve(CivEvent(type=CivEventType.NAK, frame=_fa()))
+    assert tracker.ack_sink_count == 0 and not b.done()
+    flagged_by_fa = tracker.ack_unclaimed_at
+    assert flagged_by_fa is not None, "B's FA on sink A was not flagged"
+
+    assert tracker.resolve(CivEvent(type=CivEventType.ACK, frame=_fb()))
+    assert b.result().command == 0xFB and not c.done()
+    assert tracker.ack_unclaimed_at is not None
+    c.cancel()
+
+
+@pytest.mark.asyncio
+async def test_a_bare_reply_with_no_other_open_taker_is_not_flagged() -> None:
+    """The flag stays off when the reply had exactly one possible taker."""
+    tracker = CivRequestTracker()
+    b = tracker.register_ack(wait=True, consume_backlog=False)
+    assert isinstance(b, asyncio.Future)
+    tracker.mark_sent(1.0, futures=(b,))
+    key = CivRequestKey(command=0x14, sub=0x01)
+    read = tracker.register_ack(wait=False, response_key=key, refused_read=key)
+    assert isinstance(read, int)
+    tracker.mark_sent(2.0, token=read)  # a read sink cannot take an FB
+
+    assert tracker.resolve(CivEvent(type=CivEventType.ACK, frame=_fb()))
+    assert b.result().command == 0xFB
+    assert tracker.ack_unclaimed_at is None
+
+
 @pytest.mark.timeout(30)
 @pytest.mark.parametrize("b_blocking", [True, False], ids=["b-blocking", "b-sink"])
 async def test_t5_lost_read_then_acked_write_then_refused_write(
