@@ -1789,6 +1789,103 @@ async def test_managed_startup_with_silent_t_probes_once_and_keeps_local_ptt(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "fake_kwargs", ({"silent": "t"}, {"refuse": "t"}), ids=("silent-t", "refused-t")
+)
+async def test_http_managed_transmit_release_settles_while_t_is_unanswerable(
+    tmp_path: Path, fake_kwargs: dict[str, str]
+) -> None:
+    """MOR-4456 B3/#4607: the user-facing unkey settles over the real API.
+
+    Production managed composition behind the real HTTP listener; only
+    rigctld is faked (real TCP), silent or refusing ``t``. ``transmit_on``
+    and ``force_off`` go through ``POST /api/v1/managed-transmit/command``;
+    ``GET /api/v1/managed-transmit`` must then show RX intent, no owed
+    release and an accepted ``force_receive`` -- settled from the ``T 0``
+    answer, since the read-back ``t`` is unanswerable -- and a second
+    key/unkey cycle is admitted and settles the same way.
+    """
+    from integration.test_tx_under_fault_matrix import _http_json
+    from rigplane.runtime.managed_tx_composition import (
+        ManagedTxComposition,
+        install_managed_tx_composition,
+    )
+    from rigplane.web.web_startup import (
+        attach_managed_tx_composition,
+        prepare_managed_tx_observation_generation,
+    )
+
+    command_path = "/api/v1/managed-transmit/command"
+    fake = _TcpRigctldServer(**fake_kwargs)
+    await fake.start()
+    try:
+        radio = _real_rigctld_radio(fake)
+        composition = ManagedTxComposition(
+            radio, config_path=tmp_path / "managed-tx.json"
+        )
+        install_managed_tx_composition(radio, composition)
+        await radio.connect()
+        server = WebServer(radio, _gated_config())
+        prepare_managed_tx_observation_generation(server)
+        await composition.transport_ready(radio)
+        await composition.bind_state_store(server.command_state_store)
+        attach_managed_tx_composition(server, composition)
+        try:
+            await asyncio.wait_for(server.start(), timeout=60.0)
+            port = int(server._server.sockets[0].getsockname()[1])  # noqa: SLF001
+            for cycle in (1, 2):
+                status, body = await _http_json(
+                    port, "POST", command_path, {"operation": "transmit_on"}
+                )
+                assert (status, body) == (
+                    202,
+                    {"ok": True, "operation": "transmit_on", "result": "accepted"},
+                )
+                await await_until(
+                    lambda: fake.tx_commands.count("T 1") == cycle,
+                    timeout=10.0,
+                    description=f"key {cycle} reaching the rig",
+                )
+                status, body = await _http_json(
+                    port, "POST", command_path, {"operation": "force_off"}
+                )
+                assert (status, body) == (
+                    202,
+                    {"ok": True, "operation": "force_off", "result": "accepted"},
+                )
+                await await_until(
+                    lambda: (
+                        not composition.authority.snapshot_nowait().state.release_required
+                    ),
+                    timeout=10.0,
+                    description=f"release {cycle} settling",
+                )
+                status, document = await _http_get_json(
+                    port, "/api/v1/managed-transmit"
+                )
+                assert status == 200
+                managed = document["managedTransmit"]
+                assert fake.tx_commands.count("T 0") >= cycle
+                assert managed["intent"] == {"kind": "rx"}
+                assert managed["releaseRequired"] is False
+                assert managed["lastActuation"]["operation"] == "force_receive"
+                assert managed["lastActuation"]["result"] == "accepted"
+                assert managed["lastError"] is None
+            await server.stop()
+        finally:
+            # A release still owed (the regression this test pins) must not
+            # hold the cleanup: terminate rather than wait for its drain.
+            termination = asyncio.Event()
+            termination.set()
+            with suppress(Exception):
+                await asyncio.wait_for(server.stop(), timeout=10.0)
+            await asyncio.wait_for(composition.shutdown(termination), timeout=10.0)
+            await radio.disconnect()
+    finally:
+        await fake.stop()
+
+
+@pytest.mark.asyncio
 async def test_managed_release_refused_t0_keeps_release_owed(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
