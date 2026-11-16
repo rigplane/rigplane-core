@@ -576,8 +576,8 @@ class ServerStatePublic(_Strict):
     ritOn: bool | None = None
     ritTx: bool | None = None
     compMeter: int | None = None
-    vdMeter: int | None = None
-    idMeter: int | None = None
+    vdMeter: float | None = None
+    idMeter: float | None = None
     powerMeter: int | None = None
     swrMeter: int | None = None
     alcMeter: int | None = None
