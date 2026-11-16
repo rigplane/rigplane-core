@@ -103,8 +103,14 @@ class RadioScopeSource:
         writer: RadioScopeWriter,
         *,
         max_fps: float = 30,
+        on_mode_change: Callable[[int, int], None] | None = None,
     ) -> None:
         self._writer = writer
+        # (receiver, new mode): called by feed_frame when a streamed frame
+        # reports a different scope mode than the previous frame of the same
+        # receiver (a switch between CENTER, FIX and the SCROLL modes, from
+        # the UI or the radio's front panel).
+        self._on_mode_change = on_mode_change
         self._fixed_ranges = profile.scope_fixed_edge_ranges
         self._fixed_step = profile.scope_fixed_edge_step_hz
         self._presets = profile.scope_span_presets_hz
@@ -352,6 +358,7 @@ class RadioScopeSource:
         start, end = frame.start_freq_hz, frame.end_freq_hz
         if frame.out_of_range and frame.mode == 0:
             start, end = start - end, start + end
+        previous = self._native_coverages.get(receiver)
         self._native_coverages[receiver] = (frame.mode, Coverage(start, end))
         native = NativeFrame(
             frame.receiver,
@@ -362,3 +369,11 @@ class RadioScopeSource:
         )
         for callback in tuple(self._callbacks):
             callback(native)
+        # After the frame is handed to the stream: whatever the listener asks
+        # the radio for is answered after this frame boundary.
+        if (
+            previous is not None
+            and previous[0] != frame.mode
+            and self._on_mode_change is not None
+        ):
+            self._on_mode_change(receiver, frame.mode)
