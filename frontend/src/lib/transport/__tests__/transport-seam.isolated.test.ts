@@ -15,7 +15,18 @@
  *
  * The bundle rows (C5b) run the same scenario over both producers through
  * the production path — `createMessageTransport` / `apiFetch` → installed
- * bundle → transport, never a direct transport constructor.
+ * bundle → transport, never a direct transport constructor. The
+ * data-channel rows ride an injected `RemoteLink` whose `createChannel`
+ * mints a FRESH native channel per `openChannel`: a data channel behaves
+ * like a WebSocket, so `close()` really closes it and a later open is a
+ * new channel, never a reopened one.
+ *
+ * The `bootRemote` rows cover boot.ts's own handle coordination only
+ * (shutdown unmounts; a start still in flight never mounts after it). The
+ * real remote boot seam — production App, runtime, channels, commands —
+ * is e2e row R-A1 (`frontend/tests/e2e/remote/`), not jsdom; the App and
+ * `mount` below are fakes of externals, never evidence about production
+ * bootstrap.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
@@ -23,7 +34,7 @@ import { join, relative, resolve, sep } from 'node:path';
 import { runInNewContext } from 'node:vm';
 import {
   installBundle, webSocketBundle, dataChannelBundle,
-  type RemoteChannels, type TransportBundle,
+  type ChannelLabel, type RemoteLink, type TransportBundle,
 } from '../transport-bundle';
 import { ATTACH_CLOSE_REASON } from '../datachannel-transport';
 import { createMessageTransport } from '../transport-factory';
@@ -72,23 +83,25 @@ describe('transport seam guards', () => {
       if (hits.length > 0) offenders.push(`${rel}: ${hits[0].trim()}`);
     }
     expect(offenders).toEqual([]);
+  });
 
+  it('reads the transport kind nowhere outside transport-bundle.ts and boot.ts', () => {
     // C5b pin: the transport choice is the bundle's alone, so a second
     // decider cannot appear above the seam. Pinned shapes: the
     // `datachannel` kind literal, a `bundle.kind` read, and any comparison
     // of a kind against the transport literals. Test files may name the
     // kind (these fixtures assert it); product code may not.
-    const kindOffenders: string[] = [];
+    const offenders: string[] = [];
     for (const full of files) {
       const rel = projectPath(full);
       if (rel === 'lib/transport/transport-bundle.ts' || rel === 'boot.ts' || rel.includes('__tests__/')) continue;
       const content = readFileSync(full, 'utf8');
       const pattern = /'datachannel'|"datachannel"|bundle\.kind|kind\s*===\s*'(?:websocket|datachannel)'/;
       for (const line of matchingLines(content, pattern)) {
-        kindOffenders.push(`${rel}: ${line.trim()}`);
+        offenders.push(`${rel}: ${line.trim()}`);
       }
     }
-    expect(kindOffenders, 'transport kind read outside the bundle').toEqual([]);
+    expect(offenders, 'transport kind read outside the bundle').toEqual([]);
   });
 
   it('every /api/v1 fetch goes through apiFetch', () => {
@@ -124,13 +137,20 @@ interface BundleHarness {
   sentToPeer(): Array<string | ArrayBuffer>;
 }
 
-function fakeChannels(api = new FakeDataChannel('api')): { [K in keyof RemoteChannels]: FakeDataChannel } {
-  return {
-    control: new FakeDataChannel('control'),
-    scope: new FakeDataChannel('scope'),
-    audio: new FakeDataChannel('audio'),
-    api,
-  };
+/** The fake `RemoteLink` the unit rows inject: `createChannel` mints a
+ * fresh `FakeDataChannel` per call — exactly the contract the shell's
+ * link implements — and records them so a row can act as the peer. */
+class FakeRemoteLink implements RemoteLink {
+  readonly api = new FakeDataChannel('api');
+  readonly created: FakeDataChannel[] = [];
+  createChannel(label: ChannelLabel): FakeDataChannel {
+    const channel = new FakeDataChannel(label);
+    this.created.push(channel);
+    return channel;
+  }
+  createdFor(label: ChannelLabel): FakeDataChannel[] {
+    return this.created.filter((channel) => channel.label === label);
+  }
 }
 
 function webSocketHarness(): BundleHarness {
@@ -149,19 +169,20 @@ function webSocketHarness(): BundleHarness {
   };
 }
 
-function dataChannelHarness(channels = fakeChannels()): BundleHarness {
+function dataChannelHarness(link = new FakeRemoteLink()): BundleHarness {
   return {
-    bundle: dataChannelBundle(channels),
+    bundle: dataChannelBundle(link),
     // The control hello proves the attach and is also an app frame.
     handshakeTexts: [goldenDocs.control_hello.text as string],
     openControl: (transport) => {
       transport.open('ws://ignored/', { protocols: ['rigplane-controller-v1.KEY'], role: 'primary' });
-      channels.control.simulateOpen();
-      channels.control.simulateMessage(goldenDocs.control_hello.text as string);
+      const control = link.createdFor('control').at(-1) as FakeDataChannel;
+      control.simulateOpen();
+      control.simulateMessage(goldenDocs.control_hello.text as string);
     },
-    deliverText: (text) => channels.control.simulateMessage(text),
-    deliverBinary: (data) => channels.control.simulateMessage(data),
-    sentToPeer: () => channels.control.sent.slice(),
+    deliverText: (text) => (link.createdFor('control').at(-1) as FakeDataChannel).simulateMessage(text),
+    deliverBinary: (data) => (link.createdFor('control').at(-1) as FakeDataChannel).simulateMessage(data),
+    sentToPeer: () => (link.createdFor('control').at(-1) as FakeDataChannel).sent.slice(),
   };
 }
 
@@ -212,33 +233,177 @@ describe('transport bundle seam (C5b)', () => {
 
     // Data-channel leg: the same apiFetch call travels the api transport;
     // the reply is the committed golden api_ok frames.
-    const api = new FakeDataChannel('api');
-    installBundle(dataChannelBundle(fakeChannels(api)));
-    api.simulateOpen();
+    const link = new FakeRemoteLink();
+    installBundle(dataChannelBundle(link));
+    link.api.simulateOpen();
     const pending = apiFetch('/api/v1/info');
     await vi.advanceTimersByTimeAsync(0);
-    expect(api.sent.filter((frame) => typeof frame !== 'string')).toHaveLength(2); // HEAD + END
-    for (const frame of goldenDocs.api_ok.reply ?? []) api.simulateMessage(goldenFrame(frame.hex, 1));
+    expect(link.api.sent.filter((frame) => typeof frame !== 'string')).toHaveLength(2); // HEAD + END
+    for (const frame of goldenDocs.api_ok.reply ?? []) link.api.simulateMessage(goldenFrame(frame.hex, 1));
     const res = await pending;
     expect(res.status).toBe(200);
     expect(stub, 'the global fetch stayed untouched').toHaveBeenCalledTimes(1);
   });
 
+  it('a request made while the api channel is connecting waits for its open, then succeeds', async () => {
+    // The api channel is still connecting when the mounted App asks for
+    // /api/v1/info: the request must wait for the channel's own open
+    // event — never throw "send while not open" — and then travel.
+    const link = new FakeRemoteLink();
+    installBundle(dataChannelBundle(link));
+    const pending = apiFetch('/api/v1/info');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(link.api.sent, 'nothing left while the channel connects').toEqual([]);
+    link.api.simulateOpen();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(link.api.sent.filter((frame) => typeof frame !== 'string')).toHaveLength(2); // HEAD + END
+    for (const frame of goldenDocs.api_ok.reply ?? []) link.api.simulateMessage(goldenFrame(frame.hex, 1));
+    const res = await pending;
+    expect(res.status).toBe(200);
+  });
+
+  it('a request made while the api channel is connecting rejects when the channel closes first', async () => {
+    const link = new FakeRemoteLink();
+    installBundle(dataChannelBundle(link));
+    const pending = apiFetch('/api/v1/info');
+    link.api.close();
+    await expect(pending).rejects.toThrow(TypeError);
+    expect(link.api.sent).toEqual([]);
+  });
+
+  it('a request waiting for the api channel open can be aborted while it waits', async () => {
+    const link = new FakeRemoteLink();
+    installBundle(dataChannelBundle(link));
+    const controller = new AbortController();
+    const pending = apiFetch('/api/v1/info', { signal: controller.signal });
+    controller.abort();
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+    expect(link.api.sent, 'no request ever started').toEqual([]);
+  });
+
   it('each label opens on its own channel', () => {
-    const channels = fakeChannels();
-    installBundle(dataChannelBundle(channels));
+    const link = new FakeRemoteLink();
+    installBundle(dataChannelBundle(link));
     const cases = [
-      ['scope', channels.scope, goldenAttachText('attach_scope', 'KEY'), goldenDocs.attach_ack_scope.text as string],
-      ['audio', channels.audio, goldenAttachText('attach_audio', 'KEY'), goldenDocs.attach_ack_audio.text as string],
+      ['scope', goldenAttachText('attach_scope', 'KEY'), goldenDocs.attach_ack_scope.text as string],
+      ['audio', goldenAttachText('attach_audio', 'KEY'), goldenDocs.attach_ack_audio.text as string],
     ] as const;
-    for (const [label, channel, attachText, ackText] of cases) {
+    for (const [label, attachText, ackText] of cases) {
       const transport = createMessageTransport(label);
       transport.open('ws://ignored/', { protocols: ['rigplane-controller-v1.KEY'], role: 'primary' });
+      const channel = link.createdFor(label)[0];
       channel.simulateOpen();
       expect(JSON.parse(channel.textFrames()[0]), `${label} attach frame`).toEqual(JSON.parse(attachText));
       channel.simulateMessage(ackText);
       expect(transport.state, `${label} opens on its ack`).toBe('open');
     }
+  });
+
+  it('every openChannel gets a fresh native channel; close() closes that channel only', () => {
+    // The RX-off/RX-on shape: an owner closes its transport when its
+    // demand ends, and the next open rides a NEW native channel — the
+    // closed one is never resurrected.
+    const link = new FakeRemoteLink();
+    const bundle = dataChannelBundle(link);
+    const attach = { protocols: ['rigplane-controller-v1.KEY'], role: 'primary' } as const;
+
+    const first = bundle.openChannel('audio');
+    first.open('ws://ignored/', attach);
+    const firstChannel = link.createdFor('audio')[0];
+    firstChannel.simulateOpen();
+    firstChannel.simulateMessage(goldenDocs.attach_ack_audio.text as string);
+    expect(first.state).toBe('open');
+    first.close();
+    expect(firstChannel.readyState, 'close() really closed the native channel').toBe('closed');
+
+    const second = bundle.openChannel('audio');
+    second.open('ws://ignored/', attach);
+    const secondChannel = link.createdFor('audio')[1];
+    expect(secondChannel, 'a fresh native channel per open').not.toBe(firstChannel);
+    secondChannel.simulateOpen();
+    expect(JSON.parse(secondChannel.textFrames()[0]), 'the attach went out on the fresh channel')
+      .toEqual(JSON.parse(goldenAttachText('attach_audio', 'KEY')));
+    secondChannel.simulateMessage(goldenDocs.attach_ack_audio.text as string);
+    expect(second.state, 'the reopened channel serves again').toBe('open');
+  });
+
+  it('link loss closes every transport the bundle still tracks and reports the loss once', () => {
+    const link = new FakeRemoteLink();
+    const losses: string[] = [];
+    const bundle = dataChannelBundle(link, (reason) => losses.push(reason));
+    const attach = { protocols: ['rigplane-controller-v1.KEY'], role: 'primary' } as const;
+
+    const control = bundle.openChannel('control');
+    control.open('ws://ignored/', attach);
+    link.createdFor('control')[0].simulateOpen();
+    const scope = bundle.openChannel('scope');
+    const scopeCloses: string[] = [];
+    scope.onClose((_info) => scopeCloses.push('scope'));
+    scope.open('ws://ignored/', attach);
+    const audio = bundle.openChannel('audio');
+    const audioCloses: string[] = [];
+    audio.onClose((_info) => audioCloses.push('audio'));
+    audio.open('ws://ignored/', attach);
+    link.api.simulateOpen();
+
+    // The control channel dies: the link is lost — once — and everything
+    // the bundle still tracks closes with it (the owners see the close,
+    // and the server's cleanup runs on the closed channels).
+    link.createdFor('control')[0].close();
+    expect(losses).toEqual(['channel_closed']);
+    expect(scopeCloses, 'the scope owner saw its transport close').toEqual(['scope']);
+    expect(audioCloses, 'the audio owner saw its transport close').toEqual(['audio']);
+    expect(link.createdFor('scope')[0].readyState).toBe('closed');
+    expect(link.createdFor('audio')[0].readyState).toBe('closed');
+    expect(link.api.readyState).toBe('closed');
+  });
+
+  it('shutdown closes every tracked transport and the api channel, rejects REST, reports no loss', async () => {
+    const link = new FakeRemoteLink();
+    const losses: string[] = [];
+    const bundle = dataChannelBundle(link, (reason) => losses.push(reason));
+    const attach = { protocols: ['rigplane-controller-v1.KEY'], role: 'primary' } as const;
+
+    link.api.simulateOpen();
+    const control = bundle.openChannel('control');
+    control.open('ws://ignored/', attach);
+    link.createdFor('control')[0].simulateOpen();
+    const scope = bundle.openChannel('scope');
+    scope.open('ws://ignored/', attach);
+
+    bundle.shutdown();
+    expect(losses, 'intentional retirement reports no loss').toEqual([]);
+    expect(link.createdFor('control')[0].readyState).toBe('closed');
+    expect(link.createdFor('scope')[0].readyState).toBe('closed');
+    expect(link.api.readyState).toBe('closed');
+    await expect(bundle.apiFetch('/api/v1/info'), 'REST is gone after shutdown').rejects.toThrow(TypeError);
+    const later = bundle.openChannel('control');
+    const laterCloses: { reason: string }[] = [];
+    later.onClose((info) => laterCloses.push(info));
+    expect(() => later.open('ws://ignored/'), 'no throw on a dead bundle').not.toThrow();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(laterCloses).toHaveLength(1);
+  });
+
+  it('after a loss, openChannel closes at once with the reason and creates no native channel', async () => {
+    const link = new FakeRemoteLink();
+    const losses: string[] = [];
+    const bundle = dataChannelBundle(link, (reason) => losses.push(reason));
+    // An attach-refused control channel loses the link with the classified
+    // reason; a non-default reason proves the wiring below.
+    const control = bundle.openChannel('control');
+    control.open('ws://ignored/', { protocols: [], role: 'primary' });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(losses).toEqual(['attach_refused']);
+
+    const created = link.created.length;
+    const scope = bundle.openChannel('scope');
+    const closes: { reason: string }[] = [];
+    scope.onClose((info) => closes.push(info));
+    expect(() => scope.open('ws://ignored/'), 'no throw on a dead link').not.toThrow();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(closes).toEqual([{ code: 1006, reason: 'attach_refused', wasClean: false }]);
+    expect(link.created.length, 'no native channel is created on a dead link').toBe(created);
   });
 
   it('classifies the transport\'s own close reasons: an attach refusal is reported as attach_refused', async () => {
@@ -251,8 +416,9 @@ describe('transport bundle seam (C5b)', () => {
       ['roleless', { protocols: ['rigplane-controller-v1.KEY'] } as unknown as TransportAttach],
     ];
     for (const [name, attach] of cases) {
+      const link = new FakeRemoteLink();
       const losses: string[] = [];
-      const bundle = dataChannelBundle(fakeChannels(), (reason) => losses.push(reason));
+      const bundle = dataChannelBundle(link, (reason) => losses.push(reason));
       const closes: string[] = [];
       const transport = bundle.openChannel('control');
       transport.onClose((info) => closes.push(info.reason));
@@ -264,11 +430,11 @@ describe('transport bundle seam (C5b)', () => {
   });
 
   it('a clean channel close (empty reason) is reported as channel_closed', () => {
-    const channels = fakeChannels();
+    const link = new FakeRemoteLink();
     const losses: string[] = [];
-    const bundle = dataChannelBundle(channels, (reason) => losses.push(reason));
+    const bundle = dataChannelBundle(link, (reason) => losses.push(reason));
     bundle.openChannel('control').open('ws://ignored/', { protocols: ['rigplane-controller-v1.KEY'], role: 'primary' });
-    channels.control.close();
+    link.createdFor('control')[0].close();
     expect(losses).toEqual(['channel_closed']);
     expect(ATTACH_CLOSE_REASON.none).toBe('');
   });
@@ -281,51 +447,44 @@ describe('transport bundle seam (C5b)', () => {
     const Foreign = runInNewContext('ArrayBuffer') as ArrayBufferConstructor;
     const foreign = new Foreign(3);
     new Uint8Array(foreign).set([7, 8, 9]);
-    const channels = fakeChannels();
-    installBundle(dataChannelBundle(channels));
+    const link = new FakeRemoteLink();
+    installBundle(dataChannelBundle(link));
 
     const transport = createMessageTransport('scope');
     const bins: ArrayBuffer[] = [];
     transport.onBinary((data) => bins.push(data));
     transport.open('ws://ignored/', { protocols: ['rigplane-controller-v1.KEY'], role: 'primary' });
-    channels.scope.simulateOpen();
-    channels.scope.simulateMessage(goldenDocs.attach_ack_scope.text as string);
-    channels.scope.simulateMessage(foreign);
+    link.createdFor('scope')[0].simulateOpen();
+    link.createdFor('scope')[0].simulateMessage(goldenDocs.attach_ack_scope.text as string);
+    link.createdFor('scope')[0].simulateMessage(foreign);
     expect(bins[0], 'the foreign-realm buffer itself is delivered').toBe(foreign);
     expect(new Uint8Array(bins[0])).toEqual(Uint8Array.of(7, 8, 9));
   });
 });
 
 // ----------------------------------------------------------------------
-// One boot path (C5b, PR-A): both entries — `main.ts` (the station-served
-// page) and `bootRemote` (the remote-link shell) — run the one `startApp`.
-//
-// What is compared: the ordered construction trace (config → kit →
-// activation → App/app.css evaluation → one `mount` on `#app`) and the
-// installed transport bundle each entry leaves behind. The only accepted
-// differences are the bundle itself and `main.ts`'s own storage-migration
-// preamble, which runs before `startApp` and has no equivalent in a fresh
-// remote context.
+// bootRemote's handle (C5b, PR-A): the shell-facing coordination only —
+// `shutdown()` drops the link AND unmounts the App, and a startApp still
+// in flight (async kit activation/imports) never mounts after it. The
+// production remote boot seam is e2e row R-A1; here the App, `mount` and
+// the kit activation are fakes of externals, and the rows assert only
+// boot.ts's own coordination.
 
 const events: string[] = [];
 const mount = vi.fn((_component: unknown, _options: { target: HTMLElement }) => ({ mounted: true }));
+const unmount = vi.fn((_app: unknown) => { events.push('unmount'); });
+let releaseActivation: (() => void) | null = null;
 
 function installMocks(): void {
-  vi.doMock('../../migrate-legacy-storage', () => {
-    events.push('migration');
-    return {};
-  });
-  vi.doMock('../../../../component-kits.config', () => {
-    events.push('config');
-    return {
-      default: {
-        kits: [async () => {
-          events.push('kit');
-          return { default: { apiVersion: 1, id: 'boot-kit' } };
-        }],
-      },
-    };
-  });
+  vi.doMock('../../../../component-kits.config', () => ({
+    default: {
+      kits: [async () => {
+        events.push('kit');
+        await new Promise<void>((resolve) => { releaseActivation = resolve; });
+        return { default: { apiVersion: 1, id: 'boot-kit' } };
+      }],
+    },
+  }));
   vi.doMock('../../../component-kits/activation', () => ({
     activateComponentKits: async (config: { kits: readonly (() => Promise<unknown>)[] }) => {
       await Promise.all(config.kits.map((load) => load()));
@@ -345,104 +504,55 @@ function installMocks(): void {
       events.push('mount');
       return mount(component, options);
     },
+    unmount: (app: unknown) => unmount(app),
   }));
 }
 
-/** The station page's own preamble (the migration side-effect import) —
- * absent from the remote entry by design. */
-const STATION_ONLY = 'migration';
-
-describe('one boot path (C5b)', () => {
+describe('bootRemote handle (C5b)', () => {
   beforeEach(() => {
     vi.resetModules();
     vi.clearAllMocks();
     events.length = 0;
+    releaseActivation = null;
     document.body.innerHTML = '<main id="app"></main>';
   });
+  afterEach(() => { installBundle(webSocketBundle()); });
 
-  it('both entries run the one startApp: identical construction trace, only the bundle differs', async () => {
-    installMocks();
-    const { default: started } = await import('../../../main');
-    await started;
-    expect(events[0], 'main.ts still migrates storage first').toBe(STATION_ONLY);
-    const stationTrace = events.filter((event) => event !== STATION_ONLY);
-    expect(mount).toHaveBeenCalledOnce();
-    const { currentBundle } = await import('../transport-bundle');
-    expect(currentBundle().kind).toBe('websocket');
-
-    vi.resetModules();
-    vi.clearAllMocks();
-    events.length = 0;
-    document.body.innerHTML = '<main id="app"></main>';
+  it('shutdown unmounts the mounted App and drops the link: no loss, REST is gone', async () => {
     installMocks();
     const { bootRemote, REMOTE_BOOT_API } = await import('../../../boot');
     expect(REMOTE_BOOT_API).toBe(1);
-    bootRemote(fakeChannels(), { onLinkLost: () => {} });
-    await vi.waitFor(() => expect(events.at(-1)).toBe('mount'));
-    expect(events.filter((event) => event !== STATION_ONLY)).toEqual(stationTrace);
-    expect(mount).toHaveBeenCalledOnce();
-    expect(mount.mock.calls[0][1]).toEqual({ target: document.getElementById('app') });
-    const { currentBundle: currentAfterBoot } = await import('../transport-bundle');
-    expect(currentAfterBoot().kind).toBe('datachannel');
-  });
-
-  it('bootRemote serves the factory from the injected channels; loss empties the bundle until replaceChannels', async () => {
-    installMocks();
-    const { bootRemote } = await import('../../../boot');
-    const first = fakeChannels();
+    const link = new FakeRemoteLink();
     const losses: string[] = [];
-    const handle = bootRemote(first, { onLinkLost: (reason) => losses.push(reason) });
+    const handle = bootRemote(link, { onLinkLost: (reason) => losses.push(reason) });
+    await vi.waitFor(() => expect(releaseActivation).not.toBeNull());
+    releaseActivation?.();
     await vi.waitFor(() => expect(events).toContain('mount'));
+    link.api.simulateOpen();
 
-    const { createMessageTransport } = await import('../transport-factory');
-    // A live control transport over the injected channel: the channel dying
-    // under it loses the link, once.
-    const control = createMessageTransport('control');
-    control.open('ws://ignored/', { protocols: ['rigplane-controller-v1.KEY'], role: 'primary' });
-    first.control.simulateOpen();
-    first.control.simulateMessage(goldenDocs.control_hello.text as string);
-    expect(control.state).toBe('open');
-    first.control.close();
-    expect(losses).toEqual(['channel_closed']);
-
-    // Until replaceChannels, openChannel hands out transports that close at
-    // once with the reason — no throw, so the owners' backoff survives.
-    const scope = createMessageTransport('scope');
-    const closes: { reason: string }[] = [];
-    scope.onClose((info) => closes.push(info));
-    scope.open('ws://ignored/');
-    await vi.waitFor(() => expect(closes).toHaveLength(1));
-    expect(closes[0].reason).toBe('channel_closed');
-
-    // replaceChannels: the bundle rides the fresh channels.
-    const next = fakeChannels();
-    handle.replaceChannels(next);
-    const control2 = createMessageTransport('control');
-    let opened2 = 0;
-    control2.onOpen(() => { opened2 += 1; });
-    control2.open('ws://ignored/', { protocols: ['rigplane-controller-v1.KEY'], role: 'primary' });
-    next.control.simulateOpen();
-    // JSON spacing is not contractual: compare the decoded documents.
-    expect(JSON.parse(next.control.textFrames()[0])).toEqual(JSON.parse(goldenAttachText('attach_control', 'KEY')));
-    next.control.simulateMessage(goldenDocs.control_hello.text as string);
-    expect(opened2).toBe(1);
-    expect(losses, 'no second loss from the swap').toEqual(['channel_closed']);
-  });
-
-  it('shutdown stops serving channels without reporting a loss', async () => {
-    installMocks();
-    const { bootRemote } = await import('../../../boot');
-    const losses: string[] = [];
-    const handle = bootRemote(fakeChannels(), { onLinkLost: (reason) => losses.push(reason) });
-    await vi.waitFor(() => expect(events).toContain('mount'));
     handle.shutdown();
+    expect(unmount, 'the mounted App is unmounted').toHaveBeenCalledOnce();
+    expect(unmount.mock.calls[0][0]).toBe(mount.mock.results[0].value);
+    expect(losses, 'shutdown reports no loss').toEqual([]);
+    expect(link.api.readyState, 'the api channel is closed').toBe('closed');
+    await expect(apiFetch('/api/v1/info'), 'REST is gone after shutdown').rejects.toThrow(TypeError);
+  });
 
-    const { createMessageTransport } = await import('../transport-factory');
-    const transport = createMessageTransport('control');
-    const closes: { reason: string }[] = [];
-    transport.onClose((info) => closes.push(info));
-    transport.open('ws://ignored/');
-    await vi.waitFor(() => expect(closes).toHaveLength(1));
+  it('a startApp still in flight never mounts after shutdown', async () => {
+    installMocks();
+    const { bootRemote } = await import('../../../boot');
+    const link = new FakeRemoteLink();
+    const losses: string[] = [];
+    const handle = bootRemote(link, { onLinkLost: (reason) => losses.push(reason) });
+    // Shutdown lands while the kit activation is still pending — before
+    // any App import or mount has happened.
+    await vi.waitFor(() => expect(releaseActivation).not.toBeNull());
+    handle.shutdown();
+    releaseActivation?.();
+    await vi.waitFor(() => expect(events).toContain('activation'));
+    await vi.waitFor(() => expect(events).toContain('app'));
+    expect(mount, 'the App is never mounted after shutdown').not.toHaveBeenCalled();
+    expect(unmount, 'nothing was mounted, so nothing is unmounted').not.toHaveBeenCalled();
     expect(losses).toEqual([]);
   });
 });
