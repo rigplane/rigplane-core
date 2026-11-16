@@ -10,6 +10,7 @@
   import { getStageScale } from '../../primitives/stage/stage-scale';
   import type { ScopeRenderTrace, TraceToken } from '../../lib/runtime/scope-render-trace';
   import type { ColorSchemeName } from '../../lib/renderers/waterfall-renderer';
+  import type { StackedTraceLocate } from '../../lib/renderers/stacked-trace-geometry';
   import StackedTraceCanvas from './StackedTraceCanvas.svelte';
   import {
     isStackedTraceEnabled, isStackedTraceUnavailable, markStackedTraceUnavailable,
@@ -32,9 +33,15 @@
      * flat trace (MOR-4463); without it the pane is always flat.
      */
     colorScheme?: ColorSchemeName;
+    /**
+     * While the stacked-trace view is shown a pointer position is not a
+     * frequency by its x alone: the host gets the view's own map, and null
+     * again when the flat trace returns.
+     */
+    onRegisterLocate?: (locate: StackedTraceLocate | null) => void;
   }
 
-  let { data, options = defaultSpectrumOptions, spanHz = 0, absoluteLabels = false, enableAvg = true, enablePeakHold = true, onRegisterPush, onSurfaceChange, surface: sharedSurface, colorScheme, trace = null }: Props = $props();
+  let { data, options = defaultSpectrumOptions, spanHz = 0, absoluteLabels = false, enableAvg = true, enablePeakHold = true, onRegisterPush, onSurfaceChange, surface: sharedSurface, colorScheme, onRegisterLocate, trace = null }: Props = $props();
 
   const renderer = new SpectrumRenderer();
 
@@ -149,7 +156,7 @@
 
 <div class="spectrum-container">
   {#if stacked && colorScheme !== undefined}
-    <StackedTraceCanvas {options} {colorScheme} {surface} {trace} onUnavailable={markStackedTraceUnavailable}
+    <StackedTraceCanvas {options} {colorScheme} {surface} {trace} {onRegisterLocate} onUnavailable={markStackedTraceUnavailable}
       onRegisterPush={(fn) => {
         stackedPush = fn;
         if (latestPixels) fn(latestPixels, latestToken);

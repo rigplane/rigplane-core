@@ -145,7 +145,7 @@
   "core.scope.preset.follow": "VFO に追従",
   "core.scope.zoomIn": "パノラマ表示を拡大",
   "core.scope.zoomOut": "パノラマ表示を縮小",
-  "core.scope.stackedTrace.title": "3D表示: 直近のスペクトラム履歴を奥行きで表示",
+  "core.scope.stackedTrace.title": "3D表示: 直近のスペクトラム履歴を奥行きで表示。クリックでポインター下の信号に同調",
   "core.scope.stackedTrace.unavailable": "3D表示は利用できません: このブラウザーは WebGL2 に対応していません",
   "core.scope.hatch.outOfRange": "固定スコープ範囲外の周波数",
   "core.scope.hatch.noPixels": "スコープデータなし",
