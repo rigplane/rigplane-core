@@ -240,10 +240,17 @@ and write templates, CI-V command bytes, `[vfo]` swap code, `[cmd29]` routes,
 `[modes]`): an entry the profile does not declare is "not available", a
 declared template of another shape is a load error. Mode values are the
 profile's mode names; digital-voice modes (CI-V DV/DD, Yaesu C4FM) are not in
-any mode domain.
+any mode domain; the CI-V DATA field runs 0..`[data_mode].count`. The
+selected VFO is written only through `25 00`/`26 00` (`03`/`04` stay
+read-only: `05`/`06` cannot put DATA back). `vfo_exchange` comes from
+`[vfo].swap_ab`, or from `swap_main_sub` only where `25/26 01` is the
+physical SUB (`split_tx_target = "sub_receiver"`), and only where every
+frequency and mode it changes is writable on this radio; `[0xB0]` and
+`[0x07, 0xB0]` are the same swap.
 
-Every step's bytes are built by the entry's encoder and judged by the same
-function the engine will run before writing: the bytes must parse back to the
+Every step's bytes are built by the entry's encoder and judged at load by
+the same function the engine runs again right before writing (checks carry
+no bytes): the bytes must parse back to the
 same entry and form (one CAT command ending in its only `;`; CI-V at most one
 `29 <rx>` wrapper and a value that uses every remaining byte), and a write
 needs restore items for every entry it changes on its receiver (`vfo_exchange`
