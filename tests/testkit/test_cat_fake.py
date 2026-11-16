@@ -370,7 +370,7 @@ async def test_garbled_fault_surfaces_as_garbled_frame_error(
 
 
 # ---------------------------------------------------------------------------
-# A mounted recording answers before the native handlers
+# capture_replay: a mounted recording answers before the native handlers
 # ---------------------------------------------------------------------------
 
 
@@ -387,32 +387,37 @@ async def _client_of(radio: FakeCatRadio) -> _CatClient:
     return cat
 
 
-@pytest.mark.asyncio
-async def test_recorded_frequency_reply_beats_the_native_state() -> None:
-    radio = FakeCatRadio(recorded_answers=_recorded(("c2r", "FA;"), ("r2c", "FA014211000;")))
+async def _ask_recorded(
+    table: RecordedCatAnswerTable, line: str, *, capture_replay: bool
+) -> str:
+    radio = FakeCatRadio(recorded_answers=table, capture_replay=capture_replay)
     cat = await _client_of(radio)
     try:
-        assert await cat.ask("FA;") == "FA014211000"  # native would say 014074000
+        return await cat.ask(line)
     finally:
         cat.close()
         await radio.stop()
 
 
 @pytest.mark.asyncio
-async def test_recorded_refusal_of_a_native_read_is_reproduced() -> None:
-    radio = FakeCatRadio(recorded_answers=_recorded(("c2r", "FA;"), ("r2c", "?;")))
-    cat = await _client_of(radio)
-    try:
-        assert await cat.ask("FA;") == "?"
-    finally:
-        cat.close()
-        await radio.stop()
+async def test_capture_replay_reproduces_a_recorded_data_line() -> None:
+    table = _recorded(("c2r", "FA;"), ("r2c", "FA014211000;"))
+    assert await _ask_recorded(table, "FA;", capture_replay=True) == "FA014211000"
+    assert await _ask_recorded(table, "FA;", capture_replay=False) == "FA014074000"
+
+
+@pytest.mark.asyncio
+async def test_capture_replay_reproduces_a_recorded_refusal() -> None:
+    table = _recorded(("c2r", "FA;"), ("r2c", "?;"))
+    assert await _ask_recorded(table, "FA;", capture_replay=True) == "?"
+    assert await _ask_recorded(table, "FA;", capture_replay=False) == "FA014074000"
 
 
 @pytest.mark.realtime(reason="asserts that nothing arrives on the real clock")
 @pytest.mark.asyncio
-async def test_recorded_silence_of_a_native_read_is_reproduced() -> None:
-    radio = FakeCatRadio(recorded_answers=_recorded(("c2r", "MD0;")))
+async def test_capture_replay_reproduces_recorded_silence() -> None:
+    table = _recorded(("c2r", "MD0;"))
+    radio = FakeCatRadio(recorded_answers=table, capture_replay=True)
     cat = await _client_of(radio)
     try:
         await cat.send("MD0;")
@@ -420,14 +425,11 @@ async def test_recorded_silence_of_a_native_read_is_reproduced() -> None:
     finally:
         cat.close()
         await radio.stop()
+    # Without capture_replay the native mode read still answers.
+    assert (await _ask_recorded(table, "MD0;", capture_replay=False)).startswith("MD0")
 
 
 @pytest.mark.asyncio
-async def test_a_native_read_the_recording_never_saw_is_answered_natively() -> None:
-    radio = FakeCatRadio(recorded_answers=_recorded(("c2r", "KS;"), ("r2c", "?;")))
-    cat = await _client_of(radio)
-    try:
-        assert await cat.ask("FA;") == "FA014074000"
-    finally:
-        cat.close()
-        await radio.stop()
+async def test_capture_replay_answers_an_unrecorded_read_natively() -> None:
+    table = _recorded(("c2r", "KS;"), ("r2c", "?;"))
+    assert await _ask_recorded(table, "FA;", capture_replay=True) == "FA014074000"

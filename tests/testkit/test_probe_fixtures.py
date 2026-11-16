@@ -352,6 +352,7 @@ def _run_civ_replay(
         civ_addr=CIV_ADDR,
         model_id=_identity_model_id(probe),
         recorded_answers=RecordedAnswerTable.from_civ_pairs(rows, "usb"),
+        capture_replay=True,
     )
 
     async def fake_open(device: str, baudrate: int | None = None, **kwargs):
@@ -592,7 +593,9 @@ async def test_cat_round_trip_through_real_cli(tmp_path, monkeypatch) -> None:
 
     rows = probe_to_cat_pairs(second, window="cat")
     table = RecordedCatAnswerTable.from_cat_pairs(rows, window="cat")
-    replay_radio = FakeCatRadio(profile="ft991a", recorded_answers=table)
+    replay_radio = FakeCatRadio(
+        profile="ft991a", recorded_answers=table, capture_replay=True
+    )
     await replay_radio.start()
     try:
         third = await _run_cat_probe(
