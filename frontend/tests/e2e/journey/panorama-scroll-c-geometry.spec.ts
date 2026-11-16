@@ -128,3 +128,68 @@ test('IC-705: SCROLL-C keeps the reported window across a span gesture and an in
     await server.kill();
   }
 });
+
+/**
+ * MOR-4387 pre-review P1 item 2: in radio-owned SCROLL-C the SPAN step takes
+ * its base from the OBSERVED radio window width, not from the client crop.
+ * At a 100 kHz window ZOOM+ makes a 50 kHz crop; SPAN+ must then write the
+ * NEXT preset (200 kHz window) — the old head picked 100 kHz (the existing
+ * width) from the crop, so the step only removed the crop, wrote nothing
+ * and the SPAN readout never advanced.
+ */
+test('IC-705: SCROLL-C SPAN+ after a ZOOM+ crop steps from the radio window and writes one span', async ({ page }, info) => {
+  const evidence = info.outputPath('radio.jsonl');
+  const port = Number(process.env.PANORAMA_SCROLL_SPAN_PORT ?? 22262);
+  const server = await startJourneyServer(port, 14_250_000,
+    ['--model', 'IC-705', '--evidence', evidence], 'tests/e2e/panorama_web_server.py');
+  try {
+    const frames: Array<{ view: number[]; pixels: boolean }> = [];
+    const errors: string[] = [];
+    page.on('pageerror', error => errors.push(error.message));
+    page.on('websocket', socket => {
+      if (!socket.url().endsWith('/api/v1/scope')) return;
+      socket.on('framereceived', ({ payload }) => {
+        if (typeof payload === 'string') return;
+        const parsed = parseCurrentScopeFrame(Uint8Array.from(payload).buffer, { source: 'radio', sourceId: 'radio', epoch: 0 });
+        if (parsed.ok) frames.push({
+          view: [parsed.frame.viewStartHz, parsed.frame.viewEndHz],
+          pixels: parsed.frame.pixels?.some(value => value > 0) === true,
+        });
+      });
+    });
+    const writes = async () => {
+      let contents = '';
+      for await (const chunk of createReadStream(evidence, { encoding: 'utf8' })) contents += chunk;
+      return contents.trim().split('\n').filter(Boolean).map(parseScopeWriteReceipt);
+    };
+    await page.goto(`http://127.0.0.1:${port}/?ui=v2`);
+    await expect.poll(() => frames.length, { timeout: 30_000 }).toBeGreaterThan(10);
+    await expect.poll(() => frames.at(-1)?.view).toEqual([14_200_000, 14_300_000]);
+    await page.getByRole('button', { name: 'More scope controls' }).first().click();
+    await page.getByTestId('scope-mode-2').first().click();
+    await expect.poll(async () => (await writes()).filter(receipt => receipt.sub === 0x14).at(-1)?.data[1]).toBe(2);
+    await expect.poll(() => frames.at(-1)?.view).toEqual([14_200_000, 14_300_000]);
+    // ZOOM+: a client crop of the radio's 100 kHz window (50 kHz wide).
+    await page.getByTestId('scope-zoom-in').first().click();
+    await page.keyboard.press('Escape');
+    await expect.poll(() => frames.at(-1)?.view).toEqual([14_225_000, 14_275_000]);
+    const spanValue = page.getByTestId('scope-span-value').first();
+    await expect(spanValue).toHaveText('±50k');
+    const before = await writes();
+    const mark = frames.length;
+    await page.getByRole('button', { name: 'Increase scope span', exact: true }).first().click();
+    // The next preset above the radio's 100 kHz window: one 27 15 write
+    // (the ±100k preset), later frames carry the 200 kHz window, mode stays 2.
+    await expect.poll(async () => (await writes()).slice(before.length).filter(receipt => receipt.sub === 0x15).length).toBe(1);
+    await expect.poll(() => frames.slice(mark).some(frame => frame.pixels
+      && frame.view[0] === 14_150_000 && frame.view[1] === 14_350_000)).toBe(true);
+    await expect(spanValue).toHaveText('±100k');
+    const after = (await writes()).slice(before.length);
+    expect(after.filter(receipt => receipt.sub === 0x15).map(receipt => receipt.span)).toEqual([100_000]);
+    expect(after.filter(receipt => receipt.sub === 0x14)).toEqual([]);
+    expect((await writes()).filter(receipt => receipt.sub === 0x14).at(-1)?.data[1]).toBe(2);
+    expect(errors).toEqual([]);
+  } finally {
+    await server.kill();
+  }
+});
