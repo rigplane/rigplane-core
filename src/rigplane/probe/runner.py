@@ -626,7 +626,7 @@ async def run_probe(
         termination=TerminationInfo(status=gate.stop_status, detail=gate.stop_detail),
         checks=(),
     )
-    if checks is None or gate.stopped:
+    if checks is None or gate.stopped or (checks.begin and not checks.begin()):
         return ProbeRun(file=file, aborted=aborted)
     from rigplane.probe.checks import run_checks
 

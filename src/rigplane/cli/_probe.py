@@ -3,26 +3,29 @@
 Thin CLI over ``rigplane.probe``: argument parsing, prompts, and the USB
 serial transport. Nothing here decides what is sent; the runner sends
 only what ``readlist.build_read_plan`` asks, and records the rest as
-skipped with a reason.
+skipped with a reason. With ``--checks`` the engine (``probe/checks.py``)
+builds and judges every write; this module only asks the person.
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import concurrent.futures
 import hashlib
 import os
 import re
 import shutil
 import subprocess
 import sys
+import threading
 import tomllib
 from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 import platformdirs
 
@@ -32,6 +35,8 @@ from rigplane.commands import CONTROLLER_ADDR, build_civ_frame, command_carries_
 from rigplane.core.serial_open import open_serial_port
 from rigplane.profiles.rig_loader import RigConfig
 from rigplane.probe import render
+from rigplane.probe.checks import ASK_TIMEOUT_S, ChecksRequest
+from rigplane.probe.journal import journal_path, leftover_journal_line
 from rigplane.probe.model import ProbeFile
 from rigplane.probe.render import DEFAULT_PROBE_PROG
 from rigplane.probe.readlist import ReadRequest, build_read_plan
@@ -42,6 +47,9 @@ from rigplane.probe.runner import (
     ProbeRun,
     run_probe,
 )
+
+if TYPE_CHECKING:
+    from rigplane.profiles.probe_checks import ProbeCheck
 
 __all__ = [
     "RadioSelection",
@@ -436,6 +444,84 @@ def _is_yes(answer: str) -> bool:
     return answer.strip().lower() in ("", "y", "yes")
 
 
+def _is_strict_yes(answer: str) -> bool:
+    """The checks questions default to no: only an explicit yes counts."""
+    return answer.strip().lower() in ("y", "yes")
+
+
+class _Lines:
+    """Every prompt of one run, read on a daemon thread so the event loop
+    (Ctrl-C, the time limit of a check question) keeps running. A read left
+    open by that time limit or a cancel answers the next prompt instead of
+    racing it for the same line."""
+
+    def __init__(self, ask: Callable[[str], str], emit: Callable[[str], None]):
+        self._ask, self._emit = ask, emit
+        self._open: concurrent.futures.Future[str] | None = None
+
+    def _read(self, prompt: str) -> concurrent.futures.Future[str]:
+        if self._open is not None:
+            self._emit(prompt)
+            return self._open
+        future: concurrent.futures.Future[str] = concurrent.futures.Future()
+
+        def read() -> None:
+            try:
+                future.set_result(self._ask(prompt))
+            except BaseException as error:  # noqa: BLE001 -- re-raised by the caller
+                future.set_exception(error)
+
+        threading.Thread(target=read, daemon=True).start()
+        self._open = future
+        return future
+
+    def _settle(self, future: concurrent.futures.Future[str]) -> None:
+        if future.done():
+            self._open = None
+
+    def __call__(self, prompt: str) -> str:
+        future = self._read(prompt)
+        try:
+            return future.result()
+        finally:
+            self._settle(future)
+
+    async def wait(self, prompt: str) -> str:
+        future = self._read(prompt)
+        try:
+            return await asyncio.shield(asyncio.wrap_future(future))
+        finally:
+            self._settle(future)
+
+
+def _checks_request(
+    config: RigConfig, journal: Path, lines: _Lines, emit: Callable[[str], None]
+) -> ChecksRequest:
+    """The person's side of the checks: the block question, one question per
+    check (both default no, never answered by ``--yes``) and the check asks."""
+    total = len(config.probe_checks)
+
+    def begin() -> bool:
+        emit(render.checks_block_start(total))
+        return _is_strict_yes(lines(render.checks_prompt()))
+
+    def consent(check: ProbeCheck, originals: dict[str, str]) -> bool:
+        index = config.probe_checks.index(check) + 1
+        what, after = check.explain_what, check.explain_after
+        emit(
+            render.check_screen(
+                index, total, check.title, what, after, originals, check.warnings
+            )
+        )
+        return _is_strict_yes(lines(render.check_prompt()))
+
+    async def ask(question: str) -> str | None:
+        prompt = render.check_question_prompt(question, ASK_TIMEOUT_S)
+        return (await lines.wait(prompt)).strip() or None
+
+    return ChecksRequest(consent, ask, begin=begin, journal_path=journal)
+
+
 async def execute(
     config: RigConfig,
     profile_toml_bytes: bytes,
@@ -455,21 +541,35 @@ async def execute(
     sibling_configs: Iterable[RigConfig] | None = None,
     open_folder: Callable[[Path], None] | None = None,
     documents_dir: Callable[[], Path] | None = None,
+    checks: bool = False,
 ) -> int:
     """Run the probe end to end; return the process exit code.
 
     0 ok, 2 bad usage (unknown profile, unsupported protocol, refusing to
-    save without ``--yes`` outside a TTY), 3 the port cannot be opened or
-    nothing answered at all. The file is written only after the save
+    save without ``--yes`` outside a TTY, ``--checks`` outside a TTY), 3
+    the port cannot be opened or nothing answered at all, 4 a check could
+    not put the radio back. The file is written only after the save
     answer. The tool itself records no port path, host, or user - only
-    what you type in ``--label``, plus the radio's answers.
+    what you type in ``--label``, plus the radio's answers. A check
+    journal left behind is printed first, whatever the command.
     """
+    journal = journal_path()
+    if (left := leftover_journal_line(journal)) is not None:
+        emit(left)
+        emit(render.journal_instruction_line(str(journal)))
     if config.protocol_type not in _SUPPORTED:
         emit(render.not_supported_message(config.protocol_type))
+        return 2
+    if checks and not is_tty:
+        emit(render.checks_need_terminal_message())
         return 2
     if not is_tty and not yes:
         emit("Refusing to save without --yes when stdin is not a terminal.")
         return 2
+    if checks and not config.probe_checks:
+        emit(render.no_checks_message())
+        checks = False
+    lines = _Lines(ask, emit)
 
     plan = build_read_plan(
         config, include_private=include_private, siblings=sibling_configs
@@ -483,9 +583,10 @@ async def execute(
             profile_name=config.model,
             port_label=f"{device_label} @ {baud}",
             n_questions=len(items),
+            checks=checks,
         )
     )
-    if not yes and not _is_yes(ask("Continue? [Y/n] ")):
+    if not yes and not _is_yes(lines("Continue? [Y/n] ")):
         return 0
 
     try:
@@ -504,7 +605,7 @@ async def execute(
             label=label,
             yes=yes,
             is_tty=is_tty,
-            ask=ask,
+            lines=lines,
             exchange=exchange,
             gap_s=gap_s,
             window=window,
@@ -513,6 +614,7 @@ async def execute(
             emit=emit,
             open_folder=open_folder,
             documents_dir=documents_dir,
+            checks=_checks_request(config, journal, lines, emit) if checks else None,
         )
 
 
@@ -526,7 +628,7 @@ async def _execute_after_open(
     label: str,
     yes: bool,
     is_tty: bool,
-    ask: Callable[[str], str],
+    lines: _Lines,
     exchange: Exchange,
     gap_s: float,
     window: float,
@@ -535,8 +637,9 @@ async def _execute_after_open(
     emit: Callable[[str], None],
     open_folder: Callable[[Path], None] | None,
     documents_dir: Callable[[], Path] | None,
+    checks: ChecksRequest | None,
 ) -> int:
-    """The probe pass and save; the caller owns closing the exchange."""
+    """The probe pass, the checks and save; the caller owns closing the exchange."""
 
     def on_progress(done: int, total: int) -> None:
         if done % 20 == 0 or done == total:
@@ -555,9 +658,22 @@ async def _execute_after_open(
         items=items,
         siblings=sibling_configs,
         progress=on_progress,
+        checks=checks,
     )
-    if report.aborted is not None:
+    records = report.file.checks
+    if checks is not None and any(
+        r.status == "ran" and not r.restored for r in records
+    ):
+        # first the engine's own now-vs-was line from the journal it kept
+        emit(leftover_journal_line(checks.journal_path) or "")
+    elif report.aborted is not None:
         emit(report.aborted)
+    for index, record in enumerate(records, 1):
+        emit(render.check_result_line(index, record))
+    if records:
+        emit(render.checks_done_line())
+    if checks is not None and report.exit_code == 4:
+        emit(render.journal_instruction_line(str(checks.journal_path)))
 
     if out is not None:
         saved_abs = Path(out).resolve()
@@ -607,15 +723,16 @@ async def _execute_after_open(
             absent_answered=absent_answered,
             present_missed=present_missed,
             termination=report.file.termination,
+            checks=records,
         )
     )
-    if not yes and not _is_yes(ask("Save the file? [Y/n] ")):
-        return 0
+    if not yes and not _is_yes(lines("Save the file? [Y/n] ")):
+        return report.exit_code
     try:
         actual = _write_capture(saved_abs, content, exclusive=exclusive)
     except OSError as exc:
         emit(f"Cannot save {saved_abs}: {exc.strerror or exc}")
-        return 1
+        return report.exit_code or 1
     emit(render.closing_line(str(actual)))
     if is_tty and not yes:
         opener = open_folder if open_folder is not None else open_result_folder
@@ -627,7 +744,7 @@ async def _execute_after_open(
     if not _any_answer(report.file):
         emit(render.no_answers_message())
         return 3
-    return 0
+    return report.exit_code
 
 
 def _any_answer(file: ProbeFile) -> bool:
@@ -725,7 +842,14 @@ def add_probe_arguments(p: argparse.ArgumentParser) -> None:
     p.add_argument(
         "--yes",
         action="store_true",
-        help="Answer both prompts with yes (needed without a TTY)",
+        help="Answer the start and save prompts with yes (needed without a TTY; "
+        "never answers a --checks question)",
+    )
+    p.add_argument(
+        "--checks",
+        action="store_true",
+        help="After the read part, offer the radio's optional checks: each changes "
+        "settings for a moment and puts them back, and asks you first",
     )
 
 
@@ -802,6 +926,7 @@ def run(args: argparse.Namespace, prog: str = DEFAULT_PROBE_PROG) -> int:
                 ask=lambda prompt: input(prompt),
                 exchange_factory=factory,
                 sibling_configs=list(rigs.values()),
+                checks=getattr(args, "checks", False),
             )
         )
     return asyncio.run(_run_with_selection(args, rigs, prog))
@@ -816,6 +941,10 @@ async def _run_with_selection(
     from rigplane.cli import _rigs_dir
 
     is_tty = sys.stdin.isatty()
+    checks = getattr(args, "checks", False)
+    if checks and not is_tty:  # before the scan touches any port
+        print(render.checks_need_terminal_message())
+        return 2
     selection = await select_radio(
         rigs=rigs,
         rigs_dir=_rigs_dir(),
@@ -857,4 +986,5 @@ async def _run_with_selection(
         ask=lambda prompt: input(prompt),
         exchange_factory=factory,
         sibling_configs=list(rigs.values()),
+        checks=checks,
     )

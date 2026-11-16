@@ -14,6 +14,7 @@ from pathlib import Path
 import platformdirs
 
 from rigplane.probe.model import _need_mapping, _need_str
+from rigplane.probe.render import journal_unreadable_line
 
 __all__ = [
     "ChecksJournal",
@@ -113,9 +114,12 @@ def remove_journal(path: Path) -> None:
 
 def leftover_journal_line(path: Path) -> str | None:
     """The one message a probe start prints for a journal left behind (B1c
-    wires it into every probe command); ``None`` without one. Print only:
-    nothing is sent to the radio."""
-    journal = read_journal(path)
+    wires it into every probe command); ``None`` without one, a plain line
+    naming the file when it cannot be read. Print only: nothing is sent."""
+    try:
+        journal = read_journal(path)
+    except (OSError, ValueError):
+        return journal_unreadable_line(str(path))
     if journal is None:
         return None
     now = dict(journal.now)

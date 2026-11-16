@@ -84,12 +84,14 @@ Key = tuple[str, int | None]
 
 @dataclass(frozen=True, slots=True)
 class ChecksRequest:
-    """``consent(check, originals)``, ``ask`` (``None``: skipped), ``on_event``
-    (journal_written, steps_begin, restore_begin)."""
+    """``begin()`` once after the read pass (False: no check, the file stays
+    read-only), ``consent(check, originals)``, ``ask`` (``None``: skipped),
+    ``on_event`` (journal_written, steps_begin, restore_begin)."""
 
     consent: Callable[[ProbeCheck, dict[str, str]], bool]
     ask: Callable[[str], Awaitable[str | None]]
     on_event: Callable[[str], None] | None = None
+    begin: Callable[[], bool] | None = None
     ask_timeout_s: float = ASK_TIMEOUT_S
     journal_path: Path = field(default_factory=journal_path)  # tests override
 
@@ -351,15 +353,8 @@ async def _run_one(run: _Run, check: ProbeCheck) -> CheckRecord:
         done = (tuple(state.steps), tuple(state.answers), originals)
         return CheckRecord(check.id, check.title, status, *done, error=error, **ran)
 
-    try:  # a journal from an earlier check holds originals nobody restored
-        left = run.request.journal_path.exists() and leftover_journal_line(
-            run.request.journal_path
-        )
-    except ValueError:
-        left = (
-            f"the journal {run.request.journal_path} cannot be read; check it by hand"
-        )
-    if left:
+    # a journal from an earlier check holds originals nobody restored
+    if left := leftover_journal_line(run.request.journal_path):
         return record("refused", error=left)
     try:
         await _prepare(run, state)

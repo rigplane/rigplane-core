@@ -39,6 +39,10 @@ on `cli`.
   patch `rigplane.cli.create_radio`, not `rigplane.cli.IcomRadio`).
 - Hardware-specific branches. Probe via the Capability Protocols on
   the resolved radio and surface graceful fallbacks.
+- Building, judging or sending a radio frame in `_probe.py` beyond the
+  serial transport: the probe's write checks go only through
+  `probe/checks.py`; the CLI only asks the person (`--checks` questions
+  default to no and `--yes` never answers them).
 
 ## Common operations
 
