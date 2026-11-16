@@ -47,7 +47,7 @@ from rigplane.profiles.control_domain import (
     _public_decimal,
     validate_control_raw_value,
 )
-from rigplane.profiles.probe_checks import parse_probe_checks
+from rigplane.profiles.probe_checks import RadioFacts, parse_probe_checks
 
 __all__ = [
     "RigConfig",
@@ -4229,10 +4229,17 @@ def load_rig(path: Path) -> RigConfig:
         probe_checks=parse_probe_checks(
             filename,
             data.get("probe"),
-            commands=commands,
-            protocol_type=protocol_type,
-            modes=modes,
-            mode_codes=mode_codes,
+            facts=RadioFacts(
+                protocol=protocol_type,
+                commands=commands,
+                modes=tuple(modes),
+                mode_codes=None if mode_codes is None else tuple(mode_codes),
+                cmd29_routes=frozenset(cmd29_routes),
+                vfo_swap=vfo_swap_ab or vfo_swap_main_sub,
+                freq_ranges=tuple(
+                    (r["start_hz"], r["end_hz"]) for r in freq_ranges_data
+                ),
+            ),
         ),
     )
 

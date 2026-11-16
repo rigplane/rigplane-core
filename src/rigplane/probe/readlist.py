@@ -38,8 +38,6 @@ from rigplane.commands.command_spec import (
 )
 from rigplane.probe.model import SkippedRead
 from rigplane.profiles import RadioProfile
-from rigplane.profiles.probe_checks import CIV_READ_REFUSED as _REFUSED_COMMANDS
-from rigplane.profiles.probe_checks import excluded_from_probes
 from rigplane.profiles.rig_loader import RigConfig
 
 __all__ = [
@@ -87,6 +85,19 @@ _CIV_SNAPSHOT_CANDIDATES = (
     "get_rf_power",
 )
 
+#: CI-V command bytes refused whatever follows them, checked on the body
+#: after unwrapping cmd29 so the wrapped forms are refused too: the
+#: send/set-only commands (send freq/mode 0x00/0x01, set freq/mode
+#: 0x05/0x06, MEM select/write/clear 0x08/0x09/0x0B, scan 0x0E, CW send
+#: 0x17) plus the power, PTT/tuner and VFO-selection families
+#: (0x18/0x1C/0x07) whose read forms the probe also never sends. 0x07 is
+#: in the set because the family is not read-only on Icom radios: a bare
+#: ``07`` selects VFO mode (leaving memory mode), ``07 D0/D1`` select
+#: MAIN/SUB, and ``07 A0/B0/B1`` exchange or equalise VFOs.
+_REFUSED_COMMANDS = frozenset(
+    (0x00, 0x01, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0B, 0x0E, 0x17, 0x18, 0x1C)
+)
+
 #: CI-V command bytes a borrowed read may use. A frame with no data is
 #: a query for most commands but an ACTION for some (VFO/memory select
 #: 0x07/0x08, scan 0x0E, memory write/clear 0x09/0x0B, tuner/TX 0x1C,
@@ -97,6 +108,9 @@ _CIV_SNAPSHOT_CANDIDATES = (
 _BORROW_READ_SAFE_COMMANDS = frozenset(
     (0x03, 0x04, 0x14, 0x15, 0x16, 0x19, 0x1A, 0x1B, 0x1D, 0x1E, 0x21, 0x26, 0x27)
 )
+
+#: Memory contents read, forbidden by its (command, sub) pair.
+_MEMORY_CONTENTS_SUB = 0x00
 
 #: Deliberately unknown requests for NAK-vs-silence classification.
 _UNKNOWN_BODIES = (
@@ -242,6 +256,27 @@ def _plan_cat_list(config: RigConfig, *, include_private: bool) -> ReadPlan:
     return ReadPlan(tuple(asked), tuple(skipped))
 
 
+def _excluded_from_probes(body: bytes, *, include_private: bool) -> bool:
+    """Whether a declared GET body is excluded from the probe list.
+
+    The refused command bytes (their read forms included) are always
+    out; the 0x1A 0x00 memory-contents pair — a (command, sub) pair
+    rather than a whole command byte, because 0x1A carries legal
+    scope/control reads — is out unless ``include_private`` is set.
+    The bare 0xFA/0xFB bytes are the radio's NAK/ACK replies, not
+    requests, so they never pass either.
+    """
+    if not body:
+        return True
+    if body[0] in _REFUSED_COMMANDS:
+        return True
+    if body[0] in (0xFA, 0xFB):
+        return True
+    if body[0] == 0x1A and body[1:2] == bytes((_MEMORY_CONTENTS_SUB,)):
+        return not include_private
+    return False
+
+
 def _cmd29_body(base_body: bytes, receiver: int) -> bytes:
     """Wrap one command body for *receiver* through 0x29."""
     return bytes((_CMD29, receiver)) + base_body
@@ -255,7 +290,7 @@ def _skip_reason_for_body(body: bytes, *, include_private: bool) -> str | None:
     ``0x1A 0x00`` memory-contents pair is out unless ``include_private``
     is set.
     """
-    if excluded_from_probes(body, include_private=include_private):
+    if _excluded_from_probes(body, include_private=include_private):
         if body and body[0] in (0xFA, 0xFB):
             return "response_code"
         if body and body[0] == 0x1A:
@@ -482,7 +517,7 @@ def build_allowed_bodies(
         if not name.startswith("get_"):
             continue
         body = bytes(command_map.get(name))
-        if excluded_from_probes(body, include_private=include_private):
+        if _excluded_from_probes(body, include_private=include_private):
             continue
         bodies.add(body)
     if command_map.has("get_freq"):

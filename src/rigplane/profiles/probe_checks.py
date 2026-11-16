@@ -1,204 +1,465 @@
-"""Typed ``[[probe.checks]]`` profile data and the write policy (MOR-4464 B1).
+"""Typed ``[[probe.checks]]`` profile data and the closed write-check table (MOR-4464 B1).
 
-A check is profile DATA: named receive-side settings the write-check engine
-changes one at a time, reads back and puts back. The policy lists and
-``policy_refusal`` live here, not in ``rigplane.probe``, because the loader
-enforces them at load and ``probe`` sits above ``profiles`` in the import
-layers; the engine enforces them again at send time. The adversary is a wrong
-profile entry written by a developer, never the radio or its owner.
+A check names entries of a closed table of settings, and values, never bytes.
+Frames are BUILT from the table (``build_frame``); ``parse_frame`` accepts only
+what the table's encoders produce; ``sendable`` adds that a write's restore list
+holds every setting it changes. ``judged_frame`` runs the three on every step at
+load, and the write-check engine (B1b) runs the same function on the bytes it is
+about to write. Per-radio facts come from the profile: each entry is compiled
+against the profile's own templates, and a template of another shape is a load
+error. What is not in the table (band select, duplex, VFO equalize or select,
+transmit levels) is absent. The adversary is a wrong profile entry written by a
+developer, never the radio or its owner.
 """
 
 from __future__ import annotations
 
 import re
+from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass, replace
-from collections.abc import Callable, Collection, Mapping, Sequence
 from typing import Any, TypeVar
 
-from rigplane.commands import command_carries_sub
+from rigplane.commands import RECEIVER_MAIN, RECEIVER_SUB
 from rigplane.commands._frame import unwrap_receiver_prefix
 from rigplane.commands.command_spec import CatCommandSpec, CivCommandSpec, CommandSpec
 from rigplane.core.types import Mode
 
 __all__ = [
-    "CIV_DIGITAL_VOICE",
-    "CIV_READ_REFUSED",
-    "CIV_WRITE_ALLOW",
-    "YAESU_NEVER",
-    "YAESU_WRITE_ALLOW",
+    "TABLE",
+    "Entry",
+    "Parsed",
     "ProbeCheck",
     "ProbeCheckStep",
     "ProbePrecondition",
     "ProbeRestoreItem",
-    "check_send_allowed",
-    "command_key",
-    "declared_body",
-    "digital_voice_codes",
-    "excluded_from_probes",
+    "RadioFacts",
+    "Table",
+    "TableEntry",
+    "build_frame",
+    "compile_table",
+    "judged_frame",
+    "parse_frame",
     "parse_probe_checks",
-    "policy_refusal",
-    "restored_settings",
-    "setting_of",
+    "sendable",
 ]
 
-#: What one write changes and one read returns: CAT, the template text before
-#: the first field (``MD0`` of ``MD0{mode};``, or a whole raw line); CI-V,
-#: ``(receiver, command, sub)`` with the read and write forms of one setting
-#: folded together (``_CIV_SAME``).
-Setting = bytes | tuple[int | None, int, int | None]
+#: ``(entry id, receiver)``: what one restore item puts back.
+RestoreKey = tuple[str, int | None]
 
 
-def _civ_pairs(spec: str) -> frozenset[tuple[int, int | None]]:
-    """``"28 16:46"``: hex command, optionally ``:`` and a hex sub."""
-    parts = (item.partition(":") for item in spec.split())
-    return frozenset(
-        (int(command, 16), int(sub, 16) if sub else None) for command, _, sub in parts
-    )
+@dataclass(frozen=True, slots=True)
+class RadioFacts:
+    """The profile facts the table compiles against."""
+
+    protocol: str
+    commands: Mapping[str, CommandSpec]
+    modes: tuple[str, ...]
+    mode_codes: tuple[str, ...] | None
+    cmd29_routes: frozenset[tuple[int, int | None]]
+    vfo_swap: tuple[int, ...] | None
+    freq_ranges: tuple[tuple[int, int], ...]
 
 
-#: Yaesu CAT verbs a check may write: receive-side settings only.
-YAESU_WRITE_ALLOW = frozenset("FA FB MD FT PC BS PR".split())
+# --- value codecs: fixed width; what decodes is the domain ---------------------------
 
-#: Yaesu verbs never sent by a check, not even as reads: transmit/PTT keys,
-#: memory writes, keyer/CW, voice memory, scan, tuner-adjacent writes.
-YAESU_NEVER = frozenset(
-    "TX MX AC KY KM PS MW MC EX PB LM AM MT QI MA QR VM CH SC VX BI DT".split()
-)
 
-#: CI-V settings a check may write (after ``_CIV_SAME``): selected/unselected
-#: frequency and mode, split on/off, VFO equalize/exchange, and the receive
-#: levels AF, RF gain, SQL, NR, PBT, CW pitch, RF power, notch, NB. Mic gain,
-#: compressor, break-in delay, monitor, VOX and anti-VOX stay off until a
-#: check needs them; duplex (``0F 10..12``) and VFO/receiver select are off.
-CIV_WRITE_ALLOW = _civ_pairs(
-    "25:00 25:01 26:00 26:01 0F 07:A0 07:B0 07:B1 "
-    "14:01 14:02 14:03 14:06 14:07 14:08 14:09 14:0A 14:0D 14:12"
-)
+@dataclass(frozen=True, slots=True)
+class _Choice:
+    options: tuple[tuple[object, bytes], ...]
 
-#: Read and write forms of one CI-V setting: operating freq/mode (03/05,
-#: 04/06) are the selected VFO's (25 00, 26 00); split off/on are values of
-#: the one split setting read by a bare ``0F``.
-_CIV_SAME = {
-    (0x03, None): (0x25, 0x00),
-    (0x05, None): (0x25, 0x00),
-    (0x04, None): (0x26, 0x00),
-    (0x06, None): (0x26, 0x00),
-    (0x0F, 0x00): (0x0F, None),
-    (0x0F, 0x01): (0x0F, None),
+    @property
+    def width(self) -> int:
+        return len(self.options[0][1])
+
+    def encode(self, value: object) -> bytes | None:
+        same = (b for v, b in self.options if (v, type(v)) == (value, type(value)))
+        return next(same, None)
+
+    def decode(self, data: bytes) -> object | None:
+        return next((v for v, b in self.options if b == data), None)
+
+
+@dataclass(frozen=True, slots=True)
+class _Number:
+    """An integer inside ``ranges``, as ASCII digits or BCD (``le``: low byte
+    first)."""
+
+    width: int
+    kind: str  # "ascii" | "bcd" | "le"
+    ranges: tuple[tuple[int, int], ...]
+
+    def encode(self, value: object) -> bytes | None:
+        if type(value) is not int or not any(a <= value <= b for a, b in self.ranges):
+            return None
+        if self.kind == "ascii":
+            return f"{value:0{self.width}d}".encode("ascii")
+        data = bytes.fromhex(f"{value:0{2 * self.width}d}")
+        return data[::-1] if self.kind == "le" else data
+
+    def decode(self, data: bytes) -> object | None:
+        raw = data[::-1] if self.kind == "le" else data
+        text = raw.decode("latin-1") if self.kind == "ascii" else raw.hex()
+        number = int(text) if re.fullmatch("[0-9]+", text) else -1
+        return number if any(a <= number <= b for a, b in self.ranges) else None
+
+
+@dataclass(frozen=True, slots=True)
+class _Fields:
+    """A tuple of fixed-width parts (CI-V 26: mode, data flag, filter)."""
+
+    parts: tuple[_Choice, ...]
+
+    @property
+    def width(self) -> int:
+        return sum(part.width for part in self.parts)
+
+    def encode(self, value: object) -> bytes | None:
+        if not isinstance(value, tuple) or len(value) != len(self.parts):
+            return None
+        pieces = [
+            part.encode(item) for part, item in zip(self.parts, value, strict=True)
+        ]
+        return (
+            b"".join(p for p in pieces if p is not None) if None not in pieces else None
+        )
+
+    def decode(self, data: bytes) -> object | None:
+        starts = [sum(p.width for p in self.parts[:i]) for i in range(len(self.parts))]
+        cut = (
+            p.decode(data[s : s + p.width])
+            for p, s in zip(self.parts, starts, strict=True)
+        )
+        values = tuple(cut)
+        return None if None in values else values
+
+
+Codec = _Choice | _Number | _Fields
+
+
+def _voice(name: str) -> bool:
+    """Digital-voice modes may transmit unattended (auto reply, beacon)."""
+    return name in ("DV", "DD") or "C4FM" in name
+
+
+def _cat_modes(facts: RadioFacts) -> Codec:
+    if facts.mode_codes is None:
+        raise ValueError("the mode entry needs [modes].codes")
+    codes = [code.encode("ascii") for code in facts.mode_codes]
+    pairs = zip(facts.modes, codes, strict=True)
+    return _Choice(tuple((n, c) for n, c in pairs if not _voice(n)))
+
+
+def _civ_modes(facts: RadioFacts) -> _Choice:
+    found = ((n, Mode.__members__.get(n.replace("-", "_"))) for n in facts.modes)
+    return _Choice(tuple((n, bytes((m,))) for n, m in found if m and not _voice(n)))
+
+
+_DATA = _Choice(((0, b"\x00"), (1, b"\x01")))
+_FILTER = _Choice(tuple((i, bytes((i,))) for i in (1, 2, 3)))
+
+
+def _mode_data_filter(facts: RadioFacts) -> Codec:
+    return _Fields((_civ_modes(facts), _DATA, _FILTER))
+
+
+def _mode_filter(facts: RadioFacts) -> Codec:
+    return _Fields((_civ_modes(facts), _FILTER))
+
+
+# --- the closed table ------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class _Form:
+    """One spelling of an entry: ``(profile command, template)`` per side
+    (CAT text with ``{}`` fields, CI-V hex; ``vfo_swap`` is ``[vfo]`` swap)."""
+
+    read: tuple[str, str] | None
+    write: tuple[str, str] | None
+    codec: Codec | Callable[[RadioFacts], Codec] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class TableEntry:
+    """A setting: its forms in order of preference, what a write changes
+    (default: itself) and whether a ``29 <rx>`` wrapper may carry it."""
+
+    id: str
+    forms: tuple[_Form, ...]
+    changes: tuple[str, ...] = ()
+    wrapper_ok: bool = False
+
+
+def _cat(name: str, key: str, value: str | None, codec: Any = None) -> tuple[_Form]:
+    write = None if value is None else (f"set_{name}", key + value)
+    return (_Form((f"get_{name}", key + ";"), write, codec),)
+
+
+def _civ(name: str, key: str, codec: Any) -> _Form:
+    return _Form((f"get_{name}", key), (f"set_{name}", key), codec)
+
+
+def _freq_cat(facts: RadioFacts) -> Codec:
+    """Frequencies inside the profile's own ``[freq_ranges]``."""
+    return _Number(9, "ascii", facts.freq_ranges)
+
+
+def _freq_civ(facts: RadioFacts) -> Codec:
+    return _Number(5, "le", facts.freq_ranges)
+
+
+_LEVEL = _Number(2, "bcd", ((0, 255),))
+
+#: Only what the first checks need: the B2 FT-991A checks (power, cross-band
+#: split, speech processor, IF witness) and a synthetic CI-V check (VFO
+#: exchange, RF power, a receiver-wrapped AF level).
+TABLE: dict[str, tuple[TableEntry, ...]] = {
+    "yaesu_cat": (
+        TableEntry("freq_a", _cat("freq", "FA", "{:09d};", _freq_cat)),
+        TableEntry("freq_b", _cat("freq_sub", "FB", "{:09d};", _freq_cat)),
+        TableEntry("mode_main", _cat("mode", "MD0", "{};", _cat_modes)),
+        TableEntry(
+            "split", _cat("split", "FT", "{};", _Choice((("off", b"2"), ("on", b"3"))))
+        ),
+        TableEntry(
+            "power", _cat("power", "PC", "{:03d};", _Number(3, "ascii", ((0, 999),)))
+        ),
+        TableEntry(
+            "speech_processor",
+            _cat(
+                "processor",
+                "PR0",
+                "{};",
+                _Choice(tuple((v, v.encode()) for v in "012")),
+            ),
+        ),
+        TableEntry("info", _cat("if_status", "IF", None)),
+    ),
+    "civ": (
+        TableEntry(
+            "freq_selected",
+            (
+                _civ("selected_freq", "25 00", _freq_civ),
+                _Form(("get_freq", "03"), ("set_freq", "05"), _freq_civ),
+            ),
+        ),
+        TableEntry("freq_unselected", (_civ("unselected_freq", "25 01", _freq_civ),)),
+        TableEntry(
+            "mode_selected",
+            (
+                _civ("selected_mode", "26 00", _mode_data_filter),
+                _Form(("get_mode", "04"), ("set_mode", "06"), _mode_filter),
+            ),
+        ),
+        TableEntry(
+            "mode_unselected", (_civ("unselected_mode", "26 01", _mode_data_filter),)
+        ),
+        TableEntry(
+            "vfo_exchange",
+            (_Form(None, ("vfo_swap", "07 B0"), _Fields(())),),
+            ("freq_selected", "freq_unselected", "mode_selected", "mode_unselected"),
+        ),
+        TableEntry("rf_power", (_civ("rf_power", "14 0A", _LEVEL),)),
+        TableEntry("af_level", (_civ("af_level", "14 01", _LEVEL),), wrapper_ok=True),
+    ),
 }
 
-#: Writes that change settings other than their own, and the settings the
-#: restore list must then hold: VFO equalize/exchange moves frequency and
-#: mode of both VFOs; Yaesu band select moves frequency and mode of its
-#: receiver (CAT keys match the longest prefix, so a raw ``BS1x`` takes the
-#: stricter sub-receiver entry).
-_BOTH_VFOS = ((0x25, 0x00), (0x25, 0x01), (0x26, 0x00), (0x26, 0x01))
-_ALSO_RESTORE: dict[object, tuple[Any, ...]] = {
-    (0x07, 0xA0): _BOTH_VFOS,
-    (0x07, 0xB0): _BOTH_VFOS,
-    (0x07, 0xB1): _BOTH_VFOS,
-    b"BS": (b"FA", b"MD0"),
-    b"BS0": (b"FA", b"MD0"),
-    b"BS1": (b"FB", b"MD1"),
-}
 
-#: CI-V mode bytes with unattended transmit (auto reply, GPS beacon): DV and
-#: DD (0x22, the IC-905/IC-9700 mode notes).
-CIV_DIGITAL_VOICE = frozenset((bytes((Mode.DV,)), b"\x22"))
+@dataclass(frozen=True, slots=True)
+class Entry:
+    """An entry compiled for one profile: read and write keys (CAT text before
+    the value, CI-V command bytes), ``None`` where absent."""
 
-#: CI-V command bytes no probe read sends, whatever follows (checked after
-#: unwrapping cmd29): send/set-only commands (send freq/mode 0x00/0x01, set
-#: freq/mode 0x05/0x06, MEM select/write/clear 0x08/0x09/0x0B, scan 0x0E, CW
-#: send 0x17) plus the power, PTT/tuner and VFO-selection families
-#: (0x18/0x1C/0x07). 0x07 is not read-only on Icom radios: a bare ``07``
-#: selects VFO mode, ``07 D0/D1`` select MAIN/SUB, ``07 A0/B0/B1`` exchange or
-#: equalise VFOs. Shared with ``rigplane.probe.readlist``: one read rule.
-CIV_READ_REFUSED = frozenset(
-    (0x00, 0x01, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0B, 0x0E, 0x17, 0x18, 0x1C)
-)
+    id: str
+    read: bytes | None
+    write: bytes | None
+    codec: Codec | None
+    changes: tuple[str, ...]
+    wrapper_ok: bool
 
 
-def excluded_from_probes(body: bytes, *, include_private: bool) -> bool:
-    """Whether a declared CI-V GET body is excluded from every probe read.
+@dataclass(frozen=True, slots=True)
+class Table:
+    protocol: str
+    entries: tuple[Entry, ...]
 
-    The refused command bytes (their read forms included) are always out;
-    the 0x1A 0x00 memory-contents pair, a (command, sub) pair because 0x1A
-    carries legal scope/control reads, is out unless ``include_private``.
-    The bare 0xFA/0xFB bytes are the radio's NAK/ACK replies, never requests.
-    """
-    if not body or body[0] in CIV_READ_REFUSED or body[0] in (0xFA, 0xFB):
+    def entry(self, entry_id: str) -> Entry:
+        found = next((e for e in self.entries if e.id == entry_id), None)
+        if found is None:
+            raise KeyError(f"entry {entry_id!r} is not in the compiled table")
+        return found
+
+
+@dataclass(frozen=True, slots=True)
+class Parsed:
+    entry: Entry
+    form: str  # "read" | "write"
+    receiver: int | None
+    value: object | None
+
+
+def _declared(facts: RadioFacts, name: str, write: bool) -> str | None:
+    """The profile's template for one side, in the table's notation."""
+    spec = facts.commands.get(name)
+    if name == "vfo_swap" and facts.vfo_swap:
+        return "07 " + bytes(facts.vfo_swap).hex(" ").upper()
+    if isinstance(spec, CivCommandSpec) and facts.protocol == "civ":
+        return bytes(spec.bytes).hex(" ").upper()
+    text = getattr(spec, "write" if write else "read", None)
+    if isinstance(spec, CatCommandSpec) and facts.protocol == "yaesu_cat" and text:
+        return re.sub(r"\{[A-Za-z_]\w*", "{", text)
+    return None
+
+
+def _compile(spec: TableEntry, facts: RadioFacts) -> Entry | None:
+    for form in spec.forms:
+        sides = ((form.read, False), (form.write, True))
+        found = [(s, _declared(facts, s[0], w)) for s, w in sides if s is not None]
+        if any(declared is None for _, declared in found):
+            continue
+        if wrong := next(((s, d) for s, d in found if d != s[1]), None):
+            (name, need), declared = wrong
+            raise ValueError(
+                f"{name} is {declared!r}; entry {spec.id!r} needs {need!r}"
+            )
+        cat = facts.protocol == "yaesu_cat"
+        keys = [
+            None
+            if s is None
+            else s[1].split("{")[0].removesuffix(";").encode()
+            if cat
+            else bytes.fromhex(s[1])
+            for s in (form.read, form.write)
+        ]
+        key = keys[0] or keys[1] or b""
+        codec = form.codec(facts) if callable(form.codec) else form.codec
+        routed = (key[0], key[1] if len(key) > 1 else None) in facts.cmd29_routes
+        changes = spec.changes or (spec.id,)
+        return Entry(
+            spec.id, keys[0], keys[1], codec, changes, spec.wrapper_ok and routed
+        )
+    return None
+
+
+def compile_table(facts: RadioFacts, ids: Collection[str] | None = None) -> Table:
+    """The table for one profile: ``ids`` must all be available; without
+    ``ids``, entries the profile does not declare are left out."""
+    specs = {spec.id: spec for spec in TABLE.get(facts.protocol, ())}
+    if unknown := sorted(set(ids or ()) - set(specs)):
+        raise ValueError(f"entry {unknown[0]!r} is not in the table")
+    entries = []
+    for entry_id in specs if ids is None else sorted(ids, key=list(specs).index):
+        entry = _compile(specs[entry_id], facts)
+        if entry is None and ids is not None:
+            raise ValueError(f"entry {entry_id!r} is not available on this radio")
+        entries += [] if entry is None else [entry]
+    return Table(facts.protocol, tuple(entries))
+
+
+# --- the one parser, the one predicate, the one builder ------------------------------
+
+
+def parse_frame(table: Table, body: bytes) -> Parsed | None:
+    """The entry and form ``body`` is, or ``None``. CAT: one whole line whose
+    only ``;`` ends it. CI-V: at most one ``29 <rx>`` wrapper, a key, then a
+    value the codec consumes entirely; no value is the read form."""
+    receiver, inner = None, body
+    if table.protocol == "yaesu_cat":
+        if not re.fullmatch(rb"[A-Z]{2}[^;]*;", body):
+            return None
+        inner = body[:-1]
+    elif (unwrapped := unwrap_receiver_prefix(body)) is not body:
+        receiver, inner = body[1], unwrapped
+    found = []
+    for entry in table.entries:
+        if receiver is not None and not entry.wrapper_ok:
+            continue
+        if inner == entry.read:
+            found.append(Parsed(entry, "read", receiver, None))
+        if entry.write is not None and entry.codec and inner.startswith(entry.write):
+            rest = inner[len(entry.write) :]
+            value = entry.codec.decode(rest) if len(rest) == entry.codec.width else None
+            if value is not None:
+                found.append(Parsed(entry, "write", receiver, value))
+    return found[0] if len(found) == 1 else None
+
+
+def sendable(parsed: Parsed, restored: Collection[RestoreKey]) -> bool:
+    """A read always; a write when the restore list holds every setting it
+    changes on its receiver (``parse_frame`` already enforced the domain)."""
+    if parsed.form == "read":
         return True
-    if body[0] == 0x1A and body[1:2] == b"\x00":
-        return not include_private
-    return False
+    return {(c, parsed.receiver) for c in parsed.entry.changes} <= set(restored)
 
 
-def digital_voice_codes(
-    protocol: str, modes: Sequence[str], mode_codes: Sequence[str] | None
-) -> frozenset[bytes] | None:
-    """Mode values a check must not write: CI-V DV/DD, Yaesu the profile's
-    C4FM codes; ``None`` when a CAT profile declares no mode codes."""
-    if protocol != "yaesu_cat":
-        return CIV_DIGITAL_VOICE
-    if mode_codes is None:
-        return None
-    pairs = zip(modes, mode_codes, strict=True)
-    return frozenset(code.encode("ascii") for name, code in pairs if "C4FM" in name)
+def build_frame(
+    table: Table, entry_id: str, form: str, value: object, receiver: int | None
+) -> bytes:
+    """Encode one entry's read or write form (``ValueError`` outside it)."""
+    entry = table.entry(entry_id)
+    key = {"read": entry.read, "write": entry.write}.get(form)
+    if key is None:
+        raise ValueError(f"{entry_id!r} has no {form} form")
+    data = b"" if form == "read" else entry.codec.encode(value) if entry.codec else None
+    if data is None:
+        raise ValueError(f"value {value!r} is outside the domain of {entry_id!r}")
+    if table.protocol == "yaesu_cat":
+        if receiver is not None:
+            raise ValueError("a receiver is CI-V only")
+        return key + data + b";"
+    return (b"" if receiver is None else bytes((0x29, receiver))) + key + data
 
 
-_T = TypeVar("_T")
-_PROTOCOLS = ("yaesu_cat", "civ")
-_NEED_PROTOCOL = "probe checks need USB CI-V or Yaesu CAT"
+def judged_frame(
+    table: Table,
+    entry_id: str,
+    form: str,
+    value: object,
+    receiver: int | None,
+    restored: Collection[RestoreKey],
+) -> bytes:
+    """Build a frame and judge those exact bytes: the only judging path."""
+    body = build_frame(table, entry_id, form, value, receiver)
+    parsed = parse_frame(table, body)
+    if parsed is None or (parsed.entry.id, parsed.form) != (entry_id, form):
+        raise ValueError(f"{body!r} does not parse as {entry_id!r} (receiver routed?)")
+    if not sendable(parsed, restored):
+        need = sorted(c for c in parsed.entry.changes if (c, receiver) not in restored)
+        raise ValueError(f"write {entry_id!r} needs restore items for {need!r}")
+    return body
 
-#: Keys per TOML table; anything else is rejected.
-_CHECK_KEYS = frozenset(
-    "id title explain_what explain_after warnings preconditions witness steps restore".split()
-)
-_RESTORE_KEYS = frozenset("read write map rehearse".split())
-_STEP_KEYS = {
-    "ask": ("question",),
-    "write": ("command", "values"),
-    "read": ("command",),
-}
 
-#: One template field: ``{name}`` or ``{name:09d}``.
-_TEMPLATE_FIELD = re.compile(r"\{([^{}]*)\}")
+# --- check data --------------------------------------------------------------------------
 
 
 @dataclass(frozen=True, slots=True)
 class ProbeCheckStep:
-    """One engine step. ``write``/``read`` name a profile command (a CAT
-    write fills ``values`` into the profile's template; CI-V appends
-    ``data_hex``); ``raw_write`` carries a literal CAT ``line`` or CI-V
-    ``body_hex``; ``ask`` carries the question put to the person."""
+    """``write``/``read`` name an entry (a write with its value) and carry the
+    judged ``frame``; ``ask`` carries the question put to the person."""
 
     kind: str
-    command: str = ""
-    values: tuple[tuple[str, object], ...] = ()
-    data_hex: str = ""
-    line: str = ""
-    body_hex: str = ""
+    entry: str = ""
+    value: object = None
+    receiver: int | None = None
     question: str = ""
+    frame: bytes = b""
 
 
 @dataclass(frozen=True, slots=True)
 class ProbeRestoreItem:
-    """One original to put back: the read taken before the first write plus
-    the write that restores it. ``map`` renames read-form values to
-    write-form values; ``rehearse = False`` skips the no-op rehearsal."""
+    """An entry read before the first write and written back afterwards;
+    ``rehearse = False`` skips the no-op rehearsal."""
 
-    read: str
-    write: str
-    map: tuple[tuple[str, str], ...] = ()
+    entry: str
+    receiver: int | None = None
     rehearse: bool = True
 
 
 @dataclass(frozen=True, slots=True)
 class ProbePrecondition:
-    """A gate read before the first write; ``equals`` is the reply that
-    means VFO mode."""
+    """A read before the first write; ``equals`` is the reply that allows it."""
 
-    read: str
+    entry: str
     equals: str
 
 
@@ -216,121 +477,22 @@ class ProbeCheck:
     steps: tuple[ProbeCheckStep, ...] = ()
     restore: tuple[ProbeRestoreItem, ...] = ()
 
-
-def setting_of(protocol: str, body: bytes) -> Setting:
-    """The setting a declared entry, template or wire body reads or writes."""
-    if protocol == "yaesu_cat":
-        return body.split(b"{")[0].removesuffix(b";").upper()
-    inner = unwrap_receiver_prefix(body)
-    rx = body[1] if inner is not body else None
-    has_sub = inner[0] in (0x07, 0x0F, 0x25, 0x26) or command_carries_sub(inner[0])
-    key = (inner[0], inner[1] if has_sub and len(inner) >= 2 else None)
-    command, sub = _CIV_SAME.get(key, key)
-    return rx, command, sub
+    @property
+    def restored(self) -> frozenset[RestoreKey]:
+        return frozenset((item.entry, item.receiver) for item in self.restore)
 
 
-def _restore_missing(setting: Setting, restored: Collection[Setting]) -> bool:
-    """Whether the restore list lacks a setting the write changes."""
-    if isinstance(setting, bytes):
-        keys = [
-            k for k in _ALSO_RESTORE if isinstance(k, bytes) and setting.startswith(k)
-        ]
-        if keys:
-            return not set(_ALSO_RESTORE[max(keys, key=len)]) <= set(restored)
-        return not any(isinstance(r, bytes) and setting.startswith(r) for r in restored)
-    rx, command, sub = setting
-    pairs = _ALSO_RESTORE.get((command, sub), ((command, sub),))
-    return not {(rx, *pair) for pair in pairs} <= set(restored)
-
-
-def restored_settings(
-    restore: Sequence[ProbeRestoreItem],
-    commands: Mapping[str, CommandSpec],
-    protocol: str,
-) -> frozenset[Setting]:
-    """The settings a check's restore writes put back."""
-    bodies = (
-        declared_body(commands.get(item.write), protocol, "write") for item in restore
-    )
-    return frozenset(setting_of(protocol, body) for body in bodies if body)
-
-
-def command_key(protocol: str, body: bytes) -> str | int:
-    """The verb (CAT) or command byte (CI-V) a wire body addresses."""
-    return (
-        body[:2].decode("ascii", "replace").upper()
-        if protocol == "yaesu_cat"
-        else body[0]
-    )
-
-
-def policy_refusal(
-    protocol: str,
-    body: bytes,
-    *,
-    restored: Collection[Setting],
-    voice_codes: Collection[bytes] | None,
-    setting: Setting | None = None,
-) -> str | None:
-    """Why a write must not be sent, naming the verb; ``None`` when allowed.
-
-    ``restored`` holds what the check's restore list puts back: the write's
-    ``setting`` (default: of ``body``; a CAT profile write passes its
-    template's) and every setting in ``_ALSO_RESTORE`` must be in it.
-    ``voice_codes`` are the refused digital-voice mode values (``None``:
-    unknown, so every mode write is refused).
-    """
-    if not body or protocol not in _PROTOCOLS:
-        return "empty body" if not body else _NEED_PROTOCOL
-    setting = setting_of(protocol, body) if setting is None else setting
-    if protocol == "yaesu_cat":
-        if not body.endswith(b";") or b";" in body[:-1]:
-            return "a CAT line must be exactly one command ending in ';'"
-        key = command_key(protocol, body)
-        if key in YAESU_NEVER or key not in YAESU_WRITE_ALLOW:
-            return f"CAT verb {key!r} is not on the allow-list"
-        mode = body[3:4] if key == "MD" else b""
-    else:
-        inner = unwrap_receiver_prefix(body)
-        if not inner or inner[0] == 0x29 or 0xFD in inner or b"\xfe\xfe" in inner:
-            return "CI-V body must be one command without frame delimiters"
-        assert not isinstance(setting, bytes)
-        if setting[1:] not in CIV_WRITE_ALLOW:
-            return f"CI-V 0x{inner[0]:02X} {inner[1:2].hex()} is not on the allow-list"
-        mode = inner[1 + (inner[0] == 0x26) :][:1] if setting[1] == 0x26 else b""
-    if mode and (voice_codes is None or mode in voice_codes):
-        return f"mode {mode!r} is digital voice or unknown (may transmit unattended)"
-    if _restore_missing(setting, restored):
-        return f"write {body!r} needs a restore item for the setting it changes"
-    return None
-
-
-def check_send_allowed(
-    protocol: str,
-    body: bytes,
-    *,
-    restored: Collection[Setting],
-    voice_codes: Collection[bytes] | None,
-) -> None:
-    """Refuse a write the engine must never send (``ValueError`` names it)."""
-    why = policy_refusal(protocol, body, restored=restored, voice_codes=voice_codes)
-    if why is not None:
-        raise ValueError(f"refusing to send: {why}")
-
-
-def declared_body(
-    spec: CommandSpec | None, protocol: str, part: str = "read"
-) -> bytes | None:
-    """A profile command's declared wire bytes: the CAT ``read``/``write``/
-    ``parse`` template text, or the CI-V command bytes; ``None`` if absent."""
-    if isinstance(spec, CivCommandSpec) and protocol == "civ":
-        return bytes(spec.bytes)
-    if isinstance(spec, CatCommandSpec) and protocol == "yaesu_cat":
-        text = getattr(spec, part)
-        if text is None and part == "parse":
-            text = spec.read
-        return None if text is None else str(text).encode("ascii")
-    return None
+_T = TypeVar("_T")
+_TEXT = ("title", "explain_what", "explain_after")
+_CHECK_KEYS = {"id", *_TEXT, "warnings", "preconditions", "witness", "steps", "restore"}
+_KEYS = {
+    "ask": {"kind", "question"},
+    "read": {"kind", "entry", "receiver"},
+    "write": {"kind", "entry", "value", "receiver"},
+    "restore": {"entry", "receiver", "rehearse"},
+    "precondition": {"entry", "equals"},
+}
+_RECEIVERS = {"main": RECEIVER_MAIN, "sub": RECEIVER_SUB}
 
 
 @dataclass(frozen=True, slots=True)
@@ -338,272 +500,159 @@ class _Loader:
     """The profile being loaded: the context every parse helper shares."""
 
     filename: str
-    commands: Mapping[str, CommandSpec]
-    protocol: str
-    voice_codes: frozenset[bytes] | None
-    restored: frozenset[Setting] = frozenset()
+    facts: RadioFacts
+    table: Table = Table("", ())
+    restored: frozenset[RestoreKey] = frozenset()
 
-    @property
-    def cat(self) -> bool:
-        return self.protocol == "yaesu_cat"
-
-    def fail(self, message: str) -> ValueError:
+    def fail(self, message: str) -> Exception:
         from rigplane.profiles.rig_loader import RigLoadError
 
-        error: ValueError = RigLoadError(f"{self.filename}: {message}")
+        error: Exception = RigLoadError(f"{self.filename}: {message}")
         return error
 
-    def table(self, where: str, raw: object, keys: frozenset[str]) -> dict[str, Any]:
+    def map(self, where: str, raw: object, keys: Collection[str]) -> dict[str, Any]:
         if not isinstance(raw, dict):
             raise self.fail(f"{where} must be a table")
-        if unknown := sorted(set(raw) - keys):
+        if unknown := sorted(set(raw) - set(keys)):
             raise self.fail(f"{where} unknown key(s): {unknown!r}")
         return dict(raw)
 
     def text(self, where: str, value: object) -> str:
-        """A non-empty ASCII string (customer text and names)."""
-        if not isinstance(value, str) or not value:
-            raise self.fail(f"{where} must be a non-empty string")
-        if not value.isascii():
-            raise self.fail(f"{where} must be ASCII")
+        if not isinstance(value, str) or not value or not value.isascii():
+            raise self.fail(f"{where} must be a non-empty ASCII string")
         return value
 
     def each(
-        self,
-        where: str,
-        raw: object,
-        parse: Callable[[str, Any], _T],
-        *,
-        nonempty: bool = False,
+        self, where: str, raw: object, parse: Callable[[str, Any], _T]
     ) -> tuple[_T, ...]:
-        """Parse every element of an array with ``parse(where[i], element)``."""
-        if not isinstance(raw, list) or (nonempty and not raw):
-            raise self.fail(f"{where} must be a {'non-empty ' * nonempty}array")
+        if not isinstance(raw, list):
+            raise self.fail(f"{where} must be an array")
         return tuple(parse(f"{where}[{i}]", item) for i, item in enumerate(raw))
 
-    def wire(self, where: str, text: str) -> bytes:
-        """A literal wire body: a CAT line like ``FA;`` or CI-V hex."""
-        if self.cat:
-            line = text.isascii() and text.endswith(";") and len(text) >= 3
-            if not (line and text[:2].isalpha()):
-                raise self.fail(f"{where} must be a CAT line like 'FA;'")
-            return text.encode("ascii")
+    def named(
+        self, where: str, raw: object, kind: str
+    ) -> tuple[dict[str, Any], str, int | None]:
+        """A table of ``kind`` naming an entry read at load: (table, entry, receiver)."""
+        mapping = self.map(where, raw, _KEYS[kind])
+        entry = self.text(f"{where}.entry", mapping.get("entry"))
+        receiver = mapping.get("receiver")
+        if receiver is not None and receiver not in _RECEIVERS:
+            raise self.fail(f"{where}.receiver must be 'main' or 'sub'")
+        return mapping, entry, None if receiver is None else _RECEIVERS[receiver]
+
+    def judge(
+        self,
+        where: str,
+        entry: str,
+        form: str = "read",
+        value: object = None,
+        receiver: int | None = None,
+    ) -> bytes:
         try:
-            body = bytes.fromhex(text)
-        except ValueError:
-            raise self.fail(f"{where} must be hex") from None
-        if not body:
-            raise self.fail(f"{where} must not be empty")
-        return body
-
-    def declared(self, where: str, name: str, part: str) -> bytes | None:
-        try:
-            return declared_body(self.commands.get(name), self.protocol, part)
-        except UnicodeEncodeError:
-            raise self.fail(f"{where} {name!r} template must be ASCII") from None
-
-    def read_capable(self, where: str, name: str) -> None:
-        """Only what the shipped read pass sends: a CI-V ``get_*`` entry outside
-        the refused read families, or a concrete CAT read template off the
-        never-list and off the private memory reads."""
-        spec, why = self.commands.get(name), ""
-        body = self.declared(where, name, "read")
-        if body is None or (self.cat and b"{" in body):
-            why = "declares no concrete read"
-        elif self.cat and command_key(self.protocol, body) in YAESU_NEVER | {"MR"}:
-            why = f"never-listed CAT verb {command_key(self.protocol, body)!r}"
-        elif not self.cat and excluded_from_probes(body, include_private=False):
-            why = f"never-listed CI-V read 0x{unwrap_receiver_prefix(body)[0]:02X}"
-        elif isinstance(spec, CivCommandSpec) and not name.startswith("get_"):
-            why = "is not a get_* read"
-        if why:
-            raise self.fail(f"{where} {name!r} {why}")
-
-    def refuse(self, where: str, body: bytes, setting: Setting | None = None) -> None:
-        why = policy_refusal(
-            self.protocol,
-            body,
-            restored=self.restored,
-            voice_codes=self.voice_codes,
-            setting=setting,
-        )
-        if why:
-            raise self.fail(f"{where}: {why}")
-
-    def write_step(
-        self, where: str, mapping: dict[str, Any], name: str
-    ) -> ProbeCheckStep:
-        template = self.declared(f"{where}.command", name, "write")
-        if template is None:
-            raise self.fail(f"{where}.command {name!r} declares no write")
-        values = mapping.get("values", {})
-        fields = {"data_hex"}
-        if self.cat:
-            found = _TEMPLATE_FIELD.findall(template.decode("ascii"))
-            fields = {f.split(":")[0].split("!")[0] for f in found}
-        if not isinstance(values, dict) or set(values) != fields:
-            raise self.fail(f"{where}.values must be exactly {sorted(fields)!r}")
-        for key, value in values.items():
-            number = self.cat and isinstance(value, int) and not isinstance(value, bool)
-            if not (isinstance(value, str) or number):
-                raise self.fail(f"{where}.values.{key} must be a string or integer")
-        try:
-            if self.cat:
-                line = template.decode("ascii").format(**values)
-            else:
-                line = (template + bytes.fromhex(values["data_hex"])).hex()
+            if form == "restore" and self.table.entry(entry).write is None:
+                raise ValueError(f"restore entry {entry!r} has no write form")
+            form = "read" if form == "restore" else form
+            return judged_frame(self.table, entry, form, value, receiver, self.restored)
         except (KeyError, ValueError) as error:
-            raise self.fail(f"{where}.values do not fit {name!r} ({error})") from error
-        body = self.wire(f"{where}.command", line)
-        own = setting_of(self.protocol, template) if self.cat else None
-        self.refuse(f"{where}.command {name!r}", body, own)
-        if self.cat:
-            return ProbeCheckStep(
-                "write", command=name, values=tuple(sorted(values.items()))
-            )
-        return ProbeCheckStep(
-            "write", command=name, data_hex=values["data_hex"].lower()
-        )
+            raise self.fail(f"{where}: {error}") from None
 
     def step(self, where: str, raw: object) -> ProbeCheckStep:
-        raw_key = "line" if self.cat else "body_hex"
-        keys = frozenset({"kind", "question", "command", "values", "line", "body_hex"})
-        mapping = self.table(where, raw, keys)
-        kind = mapping.get("kind")
-        if kind not in (*_STEP_KEYS, "raw_write"):
-            raise self.fail(
-                f"{where}.kind must be one of {sorted((*_STEP_KEYS, 'raw_write'))}"
-            )
-        if extra := sorted(set(mapping) - {"kind", *_STEP_KEYS.get(kind, (raw_key,))}):
-            raise self.fail(f"{where} must not carry {extra!r}")
+        kind = raw.get("kind") if isinstance(raw, dict) else None
+        if kind not in ("ask", "read", "write"):
+            raise self.fail(f"{where}.kind must be one of ['ask', 'read', 'write']")
         if kind == "ask":
+            question = self.map(where, raw, _KEYS[kind]).get("question")
             return ProbeCheckStep(
-                kind, question=self.text(f"{where}.question", mapping.get("question"))
+                kind, question=self.text(f"{where}.question", question)
             )
-        if kind == "raw_write":
-            text = self.text(f"{where}.{raw_key}", mapping.get(raw_key))
-            self.refuse(f"{where}.{raw_key}", self.wire(f"{where}.{raw_key}", text))
-            if self.cat:
-                return ProbeCheckStep(kind, line=text)
-            return ProbeCheckStep(kind, body_hex=text.lower())
-        name = self.text(f"{where}.command", mapping.get("command"))
-        if kind == "write":
-            return self.write_step(where, mapping, name)
-        self.read_capable(f"{where}.command", name)
-        return ProbeCheckStep("read", command=name)
+        mapping, entry, receiver = self.named(where, raw, kind)
+        value = mapping.get("value", () if kind == "write" else None)
+        value = tuple(value) if isinstance(value, list) else value
+        frame = self.judge(where, entry, kind, value, receiver)
+        return ProbeCheckStep(kind, entry, value, receiver, frame=frame)
 
     def restore(self, where: str, raw: object) -> ProbeRestoreItem:
-        mapping = self.table(where, raw, _RESTORE_KEYS)
-        pairs = mapping.get("map", {})
-        if not isinstance(pairs, dict):
-            raise self.fail(f"{where}.map must be a table")
-        rehearse = mapping.get("rehearse", True)
-        if not isinstance(rehearse, bool):
+        mapping, entry, receiver = self.named(where, raw, "restore")
+        if not isinstance(rehearse := mapping.get("rehearse", True), bool):
             raise self.fail(f"{where}.rehearse must be a boolean")
-        return ProbeRestoreItem(
-            read=self.text(f"{where}.read", mapping.get("read")),
-            write=self.text(f"{where}.write", mapping.get("write")),
-            map=tuple(
-                (
-                    self.text(f"{where}.map key", key),
-                    self.text(f"{where}.map value", value),
-                )
-                for key, value in pairs.items()
-            ),
-            rehearse=rehearse,
-        )
+        self.judge(where, entry, "restore", None, receiver)
+        return ProbeRestoreItem(entry, receiver, rehearse)
 
     def precondition(self, where: str, raw: object) -> ProbePrecondition:
-        mapping = self.table(where, raw, frozenset({"read", "equals"}))
-        read = self.text(f"{where}.read", mapping.get("read"))
-        self.read_capable(f"{where}.read", read)
+        mapping, entry, _ = self.named(where, raw, "precondition")
+        self.judge(where, entry)
         return ProbePrecondition(
-            read, self.text(f"{where}.equals", mapping.get("equals"))
+            entry, self.text(f"{where}.equals", mapping.get("equals"))
         )
 
-    def validate(self, restore: tuple[ProbeRestoreItem, ...]) -> _Loader:
-        """Each restore item reads and writes one setting the policy allows;
-        returns the loader that judges writes against these restores."""
-        writes = []
-        for item in restore:
-            where = f"restore {item.read!r} -> {item.write!r}"
-            self.read_capable(where, item.read)
-            write = self.declared(where, item.write, "write")
-            read = self.declared(where, item.read, "parse")
-            if write is None or read is None:
-                raise self.fail(f"{where} declares no write or no parse")
-            if setting_of(self.protocol, read) != setting_of(self.protocol, write):
-                raise self.fail(f"{where} must read and write the same setting")
-            writes.append((where, write))
-        loader = replace(
-            self, restored=restored_settings(restore, self.commands, self.protocol)
-        )
-        for where, write in writes:
-            loader.refuse(where, write)
-        return loader
+    def witness(self, where: str, raw: object) -> str:
+        self.judge(where, entry := self.text(where, raw))
+        return entry
 
     def check(self, where: str, raw: object) -> ProbeCheck:
-        mapping = self.table(where, raw, _CHECK_KEYS)
-        if not isinstance(mapping.get("id"), str) or not re.fullmatch(
-            r"[a-z0-9][a-z0-9-]*", mapping["id"]
-        ):
+        mapping = self.map(where, raw, _CHECK_KEYS)
+        slug = mapping.get("id")
+        if not isinstance(slug, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]*", slug):
             raise self.fail(f"{where}.id must be a slug like 'power-2m'")
-        witness = self.each(f"{where}.witness", mapping.get("witness", []), self.text)
-        for name in witness:
-            self.read_capable(f"{where}.witness", name)
-        restore = self.each(
-            f"{where}.restore", mapping.get("restore", []), self.restore
+        named = [*mapping.get("witness", [])]
+        for key in ("steps", "restore", "preconditions"):
+            named += [
+                i.get("entry") for i in mapping.get(key, []) if isinstance(i, dict)
+            ]
+        try:
+            table = compile_table(self.facts, {str(n) for n in named if n is not None})
+        except UnicodeEncodeError:
+            raise self.fail(
+                f"{where}: [modes].codes must be ASCII for probe checks"
+            ) from None
+        except ValueError as error:
+            raise self.fail(f"{where}: {error}") from None
+        loader = replace(self, table=table)
+        restore = loader.each(
+            f"{where}.restore", mapping.get("restore", []), loader.restore
         )
-        loader = self.validate(restore)
-        steps = self.each(
-            f"{where}.steps", mapping.get("steps", []), loader.step, nonempty=True
+        loader = replace(
+            loader, restored=frozenset((r.entry, r.receiver) for r in restore)
         )
-        if not restore and any(step.kind in ("write", "raw_write") for step in steps):
-            raise self.fail(f"{where} has write steps but no restore items")
-        text = self.text
+        steps = loader.each(f"{where}.steps", mapping.get("steps", []), loader.step)
+        if not steps:
+            raise self.fail(f"{where}.steps must be a non-empty array")
+        text = {key: self.text(f"{where}.{key}", mapping.get(key)) for key in _TEXT}
         return ProbeCheck(
-            id=mapping["id"],
-            title=text(f"{where}.title", mapping.get("title")),
-            explain_what=text(f"{where}.explain_what", mapping.get("explain_what")),
-            explain_after=text(f"{where}.explain_after", mapping.get("explain_after")),
-            warnings=self.each(f"{where}.warnings", mapping.get("warnings", []), text),
-            preconditions=self.each(
+            slug,
+            text["title"],
+            text["explain_what"],
+            text["explain_after"],
+            warnings=self.each(
+                f"{where}.warnings", mapping.get("warnings", []), self.text
+            ),
+            preconditions=loader.each(
                 f"{where}.preconditions",
                 mapping.get("preconditions", []),
-                self.precondition,
+                loader.precondition,
             ),
-            witness=witness,
+            witness=loader.each(
+                f"{where}.witness", mapping.get("witness", []), loader.witness
+            ),
             steps=steps,
             restore=restore,
         )
 
 
 def parse_probe_checks(
-    filename: str,
-    raw: object,
-    *,
-    commands: Mapping[str, CommandSpec],
-    protocol_type: str,
-    modes: Sequence[str],
-    mode_codes: Sequence[str] | None,
+    filename: str, raw: object, *, facts: RadioFacts
 ) -> tuple[ProbeCheck, ...]:
-    """Parse ``[probe]`` into typed checks; ``()`` when absent. Structure,
-    unknown keys, non-ASCII customer text and write-policy violations fail
-    here with the verb or key named."""
+    """Parse ``[probe]`` into typed checks; ``()`` when absent. The table is
+    compiled only here, so a profile without checks never meets its rules."""
     if raw is None:
         return ()
-    loader = _Loader(filename, commands, protocol_type, None)
-    section = loader.table("[probe]", raw, frozenset({"checks"}))
+    loader = _Loader(filename, facts)
+    section = loader.map("[probe]", raw, {"checks"})
     if not section.get("checks"):
         return ()
-    if protocol_type not in _PROTOCOLS:
-        raise loader.fail(f"[probe]: {_NEED_PROTOCOL}")
-    try:
-        voice = digital_voice_codes(protocol_type, modes, mode_codes)
-    except UnicodeEncodeError:
-        raise loader.fail("[modes].codes must be ASCII for probe checks") from None
-    loader = replace(loader, voice_codes=voice)
-    checks = loader.each("[probe].checks", section.get("checks", []), loader.check)
+    if facts.protocol not in TABLE:
+        raise loader.fail("[probe]: probe checks need USB CI-V or Yaesu CAT")
+    checks = loader.each("[probe].checks", section["checks"], loader.check)
     ids = [check.id for check in checks]
     if repeated := next((name for name in ids if ids.count(name) > 1), None):
         raise loader.fail(f"[probe.checks] id {repeated!r} repeats a check id")

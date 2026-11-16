@@ -199,66 +199,56 @@ type does not normalize it.
 
 ## Write checks (`[probe]`, MOR-4464 B)
 
-Optional top-level section declaring the named write checks
-`rigplane probe --checks` may run; absent `[probe]` loads an empty
-`RigConfig.probe_checks`. Checks are profile DATA for one shared engine
-(`rigplane.probe.checks`). The write-policy lists live in
-`profiles/probe_checks.py` and are enforced at load (the verb is named) and
-again at send time.
+Optional top-level section declaring the named write checks; absent `[probe]`
+loads an empty `RigConfig.probe_checks`. Checks are profile DATA: they name
+entries of a closed table of settings in `profiles/probe_checks.py` (`TABLE`)
+and values, never bytes or command names. B1a ships the table, the loader and
+the judge only; the CLI (`rigplane probe --checks`), the engine and the
+send-time integration come in B1b/B1c.
 
 ```toml
 [[probe.checks]]
-id = "synth-freq-mode"            # slug, unique per profile
-title = "Synthetic frequency and mode"   # customer words, ASCII
-explain_what = "Sets VFO-A to 7.074 MHz for a moment, then reads it back."
-explain_after = "Puts frequency and mode back exactly as they are now."
+id = "synth-split"                # slug, unique per profile
+title = "Synthetic cross-band split"     # customer words, ASCII
+explain_what = "Sets VFO-A and VFO-B and switches split on for a moment."
+explain_after = "Puts both VFOs and split back exactly as they are now."
 warnings = []                     # optional extra customer lines, ASCII
-witness = ["get_freq", "get_mode"]  # profile reads snapshotted around the check
+witness = ["freq_a", "freq_b"]    # entries read before and after the check
 
 [[probe.checks.preconditions]]    # all must hold before the first write
-read = "get_ptt"
-equals = "TX0;"                   # CAT reply text, or CI-V frame hex
+entry = "info"
+equals = "..."                    # the reply that allows the check
 
-[[probe.checks.steps]]            # write | read | raw_write | ask
+[[probe.checks.steps]]            # write | read | ask
 kind = "write"
-command = "set_freq"
-[probe.checks.steps.values]       # CAT: template fields; CI-V: exactly data_hex
-freq = 7074000
+entry = "freq_b"
+value = 145000000                 # CI-V 26: value = ["USB", 0, 1]
+# receiver = "sub"                # CI-V only, on entries the profile routes via 0x29
 
-[[probe.checks.steps]]            # raw: line (CAT) or body_hex (CI-V)
-kind = "raw_write"
-line = "PR01;"
+[[probe.checks.steps]]
+kind = "ask"
+question = "Does the display show TX on VFO-B?"
 
-[[probe.checks.restore]]          # originals, popped in reverse
-read = "get_freq"
-write = "set_freq"
-
-[[probe.checks.restore]]          # the raw_write's own setting
-read = "get_processor"
-write = "set_processor"
-# map = { "0" = "2" }             # optional read-form -> write-form values
+[[probe.checks.restore]]          # one entry: its read before, its write after
+entry = "freq_b"
 # rehearse = false                # optional: skip the no-op rehearsal
 ```
 
-The loader rejects unknown keys. `id` is a slug; customer text (`title`,
-`explain_*`, `warnings`, `question`) is non-empty ASCII.
+The loader rejects unknown keys; customer text is non-empty ASCII. At load
+each named entry is compiled against this profile's own commands (CAT read
+and write templates, CI-V command bytes, `[vfo]` swap code, `[cmd29]` routes,
+`[modes]`): an entry the profile does not declare is "not available", a
+declared template of another shape is a load error. Mode values are the
+profile's mode names; digital-voice modes (CI-V DV/DD, Yaesu C4FM) are not in
+any mode domain.
 
-A read (steps, preconditions, witness, `restore.read`) is only what the probe
-read pass itself sends: a CI-V `get_*` entry outside the refused read families
-(`0x07`, set/send, memory, scan, power, PTT/tuner) or a concrete CAT read
-template off the never-list. There is no raw read.
-
-A write (`write` or `raw_write`) must be on the protocol allow-list (CI-V by
-command and sub: `25`/`26` 00/01 and `05`/`06`, split `0F 00/01`, `07 A0/B0/B1`,
-`14` 01 02 03 06 07 08 09 0A 0D 12; CAT `FA FB MD FT PC BS PR`), must not set a
-digital-voice mode (CI-V DV `17`, DD `22`; CAT the profile's C4FM codes from
-`[modes].codes`), and needs a restore item for the very setting it changes:
-the same receiver, command, sub and selector (CAT: the template text before the
-first field, e.g. `MD0` vs `MD1`). `07 A0/B0/B1` need frequency and mode of both
-VFOs restored; `BS` needs `FA`+`MD0` (`BS1`: `FB`+`MD1`). Each restore item reads
-and writes the same setting. A CAT line is exactly one command ending in `;`; a
-CI-V body has no frame delimiters; a `29 <rx>` wrapper is judged by its inner
-command and keeps its receiver.
+Every step's bytes are built by the entry's encoder and judged by the same
+function the engine will run before writing: the bytes must parse back to the
+same entry and form (one CAT command ending in its only `;`; CI-V at most one
+`29 <rx>` wrapper and a value that uses every remaining byte), and a write
+needs restore items for every entry it changes on its receiver (`vfo_exchange`
+changes frequency and mode of both VFOs). Not having RF power above its
+original value is an engine run-time rule (B1b).
 
 ---
 
