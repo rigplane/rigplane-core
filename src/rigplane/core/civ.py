@@ -828,7 +828,7 @@ class CivRequestTracker:
         ``write_identity`` it matches exactly; a blocking waiter's
         future then resolves with a synthesized FB.
 
-        Any pending read wins: when the frame matches a blocking
+        Any sent pending read wins: when the frame matches a blocking
         response waiter or a sink carrying ``response_key``, it is not
         an echo and this returns False. An echo names its write: it is
         settled through ``_claim`` like any directed answer (MOR-4384).
@@ -840,13 +840,16 @@ class CivRequestTracker:
         if frame.to_addr == _BROADCAST_ADDR:
             return False
         for pending in self._response_waiters:
-            if pending.generation == self._generation and self._matches(
-                pending.key, frame
+            if (
+                pending.generation == self._generation
+                and pending.sent_monotonic is not None
+                and self._matches(pending.key, frame)
             ):
                 return False
         for waiter in self._ack_waiters:
             if (
                 waiter.generation == self._generation
+                and waiter.sent_monotonic is not None
                 and waiter.response_key is not None
                 and self._matches(waiter.response_key, frame)
             ):
