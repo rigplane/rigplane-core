@@ -390,6 +390,13 @@ class DuplexStream(Protocol):
 
 
 @runtime_checkable
+@runtime_checkable
+class DeviceRefreshingBackend(Protocol):
+    """A backend whose device list can go stale and be re-scanned (MOR-4338)."""
+
+    def refresh_devices(self) -> bool: ...
+
+
 class AudioBackend(Protocol):
     """Abstract audio backend capable of listing devices and opening streams.
 
@@ -752,8 +759,40 @@ class _RxFramer:
         return result
 
 
+class _OpenStreamCount:
+    """How many PortAudio streams are open in this process (MOR-4338).
+
+    ``Pa_Terminate`` closes every open stream, so the device list can only be
+    re-scanned while none is open — whichever backend instance owns it.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._count = 0
+
+    def retain(self) -> None:
+        with self._lock:
+            self._count += 1
+
+    def drop(self) -> None:
+        with self._lock:
+            self._count = max(0, self._count - 1)
+
+    @property
+    def open_streams(self) -> int:
+        with self._lock:
+            return self._count
+
+
+_open_streams = _OpenStreamCount()
+
+
 class _WindowsMtaLease:
     """Keep the process MTA alive while a native stream owns COM interfaces.
+
+    Every stream takes this lease for exactly its open lifetime on every
+    platform, so it also counts the open streams for :data:`_open_streams`
+    (the COM part is Windows only).
 
     Start and close may run on different bounded workers. A COM count scoped
     only to start would let its apartment disappear while capture is running.
@@ -764,8 +803,12 @@ class _WindowsMtaLease:
     def __init__(self) -> None:
         self._cookie: Any = None
         self._ole32: Any = None
+        self._counted = False
 
     def acquire(self) -> None:
+        if not self._counted:
+            _open_streams.retain()
+            self._counted = True
         if sys.platform != "win32":
             return
         if self._cookie is not None:
@@ -786,6 +829,9 @@ class _WindowsMtaLease:
         self._cookie, self._ole32 = cookie, ole32
 
     def release(self) -> None:
+        if self._counted:
+            _open_streams.drop()
+            self._counted = False
         if self._cookie is None:
             return
         hresult = int(self._ole32.CoDecrementMTAUsage(self._cookie)) & 0xFFFFFFFF
@@ -2091,6 +2137,27 @@ class PortAudioBackend:
         # applies to the RX and TX streams opened here, never to duplex.
         self._capture_policy = _CapturePolicy(capture_mode)
 
+    def refresh_devices(self) -> bool:
+        """Re-scan the OS audio devices; ``True`` when the scan ran (MOR-4338).
+
+        PortAudio lists devices once, when it is initialised. A USB radio that
+        was powered off and on again is missing from that list (or sits at a
+        stale index) until PortAudio is restarted. Restarting closes every
+        open stream, so it only happens while no stream is open in the
+        process (a stream still opening already holds its lease); otherwise
+        nothing changes and ``False`` is returned.
+        """
+        sd, _ = self._ensure_deps()
+        if _open_streams.open_streams:
+            return False
+        terminate = getattr(sd, "_terminate", None)
+        initialize = getattr(sd, "_initialize", None)
+        if not callable(terminate) or not callable(initialize):
+            return False
+        terminate()
+        initialize()
+        return True
+
     @property
     def sounddevice_module(self) -> Any | None:
         """Return the underlying sounddevice module, or None if not loaded."""
@@ -2815,6 +2882,7 @@ __all__ = [
     "AudioDeviceInfo",
     "CAPTURE_MODES",
     "CaptureMode",
+    "DeviceRefreshingBackend",
     "DuplexStream",
     "FakeAudioBackend",
     "FakeDuplexStream",

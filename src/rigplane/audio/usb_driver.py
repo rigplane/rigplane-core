@@ -39,6 +39,7 @@ from .backend import (
     AudioDeviceConfig,
     AudioDeviceId,
     AudioDeviceInfo,
+    DeviceRefreshingBackend,
     DuplexStream,
     PortAudioBackend,
     RxStream,
@@ -2088,7 +2089,109 @@ class UsbAudioDriver:
 
         return receive
 
+    async def _retry_with_fresh_devices(
+        self, start: Callable[[], Coroutine[Any, Any, None]], *, direction: str
+    ) -> None:
+        """Run a start; on a device failure re-scan the OS devices and retry once.
+
+        PortAudio lists devices only when it starts. A USB radio that was
+        powered off and on (or replugged) while the server kept running is
+        absent from, or at a stale position in, that list, so the start that
+        follows its return fails until PortAudio is restarted (MOR-4338). The
+        re-scan only runs when no stream is open anywhere in the process; a
+        failure that is not about devices (lifecycle, busy device, timeout)
+        is raised unchanged.
+        """
+        try:
+            await start()
+            return
+        except (asyncio.CancelledError, AudioDriverLifecycleError, AudioDeviceBusyError):
+            raise
+        except Exception as first:
+            backend = self._backend
+            if not isinstance(backend, DeviceRefreshingBackend):
+                raise
+            try:
+                refreshed = await bounded_portaudio_pool.run_bounded(
+                    backend.refresh_devices,
+                    what="device refresh",
+                    direction=direction,
+                    timeout=self._capture_open_timeout,
+                )
+            except Exception:
+                logger.warning("usb-audio: device refresh failed", exc_info=True)
+                raise first from None
+            if not refreshed:
+                raise
+            logger.info(
+                "usb-audio: %s start failed (%s); retrying after a device re-scan",
+                direction.upper(),
+                first,
+            )
+        await start()
+
     async def start_rx(
+        self,
+        callback: Callable[[bytes], None] | None = None,
+        *,
+        sample_rate: int | None = None,
+        channels: int | None = None,
+        frame_ms: int | None = None,
+        allow_sample_rate_fallback: bool = True,
+    ) -> None:
+        """Start capture and deliver PCM frames to *callback* (see ``_start_rx_once``)."""
+        await self._retry_with_fresh_devices(
+            lambda: self._start_rx_once(
+                callback,
+                sample_rate=sample_rate,
+                channels=channels,
+                frame_ms=frame_ms,
+                allow_sample_rate_fallback=allow_sample_rate_fallback,
+            ),
+            direction="rx",
+        )
+
+    async def start_tx(
+        self,
+        *,
+        sample_rate: int | None = None,
+        channels: int | None = None,
+        frame_ms: int | None = None,
+        allow_sample_rate_fallback: bool = True,
+    ) -> None:
+        """Start playback for outgoing PCM frames (see ``_start_tx_once``)."""
+        await self._retry_with_fresh_devices(
+            lambda: self._start_tx_once(
+                sample_rate=sample_rate,
+                channels=channels,
+                frame_ms=frame_ms,
+                allow_sample_rate_fallback=allow_sample_rate_fallback,
+            ),
+            direction="tx",
+        )
+
+    async def start_duplex(
+        self,
+        callback: Callable[[bytes], None] | None = None,
+        *,
+        sample_rate: int | None = None,
+        channels: int | None = None,
+        frame_ms: int | None = None,
+        allow_sample_rate_fallback: bool = True,
+    ) -> None:
+        """Start one full-duplex stream (see ``_start_duplex_once``)."""
+        await self._retry_with_fresh_devices(
+            lambda: self._start_duplex_once(
+                callback,
+                sample_rate=sample_rate,
+                channels=channels,
+                frame_ms=frame_ms,
+                allow_sample_rate_fallback=allow_sample_rate_fallback,
+            ),
+            direction="duplex",
+        )
+
+    async def _start_rx_once(
         self,
         callback: Callable[[bytes], None] | None = None,
         *,
@@ -2269,7 +2372,7 @@ class UsbAudioDriver:
             await self._close_owned_stream("_duplex_stream", direction="duplex")
             await self._close_owned_stream("_rx_stream", direction="rx")
 
-    async def start_tx(
+    async def _start_tx_once(
         self,
         *,
         sample_rate: int | None = None,
@@ -2350,7 +2453,7 @@ class UsbAudioDriver:
                 raise
             self._store_stream_contract(contract)
 
-    async def start_duplex(
+    async def _start_duplex_once(
         self,
         callback: Callable[[bytes], None] | None = None,
         *,
