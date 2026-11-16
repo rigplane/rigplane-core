@@ -76,11 +76,11 @@ async def test_served_state_carries_calibrated_swr_only_while_keyed(
         fake._ptt = True  # the radio keys; the poller only ever reads
         tx = await _drain_until(web, radio, poller, host, port, 1.5)
         assert tx.swrMeter == pytest.approx(1.5)
-        status = (await _http_state(host, port))["fieldStatus"]["swrMeter"]
-        assert status["availability"] == "available"
+        assert tx.fieldStatus is not None
+        assert tx.fieldStatus["swrMeter"].availability == "available"
 
         fake._ptt = False
         rx = await _drain_until(web, radio, poller, host, port, None)
         assert rx.swrMeter is None
-        status = (await _http_state(host, port))["fieldStatus"]["swrMeter"]
-        assert status["availability"] == "unavailable"
+        assert rx.fieldStatus is not None
+        assert rx.fieldStatus["swrMeter"].availability == "unavailable"

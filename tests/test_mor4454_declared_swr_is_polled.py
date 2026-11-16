@@ -37,6 +37,7 @@ from rigplane.core.state_store import FreshnessClock, FreshnessState
 from rigplane.profiles import get_radio_profile
 from rigplane.rig_loader import discover_rigs
 from rigplane.runtime.radio import IcomRadio
+from rigplane.web.state_schema import ServerStatePublic
 from rigplane.web.runtime_helpers import (
     build_public_state_payload_from_snapshot,
     snapshot_field_status_inputs,
@@ -226,7 +227,7 @@ async def test_profiles_without_a_swr_scale_are_unchanged(
 # ── What the web state says about SWR (never a fake zero) ───────────────────
 
 
-def _swr_status(model: str, snapshot: Any) -> dict[str, Any]:
+def _swr_state(model: str, snapshot: Any) -> ServerStatePublic:
     acquisition = get_radio_profile(model).state_acquisition
     assert acquisition is not None
     availability, declared = snapshot_field_status_inputs(acquisition, snapshot)
@@ -237,10 +238,7 @@ def _swr_status(model: str, snapshot: Any) -> dict[str, Any]:
         availability=availability,
         declared=declared,
     )
-    return {
-        "status": payload["fieldStatus"]["swrMeter"],
-        "swrMeter": payload["swrMeter"] if "swrMeter" in payload else None,
-    }
+    return ServerStatePublic.model_validate(payload)
 
 
 @pytest.mark.asyncio
@@ -250,17 +248,19 @@ async def test_g7250_swr_availability_follows_ptt_and_never_reads_zero(
     rig = _Rig(_lan("G7250")(), monkeypatch)
     await rig.receive(0x1C, 0x00, b"\x00")
     await rig.run(3.0)
-    rx = _swr_status("G7250", rig.store.snapshot())
+    rx = _swr_state("G7250", rig.store.snapshot())
     # Declared, but not in use while receiving: unavailable, no value.
-    assert rx["status"]["availability"] == "unavailable"
-    assert not rx["swrMeter"]
+    assert rx.swrMeter is None
+    assert rx.fieldStatus is not None
+    assert rx.fieldStatus["swrMeter"].availability == "unavailable"
 
     rig.keyed = True
     await rig.receive(0x1C, 0x00, b"\x01")
     await rig.run(4.0)
-    tx = _swr_status("G7250", rig.store.snapshot())
-    assert tx["status"]["availability"] == "available"
-    assert tx["status"]["observed"] is True
+    tx = _swr_state("G7250", rig.store.snapshot())
+    assert tx.swrMeter == pytest.approx(1.5)
+    assert tx.fieldStatus is not None
+    assert tx.fieldStatus["swrMeter"].availability == "available"
 
 
 @pytest.mark.asyncio
@@ -278,7 +278,8 @@ async def test_swr_classified_unknown_publishes_null_and_undeclared(
     rig.keyed = True
     await rig.receive(0x1C, 0x00, b"\x01")
     await rig.run(4.0)
-    status = _swr_status("X6200", rig.store.snapshot())
-    assert status["status"]["availability"] == "undeclared"
-    assert status["status"]["observed"] is False
-    assert not status["swrMeter"]
+    state = _swr_state("X6200", rig.store.snapshot())
+    assert state.swrMeter is None
+    assert state.fieldStatus is not None
+    assert state.fieldStatus["swrMeter"].availability == "undeclared"
+    assert state.fieldStatus["swrMeter"].observed is False
