@@ -136,6 +136,52 @@ broader coverage than maintaining a bespoke backend for each dialect.
   X6200-vs-IC-705 disambiguation because both radios can report CI-V address
   `0xA4`. Hardware reports are welcome.
 
+### Xiegu G7250
+
+- **Protocol:** CI-V (Xiegu/Icom-compatible subset), per the Xiegu G7250 CI-V
+  Reference Rev 1.2
+- **Connectivity:** USB (CI-V serial + USB audio); network control in the
+  radio's "wfview" mode, firmware V1.0.1 or later
+- **Rig profile:** `rigs/g7250.toml`
+- **Setup guide:** [G7250 USB and network setup](g7250-setup.md)
+
+!!! note "Firmware"
+    Xiegu G7250 support was verified on firmware V1.0.1, the first firmware
+    with network control. Some functions of this firmware are incomplete or
+    behave differently over USB and over the network; RigPlane can only
+    control what the radio itself implements. For the radio's own functions
+    and settings, refer to the manufacturer's documentation and firmware
+    release notes. RigPlane's support will be extended as the firmware
+    matures.
+
+**Verified on firmware V1.0.1:**
+
+- **USB:** frequency, mode, levels including volume, meters, and RX audio
+  through the radio's USB audio device.
+- **Network (wfview mode):** signing in with the radio's own network login,
+  and polling of frequency, mode and S-meter.
+
+**Not verified, not claimed:** TX, PTT and TX audio, over either connection.
+
+**Panorama.** A USB-connected G7250 gets the audio-derived panorama only; the
+radio does not answer the CI-V scope commands over serial. Scope and waterfall
+over the network are not supported yet: the shipped profile declares no scope.
+
+**Not exposed:** the 1D 17, 1D 18 and 1D 20 controls and the firmware readout.
+
+**Network modes.** The radio's network menu has two exclusive modes:
+**wfview** (Icom LAN control) and **HDSDR** (an IQ stream). In HDSDR mode Icom
+LAN control is refused. The radio can end up in HDSDR mode after a restart or
+on its own, so select **wfview** on the radio before connecting. Do not use USB
+and network control of the same radio at the same time.
+
+**Connecting.** Over USB the radio shows a serial port for CI-V (115200 baud)
+and a USB audio device; pass `--serial-port` on the command line. Without
+`--serial-port` or `--host`, `--model G7250` searches the network. For network
+control, set the radio's network mode to **wfview** and use the network login
+set in its network menu. Pass `--model G7250`; with several radios on the
+network, give the radio's address with `--host`.
+
 ### Lab599 TX-500
 
 - **Protocol:** Kenwood CAT (text) / Hamlib candidate
