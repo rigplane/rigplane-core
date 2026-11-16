@@ -172,9 +172,12 @@ test('IC-705: SCROLL-C SPAN+ after a ZOOM+ crop steps from the radio window and 
     // ZOOM+: a client crop of the radio's 100 kHz window (50 kHz wide).
     await page.getByTestId('scope-zoom-in').first().click();
     await page.keyboard.press('Escape');
-    await expect.poll(() => frames.at(-1)?.view).toEqual([14_225_000, 14_275_000]);
+    // The crop is client-side only (the radio keeps its window): the axis narrows.
+    const ticks = page.locator('.freq-axis .tick');
+    await expect.poll(async () => [await ticks.first().textContent(), await ticks.last().textContent()])
+      .toEqual(['14.225', '14.275']);
+    expect(frames.at(-1)?.view).toEqual([14_200_000, 14_300_000]);
     const spanValue = page.getByTestId('scope-span-value').first();
-    await expect(spanValue).toHaveText('±50k');
     const before = await writes();
     const mark = frames.length;
     await page.getByRole('button', { name: 'Increase scope span', exact: true }).first().click();
