@@ -14,6 +14,7 @@
   } from '../../lib/renderers/spectrum-renderer';
   import {
     defaultWaterfallOptions,
+    type WaterfallFrameIdentity,
     type WaterfallOptions,
     type ColorSchemeName,
   } from '../../lib/renderers/waterfall-renderer';
@@ -62,7 +63,7 @@
   import {
     formatFreqOffset,
     deriveFreqTicks,
-    isFixedScope as isFixedScopeFn,
+    isRadioOwnedWindowScope as isRadioOwnedWindowScopeFn,
   } from './spectrum-logic';
   import { PanoramaViewportCenter } from './panorama-motion';
   import { hasCommandModifier } from '../../components-v2/layout/keyboard-map';
@@ -105,7 +106,8 @@
   // MOR-2851: `enableAvg`, `enablePeakHold` and `showBandPlan` were local
   // `$state` and become `$bindable` props with unchanged defaults, so the
   // phone layout can own them from its SCOPE chip tab. Callers that do not
-  // bind them behave exactly as before.
+  // bind them behave exactly as before. MOR-4383 adds `enableSmooth` (the
+  // waterfall temporal-smoothing toggle, default ON) to the same mechanism.
   //
   // `colorRoles` is resolved over the defaults once, and the one resolved
   // record feeds the canvas renderer options, the CSS custom properties the
@@ -113,11 +115,11 @@
   // panel root — one resolution for all three, pinned by `resolves the roles
   // once per mount for both the root attribute and the renderer options`.
   let { hideSourceControls = false, hideScopeControls = false, hideAutoStepToggle = false, hideToolbar = false,
-    enableAvg = $bindable(true), enablePeakHold = $bindable(true), showBandPlan = $bindable(true), scopeControls,
+    enableAvg = $bindable(true), enablePeakHold = $bindable(true), enableSmooth = $bindable(true), showBandPlan = $bindable(true), scopeControls,
     scopeStatusIndicator, scopeRegion, scopeDemanded = true, onScopeDemandChange, colorRoles,
     captureTraceTimeline = false, onTraceComplete }: {
     hideSourceControls?: boolean; hideScopeControls?: boolean; hideAutoStepToggle?: boolean; hideToolbar?: boolean;
-    enableAvg?: boolean; enablePeakHold?: boolean; showBandPlan?: boolean;
+    enableAvg?: boolean; enablePeakHold?: boolean; enableSmooth?: boolean; showBandPlan?: boolean;
     scopeControls?: Snippet<[allowBare?: boolean, screenGroup?: Snippet]>;
     scopeStatusIndicator?: Snippet;
     scopeRegion?: ManagedScopeRegion | null;
@@ -207,7 +209,7 @@
   let brtLevel = $state(0);
   let colorScheme = $state<ColorSchemeName>('classic');
   let spectrumPush: ((data: Uint8Array, token?: TraceToken | null) => void) | null = null;
-  let waterfallPush: ((data: Uint8Array, options?: WaterfallOptions, token?: TraceToken | null) => void) | null = null;
+  let waterfallPush: ((data: Uint8Array, options?: WaterfallOptions, token?: TraceToken | null, identity?: WaterfallFrameIdentity) => void) | null = null;
   const traceCandidate = import.meta.env.VITE_SCOPE_TRACE_CANDIDATE === '1';
   let trace: ScopeRenderTrace | null = $state(null);
   let traceStatus: 'idle' | TraceStatus = $state('idle');
@@ -518,7 +520,7 @@
     spectrumAuthority !== null && spectrumAuthority.frequencyHz !== null && spanHz > 0,
   );
   let scopeMode = $derived(frameScopeMode);
-  let isFixedScope = $derived(isFixedScopeFn(scopeMode));
+  let isRadioOwnedWindow = $derived(isRadioOwnedWindowScopeFn(scopeMode));
   let displayTuple = $derived(!managedUnavailable && scopeRegion
     && scopeContentState !== 'out-of-range'
     && (scopeRegion.passband.state === 'current' || scopeRegion.passband.state === 'stale')
@@ -527,7 +529,7 @@
   // MOR-2464: in CENTER the anchor stays at 50%, the panorama glides under it.
   let explicitView = $state(false);
   let requestedView = $state.raw<View | null>(null);
-  let proportionalIndicator = $derived(isFixedScope || requestedView !== null);
+  let proportionalIndicator = $derived(isRadioOwnedWindow || requestedView !== null);
   let displayFrequencyHz = $derived(managed ? displayTuple?.frequencyHz : spectrumAuthority?.frequencyHz);
   // MOR-4256/MOR-4270: the preview survives only while the captured gesture
   // context still matches — a receiver/provider switch, a retune from
@@ -647,7 +649,7 @@
   // proportional line, audio FFT shows none, and viewer OFF hides it.
   // Only observed scope-control facts establish CENTER. The numeric
   // presentation fallback on v2 geometry is not mode evidence.
-  let centerReferenceMode = $derived(scopeControlsMode !== null && !isFixedScopeFn(scopeControlsMode));
+  let centerReferenceMode = $derived(scopeControlsMode !== null && !isRadioOwnedWindowScopeFn(scopeControlsMode));
   // Remember CENTER/FIX per identity; the static ruler carries no RF geometry.
   let provenCenterMode = $state<{ providerGeneration: number; receiver: 0 | 1; sessionEpoch: number } | null>(null);
   let rememberedCenterReference = $derived.by(() => {
@@ -687,7 +689,7 @@
   let panoramaKeyApplied = $state<string | null>(null);
   let panoramaTargetApplied: number | null = null;
 
-  let panoramaActive = $derived(!audioFft && !isFixedScope && spanHz > 0);
+  let panoramaActive = $derived(!audioFft && !isRadioOwnedWindow && spanHz > 0);
   // MOR-2464 follow-up: the panorama target takes the freshest display-only
   // leg available. (1) The local tuning burst — the accumulator's per-gesture
   // target, paced-unsent steps included — shields the glide from the
@@ -716,9 +718,9 @@
     const frequency = displayFrequencyHz;
     const authority = spectrumAuthority;
     const nativeRadio = !audioFft && !sdrSource;
-    const center = scopeControlsMode !== null ? !isFixedScopeFn(scopeControlsMode) : null;
+    const center = scopeControlsMode !== null ? !isRadioOwnedWindowScopeFn(scopeControlsMode) : null;
     const sessionEpoch = runtime.controlSession.epoch;
-    const fixed = isFixedScope;
+    const radioOwned = isRadioOwnedWindow;
     const follow = followSpanHz;
     const requested = requestedView;
     const active = panoramaActive;
@@ -738,7 +740,9 @@
         }
         if (geometry && geometry.view.endHz > geometry.view.startHz) {
           const span = follow ?? geometry.view.endHz - geometry.view.startHz;
-          scopeView.set('confirmed', requested ?? ((fixed && follow === null) || frequency === null || frequency === undefined ? geometry.view
+          // #4565: a radio-owned window (FIX/SCROLL-C/SCROLL-F) is always the
+          // reported geometry — a span gesture's follow width never re-centres it.
+          scopeView.set('confirmed', requested ?? (radioOwned || frequency === null || frequency === undefined ? geometry.view
             : { startHz: frequency - span / 2, endHz: frequency + span / 2 }));
         }
         const confirmed = scopeView.confirmed;
@@ -927,6 +931,7 @@
 
   let waterfallOptions = $derived<WaterfallOptions>({
     ...defaultWaterfallOptions,
+    temporalSmoothing: enableSmooth,
     spanHz: viewportSpanHz,
     sampleSpanHz: spanHz,
     coverage: audioFft ? undefined : frameGeometry?.coverage,
@@ -951,7 +956,7 @@
         position: index * 25,
         label: `${Number(((startFreq + spanHz * index / 4) / 1000).toFixed(2))} kHz`,
       }))
-    : explicitView || isFixedScope
+    : explicitView || isRadioOwnedWindow
       ? viewportSpanHz > 0 ? Array.from({ length: 5 }, (_, index) => ({
           position: index * 25,
           label: ((viewportStartFreq + viewportSpanHz * index / 4) / 1e6).toFixed(3),
@@ -1407,7 +1412,11 @@
         // MOR-3158: a TX-frozen SDR source adds no waterfall row — the
         // panorama holds its last pre-transmit image under the TX marker;
         // only the paint is withheld.
-        if (!sdrTxFrozen) waterfallPush?.(pixels, waterfallOptions, token);
+        // MOR-4383: the delivery carries the frame identity so the renderer
+        // paints one row group per NEW frame (registration replays dedupe).
+        // Field names come straight from the ScopeFrame contract.
+        const identity: WaterfallFrameIdentity = { slot: slotKey, seq: frame.seq, epoch: frame.epoch };
+        if (!sdrTxFrozen) waterfallPush?.(pixels, waterfallOptions, token, identity);
         else trace?.record('waterfall_suppressed', token, 0, true);
         if (traceStart) trace?.record('fanout', token, performance.now() - traceStart);
       };
@@ -1529,7 +1538,7 @@
        tab instead. An audio-FFT source keeps its original no-toolbar
        branch. -->
   {:else if !hideToolbar}
-    <SpectrumToolbar bind:enableAvg bind:enablePeakHold bind:brtLevel bind:colorScheme bind:fullscreen bind:showBandPlan bind:hiddenLayers bind:showEiBi {scopeDemandOn} onScopeDemandChange={setScopeDemand} {hideSourceControls} {hideScopeControls} {hideAutoStepToggle} {scopeControls} scopePresets={scopePresetOptions} onScopePresetSelect={applyScopePreset} onScopeZoom={nudgeScopeZoom} scopeStatusIndicator={sdrSource || scopeStatusIndicator || scopeError ? panelScopeStatus : undefined} />
+    <SpectrumToolbar bind:enableAvg bind:enablePeakHold bind:enableSmooth bind:brtLevel bind:colorScheme bind:fullscreen bind:showBandPlan bind:hiddenLayers bind:showEiBi {scopeDemandOn} onScopeDemandChange={setScopeDemand} {hideSourceControls} {hideScopeControls} {hideAutoStepToggle} {scopeControls} scopePresets={scopePresetOptions} onScopePresetSelect={applyScopePreset} onScopeZoom={nudgeScopeZoom} scopeStatusIndicator={sdrSource || scopeStatusIndicator || scopeError ? panelScopeStatus : undefined} />
   {/if}
   {#if (audioFft || hideToolbar) && scopeError}{@render panelScopeStatus()}{/if}
   <div
@@ -1567,7 +1576,7 @@
       {/if}
       {#if !audioFft}<BandPlanOverlay startFreq={viewportStartFreq} endFreq={viewportEndFreq} visible={showBandPlan} {hiddenLayers} region={bandPlanRegion} />{/if}
       {#if scopeTraceLive && scopeContentState !== 'out-of-range' && frameGeometry?.hasPixels !== false}
-      <SpectrumCanvas data={null} options={spectrumOptions} spanHz={viewportSpanHz} absoluteLabels={explicitView || isFixedScope} {enableAvg} {enablePeakHold} trace={traceStatus === 'recording' ? trace : null} surface={spectrumSurface} onRegisterPush={(fn) => {
+      <SpectrumCanvas data={null} options={spectrumOptions} spanHz={viewportSpanHz} absoluteLabels={explicitView || isRadioOwnedWindow} {enableAvg} {enablePeakHold} trace={traceStatus === 'recording' ? trace : null} surface={spectrumSurface} onRegisterPush={(fn) => {
         spectrumPush = fn;
         const geometry = frameGeometry;
         const frame = geometry && scopeDemandOn && samplePlaneLive && geometry.freshness === 'fresh'
@@ -1653,10 +1662,11 @@
             // canvas repaint of the current sample, not a delivery.
             waterfallPush = fn;
             const geometry = frameGeometry;
-            const frame = geometry && scopeDemandOn && samplePlaneLive && geometry.freshness === 'fresh' && !sdrTxFrozen
-              ? runtime.scope.stream(audioFft ? 'audio_fft' : 'hardware')
-                .latest(scopeSlotKey(geometry.sourceId, geometry.receiver)) : null;
-            if (frame?.pixels) fn(frame.pixels, waterfallOptions);
+            const slot = geometry ? scopeSlotKey(geometry.sourceId, geometry.receiver) : null;
+            const frame = slot !== null && scopeDemandOn && samplePlaneLive && geometry?.freshness === 'fresh' && !sdrTxFrozen
+              ? runtime.scope.stream(audioFft ? 'audio_fft' : 'hardware').latest(slot) : null;
+            if (slot !== null && frame?.pixels) fn(frame.pixels, waterfallOptions, null, {
+              slot, seq: frame.seq, epoch: frame.epoch });
           }}
         />
         <!-- MOR-3158: the TX-frozen veil rides inside the history wrapper so
