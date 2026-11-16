@@ -263,13 +263,10 @@ async def run() -> None:
     args = parser.parse_args()
     logging.basicConfig(filename=args.evidence.with_suffix(".log"), level=logging.INFO)
     args.evidence.write_text("")
-    simulator = PanoramaSimulator(
-        args.model,
-        args.evidence,
-        ack_delay=args.ack_delay,
-        response_delay=args.response_delay,
-        response_jitter=args.response_jitter,
-    )
+    # Lag knobs stay off through the handshake: the client connect phase has
+    # sub-second deadlines a delayed simulator cannot meet. They shape the
+    # test phase only, activated once the radio link is up.
+    simulator = PanoramaSimulator(args.model, args.evidence)
     await simulator.start()
     radio = IcomRadio(
         host="127.0.0.1",
@@ -281,6 +278,9 @@ async def run() -> None:
     try:
         await radio.connect()
         await radio.get_freq()
+        simulator.ack_delay = args.ack_delay
+        simulator.response_delay = args.response_delay
+        simulator._response_jitter = args.response_jitter
         server = WebServer(
             radio,
             WebConfig(
