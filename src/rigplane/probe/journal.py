@@ -1,17 +1,13 @@
-"""The write-check journal (MOR-4464 B1b, design S1): write-ahead originals.
-
-Before a check's first write byte, the values the check will put back are
-on disk in hand-settable form (frequency in MHz, mode name, VFO name; never
-internal codes), flushed and fsynced together with their directory. It is
-removed only after a verified restore. A journal left behind means the
-previous run died mid-check; the next probe start prints the originals
-(``leftover_journal_line``) and restores nothing by itself.
-"""
+"""The write-check journal (MOR-4464 B1b, design S1): the hand-settable
+originals, fsynced before a check's first write, removed after a verified
+restore. A journal left behind is printed (``leftover_journal_line``), never
+restored by itself."""
 
 from __future__ import annotations
 
 import json
 import os
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -80,16 +76,20 @@ def journal_path() -> Path:
     return Path(platformdirs.user_state_path("rigplane")) / "probe-checks-journal.json"
 
 
-def write_journal(path: Path, journal: ChecksJournal) -> None:
-    """Write, flush and fsync the journal, then fsync its directory (POSIX:
-    the rename itself must survive a power cut). Returns only when durable."""
+def write_journal(path: Path, journal: ChecksJournal, *, new: bool = False) -> None:
+    """Write and fsync a whole temporary file, publish it, fsync the folder;
+    returns only when durable. ``new``: publish by hard link, which raises
+    ``FileExistsError`` when any journal is already there (another run's)."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.tmp")
-    with temporary.open("w", encoding="utf-8") as stream:
+    handle, name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
+    with os.fdopen(handle, "w", encoding="utf-8") as stream:
         stream.write(journal.to_json())
         stream.flush()
         os.fsync(stream.fileno())
-    os.replace(temporary, path)
+    try:
+        os.link(name, path) if new else os.replace(name, path)
+    finally:
+        Path(name).unlink(missing_ok=True)
     if os.name == "posix":
         directory = os.open(path.parent, os.O_RDONLY)
         try:

@@ -104,8 +104,7 @@ class ChecksResult:
     unsolicited: tuple[UnsolicitedRow, ...] = ()
 
 
-class _Stop(Exception):
-    pass
+class _Stop(Exception): ...
 
 
 @dataclass(slots=True)
@@ -119,7 +118,7 @@ class _Run:
     task: asyncio.Future[None] | None = None
     restoring: bool = False
     cancelled: bool = False
-    unsettled: bool = False  # a cancelled exchange may still deliver its answer
+    pending: Callable[[bytes], bool] | None = None  # a cancelled ask's answer
 
 
 @dataclass(slots=True)
@@ -147,7 +146,7 @@ def radio_facts(config: RigConfig) -> RadioFacts:
             config.receiver_count, config.split_tx_target
         ),
         data_modes=config.data_mode_count,
-        freq_ranges=tuple((r["start_hz"], r["end_hz"]) for r in config.freq_ranges),
+        freq_ranges=tuple((r.start, r.end) for r in config.to_profile().freq_ranges),
     )
 
 
@@ -200,23 +199,27 @@ async def _send(
     protocol = run.config.protocol_type
     cat_write = protocol == "yaesu_cat" and bool(write)
     item = ReadRequest(key[0], body, "get" if protocol == "civ" else "cat")
-    while run.unsettled:  # read out the late answer of a cancelled exchange
-        try:
-            run.unsettled = await run.exchange(None, run.window) is not None
+    if (owed := run.pending) is not None:  # settle a cancelled exchange
+        run.pending, deadline = None, time.monotonic() + run.window
+        try:  # pushes are kept, never extend the wait past one window
+            while (left := deadline - time.monotonic()) > 0:
+                chunk = await run.exchange(None, left)
+                if chunk is None or owed(chunk):
+                    break
+                run.strays.add(chunk, protocol)
         except (OSError, asyncio.IncompleteReadError) as broken:
-            run.unsettled = False
             run.gate.stop_transport("write check", broken)
     run.gate.allowed = run.gate.allowed | {body}
+    run.pending = (lambda c: c == b"?;") if cat_write else _matcher(protocol, item)
     answer = await _gated_ask(
         run.gate,
         run.exchange,
         body,
         run.window,
-        attribute=(lambda chunk: chunk == b"?;")
-        if cat_write
-        else _matcher(protocol, item),
+        attribute=run.pending,
         garbled=_garble_check(protocol),
     )
+    run.pending = None
     if answer is None:  # the gate stopped: nothing was sent
         if run.restoring:
             return "transport_error", None, None
@@ -371,7 +374,10 @@ async def _run_one(run: _Run, check: ProbeCheck) -> CheckRecord:
     noted = ChecksJournal(
         check.id, check.title, run.config.model, (*originals.items(),), now
     )
-    write_journal(journal, noted)
+    try:  # published only if no journal exists: another run's stays intact
+        write_journal(journal, noted, new=True)
+    except FileExistsError:
+        return record("refused", error=leftover_journal_line(journal))
     if run.request.on_event:
         run.request.on_event("journal_written")
     error: str | None = None
@@ -381,7 +387,6 @@ async def _run_one(run: _Run, check: ProbeCheck) -> CheckRecord:
         await run.task
     except asyncio.CancelledError:
         external = not run.cancelled
-        run.unsettled = True
         error = "cancelled; the settings were put back first"
     except Exception as stop:  # noqa: BLE001 -- a failed step still restores
         error = str(stop)

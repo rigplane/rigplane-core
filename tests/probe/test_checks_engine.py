@@ -902,10 +902,11 @@ async def test_settling_a_cancel_ends_despite_continuous_pushes(tmp_path: Path) 
     inner = await civ_exchange(fake)
     push = bytes.fromhex("fefee0a42700ff00fd")  # an unsolicited scope-style frame
 
+    tick = 0.05
+
     async def exchange(body: bytes | None, timeout: float):
-        if body is None:  # the radio never stops pushing while we only listen
-            await asyncio.sleep(0)
-            return push
+        if body is None:  # while we only listen, a push comes every tick
+            return await inner(None, tick) or push
         return await inner(body, timeout)
 
     def events(name: str) -> None:
