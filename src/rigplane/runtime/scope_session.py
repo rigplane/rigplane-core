@@ -97,6 +97,9 @@ class ScopeSession:
         # session captures its own state.
         self._acked: dict[tuple[int, ScopeSetting], ScopeValue] = {}
         self._uncertain: set[tuple[int, ScopeSetting]] = set()
+        # Keys whose write awaits its answer (MOR-4507): nothing observed
+        # meanwhile may renew their currency or release their protection.
+        self._writing: set[tuple[int, ScopeSetting]] = set()
         self._restore_pending = False
         self._event_tasks: set[asyncio.Task[None]] = set()
 
@@ -322,7 +325,12 @@ class ScopeSession:
         key = (receiver, name)
         cached = self._applied.get(key)
         self._adopt_external(key, value)
-        if key in self._uncertain and cached is not None and value != cached:
+        if (
+            key in self._uncertain
+            and key not in self._writing
+            and cached is not None
+            and value != cached
+        ):
             # #4565 pre-review: the cache is current only while no later
             # event invalidates it. A report that DIFFERS from the cached
             # value cannot be a pre-write echo of the state an ambiguous
@@ -332,7 +340,10 @@ class ScopeSession:
             # cache proves nothing (it may predate the write), so the key
             # stays uncertain and the skip stays suppressed. Adoption and
             # restore protection above already ran under the uncertain
-            # guard for THIS report; the next one adopts normally.
+            # guard for THIS report; the next one adopts normally. This
+            # applies only after the write ended without an answer: while
+            # it still awaits one, a later-assembled older frame could
+            # follow (MOR-4507), so the key stays protected.
             self._uncertain.discard(key)
         self._applied[key] = value
         # Keep the captured per-receiver radio state truthful: later
@@ -525,6 +536,7 @@ class ScopeSession:
             return
         applied = self._applied.get((receiver, name))
         self._uncertain.add((receiver, name))
+        self._writing.add((receiver, name))
         try:
             await self._write(name, value, receiver)
         except CommandRejectedError:
@@ -540,6 +552,8 @@ class ScopeSession:
         except (CommandError, TimeoutError, asyncio.TimeoutError):
             self._desired.pop((receiver, name), None)
             raise
+        finally:
+            self._writing.discard((receiver, name))
         self._uncertain.discard((receiver, name))
         if name == "fixed_edge" and isinstance(value, ScopeFixedEdge):
             for key, prior in tuple(self._applied.items()):
