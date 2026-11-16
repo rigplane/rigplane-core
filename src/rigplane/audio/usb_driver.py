@@ -45,6 +45,7 @@ from .backend import (
     RxStream,
     TxStream,
     _platform_uid_from_device_name,
+    portaudio_native_access,
 )
 
 logger = logging.getLogger(__name__)
@@ -1395,6 +1396,9 @@ class UsbAudioDriver:
         # Counts stop_* calls so a start retrying after a device re-scan can
         # see that teardown ran meanwhile (MOR-4338).
         self._stop_epoch = 0
+        # Set only while a start retries after a device re-scan: the stop
+        # count it began with (checked again just before the stream opens).
+        self._retry_epoch: int | None = None
         self._selected_tx: UsbAudioDevice | None = None
 
         self._rx_stream: RxStream | None = None
@@ -1646,9 +1650,12 @@ class UsbAudioDriver:
             or self._config.rx_device is not None
             or self._config.tx_device is not None
         ):
-            enumeration = (
-                read_portaudio_enumeration(sd_module) if sd_module is not None else None
-            )
+            with portaudio_native_access():
+                enumeration = (
+                    read_portaudio_enumeration(sd_module)
+                    if sd_module is not None
+                    else None
+                )
             if isinstance(records, (RawMacos, RawLinux)):
                 from ._portaudio_enum import PortAudioEnumeration
 
@@ -1704,11 +1711,12 @@ class UsbAudioDriver:
             if len(identities) != 1:
                 from ._usb_pairing import _candidates
 
-                enumeration = (
-                    read_portaudio_enumeration(sd_module)
-                    if sd_module is not None
-                    else None
-                )
+                with portaudio_native_access():
+                    enumeration = (
+                        read_portaudio_enumeration(sd_module)
+                        if sd_module is not None
+                        else None
+                    )
                 session = {
                     "raw": {"windows": records.to_json_dict(), "serial_ports": []}
                 }
@@ -1956,6 +1964,11 @@ class UsbAudioDriver:
         pool-saturation fail-fast and the MOR-1438 F1 cancellation
         handling).
         """
+        if self._retry_epoch is not None and self._stop_epoch != self._retry_epoch:
+            start_coro.close()
+            raise AudioDriverLifecycleError(
+                "Audio start was cancelled by a stop during the device re-scan."
+            )
         await bounded_portaudio_pool.open_stream_bounded(
             stream,
             start_coro,
@@ -2138,7 +2151,11 @@ class UsbAudioDriver:
                 direction.upper(),
                 first,
             )
-        await start()
+        self._retry_epoch = epoch
+        try:
+            await start()
+        finally:
+            self._retry_epoch = None
 
     async def start_rx(
         self,

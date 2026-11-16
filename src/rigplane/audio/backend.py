@@ -17,6 +17,7 @@ import sys
 import threading
 import time
 from collections import deque
+from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from typing import (
     Any,
@@ -767,8 +768,14 @@ class _OpenStreamCount:
     """
 
     def __init__(self) -> None:
-        self._lock = threading.Lock()
+        # Re-entrant: it also serialises native device queries and probes
+        # against a restart (see :func:`portaudio_native_access`).
+        self._lock = threading.RLock()
         self._count = 0
+
+    @property
+    def guard(self) -> AbstractContextManager[bool]:
+        return self._lock
 
     def retain(self) -> None:
         with self._lock:
@@ -792,6 +799,16 @@ class _OpenStreamCount:
 
 
 _open_streams = _OpenStreamCount()
+
+
+def portaudio_native_access() -> AbstractContextManager[bool]:
+    """Hold off a device re-scan while a native query or probe runs (MOR-4338).
+
+    ``Pa_Terminate`` destroys the device tables, so enumeration and format
+    probes must not run while :meth:`PortAudioBackend.refresh_devices`
+    restarts PortAudio.
+    """
+    return _open_streams.guard
 
 
 class _WindowsMtaLease:
@@ -2193,8 +2210,9 @@ class PortAudioBackend:
 
     def list_devices(self) -> list[AudioDeviceInfo]:
         sd, _ = self._ensure_deps()
-        raw_devices = list(sd.query_devices())
-        default_raw = getattr(getattr(sd, "default", None), "device", None)
+        with portaudio_native_access():
+            raw_devices = list(sd.query_devices())
+            default_raw = getattr(getattr(sd, "default", None), "device", None)
         default_in: int | None = None
         default_out: int | None = None
         if isinstance(default_raw, (list, tuple)) and len(default_raw) >= 2:
@@ -2231,18 +2249,19 @@ class PortAudioBackend:
     ) -> bool:
         sd, _ = self._ensure_deps()
         idx = int(device)
-        extra = self._capture_policy.probe_settings(sd, idx)
-        kwargs: dict[str, Any] = {"device": idx, "samplerate": sample_rate}
-        if extra is not None:
-            kwargs["extra_settings"] = extra
-        try:
-            if direction == "rx":
-                sd.check_input_settings(**kwargs)
-            else:
-                sd.check_output_settings(**kwargs)
-            return True
-        except Exception:
-            return False
+        with portaudio_native_access():
+            extra = self._capture_policy.probe_settings(sd, idx)
+            kwargs: dict[str, Any] = {"device": idx, "samplerate": sample_rate}
+            if extra is not None:
+                kwargs["extra_settings"] = extra
+            try:
+                if direction == "rx":
+                    sd.check_input_settings(**kwargs)
+                else:
+                    sd.check_output_settings(**kwargs)
+                return True
+            except Exception:
+                return False
 
     def open_rx(
         self,
@@ -2901,6 +2920,7 @@ __all__ = [
     "FakeRxStream",
     "FakeTxStream",
     "PortAudioBackend",
+    "portaudio_native_access",
     "RxStreamHealth",
     "RxStream",
     "TxPlayoutPolicy",

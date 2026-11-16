@@ -33,6 +33,7 @@ from rigplane.audio.backend import (
     DeviceRefreshingBackend,
     FakeAudioBackend,
     _OpenStreamCount,
+    _open_streams,
 )
 from rigplane.backends.ic705 import Ic705SerialRadio
 from rigplane.backends.ic7300 import Ic7300SerialRadio
@@ -40,6 +41,7 @@ from rigplane.types import AudioCodec
 from rigplane.audio.usb_driver import (
     AudioAlreadyStartedError,
     AudioDeviceSelectionError,
+    AudioDriverLifecycleError,
     AudioFormatUnsupportedError,
     UsbAudioDriver,
 )
@@ -90,7 +92,18 @@ class _ReturnedRadioBackend(FakeAudioBackend):
         self.refreshes = 0
         # Set to hold ``refresh_devices`` until the test releases it.
         self.on_refresh: Callable[[], None] | None = None
+        # Hold ``list_devices`` after a refresh until released (pauses the
+        # retry's device selection).
+        self.on_list_after_refresh: Callable[[], None] | None = None
+        self.list_gate: threading.Event | None = None
         self.refresh_gate: threading.Event | None = None
+
+    def list_devices(self):
+        if self.refreshes and self.list_gate is not None:
+            if self.on_list_after_refresh is not None:
+                self.on_list_after_refresh()
+            self.list_gate.wait()
+        return super().list_devices()
 
     def check_sample_rate(self, device, sample_rate, *, direction="rx") -> bool:
         if self._stale_probes_fail and self.refreshes == 0:
@@ -231,17 +244,18 @@ async def test_a_backend_without_a_rescan_keeps_the_original_failure():
 
 def test_a_stream_cannot_open_while_the_restart_runs():
     count = _OpenStreamCount()
-    lock_free_inside: list[bool] = []
+    taken_by_other: list[bool] = []
 
     def restart() -> None:
         # ``retain`` takes this lock, so no stream can take its lease now.
-        free = count._lock.acquire(blocking=False)
-        if free:
-            count._lock.release()
-        lock_free_inside.append(free)
+        other = threading.Thread(
+            target=lambda: taken_by_other.append(count._lock.acquire(blocking=False))
+        )
+        other.start()
+        other.join()
 
     assert count.restart_if_idle(restart) is True
-    assert lock_free_inside == [False]
+    assert taken_by_other == [False]
     count.retain()
     assert count.restart_if_idle(lambda: None) is False
 
@@ -359,3 +373,79 @@ async def test_radio_rx_subscription_after_the_codec_returns_delivers_audio(
         assert backend.refreshes == 1
     finally:
         await radio.disconnect()
+
+
+class _QueryRecordingSd(_RescanSd):
+    """Records whether the native-access guard is held during each query."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.held: list[tuple[str, bool]] = []
+
+    def query_devices(self, index=None):
+        self.held.append(("query", _open_streams._lock._is_owned()))
+        return [] if index is None else super().query_devices(index)
+
+    def check_input_settings(self, **kw):
+        self.held.append(("probe", _open_streams._lock._is_owned()))
+        super().check_input_settings(**kw)
+
+
+def test_enumeration_and_format_probes_run_under_the_native_guard():
+    sd = _QueryRecordingSd()
+    backend = _backend(sd, "shared")
+
+    backend.list_devices()
+    backend.check_sample_rate(AudioDeviceId(MME_DEVICE), 48_000)
+
+    assert sd.held == [("query", True), ("probe", True)]
+
+
+def test_the_restart_holds_the_native_guard_against_other_threads():
+    seen: list[bool] = []
+
+    class _Sd(_RescanSd):
+        def _terminate(self) -> None:
+            other = threading.Thread(
+                target=lambda: seen.append(_open_streams._lock.acquire(blocking=False))
+            )
+            other.start()
+            other.join()
+
+    assert _backend(_Sd(), "shared").refresh_devices() is True
+    assert seen == [False]
+
+
+@pytest.mark.parametrize("stop", ["stop_rx", "stop_tx"])
+async def test_a_stop_during_the_retry_device_selection_opens_nothing(stop):
+    loop = asyncio.get_running_loop()
+    entered = asyncio.Event()
+    backend = _ReturnedRadioBackend(stale=[], fresh=[_codec("USB Audio CODEC")])
+    backend.list_gate = threading.Event()
+    backend.on_list_after_refresh = lambda: loop.call_soon_threadsafe(entered.set)
+    driver = UsbAudioDriver(backend=backend)
+    starting = asyncio.ensure_future(
+        driver.start_rx(lambda _pcm: None) if stop == "stop_rx" else driver.start_tx()
+    )
+    await entered.wait()
+
+    await getattr(driver, stop)()
+    backend.list_gate.set()
+
+    with pytest.raises(AudioDriverLifecycleError):
+        await starting
+    assert not driver.rx_running
+    assert not driver.tx_running
+
+
+@pytest.mark.parametrize("name", _CODEC_NAMES)
+async def test_duplex_start_after_the_radio_returns_rescans_and_succeeds(name):
+    backend = _ReturnedRadioBackend(stale=[], fresh=[_codec(name)])
+    driver = UsbAudioDriver(backend=backend)
+
+    await driver.start_duplex(lambda _pcm: None)
+
+    assert driver.rx_running and driver.tx_running
+    assert backend.refreshes == 1
+    assert [s.running for s in backend.duplex_streams] == [True]
+    await driver.stop_tx()
