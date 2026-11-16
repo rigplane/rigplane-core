@@ -71,9 +71,7 @@ def _civ_row(
     )
 
 
-def _cat_row(
-    name: str, outcome: str, line: str, reply: str | None
-) -> CommandRow:
+def _cat_row(name: str, outcome: str, line: str, reply: str | None) -> CommandRow:
     return CommandRow(
         name=name,
         template=line,
@@ -340,7 +338,7 @@ def _identity_model_id(probe: ProbeFile) -> bytes:
             raw = bytes.fromhex(row.reply_hex)
             body, reply_body = bytes.fromhex(row.request_hex), raw[4:-1]
             assert reply_body.startswith(body)
-            return reply_body[len(body):]
+            return reply_body[len(body) :]
     raise AssertionError("sample has no 19 00 identity row")
 
 
@@ -398,8 +396,18 @@ def test_civ_round_trip_through_real_cli(tmp_path, monkeypatch) -> None:
     out = tmp_path / "g7250-replay.json"
     monkeypatch.setattr(
         "sys.argv",
-        ["rigplane", "probe", "G7250", "--port", "fake-usb-serial",
-         "--yes", "--out", str(out), "--label", "replay-civ"],
+        [
+            "rigplane",
+            "probe",
+            "G7250",
+            "--port",
+            "fake-usb-serial",
+            "--yes",
+            "--out",
+            str(out),
+            "--label",
+            "replay-civ",
+        ],
     )
     with pytest.raises(SystemExit) as exc_info:
         main()
@@ -430,8 +438,18 @@ async def _run_cat_probe(monkeypatch, port: str, out, label: str) -> ProbeFile:
 
     monkeypatch.setattr(
         "sys.argv",
-        ["rigplane", "probe", "FT-991A", "--port", port,
-         "--yes", "--out", str(out), "--label", label],
+        [
+            "rigplane",
+            "probe",
+            "FT-991A",
+            "--port",
+            port,
+            "--yes",
+            "--out",
+            str(out),
+            "--label",
+            label,
+        ],
     )
     with pytest.raises(SystemExit) as exc_info:
         await asyncio.to_thread(main)
@@ -489,19 +507,13 @@ def _cat_plan_facts(first: ProbeFile, wire: tuple[str, ...]) -> tuple[str, str, 
         if row.outcome != "refused" or index == 0:
             continue
         trigger = first.commands[index - 1].request_text
-        if (
-            trigger == "ID;"
-            or trigger in snapshot_lines
-            or wire.count(trigger) != 1
-        ):
+        if trigger == "ID;" or trigger in snapshot_lines or wire.count(trigger) != 1:
             continue
         picked = (row.request_text, trigger)
         break
     assert picked is not None, "no silent-target candidate with a unique trigger"
     target, trigger = picked
-    verb = next(
-        row.request_text[:2] for row in refused if row.request_text != target
-    )
+    verb = next(row.request_text[:2] for row in refused if row.request_text != target)
     assert verb != "ID"
     return target, trigger, verb
 
@@ -541,8 +553,10 @@ async def test_cat_round_trip_through_real_cli(tmp_path, monkeypatch) -> None:
         )
         try:
             second = await _run_cat_probe(
-                monkeypatch, fault_radio.device_url,
-                tmp_path / "ft991a-b.json", "cat-b",
+                monkeypatch,
+                fault_radio.device_url,
+                tmp_path / "ft991a-b.json",
+                "cat-b",
             )
         finally:
             watcher.cancel()
@@ -552,9 +566,7 @@ async def test_cat_round_trip_through_real_cli(tmp_path, monkeypatch) -> None:
                 pass
     finally:
         await fault_radio.stop()
-    assert [row.name for row in second.commands] == [
-        row.name for row in first.commands
-    ]
+    assert [row.name for row in second.commands] == [row.name for row in first.commands]
     for old, new in zip(first.commands, second.commands):
         if new.request_text == target:
             assert new.outcome == "silent", new.name
@@ -575,9 +587,7 @@ async def test_cat_round_trip_through_real_cli(tmp_path, monkeypatch) -> None:
         )
     finally:
         await replay_radio.stop()
-    assert [row.name for row in third.commands] == [
-        row.name for row in second.commands
-    ]
+    assert [row.name for row in third.commands] == [row.name for row in second.commands]
     assert [row.outcome for row in third.commands] == [
         row.outcome for row in second.commands
     ]
