@@ -6,6 +6,7 @@ import {
   collectFirstTexts,
   foreignDestinations,
   acquireControllerKey,
+  buildFreqRequest,
   parseRelayedAnswer,
   parseSimState,
   unkeyLatencyMs,
@@ -238,11 +239,14 @@ describe('collectFirstTexts: every listener exists before any attach is sent', (
 });
 
 describe('producer contracts consumed by the harness', () => {
-  const contract = {
+  const snapshot = {
     ptt_on: 'bool',
     freq_hz: 'int',
     ptt_transitions: 'tuple[tuple[float, bool], ...]',
   };
+  // The whole document `GET /sim/contract` serves: one entry per sidecar
+  // dataclass (SimSnapshot response, SimFreqRequest request).
+  const contract = { SimSnapshot: snapshot, SimFreqRequest: { hz: 'int' } };
   const good = { ptt_on: false, freq_hz: 14_074_000, ptt_transitions: [[1.5, true]] };
 
   it('accepts a sidecar response that matches the served contract', () => {
@@ -250,12 +254,23 @@ describe('producer contracts consumed by the harness', () => {
   });
 
   it('throws when the producer changed a field type', () => {
-    expect(() => parseSimState({ ...contract, freq_hz: 'float' }, good)).toThrow('contract drift');
+    expect(() => parseSimState({ ...contract, SimSnapshot: { ...snapshot, freq_hz: 'float' } }, good)).toThrow('contract drift');
   });
 
   it('throws when the producer dropped or renamed a field', () => {
-    const { ptt_on: _dropped, ...rest } = contract;
-    expect(() => parseSimState(rest, good)).toThrow('contract drift');
+    const { ptt_on: _dropped, ...rest } = snapshot;
+    expect(() => parseSimState({ ...contract, SimSnapshot: rest }, good)).toThrow('contract drift');
+  });
+
+  it('builds the frequency request from the served contract', () => {
+    expect(buildFreqRequest(contract, 14_074_000)).toEqual({ hz: 14_074_000 });
+    expect(() => buildFreqRequest({ ...contract, SimFreqRequest: { hz: 'float' } }, 1)).toThrow(
+      'contract drift',
+    );
+    expect(() => buildFreqRequest({ ...contract, SimFreqRequest: { freq: 'int' } }, 1)).toThrow(
+      'contract drift',
+    );
+    expect(() => buildFreqRequest(contract, 14_074_000.5)).toThrow('hz');
   });
 
   it('throws when a response violates the contract', () => {

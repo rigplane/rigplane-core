@@ -31,10 +31,15 @@ _SERVER_PATH = Path(__file__).resolve().parents[1] / "e2e" / "remote_web_server.
 
 # What frontend/tests/e2e/remote/station.ts SIM_CONTRACT expects; the two
 # literals change together or this test and the Node parser both fail.
-_CONSUMER_CONTRACT = {
+_SNAPSHOT_CONTRACT = {
     "ptt_on": "bool",
     "freq_hz": "int",
     "ptt_transitions": "tuple[tuple[float, bool], ...]",
+}
+_FREQ_REQUEST_CONTRACT = {"hz": "int"}
+_CONSUMER_CONTRACT = {
+    "SimSnapshot": _SNAPSHOT_CONTRACT,
+    "SimFreqRequest": _FREQ_REQUEST_CONTRACT,
 }
 
 
@@ -83,7 +88,7 @@ def test_contract_matches_the_dataclass_and_the_consumer() -> None:
     payload = dataclasses.asdict(server.sim_snapshot(sim))
 
     assert server.sim_contract() == _CONSUMER_CONTRACT
-    assert set(payload) == set(_CONSUMER_CONTRACT)
+    assert set(payload) == set(_SNAPSHOT_CONTRACT)
 
 
 def test_sidecar_serves_the_snapshot_and_its_contract_over_http() -> None:
@@ -114,7 +119,7 @@ def test_sidecar_serves_the_snapshot_and_its_contract_over_http() -> None:
     state, contract = asyncio.run(scenario())
 
     assert contract == _CONSUMER_CONTRACT
-    assert set(state) == set(_CONSUMER_CONTRACT)
+    assert set(state) == set(_SNAPSHOT_CONTRACT)
     assert state["ptt_on"] is False
     assert [keyed for _, keyed in state["ptt_transitions"]] == [True, False]
     assert isinstance(state["freq_hz"], int)
@@ -174,3 +179,64 @@ def test_real_offer_reply_carries_exactly_what_the_harness_consumes() -> None:
     # is ignored by the harness.
     assert _CONSUMED_ANSWER_KEYS <= set(reply)
     assert set(reply) - _CONSUMED_ANSWER_KEYS == {"sessionId"}
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        b"",
+        b"not json",
+        b"[]",
+        b"{}",
+        b'{"hz": "14074000"}',
+        b'{"hz": 14074000.5}',
+        b'{"hz": true}',
+        b'{"hz": -1}',
+        b'{"hz": 14074000, "extra": 1}',
+    ],
+)
+def test_bad_frequency_request_is_rejected_before_it_reaches_the_simulator(
+    body: bytes,
+) -> None:
+    server = _load_server()
+    with pytest.raises(ValueError):
+        server.parse_freq_request(body)
+
+
+def test_frequency_request_over_http_is_parsed_through_its_contract() -> None:
+    server = _load_server()
+    sim = ic7610_lan_fake(stateful_ptt=True)
+    before = sim._frequency  # noqa: SLF001
+
+    async def post(port: int, body: bytes) -> tuple[int, Any]:
+        reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        writer.write(
+            b"POST /sim/freq HTTP/1.1\r\nHost: x\r\nContent-Length: "
+            + str(len(body)).encode()
+            + b"\r\n\r\n"
+            + body
+        )
+        await writer.drain()
+        raw = await reader.read()
+        writer.close()
+        head, _, payload = raw.partition(b"\r\n\r\n")
+        return int(head.split(b" ", 2)[1]), json.loads(payload)
+
+    async def scenario() -> list[tuple[int, Any]]:
+        listener = await server._SimSidecar(sim).serve("127.0.0.1", 0)  # noqa: SLF001
+        port = listener.sockets[0].getsockname()[1]
+        try:
+            return [
+                await post(port, b'{"hz": "x"}'),
+                await post(port, b"nope"),
+                await post(port, b'{"hz": 7074000}'),
+            ]
+        finally:
+            listener.close()
+
+    rejected_type, rejected_json, accepted = asyncio.run(scenario())
+
+    assert rejected_type[0] == 400
+    assert rejected_json[0] == 400
+    assert accepted == (200, {"ok": True, "freq_hz": 7_074_000})
+    assert sim._frequency == 7_074_000 != before  # noqa: SLF001
