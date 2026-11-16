@@ -66,7 +66,7 @@ async def test_runtime_reports_the_lan_civ_order_counters() -> None:
     civ_ingress = data["civIngress"]
     assert set(civ_ingress) == CivIngressPayload.__required_keys__
     assert civ_ingress == CivIngressPayload(
-        ordered=True, reordered=1, duplicate=1, lost=0, late=0
+        ordered=True, reordered=1, duplicate=1, lost=0, late=0, reanchored=0
     )
 
 
@@ -105,6 +105,7 @@ async def test_transport_health_line_carries_the_counters(
     lines = [r.getMessage() for r in caplog.records]
     health = [line for line in lines if "Transport health" in line]
     assert health, "no Transport health line was logged"
-    assert "civ_reordered=1 civ_duplicate=1 civ_lost=0 civ_late=0" in health[0], health[
-        0
-    ]
+    assert (
+        "civ_reordered=1 civ_duplicate=1 civ_lost=0 civ_late=0 civ_reanchored=0"
+        in health[0]
+    ), health[0]
