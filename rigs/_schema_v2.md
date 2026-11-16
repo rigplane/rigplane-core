@@ -197,6 +197,68 @@ type does not normalize it.
 
 ---
 
+## Write checks (`[probe]`, MOR-4464 B)
+
+Optional top-level section declaring the named write checks; absent `[probe]`
+loads an empty `RigConfig.probe_checks`. Checks are profile DATA: they name
+entries of a closed table of settings in `profiles/probe_checks.py` (`TABLE`)
+and values, never bytes or command names. B1a ships the table, the loader and
+the judge only; the CLI (`rigplane probe --checks`), the engine and the
+send-time integration come in B1b/B1c.
+
+```toml
+[[probe.checks]]
+id = "synth-split"                # slug, unique per profile
+title = "Synthetic cross-band split"     # customer words, ASCII
+explain_what = "Sets VFO-A and VFO-B and switches split on for a moment."
+explain_after = "Puts both VFOs and split back exactly as they are now."
+warnings = []                     # optional extra customer lines, ASCII
+witness = ["freq_a", "freq_b"]    # entries read before and after the check
+
+[[probe.checks.preconditions]]    # all must hold before the first write
+entry = "info"
+equals = "..."                    # the reply that allows the check
+
+[[probe.checks.steps]]            # write | read | ask
+kind = "write"
+entry = "freq_b"
+value = 145000000                 # CI-V 26: value = ["USB", 0, 1]
+# receiver = "sub"                # CI-V only, on entries the profile routes via 0x29
+
+[[probe.checks.steps]]
+kind = "ask"
+question = "Does the display show TX on VFO-B?"
+
+[[probe.checks.restore]]          # one entry: its read before, its write after
+entry = "freq_b"
+# rehearse = false                # optional: skip the no-op rehearsal
+```
+
+The loader rejects unknown keys; customer text is non-empty ASCII. At load
+each named entry is compiled against this profile's own commands (CAT read
+and write templates, CI-V command bytes, `[vfo]` swap code, `[cmd29]` routes,
+`[modes]`): an entry the profile does not declare is "not available", a
+declared template of another shape is a load error. Mode values are the
+profile's mode names; digital-voice modes (CI-V DV/DD, Yaesu C4FM) are not in
+any mode domain; the CI-V DATA field runs 0..`[data_mode].count`. The
+selected VFO is written only through `25 00`/`26 00` (`03`/`04` stay
+read-only: `05`/`06` cannot put DATA back). `vfo_exchange` comes from
+`[vfo].swap_ab`, or from `swap_main_sub` only where `25/26 01` is the
+physical SUB (`split_tx_target = "sub_receiver"`), and only where every
+frequency and mode it changes is writable on this radio; `[0xB0]` and
+`[0x07, 0xB0]` are the same swap.
+
+Every step's bytes are built by the entry's encoder and judged at load by
+the same function the engine runs again right before writing (checks carry
+no bytes): the bytes must parse back to the
+same entry and form (one CAT command ending in its only `;`; CI-V at most one
+`29 <rx>` wrapper and a value that uses every remaining byte), and a write
+needs restore items for every entry it changes on its receiver (`vfo_exchange`
+changes frequency and mode of both VFOs). Not having RF power above its
+original value is an engine run-time rule (B1b).
+
+---
+
 ## Layer 1: Capabilities
 
 ```toml
@@ -281,6 +343,61 @@ default = 0
 "0-12MHz" = [0, 3, 6, 9, 12, 15, 18, 21, 24, 27]
 "420-1000MHz" = [0, 7, 10, 13, 16, 19, 22, 25, 31, 34]
 ```
+
+### Narrow-state filter-width variant (MOR-4428)
+
+On `table_index` radios (Yaesu SH), the same width code can map to a
+different Hz value depending on the NARROW state. A per-mode rule may
+declare the narrow variant alongside the wide table:
+
+```toml
+[filters.width.SSB]
+defaults = [2400, 1800, 500]
+table = [2400, 2600, 3000, 3200, 4000]
+narrow_table = [1500, 1800, 2000]
+```
+
+While NARROW is on, an SH code maps through `narrow_table` instead of
+`table`. The backend reads the narrow state
+(`get_narrow`/`get_narrow_sub`) before mapping SH in both the width read
+and the width write — but only for modes whose rule declares the
+variant; modes without one issue no extra narrow query.
+
+Loader rules (`rig_loader.py: _validate_filter_narrow_variant`): a narrow
+variant is rejected unless `[filters].encoding` is `"table_index"`, the
+rule is not `fixed`, the rule has a non-empty `table`, `narrow_table` is
+non-empty and strictly increasing, and the profile declares the narrow read (`[commands].get_narrow`, plus
+`get_narrow_sub` on a multi-receiver profile). Absent narrow data keeps
+today's single-table behavior.
+
+### Per-table wire-code bases (MOR-4433)
+
+The narrow and wide tables may sit at DIFFERENT code ranges of one code
+space (FT-991A SH table: SSB narrow codes 01-09 but wide codes 09-21, CW
+narrow 01-10 but wide 10-17). A per-mode rule may therefore declare the
+wide table's base alongside it:
+
+```toml
+[filters.width.SSB]
+table = [1800, 1950, 2100, 2200, 2300, 2400, 2500, 2600, 2700, 2800, 2900, 3000, 3200]
+narrow_table = [200, 400, 600, 850, 1100, 1350, 1500, 1650, 1800]
+first_code = 9          # the wide table counts from code 09
+narrow_first_code = 1   # the narrow table counts from code 01
+```
+
+Both fields are optional: an absent field falls back to the profile-level
+`[filters] first_code`, which is the behavior every pre-MOR-4433 profile
+keeps. The backend resolves the base for the table in effect (narrow
+state first, as for the table itself) in both the width read and the
+width write; a code outside the active table's range keeps today's
+out-of-table handling.
+
+Loader rules (`rig_loader.py: _validate_filter_table_first_codes`): the
+fields need `[filters].encoding` `"table_index"`, are rejected on a
+`fixed` rule, `first_code` needs a `table`, `narrow_first_code` needs a
+`narrow_table`, each present value must be a non-negative integer, and
+each present base must sit above `[filters].radio_default_code` (the same
+below-the-table rule the profile-level `first_code` follows).
 
 ### RF power write quantum
 

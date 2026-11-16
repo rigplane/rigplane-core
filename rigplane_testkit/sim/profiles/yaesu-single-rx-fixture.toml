@@ -5,7 +5,7 @@ schema = "rigplane-sim-profile/1"
 id = "yaesu-single-rx-fixture"
 radio = "Yaesu single RX fixture"
 fidelity = "C"
-gaps = ["Synthetic fixture: no hardware recording; split, frequency, swap and directional copy only."]
+gaps = ["Synthetic fixture: no hardware recording; split, frequency, swap, directional copy, narrow-state (NA) and raw filter-width-code (SH) verbs only."]
 
 [transport.yaesu_cat]
 baud = 38400

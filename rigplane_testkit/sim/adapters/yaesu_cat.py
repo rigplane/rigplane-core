@@ -35,6 +35,7 @@ import errno
 import json
 import logging
 import math
+import re
 import time
 import weakref
 from collections import deque
@@ -44,6 +45,7 @@ from typing import TYPE_CHECKING
 
 from rigplane.profiles.rig_loader import load_rig
 
+from rigplane_testkit.fixture_rows import read_cat_rows
 from rigplane_testkit.sim.engine import ManualClock, Ok, SetFrequency
 from rigplane_testkit.sim.model.yaesu_cat import (
     YaesuCatModel,
@@ -81,9 +83,7 @@ def _recorded_table(root: Path, profile: SimProfile) -> RecordedCatAnswerTable:
         raise ValueError(f"{profile.sim.id}: an [answers] recorded entry is required")
     file, _transport = profile.answers.recorded[0]
     path = root / file
-    lines = path.read_text(encoding="utf-8").splitlines()
-    rows = [json.loads(line) for line in lines if line.strip()]
-    table = RecordedCatAnswerTable.from_cat_pairs(rows)
+    table = RecordedCatAnswerTable.from_cat_pairs(read_cat_rows(path))
     if not any(
         (answer := table.lookup(request)) is not None and answer.reply is not None
         for request in table.requests()
@@ -104,16 +104,56 @@ def _build_seeded_model(
     """A fresh engine + model seeded from the recording's own replies."""
     if not rig.expected_identity_ids:
         raise ValueError(f"{rig.model!r}: [identity].expected_ids is empty")
-    engine = build_ftx1_engine(profile, rig, clock=clock, seed=seed)
+    squelch_max = _squelch_top_for(rig)
+    engine = build_ftx1_engine(
+        profile, rig, clock=clock, seed=seed, squelch_max=squelch_max
+    )
     model = YaesuCatModel(
         engine,
         identity=rig.expected_identity_ids[0],
         recorded=recorded,
         direct_vfo_slots=rig.receiver_count == 1 and rig.vfo_scheme == "ab",
+        width_digits=_sh_code_digits(rig),
+        squelch_max=squelch_max,
+        support_if="get_if_status" in (rig.commands or {}),
         on_not_modelled=on_not_modelled,
     )
     seed_from_recording(model, recorded)
     return model
+
+
+def _squelch_top_for(rig: RigConfig) -> int | None:
+    """SQ top from the loaded capability profile (MOR-4433).
+
+    ``None`` when the profile declares no squelch read (FT-991A v1): the
+    sim leaves ``SQ`` unanswered. Otherwise the published
+    ``[controls.squelch]`` top (255 on the FTX-1); an unpublished or
+    malformed top keeps the historical 255.
+    """
+    if "get_squelch" not in (rig.commands or {}):
+        return None
+    controls = rig.controls or {}
+    entry = controls.get("squelch")
+    raw_max = entry.get("raw_max") if isinstance(entry, dict) else None
+    if type(raw_max) is not int or raw_max < 0:
+        return 255
+    return raw_max
+
+
+def _sh_code_digits(rig: RigConfig) -> int:
+    """Width-code digits from the loaded SH command contract (MOR-4433).
+
+    Reads ``get_filter_width``'s parse template (``SH0{code:02d};`` on the
+    FT-991A, ``SH0{code:03d};`` on the fixture/FTX-1) so the sim echoes the
+    shape the radio under test writes and parses. Unknown or absent
+    contracts keep the historical 3-digit shape.
+    """
+    spec = rig.commands.get("get_filter_width")
+    template = getattr(spec, "parse", "") or ""
+    match = re.search(r"\{code:0(\d+)d\}", template)
+    if match is None:
+        return 3
+    return int(match.group(1))
 
 
 def recorded_divergences(

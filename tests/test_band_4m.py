@@ -44,6 +44,7 @@ from rigplane.profiles.rig_loader import discover_rigs
 from rigplane.web.radio_poller import RadioPoller
 from rigplane.web.server import WebConfig, WebServer
 from rigplane_testkit.serial import CivSerialFake
+from support.command_consumer import run_command_consumer
 from test_band_plan_vhf import (
     _copy_plans,
     _get_segments_json,
@@ -186,16 +187,14 @@ async def _station(
     entries: list[Any] = []
     executed = asyncio.Event()
 
-    async def consume() -> None:
-        while True:
-            await web.command_queue.wait(2)
-            entry = web.command_queue.take_entry()
-            assert entry is not None
-            entries.append(entry)
-            await poller._execute_queued_entry(entry)
-            executed.set()
-
-    consumer = asyncio.create_task(consume())
+    consumer = asyncio.create_task(
+        run_command_consumer(
+            web.command_queue,
+            poller._execute_queued_entry,
+            entries=entries,
+            executed=executed,
+        )
+    )
     try:
         yield web, radio, fake, entries, executed
     finally:

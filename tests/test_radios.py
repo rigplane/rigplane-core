@@ -50,12 +50,14 @@ class TestRadioModels:
 
     def test_lan_capable_radios(self) -> None:
         # All Icom rigs in this registry are LAN-capable. The Xiegu X6200
-        # and G7250 are the USB-only entries; documented as the
-        # exceptions so future non-LAN rigs don't trip this assertion.
-        lan_capable = set(RADIOS) - {"X6200", "G7250"}
+        # is the USB-only entry; the G7250 gained wfview-mode LAN control
+        # (LIVE G7250 LAN 2026-11-13, MOR-4436). Documented as the
+        # exception so future non-LAN rigs don't trip this assertion.
+        lan_capable = set(RADIOS) - {"X6200"}
         for name in lan_capable:
             assert RADIOS[name].has_lan, f"{name} should have LAN"
         assert RADIOS["X6200"].has_lan is False
+        assert RADIOS["G7250"].has_lan is True
 
 
 class TestGetCivAddr:

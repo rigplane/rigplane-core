@@ -250,7 +250,13 @@ class SoapySourceSpec:
 
 @dataclass(frozen=True)
 class UdpIqSourceSpec:
-    """Wire facts for a radio-owned UDP IQ stream; host is configuration."""
+    """Wire facts for a radio-owned UDP IQ stream; host is configuration.
+
+    ``receive_port = 0`` means "the OS picks a free port when the source
+    binds"; the bound port is then reported by the source (see
+    :attr:`XieguUdpIqSource.bound_receive_port`). Radio profiles keep
+    requiring an explicit 1..65535 port; 0 is a programmatic/test affordance.
+    """
 
     host: str
     radio_port: int
@@ -284,9 +290,10 @@ class UdpIqSourceSpec:
             or not isinstance(self.usable_bandwidth_hz, int)
         ):
             raise ValueError("usable_bandwidth_hz: must be an integer or None")
-        for name in ("radio_port", "receive_port"):
-            if not 1 <= getattr(self, name) <= 65_535:
-                raise ValueError(f"{name}: must be in 1..65535")
+        if not 1 <= self.radio_port <= 65_535:
+            raise ValueError("radio_port: must be in 1..65535")
+        if not 0 <= self.receive_port <= 65_535:
+            raise ValueError("receive_port: must be in 0..65535 (0 = OS picks)")
         if self.sample_rate_hz <= 0:
             raise ValueError("sample_rate_hz: must be positive")
         if self.samples_per_datagram <= 0:

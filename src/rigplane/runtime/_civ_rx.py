@@ -743,7 +743,7 @@ class CivRuntime:
         # Past that point the host state is not CONNECTED, so "this task is
         # the recorded one AND the host is CONNECTED again" means the session
         # is re-established and the task is only running its tail
-        # (identity revalidation, TX re-arm, audio re-arm). Cleared when the
+        # (TX re-arm, audio re-arm). Cleared when the
         # recorded task ends. A busy=0 notice in that state means the radio
         # dropped the session AGAIN, so the tail gives way to a fresh
         # recovery (MOR-3350); anything earlier is still re-establishing.
@@ -755,7 +755,7 @@ class CivRuntime:
             tuple[asyncio.Task[None], asyncio.Task[None]] | None
         ) = None
         self._soft_recovery_epoch: int | None = None
-        self._raw_received_frame_bytes: dict[int, bytes] = {}
+        self._raw_received_frame_bytes: dict[int, tuple[CivFrame, bytes]] = {}
         self._ptt_observer: Callable[[ProviderPttObservation], None] | None = None
         self._ptt_observer_provider_generation: int | None = None
         self._ptt_observer_civ_generation: int | None = None
@@ -1097,11 +1097,6 @@ class CivRuntime:
 
     def start_data_watchdog(self) -> None:
         """Start CI-V data watchdog task."""
-        identity_pending = getattr(
-            self._host, "_lan_identity_unanswered_for_current_epoch", None
-        )
-        if identity_pending is not None and identity_pending():
-            return
         task = self._host._civ_data_watchdog_task
         if task is not None and not task.done():
             return
@@ -1289,6 +1284,7 @@ class CivRuntime:
                 pending_or_token = self._host._civ_request_tracker.register_ack(
                     wait=True,
                     consume_backlog=False,
+                    write_identity=read_identity_from_frame(parsed_frame),
                 )
                 if isinstance(pending_or_token, int):
                     raise RuntimeError("ACK waiter registration returned sink token")
@@ -1498,8 +1494,14 @@ class CivRuntime:
     def _remember_raw_received_frame_bytes(
         self, frame: CivFrame, frame_bytes: bytes
     ) -> None:
-        """Keep exact inbound bytes for parsed frames returned through futures."""
-        self._raw_received_frame_bytes[id(frame)] = bytes(frame_bytes)
+        """Keep exact inbound bytes for parsed frames returned through futures.
+
+        The frame is kept, not just its ``id``: ids of freed frames are
+        reused, and a take for a frame that was never remembered (the
+        synthesized FB of an echo-confirmed write) must miss rather than
+        hit a stale entry's bytes.
+        """
+        self._raw_received_frame_bytes[id(frame)] = (frame, bytes(frame_bytes))
         while len(self._raw_received_frame_bytes) > _RAW_RECEIVED_FRAME_BYTES_LIMIT:
             self._raw_received_frame_bytes.pop(
                 next(iter(self._raw_received_frame_bytes))
@@ -1507,7 +1509,8 @@ class CivRuntime:
 
     def _take_raw_received_frame_bytes(self, frame: CivFrame) -> bytes | None:
         """Return exact inbound bytes for a parsed frame when still available."""
-        return self._raw_received_frame_bytes.pop(id(frame), None)
+        taken = self._raw_received_frame_bytes.pop(id(frame), None)
+        return taken[1] if taken is not None else None
 
     def start_worker(self) -> None:
         """Start serialized CI-V commander."""
@@ -1792,8 +1795,7 @@ class CivRuntime:
         """Start the detached recovery now, unless one is already under way.
 
         A radio "session free" notice calls this from the datagram callback.
-        It is a no-op unless the session is CONNECTED or held by the identity
-        phase (``_lan_identity_phase_owns_open_link``), no recovery is already
+        It is a no-op unless the session is CONNECTED, no recovery is already
         flagged, and no recovery task is still running — with one exception: a
         notice that arrives while a live recovery has already re-established
         the session (``_conn_state`` CONNECTED again while the recorded task
@@ -1801,10 +1803,7 @@ class CivRuntime:
         dropped the session AGAIN, so the tail gives way to a fresh recovery.
         Every ignored notice logs exactly one line carrying the reason.
         """
-        owns_hold = getattr(self._host, "_lan_identity_phase_owns_open_link", None)
-        if self._host._conn_state != RadioConnectionState.CONNECTED and not (
-            owns_hold is not None and owns_hold()
-        ):
+        if self._host._conn_state != RadioConnectionState.CONNECTED:
             logger.info(
                 "civ-data-watchdog: notice ignored (%s): "
                 "no session to recover (state=%s)",
@@ -1866,9 +1865,8 @@ class CivRuntime:
         cancelled run finishes). The slot already holds the new task — the old
         run's ``finally`` only clears the slot when it still holds itself.
 
-        Re-arms in ``finally`` after uncancelled recovery (#1217). An identity
-        hold keeps it paused until acceptance; a released control session has
-        no stream to watch.
+        Re-arms in ``finally`` after uncancelled recovery (#1217). A released
+        control session has no stream to watch.
         """
         owner_stop_epoch = self._host._owner_stop_epoch
         escalate = full_reconnect_reason is not None or (
@@ -1975,7 +1973,7 @@ class CivRuntime:
         no-op when a healthy watchdog was already re-armed by a successful
         ``soft_reconnect``/``connect``, so this is safe to call unconditionally.
 
-        A released control session or an identity hold prevents re-arming.
+        A released control session prevents re-arming.
         """
         current = asyncio.current_task()
         if self._reconnect_task is current:
@@ -2169,6 +2167,24 @@ class CivRuntime:
                     scope_frame, receiver=receiver, frame=frame
                 )
                 self._publish_scope_frame(scope_frame)
+            return
+
+        if frame.command not in (
+            0xFB,
+            0xFA,
+        ) and self._host._civ_request_tracker.resolve_write_echo(
+            frame, generation=generation
+        ):
+            logger.debug(
+                "civ-rx: write confirmed by echo cmd=0x%02X sub=0x%02X",
+                frame.command,
+                frame.sub or 0,
+            )
+            self._update_state_cache_from_frame(
+                frame,
+                source_generation=generation,
+                store_provider_generation=store_provider_generation,
+            )
             return
 
         if frame.command == 0xFB:
@@ -4767,6 +4783,11 @@ class CivRuntime:
                 refused_read=(
                     read_identity_from_frame(parsed_frame) if expects_response else None
                 ),
+                write_identity=(
+                    read_identity_from_frame(parsed_frame)
+                    if not expects_response
+                    else None
+                ),
             )
             if isinstance(token_or_future, int):
                 ack_sink_token = token_or_future
@@ -4854,6 +4875,7 @@ class CivRuntime:
                 pending_or_token = tracker.register_ack(
                     wait=True,
                     consume_backlog=False,
+                    write_identity=read_identity_from_frame(parsed_frame),
                 )
                 if isinstance(pending_or_token, int):
                     raise RuntimeError("ACK waiter registration returned sink token")

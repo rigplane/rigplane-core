@@ -399,3 +399,131 @@ async def test_without_a_table_the_fake_is_unchanged() -> None:
     echo, reply = await _roundtrip(fake, request)
     assert echo == request
     assert parse_civ_frame(reply).data == b"\x00\x40\x07\x14\x00"
+
+
+# Recorded silence: a request whose reply row is absent was recorded as
+# "the radio did not answer" -- the fake stays silent for it, and keeps the
+# NAK fallback for a request the recording never saw.
+_SILENT_TABLE_ROWS = [
+    {
+        "window": "w",
+        "transport": "usb",
+        "t": 0.1,
+        "dir": "c2r",
+        "frame": "fefe98e07ffd",  # a recorded request nothing answered
+    },
+    {
+        "window": "w",
+        "transport": "usb",
+        "t": 0.2,
+        "dir": "c2r",
+        "frame": "fefe98e0140afd",
+    },
+    {
+        "window": "w",
+        "transport": "usb",
+        "t": 0.201,
+        "dir": "r2c",
+        "frame": "fefee098140a0013fd",
+    },
+]
+
+
+@pytest.mark.realtime(
+    reason="asserts that nothing arrives: a negative wait only the real clock bounds"
+)
+async def test_recorded_silence_is_not_answered() -> None:
+    table = RecordedAnswerTable.from_civ_pairs(_SILENT_TABLE_ROWS, "usb")
+    fake = CivSerialFake(recorded_answers=table)
+    reader, writer = await fake.open_serial_connection()
+    writer.write(_to_fake(fake, "7f"))
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(reader.read(512), timeout=0.2)
+
+
+@pytest.mark.realtime(reason="serial reads are bounded by the real clock")
+async def test_unrecorded_request_is_still_naked_beside_recorded_silence() -> None:
+    table = RecordedAnswerTable.from_civ_pairs(_SILENT_TABLE_ROWS, "usb")
+    fake = CivSerialFake(recorded_answers=table)
+    (reply,) = await _roundtrip(fake, _to_fake(fake, "7e"), replies=1)
+    assert parse_civ_frame(reply).command == 0xFA
+    (recorded,) = await _roundtrip(fake, _to_fake(fake, "140a"), replies=1)
+    assert parse_civ_frame(recorded).data == b"\x00\x13"
+
+
+# capture_replay=True: a request the recording knows (reply, refusal, silence)
+# is answered from it before any native handler, so a replay reproduces the
+# capture. A request the recording never saw falls to the native handler. With
+# the default (False) the native handlers keep precedence, as before.
+_NATIVE_READ_ROWS = [
+    {
+        "window": "w",
+        "transport": "usb",
+        "t": 0.1,
+        "dir": "c2r",
+        "frame": "fefe98e003fd",  # a frequency read the radio refused
+    },
+    {
+        "window": "w",
+        "transport": "usb",
+        "t": 0.101,
+        "dir": "r2c",
+        "frame": "fefee098fafd",
+    },
+    {
+        "window": "w",
+        "transport": "usb",
+        "t": 0.2,
+        "dir": "c2r",
+        "frame": "fefe98e004fd",  # a mode read nothing answered
+    },
+]
+
+
+def _native_read_fake(*, capture_replay: bool) -> CivSerialFake:
+    table = RecordedAnswerTable.from_civ_pairs(_NATIVE_READ_ROWS, "usb")
+    return CivSerialFake(recorded_answers=table, capture_replay=capture_replay)
+
+
+@pytest.mark.realtime(reason="serial reads are bounded by the real clock")
+async def test_capture_replay_reproduces_a_recorded_data_reply() -> None:
+    fake = CivSerialFake(recorded_answers=_recorded_table(), capture_replay=True)
+    (reply,) = await _roundtrip(fake, _to_fake(fake, "03"), replies=1)
+    assert parse_civ_frame(reply).data == b"\x00\x60\x28\x14\x00"  # not native
+
+
+@pytest.mark.realtime(reason="serial reads are bounded by the real clock")
+async def test_capture_replay_reproduces_a_recorded_refusal() -> None:
+    fake = _native_read_fake(capture_replay=True)
+    (reply,) = await _roundtrip(fake, _to_fake(fake, "03"), replies=1)
+    assert parse_civ_frame(reply).command == 0xFA
+
+
+@pytest.mark.realtime(
+    reason="asserts that nothing arrives: a negative wait only the real clock bounds"
+)
+async def test_capture_replay_reproduces_recorded_silence() -> None:
+    fake = _native_read_fake(capture_replay=True)
+    reader, writer = await fake.open_serial_connection()
+    writer.write(_to_fake(fake, "04"))
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(reader.read(512), timeout=0.2)
+
+
+@pytest.mark.realtime(reason="serial reads are bounded by the real clock")
+async def test_capture_replay_answers_an_unrecorded_read_natively() -> None:
+    fake = _native_read_fake(capture_replay=True)
+    (reply,) = await _roundtrip(fake, _to_fake(fake, "1900"), replies=1)
+    assert parse_civ_frame(reply).data == fake.model_id
+
+
+@pytest.mark.realtime(reason="serial reads are bounded by the real clock")
+@pytest.mark.parametrize(
+    ("body", "command"), [("03", 0x03), ("04", 0x04)], ids=["frequency", "mode"]
+)
+async def test_without_capture_replay_native_reads_win_over_the_recording(
+    body: str, command: int
+) -> None:
+    fake = _native_read_fake(capture_replay=False)
+    (reply,) = await _roundtrip(fake, _to_fake(fake, body), replies=1)
+    assert parse_civ_frame(reply).command == command  # native data, not NAK/silence

@@ -18,11 +18,30 @@ expected_ids = ["9999"]
 features = ["split", "vfo_swap"]
 
 [modes]
-list = ["USB", "LSB"]
-codes = ["2", "1"]
+list = ["USB", "LSB", "CW", "FM"]
+codes = ["2", "1", "3", "4"]
 
 [filters]
 list = ["FIL1"]
+encoding = "table_index"
+first_code = 0
+
+# TEST-ONLY narrow/wide SH tables (MOR-4428): SH00 reads 2400 Hz wide and
+# 1500 Hz narrow on SSB; CW has its own pair; FM is a fixed-width mode.
+[filters.width.SSB]
+defaults = [2400, 1800, 500]
+table = [2400, 2600, 3000, 3200, 4000]
+narrow_table = [1500, 1800, 2000]
+
+[filters.width.CW]
+defaults = [500, 300, 100]
+table = [500, 800, 1200, 2400]
+narrow_table = [200, 300, 500]
+
+[filters.width.FM]
+fixed = true
+defaults = [9000]
+table = [9000]
 
 [vfo]
 scheme = "ab"
@@ -53,6 +72,12 @@ end_hz = 470000000
 [commands]
 get_freq = { cat = { read = "FA;", parse = "FA{freq:09d};" } }
 set_freq = { cat = { write = "FA{freq:09d};" } }
+get_mode = { cat = { read = "MD0;", parse = "MD0{mode};" } }
+set_mode = { cat = { write = "MD0{mode};" } }
+get_filter_width = { cat = { read = "SH0;", parse = "SH0{code:03d};" } }
+set_filter_width = { cat = { write = "SH0{code:03d};" } }
+get_narrow = { cat = { read = "NA0;", parse = "NA0{state};" } }
+set_narrow = { cat = { write = "NA0{state};" } }
 get_freq_sub = { cat = { read = "FB;", parse = "FB{freq:09d};" } }
 set_freq_sub = { cat = { write = "FB{freq:09d};" } }
 get_split = { cat = { read = "FT;", parse = "FT{state};" } }

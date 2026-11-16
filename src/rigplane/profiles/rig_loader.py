@@ -12,7 +12,10 @@ from fractions import Fraction
 from importlib import resources
 from importlib.resources.abc import Traversable
 from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
+
+if TYPE_CHECKING:
+    from rigplane.profiles.probe_checks import ProbeCheck
 
 from rigplane.core.capabilities import (
     CAP_FILTER_WIDTH_RADIO_DEFAULT,
@@ -44,6 +47,7 @@ from rigplane.profiles.control_domain import (
     _public_decimal,
     validate_control_raw_value,
 )
+from rigplane.profiles.probe_checks import RadioFacts, parse_probe_checks
 
 __all__ = [
     "RigConfig",
@@ -63,6 +67,7 @@ from rigplane.commands.command_spec import (
     CommandSpec,
 )
 from rigplane.profiles import (
+    selector_one_is_sub,
     BandInfo,
     CwTextSpec,
     ControlDomainSpec,
@@ -651,6 +656,29 @@ def _parse_control_spec(
 
 
 @dataclass(frozen=True, slots=True)
+class TxFuncTarget:
+    """One FT (TX function) answer's meaning: receiver + optional A/B slot."""
+
+    receiver: str
+    slot: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class TxFuncSpec:
+    """Profile-declared FT answer and write encodings.
+
+    ``read_map`` translates the ``get_tx_func`` answer digit to the
+    transmitting receiver (and, on single-receiver ``ab`` profiles, the
+    A/B slot whose frequency was read). ``write_map`` translates the
+    ``set_tx_func`` 0/1 selector to the wire digit (identity on radios
+    like the FTX-1, ``2``/``3`` on the FT-991A).
+    """
+
+    read_map: dict[str, TxFuncTarget]
+    write_map: dict[int, str]
+
+
+@dataclass(frozen=True, slots=True)
 class SplitSpec:
     """CAT split value encodings, separate from command templates."""
 
@@ -691,6 +719,74 @@ def _parse_split(filename: str, raw: object) -> SplitSpec:
     return SplitSpec(
         write_map={False: cast(str, write["off"]), True: cast(str, write["on"])},
         read_map={cast(str, key): value == "on" for key, value in read.items()},
+    )
+
+
+def _parse_tx_func(filename: str, raw: object, scheme: str) -> TxFuncSpec | None:
+    """Parse the optional ``[vfo.tx_func]`` FT answer/write map."""
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise RigLoadError(f"{filename}: [vfo.tx_func] must be a table")
+    _reject_unknown_keys(
+        filename, "[vfo.tx_func]", raw, frozenset({"read_map", "write_map"})
+    )
+    read = raw.get("read_map")
+    if (
+        not isinstance(read, dict)
+        or set(read) != {"0", "1"}
+        or not all(isinstance(value, str) and value for value in read.values())
+    ):
+        raise RigLoadError(
+            f"{filename}: [vfo.tx_func].read_map must map "
+            '"0" and "1" to non-empty targets'
+        )
+    targets: dict[str, TxFuncTarget] = {}
+    for answer, target in read.items():
+        parts = cast(str, target).split(":")
+        receiver, slot = (parts[0], None) if len(parts) == 1 else (parts[0], parts[1])
+        if (
+            len(parts) not in (1, 2)
+            or receiver not in ("MAIN", "SUB")
+            or (slot is not None and slot not in ("A", "B"))
+        ):
+            raise RigLoadError(
+                f"{filename}: [vfo.tx_func].read_map[{answer!r}] must be "
+                '"MAIN", "SUB", "MAIN:A" or "MAIN:B", '
+                f"got {target!r}"
+            )
+        if scheme == "ab":
+            if receiver != "MAIN" or slot is None:
+                raise RigLoadError(
+                    f"{filename}: [vfo.tx_func] on the ab scheme names "
+                    f"MAIN with an A/B slot, got {target!r}"
+                )
+        elif scheme in ("ab_shared", "main_sub"):
+            if slot is not None:
+                raise RigLoadError(
+                    f"{filename}: [vfo.tx_func] on the {scheme} scheme names "
+                    f"MAIN/SUB with no slot, got {target!r}"
+                )
+        elif receiver != "MAIN" or slot is not None:
+            raise RigLoadError(
+                f"{filename}: [vfo.tx_func] on the {scheme} scheme names "
+                f"MAIN with no slot, got {target!r}"
+            )
+        targets[cast(str, answer)] = TxFuncTarget(receiver=receiver, slot=slot)
+    write = raw.get("write_map")
+    if (
+        not isinstance(write, dict)
+        or set(write) != {"0", "1"}
+        or not all(isinstance(value, str) and value for value in write.values())
+        or write["0"] == write["1"]
+    ):
+        raise RigLoadError(
+            f"{filename}: [vfo.tx_func].write_map must map "
+            '"0" and "1" to distinct non-empty wire digits'
+        )
+    return TxFuncSpec(
+        read_map=targets,
+        write_map={0: cast(str, write["0"]), 1: cast(str, write["1"])},
     )
 
 
@@ -821,6 +917,7 @@ class RigConfig:
     state_acquisition: RadioAcquisitionProfile | None = None
     tx_policy: TxPolicy = field(default_factory=TxPolicy)
     split: SplitSpec = field(default_factory=SplitSpec)
+    tx_func: TxFuncSpec | None = None
     ctcss_tones_centihz: tuple[int, ...] | None = None
     tone_squelch_types: dict[int, ToneSquelchType] | None = None
     # Protocol-native expected identity tokens (MOR-3064), from the optional
@@ -844,6 +941,10 @@ class RigConfig:
     # non-Xiegu profile. Keyword-only so no positional argument shifts.
     xiegu_model_id: int | None = field(default=None, kw_only=True)
     iq_lan: IqLanSpec | None = field(default=None, kw_only=True)
+    # Typed ``[[probe.checks]]`` write checks (MOR-4464 B1), from the
+    # optional top-level ``[probe]`` section. Empty when not declared.
+    # Keyword-only so no positional argument shifts.
+    probe_checks: tuple[ProbeCheck, ...] = field(default=(), kw_only=True)
 
     def to_profile(self) -> RadioProfile:
         """Build a ``RadioProfile`` from this config."""
@@ -971,6 +1072,7 @@ class RigConfig:
             vfo_readback=self.vfo_readback,
             tx_receiver_rule=self.tx_receiver_rule,
             split_tx_target=self.split_tx_target,
+            tx_func=self.tx_func,
             has_lan=self.has_lan,
             freq_ranges=ranges,
             modes=tuple(self.modes),
@@ -2812,6 +2914,136 @@ def _validate_band_max_power(
                 )
 
 
+def _parse_optional_first_code(
+    filename: str, mode_key: str, raw_rule: dict[str, Any], field: str
+) -> int | None:
+    """Parse one optional per-rule wire-code base (MOR-4433).
+
+    ``None`` (absent) keeps the profile-level ``[filters] first_code``;
+    a present value must be a non-negative integer (bools excluded —
+    ``isinstance(True, int)`` would otherwise admit them).
+    """
+    raw = raw_rule.get(field)
+    if raw is None:
+        return None
+    if isinstance(raw, bool) or not isinstance(raw, int) or raw < 0:
+        raise RigLoadError(
+            f"{filename}: [filters.width.{mode_key}].{field} must be "
+            f"a non-negative integer, got {raw!r}"
+        )
+    return raw
+
+
+def _validate_filter_table_first_codes(
+    filename: str,
+    filter_width_encoding: str,
+    filter_width_radio_default_code: int | None,
+    filter_config: dict[str, FilterWidthRule] | None,
+) -> None:
+    """Validate the optional per-table wire-code bases (MOR-4433).
+
+    A rule may carry its own base for the wide ``table`` (``first_code``)
+    and for the narrow ``narrow_table`` (``narrow_first_code``) — the
+    FT-991A SH space counts the wide table from 09/10 while the narrow
+    table counts from 01. Absent fields fall back to the profile-level
+    ``[filters] first_code`` (every pre-MOR-4433 profile), so only rules
+    that set at least one field are checked here.
+    """
+    for mode_key in sorted((filter_config or {}).keys()):
+        rule = (filter_config or {})[mode_key]
+        if rule.first_code is None and rule.narrow_first_code is None:
+            continue
+        where = f"{filename}: [filters.width.{mode_key}]"
+        if filter_width_encoding != "table_index":
+            raise RigLoadError(
+                f"{where} per-table first codes need [filters].encoding "
+                f'"table_index", got {filter_width_encoding!r}'
+            )
+        if rule.fixed:
+            raise RigLoadError(
+                f"{where} per-table first codes are rejected on a fixed-width mode"
+            )
+        if rule.first_code is not None and not rule.table:
+            raise RigLoadError(
+                f"{where}.first_code needs a [filters.width.{mode_key}].table"
+            )
+        if rule.narrow_first_code is not None and not rule.narrow_table:
+            raise RigLoadError(
+                f"{where}.narrow_first_code needs a "
+                f"[filters.width.{mode_key}].narrow_table"
+            )
+        if filter_width_radio_default_code is not None:
+            for field, base in (
+                ("first_code", rule.first_code),
+                ("narrow_first_code", rule.narrow_first_code),
+            ):
+                if base is not None and not filter_width_radio_default_code < base:
+                    raise RigLoadError(
+                        f"{where}.{field} ({base}) must sit above "
+                        "[filters].radio_default_code "
+                        f"({filter_width_radio_default_code}): a default "
+                        "among the table codes would be a table entry, "
+                        "not the radio's default"
+                    )
+
+
+def _validate_filter_narrow_variant(
+    filename: str,
+    filter_width_encoding: str,
+    filter_config: dict[str, FilterWidthRule] | None,
+    commands: dict[str, Any],
+    receiver_count: int,
+) -> None:
+    """Validate the optional narrow-state filter-width variant (MOR-4428).
+
+    A mode rule may carry ``narrow_table``: while NARROW is on, an SH code maps through the
+    narrow table instead of ``table``. Absent narrow data keeps exactly
+    today's behavior — the loader leaves the tuples empty and no narrow
+    read is ever issued for the mode.
+    """
+
+    def _has_readable(name: str) -> bool:
+        spec = commands.get(name)
+        if spec is None or isinstance(spec, AbsentCommandSpec):
+            return False
+        read = getattr(spec, "read", None)
+        return isinstance(read, str) and bool(read)
+
+    for mode_key in sorted((filter_config or {}).keys()):
+        rule = (filter_config or {})[mode_key]
+        where = f"{filename}: [filters.width.{mode_key}]"
+        if not rule.narrow_table:
+            continue
+        if filter_width_encoding != "table_index":
+            raise RigLoadError(
+                f"{where}.narrow_table needs [filters].encoding "
+                '"table_index", '
+                f"got {filter_width_encoding!r}"
+            )
+        if rule.fixed:
+            raise RigLoadError(
+                f"{where}.narrow_table is rejected on a fixed-width mode"
+            )
+        if not rule.table:
+            raise RigLoadError(
+                f"{where}.narrow_table needs a [filters.width.{mode_key}].table"
+            )
+        if any(
+            first >= second
+            for first, second in zip(rule.narrow_table, rule.narrow_table[1:])
+        ):
+            raise RigLoadError(f"{where}.narrow_table must be strictly increasing")
+        if not _has_readable("get_narrow"):
+            raise RigLoadError(
+                f"{where}.narrow_table needs a [commands].get_narrow read"
+            )
+        if receiver_count > 1 and not _has_readable("get_narrow_sub"):
+            raise RigLoadError(
+                f"{where}.narrow_table needs a [commands].get_narrow_sub "
+                "read on a multi-receiver profile"
+            )
+
+
 def load_rig(path: Path) -> RigConfig:
     """Load and validate a rig TOML file.
 
@@ -2961,6 +3193,7 @@ def load_rig(path: Path) -> RigConfig:
             f"{filename}: [vfo].scheme must be one of {VALID_VFO_SCHEMES}, "
             f"got {scheme!r}"
         )
+    tx_func = _parse_tx_func(filename, vfo.get("tx_func"), scheme)
     vfo_readback = vfo.get("readback", "none")
     if vfo_readback not in VALID_VFO_READBACK:
         raise RigLoadError(
@@ -3080,8 +3313,16 @@ def load_rig(path: Path) -> RigConfig:
             )
             defaults_raw = raw_rule.get("defaults", [])
             table_raw = raw_rule.get("table", [])
+            narrow_table_raw = raw_rule.get("narrow_table", [])
             filter_config[str(mode_key).upper()] = FilterWidthRule(
                 defaults=tuple(int(value) for value in defaults_raw),
+                narrow_table=tuple(int(v) for v in narrow_table_raw),
+                first_code=_parse_optional_first_code(
+                    filename, mode_key, raw_rule, "first_code"
+                ),
+                narrow_first_code=_parse_optional_first_code(
+                    filename, mode_key, raw_rule, "narrow_first_code"
+                ),
                 fixed=bool(raw_rule.get("fixed", False)),
                 step_hz=(int(raw_rule["step_hz"]) if "step_hz" in raw_rule else None),
                 pbt_step_hz=(
@@ -3117,6 +3358,18 @@ def load_rig(path: Path) -> RigConfig:
         # Apply overrides
         for key, value in overrides.items():
             commands[key] = _parse_command_value(filename, key, value)
+    # The FT answer/write map and its commands come as a pair, either way:
+    # a command without the map has no declared meaning, and a map with no
+    # command has no caller.
+    has_tx_func_commands = "get_tx_func" in commands or "set_tx_func" in commands
+    if has_tx_func_commands and tx_func is None:
+        raise RigLoadError(
+            f"{filename}: get/set_tx_func is declared without [vfo.tx_func]"
+        )
+    if tx_func is not None and not has_tx_func_commands:
+        raise RigLoadError(
+            f"{filename}: [vfo.tx_func] is declared without get/set_tx_func"
+        )
     tone_squelch_types = _resolve_tone_squelch_types(path, data, commands)
 
     # Parse freq_ranges
@@ -3857,6 +4110,20 @@ def load_rig(path: Path) -> RigConfig:
             CAP_FILTER_WIDTH_RADIO_DEFAULT,
         )
 
+    _validate_filter_narrow_variant(
+        filename,
+        filter_width_encoding,
+        filter_config,
+        commands,
+        receiver_count,
+    )
+    _validate_filter_table_first_codes(
+        filename,
+        filter_width_encoding,
+        filter_width_radio_default_code,
+        filter_config,
+    )
+
     return RigConfig(
         id=radio["id"],
         model=radio["model"],
@@ -3954,11 +4221,30 @@ def load_rig(path: Path) -> RigConfig:
         state_acquisition=state_acquisition,
         tx_policy=tx_policy,
         split=split,
+        tx_func=tx_func,
         expected_identity_ids=expected_identity_ids,
         memory=memory,
         cw_text=cw_text,
         usb_identity=usb_identity,
         iq_lan=iq_lan,
+        probe_checks=parse_probe_checks(
+            filename,
+            data.get("probe"),
+            facts=RadioFacts(
+                protocol=protocol_type,
+                commands=commands,
+                modes=tuple(modes),
+                mode_codes=None if mode_codes is None else tuple(mode_codes),
+                cmd29_routes=frozenset(cmd29_routes),
+                swap_ab=vfo_swap_ab,
+                swap_main_sub=vfo_swap_main_sub,
+                unselected_is_sub=selector_one_is_sub(receiver_count, split_tx_target),
+                data_modes=data_mode_count,
+                freq_ranges=tuple(
+                    (r["start_hz"], r["end_hz"]) for r in freq_ranges_data
+                ),
+            ),
+        ),
     )
 
 

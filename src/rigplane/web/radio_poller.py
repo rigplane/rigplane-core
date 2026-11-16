@@ -632,6 +632,7 @@ class RadioPoller:
         self._vfo_command_lock = asyncio.Lock()
         self._vfo_binding_generation = 0
         self._vfo_connect_attempt: tuple[int, object] | None = None
+        self._vfo_connect_unanswered = False
         self._vfo_recovery_generation: tuple[int, object] | None = None
         self._vfo_connection_started_at = 0.0
         # MOR-615: (main, sub) data_mode pair seen at the last MOD-input fetch;
@@ -3583,6 +3584,7 @@ class RadioPoller:
         if self._vfo_connect_attempt == generation:
             return
         self._vfo_connect_attempt = generation
+        self._vfo_connect_unanswered = False
         self._vfo_recovery_generation = generation
         reason: str | None = None
         if read_only:
@@ -3635,6 +3637,10 @@ class RadioPoller:
                 ):
                     reason = "ptt_predates_connection"
         if reason is not None:
+            self._vfo_connect_unanswered = reason in (
+                "ptt_refresh_failed",
+                "connection_changed",
+            )
             self._record_state_diagnostic(
                 "vfo_connect_skipped", "web.radio_poller", reason=reason
             )
@@ -3651,6 +3657,19 @@ class RadioPoller:
             logger.warning(
                 "radio-poller: VFO A connection selection failed", exc_info=True
             )
+
+    def retry_connect_selection_after_silence(self) -> None:
+        """Let the connect tail select VFO A once more after a silent link.
+
+        MOR-4382: a connect to a radio that answers nothing on CI-V yet (the
+        PTT read the policy needs got no answer) skipped its one attempt. The
+        radio's first answer runs the connect tail, which calls this before
+        the web layer retries. An attempt that reached a decision (selected,
+        refused for TX or read-only) is never repeated.
+        """
+        if self._vfo_connect_unanswered:
+            self._vfo_connect_unanswered = False
+            self._vfo_connect_attempt = None
 
     def reset_vfo_session(self, *, connection_recovery: bool = False) -> None:
         """Invalidate connection-epoch A/B proof without touching TX facts."""
@@ -3830,11 +3849,20 @@ class RadioPoller:
         the just-read snapshot with no ``await`` in between, so it always
         stamps the store's current provider generation.
         """
-        # Radios without the selected_unselected readback never derive
-        # here: IC-7610 publishes the radio's own 1C 03 answer through the
-        # CI-V observation path instead (MOR-2540), and this method must
-        # not become a second writer for the field.
-        if self._profile.vfo_readback != "selected_unselected":
+        # The native-read profile (IC-7610's own 1C 03 answer, MOR-2540)
+        # publishes through the CI-V observation path instead, and this
+        # method must not become a second writer for it: only a profile
+        # that declares the native ``get_tx_target`` source keeps the
+        # early return. Any other radio without the selected_unselected
+        # readback (G7250; Yaesu profiles meet this poller only in tests)
+        # has no tx_target source visible here, so it falls through and
+        # publishes ``_compute_tx_target()``'s sticky ``unsupported`` —
+        # never nothing — so the projection can tell "no source" apart
+        # from "not yet read" (MOR-4433).
+        if (
+            self._profile.vfo_readback != "selected_unselected"
+            and self._profile.supports_command("get_tx_target")
+        ):
             return
 
         target = self._compute_tx_target()

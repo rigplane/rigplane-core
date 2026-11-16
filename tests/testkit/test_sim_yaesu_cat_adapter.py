@@ -22,6 +22,7 @@ from pathlib import Path
 import pytest
 import serial
 
+from rigplane_testkit.fixture_rows import CatPairRow, Direction, dump_rows
 from rigplane_testkit.serial.endpoints import PtyEndpoint, TcpEndpoint, pty_supported
 from rigplane_testkit.sim.adapters import yaesu_cat as adapter
 from rigplane_testkit.sim.adapters.yaesu_cat import (
@@ -361,14 +362,21 @@ def test_banner_requires_both_ledger_values_to_match(
     assert fidelity_for_banner(fake, ledger) == expected
 
 
+def _jsonl(*pairs: tuple[Direction, str]) -> str:
+    """cat_pairs text for ``(dir, line)`` pairs, through the row contract."""
+    return dump_rows(
+        CatPairRow("w", "usb", 0.0, direction, line) for direction, line in pairs
+    )
+
+
 @pytest.mark.parametrize(
     "content",
     [
         "",
         " \t\n\n ",
-        '{"dir": "r2c", "line": "ID0840;"}\n',
-        '{"dir": "c2r", "line": "ID;"}\n',
-        '{"dir": "c2r", "line": "ID;"}\n{"dir": "r2c", "line": "FA147225000;"}\n',
+        _jsonl(("r2c", "ID0840;")),
+        _jsonl(("c2r", "ID;")),
+        _jsonl(("c2r", "ID;"), ("r2c", "FA147225000;")),
     ],
     ids=["empty", "whitespace", "unsolicited-only", "request-only", "unpaired"],
 )

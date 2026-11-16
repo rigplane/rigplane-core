@@ -246,6 +246,29 @@ _LEVELS = (
 _LEVEL_BY_VERB = {codec.verb: codec for codec in _LEVELS}
 
 
+def _level_codecs(squelch_max: int | None) -> tuple[_LevelCodec, ...]:
+    """Per-profile level verbs: SQ carries *squelch_max*, or is absent.
+
+    ``None`` means the loaded capability profile declares no squelch read
+    (FT-991A v1): the verb is not served at all. Anything else is the
+    profile's published top value (255 on the FTX-1), enforced on SET and
+    reported by reads. ``squelch_max`` outside ``int >= 0`` raises
+    ``ValueError``.
+    """
+    if squelch_max is not None and (type(squelch_max) is not int or squelch_max < 0):
+        raise ValueError(
+            f"squelch_max must be a non-negative int or None, got {squelch_max!r}"
+        )
+    if squelch_max is None:
+        return tuple(codec for codec in _LEVELS if codec.verb != "SQ")
+    return tuple(
+        _LevelCodec(codec.verb, codec.name, squelch_max)
+        if codec.verb == "SQ"
+        else codec
+        for codec in _LEVELS
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class _SelectorCodec:
     """One receiver-routed 1-digit selector; a SET accepts 0..set_max."""
@@ -287,6 +310,9 @@ class YaesuCatModel:
         recorded: RecordedCatAnswerTable | None = None,
         on_not_modelled: Callable[[str], None] | None = None,
         direct_vfo_slots: bool = False,
+        width_digits: int = 3,
+        squelch_max: int | None = 255,
+        support_if: bool = True,
     ) -> None:
         if type(identity) is not str or not identity:
             raise ValueError(f"identity must be a non-empty string, got {identity!r}")
@@ -327,16 +353,39 @@ class YaesuCatModel:
             "KM": self._keying_memory_command,
             "KY": self._keyer_play,
         }
-        for codec in _LEVELS:
+        for codec in _level_codecs(squelch_max):
             self._handlers[codec.verb] = lambda body, c=codec: self._level(body, c)
         for codec in _SELECTORS:
             self._handlers[codec.verb] = lambda body, c=codec: self._selector(body, c)
+        if not support_if:
+            # The loaded capability profile declares no IF read (FT-991A
+            # v1): the verb stays unanswered instead of echoing a layout
+            # the profile's own parser cannot read.
+            self._handlers.pop("IF", None)
+        if type(width_digits) is not int or width_digits <= 0:
+            raise ValueError(
+                f"width_digits must be a positive int, got {width_digits!r}"
+            )
+        if type(support_if) is not bool:
+            raise ValueError(f"support_if must be a bool, got {support_if!r}")
+        self._width_digits = width_digits
         if direct_vfo_slots:
             self._handlers.pop("ST")
             self._handlers.pop("VS")
             self._handlers["FT"] = self._split_tx_vfo
             for verb in ("SV", "AB", "BA"):
                 self._handlers[verb] = self._vfo_transfer
+            # SH/NA verbs (MOR-4428, MOR-4433): a single-receiver profile
+            # with VFO scheme "ab" models per-receiver narrow state and
+            # the raw SH code store. The radio under test computes the
+            # codes from the loader tables, so the sim only echoes them —
+            # never interprets Hz — in the code shape the loaded command
+            # contract declares (``width_digits``). FTX-1 keeps
+            # answering "?;" here.
+            self._handlers["NA"] = self._narrow_state
+            self._handlers["SH"] = self._width_code
+            self._narrow = [False, False]
+            self._width = [0, 0]
 
     @property
     def engine(self) -> SimEngine:
@@ -564,6 +613,33 @@ class YaesuCatModel:
             return self._applied(SelectReceiver(int(body[2])))
         return REFUSAL
 
+    def _narrow_state(self, body: str) -> str | None:
+        """Fixture-only NA verb (MOR-4428): per-receiver narrow state."""
+        if len(body) == 3 and body[2] in "01":
+            receiver = int(body[2])
+            return f"NA{receiver}{1 if self._narrow[receiver] else 0};"
+        if len(body) == 4 and body[2] in "01" and body[3] in "01":
+            self._narrow[int(body[2])] = body[3] == "1"
+            return None
+        return REFUSAL
+
+    def _width_code(self, body: str) -> str | None:
+        """SH verb (MOR-4428, MOR-4433): raw SH code store.
+
+        The radio under test computes codes from the loader tables; the
+        sim stores any code verbatim in the loaded contract's shape
+        (``width_digits``: 3 for the fixture, 2 for the FT-991A) and
+        echoes it back, so the loader and the CAT transport are exercised
+        end to end.
+        """
+        digits = self._width_digits
+        if len(body) == 3 and body[2] in "01":
+            return f"SH{body[2]}{self._width[int(body[2])]:0{digits}d};"
+        if len(body) == 3 + digits and body[2] in "01" and body[3:].isdigit():
+            self._width[int(body[2])] = int(body[3:])
+            return None
+        return REFUSAL
+
     def _level(self, body: str, codec: _LevelCodec) -> str | None:
         rest = body[2:]
         if len(rest) == 1 and rest in "01":
@@ -750,7 +826,12 @@ class YaesuCatModel:
 
 
 def build_ftx1_engine(
-    profile: SimProfile, rig: _RigData, *, clock: Clock, seed: int = 0
+    profile: SimProfile,
+    rig: _RigData,
+    *,
+    clock: Clock,
+    seed: int = 0,
+    squelch_max: int | None = 255,
 ) -> SimEngine:
     """Build CAT engine capabilities from *rig*, initial state from *profile*.
 
@@ -776,7 +857,7 @@ def build_ftx1_engine(
         receiver_count=rig.receiver_count,
         modes=tuple(rig.modes),
         frequency_range_hz=(lo, hi),
-        levels={codec.name: (0, codec.maximum) for codec in _LEVELS},
+        levels={codec.name: (0, codec.maximum) for codec in _level_codecs(squelch_max)},
         selectors={
             "agc": tuple(rig.agc_readback_modes),
             "preamp": tuple(rig.pre_values),

@@ -39,7 +39,13 @@ answered only from the table or NAKed — never unwrapped into a native
 handler; an UNWRAPPED request keeps its native handler if it has one
 (frequency, mode, PTT, S-meter and identity keep their state); a
 controller's own ACK/NAK gets no reply; any other request falls to the
-table, then to a NAK. The echo default then comes from the table's ``echo``
+table, then to a NAK; a request the table records as unanswered (a request
+row with no reply row) stays unanswered instead of being NAKed.
+``capture_replay=True`` (default False) moves the table first: a request
+the table knows — a recorded reply, a recorded NAK or recorded silence — is
+answered from the table before any native handler, so a replay of a capture
+reproduces the capture's bytes; a request it never saw falls to the native
+handler, then to a NAK. The echo default then comes from the table's ``echo``
 fact unless ``echo=`` is passed explicitly; without a table the default
 stays on.
 
@@ -89,10 +95,9 @@ from __future__ import annotations
 
 import asyncio
 import errno
-import json
 import math
 import time
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -102,6 +107,7 @@ from rigplane.profiles import resolve_radio_profile
 from rigplane.profiles.rig_loader import load_rig
 from rigplane.types import CivFrame, bcd_decode, bcd_encode
 
+from rigplane_testkit.fixture_rows import CivPairRow, civ_rows, read_civ_rows
 from rigplane_testkit.icom import (
     _level_bcd_encode,
 )
@@ -118,6 +124,8 @@ _CMD_MODE_SET = 0x06  # set operating mode (+ filter)
 _CMD_METER = 0x15  # meter readings
 _SUB_S_METER = 0x02
 _CMD_TRANSCEIVER_ID = 0x19  # read transceiver ID
+_CMD_XIEGU_MODEL_ID = 0x1D  # Xiegu model ID (sub 0x19 carries the id bytes)
+_SUB_XIEGU_MODEL_ID = 0x19
 _SUB_TRANSCEIVER_ID = 0x00
 _CMD_SEL_FREQ_GET = 0x25  # read the selected VFO's frequency (data 00)
 _CMD_SEL_MODE_GET = 0x26  # read the selected VFO's mode, data mode and filter (data 00)
@@ -173,7 +181,7 @@ class ScopeSource:
     @classmethod
     def from_civ_pairs(
         cls,
-        rows: Iterable[dict[str, Any]],
+        rows: Iterable[CivPairRow | Mapping[str, Any]],
         transport: str,
         *,
         rate_hz: float,
@@ -187,10 +195,10 @@ class ScopeSource:
         """
         whole: list[tuple[tuple[float, bytes], ...]] = []
         current: list[tuple[float, bytes]] = []
-        for row in rows:
-            if row["transport"] != transport or row["dir"] != "r2c":
+        for row in civ_rows(rows):
+            if row.transport != transport or row.dir != "r2c":
                 continue
-            frame = bytes.fromhex(row["frame"])
+            frame = row.frame
             if frame[4:6] != bytes([_CMD_SCOPE, _SUB_SCOPE_WAVE]) or len(frame) < 10:
                 continue
             seq, seq_max = _bcd_byte(frame[7]), _bcd_byte(frame[8])
@@ -199,7 +207,7 @@ class ScopeSource:
             elif len(current) != seq - 1:
                 current = []  # a packet is missing: the partial sweep is dropped
                 continue
-            current.append((float(row["t"]), frame))
+            current.append((row.t, frame))
             if seq == seq_max:
                 whole.append(tuple((t - current[0][0], f) for t, f in current))
                 current = []
@@ -238,6 +246,7 @@ class CivSerialFake:
         model_id: bytes | None = None,
         echo: bool | None = None,
         recorded_answers: RecordedAnswerTable | None = None,
+        capture_replay: bool = False,
         frequency_hz: int = 14_074_000,
         mode: int = 0x01,  # USB (§19 mode table)
         filter_width: int = 1,
@@ -289,7 +298,15 @@ class CivSerialFake:
                 )
             model_id = bytes.fromhex(profile.expected_identity_ids[0])
         self._model_id = bytes(model_id)
+        # The Xiegu model-id answer (``1D 19``), driven by the profile's
+        # ``[radio].xiegu_model_id`` when it declares one (MOR-4352): a
+        # radio without it keeps NAKing the command, as before.
+        xiegu_model_id = profile.xiegu_model_id
+        self._xiegu_model_id = (
+            None if xiegu_model_id is None else xiegu_model_id.to_bytes(2, "big")
+        )
         self._recorded_answers = recorded_answers
+        self._capture_replay = capture_replay
         if echo is not None:
             self.echo = echo
         elif recorded_answers is not None:
@@ -379,11 +396,7 @@ class CivSerialFake:
                 f"{path.name}: exactly one [answers] recorded entry is required"
             )
         file, transport = profile.answers.recorded[0]
-        rows = [
-            json.loads(line)
-            for line in (root / file).read_text(encoding="utf-8").splitlines()
-            if line
-        ]
+        rows = read_civ_rows(root / file)
         initial = profile.initial
         mode = _CIV_MODE_CODES.get(initial.mode) if initial.mode is not None else 0x01
         if mode is None:
@@ -751,11 +764,19 @@ class CivSerialFake:
         if cmd in self._refused and parsed.to_addr == self._civ_addr:
             self._refused.remove(cmd)
             return self._nak()
-        if self._recorded_answers is not None and parsed.receiver is not None:
-            # Command29-wrapped: answered from the recording or NAKed, never
-            # unwrapped into a native handler.
-            recorded = self._recorded_answers.answer(frame)
-            return recorded if recorded is not None else self._nak()
+        if self._recorded_answers is not None and (
+            self._capture_replay or parsed.receiver is not None
+        ):
+            # Capture replay: a request the recording knows is answered as
+            # the radio answered it (reply, NAK, or no answer at all) before
+            # any native handler. A Command29-wrapped request is always
+            # answered from the recording or NAKed, never unwrapped into a
+            # native handler.
+            recorded = self._recorded_answers.lookup(frame)
+            if recorded is not None:
+                return recorded.reply
+            if parsed.receiver is not None:
+                return self._nak()
         if cmd == _CMD_TRANSCEIVER_ID and parsed.sub == _SUB_TRANSCEIVER_ID:
             if self._identity_after_reconnect_only and connection.ordinal < 2:
                 return None
@@ -765,6 +786,14 @@ class CivSerialFake:
                 _CMD_TRANSCEIVER_ID,
                 sub=_SUB_TRANSCEIVER_ID,
                 data=self.model_id,
+            )
+        if cmd == _CMD_XIEGU_MODEL_ID and self._xiegu_model_id is not None:
+            # 0x1D carries no sub: the 0x19 byte is payload, then the id.
+            return build_civ_frame(
+                CONTROLLER_ADDR,
+                self._civ_addr,
+                _CMD_XIEGU_MODEL_ID,
+                data=bytes((_SUB_XIEGU_MODEL_ID,)) + self._xiegu_model_id,
             )
         if (
             cmd == _CMD_VFO
@@ -852,9 +881,9 @@ class CivSerialFake:
         if parsed.to_addr == _BROADCAST_ADDR:
             return None  # unknown broadcast: silence, as on a real bus
         if self._recorded_answers is not None:
-            recorded = self._recorded_answers.answer(frame)
+            recorded = self._recorded_answers.lookup(frame)
             if recorded is not None:
-                return recorded
+                return recorded.reply  # None: the recording shows silence
         return self._nak()
 
     def _memory_select(self, data: bytes) -> bytes:

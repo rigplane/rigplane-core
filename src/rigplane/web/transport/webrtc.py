@@ -40,6 +40,7 @@ if TYPE_CHECKING:
 __all__ = [
     "WebRtcDataChannelConnection",
     "WebRtcUnavailableError",
+    "add_api_channel",
     "add_audio_channel",
     "add_control_channel",
     "add_scope_channel",
@@ -130,19 +131,20 @@ class WebRtcDataChannelConnection:
         self._channel.send(data)
 
     async def close(self, code: int = 1000, reason: str = "") -> None:
-        """Close the DataChannel and its peer connection.
+        """Close ONLY this connection's DataChannel (MOR-4498).
+
+        The peer connection outlives each of its channels: its single
+        owner — the WebRTC session manager — closes it (``_Session.close``,
+        where ``pc.close()`` stays shielded per MOR-1431) when the peer
+        itself ends. Closing one channel closes exactly its own stream,
+        like ``abort()`` and like a WebSocket ``close()`` closes one
+        socket; sibling channels on the same peer keep working.
 
         ``code`` and ``reason`` are accepted for protocol parity with the
         WebSocket transport; WebRTC has no equivalent close frame.
-
-        ``pc.close()`` runs under ``asyncio.shield``: aiortc arms its
-        internal "closed" future first and resolves it only at the end of
-        teardown, so cancelling this await mid-teardown would leave every
-        later ``pc.close()`` hanging on the never-resolved future (MOR-1431).
         """
         self._mark_closed()
         self._channel.close()
-        await asyncio.shield(self._pc.close())
 
     def abort(self) -> None:
         """Synchronously mark the channel closed, for ``Connection`` parity.
@@ -153,7 +155,7 @@ class WebRtcDataChannelConnection:
         ``WebRtcDataChannelConnection`` keeps satisfying the ``Connection``
         protocol now that a bounded-close fallback caller may call
         ``.abort()`` on any ``Connection``. ``close()`` remains the normal
-        (awaited, full) teardown path.
+        awaited teardown of this channel.
         """
         self._mark_closed()
         try:
@@ -170,6 +172,22 @@ class WebRtcDataChannelConnection:
             "failed",
         )
 
+    def buffered_bytes(self) -> int:
+        """Unsent bytes the data channel still buffers (backpressure source).
+
+        Reports aiortc's ``bufferedAmount``; anything unrecognized (a
+        channel without that surface) reads as 0, i.e. no backpressure.
+        """
+        amount = getattr(self._channel, "bufferedAmount", 0)
+        return amount if isinstance(amount, int) else 0
+
+    def set_buffer_low_watermark(self, value: int) -> None:
+        """Request the drain-resume mark (best effort, aiortc may ignore it)."""
+        try:
+            self._channel.bufferedAmountLowThreshold = value
+        except (AttributeError, TypeError):
+            pass
+
 
 def add_control_channel(pc: RTCPeerConnection) -> WebRtcDataChannelConnection:
     """Create the single ordered/reliable ``control`` channel on ``pc``.
@@ -182,6 +200,22 @@ def add_control_channel(pc: RTCPeerConnection) -> WebRtcDataChannelConnection:
     if not webrtc_available():
         raise WebRtcUnavailableError(_INSTALL_HINT)
     channel = pc.createDataChannel("control", ordered=True)
+    return WebRtcDataChannelConnection(channel, pc)
+
+
+def add_api_channel(pc: RTCPeerConnection) -> WebRtcDataChannelConnection:
+    """Create the single ordered/reliable ``api`` channel on ``pc``.
+
+    Returns a :class:`WebRtcDataChannelConnection` ready to hand to the
+    ``api`` channel handler via the ``Connection`` seam. REST over the
+    channel multiplexes independent requests, so (like ``control`` and
+    unlike ``scope``/``audio``) it is ordered and fully reliable.
+
+    Raises :class:`WebRtcUnavailableError` if ``aiortc`` is not installed.
+    """
+    if not webrtc_available():
+        raise WebRtcUnavailableError(_INSTALL_HINT)
+    channel = pc.createDataChannel("api", ordered=True)
     return WebRtcDataChannelConnection(channel, pc)
 
 

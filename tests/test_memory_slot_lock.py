@@ -25,6 +25,7 @@ from rigplane.radio import IcomRadio
 from rigplane.rig_loader import load_rig
 from rigplane.web.radio_poller import RadioPoller
 from rigplane.web.server import WebConfig, WebServer
+from support.command_consumer import run_command_consumer
 from test_memory_list_api import _reply
 from test_memory_recall import _radio as _icom_recall_radio
 from test_radio import MockTransport
@@ -199,14 +200,14 @@ async def test_web_memory_clear_runs_between_the_listed_slot_reads() -> None:
     web._server = await asyncio.start_server(web._accept_client, "127.0.0.1", 0)
     entry_taken = asyncio.Event()
 
-    async def consume() -> None:
-        await web.command_queue.wait(2)
-        entry = web.command_queue.take_entry()
-        assert entry is not None
-        entry_taken.set()
-        await poller._execute_queued_entry(entry)
-
-    consumer = asyncio.create_task(consume())
+    consumer = asyncio.create_task(
+        run_command_consumer(
+            web.command_queue,
+            poller._execute_queued_entry,
+            count=1,
+            taken=entry_taken,
+        )
+    )
     try:
         host, port = _addr(web)
         get = asyncio.create_task(

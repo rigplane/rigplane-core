@@ -27,7 +27,9 @@ from rigplane.core.radio_protocol import RadioIdentityStatus
 from rigplane.exceptions import CommandRejectedError
 from rigplane.rig_loader import load_rig
 
+from rigplane_testkit.fixture_rows import CatPairRow
 from rigplane_testkit.yaesu import FakeCatRadio
+from rigplane_testkit.yaesu.replay import RecordedCatAnswerTable
 
 _RIGS_DIR = Path(__file__).parents[2] / "rigs"
 
@@ -365,3 +367,69 @@ async def test_garbled_fault_surfaces_as_garbled_frame_error(
         assert await radio.get_freq() == 14_074_000  # one-shot, then clean
     finally:
         await radio.disconnect()
+
+
+# ---------------------------------------------------------------------------
+# capture_replay: a mounted recording answers before the native handlers
+# ---------------------------------------------------------------------------
+
+
+def _recorded(*pairs: tuple[str, str]) -> RecordedCatAnswerTable:
+    return RecordedCatAnswerTable.from_cat_pairs(
+        [CatPairRow("w", "usb", 0.0, d, line) for d, line in pairs]  # type: ignore[arg-type]
+    )
+
+
+async def _client_of(radio: FakeCatRadio) -> _CatClient:
+    await radio.start()
+    cat = _CatClient()
+    await cat.connect(radio)
+    return cat
+
+
+async def _ask_recorded(
+    table: RecordedCatAnswerTable, line: str, *, capture_replay: bool
+) -> str:
+    radio = FakeCatRadio(recorded_answers=table, capture_replay=capture_replay)
+    cat = await _client_of(radio)
+    try:
+        return await cat.ask(line)
+    finally:
+        cat.close()
+        await radio.stop()
+
+
+@pytest.mark.asyncio
+async def test_capture_replay_reproduces_a_recorded_data_line() -> None:
+    table = _recorded(("c2r", "FA;"), ("r2c", "FA014211000;"))
+    assert await _ask_recorded(table, "FA;", capture_replay=True) == "FA014211000"
+    assert await _ask_recorded(table, "FA;", capture_replay=False) == "FA014074000"
+
+
+@pytest.mark.asyncio
+async def test_capture_replay_reproduces_a_recorded_refusal() -> None:
+    table = _recorded(("c2r", "FA;"), ("r2c", "?;"))
+    assert await _ask_recorded(table, "FA;", capture_replay=True) == "?"
+    assert await _ask_recorded(table, "FA;", capture_replay=False) == "FA014074000"
+
+
+@pytest.mark.realtime(reason="asserts that nothing arrives on the real clock")
+@pytest.mark.asyncio
+async def test_capture_replay_reproduces_recorded_silence() -> None:
+    table = _recorded(("c2r", "MD0;"))
+    radio = FakeCatRadio(recorded_answers=table, capture_replay=True)
+    cat = await _client_of(radio)
+    try:
+        await cat.send("MD0;")
+        await cat.assert_silent()
+    finally:
+        cat.close()
+        await radio.stop()
+    # Without capture_replay the native mode read still answers.
+    assert (await _ask_recorded(table, "MD0;", capture_replay=False)).startswith("MD0")
+
+
+@pytest.mark.asyncio
+async def test_capture_replay_answers_an_unrecorded_read_natively() -> None:
+    table = _recorded(("c2r", "KS;"), ("r2c", "?;"))
+    assert await _ask_recorded(table, "FA;", capture_replay=True) == "FA014074000"

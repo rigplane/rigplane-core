@@ -20,8 +20,13 @@ concurrency:
   # A run that stops because the head or main moved during the run makes 8
   # (the same 7 reads as a full evaluation plus the pending
   # repos.createCommitStatus).
+  # cancel-in-progress stays false for qualifying runs: cancelling a pending
+  # issue_comment evaluation orphans its "Trusted review observation publisher"
+  # check run on the PR head while the replacement run's check run attaches to
+  # main; serial eval runs in the per-PR eval group are cheap and preserve
+  # order without orphaning the head's publisher row.
   group: agent-review-gate-v2-${{ github.event.issue.pull_request && github.event.issue.number || github.event.pull_request.number }}-${{ (github.event_name == 'pull_request_target' && (github.event.action != 'edited' || github.event.changes.base) || (github.event.issue.pull_request && (contains(github.event.comment.body, 'Agent Review:') || contains(github.event.changes.body.from, 'Agent Review:')))) && 'eval' || github.run_id }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   publish:

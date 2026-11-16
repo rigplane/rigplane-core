@@ -95,12 +95,8 @@ scripts/*
 # And the pre-push quick gate and its selection logic are tracked (MOR-4372).
 !scripts/local-ci.sh
 !scripts/pre_push_scope.py
-# And the IC-7610 capture probe driver is tracked (MOR-3307).
-!scripts/ic7610_capture/
 # And the IC-7300 capture bridge and scope session driver are tracked (MOR-3595).
 !scripts/ic7300_capture/
-# And the FTX-1 capture probe driver is tracked (MOR-3596).
-!scripts/ftx1_capture/
 # And the TCI recording proxy is tracked (MOR-3821).
 !scripts/tci_capture/
 # And the versioned docs site builder is tracked (MOR-2914).

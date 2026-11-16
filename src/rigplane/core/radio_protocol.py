@@ -1612,7 +1612,12 @@ class VfoSlotCapable(Protocol):
         ...
 
     async def equalize_vfo_ab(self, receiver: int = 0) -> None:
-        """Copy the active VFO's state to the inactive VFO on ``receiver``."""
+        """Copy the active VFO to the other VFO on ``receiver``.
+
+        Yaesu single-transceiver profiles: A→B, through the profile's
+        ``vfo_a_to_b`` copy primitive (MOR-4434). A Yaesu ``ab_shared``
+        (dual-receiver) profile has no per-receiver copy and refuses.
+        """
         ...
 
 
@@ -1642,8 +1647,9 @@ class RadioIdentityStatus(Enum):
     identifying the other model.
 
     ``NO_RESPONSE``: nothing answered the read. Not terminal — the read is
-    retried on the open link and the connect completes when the right radio
-    answers.
+    retried on the open link. Serial and Yaesu hold the connect until the
+    right radio answers; the Icom LAN runtime only publishes the status and
+    never blocks commands or state reads on it (MOR-4382).
     """
 
     CHECKING = "checking"
