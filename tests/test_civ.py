@@ -456,7 +456,7 @@ async def test_generation_advance_forgets_refused_reads() -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_late_refusal_of_a_released_read_never_settles_a_blocking_read() -> None:
+async def test_a_released_read_keeps_its_late_refusal() -> None:
     """MOR-4526: a read released from the drain still owns its late refusal.
 
     Before a blocking command the runtime gives fire-and-forget sinks a
