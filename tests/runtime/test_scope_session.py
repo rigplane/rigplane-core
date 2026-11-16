@@ -558,7 +558,9 @@ async def test_lost_span_ack_keeps_cached_preset_untrusted():
     assert writer.state.span == 4  # the radio moved; Core never saw the ACK
     assert session._applied.get((0, "span")) == 3  # the stale cache
     assert (0, "span") in session._uncertain
-    # Requesting the CACHED preset must not trust it: the SET goes out.
+    # Requesting the CACHED preset must not trust it: the SET goes out
+    # (and its acknowledgement re-establishes certainty).
+    writer.lost = False
     await session.configure(span=3)
     assert writer.span_writes == [(4, 0), (3, 0)]
     assert writer.state.span == 3
@@ -576,6 +578,7 @@ async def test_lost_span_ack_restore_writes_despite_stale_cache():
     await session.set_demand(ScopeDemand(1, 1))
     with pytest.raises(TimeoutError, match="ack lost"):
         await session.configure(span=4)
+    writer.lost = False
     await session.set_demand(ScopeDemand(0, 0))
     assert writer.span_writes == [(4, 0), (3, 0)]
     assert writer.state.span == 3
@@ -593,6 +596,7 @@ async def test_stale_span_echo_after_lost_ack_still_writes():
         await session.configure(span=4)
     session.observe("span", 3)  # a stale echo of the pre-write state
     assert (0, "span") in session._uncertain
+    writer.lost = False
     await session.configure(span=3)
     assert writer.span_writes == [(4, 0), (3, 0)]
     assert writer.state.span == 3

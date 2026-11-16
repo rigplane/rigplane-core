@@ -319,8 +319,22 @@ class ScopeSession:
                     self._adopt_external(key, value)
                     self._applied[key] = value
                 return
-        self._adopt_external((receiver, name), value)
-        self._applied[receiver, name] = value
+        key = (receiver, name)
+        cached = self._applied.get(key)
+        self._adopt_external(key, value)
+        if key in self._uncertain and cached is not None and value != cached:
+            # #4565 pre-review: the cache is current only while no later
+            # event invalidates it. A report that DIFFERS from the cached
+            # value cannot be a pre-write echo of the state an ambiguous
+            # write was about to leave — the write landed (or the radio
+            # moved on by itself) — so it renews the cache's currency and
+            # the same-value skip may trust it again. A report EQUAL to the
+            # cache proves nothing (it may predate the write), so the key
+            # stays uncertain and the skip stays suppressed. Adoption and
+            # restore protection above already ran under the uncertain
+            # guard for THIS report; the next one adopts normally.
+            self._uncertain.discard(key)
+        self._applied[key] = value
         # Keep the captured per-receiver radio state truthful: later
         # restore captures and follow-mode decisions read ``_views``.
         view = self._views.get(receiver)
@@ -489,17 +503,25 @@ class ScopeSession:
             raise RuntimeError("scope control is deferred until radio readiness")
         if self._tx or (self.tx_probe is not None and self.tx_probe()):
             raise RuntimeError("scope control is deferred during transmit")
-        if name == "span" and self._applied.get((receiver, "span")) == value:
+        if (
+            name == "span"
+            and self._applied.get((receiver, "span")) == value
+            and (receiver, "span") not in self._uncertain
+        ):
             # #4565: the radio already reports the chosen preset — a
             # front-panel (or other-controller) change adopted via
             # observe(), or our own write echoed back. Re-asserting it
             # would emit a same-value 0x15 SET, so the span part is a
             # no-op; set_center's mode write is a separate _put and keeps
-            # its own logic. The report resolves any in-flight uncertainty
-            # for this key, so adoption of later changes resumes. An
+            # its own logic. The skip consults only the currency rule:
+            # the cache suppresses the SET while no later event
+            # invalidated it — an ambiguous write (lost ACK) leaves the
+            # key uncertain with a cache that predates it, so the SET
+            # goes out and re-establishes certainty (the radio may sit on
+            # the unacknowledged value). A differing report has already
+            # renewed the cache in observe(); an equal one has not. An
             # unknown span (never read) still writes below, as today —
-            # and the restore loop inherits the same no-op through here.
-            self._uncertain.discard((receiver, name))
+            # and the restore loop inherits the same rule through here.
             return
         applied = self._applied.get((receiver, name))
         self._uncertain.add((receiver, name))
