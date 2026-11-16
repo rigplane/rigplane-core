@@ -507,11 +507,7 @@ class _ScopeWindowSimulator(ScopeControlSimulator):
                 # when the span preset changed; the same model the
                 # panorama journey simulator uses.
                 preset = self.profile.scope_span_presets_hz[span]
-                tuned = (
-                    self._frequency
-                    if receiver == 0
-                    else self._unselected_frequency
-                )
+                tuned = self._frequency if receiver == 0 else self._unselected_frequency
                 window = self._scroll.get(receiver)
                 if (
                     window is None
