@@ -1011,6 +1011,21 @@ describe('SpectrumPanel component', () => {
     expect(target.querySelector('[title="Scope span"] .toolbar-value')?.textContent).toBe('±50k');
   });
 
+  // MOR-4451: SPAN applies in Center (0) and SCROLL-C (2); only FIX/SCROLL-F
+  // refuse it. S-C owns its window but the span write is accepted.
+  it.each(['IC-705', 'IC-7300'])('steps SPAN while %s observes SCROLL-C (mode 2)', async (model) => {
+    runtimeHarness.state.currentCaps = validateCapabilities({ ...IC7300_CAPABILITIES, ...spanCapabilities, model });
+    authorityHarness.state.current = authority({ scopeControls: testScopeControls(2) });
+    const target = mountPanel();
+    emitFrame({ mode: 2, startFreq: 14_000_000, endFreq: 14_100_000 }); await flushWaterfallPaint();
+    const control = mockRuntime.scope.spanControl!;
+    const view = () => JSON.parse(target.querySelector('.spectrum-panel')!.getAttribute('data-scope-subscription')!).view;
+    expect(view()).toEqual({ follow: 'vfo', spanHz: 100_000 });
+    control.step(-1); flushSync();
+    expect(view()).toEqual({ follow: 'vfo', spanHz: 50_000 });
+    expect(target.querySelector<HTMLButtonElement>('[title="Increase span"]')!.disabled).toBe(false);
+  });
+
   it('keeps trace controls absent in an ordinary build', () => {
     const target = mountPanel();
     expect(target.querySelector('[aria-label="Scope render trace"]')).toBeNull();
