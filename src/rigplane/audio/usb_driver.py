@@ -2105,7 +2105,11 @@ class UsbAudioDriver:
         try:
             await start()
             return
-        except (asyncio.CancelledError, AudioDriverLifecycleError, AudioDeviceBusyError):
+        except (
+            asyncio.CancelledError,
+            AudioDriverLifecycleError,
+            AudioDeviceBusyError,
+        ):
             raise
         except Exception as first:
             backend = self._backend
