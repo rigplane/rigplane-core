@@ -939,9 +939,9 @@
   let nativeScopeCoverage = $derived(nativeScopeWidthHz !== null
     ? { startHz: 0, endHz: nativeScopeWidthHz } : null);
   // MOR-4532: a settled CENTER follow view IS the window the radio delivers
-  // (the server clips it to a narrower native), so it never hatches; the
-  // hatch reads the settled geometry width in the same tick the frame lands,
-  // never the follow width the post-render effect has yet to write.
+  // (the server clips it to a narrower native); the hatch reads that settled
+  // geometry width in the same tick the frame lands, never the follow width
+  // the post-render effect has yet to write.
   let settledFollowHatch = $derived(followSettled && !isRadioOwnedWindow && requestedView === null
     && frameGeometry !== null && frameGeometry.view.endHz > frameGeometry.view.startHz
     && effectiveView.endHz > effectiveView.startHz);
@@ -951,10 +951,8 @@
     const centerHz = viewCenterHz(effectiveView);
     return { startHz: centerHz - widthHz / 2, endHz: centerHz + widthHz / 2 };
   });
-  let hatchNativeCoverage = $derived(settledFollowHatch
-    ? { startHz: 0, endHz: hatchRequestedView.endHz - hatchRequestedView.startHz } : nativeScopeCoverage);
   let coverageProjection = $derived(!audioFft && displayGeometry !== null && scopeDemandOn
-    ? projectScopeCoverage(displayGeometry, hatchRequestedView, hatchNativeCoverage) : null);
+    ? projectScopeCoverage(displayGeometry, hatchRequestedView, nativeScopeCoverage) : null);
   let coverageHatched = $derived(coverageProjection?.hatched.filter(
     (range) => range.end - range.start > 0.001) ?? []);
   function hatchReasonText(reason: ScopeCoverageProjection['hatched'][number]['reason']): string {
