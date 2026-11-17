@@ -2312,3 +2312,46 @@ async def test_request_seq_resent_and_zero_grants_stay_settled_while_another_wri
 async def _grants_after(ws, subscription):
     await ws.send_str(encode_scope_subscription(subscription))
     return await _grants(ws, lambda grant: True)
+
+
+async def test_request_seq_settled_request_on_another_target_leaves_this_one_pending(
+    windowed_sdk,
+):
+    """One socket multiplexes targets: MAIN request 2 is TX-deferred, then a
+    request 3 on another target (a paused SUB subscription) settles at once.
+    Settled progress belongs to each target, so MAIN's request stays pending
+    (a re-sent MAIN grant included) until its own span write settles after
+    TX."""
+    radio, sim = windowed_sdk
+    sim.capture_civ_frames = True
+    sim.set_frequency(14_100_000)
+    radio._radio_state.main.freq = 14_100_000
+    async with web(radio) as (_, client, base, protocols, _):
+        async with client.ws_connect(base + "/api/v1/scope", protocols=protocols) as ws:
+            await _settle_first_request(ws)
+            sim.civ_frames_received.clear()
+            sim._ptt_state = True
+            ptt_reply(radio, True)
+            (deferred,) = await _grants_after(ws, _request(2, 500_000))
+            assert (deferred.request_seq, deferred.request_state) == (2, "pending")
+            (other,) = await _grants_after(
+                ws,
+                Subscription(
+                    "radio", 1, FollowView("vfo", 100_000), 475, 0, request_seq=3
+                ),
+            )
+            assert (other.receiver, other.request_seq, other.request_state) == (
+                1,
+                3,
+                "settled",
+            )
+            (resent,) = await _grants_after(ws, _resize(2, 500_000, 300))
+            assert (resent.receiver, resent.request_seq) == (0, 2)
+            assert resent.request_state == "pending"
+            assert _span_sets(sim) == []
+            sim._ptt_state = False
+            ptt_reply(radio, False)
+            await _grants(
+                ws, lambda g: g.receiver == 0 and g.request_state == "settled"
+            )
+            assert len(_span_sets(sim)) == 1
