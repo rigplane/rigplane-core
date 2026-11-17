@@ -10,6 +10,11 @@ permissions:
   pull-requests: read
   statuses: write
 
+# MOR-4524: a newer head of the same PR supersedes the older status run.
+concurrency:
+  group: docs-only-quick-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 jobs:
   publish-docs-only-quick-status:
     # Keep the protected `quick` context green for an exact docs-only review

@@ -78,7 +78,10 @@ async def api(tmp_path, monkeypatch):
                 if payload == b"\x00":
                     if isinstance(owner, _PttReadContext) or owner is script["a_owner"]:
                         read_sent.set()
-                    if script["case"] == "earlier-silent-read" or (
+                    if script["case"] in (
+                        "earlier-silent-read",
+                        "earlier-late-read",
+                    ) or (
                         script["case"] == "key-during-confirmation"
                         and script["b"] is not None
                     ):
@@ -96,16 +99,31 @@ async def api(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "case", ["clean-rx", "earlier-silent-read", "key-during-confirmation"]
+    "case",
+    [
+        "clean-rx",
+        "earlier-silent-read",
+        "earlier-late-read",
+        "key-during-confirmation",
+    ],
 )
 async def test_release_readback_through_http_and_websocket(api, case, monkeypatch):
+    """Release readback outcomes through the HTTP/WS control path.
+
+    MOR-4384 T8: an older identical fire-and-forget PTT read A. When A's
+    answer is lost (``earlier-silent-read``) the release ends in the safe
+    unverifiable outcome: A stays owed, the readback is never sent, and
+    the release stays required. When A's answer only arrives late, after
+    the newer ``ptt_off`` is on the wire (``earlier-late-read``), it lands
+    on A's own request, and the readback verifies the release.
+    """
     stack, client, script, read_sent, off_sent = api
     runtime, authority = stack.radio._civ_runtime, stack.composition.authority
     assert await client.key("first")
     await _wait_ptt(stack.sim, True, 1)
     script["armed"] = True
     script["case"] = case
-    if case == "earlier-silent-read":
+    if case in ("earlier-silent-read", "earlier-late-read"):
         ledger = runtime._ptt_reply_ledger
         await runtime.execute_civ_raw(
             build_civ_frame(stack.radio._radio_addr, CONTROLLER_ADDR, 0x1C, sub=0),
@@ -114,13 +132,23 @@ async def test_release_readback_through_http_and_websocket(api, case, monkeypatc
         )
         a = script["a"]
         assert a.dispatched_at is not None
-        monkeypatch.setattr(ledger, "_clock", lambda: a.dispatched_at)
-        monkeypatch.setattr(authority._wakeup, "_clock", ledger._clock)
-        monkeypatch.setattr(authority, "_clock", ledger._clock)
+        if case == "earlier-silent-read":
+            monkeypatch.setattr(ledger, "_clock", lambda: a.dispatched_at)
+            monkeypatch.setattr(authority._wakeup, "_clock", ledger._clock)
+            monkeypatch.setattr(authority, "_clock", ledger._clock)
         await asyncio.wait_for(read_sent.wait(), 1)
         read_sent.clear()
     assert (await client.command("unkey", "ptt_off")).get("ok") is True
     await asyncio.wait_for(off_sent.wait(), 1)
+    if case == "earlier-late-read":
+        # A's answer arrives now, behind the newer ``ptt_off`` on the wire.
+        script["case"] = None
+        assert len(script["held"]) == 1
+        for reply in script["held"]:
+            await runtime._route_civ_frame(
+                parse_civ_frame(reply), generation=stack.radio._civ_epoch
+            )
+        assert a.answered_by is not None
     if case == "key-during-confirmation":
         await asyncio.wait_for(read_sent.wait(), 5)
         b = script["b"]

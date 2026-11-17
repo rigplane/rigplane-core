@@ -25,7 +25,7 @@ concurrency:
   # check run on the PR head while the replacement run's check run attaches to
   # main; serial eval runs in the per-PR eval group are cheap and preserve
   # order without orphaning the head's publisher row.
-  group: agent-review-gate-v2-${{ github.event.issue.pull_request && github.event.issue.number || github.event.pull_request.number }}-${{ (github.event_name == 'pull_request_target' && (github.event.action != 'edited' || github.event.changes.base) || (github.event.issue.pull_request && (contains(github.event.comment.body, 'Agent Review:') || contains(github.event.changes.body.from, 'Agent Review:')))) && 'eval' || github.run_id }}
+  group: agent-review-gate-v2-${{ github.event.issue.pull_request && github.event.issue.number || github.event.pull_request.number }}-${{ ((github.event.pull_request.state || github.event.issue.state || 'open') == 'open' && (github.event_name == 'pull_request_target' && (github.event.action != 'edited' || github.event.changes.base) || (github.event.issue.pull_request && (contains(github.event.comment.body, 'Agent Review:') || contains(github.event.changes.body.from, 'Agent Review:'))))) && 'eval' || github.run_id }}
   cancel-in-progress: false
 
 jobs:
@@ -34,7 +34,8 @@ jobs:
     # issue_comment legs use the same verdict-relevance predicate as
     # agent-review-gate.yml; pull_request_target 'edited' is skipped unless
     # the base changed, the only edit that can move the observation domain.
-    if: github.event_name == 'pull_request_target' && (github.event.action != 'edited' || github.event.changes.base) || (github.event.issue.pull_request && (contains(github.event.comment.body, 'Agent Review:') || contains(github.event.changes.body.from, 'Agent Review:')))
+    # MOR-4524: an edit, label or comment on a closed or merged PR publishes nothing.
+    if: (github.event.pull_request.state || github.event.issue.state || 'open') == 'open' && (github.event_name == 'pull_request_target' && (github.event.action != 'edited' || github.event.changes.base) || (github.event.issue.pull_request && (contains(github.event.comment.body, 'Agent Review:') || contains(github.event.changes.body.from, 'Agent Review:'))))
     runs-on: [self-hosted, Linux, ARM64, light]
     timeout-minutes: 3
     permissions:

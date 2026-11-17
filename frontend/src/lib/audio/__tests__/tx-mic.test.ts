@@ -53,10 +53,13 @@ describe('TxMic', () => {
     const m = new TxMic(vi.fn());
     expect(await m.start()).toContain('microphone capture not supported');
   });
-  it('requests mic with correct constraints', async () => {
+  it('requests raw mic capture: no browser voice processing (MOR-4312)', async () => {
     const m = new TxMic(vi.fn()); await m.start();
     expect(navigator.mediaDevices.getUserMedia).toHaveBeenCalledWith({
-      audio: { channelCount: CHANNELS, sampleRate: SAMPLE_RATE, echoCancellation: true, noiseSuppression: true },
+      audio: {
+        channelCount: CHANNELS, sampleRate: SAMPLE_RATE,
+        echoCancellation: false, noiseSuppression: false, autoGainControl: false,
+      },
     });
     expect(m.active).toBe(true); m.stop();
   });
@@ -225,6 +228,14 @@ describe('TxMic', () => {
     const header = new DataView(packet);
     expect(header.getUint8(1)).toBe(CODEC_PCM16);
     expect(packet.byteLength).toBe(AUDIO_HEADER_SIZE + 960 * 2);
+    // MOR-4312: the raw capture request and the captured samples reaching the
+    // frame sink (the WebSocket send) in one pass.
+    expect(navigator.mediaDevices.getUserMedia).toHaveBeenCalledWith({
+      audio: expect.objectContaining({
+        echoCancellation: false, noiseSuppression: false, autoGainControl: false,
+      }),
+    });
+    expect(header.getInt16(AUDIO_HEADER_SIZE, true)).toBe(Math.round(0.25 * 0x7fff));
     m.stop();
     expect(context.close).toHaveBeenCalled();
   });
@@ -276,7 +287,10 @@ describe('TxMic', () => {
     expect(await m.start()).toBeNull();
     expect(legacyGetUserMedia).toHaveBeenCalledWith(
       {
-        audio: { channelCount: CHANNELS, sampleRate: SAMPLE_RATE, echoCancellation: true, noiseSuppression: true },
+        audio: {
+        channelCount: CHANNELS, sampleRate: SAMPLE_RATE,
+        echoCancellation: false, noiseSuppression: false, autoGainControl: false,
+      },
       },
       expect.any(Function),
       expect.any(Function),

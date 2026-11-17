@@ -774,6 +774,15 @@ new AsyncFunction('github', 'context', 'core', script)(github, context, core)
         self.assertNotIn("github.workflow_sha", docs_quick)
         self.assertNotIn("actions/checkout", docs_quick)
 
+    def test_docs_only_quick_concurrency_is_per_pull_request(self) -> None:
+        docs_quick = DOCS_QUICK_YML.read_text(encoding="utf-8")
+        self.assertIn(
+            "concurrency:\n"
+            "  group: docs-only-quick-${{ github.event.pull_request.number }}\n"
+            "  cancel-in-progress: true\n",
+            docs_quick,
+        )
+
     def test_docs_only_publisher_succeeds_only_for_complete_stable_docs(self) -> None:
         head = "a" * 40
         base = "c" * 40

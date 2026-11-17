@@ -19,6 +19,8 @@ concurrency:
 jobs:
   observe:
     name: Read-only legacy quick metadata observer
+    # MOR-4524: a title/body edit of a closed or merged PR observes nothing.
+    if: (github.event.pull_request.state || 'open') == 'open'
     runs-on: [self-hosted, Linux, ARM64, light]
     timeout-minutes: 5
     permissions:
@@ -86,7 +88,7 @@ jobs:
   publish:
     name: Exact-head metadata observation publisher
     needs: observe
-    if: always()
+    if: always() && needs.observe.result != 'skipped'
     runs-on: [self-hosted, Linux, ARM64, light]
     timeout-minutes: 5
     permissions:
