@@ -173,6 +173,14 @@ class ScopeHandler:
         try:
             while True:
                 grant, data = await subscription.receive_delivery()
+                if (
+                    grant.request_state == "pending"
+                    and subscription.granted.request_state == "settled"
+                ):
+                    # Buffered before this request settled; the hub already
+                    # offered the settled frame behind it. Retire it rather
+                    # than send its pre-request geometry under a settled grant.
+                    continue
                 grant = self._final(grant)
                 # A regrant on a width change, and when the request settles
                 # (MOR-4532: the re-sent grant is the only "settled" signal).
