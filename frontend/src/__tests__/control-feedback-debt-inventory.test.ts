@@ -150,6 +150,15 @@ describe('AST-backed control feedback debt inventory (MOR-1713)', () => {
     expect(debt(source.replace('gain in decibels', 'gain'), file)).toHaveLength(1);
   });
 
+  it('exempts only the 3D panorama\'s exact browser-local look sliders (MOR-4463)', () => {
+    const source = wrap('<input type="range" value={settings[item.key]}/>', 'let settings={a:1}, item={key:"a"};');
+    const file = 'src/components/spectrum/StackedTraceCanvas.svelte';
+    expect(debt(source, file)).toEqual([]);
+    expect(debt(source, `nested/${file}`)).toHaveLength(1);
+    expect(debt(source.replace('settings[item.key]', 'radio[item.key]'), file)).toHaveLength(1);
+    expect(debt(source.replace('<input', '<input aria-label="RF Gain"'), file)).toHaveLength(1);
+  });
+
   it('allows the frozen inventory to shrink but never grow', () => {
     expect(assertShrinkOnly([{ identity: 'a' }], new Set(['a', 'b']))).toEqual(['a']);
     expect(() => assertShrinkOnly([{ identity: 'a' }, { identity: 'c' }], new Set(['a', 'b']))).toThrow(/grew.*c/);
