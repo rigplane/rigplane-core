@@ -60,11 +60,12 @@ expression, evaluated to 60 minutes when that gate is true and 25 otherwise.
 
 from __future__ import annotations
 
-import pytest
 import re
 import shlex
 import tomllib
 from pathlib import Path
+
+import pytest
 
 WORKFLOWS_DIR = Path(__file__).resolve().parent.parent / ".github" / "workflows"
 
@@ -212,9 +213,7 @@ def _rc_gate_condition(expr: str) -> str:
     return match.group(0)
 
 
-def _rc_gated_timeout(
-    expr: str, *, rc: bool | None = None, tag: bool = False
-) -> int:
+def _rc_gated_timeout(expr: str, *, rc: bool | None = None, tag: bool = False) -> int:
     """The minutes `expr` gives when `inputs.rc` is `rc` (or the run is on a tag)."""
     rendered = _RC_TIMEOUT_GATE_RE.sub(
         lambda m: str(int(m["on"]) if rc or tag else int(m["off"])), expr
