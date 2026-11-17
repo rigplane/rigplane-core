@@ -905,6 +905,15 @@
         <CollapsiblePanel title="DSP" panelId="m-dsp-chip" collapsible={false}>
           <DspPanel />
         </CollapsiblePanel>
+        <!-- MOR-4528: the AGC choice lives here, its one home on the phone
+             (it used to sit in the SETUP sheet only). Same `AgcPanel` the
+             desktop sidebar mounts; the gate is the projection's own
+             `hasAgc`, so a radio without AGC draws no empty AGC header. -->
+        {#if agc.hasAgc}
+          <CollapsiblePanel title="AGC" panelId="m-agc-chip" collapsible={false}>
+            <AgcPanel />
+          </CollapsiblePanel>
+        {/if}
       </section>
     {:else if activeChipId === 'rit'}
       <section class="m-section" id="m-chip-panel-rit" role="tabpanel">
@@ -1044,7 +1053,7 @@
   <!-- ═══ SETUP BOTTOM SHEET (#841 rename, SETUP-only content) ═══
        Per docs/plans/2026-04-18-mobile-ia.md §6, rare-config home.
        BAND / DSP / RF / MODE / FILTER / ESSENTIALS live in chips.
-       Remaining here: AGC, RIT/XIT (until #842 chip lands), ANTENNA, CW. -->
+       Remaining here: RIT/XIT (until #842 chip lands), ANTENNA, CW. -->
   <BottomSheet bind:open={setupOpen} title={t('core.mobile.sheet.setup')}>
           {#if hasCapability('power_control') && !runtime.remoteController}
             <button type="button" class="power-toggle-btn m-radio-power" disabled={radioPowerOn === null}
@@ -1055,10 +1064,6 @@
           <!-- VFO/BAND, DSP panels removed (#841) — BAND lives in the "band" chip,
                VFO ops (SPLIT/A↔B/A=B) live in ESSENTIALS, DSP levels+toggles live
                in ESSENTIALS. -->
-
-          <CollapsiblePanel title="AGC" panelId="m-agc">
-            <AgcPanel />
-          </CollapsiblePanel>
 
           <!-- RF FRONT END panel removed (#841) — lives in the "rf" chip. -->
 
