@@ -854,12 +854,19 @@
               lit={stackedTrace} disabled={isStackedTraceUnavailable()}
               title={t(isStackedTraceUnavailable() ? 'core.scope.stackedTrace.unavailable' : 'core.scope.stackedTrace.title')}
               onclick={() => setStackedTraceEnabled(!stackedTrace)} />
-            <ScopeFlatKey label="AVG" testid="scope-key-avg"
-              lit={scopeAvg} onclick={() => (scopeAvg = !scopeAvg)} />
+            <!-- AVG and PEAK shape the flat trace only: hidden while 3D is lit, as on
+                 the desktop toolbar. The stored values live in layout state and
+                 are back on return. -->
+            {#if !stackedTrace}
+              <ScopeFlatKey label="AVG" testid="scope-key-avg"
+                lit={scopeAvg} onclick={() => (scopeAvg = !scopeAvg)} />
+            {/if}
             <ScopeFlatKey label="SMTH" testid="scope-key-smooth"
               lit={scopeSmooth} onclick={() => (scopeSmooth = !scopeSmooth)} />
-            <ScopeFlatKey label="PEAK" testid="scope-key-peak"
-              lit={scopePeakHold} onclick={() => (scopePeakHold = !scopePeakHold)} />
+            {#if !stackedTrace}
+              <ScopeFlatKey label="PEAK" testid="scope-key-peak"
+                lit={scopePeakHold} onclick={() => (scopePeakHold = !scopePeakHold)} />
+            {/if}
             <ScopeFlatKey label="BANDS" testid="scope-key-bands"
               lit={scopeBandPlan} onclick={() => (scopeBandPlan = !scopeBandPlan)} />
           </div>

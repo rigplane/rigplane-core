@@ -464,17 +464,33 @@ describe('MobileRadioLayout SCOPE -> SMTH reaches the waterfall rows (MOR-4383)'
       expect(key.getAttribute('aria-pressed')).toBe('false');
       expect(target.querySelector('[data-testid="stacked-trace"]')).toBeNull();
 
+      // AVG and PEAK shape the flat trace only. The desktop toolbar hides them
+      // while 3D is lit (stacked-trace-toggle.spec.ts); the phone follows the
+      // same rule, and the stored values come back untouched on return.
+      const avgKey = () => target.querySelector<HTMLButtonElement>('[data-testid="scope-key-avg"]');
+      const peakKey = () => target.querySelector<HTMLButtonElement>('[data-testid="scope-key-peak"]');
+      expect(avgKey()!.getAttribute('aria-pressed')).toBe('true');
+      expect(peakKey()!.getAttribute('aria-pressed')).toBe('true');
+      avgKey()!.click();
+      flushSync();
+      expect(avgKey()!.getAttribute('aria-pressed')).toBe('false');
+      expect(peakKey()!.getAttribute('aria-pressed')).toBe('true');
+
       key.click();
       flushSync();
       expect(isStackedTraceEnabled()).toBe(true);
       expect(key.getAttribute('aria-pressed')).toBe('true');
       expect(target.querySelector('[data-testid="stacked-trace"]')).not.toBeNull();
+      expect(avgKey()).toBeNull();
+      expect(peakKey()).toBeNull();
 
       key.click();
       flushSync();
       expect(isStackedTraceEnabled()).toBe(false);
       expect(key.getAttribute('aria-pressed')).toBe('false');
       expect(target.querySelector('[data-testid="stacked-trace"]')).toBeNull();
+      expect(avgKey()!.getAttribute('aria-pressed')).toBe('false');
+      expect(peakKey()!.getAttribute('aria-pressed')).toBe('true');
     } finally {
       setStackedTraceEnabled(false);
       capture.restore();
