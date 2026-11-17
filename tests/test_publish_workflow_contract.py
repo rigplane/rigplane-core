@@ -188,7 +188,7 @@ def test_build_job_has_a_timeout() -> None:
     assert build.get("timeout-minutes") == 15, (
         "the build job needs its own timeout: it measures about a minute, "
         "so 15 minutes covers a cold npm ci + uv build while a hung build "
-        "still releases the self-hosted runner (validate already has 25)"
+        "still releases the self-hosted runner (validate has its own, longer budget)"
     )
 
 
