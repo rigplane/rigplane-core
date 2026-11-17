@@ -37,7 +37,10 @@ from ..core.state_pipeline_contracts import (
 from ..profiles import RadioProfile
 from ..radio_state import RadioState
 from ..runtime._civ_rx import _profile_path_for_observation
-from ..runtime._state_queries import acquisition_query_resolver_for_profile
+from ..runtime._state_queries import (
+    acquisition_query_resolver_for_profile,
+    scope_fixed_edge_slot,
+)
 from ..startup_checks import assert_radio_startup_ready
 from .discovery import DiscoveryResponder, RadioInfo  # noqa: TID251
 from .dx_cluster import DXClusterClient  # noqa: TID251
@@ -531,9 +534,11 @@ async def _await_initial_state_acquisition(
       listener binds; nothing fabricates a reading, the published
       ``radioHealth`` keeps reporting ``stalled`` /
       ``radio_powered_off_likely`` until the radio's first observation
-      (whatever the live link state does in between), and transmit stays
-      refused while the safety-critical fields are unobserved (the
-      managed TX authority's provider stays not-ready).
+      (whatever the live link state does in between). An unobserved PTT
+      does not refuse transmit by itself (MOR-4456): the managed
+      authority admits the local key, and only remote controller arming
+      is refused with ``controller_not_ready`` while PTT stays
+      unobserved.
 
     Before that decision there was no serve-anyway timeout: every declared,
     non-``tx_only`` path held the listener open forever.
@@ -576,12 +581,25 @@ async def _await_initial_state_acquisition(
     if scheduler is None:
         return
     _abort_on_startup_defect(scheduler)
-    outstanding = scheduler.unobserved_startup_paths(
-        _observed_paths(server, scheduler),
-        availability=resolve_available_when(
-            scheduler._profile, server.command_state_store.snapshot()
-        ),
-    )
+
+    def unobserved() -> tuple[FieldPath, ...]:
+        snapshot = server.command_state_store.snapshot()
+        availability = resolve_available_when(scheduler._profile, snapshot)
+        profile = getattr(server._radio, "_profile", None)
+        if (
+            isinstance(profile, RadioProfile)
+            and scope_fixed_edge_slot(profile, snapshot) is None
+        ):
+            # No addressed slot can be read yet; startup must not await its reply.
+            availability[FieldPath.scope_control("display", "fixed_edge")] = False
+        return cast(
+            "tuple[FieldPath, ...]",
+            scheduler.unobserved_startup_paths(
+                _observed_paths(server, scheduler), availability=availability
+            ),
+        )
+
+    outstanding = unobserved()
     if not outstanding:
         return
     logger.info(
@@ -661,12 +679,7 @@ async def _await_initial_state_acquisition(
                     primed_at[path] = queued_at
         await asyncio.sleep(gap)
         _abort_on_startup_defect(scheduler)
-        outstanding = scheduler.unobserved_startup_paths(
-            _observed_paths(server, scheduler),
-            availability=resolve_available_when(
-                scheduler._profile, server.command_state_store.snapshot()
-            ),
-        )
+        outstanding = unobserved()
         now = time.monotonic()
         if len(outstanding) < fewest:
             fewest = len(outstanding)

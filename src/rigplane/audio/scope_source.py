@@ -125,10 +125,19 @@ class AudioFftSource:
         return Coverage(facts.tuned_hz + lo, facts.tuned_hz + hi) if lo < hi else None
 
     async def set_view(
-        self, view: ViewRequest, receiver: int | None = None
+        self,
+        view: ViewRequest,
+        receiver: int | None = None,
+        *,
+        apply_width: bool = True,
     ) -> GrantedView:
+        # The FFT crop writes nothing, so apply_width changes nothing here.
         resolved = self.resolve_view(view, receiver)
         return GrantedView(resolved, self.coverage_for(resolved, receiver))
+
+    def view_settled(self, receiver: int | None = None) -> bool:
+        # No radio write: the view is settled once set_view returns.
+        return True
 
     async def start(self) -> None:
         if self._active:

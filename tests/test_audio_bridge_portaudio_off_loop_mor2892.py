@@ -40,6 +40,12 @@ _LOGGER_NAME = "rigplane.audio.usb_driver"
 # Tiny relative to the production default — keeps this suite fast while
 # still exercising the real asyncio.wait()-based bound.
 _TEST_TIMEOUT_S = 0.05
+# A healthy start is not the subject of the stop test: it gets a bound no loaded
+# worker can exceed, and only the stop under test runs against the tiny one.
+_HEALTHY_START_TIMEOUT_S = 30.0
+# A healthy but slow open, longer than the tiny bound: what a starved xdist
+# worker does to a start (MOR-4347). Makes the test deterministic about it.
+_SLOW_HEALTHY_OPEN_S = 0.2
 
 _RP_DEVICE = AudioDeviceInfo(
     id=AudioDeviceId(1),
@@ -69,12 +75,14 @@ def _make_radio() -> types.SimpleNamespace:
     return radio
 
 
-def _make_bridge(backend: FakeAudioBackend) -> AudioBridge:
+def _make_bridge(
+    backend: FakeAudioBackend, *, portaudio_timeout: float = _TEST_TIMEOUT_S
+) -> AudioBridge:
     return AudioBridge(
         _make_radio(),
         device_name="RigPlane Virtual Cable",
         backend=backend,
-        portaudio_timeout=_TEST_TIMEOUT_S,
+        portaudio_timeout=portaudio_timeout,
     )
 
 
@@ -256,9 +264,13 @@ async def test_stop_timeout_keeps_loop_free_and_completes_teardown(
     caplog.set_level(logging.WARNING, logger=_LOGGER_NAME)
     gate = threading.Event()
     backend = FakeAudioBackend([_RP_DEVICE])
-    bridge = _make_bridge(backend)
+    # The start runs under a generous bound even when its open is slow, so it
+    # cannot time out on a loaded host; the tiny bound applies to the stop only.
+    backend.block_tx_open = lambda: time.sleep(_SLOW_HEALTHY_OPEN_S)
+    bridge = _make_bridge(backend, portaudio_timeout=_HEALTHY_START_TIMEOUT_S)
     await bridge.start()
     assert bridge.bridge_state == BridgeState.RUNNING
+    bridge._portaudio_timeout = _TEST_TIMEOUT_S
     capture = backend.rx_streams[0]
     capture.block_stop = gate.wait  # blocks a WORKER thread, never the loop
 

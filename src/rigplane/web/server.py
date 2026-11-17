@@ -1836,7 +1836,9 @@ class WebServer:
                 ).scope_session()
                 self._radio_scope_session.tx_probe = self._scope_tx_known
                 self._radio_scope_source = RadioScopeSource(
-                    profile, self._radio_scope_session
+                    profile,
+                    self._radio_scope_session,
+                    on_mode_change=self._on_scope_mode_change,
                 )
                 self._set_scope_data_callback(self._radio_scope_source.feed_frame)
                 hub.register(
@@ -1852,6 +1854,13 @@ class WebServer:
             except Exception:
                 logger.warning("optional IQ scope construction failed", exc_info=True)
         return self._scope_hub
+
+    def _on_scope_mode_change(self, receiver: int, _mode: int) -> None:
+        """A streamed frame reported a new scope mode: re-read the passband
+        geometry so the client's passband re-proof is not left to the slow
+        ordinary poll of the PBT leaves."""
+        if isinstance(self._radio_poller, RadioPoller):
+            self._radio_poller.request_scope_mode_geometry_readback(receiver)
 
     def _register_iq_scope_source(self, hub: ScopeHub) -> None:
         config = self._config.sdr_config

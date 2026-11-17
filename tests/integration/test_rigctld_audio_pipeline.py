@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncGenerator
-from typing import Any
+from typing import Any, ClassVar
 from unittest.mock import AsyncMock
 
 import pytest
@@ -14,6 +14,7 @@ from rigplane.audio.lan_stream import AudioStream, TX_IDENT
 from rigplane.audio.route import resolve_audio_route, rigctld_wsjtx_policy
 from rigplane.audio_bridge import AudioBridge, FRAME_BYTES, SAMPLES_PER_FRAME
 from rigplane.commands.commander import Priority
+from rigplane.core.transport import IcomCivTransport
 from rigplane.radio import IcomRadio
 from rigplane.rigctld.contract import RigctldConfig
 from rigplane.rigctld.server import RigctldServer
@@ -50,6 +51,10 @@ class _RecordingAudioTransport:
 
 
 class _IdleCivTransport:
+    #: The LAN CI-V transport's typed ingress-order contract (MOR-4209); the
+    #: CI-V ingress reads it before claiming any answer.
+    ordered_ingress: ClassVar[bool] = IcomCivTransport.ordered_ingress
+
     async def receive_packet(self, *, timeout: float = 0.2) -> bytes:
         await asyncio.sleep(timeout)
         raise asyncio.TimeoutError
@@ -250,6 +255,31 @@ async def rigctld_audio_setup() -> AsyncGenerator[
         await bridge.stop()
         await server.stop()
         radio._connected = False
+
+
+async def test_ptt_reread_reply_routes_through_the_lan_double_without_error(
+    rigctld_audio_setup: tuple[
+        RecordingLanRadio,
+        RigctldServer,
+        AudioBridge,
+        FakeAudioBackend,
+        _RecordingAudioTransport,
+    ],
+) -> None:
+    """MOR-4384: the rigctld PTT re-read reply reaches the PTT state.
+
+    The reply goes through the real CI-V ingress, which reads the CI-V
+    transport's typed ``ordered_ingress`` contract (MOR-4209) before it
+    claims any answer. A transport double without that attribute made the
+    route raise -- swallowed by the re-read caller -- so the managed-TX
+    seam never learnt the key state and rigctld's RF state stayed UNKNOWN.
+    The reply must route without error and land as the PTT observation.
+    """
+    radio, _server, _bridge, _backend, _transport = rigctld_audio_setup
+    await answer_ptt_reread(radio, transmitting=True)
+    assert radio.state_cache.ptt is True
+    await answer_ptt_reread(radio, transmitting=False)
+    assert radio.state_cache.ptt is False
 
 
 async def test_defer_split_is_dropped_while_the_radio_transmits(

@@ -1,0 +1,507 @@
+{
+  "seq0-follow-100k-at-14050": {
+    "case": {
+      "model": "ic705",
+      "tunedHz": 14050000,
+      "spanSettled": true,
+      "subscribe": {
+        "type": "subscribe",
+        "sourceId": "radio",
+        "receiver": 0,
+        "view": {
+          "follow": "vfo",
+          "spanHz": 100000
+        },
+        "width": 200,
+        "maxFps": 20,
+        "requestSeq": 0
+      },
+      "native": [
+        14000000,
+        14100000
+      ],
+      "nativeWidth": 475
+    },
+    "granted": {
+      "type": "granted",
+      "sourceId": "radio",
+      "receiver": 0,
+      "view": {
+        "startHz": 14000000.0,
+        "endHz": 14100000.0
+      },
+      "coverage": {
+        "startHz": 14000000,
+        "endHz": 14100000
+      },
+      "width": 200,
+      "fps": 20,
+      "requestSeq": 0,
+      "requestState": "settled"
+    }
+  },
+  "seq0-follow-100k-at-14060-native-equal": {
+    "case": {
+      "model": "ic705",
+      "tunedHz": 14060000,
+      "spanSettled": true,
+      "subscribe": {
+        "type": "subscribe",
+        "sourceId": "radio",
+        "receiver": 0,
+        "view": {
+          "follow": "vfo",
+          "spanHz": 100000
+        },
+        "width": 200,
+        "maxFps": 20,
+        "requestSeq": 0
+      },
+      "native": [
+        14010000,
+        14110000
+      ],
+      "nativeWidth": 475
+    },
+    "granted": {
+      "type": "granted",
+      "sourceId": "radio",
+      "receiver": 0,
+      "view": {
+        "startHz": 14010000.0,
+        "endHz": 14110000.0
+      },
+      "coverage": {
+        "startHz": 14010000,
+        "endHz": 14110000
+      },
+      "width": 200,
+      "fps": 20,
+      "requestSeq": 0,
+      "requestState": "settled"
+    }
+  },
+  "seq0-follow-100k-at-14060-native-narrower": {
+    "case": {
+      "model": "ic705",
+      "tunedHz": 14060000,
+      "spanSettled": true,
+      "subscribe": {
+        "type": "subscribe",
+        "sourceId": "radio",
+        "receiver": 0,
+        "view": {
+          "follow": "vfo",
+          "spanHz": 100000
+        },
+        "width": 200,
+        "maxFps": 20,
+        "requestSeq": 0
+      },
+      "native": [
+        14020000,
+        14100000
+      ],
+      "nativeWidth": 475
+    },
+    "granted": {
+      "type": "granted",
+      "sourceId": "radio",
+      "receiver": 0,
+      "view": {
+        "startHz": 14020000,
+        "endHz": 14100000
+      },
+      "coverage": {
+        "startHz": 14020000,
+        "endHz": 14100000
+      },
+      "width": 200,
+      "fps": 20,
+      "requestSeq": 0,
+      "requestState": "settled"
+    }
+  },
+  "seq1-follow-100k-pending": {
+    "case": {
+      "model": "ic705",
+      "tunedHz": 14050000,
+      "spanSettled": false,
+      "subscribe": {
+        "type": "subscribe",
+        "sourceId": "radio",
+        "receiver": 0,
+        "view": {
+          "follow": "vfo",
+          "spanHz": 100000
+        },
+        "width": 200,
+        "maxFps": 20,
+        "requestSeq": 1
+      }
+    },
+    "granted": {
+      "type": "granted",
+      "sourceId": "radio",
+      "receiver": 0,
+      "view": {
+        "startHz": 14000000.0,
+        "endHz": 14100000.0
+      },
+      "coverage": {
+        "startHz": 14000000,
+        "endHz": 14100000
+      },
+      "width": 200,
+      "fps": 20,
+      "requestSeq": 1,
+      "requestState": "pending"
+    }
+  },
+  "seq1-follow-200k-pending": {
+    "case": {
+      "model": "ic705",
+      "tunedHz": 14050000,
+      "spanSettled": false,
+      "subscribe": {
+        "type": "subscribe",
+        "sourceId": "radio",
+        "receiver": 0,
+        "view": {
+          "follow": "vfo",
+          "spanHz": 200000
+        },
+        "width": 200,
+        "maxFps": 20,
+        "requestSeq": 1
+      }
+    },
+    "granted": {
+      "type": "granted",
+      "sourceId": "radio",
+      "receiver": 0,
+      "view": {
+        "startHz": 13950000.0,
+        "endHz": 14150000.0
+      },
+      "coverage": {
+        "startHz": 13950000,
+        "endHz": 14150000
+      },
+      "width": 200,
+      "fps": 20,
+      "requestSeq": 1,
+      "requestState": "pending"
+    }
+  },
+  "seq1-follow-200k-settled": {
+    "case": {
+      "model": "ic705",
+      "tunedHz": 14050000,
+      "spanSettled": true,
+      "subscribe": {
+        "type": "subscribe",
+        "sourceId": "radio",
+        "receiver": 0,
+        "view": {
+          "follow": "vfo",
+          "spanHz": 200000
+        },
+        "width": 200,
+        "maxFps": 20,
+        "requestSeq": 1
+      }
+    },
+    "granted": {
+      "type": "granted",
+      "sourceId": "radio",
+      "receiver": 0,
+      "view": {
+        "startHz": 13950000.0,
+        "endHz": 14150000.0
+      },
+      "coverage": {
+        "startHz": 13950000,
+        "endHz": 14150000
+      },
+      "width": 200,
+      "fps": 20,
+      "requestSeq": 1,
+      "requestState": "settled"
+    }
+  },
+  "seq1-follow-200k-refused": {
+    "case": {
+      "model": "ic705",
+      "tunedHz": 14050000,
+      "spanSettled": true,
+      "subscribe": {
+        "type": "subscribe",
+        "sourceId": "radio",
+        "receiver": 0,
+        "view": {
+          "follow": "vfo",
+          "spanHz": 200000
+        },
+        "width": 200,
+        "maxFps": 20,
+        "requestSeq": 1
+      },
+      "native": [
+        14000000,
+        14100000
+      ],
+      "nativeWidth": 475,
+      "refused": true
+    },
+    "granted": {
+      "type": "granted",
+      "sourceId": "radio",
+      "receiver": 0,
+      "view": {
+        "startHz": 14000000,
+        "endHz": 14100000
+      },
+      "coverage": {
+        "startHz": 14000000,
+        "endHz": 14100000
+      },
+      "width": 200,
+      "fps": 20,
+      "requestSeq": 1,
+      "requestState": "settled"
+    }
+  },
+  "seq2-follow-100k-pending-then-narrower-frame": {
+    "case": {
+      "model": "ic705",
+      "tunedHz": 14050000,
+      "spanSettled": false,
+      "subscribe": {
+        "type": "subscribe",
+        "sourceId": "radio",
+        "receiver": 0,
+        "view": {
+          "follow": "vfo",
+          "spanHz": 100000
+        },
+        "width": 200,
+        "maxFps": 20,
+        "requestSeq": 2
+      },
+      "after": [
+        14025000,
+        14075000
+      ],
+      "afterWidth": 150
+    },
+    "granted": {
+      "type": "granted",
+      "sourceId": "radio",
+      "receiver": 0,
+      "view": {
+        "startHz": 14025000,
+        "endHz": 14075000
+      },
+      "coverage": {
+        "startHz": 14025000,
+        "endHz": 14075000
+      },
+      "width": 150,
+      "fps": 20,
+      "requestSeq": 2,
+      "requestState": "pending"
+    }
+  },
+  "seq2-follow-400k-settled": {
+    "case": {
+      "model": "ic705",
+      "tunedHz": 14050000,
+      "spanSettled": true,
+      "subscribe": {
+        "type": "subscribe",
+        "sourceId": "radio",
+        "receiver": 0,
+        "view": {
+          "follow": "vfo",
+          "spanHz": 400000
+        },
+        "width": 200,
+        "maxFps": 20,
+        "requestSeq": 2
+      }
+    },
+    "granted": {
+      "type": "granted",
+      "sourceId": "radio",
+      "receiver": 0,
+      "view": {
+        "startHz": 13850000.0,
+        "endHz": 14250000.0
+      },
+      "coverage": {
+        "startHz": 13800000,
+        "endHz": 14300000
+      },
+      "width": 200,
+      "fps": 20,
+      "requestSeq": 2,
+      "requestState": "settled"
+    }
+  },
+  "seq3-follow-1000k-settled": {
+    "case": {
+      "model": "ic705",
+      "tunedHz": 14050000,
+      "spanSettled": true,
+      "subscribe": {
+        "type": "subscribe",
+        "sourceId": "radio",
+        "receiver": 0,
+        "view": {
+          "follow": "vfo",
+          "spanHz": 1000000
+        },
+        "width": 200,
+        "maxFps": 20,
+        "requestSeq": 3
+      }
+    },
+    "granted": {
+      "type": "granted",
+      "sourceId": "radio",
+      "receiver": 0,
+      "view": {
+        "startHz": 13550000.0,
+        "endHz": 14550000.0
+      },
+      "coverage": {
+        "startHz": 13550000,
+        "endHz": 14550000
+      },
+      "width": 200,
+      "fps": 20,
+      "requestSeq": 3,
+      "requestState": "settled"
+    }
+  },
+  "ic7610-main-seq1-follow-200k-pending": {
+    "case": {
+      "model": "ic7610",
+      "tunedHz": 14050000,
+      "spanSettled": false,
+      "subscribe": {
+        "type": "subscribe",
+        "sourceId": "radio",
+        "receiver": 0,
+        "view": {
+          "follow": "vfo",
+          "spanHz": 200000
+        },
+        "width": 200,
+        "maxFps": 20,
+        "requestSeq": 1
+      }
+    },
+    "granted": {
+      "type": "granted",
+      "sourceId": "radio",
+      "receiver": 0,
+      "view": {
+        "startHz": 13950000.0,
+        "endHz": 14150000.0
+      },
+      "coverage": {
+        "startHz": 13950000,
+        "endHz": 14150000
+      },
+      "width": 200,
+      "fps": 20,
+      "requestSeq": 1,
+      "requestState": "pending"
+    }
+  },
+  "ic7610-sub-seq1-follow-200k-settled": {
+    "case": {
+      "model": "ic7610",
+      "tunedHz": 14050000,
+      "spanSettled": true,
+      "subscribe": {
+        "type": "subscribe",
+        "sourceId": "radio",
+        "receiver": 1,
+        "view": {
+          "follow": "vfo",
+          "spanHz": 200000
+        },
+        "width": 200,
+        "maxFps": 20,
+        "requestSeq": 1
+      }
+    },
+    "granted": {
+      "type": "granted",
+      "sourceId": "radio",
+      "receiver": 1,
+      "view": {
+        "startHz": 13950000.0,
+        "endHz": 14150000.0
+      },
+      "coverage": {
+        "startHz": 13950000,
+        "endHz": 14150000
+      },
+      "width": 200,
+      "fps": 20,
+      "requestSeq": 1,
+      "requestState": "settled"
+    }
+  },
+  "seq0-after-seq3": {
+    "case": {
+      "model": "ic705",
+      "tunedHz": 14050000,
+      "spanSettled": true,
+      "before": [
+        {
+          "type": "subscribe",
+          "sourceId": "radio",
+          "receiver": 0,
+          "view": {
+            "follow": "vfo",
+            "spanHz": 200000
+          },
+          "width": 200,
+          "maxFps": 20,
+          "requestSeq": 3
+        }
+      ],
+      "subscribe": {
+        "type": "subscribe",
+        "sourceId": "radio",
+        "receiver": 0,
+        "view": {
+          "follow": "vfo",
+          "spanHz": 100000
+        },
+        "width": 200,
+        "maxFps": 20,
+        "requestSeq": 0
+      }
+    },
+    "granted": {
+      "type": "granted",
+      "sourceId": "radio",
+      "receiver": 0,
+      "view": {
+        "startHz": 14000000.0,
+        "endHz": 14100000.0
+      },
+      "coverage": null,
+      "width": 200,
+      "fps": 20,
+      "requestSeq": 0,
+      "requestState": "settled"
+    }
+  }
+}

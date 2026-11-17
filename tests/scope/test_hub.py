@@ -60,7 +60,7 @@ class FakeSource:
     def coverage_for(self, view, receiver=None):
         return self.coverage
 
-    async def set_view(self, view, receiver=None):
+    async def set_view(self, view, receiver=None, *, apply_width=True):
         self.set_views.append((view, receiver))
         if self.fail_view:
             raise RuntimeError("view failed")

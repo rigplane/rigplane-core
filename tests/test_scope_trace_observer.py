@@ -16,7 +16,7 @@ async def test_sender_closes_failed_connection():
     )
     subscription.receive_delivery.return_value = (grant, b"frame")
     handler = ScopeHandler(ws)
-    await handler._sender(subscription, grant.width)
+    await handler._sender(subscription, grant)
     ws.close.assert_awaited_once()
     assert not hasattr(handler, "_frame_queue")
     assert not hasattr(handler, "_trace_observer")

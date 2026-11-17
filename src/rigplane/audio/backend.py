@@ -17,6 +17,7 @@ import sys
 import threading
 import time
 from collections import deque
+from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from typing import (
     Any,
@@ -28,7 +29,7 @@ from typing import (
     runtime_checkable,
 )
 
-from ._portaudio_enum import WASAPI_HOST_API
+from ._portaudio_enum import _NATIVE_LOCK, WASAPI_HOST_API, portaudio_native_access
 from ._usb_holder import (
     HOLDER_LOOKUP_TIMEOUT_S,
     HolderLookup,
@@ -387,6 +388,13 @@ class DuplexStream(Protocol):
 # ---------------------------------------------------------------------------
 # Backend protocol
 # ---------------------------------------------------------------------------
+
+
+@runtime_checkable
+class DeviceRefreshingBackend(Protocol):
+    """A backend whose device list can go stale and be re-scanned (MOR-4338)."""
+
+    def refresh_devices(self) -> bool: ...
 
 
 @runtime_checkable
@@ -752,8 +760,64 @@ class _RxFramer:
         return result
 
 
+class _OpenStreamCount:
+    """How many PortAudio streams are open in this process (MOR-4338).
+
+    ``Pa_Terminate`` closes every open stream, so the device list can only be
+    re-scanned while none is open — whichever backend instance owns it.
+    """
+
+    def __init__(self) -> None:
+        # Re-entrant: it also serialises native device queries and probes
+        # against a restart (see :func:`portaudio_native_access`).
+        self._lock = _NATIVE_LOCK
+        self._count = 0
+        self.restarts = 0
+
+    @property
+    def guard(self) -> AbstractContextManager[bool]:
+        return self._lock
+
+    def retain(self) -> None:
+        with self._lock:
+            self._count += 1
+
+    def drop(self) -> None:
+        with self._lock:
+            self._count = max(0, self._count - 1)
+
+    def restart_if_idle(self, restart: Callable[[], None]) -> bool:
+        """Run *restart* only while no stream is open, holding the lock.
+
+        A stream cannot take its lease while the restart runs, so none can
+        open (and then be closed by it) in between.
+        """
+        with self._lock:
+            if self._count:
+                return False
+            restart()
+            self.restarts += 1
+            return True
+
+
+_open_streams = _OpenStreamCount()
+
+
+def device_scan_generation() -> int:
+    """How many times PortAudio was restarted to re-scan devices (MOR-4338).
+
+    A caller that selected device indices before an operation that can restart
+    PortAudio re-selects when this changed.
+    """
+    return _open_streams.restarts
+
+
 class _WindowsMtaLease:
     """Keep the process MTA alive while a native stream owns COM interfaces.
+
+    Every stream takes this lease for exactly its open lifetime on every
+    platform, so it also counts the open streams for :data:`_open_streams`
+    (the COM part is Windows only).
 
     Start and close may run on different bounded workers. A COM count scoped
     only to start would let its apartment disappear while capture is running.
@@ -764,8 +828,12 @@ class _WindowsMtaLease:
     def __init__(self) -> None:
         self._cookie: Any = None
         self._ole32: Any = None
+        self._counted = False
 
     def acquire(self) -> None:
+        if not self._counted:
+            _open_streams.retain()
+            self._counted = True
         if sys.platform != "win32":
             return
         if self._cookie is not None:
@@ -786,6 +854,9 @@ class _WindowsMtaLease:
         self._cookie, self._ole32 = cookie, ole32
 
     def release(self) -> None:
+        if self._counted:
+            _open_streams.drop()
+            self._counted = False
         if self._cookie is None:
             return
         hresult = int(self._ole32.CoDecrementMTAUsage(self._cookie)) & 0xFFFFFFFF
@@ -2091,6 +2162,32 @@ class PortAudioBackend:
         # applies to the RX and TX streams opened here, never to duplex.
         self._capture_policy = _CapturePolicy(capture_mode)
 
+    def refresh_devices(self) -> bool:
+        """Re-scan the OS audio devices; ``True`` when the scan ran (MOR-4338).
+
+        PortAudio lists devices once, when it is initialised. A USB radio that
+        was powered off and on again is missing from that list (or sits at a
+        stale index) until PortAudio is restarted. Restarting closes every
+        open stream, so it only happens while no stream is open in the
+        process (a stream still opening already holds its lease); otherwise
+        nothing changes and ``False`` is returned.
+        """
+        sd, _ = self._ensure_deps()
+        terminate = getattr(sd, "_terminate", None)
+        initialize = getattr(sd, "_initialize", None)
+        if not callable(terminate) or not callable(initialize):
+            return False
+
+        def restart() -> None:
+            try:
+                terminate()
+            except Exception:
+                # Already stopped: an earlier restart's initialize failed.
+                logger.debug("portaudio: terminate failed", exc_info=True)
+            initialize()
+
+        return _open_streams.restart_if_idle(restart)
+
     @property
     def sounddevice_module(self) -> Any | None:
         """Return the underlying sounddevice module, or None if not loaded."""
@@ -2114,8 +2211,9 @@ class PortAudioBackend:
 
     def list_devices(self) -> list[AudioDeviceInfo]:
         sd, _ = self._ensure_deps()
-        raw_devices = list(sd.query_devices())
-        default_raw = getattr(getattr(sd, "default", None), "device", None)
+        with portaudio_native_access():
+            raw_devices = list(sd.query_devices())
+            default_raw = getattr(getattr(sd, "default", None), "device", None)
         default_in: int | None = None
         default_out: int | None = None
         if isinstance(default_raw, (list, tuple)) and len(default_raw) >= 2:
@@ -2152,18 +2250,19 @@ class PortAudioBackend:
     ) -> bool:
         sd, _ = self._ensure_deps()
         idx = int(device)
-        extra = self._capture_policy.probe_settings(sd, idx)
-        kwargs: dict[str, Any] = {"device": idx, "samplerate": sample_rate}
-        if extra is not None:
-            kwargs["extra_settings"] = extra
-        try:
-            if direction == "rx":
-                sd.check_input_settings(**kwargs)
-            else:
-                sd.check_output_settings(**kwargs)
-            return True
-        except Exception:
-            return False
+        with portaudio_native_access():
+            extra = self._capture_policy.probe_settings(sd, idx)
+            kwargs: dict[str, Any] = {"device": idx, "samplerate": sample_rate}
+            if extra is not None:
+                kwargs["extra_settings"] = extra
+            try:
+                if direction == "rx":
+                    sd.check_input_settings(**kwargs)
+                else:
+                    sd.check_output_settings(**kwargs)
+                return True
+            except Exception:
+                return False
 
     def open_rx(
         self,
@@ -2815,12 +2914,15 @@ __all__ = [
     "AudioDeviceInfo",
     "CAPTURE_MODES",
     "CaptureMode",
+    "DeviceRefreshingBackend",
     "DuplexStream",
     "FakeAudioBackend",
     "FakeDuplexStream",
     "FakeRxStream",
     "FakeTxStream",
     "PortAudioBackend",
+    "device_scan_generation",
+    "portaudio_native_access",
     "RxStreamHealth",
     "RxStream",
     "TxPlayoutPolicy",

@@ -5,9 +5,10 @@ import type { WsCommand, WsIncoming } from '../../../src/lib/types/protocol';
 import type { ServerStatePublic } from '../../../src/lib/types/state';
 
 /**
- * MOR-4393 — step tuning under downlink lag, real WebServer + WebKit,
- * loopback PanoramaSimulator with `--response-delay` (the harness knob in
- * tests/e2e/panorama_web_server.py): every CI-V response — writes,
+ * MOR-4393 — step tuning under readback lag, real WebServer + WebKit,
+ * loopback PanoramaSimulator with `--uplink-delay` (the harness knob in
+ * tests/e2e/panorama_web_server.py that holds every inbound request in the
+ * simulator's inherited response_delay): every CI-V response — writes,
  * transceive echoes, poll readbacks — arrives late, so the client observes
  * older own-target frequencies while newer tuning intent already exists.
  * The WebServer answers WS-queued set_freq at enqueue, so delaying only the
@@ -65,7 +66,7 @@ test('IC-705 slow link: paced drag, release, delayed own-target echo, step lands
   const base = 14_250_000;
   const server = await startJourneyServer(port, base,
     ['--model', 'IC-705', '--evidence', info.outputPath('radio.jsonl'),
-      '--response-delay', '0.5'], 'tests/e2e/panorama_web_server.py');
+      '--uplink-delay', '0.5'], 'tests/e2e/panorama_web_server.py');
   try {
     const sentFreqs: number[] = [];
     let scopeFrames = 0;

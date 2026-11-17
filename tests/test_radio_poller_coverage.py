@@ -2789,6 +2789,54 @@ async def test_confirmed_vfo_selection_dispatches_real_ic7300_geometry() -> None
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("model", ["IC-7300", "IC-705", "IC-7610"])
+async def test_scope_mode_change_dispatches_shipped_geometry_ahead_of_cadence(
+    model: str,
+) -> None:
+    """MOR-4451: the passband re-proof after a scope frame-mode change.
+
+    The client retires its passband tuple on the frame-mode boundary and
+    proves it again from geometry observed AFTER it. Left to the profile
+    cadence the slowest leaf (PBT, 5 s) arrives up to 5 s later — the
+    measured 1-5 s blink of marker and passband after FIX. The change
+    requests every pollable geometry leaf of the receiver at once, ahead of
+    the cadence, for every radio (which leaves exist is profile data).
+    """
+
+    radio = _make_radio(model=model)
+    radio._radio_state = RadioState()
+    profile = resolve_radio_profile(model=model)
+    assert profile.state_acquisition is not None
+    scheduler = AcquisitionScheduler(profile=profile.state_acquisition)
+    radio._acquisition_scheduler = scheduler
+    poller = RadioPoller(radio, CommandQueue())
+    width = FieldPath.active("main", "freq_mode", "filter_width")
+    leaves = [
+        FieldPath.receiver("main", "operator_controls", leaf)
+        for leaf in ("if_shift", "pbt_inner", "pbt_outer")
+    ]
+    expected = {
+        path
+        for path in (width, *leaves)
+        if scheduler._profile.capability_for(path).can_poll
+    }
+    assert width in expected and len(expected) >= 2
+    assert not scheduler.pending_requests()
+
+    poller.request_scope_mode_geometry_readback(0)
+
+    assert {
+        path for request in scheduler.pending_requests() for path in request.paths
+    } == expected
+    assert all(
+        request.priority is AcquisitionPriority.USER
+        for request in scheduler.pending_requests()
+    )
+    await poller._send_scheduler_requests()  # noqa: SLF001
+    assert radio.send_civ.await_count >= len(expected)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "interruption", ["select", "readback", "provider", "selection"]
 )
@@ -6896,7 +6944,6 @@ _IC7300_DRAIN_CYCLE_FRAMES: tuple[tuple[int, int | None, bytes], ...] = (
     (0x27, 0x13, b""),
     (0x27, 0x1B, b""),
     (0x27, 0x16, b"\x00"),
-    (0x27, 0x1E, b"\x01\x01"),
     (0x27, 0x17, b"\x00"),
     (0x27, 0x14, b"\x00"),
     (0x27, 0x12, b""),
