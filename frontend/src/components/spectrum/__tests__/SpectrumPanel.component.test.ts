@@ -1944,22 +1944,27 @@ describe('SpectrumPanel component', () => {
       expect(subscribes()).toHaveLength(sentBefore);
     });
 
-    it('no code path assigns a frame width to the follow request (source)', () => {
-      const source = readFileSync(resolve(process.cwd(), 'src/components/spectrum/SpectrumPanel.svelte'), 'utf8');
-      const writes = [...source.matchAll(/(?<!let )followSpanHz\s*=(?!=)/g)];
-      // The one write lives in requestFollowSpan, and only user actions call it.
-      expect(writes).toHaveLength(1);
-      const writer = source.slice(source.lastIndexOf('function ', writes[0]!.index), writes[0]!.index);
-      expect(writer).toMatch(/^function requestFollowSpan\(/);
-      // Every call sits in a user-action handler: SPAN step, ZOOM, a preset.
-      const markers = ['step(delta: -1 | 1): void {', 'function nudgeScopeZoom(', 'function applyScopePreset(', 'function '];
-      const calls = [...source.matchAll(/requestFollowSpan\(/g)].slice(1);
-      expect(calls).toHaveLength(3);
-      for (const call of calls) {
-        const nearest = markers.map((marker) => ({ marker, at: source.lastIndexOf(marker, call.index) }))
-          .reduce((best, next) => next.at > best.at ? next : best);
-        expect(nearest.marker).not.toBe('function ');
-      }
+    it.each([0, 2, 1])('no frame width ever reaches the subscription without a user action (mode %i)', async (mode) => {
+      const target = await mountAt(mode === 1 ? 0 : mode, 100_000);
+      if (mode !== 1) { mockRuntime.scope.spanControl!.step(1); flushSync(); }
+      const requested = view(target);
+      const sentBefore = subscribes().length;
+      // Every frame shape a radio can stream, pending and settled: old and
+      // new widths, an external narrowing and widening, partial coverage,
+      // an out-of-range frame and a mode change to FIX.
+      grant('pending', 13_950_000, 14_150_000);
+      window(100_000, mode, 2); window(50_000, mode, 3);
+      grant('settled', 13_950_000, 14_150_000);
+      let sequence = 4;
+      for (const widthHz of [200_000, 100_000, 50_000, 500_000, 20_000]) window(widthHz, mode, sequence++);
+      emitFrame({ mode, startFreq: 14_000_000, endFreq: 14_100_000,
+        coverageStartHz: 14_000_000, coverageEndHz: 14_060_000, sequence: sequence++ });
+      emitFrame({ mode, outOfRange: true, pixels: null, sequence: sequence++ });
+      window(150_000, 1, sequence++); window(150_000, mode, sequence++);
+      await flushWaterfallPaint();
+      expect(view(target)).toEqual(requested);
+      expect(subscribes().slice(sentBefore).every((message) => message.view?.spanHz === requested.view.spanHz
+        && message.requestSeq === requested.requestSeq)).toBe(true);
     });
 
     it('settles only on the grant: a settled grant then a frame makes the geometry the step base', async () => {
