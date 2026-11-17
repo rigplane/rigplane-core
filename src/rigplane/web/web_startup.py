@@ -534,9 +534,11 @@ async def _await_initial_state_acquisition(
       listener binds; nothing fabricates a reading, the published
       ``radioHealth`` keeps reporting ``stalled`` /
       ``radio_powered_off_likely`` until the radio's first observation
-      (whatever the live link state does in between), and transmit stays
-      refused while the safety-critical fields are unobserved (the
-      managed TX authority's provider stays not-ready).
+      (whatever the live link state does in between). An unobserved PTT
+      does not refuse transmit by itself (MOR-4456): the managed
+      authority admits the local key, and only remote controller arming
+      is refused with ``controller_not_ready`` while PTT stays
+      unobserved.
 
     Before that decision there was no serve-anyway timeout: every declared,
     non-``tx_only`` path held the listener open forever.

@@ -270,13 +270,27 @@ def test_refusal_before_the_send_does_not_complete_the_request() -> None:
 
 
 def test_refused_path_leaves_the_startup_set_unless_safety_critical() -> None:
+    """MOR-4456: only a refused freq/mode read still blocks the startup set.
+
+    PTT and split left the startup-critical set, so a refused read of
+    either leaves the unobserved startup set at once — like any other
+    non-critical refusal — while a refused freq read (the live tuning
+    pair) still blocks it.
+    """
+    from rigplane.core.state_pipeline_contracts import startup_critical_path
+
+    freq = FieldPath.active("main", "freq_mode", "freq_hz")
+    ptt = FieldPath.global_("tx_state", "ptt")
     split = FieldPath.global_("tx_state", "split")
-    scheduler = _refusal_scheduler(FreshnessClock(start=0.0), _TUNER, split)
-    assert set(scheduler.unobserved_startup_paths(())) == {_TUNER, split}
+    assert startup_critical_path(freq)
+    assert not startup_critical_path(ptt)
+    assert not startup_critical_path(split)
+    scheduler = _refusal_scheduler(FreshnessClock(start=0.0), _TUNER, freq, ptt, split)
+    assert set(scheduler.unobserved_startup_paths(())) == {_TUNER, freq, ptt, split}
 
-    scheduler.record_read_refusal((_TUNER, split), now=1.0)
+    scheduler.record_read_refusal((_TUNER, freq, ptt, split), now=1.0)
 
-    assert scheduler.unobserved_startup_paths(()) == (split,)
+    assert scheduler.unobserved_startup_paths(()) == (freq,)
 
 
 def test_refused_lone_group_is_asked_again_at_its_idle_ceiling() -> None:
