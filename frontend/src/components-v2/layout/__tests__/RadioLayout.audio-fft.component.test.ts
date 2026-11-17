@@ -174,7 +174,18 @@ afterEach(async () => {
   Reflect.deleteProperty(HTMLElement.prototype, 'releasePointerCapture');
 });
 
-describe('MOR-2545 PR2 — the scope status renders exactly once on both desktop faces', () => {
+// Every case mounts the REAL RadioLayout (about 1000 DOM nodes under jsdom
+// with the Svelte dev runtime). Measured on a healthy host that is 0.1-0.5 s
+// per case, and a CPU profile of the mount shows no single hot spot: the time
+// is spread over jsdom tree walks and Svelte effect flushes, so there is no
+// one cost to cut without mounting less of the layout, which these tests
+// exist to exercise. The cost scales with machine speed (11 cases take 1 s
+// here, 4 s on a normal CI runner, 14-16 s on a starved one), so vitest's
+// 5 s default left a starved runner no margin (MOR-4533). The budget is a
+// machine-speed ceiling, not a behaviour bound; a real hang still fails.
+const LAYOUT_MOUNT_TIMEOUT_MS = 30_000;
+
+describe('MOR-2545 PR2 — the scope status renders exactly once on both desktop faces', { timeout: LAYOUT_MOUNT_TIMEOUT_MS }, () => {
   // Composed regression for the review finding: the head handed the status
   // to the toolbar for EVERY scope source, but SpectrumPanel never mounts
   // SpectrumToolbar for audio_fft, so the status silently vanished. Each
@@ -258,7 +269,7 @@ describe('MOR-2545 PR2 — the scope status renders exactly once on both desktop
   });
 });
 
-describe('MOR-2355 central default scope source', () => {
+describe('MOR-2355 central default scope source', { timeout: LAYOUT_MOUNT_TIMEOUT_MS }, () => {
   it('renders parsed audio FFT in the real SDR center with AF bounds and no RF actions', async () => {
     select(true);
     const render = vi.spyOn(SpectrumRenderer.prototype, 'render');

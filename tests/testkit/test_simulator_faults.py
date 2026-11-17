@@ -567,23 +567,23 @@ async def test_delayed_burst_schedules_one_timer_per_packet(server, client):
     rule = FaultRule(delay_s=0.05, jitter_s=0.05, preserve_order=True)
     server.fault_plan = FaultPlan(civ_to_client=rule, seed=0xC0FFEE)
     loop = asyncio.get_running_loop()
-    real_call_later = loop.call_later
+    real_call_at = loop.call_at
     scheduled = 0
 
-    def counting_call_later(delay, callback, *args):
+    def counting_call_at(when, callback, *args, **kwargs):
         nonlocal scheduled
         if callback == server._deliver_planned:
             scheduled += 1
-        return real_call_later(delay, callback, *args)
+        return real_call_at(when, callback, *args, **kwargs)
 
     count = 30
-    loop.call_later = counting_call_later  # type: ignore[method-assign]
+    loop.call_at = counting_call_at  # type: ignore[method-assign]
     try:
         for seq in range(1, count + 1):
             client.send(_freq_get(seq=seq), server.civ_port)
         replies = [await client.recv(timeout=5.0) for _ in range(count)]
     finally:
-        loop.call_later = real_call_later  # type: ignore[method-assign]
+        loop.call_at = real_call_at  # type: ignore[method-assign]
     assert all(_is_freq_reply(reply) for reply in replies)
     assert [struct.unpack_from("<H", reply, 0x06)[0] for reply in replies] == list(
         range(1, count + 1)
@@ -591,3 +591,44 @@ async def test_delayed_burst_schedules_one_timer_per_packet(server, client):
     assert scheduled == count, f"one timer per delayed packet, got {scheduled}"
     assert rule.held == 0
     await client.expect_silence(0.3)
+
+
+@pytest.mark.realtime(reason="simulates a real scheduling stall on the loop thread")
+async def test_preserve_order_survives_a_stall_between_decision_and_timer(
+    server, client
+):
+    """A pause after the plan's clock read must not reorder the burst.
+
+    ``preserve_order`` spaces the per-packet due times by 100 microseconds.
+    On a loaded host the loop thread can be descheduled for longer than that
+    between the plan reading the clock and the timer being armed. If the
+    timer is armed with a *relative* delay, that pause shifts the packet's
+    real fire time past its successor's and the burst arrives shuffled
+    (seen on CI as ...14,16,15,17...). Simulate the pause on every other
+    packet: the due times the plan chose must be the times the loop uses.
+    """
+    server.lan_civ_echo = False
+    rule = FaultRule(delay_s=0.05, jitter_s=0.05, preserve_order=True)
+    plan = FaultPlan(civ_to_client=rule, seed=0xC0FFEE)
+    server.fault_plan = plan
+    real_decide = plan.decide
+    calls = 0
+
+    def decide_then_stall(*args, **kwargs):
+        nonlocal calls
+        result = real_decide(*args, **kwargs)
+        calls += 1
+        if calls % 2:  # a 1 ms descheduling right after the clock read
+            stall_until = time.monotonic() + 0.001
+            while time.monotonic() < stall_until:
+                pass
+        return result
+
+    plan.decide = decide_then_stall  # type: ignore[method-assign]
+    count = 30
+    for seq in range(1, count + 1):
+        client.send(_freq_get(seq=seq), server.civ_port)
+    replies = [await client.recv(timeout=5.0) for _ in range(count)]
+    assert [struct.unpack_from("<H", reply, 0x06)[0] for reply in replies] == list(
+        range(1, count + 1)
+    ), "a stall after the decision clock-read must not reorder the burst"

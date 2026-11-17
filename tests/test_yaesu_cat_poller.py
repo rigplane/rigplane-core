@@ -590,12 +590,11 @@ async def test_canonical_ptt_timeout_is_contained_without_reconnect(
 
     Three production medium cycles with a silent ``TX;``: no raise, no
     reconnect, the control after the PTT field still reaches the store
-    every cycle, and the critical-path counting still reaches the gate
-    threshold (the unchanged gate's abort on that threshold is pinned by
-    test_yaesu_unanswered_ptt_read_still_fails_startup).
+    every cycle, and no timeout tally accrues — PTT left the critical
+    set, so the counting switched off with it (the gate's opens-without-
+    PTT proof is pinned by
+    test_yaesu_unanswered_tx_state_opens_after_the_non_critical_deadline).
     """
-    from rigplane.backends.yaesu_cat.observations import _PTT
-
     radio, poller, store, clock, emitted = _canonical_ptt_path(
         monkeypatch, later_field=True
     )
@@ -614,7 +613,7 @@ async def test_canonical_ptt_timeout_is_contained_without_reconnect(
     ] * 3
     assert store.snapshot().field(OBSERVED_PTT_PATH).value is ObservedPtt.UNKNOWN
     assert not any(str(item.path) == "global.tx_state.ptt" for item in emitted)
-    assert radio._critical_read_timeouts == {_PTT: 3}  # noqa: SLF001
+    assert radio._critical_read_timeouts == {}  # noqa: SLF001
     widths = [item for item in emitted if str(item.path).endswith("filter_width")]
     assert len(widths) == 3, "the control after PTT must reach the store every cycle"
 
@@ -623,14 +622,14 @@ async def test_canonical_ptt_timeout_is_contained_without_reconnect(
 async def test_canonical_split_timeout_is_contained_without_reconnect(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """MOR-4456: an unanswered split read is served absent and counted.
+    """MOR-4456: an unanswered split read is served absent and uncounted.
 
     Three production slow cycles with a silent ``ST;``: no raise, no
     reconnect, the controls after split (clarifier) still reach the store
-    every cycle, and the critical-path accounting is kept (the unchanged
-    gate's abort on the third attempt is pinned by
-    test_never_answered_split_path_fails_startup_after_three_attempts and
-    the new gate test below).
+    every cycle, and no timeout tally accrues — split left the critical
+    set, so the counting switched off with it (the gate's opens-without-
+    split proof is pinned by
+    test_yaesu_unanswered_tx_state_opens_after_the_non_critical_deadline).
     """
     from rigplane.backends.yaesu_cat.observations import (
         _RIT_FREQ,
@@ -667,7 +666,7 @@ async def test_canonical_split_timeout_is_contained_without_reconnect(
         call.args[0] for call in radio._transport.query.await_args_list
     ] == ["ST;"] * 3
     assert not any(item.path == _SPLIT for item in emitted)
-    assert radio._critical_read_timeouts == {_SPLIT: 3}  # noqa: SLF001
+    assert radio._critical_read_timeouts == {}  # noqa: SLF001
     by_path = [item.path for item in emitted]
     for path in (_RIT_ON, _RIT_TX, _RIT_FREQ):
         assert by_path.count(path) == 3, (
@@ -679,15 +678,14 @@ async def test_canonical_split_timeout_is_contained_without_reconnect(
 async def test_canonical_split_refusal_then_timeout_stays_contained(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """MOR-4456: a refused split with a silent re-read is served absent and counted.
+    """MOR-4456: a refused split with a silent re-read is served absent.
 
     Three production slow cycles where ``ST;`` first answers ``?;`` and the
     single re-read stays silent: the retry timeout gets the same
-    containment flag and critical-read accounting as a plain timeout — no
-    raise, no reconnect, split absent, the controls after split
-    (clarifier) still reach the store every cycle, and the tally reaches
-    the gate threshold on the third cycle exactly like three plain
-    timeouts.
+    containment flag as a plain timeout — no raise, no reconnect, split
+    absent, the controls after split (clarifier) still reach the store
+    every cycle — and no tally accrues, since split left the critical
+    set.
     """
     from rigplane.backends.yaesu_cat.observations import (
         _RIT_FREQ,
@@ -726,7 +724,7 @@ async def test_canonical_split_refusal_then_timeout_stays_contained(
         call.args[0] for call in radio._transport.query.await_args_list
     ] == ["ST;"] * 6
     assert not any(item.path == _SPLIT for item in emitted)
-    assert radio._critical_read_timeouts == {_SPLIT: 3}  # noqa: SLF001
+    assert radio._critical_read_timeouts == {}  # noqa: SLF001
     by_path = [item.path for item in emitted]
     for path in (_RIT_ON, _RIT_TX, _RIT_FREQ):
         assert by_path.count(path) == 3, (
@@ -738,12 +736,13 @@ async def test_canonical_split_refusal_then_timeout_stays_contained(
 async def test_canonical_split_refusal_skips_retry_count_and_continues(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """MOR-4456: a twice-refused split records the defect and stays in-cycle.
+    """MOR-4456: a twice-refused split records no defect and stays in-cycle.
 
     The refusal is re-issued once (MOR-2584) without touching the timeout
     tally; the slow cycle completes with no reconnect and the controls
-    after split still publish. The defect the lane records is what the
-    unchanged gate aborts on (new gate test below).
+    after split still publish. Split left the critical set, so the lane
+    records no startup defect — the gate opens without it (new gate test
+    below).
     """
     from rigplane.backends.yaesu_cat.observations import (
         _RIT_FREQ,
