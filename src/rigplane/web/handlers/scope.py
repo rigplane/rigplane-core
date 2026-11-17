@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
 from rigplane.scope.hub import HubSubscription
@@ -143,6 +143,13 @@ class ScopeHandler:
         try:
             while True:
                 grant, data = await subscription.receive_delivery()
+                if (
+                    sent.request_state == "settled"
+                    and grant.request_seq == sent.request_seq
+                ):
+                    # A delivery buffered before the request settled must
+                    # not send it back to pending: settled is final per seq.
+                    grant = replace(grant, request_state="settled")
                 # A regrant on a width change, and when the request settles
                 # (MOR-4532: the re-sent grant is the only "settled" signal).
                 if (grant.width, grant.request_state) != (
