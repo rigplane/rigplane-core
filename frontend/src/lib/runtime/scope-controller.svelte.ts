@@ -148,6 +148,12 @@ export class ScopeController {
     return this._streams[source]!;
   }
 
+  /** MOR-4534: the App's presentation swap holds every stream's departing surfaces (ScopeStream.holdSurfaces). */
+  holdSurfaces(): () => void {
+    const releases = Object.values(this._streams).map(stream => stream!.holdSurfaces());
+    return () => { for (const release of releases) release(); };
+  }
+
   configureSources(sourceIds: readonly string[], defaultSourceId?: 'radio' | 'iq_fft' | 'audio_fft' | null): void {
     const selected = defaultSourceId === 'radio' || defaultSourceId === 'iq_fft' ? defaultSourceId
       : sourceIds.includes('radio') ? 'radio' : sourceIds.includes('iq_fft') ? 'iq_fft' : null;

@@ -7,6 +7,7 @@
   import { presentationResources, runtime } from './lib/runtime/frontend-runtime';
   import type { AppResource, ResourceLease } from '$lib/runtime/resource-demand';
   import { systemController } from '$lib/runtime/system-controller';
+  import { scopeController } from '$lib/runtime/scope-controller.svelte';
   import { provideManagedAppTxHost } from '$lib/runtime/tx-controller/managed-app-host';
   import { managedTxAuthorityKey, ManagedTxAuthorityRefreshGate } from '$lib/runtime/tx-controller/authority-refresh-key';
   import { hasAnyScope } from './lib/stores/capabilities.svelte';
@@ -196,7 +197,7 @@
 
   async function requestPresentation(id: PresentationId): Promise<void> {
     const generation = ++loaderGeneration;
-    let bridge: ResourceLease[] = [];
+    let bridge: SwapBridge = { leases: [], releaseSurfaces: () => {} };
     try {
       const record = getPresentationRecord(id);
       if (record === undefined) throw new Error(`Presentation "${id}" is not registered.`);
@@ -244,12 +245,15 @@
     }
   }
 
+  type SwapBridge = { leases: ResourceLease[]; releaseSurfaces: () => void };
+
   /**
    * Bridge leases for the incoming presentation's planned resources, limited
    * to those already demanded: a presentation choice must not manufacture a
-   * live service (v3 ADR invariant 12).
+   * live service (v3 ADR invariant 12). MOR-4534: the bridge also holds the
+   * outgoing scope surfaces' requests until the incoming panels send theirs.
    */
-  function acquireSwapBridge(id: PresentationId, resources: readonly AppResource[]): ResourceLease[] {
+  function acquireSwapBridge(id: PresentationId, resources: readonly AppResource[]): SwapBridge {
     const leases: ResourceLease[] = [];
     for (const resource of resources) {
       try {
@@ -261,10 +265,11 @@
         // The App resource session is torn down — there is nothing to bridge.
       }
     }
-    return leases;
+    return { leases, releaseSurfaces: scopeController.holdSurfaces() };
   }
 
-  function releaseSwapBridge(leases: ResourceLease[]): void {
+  function releaseSwapBridge({ leases, releaseSurfaces }: SwapBridge): void {
+    releaseSurfaces();
     while (leases.length > 0) presentationResources.release(leases.pop()!);
   }
 

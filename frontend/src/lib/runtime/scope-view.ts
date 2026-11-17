@@ -153,13 +153,18 @@ export function scopeSubscriptionSurface(_node: Element, initial: {
   const watchError = () => parameters.stream?.error.subscribe(error => {
     if (error !== null && attempted && attemptedRevision !== parameters.revision) publish();
   }) ?? (() => {});
+  const claim = () => parameters.stream?.claimSurface(token, parameters.stream.sourceId,
+    parameters.stream.kind === 'radio' ? parameters.receiver : null);
+  claim();
   publish();
   stopError = watchError();
   return {
     update(next: typeof initial) {
       const changed = next.stream !== parameters.stream;
       if (changed) { stopError(); parameters.stream?.removeSurfaceSubscription(token); attempted = false; }
-      parameters = next; publish();
+      parameters = next;
+      if (changed) claim();
+      publish();
       if (changed) stopError = watchError();
     },
     destroy() {
