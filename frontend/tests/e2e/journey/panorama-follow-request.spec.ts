@@ -1,5 +1,5 @@
 import { createReadStream } from 'node:fs';
-import { writeFile } from 'node:fs/promises';
+import { rename, writeFile } from 'node:fs/promises';
 import { expect, test, type Page, type TestInfo } from '@playwright/test';
 import { parseCurrentScopeFrame } from '../../../src/lib/runtime/scope-frame';
 import { startJourneyServer, type JourneyServerHandle } from './server-process';
@@ -99,7 +99,10 @@ async function wideThenExternalNarrow(page: Page, h: Harness): Promise<number> {
   await expect.poll(() => h.coverageWidth(), { timeout: 30_000 }).toBe(wide);
   await settleOnFrames(h, 8);
   const receiptsBefore = (await h.writes()).length;
-  await writeFile(h.evidence.replace('.jsonl', '.span'), '25000');
+  // Atomic: the simulator's pump must never read a half-written file.
+  const hook = h.evidence.replace('.jsonl', '.span');
+  await writeFile(`${hook}.tmp`, '25000');
+  await rename(`${hook}.tmp`, hook);
   await expect.poll(() => h.coverageWidth(), { timeout: 10_000 }).toBe(50_000);
   return receiptsBefore;
 }
