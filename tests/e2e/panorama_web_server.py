@@ -594,7 +594,9 @@ async def run() -> None:
 
         async def _external_span_change() -> None:
             await asyncio.sleep(args.external_span_after_s)
-            simulator.apply_external_span(args.external_span_hz, args.external_span_skew_s)
+            simulator.apply_external_span(
+                args.external_span_hz, args.external_span_skew_s
+            )
 
         asyncio.create_task(_external_span_change())
     radio = IcomRadio(
