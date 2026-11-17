@@ -52,10 +52,15 @@ and no push to `main`: the merge queue already tested that tree, MOR-3878)
 and its two jobs so that an accidental guard regression — a dropped trigger,
 or a `jobs.test`/`jobs.capture-harness` `if:` other than the freshness guard
 that silently disables the matrix — turns red.
+
+Also pins that `full.yml`'s `test` job `timeout-minutes` uses the same
+`(inputs.rc || github.ref_type == 'tag')` gate as its `Run tests` marker
+expression, evaluated to 60 minutes when that gate is true and 25 otherwise.
 """
 
 from __future__ import annotations
 
+import pytest
 import re
 import shlex
 import tomllib
@@ -98,6 +103,23 @@ _RC_GATE_RE = re.compile(
     r"\$\{\{\s*\(inputs\.rc\s*\|\|\s*github\.ref_type\s*==\s*'tag'\)"
     r"\s*&&\s*'(?P<on>(?:[^']|'')*)'"
     r"\s*\|\|\s*'(?P<off>(?:[^']|'')*)'\s*\}\}"
+)
+
+# Same gate shape as _RC_GATE_RE, but the branches are numeric job timeouts.
+_RC_TIMEOUT_GATE_RE = re.compile(
+    r"\$\{\{\s*\(inputs\.rc\s*\|\|\s*github\.ref_type\s*==\s*'tag'\)"
+    r"\s*&&\s*(?P<on>\d+)"
+    r"\s*\|\|\s*(?P<off>\d+)\s*\}\}"
+)
+
+# The shared condition prefix in both gate expressions above.
+_RC_GATE_CONDITION_RE = re.compile(
+    r"\(inputs\.rc\s*\|\|\s*github\.ref_type\s*==\s*'tag'\)"
+)
+
+_TEST_JOB_TIMEOUT_RE = re.compile(
+    r"^    timeout-minutes:\s*(?P<expr>.+)$",
+    re.MULTILINE,
 )
 
 # The body of the `rc` input under `workflow_dispatch:` in full.yml.
@@ -179,6 +201,29 @@ def _run_tests_step_body(workflow_name: str) -> str:
         "the step was renamed or restructured"
     )
     return match.group(1)
+
+
+def _rc_gate_condition(expr: str) -> str:
+    match = _RC_GATE_CONDITION_RE.search(expr)
+    assert match, (
+        f"no `(inputs.rc || github.ref_type == 'tag')` gate in {expr!r} — "
+        "extend the pin if full.yml gates RC another way"
+    )
+    return match.group(0)
+
+
+def _rc_gated_timeout(
+    expr: str, *, rc: bool | None = None, tag: bool = False
+) -> int:
+    """The minutes `expr` gives when `inputs.rc` is `rc` (or the run is on a tag)."""
+    rendered = _RC_TIMEOUT_GATE_RE.sub(
+        lambda m: str(int(m["on"]) if rc or tag else int(m["off"])), expr
+    )
+    assert "${{" not in rendered, (
+        f"an expression this pin does not evaluate is in {expr!r} — "
+        "extend `_RC_TIMEOUT_GATE_RE` if the workflow gates timeout another way"
+    )
+    return int(rendered.strip())
 
 
 def _marker_selection(
@@ -293,6 +338,30 @@ def test_full_runs_the_slow_tests_only_for_an_rc_dispatch_or_rc_tag() -> None:
             assert _marker_selection(invocation, rc=rc) == [], (
                 f"full.yml selects markers when `rc` is {rc!r}: {invocation!r}"
             )
+
+
+def test_full_test_job_timeout_matches_rc_gate_used_for_marker_selection() -> None:
+    test_job = _job_body("full.yml", "test")
+    timeout_match = _TEST_JOB_TIMEOUT_RE.search(test_job)
+    assert timeout_match, "full.yml `test` job has no `timeout-minutes`"
+    timeout_expr = timeout_match.group("expr")
+
+    for invocation in _pytest_invocations("full.yml"):
+        assert _rc_gate_condition(timeout_expr) == _rc_gate_condition(invocation), (
+            "full.yml `test` job timeout and `Run tests` marker use different "
+            "RC gates — keep `(inputs.rc || github.ref_type == 'tag')` identical"
+        )
+
+    assert _rc_gated_timeout(timeout_expr, rc=True) == 60
+    assert _rc_gated_timeout(timeout_expr, rc=False) == 25
+    assert _rc_gated_timeout(timeout_expr, rc=None) == 25
+    assert _rc_gated_timeout(timeout_expr, tag=True) == 60
+
+    with pytest.raises(AssertionError, match="does not evaluate"):
+        _rc_gated_timeout(
+            "${{ (inputs.rc || github.ref_type == 'tag') && 60 || }}",
+            rc=True,
+        )
 
 
 def test_full_declares_a_boolean_rc_input_defaulting_to_false() -> None:
