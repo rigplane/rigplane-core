@@ -713,53 +713,51 @@
   // the drag writes `gesture`, the tuning legs write their own. Pan/zoom
   // presets edit the View directly (display-only until R4 grants views).
   let followSpanHz = $state<number | null>(null);
-  // MOR-4451: the last OBSERVED native width, for the adoption clamp —
-  // only a narrowing of the radio's own native window can be an external
-  // change to adopt, never a shrinking frame intersection.
-  let lastNativeWidthHz: number | null = null;
-  // MOR-4451 defect 1: the ONE adoption rule, shared by the follow
-  // adoption in the coordination effect below and the hatch input. The
-  // adoption write lands in a post-render $effect while the hatch DOM
-  // commits in the render phase, so the hatch input must predict the
-  // adoption with this same rule instead of reading the still-stale
-  // follow width — otherwise every frames-first adoption commits
-  // hatch-then-clean (two DOM commits the rAF sampler can paint
-  // between). Returns the adopted width, or null when this tick adopts
-  // nothing. Pure: no latch update, so the effect and the hatch derived
-  // always agree in the same tick. (`lastNativeWidthHz` is intentionally
-  // a plain read here: it is only ever assigned the current native
-  // width, so whenever it differs all other inputs already changed and
-  // re-ran this rule's readers.)
-  function adoptedFollowWidth(input: {
-    follow: number | null;
-    geometry: ScopeGeometry | null;
-    grant: ScopeGranted | null;
-    nativeWidthHz: number | null;
-    lastNativeWidthHz: number | null;
-    fixed: boolean;
-    changingMode: boolean;
-    requestedView: View | null;
-  }): number | null {
-    const { follow, geometry, grant, nativeWidthHz, lastNativeWidthHz, fixed, changingMode, requestedView } = input;
-    // A late response to an earlier zoom cannot adopt over newer intent:
-    // the grant still answers the current follow request when its width
-    // matches the requested follow width. The frame view is NOT part of
-    // the guard — the server clips follow frames to a narrowed native
-    // before the span-index readback arrives, so demanding frame view
-    // width == follow width misses the adoption forever (MOR-4451).
-    const currentGrant = follow !== null && geometry !== null && grant !== null
-      && geometry.receiver === grant.receiver
-      && Math.abs(grant.view.endHz - grant.view.startHz - follow) < 1;
-    // The 1 Hz epsilon keeps the clamp from firing on wire/view
-    // reconstruction jitter (a freq±span/2 window rebuilds 1 ulp off
-    // the requested width); real adoptions are thousands of times
-    // larger.
-    if (!fixed && !changingMode && requestedView === null && currentGrant && nativeWidthHz !== null
-      && follow !== null && lastNativeWidthHz !== null
-      && nativeWidthHz < lastNativeWidthHz - 1 && follow > nativeWidthHz + 1) {
-      return nativeWidthHz;
-    }
-    return null;
+  // MOR-4532: `followSpanHz` is a REQUEST, not a width, and it changes ONLY
+  // on a user action (requestFollowSpan). Each request carries a
+  // per-connection `requestSeq` (1, 2, …) the ScopeController allocates, so
+  // a remounted panel continues it; a fresh scope connection starts at 0,
+  // which is not a request. A grant settles every request up to its
+  // `requestSeq`. While the newest request is unsettled, the displayed follow
+  // width and the SPAN step base come from the request, so fast presses
+  // accumulate; once it is settled they come from the frame geometry — the
+  // display and the step base only: no frame width ever reaches the
+  // subscription. "Settled" comes ONLY from the grant (re-sent before the
+  // frame that settles it) — never from scopeControls.span, field status or
+  // widths.
+  let followRequestTracked = $derived(!audioFft && !sdrSource && explicitView === null);
+  let followRequest = $state({ epoch: 0, seq: 0 });
+  let followRequestSeq = $derived(followRequest.epoch === runtime.scope.connectionEpoch ? followRequest.seq : 0);
+  // The newest requestSeq a settled grant carried, and the newest one a frame
+  // after that grant confirmed (the frame is the settled geometry), each with
+  // its connection.
+  let settledGrant = { epoch: 0, seq: 0 };
+  let settledFollow = $state({ epoch: 0, seq: 0 });
+  let followSettled = $derived(followRequestTracked && (followRequestSeq === 0
+    || (settledFollow.epoch === runtime.scope.connectionEpoch && settledFollow.seq >= followRequestSeq)));
+  function requestFollowSpan(widthHz: number): void {
+    followRequest = { epoch: runtime.scope.connectionEpoch, seq: runtime.scope.nextRequestSeq() };
+    followSpanHz = widthHz;
+  }
+  // The base width a SPAN step or a CENTER ZOOM starts from: a CENTER crop
+  // when one is shown, else the unsettled request (fast gestures
+  // accumulate), else the displayed frame geometry. SCROLL-C never starts
+  // from a client crop (it would re-pick the existing width and write
+  // nothing).
+  function followGestureBaseHz(observedHz: number | null): number | null {
+    if (requestedView !== null && !isRadioOwnedWindow) return requestedView.endHz - requestedView.startHz;
+    return observedHz !== null ? followViewWidthHz(observedHz) : followSpanHz;
+  }
+  // The width the follow view shows: the frame geometry once the request is
+  // settled, the request while it is pending (or not tracked at all).
+  function followViewWidthHz(geometryWidthHz: number): number {
+    return followSettled ? geometryWidthHz : followSpanHz ?? geometryWidthHz;
+  }
+  // This panel's own radio frame width (the SPAN readout), or null.
+  function radioFrameWidthHz(): number | null {
+    const geometry = frameGeometry;
+    return geometry?.source === 'radio' && geometry.receiver === (spectrumAuthority?.receiver ?? 0)
+      ? geometry.view.endHz - geometry.view.startHz : null;
   }
   const scopeView = createScopeView({ startHz: 0, endHz: 0 });
   let coordinatingView = false;
@@ -771,8 +769,8 @@
     });
     return stop;
   });
-  // MOR-4451: one source of truth for the radio's NATIVE width in Hz, shared
-  // by the follow adoption below and the hatch input. span_choices_hz[i] is
+  // MOR-4451: one source of truth for the radio's NATIVE width in Hz for the
+  // hatch input while a follow request is pending. span_choices_hz[i] is
   // already the FULL view width (CENTER: 2 × the radio's ±half-width
   // preset — the server publishes view widths since #4565), so the observed
   // scope-span index names the native width with no client ×2. The cached
@@ -797,7 +795,6 @@
   });
   $effect(() => {
     const geometry = frameGeometry;
-    const grant = frameGrant;
     const frequency = displayFrequencyHz;
     const authority = spectrumAuthority;
     const nativeRadio = !audioFft && !sdrSource;
@@ -806,6 +803,7 @@
     const fixed = isRadioOwnedWindow;
     const changingMode = authority !== null && hasPendingScopeModeChange(authority.providerGeneration, sessionEpoch);
     const follow = followSpanHz;
+    const settled = followSettled;
     const requested = requestedView;
     const fixedCrop = fixed && requested !== null && (explicitView === null
       || requested.startHz !== explicitView.startHz || requested.endHz !== explicitView.endHz);
@@ -848,21 +846,10 @@
           explicitView = null;
         }
         if (geometry && geometry.view.endHz > geometry.view.startHz) {
-          // MOR-4451: adopt external NATIVE-width changes without a
-          // write-back. The frame coverage is the intersection of the delayed
-          // pixels with the requested view — during tuning lag it shrinks
-          // (100→90 kHz) while the radio's native window is unchanged, so an
-          // intersection shrink must never adopt. Only an OBSERVED narrowing
-          // of the native width below the follow width clamps it to the new
-          // native width; anything else keeps it. Only a narrowing can be
-          // adoption — our own zoom/step gestures ask the server for a
-          // covering preset, never for less than requested.
-          const nativeWidthHz = nativeScopeWidthHz;
-          const adopted = adoptedFollowWidth({ follow, geometry, grant, nativeWidthHz,
-            lastNativeWidthHz, fixed, changingMode, requestedView });
-          if (adopted !== null) followSpanHz = adopted;
-          lastNativeWidthHz = nativeWidthHz;
-          const span = followSpanHz ?? (geometry.view.endHz - geometry.view.startHz);
+          // MOR-4532: a settled request shows the frame geometry; the
+          // subscription keeps the requested width.
+          const geometryWidthHz = geometry.view.endHz - geometry.view.startHz;
+          const span = settled ? geometryWidthHz : follow ?? geometryWidthHz;
           // MOR-4392: in FIX the displayed window is the fixed window (or a
           // requested crop inside it) — a leftover CENTER follow width must
           // never replace it, or marker/passband/click math runs against a
@@ -950,8 +937,8 @@
   let spectrumGeometryKey = $derived(`${spectrumAuthority?.providerGeneration ?? 'x'}|${displayGeometry?.receiver ?? 'legacy'}|${startFreq}|${endFreq}|${frameGeometry?.width ?? 0}|${audioProjection?.zero ?? 'legacy'}|${audioProjection?.perHz ?? 0}`);
   // MOR-4270: the coverage projection hatches the requested view's
   // uncovered columns with the typed reason — never stretched pixels.
-  // MOR-4451: the hatch reads the same native width as the follow adoption
-  // above (the reviewer's P2: the cached grant coverage is a stale
+  // MOR-4451: the hatch reads the native width above (the reviewer's P2:
+  // the cached grant coverage is a stale
   // subscription-time intersection, not the current native window). Only the
   // span feeds the gap decision, so the width rides a span-only view here.
   // An uncovered column against an as-wide-or-wider native is a transient lag
@@ -959,27 +946,18 @@
   // a truly narrower native hatches.
   let nativeScopeCoverage = $derived(nativeScopeWidthHz !== null
     ? { startHz: 0, endHz: nativeScopeWidthHz } : null);
-  // MOR-4451 defect 1: the hatch input predicts the adoption with the
-  // same rule the coordination effect applies, so the hatch decision for
-  // the adopted view uses the adopted width in the same tick the readback
-  // arrives — not the still-stale follow width the post-render effect has
-  // yet to write. Null (no adoption this tick) keeps the displayed view,
-  // so every other tick is byte-identical to before.
-  let adoptedFollowSpanHz = $derived(adoptedFollowWidth({
-    follow: followSpanHz,
-    geometry: frameGeometry,
-    grant: frameGrant,
-    nativeWidthHz: nativeScopeWidthHz,
-    lastNativeWidthHz,
-    fixed: isRadioOwnedWindow,
-    changingMode: spectrumAuthority !== null
-      && hasPendingScopeModeChange(spectrumAuthority.providerGeneration, runtime.controlSession.epoch),
-    requestedView,
-  }));
+  // MOR-4532: a settled CENTER follow view IS the window the radio delivers
+  // (the server clips it to a narrower native); the hatch reads that settled
+  // geometry width in the same tick the frame lands, never the follow width
+  // the post-render effect has yet to write.
+  let settledFollowHatch = $derived(followSettled && !isRadioOwnedWindow && requestedView === null
+    && frameGeometry !== null && frameGeometry.view.endHz > frameGeometry.view.startHz
+    && effectiveView.endHz > effectiveView.startHz);
   let hatchRequestedView = $derived.by(() => {
-    if (adoptedFollowSpanHz === null || effectiveView.endHz <= effectiveView.startHz) return effectiveView;
+    if (!settledFollowHatch || frameGeometry === null) return effectiveView;
+    const widthHz = frameGeometry.view.endHz - frameGeometry.view.startHz;
     const centerHz = viewCenterHz(effectiveView);
-    return { startHz: centerHz - adoptedFollowSpanHz / 2, endHz: centerHz + adoptedFollowSpanHz / 2 };
+    return { startHz: centerHz - widthHz / 2, endHz: centerHz + widthHz / 2 };
   });
   let coverageProjection = $derived(!audioFft && displayGeometry !== null && scopeDemandOn
     ? projectScopeCoverage(displayGeometry, hatchRequestedView, nativeScopeCoverage) : null);
@@ -1006,10 +984,12 @@
     const view = !audioFft && explicitView !== null ? explicitView
       : { follow: 'vfo' as const, spanHz: followSpanHz ?? (audioFft ? 48000 : 100000) };
     const facts = spectrumFacts;
+    const requestSeq = followRequestSeq;
     return scopeSubscription({
       sourceId: stream.sourceId,
       receiver: audioFft || sdrSource ? null : spectrumAuthority?.receiver ?? 0,
       view, width: facts?.backingW ?? 0, visible: facts?.visible ?? false, maxFps: 20,
+      requestSeq: followRequestTracked ? requestSeq : undefined,
     });
   });
   $effect(() => {
@@ -1018,26 +998,16 @@
   });
   $effect(() => {
     if (audioFft || sdrSource || !runtime.caps?.span_choices_hz?.length) return;
-    const receiver = spectrumAuthority?.receiver ?? 0;
     const control = {
-      get spanHz(): number | null {
-        const geometry = frameGeometry;
-        return geometry?.source === 'radio' && geometry.receiver === receiver
-          ? geometry.view.endHz - geometry.view.startHz : null;
-      },
+      get spanHz(): number | null { return radioFrameWidthHz(); },
       step(delta: -1 | 1): void {
         // MOR-4392 (coordinator ruling 2026-11-10): SPAN applies in CENTER and
         // SCROLL-C. In FIX/SCROLL-F the edges are wire-owned and a step writes
         // nothing, so it is refused outright (the keys render disabled).
         // MOR-4451: SCROLL-C owns its window but still accepts SPAN.
         if (isSpanDisabledScope(scopeMode)) return;
-        // The only radio-owned scope the guard above lets through is
-        // SCROLL-C: its SPAN steps from the OBSERVED radio window width, never
-        // from a client ZOOM crop (which would re-pick the existing width and
-        // write nothing). CENTER keeps its crop/follow base.
-        const observedHz = isRadioOwnedWindow ? nativeScopeWidthHz : null;
-        const current = observedHz ?? (requestedView !== null ? requestedView.endHz - requestedView.startHz
-          : followSpanHz ?? control.spanHz);
+        // MOR-4532: CENTER and SCROLL-C step from followGestureBaseHz.
+        const current = followGestureBaseHz(control.spanHz);
         const choices = runtime.caps?.span_choices_hz ?? [];
         if (current === null) return;
         const next = delta > 0 ? choices.find(span => span > current)
@@ -1045,7 +1015,7 @@
         if (next === undefined) return;
         explicitView = null;
         requestedView = null;
-        followSpanHz = next;
+        requestFollowSpan(next);
         scopeView.set('gesture', null);
       },
     };
@@ -1064,7 +1034,7 @@
     if (preset.kind === 'follow') {
       explicitView = null;
       requestedView = null;
-      followSpanHz = 'spanHz' in preset.view ? preset.view.spanHz : spanHz;
+      requestFollowSpan('spanHz' in preset.view ? preset.view.spanHz : spanHz);
       scopeView.set('gesture', null);
       return;
     }
@@ -1151,8 +1121,7 @@
     // inside one preset is a pure client crop with no radio write. The
     // chain reads the exact requested width, not the freq±span/2 view
     // reconstruction, so the floor/cap no-op is exact (1-ulp idempotence).
-    const current = requestedView !== null ? requestedView.endHz - requestedView.startHz
-      : followSpanHz ?? (effectiveView.endHz - effectiveView.startHz);
+    const current = followGestureBaseHz(radioFrameWidthHz()) ?? effectiveView.endHz - effectiveView.startHz;
     let next = current * factor;
     if (factor < 1) {
       // The floor is a few bins of the NARROWEST span choice (see
@@ -1166,7 +1135,7 @@
     if (next === current) return; // the bin floor / widest preset is a no-op
     requestedView = null;
     explicitView = null;
-    followSpanHz = next;
+    requestFollowSpan(next);
     scopeView.set('gesture', null);
   }
 
@@ -1705,7 +1674,14 @@
       if (sourceIsAudio) runtime.scope.registerPresentationDriver(presentationResources);
       const scopeStream = runtime.scope.stream(sourceIsAudio ? 'audio_fft' : 'hardware');
       const stopError = scopeStream.error.subscribe(error => { scopeError = error; });
-      const stopGrant = scopeStream.granted.subscribe((grant) => { frameGrant = grant; });
+      const stopGrant = scopeStream.granted.subscribe((grant) => {
+        frameGrant = grant;
+        const epoch = runtime.scope.connectionEpoch;
+        if (grant?.requestState === 'settled' && grant.requestSeq !== undefined
+          && (settledGrant.epoch !== epoch || grant.requestSeq > settledGrant.seq)) {
+          settledGrant = { epoch, seq: grant.requestSeq };
+        }
+      });
       const stopGeometry = scopeStream.geometry.subscribe((geometry) => { frameGeometry = geometry; });
       cachedWhileOff = false;
       const acceptFrame = (frame: ScopeFrame, slotKey: string) => {
@@ -1713,6 +1689,11 @@
         if (geometry === null) return;
         // Follow the qualified display slot (the geometry's own slot).
         if (slotKey !== scopeSlotKey(geometry.sourceId, geometry.receiver)) return;
+        // MOR-4532: a frame after a settled grant is the settled geometry
+        // (the grant is re-sent before the frame that settles it).
+        if (settledFollow.epoch !== settledGrant.epoch || settledFollow.seq < settledGrant.seq) {
+          settledFollow = { ...settledGrant };
+        }
         if (geometry.outOfRange && !geometry.hasPixels) return;
         if (!scopeDemandOn) { cachedWhileOff = true; return; }
         const traceStart = trace?.status === 'recording' ? performance.now() : 0;
@@ -1871,6 +1852,7 @@
     <div class="spectrum-area" class:panning={dragging} class:draggable={canPan} bind:this={spectrumArea} use:scopeSubscriptionSurface={{
       stream: runtime.scope.stream(audioFft ? 'audio_fft' : 'hardware'),
       receiver: scopeSubscriptionValue.receiver, view: scopeSubscriptionValue.view, facts: spectrumFacts,
+      requestSeq: scopeSubscriptionValue.requestSeq,
       revision: audioFft ? audioScopeFactsRevision(runtime.state, runtime.caps) : spectrumAuthority?.digest,
       frequencyHz: spectrumAuthority?.frequencyHz,
     }} onpointerdown={handleDragStart} onlostpointercapture={handleDragLostCapture} role="presentation">

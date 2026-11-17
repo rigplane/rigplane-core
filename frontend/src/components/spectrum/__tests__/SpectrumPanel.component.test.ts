@@ -165,6 +165,8 @@ type TestScopeFrame = ScopeFrame;
 // sink path (zero-copy included). The bridge is assigned after imports.
 type ScopeBridge = {
   spanControl: ScopeSpanControl | null;
+  readonly connectionEpoch: number;
+  nextRequestSeq(): number;
   stream(source: 'hardware' | 'audio_fft'): ReturnType<ScopeController['stream']>;
   registerPresentationDriver: ScopeController['registerPresentationDriver'];
   subscribeTraceReceipt: ScopeController['subscribeTraceReceipt'];
@@ -290,6 +292,8 @@ let scopeControllerHarness = new ScopeController(
 runtimeHarness.runtime.scope = {
   get spanControl() { return scopeControllerHarness.spanControl; },
   set spanControl(control) { scopeControllerHarness.spanControl = control; },
+  get connectionEpoch() { return scopeControllerHarness.connectionEpoch; },
+  nextRequestSeq: () => scopeControllerHarness.nextRequestSeq(),
   stream: (source) => scopeControllerHarness.stream(source),
   registerPresentationDriver: (host, config) => scopeControllerHarness.registerPresentationDriver(host, config),
   subscribeTraceReceipt: (observer) => scopeControllerHarness.subscribeTraceReceipt(observer),
@@ -1371,7 +1375,7 @@ describe('SpectrumPanel component', () => {
     // The grant carries the truthful native coverage: 100 kHz at the panned
     // position the follow view glides to while the radio lags behind.
     const stream = scopeControllerHarness.stream('hardware');
-    stream.handleMessage({ type: 'granted', ...stream.subscription!,
+    stream.handleMessage({ type: 'granted', ...stream.subscription!, requestState: 'pending',
       view: { startHz: 14_010_000, endHz: 14_110_000 },
       coverage: { startHz: 14_010_000, endHz: 14_110_000 }, fps: 20 });
     flushSync();
@@ -1396,7 +1400,7 @@ describe('SpectrumPanel component', () => {
     authorityHarness.state.current = authority({ frequencyHz: 14_050_000 });
     const target = mountPanel(); emitFrame(); await flushWaterfallPaint();
     const stream = scopeControllerHarness.stream('hardware');
-    stream.handleMessage({ type: 'granted', ...stream.subscription!,
+    stream.handleMessage({ type: 'granted', ...stream.subscription!, requestState: 'pending',
       view: { startHz: 14_010_000, endHz: 14_110_000 },
       coverage: { startHz: 14_020_000, endHz: 14_100_000 }, fps: 20 });
     flushSync();
@@ -1422,7 +1426,7 @@ describe('SpectrumPanel component', () => {
     // The grant carries the truthful native coverage: 100 kHz at the panned
     // position while the radio still delivers the old offset window.
     const stream = scopeControllerHarness.stream('hardware');
-    stream.handleMessage({ type: 'granted', ...stream.subscription!,
+    stream.handleMessage({ type: 'granted', ...stream.subscription!, requestState: 'pending',
       view: { startHz: 14_010_000, endHz: 14_110_000 },
       coverage: { startHz: 14_010_000, endHz: 14_110_000 }, fps: 20 });
     flushSync();
@@ -1447,7 +1451,7 @@ describe('SpectrumPanel component', () => {
     authorityHarness.state.current = authority({ frequencyHz: 14_050_000 });
     const target = mountPanel(); emitFrame(); await flushWaterfallPaint();
     const stream = scopeControllerHarness.stream('hardware');
-    stream.handleMessage({ type: 'granted', ...stream.subscription!,
+    stream.handleMessage({ type: 'granted', ...stream.subscription!, requestState: 'pending',
       view: { startHz: 14_010_000, endHz: 14_110_000 },
       coverage: { startHz: 14_020_000, endHz: 14_100_000 }, fps: 20 });
     flushSync();
@@ -1528,7 +1532,7 @@ describe('SpectrumPanel component', () => {
     const target = mountPanel(); emitFrame(); await flushWaterfallPaint();
     const read = () => JSON.parse(target.querySelector('.spectrum-panel')!.getAttribute('data-scope-subscription')!);
     const stream = scopeControllerHarness.stream('hardware');
-    stream.handleMessage({ type: 'granted', ...stream.subscription!,
+    stream.handleMessage({ type: 'granted', ...stream.subscription!, requestState: 'pending',
       view: { startHz: 14_000_000, endHz: 14_100_000 },
       coverage: { startHz: 14_000_000, endHz: 14_100_000 }, fps: 20 });
     flushSync();
@@ -1539,7 +1543,7 @@ describe('SpectrumPanel component', () => {
     emitFrame({ startFreq: 14_000_000, endFreq: 14_100_000,
       coverageStartHz: 14_025_000, coverageEndHz: 14_075_000, sequence: 2 });
     expect(read().view).toEqual({ follow: 'vfo', spanHz: 100_000 });
-    stream.handleMessage({ type: 'granted', ...stream.subscription!,
+    stream.handleMessage({ type: 'granted', ...stream.subscription!, requestState: 'pending',
       view: { startHz: 14_025_000, endHz: 14_075_000 },
       coverage: { startHz: 14_025_000, endHz: 14_075_000 }, fps: 20 });
     flushSync();
@@ -1584,7 +1588,7 @@ describe('SpectrumPanel component', () => {
     const read = () => JSON.parse(target.querySelector('.spectrum-panel')!.getAttribute('data-scope-subscription')!);
     target.querySelector<HTMLButtonElement>('[data-testid="scope-zoom-out"]')!.click(); flushSync();
     const stream = scopeControllerHarness.stream('hardware');
-    stream.handleMessage({ type: 'granted', ...stream.subscription!,
+    stream.handleMessage({ type: 'granted', ...stream.subscription!, requestState: 'pending',
       view: { startHz: 13_950_000, endHz: 14_150_000 },
       coverage: { startHz: 13_950_000, endHz: 14_150_000 }, fps: 20 }); flushSync();
     const command: import('$lib/stores/commands.svelte').CommandLifecycle = {
@@ -1601,60 +1605,61 @@ describe('SpectrumPanel component', () => {
     } finally { spy.mockRestore(); }
   });
 
-  it('keeps the requested width on delayed partially intersecting frames and adopts only an observed narrowing (MOR-4451)', async () => {
+  // MOR-4532 replaced the MOR-4451 readback adoption: once a grant settles
+  // the follow request, the frame geometry is the shown width (the server
+  // clips a follow frame to a narrower native); the subscription keeps the
+  // requested width. The span readback neither adopts nor gates anything.
+  it('keeps the requested width on delayed partially intersecting frames and shows only a narrowed settled geometry (MOR-4451)', async () => {
     runtimeHarness.state.currentCaps = validateCapabilities({ ...IC7300_CAPABILITIES, ...spanCapabilities, model: 'IC-705' });
-    // Observed span index 5 names the 200 kHz published view width: the
-    // native window is 200 kHz, matching the zoomed follow width below.
-    authorityHarness.state.current = authority({ frequencyHz: 14_050_000, scopeControls: testScopeControls(2, 5) });
+    authorityHarness.state.current = authority({ frequencyHz: 14_050_000, scopeControls: testScopeControls(0, 5) });
     const target = mountPanel(); emitFrame(); await flushWaterfallPaint();
     const read = () => JSON.parse(target.querySelector('.spectrum-panel')!.getAttribute('data-scope-subscription')!);
     target.querySelector<HTMLButtonElement>('[data-testid="scope-zoom-out"]')!.click(); flushSync();
     expect(read().view).toEqual({ follow: 'vfo', spanHz: 200_000 });
-    // The grant of the requested width arrives: nothing to clamp.
-    emitFrame({ startFreq: 13_950_000, endFreq: 14_150_000, sequence: 2 }); flushSync();
-    expect(read().view).toEqual({ follow: 'vfo', spanHz: 200_000 });
+    // The grant settles the 200 kHz request; its frame carries that window.
     const stream = scopeControllerHarness.stream('hardware');
-    stream.handleMessage({ type: 'granted', ...stream.subscription!,
+    stream.handleMessage({ type: 'granted', ...stream.subscription!, requestState: 'settled',
       view: { startHz: 13_950_000, endHz: 14_150_000 },
       coverage: { startHz: 13_950_000, endHz: 14_150_000 }, fps: 20 });
     flushSync();
+    emitFrame({ startFreq: 13_950_000, endFreq: 14_150_000, sequence: 2 }); flushSync();
+    expect(read().view).toEqual({ follow: 'vfo', spanHz: 200_000 });
     const subscribes = () => (harnessChannels.scope.sendRaw as unknown as Mock).mock.calls
       .map(([message]) => message as { type?: unknown })
       .filter((message) => message?.type === 'subscribe');
     const sentBefore = subscribes().length;
     expect(sentBefore).toBeGreaterThan(0);
-    // Delayed pixels cover only the left three quarters of the requested
-    // view while the observed native window is unchanged: the requested
-    // width stays, no extra subscription goes out, and the transient margin
-    // stays unhatched.
+    // Delayed pixels cover only the left three quarters of the 200 kHz view
+    // (the view itself unchanged): the width stays, no subscription goes out,
+    // and the transient margin stays unhatched.
     emitFrame({ startFreq: 13_950_000, endFreq: 14_150_000,
       coverageStartHz: 13_950_000, coverageEndHz: 14_100_000, sequence: 3 }); flushSync();
     await flushWaterfallPaint();
     expect(read().view).toEqual({ follow: 'vfo', spanHz: 200_000 });
     expect(subscribes()).toHaveLength(sentBefore);
     expect(target.querySelectorAll('.scope-hatch')).toHaveLength(0);
-    // A genuinely observed narrowing (front panel / RigDeck) below the follow
-    // width still adopts: the span index drops to the 100 kHz view width.
-    authorityHarness.state.current = authority({ frequencyHz: 14_050_000, scopeControls: testScopeControls(2, 4) });
-    refreshSpectrumAuthority(); flushSync();
-    expect(read().view).toEqual({ follow: 'vfo', spanHz: 100_000 });
-    expect(subscribes()).toHaveLength(sentBefore + 1);
-    expect(subscribes().at(-1)).toMatchObject({ type: 'subscribe', view: { follow: 'vfo', spanHz: 100_000 } });
+    // A genuine narrowing (front panel / RigDeck): the server clips the follow
+    // frame to the radio's 100 kHz window, which becomes the shown width.
+    emitFrame({ startFreq: 14_000_000, endFreq: 14_100_000, sequence: 4 }); flushSync();
+    await flushWaterfallPaint();
+    expect(spectrumRendererHarness.lastOptions.spanHz).toBe(100_000);
+    expect(read().view).toEqual({ follow: 'vfo', spanHz: 200_000 });
+    expect(subscribes()).toHaveLength(sentBefore);
   });
 
-  it.each(['readback-first', 'frames-first'] as const)('adopts a zoomed follow narrowing when the %s leg arrives first (MOR-4451)', async (order) => {
+  const zoomedTo400k = async () => {
     runtimeHarness.state.currentCaps = validateCapabilities({ ...IC7300_CAPABILITIES, ...spanCapabilities, model: 'IC-705' });
     // Observed span index 6 names the 500 kHz published view width.
-    authorityHarness.state.current = authority({ frequencyHz: 14_050_000, scopeControls: testScopeControls(2, 6) });
+    authorityHarness.state.current = authority({ frequencyHz: 14_050_000, scopeControls: testScopeControls(0, 6) });
     const target = mountPanel(); emitFrame(); await flushWaterfallPaint();
     const read = () => JSON.parse(target.querySelector('.spectrum-panel')!.getAttribute('data-scope-subscription')!);
-    // Two ZOOM− steps from the 100 kHz default follow width: 400 kHz.
+    // Two ZOOM− steps from the 100 kHz default follow width: 400 kHz, a crop
+    // of the radio's 500 kHz window.
     target.querySelector<HTMLButtonElement>('[data-testid="scope-zoom-out"]')!.click(); flushSync();
     target.querySelector<HTMLButtonElement>('[data-testid="scope-zoom-out"]')!.click(); flushSync();
     expect(read().view).toEqual({ follow: 'vfo', spanHz: 400_000 });
-    // The grant answers the current 400 kHz follow request at full width.
     const stream = scopeControllerHarness.stream('hardware');
-    stream.handleMessage({ type: 'granted', ...stream.subscription!,
+    stream.handleMessage({ type: 'granted', ...stream.subscription!, requestState: 'settled',
       view: { startHz: 13_850_000, endHz: 14_250_000 },
       coverage: { startHz: 13_850_000, endHz: 14_250_000 }, fps: 20 });
     flushSync();
@@ -1664,44 +1669,39 @@ describe('SpectrumPanel component', () => {
     const subscribes = () => (harnessChannels.scope.sendRaw as unknown as Mock).mock.calls
       .map(([message]) => message as { type?: unknown })
       .filter((message) => message?.type === 'subscribe');
-    const sentBefore = subscribes().length;
     const narrowReadback = () => {
-      authorityHarness.state.current = authority({ frequencyHz: 14_050_000, scopeControls: testScopeControls(2, 5) });
+      authorityHarness.state.current = authority({ frequencyHz: 14_050_000, scopeControls: testScopeControls(0, 5) });
       refreshSpectrumAuthority(); flushSync();
     };
-    const clippedFrames = () => {
+    const clippedFrame = (sequence: number) => {
       emitFrame({ startFreq: 13_950_000, endFreq: 14_150_000,
-        coverageStartHz: 13_950_000, coverageEndHz: 14_150_000, sequence: 3 }); flushSync();
+        coverageStartHz: 13_950_000, coverageEndHz: 14_150_000, sequence }); flushSync();
     };
+    return { target, read, subscribes, narrowReadback, clippedFrame };
+  };
+
+  it.each(['readback-first', 'frames-first'] as const)('shows a zoomed follow narrowing from the settled frames when the %s leg arrives first (MOR-4451)', async (order) => {
+    const { target, read, subscribes, narrowReadback, clippedFrame } = await zoomedTo400k();
+    const sentBefore = subscribes().length;
     if (order === 'readback-first') {
-      // The span-index readback narrows 500 kHz → 200 kHz while the
-      // frames still carry the full 400 kHz view: adoption fires at once.
+      // The readback narrows 500 → 200 kHz while the frames still carry the
+      // 400 kHz view: the readback alone changes nothing.
       narrowReadback();
-      expect(read().view).toEqual({ follow: 'vfo', spanHz: 200_000 });
-      // The clipped frames arriving next change nothing: the view is
-      // already the narrowed native, fully covered, never hatched.
-      clippedFrames();
-    } else {
-      // The clipped 200 kHz frames arrive BEFORE the span-index
-      // readback: the observed native is still the old 500 kHz, so
-      // nothing adopts yet — a narrowing that never happened must not
-      // clamp the follow width.
-      clippedFrames();
       expect(read().view).toEqual({ follow: 'vfo', spanHz: 400_000 });
-      // The readback follows: the grant still answers the current
-      // 400 kHz follow request, so the observed 500 kHz → 200 kHz
-      // narrowing below the follow width adopts — with no requirement
-      // that the already-clipped frame view equal the follow width.
+      expect(subscribes()).toHaveLength(sentBefore);
+      clippedFrame(3);
+    } else {
+      // The clipped 200 kHz frames arrive first: they are the width at once;
+      // the readback arriving next changes nothing.
+      clippedFrame(3); await flushWaterfallPaint();
+      expect(spectrumRendererHarness.lastOptions.spanHz).toBe(200_000);
       narrowReadback();
-      expect(read().view).toEqual({ follow: 'vfo', spanHz: 200_000 });
-      // One more narrowed frame after the adoption, so the paint below
-      // reflects the adopted state.
-      emitFrame({ startFreq: 13_950_000, endFreq: 14_150_000,
-        coverageStartHz: 13_950_000, coverageEndHz: 14_150_000, sequence: 4 }); flushSync();
     }
+    clippedFrame(4);
     await flushWaterfallPaint();
-    expect(subscribes()).toHaveLength(sentBefore + 1);
-    expect(subscribes().at(-1)).toMatchObject({ type: 'subscribe', view: { follow: 'vfo', spanHz: 200_000 } });
+    expect(spectrumRendererHarness.lastOptions.spanHz).toBe(200_000);
+    expect(read().view).toEqual({ follow: 'vfo', spanHz: 400_000 });
+    expect(subscribes()).toHaveLength(sentBefore);
     expect(target.querySelectorAll('.scope-hatch')).toHaveLength(0);
     // The panel's hatch decision reaches the canvas with no ranges: the
     // adopted view is fully covered, so nothing hatches anywhere.
@@ -1709,40 +1709,11 @@ describe('SpectrumPanel component', () => {
   });
 
   it.each(['readback-first', 'frames-first'] as const)(
-    'adopts a zoomed follow narrowing without committing an intermediate hatch (MOR-4451)', async (order) => {
-    runtimeHarness.state.currentCaps = validateCapabilities({ ...IC7300_CAPABILITIES, ...spanCapabilities, model: 'IC-705' });
-    // Observed span index 6 names the 500 kHz published view width.
-    authorityHarness.state.current = authority({ frequencyHz: 14_050_000, scopeControls: testScopeControls(2, 6) });
-    const target = mountPanel(); emitFrame(); await flushWaterfallPaint();
-    const read = () => JSON.parse(target.querySelector('.spectrum-panel')!.getAttribute('data-scope-subscription')!);
-    // Two ZOOM− steps from the 100 kHz default follow width: 400 kHz.
-    target.querySelector<HTMLButtonElement>('[data-testid="scope-zoom-out"]')!.click(); flushSync();
-    target.querySelector<HTMLButtonElement>('[data-testid="scope-zoom-out"]')!.click(); flushSync();
-    expect(read().view).toEqual({ follow: 'vfo', spanHz: 400_000 });
-    // The grant answers the current 400 kHz follow request at full width.
-    const stream = scopeControllerHarness.stream('hardware');
-    stream.handleMessage({ type: 'granted', ...stream.subscription!,
-      view: { startHz: 13_850_000, endHz: 14_250_000 },
-      coverage: { startHz: 13_850_000, endHz: 14_250_000 }, fps: 20 });
-    flushSync();
-    const frame400 = () => emitFrame({ startFreq: 13_850_000, endFreq: 14_250_000,
-      coverageStartHz: 13_850_000, coverageEndHz: 14_250_000, sequence: 2 });
-    const frame200 = (sequence: number) => emitFrame({ startFreq: 13_950_000, endFreq: 14_150_000,
-      coverageStartHz: 13_950_000, coverageEndHz: 14_150_000, sequence });
-    frame400(); flushSync();
-    if (order === 'frames-first') {
-      // The clipped 200 kHz frames arrive BEFORE the span-index readback:
-      // the observed native is still the old 500 kHz, so nothing adopts yet.
-      frame200(3); flushSync();
-      expect(read().view).toEqual({ follow: 'vfo', spanHz: 400_000 });
-    }
-    // Watch the adoption flush itself: the hatch decision for the adopted
-    // view must use the adopted widths in the same tick, so no .scope-hatch
-    // node may be committed while the readback flush settles. A
-    // render-before-effect adoption commits the hatch first and removes it
-    // in the next commit — two DOM commits the rAF sampler can paint
-    // between (the e2e zoomed row caught ~3 such samples on the unfixed
-    // tree, flaky 1/2).
+    'shows a zoomed follow narrowing without committing an intermediate hatch (%s, MOR-4451)', async (order) => {
+    const { target, read, narrowReadback, clippedFrame } = await zoomedTo400k();
+    // Watch both legs land: no .scope-hatch node may be committed in between
+    // (a render-before-effect width commits the hatch first and removes it in
+    // the next commit — two DOM commits the rAF sampler can paint between).
     const hatchAdds: Element[] = [];
     const observer = new MutationObserver((records) => {
       for (const record of records) {
@@ -1754,13 +1725,14 @@ describe('SpectrumPanel component', () => {
       }
     });
     observer.observe(target, { childList: true, subtree: true });
-    authorityHarness.state.current = authority({ frequencyHz: 14_050_000, scopeControls: testScopeControls(2, 5) });
-    refreshSpectrumAuthority(); flushSync();
+    if (order === 'readback-first') { narrowReadback(); await flushWaterfallPaint(); clippedFrame(3); }
+    else { clippedFrame(3); await flushWaterfallPaint(); narrowReadback(); }
     await flushWaterfallPaint();
     observer.disconnect();
-    expect(read().view).toEqual({ follow: 'vfo', spanHz: 200_000 });
+    expect(spectrumRendererHarness.lastOptions.spanHz).toBe(200_000);
+    expect(read().view).toEqual({ follow: 'vfo', spanHz: 400_000 });
     expect(hatchAdds).toEqual([]);
-    frame200(order === 'frames-first' ? 4 : 3); flushSync();
+    clippedFrame(4);
     await flushWaterfallPaint();
     expect(target.querySelectorAll('.scope-hatch')).toHaveLength(0);
     expect(spectrumRendererHarness.lastOptions.hatchRanges).toBeNull();
@@ -1777,7 +1749,7 @@ describe('SpectrumPanel component', () => {
     emitFrame({ startFreq: 14_025_000, endFreq: 14_075_000 }); await flushWaterfallPaint();
     target.querySelector<HTMLButtonElement>('[data-testid="scope-zoom-out"]')!.click(); flushSync();
     const stream = scopeControllerHarness.stream('hardware');
-    stream.handleMessage({ type: 'granted', ...stream.subscription!,
+    stream.handleMessage({ type: 'granted', ...stream.subscription!, requestState: 'pending',
       view: { startHz: 14_000_000, endHz: 14_100_000 },
       coverage: { startHz: 14_000_000, endHz: 14_100_000 }, fps: 20 });
     flushSync();
@@ -1787,6 +1759,269 @@ describe('SpectrumPanel component', () => {
     expect(hatches).toHaveLength(2);
     expect(hatches[0]!.dataset.reason).toBe('view wider than coverage');
     expect(hatches[1]!.dataset.reason).toBe('view wider than coverage');
+  });
+
+  // MOR-4532: the follow width is a REQUEST. While the newest request is not
+  // settled by a grant (its requestSeq), the display and the SPAN step base
+  // come from the request; once a grant settles it, from the frame geometry.
+  // "Settled" comes only from the grant — never from scopeControls.span or
+  // from widths.
+  describe('MOR-4532 follow width is a request until a grant settles it', () => {
+    const view = (target: HTMLElement) => JSON.parse(target.querySelector('.spectrum-panel')!
+      .getAttribute('data-scope-subscription')!) as { view: { follow?: 'vfo'; spanHz?: number }; requestSeq?: number };
+    const subscribes = () => (harnessChannels.scope.sendRaw as unknown as Mock).mock.calls
+      .map(([message]) => message as { type?: unknown; view?: { spanHz?: number }; requestSeq?: number })
+      .filter((message) => message?.type === 'subscribe');
+    // The server's grant for the subscription the client sent last; it
+    // echoes the client's own requestSeq (PR-A wire contract).
+    const grant = (requestState: 'pending' | 'settled', startHz: number, endHz: number) => {
+      const stream = scopeControllerHarness.stream('hardware');
+      const sent = stream.subscription!;
+      stream.handleMessage({ type: 'granted', sourceId: sent.sourceId, receiver: sent.receiver,
+        view: { startHz, endHz }, coverage: { startHz, endHz }, width: sent.width, fps: 20,
+        requestSeq: sent.requestSeq ?? 0, requestState });
+      flushSync();
+    };
+    const window = (widthHz: number, mode: number, sequence: number) => emitFrame({
+      mode, startFreq: 14_050_000 - widthHz / 2, endFreq: 14_050_000 + widthHz / 2, sequence });
+    const mountAt = async (mode: number, widthHz: number) => {
+      runtimeHarness.state.currentCaps = validateCapabilities({ ...IC7300_CAPABILITIES, ...spanCapabilities, model: 'IC-705' });
+      const span = (spanCapabilities.span_choices_hz as number[]).indexOf(widthHz);
+      authorityHarness.state.current = authority({ frequencyHz: 14_050_000, scopeControls: testScopeControls(mode, span) });
+      const target = mountPanel();
+      window(widthHz, mode, 1); await flushWaterfallPaint();
+      return target;
+    };
+
+    it('row 1+5: an external narrowing of a settled wide request is the shown width; the subscription keeps the request', async () => {
+      const target = await mountAt(0, 100_000);
+      const control = mockRuntime.scope.spanControl!;
+      control.step(1); flushSync();
+      expect(view(target).view).toEqual({ follow: 'vfo', spanHz: 200_000 });
+      grant('settled', 13_950_000, 14_150_000);
+      window(200_000, 0, 2);
+      authorityHarness.state.current = authority({ frequencyHz: 14_050_000, scopeControls: testScopeControls(0, 5) });
+      refreshSpectrumAuthority(); flushSync(); await flushWaterfallPaint();
+      expect(view(target).view).toEqual({ follow: 'vfo', spanHz: 200_000 });
+      const sentBefore = subscribes().length;
+      // Front panel: the radio narrows to 50 kHz; its frames are clipped to
+      // it. The span readback has not caught up (still 200 kHz): the width
+      // must come from the frame geometry, not from the readback.
+      window(50_000, 0, 3); window(50_000, 0, 4); await flushWaterfallPaint();
+      expect(spectrumRendererHarness.lastOptions.spanHz).toBe(50_000);
+      expect(target.querySelectorAll('.scope-hatch')).toHaveLength(0);
+      // Row 5: frames never change the subscription (adviser decision b):
+      // it keeps the requested width and nothing is sent.
+      window(50_000, 0, 5); window(50_000, 0, 6);
+      expect(view(target).view).toEqual({ follow: 'vfo', spanHz: 200_000 });
+      expect(subscribes()).toHaveLength(sentBefore);
+      control.step(-1); flushSync();
+      expect(view(target).view).toEqual({ follow: 'vfo', spanHz: 20_000 });
+    });
+
+    it.each([0, 2])('row 2: two steps before the first grant are two steps in mode %i', async (mode) => {
+      const target = await mountAt(mode, 100_000);
+      const control = mockRuntime.scope.spanControl!;
+      control.step(-1); flushSync();
+      control.step(-1); flushSync();
+      expect(view(target).view).toEqual({ follow: 'vfo', spanHz: 20_000 });
+    });
+
+    it.each([0, 2])('row 3: five fast steps accumulate before the first answer in mode %i', async (mode) => {
+      const target = await mountAt(mode, 1_000_000);
+      const control = mockRuntime.scope.spanControl!;
+      const sentBefore = subscribes().length;
+      for (let press = 0; press < 5; press++) { control.step(-1); flushSync(); }
+      expect(view(target).view).toEqual({ follow: 'vfo', spanHz: 20_000 });
+      // Every follow-width change carries a new, higher requestSeq.
+      const seqs = subscribes().slice(sentBefore).map((message) => message.requestSeq!);
+      expect(seqs).toHaveLength(5);
+      for (let i = 1; i < seqs.length; i++) expect(seqs[i]!).toBeGreaterThan(seqs[i - 1]!);
+    });
+
+    it.each([0, 2])('row 4: an old-width frame before the grant does not cancel the request in mode %i', async (mode) => {
+      const target = await mountAt(mode, 100_000);
+      const control = mockRuntime.scope.spanControl!;
+      control.step(1); flushSync();
+      grant('pending', 13_950_000, 14_150_000);
+      window(100_000, mode, 2); window(100_000, mode, 3); await flushWaterfallPaint();
+      expect(view(target).view).toEqual({ follow: 'vfo', spanHz: 200_000 });
+      if (mode === 0) expect(spectrumRendererHarness.lastOptions.spanHz).toBe(200_000);
+      control.step(1); flushSync();
+      expect(view(target).view).toEqual({ follow: 'vfo', spanHz: 500_000 });
+    });
+
+    it.each([[0, 3], [0, 4], [0, 5], [0, 6], [2, 3], [2, 4], [2, 5], [2, 6]])(
+      'row 6: in mode %i a scopeControls.span update (index %i) while pending does not end the request', async (mode, span) => {
+      const target = await mountAt(mode, 100_000);
+      const control = mockRuntime.scope.spanControl!;
+      control.step(1); flushSync();
+      grant('pending', 13_950_000, 14_150_000);
+      window(100_000, mode, 2); await flushWaterfallPaint();
+      authorityHarness.state.current = authority({ frequencyHz: 14_050_000, scopeControls: testScopeControls(mode, span) });
+      refreshSpectrumAuthority(); flushSync();
+      window(100_000, mode, 3); await flushWaterfallPaint();
+      expect(view(target).view).toEqual({ follow: 'vfo', spanHz: 200_000 });
+      control.step(1); flushSync();
+      expect(view(target).view).toEqual({ follow: 'vfo', spanHz: 500_000 });
+    });
+
+    // Adviser decision (b): the follow width in a subscription changes ONLY
+    // on a user action; settled changes the display and the step base only.
+    const settledAt200k = async () => {
+      const target = await mountAt(0, 100_000);
+      mockRuntime.scope.spanControl!.step(1); flushSync();
+      grant('settled', 13_950_000, 14_150_000);
+      window(200_000, 0, 2); await flushWaterfallPaint();
+      return target;
+    };
+
+    it('external narrowing then a resize: the re-sent subscription keeps the requested width and seq, the display stays 50k', async () => {
+      const callbacks: Array<() => void> = [];
+      let boxWidth = 200;
+      vi.stubGlobal('ResizeObserver', class {
+        constructor(private readonly callback: ResizeObserverCallback) {}
+        observe(target: Element) {
+          const fire = () => this.callback([{ target, contentRect: { width: boxWidth, height: 100 } } as ResizeObserverEntry],
+            this as unknown as ResizeObserver);
+          callbacks.push(fire); fire();
+        }
+        unobserve() {}
+        disconnect() {}
+      });
+      try {
+        const target = await settledAt200k();
+        const requested = view(target);
+        expect(requested.view).toEqual({ follow: 'vfo', spanHz: 200_000 });
+        window(50_000, 0, 3); window(50_000, 0, 4); await flushWaterfallPaint();
+        const sentBefore = subscribes().length;
+        boxWidth = 320;
+        for (const fire of callbacks) fire();
+        flushSync(); window(50_000, 0, 5); await flushWaterfallPaint();
+        const resent = subscribes().slice(sentBefore);
+        expect(resent.length).toBeGreaterThan(0);
+        for (const message of resent) {
+          expect(message.view).toEqual({ follow: 'vfo', spanHz: 200_000 });
+          expect(message.requestSeq).toBe(requested.requestSeq);
+        }
+        expect(spectrumRendererHarness.lastOptions.spanHz).toBe(50_000);
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    });
+
+    it('reconnect: the re-sent subscription is seq 0 with the last requested width, and the display follows the radio', async () => {
+      const target = await settledAt200k();
+      expect(view(target).requestSeq).toBeGreaterThan(0);
+      const channel = harnessChannels.scope;
+      channel.disconnect(); flushSync();
+      const sentBefore = subscribes().length;
+      channel.connect(); flushSync();
+      const resent = subscribes().slice(sentBefore);
+      expect(resent.length).toBeGreaterThan(0);
+      for (const message of resent) {
+        expect(message.requestSeq).toBe(0);
+        expect(message.view).toEqual({ follow: 'vfo', spanHz: 200_000 });
+      }
+      // The radio sits on an externally set 50 kHz window: the display follows it.
+      window(50_000, 0, 3); window(50_000, 0, 4); await flushWaterfallPaint();
+      expect(spectrumRendererHarness.lastOptions.spanHz).toBe(50_000);
+      expect(view(target)).toMatchObject({ view: { follow: 'vfo', spanHz: 200_000 }, requestSeq: 0 });
+      // The next user step is request 1 of the new connection, from the radio's window.
+      mockRuntime.scope.spanControl!.step(-1); flushSync();
+      expect(view(target)).toMatchObject({ view: { follow: 'vfo', spanHz: 20_000 }, requestSeq: 1 });
+    });
+
+    it('one stale old-width frame right after the settle shows for one frame and leaves the subscription unchanged', async () => {
+      const target = await mountAt(0, 100_000);
+      mockRuntime.scope.spanControl!.step(1); flushSync();
+      const requested = view(target);
+      grant('settled', 13_950_000, 14_150_000);
+      const sentBefore = subscribes().length;
+      window(100_000, 0, 2); await flushWaterfallPaint();
+      expect(view(target)).toEqual(requested);
+      window(200_000, 0, 3); await flushWaterfallPaint();
+      expect(view(target)).toEqual(requested);
+      expect(spectrumRendererHarness.lastOptions.spanHz).toBe(200_000);
+      expect(subscribes()).toHaveLength(sentBefore);
+    });
+
+    it.each([0, 2, 1])('no frame width ever reaches the subscription without a user action (mode %i)', async (mode) => {
+      const target = await mountAt(mode === 1 ? 0 : mode, 100_000);
+      if (mode !== 1) { mockRuntime.scope.spanControl!.step(1); flushSync(); }
+      const requested = view(target);
+      const sentBefore = subscribes().length;
+      // Every frame shape a radio can stream, pending and settled: old and
+      // new widths, an external narrowing and widening, partial coverage,
+      // an out-of-range frame and a mode change to FIX.
+      grant('pending', 13_950_000, 14_150_000);
+      window(100_000, mode, 2); window(50_000, mode, 3);
+      grant('settled', 13_950_000, 14_150_000);
+      let sequence = 4;
+      for (const widthHz of [200_000, 100_000, 50_000, 500_000, 20_000]) window(widthHz, mode, sequence++);
+      emitFrame({ mode, startFreq: 14_000_000, endFreq: 14_100_000,
+        coverageStartHz: 14_000_000, coverageEndHz: 14_060_000, sequence: sequence++ });
+      emitFrame({ mode, outOfRange: true, pixels: null, sequence: sequence++ });
+      window(150_000, 1, sequence++); window(150_000, mode, sequence++);
+      await flushWaterfallPaint();
+      expect(view(target)).toEqual(requested);
+      expect(subscribes().slice(sentBefore).every((message) => message.view?.spanHz === requested.view.spanHz
+        && message.requestSeq === requested.requestSeq)).toBe(true);
+    });
+
+    it('a remounted panel on the same scope connection continues the request numbers', async () => {
+      await mountAt(0, 100_000);
+      mockRuntime.scope.spanControl!.step(-1); flushSync();
+      mockRuntime.scope.spanControl!.step(-1); flushSync();
+      const before = subscribes().at(-1)!.requestSeq!;
+      expect(before).toBeGreaterThan(1);
+      // A presentation switch: the panel is destroyed and mounted again while
+      // the App's swap bridge holds the scope lease, so the socket stays.
+      const epoch = harnessChannels.scope.sessionEpoch;
+      harnessLeases.push(mockRuntime.acquireHardwareScope());
+      await unmount(components.pop()!); flushSync();
+      const target = mountPanel(); window(20_000, 0, 5); await flushWaterfallPaint();
+      expect(harnessChannels.scope.sessionEpoch).toBe(epoch);
+      mockRuntime.scope.spanControl!.step(1); flushSync();
+      expect(view(target).view).toEqual({ follow: 'vfo', spanHz: 50_000 });
+      expect(view(target).requestSeq).toBeGreaterThan(before);
+      expect(subscribes().at(-1)!.requestSeq).toBeGreaterThan(before);
+    });
+
+    it('ZOOM after an external narrowing of a settled request zooms from the shown window', async () => {
+      const target = await settledAt200k();
+      window(50_000, 0, 3); window(50_000, 0, 4); await flushWaterfallPaint();
+      expect(spectrumRendererHarness.lastOptions.spanHz).toBe(50_000);
+      target.querySelector<HTMLButtonElement>('[data-testid="scope-zoom-in"]')!.click(); flushSync();
+      expect(view(target).view).toEqual({ follow: 'vfo', spanHz: 25_000 });
+      // Pending: the next ZOOM− expands from the request just made.
+      target.querySelector<HTMLButtonElement>('[data-testid="scope-zoom-out"]')!.click(); flushSync();
+      expect(view(target).view).toEqual({ follow: 'vfo', spanHz: 50_000 });
+    });
+
+    it('ZOOM− after an external narrowing of a settled widest request expands from the shown window', async () => {
+      const target = await mountAt(0, 100_000);
+      for (let press = 0; press < 3; press++) { mockRuntime.scope.spanControl!.step(1); flushSync(); }
+      expect(view(target).view).toEqual({ follow: 'vfo', spanHz: 1_000_000 });
+      grant('settled', 13_550_000, 14_550_000);
+      window(1_000_000, 0, 2); window(50_000, 0, 3); window(50_000, 0, 4); await flushWaterfallPaint();
+      target.querySelector<HTMLButtonElement>('[data-testid="scope-zoom-out"]')!.click(); flushSync();
+      expect(view(target).view).toEqual({ follow: 'vfo', spanHz: 100_000 });
+    });
+
+    it('settles only on the grant: a settled grant then a frame makes the geometry the step base', async () => {
+      const target = await mountAt(0, 100_000);
+      const control = mockRuntime.scope.spanControl!;
+      control.step(1); flushSync();
+      // The radio refused the 200 kHz request: the grant settles it and the
+      // frames keep the old 100 kHz window, which is now the width.
+      grant('settled', 14_000_000, 14_100_000);
+      window(100_000, 0, 2); await flushWaterfallPaint();
+      expect(view(target).view).toEqual({ follow: 'vfo', spanHz: 200_000 });
+      expect(spectrumRendererHarness.lastOptions.spanHz).toBe(100_000);
+      control.step(-1); flushSync();
+      expect(view(target).view).toEqual({ follow: 'vfo', spanHz: 50_000 });
+    });
   });
 
   it('keeps the fixed window for the FIX marker and passband after a CENTER zoom (MOR-4392)', async () => {
@@ -5629,7 +5864,7 @@ describe('scope negotiation refusal (MOR-4274)', () => {
     expect(target.querySelector('[data-testid="toolbar-scope-status"]')?.textContent).toContain('View negotiation refused');
     expect(target.querySelector('.spectrum-area canvas')).not.toBeNull();
     const request = stream.subscription!;
-    stream.handleMessage({ type: 'granted', ...request,
+    stream.handleMessage({ type: 'granted', ...request, requestState: 'pending',
       view: { startHz: 14_000_000, endHz: 14_100_000 },
       coverage: { startHz: 14_000_000, endHz: 14_100_000 }, fps: request.maxFps });
     flushSync();

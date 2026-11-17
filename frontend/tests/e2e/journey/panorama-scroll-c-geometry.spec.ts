@@ -169,6 +169,9 @@ test('IC-705: SCROLL-C SPAN+ after a ZOOM+ crop steps from the radio window and 
     await page.getByTestId('scope-mode-2').first().click();
     await expect.poll(async () => (await writes()).filter(receipt => receipt.sub === 0x14).at(-1)?.data[1]).toBe(2);
     await expect.poll(() => frames.at(-1)?.view).toEqual([14_200_000, 14_300_000]);
+    // The client knows SCROLL-C (the mode readback lit the key) before the
+    // ZOOM+; earlier the press would be a CENTER zoom, a span request.
+    await expect(page.getByTestId('scope-mode-2').first()).toHaveAttribute('aria-checked', 'true');
     // ZOOM+: a client crop of the radio's 100 kHz window (50 kHz wide).
     await page.getByTestId('scope-zoom-in').first().click();
     await page.keyboard.press('Escape');

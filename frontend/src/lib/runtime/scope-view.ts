@@ -109,6 +109,7 @@ export function scopeSubscription(input: {
   width: number;
   visible: boolean;
   maxFps: number;
+  requestSeq?: number;
 }): ScopeSubscription {
   return {
     sourceId: input.sourceId,
@@ -116,6 +117,7 @@ export function scopeSubscription(input: {
     view: input.view,
     width: input.width,
     maxFps: input.visible && input.width > 0 ? input.maxFps : 0,
+    ...(input.requestSeq === undefined ? {} : { requestSeq: input.requestSeq }),
   };
 }
 
@@ -128,6 +130,7 @@ export function scopeSubscriptionSurface(_node: Element, initial: {
   maxFps?: number;
   revision?: string;
   frequencyHz?: number | null;
+  requestSeq?: number;
 }) {
   let parameters = initial;
   const token = Symbol('scope surface');
@@ -143,7 +146,7 @@ export function scopeSubscriptionSurface(_node: Element, initial: {
     const sent = parameters.stream.updateSurfaceSubscription(token, scopeSubscription({
       sourceId: parameters.stream.sourceId, receiver: parameters.stream.kind === 'radio' ? parameters.receiver : null,
       view: parameters.view, width, visible: facts?.visible === true && facts.backingW > 0,
-      maxFps: parameters.maxFps ?? 20,
+      maxFps: parameters.maxFps ?? 20, requestSeq: parameters.requestSeq,
     }), !attempted || attemptedRevision !== parameters.revision, parameters.revision, parameters.frequencyHz);
     if (sent) { attempted = true; attemptedRevision = parameters.revision; }
   };
