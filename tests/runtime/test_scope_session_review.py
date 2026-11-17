@@ -2169,3 +2169,99 @@ async def test_request_seq_buffered_delivery_never_reverses_a_settled_grant(
             states = [d["requestState"] for d in seen if d.get("requestSeq") == 2]
             assert states and states[0] == "settled"
             assert "pending" not in states[states.index("settled") :]
+
+
+# ── MOR-4532 write-back rule: only a NEW requestSeq applies a follow width ──
+# A re-sent subscription with the same requestSeq (resize, visibility, fps)
+# carries its follow width as context; requestSeq 0 (a fresh connection) is
+# never a request. Neither may write a span the radio did not get asked for.
+
+
+def _resize(request_seq, span_hz, width):
+    return Subscription(
+        "radio", 0, FollowView("vfo", span_hz), width, 20, request_seq=request_seq
+    )
+
+
+@pytest.mark.parametrize("windowed_sdk", ["IC-7610", "IC-705"], indirect=True)
+async def test_request_seq_resize_after_external_narrow_writes_no_span(windowed_sdk):
+    """External narrow to 50k, then the panel resizes: the same requestSeq
+    re-sent with another pixel width writes no span; the view stays 50k."""
+    radio, sim = windowed_sdk
+    sim.capture_civ_frames = True
+    sim.set_frequency(14_100_000)
+    radio._radio_state.main.freq = 14_100_000
+    presets = radio._profile.scope_span_presets_hz
+    async with web(radio) as (_, client, base, protocols, _):
+        async with client.ws_connect(base + "/api/v1/scope", protocols=protocols) as ws:
+            await ws.send_str(encode_scope_subscription(_request(1, 200_000)))
+            await _grants(ws, _settled(1))
+            await _frame_with(ws, (14_000_000, 14_200_000))
+            sim.views[0] = (0, presets.index(25_000), 1)
+            await _frame_with(ws, (14_075_000, 14_125_000))
+            sim.civ_frames_received.clear()
+            await ws.send_str(encode_scope_subscription(_resize(1, 200_000, 300)))
+            await _grants(ws, lambda grant: grant.request_seq == 1)
+            assert _span_sets(sim) == []
+            await _frame_with(ws, (14_075_000, 14_125_000))
+            assert _span_sets(sim) == []
+            assert sim.views[0][1] == presets.index(25_000)
+
+
+@pytest.mark.parametrize("windowed_sdk", ["IC-7610", "IC-705"], indirect=True)
+async def test_request_seq_zero_on_reconnect_writes_no_span(windowed_sdk):
+    """A fresh connection starts at requestSeq 0, which is never a request:
+    reconnecting while the radio sits on an externally set span writes no
+    span, and the view follows the radio."""
+    radio, sim = windowed_sdk
+    sim.capture_civ_frames = True
+    sim.set_frequency(14_100_000)
+    radio._radio_state.main.freq = 14_100_000
+    presets = radio._profile.scope_span_presets_hz
+    async with web(radio) as (_, client, base, protocols, _):
+        async with client.ws_connect(base + "/api/v1/scope", protocols=protocols) as ws:
+            await ws.send_str(encode_scope_subscription(_request(1, 200_000)))
+            await _grants(ws, _settled(1))
+            sim.views[0] = (0, presets.index(25_000), 1)
+            await _frame_with(ws, (14_075_000, 14_125_000))
+        assert await await_until(lambda: not radio.scope_session().active)
+        sim.civ_frames_received.clear()
+        async with client.ws_connect(base + "/api/v1/scope", protocols=protocols) as ws:
+            await ws.send_str(encode_scope_subscription(_request(0, 200_000)))
+            (first,) = await _grants(ws, lambda grant: True)
+            assert (first.request_seq, first.request_state) == (0, "settled")
+            await _frame_with(ws, (14_075_000, 14_125_000))
+            assert _span_sets(sim) == []
+            assert sim.views[0][1] == presets.index(25_000)
+
+
+@pytest.mark.parametrize("windowed_sdk", ["IC-7610", "IC-705"], indirect=True)
+async def test_request_seq_stale_frame_after_ack_never_writes_back(windowed_sdk):
+    """MOR-4507 residual as display-only: one old-width frame lands right
+    after the span ACK (and nothing newer follows yet). Re-sending the same
+    requestSeq (a resize) must not write the requested span back."""
+    radio, sim = windowed_sdk
+    sim.capture_civ_frames = True
+    sim.set_frequency(14_100_000)
+    radio._radio_state.main.freq = 14_100_000
+    presets = radio._profile.scope_span_presets_hz
+    old, new = presets.index(50_000), presets.index(250_000)
+    async with web(radio) as (_, client, base, protocols, _):
+        async with client.ws_connect(base + "/api/v1/scope", protocols=protocols) as ws:
+            await _settle_first_request(ws)
+            await ws.send_str(encode_scope_subscription(_request(2, 500_000)))
+            await _grants(ws, _settled(2))
+            assert sim.views[0][1] == new
+            session = radio.scope_session()
+            # One stale frame at the old width, then the stream pauses.
+            sim.views[0] = (0, old, 1)
+            assert await await_until(lambda: session._applied.get((0, "span")) == old)
+            await _mute(sim)
+            sim.views[0] = (0, new, 1)
+            sim.civ_frames_received.clear()
+            await ws.send_str(encode_scope_subscription(_resize(2, 500_000, 300)))
+            await _grants(ws, lambda grant: grant.request_seq == 2)
+            assert _span_sets(sim) == []
+            sim.muted.discard(0)
+            await _frame_with(ws, (14_100_000 - 250_000, 14_100_000 + 250_000))
+            assert _span_sets(sim) == []
