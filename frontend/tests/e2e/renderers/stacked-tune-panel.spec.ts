@@ -6,10 +6,13 @@ import { test, expect } from '@playwright/test';
 // shorter than the list (where the list scrolls inside itself). The witness
 // page declares no mobile viewport, so the phone cases are a narrow touch
 // window rather than an emulated device, which would lay it out 980 px wide.
+// A phone's spectrum pane is short and clips what is placed inside it, so the
+// phone cases give the witness pane that height and clip: a panel positioned
+// inside the pane would then be cut off.
 const SCREENS = [
-  { name: 'desktop', context: { viewport: { width: 1280, height: 800 } } },
-  { name: 'phone', context: { hasTouch: true, viewport: { width: 390, height: 700 } } },
-  { name: 'short phone', context: { hasTouch: true, viewport: { width: 390, height: 300 } } },
+  { name: 'desktop', context: { viewport: { width: 1280, height: 800 } }, paneHeight: null },
+  { name: 'phone', context: { hasTouch: true, viewport: { width: 390, height: 700 } }, paneHeight: 160 },
+  { name: 'short phone', context: { hasTouch: true, viewport: { width: 390, height: 300 } }, paneHeight: 160 },
 ];
 
 for (const screen of SCREENS) {
@@ -19,6 +22,14 @@ for (const screen of SCREENS) {
     try {
       await page.addInitScript(() => localStorage.setItem('rigplane-spectrum-stacked-trace', '1'));
       await page.goto('/fixtures/spectrum-witness.html');
+      if (screen.paneHeight !== null) {
+        await page.evaluate((height) => {
+          const pane = document.getElementById('app')!;
+          pane.style.height = `${height}px`;
+          pane.style.overflow = 'hidden';
+          pane.style.position = 'relative';
+        }, screen.paneHeight);
+      }
       await page.getByTestId('stacked-trace-tune').click({ timeout: 4000 });
       const panel = page.locator('.tune-panel');
       await expect(panel).toBeVisible();
@@ -29,14 +40,25 @@ for (const screen of SCREENS) {
       expect(box.x + box.width).toBeLessThanOrEqual(view.width);
       expect(box.y + box.height).toBeLessThanOrEqual(view.height);
 
-      const sliders = panel.locator('input[type="range"]');
-      await expect(sliders).toHaveCount(10);
       /** The element is the topmost one at its own centre: nothing clips or covers it. */
       const onTop = (element: Element) => {
         const rect = element.getBoundingClientRect();
         const hit = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
         return hit === element || element.contains(hit);
       };
+      // Before anything is scrolled into view (a clipping pane would scroll
+      // itself and hide the problem), the panel's own corners are on top: a
+      // pane that cuts the panel off covers or removes them.
+      const cornersOnTop = await panel.evaluate((element) => {
+        const rect = element.getBoundingClientRect();
+        return [[rect.left + 6, rect.top + 6], [rect.right - 6, rect.top + 6],
+          [rect.left + 6, rect.bottom - 6], [rect.right - 6, rect.bottom - 6]]
+          .map(([x, y]) => element.contains(document.elementFromPoint(x, y)));
+      });
+      expect(cornersOnTop).toEqual([true, true, true, true]);
+
+      const sliders = panel.locator('input[type="range"]');
+      await expect(sliders).toHaveCount(10);
       for (let index = 0; index < 10; index++) {
         const slider = sliders.nth(index);
         await slider.scrollIntoViewIfNeeded({ timeout: 4000 });
