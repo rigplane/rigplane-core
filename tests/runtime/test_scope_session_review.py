@@ -2279,3 +2279,36 @@ async def test_request_seq_stale_frame_after_ack_never_writes_back(windowed_sdk)
             sim.muted.discard(0)
             await _frame_with(ws, (14_100_000 - 250_000, 14_100_000 + 250_000))
             assert _span_sets(sim) == []
+
+
+async def test_request_seq_resent_and_zero_grants_stay_settled_while_another_writes(
+    windowed_sdk,
+):
+    """While another client's span request is still pending (its frame not
+    yet arrived), a re-sent settled requestSeq and a fresh connection's
+    requestSeq 0 are both granted settled: settled is final per requestSeq,
+    and 0 is never a pending request."""
+    radio, sim = windowed_sdk
+    sim.set_frequency(14_100_000)
+    radio._radio_state.main.freq = 14_100_000
+    async with web(radio) as (_, client, base, protocols, _):
+        async with client.ws_connect(base + "/api/v1/scope", protocols=protocols) as a:
+            await _settle_first_request(a)
+            await _mute(sim)
+            async with client.ws_connect(
+                base + "/api/v1/scope", protocols=protocols
+            ) as b:
+                (other,) = await _grants_after(b, _request(9, 500_000))
+                assert (other.request_seq, other.request_state) == (9, "pending")
+                (resent,) = await _grants_after(a, _resize(1, 100_000, 300))
+                assert (resent.request_seq, resent.request_state) == (1, "settled")
+                async with client.ws_connect(
+                    base + "/api/v1/scope", protocols=protocols
+                ) as c:
+                    (fresh,) = await _grants_after(c, _request(0, 100_000))
+                    assert (fresh.request_seq, fresh.request_state) == (0, "settled")
+
+
+async def _grants_after(ws, subscription):
+    await ws.send_str(encode_scope_subscription(subscription))
+    return await _grants(ws, lambda grant: True)
