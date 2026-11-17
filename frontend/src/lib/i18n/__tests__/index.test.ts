@@ -75,7 +75,7 @@ describe('t()', () => {
 
   it('carries the MOR-1422 disabled-reason strings in ru-RU (own catalog entries)', () => {
     setLocale('ru-RU');
-    expect(t('core.disabledReason.missing')).toBe('Не поддерживается этим трансивером');
+    expect(t('core.disabledReason.missing')).toBe('Не поддерживается этим радио');
     expect(t('core.disabledReason.unobserved')).toBe('Ещё не считано');
   });
 });
@@ -137,7 +137,7 @@ describe('messageFromReasonCode()', () => {
   it('resolves the MOR-1422 command-refusal reason code in ru-RU (own catalog entry, not the en-US fallback)', () => {
     setLocale('ru-RU');
     expect(messageFromReasonCode('commandRefusedLinkDegraded')).toBe(
-      'Команда не отправлена — связь с трансивером деградировала',
+      'Команда не отправлена — связь с радио деградировала',
     );
   });
 

@@ -721,7 +721,7 @@ describe('MOR-2997 — the phone power overlay label is centred with a side marg
     expect(longest).toEqual({
       locale: 'ru-RU',
       key: 'core.overlay.poweredOff.notConnectedLabel',
-      length: 58,
+      length: 55,
     });
   });
 });

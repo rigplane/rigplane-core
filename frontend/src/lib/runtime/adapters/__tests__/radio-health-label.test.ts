@@ -114,6 +114,6 @@ describe('deriveRadioHealthLabel — locale', () => {
   it('reads the busy copy in Russian', () => {
     setLocale('ru-RU');
     expect(deriveRadioHealthLabel({ health: health('radio_session_busy', 'recovering'), ...healthy }))
-      .toBe('трансивер занят другим подключением, повторяем попытку');
+      .toBe('радио занято другим подключением, повторяем попытку');
   });
 });
