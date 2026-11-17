@@ -304,8 +304,16 @@ class ScopeSourcePlugin(Protocol):
         self, view: ViewRequest, receiver: int | None = None
     ) -> Coverage | None: ...
     async def set_view(
-        self, view: ViewRequest, receiver: int | None = None
-    ) -> GrantedView: ...
+        self,
+        view: ViewRequest,
+        receiver: int | None = None,
+        *,
+        apply_width: bool = True,
+    ) -> GrantedView:
+        """Act on a view request; ``apply_width=False`` (MOR-4532) means a
+        follow width is context only and must cause no width write."""
+        ...
+
     def view_settled(self, receiver: int | None = None) -> bool:
         """Whether the source finished acting on the last view request.
 

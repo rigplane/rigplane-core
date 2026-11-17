@@ -55,6 +55,19 @@ highest request that grant accounts for; the server may fold fast requests,
 so a grant saying 6 leaves a later request 7 pending on the client. Grants are
 never sent for an older `requestSeq` after a newer one.
 
+Only a new request writes. The server applies a subscription's follow width
+(a span write) only when its `requestSeq` is greater than the last one it
+applied on that connection. A re-sent subscription with the same `requestSeq`
+(a resize, a visibility or frame-rate change) carries the follow width as
+context and writes nothing; its grant follows the radio's own window. A fresh
+connection (page load or reconnect) starts at `requestSeq` 0, and 0 is never a
+request: whatever width it carries causes no span write and its grant is
+settled. Without `requestSeq` a subscription behaves as before. The hub itself
+does not skip a re-sent subscription whose view is unchanged; only the scope
+session's same-preset skip avoids a repeated span SET, which does not cover a
+width the radio changed meanwhile. See
+`src/rigplane/web/handlers/scope.py: ScopeHandler._handle_control`.
+
 "Settled" comes only from the grant. A client must not derive it from scope
 control state (`scopeControls.span`, field status) or from frame widths. A
 request that is still pending when its first grant is sent settles later by a

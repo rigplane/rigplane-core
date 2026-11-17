@@ -41,6 +41,11 @@ class ScopeHandler:
         self._ws = ws
         self._server = server
         self._streams: dict[ScopeTarget, _Stream] = {}
+        # MOR-4532, per connection: the last requestSeq whose follow width
+        # was applied, and the highest one sent as settled. A fresh
+        # connection starts at 0, which is never a request.
+        self._applied_seq = 0
+        self._settled_seq = 0
 
     async def run(self) -> None:
         if self._server is not None:
@@ -116,7 +121,16 @@ class ScopeHandler:
                 hub = self._server.scope_hub
                 if request.source_id == "iq_fft":
                     self._server._register_iq_scope_source(hub)
-                subscription = await hub.subscribe(request)
+                # Only a NEW requestSeq applies its follow width; a re-sent
+                # subscription (resize, visibility, fps) and requestSeq 0
+                # carry the width as context. No requestSeq: as before.
+                applies = (
+                    request.request_seq is None
+                    or request.request_seq > self._applied_seq
+                )
+                subscription = await hub.subscribe(request, apply_width=applies)
+                if applies and request.request_seq is not None:
+                    self._applied_seq = request.request_seq
                 try:
                     await self._unsubscribe(target)
                 except BaseException:
@@ -124,7 +138,7 @@ class ScopeHandler:
                     raise
                 stream = _Stream(subscription)
                 self._streams[target] = stream
-                grant = subscription.granted
+                grant = self._final(subscription.granted)
                 try:
                     await self._ws.send_text(encode_scope_granted(grant))
                 except BaseException:
@@ -137,6 +151,22 @@ class ScopeHandler:
                 error.update(sourceId=target.source_id, receiver=target.receiver)
             await self._ws.send_text(encode_json(error))
 
+    def _final(self, grant: GrantedSubscription) -> GrantedSubscription:
+        """Settled is final per requestSeq on this connection (MOR-4532).
+
+        Every grant this connection sends passes here: a requestSeq at or
+        below the highest one already sent as settled (0 included) is sent
+        settled, so a delivery buffered before the request settled, or a
+        re-sent subscription, can never send it back to pending.
+        """
+        if grant.request_seq is None:
+            return grant
+        if grant.request_seq <= self._settled_seq:
+            return replace(grant, request_state="settled")
+        if grant.request_state == "settled":
+            self._settled_seq = grant.request_seq
+        return grant
+
     async def _sender(
         self, subscription: HubSubscription, sent: GrantedSubscription
     ) -> None:
@@ -144,12 +174,14 @@ class ScopeHandler:
             while True:
                 grant, data = await subscription.receive_delivery()
                 if (
-                    sent.request_state == "settled"
-                    and grant.request_seq == sent.request_seq
+                    grant.request_state == "pending"
+                    and subscription.granted.request_state == "settled"
                 ):
-                    # A delivery buffered before the request settled must
-                    # not send it back to pending: settled is final per seq.
-                    grant = replace(grant, request_state="settled")
+                    # Buffered before this request settled; the hub already
+                    # offered the settled frame behind it. Retire it rather
+                    # than send its pre-request geometry under a settled grant.
+                    continue
+                grant = self._final(grant)
                 # A regrant on a width change, and when the request settles
                 # (MOR-4532: the re-sent grant is the only "settled" signal).
                 if (grant.width, grant.request_state) != (

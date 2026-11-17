@@ -155,8 +155,13 @@ class IqFftSource:
         return Coverage(start, end) if start < end else None
 
     async def set_view(
-        self, view: ViewRequest, receiver: int | None = None
+        self,
+        view: ViewRequest,
+        receiver: int | None = None,
+        *,
+        apply_width: bool = True,
     ) -> GrantedView:
+        # The FFT crop writes nothing, so apply_width changes nothing here.
         resolved = self.resolve_view(view, receiver)
         return GrantedView(resolved, self.coverage_for(resolved, receiver))
 
