@@ -751,10 +751,7 @@
   // The width the follow view shows: the frame geometry once the request is
   // settled, the request while it is pending (or not tracked at all).
   function followViewWidthHz(geometryWidthHz: number): number {
-    if (!followSettled) return followSpanHz ?? geometryWidthHz;
-    // The settled frame rebuilds the window as freq±span/2: within 1 Hz it is
-    // the request itself, so floor/cap no-ops stay exact.
-    return followSpanHz !== null && Math.abs(geometryWidthHz - followSpanHz) < 1 ? followSpanHz : geometryWidthHz;
+    return followSettled ? geometryWidthHz : followSpanHz ?? geometryWidthHz;
   }
   // This panel's own radio frame width (the SPAN readout), or null.
   function radioFrameWidthHz(): number | null {
