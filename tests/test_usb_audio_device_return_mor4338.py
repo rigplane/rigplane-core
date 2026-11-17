@@ -517,48 +517,79 @@ async def test_bridge_uses_the_cable_ids_of_the_scan_the_radio_recovery_made():
         await radio.disconnect()
 
 
-async def test_overlapping_retries_keep_each_starts_stop():
-    loop = asyncio.get_running_loop()
-    entered = asyncio.Event()
-    listed_after_refresh = 0
-    refresh_calls = 0
-    refresh_both = asyncio.Event()
-    backend = _ReturnedRadioBackend(stale=[], fresh=[_codec("USB Audio CODEC")])
-    backend.refresh_gate = threading.Event()
-    backend.list_gate = threading.Event()
+class _ScriptedBackend(FakeAudioBackend):
+    """Two overlapping re-scans released in a scripted order.
 
-    def on_refresh() -> None:
-        nonlocal refresh_calls
-        refresh_calls += 1
-        if refresh_calls == 2:
-            loop.call_soon_threadsafe(refresh_both.set)
+    ``refresh_gates[n]`` holds the n-th ``refresh_devices`` call. Once one
+    re-scan has completed (``refreshes == 1``) every device listing waits on
+    ``list_gate``: only the start whose re-scan was released first can be in
+    its retry selection then, so that start is the one paused.
+    """
 
-    def list_devices():
-        nonlocal listed_after_refresh
-        if backend.refreshes >= 2:
-            listed_after_refresh += 1
-            if listed_after_refresh == 2:  # the second start's retry selection
-                loop.call_soon_threadsafe(entered.set)
-                backend.list_gate.wait()
-        return FakeAudioBackend.list_devices(backend)
+    def __init__(self, fresh: list[AudioDeviceInfo], loop) -> None:
+        super().__init__([])
+        self._fresh = fresh
+        self._loop = loop
+        self._lock = threading.Lock()
+        self._calls = 0
+        self.refreshes = 0
+        self.refresh_gates = [threading.Event(), threading.Event()]
+        self.refresh_entered = [asyncio.Event(), asyncio.Event()]
+        self.list_gate = threading.Event()
+        self.paused = asyncio.Event()
 
-    backend.on_refresh = on_refresh
-    backend.list_devices = list_devices  # type: ignore[method-assign]
+    def refresh_devices(self) -> bool:
+        with self._lock:
+            index = self._calls
+            self._calls += 1
+        self._loop.call_soon_threadsafe(self.refresh_entered[index].set)
+        self.refresh_gates[index].wait()
+        with self._lock:
+            self.refreshes += 1
+            self._devices = self._fresh
+        _open_streams.restart_if_idle(lambda: None)
+        return True
+
+    def list_devices(self):
+        if self.refreshes == 1:
+            self._loop.call_soon_threadsafe(self.paused.set)
+            self.list_gate.wait()
+        return super().list_devices()
+
+
+@pytest.mark.parametrize("tx_first", [True, False], ids=["tx-first", "rx-first"])
+async def test_overlapping_retries_keep_each_starts_stop(tx_first):
+    """TX is paused in its retry selection while RX's retry completes; a stop
+    of TX issued meanwhile must still win (a retry epoch shared between the
+    starts was cleared by the RX completion and TX opened after the stop)."""
+    backend = _ScriptedBackend([_codec("USB Audio CODEC")], asyncio.get_running_loop())
     driver = UsbAudioDriver(backend=backend)
-    rx = asyncio.ensure_future(driver.start_rx(lambda _pcm: None))
-    tx = asyncio.ensure_future(driver.start_tx())
-    await refresh_both.wait()
-    backend.refresh_gate.set()
-    await entered.wait()
-    done, pending = await asyncio.wait({rx, tx}, return_when=asyncio.FIRST_COMPLETED)
-    (paused,) = pending
-    # One retry finished; the other is still choosing its devices.
-    await (driver.stop_rx() if paused is rx else driver.stop_tx())
+    order = ["tx", "rx"] if tx_first else ["rx", "tx"]
+    tasks = {}
+    for index, direction in enumerate(order):
+        tasks[direction] = asyncio.ensure_future(
+            driver.start_tx()
+            if direction == "tx"
+            else driver.start_rx(lambda _pcm: None)
+        )
+        await backend.refresh_entered[index].wait()
+    tx_gate = order.index("tx")
+    rx_gate = order.index("rx")
+
+    backend.refresh_gates[tx_gate].set()  # TX's re-scan completes first ...
+    await backend.paused.wait()  # ... and its retry is choosing devices
+    backend.refresh_gates[rx_gate].set()  # RX's re-scan completes, RX opens
+    # RX's listing waits too (refreshes is already 2 here, so it does not).
+    await tasks["rx"]
+    assert driver.rx_running
+
+    await driver.stop_tx()  # nothing to close yet; the stop must still count
     backend.list_gate.set()
 
-    with pytest.raises(AudioDriverLifecycleError):
-        await paused
-    assert not (driver.rx_running if paused is rx else driver.tx_running)
+    with pytest.raises(AudioDriverLifecycleError, match="cancelled by a stop"):
+        await tasks["tx"]
+    assert not driver.tx_running
+    await driver.stop_rx()
 
 
 class _GuardSd(_RescanSd):
