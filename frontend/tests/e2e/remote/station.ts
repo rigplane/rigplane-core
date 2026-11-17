@@ -20,6 +20,8 @@ export interface SimState {
   freq_hz: number;
   /** The simulator's own PTT journal as [unix seconds, keyed]. */
   ptt_transitions: [number, boolean][];
+  /** Client audio frames the simulator received with a non-silent payload. */
+  tx_audio_signal_frames: number;
 }
 
 /** The producer's field types, as the sidecar serves them at
@@ -31,6 +33,7 @@ const SIM_CONTRACT: Record<string, Record<string, string>> = {
     ptt_on: 'bool',
     freq_hz: 'int',
     ptt_transitions: 'tuple[tuple[float, bool], ...]',
+    tx_audio_signal_frames: 'int',
   },
   SimFreqRequest: { hz: 'int' },
 };
@@ -69,6 +72,7 @@ export function parseSimState(contract: unknown, value: unknown): SimState {
   }
   if (typeof record.ptt_on !== 'boolean') throw bad('ptt_on');
   if (!Number.isInteger(record.freq_hz)) throw bad('freq_hz');
+  if (!Number.isInteger(record.tx_audio_signal_frames)) throw bad('tx_audio_signal_frames');
   const transitions = record.ptt_transitions;
   if (
     !Array.isArray(transitions) ||
@@ -211,6 +215,7 @@ export async function stubMicrophone(page: Page): Promise<void> {
       // does: the page's Opus encoder is configured for that rate and
       // channel count and refuses a stream that differs (a default
       // AudioContext rate and the 2-channel destination fail it).
+      (window as unknown as { __micConstraints?: unknown }).__micConstraints = constraints?.audio;
       const audio = constraints?.audio;
       const wanted = typeof audio === 'object' && audio !== null ? audio : {};
       const rate = (wanted.sampleRate as number | undefined) ?? undefined;

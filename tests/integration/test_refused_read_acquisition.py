@@ -263,31 +263,50 @@ async def test_silent_tx_target_read_does_not_hold_the_startup_gate() -> None:
     ("path_name", "command", "sub"),
     [("ptt", 0x1C, 0x00), ("split", 0x0F, None)],
 )
-async def test_refused_ptt_or_split_read_still_fails_startup(
-    path_name: str, command: int, sub: int | None
+async def test_refused_ptt_or_split_read_opens_with_tx_unknown(
+    path_name: str, command: int, sub: int | None, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """A refused read of a still startup-critical path fails startup (MOR-2749, MOR-4058).
+    """A refused PTT/split read opens with it unknown (MOR-4456, MOR-4058).
 
-    MOR-4433 left ``tx_state`` with two safety-critical reads — PTT
-    (``1C 00``) and split (``0F``) — while the TX target left the critical
-    set. A radio that NAKs either one still fails startup naming it, counting
-    its refusals as the failed reads. ``refuse_next`` NAKs one request per
-    queued command byte, so the test queues enough to cover the initial fetch
-    plus the re-reads (``0x1C`` also covers the non-critical tuner/TX-target
-    reads sharing the command byte; only the critical path can fail the
-    gate).
+    MOR-4456 moves PTT (``1C 00``) and split (``0F``) the way MOR-4433
+    moved the TX target: out of the startup-critical set. A radio that
+    NAKs either one opens with it unobserved — the refusal is still
+    counted, not dropped, and no startup defect is recorded. The refused
+    path leaves the unobserved set at once, so the gate opens well under
+    the non-critical deadline with no ``no answer for`` WARNING. When the
+    refused path is PTT itself, the transmit state is unknown.
     """
+    from rigplane.runtime.tx_interlock import RfState, resolve_rf_state
+
     fake, endpoint, radio = await _connected("IC-7610")
     for _ in range(30):
         fake.refuse_next(command)
     web = _gated_web(radio, "IC-7610")
     path = FieldPath.global_("tx_state", path_name)
     try:
-        with pytest.raises(RuntimeError, match=str(path)):
+        with caplog.at_level(logging.INFO):
             await asyncio.wait_for(web.start(), 30)
         # Not vacuous: the radio was asked for the refused read.
         assert any((f.command, f.sub) == (command, sub) for f in fake.commands)
-        assert radio._acquisition_scheduler.consecutive_refusals(path) >= 3
+        messages = [record.getMessage() for record in caplog.records]
+        # The refused path leaves the unobserved set at once: the
+        # deadline WARNING — driven by unrelated never-answering SUB
+        # paths on this recording — must not name it.
+        assert not [m for m in messages if "no answer for" in m and str(path) in m], (
+            messages
+        )
+        assert any(
+            "refused" in m and str(path) in m
+            for m in messages
+            if m.startswith("acquisition:")
+        ), "the refused path is named once at INFO"
+        assert radio._acquisition_scheduler.consecutive_refusals(path) > 0
+        assert radio._acquisition_scheduler.startup_defect is None
+        assert path not in _observed_paths(web, radio._acquisition_scheduler)
+        if path_name == "ptt":
+            assert (
+                resolve_rf_state(web.command_state_store.snapshot()) is RfState.UNKNOWN
+            )
     finally:
         await web.stop()
         await radio.disconnect()

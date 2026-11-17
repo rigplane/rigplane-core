@@ -514,3 +514,121 @@ async def test_token_renew_reply_swaps_endpoint_ids(server, client):
     assert reply[0x15] == 0x05
     assert struct.unpack_from("<I", reply, 0x08)[0] == server.radio_id
     assert struct.unpack_from("<I", reply, 0x0C)[0] == _CLIENT_ID
+
+
+@pytest.mark.realtime(reason="measures a real loop-timer delay on the wire")
+async def test_configured_delay_applies_once_end_to_end(server, client):
+    """One configured CI-V delay, end to end: the reply lands ~delay late.
+
+    The delay is the shared outbound rule's own emission — not a second
+    queue on top of the inherited dispatch delay, which stacked the same
+    configured value twice.
+    """
+    server.lan_civ_echo = False  # time the reply itself, not its echo
+    server.fault_plan = FaultPlan(
+        civ_to_client=FaultRule(delay_s=0.2, preserve_order=True)
+    )
+    started = time.monotonic()
+    client.send(_freq_get(), server.civ_port)
+    reply = await client.recv()
+    elapsed = time.monotonic() - started
+    assert _is_freq_reply(reply)
+    assert elapsed >= 0.2, "the configured delay must apply"
+    assert elapsed < 0.35, f"one delay, not two: {elapsed:.3f}s for delay_s=0.2"
+
+
+@pytest.mark.realtime(reason="measures a real control-port round trip on the wire")
+async def test_civ_delay_leaves_control_traffic_untouched(server, client):
+    """A CI-V outbound delay never slows the control port.
+
+    The old per-harness queue delayed request dispatch for every label, so
+    control traffic paid the CI-V latency too. The shared plan is per
+    (port, direction): control rules stay noop here.
+    """
+    server.fault_plan = FaultPlan(
+        civ_to_client=FaultRule(delay_s=0.3, preserve_order=True)
+    )
+    assert server.fault_plan.is_noop("control", "to_client")
+    assert server.fault_plan.is_noop("control", "from_client")
+    started = time.monotonic()
+    client.send(_ping(), server.control_port)
+    await client.recv()
+    assert time.monotonic() - started < 0.15
+
+
+async def test_delayed_burst_schedules_one_timer_per_packet(server, client):
+    """Bounded scheduled work: jittered delay orders but never multiplies.
+
+    Every delayed packet schedules exactly one loop timer; nothing chains
+    a second pump behind it, and the burst drains in send order with the
+    reorder buffer empty at the end.
+    """
+    server.lan_civ_echo = False  # count replies, not echo+reply pairs
+    rule = FaultRule(delay_s=0.05, jitter_s=0.05, preserve_order=True)
+    server.fault_plan = FaultPlan(civ_to_client=rule, seed=0xC0FFEE)
+    loop = asyncio.get_running_loop()
+    real_call_at = loop.call_at
+    scheduled = 0
+
+    def counting_call_at(when, callback, *args, **kwargs):
+        nonlocal scheduled
+        if callback == server._deliver_planned:
+            scheduled += 1
+        return real_call_at(when, callback, *args, **kwargs)
+
+    count = 30
+    loop.call_at = counting_call_at  # type: ignore[method-assign]
+    try:
+        for seq in range(1, count + 1):
+            client.send(_freq_get(seq=seq), server.civ_port)
+        replies = [await client.recv(timeout=5.0) for _ in range(count)]
+    finally:
+        loop.call_at = real_call_at  # type: ignore[method-assign]
+    assert all(_is_freq_reply(reply) for reply in replies)
+    assert [struct.unpack_from("<H", reply, 0x06)[0] for reply in replies] == list(
+        range(1, count + 1)
+    ), "jitter delays but never reorders"
+    assert scheduled == count, f"one timer per delayed packet, got {scheduled}"
+    assert rule.held == 0
+    await client.expect_silence(0.3)
+
+
+@pytest.mark.realtime(reason="simulates a real scheduling stall on the loop thread")
+async def test_preserve_order_survives_a_stall_between_decision_and_timer(
+    server, client
+):
+    """A pause after the plan's clock read must not reorder the burst.
+
+    ``preserve_order`` spaces the per-packet due times by 100 microseconds.
+    On a loaded host the loop thread can be descheduled for longer than that
+    between the plan reading the clock and the timer being armed. If the
+    timer is armed with a *relative* delay, that pause shifts the packet's
+    real fire time past its successor's and the burst arrives shuffled
+    (seen on CI as ...14,16,15,17...). Simulate the pause on every other
+    packet: the due times the plan chose must be the times the loop uses.
+    """
+    server.lan_civ_echo = False
+    rule = FaultRule(delay_s=0.05, jitter_s=0.05, preserve_order=True)
+    plan = FaultPlan(civ_to_client=rule, seed=0xC0FFEE)
+    server.fault_plan = plan
+    real_decide = plan.decide
+    calls = 0
+
+    def decide_then_stall(*args, **kwargs):
+        nonlocal calls
+        result = real_decide(*args, **kwargs)
+        calls += 1
+        if calls % 2:  # a 1 ms descheduling right after the clock read
+            stall_until = time.monotonic() + 0.001
+            while time.monotonic() < stall_until:
+                pass
+        return result
+
+    plan.decide = decide_then_stall  # type: ignore[method-assign]
+    count = 30
+    for seq in range(1, count + 1):
+        client.send(_freq_get(seq=seq), server.civ_port)
+    replies = [await client.recv(timeout=5.0) for _ in range(count)]
+    assert [struct.unpack_from("<H", reply, 0x06)[0] for reply in replies] == list(
+        range(1, count + 1)
+    ), "a stall after the decision clock-read must not reorder the burst"

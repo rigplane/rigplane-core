@@ -1,11 +1,16 @@
+import asyncio
 import json
+import time
 from pathlib import Path
 
 import pytest
 
+from _perf_helpers import fast_connect
 from e2e.panorama_web_server import PanoramaSimulator, ScopeWriteReceipt
 from rigplane.commands import parse_civ_frame
+from rigplane.commands._codec import filter_index_to_hz
 from rigplane.commands.scope import _span_index_for_hz, parse_scope_span_response
+from rigplane.radio import IcomRadio
 from rigplane.scope import ScopeAssembler
 
 
@@ -34,6 +39,40 @@ def test_panorama_waveform_and_control_span_agree(model: str, tmp_path: Path) ->
                     sim.profile.scope_span_presets_hz,
                 )
                 == index
+            )
+            return
+    pytest.fail("simulator produced no complete waveform")
+
+
+@pytest.mark.parametrize("mode,sign", [(0x00, -1), (0x01, +1)], ids=["LSB", "USB"])
+def test_filter_center_offsets_wave_by_passband_centre(
+    mode: int, sign: int, tmp_path: Path
+) -> None:
+    """MOR-4451: Filter Center (27 1C = 0) streams the CENTER wave centred on
+    the passband centre — LSB negative, USB positive, by half the current
+    filter width decoded from the profile segments. Carrier Point Center
+    (the default) keeps the wave centred on the VFO."""
+    sim = PanoramaSimulator("IC-705", tmp_path / "radio.jsonl", scope_center_type=0)
+    sim.set_mode(mode)
+    sim.pump_scope_stream()
+    mode_name = "LSB" if mode == 0x00 else "USB"
+    width_hz = filter_index_to_hz(
+        28, segments=sim.profile.filter_config[mode_name].segments
+    )
+    # The default 1A 03 byte 0x28 is BCD slot 28: profile data pins 2400 Hz
+    # SSB, so the passband centre sits 1200 Hz off the carrier.
+    assert width_hz == 2400
+    assembler = ScopeAssembler()
+    for raw in sim._scope_templates[0]:
+        civ = parse_civ_frame(raw)
+        frame = assembler.feed(civ.data[1:], civ.data[0])
+        if frame is not None:
+            span = sim.profile.scope_span_presets_hz[
+                sim.profile.scope_span_presets_hz.index(100_000)
+            ]
+            assert (frame.start_freq_hz, frame.end_freq_hz) == (
+                14_250_000 + sign * (width_hz // 2) - span,
+                14_250_000 + sign * (width_hz // 2) + span,
             )
             return
     pytest.fail("simulator produced no complete waveform")
@@ -82,3 +121,209 @@ def test_scope_span_capability_fixture(model: str) -> None:
     caps = server._scope_source_capabilities(server._get_profile())
     fixture = Path(__file__).parent / "fixtures/scope-span-capabilities.json"
     assert caps == json.loads(fixture.read_text())
+
+
+@pytest.mark.parametrize("model", ["IC-705", "IC-7300", "IC-7610"])
+def test_scope_span_choices_publish_full_view_widths(model: str) -> None:
+    """MOR-4451: the published span_choices_hz fact states FULL view widths
+    (end - start) — twice an Icom ±half-width preset. Fails if the server
+    goes back to publishing the radio's half-width presets."""
+    from test_web_server_coverage import _scope_radio
+    from rigplane.web.server import WebConfig, WebServer
+
+    server = WebServer(
+        _scope_radio(), WebConfig(radio_model=model, scope_source="hardware")
+    )
+    profile = server._get_profile()
+    assert profile is not None
+    assert profile.scope_span_preset_semantics == "half_width"
+    caps = server._scope_source_capabilities(profile)
+    assert caps["span_choices_hz"] == [
+        2 * preset for preset in profile.scope_span_presets_hz
+    ]
+
+
+def test_latency_harness_uses_the_shared_civ_plan(tmp_path: Path) -> None:
+    """The latency knobs configure the shared outbound CI-V plan — nothing else.
+
+    The removed per-harness queue doubled the simulator's own mechanisms: it
+    stacked a second delay on top of the inherited ``response_delay``
+    dispatch delay (a configured 100 ms cost ~200 ms on CI-V replies) and
+    delayed control-port traffic too. Now the plan carries the delay once,
+    on CI-V only, and the inherited dispatch delay stays unset.
+    """
+    sim = PanoramaSimulator(
+        "IC-705",
+        tmp_path / "radio.jsonl",
+        response_delay=0.1,
+        response_jitter=0.05,
+        seed=7,
+    )
+    rule = sim.fault_plan.civ_to_client
+    assert (rule.delay_s, rule.jitter_s, rule.preserve_order) == (0.1, 0.05, True)
+    assert sim.fault_plan.seed == 7
+    assert sim.fault_plan.is_noop("control", "to_client")
+    assert sim.fault_plan.is_noop("control", "from_client")
+    assert sim.fault_plan.is_noop("civ", "from_client")
+    assert sim.response_delay == 0.0
+
+
+def test_latency_harness_default_is_passthrough(tmp_path: Path) -> None:
+    """No knobs, no faults: the default harness passes CI-V through untouched."""
+    sim = PanoramaSimulator("IC-705", tmp_path / "radio.jsonl")
+    assert sim.fault_plan.is_noop("civ", "to_client")
+    assert sim.response_delay == 0.0
+
+
+async def _round_trip_legs(sim: PanoramaSimulator) -> tuple[float, float, float]:
+    """One real-client get_freq: (request-leg s, reply-leg s, RTT s).
+
+    The request leg ends when the simulator dispatches the request
+    (``civ_frames_received`` grows — after the uplink dispatch delay, before
+    any downlink delay); the reply leg ends when the client's reply arrives.
+    Starts and stops the simulator around the round trip.
+    """
+    sim.capture_civ_frames = True
+    await sim.start()
+    try:
+        client = IcomRadio(
+            host="127.0.0.1",
+            port=sim.control_port,
+            username="testuser",
+            password="testpass",
+            model="IC-705",
+            timeout=5.0,
+        )
+        with fast_connect():
+            await client.connect()
+        try:
+            baseline = len(sim.civ_frames_received)
+            started = time.monotonic()
+            pending = asyncio.ensure_future(client.get_freq())
+
+            async def _wait_dispatch() -> None:
+                while len(sim.civ_frames_received) == baseline:
+                    await asyncio.sleep(0.005)
+
+            await asyncio.wait_for(_wait_dispatch(), 10.0)
+            dispatched = time.monotonic()
+            await asyncio.wait_for(pending, 10.0)
+            finished = time.monotonic()
+        finally:
+            await asyncio.wait_for(client.disconnect(), 10.0)
+    finally:
+        await sim.stop()
+    return dispatched - started, finished - dispatched, finished - started
+
+
+@pytest.mark.realtime(reason="measures the uplink leg against the sim")
+async def test_uplink_delay_applies_once_on_request_leg(tmp_path: Path) -> None:
+    """Uplink only: one delay on the request leg, a fast reply leg."""
+    sim = PanoramaSimulator(
+        "IC-705", tmp_path / "radio.jsonl", uplink_delay=0.2, seed=1
+    )
+    assert sim.response_delay == 0.2
+    assert sim.fault_plan.is_noop("civ", "to_client")
+    request_leg, reply_leg, rtt = await _round_trip_legs(sim)
+    assert request_leg >= 0.15, (
+        f"the uplink delay must hold the request: {request_leg:.3f}s"
+    )
+    assert reply_leg < 0.1, f"the reply leg must stay fast: {reply_leg:.3f}s"
+    assert rtt >= 0.2, "the configured delay must apply"
+    assert rtt < 0.35, f"one delay, not two: {rtt:.3f}s for uplink 0.2"
+
+
+@pytest.mark.realtime(reason="measures the downlink leg against the sim")
+async def test_downlink_delay_applies_once_on_reply_leg(tmp_path: Path) -> None:
+    """Downlink only: a fast request leg, one delay on the reply leg."""
+    sim = PanoramaSimulator(
+        "IC-705", tmp_path / "radio.jsonl", response_delay=0.2, seed=1
+    )
+    assert sim.response_delay == 0.0
+    request_leg, reply_leg, rtt = await _round_trip_legs(sim)
+    assert request_leg < 0.1, f"the request leg must stay fast: {request_leg:.3f}s"
+    assert reply_leg >= 0.15, (
+        f"the downlink delay must hold the reply: {reply_leg:.3f}s"
+    )
+    assert rtt >= 0.2, "the configured delay must apply"
+    assert rtt < 0.35, f"one delay, not two: {rtt:.3f}s for downlink 0.2"
+
+
+@pytest.mark.realtime(reason="measures the summed round trip against the sim")
+async def test_uplink_plus_downlink_sum_to_rtt_never_doubled(
+    tmp_path: Path,
+) -> None:
+    """Both legs: RTT is uplink + downlink, never doubled."""
+    sim = PanoramaSimulator(
+        "IC-705",
+        tmp_path / "radio.jsonl",
+        uplink_delay=0.15,
+        response_delay=0.15,
+        seed=1,
+    )
+    request_leg, reply_leg, rtt = await _round_trip_legs(sim)
+    assert request_leg >= 0.1, f"uplink 0.15 must hold the request: {request_leg:.3f}s"
+    assert reply_leg >= 0.1, f"downlink 0.15 must hold the reply: {reply_leg:.3f}s"
+    assert rtt >= 0.25, f"both legs must apply: {rtt:.3f}s for 0.15 + 0.15"
+    assert rtt < 0.5, f"sum, never doubled: {rtt:.3f}s for 0.15 + 0.15"
+
+
+@pytest.mark.realtime(reason="measures a real client round trip against the sim")
+async def test_configured_delay_applies_once_over_the_wire(
+    tmp_path: Path,
+) -> None:
+    """A real client against the latency harness: one delay, not two."""
+    sim = PanoramaSimulator(
+        "IC-705", tmp_path / "radio.jsonl", response_delay=0.2, seed=1
+    )
+    await sim.start()
+    try:
+        client = IcomRadio(
+            host="127.0.0.1",
+            port=sim.control_port,
+            username="testuser",
+            password="testpass",
+            model="IC-705",
+            timeout=5.0,
+        )
+        with fast_connect():
+            await client.connect()
+        try:
+            started = time.monotonic()
+            await asyncio.wait_for(client.get_freq(), 10.0)
+            elapsed = time.monotonic() - started
+        finally:
+            await asyncio.wait_for(client.disconnect(), 10.0)
+    finally:
+        await sim.stop()
+    assert elapsed >= 0.2, "the configured delay must apply"
+    assert elapsed < 0.35, f"one delay, not two: {elapsed:.3f}s for delay 0.2"
+
+
+@pytest.mark.parametrize("model", ["IC-705", "IC-7300"])
+def test_panorama_harness_ab_select_uses_the_shared_state(
+    model: str, tmp_path: Path
+) -> None:
+    """A -> B -> B -> A on the harness goes through the shared simulator's
+    VFO A/B state (``_selected_vfo_letter`` / ``_swap_selected_unselected``):
+    the harness keeps no selection copy of its own, and the selected VFO's
+    frequency is the one the passband state reads."""
+    sim = PanoramaSimulator(model, tmp_path / "radio.jsonl")
+    assert not hasattr(sim, "_active_slot")
+    sim.set_frequency(14_250_000)
+    sim._unselected_frequency = 7_100_000
+
+    def select(letter: int) -> None:
+        reply = sim._dispatch_civ_native(0x07, bytes([letter]), 0xE0)
+        assert reply is not None and parse_civ_frame(reply).command == 0xFB
+
+    seen = []
+    for letter in (0x00, 0x01, 0x01, 0x00):
+        select(letter)
+        seen.append((sim._selected_vfo_letter, sim._frequency))
+    assert seen == [
+        ("A", 14_250_000),
+        ("B", 7_100_000),
+        ("B", 7_100_000),
+        ("A", 14_250_000),
+    ]

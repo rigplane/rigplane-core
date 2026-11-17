@@ -77,7 +77,8 @@
   import { getManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
   import { createManagedTxGesture, createPttHold } from '../wiring/managed-tx-gesture';
   import { vibrate } from '$lib/utils/haptics';
-  import { onMount, onDestroy } from 'svelte';
+  import { onMount, onDestroy, tick } from 'svelte';
+  import { acquireSwapBridge } from '$lib/runtime/swap-bridge';
 
   // ── State — via runtime ──
   let radioState = $derived(runtime.state);
@@ -297,7 +298,15 @@
   let isLandscape = $state(false);
   function checkOrientation() {
     const wasLandscape = isLandscape;
-    isLandscape = window.innerWidth > window.innerHeight && window.innerHeight < 500;
+    const landscape = window.innerWidth > window.innerHeight && window.innerHeight < 500;
+    if (landscape !== wasLandscape) {
+      // MOR-4534: the orientation swap replaces the portrait scope panel with
+      // the landscape one; the same bridge as a presentation switch keeps the
+      // scope lease and the outgoing subscription until the new panel mounts.
+      const releaseBridge = acquireSwapBridge('MobileRadioLayout:orientation', ['hardware-scope']);
+      isLandscape = landscape;
+      void tick().then(releaseBridge);
+    }
     // Try to enter fullscreen on landscape (hides Safari chrome)
     if (isLandscape && !wasLandscape) {
       requestFullscreen();

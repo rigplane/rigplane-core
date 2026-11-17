@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { scopeFixtures as fixtures } from './scope-wire-fixture';
 import { ingressScopeFrame, parseCurrentScopeFrame, scopeSlotKey } from '../adapters/scope-adapter';
-import { projectScopeCoverage } from '../scope-frame';
+import { projectScopeCoverage, shouldHatchCoverageGap } from '../scope-frame';
 import type { ScopeGeometry } from '../scope-frame';
+import type { ScopeGranted } from '../scope-view';
 
 const context = { source: 'radio' as const, sourceId: 'scope-1', epoch: 7 };
 const wire = (bytes: number[]) => Uint8Array.from(bytes).buffer;
@@ -42,6 +43,46 @@ describe('coverage projection', () => {
     expect(projectScopeCoverage(geometry, { startHz: 100, endHz: 200 }).covered).toEqual([]);
     expect(projectScopeCoverage(geometry, { startHz: 100, endHz: 200 }).hatched)
       .toEqual([{ start: 0, end: 1, reason: 'view wider than coverage' }]);
+  });
+});
+
+describe('shouldHatchCoverageGap (MOR-4451)', () => {
+  // Fakes from the producer types: the grant carries the truthful native
+  // coverage, the requested view is the follow window being drawn.
+  const nativeOf = (startHz: number, endHz: number): ScopeGranted['coverage'] => ({ startHz, endHz });
+  it('leaves an offset native coverage of equal width as plain background', () => {
+    expect(shouldHatchCoverageGap(nativeOf(30, 70), { startHz: 35, endHz: 75 })).toBe(false);
+  });
+  it('leaves a wider native coverage as plain background', () => {
+    expect(shouldHatchCoverageGap(nativeOf(0, 100), { startHz: 35, endHz: 75 })).toBe(false);
+  });
+  it('hatches a truly narrower native coverage', () => {
+    expect(shouldHatchCoverageGap(nativeOf(40, 60), { startHz: 30, endHz: 70 })).toBe(true);
+  });
+  it('hatches when the native coverage is unknown', () => {
+    expect(shouldHatchCoverageGap(null, { startHz: 30, endHz: 70 })).toBe(true);
+  });
+});
+
+describe('transient-lag projection (MOR-4451)', () => {
+  const nativeOf = (startHz: number, endHz: number): ScopeGranted['coverage'] => ({ startHz, endHz });
+  it('leaves the uncovered leading edge unhatched when the native coverage is as wide as the view', () => {
+    const projection = projectScopeCoverage(geometry, { startHz: 35, endHz: 75 }, nativeOf(35, 75));
+    expect(projection.hatched).toEqual([]);
+    expect(projection.covered).toEqual([{
+      start: 0, end: 0.875, sampleStart: 0.25, sampleEnd: 5 / 6,
+    }]);
+  });
+  it('leaves fully disjoint frames unhatched when the native coverage is as wide as the view', () => {
+    const projection = projectScopeCoverage(geometry, { startHz: 100, endHz: 200 }, nativeOf(100, 200));
+    expect(projection).toEqual({ covered: [], hatched: [] });
+  });
+  it('keeps hatching when the native coverage is truly narrower than the view', () => {
+    const projection = projectScopeCoverage(geometry, { startHz: 0, endHz: 100 }, nativeOf(40, 60));
+    expect(projection.hatched).toEqual([
+      { start: 0, end: 0.3, reason: 'view wider than coverage' },
+      { start: 0.7, end: 1, reason: 'view wider than coverage' },
+    ]);
   });
 });
 

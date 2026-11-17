@@ -107,6 +107,52 @@ def test_control_roundtrip():
         )
 
 
+CONTROL = Path(__file__).parents[1] / "fixtures" / "scope-control" / "control.json"
+
+
+def test_request_seq_control_documents_match_the_golden_fixture():
+    """MOR-4532: requestSeq/requestState are optional and additive; the
+    same documents are parsed by the frontend (scope-wire-v2.test.ts)."""
+    documents = json.loads(CONTROL.read_text())
+    for name, request_seq in (("subscribe", None), ("subscribe_with_requestSeq", 6)):
+        request = decode_scope_subscription(json.dumps(documents[name]))
+        assert request.request_seq == request_seq
+        assert json.loads(encode_scope_subscription(request)) == documents[name]
+    for name, request_seq, state in (
+        ("granted", None, None),
+        ("granted_pending", 6, "pending"),
+        ("granted_settled", 6, "settled"),
+    ):
+        granted = decode_scope_granted(json.dumps(documents[name]))
+        assert (granted.request_seq, granted.request_state) == (request_seq, state)
+        assert json.loads(encode_scope_granted(granted)) == documents[name]
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"requestState": "pending"},
+        {"requestSeq": 6},
+        {"requestSeq": 6, "requestState": "answered"},
+        {"requestSeq": -1, "requestState": "pending"},
+        {"requestSeq": True, "requestState": "settled"},
+        {"requestSeq": 6, "requestState": None},
+    ],
+)
+def test_granted_request_fields_travel_together_and_typed(changes):
+    documents = json.loads(CONTROL.read_text())
+    with pytest.raises(ValueError):
+        decode_scope_granted(json.dumps({**documents["granted"], **changes}))
+
+
+@pytest.mark.parametrize("request_seq", [-1, 1.5, True, None, "6"])
+def test_subscription_request_seq_must_be_a_non_negative_integer(request_seq):
+    documents = json.loads(CONTROL.read_text())
+    document = {**documents["subscribe"], "requestSeq": request_seq}
+    with pytest.raises(ValueError):
+        decode_scope_subscription(json.dumps(document))
+
+
 def test_golden_fixtures_and_standalone_decoder():
     spec = importlib.util.spec_from_file_location(
         "scope_reference_decoder", FIXTURES / "reference_decoder.py"

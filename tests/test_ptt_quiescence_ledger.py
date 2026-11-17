@@ -173,7 +173,7 @@ async def radio(monkeypatch):
     radio._civ_transport = _LanTransport()
     radio._civ_transport.answer = "silence"
     radio._connected = True
-    radio._civ_min_interval = radio._civ_ack_sink_grace = 0
+    radio._civ_min_interval = 0
     monkeypatch.setattr(CoreRadio, "_PTT_READBACK_SETTLE_S", 0.001)
     try:
         yield radio
@@ -249,7 +249,7 @@ async def test_poll_debt_outlives_waiters_and_sinks(radio, ending, monkeypatch):
     else:
         await runtime.execute_civ_raw(raw, wait_response=False)
         if ending == "sink-removed":
-            radio._civ_request_tracker.drop_ack_sinks()
+            radio._civ_request_tracker.expire_ack_sinks(answer_window=0.0)
         if ending == "malformed":
             for shape in (
                 "unmapped",
@@ -466,6 +466,7 @@ async def test_reconnect_retains_debt_and_stale_generation_accounting(radio, sta
     waiter = radio._civ_request_tracker.register_response(
         request_key_from_frame(_request())
     )
+    radio._civ_request_tracker.mark_sent(0.0, futures=(waiter,))  # MOR-4384
     if stale:
         await _inject(radio, generation=radio._civ_epoch - 1)
         assert a.answered_by is not None and not waiter.done()
@@ -485,6 +486,7 @@ async def test_reconnect_retains_debt_and_stale_generation_accounting(radio, sta
 async def test_waiter_completion_charged_to_another_entry(radio):
     tracker = radio._civ_request_tracker
     earlier = tracker.register_response(request_key_from_frame(_request()))
+    tracker.mark_sent(0.0, futures=(earlier,))  # MOR-4384: on the wire first
     reading = asyncio.create_task(radio.read_transmit_state())
     while not radio._civ_transport.sent_packets:
         await asyncio.sleep(0)

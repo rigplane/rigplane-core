@@ -69,8 +69,24 @@ export function spectrumColorRolesToOptions(roles: SpectrumColorRoles) {
   };
 }
 
+/** Normalized view fraction the panel decided to hatch — the same space as the DOM overlay ranges. */
+export interface SpectrumHatchRange {
+  readonly start: number;
+  readonly end: number;
+}
+
 export interface SpectrumOptions {
   coverage?: Readonly<{ startHz: number; endHz: number }>;
+  /**
+   * MOR-4451: the ONE hatch decision for the uncovered area. The panel
+   * computes these normalized view fractions from projectScopeCoverage
+   * (the same ranges the DOM overlay renders) and the renderer only
+   * paints them. Null/undefined/empty draws no fill: an uncovered column
+   * without a range is a transient lag with plain background, never a
+   * hatch. `coverage` stays for the TRACE gap only (columns without data
+   * stay blank) — it never decides the fill.
+   */
+  hatchRanges?: readonly SpectrumHatchRange[] | null;
   showRfOverlays?: boolean;
   showTuneIndicator?: boolean;
   bgColor: string;
@@ -207,11 +223,21 @@ function paintState(ctx: CanvasRenderingContext2D): SpectrumPaintState {
   return state;
 }
 
+function sameHatchRanges(
+  a: readonly SpectrumHatchRange[] | null | undefined,
+  b: readonly SpectrumHatchRange[] | null | undefined,
+): boolean {
+  if (a === b) return true;
+  if (!a || !b || a.length !== b.length) return false;
+  return a.every((range, i) => range.start === b[i]!.start && range.end === b[i]!.end);
+}
+
 function staticChanged(state: SpectrumPaintState, ctx: CanvasRenderingContext2D, width: number, height: number, options: SpectrumOptions): boolean {
   const old = state.options;
   if (!old || state.width !== width || state.height !== height
     || state.backingW !== ctx.canvas.width || state.backingH !== ctx.canvas.height
-    || old.coverage?.startHz !== options.coverage?.startHz || old.coverage?.endHz !== options.coverage?.endHz) return true;
+    || old.coverage?.startHz !== options.coverage?.startHz || old.coverage?.endHz !== options.coverage?.endHz
+    || !sameHatchRanges(old.hatchRanges, options.hatchRanges)) return true;
   for (const key of STATIC_KEYS) if (!Object.is(old[key], options[key])) return true;
   return false;
 }
@@ -398,14 +424,20 @@ function drawSpectrumOverlay(ctx: CanvasRenderingContext2D, width: number, heigh
       ctx.stroke();
     }
   }
-  const sampleSpan = options.sampleSpanHz || spanHz;
-  if (spanHz > 0 && sampleSpan > 0) {
-    const sourceCenter = centerHz - options.panoramaShiftHz;
-    const viewStart = centerHz - spanHz / 2;
-    const left = clamp(((options.coverage?.startHz ?? sourceCenter - sampleSpan / 2) - viewStart) / spanHz * width, 0, width);
-    const right = clamp(((options.coverage?.endHz ?? sourceCenter + sampleSpan / 2) - viewStart) / spanHz * width, 0, width);
-    if (left <= 0 && right >= width) return;
-    ctx.save(); ctx.beginPath(); ctx.rect(0, 0, left, height); ctx.rect(right, 0, width - right, height); ctx.clip();
+  // MOR-4451: the private "outside coverage ⇒ hatch" test is gone — the
+  // fill is drawn only for the panel's hatchRanges (the one decision from
+  // shouldHatchCoverageGap/projectScopeCoverage, the same ranges the DOM
+  // overlay renders). No ranges ⇒ plain background, even when coverage is
+  // narrower than the view.
+  const hatchRanges = options.hatchRanges;
+  if (spanHz > 0 && hatchRanges && hatchRanges.length > 0) {
+    ctx.save(); ctx.beginPath();
+    for (const range of hatchRanges) {
+      const left = clamp(range.start * width, 0, width);
+      const right = clamp(range.end * width, 0, width);
+      if (right > left) ctx.rect(left, 0, right - left, height);
+    }
+    ctx.clip();
     ctx.fillStyle = 'rgba(20,30,40,0.65)'; ctx.fillRect(0, 0, width, height);
     ctx.strokeStyle = 'rgba(120,140,160,0.3)'; ctx.lineWidth = 1;
     ctx.beginPath();

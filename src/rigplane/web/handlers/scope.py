@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
 from rigplane.scope.hub import HubSubscription
-from rigplane.scope.models import ScopeTarget
+from rigplane.scope.models import GrantedSubscription, ScopeTarget
 from rigplane.ws import WS_OP_TEXT
 
 from ..protocol import (  # noqa: TID251
@@ -41,6 +41,12 @@ class ScopeHandler:
         self._ws = ws
         self._server = server
         self._streams: dict[ScopeTarget, _Stream] = {}
+        # MOR-4532: the last requestSeq whose follow width was applied (per
+        # connection: the client allocates one rising number across all its
+        # targets) and, per target, the highest one sent as settled. A fresh
+        # connection starts at 0, which is never a request.
+        self._applied_seq = 0
+        self._settled_seq: dict[ScopeTarget, int] = {}
 
     async def run(self) -> None:
         if self._server is not None:
@@ -116,7 +122,16 @@ class ScopeHandler:
                 hub = self._server.scope_hub
                 if request.source_id == "iq_fft":
                     self._server._register_iq_scope_source(hub)
-                subscription = await hub.subscribe(request)
+                # Only a NEW requestSeq applies its follow width; a re-sent
+                # subscription (resize, visibility, fps) and requestSeq 0
+                # carry the width as context. No requestSeq: as before.
+                applies = (
+                    request.request_seq is None
+                    or request.request_seq > self._applied_seq
+                )
+                subscription = await hub.subscribe(request, apply_width=applies)
+                if applies and request.request_seq is not None:
+                    self._applied_seq = request.request_seq
                 try:
                     await self._unsubscribe(target)
                 except BaseException:
@@ -124,28 +139,60 @@ class ScopeHandler:
                     raise
                 stream = _Stream(subscription)
                 self._streams[target] = stream
-                grant = subscription.granted
+                grant = self._final(subscription.granted)
                 try:
                     await self._ws.send_text(encode_scope_granted(grant))
                 except BaseException:
                     await self._unsubscribe(target)
                     raise
-                stream.sender = asyncio.create_task(
-                    self._sender(subscription, grant.width)
-                )
+                stream.sender = asyncio.create_task(self._sender(subscription, grant))
         except Exception as exc:
             error: dict[str, object] = {"type": "error", "message": str(exc)}
             if target is not None:
                 error.update(sourceId=target.source_id, receiver=target.receiver)
             await self._ws.send_text(encode_json(error))
 
-    async def _sender(self, subscription: HubSubscription, sent_width: int) -> None:
+    def _final(self, grant: GrantedSubscription) -> GrantedSubscription:
+        """Settled is final per requestSeq and target (MOR-4532).
+
+        Every grant this connection sends passes here: a requestSeq at or
+        below the highest one already sent as settled for the same target
+        (0 included) is sent settled, so a re-sent subscription can never
+        send it back to pending. Another target's settled request says
+        nothing about this one: targets coexist on one socket.
+        """
+        if grant.request_seq is None:
+            return grant
+        target = ScopeTarget(grant.source_id, grant.receiver)
+        if grant.request_seq <= self._settled_seq.get(target, 0):
+            return replace(grant, request_state="settled")
+        if grant.request_state == "settled":
+            self._settled_seq[target] = grant.request_seq
+        return grant
+
+    async def _sender(
+        self, subscription: HubSubscription, sent: GrantedSubscription
+    ) -> None:
         try:
             while True:
                 grant, data = await subscription.receive_delivery()
-                if grant.width != sent_width:
+                if (
+                    grant.request_state == "pending"
+                    and subscription.granted.request_state == "settled"
+                ):
+                    # Buffered before this request settled; the hub already
+                    # offered the settled frame behind it. Retire it rather
+                    # than send its pre-request geometry under a settled grant.
+                    continue
+                grant = self._final(grant)
+                # A regrant on a width change, and when the request settles
+                # (MOR-4532: the re-sent grant is the only "settled" signal).
+                if (grant.width, grant.request_state) != (
+                    sent.width,
+                    sent.request_state,
+                ):
                     await self._ws.send_text(encode_scope_granted(grant))
-                    sent_width = grant.width
+                    sent = grant
                 await self._ws.send_binary(data)
         except StopAsyncIteration:
             pass

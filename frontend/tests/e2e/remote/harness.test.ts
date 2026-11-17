@@ -105,6 +105,7 @@ const state = (keyed: boolean, timeline: [number, boolean][]): SimState => ({
   ptt_on: keyed,
   freq_hz: 14_074_000,
   ptt_transitions: timeline,
+  tx_audio_signal_frames: 0,
 });
 
 describe('unkeyLatencyMs: the unkey that answers this press/release', () => {
@@ -243,11 +244,17 @@ describe('producer contracts consumed by the harness', () => {
     ptt_on: 'bool',
     freq_hz: 'int',
     ptt_transitions: 'tuple[tuple[float, bool], ...]',
+    tx_audio_signal_frames: 'int',
   };
   // The whole document `GET /sim/contract` serves: one entry per sidecar
   // dataclass (SimSnapshot response, SimFreqRequest request).
   const contract = { SimSnapshot: snapshot, SimFreqRequest: { hz: 'int' } };
-  const good = { ptt_on: false, freq_hz: 14_074_000, ptt_transitions: [[1.5, true]] };
+  const good = {
+    ptt_on: false,
+    freq_hz: 14_074_000,
+    ptt_transitions: [[1.5, true]],
+    tx_audio_signal_frames: 3,
+  };
 
   it('accepts a sidecar response that matches the served contract', () => {
     expect(parseSimState(contract, good)).toEqual(good);

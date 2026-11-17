@@ -1,3 +1,5 @@
+import { readFile } from 'node:fs/promises';
+
 export interface ScopeWriteReceipt { sub: number; data: number[]; span: number }
 
 export function parseScopeWriteReceipt(line: string): ScopeWriteReceipt {
@@ -10,4 +12,10 @@ export function parseScopeWriteReceipt(line: string): ScopeWriteReceipt {
     throw new Error('invalid scope receipt');
   }
   return { sub: record.sub, data: record.data, span: record.span };
+}
+
+/** Read the RUNTIME evidence file (one receipt JSON per line) through the parser above. */
+export async function readScopeWriteReceipts(path: string): Promise<ScopeWriteReceipt[]> {
+  const text = await readFile(path, 'utf8');
+  return text.split('\n').filter(Boolean).map(parseScopeWriteReceipt);
 }

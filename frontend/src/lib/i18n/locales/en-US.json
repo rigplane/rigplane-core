@@ -116,6 +116,7 @@
   "core.overlay.scopeSwitchToCtr": "Switch to CTR",
   "core.scope.webglRequired": "WebGL required for the waterfall",
   "core.scope.presets": "Scope presets",
+  "core.scope.spanWorksInCtr": "SPAN works in CTR",
   "core.scope.viewRefused": "Scope view refused: {reason}",
   "core.scope.preset.follow": "Follow VFO",
   "core.scope.zoomIn": "Zoom in the panorama view",

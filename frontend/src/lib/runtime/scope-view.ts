@@ -11,7 +11,12 @@ export interface ScopeSubscription {
   readonly view: ScopeViewRequest;
   readonly width: number;
   readonly maxFps: number;
+  /** MOR-4532: the client's own request number, scoped to its connection; echoed, never interpreted. */
+  readonly requestSeq?: number;
 }
+
+/** MOR-4532: whether the server still works on the request a grant accounts for. */
+export type ScopeRequestState = 'pending' | 'settled';
 
 export interface ScopeGranted {
   readonly type: 'granted';
@@ -21,12 +26,48 @@ export interface ScopeGranted {
   readonly coverage: View | null;
   readonly width: number;
   readonly fps: number;
+  /** The highest request this grant accounts for (fast requests may fold). Present with requestState or not at all. */
+  readonly requestSeq?: number;
+  /** "settled" comes only from a grant; never derive it from scope controls or widths. */
+  readonly requestState?: ScopeRequestState;
 }
 
 export function viewCenterHz(view: View): number { return (view.startHz + view.endHz) / 2; }
 export function viewSpanHz(view: View): number { return view.endHz - view.startHz; }
-export function panView(view: View, deltaHz: number): View {
-  return { startHz: view.startHz + deltaHz, endHz: view.endHz + deltaHz };
+
+export interface ConfirmedFollowLegInput {
+  /** FIX scope keeps the fixed window; every other mode follows the VFO. */
+  readonly fixed: boolean;
+  /** The radio's confirmed frequency (the spectrum authority's frequency). */
+  readonly authorityFrequencyHz: number | null | undefined;
+  /** The passband tuple's frequency — fallback while the authority is unobserved. */
+  readonly displayFrequencyHz: number | null | undefined;
+  readonly spanHz: number;
+  readonly geometryView: View;
+  /** A FIX crop or requested view that overrides the follow window. */
+  readonly crop: View | null;
+}
+
+/**
+ * The follow view's confirmed leg (MOR-4451): always centred on the radio's
+ * CONFIRMED frequency — the spectrum authority's frequency, falling back to
+ * the passband tuple's frequency only while the authority is unobserved.
+ * The tuple deliberately holds the last proven frequency (stale/held for
+ * seconds during a burst), so centring the view on it retargets the glide
+ * backwards every time the pending leg clears.
+ */
+export function confirmedFollowLegView(input: ConfirmedFollowLegInput): View {
+  const { fixed, authorityFrequencyHz, displayFrequencyHz, spanHz, geometryView, crop } = input;
+  const confirmedHz = authorityFrequencyHz ?? displayFrequencyHz;
+  return crop ?? (fixed || confirmedHz === null || confirmedHz === undefined
+    ? geometryView
+    : { startHz: confirmedHz - spanHz / 2, endHz: confirmedHz + spanHz / 2 });
+}
+export function panView(view: View, deltaHz: number, bounds?: View): View {
+  if (!bounds) return { startHz: view.startHz + deltaHz, endHz: view.endHz + deltaHz };
+  const span = Math.min(viewSpanHz(view), viewSpanHz(bounds));
+  const startHz = Math.max(bounds.startHz, Math.min(bounds.endHz - span, view.startHz + deltaHz));
+  return { startHz, endHz: startHz + span };
 }
 export function zoomView(view: View, factor: number): View {
   const halfSpan = viewSpanHz(view) * factor / 2;
@@ -68,6 +109,7 @@ export function scopeSubscription(input: {
   width: number;
   visible: boolean;
   maxFps: number;
+  requestSeq?: number;
 }): ScopeSubscription {
   return {
     sourceId: input.sourceId,
@@ -75,6 +117,7 @@ export function scopeSubscription(input: {
     view: input.view,
     width: input.width,
     maxFps: input.visible && input.width > 0 ? input.maxFps : 0,
+    ...(input.requestSeq === undefined ? {} : { requestSeq: input.requestSeq }),
   };
 }
 
@@ -87,6 +130,7 @@ export function scopeSubscriptionSurface(_node: Element, initial: {
   maxFps?: number;
   revision?: string;
   frequencyHz?: number | null;
+  requestSeq?: number;
 }) {
   let parameters = initial;
   const token = Symbol('scope surface');
@@ -99,23 +143,36 @@ export function scopeSubscriptionSurface(_node: Element, initial: {
     const facts = parameters.facts;
     if ((!facts || facts.backingW <= 0) && !attempted) return;
     const width = Math.max(1, Math.min(65535, facts?.backingW ?? 0));
-    const sent = parameters.stream.updateSurfaceSubscription(token, scopeSubscription({
-      sourceId: parameters.stream.sourceId, receiver: parameters.stream.kind === 'radio' ? parameters.receiver : null,
-      view: parameters.view, width, visible: facts?.visible === true && facts.backingW > 0,
-      maxFps: parameters.maxFps ?? 20,
+    const stream = parameters.stream;
+    const receiver = stream.kind === 'radio' ? parameters.receiver : null;
+    // MOR-4534: an automatic radio follow surface (no requestSeq of its own)
+    // is passive: requestSeq 0, the width of the newest follow request on its
+    // key as context, so mounting it never writes a radio span.
+    const passive = parameters.requestSeq === undefined && stream.kind === 'radio' && 'follow' in parameters.view;
+    const context = passive ? stream.followContext(receiver) : null;
+    const sent = stream.updateSurfaceSubscription(token, scopeSubscription({
+      sourceId: stream.sourceId, receiver,
+      view: context === null ? parameters.view : { follow: 'vfo', spanHz: context.spanHz },
+      width, visible: facts?.visible === true && facts.backingW > 0,
+      maxFps: parameters.maxFps ?? 20, requestSeq: passive ? 0 : parameters.requestSeq,
     }), !attempted || attemptedRevision !== parameters.revision, parameters.revision, parameters.frequencyHz);
     if (sent) { attempted = true; attemptedRevision = parameters.revision; }
   };
   const watchError = () => parameters.stream?.error.subscribe(error => {
     if (error !== null && attempted && attemptedRevision !== parameters.revision) publish();
   }) ?? (() => {});
+  const claim = () => parameters.stream?.claimSurface(token, parameters.stream.sourceId,
+    parameters.stream.kind === 'radio' ? parameters.receiver : null);
+  claim();
   publish();
   stopError = watchError();
   return {
     update(next: typeof initial) {
       const changed = next.stream !== parameters.stream;
       if (changed) { stopError(); parameters.stream?.removeSurfaceSubscription(token); attempted = false; }
-      parameters = next; publish();
+      parameters = next;
+      if (changed) claim();
+      publish();
       if (changed) stopError = watchError();
     },
     destroy() {

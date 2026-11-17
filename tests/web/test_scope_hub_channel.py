@@ -1091,3 +1091,49 @@ async def test_cancelling_multiplex_socket_releases_every_subscription():
     assert not handler._streams
     assert handler not in server._scope_handlers
     assert all(writer.output == [True, False] for writer in writers)
+
+
+async def test_tagged_audio_fft_grant_is_settled_before_any_frame():
+    """MOR-4532: a tagged audio_fft subscription through the real scope
+    WebSocket, real AudioFftSource, faked audio: the first message is the
+    grant, echoing requestSeq and already settled (the FFT crop writes
+    nothing to a radio)."""
+    import aiohttp
+    from rigplane.audio.scope_source import AudioFftSource
+    from rigplane.web.handlers.audio import AudioBroadcaster
+    from rigplane.web.scope_sources import WebScopePcmTap
+    from rigplane.web.server import WebConfig
+    from test_handlers_coverage import _RelayRadio
+    from test_audio_scope_dispatch import _seed_audio_facts
+    from test_web_server import _addr
+
+    server = WebServer(None, WebConfig(host="127.0.0.1", port=0))
+    server._audio_broadcaster = AudioBroadcaster(_RelayRadio())
+    _seed_audio_facts(server)
+    tap = WebScopePcmTap(server)
+    server.scope_hub.register(
+        "audio_fft", AudioFftSource(tap, tap.facts, fft_size=2048)
+    )
+    await server.start()
+    host, port = _addr(server)
+    try:
+        async with aiohttp.ClientSession() as client:
+            async with client.ws_connect(f"http://{host}:{port}/api/v1/scope") as ws:
+                await ws.send_str(
+                    encode_scope_subscription(
+                        Subscription(
+                            "audio_fft",
+                            None,
+                            View(14_074_000, 14_076_400),
+                            1024,
+                            20,
+                            request_seq=7,
+                        )
+                    )
+                )
+                message = await ws.receive(timeout=5)
+                assert message.type == aiohttp.WSMsgType.TEXT
+                grant = decode_scope_granted(message.data)
+                assert (grant.request_seq, grant.request_state) == (7, "settled")
+    finally:
+        await server.stop()

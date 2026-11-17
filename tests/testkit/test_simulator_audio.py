@@ -17,7 +17,7 @@ import socket
 import struct
 import time
 import wave
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from pathlib import Path
 
 import pytest
@@ -194,6 +194,49 @@ async def _udp() -> _UdpClient:
         lambda: c, local_addr=(_HOST, 0)
     )
     return c
+
+
+def _guard_dummy_port(port: int) -> socket.socket | None:
+    """Bind a silent loopback socket on the advertised dummy ``port``.
+
+    The simulator advertises a dummy audio port next to its CI-V port; it
+    only avoids its OWN endpoints. Under pytest-xdist another worker's
+    simulator can legitimately listen there, and a silence probe would hit
+    it (MOR-4214). Owning the port ourselves makes "silence" provable; a
+    ``None`` result means a stranger holds it, so the caller retries.
+    """
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sock.bind((_HOST, port))
+    except OSError:
+        sock.close()
+        return None
+    sock.setblocking(False)
+    return sock
+
+
+async def _server_with_guarded_dummy(
+    advertise: Callable[[MockIcomRadio], Awaitable[int]],
+) -> tuple[MockIcomRadio, int, socket.socket]:
+    """Start a simulator whose advertised dummy audio port we own.
+
+    ``advertise`` returns the advertised port. Retries with a fresh server
+    (new ephemeral ports) when a foreign listener holds that port. The
+    simulator's own endpoints are asserted separately by the callers, so a
+    bind failure here is never the simulator's own listener.
+    """
+    for _ in range(10):
+        server = MockIcomRadio()
+        await server.start()
+        advertised = await advertise(server)
+        if advertised in (server.control_port, server.civ_port):
+            await server.stop()
+            raise AssertionError(f"advertised {advertised} is a live endpoint")
+        guard = _guard_dummy_port(advertised)
+        if guard is not None:
+            return server, advertised, guard
+        await server.stop()
+    raise AssertionError("no free dummy audio port after 10 attempts")
 
 
 async def _open_audio(client: _UdpClient, server: MockIcomRadio) -> int:
@@ -933,16 +976,18 @@ async def test_tx_capture_format_without_frames_or_format_is_none(
 async def test_default_audio_port_answers_nothing() -> None:
     """Default (listener off): the status reply still advertises an audio
     port, but nothing answers there — AYT and ping draw silence."""
-    server = MockIcomRadio()
-    await server.start()
     ctrl = await _udp()
-    try:
-        assert server.audio_port == 0  # no listener bound
+
+    async def advertise(server: MockIcomRadio) -> int:
         ctrl.send(_login(), server.control_port)
         await ctrl.recv()
         ctrl.send(_conninfo(), server.control_port)
         status = await ctrl.recv()
-        advertised = struct.unpack_from(">H", status, 0x46)[0]
+        return struct.unpack_from(">H", status, 0x46)[0]
+
+    server, advertised, guard = await _server_with_guarded_dummy(advertise)
+    try:
+        assert server.audio_port == 0  # no listener bound
         assert advertised != 0  # still advertised, as before
         assert advertised not in (server.control_port, server.civ_port)
         adjacent = server.civ_port + 1 if server.civ_port < 65535 else 65534
@@ -958,7 +1003,35 @@ async def test_default_audio_port_answers_nothing() -> None:
         finally:
             probe.close()
     finally:
+        guard.close()
         ctrl.close()
+        await server.stop()
+
+
+async def test_dummy_port_guard_detects_foreign_listener() -> None:
+    """The advertised dummy port is only adjacent, so a listener of ANOTHER
+    simulator (parallel xdist worker) may sit on it. The guard must say so
+    instead of letting the silence probe hit that stranger (MOR-4214)."""
+    server = MockIcomRadio()
+    await server.start()
+    advertised = struct.unpack_from(
+        ">H", server._status_response(_CLIENT_ID, civ_port=server.civ_port), 0x46
+    )[0]
+    foreign = MockIcomRadio(port=advertised)
+    probe = await _udp()
+    try:
+        try:
+            await foreign.start()
+        except OSError:
+            pytest.skip("advertised dummy port was taken by something else")
+        # The stranger really answers there: an unguarded silence probe fails.
+        probe.send(_ayt(), advertised)
+        reply = await probe.recv()
+        assert struct.unpack_from("<H", reply, 4)[0] == _PT_I_AM_HERE
+        assert _guard_dummy_port(advertised) is None
+    finally:
+        probe.close()
+        await foreign.stop()
         await server.stop()
 
 
@@ -967,8 +1040,13 @@ async def test_disabled_audio_advertisement_avoids_live_endpoint(
     endpoint: str,
 ) -> None:
     """The status CIV-port override forces the old dummy onto a real listener."""
-    server = MockIcomRadio()
-    await server.start()
+
+    async def advertise(server: MockIcomRadio) -> int:
+        live_port = getattr(server, endpoint)
+        status = server._status_response(_CLIENT_ID, civ_port=live_port - 1)
+        return struct.unpack_from(">H", status, 0x46)[0]
+
+    server, advertised, guard = await _server_with_guarded_dummy(advertise)
     probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     probe.bind((_HOST, 0))
     probe.setblocking(False)
@@ -984,8 +1062,6 @@ async def test_disabled_audio_advertisement_avoids_live_endpoint(
         assert control_addr == (_HOST, live_port)
         assert struct.unpack_from("<H", control_reply, 4)[0] == _PT_I_AM_HERE
 
-        status = server._status_response(_CLIENT_ID, civ_port=live_port - 1)
-        advertised = struct.unpack_from(">H", status, 0x46)[0]
         for packet in (_ayt(), _ping()):
             await loop.sock_sendto(probe, packet, (_HOST, advertised))
             try:
@@ -998,6 +1074,7 @@ async def test_disabled_audio_advertisement_avoids_live_endpoint(
             )
         assert advertised not in (server.control_port, server.civ_port)
     finally:
+        guard.close()
         probe.close()
         await server.stop()
     assert server._ctrl_udp is None

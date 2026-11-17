@@ -74,7 +74,7 @@ vi.mock('$lib/runtime', () => ({
         sourceId: 'radio', subscription: null,
         error: Object.freeze({ subscribe(listener: (value: null) => void) { listener(null); return () => {}; } }),
         setMode(_mode: number): void {},
-        updateSurfaceSubscription(): void {}, removeSurfaceSubscription(): void {},
+        updateSurfaceSubscription(): void {}, removeSurfaceSubscription(): void {}, claimSurface(): void {},
         geometry: Object.freeze({ subscribe(listener: (value: null) => void) { listener(null); return () => {}; } }),
         subscribe(_sink: (frame: never, slotKey: string) => void): () => void { return () => {}; },
         latest(_slotKey: string): null { return null; },

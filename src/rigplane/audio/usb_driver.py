@@ -12,6 +12,7 @@ See :mod:`rigplane.usb_audio_resolve` for the topology-based resolution logic.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import logging
 import platform
 import sys
@@ -39,14 +40,23 @@ from .backend import (
     AudioDeviceConfig,
     AudioDeviceId,
     AudioDeviceInfo,
+    DeviceRefreshingBackend,
     DuplexStream,
     PortAudioBackend,
     RxStream,
     TxStream,
     _platform_uid_from_device_name,
+    portaudio_native_access,
 )
 
 logger = logging.getLogger(__name__)
+_retry_epoch: contextvars.ContextVar[int | None] = contextvars.ContextVar(
+    "usb_audio_retry_epoch", default=None
+)
+"""The stop count a start that retries after a device re-scan began with.
+
+Local to each start's task context, so overlapping RX/TX retries never clear
+or inherit each other's value (MOR-4338)."""
 _PORTAUDIO_OPERATION_IDS = count(1)
 
 _SILENCE_WARN_SECONDS = 10
@@ -1228,7 +1238,8 @@ def list_usb_audio_devices(sounddevice_module: Any) -> list[UsbAudioDevice]:
         Prefer :func:`_devices_from_backend` with an :class:`AudioBackend`.
         This function is kept for backward compatibility with CLI code.
     """
-    raw_devices = list(sounddevice_module.query_devices())
+    with portaudio_native_access():
+        raw_devices = list(sounddevice_module.query_devices())
     default_input_idx: int | None = None
     default_output_idx: int | None = None
     default_raw = getattr(getattr(sounddevice_module, "default", None), "device", None)
@@ -1391,6 +1402,9 @@ class UsbAudioDriver:
 
         self._selected_rx: UsbAudioDevice | None = None
         self._selection_generation = 0
+        # Counts stop_* calls so a start retrying after a device re-scan can
+        # see that teardown ran meanwhile (MOR-4338).
+        self._stop_epoch = 0
         self._selected_tx: UsbAudioDevice | None = None
 
         self._rx_stream: RxStream | None = None
@@ -1642,9 +1656,12 @@ class UsbAudioDriver:
             or self._config.rx_device is not None
             or self._config.tx_device is not None
         ):
-            enumeration = (
-                read_portaudio_enumeration(sd_module) if sd_module is not None else None
-            )
+            with portaudio_native_access():
+                enumeration = (
+                    read_portaudio_enumeration(sd_module)
+                    if sd_module is not None
+                    else None
+                )
             if isinstance(records, (RawMacos, RawLinux)):
                 from ._portaudio_enum import PortAudioEnumeration
 
@@ -1700,11 +1717,12 @@ class UsbAudioDriver:
             if len(identities) != 1:
                 from ._usb_pairing import _candidates
 
-                enumeration = (
-                    read_portaudio_enumeration(sd_module)
-                    if sd_module is not None
-                    else None
-                )
+                with portaudio_native_access():
+                    enumeration = (
+                        read_portaudio_enumeration(sd_module)
+                        if sd_module is not None
+                        else None
+                    )
                 session = {
                     "raw": {"windows": records.to_json_dict(), "serial_ports": []}
                 }
@@ -1952,6 +1970,12 @@ class UsbAudioDriver:
         pool-saturation fail-fast and the MOR-1438 F1 cancellation
         handling).
         """
+        retry_epoch = _retry_epoch.get()
+        if retry_epoch is not None and self._stop_epoch != retry_epoch:
+            start_coro.close()
+            raise AudioDriverLifecycleError(
+                "Audio start was cancelled by a stop during the device re-scan."
+            )
         await bounded_portaudio_pool.open_stream_bounded(
             stream,
             start_coro,
@@ -2088,7 +2112,120 @@ class UsbAudioDriver:
 
         return receive
 
+    async def _retry_with_fresh_devices(
+        self, start: Callable[[], Coroutine[Any, Any, None]], *, direction: str
+    ) -> None:
+        """Run a start; on a device failure re-scan the OS devices and retry once.
+
+        PortAudio lists devices only when it starts. A USB radio that was
+        powered off and on (or replugged) while the server kept running is
+        absent from, or at a stale position in, that list, so the start that
+        follows its return fails until PortAudio is restarted (MOR-4338). The
+        re-scan only runs when no stream is open anywhere in the process; a
+        failure that is not about devices (already started, busy device,
+        timeout) is raised unchanged. A stop that arrives while the re-scan
+        runs ends the start: teardown must not be followed by a reopen.
+        """
+        epoch = self._stop_epoch
+        try:
+            await start()
+            return
+        except (
+            asyncio.CancelledError,
+            AudioAlreadyStartedError,
+            AudioCaptureOpenTimeoutError,
+            AudioDeviceBusyError,
+        ):
+            raise
+        except Exception as first:
+            backend = self._backend
+            if not isinstance(backend, DeviceRefreshingBackend):
+                raise
+            try:
+                refreshed = await bounded_portaudio_pool.run_bounded(
+                    backend.refresh_devices,
+                    what="device refresh",
+                    direction=direction,
+                    timeout=self._capture_open_timeout,
+                )
+            except Exception:
+                logger.warning("usb-audio: device refresh failed", exc_info=True)
+                raise first from None
+            if not refreshed or self._stop_epoch != epoch:
+                raise first
+            logger.info(
+                "usb-audio: %s start failed (%s); retrying after a device re-scan",
+                direction.upper(),
+                first,
+            )
+        token = _retry_epoch.set(epoch)
+        try:
+            await start()
+        finally:
+            _retry_epoch.reset(token)
+
     async def start_rx(
+        self,
+        callback: Callable[[bytes], None] | None = None,
+        *,
+        sample_rate: int | None = None,
+        channels: int | None = None,
+        frame_ms: int | None = None,
+        allow_sample_rate_fallback: bool = True,
+    ) -> None:
+        """Start capture and deliver PCM frames to *callback* (see ``_start_rx_once``)."""
+        await self._retry_with_fresh_devices(
+            lambda: self._start_rx_once(
+                callback,
+                sample_rate=sample_rate,
+                channels=channels,
+                frame_ms=frame_ms,
+                allow_sample_rate_fallback=allow_sample_rate_fallback,
+            ),
+            direction="rx",
+        )
+
+    async def start_tx(
+        self,
+        *,
+        sample_rate: int | None = None,
+        channels: int | None = None,
+        frame_ms: int | None = None,
+        allow_sample_rate_fallback: bool = True,
+    ) -> None:
+        """Start playback for outgoing PCM frames (see ``_start_tx_once``)."""
+        await self._retry_with_fresh_devices(
+            lambda: self._start_tx_once(
+                sample_rate=sample_rate,
+                channels=channels,
+                frame_ms=frame_ms,
+                allow_sample_rate_fallback=allow_sample_rate_fallback,
+            ),
+            direction="tx",
+        )
+
+    async def start_duplex(
+        self,
+        callback: Callable[[bytes], None] | None = None,
+        *,
+        sample_rate: int | None = None,
+        channels: int | None = None,
+        frame_ms: int | None = None,
+        allow_sample_rate_fallback: bool = True,
+    ) -> None:
+        """Start one full-duplex stream (see ``_start_duplex_once``)."""
+        await self._retry_with_fresh_devices(
+            lambda: self._start_duplex_once(
+                callback,
+                sample_rate=sample_rate,
+                channels=channels,
+                frame_ms=frame_ms,
+                allow_sample_rate_fallback=allow_sample_rate_fallback,
+            ),
+            direction="duplex",
+        )
+
+    async def _start_rx_once(
         self,
         callback: Callable[[bytes], None] | None = None,
         *,
@@ -2262,6 +2399,7 @@ class UsbAudioDriver:
         RX callback (frames drain); :meth:`stop_tx` owns the duplex
         teardown.
         """
+        self._stop_epoch += 1
         async with self._rx_lock:
             self._rx_callback = None
             if self._duplex_stream is not None and self.tx_running:
@@ -2269,7 +2407,7 @@ class UsbAudioDriver:
             await self._close_owned_stream("_duplex_stream", direction="duplex")
             await self._close_owned_stream("_rx_stream", direction="rx")
 
-    async def start_tx(
+    async def _start_tx_once(
         self,
         *,
         sample_rate: int | None = None,
@@ -2350,7 +2488,7 @@ class UsbAudioDriver:
                 raise
             self._store_stream_contract(contract)
 
-    async def start_duplex(
+    async def _start_duplex_once(
         self,
         callback: Callable[[bytes], None] | None = None,
         *,
@@ -2563,6 +2701,7 @@ class UsbAudioDriver:
 
     async def stop_duplex(self) -> None:
         """Stop and close the full-duplex stream."""
+        self._stop_epoch += 1
         async with self._rx_lock, self._tx_lock:
             await self._close_owned_stream("_duplex_stream", direction="duplex")
 
@@ -2587,6 +2726,7 @@ class UsbAudioDriver:
         RX callback is still wired (:meth:`stop_rx` unwires it first).
         Separate-device (``full``) behaviour is unchanged.
         """
+        self._stop_epoch += 1
         async with self._rx_lock, self._tx_lock:
             duplex_stream = self._duplex_stream
             if duplex_stream is None:

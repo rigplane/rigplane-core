@@ -46,11 +46,14 @@ from rigplane.core.types import _AUDIO_CODEC_CHANNELS
 from ._bridge_metrics import BridgeMetrics
 from ._bridge_state import BridgeState, BridgeStateChange
 from ._transcoder import _opus_library_lookup
+from ._portaudio_enum import portaudio_native_access
 from .backend import (
     AudioBackend,
+    AudioDeviceId,
     AudioDeviceInfo,
     DuplexStream,
     PortAudioBackend,
+    device_scan_generation,
     RxStream,
     RxStreamHealth,
     TxStream,
@@ -224,7 +227,8 @@ def find_loopback_device(name: str | None = None) -> dict[str, Any] | None:
     _require_sounddevice()
     import sounddevice as sd
 
-    devices = sd.query_devices()
+    with portaudio_native_access():
+        devices = sd.query_devices()
     search_names = [name] if name else list(_LOOPBACK_CANDIDATES)
 
     for dev in devices:
@@ -240,7 +244,8 @@ def list_audio_devices() -> list[dict[str, Any]]:
     _require_sounddevice()
     import sounddevice as sd
 
-    return list(sd.query_devices())
+    with portaudio_native_access():
+        return list(sd.query_devices())
 
 
 def _candidate_matches(name: str, search: str) -> bool:
@@ -582,11 +587,10 @@ class AudioBridge:
     # Stream setup / teardown (extracted for reconnect reuse)
     # ------------------------------------------------------------------
 
-    async def _setup_streams(self) -> None:
-        """Find device, declare session demands, open streams, create tasks.
-
-        Raises on failure (RuntimeError, ValueError, OSError, etc.).
-        """
+    async def _resolve_cable_devices(
+        self,
+    ) -> tuple[AudioDeviceInfo, AudioDeviceId, AudioDeviceId]:
+        """Resolve the cable's playback device and its TX-capture device id."""
         # The RigPlane cable is a single loop (Output → Input): resolve the
         # RX-playback (output) and TX-capture (input) devices separately —
         # they may be two ends of the same cable.
@@ -640,6 +644,16 @@ class AudioBridge:
             )
             if auto_tx is not None:
                 tx_dev_id = auto_tx.id
+
+        return dev, dev_id, tx_dev_id
+
+    async def _setup_streams(self) -> None:
+        """Find device, declare session demands, open streams, create tasks.
+
+        Raises on failure (RuntimeError, ValueError, OSError, etc.).
+        """
+        scan = device_scan_generation()
+        dev, dev_id, tx_dev_id = await self._resolve_cable_devices()
 
         # Codec detection
         from rigplane.core.types import AudioCodec
@@ -731,6 +745,10 @@ class AudioBridge:
                 self._tx_lease = await session.acquire_tx("audio-bridge")
 
         self._rx_sub = await session.subscribe_rx("audio-bridge")
+        if device_scan_generation() != scan:
+            # Arming the radio's audio restarted PortAudio to find a returned
+            # radio (MOR-4338): device indices chosen above may have moved.
+            dev, dev_id, tx_dev_id = await self._resolve_cable_devices()
 
         # The radio may reject TX (serial backend with no USB-audio TX
         # path): degrade to RX-only and use a plain output stream, never a
