@@ -52,8 +52,12 @@ server only echoes and orders it and never interprets it. A grant for such a
 subscription carries `requestSeq` and `requestState` (`"pending"` or
 `"settled"`, a string enum that may grow). `requestSeq` in a grant is the
 highest request that grant accounts for; the server may fold fast requests,
-so a grant saying 6 leaves a later request 7 pending on the client. Grants are
-never sent for an older `requestSeq` after a newer one.
+so a grant saying 6 leaves a later request 7 pending on the client. A grant
+echoes the `requestSeq` of the subscription it answers, so the numbers in
+grants can go down: a client may send `requestSeq` 0 after higher numbers on
+the same connection (a passive surface that makes no request of its own), and
+that grant says 0, settled, and nothing about the earlier requests. See the
+`seq0-after-seq3` case in `tests/fixtures/scope-control/replies.json`.
 
 Only a new request writes. The server applies a subscription's follow width
 (a span write) only when its `requestSeq` is greater than the last one it
