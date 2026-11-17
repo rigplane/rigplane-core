@@ -13,6 +13,7 @@ from rigplane.core.exceptions import CommandError, TimeoutError
 from rigplane.core.types import ScopeFixedEdge, bcd_encode
 from rigplane.radio import IcomRadio
 from rigplane.profiles import resolve_radio_profile
+from rigplane.scope.hub import HubSubscription
 from rigplane.scope.models import FollowView, Subscription, View
 from rigplane.testing.timing import await_until
 from rigplane.web.protocol import (
@@ -2081,3 +2082,90 @@ async def test_request_seq_absent_leaves_the_grant_document_unchanged(windowed_s
                     "width",
                     "fps",
                 }
+
+
+@pytest.mark.parametrize("windowed_sdk", ["IC-7610", "IC-705"], indirect=True)
+async def test_request_seq_paused_request_is_settled_without_frames(windowed_sdk):
+    """A tagged maxFps 0 (passive) request replaces an outstanding span
+    request before its settling frame. A paused subscription receives no
+    frames and the passive request performs no view action, so its grant
+    is settled at once; it must never wait for a frame that cannot come."""
+    radio, sim = windowed_sdk
+    sim.set_frequency(14_100_000)
+    radio._radio_state.main.freq = 14_100_000
+    async with web(radio) as (_, client, base, protocols, _):
+        async with client.ws_connect(base + "/api/v1/scope", protocols=protocols) as ws:
+            await _settle_first_request(ws)
+            await _mute(sim)
+            await ws.send_str(encode_scope_subscription(_request(2, 500_000)))
+            (outstanding,) = await _grants(ws, lambda grant: True)
+            assert (outstanding.request_seq, outstanding.request_state) == (
+                2,
+                "pending",
+            )
+            paused = Subscription(
+                "radio", 0, FollowView("vfo", 500_000), 475, 0, request_seq=3
+            )
+            await ws.send_str(encode_scope_subscription(paused))
+            (final,) = await _grants(ws, lambda grant: True)
+            assert (final.request_seq, final.request_state) == (3, "settled")
+
+
+async def test_request_seq_buffered_delivery_never_reverses_a_settled_grant(
+    windowed_sdk, monkeypatch
+):
+    """A TX-deferred replacement at a low frame rate: while the old
+    subscription's release is held, the new one buffers a pending delivery,
+    then TX ends and the request settles. The initial grant goes out
+    settled; the older buffered delivery must not send pending after it."""
+    radio, sim = windowed_sdk
+    sim.set_frequency(14_100_000)
+    radio._radio_state.main.freq = 14_100_000
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    close = HubSubscription.close
+
+    async def held_release(self):
+        if self._request.request_seq == 1:
+            entered.set()
+            await release.wait()
+        await close(self)
+
+    async with web(radio) as (server, client, base, protocols, _):
+        async with client.ws_connect(base + "/api/v1/scope", protocols=protocols) as ws:
+            await _settle_first_request(ws)
+            sim._ptt_state = True
+            ptt_reply(radio, True)
+            monkeypatch.setattr(HubSubscription, "close", held_release)
+            await ws.send_str(
+                encode_scope_subscription(
+                    Subscription(
+                        "radio", 0, FollowView("vfo", 500_000), 475, 0.1, request_seq=2
+                    )
+                )
+            )
+            await asyncio.wait_for(entered.wait(), 5)
+            source = server.scope_hub._sources["radio"]
+            (new,) = [c for c in source.clients if c._request.request_seq == 2]
+            # The first frame during TX is buffered as a pending delivery.
+            assert await await_until(
+                lambda: (
+                    new._latest is not None
+                    and new._latest[0].request_state == "pending"
+                )
+            )
+            sim._ptt_state = False
+            ptt_reply(radio, False)
+            assert await await_until(lambda: new.granted.request_state == "settled")
+            release.set()
+            seen = []
+            async with asyncio.timeout(10):
+                while True:
+                    message = await ws.receive(timeout=5)
+                    if message.type is aiohttp.WSMsgType.TEXT:
+                        seen.append(json.loads(message.data))
+                    elif message.type is aiohttp.WSMsgType.BINARY:
+                        break
+            states = [d["requestState"] for d in seen if d.get("requestSeq") == 2]
+            assert states and states[0] == "settled"
+            assert "pending" not in states[states.index("settled") :]
