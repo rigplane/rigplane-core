@@ -570,11 +570,11 @@ async def test_delayed_burst_schedules_one_timer_per_packet(server, client):
     real_call_at = loop.call_at
     scheduled = 0
 
-    def counting_call_at(when, callback, *args):
+    def counting_call_at(when, callback, *args, **kwargs):
         nonlocal scheduled
         if callback == server._deliver_planned:
             scheduled += 1
-        return real_call_at(when, callback, *args)
+        return real_call_at(when, callback, *args, **kwargs)
 
     count = 30
     loop.call_at = counting_call_at  # type: ignore[method-assign]
