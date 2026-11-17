@@ -1832,9 +1832,12 @@ async def _grants(ws, until, timeout=10):
 
 
 def _settled(request_seq):
-    return lambda grant: (grant.request_seq, grant.request_state) == (
-        request_seq,
-        "settled",
+    return lambda grant: (
+        (grant.request_seq, grant.request_state)
+        == (
+            request_seq,
+            "settled",
+        )
     )
 
 
@@ -2033,6 +2036,8 @@ async def test_request_seq_tx_deferred_span_stays_pending_until_applied(
     async with web(radio) as (_, client, base, protocols, _):
         async with client.ws_connect(base + "/api/v1/scope", protocols=protocols) as ws:
             await _settle_first_request(ws)
+            # The radio's PTT polls must keep answering ON while transmitting.
+            sim._ptt_state = True
             ptt_reply(radio, True)
             sim.civ_frames_received.clear()
             await ws.send_str(encode_scope_subscription(_request(2, 500_000)))
@@ -2041,10 +2046,10 @@ async def test_request_seq_tx_deferred_span_stays_pending_until_applied(
             # Frames at the old width flow and settle nothing.
             during = await _texts_until_frames(ws, (14_050_000, 14_150_000), 3)
             assert all(
-                (d["request_seq"], d["request_state"]) == (2, "pending")
-                for d in during
+                (d["request_seq"], d["request_state"]) == (2, "pending") for d in during
             )
             assert _span_sets(sim) == []
+            sim._ptt_state = False
             ptt_reply(radio, False)
             await _grants(ws, _settled(2))
             await _frame_with(ws, (14_100_000 - 250_000, 14_100_000 + 250_000))
