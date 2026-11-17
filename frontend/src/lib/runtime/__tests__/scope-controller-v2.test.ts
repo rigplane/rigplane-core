@@ -257,10 +257,12 @@ describe('MOR-4534: a presentation swap subscribes before it unsubscribes', () =
     await owner.hardwareScopeDriver.stop(handle);
   });
 
-  it('must-not: the last panel leaving outside a swap unsubscribes at once', async () => {
+  it.each(['alone', 'beside an unmeasured panel'] as const)('must-not: the last measured panel leaving outside a swap unsubscribes at once (%s)', async company => {
     const { owner, handle, outgoing, sent } = await mounted();
+    const other = company === 'alone' ? null : incoming(owner);
     outgoing.destroy();
     expect(sent()).toEqual([{ type: 'unsubscribe', sourceId: 'radio', receiver: 0 }]);
+    other?.destroy();
     await owner.hardwareScopeDriver.stop(handle);
   });
 
@@ -269,7 +271,7 @@ describe('MOR-4534: a presentation swap subscribes before it unsubscribes', () =
     const release = owner.holdSurfaces();
     outgoing.destroy();
     expect(sent()).toEqual([]);
-    release(); release();
+    release();
     expect(sent()).toEqual([{ type: 'unsubscribe', sourceId: 'radio', receiver: 0 }]);
     await owner.hardwareScopeDriver.stop(handle);
   });

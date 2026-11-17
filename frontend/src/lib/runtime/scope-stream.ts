@@ -98,10 +98,7 @@ export class ScopeStream {
    */
   holdSurfaces(): () => void {
     this.swapHolds += 1;
-    let held = true;
     return () => {
-      if (!held) return;
-      held = false;
       this.swapHolds -= 1;
       this.pruneDeparted();
       this.publishSurfaceDemand(false);
