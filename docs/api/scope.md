@@ -70,8 +70,10 @@ settles as follows:
 | Ended with no answer | on the first frame after the write's answer window closed |
 | Deferred during transmit or before readiness | stays pending until written, then as above |
 | Superseded by a newer request on the same subscription | by the newer request's grant |
+| A paused request (`maxFps: 0`): no view action, no frames | in its first grant |
 
-Audio and IQ sources are settled in the first grant. Without `requestSeq`, the
+Once a grant says `"settled"` for a `requestSeq`, no later grant says
+`"pending"` for that same `requestSeq`. Audio and IQ sources are settled in the first grant. Without `requestSeq`, the
 grant has neither field and behaves as before. See
 `src/rigplane/runtime/scope_session.py: ScopeSession.span_settled` and
 `tests/fixtures/scope-control/control.json`.

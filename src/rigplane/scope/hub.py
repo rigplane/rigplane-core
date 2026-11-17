@@ -134,9 +134,15 @@ class HubSubscription:
 
 
 def _request_state(source: _Source, request: Subscription) -> RequestState | None:
-    """The new grant's request state; None when the client sent no seq."""
+    """The new grant's request state; None when the client sent no seq.
+
+    A passive (maxFps 0) request performs no view action and receives no
+    frames, so it is settled at grant time: nothing could settle it later.
+    """
     if request.request_seq is None:
         return None
+    if request.max_fps == 0:
+        return "settled"
     return "settled" if source.plugin.view_settled(request.receiver) else "pending"
 
 
