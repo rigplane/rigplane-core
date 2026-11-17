@@ -2329,6 +2329,7 @@ async def test_request_seq_settled_request_on_another_target_leaves_this_one_pen
     async with web(radio) as (_, client, base, protocols, _):
         async with client.ws_connect(base + "/api/v1/scope", protocols=protocols) as ws:
             await _settle_first_request(ws)
+            sim.civ_frames_received.clear()
             sim._ptt_state = True
             ptt_reply(radio, True)
             (deferred,) = await _grants_after(ws, _request(2, 500_000))
