@@ -1,6 +1,4 @@
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
-import { loadScopeWireGolden, scopeWireGoldenNames as names } from './scope-wire-fixture';
+import { loadScopeControlGolden, loadScopeWireGolden, scopeWireGoldenNames as names } from './scope-wire-fixture';
 import { describe, expect, it } from 'vitest';
 import { ingressScopeFrame, parseCurrentScopeFrame, parseScopeGranted } from '../adapters/scope-adapter';
 
@@ -90,7 +88,7 @@ describe('granted control documents', () => {
 describe('request_seq granted documents (MOR-4532)', () => {
   // The same golden documents tests/scope/test_wire_v2.py decodes with the
   // producer's parser: request_seq/request_state are optional and additive.
-  const control = JSON.parse(readFileSync(resolve(process.cwd(), '../tests/fixtures/scope-control/control.json'), 'utf8'));
+  const control = loadScopeControlGolden();
   it('parses a grant without request_seq exactly as before', () => {
     expect(parseScopeGranted(control.granted)).toEqual(control.granted);
     expect(parseScopeGranted(control.granted)).not.toHaveProperty('request_seq');
