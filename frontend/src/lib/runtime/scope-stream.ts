@@ -40,6 +40,8 @@ export class ScopeStream {
    */
   private readonly departed = new Map<symbol, ScopeSubscription>();
   private swapHolds = 0;
+  /** MOR-4534: the newest follow request sent per key, with the session it was sent in. */
+  private readonly followRequests = new Map<string, { epoch: number; spanHz: number; requestSeq: number }>();
   private readonly geometryStore = writable<ScopeGeometry | null>(null);
   private geometryValue: ScopeGeometry | null = null;
   private readonly frames = new Map<string, ScopeFrame>();
@@ -85,6 +87,27 @@ export class ScopeStream {
     if (request && this.swapHolds > 0) this.departed.set(token, request);
     this.pruneDeparted();
     this.publishSurfaceDemand(false);
+  }
+
+  /**
+   * MOR-4534: the follow context a surface mounting on this key continues: the
+   * newest follow request sent for it (its width, and its requestSeq while the
+   * session it was sent in is still current, else 0). It never comes from frames.
+   */
+  followContext(receiver: number | null): { spanHz: number; requestSeq: number } | null {
+    const sent = this.followRequests.get(`${this.sourceId}:${this.kind === 'radio' ? receiver : null}`);
+    if (sent === undefined) return null;
+    const current = sent.epoch > 0 && sent.epoch === this.context.epoch;
+    return { spanHz: sent.spanHz, requestSeq: current ? sent.requestSeq : 0 };
+  }
+
+  private recordFollowRequest(request: ScopeSubscription): void {
+    if (!('follow' in request.view) || request.requestSeq === undefined) return;
+    const key = `${request.sourceId}:${request.receiver}`;
+    const epoch = this.context.epoch;
+    const prior = this.followRequests.get(key);
+    if (prior !== undefined && prior.epoch === epoch && prior.requestSeq > request.requestSeq) return;
+    this.followRequests.set(key, { epoch, spanHz: request.view.spanHz, requestSeq: request.requestSeq });
   }
 
   /** MOR-4534: a mounted surface will send a request for this key once it is measured. */
@@ -179,6 +202,7 @@ export class ScopeStream {
       }
     }
     for (const request of this.subscriptionsValue) {
+      this.recordFollowRequest(request);
       const old = previous.find(prior => prior.sourceId === request.sourceId && prior.receiver === request.receiver) ?? null;
       if (JSON.stringify(old) !== JSON.stringify(request)) {
         if (revision !== undefined) this.attemptedFacts.set(`${request.sourceId}:${request.receiver}`, revision);

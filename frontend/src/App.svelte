@@ -4,10 +4,9 @@
   import LocalExtensionsHost from './lib/local-extensions/LocalExtensionsHost.svelte';
   import { initMediaSession, destroyMediaSession } from './lib/media/media-session';
   import { claimPreloadErrorReload, clearPreloadErrorReload } from './lib/preload-error-reload';
-  import { presentationResources, runtime } from './lib/runtime/frontend-runtime';
-  import type { AppResource, ResourceLease } from '$lib/runtime/resource-demand';
+  import { runtime } from './lib/runtime/frontend-runtime';
   import { systemController } from '$lib/runtime/system-controller';
-  import { scopeController } from '$lib/runtime/scope-controller.svelte';
+  import { acquireSwapBridge } from '$lib/runtime/swap-bridge';
   import { provideManagedAppTxHost } from '$lib/runtime/tx-controller/managed-app-host';
   import { managedTxAuthorityKey, ManagedTxAuthorityRefreshGate } from '$lib/runtime/tx-controller/authority-refresh-key';
   import { hasAnyScope } from './lib/stores/capabilities.svelte';
@@ -197,14 +196,14 @@
 
   async function requestPresentation(id: PresentationId): Promise<void> {
     const generation = ++loaderGeneration;
-    let bridge: SwapBridge = { leases: [], releaseSurfaces: () => {} };
+    let releaseBridge = () => {};
     try {
       const record = getPresentationRecord(id);
       if (record === undefined) throw new Error(`Presentation "${id}" is not registered.`);
       if (record.kind === 'external-instruments-v1') {
         const component = await loadSkin(record);
         if (!presentationActive || generation !== loaderGeneration) return;
-        bridge = acquireSwapBridge(id, record.resources);
+        releaseBridge = acquireSwapBridge(`App:${id}`, record.resources);
         let occurrence: ExternalPresentationInput;
         occurrence = Object.freeze({
           record,
@@ -222,7 +221,7 @@
       } else {
         const loaded: PresentationComponent = await loadSkin(id);
         if (!presentationActive || generation !== loaderGeneration) return;
-        bridge = acquireSwapBridge(id, record.resources);
+        releaseBridge = acquireSwapBridge(`App:${id}`, record.resources);
         presentation = record.kind === 'built-in-instrument-layout'
           ? { id: record.id, layoutId: record.id, component: loaded as InstrumentHandlesPresentation, hostMode: 'instrument-handles' }
           : { id: record.id, layoutId: record.id, component: loaded as SelfContainedPresentation, hostMode: 'self-contained' };
@@ -241,36 +240,8 @@
       presentationFailed = presentation === null;
       return;
     } finally {
-      releaseSwapBridge(bridge);
+      releaseBridge();
     }
-  }
-
-  type SwapBridge = { leases: ResourceLease[]; releaseSurfaces: () => void };
-
-  /**
-   * Bridge leases for the incoming presentation's planned resources, limited
-   * to those already demanded: a presentation choice must not manufacture a
-   * live service (v3 ADR invariant 12). MOR-4534: the bridge also holds the
-   * outgoing scope surfaces' requests until the incoming panels send theirs.
-   */
-  function acquireSwapBridge(id: PresentationId, resources: readonly AppResource[]): SwapBridge {
-    const leases: ResourceLease[] = [];
-    for (const resource of resources) {
-      try {
-        if (presentationResources.snapshot(resource).demand <= 0) continue;
-        // Every acquisition returns its own distinct lease object, so a
-        // release can only ever cancel the binding it created.
-        leases.push(presentationResources.acquire(resource, `App:${id}`));
-      } catch {
-        // The App resource session is torn down — there is nothing to bridge.
-      }
-    }
-    return { leases, releaseSurfaces: scopeController.holdSurfaces() };
-  }
-
-  function releaseSwapBridge({ leases, releaseSurfaces }: SwapBridge): void {
-    releaseSurfaces();
-    while (leases.length > 0) presentationResources.release(leases.pop()!);
   }
 
   const txHost = provideManagedAppTxHost({

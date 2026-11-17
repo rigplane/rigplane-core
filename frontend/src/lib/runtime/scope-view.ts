@@ -143,10 +143,18 @@ export function scopeSubscriptionSurface(_node: Element, initial: {
     const facts = parameters.facts;
     if ((!facts || facts.backingW <= 0) && !attempted) return;
     const width = Math.max(1, Math.min(65535, facts?.backingW ?? 0));
-    const sent = parameters.stream.updateSurfaceSubscription(token, scopeSubscription({
-      sourceId: parameters.stream.sourceId, receiver: parameters.stream.kind === 'radio' ? parameters.receiver : null,
-      view: parameters.view, width, visible: facts?.visible === true && facts.backingW > 0,
-      maxFps: parameters.maxFps ?? 20, requestSeq: parameters.requestSeq,
+    const stream = parameters.stream;
+    const receiver = stream.kind === 'radio' ? parameters.receiver : null;
+    // MOR-4534: an automatic radio follow surface (no requestSeq of its own)
+    // is passive: requestSeq 0, the width of the newest follow request on its
+    // key as context, so mounting it never writes a radio span.
+    const passive = parameters.requestSeq === undefined && stream.kind === 'radio' && 'follow' in parameters.view;
+    const context = passive ? stream.followContext(receiver) : null;
+    const sent = stream.updateSurfaceSubscription(token, scopeSubscription({
+      sourceId: stream.sourceId, receiver,
+      view: context === null ? parameters.view : { follow: 'vfo', spanHz: context.spanHz },
+      width, visible: facts?.visible === true && facts.backingW > 0,
+      maxFps: parameters.maxFps ?? 20, requestSeq: passive ? 0 : parameters.requestSeq,
     }), !attempted || attemptedRevision !== parameters.revision, parameters.revision, parameters.frequencyHz);
     if (sent) { attempted = true; attemptedRevision = parameters.revision; }
   };
