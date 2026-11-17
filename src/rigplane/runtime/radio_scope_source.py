@@ -261,7 +261,11 @@ class RadioScopeSource:
         return None
 
     async def set_view(
-        self, view: ViewRequest, receiver: int | None = None
+        self,
+        view: ViewRequest,
+        receiver: int | None = None,
+        *,
+        apply_width: bool = True,
     ) -> GrantedView:
         selected = self._receiver(receiver)
         resolved = self.resolve_view(view, selected)
@@ -272,6 +276,11 @@ class RadioScopeSource:
         )
         if isinstance(view, FollowView) and selected:
             await self._writer.set_dual(True, selected)
+        if isinstance(view, FollowView) and not apply_width:
+            # MOR-4532: a re-sent subscription or requestSeq 0 carries its
+            # follow width as context only: no span or mode write. The
+            # grant follows the radio's own window, as after a failed write.
+            return self._follow_grant(view, selected)
         if observed_mode in RADIO_OWNED_WINDOW_SCOPE_MODES:
             # MOR-4392 round 2, gate round 1: the REQUESTED receiver is in
             # a radio-owned-window mode (FIX, SCROLL-C or SCROLL-F) — a
@@ -323,12 +332,16 @@ class RadioScopeSource:
         except (CommandError, TimeoutError, asyncio.TimeoutError):
             if not isinstance(view, FollowView):
                 raise
-            remembered = self._native_coverages.get(selected)
-            if remembered is not None:
-                native = remembered[1]
-                return GrantedView(self.resolve_follow(view, native, selected), native)
-            return GrantedView(resolved, None)
+            return self._follow_grant(view, selected)
         return GrantedView(resolved, coverage)
+
+    def _follow_grant(self, view: FollowView, receiver: int) -> GrantedView:
+        """A follow grant from the radio's last streamed window, no write."""
+        remembered = self._native_coverages.get(receiver)
+        if remembered is not None:
+            native = remembered[1]
+            return GrantedView(self.resolve_follow(view, native, receiver), native)
+        return GrantedView(self.resolve_view(view, receiver), None)
 
     def view_settled(self, receiver: int | None = None) -> bool:
         return self._writer.span_settled(self._receiver(receiver))

@@ -174,7 +174,9 @@ class ScopeHub:
     def health(self, source_id: str, receiver: int | None = None) -> ScopeHealth:
         return self._sources[source_id].health.get(receiver, ScopeHealth())
 
-    async def subscribe(self, request: Subscription) -> HubSubscription:
+    async def subscribe(
+        self, request: Subscription, *, apply_width: bool = True
+    ) -> HubSubscription:
         source = self._sources[request.source_id]
         async with source.lock:
             caps = source.plugin.capabilities()
@@ -197,7 +199,9 @@ class ScopeHub:
                     )
                     await source.plugin.start()
                 grant = (
-                    await source.plugin.set_view(request.view, request.receiver)
+                    await source.plugin.set_view(
+                        request.view, request.receiver, apply_width=apply_width
+                    )
                     if positive
                     else GrantedView(
                         source.plugin.resolve_view(request.view, request.receiver),
