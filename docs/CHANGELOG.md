@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.2.0rc9] — 2026-11-16
+
+This is the ninth release candidate of 3.2.0 and the first cut from main. 3.2.0rc1 to 3.2.0rc8 were cut from the release/3.2.x branch; their notes are on that branch and in the v3.2.0rc1 to v3.2.0rc8 tags. This candidate contains everything merged to main up to #4605.
+
 ### Added
 
 - **Experimental** — 4 m (70 MHz) band for the IC-7300 and IC-7300MK2: a 4 m band button (tunes 70.200 MHz) with the band's rated power (50 W), and 4 m segments in the IARU Region 1 band-plan overlay. Whether the radio transmits on 70 MHz is left to the radio (only European versions do). Experimental until a real European radio confirms it. (MOR-4300)
@@ -5153,7 +5157,8 @@ These deprecation closures were announced in v0.19 and dropped on schedule.
 - Transport layer, authentication, CI-V commands, meters, PTT, keep-alive.
 - Clean-room Icom LAN UDP protocol implementation.
 
-[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.1.2rc4...HEAD
+[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.2.0rc9...HEAD
+[3.2.0rc9]: https://github.com/rigplane/rigplane-core/compare/v3.2.0rc8...v3.2.0rc9
 [3.1.2rc4]: https://github.com/rigplane/rigplane-core/compare/v3.1.2rc3...v3.1.2rc4
 [3.1.2rc3]: https://github.com/rigplane/rigplane-core/compare/v3.1.2rc2...v3.1.2rc3
 [3.1.2rc2]: https://github.com/rigplane/rigplane-core/compare/v3.1.2rc1...v3.1.2rc2
