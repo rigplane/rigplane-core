@@ -102,14 +102,6 @@ export function createScopeView(confirmed: View) {
   };
 }
 
-let lastScopeRequestSeq = 0;
-
-/** MOR-4532: the next client request number; monotonic for the page, so per connection too. */
-export function nextScopeRequestSeq(): number {
-  lastScopeRequestSeq += 1;
-  return lastScopeRequestSeq;
-}
-
 export function scopeSubscription(input: {
   sourceId: string;
   receiver: number | null;

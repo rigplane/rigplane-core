@@ -23,7 +23,8 @@ interface Harness {
   readonly server: JourneyServerHandle;
   readonly evidence: string;
   readonly frames: Array<{ view: number[]; coverage: number[] }>;
-  readonly subscribes: Array<{ spanHz?: number }>;
+  readonly subscribes: Array<{ spanHz?: number; requestSeq?: number; width?: number; socket: number }>;
+  sockets(): number;
   writes(): Promise<ScopeWriteReceipt[]>;
   width(): number;
   coverageWidth(): number;
@@ -36,12 +37,16 @@ async function boot(page: Page, info: TestInfo, port: number): Promise<Harness> 
     ['--model', 'IC-705', '--evidence', evidence], 'tests/e2e/panorama_web_server.py');
   const frames: Harness['frames'] = [];
   const subscribes: Harness['subscribes'] = [];
+  let sockets = 0;
   page.on('websocket', socket => {
     if (!socket.url().endsWith('/api/v1/scope')) return;
+    const index = ++sockets;
     socket.on('framesent', ({ payload }) => {
       if (typeof payload !== 'string') return;
-      const message = JSON.parse(payload) as { type?: string; view?: { spanHz?: number } };
-      if (message.type === 'subscribe' && message.view) subscribes.push(message.view);
+      const message = JSON.parse(payload) as { type?: string; view?: { spanHz?: number }; requestSeq?: number; width?: number };
+      if (message.type === 'subscribe' && message.view) {
+        subscribes.push({ spanHz: message.view.spanHz, requestSeq: message.requestSeq, width: message.width, socket: index });
+      }
     });
     socket.on('framereceived', ({ payload }) => {
       if (typeof payload === 'string') return;
@@ -59,7 +64,7 @@ async function boot(page: Page, info: TestInfo, port: number): Promise<Harness> 
   await expect.poll(() => frames.length, { timeout: 30_000 }).toBeGreaterThan(10);
   const caps = await (await page.request.get(`http://127.0.0.1:${port}/api/v1/capabilities`)).json() as { span_choices_hz: number[] };
   return {
-    server, evidence, frames, subscribes, writes,
+    server, evidence, frames, subscribes, writes, sockets: () => sockets,
     width: () => { const v = frames.at(-1)?.view; return v ? v[1] - v[0] : 0; },
     coverageWidth: () => { const c = frames.at(-1)?.coverage; return c ? c[1] - c[0] : 0; },
     choices: [...caps.span_choices_hz].sort((a, b) => a - b),
@@ -199,3 +204,40 @@ test('IC-705 SCROLL-C: five fast SPAN+ clicks accumulate', async ({ page }, info
     await h.server.kill();
   }
 });
+
+for (const change of ['resize', 'reload'] as const) {
+  /**
+   * Adviser decision (b): the follow width in a subscription changes only on
+   * a user action, and the server writes a span only for a NEW requestSeq. A
+   * resize re-sends the same request; a reload is a fresh connection whose
+   * subscription is seq 0. Neither writes the radio's externally set span
+   * back, and the display follows the radio.
+   */
+  test(`IC-705 CENTER: a ${change} after an external narrowing writes nothing and shows the radio's window`, async ({ page }, info) => {
+    const watch = watchPanoramaErrors(page);
+    const h = await boot(page, info, Number(process.env[`PANORAMA_FOLLOW_PORT_${change}`] ?? (change === 'resize' ? 22325 : 22326)));
+    try {
+      const receiptsBefore = await wideThenExternalNarrow(page, h);
+      await settleOnFrames(h, 10);
+      const sentBefore = h.subscribes.length;
+      const socketBefore = h.sockets();
+      if (change === 'resize') await page.setViewportSize({ width: 1200, height: 1200 });
+      else await page.reload();
+      // A resize re-sends on the same socket; a reload subscribes on a new one.
+      const after = () => h.subscribes.slice(sentBefore).filter(message => change === 'resize' || message.socket > socketBefore);
+      await expect.poll(() => after().length, { timeout: 15_000 }).toBeGreaterThan(0);
+      if (change === 'reload') expect(after().every(message => message.requestSeq === 0)).toBe(true);
+      await settleOnFrames(h, 30);
+      expect((await h.writes()).slice(receiptsBefore).filter(r => r.sub === 0x15)).toEqual([]);
+      expect(h.coverageWidth()).toBe(50_000);
+      await expect.poll(async () => {
+        const axis = await page.locator('.freq-axis .tick').allInnerTexts();
+        return [axis[0], axis.at(-1)];
+      }).toEqual(['-25k', '+25k']);
+      await expect(page.getByTestId('scope-span-value').first()).toHaveText('±25k');
+      expectPanoramaSettled(watch);
+    } finally {
+      await h.server.kill();
+    }
+  });
+}

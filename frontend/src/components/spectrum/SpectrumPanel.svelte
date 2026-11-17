@@ -43,7 +43,7 @@
   import { scopeSlotKey } from '../../lib/runtime/adapters/scope-adapter';
   import {
     createScopeView, confirmedFollowLegView, panView, viewCenterHz, zoomView, scopeSubscription, scopeSubscriptionSurface,
-    nextScopeRequestSeq, type View, type ScopeGranted,
+    type View, type ScopeGranted,
   } from '../../lib/runtime/scope-view';
   import { ScopeRenderScheduler } from '../../lib/canvas/scope-render-scheduler';
   import { CanvasSurface } from '../../lib/canvas/canvas-surface.svelte';
@@ -713,30 +713,32 @@
   // the drag writes `gesture`, the tuning legs write their own. Pan/zoom
   // presets edit the View directly (display-only until R4 grants views).
   let followSpanHz = $state<number | null>(null);
-  // The radio follow request before any SPAN/ZOOM gesture.
-  const RADIO_FOLLOW_DEFAULT_HZ = 100_000;
-  // MOR-4532: `followSpanHz` is a REQUEST, not a width. Every change of the
-  // follow request (its width, its receiver, a return from an absolute view)
-  // carries a new page-monotonic `requestSeq`; a grant settles every request
-  // up to its `requestSeq`. While the newest request is unsettled, the
-  // displayed follow width and the SPAN step base come from the request, so
-  // fast presses accumulate; once it is settled they come from the frame
-  // geometry. "Settled" comes ONLY from the grant (re-sent before the frame
-  // that settles it) — never from scopeControls.span, field status or widths.
+  // MOR-4532: `followSpanHz` is a REQUEST, not a width, and it changes ONLY
+  // on a user action (requestFollowSpan). Each request carries a
+  // per-connection `requestSeq` (1, 2, …); a fresh scope connection starts at
+  // 0, which is not a request. A grant settles every request up to its
+  // `requestSeq`. While the newest request is unsettled, the displayed follow
+  // width and the SPAN step base come from the request, so fast presses
+  // accumulate; once it is settled they come from the frame geometry — the
+  // display and the step base only: no frame width ever reaches the
+  // subscription. "Settled" comes ONLY from the grant (re-sent before the
+  // frame that settles it) — never from scopeControls.span, field status or
+  // widths.
   let followRequestTracked = $derived(!audioFft && !sdrSource && explicitView === null);
-  let lastFollowRequest = { key: '', seq: 0 };
-  let followRequestSeq = $derived.by(() => {
-    const key = followRequestTracked ? JSON.stringify([spectrumAuthority?.receiver ?? 0, followSpanHz]) : '';
-    if (key !== lastFollowRequest.key) {
-      lastFollowRequest = { key, seq: key === '' ? lastFollowRequest.seq : nextScopeRequestSeq() };
-    }
-    return lastFollowRequest.seq;
-  });
+  let followRequest = $state({ epoch: 0, seq: 0 });
+  let followRequestSeq = $derived(followRequest.epoch === runtime.scope.connectionEpoch ? followRequest.seq : 0);
   // The newest requestSeq a settled grant carried, and the newest one a frame
-  // after that grant confirmed (the frame is the settled geometry).
-  let settledGrantSeq = 0;
-  let settledFollowSeq = $state(0);
-  let followSettled = $derived(followRequestTracked && settledFollowSeq >= followRequestSeq);
+  // after that grant confirmed (the frame is the settled geometry), each with
+  // its connection.
+  let settledGrant = { epoch: 0, seq: 0 };
+  let settledFollow = $state({ epoch: 0, seq: 0 });
+  let followSettled = $derived(followRequestTracked && (followRequestSeq === 0
+    || (settledFollow.epoch === runtime.scope.connectionEpoch && settledFollow.seq >= followRequestSeq)));
+  function requestFollowSpan(widthHz: number): void {
+    const epoch = runtime.scope.connectionEpoch;
+    followRequest = { epoch, seq: (followRequest.epoch === epoch ? followRequest.seq : 0) + 1 };
+    followSpanHz = widthHz;
+  }
   // The width the follow view shows: the frame geometry once the request is
   // settled, the request while it is pending (or not tracked at all).
   function followViewWidthHz(geometryWidthHz: number): number {
@@ -787,7 +789,6 @@
     const changingMode = authority !== null && hasPendingScopeModeChange(authority.providerGeneration, sessionEpoch);
     const follow = followSpanHz;
     const settled = followSettled;
-    const spanScope = !isSpanDisabledScope(scopeMode);
     const requested = requestedView;
     const fixedCrop = fixed && requested !== null && (explicitView === null
       || requested.startHz !== explicitView.startHz || requested.endHz !== explicitView.endHz);
@@ -830,17 +831,9 @@
           explicitView = null;
         }
         if (geometry && geometry.view.endHz > geometry.view.startHz) {
-          // MOR-4532: once the grant settled the request, the frame geometry
-          // is the width, and the subscription keeps that confirmed width —
-          // a new request the radio needs no write for (an external
-          // narrowing, a refused or folded write). FIX/SCROLL-F keep the
-          // CENTER request: their window is not a follow width.
+          // MOR-4532: a settled request shows the frame geometry; the
+          // subscription keeps the requested width.
           const geometryWidthHz = geometry.view.endHz - geometry.view.startHz;
-          if (settled && spanScope && !changingMode && requested === null && !geometry.outOfRange
-            && geometry.source === 'radio' && geometry.receiver === (authority?.receiver ?? 0)
-            && Math.abs(geometryWidthHz - (follow ?? RADIO_FOLLOW_DEFAULT_HZ)) >= 1) {
-            followSpanHz = geometryWidthHz;
-          }
           const span = settled ? geometryWidthHz : follow ?? geometryWidthHz;
           // MOR-4392: in FIX the displayed window is the fixed window (or a
           // requested crop inside it) — a leftover CENTER follow width must
@@ -974,7 +967,7 @@
     // explicit band/segment preset keeps the absolute subscription — there
     // the fixed-window change IS the user's intent.
     const view = !audioFft && explicitView !== null ? explicitView
-      : { follow: 'vfo' as const, spanHz: followSpanHz ?? (audioFft ? 48000 : RADIO_FOLLOW_DEFAULT_HZ) };
+      : { follow: 'vfo' as const, spanHz: followSpanHz ?? (audioFft ? 48000 : 100000) };
     const facts = spectrumFacts;
     const requestSeq = followRequestSeq;
     return scopeSubscription({
@@ -1019,7 +1012,7 @@
         if (next === undefined) return;
         explicitView = null;
         requestedView = null;
-        followSpanHz = next;
+        requestFollowSpan(next);
         scopeView.set('gesture', null);
       },
     };
@@ -1038,7 +1031,7 @@
     if (preset.kind === 'follow') {
       explicitView = null;
       requestedView = null;
-      followSpanHz = 'spanHz' in preset.view ? preset.view.spanHz : spanHz;
+      requestFollowSpan('spanHz' in preset.view ? preset.view.spanHz : spanHz);
       scopeView.set('gesture', null);
       return;
     }
@@ -1140,7 +1133,7 @@
     if (next === current) return; // the bin floor / widest preset is a no-op
     requestedView = null;
     explicitView = null;
-    followSpanHz = next;
+    requestFollowSpan(next);
     scopeView.set('gesture', null);
   }
 
@@ -1681,8 +1674,10 @@
       const stopError = scopeStream.error.subscribe(error => { scopeError = error; });
       const stopGrant = scopeStream.granted.subscribe((grant) => {
         frameGrant = grant;
-        if (grant?.requestState === 'settled' && grant.requestSeq !== undefined && grant.requestSeq > settledGrantSeq) {
-          settledGrantSeq = grant.requestSeq;
+        const epoch = runtime.scope.connectionEpoch;
+        if (grant?.requestState === 'settled' && grant.requestSeq !== undefined
+          && (settledGrant.epoch !== epoch || grant.requestSeq > settledGrant.seq)) {
+          settledGrant = { epoch, seq: grant.requestSeq };
         }
       });
       const stopGeometry = scopeStream.geometry.subscribe((geometry) => { frameGeometry = geometry; });
@@ -1694,7 +1689,9 @@
         if (slotKey !== scopeSlotKey(geometry.sourceId, geometry.receiver)) return;
         // MOR-4532: a frame after a settled grant is the settled geometry
         // (the grant is re-sent before the frame that settles it).
-        if (settledFollowSeq < settledGrantSeq) settledFollowSeq = settledGrantSeq;
+        if (settledFollow.epoch !== settledGrant.epoch || settledFollow.seq < settledGrant.seq) {
+          settledFollow = { ...settledGrant };
+        }
         if (geometry.outOfRange && !geometry.hasPixels) return;
         if (!scopeDemandOn) { cachedWhileOff = true; return; }
         const traceStart = trace?.status === 'recording' ? performance.now() : 0;

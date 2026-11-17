@@ -66,8 +66,19 @@ export interface ScopeSpanControl {
   step(delta: -1 | 1): void;
 }
 
+/**
+ * MOR-4532: a fresh connection starts at requestSeq 0, which is not a
+ * request: a subscription re-sent on (re)connect carries its width as context
+ * only. The panel re-derives seq 0 itself once `connectionEpoch` moves.
+ */
+function freshConnection(subscription: ScopeSubscription): ScopeSubscription {
+  return subscription.requestSeq === undefined ? subscription : { ...subscription, requestSeq: 0 };
+}
+
 export class ScopeController {
   spanControl = $state.raw<ScopeSpanControl | null>(null);
+  /** MOR-4532: the scope socket's connection (0 while disconnected); requestSeq counts per connection. */
+  connectionEpoch = $state(0);
   get hardwareScopeDemanded() { return this._health.hardware.demanded; }
   get hardwareScopeConnected() { return this._health.hardware.transport === 'connected'; }
   get hardwareScopeFrameLive() { return this._health.hardware.frameSeen; }
@@ -311,6 +322,7 @@ export class ScopeController {
       try {
       unsubscribeState = channel.onStateChange(state => {
         if (!current()) return;
+        this.connectionEpoch = state === 'connected' && Number.isSafeInteger(channel.sessionEpoch) ? channel.sessionEpoch : 0;
         for (const active of new Set(this._bindings.values())) {
           if (!active.active) continue;
           const selected = this.stream(active.source);
@@ -319,7 +331,7 @@ export class ScopeController {
           }
           if (state === 'connected') {
             selected.setSessionEpoch(Number.isSafeInteger(channel.sessionEpoch) && channel.sessionEpoch > 0 ? channel.sessionEpoch : 0);
-            for (const request of selected.subscriptions) this._sendSubscription(active.source, request);
+            for (const request of selected.subscriptions) this._sendSubscription(active.source, freshConnection(request));
           }
           this._setHealth(active.source, { demanded: true, transport: state,
             frameSeen: state === 'connected' && this._arrivalIsLive(active.source) });
@@ -332,7 +344,7 @@ export class ScopeController {
           if (!active.active) continue;
           const selected = this.stream(active.source);
           selected.setSessionEpoch(transition.state === 'connected' && Number.isSafeInteger(channel.sessionEpoch) && channel.sessionEpoch > 0 ? channel.sessionEpoch : 0);
-          if (transition.state === 'connected' && selected.subscription) this._sendSubscription(active.source, selected.subscription);
+          if (transition.state === 'connected' && selected.subscription) this._sendSubscription(active.source, freshConnection(selected.subscription));
         }
       });
       unsubscribeBinary = channel.onBinary(buffer => {
@@ -367,6 +379,7 @@ export class ScopeController {
       catch (error) { this._retire(binding); throw error; }
     }
     if (channel.state === 'connected') {
+      this.connectionEpoch = Number.isSafeInteger(channel.sessionEpoch) ? channel.sessionEpoch : 0;
       stream.setSessionEpoch(Number.isSafeInteger(channel.sessionEpoch) && channel.sessionEpoch > 0 ? channel.sessionEpoch : 0);
       for (const request of stream.subscriptions) this._sendSubscription(source, request);
     }
@@ -382,7 +395,7 @@ export class ScopeController {
     stream?.pause(); stream?.clearMode(); this._arrivals[source] = null; this._slotArrivals[source].clear();
     if (![...this._bindings.values()].some(active => active.active)) {
       const detach = this._detachChannel; this._detachChannel = null; this._channelGeneration += 1;
-      try { detach?.(); } finally { channel.disconnect(); this._channel = null; }
+      try { detach?.(); } finally { channel.disconnect(); this._channel = null; this.connectionEpoch = 0; }
     }
     this._setHealth(source, { demanded: this._sourceDemanded(source), transport: 'disconnected', frameSeen: false });
     this._ensureClock();
