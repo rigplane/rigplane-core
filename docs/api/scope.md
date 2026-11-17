@@ -43,6 +43,56 @@ If native width is unknown for the requested receiver, the initial grant
 provisionally echoes the requested width.
 When the observed width changes, the server sends an updated `granted` before
 the corresponding binary frame; existing subscriptions need no new request.
+
+### Request sequence and request state
+
+A subscription may carry an optional `requestSeq` (a non-negative integer).
+It is the client's own number for that request, scoped to its connection: the
+server only echoes and orders it and never interprets it. A grant for such a
+subscription carries `requestSeq` and `requestState` (`"pending"` or
+`"settled"`, a string enum that may grow). `requestSeq` in a grant is the
+highest request that grant accounts for; the server may fold fast requests,
+so a grant saying 6 leaves a later request 7 pending on the client. Grants are
+never sent for an older `requestSeq` after a newer one.
+
+Only a new request writes. The server applies a subscription's follow width
+(a span write) only when its `requestSeq` is greater than the last one it
+applied on that connection. A re-sent subscription with the same `requestSeq`
+(a resize, a visibility or frame-rate change) carries the follow width as
+context and writes nothing; its grant follows the radio's own window. A fresh
+connection (page load or reconnect) starts at `requestSeq` 0, and 0 is never a
+request: whatever width it carries causes no span write and its grant is
+settled. Without `requestSeq` a subscription behaves as before. The hub itself
+does not skip a re-sent subscription whose view is unchanged; only the scope
+session's same-preset skip avoids a repeated span SET, which does not cover a
+width the radio changed meanwhile. See
+`src/rigplane/web/handlers/scope.py: ScopeHandler._handle_control`.
+
+"Settled" comes only from the grant. A client must not derive it from scope
+control state (`scopeControls.span`, field status) or from frame widths. A
+request that is still pending when its first grant is sent settles later by a
+re-sent `granted` with the same `requestSeq`, before the corresponding binary
+frame; there is no other message for it. For a radio source the request
+settles as follows:
+
+| What happened to the span write | Settles |
+| --- | --- |
+| No write needed (same preset, or a FIX/SCROLL-F follow gesture) | in its first grant |
+| Refused by the radio | in its first grant; the width is what the radio reports |
+| Acknowledged | on the first frame after the acknowledgement |
+| Ended with no answer | on the first frame after the write's answer window closed |
+| Deferred during transmit or before readiness | stays pending until written, then as above |
+| Superseded by a newer request on the same subscription | by the newer request's grant |
+| A paused request (`maxFps: 0`): no view action, no frames | in its first grant |
+
+Once a grant says `"settled"` for a `requestSeq`, no later grant for the same
+subscription key (`sourceId`, `receiver`) says `"pending"` for that
+`requestSeq` or an older one. Settling is tracked per key: a request on another
+key of the same socket settles nothing here.
+Audio and IQ sources are settled in the first grant. Without `requestSeq`, the
+grant has neither field and behaves as before. See
+`src/rigplane/runtime/scope_session.py: ScopeSession.span_settled` and
+`tests/fixtures/scope-control/control.json`.
 Send another subscription with the same key to change its view, width or rate;
 `maxFps: 0` pauses that subscription. To release one stream, send
 `{"type":"unsubscribe","sourceId":"radio","receiver":0}`. Bare

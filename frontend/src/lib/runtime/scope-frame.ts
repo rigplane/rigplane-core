@@ -1,4 +1,4 @@
-import type { ScopeGranted, View } from './scope-view';
+import type { ScopeGranted, ScopeRequestState, View } from './scope-view';
 
 export interface ScopeFrame {
   readonly source: 'radio' | 'audio_fft' | 'iq_fft';
@@ -85,8 +85,15 @@ export function parseScopeGranted(message: unknown): ScopeGranted | null {
     || !view(value.view) || !(value.coverage === null || view(value.coverage))
     || !Number.isInteger(value.width) || (value.width as number) < 1 || (value.width as number) > 65535
     || typeof value.fps !== 'number' || !Number.isFinite(value.fps) || value.fps < 0) return null;
-  return { type: 'granted', sourceId: value.sourceId, receiver: value.receiver as number | null,
-    view: { ...value.view }, coverage: value.coverage === null ? null : { ...value.coverage }, width: value.width as number, fps: value.fps };
+  // MOR-4532: requestSeq and requestState are optional and travel together.
+  const tagged = 'requestSeq' in value || 'requestState' in value;
+  if (tagged && (!Number.isSafeInteger(value.requestSeq) || (value.requestSeq as number) < 0
+    || (value.requestState !== 'pending' && value.requestState !== 'settled'))) return null;
+  const granted = { type: 'granted', sourceId: value.sourceId, receiver: value.receiver as number | null,
+    view: { ...value.view }, coverage: value.coverage === null ? null : { ...value.coverage }, width: value.width as number, fps: value.fps } as const;
+  return tagged
+    ? { ...granted, requestSeq: value.requestSeq as number, requestState: value.requestState as ScopeRequestState }
+    : granted;
 }
 
 /** Freshness is host supplied; each accepted message marks its geometry fresh. */

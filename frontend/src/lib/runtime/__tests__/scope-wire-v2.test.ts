@@ -1,4 +1,4 @@
-import { loadScopeWireGolden, scopeWireGoldenNames as names } from './scope-wire-fixture';
+import { loadScopeControlGolden, loadScopeWireGolden, scopeWireGoldenNames as names } from './scope-wire-fixture';
 import { describe, expect, it } from 'vitest';
 import { ingressScopeFrame, parseCurrentScopeFrame, parseScopeGranted } from '../adapters/scope-adapter';
 
@@ -82,5 +82,26 @@ describe('granted control documents', () => {
   it('still rejects malformed coverage geometry', () => {
     expect(parseScopeGranted({ ...document, coverage: { startHz: 14_150_000, endHz: 14_050_000 } })).toBeNull();
     expect(parseScopeGranted({ ...document, coverage: { startHz: -1, endHz: 14_150_000 } })).toBeNull();
+  });
+});
+
+describe('requestSeq granted documents (MOR-4532)', () => {
+  // The same golden documents tests/scope/test_wire_v2.py decodes with the
+  // producer's parser: requestSeq/requestState are optional and additive.
+  const control = loadScopeControlGolden();
+  it('parses a grant without requestSeq exactly as before', () => {
+    expect(parseScopeGranted(control.granted)).toEqual(control.granted);
+    expect(parseScopeGranted(control.granted)).not.toHaveProperty('requestSeq');
+    expect(parseScopeGranted(control.granted)).not.toHaveProperty('requestState');
+  });
+  it.each(['granted_pending', 'granted_settled'])('parses %s with its request fields', name => {
+    expect(parseScopeGranted(control[name])).toEqual(control[name]);
+  });
+  it.each([
+    { requestState: 'pending' }, { requestSeq: 6 }, { requestSeq: 6, requestState: 'answered' },
+    { requestSeq: -1, requestState: 'pending' }, { requestSeq: 1.5, requestState: 'settled' },
+    { requestSeq: 6, requestState: null },
+  ])('rejects half or malformed request fields %o', changes => {
+    expect(parseScopeGranted({ ...control.granted, ...changes })).toBeNull();
   });
 });

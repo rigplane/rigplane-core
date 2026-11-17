@@ -230,32 +230,40 @@ def _parse_scope_view(value: Any) -> View | FollowView:
     raise ValueError("invalid view fields")
 
 
+_SUBSCRIPTION_FIELDS = {"type", "sourceId", "receiver", "view", "width", "maxFps"}
+_GRANTED_FIELDS = {"type", "sourceId", "receiver", "view", "coverage", "width", "fps"}
+
+
 def encode_scope_subscription(request: Subscription) -> str:
-    return encode_json(
-        {
-            "type": "subscribe",
-            "sourceId": request.source_id,
-            "receiver": request.receiver,
-            "view": _scope_view_json(request.view),
-            "width": request.width,
-            "maxFps": request.max_fps,
-        }
-    )
+    document: dict[str, Any] = {
+        "type": "subscribe",
+        "sourceId": request.source_id,
+        "receiver": request.receiver,
+        "view": _scope_view_json(request.view),
+        "width": request.width,
+        "maxFps": request.max_fps,
+    }
+    if request.request_seq is not None:
+        document["requestSeq"] = request.request_seq
+    return encode_json(document)
 
 
 def decode_scope_subscription(text: str) -> Subscription:
     obj = decode_json(text)
     if (
-        set(obj) != {"type", "sourceId", "receiver", "view", "width", "maxFps"}
+        set(obj) not in (_SUBSCRIPTION_FIELDS, _SUBSCRIPTION_FIELDS | {"requestSeq"})
         or obj["type"] != "subscribe"
     ):
         raise ValueError("invalid subscription fields")
+    if "requestSeq" in obj and obj["requestSeq"] is None:
+        raise ValueError("requestSeq must be an integer when present")
     return Subscription(
         obj["sourceId"],
         obj["receiver"],
         _parse_scope_view(obj["view"]),
         obj["width"],
         obj["maxFps"],
+        obj.get("requestSeq"),
     )
 
 
@@ -276,28 +284,33 @@ def decode_scope_unsubscribe(text: str) -> ScopeTarget | None:
 
 
 def encode_scope_granted(granted: GrantedSubscription) -> str:
-    return encode_json(
-        {
-            "type": "granted",
-            "sourceId": granted.source_id,
-            "receiver": granted.receiver,
-            "view": _scope_view_json(granted.view),
-            "coverage": None
-            if granted.coverage is None
-            else _scope_view_json(granted.coverage),
-            "width": granted.width,
-            "fps": granted.max_fps,
-        }
-    )
+    document: dict[str, Any] = {
+        "type": "granted",
+        "sourceId": granted.source_id,
+        "receiver": granted.receiver,
+        "view": _scope_view_json(granted.view),
+        "coverage": None
+        if granted.coverage is None
+        else _scope_view_json(granted.coverage),
+        "width": granted.width,
+        "fps": granted.max_fps,
+    }
+    if granted.request_seq is not None:
+        document["requestSeq"] = granted.request_seq
+        document["requestState"] = granted.request_state
+    return encode_json(document)
 
 
 def decode_scope_granted(text: str) -> GrantedSubscription:
     obj = decode_json(text)
     if (
-        set(obj) != {"type", "sourceId", "receiver", "view", "coverage", "width", "fps"}
+        set(obj)
+        not in (_GRANTED_FIELDS, _GRANTED_FIELDS | {"requestSeq", "requestState"})
         or obj["type"] != "granted"
     ):
         raise ValueError("invalid granted fields")
+    if "requestSeq" in obj and obj["requestSeq"] is None:
+        raise ValueError("requestSeq must be an integer when present")
     view = _parse_scope_view(obj["view"])
     coverage = None if obj["coverage"] is None else _parse_scope_view(obj["coverage"])
     if not isinstance(view, View) or (
@@ -311,4 +324,6 @@ def decode_scope_granted(text: str) -> GrantedSubscription:
         None if coverage is None else Coverage(coverage.start_hz, coverage.end_hz),
         obj["width"],
         obj["fps"],
+        obj.get("requestSeq"),
+        obj.get("requestState"),
     )

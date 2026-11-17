@@ -54,6 +54,11 @@ export function loadScopeWireGolden(name: string): { buffer: ArrayBuffer; expect
     expected: JSON.parse(readFileSync(resolve(goldenRoot, name.replace('.bin', '.json')), 'utf8')) };
 }
 
+/** MOR-4532: the shared control documents tests/scope/test_wire_v2.py also decodes. */
+export function loadScopeControlGolden(): Record<string, Record<string, unknown>> {
+  return JSON.parse(readFileSync(resolve(process.cwd(), '../tests/fixtures/scope-control/control.json'), 'utf8'));
+}
+
 export type AudioScopeGolden = {
   frame: ScopeWireGolden;
   audioPassband: { tunedHz: number; carrierOffsetHz: number; sideband: 'upper' | 'lower' | 'both'; lowOffsetHz: number; highOffsetHz: number };

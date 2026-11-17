@@ -128,5 +128,5 @@ async def test_scope_handler_sender_uses_only_send_binary() -> None:
         "radio", None, View(14_000_000, 14_100_000), None, 2, 30
     )
     subscription.receive_delivery.side_effect = [(grant, data), StopAsyncIteration]
-    await handler._sender(subscription, grant.width)
+    await handler._sender(subscription, grant)
     assert fake.sent_binary == [data]
