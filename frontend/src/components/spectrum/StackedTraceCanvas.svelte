@@ -32,6 +32,20 @@
   // The look of the view is the user's to adjust; the values are kept per browser.
   let settings = $derived(stackedTraceSettings());
   let tuning = $state(false);
+  let tuneKey: HTMLButtonElement;
+  // The pane clips its content and can be a few dozen pixels tall (a phone),
+  // so the adjustments open against the viewport, under the gear key, and
+  // scroll inside themselves when the screen is shorter than the list.
+  let panelPlace = $state('');
+  function toggleTuning(): void {
+    if (!tuning) {
+      const key = tuneKey.getBoundingClientRect();
+      const top = Math.max(8, Math.min(key.bottom + 4, window.innerHeight - 160));
+      panelPlace = `top:${Math.round(top)}px;right:${Math.max(4, Math.round(window.innerWidth - key.right))}px;`
+        + `max-height:${Math.round(window.innerHeight - top - 8)}px;`;
+    }
+    tuning = !tuning;
+  }
 
   /** The sample placement and appearance the renderer needs, from the pane's own options. */
   function rowOptions(source: SpectrumOptions, target: WaterfallOptions): WaterfallOptions {
@@ -168,10 +182,12 @@
 <div class="stacked-trace" data-testid="stacked-trace" data-stacked-trace data-history-rows={historyRows}>
   <canvas bind:this={scene}></canvas>
   <canvas bind:this={chrome} class="chrome"></canvas>
-  <button type="button" class="tune-key" data-testid="stacked-trace-tune" aria-expanded={tuning}
-    title={t('core.scope.stackedTrace.tune.title')} onclick={() => (tuning = !tuning)}>⚙</button>
+  <button type="button" class="tune-key" data-testid="stacked-trace-tune" aria-expanded={tuning} bind:this={tuneKey}
+    title={t('core.scope.stackedTrace.tune.title')} onclick={toggleTuning}>⚙</button>
   {#if tuning}
-    <div class="tune-panel" role="dialog" aria-label={t('core.scope.stackedTrace.tune.title')}>
+    <!-- A wheel over the adjustments scrolls or moves them; it never reaches the pane's scroll-to-tune. -->
+    <div class="tune-panel" role="dialog" aria-label={t('core.scope.stackedTrace.tune.title')} style={panelPlace}
+      onwheel={(event) => event.stopPropagation()}>
       {#each stackedTraceTunables as item (item.key)}
         <label>
           <span>{t(`core.scope.stackedTrace.tune.${item.key}`)}</span>
@@ -226,10 +242,12 @@
   }
 
   .tune-panel {
-    position: absolute;
-    top: 48px;
-    right: 4px;
-    z-index: 7;
+    position: fixed;
+    z-index: 1000;
+    box-sizing: border-box;
+    max-width: calc(100vw - 8px);
+    overflow-y: auto;
+    overscroll-behavior: contain;
     display: grid;
     gap: 4px;
     padding: 8px;
@@ -243,7 +261,7 @@
 
   .tune-panel label {
     display: grid;
-    grid-template-columns: 110px 120px 34px;
+    grid-template-columns: minmax(0, 110px) minmax(60px, 120px) 34px;
     align-items: center;
     gap: 6px;
   }

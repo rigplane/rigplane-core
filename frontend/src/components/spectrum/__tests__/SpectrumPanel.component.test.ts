@@ -1,5 +1,5 @@
 import { webglFixture } from '$lib/renderers/__tests__/webgl-fixture';
-import { recordCanvasLayers } from '$lib/renderers/__tests__/canvas-layers-fixture';
+import { RecordedPath, recordCanvasLayers } from '$lib/renderers/__tests__/canvas-layers-fixture';
 /**
  * SpectrumPanel component-level render tests.
  * Mounts the actual Svelte component in jsdom and verifies DOM structure,
@@ -105,6 +105,7 @@ const noopCanvas: Record<string, unknown> = {
   translate: noop,
   transform: noop,
   setTransform: noop,
+  setLineDash: noop,
   measureText: () => ({ width: 0 }),
   canvas: { width: 800, height: 400 },
   fillStyle: '',
@@ -528,6 +529,7 @@ const spectrumRendererHarness = vi.hoisted(() => ({
   }),
   setAvgEnabled: vi.fn(),
   setPeakHoldEnabled: vi.fn(),
+  forget: vi.fn(),
 }));
 
 const audioPaint = vi.hoisted(() => vi.fn());
@@ -591,6 +593,7 @@ vi.mock('$lib/renderers/spectrum-renderer', async (importOriginal) => {
     constructor() { spectrumRendererHarness.constructed++; }
     setAvgEnabled = spectrumRendererHarness.setAvgEnabled;
     setPeakHoldEnabled = spectrumRendererHarness.setPeakHoldEnabled;
+    forget = spectrumRendererHarness.forget;
     render = spectrumRendererHarness.render;
   }
   return {
@@ -2351,6 +2354,35 @@ describe('SpectrumPanel component', () => {
     expect(() => unmount(component)).not.toThrow();
     // Verify disconnect was called via the cleanup returned from onMount
     target.remove();
+  });
+
+  it('MOR-4463: a wheel over the 3D adjustments never tunes the radio; over the 3D trace it still does', async () => {
+    const { setStackedTraceEnabled } = await import('$lib/stores/stacked-trace.svelte');
+    setStackedTraceEnabled(true);
+    vi.stubGlobal('Path2D', RecordedPath);
+    try {
+      authorityHarness.state.current = authority({ frequencyHz: 14_074_250 });
+      const target = mountPanel();
+      emitFrame({ sequence: 1 });
+      flushSync();
+      const pane = target.querySelector('[data-testid="stacked-trace"]')!;
+      expect(pane).not.toBeNull();
+      target.querySelector<HTMLButtonElement>('[data-testid="stacked-trace-tune"]')!.click();
+      flushSync();
+      const wheel = () => new WheelEvent('wheel', { deltaY: -100, bubbles: true, cancelable: true });
+      const sliders = [...target.querySelectorAll<HTMLInputElement>('.tune-panel input[type="range"]')];
+      expect(sliders).toHaveLength(10);
+      for (const element of [...sliders, target.querySelector('.tune-panel')!,
+        target.querySelector('[data-testid="stacked-trace-tune-reset"]')!]) element.dispatchEvent(wheel());
+      expect(handlerHarness.vfo.onFreqChange).not.toHaveBeenCalled();
+
+      pane.querySelector('canvas')!.dispatchEvent(wheel());
+      expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledOnce();
+      expect(handlerHarness.vfo.onFreqChange).toHaveBeenCalledWith(14_075_000, 0, 'step');
+    } finally {
+      setStackedTraceEnabled(false);
+      vi.unstubAllGlobals();
+    }
   });
 
   it('wheel snaps an off-grid Observation and emits one typed VFO intent', () => {

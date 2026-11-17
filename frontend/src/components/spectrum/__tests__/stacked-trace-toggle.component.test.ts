@@ -20,6 +20,8 @@ let component: Record<string, unknown> | undefined;
 let frames: ((now: number) => void)[];
 let gl: Fixture[];
 let flatDraws: number;
+/** Heights of every trace path the flat canvas stroked, in order. */
+let flatTraces: number[][];
 let webglAvailable: boolean;
 
 class BoxResizeObserver {
@@ -57,7 +59,7 @@ async function mountPane(props: { colorScheme?: 'classic'; showRfOverlays?: bool
 beforeEach(() => {
   vi.resetModules();
   localStorage.clear();
-  frames = []; gl = []; flatDraws = 0; webglAvailable = true;
+  frames = []; gl = []; flatDraws = 0; flatTraces = []; webglAvailable = true;
   target = document.createElement('div');
   document.body.appendChild(target);
   vi.stubGlobal('requestAnimationFrame', (callback: (now: number) => void) => frames.push(callback));
@@ -77,7 +79,11 @@ beforeEach(() => {
         if (key in context) return context[key];
         if (key === 'createLinearGradient') return () => ({ addColorStop: () => {} });
         if (key === 'measureText') return () => ({ width: 10 });
-        if (key === 'stroke') return () => { if (owner.parentElement?.classList.contains('spectrum-container')) flatDraws++; };
+        if (key === 'stroke') return (path?: unknown) => {
+          if (!owner.parentElement?.classList.contains('spectrum-container')) return;
+          flatDraws++;
+          if (path instanceof RecordedPath) flatTraces.push(path.points.map(([, y]) => y));
+        };
         return () => {};
       },
       set(context, key: string, value) { context[key] = value; return true; },
@@ -136,6 +142,24 @@ describe('MOR-4463 stacked-trace toggle', () => {
     expect(localStorage.getItem('rigplane-spectrum-stacked-trace')).toBe('0');
     flushFrames(300);
     expect(flatDraws).toBeGreaterThan(flatBefore);
+  });
+
+  it('starts the flat trace anew on return: a carrier that left during 3D is not averaged back in', async () => {
+    const pane = await mountPane();
+    const carrier = new Uint8Array(475).fill(10); carrier.fill(80, 200, 220);
+    for (let frame = 0; frame < 8; frame++) { pane.push(carrier); flushFrames(16 * (frame + 1)); }
+    // The witness: the averaged flat trace does show the carrier.
+    expect(new Set(flatTraces.at(-1)).size).toBeGreaterThan(1);
+
+    pane.set(true);
+    pane.push(new Uint8Array(475).fill(10));
+    flushFrames(200);
+    flatTraces = [];
+    pane.set(false);
+    flushFrames(300);
+    expect(flatTraces.length).toBeGreaterThan(0);
+    // Trace and peak line alike are level: nothing of the carrier is left.
+    for (const heights of flatTraces) expect(new Set(heights).size).toBe(1);
   });
 
   it('restores the stacked view from the stored preference on the next load', async () => {

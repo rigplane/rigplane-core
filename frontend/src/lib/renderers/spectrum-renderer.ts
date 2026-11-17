@@ -470,6 +470,11 @@ export class SpectrumRenderer {
     if (enabled !== this.peakHoldEnabled) { this.peakValues.fill(0); this.peakTimestamps.fill(0); }
     this.peakHoldEnabled = enabled;
   }
+  /** Drops the averaging and peak history, keeping the AVG/PEAK choices: the next frame starts a new trace. */
+  forget(): void {
+    this.frames = 0; this.cursor = 0;
+    this.sums.fill(0); this.history.fill(0); this.peakValues.fill(0); this.peakTimestamps.fill(0);
+  }
   render(ctx: CanvasRenderingContext2D, data: Uint8Array, width: number, height: number, options: SpectrumOptions): void {
     const offset = options.sampleOffset ?? 0, amplitudeMax = options.sampleAmplitudeMax ?? 80;
     const n = data.length - offset;
@@ -480,8 +485,7 @@ export class SpectrumRenderer {
       this.frames = 0; this.cursor = 0;
     }
     if (options.geometryKey !== this.lastGeometryKey) {
-      this.lastGeometryKey = options.geometryKey; this.frames = 0; this.cursor = 0;
-      this.sums.fill(0); this.history.fill(0); this.peakValues.fill(0); this.peakTimestamps.fill(0);
+      this.lastGeometryKey = options.geometryKey; this.forget();
     }
     const now = performance.now(), base = this.cursor * n;
     if (this.avgEnabled) this.frames = Math.min(AVG_DEPTH, this.frames + 1);

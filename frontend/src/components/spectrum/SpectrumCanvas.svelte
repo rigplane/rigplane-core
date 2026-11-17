@@ -65,6 +65,9 @@
   let stacked = $derived(isStackedTraceEnabled() && !isStackedTraceUnavailable()
     && colorScheme !== undefined && suppliedSurface !== undefined && options.showRfOverlays !== false);
   let stackedPush: ((pixels: Uint8Array, token?: TraceToken | null) => void) | null = null;
+  // The flat trace sees no frames while the stacked view is shown, so its
+  // averaging and peak history would be stale on return: it starts anew.
+  $effect(() => { if (stacked) renderer.forget(); });
 
   // Latest scope pixels — updated directly from WS binary, not via Svelte props
   let latestPixels: Uint8Array | null = null;
