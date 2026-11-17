@@ -190,3 +190,13 @@ def test_build_job_has_a_timeout() -> None:
         "so 15 minutes covers a cold npm ci + uv build while a hung build "
         "still releases the self-hosted runner (validate already has 25)"
     )
+
+
+def test_validate_job_timeout_covers_the_full_suite() -> None:
+    validate = _parsed()["jobs"]["validate"]
+    timeout = validate.get("timeout-minutes")
+    assert isinstance(timeout, int) and timeout >= 60, (
+        "validate always runs the full suite (release and rehearsal); on the "
+        "ARM64 build runner it outgrew 25 minutes (run 44109071644, v3.2.0rc9), "
+        "so it needs the same 60-minute budget full.yml gives tag/rc runs"
+    )
