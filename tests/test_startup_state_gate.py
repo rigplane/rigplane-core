@@ -69,6 +69,10 @@ from rigplane.runtime.radio import IcomRadio
 from rigplane.runtime.radio_initial_state import fetch_initial_state
 from rigplane.web import web_startup
 from rigplane.web.server import WebConfig, WebServer
+from rigplane.web.state_schema import (
+    ManagedTransmitDocumentPublic,
+    ServerStatePublic,
+)
 from rigplane.web.web_startup import (
     _acquisition_scheduler,
     _await_initial_state_acquisition,
@@ -1242,8 +1246,9 @@ async def test_rigctld_silent_t_demotes_after_one_reconnect_and_serves_receive_s
             base_f = fake.f_requests
             status, body = await _http_get_json(port, "/api/v1/state")
             assert status == 200
-            assert body["main"]["freqHz"] == 14074000
-            assert body["main"]["mode"] == "USB"
+            state = ServerStatePublic.model_validate(body, strict=True)
+            assert state.main.freqHz == 14074000
+            assert state.main.mode == "USB"
             snapshot = server.command_state_store.snapshot()
             assert snapshot.field(FREQ).value == 14074000
             assert snapshot.field(MODE).value == "USB"
@@ -1726,8 +1731,9 @@ async def test_managed_startup_with_silent_t_probes_once_and_keeps_local_ptt(
                 base_f = fake.f_requests
                 status, body = await _http_get_json(port, "/api/v1/state")
                 assert status == 200
-                assert body["main"]["freqHz"] == 14074000
-                assert body["main"]["mode"] == "USB"
+                state = ServerStatePublic.model_validate(body, strict=True)
+                assert state.main.freqHz == 14074000
+                assert state.main.mode == "USB"
             assert fake.t_requests == 1
             assert fake.t_commands == 1
             assert fake.connections == 2
@@ -1864,13 +1870,19 @@ async def test_http_managed_transmit_release_settles_while_t_is_unanswerable(
                     port, "/api/v1/managed-transmit"
                 )
                 assert status == 200
-                managed = document["managedTransmit"]
+                managed = ManagedTransmitDocumentPublic.model_validate(
+                    document, strict=True
+                ).managedTransmit
                 assert fake.tx_commands.count("T 0") >= cycle
-                assert managed["intent"] == {"kind": "rx"}
-                assert managed["releaseRequired"] is False
-                assert managed["lastActuation"]["operation"] == "force_receive"
-                assert managed["lastActuation"]["result"] == "accepted"
-                assert managed["lastError"] is None
+                assert managed.status == "available"
+                assert managed.intent is not None
+                assert managed.intent.kind == "rx"
+                assert managed.intent.owner is None
+                assert managed.releaseRequired is False
+                assert managed.lastActuation is not None
+                assert managed.lastActuation.operation == "force_receive"
+                assert managed.lastActuation.result == "accepted"
+                assert managed.lastError is None
             await server.stop()
         finally:
             # A release still owed (the regression this test pins) must not
