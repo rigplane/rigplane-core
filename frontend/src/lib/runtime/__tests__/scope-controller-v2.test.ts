@@ -225,3 +225,64 @@ it.each(['iq_fft', 'audio_fft'] as const)('does not apply native radio scope mod
   expect(get(stream.geometry)?.mode).toBe(0);
   await driver.stop(handle);
 });
+
+describe('MOR-4534: a presentation swap subscribes before it unsubscribes', () => {
+  const facts: CanvasSurfaceFacts = { cssW: 1400, cssH: 200, backingW: 2800, backingH: 400, pixelScale: 2, visible: true };
+  const view = { follow: 'vfo' as const, spanHz: 20_000 };
+  async function mounted() {
+    const { port, change } = channel();
+    const owner = new ScopeController(() => port as unknown as WsChannel);
+    const handle = await owner.hardwareScopeDriver.start(); change('connected');
+    const outgoing = scopeSubscriptionSurface(document.createElement('div'),
+      { stream: owner.stream('hardware'), receiver: 0, view, facts, requestSeq: 3 });
+    port.sendRaw.mockClear();
+    const sent = () => port.sendRaw.mock.calls.map(call => call[0] as Record<string, unknown>);
+    return { port, owner, handle, outgoing, sent };
+  }
+  /** The incoming panel mounts before its canvas is measured. */
+  const incoming = (owner: ScopeController) => scopeSubscriptionSurface(document.createElement('div'),
+    { stream: owner.stream('hardware'), receiver: 0, view, facts: null, requestSeq: 0 });
+
+  it('keeps the outgoing request on the wire until the incoming panel sends its own', async () => {
+    const { owner, handle, outgoing, sent } = await mounted();
+    const release = owner.holdSurfaces();
+    outgoing.destroy();
+    const next = incoming(owner);
+    release();
+    expect(sent()).toEqual([]);
+    next.update({ stream: owner.stream('hardware'), receiver: 0, view, facts, requestSeq: 0 });
+    expect(sent()).toEqual([{ type: 'subscribe', sourceId: 'radio', receiver: 0, view, width: 2800, maxFps: 20, requestSeq: 0 }]);
+    next.destroy();
+    expect(sent().at(-1)).toEqual({ type: 'unsubscribe', sourceId: 'radio', receiver: 0 });
+    await owner.hardwareScopeDriver.stop(handle);
+  });
+
+  it('must-not: the last panel leaving outside a swap unsubscribes at once', async () => {
+    const { owner, handle, outgoing, sent } = await mounted();
+    outgoing.destroy();
+    expect(sent()).toEqual([{ type: 'unsubscribe', sourceId: 'radio', receiver: 0 }]);
+    await owner.hardwareScopeDriver.stop(handle);
+  });
+
+  it('unsubscribes when the swap ends without an incoming panel', async () => {
+    const { owner, handle, outgoing, sent } = await mounted();
+    const release = owner.holdSurfaces();
+    outgoing.destroy();
+    expect(sent()).toEqual([]);
+    release(); release();
+    expect(sent()).toEqual([{ type: 'unsubscribe', sourceId: 'radio', receiver: 0 }]);
+    await owner.hardwareScopeDriver.stop(handle);
+  });
+
+  it('unsubscribes when the incoming panel leaves before it sends a request', async () => {
+    const { owner, handle, outgoing, sent } = await mounted();
+    const release = owner.holdSurfaces();
+    outgoing.destroy();
+    const next = incoming(owner);
+    release();
+    expect(sent()).toEqual([]);
+    next.destroy();
+    expect(sent()).toEqual([{ type: 'unsubscribe', sourceId: 'radio', receiver: 0 }]);
+    await owner.hardwareScopeDriver.stop(handle);
+  });
+});

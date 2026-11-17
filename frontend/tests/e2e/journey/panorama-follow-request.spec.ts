@@ -342,3 +342,92 @@ test('IC-705: after a presentation switch on the same socket the next SPAN press
     await h.server.kill();
   }
 });
+
+/** A user-chosen 20 kHz window (two SPAN− presses from the radio's 100 kHz), answered by the radio. */
+async function chooseNarrowSpan(page: Page, h: Harness): Promise<void> {
+  await expect.poll(() => h.width(), { timeout: 15_000 }).toBe(100_000);
+  for (const expected of [50_000, 20_000]) {
+    await page.keyboard.press('[');
+    await expect.poll(() => h.coverageWidth(), { timeout: 10_000 }).toBe(expected);
+    await settleOnFrames(h, 10);
+  }
+  await expect.poll(async () => (await h.writes()).filter(r => r.sub === 0x15).at(-1)?.span).toBe(10_000);
+}
+
+/** Desktop → mobile → desktop on the same scope socket (the App's swap bridge keeps it). */
+async function swapPresentations(page: Page, h: Harness): Promise<void> {
+  const sockets = h.sockets();
+  const sentBefore = h.subscribes.length;
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(page.locator('.spectrum-panel').first()).toBeVisible();
+  await settleOnFrames(h, 20);
+  await page.setViewportSize({ width: 1728, height: 1200 });
+  await expect(page.getByTestId('scope-span-value').first()).toBeVisible();
+  await settleOnFrames(h, 30);
+  expect(h.sockets()).toBe(sockets);
+  expect(h.subscribes.length).toBeGreaterThan(sentBefore);
+}
+
+/**
+ * MOR-4534 row 1: a presentation switch keeps the scope socket, and the
+ * incoming panel subscribes before the outgoing one is released, so the hub
+ * never sees zero subscribers: neither restore-on-close nor a re-assert
+ * writes a span during the swap, and the panel shows the chosen window from
+ * the grant.
+ */
+test('IC-705: a presentation switch after a user-chosen span writes no span and keeps the window', async ({ page }, info) => {
+  const watch = watchPanoramaErrors(page);
+  const h = await boot(page, info, Number(process.env.PANORAMA_SWAP_PORT_1 ?? 22340));
+  try {
+    await chooseNarrowSpan(page, h);
+    const receiptsBefore = (await h.writes()).length;
+    await swapPresentations(page, h);
+    expect((await h.writes()).slice(receiptsBefore).filter(r => r.sub === 0x15)).toEqual([]);
+    expect(h.coverageWidth()).toBe(20_000);
+    await expect(page.getByTestId('scope-span-value').first()).toHaveText('±10k');
+    expectPanoramaSettled(watch);
+  } finally {
+    await h.server.kill();
+  }
+});
+
+/**
+ * MOR-4534 row 2: after the swap the first SPAN− steps from the chosen
+ * window and IS written, with a requestSeq above every one sent before.
+ */
+test('IC-705: the first SPAN press after a presentation switch is written from the chosen window', async ({ page }, info) => {
+  const watch = watchPanoramaErrors(page);
+  const h = await boot(page, info, Number(process.env.PANORAMA_SWAP_PORT_2 ?? 22341));
+  try {
+    await chooseNarrowSpan(page, h);
+    const highest = Math.max(...h.subscribes.map(message => message.requestSeq ?? 0));
+    await swapPresentations(page, h);
+    const receiptsBefore = (await h.writes()).length;
+    const sentBefore = h.subscribes.length;
+    await page.keyboard.press('[');
+    await expect.poll(async () => (await h.writes()).slice(receiptsBefore).filter(r => r.sub === 0x15).map(r => r.span),
+      { timeout: 10_000 }).toEqual([5_000]);
+    await expect.poll(() => h.coverageWidth(), { timeout: 10_000 }).toBe(10_000);
+    expect(Math.max(...h.subscribes.slice(sentBefore).map(message => message.requestSeq ?? 0))).toBeGreaterThan(highest);
+    expectPanoramaSettled(watch);
+  } finally {
+    await h.server.kill();
+  }
+});
+
+/**
+ * MOR-4534 row 3 (must-not): a real close — the last panel goes with its
+ * socket — still restores the pre-session span at once.
+ */
+test('IC-705: closing the page after a user-chosen span restores the radio span at once', async ({ page }, info) => {
+  const h = await boot(page, info, Number(process.env.PANORAMA_SWAP_PORT_3 ?? 22342));
+  try {
+    await chooseNarrowSpan(page, h);
+    const receiptsBefore = (await h.writes()).length;
+    await page.close();
+    await expect.poll(async () => (await h.writes()).slice(receiptsBefore).filter(r => r.sub === 0x15).map(r => r.span),
+      { timeout: 5_000 }).toEqual([50_000]);
+  } finally {
+    await h.server.kill();
+  }
+});
