@@ -11,6 +11,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.2.0rc10] — 2026-11-17
+
+This is the tenth release candidate of 3.2.0. It contains everything merged to main after 3.2.0rc9 (up to #4646).
+
+### Added
+
+- Scope WebSocket: a subscription on `/api/v1/scope` may carry an optional `requestSeq` (a non-negative integer, the client's own number for its connection). The grant for it carries `requestSeq` and `requestState` (`"pending"` or `"settled"`; the string enum may grow), tracked per source and receiver, and a request that is still pending settles later with a re-sent `granted` carrying the same `requestSeq`. Only a request with a higher `requestSeq` than the last one applied on the connection writes the follow span to the radio; a re-sent subscription with the same `requestSeq`, and `requestSeq` 0 (a fresh connection), write nothing. Subscriptions without `requestSeq` behave as before. Additive, not a breaking change for existing WS clients. Documented in `docs/api/scope.md`. (MOR-4532, #4639)
+
+### Fixed
+
+- Panorama: the follow width in the scope subscription now changes only on a user action (SPAN step, ZOOM or a follow preset) and counts as a request until the radio's grant settles it. Fast SPAN presses add up in CENTER and SCROLL-C, ZOOM after a front-panel narrowing zooms from the window on screen, and a resize, a reload or a reconnect no longer writes an old width back to the radio. A page load no longer sets the radio's span. (MOR-4532, #4641)
+- Panorama: switching between the desktop and the mobile view (and rotating a phone) no longer loses the span you chose. The new panel is subscribed before the old one is released, so the radio's pre-session span is not restored in between, and the new panel continues the chosen width and request number instead of falling back to 100 kHz. Closing the page still restores the radio's span. (MOR-4534, #4645)
+
+### Internal
+
+- Test and CI robustness only, no product change: a timeout budget for the real-layout audio-FFT component tests (#4643), simulator fault-plan timers armed at the plan's absolute due time (#4644), and a 60-minute timeout for the publish `validate` job (#4646).
+
 ## [3.2.0rc9] — 2026-11-16
 
 This is the ninth release candidate of 3.2.0 and the first cut from main. 3.2.0rc1 to 3.2.0rc8 were cut from the release/3.2.x branch; their notes follow below. This candidate contains everything merged to main up to #4605.
@@ -5303,7 +5320,8 @@ These deprecation closures were announced in v0.19 and dropped on schedule.
 - Transport layer, authentication, CI-V commands, meters, PTT, keep-alive.
 - Clean-room Icom LAN UDP protocol implementation.
 
-[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.2.0rc9...HEAD
+[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.2.0rc10...HEAD
+[3.2.0rc10]: https://github.com/rigplane/rigplane-core/compare/v3.2.0rc9...v3.2.0rc10
 [3.2.0rc9]: https://github.com/rigplane/rigplane-core/compare/v3.2.0rc8...v3.2.0rc9
 [3.2.0rc8]: https://github.com/rigplane/rigplane-core/compare/v3.2.0rc7...v3.2.0rc8
 [3.2.0rc7]: https://github.com/rigplane/rigplane-core/compare/v3.2.0rc6...v3.2.0rc7
