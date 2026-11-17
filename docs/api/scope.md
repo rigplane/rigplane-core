@@ -85,8 +85,11 @@ settles as follows:
 | Superseded by a newer request on the same subscription | by the newer request's grant |
 | A paused request (`maxFps: 0`): no view action, no frames | in its first grant |
 
-Once a grant says `"settled"` for a `requestSeq`, no later grant says
-`"pending"` for that same `requestSeq`. Audio and IQ sources are settled in the first grant. Without `requestSeq`, the
+Once a grant says `"settled"` for a `requestSeq`, no later grant for the same
+subscription key (`sourceId`, `receiver`) says `"pending"` for that
+`requestSeq` or an older one. Settling is tracked per key: a request on another
+key of the same socket settles nothing here.
+Audio and IQ sources are settled in the first grant. Without `requestSeq`, the
 grant has neither field and behaves as before. See
 `src/rigplane/runtime/scope_session.py: ScopeSession.span_settled` and
 `tests/fixtures/scope-control/control.json`.
