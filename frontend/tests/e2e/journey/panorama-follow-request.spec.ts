@@ -431,3 +431,115 @@ test('IC-705: closing the page after a user-chosen span restores the radio span 
     await h.server.kill();
   }
 });
+
+/** Presses SPAN until the radio streams `target`, then waits for its 27 15 receipt. */
+async function chooseSpan(page: Page, h: Harness, target: number): Promise<void> {
+  await expect.poll(() => h.width(), { timeout: 15_000 }).toBe(100_000);
+  for (let step = 0; step < 6 && h.coverageWidth() !== target; step++) {
+    const before = h.coverageWidth();
+    await page.keyboard.press(target > before ? ']' : '[');
+    await expect.poll(() => h.coverageWidth(), { timeout: 10_000 }).not.toBe(before);
+    await settleOnFrames(h, 8);
+  }
+  expect(h.coverageWidth()).toBe(target);
+  await expect.poll(async () => (await h.writes()).filter(r => r.sub === 0x15).at(-1)?.span).toBe(target / 2);
+}
+
+async function expectFollowWindow(page: Page, width: number): Promise<void> {
+  await expect.poll(async () => {
+    const axis = await page.locator('.freq-axis .tick').allInnerTexts();
+    return [axis[0], axis.at(-1)];
+  }).toEqual([`-${width / 2000}k`, `+${width / 2000}k`]);
+  await expect(page.getByTestId('scope-span-value').first()).toHaveText(`±${width / 2000}k`);
+}
+
+for (const [chosen, key, next] of [[200_000, ']', 500_000], [500_000, '[', 200_000]] as const) {
+  /**
+   * MOR-4534 pre-review P1 #2: the incoming panel carries the outgoing
+   * request (its width and requestSeq) instead of the 100 kHz default, so a
+   * span above 100 kHz is neither cropped nor written; axes, readout and the
+   * next step all come from the chosen window.
+   */
+  test(`IC-705: a presentation switch keeps a chosen ${chosen / 1000} kHz window and steps from it`, async ({ page }, info) => {
+    const watch = watchPanoramaErrors(page);
+    const h = await boot(page, info, Number(process.env[`PANORAMA_SWAP_PORT_${chosen}`] ?? (chosen === 200_000 ? 22343 : 22344)));
+    try {
+      await chooseSpan(page, h, chosen);
+      const receiptsBefore = (await h.writes()).length;
+      await swapPresentations(page, h);
+      expect((await h.writes()).slice(receiptsBefore).filter(r => r.sub === 0x15)).toEqual([]);
+      expect(h.coverageWidth()).toBe(chosen);
+      expect(h.width()).toBe(chosen);
+      await expectFollowWindow(page, chosen);
+      await page.keyboard.press(key);
+      await expect.poll(async () => (await h.writes()).slice(receiptsBefore).filter(r => r.sub === 0x15).map(r => r.span),
+        { timeout: 10_000 }).toEqual([next / 2]);
+      await expect.poll(() => h.coverageWidth(), { timeout: 10_000 }).toBe(next);
+      expectPanoramaSettled(watch);
+    } finally {
+      await h.server.kill();
+    }
+  });
+}
+
+/**
+ * MOR-4534 pre-review P1 #1: rotating the phone replaces the portrait panel
+ * with the landscape one inside the mobile presentation (no presentation
+ * switch). The same surface hold covers it: zero span writes, the chosen
+ * window is kept, and the next SPAN steps from it.
+ */
+test('IC-705: rotating the phone after a chosen 200 kHz window writes no span and keeps the window', async ({ page }, info) => {
+  const watch = watchPanoramaErrors(page);
+  const h = await boot(page, info, Number(process.env.PANORAMA_SWAP_PORT_ROTATE ?? 22345));
+  try {
+    await chooseSpan(page, h, 200_000);
+    const sockets = h.sockets();
+    const receiptsBefore = (await h.writes()).length;
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect(page.locator('.spectrum-panel').first()).toBeVisible();
+    await settleOnFrames(h, 20);
+    await page.setViewportSize({ width: 844, height: 390 });
+    await expect(page.locator('.m-landscape .spectrum-panel').first()).toBeVisible();
+    await settleOnFrames(h, 20);
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect(page.locator('.m-landscape')).toHaveCount(0);
+    await settleOnFrames(h, 20);
+    await page.setViewportSize({ width: 1728, height: 1200 });
+    await expect(page.getByTestId('scope-span-value').first()).toBeVisible();
+    await settleOnFrames(h, 30);
+    expect(h.sockets()).toBe(sockets);
+    expect((await h.writes()).slice(receiptsBefore).filter(r => r.sub === 0x15)).toEqual([]);
+    expect(h.coverageWidth()).toBe(200_000);
+    await expectFollowWindow(page, 200_000);
+    await page.keyboard.press(']');
+    await expect.poll(async () => (await h.writes()).slice(receiptsBefore).filter(r => r.sub === 0x15).map(r => r.span),
+      { timeout: 10_000 }).toEqual([250_000]);
+    expectPanoramaSettled(watch);
+  } finally {
+    await h.server.kill();
+  }
+});
+
+/**
+ * MOR-4534 pre-review P2 #5: the dual-sdr-face presentation mounts passive
+ * radio follow surfaces (ReceiverScopeWaterfall: no user span request). Switching to it
+ * after a chosen 20 kHz window writes no span: an automatic follow
+ * subscription carries requestSeq 0 through the shared surface mechanism.
+ */
+test('IC-705: switching to the dual-sdr-face presentation after a chosen span writes no span', async ({ page }, info) => {
+  const h = await boot(page, info, Number(process.env.PANORAMA_SWAP_PORT_PANADAPTER ?? 22346));
+  try {
+    await chooseSpan(page, h, 20_000);
+    const receiptsBefore = (await h.writes()).length;
+    const sentBefore = h.subscribes.length;
+    await page.getByLabel('Select UI skin').first().selectOption('dual-sdr-face');
+    await expect(page.locator('canvas[aria-label="Receiver spectrum"]').first()).toBeAttached();
+    await expect.poll(() => h.subscribes.length, { timeout: 15_000 }).toBeGreaterThan(sentBefore);
+    await settleOnFrames(h, 30);
+    expect(h.subscribes.slice(sentBefore).every(message => message.requestSeq !== undefined)).toBe(true);
+    expect((await h.writes()).slice(receiptsBefore).filter(r => r.sub === 0x15)).toEqual([]);
+    expect(h.coverageWidth()).toBe(20_000);
+  } finally {
+    await h.server.kill();
+  }
+});

@@ -301,3 +301,68 @@ describe('MOR-4534: a presentation swap subscribes before it unsubscribes', () =
     await owner.hardwareScopeDriver.stop(handle);
   });
 });
+
+describe('MOR-4534: a mounting surface continues the follow request on its key', () => {
+  const facts: CanvasSurfaceFacts = { cssW: 400, cssH: 100, backingW: 800, backingH: 200, pixelScale: 2, visible: true };
+  async function connected() {
+    const { port, change } = channel();
+    const owner = new ScopeController(() => port as unknown as WsChannel);
+    const handle = await owner.hardwareScopeDriver.start(); change('connected');
+    const sent = () => port.sendRaw.mock.calls.map(call => call[0] as Record<string, unknown>);
+    return { port, change, owner, handle, sent };
+  }
+
+  it('a passive radio follow surface sends requestSeq 0 with the newest request width', async () => {
+    const { port, owner, handle, sent } = await connected();
+    const stream = owner.stream('hardware');
+    const chosen = scopeSubscriptionSurface(document.createElement('div'),
+      { stream, receiver: 0, view: { follow: 'vfo', spanHz: 200_000 }, facts, requestSeq: 3 });
+    expect(stream.followContext(0)).toEqual({ spanHz: 200_000, requestSeq: 3 });
+    port.sendRaw.mockClear();
+    const release = owner.holdSurfaces();
+    chosen.destroy();
+    const passive = scopeSubscriptionSurface(document.createElement('div'),
+      { stream, receiver: 0, view: { follow: 'vfo', spanHz: 100_000 }, facts });
+    release();
+    expect(sent()).toEqual([{ type: 'subscribe', sourceId: 'radio', receiver: 0,
+      view: { follow: 'vfo', spanHz: 200_000 }, width: 800, maxFps: 20, requestSeq: 0 }]);
+    passive.destroy();
+    await owner.hardwareScopeDriver.stop(handle);
+  });
+
+  it('with no follow request on the key a passive surface keeps its own width, still at requestSeq 0', async () => {
+    const { owner, handle, sent } = await connected();
+    const passive = scopeSubscriptionSurface(document.createElement('div'),
+      { stream: owner.stream('hardware'), receiver: 0, view: { follow: 'vfo', spanHz: 100_000 }, facts });
+    expect(sent()).toEqual([{ type: 'subscribe', sourceId: 'radio', receiver: 0,
+      view: { follow: 'vfo', spanHz: 100_000 }, width: 800, maxFps: 20, requestSeq: 0 }]);
+    passive.destroy();
+    await owner.hardwareScopeDriver.stop(handle);
+  });
+
+  it('a passive request never replaces the user request it continues, and a new session keeps only the width', async () => {
+    const { change, owner, handle } = await connected();
+    const stream = owner.stream('hardware');
+    const chosen = scopeSubscriptionSurface(document.createElement('div'),
+      { stream, receiver: 0, view: { follow: 'vfo', spanHz: 500_000 }, facts, requestSeq: 4 });
+    const passive = scopeSubscriptionSurface(document.createElement('div'),
+      { stream, receiver: 0, view: { follow: 'vfo', spanHz: 100_000 }, facts });
+    expect(stream.followContext(0)).toEqual({ spanHz: 500_000, requestSeq: 4 });
+    change('disconnected'); change('connected');
+    expect(stream.followContext(0)).toEqual({ spanHz: 500_000, requestSeq: 0 });
+    passive.destroy(); chosen.destroy();
+    await owner.hardwareScopeDriver.stop(handle);
+  });
+
+  it('audio surfaces stay untagged', async () => {
+    const { port, change } = channel();
+    const owner = new ScopeController(() => port as unknown as WsChannel);
+    const handle = await owner.audioFftDriver.start(); change('connected');
+    const surface = scopeSubscriptionSurface(document.createElement('div'),
+      { stream: owner.stream('audio_fft'), receiver: null, view: { follow: 'vfo', spanHz: 48_000 }, facts });
+    expect(port.sendRaw).toHaveBeenCalled();
+    expect(port.sendRaw.mock.calls.every(call => !('requestSeq' in (call[0] as object)))).toBe(true);
+    surface.destroy();
+    await owner.audioFftDriver.stop(handle);
+  });
+});
