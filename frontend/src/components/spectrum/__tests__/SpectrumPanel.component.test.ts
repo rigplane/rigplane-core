@@ -1861,6 +1861,98 @@ describe('SpectrumPanel component', () => {
       expect(view(target).view).toEqual({ follow: 'vfo', spanHz: 500_000 });
     });
 
+    // Adviser decision (b): the follow width in a subscription changes ONLY
+    // on a user action; settled changes the display and the step base only.
+    const settledAt200k = async () => {
+      const target = await mountAt(0, 100_000);
+      mockRuntime.scope.spanControl!.step(1); flushSync();
+      grant('settled', 13_950_000, 14_150_000);
+      window(200_000, 0, 2); await flushWaterfallPaint();
+      return target;
+    };
+
+    it('external narrowing then a resize: the re-sent subscription keeps the requested width and seq, the display stays 50k', async () => {
+      const callbacks: Array<() => void> = [];
+      let boxWidth = 200;
+      vi.stubGlobal('ResizeObserver', class {
+        constructor(private readonly callback: ResizeObserverCallback) {}
+        observe(target: Element) {
+          const fire = () => this.callback([{ target, contentRect: { width: boxWidth, height: 100 } } as ResizeObserverEntry],
+            this as unknown as ResizeObserver);
+          callbacks.push(fire); fire();
+        }
+        unobserve() {}
+        disconnect() {}
+      });
+      try {
+        const target = await settledAt200k();
+        const requested = view(target);
+        expect(requested.view).toEqual({ follow: 'vfo', spanHz: 200_000 });
+        window(50_000, 0, 3); window(50_000, 0, 4); await flushWaterfallPaint();
+        const sentBefore = subscribes().length;
+        boxWidth = 320;
+        for (const fire of callbacks) fire();
+        flushSync(); window(50_000, 0, 5); await flushWaterfallPaint();
+        const resent = subscribes().slice(sentBefore);
+        expect(resent.length).toBeGreaterThan(0);
+        for (const message of resent) {
+          expect(message.view).toEqual({ follow: 'vfo', spanHz: 200_000 });
+          expect(message.requestSeq).toBe(requested.requestSeq);
+        }
+        expect(spectrumRendererHarness.lastOptions.spanHz).toBe(50_000);
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    });
+
+    it('reconnect: the re-sent subscription is seq 0 with the last requested width, and the display follows the radio', async () => {
+      const target = await settledAt200k();
+      expect(view(target).requestSeq).toBeGreaterThan(0);
+      const channel = harnessChannels.scope;
+      channel.disconnect(); flushSync();
+      const sentBefore = subscribes().length;
+      channel.connect(); flushSync();
+      const resent = subscribes().slice(sentBefore);
+      expect(resent.length).toBeGreaterThan(0);
+      for (const message of resent) {
+        expect(message.requestSeq).toBe(0);
+        expect(message.view).toEqual({ follow: 'vfo', spanHz: 200_000 });
+      }
+      // The radio sits on an externally set 50 kHz window: the display follows it.
+      window(50_000, 0, 3); window(50_000, 0, 4); await flushWaterfallPaint();
+      expect(spectrumRendererHarness.lastOptions.spanHz).toBe(50_000);
+      expect(view(target)).toMatchObject({ view: { follow: 'vfo', spanHz: 200_000 }, requestSeq: 0 });
+      // The next user step is request 1 of the new connection, from the radio's window.
+      mockRuntime.scope.spanControl!.step(-1); flushSync();
+      expect(view(target)).toMatchObject({ view: { follow: 'vfo', spanHz: 20_000 }, requestSeq: 1 });
+    });
+
+    it('one stale old-width frame right after the settle shows for one frame and leaves the subscription unchanged', async () => {
+      const target = await mountAt(0, 100_000);
+      mockRuntime.scope.spanControl!.step(1); flushSync();
+      const requested = view(target);
+      grant('settled', 13_950_000, 14_150_000);
+      const sentBefore = subscribes().length;
+      window(100_000, 0, 2); await flushWaterfallPaint();
+      expect(view(target)).toEqual(requested);
+      window(200_000, 0, 3); await flushWaterfallPaint();
+      expect(view(target)).toEqual(requested);
+      expect(spectrumRendererHarness.lastOptions.spanHz).toBe(200_000);
+      expect(subscribes()).toHaveLength(sentBefore);
+    });
+
+    it('no code path assigns a frame width to the follow request (source)', () => {
+      const source = readFileSync(resolve(process.cwd(), 'src/components/spectrum/SpectrumPanel.svelte'), 'utf8');
+      const writes = [...source.matchAll(/followSpanHz\s*=(?!=)/g)];
+      // The one write lives in requestFollowSpan, and only user actions call it.
+      expect(writes).toHaveLength(1);
+      const writer = source.slice(source.lastIndexOf('function ', writes[0]!.index), writes[0]!.index);
+      expect(writer).toMatch(/^function requestFollowSpan\(/);
+      const callers = [...source.matchAll(/requestFollowSpan\(/g)].map((match) =>
+        source.slice(source.lastIndexOf('function ', match.index), match.index).match(/^function (\w+)|^(\w+)\(/)?.[0]);
+      expect(callers.slice(1).every((name) => /step|nudgeScopeZoom|applyScopePreset/.test(name ?? 'step'))).toBe(true);
+    });
+
     it('settles only on the grant: a settled grant then a frame makes the geometry the step base', async () => {
       const target = await mountAt(0, 100_000);
       const control = mockRuntime.scope.spanControl!;
