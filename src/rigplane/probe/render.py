@@ -466,11 +466,13 @@ def no_checks_message() -> str:
     return "This radio has no checks yet. Running the read-only probe only."
 
 
-def journal_unreadable_line(path: str) -> str:
-    """A check journal left behind that cannot be read (start line, refusal)."""
+def journal_unreadable_line(path: str | None) -> str:
+    """A check journal left behind that cannot be read: with its path on the
+    console, without it (``None``) in a refusal saved in the capture."""
+    where = "" if path is None else f": {path}"
     return (
         "The file with the values an earlier check should have set back cannot "
-        f"be read: {path}. Check the radio's settings by hand."
+        f"be read{where}. Check the radio's settings by hand."
     )
 
 
