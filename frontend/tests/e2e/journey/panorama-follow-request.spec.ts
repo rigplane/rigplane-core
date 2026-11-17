@@ -501,6 +501,11 @@ test('IC-705: rotating the phone after a chosen 200 kHz window writes no span an
     await page.setViewportSize({ width: 844, height: 390 });
     await expect(page.locator('.m-landscape .spectrum-panel').first()).toBeVisible();
     await settleOnFrames(h, 20);
+    // Landscape entry requests fullscreen (MobileRadioLayout); Chromium resizes
+    // only a normal window, as in mobile-ptt-hold.spec.ts. Same page, same socket.
+    await page.evaluate(async () => {
+      if (document.fullscreenElement) await document.exitFullscreen();
+    });
     await page.setViewportSize({ width: 390, height: 844 });
     await expect(page.locator('.m-landscape')).toHaveCount(0);
     await settleOnFrames(h, 20);
