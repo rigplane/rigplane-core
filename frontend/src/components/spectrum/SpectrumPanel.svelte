@@ -715,8 +715,9 @@
   let followSpanHz = $state<number | null>(null);
   // MOR-4532: `followSpanHz` is a REQUEST, not a width, and it changes ONLY
   // on a user action (requestFollowSpan). Each request carries a
-  // per-connection `requestSeq` (1, 2, …); a fresh scope connection starts at
-  // 0, which is not a request. A grant settles every request up to its
+  // per-connection `requestSeq` (1, 2, …) the ScopeController allocates, so
+  // a remounted panel continues it; a fresh scope connection starts at 0,
+  // which is not a request. A grant settles every request up to its
   // `requestSeq`. While the newest request is unsettled, the displayed follow
   // width and the SPAN step base come from the request, so fast presses
   // accumulate; once it is settled they come from the frame geometry — the
@@ -735,14 +736,31 @@
   let followSettled = $derived(followRequestTracked && (followRequestSeq === 0
     || (settledFollow.epoch === runtime.scope.connectionEpoch && settledFollow.seq >= followRequestSeq)));
   function requestFollowSpan(widthHz: number): void {
-    const epoch = runtime.scope.connectionEpoch;
-    followRequest = { epoch, seq: (followRequest.epoch === epoch ? followRequest.seq : 0) + 1 };
+    followRequest = { epoch: runtime.scope.connectionEpoch, seq: runtime.scope.nextRequestSeq() };
     followSpanHz = widthHz;
+  }
+  // The base width a SPAN step or a CENTER ZOOM starts from: a CENTER crop
+  // when one is shown, else the unsettled request (fast gestures
+  // accumulate), else the displayed frame geometry. SCROLL-C never starts
+  // from a client crop (it would re-pick the existing width and write
+  // nothing).
+  function followGestureBaseHz(observedHz: number | null): number | null {
+    if (requestedView !== null && !isRadioOwnedWindow) return requestedView.endHz - requestedView.startHz;
+    return observedHz !== null ? followViewWidthHz(observedHz) : followSpanHz;
   }
   // The width the follow view shows: the frame geometry once the request is
   // settled, the request while it is pending (or not tracked at all).
   function followViewWidthHz(geometryWidthHz: number): number {
-    return followSettled ? geometryWidthHz : followSpanHz ?? geometryWidthHz;
+    if (!followSettled) return followSpanHz ?? geometryWidthHz;
+    // The settled frame rebuilds the window as freq±span/2: within 1 Hz it is
+    // the request itself, so floor/cap no-ops stay exact.
+    return followSpanHz !== null && Math.abs(geometryWidthHz - followSpanHz) < 1 ? followSpanHz : geometryWidthHz;
+  }
+  // This panel's own radio frame width (the SPAN readout), or null.
+  function radioFrameWidthHz(): number | null {
+    const geometry = frameGeometry;
+    return geometry?.source === 'radio' && geometry.receiver === (spectrumAuthority?.receiver ?? 0)
+      ? geometry.view.endHz - geometry.view.startHz : null;
   }
   const scopeView = createScopeView({ startHz: 0, endHz: 0 });
   let coordinatingView = false;
@@ -983,28 +1001,16 @@
   });
   $effect(() => {
     if (audioFft || sdrSource || !runtime.caps?.span_choices_hz?.length) return;
-    const receiver = spectrumAuthority?.receiver ?? 0;
     const control = {
-      get spanHz(): number | null {
-        const geometry = frameGeometry;
-        return geometry?.source === 'radio' && geometry.receiver === receiver
-          ? geometry.view.endHz - geometry.view.startHz : null;
-      },
+      get spanHz(): number | null { return radioFrameWidthHz(); },
       step(delta: -1 | 1): void {
         // MOR-4392 (coordinator ruling 2026-11-10): SPAN applies in CENTER and
         // SCROLL-C. In FIX/SCROLL-F the edges are wire-owned and a step writes
         // nothing, so it is refused outright (the keys render disabled).
         // MOR-4451: SCROLL-C owns its window but still accepts SPAN.
         if (isSpanDisabledScope(scopeMode)) return;
-        // MOR-4532: CENTER and SCROLL-C step from the unsettled request (fast
-        // presses accumulate), else from the frame geometry. The only
-        // radio-owned scope the guard above lets through is SCROLL-C: it never
-        // steps from a client ZOOM crop (which would re-pick the existing
-        // width and write nothing); CENTER steps from its crop.
-        const observedHz = control.spanHz;
-        const current = requestedView !== null && !isRadioOwnedWindow
-          ? requestedView.endHz - requestedView.startHz
-          : observedHz !== null ? followViewWidthHz(observedHz) : followSpanHz;
+        // MOR-4532: CENTER and SCROLL-C step from followGestureBaseHz.
+        const current = followGestureBaseHz(control.spanHz);
         const choices = runtime.caps?.span_choices_hz ?? [];
         if (current === null) return;
         const next = delta > 0 ? choices.find(span => span > current)
@@ -1118,8 +1124,7 @@
     // inside one preset is a pure client crop with no radio write. The
     // chain reads the exact requested width, not the freq±span/2 view
     // reconstruction, so the floor/cap no-op is exact (1-ulp idempotence).
-    const current = requestedView !== null ? requestedView.endHz - requestedView.startHz
-      : followSpanHz ?? (effectiveView.endHz - effectiveView.startHz);
+    const current = followGestureBaseHz(radioFrameWidthHz()) ?? effectiveView.endHz - effectiveView.startHz;
     let next = current * factor;
     if (factor < 1) {
       // The floor is a few bins of the NARROWEST span choice (see

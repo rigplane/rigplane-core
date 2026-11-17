@@ -166,6 +166,7 @@ type TestScopeFrame = ScopeFrame;
 type ScopeBridge = {
   spanControl: ScopeSpanControl | null;
   readonly connectionEpoch: number;
+  nextRequestSeq(): number;
   stream(source: 'hardware' | 'audio_fft'): ReturnType<ScopeController['stream']>;
   registerPresentationDriver: ScopeController['registerPresentationDriver'];
   subscribeTraceReceipt: ScopeController['subscribeTraceReceipt'];
@@ -292,6 +293,7 @@ runtimeHarness.runtime.scope = {
   get spanControl() { return scopeControllerHarness.spanControl; },
   set spanControl(control) { scopeControllerHarness.spanControl = control; },
   get connectionEpoch() { return scopeControllerHarness.connectionEpoch; },
+  nextRequestSeq: () => scopeControllerHarness.nextRequestSeq(),
   stream: (source) => scopeControllerHarness.stream(source),
   registerPresentationDriver: (host, config) => scopeControllerHarness.registerPresentationDriver(host, config),
   subscribeTraceReceipt: (observer) => scopeControllerHarness.subscribeTraceReceipt(observer),
