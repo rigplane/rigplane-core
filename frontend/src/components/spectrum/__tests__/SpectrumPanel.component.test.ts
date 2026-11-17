@@ -1967,6 +1967,46 @@ describe('SpectrumPanel component', () => {
         && message.requestSeq === requested.requestSeq)).toBe(true);
     });
 
+    it('a remounted panel on the same scope connection continues the request numbers', async () => {
+      await mountAt(0, 100_000);
+      mockRuntime.scope.spanControl!.step(-1); flushSync();
+      mockRuntime.scope.spanControl!.step(-1); flushSync();
+      const before = subscribes().at(-1)!.requestSeq!;
+      expect(before).toBeGreaterThan(1);
+      // A presentation switch: the panel is destroyed and mounted again while
+      // the App's swap bridge holds the scope lease, so the socket stays.
+      const epoch = harnessChannels.scope.sessionEpoch;
+      harnessLeases.push(mockRuntime.acquireHardwareScope());
+      await unmount(components.pop()!); flushSync();
+      const target = mountPanel(); window(20_000, 0, 5); await flushWaterfallPaint();
+      expect(harnessChannels.scope.sessionEpoch).toBe(epoch);
+      mockRuntime.scope.spanControl!.step(1); flushSync();
+      expect(view(target).view).toEqual({ follow: 'vfo', spanHz: 50_000 });
+      expect(view(target).requestSeq).toBeGreaterThan(before);
+      expect(subscribes().at(-1)!.requestSeq).toBeGreaterThan(before);
+    });
+
+    it('ZOOM after an external narrowing of a settled request zooms from the shown window', async () => {
+      const target = await settledAt200k();
+      window(50_000, 0, 3); window(50_000, 0, 4); await flushWaterfallPaint();
+      expect(spectrumRendererHarness.lastOptions.spanHz).toBe(50_000);
+      target.querySelector<HTMLButtonElement>('[data-testid="scope-zoom-in"]')!.click(); flushSync();
+      expect(view(target).view).toEqual({ follow: 'vfo', spanHz: 25_000 });
+      // Pending: the next ZOOM− expands from the request just made.
+      target.querySelector<HTMLButtonElement>('[data-testid="scope-zoom-out"]')!.click(); flushSync();
+      expect(view(target).view).toEqual({ follow: 'vfo', spanHz: 50_000 });
+    });
+
+    it('ZOOM− after an external narrowing of a settled widest request expands from the shown window', async () => {
+      const target = await mountAt(0, 100_000);
+      for (let press = 0; press < 3; press++) { mockRuntime.scope.spanControl!.step(1); flushSync(); }
+      expect(view(target).view).toEqual({ follow: 'vfo', spanHz: 1_000_000 });
+      grant('settled', 13_550_000, 14_550_000);
+      window(1_000_000, 0, 2); window(50_000, 0, 3); window(50_000, 0, 4); await flushWaterfallPaint();
+      target.querySelector<HTMLButtonElement>('[data-testid="scope-zoom-out"]')!.click(); flushSync();
+      expect(view(target).view).toEqual({ follow: 'vfo', spanHz: 100_000 });
+    });
+
     it('settles only on the grant: a settled grant then a frame makes the geometry the step base', async () => {
       const target = await mountAt(0, 100_000);
       const control = mockRuntime.scope.spanControl!;

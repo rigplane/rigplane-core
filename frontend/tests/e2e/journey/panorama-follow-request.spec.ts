@@ -274,3 +274,71 @@ test('IC-705 CENTER: stale old-width frames right after the span ACK change no s
     await h.server.kill();
   }
 });
+
+/**
+ * Pre-review P1 #2: ZOOM after an external narrowing of a settled request
+ * zooms from the shown window, as SPAN does: ZOOM+ from the displayed 50 kHz
+ * asks for 25 kHz, and ZOOM− expands from the displayed width.
+ */
+test('IC-705 CENTER: ZOOM after an external narrowing zooms from the shown window', async ({ page }, info) => {
+  const watch = watchPanoramaErrors(page);
+  const h = await boot(page, info, Number(process.env.PANORAMA_FOLLOW_PORT_ZOOM ?? 22328));
+  try {
+    await wideThenExternalNarrow(page, h);
+    await settleOnFrames(h, 20);
+    await expect(page.getByTestId('scope-span-value').first()).toHaveText('±25k');
+    const sentBefore = h.subscribes.length;
+    await page.getByRole('button', { name: 'More scope controls' }).first().click();
+    await page.getByTestId('scope-zoom-in').first().click();
+    await expect.poll(() => h.subscribes.slice(sentBefore).at(-1)?.spanHz, { timeout: 10_000 }).toBe(25_000);
+    await expect.poll(() => h.width(), { timeout: 10_000 }).toBe(25_000);
+    await settleOnFrames(h, 20);
+    const zoomOutFrom = h.subscribes.length;
+    await page.getByTestId('scope-zoom-out').first().click();
+    await expect.poll(() => h.subscribes.slice(zoomOutFrom).at(-1)?.spanHz, { timeout: 10_000 }).toBe(50_000);
+    await expect.poll(() => h.width(), { timeout: 10_000 }).toBe(50_000);
+    expectPanoramaSettled(watch);
+  } finally {
+    await h.server.kill();
+  }
+});
+
+/**
+ * Pre-review P1 #1: a presentation switch remounts the panel while the App's
+ * swap bridge keeps the scope socket. The next SPAN press must carry a
+ * requestSeq above the last one on that socket, or the server ignores it.
+ */
+test('IC-705: after a presentation switch on the same socket the next SPAN press changes the radio span', async ({ page }, info) => {
+  const watch = watchPanoramaErrors(page);
+  const h = await boot(page, info, Number(process.env.PANORAMA_FOLLOW_PORT_SWITCH ?? 22329));
+  try {
+    await expect.poll(() => h.width(), { timeout: 15_000 }).toBe(100_000);
+    for (const expected of [50_000, 20_000]) {
+      await page.keyboard.press('[');
+      await expect.poll(() => h.coverageWidth(), { timeout: 10_000 }).toBe(expected);
+      await settleOnFrames(h, 10);
+    }
+    const highest = Math.max(...h.subscribes.map(message => message.requestSeq ?? 0));
+    expect(highest).toBeGreaterThan(1);
+    const sockets = h.sockets();
+    // Narrow viewport: the mobile presentation; back: the desktop one.
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect(page.locator('.spectrum-panel').first()).toBeVisible();
+    await page.setViewportSize({ width: 1728, height: 1200 });
+    await expect(page.getByTestId('scope-span-value').first()).toBeVisible();
+    await settleOnFrames(h, 30);
+    expect(h.sockets()).toBe(sockets);
+    // The next SPAN+ steps from the radio's window as it streams now.
+    const observed = h.coverageWidth();
+    const next = h.choices.find(choice => choice > observed)!;
+    const receiptsBefore = (await h.writes()).length;
+    const sentBefore = h.subscribes.length;
+    await page.keyboard.press(']');
+    await expect.poll(() => h.coverageWidth(), { timeout: 10_000 }).toBe(next);
+    expect(Math.max(...h.subscribes.slice(sentBefore).map(message => message.requestSeq ?? 0))).toBeGreaterThan(highest);
+    expect((await h.writes()).slice(receiptsBefore).filter(r => r.sub === 0x15).map(r => r.span)).toEqual([next / 2]);
+    expectPanoramaSettled(watch);
+  } finally {
+    await h.server.kill();
+  }
+});
