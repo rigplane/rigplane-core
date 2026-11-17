@@ -1,6 +1,7 @@
 """R5 review regressions: real Core RX, SDK and local WebSocket seams."""
 
 import asyncio
+import json
 import logging
 from contextlib import asynccontextmanager
 
@@ -1800,3 +1801,278 @@ async def test_native_width_known_at_subscribe_needs_no_regrant(windowed_sdk):
             message = await ws.receive(timeout=5)
             assert message.type is aiohttp.WSMsgType.BINARY
             assert decode_scope_frame_v2(message.data).width == native_width
+
+
+# ── MOR-4532 PR-A: the grant echoes request_seq and carries request_state ──
+# The client's request_seq is echoed and ordered, never interpreted; the
+# grant (and only the grant) says when that request is settled. Settling
+# reads ScopeSession's existing facts: the span write's outcome and the
+# first frame after its answer window closed (a muted receiver streams no
+# frame, which makes "no frame yet" deterministic).
+
+
+def _request(request_seq, span_hz):
+    return Subscription(
+        "radio", 0, FollowView("vfo", span_hz), 475, 20, request_seq=request_seq
+    )
+
+
+async def _grants(ws, until, timeout=10):
+    """Every granted document, in arrival order, until ``until(grant)``."""
+    grants = []
+    async with asyncio.timeout(timeout):
+        while True:
+            message = await ws.receive(timeout=5)
+            if message.type is not aiohttp.WSMsgType.TEXT:
+                continue
+            assert '"error"' not in message.data, message.data
+            grants.append(decode_scope_granted(message.data))
+            if until(grants[-1]):
+                return grants
+
+
+def _settled(request_seq):
+    return lambda grant: (grant.request_seq, grant.request_state) == (
+        request_seq,
+        "settled",
+    )
+
+
+async def _settle_first_request(ws):
+    await ws.send_str(encode_scope_subscription(_request(1, 100_000)))
+    await _grants(ws, _settled(1))
+    await _frame_with(ws, (14_050_000, 14_150_000))
+
+
+async def _mute(sim, receiver=0):
+    sim.muted.add(receiver)
+    # Let a frame already on the wire land before the request goes out.
+    await asyncio.sleep(0.3)
+
+
+def _span_sets(sim):
+    return [w for w in _viewport_writes(sim) if w.sub == 0x15]
+
+
+async def _texts_until_frames(ws, view, count, timeout=10):
+    """Every text document received until ``count`` frames show ``view``."""
+    documents = []
+    async with asyncio.timeout(timeout):
+        while count:
+            message = await ws.receive(timeout=5)
+            if message.type is aiohttp.WSMsgType.TEXT:
+                documents.append(json.loads(message.data))
+            elif message.type is aiohttp.WSMsgType.BINARY:
+                frame = decode_scope_frame_v2(message.data)
+                if (frame.view_start_hz, frame.view_end_hz) == view:
+                    count -= 1
+    return documents
+
+
+@pytest.mark.parametrize("windowed_sdk", ["IC-7610", "IC-705"], indirect=True)
+async def test_request_seq_acked_span_write_settles_on_the_next_frame(windowed_sdk):
+    """Change C, ACK: the acknowledged write alone does not settle the
+    request; the first frame after the answer does, and the grant that says
+    so precedes the frames at the requested width."""
+    radio, sim = windowed_sdk
+    sim.capture_civ_frames = True
+    sim.set_frequency(14_100_000)
+    radio._radio_state.main.freq = 14_100_000
+    presets = radio._profile.scope_span_presets_hz
+    async with web(radio) as (_, client, base, protocols, _):
+        async with client.ws_connect(base + "/api/v1/scope", protocols=protocols) as ws:
+            await _settle_first_request(ws)
+            await _mute(sim)
+            sim.civ_frames_received.clear()
+            await ws.send_str(encode_scope_subscription(_request(2, 500_000)))
+            (first,) = await _grants(ws, lambda grant: True)
+            assert (first.request_seq, first.request_state) == (2, "pending")
+            assert sim.views[0][1] == presets.index(250_000)
+            sim.muted.discard(0)
+            grants = await _grants(ws, _settled(2))
+            assert {grant.request_seq for grant in grants} == {2}
+            await _frame_with(ws, (14_100_000 - 250_000, 14_100_000 + 250_000))
+            assert len(_span_sets(sim)) == 1
+
+
+@pytest.mark.parametrize("windowed_sdk", ["IC-7610", "IC-705"], indirect=True)
+async def test_request_seq_lost_ack_settles_on_the_first_frame_after_the_window(
+    windowed_sdk, monkeypatch
+):
+    """Change C, uncertain: the span SET ends without an answer and the
+    radio stays on the old span. The first frame after that write's answer
+    window settles the request, and the geometry shows the old span."""
+    radio, sim = windowed_sdk
+    sim.capture_civ_frames = True
+    sim.set_frequency(14_100_000)
+    radio._radio_state.main.freq = 14_100_000
+    send = radio._send_civ_raw
+
+    async def lost_span_ack(payload, **kwargs):
+        frame = parse_civ_frame(payload)
+        if frame.command == 0x27 and frame.sub == 0x15 and len(frame.data) > 1:
+            raise TimeoutError("lost ACK")
+        return await send(payload, **kwargs)
+
+    async with web(radio) as (_, client, base, protocols, _):
+        async with client.ws_connect(base + "/api/v1/scope", protocols=protocols) as ws:
+            await _settle_first_request(ws)
+            await _mute(sim)
+            monkeypatch.setattr(radio, "_send_civ_raw", lost_span_ack)
+            await ws.send_str(encode_scope_subscription(_request(2, 500_000)))
+            (first,) = await _grants(ws, lambda grant: True)
+            assert (first.request_seq, first.request_state) == (2, "pending")
+            sim.muted.discard(0)
+            await _grants(ws, _settled(2))
+            await _frame_with(ws, (14_050_000, 14_150_000))
+
+
+@pytest.mark.parametrize("windowed_sdk", ["IC-7610", "IC-705"], indirect=True)
+async def test_request_seq_refused_span_write_is_settled_in_its_grant(
+    windowed_sdk, monkeypatch
+):
+    """Change C, refusal: the radio refuses the span SET, so the grant is
+    settled at once (no frame needed) and nothing retries the write."""
+    radio, sim = windowed_sdk
+    sim.capture_civ_frames = True
+    sim.set_frequency(14_100_000)
+    radio._radio_state.main.freq = 14_100_000
+    dispatch = sim._dispatch_civ
+
+    def refuse_span(cmd, payload, from_addr):
+        if cmd == 0x27 and payload[:1] == b"\x15" and len(payload) > 2:
+            return sim._civ_nak(from_addr, sim._radio_addr)
+        return dispatch(cmd, payload, from_addr)
+
+    async with web(radio) as (_, client, base, protocols, _):
+        async with client.ws_connect(base + "/api/v1/scope", protocols=protocols) as ws:
+            await _settle_first_request(ws)
+            await _mute(sim)
+            monkeypatch.setattr(sim, "_dispatch_civ", refuse_span)
+            sim.civ_frames_received.clear()
+            await ws.send_str(encode_scope_subscription(_request(2, 500_000)))
+            (first,) = await _grants(ws, lambda grant: True)
+            assert (first.request_seq, first.request_state) == (2, "settled")
+            sim.muted.discard(0)
+            await _frame_with(ws, (14_050_000, 14_150_000))
+            assert len(_span_sets(sim)) == 1
+
+
+async def test_request_seq_fast_requests_are_answered_in_order(windowed_sdk):
+    """Change B: requests 5 and 6 sent before any grant. Grants never go
+    back to an older request, and request 6 ends settled at its width."""
+    radio, sim = windowed_sdk
+    sim.set_frequency(14_100_000)
+    radio._radio_state.main.freq = 14_100_000
+    async with web(radio) as (_, client, base, protocols, _):
+        async with client.ws_connect(base + "/api/v1/scope", protocols=protocols) as ws:
+            await ws.send_str(encode_scope_subscription(_request(5, 200_000)))
+            await ws.send_str(encode_scope_subscription(_request(6, 500_000)))
+            grants = await _grants(ws, _settled(6))
+            sequence = [grant.request_seq for grant in grants]
+            assert sequence == sorted(sequence) and set(sequence) <= {5, 6}
+            await _frame_with(ws, (14_100_000 - 250_000, 14_100_000 + 250_000))
+
+
+async def test_request_seq_another_clients_span_change_leaves_this_grant_settled(
+    windowed_sdk, monkeypatch
+):
+    """Another client's span request (its ACK held, frames flowing) changes
+    this client's geometry but never its grant's request_seq or state."""
+    radio, sim = windowed_sdk
+    sim.set_frequency(14_100_000)
+    radio._radio_state.main.freq = 14_100_000
+    send = radio._send_civ_raw
+    held = asyncio.Event()
+    release = asyncio.Event()
+
+    async def held_span_ack(payload, **kwargs):
+        response = await send(payload, **kwargs)
+        frame = parse_civ_frame(payload)
+        if (
+            frame.command == 0x27
+            and frame.sub == 0x15
+            and frame.data == b"\x00" + bcd_encode(25_000)
+        ):
+            held.set()
+            await release.wait()
+        return response
+
+    async with web(radio) as (_, client, base, protocols, _):
+        async with client.ws_connect(base + "/api/v1/scope", protocols=protocols) as a:
+            await a.send_str(encode_scope_subscription(_request(1, 200_000)))
+            await _grants(a, _settled(1))
+            await _frame_with(a, (14_000_000, 14_200_000))
+            monkeypatch.setattr(radio, "_send_civ_raw", held_span_ack)
+            async with client.ws_connect(
+                base + "/api/v1/scope", protocols=protocols
+            ) as b:
+                narrow = asyncio.create_task(_subscribe(b, _request(9, 50_000)))
+                await asyncio.wait_for(held.wait(), 5)
+                # A's frames keep flowing while B's write awaits its answer.
+                seen = await _texts_until_frames(a, (14_075_000, 14_125_000), 3)
+                release.set()
+                await asyncio.wait_for(narrow, 5)
+                seen += await _texts_until_frames(a, (14_075_000, 14_125_000), 3)
+    # Any grant A received meanwhile is still request 1, settled.
+    for document in seen:
+        grant = decode_scope_granted(json.dumps(document))
+        assert (grant.request_seq, grant.request_state) == (1, "settled")
+
+
+async def test_request_seq_tx_deferred_span_stays_pending_until_applied(
+    windowed_sdk,
+):
+    """Change C, TX: a span request during transmit is deferred, so its
+    grant stays pending while frames flow; after TX the write goes out and
+    the next frame settles it."""
+    radio, sim = windowed_sdk
+    sim.capture_civ_frames = True
+    sim.set_frequency(14_100_000)
+    radio._radio_state.main.freq = 14_100_000
+    async with web(radio) as (_, client, base, protocols, _):
+        async with client.ws_connect(base + "/api/v1/scope", protocols=protocols) as ws:
+            await _settle_first_request(ws)
+            ptt_reply(radio, True)
+            sim.civ_frames_received.clear()
+            await ws.send_str(encode_scope_subscription(_request(2, 500_000)))
+            (first,) = await _grants(ws, lambda grant: True)
+            assert (first.request_seq, first.request_state) == (2, "pending")
+            # Frames at the old width flow and settle nothing.
+            during = await _texts_until_frames(ws, (14_050_000, 14_150_000), 3)
+            assert all(
+                (d["request_seq"], d["request_state"]) == (2, "pending")
+                for d in during
+            )
+            assert _span_sets(sim) == []
+            ptt_reply(radio, False)
+            await _grants(ws, _settled(2))
+            await _frame_with(ws, (14_100_000 - 250_000, 14_100_000 + 250_000))
+            assert len(_span_sets(sim)) == 1
+
+
+async def test_request_seq_absent_leaves_the_grant_document_unchanged(windowed_sdk):
+    """Change D: a subscription without request_seq gets the grant document
+    exactly as before — no request_seq, no request_state."""
+    radio, sim = windowed_sdk
+    sim.set_frequency(14_100_000)
+    radio._radio_state.main.freq = 14_100_000
+    async with web(radio) as (_, client, base, protocols, _):
+        async with client.ws_connect(base + "/api/v1/scope", protocols=protocols) as ws:
+            await ws.send_str(
+                encode_scope_subscription(
+                    Subscription("radio", 0, FollowView("vfo", 100_000), 475, 20)
+                )
+            )
+            documents = await _texts_until_frames(ws, (14_050_000, 14_150_000), 1)
+            assert documents
+            for document in documents:
+                assert set(document) == {
+                    "type",
+                    "sourceId",
+                    "receiver",
+                    "view",
+                    "coverage",
+                    "width",
+                    "fps",
+                }
