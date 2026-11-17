@@ -2114,7 +2114,7 @@ async def test_request_seq_paused_request_is_settled_without_frames(windowed_sdk
 async def test_request_seq_buffered_delivery_never_reverses_a_settled_grant(
     windowed_sdk, monkeypatch
 ):
-    """A TX-deferred replacement at a low frame rate: while the old
+    """A TX-deferred replacement at a low frame rate (0.5 fps): while the old
     subscription's release is held, the new one buffers a pending delivery,
     then TX ends and the request settles. The initial grant goes out
     settled; the older buffered delivery must not send pending after it."""
@@ -2140,7 +2140,7 @@ async def test_request_seq_buffered_delivery_never_reverses_a_settled_grant(
             await ws.send_str(
                 encode_scope_subscription(
                     Subscription(
-                        "radio", 0, FollowView("vfo", 500_000), 475, 0.1, request_seq=2
+                        "radio", 0, FollowView("vfo", 500_000), 475, 0.5, request_seq=2
                     )
                 )
             )
@@ -2159,9 +2159,9 @@ async def test_request_seq_buffered_delivery_never_reverses_a_settled_grant(
             assert await await_until(lambda: new.granted.request_state == "settled")
             release.set()
             seen = []
-            async with asyncio.timeout(15):
+            async with asyncio.timeout(10):
                 while True:
-                    message = await ws.receive(timeout=12)
+                    message = await ws.receive(timeout=5)
                     if message.type is aiohttp.WSMsgType.TEXT:
                         seen.append(json.loads(message.data))
                     elif message.type is aiohttp.WSMsgType.BINARY:
