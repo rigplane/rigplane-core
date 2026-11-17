@@ -9,6 +9,11 @@
   import { ScopeRenderScheduler } from '../../lib/canvas/scope-render-scheduler';
   import { getStageScale } from '../../primitives/stage/stage-scale';
   import type { ScopeRenderTrace, TraceToken } from '../../lib/runtime/scope-render-trace';
+  import type { ColorSchemeName } from '../../lib/renderers/waterfall-renderer';
+  import StackedTraceCanvas from './StackedTraceCanvas.svelte';
+  import {
+    isStackedTraceEnabled, isStackedTraceUnavailable, markStackedTraceUnavailable,
+  } from '../../lib/stores/stacked-trace.svelte';
   interface Props {
     data: Uint8Array | null;
     options?: SpectrumOptions;
@@ -21,9 +26,15 @@
     /** Surface facts on every size/visibility change (MOR-4271). */
     onSurfaceChange?: (facts: CanvasSurfaceFacts) => void;
     surface?: CanvasSurface;
+    /**
+     * Waterfall palette of the host panorama. A host that passes it (with
+     * its `surface`) lets the user's stacked-trace preference replace the
+     * flat trace (MOR-4463); without it the pane is always flat.
+     */
+    colorScheme?: ColorSchemeName;
   }
 
-  let { data, options = defaultSpectrumOptions, spanHz = 0, absoluteLabels = false, enableAvg = true, enablePeakHold = true, onRegisterPush, onSurfaceChange, surface: sharedSurface, trace = null }: Props = $props();
+  let { data, options = defaultSpectrumOptions, spanHz = 0, absoluteLabels = false, enableAvg = true, enablePeakHold = true, onRegisterPush, onSurfaceChange, surface: sharedSurface, colorScheme, trace = null }: Props = $props();
 
   const renderer = new SpectrumRenderer();
 
@@ -38,7 +49,7 @@
     return `${sign}${absHz} Hz`;
   }
 
-  let canvas: HTMLCanvasElement;
+  let canvas = $state<HTMLCanvasElement>();
 
   // MOR-4271: the one sizing/visibility mechanism and the one redraw
   // scheduler. The scheduler requests an animation frame only while the
@@ -47,6 +58,16 @@
   const suppliedSurface = untrack(() => sharedSurface);
   const surface = suppliedSurface ?? new CanvasSurface({ stageScale: getStageScale() });
   const scheduler = new ScopeRenderScheduler(draw, { active: () => surface.visible && surface.sized });
+
+  // MOR-4463: the stacked-trace view takes over the pane only by the user's
+  // own toggle, for an RF panorama whose host supplied the surface and the
+  // palette; every other case keeps the flat trace.
+  let stacked = $derived(isStackedTraceEnabled() && !isStackedTraceUnavailable()
+    && colorScheme !== undefined && suppliedSurface !== undefined && options.showRfOverlays !== false);
+  let stackedPush: ((pixels: Uint8Array, token?: TraceToken | null) => void) | null = null;
+  // The flat trace sees no frames while the stacked view is shown, so its
+  // averaging and peak history would be stale on return: it starts anew.
+  $effect(() => { if (stacked) renderer.forget(); });
 
   // Latest scope pixels — updated directly from WS binary, not via Svelte props
   let latestPixels: Uint8Array | null = null;
@@ -90,7 +111,17 @@
 
   // The surface publishes sizing (RO ∧ DPR ∧ stage scale) and visibility
   // (IO ∧ !document.hidden); size and visibility wakes repaint from cache.
-  $effect(() => untrack(() => suppliedSurface ? surface.bindBacking(canvas) : surface.attach(canvas)));
+  $effect(() => {
+    // The flat canvas is absent while the stacked view is shown, and is
+    // sized and repainted again when it returns.
+    const target = canvas;
+    if (!target) return;
+    return untrack(() => {
+      const stop = suppliedSurface ? surface.bindBacking(target) : surface.attach(target);
+      wake('size');
+      return stop;
+    });
+  });
   const stopSizeListener = surface.onSizeChanged(() => wake('size'));
   $effect(() => {
     if (surface.visible) wake('visibility');
@@ -109,7 +140,8 @@
       latestPixels = pixels;
       latestToken = token ?? null;
       if (measuring) trace?.record('spectrum_push', latestToken);
-      wake('frame');
+      if (stacked && stackedPush) stackedPush(pixels, latestToken);
+      else wake('frame');
     });
     return () => {
       stopSizeListener();
@@ -119,7 +151,15 @@
 </script>
 
 <div class="spectrum-container">
-  <canvas bind:this={canvas}></canvas>
+  {#if stacked && colorScheme !== undefined}
+    <StackedTraceCanvas {options} {colorScheme} {surface} {trace} onUnavailable={markStackedTraceUnavailable}
+      onRegisterPush={(fn) => {
+        stackedPush = fn;
+        if (latestPixels) fn(latestPixels, latestToken);
+      }} />
+  {:else}
+    <canvas bind:this={canvas}></canvas>
+  {/if}
   {#if options.showRfOverlays !== false && spanHz > 0}
     <div class="span-indicators">
       <span class="span-left">{absoluteLabels ? `${((options.centerHz - spanHz / 2) / 1e6).toFixed(3)} MHz` : formatOffset(spanHz / -2)}</span>

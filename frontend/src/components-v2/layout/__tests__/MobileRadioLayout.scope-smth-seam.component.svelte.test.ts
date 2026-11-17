@@ -299,6 +299,7 @@ import MobileRadioLayout from '../MobileRadioLayout.svelte';
 import { hasTx, hasDualReceiver, hasSpectrum, getCapabilities, getScopeSource } from '$lib/stores/capabilities.svelte';
 import type { Capabilities } from '$lib/types/capabilities';
 import { radio } from '$lib/stores/radio.svelte';
+import { isStackedTraceEnabled, setStackedTraceEnabled } from '$lib/stores/stacked-trace.svelte';
 import { getTxPermit } from '$lib/utils/tx-permit';
 import { presentationResources } from '$lib/runtime/frontend-runtime';
 import { scopeController } from '$lib/runtime/scope-controller.svelte';
@@ -428,6 +429,54 @@ describe('MobileRadioLayout SCOPE -> SMTH reaches the waterfall rows (MOR-4383)'
       expect(capture.lastGroupBytes()).toEqual([solid(53), solid(67), solid(80)]);
     } finally {
       update.mockRestore();
+      capture.restore();
+      vi.mocked(hasSpectrum).mockReturnValue(false);
+      vi.mocked(getScopeSource).mockReturnValue(null);
+      vi.mocked(getCapabilities).mockReturnValue(oldCaps);
+      (radio as unknown as { current: unknown }).current = null;
+    }
+  });
+
+  it('MOR-4463: the phone SCOPE tab carries the 3D key, and it switches the real pane to the 3D view and back', async () => {
+    const oldCaps = getCapabilities();
+    vi.mocked(hasSpectrum).mockReturnValue(true);
+    vi.mocked(getScopeSource).mockReturnValue('hardware');
+    vi.mocked(getCapabilities).mockReturnValue({
+      ...IC7300_CAPABILITIES, vfoReadback: 'none',
+    } as Capabilities);
+    (radio as unknown as { current: unknown }).current = structuredClone(IC7300_STATE);
+    scopeController.configureSources(['radio'], 'radio');
+    presentationResources.configure('hardware-scope', { available: true, selected: true });
+    const capture = captureWaterfallFixtures();
+    setStackedTraceEnabled(false);
+    try {
+      const target = document.createElement('div');
+      document.body.appendChild(target);
+      components.push(mount(MobileRadioLayout, { target }));
+      flushSync();
+      // A live frame mounts the spectrum trace the 3D view replaces.
+      await deliverFrame(40, 1);
+      [...target.querySelectorAll<HTMLButtonElement>('.m-chip')]
+        .find((chip) => chip.textContent?.trim() === 'SCOPE')!.click();
+      flushSync();
+      const key = target.querySelector<HTMLButtonElement>('[data-testid="scope-key-3d"]')!;
+      expect(key.textContent?.trim()).toBe('3D');
+      expect(key.getAttribute('aria-pressed')).toBe('false');
+      expect(target.querySelector('[data-testid="stacked-trace"]')).toBeNull();
+
+      key.click();
+      flushSync();
+      expect(isStackedTraceEnabled()).toBe(true);
+      expect(key.getAttribute('aria-pressed')).toBe('true');
+      expect(target.querySelector('[data-testid="stacked-trace"]')).not.toBeNull();
+
+      key.click();
+      flushSync();
+      expect(isStackedTraceEnabled()).toBe(false);
+      expect(key.getAttribute('aria-pressed')).toBe('false');
+      expect(target.querySelector('[data-testid="stacked-trace"]')).toBeNull();
+    } finally {
+      setStackedTraceEnabled(false);
       capture.restore();
       vi.mocked(hasSpectrum).mockReturnValue(false);
       vi.mocked(getScopeSource).mockReturnValue(null);

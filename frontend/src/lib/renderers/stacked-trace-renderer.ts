@@ -1,0 +1,560 @@
+// Stacked-trace ("3D") panadapter renderer (MOR-4463): the recent spectrum
+// history drawn as traces receding in depth, newest in front. It is fed the
+// same frames and the same WaterfallOptions as the waterfall and keeps each
+// row's own frequency placement, so history stays on its frequencies while
+// the view retunes or zooms.
+
+import { COLOR_SCHEMES, type ColorSchemeName, type WaterfallOptions } from './waterfall-renderer';
+import { estimateNoiseFloor, followNoiseFloor } from './noise-floor';
+import {
+  defaultStackedTraceSettings, projectStackedDepth, projectStackedRow, stackedColumnCount,
+  stackedGlidePhase, stackedRowGeometry,
+  type StackedDepth, type StackedRowGeometry, type StackedRowView, type StackedTraceSettings,
+} from './stacked-trace-geometry';
+
+export class StackedTraceRenderError extends Error {
+  readonly code = 'webgl-required';
+  constructor() { super('WebGL2 required for the stacked-trace view'); }
+}
+
+const BACKGROUND_VERTEX = `#version 300 es
+void main() {
+  vec2 p = vec2(float(gl_VertexID & 1), float(gl_VertexID >> 1));
+  gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);
+}`;
+
+// The floor is the plane of the row baselines, drawn in the same perspective
+// as the rows: frequency divisions of a tenth of the view, converging on the
+// vanishing point and continuing beside the view where far rows reach.
+const BACKGROUND_FRAGMENT = `#version 300 es
+precision highp float;
+uniform vec2 uSize;
+uniform vec3 uFloor;
+out vec4 color;
+void main() {
+  vec3 base = vec3(0.0, 16.0, 32.0) / 255.0;
+  float t = (gl_FragCoord.y - uFloor.x) / uFloor.y;
+  if (t <= 0.0 || t * (1.0 + uFloor.z) >= 1.0) { color = vec4(base, 1.0); return; }
+  float z = t / (1.0 - uFloor.z * t);
+  float scale = 1.0 / (1.0 + uFloor.z * z);
+  float f = 0.5 + (gl_FragCoord.x / uSize.x - 0.5) / scale;
+  float cell = abs(f * 10.0 - floor(f * 10.0 + 0.5)) * uSize.x * scale / 10.0;
+  float grid = (1.0 - smoothstep(0.5, 1.5, cell)) * mix(0.1, 0.02, z);
+  color = vec4(base + vec3(0.03, 0.045, 0.065) * (1.0 - z) + grid, 1.0);
+}`;
+
+// One triangle strip per row: two vertices per column, baseline and crest.
+// A column narrower than a bin interpolates the two adjacent bins about the
+// bin centres. A wider column takes the peak of every bin it spans: each ring
+// row stores the samples followed by their pairwise-maximum levels, and the
+// column reads the first level at which it spans at most eight entries.
+// Every row spans the pane: a row drawn at scale s shows 1 / s of the view,
+// so the view itself narrows toward the vanishing point and the row fills the
+// space beside it where it has samples.
+const ROW_VERTEX = `#version 300 es
+precision highp float;
+precision highp int;
+uniform highp sampler2D uRing;
+uniform vec2 uMap;
+uniform vec2 uCover;
+uniform int uRow;
+uniform vec2 uSamples;
+uniform vec4 uPlace;
+uniform vec4 uFrame;
+uniform vec3 uLevel;
+out float vLevel;
+out float vY;
+out float vCrest;
+out float vSlope;
+out float vCovered;
+float amplitude(float index) {
+  float value = texelFetch(uRing, ivec2(int(index), uRow), 0).r * 255.0;
+  return uSamples.y == 80.0 ? value : min(value, uSamples.y) * 80.0 / uSamples.y;
+}
+float sampleAt(float coordinate) {
+  float position = clamp(coordinate * uSamples.x - 0.5, 0.0, uSamples.x - 1.0);
+  float bin = floor(position);
+  return mix(amplitude(bin), amplitude(min(bin + 1.0, uSamples.x - 1.0)), position - bin);
+}
+float peakAt(float coordinate, float width) {
+  if (uPlace.y <= 1.0) return sampleAt(coordinate);
+  float low = (coordinate - 0.5 * abs(width)) * uSamples.x;
+  float high = (coordinate + 0.5 * abs(width)) * uSamples.x;
+  float start = 0.0, count = uSamples.x, scale = 1.0;
+  for (int i = 0; i < 24; i++) {
+    if ((high - low) / scale <= 8.0 || count <= 1.0) break;
+    start += count; count = ceil(count / 2.0); scale *= 2.0;
+  }
+  float first = clamp(floor(low / scale), 0.0, count - 1.0);
+  float last = clamp(floor(high / scale), 0.0, count - 1.0);
+  float peak = 0.0;
+  for (int i = 0; i < 10; i++) {
+    float bin = first + float(i);
+    if (bin > last) break;
+    peak = max(peak, amplitude(start + bin));
+  }
+  return peak;
+}
+// Height is measured from the noise floor (uLevel.x, a little below it), so
+// the surface stands on the noise whatever the band or the gain; the 0.7
+// power lifts weak signals off it.
+float level(float amplitude80) {
+  return pow(clamp((amplitude80 - uLevel.x) / 80.0, 0.0, 1.0), 0.7);
+}
+void main() {
+  float column = float(gl_VertexID >> 1), top = float(gl_VertexID & 1);
+  float screen = column / (uFrame.x - 1.0);
+  float x = 0.5 + (screen - 0.5) / uPlace.w;
+  float coordinate = uMap.y + uMap.x * x;
+  float width = uMap.x / (uFrame.x - 1.0) / uPlace.w;
+  vLevel = level(peakAt(coordinate, width));
+  vCrest = vLevel * uPlace.z;
+  vSlope = uPlace.y <= 1.0 ? (level(sampleAt(coordinate + width)) - vLevel) * uPlace.z / uFrame.y : 0.0;
+  vCovered = x >= uCover.x && x < uCover.y && coordinate >= 0.0 && coordinate <= 1.0 ? 1.0 : 0.0;
+  vY = top * (vCrest + uFrame.w * 0.5 + 1.0);
+  gl_Position = vec4(screen * 2.0 - 1.0, uPlace.x + vY * uFrame.z, 0.0, 1.0);
+}`;
+
+// The body is opaque, so a nearer row hides what lies behind it; it is
+// coloured by the level each height stands for, and the crest line by the
+// level of the signal itself — both through the waterfall palette. Weak
+// crests are drawn dim, so the noise floor stays quiet under the signals.
+const ROW_FRAGMENT = `#version 300 es
+precision highp float;
+uniform vec4 uPlace;
+uniform vec4 uFrame;
+uniform vec2 uShade;
+uniform vec3 uLevel;
+uniform vec3 uColors[6];
+uniform float uStops[6];
+uniform int uColorCount;
+in float vLevel;
+in float vY;
+in float vCrest;
+in float vSlope;
+in float vCovered;
+out vec4 color;
+vec3 palette(float t) {
+  vec3 rgb = uColors[0];
+  for (int i = 1; i < 6; i++) {
+    if (i >= uColorCount) break;
+    if (t >= uStops[i - 1]) rgb = mix(uColors[i - 1], uColors[i], clamp((t - uStops[i - 1]) / (uStops[i] - uStops[i - 1]), 0.0, 1.0));
+  }
+  return rgb / 255.0;
+}
+// Colour has its own window above the floor (uLevel.z), so a signal keeps
+// its colour whatever the height scale; uLevel.y is the colour gain's gamma.
+vec3 tint(float height) {
+  float above = pow(height, 1.0 / 0.7) * 80.0;
+  return palette(pow(clamp(above / uLevel.z, 0.0, 1.0), uLevel.y));
+}
+void main() {
+  if (vCovered < 0.5) discard;
+  float edge = vCrest - vY + uFrame.w * 0.5;
+  float lineWidth = uFrame.w * min(sqrt(1.0 + vSlope * vSlope), 6.0);
+  float line = (1.0 - smoothstep(lineWidth - 1.0, lineWidth, edge)) * uShade.y;
+  float local = clamp(vY / max(uPlace.z, 1.0), 0.0, 1.0);
+  vec3 body = tint(local) * mix(0.35, 0.8, local);
+  vec3 crest = mix(tint(vLevel) * mix(0.5, 1.0, vLevel), vec3(1.0), 0.3 * vLevel);
+  vec3 rgb = mix(mix(body, crest, line), vec3(0.0, 16.0, 32.0) / 255.0, uShade.x);
+  color = vec4(rgb, clamp(edge + 1.0, 0.0, 1.0));
+}`;
+
+const BACKGROUND_UNIFORMS = ['uSize', 'uFloor'] as const;
+const ROW_UNIFORMS = ['uRing', 'uMap', 'uCover', 'uRow', 'uSamples', 'uPlace', 'uFrame', 'uLevel', 'uShade',
+  'uColors', 'uStops', 'uColorCount'] as const;
+/** Longest gap between two frames that still counts as stream time. */
+const MAX_GAP_MS = 1000;
+
+export class StackedTraceRenderer {
+  private readonly gl: WebGL2RenderingContext;
+  private readonly options: WaterfallOptions;
+  private readonly slots: number;
+  private readonly rows: StackedRowGeometry[];
+  /** Stream time at which each ring slot was committed. */
+  private readonly times: Float64Array;
+  private levels = new Uint8Array(0);
+  /** Per-bin maximum of the frames since the last committed row, and their placement. */
+  private peak = new Uint8Array(0);
+  private readonly peakRow: StackedRowGeometry = {
+    startHz: 0, spanHz: 1, coverStartHz: 0, coverEndHz: 0, samples: 0, sampleOffset: 0, amplitudeMax: 80,
+  };
+  private peakValid = false;
+  /** The last committed history row and its placement: what the next one is blended with. */
+  private blended = new Uint8Array(0);
+  private readonly blendedRow: StackedRowGeometry = {
+    startHz: 0, spanHz: 1, coverStartHz: 0, coverEndHz: 0, samples: 0, sampleOffset: 0, amplitudeMax: 80,
+  };
+  /** The noise floor the surface stands on, on the 0..80 level scale; null before the first frame. */
+  private floor: number | null = null;
+  private maxTextureWidth = 0;
+  private readonly rowView: StackedRowView = { scale: 1, offset: 0, coverLo: 0, coverHi: 1 };
+  private readonly depth: StackedDepth = { baseline: 0, scale: 1, fog: 0 };
+  private readonly colors = new Float32Array(18);
+  private readonly stops = new Float32Array(6);
+  private readonly background = new Map<string, WebGLUniformLocation | null>();
+  private readonly row = new Map<string, WebGLUniformLocation | null>();
+  private backgroundProgram: WebGLProgram | null = null;
+  private rowProgram: WebGLProgram | null = null;
+  private texture: WebGLTexture | null = null;
+  private textureWidth = 0;
+  private palette: ColorSchemeName | null = null;
+  private width = 0;
+  private height = 0;
+  private pixelScale = 1;
+  private columns = 64;
+  private head = -1;
+  private count = 0;
+  // Stream time runs only while frames arrive (gaps count up to MAX_GAP_MS),
+  // so a paused source keeps its picture instead of ageing out.
+  private streamTime = 0;
+  private lastPushAt = 0;
+  private lastInterval: number;
+  private nextCommitAt = 0;
+  private pushed = false;
+  private viewCenter: number;
+  private viewSpan: number;
+  private destroyed = false;
+
+  constructor(
+    private readonly canvas: HTMLCanvasElement, options: WaterfallOptions,
+    private settings: StackedTraceSettings = defaultStackedTraceSettings,
+  ) {
+    const gl = canvas.getContext('webgl2', { alpha: false, antialias: true, depth: false, stencil: false });
+    if (!gl) throw new StackedTraceRenderError();
+    this.gl = gl;
+    this.options = { ...options };
+    this.viewCenter = options.centerHz;
+    this.viewSpan = options.spanHz > 0 ? options.spanHz : 1;
+    this.slots = settings.rows + 1;
+    this.lastInterval = settings.rowPeriodMs;
+    this.times = new Float64Array(this.slots);
+    this.rows = Array.from({ length: this.slots }, () => ({
+      startHz: 0, spanHz: 1, coverStartHz: 0, coverEndHz: 0, samples: 0, sampleOffset: 0, amplitudeMax: 80,
+    }));
+    try {
+      this.backgroundProgram = this.program(BACKGROUND_VERTEX, BACKGROUND_FRAGMENT, BACKGROUND_UNIFORMS, this.background);
+      this.rowProgram = this.program(ROW_VERTEX, ROW_FRAGMENT, ROW_UNIFORMS, this.row);
+      gl.useProgram(this.rowProgram);
+      gl.uniform1i(this.row.get('uRing')!, 0);
+      gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+      this.maxTextureWidth = gl.getParameter(gl.MAX_TEXTURE_SIZE);
+      this.texture = this.createTexture(1);
+      this.textureWidth = 1;
+    } catch (error) { this.destroy(); throw error; }
+  }
+
+  /** History rows currently held behind the live trace. */
+  get historyRows(): number { return this.count; }
+
+  private shader(type: number, source: string): WebGLShader {
+    const gl = this.gl, shader = gl.createShader(type);
+    if (!shader) throw new StackedTraceRenderError();
+    gl.shaderSource(shader, source); gl.compileShader(shader);
+    if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+      gl.deleteShader(shader); throw new StackedTraceRenderError();
+    }
+    return shader;
+  }
+
+  private program(vertexSource: string, fragmentSource: string, names: readonly string[],
+    locations: Map<string, WebGLUniformLocation | null>): WebGLProgram {
+    const gl = this.gl, program = gl.createProgram();
+    if (!program) throw new StackedTraceRenderError();
+    let vertex: WebGLShader | null = null, fragment: WebGLShader | null = null;
+    try {
+      vertex = this.shader(gl.VERTEX_SHADER, vertexSource);
+      fragment = this.shader(gl.FRAGMENT_SHADER, fragmentSource);
+      gl.attachShader(program, vertex); gl.attachShader(program, fragment); gl.linkProgram(program);
+      if (!gl.getProgramParameter(program, gl.LINK_STATUS)) throw new StackedTraceRenderError();
+    } catch (error) { gl.deleteProgram(program); throw error; }
+    finally { gl.deleteShader(vertex); gl.deleteShader(fragment); }
+    for (const name of names) locations.set(name, gl.getUniformLocation(program, name));
+    return program;
+  }
+
+  private createTexture(width: number): WebGLTexture {
+    const gl = this.gl;
+    if (width > this.maxTextureWidth) throw new StackedTraceRenderError();
+    const texture = gl.createTexture();
+    if (!texture) throw new StackedTraceRenderError();
+    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, texture);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, width, this.slots, 0, gl.RED, gl.UNSIGNED_BYTE, null);
+    return texture;
+  }
+
+  /** A wider frame widens the ring and keeps the rows already stored. */
+  private growTexture(width: number): void {
+    const gl = this.gl, previous = this.texture, previousWidth = this.textureWidth;
+    const texture = this.createTexture(width);
+    const framebuffer = gl.createFramebuffer();
+    try {
+      if (!framebuffer) throw new StackedTraceRenderError();
+      gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, previous, 0);
+      if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) throw new StackedTraceRenderError();
+      gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, previousWidth, this.slots);
+    } catch (error) { gl.deleteTexture(texture); gl.bindTexture(gl.TEXTURE_2D, previous); throw error; }
+    finally { gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.deleteFramebuffer(framebuffer); }
+    gl.deleteTexture(previous);
+    this.texture = texture; this.textureWidth = width;
+  }
+
+  /**
+   * Writes the row's samples (`data` from `offset`) and their
+   * pairwise-maximum levels into `levels` and returns the length used. A
+   * frame too dense for the device's texture width is first reduced by
+   * pairwise maxima, and `row.samples` becomes the reduced count.
+   */
+  private buildLevels(data: Uint8Array, offset: number, row: StackedRowGeometry): number {
+    const total = (count: number): number => {
+      let sum = count;
+      while (count > 1) { count = (count + 1) >> 1; sum += count; }
+      return sum;
+    };
+    let samples = row.samples, reductions = 0;
+    while (total(samples) > this.maxTextureWidth && samples > 1) { samples = (samples + 1) >> 1; reductions++; }
+    const need = total(samples) + (reductions > 0 ? row.samples : 0);
+    if (this.levels.length < need) this.levels = new Uint8Array(need);
+    const levels = this.levels;
+    // Reduce in the tail of the buffer, then lay the kept level at index 0.
+    let length = row.samples, from = need - row.samples;
+    if (reductions === 0) from = 0;
+    for (let i = 0; i < length; i++) levels[from + i] = data[offset + i];
+    for (let r = 0; r < reductions; r++) {
+      const next = (length + 1) >> 1;
+      for (let i = 0; i < next; i++) {
+        const a = levels[from + 2 * i], b = 2 * i + 1 < length ? levels[from + 2 * i + 1] : 0;
+        levels[from + i] = a > b ? a : b;
+      }
+      length = next;
+    }
+    if (from !== 0) for (let i = 0; i < length; i++) levels[i] = levels[from + i];
+    row.samples = length;
+    let source = 0, target = length;
+    while (length > 1) {
+      const next = (length + 1) >> 1;
+      for (let i = 0; i < next; i++) {
+        const a = levels[source + 2 * i], b = 2 * i + 1 < length ? levels[source + 2 * i + 1] : 0;
+        levels[target + i] = a > b ? a : b;
+      }
+      source = target; target += next; length = next;
+    }
+    return target;
+  }
+
+  private upload(slot: number, data: Uint8Array, offset: number): void {
+    const length = this.buildLevels(data, offset, this.rows[slot]);
+    if (length > this.textureWidth) this.growTexture(length);
+    const gl = this.gl;
+    gl.bindTexture(gl.TEXTURE_2D, this.texture);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, slot, length, 1, gl.RED, gl.UNSIGNED_BYTE, this.levels, 0);
+  }
+
+  /**
+   * Folds a frame into the per-bin maximum since the last committed row.
+   * A frame with another placement or sample count starts the maximum anew.
+   */
+  private accumulate(data: Uint8Array, row: StackedRowGeometry): void {
+    const held = this.peakRow, samples = row.samples, offset = row.sampleOffset;
+    if (this.peak.length < samples) { this.peak = new Uint8Array(samples); this.peakValid = false; }
+    const peak = this.peak;
+    if (this.peakValid && held.samples === samples && held.startHz === row.startHz && held.spanHz === row.spanHz
+      && held.coverStartHz === row.coverStartHz && held.coverEndHz === row.coverEndHz
+      && held.amplitudeMax === row.amplitudeMax) {
+      for (let i = 0; i < samples; i++) { const value = data[offset + i]; if (value > peak[i]) peak[i] = value; }
+      return;
+    }
+    for (let i = 0; i < samples; i++) peak[i] = data[offset + i];
+    held.startHz = row.startHz; held.spanHz = row.spanHz; held.coverStartHz = row.coverStartHz;
+    held.coverEndHz = row.coverEndHz; held.samples = samples; held.amplitudeMax = row.amplitudeMax;
+    this.peakValid = true;
+  }
+
+  /**
+   * Turns the held maximum into the next history row: smoothed across
+   * frequency, then blended with the row before it when both have the same
+   * placement, so the surface settles instead of flickering; a signal one
+   * row long still stands at `rowBlend` of its height. Returns the row to
+   * upload.
+   */
+  private blend(): Uint8Array {
+    const held = this.peakRow, last = this.blendedRow, samples = held.samples, share = this.settings.rowBlend;
+    const soften = this.settings.rowSoften / 4;
+    if (this.blended.length < samples) { this.blended = new Uint8Array(samples); last.samples = 0; }
+    const blended = this.blended, peak = this.peak;
+    const same = last.samples === samples && last.startHz === held.startHz && last.spanHz === held.spanHz
+      && last.coverStartHz === held.coverStartHz && last.coverEndHz === held.coverEndHz
+      && last.amplitudeMax === held.amplitudeMax;
+    for (let i = 0; i < samples; i++) {
+      const value = peak[i] + soften * (peak[i > 0 ? i - 1 : i] + peak[i < samples - 1 ? i + 1 : i] - 2 * peak[i]);
+      blended[i] = Math.round(same ? share * value + (1 - share) * blended[i] : value);
+    }
+    last.startHz = held.startHz; last.spanHz = held.spanHz; last.coverStartHz = held.coverStartHz;
+    last.coverEndHz = held.coverEndHz; last.samples = samples; last.amplitudeMax = held.amplitudeMax;
+    return blended;
+  }
+
+  /**
+   * Stores one delivered frame. Every frame becomes the live front trace.
+   * A history row is committed on a `rowPeriodMs` grid of stream time and
+   * holds the per-bin maximum of the frames since the previous row, so a
+   * signal shorter than a row period still enters history. Each row keeps
+   * its commit time: depth is elapsed time, and the stack spans
+   * `rows * rowPeriodMs` whatever the source frame rate.
+   * `frame` carries the options the frame was delivered under.
+   */
+  pushRow(data: Uint8Array, frame: WaterfallOptions, now: number): void {
+    if (this.destroyed) return;
+    let live = (this.head + 1) % this.slots;
+    const row = this.rows[live];
+    if (!stackedRowGeometry(frame, data.length, row)) return;
+    // A change of 18 dB (24 of the 80 units) is another band, not drift.
+    this.floor = followNoiseFloor(this.floor,
+      estimateNoiseFloor(data, row.sampleOffset, row.samples) * 80 / row.amplitudeMax, 24);
+    this.accumulate(data, row);
+    if (this.pushed) {
+      const gap = Math.min(Math.max(now - this.lastPushAt, 0), MAX_GAP_MS);
+      this.streamTime += gap;
+      this.lastInterval = Math.max(gap, 1);
+    }
+    this.pushed = true;
+    this.lastPushAt = now;
+    const period = this.settings.rowPeriodMs;
+    if (this.count === 0 || this.streamTime >= this.nextCommitAt) {
+      const held = this.peakRow;
+      row.startHz = held.startHz; row.spanHz = held.spanHz; row.coverStartHz = held.coverStartHz;
+      row.coverEndHz = held.coverEndHz; row.samples = held.samples; row.amplitudeMax = held.amplitudeMax;
+      row.sampleOffset = 0;
+      this.upload(live, this.blend(), 0);
+      this.peakValid = false;
+      this.head = live;
+      this.count = Math.min(this.settings.rows, this.count + 1);
+      this.times[live] = this.streamTime;
+      this.nextCommitAt += period;
+      if (this.nextCommitAt <= this.streamTime) this.nextCommitAt = this.streamTime + period;
+      live = (this.head + 1) % this.slots;
+      stackedRowGeometry(frame, data.length, this.rows[live]);
+    }
+    this.upload(live, data, this.rows[live].sampleOffset);
+  }
+
+  /**
+   * Takes new settings for the rows already held. The ring keeps the size it
+   * was built with: a new row count needs a new renderer.
+   */
+  setSettings(settings: StackedTraceSettings): void {
+    this.settings = { ...settings, rows: this.settings.rows };
+  }
+
+  /** CSS-to-backing pixel ratio of the canvas; sizes the front inset and the line. */
+  setPixelScale(scale: number): void {
+    if (scale > 0) this.pixelScale = scale;
+  }
+
+  private syncSize(): void {
+    const { width, height } = this.canvas;
+    if (width === this.width && height === this.height) return;
+    this.width = width; this.height = height;
+    this.columns = stackedColumnCount(width);
+    this.gl.viewport(0, 0, width, height);
+  }
+
+  private syncPalette(): void {
+    const scheme = this.options.colorScheme;
+    if (this.palette === scheme) return;
+    this.palette = scheme;
+    const palette = COLOR_SCHEMES[scheme];
+    for (let i = 0; i < palette.length; i++) {
+      this.stops[i] = palette[i].stop;
+      const value = Number.parseInt(palette[i].color.slice(1), 16);
+      this.colors[i * 3] = value >> 16;
+      this.colors[i * 3 + 1] = (value >> 8) & 255;
+      this.colors[i * 3 + 2] = value & 255;
+    }
+  }
+
+  private drawRow(slot: number, depth: number, front: boolean): void {
+    const gl = this.gl, row = this.rows[slot], view = this.rowView, placed = this.depth, s = this.settings;
+    projectStackedRow(row, this.viewCenter - this.viewSpan / 2, this.viewSpan, view);
+    projectStackedDepth(depth, s, placed);
+    const basePx = s.frontInsetPx * this.pixelScale + placed.baseline * this.height;
+    const linePx = 1.25 * this.pixelScale;
+    // Rows closer together than a few line widths dim their crest lines so
+    // the far end of the stack reads as a surface, not as a solid block.
+    const spacingPx = s.floorRise * this.height * (1 + s.recede) * placed.scale * placed.scale / s.rows;
+    const lineGain = front ? 1 : Math.max(0.25, Math.min(1, spacingPx / (2.5 * linePx)));
+    gl.uniform2f(this.row.get('uMap')!, view.scale, view.offset);
+    gl.uniform2f(this.row.get('uCover')!, view.coverLo, view.coverHi);
+    gl.uniform1i(this.row.get('uRow')!, slot);
+    gl.uniform2f(this.row.get('uSamples')!, row.samples, row.amplitudeMax);
+    gl.uniform4f(this.row.get('uPlace')!, basePx / this.height * 2 - 1,
+      Math.abs(view.scale) * row.samples / (this.columns - 1) / placed.scale, s.traceHeight * placed.scale * this.height,
+      placed.scale);
+    gl.uniform2f(this.row.get('uShade')!, placed.fog, lineGain);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, this.columns * 2);
+  }
+
+  /**
+   * Paints the stack for `now`. Between frames the rows keep gliding back
+   * for one frame interval; returns true while they do, i.e. while the
+   * caller should paint the next display frame.
+   */
+  draw(now: number): boolean {
+    if (this.destroyed) return false;
+    this.syncSize();
+    if (this.width <= 0 || this.height <= 0) return false;
+    const gl = this.gl, s = this.settings;
+    gl.disable(gl.BLEND);
+    gl.useProgram(this.backgroundProgram);
+    gl.uniform2f(this.background.get('uSize')!, this.width, this.height);
+    gl.uniform3f(this.background.get('uFloor')!, s.frontInsetPx * this.pixelScale,
+      s.floorRise * (1 + s.recede) * this.height, s.recede);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    if (this.count === 0) return false;
+    this.syncPalette();
+    gl.useProgram(this.rowProgram);
+    gl.enable(gl.BLEND);
+    gl.uniform4f(this.row.get('uFrame')!, this.columns, this.width / (this.columns - 1), 2 / this.height,
+      1.25 * this.pixelScale);
+    // The colour window is 45 dB of the nominal 60 dB the 0..80 scale stands for.
+    gl.uniform3f(this.row.get('uLevel')!, (this.floor ?? 0) - s.floorDrop, 4 ** ((50 - s.colorGain) / 50), 60);
+    gl.uniform3fv(this.row.get('uColors')!, this.colors);
+    gl.uniform1fv(this.row.get('uStops')!, this.stops);
+    gl.uniform1i(this.row.get('uColorCount')!, COLOR_SCHEMES[this.options.colorScheme].length);
+    const phase = stackedGlidePhase(now, this.lastPushAt, this.lastInterval);
+    const clock = this.streamTime + phase * this.lastInterval, span = s.rows * s.rowPeriodMs;
+    for (let k = this.count - 1; k >= 0; k--) {
+      const slot = (this.head - k + this.slots) % this.slots;
+      const depth = (clock - this.times[slot]) / span;
+      if (depth < 1) this.drawRow(slot, depth, false);
+    }
+    this.drawRow((this.head + 1) % this.slots, 0, true);
+    return phase < 1;
+  }
+
+  /** Returns true when the change needs a repaint. */
+  updateOptions(options: Partial<WaterfallOptions>): boolean {
+    const o = this.options;
+    let changed = options.colorScheme !== undefined && options.colorScheme !== o.colorScheme;
+    Object.assign(o, options);
+    if (o.spanHz > 0 && Number.isFinite(o.centerHz)) {
+      if (this.viewCenter !== o.centerHz || this.viewSpan !== o.spanHz) changed = true;
+      this.viewCenter = o.centerHz; this.viewSpan = o.spanHz;
+    }
+    return changed;
+  }
+
+  destroy(): void {
+    if (this.destroyed) return;
+    this.destroyed = true;
+    const gl = this.gl;
+    gl.deleteProgram(this.backgroundProgram); gl.deleteProgram(this.rowProgram); gl.deleteTexture(this.texture);
+    this.backgroundProgram = this.rowProgram = this.texture = null;
+  }
+}

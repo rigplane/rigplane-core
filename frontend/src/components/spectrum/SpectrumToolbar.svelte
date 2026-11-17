@@ -15,6 +15,9 @@
   } from '$lib/stores/band-plan-region.svelte';
   import ScopeSettingsPopover from './ScopeSettingsPopover.svelte';
   import {
+    isStackedTraceEnabled, isStackedTraceUnavailable, setStackedTraceEnabled,
+  } from '../../lib/stores/stacked-trace.svelte';
+  import {
     formatSpanHz, SPEED_LABELS, SPEED_STATIC_LABEL, MODE_BUTTONS,
     toggleLayer as toggleLayerFn, isLayerVisible,
     isSpanApplicable, isEdgeApplicable,
@@ -152,6 +155,12 @@
   let showSettings = $state(false);
   let showDisplayGear = $state(false);
   let layerDropdownOpen = $state(false);
+  // MOR-4463: the stacked-trace ("3D") spectrum view — off by default, the
+  // user's own choice, shared with the spectrum pane through its store.
+  let stackedTrace = $derived(isStackedTraceEnabled() && !isStackedTraceUnavailable());
+  let stackedTraceUnavailable = $derived(isStackedTraceUnavailable());
+  let stackedTraceTitle = $derived(t(stackedTraceUnavailable
+    ? 'core.scope.stackedTrace.unavailable' : 'core.scope.stackedTrace.title'));
   let layerToggleBtn = $state<HTMLElement | null>(null);
   let dropdownStyle = $derived.by(() => {
     if (!layerDropdownOpen || !layerToggleBtn) return '';
@@ -315,6 +324,9 @@
 {#snippet avgPeakKeys()}
   <!-- MOR-2545 PR3: ONE definition, TWO mounts (row quick keys + More); same
        handlers, same bindable state — not a fork. -->
+  <button type="button" class="scope-flat-key stacked-trace-key" data-testid="scope-3d-toggle" data-lit={stackedTrace}
+    aria-pressed={stackedTrace} disabled={stackedTraceUnavailable} title={stackedTraceTitle}
+    onclick={() => setStackedTraceEnabled(!stackedTrace)}>3D</button>
   <button type="button" class="scope-flat-key" data-lit={enableAvg} aria-pressed={enableAvg}
     onclick={() => (enableAvg = !enableAvg)}>AVG</button>
   <button type="button" class="scope-flat-key" data-lit={enablePeakHold} aria-pressed={enablePeakHold}
@@ -596,6 +608,9 @@
   <!-- Group D: Display (neutral wash) -->
   <div class="toolbar-group-d">
     <div class="toolbar-group">
+      <button class="toolbar-btn stacked-trace-key" class:active={stackedTrace} data-testid="scope-3d-toggle" aria-pressed={stackedTrace}
+        disabled={stackedTraceUnavailable} title={stackedTraceTitle}
+        onclick={() => setStackedTraceEnabled(!stackedTrace)}>3D</button>
       <button class="toolbar-btn" class:active={enableAvg} onclick={() => (enableAvg = !enableAvg)}>AVG</button>
       <button class="toolbar-btn" class:active={enablePeakHold} onclick={() => (enablePeakHold = !enablePeakHold)}>PEAK</button>
       <button class="toolbar-btn" class:active={enableSmooth} onclick={() => (enableSmooth = !enableSmooth)}>SMTH</button>
@@ -725,6 +740,14 @@
 </div>
 
 <style>
+  /* AVG and PEAK shape the flat trace only. In both toolbar variants they are
+     the two keys right after the 3D key, and they are hidden while it is lit
+     (pinned by tests/e2e/renderers/stacked-trace-toggle.spec.ts). */
+  .stacked-trace-key[aria-pressed='true'] + button,
+  .stacked-trace-key[aria-pressed='true'] + button + button {
+    display: none;
+  }
+
   .spectrum-toolbar {
     display: flex;
     align-items: center;

@@ -196,6 +196,10 @@ function isLocalGain(file, kind, attributes) {
     return (label === 'MAIN gain in decibels' && value === 'mainGainDb')
       || (label === 'SUB gain in decibels' && value === 'subGainDb');
   }
+  // The 3D panorama's look sliders: browser-kept display settings, nothing is sent to a radio (MOR-4463).
+  if (normalizedFile === 'src/components/spectrum/StackedTraceCanvas.svelte') {
+    return labelText === undefined && value === 'settings[item.key]';
+  }
   return normalizedFile === 'src/semantic/RxAudioInstrumentHost.svelte'
     && labelText === '`${channel.toUpperCase()} gain in decibels`'
     && value === 'value ?? 0';
