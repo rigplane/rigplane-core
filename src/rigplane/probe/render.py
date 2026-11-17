@@ -6,11 +6,11 @@ the CLI only wires prompts and ports.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 from rigplane.commands import parse_civ_frame
-from rigplane.probe.model import TerminationInfo
+from rigplane.probe.model import CheckRecord, TerminationInfo
 
 #: The display name of this command in every customer-facing hint.
 #: The Pro sidecar calls the probe under its own command name, so every
@@ -31,13 +31,27 @@ __all__ = [
     "AbsentAnswer",
     "absent_answered_line",
     "bad_choice_message",
+    "check_prompt",
+    "check_question_prompt",
+    "check_result_line",
+    "check_screen",
+    "checks_block_start",
+    "checks_done_line",
+    "checks_need_terminal_message",
+    "checks_not_on_windows_message",
+    "checks_prompt",
+    "checks_summary_line",
     "closing_line",
     "cannot_open_message",
     "confirm_radio_prompt",
     "discovery_announcement",
     "found_line",
     "human_read_name",
+    "journal_instruction_line",
+    "journal_set_back_prompt",
+    "journal_unreadable_line",
     "no_answers_message",
+    "no_checks_message",
     "no_profile_for_radio_message",
     "no_radio_found_message",
     "not_supported_message",
@@ -126,15 +140,23 @@ one is yours. You can also name the model and port yourself:
 """
 
 
-def start_screen(profile_name: str, port_label: str, n_questions: int) -> str:
-    """The screen shown before the read pass starts."""
+def start_screen(
+    profile_name: str, port_label: str, n_questions: int, *, checks: bool = False
+) -> str:
+    """The screen shown before the read pass starts (``checks``: checks follow)."""
+    title, promise = ("READ ONLY", "It changes nothing and never transmits.")
+    if checks:
+        title = "read, then optional checks"
+        promise = (
+            "The read part changes nothing and never transmits; "
+            "each optional check after it asks you first."
+        )
     return (
-        "RigPlane radio probe - READ ONLY\n"
+        f"RigPlane radio probe - {title}\n"
         f"Radio profile: {profile_name}    Port: {port_label}\n"
         f"This run asks about {n_questions} read questions, one at a time, "
         "usually under a minute.\n"
-        "It changes nothing and never transmits. "
-        "Press Ctrl-C at any time to stop.\n"
+        f"{promise} Press Ctrl-C at any time to stop.\n"
         "Continue? [Y/n] "
     )
 
@@ -252,9 +274,16 @@ def pre_save_summary(
     absent_answered: Sequence[AbsentAnswer] | None = None,
     present_missed: list[str] | None = None,
     termination: TerminationInfo | None = None,
+    checks: Sequence[CheckRecord] = (),
 ) -> str:
     """The summary shown before the file exists on disk."""
     settings = ", ".join(settings_lines)
+    # after a check the radio may differ from the snapshot taken before it
+    when = (
+        "settings at the start of this run"
+        if checks
+        else ("current settings as of this moment")
+    )
     if private_reads_included:
         memory_line = (
             "  - stored memory contents: these can contain callsigns "
@@ -269,12 +298,13 @@ def pre_save_summary(
         "It contains:\n"
         f"  - the questions we asked and the radio's exact replies ({n_commands} of them)\n"
         f"  - what the radio says it is ({identity_text}) and the RigPlane version\n"
-        f"  - your radio's current settings as of this moment: {settings}\n"
+        f"  - your radio's {when}: {settings}\n"
         f"{memory_line}"
         f"{skipped_line(skipped_counts or {})}"
         f"{absent_answered_line(absent_answered or [])}"
         f"{present_missed_line(present_missed or [])}"
         f"{termination_line(termination)}"
+        f"{checks_summary_line(checks)}"
         "The tool itself does not add your name, computer name, internet "
         "address, or any file from your computer.\n"
         "But the --label text is saved exactly as you typed it, and stored "
@@ -413,3 +443,160 @@ def no_answers_message() -> str:
         "The radio did not answer any question. "
         "Check it is on, and the port and speed are right."
     )
+
+
+# --- write checks (--checks, MOR-4502) ------------------------------------------
+
+
+def checks_need_terminal_message() -> str:
+    """``--checks`` without a terminal (exit 2, before the port is opened)."""
+    return (
+        "--checks asks you questions, so it needs a terminal window: "
+        "run it there, not from a script or a pipe."
+    )
+
+
+def checks_not_on_windows_message() -> str:
+    """``--checks`` on Windows, which has no terminal reader for it yet."""
+    return "--checks does not work on Windows yet. Running the read-only probe only."
+
+
+def no_checks_message() -> str:
+    """``--checks`` on a profile that carries no checks."""
+    return "This radio has no checks yet. Running the read-only probe only."
+
+
+def journal_unreadable_line(path: str | None) -> str:
+    """A check journal left behind that cannot be read: with its path on the
+    console, without it (``None``) in a refusal saved in the capture."""
+    where = "" if path is None else f": {path}"
+    return (
+        "The file with the values an earlier check should have set back cannot "
+        f"be read{where}. Check the radio's settings by hand."
+    )
+
+
+def journal_set_back_prompt() -> str:
+    """The question after a leftover journal on a terminal (default no)."""
+    return "Are these set back on the radio now? [y/N] "
+
+
+def journal_instruction_line(path: str) -> str:
+    """How to go on after a journal left behind; checks refuse while it exists."""
+    return f"When the radio is set back, delete this file and run the program again: {path}"
+
+
+def checks_block_start(n: int) -> str:
+    """The block printed after the read pass, before the checks question."""
+    count = "is 1 optional check" if n == 1 else f"are {n} optional checks"
+    return (
+        "The read-only part is done.\n"
+        f"Next there {count}. Each one CHANGES one or more settings on your radio "
+        "for a moment, asks the radio what it now says, then sets them back and reads "
+        "them again to confirm. If the radio does not take a setting back, this "
+        "program tells you what to set by hand. None of them transmits, starts the antenna tuner or writes to the radio's "
+        "memory channels. You can say no to any check.\n"
+        'Do not touch the knobs or buttons of the radio until this program says "done".\n'
+        "Do not transmit while a check runs: no PTT, no CW key, no VOX, "
+        "no digital-mode program.\n"
+        "Do not close this window while a check is running. Press Ctrl-C instead; "
+        "the program then tries to put the settings back before it stops.\n"
+        "If you close this window anyway, the radio may be left changed. Run the "
+        "program again: it will show the values to set back.\n"
+        'If the cable comes out, set the values listed under "Right now" back by hand.'
+    )
+
+
+def checks_prompt() -> str:
+    """The one question for the whole block (default no)."""
+    return "Run the checks? [y/N] "
+
+
+def check_screen(
+    index: int,
+    total: int,
+    title: str,
+    what: str,
+    after: str,
+    originals: Mapping[str, str],
+    warnings: Sequence[str],
+) -> str:
+    """One check before its question; ``warnings`` come from the profile."""
+    now = ", ".join(f"{name} {value}" for name, value in originals.items())
+    lines = [
+        f"Check {index} of {total}: {title}",
+        f"  What it does: {what}",
+        f"  Afterwards:   {after}",
+        f"  Right now:    {now} (the check will try to set these back).",
+        "  Never:        no transmit, no tuner, no memory channel write.",
+        *(f"  {warning}" for warning in warnings),
+        "  Ctrl-C at any time: the program tries to put the settings back, then stops.",
+    ]
+    return "\n".join(lines)
+
+
+def check_prompt() -> str:
+    """The question for one check (default no)."""
+    return "Run this check? [y/N] "
+
+
+def check_question_prompt(question: str, timeout_s: float) -> str:
+    """A check's question to the person; Enter or the time limit skips it."""
+    return (
+        f"Look at the radio. {question} Type your answer, or press Enter to skip "
+        f"(it is skipped after {timeout_s:g} seconds): "
+    )
+
+
+def check_result_line(index: int, record: CheckRecord) -> str:
+    """The one result line of a check."""
+    error = (record.error or "").rstrip(".")
+    if record.status == "declined":
+        return f"Check {index} skipped by you."
+    if record.status != "ran":
+        return f"Check {index} not run: {error}. Nothing was changed."
+    if not record.restored:
+        error = error or "could not put the settings back"
+        return f"WARNING: {error}. Please set it by hand before you transmit."
+    if not record.verified:
+        return (
+            f"Check {index} done: the settings were sent back, but the radio did not "
+            "confirm them (see the file). Check them on the radio before transmitting."
+        )
+    early = f" It stopped early: {error}." if error else ""
+    return f"Check {index} done: settings put back and verified.{early}"
+
+
+def checks_done_line() -> str:
+    """The line after the last check: the person may touch the radio again."""
+    return "The checks are done."
+
+
+def checks_summary_line(records: Sequence[CheckRecord]) -> str:
+    """The pre-save summary line for the checks, or ``""`` without any."""
+    if not records:
+        return ""
+    ran = [r for r in records if r.status == "ran"]
+    confirmed = [r for r in ran if r.restored and r.verified]
+    unconfirmed = [r for r in ran if r.restored and not r.verified]
+    lost = [r for r in ran if not r.restored]
+    kinds = (
+        ("verified", confirmed),
+        ("sent back but not confirmed", unconfirmed),
+        ("NOT put back", lost),
+        ("skipped by you", [r for r in records if r.status == "declined"]),
+        ("not run", [r for r in records if r.status not in ("ran", "declined")]),
+    )
+    parts = ", ".join(f"{len(group)} {name}" for name, group in kinds if group)
+    named = (
+        ("settings changed and put back (confirmed)", confirmed),
+        ("sent back but not confirmed, check them on the radio", unconfirmed),
+        ("NOT put back, set by hand", lost),
+    )
+    said = [
+        f"{text}: {', '.join(name for r in group for name in r.originals)}"
+        for text, group in named
+        if group
+    ]
+    changed = "; " + "; ".join(said or ["nothing was changed"])
+    return f"  - checks: {len(records)} offered ({parts}){changed}\n"

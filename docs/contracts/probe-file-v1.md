@@ -26,7 +26,7 @@ Pretty-printed JSON, one command per block, `jq`-friendly. Top level:
 | --- | --- | --- |
 | `schema` | string | Always `rigplane-probe-v1`. |
 | `tool` | object | `{rigplane_version, python, os, created_utc}` of the recorder. |
-| `mode` | string | `"read"`, or `"read+checks"` when write checks were requested (the parser refuses anything else). |
+| `mode` | string | `"read"`, or `"read+checks"` when the person said yes to the write checks after the read pass (`--checks`; a no keeps `"read"`; the parser refuses anything else). |
 | `radio` | object | `{profile, profile_sha256, protocol, port_kind, baud, identity_reported{raw, parsed}, identity_matches_profile}`. `profile_sha256` is the sha256 of the profile TOML bytes. |
 | `private_reads_included` | boolean | Whether memory-content reads were sent. |
 | `label` | string | The `--label` text, empty when not given. |

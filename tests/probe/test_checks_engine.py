@@ -116,6 +116,11 @@ def civ_fake(model: str, power: bytes = b"\x01\x28"):
     return fake
 
 
+async def agree(check, originals) -> bool:
+    """Consent is awaited (the person answers on the event loop)."""
+    return True
+
+
 def request(tmp_path: Path, *, answer="yes", events=None, ask_timeout_s=60.0):
     from rigplane.probe.checks import ChecksRequest
 
@@ -126,7 +131,7 @@ def request(tmp_path: Path, *, answer="yes", events=None, ask_timeout_s=60.0):
 
     return ChecksRequest(
         journal_path=tmp_path / "out.json.checks-journal.json",
-        consent=lambda check, originals: True,
+        consent=agree,
         ask=ask,
         on_event=events,
         ask_timeout_s=ask_timeout_s,
@@ -245,7 +250,7 @@ async def test_link_lost_during_restore_is_exit_4_and_keeps_the_journal(
     assert not record.restored and not record.verified
     assert result.termination is not None
     assert result.termination.status == "restore_failed"
-    assert "please set it by hand" in (record.error or "")
+    assert "could not put" in (record.error or "")
     assert req.journal_path.exists()
     # the one attempted restore write is recorded; suppressed sends are not
     restore = record.steps[-1:]
@@ -658,7 +663,7 @@ async def test_an_ask_that_raises_still_restores(tmp_path: Path) -> None:
 
     config = load(tmp_path, "ft991a", SPLIT)
     radio = await cat_radio()
-    req = ChecksRequest(lambda c, o: True, ask, journal_path=tmp_path / "j.json")
+    req = ChecksRequest(agree, ask, journal_path=tmp_path / "j.json")
     try:
         result = await run(config, req, await cat_exchange(radio))
     finally:
@@ -727,7 +732,7 @@ async def test_the_journal_has_one_fixed_place_whatever_the_output_file(
     from rigplane.probe.journal import journal_path
 
     monkeypatch.setattr(platformdirs, "user_state_path", lambda app: tmp_path / app)
-    first = ChecksRequest(lambda c, o: True, request(tmp_path).ask)
+    first = ChecksRequest(agree, request(tmp_path).ask)
     assert (
         first.journal_path
         == journal_path()
@@ -742,9 +747,9 @@ async def test_the_journal_has_one_fixed_place_whatever_the_output_file(
             fake.refuse_next(0x14)
             fake.refuse_next(0x14)
 
-    failing = ChecksRequest(lambda c, o: True, first.ask, on_event=events)
+    failing = ChecksRequest(agree, first.ask, on_event=events)
     assert (await run(config, failing, await civ_exchange(fake))).exit_code == 4
-    second = ChecksRequest(lambda c, o: True, first.ask)
+    second = ChecksRequest(agree, first.ask)
     result = await run(config, second, await civ_exchange(fake))
     assert result.records[0].status == "refused"
     assert "could not put the radio back" in (result.records[0].error or "")
@@ -870,7 +875,7 @@ async def test_two_runs_on_one_journal_path_only_one_writes(tmp_path: Path) -> N
             if event in ("journal_written", "restore_begin"):
                 snapshots.append(path.read_bytes())
 
-        return ChecksRequest(lambda c, o: True, ask, on_event=events, journal_path=path)
+        return ChecksRequest(agree, ask, on_event=events, journal_path=path)
 
     exchanges = {name: await civ_exchange(fake) for name, fake in fakes.items()}
 
@@ -971,6 +976,77 @@ async def test_sigterm_cancels_into_restore_and_ctrl_c_during_restore_is_ignored
     assert record.restored and record.verified
     assert seen == ["journal_written", "steps_begin", "restore_begin"]
     assert radio.frequency_hz == 14_074_000
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX signals (Windows: MOR-4497)")
+async def test_ctrl_c_while_consent_waits_refuses_before_the_journal_and_any_write(
+    tmp_path: Path,
+) -> None:
+    from rigplane.probe.checks import ChecksRequest
+
+    config = load(tmp_path, "ft991a", SPLIT)
+    radio = await cat_radio()
+
+    async def waiting(check, originals) -> bool:
+        os.kill(os.getpid(), signal.SIGINT)  # pressed while the question waits
+        await asyncio.Event().wait()  # never answered
+        return True
+
+    req = ChecksRequest(
+        waiting, request(tmp_path).ask, journal_path=tmp_path / "journal.json"
+    )
+    try:
+        result = await run(config, req, await cat_exchange(radio))
+    finally:
+        await radio.stop()
+    (record,) = result.records
+    assert (record.status, record.error) == ("refused", "cancelled before any write")
+    assert result.termination is not None and result.termination.status == "cancelled"
+    assert not any(s.kind == "write" for s in record.steps)
+    assert not req.journal_path.exists()
+    assert not [c for c in radio.commands if c in ("FT3;", "FT2;")]
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX signals (Windows: MOR-4497)")
+@pytest.mark.realtime(reason="a real SIGINT; the time limit only bounds a regression")
+async def test_ctrl_c_while_reading_an_original_never_opens_consent(
+    tmp_path: Path,
+) -> None:
+    from rigplane.probe.checks import ChecksRequest
+
+    config = load(tmp_path, "ft991a", SPLIT)
+    radio = await cat_radio()
+    inner = await cat_exchange(radio)
+    asked: list[str] = []
+
+    async def exchange(body, timeout):
+        if body == b"FT;":  # split is read only as an original, before consent
+            os.kill(os.getpid(), signal.SIGINT)
+        return await inner(body, timeout)
+
+    async def consent(check, originals) -> bool:
+        asked.append(check.id)
+        await asyncio.Event().wait()  # a regression would wait here
+        return True
+
+    req = ChecksRequest(consent, request(tmp_path).ask, journal_path=tmp_path / "j")
+    try:
+        result = await asyncio.wait_for(run(config, req, exchange), 20)
+    finally:
+        await radio.stop()
+    (record,) = result.records
+    assert asked == []
+    assert (record.status, record.error) == ("refused", "cancelled before any write")
+    assert not req.journal_path.exists()
+    assert not any(s.kind == "write" for s in record.steps)
+
+
+def test_the_old_positional_request_order_still_works(tmp_path: Path) -> None:
+    from rigplane.probe.checks import ChecksRequest
+
+    path = tmp_path / "journal.json"
+    req = ChecksRequest(agree, request(tmp_path).ask, None, 5.0, path)
+    assert (req.ask_timeout_s, req.journal_path, req.begin) == (5.0, path, None)
 
 
 # --- journal ------------------------------------------------------------------------------
@@ -1086,7 +1162,10 @@ CHILD = textwrap.dedent(
         async def ask(question):
             return "yes"
 
-        request = ChecksRequest(lambda c, o: True, ask, journal_path=Path(journal))
+        async def agree(check, originals):
+            return True
+
+        request = ChecksRequest(agree, ask, journal_path=Path(journal))
         await run_checks(load_rig(Path(profile)), request, exchange=exchange,
                          gap_s=0.0, timeout_s=0.5)
 
