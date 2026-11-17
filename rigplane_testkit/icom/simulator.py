@@ -530,6 +530,15 @@ class MockIcomRadio(AudioPortMixin):
             0x26 SET with a non-zero data byte for a mode outside the set
             is NAKed with no state change, and so is a 0x1A 06 DATA-on SET
             while the current mode is outside the set (MOR-4036).
+        civ_tx_seq_jump: offset added to the sequence number of the open
+            marker — the first numbered CI-V packet of each OpenClose(open)
+            — while the radio's own counter advances unchanged, so the
+            stream continues from its real numbers right behind it. Models
+            a fresh client whose first packet carries a number far ahead of
+            the stream that follows: a number from the session that just
+            ended (the radio may track numbering per client across
+            processes, MOR-3418; owner's IC-705 field log, MOR-4416).
+            0 (default) keeps the marker numbered like any other packet.
         substream_discovery: which discovery the CI-V and audio ports
             answer (default ``"i_am_here"`` keeps the recorded IC-7610
             behaviour byte for byte). ``"ping"`` models the Xiegu G7250
@@ -638,11 +647,13 @@ class MockIcomRadio(AudioPortMixin):
         civ_inherited_drop_unanswered_rounds: int = 0,
         clock: Callable[[], float] | None = None,
         dual_receiver: bool = False,
+        vfo_ab: bool = False,
         scope_stream: bool = False,
         scope_blank_waves: bool = False,
         rx_source: RxSource | None = None,
         require_control_discovery: bool = False,
         data_capable_modes: frozenset[int] | None = None,
+        civ_tx_seq_jump: int = 0,
         substream_discovery: Literal["i_am_here", "ping"] = "i_am_here",
         ignored_civ_commands: Iterable[tuple[int, int | None]] | None = None,
         span_preset_semantics: Literal["half_width", "full_width"] | None = None,
@@ -723,6 +734,11 @@ class MockIcomRadio(AudioPortMixin):
         # the selected receiver, 1 = SUB is (recorded vfo_select window).
         self._dual_receiver: bool = dual_receiver
         self._selected_receiver: int = 0
+        # VFO A/B letter of the selected receiver (CI-V 0x07 00/01). A radio
+        # powers up on VFO A; selecting the idle letter swaps the
+        # selected/unselected pair, selecting the current one is idempotent.
+        self._vfo_ab = vfo_ab
+        self._selected_vfo_letter: str = "A"
         # MOR-4036: the set of CI-V mode bytes that can carry the DATA flag
         # (None = every mode, today's behaviour — unchanged for all existing
         # tests). When set, a 0x26 SET whose data byte is non-zero for a mode
@@ -730,6 +746,9 @@ class MockIcomRadio(AudioPortMixin):
         # DATA-on SET while the current mode is outside the set — the bench
         # IC-705 behaviour (26 00 03 01 01 = CW+DATA is NAKed).
         self._data_capable_modes: frozenset[int] | None = data_capable_modes
+        # See the ctor docstring: the open marker's sequence number carries
+        # this offset; the counter itself advances by one regardless.
+        self.civ_tx_seq_jump: int = civ_tx_seq_jump
         # Modelling of the 0x1A 05 menu items the startup reader reads;
         # current values (defaults and byte widths live in the table above).
         self._ctl_mem_menu: dict[bytes, int] = {
@@ -1677,13 +1696,14 @@ class MockIcomRadio(AudioPortMixin):
         if plan is None or plan.is_noop(port, "to_client"):
             proto.send(pkt, addr)
             return
-        planned = plan.decide(port, "to_client", pkt)
+        decided_at = time.monotonic()
+        planned = plan.decide(port, "to_client", pkt, now=decided_at)
         if planned is None:
             # Held in the plan's reorder buffer: arm the flush deadline so a
             # short burst is emitted even if the window never fills.
             self._arm_reorder_flush(plan, port, "to_client", proto, addr, label)
             return
-        self._deliver_planned(planned, "to_client", proto, addr, label)
+        self._deliver_planned(planned, "to_client", proto, addr, label, decided_at)
 
     def _deliver_planned(
         self,
@@ -1692,18 +1712,28 @@ class MockIcomRadio(AudioPortMixin):
         proto: _MockProtocol,
         addr: tuple[str, int],
         label: str,
+        decided_at: float | None = None,
     ) -> None:
         """Emit the plan's emissions for one packet.
 
         Delayed emissions re-check the reboot down-window when they fire: a
         packet the plan delayed into a reboot dies with the radio "off"
         instead of being delivered by a powered-down radio.
+
+        ``decided_at`` is the clock reading the plan used for its delays. A
+        delayed emission is armed at ``decided_at + delay`` (an absolute
+        time), not "delay from whenever the loop gets here": the plan keeps
+        ``preserve_order`` due times only 100 microseconds apart, and a
+        loaded host can deschedule this thread for longer than that between
+        the plan's clock read and a relative timer's own clock read, which
+        shuffled adjacent packets.
         """
         loop = asyncio.get_running_loop()
+        base = time.monotonic() if decided_at is None else decided_at
         for delay, payload in planned:
             if delay > 0.0:
-                loop.call_later(
-                    delay,
+                loop.call_at(
+                    base + delay,
                     self._deliver_planned,
                     [(0.0, payload)],
                     direction,
@@ -1779,12 +1809,15 @@ class MockIcomRadio(AudioPortMixin):
         plan = self.fault_plan
         port = self._port_of(label)
         if plan is not None and not plan.is_noop(port, "from_client"):
-            planned = plan.decide(port, "from_client", data)
+            decided_at = time.monotonic()
+            planned = plan.decide(port, "from_client", data, now=decided_at)
             if planned is None:
                 # Held in the reorder buffer: arm the flush deadline (idle).
                 self._arm_reorder_flush(plan, port, "from_client", proto, addr, label)
                 return
-            self._deliver_planned(planned, "from_client", proto, addr, label)
+            self._deliver_planned(
+                planned, "from_client", proto, addr, label, decided_at
+            )
             return
         self._receive(data, addr, label, proto)
 
@@ -2144,7 +2177,12 @@ class MockIcomRadio(AudioPortMixin):
                 self._arm_civ_silence_after_open()
                 if not self._civ_standby:
                     civ = self._civ_frame(to=0x00, frm=self._radio_addr, cmd=0x00)
-                    self._send(proto, self._wrap_civ(civ, sender_id), addr, "civ")
+                    self._send(
+                        proto,
+                        self._wrap_civ(civ, sender_id, seq_shift=self.civ_tx_seq_jump),
+                        addr,
+                        "civ",
+                    )
                 key = (addr, sender_id)
                 if self._civ_gap_gate(
                     key, "openclose", data, addr, sender_id, seq, proto
@@ -2646,6 +2684,25 @@ class MockIcomRadio(AudioPortMixin):
             return self._civ_frame(to, frm, cmd, data=payload)
         return reply
 
+    def _swap_selected_unselected(self) -> None:
+        """Exchange the selected and unselected receiver/VFO state pairs."""
+        self._frequency, self._unselected_frequency = (
+            self._unselected_frequency,
+            self._frequency,
+        )
+        self._mode, self._unselected_mode = (
+            self._unselected_mode,
+            self._mode,
+        )
+        self._data_mode, self._unselected_data_mode = (
+            self._unselected_data_mode,
+            self._data_mode,
+        )
+        self._filter, self._unselected_filter = (
+            self._unselected_filter,
+            self._filter,
+        )
+
     def _dispatch_civ_native(
         self, cmd: int, payload: bytes, from_addr: int
     ) -> bytes | None:
@@ -2841,24 +2898,28 @@ class MockIcomRadio(AudioPortMixin):
             if len(payload) == 1 and payload[0] in (0xD0, 0xD1):
                 target = payload[0] - 0xD0  # D0 -> MAIN (0), D1 -> SUB (1)
                 if target != self._selected_receiver:
-                    self._frequency, self._unselected_frequency = (
-                        self._unselected_frequency,
-                        self._frequency,
-                    )
-                    self._mode, self._unselected_mode = (
-                        self._unselected_mode,
-                        self._mode,
-                    )
-                    self._data_mode, self._unselected_data_mode = (
-                        self._unselected_data_mode,
-                        self._data_mode,
-                    )
-                    self._filter, self._unselected_filter = (
-                        self._unselected_filter,
-                        self._filter,
-                    )
+                    self._swap_selected_unselected()
                     self._selected_receiver = target
                 return self._civ_ack(to, frm)
+        # --- VFO A/B select (0x07 00/01) on the selected receiver ---
+        # Single-receiver "VFO A/B" radios (IC-705, IC-7300) take the letter
+        # form: selecting the idle letter swaps the selected/unselected pair
+        # (same exchange as a receiver re-select), selecting the current
+        # letter is an idempotent ACK. Core's connection policy
+        # (``RadioPoller.select_vfo_a_on_connect``) sends 0x07 0x00 at
+        # connect to bind the A/B identity; a NAK here leaves
+        # ``main.activeSlot`` unobserved and the passband tuple unprovable.
+        if (
+            self._vfo_ab
+            and cmd == _CMD_VFO_SELECT
+            and len(payload) == 1
+            and payload[0] in (0x00, 0x01)
+        ):
+            target_letter = "A" if payload[0] == 0x00 else "B"
+            if target_letter != self._selected_vfo_letter:
+                self._swap_selected_unselected()
+                self._selected_vfo_letter = target_letter
+            return self._civ_ack(to, frm)
         # The bare D2 read is answered with or without ``dual_receiver``: a
         # dual-receiver radio always reports its selection, and Core refuses
         # receiver-scoped plain commands until it has (MOR-3591). Without
@@ -3326,18 +3387,26 @@ class MockIcomRadio(AudioPortMixin):
     def _civ_nak(self, to: int, frm: int) -> bytes:
         return self._civ_frame(to, frm, _CMD_NAK)
 
-    def _wrap_civ(self, civ_frame: bytes, client_id: int) -> bytes:
-        """Wrap a CI-V frame in a 0x15-byte DATA header for the CI-V port."""
+    def _wrap_civ(
+        self, civ_frame: bytes, client_id: int, *, seq_shift: int = 0
+    ) -> bytes:
+        """Wrap a CI-V frame in a 0x15-byte DATA header for the CI-V port.
+
+        ``seq_shift`` moves THIS packet's sequence number only (header and
+        the echoed big-endian copy at 0x13); the counter advances by one
+        regardless. The open marker uses it for ``civ_tx_seq_jump``.
+        """
         total = _CIV_HEADER_SIZE + len(civ_frame)
         pkt = bytearray(total)
+        seq = (self._civ_seq + seq_shift) & 0xFFFF
         struct.pack_into("<I", pkt, 0x00, total)
         struct.pack_into("<H", pkt, 0x04, _PT_DATA)
-        struct.pack_into("<H", pkt, 0x06, self._civ_seq)
+        struct.pack_into("<H", pkt, 0x06, seq)
         struct.pack_into("<I", pkt, 0x08, self.radio_id)
         struct.pack_into("<I", pkt, 0x0C, client_id)
         pkt[0x10] = 0xC1
         struct.pack_into("<H", pkt, 0x11, len(civ_frame))
-        struct.pack_into(">H", pkt, 0x13, self._civ_seq)
+        struct.pack_into(">H", pkt, 0x13, seq)
         pkt[_CIV_HEADER_SIZE:] = civ_frame
         self._civ_seq = (self._civ_seq + 1) & 0xFFFF
         return bytes(pkt)

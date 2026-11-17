@@ -1,4 +1,20 @@
-"""Loopback simulator with writable CENTER geometry for the panorama journey."""
+"""Loopback simulator with writable CENTER geometry for the panorama journey.
+
+Latency knobs (MOR-4451): a real LAN/Wi-Fi link delays both directions, so
+the harness models each leg with its own one-way knob. ``--response-delay``
+/ ``--response-jitter`` delay the DOWNLINK only: every CI-V reply or
+unsolicited frame on the CI-V port leaves late through the shared outbound
+CI-V FaultPlan (``civ_to_client``), order preserved. ``--uplink-delay``
+delays the UPLINK only: every inbound request waits in the simulator's
+inherited ``response_delay`` dispatch delay (applied in ``_receive``) before
+it is parsed. Round-trip time is the sum of the two legs, each applied
+exactly once — never doubled.
+
+Adoption-order knob (MOR-4451): ``--external-span-skew-s`` staggers the two
+observable legs of the front-panel ``--external-span-after-s`` change — the
+streamed wave and the 0x15 span readback — so the client sees one order
+deterministically (positive skew: frames first; negative: readback first).
+"""
 
 from __future__ import annotations
 
@@ -6,20 +22,31 @@ import argparse
 import asyncio
 import json
 import logging
-import random
 import sys
+import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from rigplane.core.types import bcd_decode, bcd_encode  # noqa: E402
+from rigplane.commands._codec import bcd_encode_value, filter_index_to_hz  # noqa: E402
+from rigplane.core.types import Mode  # noqa: E402
+
+
+def _bcd_level_decode(data: bytes) -> int:
+    value = 0
+    for byte in data:
+        value = value * 100 + ((byte >> 4) & 0x0F) * 10 + (byte & 0x0F)
+    return value
+
+
 from rigplane.commands import parse_civ_frame  # noqa: E402
-from rigplane.commands._codec import bcd_encode_value  # noqa: E402
 from rigplane.commands.scope import parse_scope_fixed_edge_response  # noqa: E402
 from rigplane.profiles import resolve_radio_profile  # noqa: E402
 from rigplane.runtime.radio import IcomRadio  # noqa: E402
 from rigplane.web.server import WebConfig, WebServer  # noqa: E402
+from rigplane_testkit.icom.faults import FaultPlan, FaultRule  # noqa: E402
 from rigplane_testkit.icom.simulator import (  # noqa: E402
     _CIV_HEADER_SIZE,
     _CIV_PREAMBLE,
@@ -28,6 +55,13 @@ from rigplane_testkit.icom.simulator import (  # noqa: E402
     _CMD_FREQ_SET,
     MockIcomRadio,
 )
+
+
+# CI-V 27 1C scope center type (MOR-4451): Filter Center (0) streams the
+# CENTER wave centred on the passband centre, not the carrier. Only SSB has
+# a carrier-offset passband — LSB below, USB above the carrier (CI-V mode
+# bytes match rigplane.core.types.Mode: LSB 0x00, USB 0x01).
+_SCOPE_CENTER_PASSBAND_SIGN = {Mode.LSB: -1, Mode.USB: +1}
 
 
 @dataclass(frozen=True)
@@ -45,9 +79,12 @@ class PanoramaSimulator(MockIcomRadio):
         self,
         model: str,
         evidence: Path,
-        ack_delay: float = 0.0,
         response_delay: float = 0.0,
         response_jitter: float = 0.0,
+        uplink_delay: float = 0.0,
+        span_hz: int = 100_000,
+        seed: int = 0xC0FFEE,
+        scope_center_type: int = 1,
     ) -> None:
         self.profile = resolve_radio_profile(model=model)
         super().__init__(
@@ -55,26 +92,36 @@ class PanoramaSimulator(MockIcomRadio):
             radio_addr=self.profile.civ_addr,
             scope_stream=True,
             dual_receiver=self.profile.receiver_count > 1,
+            vfo_ab=self.profile.vfo_scheme == "ab",
         )
         self.evidence = evidence
+        self.set_link_lag(response_delay, response_jitter, uplink_delay, seed)
         # MOR-4393 slow-link knob: seconds the FB/01 ACK of a frequency SET
         # lags behind the write itself. The write applies instantly, so the
         # next poll readback carries the new frequency while the client-side
         # command lifecycle is still pending — the owner's IC-705-over-Wi-Fi
         # readback-lag shape.
-        self.ack_delay = ack_delay
-        # Downlink-lag knob: seconds every simulator CI-V response (writes,
-        # transceive echoes, poll readbacks) is held before dispatch, so the
-        # client observes older own-target frequencies while newer tuning
-        # intent already exists. Unlike ack_delay (one frame late), this lags
-        # the whole downlink the frontend reads.
-        self.response_delay = response_delay
-        self._response_jitter = response_jitter
+        self.ack_delay = 0.0
         if self.profile.expected_identity_ids:
             self.model_id = bytes.fromhex(self.profile.expected_identity_ids[0])
-        self.span_index = self.profile.scope_span_presets_hz.index(100_000)
+        # CI-V 27 1C scope center type (MOR-4451): Carrier Point Center (1,
+        # the default) streams centred on the VFO, so the default keeps every
+        # existing row's wave geometry byte-identical. Filter Center (0)
+        # offsets the CENTER wave to the passband centre (see
+        # _scope_wave_center_hz).
+        if scope_center_type not in (0, 1):
+            raise ValueError(
+                f"scope_center_type must be 0 (Filter Center) or 1 (Carrier Point Center), got {scope_center_type}"
+            )
+        self._scope_center_type = scope_center_type
+        self.span_index = self.profile.scope_span_presets_hz.index(span_hz)
+        # MOR-4451 adoption-order knob: the lagging leg of a front-panel
+        # external span change keeps reporting the old preset until its
+        # switch time — (leg, old preset, switch at monotonic s). The
+        # leading leg switches span_index at once; both legs stay views
+        # of the same scheduled change, never a second mechanism.
+        self._external_hold: tuple[str, int, float] | None = None
         self.scope_mode = 0
-        self._active_slot = 0  # single-receiver A/B: 0 = A, 1 = B
         self.fixed = (14_200_000, 14_300_000)
         # SCROLL-C window, radio-owned: the radio scrolls its own edges
         # when the VFO leaves the window (CI-V 27 15 SPAN applies in
@@ -85,20 +132,47 @@ class PanoramaSimulator(MockIcomRadio):
         # item 5) — None until the first SCROLL-C pump.
         self.scroll_span: int | None = None
         self.set_frequency(14_250_000)
+        # CI-V 1A 03 (DSP filter width): the shared simulator does not model
+        # it, so the panorama harness never observed main.filterWidth and no
+        # passband overlay could render. The byte is the profile-encoded
+        # index; 0x28 decodes to 2400 Hz SSB on the Icom tables.
+        self._filter_width_index = 0x28
+        # CI-V 14 07/08 (PBT inner/outer, BCD level 0-255): the passband
+        # tuple's shift leg. Both pots parked at center (128 = no shift).
+        self._pbt = {0x07: 128, 0x08: 128}
 
-    def _receive(self, data, addr, label, proto) -> None:
-        # Per-datagram uniform jitter on top of the fixed downlink lag. The
-        # base class reads self.response_delay synchronously at schedule
-        # time, so a temporary adjustment is race-free on the event loop.
-        if self._response_jitter <= 0:
-            super()._receive(data, addr, label, proto)
-            return
-        original = self.response_delay
-        try:
-            self.response_delay = original + random.uniform(0.0, self._response_jitter)
-            super()._receive(data, addr, label, proto)
-        finally:
-            self.response_delay = original
+    def set_link_lag(
+        self,
+        response_delay: float,
+        response_jitter: float,
+        uplink_delay: float,
+        seed: int,
+    ) -> None:
+        # MOR-4451 held-key acceptance: realistic CI-V readback latency.
+        # EVERY reply or unsolicited frame on the CI-V port leaves
+        # ``response_delay + uniform(0, response_jitter)`` seconds late, ORDER
+        # PRESERVED (``preserve_order``) — a real link delays but does not
+        # reorder. Seeded (``seed``) so a latency case replays exactly.
+        # This is the shared outbound CI-V FaultPlan (the same mechanism
+        # ``simulator.py``'s funnel already serves), never a parallel queue:
+        # the inherited ``response_delay`` carries only the uplink knob
+        # (``uplink_delay`` below), never a second copy of this downlink delay.
+        self.fault_plan = FaultPlan(
+            civ_to_client=FaultRule(
+                delay_s=response_delay,
+                jitter_s=response_jitter,
+                preserve_order=True,
+            ),
+            seed=seed,
+        )
+        # MOR-4451 one-way UPLINK latency: the inherited ``response_delay``
+        # dispatch delay (applied in ``_receive``) holds every inbound
+        # datagram before parsing — the request leg. That mechanism has no
+        # per-port scoping (one float for every label), so this also holds
+        # control-port session traffic, not just CI-V requests; the panorama
+        # path only depends on the CI-V request leg. Kept as is — no second
+        # mechanism beside it.
+        self.response_delay = uplink_delay
 
     def _handle_civ_data(self, data, addr, sender_id, proto):
         if self.ack_delay > 0:
@@ -139,6 +213,76 @@ class PanoramaSimulator(MockIcomRadio):
                 return
         super()._handle_civ_data(data, addr, sender_id, proto)
 
+    def _dispatch_filter_width(
+        self, rest: bytes, from_addr: int, reply
+    ) -> bytes | None:
+        if len(rest) == 0:  # GET: the stored profile-encoded index byte
+            return reply(bytes([self._filter_width_index]))
+        if len(rest) == 1:  # SET: store and ACK
+            self._filter_width_index = rest[0]
+            return self._civ_ack(from_addr, self._radio_addr)
+        return self._civ_nak(from_addr, self._radio_addr)
+
+    def _dispatch_pbt(
+        self, sub: int, rest: bytes, from_addr: int, reply
+    ) -> bytes | None:
+        if len(rest) == 0:  # GET: sub echo + BCD level (two bytes)
+            return reply(sub, bcd_encode_value(self._pbt[sub], byte_count=2))
+        if len(rest) != 2:
+            return self._civ_nak(from_addr, self._radio_addr)
+        self._pbt[sub] = _bcd_level_decode(rest)
+        return self._civ_ack(from_addr, self._radio_addr)
+
+    def _dispatch_civ_native(
+        self, cmd: int, payload: bytes, from_addr: int
+    ) -> bytes | None:
+        if cmd == 0x1A and payload[:1] == b"\x03":
+            return self._dispatch_filter_width(
+                payload[1:],
+                from_addr,
+                lambda data: self._civ_frame(
+                    from_addr, self._radio_addr, 0x1A, sub=0x03, data=data
+                ),
+            )
+        if cmd == 0x14 and payload and payload[0] in self._pbt:
+            return self._dispatch_pbt(
+                payload[0],
+                payload[1:],
+                from_addr,
+                lambda sub, data: self._civ_frame(
+                    from_addr, self._radio_addr, 0x14, sub=sub, data=data
+                ),
+            )
+        return super()._dispatch_civ_native(cmd, payload, from_addr)
+
+    def _dispatch_cmd29(
+        self, real_cmd: int, inner: bytes, from_addr: int, receiver: int
+    ) -> bytes | None:
+        if real_cmd == 0x1A and inner[:1] == b"\x03":
+            return self._dispatch_filter_width(
+                inner[1:],
+                from_addr,
+                lambda data: self._civ_frame(
+                    from_addr,
+                    self._radio_addr,
+                    0x29,
+                    data=bytes([receiver, 0x1A, 0x03]) + data,
+                ),
+            )
+        if real_cmd == 0x14 and inner and inner[0] in self._pbt:
+            return self._dispatch_pbt(
+                inner[0],
+                inner[1:],
+                from_addr,
+                lambda sub, data: self._civ_frame(
+                    from_addr,
+                    self._radio_addr,
+                    0x29,
+                    data=bytes([receiver, 0x14, sub]) + data,
+                ),
+            )
+        return super()._dispatch_cmd29(real_cmd, inner, from_addr, receiver)
+
     def _dispatch_scope(self, payload: bytes, from_addr: int) -> bytes | None:
         reply = self._dispatch_scope_reply(payload, from_addr)
         lengths = {
@@ -162,6 +306,19 @@ class PanoramaSimulator(MockIcomRadio):
                     + "\n"
                 )
         return reply
+
+    def _external_leg_span_hz(self, leg: str) -> int:
+        """Preset the given leg (``readback`` or ``wave``) reports right now.
+
+        While the external change's lagging leg has not reached its switch
+        time it keeps the old preset; every other case (no change, leading
+        leg, expired hold) reports ``span_index`` — the single source of
+        truth the client span writes also update.
+        """
+        hold = self._external_hold
+        if hold is not None and hold[0] == leg and time.monotonic() < hold[2]:
+            return hold[1]
+        return self.profile.scope_span_presets_hz[self.span_index]
 
     def _dispatch_scope_reply(self, payload: bytes, from_addr: int) -> bytes | None:
         if payload and payload[0] == 0x1E and len(payload) == 3:
@@ -191,7 +348,7 @@ class PanoramaSimulator(MockIcomRadio):
                 value = (
                     bytes([self.scope_mode])
                     if sub == 0x14
-                    else bcd_encode(self.profile.scope_span_presets_hz[self.span_index])
+                    else bcd_encode(self._external_leg_span_hz("readback"))
                 )
                 if len(rest) == 1:
                     return self._civ_frame(
@@ -204,9 +361,23 @@ class PanoramaSimulator(MockIcomRadio):
                     if sub == 0x14:
                         self.scope_mode = rest[1]
                     else:
+                        old_preset = self.profile.scope_span_presets_hz[self.span_index]
                         self.span_index = self.profile.scope_span_presets_hz.index(
                             bcd_decode(rest[1:])
                         )
+                        # MOR-4532: one-shot stale-frame hook. The streamed
+                        # wave keeps the old preset for the file's seconds
+                        # after this ACKed write (the external-change hold,
+                        # never a second mechanism).
+                        stale = self.evidence.with_suffix(".stale")
+                        if stale.exists():
+                            hold_s = float(stale.read_text())
+                            stale.unlink()
+                            self._external_hold = (
+                                "wave",
+                                old_preset,
+                                time.monotonic() + hold_s,
+                            )
                     reply = self._civ_ack(from_addr, self._radio_addr)
                 else:
                     return self._civ_nak(from_addr, self._radio_addr)
@@ -215,86 +386,64 @@ class PanoramaSimulator(MockIcomRadio):
             return reply
         return super()._dispatch_scope(payload, from_addr)
 
-    # Passband geometry the radio reports (#4565 journey): the filter width
-    # and PBT reads, with the wire bytes taken from the profile's command
-    # map. Without them the panel never gets a passband tuple, so its
-    # frequency is undefined and radio-owned windows are never exercised
-    # against a VFO-centred branch. Values: a mid filter index, PBT centred.
-    _PASSBAND_READS = (
-        ("get_filter_width", 10),
-        ("get_pbt_inner", 128),
-        ("get_pbt_outer", 128),
-    )
+    def _scope_wave_center_hz(self) -> int:
+        """CENTER-mode wave centre under the modeled scope center type.
 
-    def _passband_read_reply(
-        self, wire: tuple[int, ...], from_addr: int, receiver: int | None
-    ) -> bytes | None:
-        """The reply to a passband read, wrapped in Command29 when it was."""
-        command_map = self.profile.command_map
-        if command_map is None:
-            return None
-        for name, value in self._PASSBAND_READS:
-            if command_map.has(name) and command_map.get(name) == wire:
-                if name == "get_filter_width" and (
-                    self.profile.filter_width_encoding == "raw_byte_index"
-                ):
-                    data = bytes([value])
-                else:
-                    data = bcd_encode_value(value, byte_count=2)
-                if receiver is None:
-                    return self._civ_frame(
-                        from_addr,
-                        self._radio_addr,
-                        wire[0],
-                        data=bytes(wire[1:]) + data,
-                    )
-                return self._civ_frame(
-                    from_addr,
-                    self._radio_addr,
-                    0x29,
-                    data=bytes([receiver, *wire]) + data,
-                )
-        return None
-
-    def _dispatch_civ_native(
-        self, cmd: int, payload: bytes, from_addr: int
-    ) -> bytes | None:
-        if cmd == 0x29 and len(payload) >= 2:
-            reply = self._passband_read_reply(
-                (payload[1], *payload[2:]), from_addr, payload[0]
+        Filter Center (27 1C = 0) centres the streamed wave on the passband
+        centre: the current mode's filter width decoded from the profile
+        segments (the stored 1A 03 byte is BCD-encoded on the wire, so it is
+        BCD-decoded first — 0x28 is slot 28, 2400 Hz SSB), halved, signed by
+        sideband (LSB negative, USB positive). Carrier Point Center (= 1),
+        any non-SSB mode, or an undecodable width streams centred on the VFO.
+        """
+        if self._scope_center_type != 0:
+            return self._frequency
+        try:
+            mode = Mode(self._mode)
+        except ValueError:
+            return self._frequency
+        sign = _SCOPE_CENTER_PASSBAND_SIGN.get(mode)
+        if sign is None:
+            return self._frequency
+        rule = self.profile.resolve_filter_rule(mode.name)
+        if rule is None or not rule.segments:
+            return self._frequency
+        try:
+            width_hz = filter_index_to_hz(
+                _bcd_level_decode(bytes([self._filter_width_index])),
+                segments=rule.segments,
             )
-        else:
-            reply = self._passband_read_reply((cmd, *payload), from_addr, None)
-        if reply is not None:
-            return reply
-        if cmd == 0x07 and payload in (b"\x00", b"\x01") and not self._dual_receiver:
-            # A/B slot select on a single-receiver radio: the connection
-            # policy selects VFO A and the passband identity needs the
-            # confirmed slot. Exchanging slots swaps the selected and
-            # unselected sets, exactly as the dual-receiver select does.
-            target = payload[0]
-            if target != self._active_slot:
-                self._frequency, self._unselected_frequency = (
-                    self._unselected_frequency,
-                    self._frequency,
-                )
-                self._mode, self._unselected_mode = self._unselected_mode, self._mode
-                self._data_mode, self._unselected_data_mode = (
-                    self._unselected_data_mode,
-                    self._data_mode,
-                )
-                self._filter, self._unselected_filter = (
-                    self._unselected_filter,
-                    self._filter,
-                )
-                self._active_slot = target
-            return self._civ_ack(from_addr, self._radio_addr)
-        return super()._dispatch_civ_native(cmd, payload, from_addr)
+        except ValueError:
+            return self._frequency
+        return self._frequency + sign * (width_hz // 2)
+
+    def apply_external_span(self, preset_hz: int, skew_s: float = 0.0) -> None:
+        """Front-panel span change: the radio moves to ``preset_hz`` with no
+        client message (``span_index``, the one source of truth). ``skew_s``
+        staggers the two observable legs (see ``--external-span-skew-s``).
+        The timed CLI change and the one-shot ``<evidence>.span`` file both
+        land here, never a second mechanism.
+        """
+        presets = self.profile.scope_span_presets_hz
+        old_preset = presets[self.span_index]
+        self.span_index = presets.index(preset_hz)
+        if skew_s > 0:
+            self._external_hold = ("readback", old_preset, time.monotonic() + skew_s)
+        elif skew_s < 0:
+            self._external_hold = ("wave", old_preset, time.monotonic() - skew_s)
+        logging.info("external span change: now %d Hz (skew %.1f s)", preset_hz, skew_s)
 
     def pump_scope_stream(self) -> int:
         if self.evidence.with_suffix(".pause").exists():
             return 0
-        span = self.profile.scope_span_presets_hz[self.span_index]
+        # MOR-4532: one-shot front-panel span change a spec triggers at a
+        # point of its own (the file holds the preset value in Hz).
+        front_panel = self.evidence.with_suffix(".span")
+        if front_panel.exists():
+            preset_hz = int(front_panel.read_text())
+            front_panel.unlink()
+            self.apply_external_span(preset_hz)
+        span = self._external_leg_span_hz("wave")
         if self.scope_mode in (1, 3):
             # Edge-number modes (FIX, SCROLL-F): the window is the selected
             # EDGE pair; the radio never moves it on its own.
@@ -315,7 +464,7 @@ class PanoramaSimulator(MockIcomRadio):
                 self.scroll_span = span
             first, last = self.scroll
         else:
-            first, last = self._frequency, span
+            first, last = self._scope_wave_center_hz(), span
         for receiver, templates in self._scope_templates.items():
             shaped = []
             for template in templates:
@@ -352,28 +501,121 @@ async def run() -> None:
         "--response-delay",
         type=float,
         default=0.0,
-        help="seconds every simulator CI-V response is held before dispatch "
-        "(PanoramaSimulator.response_delay) — a downlink-lag knob: writes, "
-        "transceive echoes and poll readbacks all arrive late, so the "
-        "client observes older own-target frequencies while newer tuning "
-        "intent exists (MOR-4393)",
+        help="one-way DOWNLINK seconds: EVERY CI-V reply/unsolicited frame "
+        "on the CI-V port leaves late (shared outbound CI-V FaultPlan) — a "
+        "readback-latency knob: order is preserved, so this models a slow "
+        "link rather than a reordering one; round-trip time is "
+        "--uplink-delay + --response-delay, each applied once",
+    )
+    parser.add_argument(
+        "--uplink-delay",
+        type=float,
+        default=0.0,
+        help="one-way UPLINK seconds: EVERY inbound request waits this long "
+        "in the simulator's inherited response_delay dispatch delay "
+        "(applied in _receive) before it is parsed — a request-leg latency "
+        "knob. The inherited mechanism has no per-port scoping, so this "
+        "also holds control-port session traffic, never a second mechanism; "
+        "round-trip time is --uplink-delay + --response-delay, each once",
     )
     parser.add_argument(
         "--response-jitter",
         type=float,
         default=0.0,
-        help="per-datagram uniform [0, jitter] seconds added to "
-        "--response-delay (PanoramaSimulator jitter) — nondeterministic; "
-        "the slow-link row keeps it at zero",
+        help="uniform random extra delay in [0, response_jitter] seconds "
+        "added to every CI-V reply/unsolicited frame on top of "
+        "--response-delay (seeded by --seed; order still preserved)",
+    )
+    parser.add_argument(
+        "--span-hz",
+        type=int,
+        # MOR-4532: a page load is requestSeq 0 and writes no span, so the
+        # simulator itself starts on the 100 kHz window (the ±50 kHz preset)
+        # the rows used to reach through that first write.
+        default=50_000,
+        help="radio scope span preset the simulator starts on "
+        "(PanoramaSimulator.span_index) — must be one of the profile's "
+        "scope_span_presets_hz",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=0xC0FFEE,
+        help="seed for the CI-V response jitter RNG so a latency case replays exactly",
+    )
+    parser.add_argument(
+        "--scope-center-type",
+        type=int,
+        choices=(0, 1),
+        default=1,
+        help="simulated CI-V 27 1C scope center type: 0 Filter Center streams "
+        "the CENTER wave centred on the passband centre (LSB negative / USB "
+        "positive by half the current filter width, from profile/filter "
+        "data); 1 Carrier Point Center (default) streams centred on the VFO "
+        "— the default keeps every existing row's geometry byte-identical",
+    )
+    parser.add_argument(
+        "--external-span-after-s",
+        type=float,
+        default=None,
+        help="front-panel span change: seconds after simulator start, set the "
+        "radio span preset to --external-span-hz WITHOUT any client message "
+        "(reuses PanoramaSimulator.span_index, never a second mechanism)",
+    )
+    parser.add_argument(
+        "--external-span-hz",
+        type=int,
+        default=None,
+        help="radio scope span preset the external change narrows to — must be "
+        "one of the profile's scope_span_presets_hz",
+    )
+    parser.add_argument(
+        "--external-span-skew-s",
+        type=float,
+        default=0.0,
+        help="MOR-4451 adoption-order knob: staggers the two observable legs "
+        "of the --external-span-after-s change so the arrival order at the "
+        "client is deterministic. Positive: the streamed wave switches "
+        "first and the span readback (0x15) keeps the old preset that many "
+        "seconds longer (frames-first order). Negative: the span readback "
+        "switches first and the wave keeps the old width |skew| seconds "
+        "longer (readback-first order). Zero: both switch together (the "
+        "previous behaviour). One scheduled change, two switch times — "
+        "never a second mechanism.",
     )
     args = parser.parse_args()
     logging.basicConfig(filename=args.evidence.with_suffix(".log"), level=logging.INFO)
     args.evidence.write_text("")
     # Lag knobs stay off through the handshake: the client connect phase has
-    # sub-second deadlines a delayed simulator cannot meet. They shape the
-    # test phase only, activated once the radio link is up.
-    simulator = PanoramaSimulator(args.model, args.evidence)
+    # sub-second deadlines a delayed simulator cannot meet (MOR-4393). They
+    # shape the test phase only, activated once the radio link is up.
+    simulator = PanoramaSimulator(
+        args.model,
+        args.evidence,
+        span_hz=args.span_hz,
+        seed=args.seed,
+        scope_center_type=args.scope_center_type,
+    )
+    # --freq was parsed but never applied: every row ran at the hardcoded
+    # 14.25 MHz. Rows that pin a band preset need the VFO inside that band.
+    simulator.set_frequency(args.freq)
     await simulator.start()
+    if args.external_span_after_s is not None:
+        if args.external_span_hz is None:
+            raise SystemExit("--external-span-after-s needs --external-span-hz")
+        presets = simulator.profile.scope_span_presets_hz
+        if args.external_span_hz not in presets:
+            raise SystemExit(
+                f"--external-span-hz {args.external_span_hz} is not one of {list(presets)}"
+            )
+
+        async def _external_span_change() -> None:
+            await asyncio.sleep(args.external_span_after_s)
+            simulator.apply_external_span(
+                args.external_span_hz, args.external_span_skew_s
+            )
+
+        asyncio.create_task(_external_span_change())
     radio = IcomRadio(
         host="127.0.0.1",
         port=simulator.control_port,
@@ -384,9 +626,10 @@ async def run() -> None:
     try:
         await radio.connect()
         await radio.get_freq()
+        simulator.set_link_lag(
+            args.response_delay, args.response_jitter, args.uplink_delay, args.seed
+        )
         simulator.ack_delay = args.ack_delay
-        simulator.response_delay = args.response_delay
-        simulator._response_jitter = args.response_jitter
         server = WebServer(
             radio,
             WebConfig(

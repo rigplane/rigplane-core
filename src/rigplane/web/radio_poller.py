@@ -120,6 +120,7 @@ from ..profiles import RadioProfile, resolve_radio_profile
 from ..runtime._dual_rx_runtime import require_receiver_for_profile
 from ..runtime._state_queries import (
     acquisition_query_resolver_for_profile,
+    scope_fixed_edge_slot,
     tx_target_max_age,
     wire_parts_for_query,
 )
@@ -622,7 +623,16 @@ class RadioPoller:
             self._acquisition_executor = civ_acquisition_executor_for_provider(
                 self._acquisition_scheduler.provider,
                 self._send_one_state_query,
-                resolve_query=acquisition_query_resolver_for_profile(self._profile),
+                # MOR-4387: the periodic fixed-edge read addresses the slot
+                # of the scope receiver's CURRENT band and the observed edge,
+                # re-resolved per poll against the live store — never the
+                # 01/01 default that published an unrelated slot's bounds.
+                resolve_query=acquisition_query_resolver_for_profile(
+                    self._profile,
+                    fixed_edge_slot=lambda: scope_fixed_edge_slot(
+                        self._profile, self._state_store.snapshot()
+                    ),
+                ),
                 supports_cmd29=self._profile.supports_cmd29,
             )
         # Set by default — cleared at _run() start, re-set after initial fetch.
@@ -1339,6 +1349,59 @@ class RadioPoller:
         except Exception:
             logger.debug("radio-poller: %s reconfirm failed", label, exc_info=True)
 
+    @staticmethod
+    def _requestable(scheduler: AcquisitionScheduler, path: FieldPath) -> bool:
+        capability = scheduler._profile.capability_for(path)
+        return bool(capability.can_poll or capability.command_response_observable)
+
+    def _geometry_readback_paths(
+        self, scheduler: AcquisitionScheduler, receiver_id: str
+    ) -> tuple[FieldPath, ...]:
+        """The passband-geometry leaves the profile can read for a receiver.
+
+        Filter width plus the IF-shift / PBT pair, whichever of them this
+        radio declares pollable. The client re-proves its passband tuple
+        from exactly these leaves after a boundary (A/B selection, a scope
+        frame-mode change), so a boundary requests them at once instead of
+        leaving them on their ordinary cadence (5 s for PBT).
+        """
+        geometry = (
+            FieldPath.active(receiver_id, "freq_mode", "filter_width"),
+            *(
+                FieldPath.receiver(receiver_id, "operator_controls", leaf)
+                for leaf in ("if_shift", "pbt_inner", "pbt_outer")
+            ),
+        )
+        return tuple(path for path in geometry if self._requestable(scheduler, path))
+
+    def request_scope_mode_geometry_readback(self, receiver: int) -> None:
+        """Re-read the passband geometry after the scope frame mode changed.
+
+        The client retires its passband tuple on a frame-mode boundary and
+        proves it again only from geometry observed after that boundary.
+        The leaves are unchanged by a scope mode, so without this read the
+        overlay waits for the next ordinary poll of the slowest one (PBT,
+        5 s) — a 1-5 s blink of the marker and passband on every
+        CTR/FIX/SCROLL switch. Called once the first frame of the new mode
+        has been handed to the stream, so the answer is observed after the
+        boundary. Shared by every radio: which leaves exist is profile data.
+        """
+        scheduler = self._acquisition_scheduler
+        if scheduler is None:
+            return
+        paths = self._geometry_readback_paths(
+            scheduler, "sub" if receiver == 1 else "main"
+        )
+        if not paths:
+            return
+        scheduler.ensure_fresh(
+            paths,
+            max_age=_POST_WRITE_READBACK_MAX_AGE,
+            priority=AcquisitionPriority.USER,
+            reason="scope_mode_geometry_readback",
+            require_fresh_dispatch=True,
+        )
+
     def _request_post_write_readback(
         self, cmd: Command, *, selected_receiver: int | None = None
     ) -> None:
@@ -1379,18 +1442,9 @@ class RadioPoller:
             # makes every real-profile capability lookup below unsupported,
             # silently leaving geometry on its ordinary cadence after A/B.
             receiver_id = "sub" if selected_receiver == 1 else "main"
-            geometry = (
-                FieldPath.active(receiver_id, "freq_mode", "filter_width"),
-                *(
-                    FieldPath.receiver(receiver_id, "operator_controls", leaf)
-                    for leaf in ("if_shift", "pbt_inner", "pbt_outer")
-                ),
-            )
-            paths = tuple(
-                path
-                for path in (*paths, *geometry)
-                if (capability := scheduler._profile.capability_for(path)).can_poll
-                or capability.command_response_observable
+            paths = (
+                *(path for path in paths if self._requestable(scheduler, path)),
+                *self._geometry_readback_paths(scheduler, receiver_id),
             )
         if type(cmd) is SetMode and CAP_FILTER_WIDTH in self._caps:
             filter_width = FieldPath.active(

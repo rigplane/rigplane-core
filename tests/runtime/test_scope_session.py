@@ -676,6 +676,40 @@ async def test_in_flight_write_blocks_external_release_until_it_lands():
     assert ("span", 3, 0) in writer.views
 
 
+async def test_in_flight_write_keeps_protection_through_a_late_older_report():
+    """MOR-4507: while a span SET awaits its answer, a report of the new
+    value must not clear the write's protection — otherwise an older
+    multi-packet waveform that finishes assembling afterwards (reporting
+    the pre-write span) is adopted as external: the restore snapshot is
+    dropped, desired falls back to the old span, and the next reconcile
+    reverses the user's acknowledged request."""
+    writer = Writer()
+    writer.state = ScopeState(True, True, 0, 3, 1)
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def write(name, value, receiver):
+        if name == "span":
+            entered.set()
+            await release.wait()
+        await writer.write(name, value, receiver)
+
+    session = ScopeSession(writer.read, write, writer.read_fixed)
+    await session.set_inputs(ready=True, tx=False)
+    await session.set_demand(ScopeDemand(1, 1))
+    task = asyncio.create_task(session.configure(span=4))
+    await asyncio.wait_for(entered.wait(), 5)
+    session.observe("span", 4)  # the radio already shows the new span
+    session.observe("span", 3)  # a late, older waveform finishes assembling
+    release.set()
+    await task
+    assert session._applied.get((0, "span")) == 4
+    assert session._desired.get((0, "span")) == 4
+    assert session._previous.get((0, "span")) == 3
+    await session.reconcile()
+    assert [view for view in writer.views if view[0] == "span"] == [("span", 4, 0)]
+
+
 async def test_reconnect_unchanged_mode_keeps_restore():
     """Gate round 2 P1 (fix-4565): an unchanged mode report after a
     connection loss keeps restore ownership — the cleared applied map

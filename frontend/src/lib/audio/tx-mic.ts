@@ -202,8 +202,16 @@ export class TxMic {
         audio: {
           channelCount: CHANNELS,
           sampleRate: SAMPLE_RATE,
-          echoCancellation: true,
-          noiseSuppression: true,
+          // Raw capture (MOR-4312). The browser's voice-call processing is
+          // wrong for a radio transmitter: noise suppression gates and
+          // darkens speech, automatic gain control pumps and distorts it,
+          // and on Android echo cancellation also moves the capture to the
+          // band-limited call route. The radio's own speech processing
+          // shapes the audio. Echo cancellation has nothing to cancel: the
+          // receive audio is silent while the radio transmits.
+          echoCancellation: false,
+          noiseSuppression: false,
+          autoGainControl: false,
         },
       });
     } catch (error: unknown) {

@@ -39,6 +39,16 @@ class RadioScopeWriter(Protocol):
         """
         ...
 
+    def span_settled(self, receiver: int) -> bool:
+        """Whether the receiver's last span request is settled (MOR-4532).
+
+        False while the span write awaits its answer, while it is deferred
+        (TX, readiness), and after an acknowledged or unanswered write until
+        the first frame that follows it. A refused write and a write that
+        was not needed are settled at once.
+        """
+        ...
+
     async def set_output(self, enabled: bool, *, release: bool = True) -> None: ...
     async def set_fixed(self, edges: ScopeFixedEdge, receiver: int) -> None: ...
 
@@ -103,8 +113,14 @@ class RadioScopeSource:
         writer: RadioScopeWriter,
         *,
         max_fps: float = 30,
+        on_mode_change: Callable[[int, int], None] | None = None,
     ) -> None:
         self._writer = writer
+        # (receiver, new mode): called by feed_frame when a streamed frame
+        # reports a different scope mode than the previous frame of the same
+        # receiver (a switch between CENTER, FIX and the SCROLL modes, from
+        # the UI or the radio's front panel).
+        self._on_mode_change = on_mode_change
         self._fixed_ranges = profile.scope_fixed_edge_ranges
         self._fixed_step = profile.scope_fixed_edge_step_hz
         self._presets = profile.scope_span_presets_hz
@@ -245,7 +261,11 @@ class RadioScopeSource:
         return None
 
     async def set_view(
-        self, view: ViewRequest, receiver: int | None = None
+        self,
+        view: ViewRequest,
+        receiver: int | None = None,
+        *,
+        apply_width: bool = True,
     ) -> GrantedView:
         selected = self._receiver(receiver)
         resolved = self.resolve_view(view, selected)
@@ -256,6 +276,11 @@ class RadioScopeSource:
         )
         if isinstance(view, FollowView) and selected:
             await self._writer.set_dual(True, selected)
+        if isinstance(view, FollowView) and not apply_width:
+            # MOR-4532: a re-sent subscription or requestSeq 0 carries its
+            # follow width as context only: no span or mode write. The
+            # grant follows the radio's own window, as after a failed write.
+            return self._follow_grant(view, selected)
         if observed_mode in RADIO_OWNED_WINDOW_SCOPE_MODES:
             # MOR-4392 round 2, gate round 1: the REQUESTED receiver is in
             # a radio-owned-window mode (FIX, SCROLL-C or SCROLL-F) — a
@@ -307,12 +332,19 @@ class RadioScopeSource:
         except (CommandError, TimeoutError, asyncio.TimeoutError):
             if not isinstance(view, FollowView):
                 raise
-            remembered = self._native_coverages.get(selected)
-            if remembered is not None:
-                native = remembered[1]
-                return GrantedView(self.resolve_follow(view, native, selected), native)
-            return GrantedView(resolved, None)
+            return self._follow_grant(view, selected)
         return GrantedView(resolved, coverage)
+
+    def _follow_grant(self, view: FollowView, receiver: int) -> GrantedView:
+        """A follow grant from the radio's last streamed window, no write."""
+        remembered = self._native_coverages.get(receiver)
+        if remembered is not None:
+            native = remembered[1]
+            return GrantedView(self.resolve_follow(view, native, receiver), native)
+        return GrantedView(self.resolve_view(view, receiver), None)
+
+    def view_settled(self, receiver: int | None = None) -> bool:
+        return self._writer.span_settled(self._receiver(receiver))
 
     async def start(self) -> None:
         if self._active:
@@ -352,6 +384,7 @@ class RadioScopeSource:
         start, end = frame.start_freq_hz, frame.end_freq_hz
         if frame.out_of_range and frame.mode == 0:
             start, end = start - end, start + end
+        previous = self._native_coverages.get(receiver)
         self._native_coverages[receiver] = (frame.mode, Coverage(start, end))
         native = NativeFrame(
             frame.receiver,
@@ -362,3 +395,11 @@ class RadioScopeSource:
         )
         for callback in tuple(self._callbacks):
             callback(native)
+        # After the frame is handed to the stream: whatever the listener asks
+        # the radio for is answered after this frame boundary.
+        if (
+            previous is not None
+            and previous[0] != frame.mode
+            and self._on_mode_change is not None
+        ):
+            self._on_mode_change(receiver, frame.mode)

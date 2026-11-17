@@ -21,6 +21,7 @@ from rigplane.web.handlers.audio import AudioBroadcaster
 from rigplane.web.handlers.scope import ScopeHandler
 from rigplane.web.protocol import decode_scope_frame_v2, encode_scope_subscription
 from rigplane.web.scope_sources import WebScopePcmTap
+from rigplane.web.radio_poller import RadioPoller
 from rigplane.web.server import WebConfig, WebServer
 
 from test_audio_scope_dispatch import _seed_audio_facts
@@ -29,6 +30,26 @@ from tests.web.test_scope_hub_channel import Socket, Writer
 from tests.web.test_sdr_scope_source import _run_cmd_web
 from test_web_server import _addr
 from test_web_server_coverage import _scope_radio
+
+
+async def test_streamed_scope_mode_change_requests_the_passband_geometry_readback():
+    """MOR-4451: the hub's radio source reports a frame-mode switch to the
+    poller, which re-reads the receiver's passband geometry (the client
+    re-proves its tuple from it) instead of leaving it to the 5 s PBT poll."""
+    from unittest.mock import MagicMock
+
+    server = WebServer(
+        _scope_radio(), WebConfig(host="127.0.0.1", port=0, radio_model="IC-7300")
+    )
+    server._radio_poller = MagicMock(spec=RadioPoller)
+    server.scope_hub  # noqa: B018 - builds the hub and its radio source
+    source = server._radio_scope_source
+    assert source is not None
+    source._active = True
+    source.feed_frame(ScopeFrame(0, 0, 14_050_000, 14_150_000, bytes(475), False))
+    server._radio_poller.request_scope_mode_geometry_readback.assert_not_called()
+    source.feed_frame(ScopeFrame(0, 1, 14_000_000, 14_100_000, bytes(475), False))
+    server._radio_poller.request_scope_mode_geometry_readback.assert_called_once_with(0)
 
 
 @pytest.mark.parametrize(

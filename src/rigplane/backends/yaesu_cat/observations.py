@@ -508,9 +508,10 @@ class YaesuObservationAdapter:
                 KeyError,
                 CatCommandRejected,
             ) as exc:
-                # Same rule as ``_safe_read``: record the defect (what the
-                # startup gate reads), skip this field, keep the cycle.
-                self._record_declared_defect("ptt", exc, (_PTT,))
+                # Same rule as ``_safe_read`` minus the record: PTT left
+                # the startup-critical set (MOR-4456), so a refused or
+                # malformed read is skipped with no defect — the gate
+                # serves it unknown after the deadline. The cycle is kept.
                 self._log_field_skip(
                     "ptt",
                     "Skipping field %s — declared read refused or malformed: %s",
@@ -526,13 +527,15 @@ class YaesuObservationAdapter:
                     if reading.failure == "timeout":
                         # MOR-4456: a PTT-only timeout is contained in the
                         # lane — unknown is already published above and the
-                        # cycle continues — but the critical-path COUNT is
-                        # kept, so the unchanged gate still ends startup
-                        # after the three reads. Only transport failures
-                        # still raise below. (MOR-2757: the count is taken
-                        # here because the raised ``CatTimeoutError`` used
-                        # to be built here; the tag carries no wire
-                        # command, so the defect names the field only.)
+                        # cycle continues. The counting call stays (the
+                        # accounting lives here because the raised
+                        # ``CatTimeoutError`` used to be built here; the
+                        # tag carries no wire command, so the defect names
+                        # the field only), but PTT left the critical set,
+                        # so the count filters to nothing and the gate
+                        # serves PTT unknown after the deadline instead of
+                        # ending startup. Only transport failures still
+                        # raise below.
                         exc = CatTimeoutError("PTT read failed: timeout")
                         self._count_critical_read_timeouts("ptt", exc, (_PTT,))
                     if reading.failure == "transport":
@@ -1800,9 +1803,10 @@ class YaesuObservationAdapter:
         # ``"split" in caps`` gate. MOR-4456: an unanswered split read is
         # contained as an absent observation within its field (the
         # MOR-4433 ``_read_tx_target`` containment shape) — the completed
-        # fields and the reads after split still reach the store — with
-        # its critical-path accounting kept, so the unchanged gate still
-        # ends startup after three attempts.
+        # fields and the reads after split still reach the store. Split
+        # left the critical set, so the contained timeout counts nothing
+        # and a refused/malformed read records no defect: the gate serves
+        # split unknown after the deadline instead of ending startup.
         if self._has_runtime_capability("split") and self._can_poll(_SPLIT):
             ok, value = await self._safe_read(
                 "split",
@@ -2019,13 +2023,14 @@ class YaesuObservationAdapter:
 
         MOR-4456: ``contain_timeout`` serves a contained lane's unanswered
         read as absent for the cycle — completed fields still reach the
-        store and the reads after this one still run — while the
-        critical-path accounting above is kept, so the unchanged gate
-        still ends startup after three attempts. Only timeouts are
-        contained — a timeout on the refusal re-read counts and contains
-        exactly like a first-read timeout; a refused or malformed read
-        keeps the defect record below, and transport failures still raise
-        untouched.
+        store and the reads after this one still run. The critical-path
+        accounting above still runs but filters through
+        ``startup_critical_path``: PTT and split left that set, so their
+        contained timeouts count nothing and the gate serves them unknown
+        after the deadline. Only timeouts are contained — a timeout on
+        the refusal re-read contains exactly like a first-read timeout; a
+        refused or malformed read still skips the field below (PTT/split
+        record no defect), and transport failures still raise untouched.
         """
         try:
             value = await read
@@ -2146,7 +2151,18 @@ class YaesuObservationAdapter:
         read itself is skipped — only that field is dropped and the poll
         cycle continues, so the field's own refusal cannot stall every
         later field (MOR-2578).
+
+        MOR-4456: PTT and split record nothing — they left the
+        startup-critical set and are served unknown after the non-critical
+        deadline, so they must never occupy the startup-defect slot (the
+        first record wins). Name-scoped, not a criticality filter: every
+        other path keeps its existing record, and the timeout tally in
+        :meth:`_count_critical_read_timeouts` already filters through
+        :func:`startup_critical_path` and switched off by itself.
         """
+        paths = tuple(path for path in paths if path.name not in ("ptt", "split"))
+        if not paths:
+            return
         command = ""
         frame = ""
         if isinstance(exc, CatParseError):

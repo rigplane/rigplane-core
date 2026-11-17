@@ -512,24 +512,33 @@ async function installPanoramaWitness(page: Page): Promise<void> {
     // The production canvas is transparent. Exclude its ten/five grid lines,
     // bottom labels, edges, and central tuning/passband overlays. The remaining
     // opaque pixels can only come from the actual trace/fill, never DOM geometry.
-    const signalPixels = (target: HTMLCanvasElement | null): number => {
-      if (!target?.isConnected || !target.width || !target.height) return 0;
+    // `count` (opaque pixels) witnesses presence; `digest` (every RGBA byte of the
+    // same pixels) witnesses advance. The averaged trace of the alternating
+    // synthetic wave moves by under a pixel row per frame once the 15-frame
+    // average has filled, so the opaque count stays flat and only changed with
+    // the post-reset ramp or a 3 s peak-hold decay (MOR-3513 flake).
+    const signalSample = (target: HTMLCanvasElement | null): { count: number; digest: number } => {
+      if (!target?.isConnected || !target.width || !target.height) return { count: 0, digest: 0 };
       const context = target.getContext('2d');
-      if (!context) return 0;
+      if (!context) return { count: 0, digest: 0 };
       const { width: cw, height: ch } = target;
       const rgba = context.getImageData(0, 0, cw, ch).data;
       const scale = cw / Math.max(1, target.getBoundingClientRect().width);
       let count = 0;
+      let digest = 0x811c9dc5;
       for (let y = Math.ceil(ch * 0.1); y < ch - 20 * scale; y += 2) {
         if (Math.abs(y - Math.round(y / (ch / 5)) * (ch / 5)) < 3 * scale) continue;
         for (let x = Math.ceil(cw * 0.05); x < cw * 0.95; x += 2) {
           if (x > cw * 0.4 && x < cw * 0.6) continue;
           if (Math.abs(x - Math.round(x / (cw / 10)) * (cw / 10)) < 3 * scale) continue;
-          if (rgba[(y * cw + x) * 4 + 3] > 32) count += 1;
+          const at = (y * cw + x) * 4;
+          if (rgba[at + 3] > 32) count += 1;
+          for (let byte = 0; byte < 4; byte += 1) digest = Math.imul(digest ^ rgba[at + byte], 0x01000193);
         }
       }
-      return count;
+      return { count, digest: count > 0 ? digest >>> 0 : 0 };
     };
+    const signalPixels = (target: HTMLCanvasElement | null): number => signalSample(target).count;
     const nativeStart = AudioBufferSourceNode.prototype.start;
     AudioBufferSourceNode.prototype.start = function (...args: Parameters<typeof nativeStart>) {
       nativeStart.apply(this, args);
@@ -607,9 +616,10 @@ async function installPanoramaWitness(page: Page): Promise<void> {
             const currentCanvas = current?.querySelector<HTMLCanvasElement>('.spectrum-area canvas') ?? null;
             const rect = currentCanvas?.getBoundingClientRect();
             if (receiver === 0 && w.pinned && w.refusals.length > 0 && currentCanvas === canvas) {
-              const signal = signalPixels(currentCanvas);
-              if (renderedSignal !== null && signal !== renderedSignal) w.advancingSpectrum += 1;
-              renderedSignal = signal;
+              const { count, digest } = signalSample(currentCanvas);
+              // A blank canvas never advances, however its digest compares.
+              if (count > 0 && renderedSignal !== null && digest !== renderedSignal) w.advancingSpectrum += 1;
+              renderedSignal = count > 0 ? digest : null;
             }
             if (receiver === 0 && w.lastReceiver === 0 && current && currentCanvas && rect && rect.width > 0 && rect.height > 0 && !w.pinned) {
               const signal = signalPixels(currentCanvas);
@@ -732,8 +742,12 @@ panoramaTest.describe('simulated mixed receiver panorama with real PCM', () => {
       const requestsBefore = (await panoramaWitness(page)).requests.length;
       const refusalsBefore = (await panoramaWitness(page)).refusals.length;
       await modeKey.click();
+      // A pinned (absolute-bounds) view is the negotiation the radio can
+      // refuse: ZOOM follows the VFO as a client crop (MOR-4387, covered by
+      // panorama-zoom-fix.spec.ts) and is always granted, so the band preset
+      // is the operator gesture that still asks the radio for fixed edges.
       await page.getByTestId('scope-more').click();
-      await page.getByTestId('scope-zoom-in').click();
+      await page.locator('[data-testid="scope-preset-select"]:visible').selectOption('0');
       await page.keyboard.press('Escape');
       await expect.poll(async () => (await panoramaWitness(page)).requests.slice(requestsBefore)
         .some(request => 'startHz' in request.view)).toBe(true);

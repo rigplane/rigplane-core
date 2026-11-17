@@ -1,4 +1,4 @@
-import type { ScopeGranted, View } from './scope-view';
+import type { ScopeGranted, ScopeRequestState, View } from './scope-view';
 
 export interface ScopeFrame {
   readonly source: 'radio' | 'audio_fft' | 'iq_fft';
@@ -85,8 +85,15 @@ export function parseScopeGranted(message: unknown): ScopeGranted | null {
     || !view(value.view) || !(value.coverage === null || view(value.coverage))
     || !Number.isInteger(value.width) || (value.width as number) < 1 || (value.width as number) > 65535
     || typeof value.fps !== 'number' || !Number.isFinite(value.fps) || value.fps < 0) return null;
-  return { type: 'granted', sourceId: value.sourceId, receiver: value.receiver as number | null,
-    view: { ...value.view }, coverage: value.coverage === null ? null : { ...value.coverage }, width: value.width as number, fps: value.fps };
+  // MOR-4532: requestSeq and requestState are optional and travel together.
+  const tagged = 'requestSeq' in value || 'requestState' in value;
+  if (tagged && (!Number.isSafeInteger(value.requestSeq) || (value.requestSeq as number) < 0
+    || (value.requestState !== 'pending' && value.requestState !== 'settled'))) return null;
+  const granted = { type: 'granted', sourceId: value.sourceId, receiver: value.receiver as number | null,
+    view: { ...value.view }, coverage: value.coverage === null ? null : { ...value.coverage }, width: value.width as number, fps: value.fps } as const;
+  return tagged
+    ? { ...granted, requestSeq: value.requestSeq as number, requestState: value.requestState as ScopeRequestState }
+    : granted;
 }
 
 /** Freshness is host supplied; each accepted message marks its geometry fresh. */
@@ -112,20 +119,55 @@ export interface ScopeAudioProjection {
 }
 
 export type ScopeHatchReason = 'outOfRange' | 'view wider than coverage' | 'no pixels';
+
+/**
+ * MOR-4451: hatch means "this radio cannot deliver this part of the view".
+ * An uncovered column is a transient lag — plain background, no hatch, the
+ * same treatment the waterfall gives uncovered columns (MOR-4383 fills them
+ * with the empty-history background while the row keeps its truthful
+ * coverage in the metadata) — when the radio's NATIVE coverage (the
+ * truthful native coverage `ScopeGranted.coverage` carries) is as wide as
+ * the requested view or wider and only offset: the wire frame is the smaller
+ * intersection while the radio catches up. Only a native coverage truly
+ * NARROWER than the requested view is a real gap worth hatching. Unknown
+ * native (null) keeps today's hatch: without the grant facts a gap cannot
+ * be proven transient.
+ */
+export function shouldHatchCoverageGap(native: View | null, requested: View): boolean {
+  if (native === null) return true;
+  const nativeSpan = native.endHz - native.startHz;
+  const requestedSpan = requested.endHz - requested.startHz;
+  if (!(nativeSpan > 0) || !(requestedSpan > 0)) return true;
+  // 1 Hz epsilon: wire/view reconstruction can rebuild a window off the
+  // requested width (the follow-grant match in SpectrumPanel uses the same
+  // tolerance); real shrink adoptions are thousands of times larger.
+  return nativeSpan < requestedSpan - 1;
+}
 export interface ScopeCoverageProjection {
   /** Normalized output columns, with sample coordinates relative to the granted frame view. */
   readonly covered: readonly { readonly start: number; readonly end: number; readonly sampleStart: number; readonly sampleEnd: number }[];
   readonly hatched: readonly { readonly start: number; readonly end: number; readonly reason: ScopeHatchReason }[];
 }
 
-export function projectScopeCoverage(geometry: ScopeGeometry, requested: View): ScopeCoverageProjection {
+export function projectScopeCoverage(
+  geometry: ScopeGeometry,
+  requested: View,
+  native: View | null = null,
+): ScopeCoverageProjection {
   const hatch = (reason: ScopeHatchReason): ScopeCoverageProjection => ({ covered: [], hatched: [{ start: 0, end: 1, reason }] });
   // IqFftScope._tx_frame retains pixels while setting the out-of-range flag.
   if (geometry.outOfRange && !geometry.hasPixels) return hatch('outOfRange');
   if (!geometry.hasPixels) return hatch('no pixels');
   const startHz = Math.max(requested.startHz, geometry.view.startHz, geometry.coverage.startHz);
   const endHz = Math.min(requested.endHz, geometry.view.endHz, geometry.coverage.endHz);
-  if (endHz <= startHz) return hatch('view wider than coverage');
+  // MOR-4451: a gap against a native coverage as wide as the view (or
+  // wider) is the radio lagging behind the follow view — plain background,
+  // never a hatch block sliding with each step.
+  if (endHz <= startHz) {
+    return shouldHatchCoverageGap(native, requested)
+      ? hatch('view wider than coverage')
+      : { covered: [], hatched: [] };
+  }
   const span = requested.endHz - requested.startHz;
   const sampleSpan = geometry.view.endHz - geometry.view.startHz;
   const start = (startHz - requested.startHz) / span;
@@ -136,5 +178,5 @@ export function projectScopeCoverage(geometry: ScopeGeometry, requested: View): 
   return { covered: [{ start, end,
     sampleStart: (startHz - geometry.view.startHz) / sampleSpan,
     sampleEnd: (endHz - geometry.view.startHz) / sampleSpan,
-  }], hatched };
+  }], hatched: shouldHatchCoverageGap(native, requested) ? hatched : [] };
 }

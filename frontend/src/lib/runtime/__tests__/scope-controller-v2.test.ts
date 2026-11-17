@@ -142,6 +142,23 @@ describe('one multiplexed subscribed scope channel', () => {
     expect(port.sendRaw.mock.calls.filter(call => call[0].type === 'subscribe')).toHaveLength(6);
     await owner.hardwareScopeDriver.stop(first); await owner.audioFftDriver.stop(second);
   });
+
+  it('re-sends a tagged subscription on reconnect as requestSeq 0, which is not a request (MOR-4532)', async () => {
+    const { port, change } = channel(); const owner = new ScopeController(() => port as unknown as WsChannel);
+    const hardware = owner.stream('hardware');
+    hardware.setSubscription({ ...request('radio', 0), view: { follow: 'vfo', spanHz: 200_000 }, requestSeq: 3 });
+    const handle = await owner.hardwareScopeDriver.start();
+    change('connected');
+    expect(owner.connectionEpoch).toBe(1);
+    change('disconnected');
+    expect(owner.connectionEpoch).toBe(0);
+    port.sendRaw.mockClear();
+    change('connected');
+    expect(owner.connectionEpoch).toBe(2);
+    const resent = port.sendRaw.mock.calls.map(call => call[0]).filter(message => message.type === 'subscribe');
+    expect(resent).toEqual([{ type: 'subscribe', ...request('radio', 0), view: { follow: 'vfo', spanHz: 200_000 }, requestSeq: 0 }]);
+    await owner.hardwareScopeDriver.stop(handle);
+  });
 });
 
 it('retires observed mode at provider/source boundaries and accepts the next qualified control fact', async () => {
@@ -207,4 +224,145 @@ it.each(['iq_fft', 'audio_fft'] as const)('does not apply native radio scope mod
   port.receive(scopeWire({ source, sourceId: source, receiver: null }));
   expect(get(stream.geometry)?.mode).toBe(0);
   await driver.stop(handle);
+});
+
+describe('MOR-4534: a presentation swap subscribes before it unsubscribes', () => {
+  const facts: CanvasSurfaceFacts = { cssW: 1400, cssH: 200, backingW: 2800, backingH: 400, pixelScale: 2, visible: true };
+  const view = { follow: 'vfo' as const, spanHz: 20_000 };
+  async function mounted() {
+    const { port, change } = channel();
+    const owner = new ScopeController(() => port as unknown as WsChannel);
+    const handle = await owner.hardwareScopeDriver.start(); change('connected');
+    const outgoing = scopeSubscriptionSurface(document.createElement('div'),
+      { stream: owner.stream('hardware'), receiver: 0, view, facts, requestSeq: 3 });
+    port.sendRaw.mockClear();
+    const sent = () => port.sendRaw.mock.calls.map(call => call[0] as Record<string, unknown>);
+    return { port, owner, handle, outgoing, sent };
+  }
+  /** The incoming panel mounts before its canvas is measured. */
+  const incoming = (owner: ScopeController) => scopeSubscriptionSurface(document.createElement('div'),
+    { stream: owner.stream('hardware'), receiver: 0, view, facts: null, requestSeq: 0 });
+
+  it('keeps the outgoing request on the wire until the incoming panel sends its own', async () => {
+    const { owner, handle, outgoing, sent } = await mounted();
+    const release = owner.holdSurfaces();
+    outgoing.destroy();
+    const next = incoming(owner);
+    release();
+    expect(sent()).toEqual([]);
+    next.update({ stream: owner.stream('hardware'), receiver: 0, view, facts, requestSeq: 0 });
+    expect(sent()).toEqual([{ type: 'subscribe', sourceId: 'radio', receiver: 0, view, width: 2800, maxFps: 20, requestSeq: 0 }]);
+    next.destroy();
+    expect(sent().at(-1)).toEqual({ type: 'unsubscribe', sourceId: 'radio', receiver: 0 });
+    await owner.hardwareScopeDriver.stop(handle);
+  });
+
+  it.each(['alone', 'beside an unmeasured panel'] as const)('must-not: the last measured panel leaving outside a swap unsubscribes at once (%s)', async company => {
+    const { owner, handle, outgoing, sent } = await mounted();
+    const other = company === 'alone' ? null : incoming(owner);
+    outgoing.destroy();
+    expect(sent()).toEqual([{ type: 'unsubscribe', sourceId: 'radio', receiver: 0 }]);
+    other?.destroy();
+    await owner.hardwareScopeDriver.stop(handle);
+  });
+
+  it('sends the incoming request at once when the incoming panel is measured within the swap', async () => {
+    const { owner, handle, outgoing, sent } = await mounted();
+    const release = owner.holdSurfaces();
+    outgoing.destroy();
+    const next = incoming(owner);
+    next.update({ stream: owner.stream('hardware'), receiver: 0, view, facts, requestSeq: 0 });
+    expect(sent()).toEqual([{ type: 'subscribe', sourceId: 'radio', receiver: 0, view, width: 2800, maxFps: 20, requestSeq: 0 }]);
+    release();
+    expect(sent()).toHaveLength(1);
+    next.destroy();
+    await owner.hardwareScopeDriver.stop(handle);
+  });
+
+  it('unsubscribes when the swap ends without an incoming panel', async () => {
+    const { owner, handle, outgoing, sent } = await mounted();
+    const release = owner.holdSurfaces();
+    outgoing.destroy();
+    expect(sent()).toEqual([]);
+    release();
+    expect(sent()).toEqual([{ type: 'unsubscribe', sourceId: 'radio', receiver: 0 }]);
+    await owner.hardwareScopeDriver.stop(handle);
+  });
+
+  it('unsubscribes when the incoming panel leaves before it sends a request', async () => {
+    const { owner, handle, outgoing, sent } = await mounted();
+    const release = owner.holdSurfaces();
+    outgoing.destroy();
+    const next = incoming(owner);
+    release();
+    expect(sent()).toEqual([]);
+    next.destroy();
+    expect(sent()).toEqual([{ type: 'unsubscribe', sourceId: 'radio', receiver: 0 }]);
+    await owner.hardwareScopeDriver.stop(handle);
+  });
+});
+
+describe('MOR-4534: a mounting surface continues the follow request on its key', () => {
+  const facts: CanvasSurfaceFacts = { cssW: 400, cssH: 100, backingW: 800, backingH: 200, pixelScale: 2, visible: true };
+  async function connected() {
+    const { port, change } = channel();
+    const owner = new ScopeController(() => port as unknown as WsChannel);
+    const handle = await owner.hardwareScopeDriver.start(); change('connected');
+    const sent = () => port.sendRaw.mock.calls.map(call => call[0] as Record<string, unknown>);
+    return { port, change, owner, handle, sent };
+  }
+
+  it('a passive radio follow surface sends requestSeq 0 with the newest request width', async () => {
+    const { port, owner, handle, sent } = await connected();
+    const stream = owner.stream('hardware');
+    const chosen = scopeSubscriptionSurface(document.createElement('div'),
+      { stream, receiver: 0, view: { follow: 'vfo', spanHz: 200_000 }, facts, requestSeq: 3 });
+    expect(stream.followContext(0)).toEqual({ spanHz: 200_000, requestSeq: 3 });
+    port.sendRaw.mockClear();
+    const release = owner.holdSurfaces();
+    chosen.destroy();
+    const passive = scopeSubscriptionSurface(document.createElement('div'),
+      { stream, receiver: 0, view: { follow: 'vfo', spanHz: 100_000 }, facts });
+    release();
+    expect(sent()).toEqual([{ type: 'subscribe', sourceId: 'radio', receiver: 0,
+      view: { follow: 'vfo', spanHz: 200_000 }, width: 800, maxFps: 20, requestSeq: 0 }]);
+    passive.destroy();
+    await owner.hardwareScopeDriver.stop(handle);
+  });
+
+  it('with no follow request on the key a passive surface keeps its own width, still at requestSeq 0', async () => {
+    const { owner, handle, sent } = await connected();
+    const passive = scopeSubscriptionSurface(document.createElement('div'),
+      { stream: owner.stream('hardware'), receiver: 0, view: { follow: 'vfo', spanHz: 100_000 }, facts });
+    expect(sent()).toEqual([{ type: 'subscribe', sourceId: 'radio', receiver: 0,
+      view: { follow: 'vfo', spanHz: 100_000 }, width: 800, maxFps: 20, requestSeq: 0 }]);
+    passive.destroy();
+    await owner.hardwareScopeDriver.stop(handle);
+  });
+
+  it('a passive request never replaces the user request it continues, and a new session keeps only the width', async () => {
+    const { change, owner, handle } = await connected();
+    const stream = owner.stream('hardware');
+    const chosen = scopeSubscriptionSurface(document.createElement('div'),
+      { stream, receiver: 0, view: { follow: 'vfo', spanHz: 500_000 }, facts, requestSeq: 4 });
+    const passive = scopeSubscriptionSurface(document.createElement('div'),
+      { stream, receiver: 0, view: { follow: 'vfo', spanHz: 100_000 }, facts });
+    expect(stream.followContext(0)).toEqual({ spanHz: 500_000, requestSeq: 4 });
+    change('disconnected'); change('connected');
+    expect(stream.followContext(0)).toEqual({ spanHz: 500_000, requestSeq: 0 });
+    passive.destroy(); chosen.destroy();
+    await owner.hardwareScopeDriver.stop(handle);
+  });
+
+  it('audio surfaces stay untagged', async () => {
+    const { port, change } = channel();
+    const owner = new ScopeController(() => port as unknown as WsChannel);
+    const handle = await owner.audioFftDriver.start(); change('connected');
+    const surface = scopeSubscriptionSurface(document.createElement('div'),
+      { stream: owner.stream('audio_fft'), receiver: null, view: { follow: 'vfo', spanHz: 48_000 }, facts });
+    expect(port.sendRaw).toHaveBeenCalled();
+    expect(port.sendRaw.mock.calls.every(call => !('requestSeq' in (call[0] as object)))).toBe(true);
+    surface.destroy();
+    await owner.audioFftDriver.stop(handle);
+  });
 });

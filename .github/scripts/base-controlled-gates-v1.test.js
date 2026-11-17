@@ -22,6 +22,8 @@ function topologyErrors({quick, review, migration}) {
     'checks: read', 'contents: read', 'pull-requests: read', 'statuses: write',
     'Read-only legacy quick metadata observer', 'Exact-head metadata observation publisher',
     '.github/scripts/quick-v2-metadata-policy-v1.js', 'rebindForPublication',
+    "if: (github.event.pull_request.state || 'open') == 'open'",
+    "if: always() && needs.observe.result != 'skipped'",
   ]) {
     if (!quick.includes(required)) errors.push(`quick observer is missing ${required}`);
   }
@@ -83,6 +85,50 @@ test('trusted route policy rejects incomplete and injected path metadata', () =>
   assert.throws(() => routePolicy.classifyPullFiles([{filename: 'docs/a.md'}], 3000));
 });
 
+function parseWorkflowJobIf(workflowText, jobName) {
+  const jobsMarker = '\njobs:\n';
+  const start = workflowText.indexOf(jobsMarker);
+  assert.notEqual(start, -1, 'missing jobs: mapping');
+  const body = workflowText.slice(start + jobsMarker.length);
+  const headers = [...body.matchAll(/^  ([\w-]+):\n/gm)];
+  const index = headers.findIndex((match) => match[1] === jobName);
+  assert.notEqual(index, -1, `missing job ${jobName}`);
+  const jobStart = headers[index].index + headers[index][0].length;
+  const jobEnd = index + 1 < headers.length ? headers[index + 1].index : body.length;
+  const jobText = body.slice(jobStart, jobEnd);
+  const ifMatch = /^    if: (.+)$/m.exec(jobText);
+  assert.notEqual(ifMatch, null, `missing if: on job ${jobName}`);
+  return ifMatch[1].trim();
+}
+
+function evalQuickV2ObserveIf(expression, event) {
+  assert.match(
+    expression,
+    /^\(github\.event\.pull_request\.state \|\| 'open'\) == 'open'$/u,
+    'observe if must stay the closed-pull guard predicate',
+  );
+  const state = event.pull_request?.state;
+  return (state ?? 'open') === 'open';
+}
+
+function evalQuickV2PublishIf(expression, observeJobResult) {
+  assert.match(
+    expression,
+    /^always\(\) && needs\.observe\.result != 'skipped'$/u,
+    'publish if must gate on observe being skipped only',
+  );
+  return observeJobResult !== 'skipped';
+}
+
+function quickV2JobAdmission(workflowText, event, observeJobResult = 'success') {
+  const observeIf = parseWorkflowJobIf(workflowText, 'observe');
+  const publishIf = parseWorkflowJobIf(workflowText, 'publish');
+  const observeAdmitted = evalQuickV2ObserveIf(observeIf, event);
+  const observeResult = observeAdmitted ? observeJobResult : 'skipped';
+  const publishAdmitted = evalQuickV2PublishIf(publishIf, observeResult);
+  return {observeAdmitted, observeResult, publishAdmitted};
+}
+
 test('quick v2 topology is light-runner, metadata-only, and separately published', () => {
   assert.deepEqual(topologyErrors(sources()), []);
   assert.equal(observer.LEGACY_WORKFLOW.id, 270532868);
@@ -90,6 +136,43 @@ test('quick v2 topology is light-runner, metadata-only, and separately published
   assert.equal(observer.OBSERVATION_CONTEXT, 'quick-v2-observe');
 });
 test('workflow-run observation admits feature heads targeting main', () => assert.doesNotMatch(sources().quick, /\n  workflow_run:\n(?: {4}.*\n)* {4}branches:/u));
+
+test('quick v2 job conditions skip closed pull requests and publish after observe failure', () => {
+  const quick = sources().quick;
+  const openTarget = {
+    event_name: 'pull_request_target',
+    pull_request: {number: 4635, state: 'open'},
+    action: 'synchronize',
+  };
+  const closedTarget = {
+    event_name: 'pull_request_target',
+    pull_request: {number: 4635, state: 'closed'},
+    action: 'edited',
+  };
+  const workflowRun = {
+    event_name: 'workflow_run',
+    workflow_run: {id: 99, run_attempt: 1, event: 'pull_request'},
+  };
+  for (const [name, event] of [
+    ['open pull_request_target', openTarget],
+    ['workflow_run', workflowRun],
+  ]) {
+    const admitted = quickV2JobAdmission(quick, event);
+    assert.equal(admitted.observeAdmitted, true, name);
+    assert.equal(admitted.observeResult, 'success', name);
+    assert.equal(admitted.publishAdmitted, true, name);
+  }
+  const closed = quickV2JobAdmission(quick, closedTarget);
+  assert.equal(closed.observeAdmitted, false);
+  assert.equal(closed.observeResult, 'skipped');
+  assert.equal(closed.publishAdmitted, false);
+  const failedObserve = quickV2JobAdmission(quick, openTarget, 'failure');
+  assert.equal(failedObserve.observeAdmitted, true);
+  assert.equal(failedObserve.observeResult, 'failure');
+  assert.equal(failedObserve.publishAdmitted, true);
+  const cancelledObserve = quickV2JobAdmission(quick, openTarget, 'cancelled');
+  assert.equal(cancelledObserve.publishAdmitted, true);
+});
 
 test('topology contract catches permission, execution, event, and pin regressions', () => {
   const original = sources();

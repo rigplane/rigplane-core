@@ -264,3 +264,36 @@ def test_stream_decisions_do_not_depend_on_other_streams() -> None:
         return drops
 
     assert civ_drop_sequence(0) == civ_drop_sequence(5)
+
+
+def test_preserve_order_keeps_jittered_emissions_monotonic() -> None:
+    """Jitter must delay, never reorder: per-packet due times stay monotonic."""
+    plan = _plan(delay_s=0.05, jitter_s=0.05, preserve_order=True)
+    now = 100.0
+    dues: list[float] = []
+    for i in range(50):
+        result = plan.decide("civ", "to_client", bytes([i]), now=now)
+        assert result is not None and len(result) == 1
+        delay, payload = result[0]
+        assert payload == bytes([i])
+        assert delay >= 0.05, "the configured delay still applies to every packet"
+        dues.append(now + delay)
+        now += 0.001  # 1 kHz packet rate, well inside the jitter span
+    assert all(earlier < later for earlier, later in zip(dues, dues[1:])), (
+        "due times must be strictly increasing (ties still shuffle on the loop heap)"
+    )
+
+
+def test_preserve_order_off_by_default() -> None:
+    """Without the knob the delay path is untouched (exact legacy emissions)."""
+    import random
+
+    plan = _plan(delay_s=0.05, jitter_s=0.05)
+    assert plan.civ_to_client.preserve_order is False
+    first = plan.decide("civ", "to_client", P, now=7.0)
+    assert first is not None and len(first) == 1
+    # Exactly delay + one draw from the stream RNG — no order clamping.
+    expected = 0.05 + random.Random(f"{plan.seed}:civ:to_client").uniform(0.0, 0.05)
+    assert first[0][0] == pytest.approx(expected)
+    assert first[0][1] == P
+    assert plan.civ_to_client._last_due is None

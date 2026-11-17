@@ -58,10 +58,11 @@ async def test_registered_source_kind_builds_iq_scope_provider() -> None:
         sdr_runtime._SOURCE_FACTORIES.pop(spec.kind, None)
 
 
-def make_server(provider, *, invert=False):
+def make_server(provider, *, invert=False, port=None):
     server = WebServer(
         None,
         WebConfig(
+            **({} if port is None else {"host": "127.0.0.1", "port": port}),
             radio_model="IC-7610",
             sdr_config=SdrConfig(
                 device_args="driver=fake",
@@ -255,3 +256,37 @@ async def test_iq_status_retains_open_error_until_successful_retry(monkeypatch):
     await subscription.close()
     assert server._sdr_status_payload()["lastError"] is None
     assert server._sdr_status_payload()["state"] == "disabled"
+
+
+async def test_tagged_iq_fft_grant_is_settled_before_any_frame():
+    """MOR-4532: a tagged iq_fft subscription through the real scope
+    WebSocket, real IqFftSource over a fake IQ provider: the first message
+    is the grant, echoing requestSeq and already settled."""
+    import aiohttp
+
+    from rigplane.web.protocol import decode_scope_granted, encode_scope_subscription
+
+    server = make_server(FakeIqSource(sample_rate_hz=48_000), port=0)
+    await server.start()
+    port = server._server.sockets[0].getsockname()[1]
+    try:
+        async with aiohttp.ClientSession() as client:
+            async with client.ws_connect(f"http://127.0.0.1:{port}/api/v1/scope") as ws:
+                await ws.send_str(
+                    encode_scope_subscription(
+                        Subscription(
+                            "iq_fft",
+                            None,
+                            View(14_090_000, 14_110_000),
+                            1024,
+                            20,
+                            request_seq=7,
+                        )
+                    )
+                )
+                message = await ws.receive(timeout=5)
+                assert message.type == aiohttp.WSMsgType.TEXT, message
+                grant = decode_scope_granted(message.data)
+                assert (grant.request_seq, grant.request_state) == (7, "settled")
+    finally:
+        await server.stop()

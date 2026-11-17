@@ -14,6 +14,7 @@ import time
 import pytest
 
 from rigplane.tci.server import TciServer
+from rigplane.testing.timing import await_until
 from rigplane.ws import (
     WS_OP_BINARY,
     WS_OP_CLOSE,
@@ -97,6 +98,12 @@ def make_server(handler: FakeHandler, port: int = 0, **kwargs: object) -> TciSer
         clock=time.monotonic,
         **kwargs,  # type: ignore[arg-type]
     )
+
+
+#: Heartbeat interval for tests whose subject is not the heartbeat. The default
+#: 5 s tick can land on a loaded xdist worker before the frame under test and put
+#: a ping ahead of it (MOR-4413); an hour-long interval means no ping at all.
+_NO_HEARTBEAT_S = 3600.0
 
 
 class RawClient:
@@ -686,7 +693,7 @@ async def test_fragmented_bytes_overflow_bounded(
     once, leaves the registry, and another client is served meanwhile.
     """
     handler = FakeHandler()
-    server = make_server(handler)
+    server = make_server(handler, ping_interval=_NO_HEARTBEAT_S)
     await server.start()
     try:
         client = await RawClient.connect(server.bound_port)
@@ -701,9 +708,11 @@ async def test_fragmented_bytes_overflow_bounded(
         assert opcode == WS_OP_CLOSE
         assert struct.unpack("!H", payload[:2])[0] == 1009
         await _read_until_closed(client)
-        async with asyncio.timeout(5.0):
-            while handler.disconnect_calls == 0:
-                await asyncio.sleep(0.005)
+        # finish() drops the session only after on_disconnect returned
+        # (stop() relies on that order): wait for both (MOR-4413).
+        assert await await_until(
+            lambda: handler.disconnect_calls > 0 and not server.sessions, timeout=5.0
+        )
         assert handler.disconnect_calls == 1
         assert len(server.sessions) == 0
         other = await RawClient.connect(server.bound_port)
@@ -728,7 +737,7 @@ async def test_fragment_count_overflow_bounded(
     teardown and uninterrupted-service assertions as the byte limit.
     """
     handler = FakeHandler()
-    server = make_server(handler)
+    server = make_server(handler, ping_interval=_NO_HEARTBEAT_S)
     await server.start()
     try:
         client = await RawClient.connect(server.bound_port)
@@ -741,9 +750,11 @@ async def test_fragment_count_overflow_bounded(
         assert opcode == WS_OP_CLOSE
         assert struct.unpack("!H", payload[:2])[0] == 1009
         await _read_until_closed(client)
-        async with asyncio.timeout(5.0):
-            while handler.disconnect_calls == 0:
-                await asyncio.sleep(0.005)
+        # finish() drops the session only after on_disconnect returned
+        # (stop() relies on that order): wait for both (MOR-4413).
+        assert await await_until(
+            lambda: handler.disconnect_calls > 0 and not server.sessions, timeout=5.0
+        )
         assert handler.disconnect_calls == 1
         assert len(server.sessions) == 0
         other = await RawClient.connect(server.bound_port)
@@ -753,6 +764,85 @@ async def test_fragment_count_overflow_bounded(
     finally:
         await server.stop()
     assert handler.disconnect_calls == 2
+
+
+async def test_overflow_close_is_the_last_frame_after_a_heartbeat_ping(
+    tcp_available: None,
+) -> None:
+    """A ping sent before the overflow decision precedes the 1009 close; none follows.
+
+    MOR-4413: on a loaded host the 5 s ping tick can land before the overflow is
+    decided, so the client legitimately sees a ping first. The product contract
+    is the order: heartbeat frames only before the close, and the close frame is
+    the last thing the server writes.
+    """
+    handler = FakeHandler()
+    server = make_server(handler, ping_interval=0.02)
+    await server.start()
+    try:
+        client = await RawClient.connect(server.bound_port)
+        await client.read_until_ready()
+        opcode, _ = await client.next_frame()
+        assert opcode == WS_OP_PING
+        chunk = b"y" * 60000
+        await _send_fragment(client.writer, WS_OP_BINARY, chunk, fin=False)
+        for _ in range(4):
+            await _send_fragment(client.writer, WS_OP_CONTINUATION, chunk, fin=False)
+        async with asyncio.timeout(5.0):
+            while True:
+                opcode, payload = await client.next_frame()
+                if opcode != WS_OP_PING:
+                    break
+        assert opcode == WS_OP_CLOSE
+        assert struct.unpack("!H", payload[:2])[0] == 1009
+        async with asyncio.timeout(5.0):
+            trailing = b""
+            while chunk_in := await client.reader.read(65536):
+                trailing += chunk_in
+        assert trailing == b""
+    finally:
+        await server.stop()
+
+
+async def test_session_stays_registered_until_on_disconnect_returns(
+    tcp_available: None,
+) -> None:
+    """The registry drops a session only after its ``on_disconnect`` returned.
+
+    ``stop()`` waits on the registered sessions, so removing one earlier would
+    let it return before the handler finished tearing down. The handler parks
+    on an event after counting the call, so the window is held open by the test.
+    """
+    seen: list[int] = []
+    server_box: list[TciServer] = []
+    release = asyncio.Event()
+    entered = asyncio.Event()
+
+    class SlowDisconnect(FakeHandler):
+        async def on_disconnect(self) -> None:
+            self.disconnect_calls += 1
+            seen.append(len(server_box[0].sessions))
+            entered.set()
+            await release.wait()
+            seen.append(len(server_box[0].sessions))
+
+    handler = SlowDisconnect()
+    server = make_server(handler)
+    server_box.append(server)
+    await server.start()
+    try:
+        client = await RawClient.connect(server.bound_port)
+        await client.read_until_ready()
+        await client.close()
+        async with asyncio.timeout(5.0):
+            await entered.wait()
+        assert len(server.sessions) == 1
+        release.set()
+    finally:
+        # stop() returns only once every session finished its teardown.
+        await server.stop()
+    assert seen == [1, 1]
+    assert server.sessions == ()
 
 
 async def test_cancelled_join_still_closes_transport(

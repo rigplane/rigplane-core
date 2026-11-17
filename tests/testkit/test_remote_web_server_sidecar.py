@@ -35,6 +35,7 @@ _SNAPSHOT_CONTRACT = {
     "ptt_on": "bool",
     "freq_hz": "int",
     "ptt_transitions": "tuple[tuple[float, bool], ...]",
+    "tx_audio_signal_frames": "int",
 }
 _FREQ_REQUEST_CONTRACT = {"hz": "int"}
 _CONSUMER_CONTRACT = {
@@ -240,3 +241,25 @@ def test_frequency_request_over_http_is_parsed_through_its_contract() -> None:
     assert rejected_json[0] == 400
     assert accepted == (200, {"ok": True, "freq_hz": 7_074_000})
     assert sim._frequency == 7_074_000 != before  # noqa: SLF001
+
+
+def test_snapshot_counts_only_client_audio_frames_that_carry_signal() -> None:
+    from rigplane_testkit.icom.simulator_audio import ClientAudioFrame
+
+    server = _load_server()
+    sim = ic7610_lan_fake(capture_tx_audio=True)
+
+    def frame(payload: bytes) -> ClientAudioFrame:
+        return ClientAudioFrame(
+            seq=0,
+            inner_seq=0,
+            payload_len=len(payload),
+            received_at=0.0,
+            ptt=True,
+            payload=payload,
+            tx_format=None,
+        )
+
+    sim.audio_tx_frames.extend([frame(b"\x00" * 8), frame(b"\x00\x10" * 4), frame(b"")])
+
+    assert server.sim_snapshot(sim).tx_audio_signal_frames == 1
