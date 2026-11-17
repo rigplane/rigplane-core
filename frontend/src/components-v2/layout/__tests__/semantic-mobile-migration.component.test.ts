@@ -21,7 +21,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { mount, unmount, flushSync } from 'svelte';
+import { mount, unmount, flushSync, tick } from 'svelte';
 import type { ManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
 import type { ManagedTxState } from '$lib/runtime/tx-controller/managed-state';
 import { presentationResources } from '$lib/runtime';
@@ -668,7 +668,7 @@ describe('managed scope contract on a hardware-scope radio (MOR-2442)', () => {
   // lease effect — then rotation leaves TWO live leases and unmount leaves
   // one. Each orientation mounts at most one SRS instance; the pin counts
   // live leases at every settled step, not just the end state.
-  it('holds at most one scope lease through rotation, and none after unmount', () => {
+  it('holds at most one scope lease through rotation, and none after unmount', async () => {
     const realAcquire = presentationResources.acquire.bind(presentationResources);
     const realRelease = presentationResources.release.bind(presentationResources);
     const live = new Set<ResourceLease>();
@@ -687,10 +687,16 @@ describe('managed scope contract on a hardware-scope radio (MOR-2442)', () => {
     expect(t.querySelectorAll('[data-testid="semantic-radio-surfaces"]')).toHaveLength(1);
     expect(live.size).toBe(1);
 
+    // MOR-4534: the orientation swap bridge holds one extra lease until the
+    // incoming panel has mounted (lib/runtime/swap-bridge.ts), so the scope
+    // socket stays open; it is gone once the swap settles.
     rotate(true); // → landscape
+    expect(live.size).toBe(2);
+    await tick();
     expect(live.size).toBe(1);
 
     rotate(false); // → back to portrait
+    await tick();
     expect(live.size).toBe(1);
 
     for (const component of components.splice(0)) unmount(component);

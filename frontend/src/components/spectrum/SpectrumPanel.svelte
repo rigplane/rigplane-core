@@ -712,9 +712,14 @@
   // The effective view is `gesture > tuningBurst > pending > confirmed`;
   // the drag writes `gesture`, the tuning legs write their own. Pan/zoom
   // presets edit the View directly (display-only until R4 grants views).
-  let followSpanHz = $state<number | null>(null);
+  // MOR-4534: a panel mounting on a key that already carries a follow request
+  // (a presentation switch or a phone rotation on the same socket) continues
+  // it, width and requestSeq, instead of the default; no new request is made.
+  const mountFollow = untrack(() => audioFft || sdrSource ? null
+    : runtime.scope.stream('hardware').followContext(spectrumAuthority?.receiver ?? 0));
+  let followSpanHz = $state<number | null>(mountFollow?.spanHz ?? null);
   // MOR-4532: `followSpanHz` is a REQUEST, not a width, and it changes ONLY
-  // on a user action (requestFollowSpan). Each request carries a
+  // on a user action (requestFollowSpan) or with the continued request above. Each request carries a
   // per-connection `requestSeq` (1, 2, …) the ScopeController allocates, so
   // a remounted panel continues it; a fresh scope connection starts at 0,
   // which is not a request. A grant settles every request up to its
@@ -726,15 +731,20 @@
   // frame that settles it) — never from scopeControls.span, field status or
   // widths.
   let followRequestTracked = $derived(!audioFft && !sdrSource && explicitView === null);
-  let followRequest = $state({ epoch: 0, seq: 0 });
+  let followRequest = $state({ epoch: mountFollow ? untrack(() => runtime.scope.connectionEpoch) : 0, seq: mountFollow?.requestSeq ?? 0 });
   let followRequestSeq = $derived(followRequest.epoch === runtime.scope.connectionEpoch ? followRequest.seq : 0);
   // The newest requestSeq a settled grant carried, and the newest one a frame
   // after that grant confirmed (the frame is the settled geometry), each with
   // its connection.
-  let settledGrant = { epoch: 0, seq: 0 };
-  let settledFollow = $state({ epoch: 0, seq: 0 });
+  // MOR-4534: kept per subscription target (source + receiver), as the server
+  // settles per target: one receiver's settled grant says nothing of another's.
+  type Settlement = Readonly<{ epoch: number; seq: number }>;
+  let settledGrant: Readonly<Record<string, Settlement>> = {};
+  let settledFollow = $state.raw<Readonly<Record<string, Settlement>>>({});
+  let followTargetKey = $derived(`${runtime.scope.stream('hardware').sourceId}:${spectrumAuthority?.receiver ?? 0}`);
   let followSettled = $derived(followRequestTracked && (followRequestSeq === 0
-    || (settledFollow.epoch === runtime.scope.connectionEpoch && settledFollow.seq >= followRequestSeq)));
+    || (settledFollow[followTargetKey]?.epoch === runtime.scope.connectionEpoch
+      && settledFollow[followTargetKey]!.seq >= followRequestSeq)));
   function requestFollowSpan(widthHz: number): void {
     followRequest = { epoch: runtime.scope.connectionEpoch, seq: runtime.scope.nextRequestSeq() };
     followSpanHz = widthHz;
@@ -1678,8 +1688,9 @@
         frameGrant = grant;
         const epoch = runtime.scope.connectionEpoch;
         if (grant?.requestState === 'settled' && grant.requestSeq !== undefined
-          && (settledGrant.epoch !== epoch || grant.requestSeq > settledGrant.seq)) {
-          settledGrant = { epoch, seq: grant.requestSeq };
+          && (settledGrant[`${grant.sourceId}:${grant.receiver}`]?.epoch !== epoch
+            || grant.requestSeq > settledGrant[`${grant.sourceId}:${grant.receiver}`]!.seq)) {
+          settledGrant = { ...settledGrant, [`${grant.sourceId}:${grant.receiver}`]: { epoch, seq: grant.requestSeq } };
         }
       });
       const stopGeometry = scopeStream.geometry.subscribe((geometry) => { frameGeometry = geometry; });
@@ -1691,8 +1702,10 @@
         if (slotKey !== scopeSlotKey(geometry.sourceId, geometry.receiver)) return;
         // MOR-4532: a frame after a settled grant is the settled geometry
         // (the grant is re-sent before the frame that settles it).
-        if (settledFollow.epoch !== settledGrant.epoch || settledFollow.seq < settledGrant.seq) {
-          settledFollow = { ...settledGrant };
+        const target = `${geometry.sourceId}:${geometry.receiver}`;
+        const grant = settledGrant[target], shown = settledFollow[target];
+        if (grant !== undefined && (shown === undefined || shown.epoch !== grant.epoch || shown.seq < grant.seq)) {
+          settledFollow = { ...settledFollow, [target]: grant };
         }
         if (geometry.outOfRange && !geometry.hasPixels) return;
         if (!scopeDemandOn) { cachedWhileOff = true; return; }

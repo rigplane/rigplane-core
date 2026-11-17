@@ -30,6 +30,18 @@ export class ScopeStream {
   private readonly confirmedFrequencies = new Map<string, number>();
   private subscriptionsValue: readonly ScopeSubscription[] = [];
   private surfaces = new Map<symbol, ScopeSubscription>();
+  /** MOR-4534: mounted surfaces that have not sent a request yet, by key. */
+  private readonly claims = new Map<symbol, string>();
+  /**
+   * MOR-4534: requests of surfaces that left during a presentation swap. They
+   * stay in the demand until a surface on the same key sends its own request,
+   * so the wire re-subscribes instead of unsubscribing and the server never
+   * sees zero subscribers. Kept only while the swap holds or a claim waits.
+   */
+  private readonly departed = new Map<symbol, ScopeSubscription>();
+  private swapHolds = 0;
+  /** MOR-4534: the newest follow request sent per key, with the session it was sent in. */
+  private readonly followRequests = new Map<string, { epoch: number; spanHz: number; requestSeq: number }>();
   private readonly geometryStore = writable<ScopeGeometry | null>(null);
   private geometryValue: ScopeGeometry | null = null;
   private readonly frames = new Map<string, ScopeFrame>();
@@ -58,7 +70,9 @@ export class ScopeStream {
   get subscription(): ScopeSubscription | null { return this.subscriptionValue; }
 
   updateSurfaceSubscription(token: symbol, subscription: ScopeSubscription, retry = true, revision?: string, frequencyHz?: number | null): boolean {
+    this.claims.delete(token);
     this.surfaces.set(token, subscription);
+    this.pruneDeparted();
     const key = `${subscription.sourceId}:${subscription.receiver}`;
     const previous = this.confirmedFrequencies.get(key);
     if (frequencyHz != null) this.confirmedFrequencies.set(key, frequencyHz);
@@ -67,15 +81,67 @@ export class ScopeStream {
   }
 
   removeSurfaceSubscription(token: symbol): void {
+    const request = this.surfaces.get(token);
     this.surfaces.delete(token);
+    this.claims.delete(token);
+    if (request && this.swapHolds > 0) this.departed.set(token, request);
+    this.pruneDeparted();
     this.publishSurfaceDemand(false);
+  }
+
+  /**
+   * MOR-4534: the follow context a surface mounting on this key continues: the
+   * newest follow request sent for it (its width, and its requestSeq while the
+   * session it was sent in is still current, else 0). It never comes from frames.
+   */
+  followContext(receiver: number | null): { spanHz: number; requestSeq: number } | null {
+    const sent = this.followRequests.get(`${this.sourceId}:${this.kind === 'radio' ? receiver : null}`);
+    if (sent === undefined) return null;
+    const current = sent.epoch > 0 && sent.epoch === this.context.epoch;
+    return { spanHz: sent.spanHz, requestSeq: current ? sent.requestSeq : 0 };
+  }
+
+  private recordFollowRequest(request: ScopeSubscription): void {
+    if (!('follow' in request.view) || request.requestSeq === undefined) return;
+    const key = `${request.sourceId}:${request.receiver}`;
+    const epoch = this.context.epoch;
+    const prior = this.followRequests.get(key);
+    if (prior !== undefined && prior.epoch === epoch && prior.requestSeq > request.requestSeq) return;
+    this.followRequests.set(key, { epoch, spanHz: request.view.spanHz, requestSeq: request.requestSeq });
+  }
+
+  /** MOR-4534: a mounted surface will send a request for this key once it is measured. */
+  claimSurface(token: symbol, sourceId: string, receiver: number | null): void {
+    if (!this.surfaces.has(token)) this.claims.set(token, `${sourceId}:${receiver}`);
+  }
+
+  /**
+   * MOR-4534: held across a presentation swap, so a surface the outgoing
+   * presentation releases keeps its request until the incoming one sends its own.
+   */
+  holdSurfaces(): () => void {
+    this.swapHolds += 1;
+    return () => {
+      this.swapHolds -= 1;
+      this.pruneDeparted();
+      this.publishSurfaceDemand(false);
+    };
+  }
+
+  private pruneDeparted(): void {
+    const claimed = new Set(this.claims.values());
+    const requested = new Set([...this.surfaces.values()].map(request => `${request.sourceId}:${request.receiver}`));
+    for (const [token, request] of this.departed) {
+      const key = `${request.sourceId}:${request.receiver}`;
+      if (requested.has(key) || (this.swapHolds === 0 && !claimed.has(key))) this.departed.delete(token);
+    }
   }
 
   get subscriptions(): readonly ScopeSubscription[] { return this.subscriptionsValue; }
 
   private publishSurfaceDemand(retry = true, revision?: string, targetKey?: string, refresh = false): boolean {
     const groups = new Map<string, ScopeSubscription[]>();
-    for (const request of this.surfaces.values()) {
+    for (const request of [...this.surfaces.values(), ...this.departed.values()]) {
       const key = `${request.sourceId}:${request.receiver}`;
       const group = groups.get(key) ?? []; group.push(request); groups.set(key, group);
     }
@@ -136,6 +202,7 @@ export class ScopeStream {
       }
     }
     for (const request of this.subscriptionsValue) {
+      this.recordFollowRequest(request);
       const old = previous.find(prior => prior.sourceId === request.sourceId && prior.receiver === request.receiver) ?? null;
       if (JSON.stringify(old) !== JSON.stringify(request)) {
         if (revision !== undefined) this.attemptedFacts.set(`${request.sourceId}:${request.receiver}`, revision);

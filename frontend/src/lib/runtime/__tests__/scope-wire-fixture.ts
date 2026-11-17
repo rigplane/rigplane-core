@@ -59,6 +59,19 @@ export function loadScopeControlGolden(): Record<string, Record<string, unknown>
   return JSON.parse(readFileSync(resolve(process.cwd(), '../tests/fixtures/scope-control/control.json'), 'utf8'));
 }
 
+/**
+ * MOR-4534: grant replies the real Python handler produced for named source
+ * states (tests/web/test_scope_reply_fixture.py replays every case and
+ * asserts these exact documents). Component tests feed only these.
+ */
+export function loadScopeReply(name: string): Record<string, unknown> {
+  const replies = JSON.parse(readFileSync(resolve(process.cwd(), '../tests/fixtures/scope-control/replies.json'), 'utf8')) as
+    Record<string, { granted: Record<string, unknown> }>;
+  const reply = replies[name];
+  if (reply === undefined) throw new Error(`no scope reply named ${name}`);
+  return reply.granted;
+}
+
 export type AudioScopeGolden = {
   frame: ScopeWireGolden;
   audioPassband: { tunedHz: number; carrierOffsetHz: number; sideband: 'upper' | 'lower' | 'both'; lowOffsetHz: number; highOffsetHz: number };

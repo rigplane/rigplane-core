@@ -480,6 +480,13 @@ class _ScopeWindowSimulator(ScopeControlSimulator):
         # 27 15 GET reads the "radio" does not answer: the waveform edges
         # are then the only evidence of an external span change.
         self.withhold_span_reads = False
+        # Frames the radio's ScopeSession took in, per receiver (the fixture
+        # counts them), so a test can observe the stream drained.
+        self.observed_frames: dict[int, int] = {0: 0, 1: 0}
+
+    def waves_sent(self, receiver: int) -> int:
+        """Scope waves (one frame each) streamed for ``receiver`` so far."""
+        return self._scope_template_index[receiver]
 
     def _dispatch_scope(self, payload: bytes, from_addr: int) -> bytes | None:
         if self.withhold_span_reads and payload[0] == 0x15 and len(payload) == 2:
@@ -569,6 +576,14 @@ async def windowed_sdk(request):
         model=model,
     )
     await radio.connect()
+    session = radio.scope_session()
+    take_frame = session.on_frame
+
+    def counting(frame):
+        sim.observed_frames[frame.receiver] += 1
+        take_frame(frame)
+
+    session.on_frame = counting
     try:
         yield radio, sim
     finally:
@@ -1850,8 +1865,13 @@ async def _settle_first_request(ws):
 
 async def _mute(sim, receiver=0):
     sim.muted.add(receiver)
-    # Let a frame already on the wire land before the request goes out.
-    await asyncio.sleep(0.3)
+    # Every frame already streamed lands in the radio's ScopeSession before
+    # the request goes out, so none can settle that request.
+    sent = sim.waves_sent(receiver)
+    await await_until(
+        lambda: sim.observed_frames[receiver] >= sent,
+        description=f"the radio took in all {sent} streamed frames",
+    )
 
 
 def _span_sets(sim):
