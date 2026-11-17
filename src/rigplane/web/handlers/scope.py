@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from rigplane.scope.hub import HubSubscription
-from rigplane.scope.models import ScopeTarget
+from rigplane.scope.models import GrantedSubscription, ScopeTarget
 from rigplane.ws import WS_OP_TEXT
 
 from ..protocol import (  # noqa: TID251
@@ -130,22 +130,27 @@ class ScopeHandler:
                 except BaseException:
                     await self._unsubscribe(target)
                     raise
-                stream.sender = asyncio.create_task(
-                    self._sender(subscription, grant.width)
-                )
+                stream.sender = asyncio.create_task(self._sender(subscription, grant))
         except Exception as exc:
             error: dict[str, object] = {"type": "error", "message": str(exc)}
             if target is not None:
                 error.update(sourceId=target.source_id, receiver=target.receiver)
             await self._ws.send_text(encode_json(error))
 
-    async def _sender(self, subscription: HubSubscription, sent_width: int) -> None:
+    async def _sender(
+        self, subscription: HubSubscription, sent: GrantedSubscription
+    ) -> None:
         try:
             while True:
                 grant, data = await subscription.receive_delivery()
-                if grant.width != sent_width:
+                # A regrant on a width change, and when the request settles
+                # (MOR-4532: the re-sent grant is the only "settled" signal).
+                if (grant.width, grant.request_state) != (
+                    sent.width,
+                    sent.request_state,
+                ):
                     await self._ws.send_text(encode_scope_granted(grant))
-                    sent_width = grant.width
+                    sent = grant
                 await self._ws.send_binary(data)
         except StopAsyncIteration:
             pass

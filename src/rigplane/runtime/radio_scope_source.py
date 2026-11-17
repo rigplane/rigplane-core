@@ -39,6 +39,16 @@ class RadioScopeWriter(Protocol):
         """
         ...
 
+    def span_settled(self, receiver: int) -> bool:
+        """Whether the receiver's last span request is settled (MOR-4532).
+
+        False while the span write awaits its answer, while it is deferred
+        (TX, readiness), and after an acknowledged or unanswered write until
+        the first frame that follows it. A refused write and a write that
+        was not needed are settled at once.
+        """
+        ...
+
     async def set_output(self, enabled: bool, *, release: bool = True) -> None: ...
     async def set_fixed(self, edges: ScopeFixedEdge, receiver: int) -> None: ...
 
@@ -319,6 +329,9 @@ class RadioScopeSource:
                 return GrantedView(self.resolve_follow(view, native, selected), native)
             return GrantedView(resolved, None)
         return GrantedView(resolved, coverage)
+
+    def view_settled(self, receiver: int | None = None) -> bool:
+        return self._writer.span_settled(self._receiver(receiver))
 
     async def start(self) -> None:
         if self._active:

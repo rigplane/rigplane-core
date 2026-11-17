@@ -12,6 +12,7 @@ from .models import (
     GrantedSubscription,
     GrantedView,
     NativeFrame,
+    RequestState,
     ScopeSourcePlugin,
     ScopeDemand,
     ScopeWireFrame,
@@ -132,6 +133,13 @@ class HubSubscription:
         self._ready.set()
 
 
+def _request_state(source: _Source, request: Subscription) -> RequestState | None:
+    """The new grant's request state; None when the client sent no seq."""
+    if request.request_seq is None:
+        return None
+    return "settled" if source.plugin.view_settled(request.receiver) else "pending"
+
+
 class ScopeHub:
     def __init__(
         self,
@@ -218,6 +226,8 @@ class ScopeHub:
                         if native_width is not None
                         else request.width,
                         min(request.max_fps, caps.max_fps),
+                        request.request_seq,
+                        _request_state(source, request),
                     ),
                 )
                 source.clients.add(subscription)
@@ -327,6 +337,11 @@ class ScopeHub:
                 if native_width is not None
                 else client._request.width,
             )
+            if client.granted.request_state == "pending" and (
+                source.plugin.view_settled(frame.receiver)
+            ):
+                # MOR-4532: only pending flips, once; the regrant carries it.
+                client.granted = replace(client.granted, request_state="settled")
             grant = client.granted
             if isinstance(client._request.view, FollowView):
                 # MOR-4392: the follow grant's view is the source's own

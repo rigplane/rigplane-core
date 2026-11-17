@@ -9,6 +9,8 @@ from typing import Literal, Protocol, TypeAlias
 
 SourceKind: TypeAlias = Literal["radio", "audio_fft", "iq_fft"]
 ViewMode: TypeAlias = Literal["center", "fixed", "free"]
+RequestState: TypeAlias = Literal["pending", "settled"]
+"""Whether the server still works on a subscription's request (MOR-4532)."""
 
 
 def _number(value: object, name: str, minimum: float = 0) -> None:
@@ -190,6 +192,9 @@ class Subscription:
     view: ViewRequest
     width: int
     max_fps: float
+    # MOR-4532: the client's own number for this request, scoped to its
+    # connection. The server only echoes and orders it, never interprets it.
+    request_seq: int | None = None
 
     def __post_init__(self) -> None:
         _identity(self.source_id)
@@ -198,6 +203,8 @@ class Subscription:
             raise ValueError("view must be View or FollowView")
         _integer(self.width, "width", 65535, 1)
         _number(self.max_fps, "max_fps")
+        if self.request_seq is not None:
+            _integer(self.request_seq, "request_seq", 2**53 - 1)
 
 
 @dataclass(frozen=True)
@@ -208,10 +215,25 @@ class GrantedSubscription:
     coverage: Coverage | None
     width: int
     max_fps: float
+    # MOR-4532: the highest request this grant accounts for (the server may
+    # fold fast requests) and whether it is settled. Both or neither.
+    request_seq: int | None = None
+    request_state: RequestState | None = None
 
     def __post_init__(self) -> None:
-        Subscription(self.source_id, self.receiver, self.view, self.width, self.max_fps)
+        Subscription(
+            self.source_id,
+            self.receiver,
+            self.view,
+            self.width,
+            self.max_fps,
+            self.request_seq,
+        )
         GrantedView(self.view, self.coverage)
+        if (self.request_seq is None) != (self.request_state is None) or (
+            self.request_state not in (None, "pending", "settled")
+        ):
+            raise ValueError("request_seq and request_state come together")
 
 
 @dataclass(frozen=True)
@@ -284,6 +306,15 @@ class ScopeSourcePlugin(Protocol):
     async def set_view(
         self, view: ViewRequest, receiver: int | None = None
     ) -> GrantedView: ...
+    def view_settled(self, receiver: int | None = None) -> bool:
+        """Whether the source finished acting on the last view request.
+
+        MOR-4532: the hub asks after ``set_view`` and on every frame while a
+        grant's request is pending. A source that never writes to a radio
+        is settled once ``set_view`` returns.
+        """
+        ...
+
     async def start(self) -> None: ...
     async def stop(self, *, release: bool = True) -> None: ...
     def on_frame(

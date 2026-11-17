@@ -43,6 +43,38 @@ If native width is unknown for the requested receiver, the initial grant
 provisionally echoes the requested width.
 When the observed width changes, the server sends an updated `granted` before
 the corresponding binary frame; existing subscriptions need no new request.
+
+### Request sequence and request state
+
+A subscription may carry an optional `request_seq` (a non-negative integer).
+It is the client's own number for that request, scoped to its connection: the
+server only echoes and orders it and never interprets it. A grant for such a
+subscription carries `request_seq` and `request_state` (`"pending"` or
+`"settled"`, a string enum that may grow). `request_seq` in a grant is the
+highest request that grant accounts for; the server may fold fast requests,
+so a grant saying 6 leaves a later request 7 pending on the client. Grants are
+never sent for an older `request_seq` after a newer one.
+
+"Settled" comes only from the grant. A client must not derive it from scope
+control state (`scopeControls.span`, field status) or from frame widths. A
+request that is still pending when its first grant is sent settles later by a
+re-sent `granted` with the same `request_seq`, before the corresponding binary
+frame; there is no other message for it. For a radio source the request
+settles as follows:
+
+| What happened to the span write | Settles |
+| --- | --- |
+| No write needed (same preset, or a FIX/SCROLL-F follow gesture) | in its first grant |
+| Refused by the radio | in its first grant; the width is what the radio reports |
+| Acknowledged | on the first frame after the acknowledgement |
+| Ended with no answer | on the first frame after the write's answer window closed |
+| Deferred during transmit or before readiness | stays pending until written, then as above |
+| Superseded by a newer request on the same subscription | by the newer request's grant |
+
+Audio and IQ sources are settled in the first grant. Without `request_seq`, the
+grant has neither field and behaves as before. See
+`src/rigplane/runtime/scope_session.py: ScopeSession.span_settled` and
+`tests/fixtures/scope-control/control.json`.
 Send another subscription with the same key to change its view, width or rate;
 `maxFps: 0` pauses that subscription. To release one stream, send
 `{"type":"unsubscribe","sourceId":"radio","receiver":0}`. Bare

@@ -160,6 +160,10 @@ class IqFftSource:
         resolved = self.resolve_view(view, receiver)
         return GrantedView(resolved, self.coverage_for(resolved, receiver))
 
+    def view_settled(self, receiver: int | None = None) -> bool:
+        # No radio write: the view is settled once set_view returns.
+        return True
+
     async def start(self) -> None:
         if self._active:
             return
