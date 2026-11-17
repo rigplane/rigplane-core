@@ -80,6 +80,7 @@ async function settleOnFrames(h: Harness, count: number): Promise<void> {
 async function switchToScrollC(page: Page, h: Harness): Promise<void> {
   await page.getByRole('button', { name: 'More scope controls' }).first().click();
   await page.getByTestId('scope-mode-2').first().click();
+  await expect(page.getByTestId('scope-mode-2').first()).toHaveAttribute('aria-checked', 'true');
   await page.keyboard.press('Escape');
   await expect.poll(async () => (await h.writes()).filter(receipt => receipt.sub === 0x14).at(-1)?.data[1]).toBe(2);
   await settleOnFrames(h, 10);
@@ -241,3 +242,35 @@ for (const change of ['resize', 'reload'] as const) {
     }
   });
 }
+
+/**
+ * Adviser decision (b), the write-back risk: the radio streams its OLD window
+ * for a moment after it ACKed a span write (the simulator's one-shot
+ * `<evidence>.stale` hook). The display may show the stale frames, but the
+ * subscription keeps the request and nothing is written back.
+ */
+test('IC-705 CENTER: stale old-width frames right after the span ACK change no subscription and write nothing', async ({ page }, info) => {
+  const watch = watchPanoramaErrors(page);
+  const h = await boot(page, info, Number(process.env.PANORAMA_FOLLOW_PORT_STALE ?? 22327));
+  try {
+    await expect.poll(() => h.width(), { timeout: 15_000 }).toBe(100_000);
+    await settleOnFrames(h, 10);
+    const hook = h.evidence.replace('.jsonl', '.stale');
+    await writeFile(`${hook}.tmp`, '0.4');
+    await rename(`${hook}.tmp`, hook);
+    const receiptsBefore = (await h.writes()).length;
+    const sentBefore = h.subscribes.length;
+    await page.keyboard.press(']');
+    await expect.poll(() => h.width(), { timeout: 10_000 }).toBe(200_000);
+    await settleOnFrames(h, 30);
+    expect(h.width()).toBe(200_000);
+    expect((await h.writes()).slice(receiptsBefore).filter(r => r.sub === 0x15).map(r => r.span)).toEqual([100_000]);
+    const sent = h.subscribes.slice(sentBefore);
+    expect(sent.length).toBeGreaterThan(0);
+    expect(sent.every(message => message.spanHz === 200_000 && message.requestSeq === sent[0]!.requestSeq)).toBe(true);
+    await expect(page.getByTestId('scope-span-value').first()).toHaveText('±100k');
+    expectPanoramaSettled(watch);
+  } finally {
+    await h.server.kill();
+  }
+});

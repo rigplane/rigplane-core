@@ -361,9 +361,23 @@ class PanoramaSimulator(MockIcomRadio):
                     if sub == 0x14:
                         self.scope_mode = rest[1]
                     else:
+                        old_preset = self.profile.scope_span_presets_hz[self.span_index]
                         self.span_index = self.profile.scope_span_presets_hz.index(
                             bcd_decode(rest[1:])
                         )
+                        # MOR-4532: one-shot stale-frame hook. The streamed
+                        # wave keeps the old preset for the file's seconds
+                        # after this ACKed write (the external-change hold,
+                        # never a second mechanism).
+                        stale = self.evidence.with_suffix(".stale")
+                        if stale.exists():
+                            hold_s = float(stale.read_text())
+                            stale.unlink()
+                            self._external_hold = (
+                                "wave",
+                                old_preset,
+                                time.monotonic() + hold_s,
+                            )
                     reply = self._civ_ack(from_addr, self._radio_addr)
                 else:
                     return self._civ_nak(from_addr, self._radio_addr)
@@ -515,7 +529,10 @@ async def run() -> None:
     parser.add_argument(
         "--span-hz",
         type=int,
-        default=100_000,
+        # MOR-4532: a page load is requestSeq 0 and writes no span, so the
+        # simulator itself starts on the 100 kHz window (the ±50 kHz preset)
+        # the rows used to reach through that first write.
+        default=50_000,
         help="radio scope span preset the simulator starts on "
         "(PanoramaSimulator.span_index) — must be one of the profile's "
         "scope_span_presets_hz",
