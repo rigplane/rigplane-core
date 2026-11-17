@@ -266,6 +266,19 @@ describe('MOR-4534: a presentation swap subscribes before it unsubscribes', () =
     await owner.hardwareScopeDriver.stop(handle);
   });
 
+  it('sends the incoming request at once when the incoming panel is measured within the swap', async () => {
+    const { owner, handle, outgoing, sent } = await mounted();
+    const release = owner.holdSurfaces();
+    outgoing.destroy();
+    const next = incoming(owner);
+    next.update({ stream: owner.stream('hardware'), receiver: 0, view, facts, requestSeq: 0 });
+    expect(sent()).toEqual([{ type: 'subscribe', sourceId: 'radio', receiver: 0, view, width: 2800, maxFps: 20, requestSeq: 0 }]);
+    release();
+    expect(sent()).toHaveLength(1);
+    next.destroy();
+    await owner.hardwareScopeDriver.stop(handle);
+  });
+
   it('unsubscribes when the swap ends without an incoming panel', async () => {
     const { owner, handle, outgoing, sent } = await mounted();
     const release = owner.holdSurfaces();
