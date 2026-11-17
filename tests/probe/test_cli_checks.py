@@ -701,6 +701,87 @@ async def test_entry_named_port_failed_restore_is_exit_4(tmp_path, monkeypatch) 
     assert "PC100;" in radio.commands and PINNED in term.screen
 
 
+async def _failed_restore_on_terminal(tmp_path, monkeypatch, out: Path, save: str):
+    """A check whose restore is refused, run through probe_main on a terminal
+    without --yes; *save* answers the save question. Returns the exit code."""
+    rigs_with(tmp_path, POWER_ASK, monkeypatch)
+    monkeypatch.setattr(_probe, "open_result_folder", lambda folder: None)
+    radio = await cat_radio()
+    radio.hold("PC", "020")
+
+    def refuse_power() -> str:
+        radio.reject("PC")
+        return "\n"
+
+    term = Terminal(
+        {
+            "Continue? [Y/n] ": "\n",
+            render.checks_prompt(): "y\n",
+            render.check_prompt(): "y\n",
+            "Look at the radio.": refuse_power,
+            "Save the file? [Y/n] ": save,
+        }
+    )
+    argv = ["FT-991A", "--port", radio.device_url, "--checks", "--out", str(out)]
+    try:
+        return await on_terminal(term, monkeypatch, argv)
+    finally:
+        term.close()
+        await radio.stop()
+
+
+async def test_entry_failed_restore_then_save_declined_is_still_exit_4(
+    tmp_path, monkeypatch
+) -> None:
+    out = tmp_path / "probe.json"
+    code = await _failed_restore_on_terminal(tmp_path, monkeypatch, out, "n\n")
+    assert code == 4 and not out.exists()
+    assert leftover_journal_line(journal_path()) == PINNED
+
+
+async def test_entry_failed_restore_then_save_fails_is_still_exit_4(
+    tmp_path, monkeypatch
+) -> None:
+    out = tmp_path / "no-such-folder" / "probe.json"
+    code = await _failed_restore_on_terminal(tmp_path, monkeypatch, out, "y\n")
+    assert code == 4 and not out.exists()
+    assert leftover_journal_line(journal_path()) == PINNED
+
+
+async def test_entry_unreadable_journal_never_reaches_the_saved_file(
+    tmp_path, monkeypatch
+) -> None:
+    import getpass
+
+    rigs_with(tmp_path, SPLIT, monkeypatch)
+    path = journal_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"not json at all")
+    radio = await cat_radio()
+    out = tmp_path / "probe.json"
+    term = Terminal(
+        {
+            render.journal_set_back_prompt(): "\n",  # keep it
+            render.checks_prompt(): "y\n",
+            render.check_prompt(): "y\n",
+        }
+    )
+    argv = ["FT-991A", "--port", radio.device_url, "--checks", "--yes"]
+    try:
+        code = await on_terminal(term, monkeypatch, [*argv, "--out", str(out)])
+    finally:
+        term.close()
+        await radio.stop()
+    text = out.read_text(encoding="utf-8")
+    (record,) = saved(out).checks
+    assert code == 0 and record.status == "refused"
+    assert record.error == render.journal_unreadable_line(None)
+    assert str(path) in term.screen  # the console still names the file
+    for private in (str(path), str(path.parent), str(Path.home()), getpass.getuser()):
+        assert private not in text
+    assert cat_writes(radio) == []
+
+
 async def test_entry_discovery_checks_run_write_restore_and_save(
     tmp_path, monkeypatch
 ) -> None:
@@ -919,6 +1000,10 @@ def test_prompts_and_one_line_messages() -> None:
     assert render.journal_unreadable_line("/s/j.json") == (
         "The file with the values an earlier check should have set back cannot "
         "be read: /s/j.json. Check the radio's settings by hand."
+    )
+    assert render.journal_unreadable_line(None) == (
+        "The file with the values an earlier check should have set back cannot "
+        "be read. Check the radio's settings by hand."
     )
     assert render.journal_set_back_prompt() == (
         "Are these set back on the radio now? [y/N] "

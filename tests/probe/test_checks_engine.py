@@ -1007,6 +1007,48 @@ async def test_ctrl_c_while_consent_waits_refuses_before_the_journal_and_any_wri
     assert not [c for c in radio.commands if c in ("FT3;", "FT2;")]
 
 
+@pytest.mark.skipif(os.name != "posix", reason="POSIX signals (Windows: MOR-4497)")
+@pytest.mark.realtime(reason="a real SIGINT; the time limit only bounds a regression")
+async def test_ctrl_c_while_reading_an_original_never_opens_consent(
+    tmp_path: Path,
+) -> None:
+    from rigplane.probe.checks import ChecksRequest
+
+    config = load(tmp_path, "ft991a", SPLIT)
+    radio = await cat_radio()
+    inner = await cat_exchange(radio)
+    asked: list[str] = []
+
+    async def exchange(body, timeout):
+        if body == b"FT;":  # split is read only as an original, before consent
+            os.kill(os.getpid(), signal.SIGINT)
+        return await inner(body, timeout)
+
+    async def consent(check, originals) -> bool:
+        asked.append(check.id)
+        await asyncio.Event().wait()  # a regression would wait here
+        return True
+
+    req = ChecksRequest(consent, request(tmp_path).ask, journal_path=tmp_path / "j")
+    try:
+        result = await asyncio.wait_for(run(config, req, exchange), 20)
+    finally:
+        await radio.stop()
+    (record,) = result.records
+    assert asked == []
+    assert (record.status, record.error) == ("refused", "cancelled before any write")
+    assert not req.journal_path.exists()
+    assert not any(s.kind == "write" for s in record.steps)
+
+
+def test_the_old_positional_request_order_still_works(tmp_path: Path) -> None:
+    from rigplane.probe.checks import ChecksRequest
+
+    path = tmp_path / "journal.json"
+    req = ChecksRequest(agree, request(tmp_path).ask, None, 5.0, path)
+    assert (req.ask_timeout_s, req.journal_path, req.begin) == (5.0, path, None)
+
+
 # --- journal ------------------------------------------------------------------------------
 
 
