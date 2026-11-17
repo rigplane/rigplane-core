@@ -1,175 +1,203 @@
 /**
  * MOR-4528 — the phone DSP tab hosts the AGC choice.
  *
- * The real `MobileRadioLayout` is mounted with its real children, the real
- * projections and the real command path; only the spectrum pane, the icons,
- * the stores (radio state, capabilities) and the WebSocket send are fixtures.
- * The radios below are capability sets shaped like the shipped profiles'
- * `[agc]` tables (`rigs/ic705.toml`, `rigs/x6200.toml`) and a profile that
- * declares no AGC at all (`rigs/tx500.toml`).
+ * Every capability and state document here is one the backend produced:
+ * `scripts/gen_state_wire_goldens.py` writes them into
+ * `src/lib/transport/__tests__/fixtures/state-wire-goldens.json` and
+ * `tests/web/test_state_wire_goldens.py` keeps that file current. They
+ * enter through the production parsers — `validateCapabilities`, the
+ * capabilities store, the real ws-client over a fake socket and the radio
+ * store's own state validation — into the real `MobileRadioLayout`, its
+ * real `AgcPanel` and the real command path. Only the socket, the
+ * capabilities HTTP fetch, the audio manager, the spectrum pane and the
+ * icons are stand-ins.
+ *
+ * Server half of the command seam:
+ * `tests/test_g7250_local_api.py::test_agc_slow_writes_03_and_capabilities_serve_slow`
+ * sends `set_agc {mode}` through the real local API, sees the handler accept
+ * it and then serves `main.agc` equal to the requested mode. This file is
+ * the browser half of that exchange: the key press puts `set_agc` on the
+ * socket, the handler's `response` frame (shape per `ControlHandler` in
+ * `src/rigplane/web/handlers/control.py`) and the next state envelope come
+ * back, and the lit key moves only when that envelope arrives.
+ *
+ * Named `*.isolated.test.ts`: it mocks `http-client` and needs a fresh
+ * module graph per test, so the components and the stores share one graph.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { mount, unmount, flushSync } from 'svelte';
-import { ManagedAppTxHarness } from '$lib/runtime/tx-controller/__tests__/support/managed-app-tx-harness';
-import type { Capabilities } from '$lib/types/capabilities';
+import { validateCapabilities, type Capabilities } from '$lib/types/capabilities';
+import { MockWebSocket, instances } from '$lib/transport/__tests__/support/fake-ws-backend';
+import type { ServerState } from '$lib/types/state';
+import goldenFile from '$lib/transport/__tests__/fixtures/state-wire-goldens.json';
 
-const txHarness = new ManagedAppTxHarness();
-
-vi.mock('../../../components/spectrum/SpectrumPanel.svelte', async () => {
-  const stub = await import('./SpectrumPanelStub.svelte');
-  return { default: stub.default };
-});
+// A plain function, not a compiled stub: a mock factory's result outlives
+// `vi.resetModules()`, and a compiled component would keep the first test's
+// Svelte runtime.
+vi.mock('../../../components/spectrum/SpectrumPanel.svelte', () => ({ default: function S() { return {}; } }));
 vi.mock('lucide-svelte', () => {
   const S = function () { return {}; };
   return {
     Settings: S, ChevronLeft: S, ChevronRight: S, ChevronsLeft: S, ChevronsRight: S,
-    Sliders: S, Radio: S, Mic: S, MicOff: S,
+    Mic: S, MicOff: S, Sliders: S, Radio: S,
   };
 });
-// ── Stores: the radio under test ───────────────────────────────────────────
-const radioStore = vi.hoisted(() => ({ current: null as Record<string, unknown> | null }));
-const capsStore = vi.hoisted(() => ({ current: null as Record<string, unknown> | null }));
-vi.mock('$lib/stores/radio.svelte', () => ({
-  radio: radioStore,
-  getActiveReceiver: vi.fn(),
-  getRadioState: vi.fn(() => radioStore.current),
-  subscribeRadioState: vi.fn((handler: (state: Record<string, unknown> | null) => void) => {
-    handler(radioStore.current);
-    return () => {};
-  }),
-}));
-vi.mock('$lib/stores/connection.svelte', () => ({
-  getConnectionStatus: vi.fn(() => 'connected'),
-  getRadioPowerOn: vi.fn(() => null),
-  getWsConnected: vi.fn(() => true),
-  isStale: vi.fn(() => false),
-  isReconnecting: vi.fn(() => false),
-  getRadioStatus: vi.fn(() => 'ok'),
-  isAudioConnected: vi.fn(() => false),
-  getRadioLinkState: vi.fn(() => 'connected'),
-  getRigConnected: vi.fn(() => true),
-  getRadioReady: vi.fn(() => true),
-  getRadioHealth: vi.fn(() => null),
-}));
-vi.mock('$lib/stores/audio.svelte', () => ({
-  getAudioState: vi.fn(() => ({
-    volume: 50, muted: false, rxEnabled: false, txEnabled: false,
-    micEnabled: false, bridgeRunning: false,
-  })),
-  getRxAudioTargetSnapshot: vi.fn(() => Object.freeze({ muted: false, rxEnabled: false })),
-  subscribeRxAudioTarget: vi.fn((handler: (target: { muted: boolean; rxEnabled: boolean }) => void) => {
-    handler(Object.freeze({ muted: false, rxEnabled: false }));
-    return () => {};
-  }),
-}));
 vi.mock('$lib/audio/audio-manager', () => ({
   audioManager: {
     onChange: () => () => {}, getAppliedAudioConfig: () => null,
-    onTxAudioDied: () => () => {},
-    setOperatorNotifier: vi.fn(),
+    onTxAudioDied: () => () => {}, setOperatorNotifier: vi.fn(),
     start: vi.fn(), stop: vi.fn(), setVolume: vi.fn(), toggleMute: vi.fn(),
   },
 }));
-vi.mock('$lib/stores/capabilities.svelte', () => ({
-  hasTx: vi.fn(() => false), hasDualReceiver: vi.fn(() => false), hasAnyScope: vi.fn(() => false),
-  hasSpectrum: vi.fn(() => false), getCapabilities: vi.fn(() => capsStore.current),
-  getScopeSource: vi.fn(() => null),
-  subscribeCapabilities: vi.fn((handler: (caps: Record<string, unknown> | null) => void) => {
-    handler(capsStore.current);
-    return () => {};
-  }),
-  getKeyboardConfig: vi.fn(() => null),
-  hasCapability: vi.fn((name: string) =>
-    (capsStore.current?.capabilities as string[] | undefined)?.includes(name) ?? false),
-  receiverLabel: vi.fn((id: 'MAIN' | 'SUB') => id),
-  hasAudioFft: vi.fn(() => false),
-  getMeterCalibration: vi.fn(() => null), getMeterRedline: vi.fn(() => null),
-  getSmeterCalibration: vi.fn(() => null), getSmeterRedline: vi.fn(() => null),
-}));
+const txHost = vi.hoisted(() => ({ current: undefined as unknown }));
 vi.mock('$lib/runtime/tx-controller/managed-app-host', () => ({
-  getManagedAppTxController: () => txHarness.controller,
+  getManagedAppTxController: () => txHost.current,
 }));
+const fetchCapabilities = vi.hoisted(() => vi.fn());
+vi.mock('$lib/transport/http-client', async (importOriginal) => ({
+  ...await importOriginal<typeof import('$lib/transport/http-client')>(), fetchCapabilities }));
 
-// ── The wire: every command the UI sends lands here ────────────────────────
-const wsFrameSpy = vi.hoisted(() => vi.fn(() => true));
-vi.mock('$lib/transport/ws-client', async (importOriginal) => ({
-  ...await importOriginal<typeof import('$lib/transport/ws-client')>(),
-  sendCommand: wsFrameSpy,
-}));
+type Envelope = Record<string, unknown> & { data: Record<string, unknown> };
+interface GoldenEntry {
+  /** Served by a server with no radio attached: the profile's tables, no
+   *  radio-derived capability tags. */
+  capabilities: Record<string, unknown> & { capabilities: string[] };
+  /** Served by a server with the radio attached (Icom polled family only). */
+  polledSquelchCapabilities?: Record<string, unknown>;
+  allObserved?: Envelope;
+  allUnobserved?: Envelope;
+}
+const goldens = goldenFile as unknown as Record<string, GoldenEntry>;
 
-import MobileRadioLayout from '../MobileRadioLayout.svelte';
-import AgcPanel from '../../panels/AgcPanel.svelte';
-import { resetCommandLifecycle } from '$lib/stores/commands.svelte';
-
-interface RadioFixture {
-  readonly name: string;
-  readonly caps: Capabilities;
-  /** The AGC keys this radio must offer, in profile order. */
-  readonly keys: readonly string[];
+/**
+ * The capability document of a connected radio. Where the generator has a
+ * radio-backed document it is used as served. Elsewhere the radio-less one
+ * is used with the single `agc` tag a connected radio adds (the IC-705's two
+ * documents differ in exactly that kind of tag); the profile's AGC table is
+ * the served one either way, and the result must pass `validateCapabilities`.
+ */
+function connectedCapabilities(model: string): Capabilities {
+  const entry = goldens[model];
+  if (entry.polledSquelchCapabilities) {
+    return validateCapabilities(structuredClone(entry.polledSquelchCapabilities));
+  }
+  const served = structuredClone(entry.capabilities);
+  return validateCapabilities({ ...served, capabilities: [...served.capabilities, 'agc'] });
 }
 
-function caps(capabilities: string[], agc?: { modes: number[]; labels: Record<string, string> }): Capabilities {
+/** The AGC keys each radio must offer: its served table, in served order. */
+const servedKeys = (model: string): string[] => {
+  const { agcModes, agcLabels } = validateCapabilities(structuredClone(goldens[model].capabilities));
+  return (agcModes ?? []).map((mode) => (agcLabels ?? {})[String(mode)]);
+};
+
+/**
+ * The golden observed envelope with the radio link up. The generator has no
+ * live radio behind it, so every golden serves a down link (`connection`
+ * flags false, `radioHealth` unknown/stalled) and the client (rightly)
+ * refuses to send commands. A live link is those served fields at their
+ * healthy values; nothing else in the document changes.
+ */
+function liveEnvelope(model: string): Envelope {
+  const envelope = structuredClone(goldens[model].allObserved!);
+  const link: Pick<ServerState['connection'], 'rigConnected' | 'radioReady' | 'controlConnected'> = {
+    rigConnected: true, radioReady: true, controlConnected: true,
+  };
+  const health: Pick<NonNullable<ServerState['radioHealth']>, 'radioLink' | 'readiness'> = {
+    radioLink: 'connected', readiness: 'ready',
+  };
+  envelope.data.connection = { ...(envelope.data.connection as object), ...link };
+  envelope.data.radioHealth = { ...(envelope.data.radioHealth as object), ...health };
+  return envelope;
+}
+
+/** The state envelope the server sends once the radio has confirmed `mode`:
+ *  the live envelope, one revision later, with that reading. */
+function confirmedEnvelope(model: string, mode: number): Envelope {
+  const next = liveEnvelope(model);
+  for (const key of ['revision', 'stateRevision', 'freshnessRevision', 'observationSeq', 'transportSeq']) {
+    next[key] = (next[key] as number) + 1;
+    if (typeof next.data[key] === 'number') next.data[key] = (next.data[key] as number) + 1;
+  }
+  (next.data.main as Record<string, unknown>).agc = mode;
+  const status = (next.data.fieldStatus as Record<string, Record<string, unknown>>)['main.agc'];
+  status.lastObservedMonotonic = (status.lastObservedMonotonic as number) + 1;
+  return next;
+}
+
+interface Session {
+  socket: MockWebSocket;
+  flushSync: typeof import('svelte').flushSync;
+  resetCommandLifecycle: () => void;
+  /** `set_agc` frames the client has put on the socket so far. */
+  agcFrames: () => { id: string; name: string; params: Record<string, unknown> }[];
+  deliver: (message: Record<string, unknown>) => void;
+  mount: (load: () => Promise<{ default: unknown }>) => Promise<HTMLElement>;
+}
+
+let loadedWsClient: typeof import('$lib/transport/ws-client') | null = null;
+let originalWebSocket: typeof WebSocket;
+let mounted: (() => void)[] = [];
+
+/** Bring one radio up through the production path: capabilities into the
+ *  store, the socket open, the first state envelope delivered. */
+async function connectRadio(caps: Capabilities, envelope: Envelope): Promise<Session> {
+  fetchCapabilities.mockResolvedValue(caps);
+  const wsClient = await import('$lib/transport/ws-client');
+  loadedWsClient = wsClient;
+  const store = await import('$lib/stores/radio.svelte');
+  const capabilities = await import('$lib/stores/capabilities.svelte');
+  const { resetCommandLifecycle } = await import('$lib/stores/commands.svelte');
+  // `svelte` joins the post-reset module graph too: a component compiled
+  // against one runtime instance must be mounted by the same one.
+  const { mount, unmount, flushSync } = await import('svelte');
+  const { ManagedAppTxHarness } = await import(
+    '$lib/runtime/tx-controller/__tests__/support/managed-app-tx-harness');
+  txHost.current = new ManagedAppTxHarness().controller;
+  expect(capabilities.setCapabilities(caps)).toBe(true);
+
+  wsClient.connect('ws://test/api/v1/ws');
+  const socket = instances[0];
+  socket.simulateOpen();
+  const deliver = (message: Record<string, unknown>) => {
+    socket.simulateMessage(JSON.stringify(message));
+    flushSync();
+  };
+  deliver({ type: 'state_update', data: structuredClone(envelope) });
+  // The store accepted the served document as it is.
+  expect(store.getRadioState()).not.toBeNull();
+
   return {
-    freqRanges: [], modes: ['USB', 'LSB'], filters: ['FIL1', 'FIL2'],
-    stateContractVersion: 1, providerGeneration: 1,
-    receivers: 1, vfoScheme: 'ab', capabilities,
-    ...(agc ? { agcModes: agc.modes, agcLabels: agc.labels } : {}),
-  } as unknown as Capabilities;
-}
-
-const IC705: RadioFixture = {
-  name: 'IC-705-shaped (FAST/MID/SLOW, no OFF)',
-  caps: caps(['agc', 'nb', 'nr'], { modes: [1, 2, 3], labels: { 1: 'FAST', 2: 'MID', 3: 'SLOW' } }),
-  keys: ['FAST', 'MID', 'SLOW'],
-};
-const X6200: RadioFixture = {
-  name: 'X6200-shaped (OFF/FAST/SLOW/AUTO)',
-  caps: caps(['agc', 'nb', 'nr'], {
-    modes: [0, 1, 2, 3], labels: { 0: 'OFF', 1: 'FAST', 2: 'SLOW', 3: 'AUTO' },
-  }),
-  keys: ['OFF', 'FAST', 'SLOW', 'AUTO'],
-};
-const NO_AGC: RadioFixture = {
-  name: 'a radio whose profile declares no AGC',
-  caps: caps(['nb', 'nr']),
-  keys: [],
-};
-
-/** Tune the fixture stores to one radio reporting `agc` on its receiver. */
-function connect(radio: RadioFixture, agc?: number): void {
-  capsStore.current = radio.caps as unknown as Record<string, unknown>;
-  const seen = { observed: true, freshness: 'fresh', availability: 'available', lastObservedMonotonic: 1 };
-  radioStore.current = {
-    active: 'MAIN', providerGeneration: 1,
-    main: {
-      freqHz: 7_215_000, mode: 'LSB', filter: 1, dataMode: 0, activeSlot: 'A',
-      vfoA: {}, vfoB: {}, ...(agc === undefined ? {} : { agc }),
+    socket, flushSync, resetCommandLifecycle, deliver,
+    agcFrames: () => socket.sent
+      .map((raw) => JSON.parse(raw) as { id: string; name?: string; params: Record<string, unknown> })
+      .filter((frame): frame is { id: string; name: string; params: Record<string, unknown> } =>
+        frame.name === 'set_agc'),
+    mount: async (load) => {
+      const { default: component } = await load();
+      const target = document.createElement('div');
+      document.body.appendChild(target);
+      const instance = mount(component as never, { target, props: {} });
+      mounted.push(() => unmount(instance));
+      flushSync();
+      return target;
     },
-    connection: {},
-    fieldStatus: agc === undefined ? {} : { 'main.agc': seen },
   };
 }
 
-let hosts: HTMLElement[] = [];
-let instances: Record<string, unknown>[] = [];
-
-function mountInto(component: typeof MobileRadioLayout | typeof AgcPanel): HTMLElement {
-  const host = document.createElement('div');
-  document.body.appendChild(host);
-  hosts.push(host);
-  instances.push(mount(component as typeof MobileRadioLayout, { target: host }));
-  flushSync();
-  return host;
-}
+const loadPhone = () => import('../MobileRadioLayout.svelte');
+/** The desktop control: the sidebar's own `AgcPanel`, mounted bare. */
+const loadDesktopAgc = () => import('../../panels/AgcPanel.svelte');
 
 /** Mount the phone layout in portrait and open its DSP tab. */
-function openPhoneDspTab(): HTMLElement {
-  const root = mountInto(MobileRadioLayout);
+async function openPhoneDspTab(session: Session): Promise<HTMLElement> {
+  Object.defineProperty(window, 'innerWidth', { writable: true, configurable: true, value: 390 });
+  Object.defineProperty(window, 'innerHeight', { writable: true, configurable: true, value: 844 });
+  const root = await session.mount(loadPhone);
   const chip = [...root.querySelectorAll<HTMLButtonElement>('.m-chip')]
     .find((el) => el.getAttribute('aria-controls') === 'm-chip-panel-dsp');
   expect(chip, 'the DSP chip').toBeDefined();
   chip!.click();
-  flushSync();
+  session.flushSync();
   const panel = root.querySelector<HTMLElement>('#m-chip-panel-dsp');
   expect(panel, 'the DSP tab panel').not.toBeNull();
   return panel!;
@@ -180,86 +208,130 @@ const agcPanelIn = (tab: HTMLElement) =>
 const keysIn = (scope: HTMLElement) => [...scope.querySelectorAll<HTMLButtonElement>('button')]
   .filter((b) => !b.classList.contains('panel-header'));
 const labels = (keys: HTMLButtonElement[]) => keys.map((k) => k.textContent?.trim());
-const lit = (keys: HTMLButtonElement[]) =>
-  keys.filter((k) => k.getAttribute('aria-pressed') === 'true').map((k) => k.textContent?.trim());
+const lit = (scope: HTMLElement) => keysIn(scope)
+  .filter((k) => k.getAttribute('aria-pressed') === 'true').map((k) => k.textContent?.trim());
+const press = (scope: HTMLElement, label: string, session: Session) => {
+  keysIn(scope).find((k) => k.textContent?.trim() === label)!.click();
+  session.flushSync();
+};
 
-const originalWidth = window.innerWidth;
-const originalHeight = window.innerHeight;
-function setViewport(width: number, height: number): void {
-  Object.defineProperty(window, 'innerWidth', { value: width, configurable: true, writable: true });
-  Object.defineProperty(window, 'innerHeight', { value: height, configurable: true, writable: true });
-}
+/** Radios with an AGC table and an observed state envelope, plus the choice
+ *  each test makes: a key other than the one the golden state reports. */
+const AGC_RADIOS = [
+  { model: 'IC-705', choose: 'SLOW' },
+  { model: 'X6200', choose: 'OFF' },
+  { model: 'G7250', choose: 'SLOW' },
+].filter(({ model }) => goldens[model]?.allObserved);
+const NO_AGC_MODEL = 'TX-500';
 
 beforeEach(() => {
-  txHarness.reset();
-  setViewport(390, 844);
-  radioStore.current = null;
-  capsStore.current = null;
-  wsFrameSpy.mockClear();
-  resetCommandLifecycle();
+  instances.length = 0;
+  mounted = [];
+  originalWebSocket = globalThis.WebSocket;
+  // @ts-expect-error install the mock as the global WebSocket constructor
+  globalThis.WebSocket = MockWebSocket;
+  vi.resetModules();
 });
 
 afterEach(() => {
-  instances.forEach((instance) => unmount(instance));
-  instances = [];
-  hosts.forEach((host) => host.remove());
-  hosts = [];
-  setViewport(originalWidth, originalHeight);
+  for (const unmountComponent of mounted) unmountComponent();
+  while (document.body.firstChild) document.body.removeChild(document.body.firstChild);
+  loadedWsClient?.disconnect();
+  loadedWsClient = null;
+  globalThis.WebSocket = originalWebSocket;
+  vi.restoreAllMocks();
+  vi.resetModules();
 });
 
 describe('phone DSP tab AGC choice (MOR-4528)', () => {
-  it.each([IC705, X6200])('offers exactly the AGC modes of $name', (radio) => {
-    connect(radio, radio.caps.agcModes![1]);
-    const agc = agcPanelIn(openPhoneDspTab());
-    expect(agc, 'the AGC panel in the DSP tab').not.toBeNull();
-    expect(labels(keysIn(agc!))).toEqual(radio.keys);
+  it('covers radios whose served AGC tables differ, and one with none', () => {
+    const tables = AGC_RADIOS.map(({ model }) => servedKeys(model).join('/'));
+    expect(AGC_RADIOS.map(({ model }) => model)).toEqual(expect.arrayContaining(['IC-705', 'X6200']));
+    expect(new Set(tables).size).toBeGreaterThanOrEqual(2);
+    expect(servedKeys(NO_AGC_MODEL)).toEqual([]);
   });
 
-  it('draws no AGC panel for a radio whose profile declares no AGC', () => {
-    connect(NO_AGC);
-    const tab = openPhoneDspTab();
+  it.each(AGC_RADIOS)('$model: offers exactly the served AGC modes and lights the reported one', async ({ model }) => {
+    const envelope = liveEnvelope(model);
+    const session = await connectRadio(connectedCapabilities(model), envelope);
+
+    const agc = agcPanelIn(await openPhoneDspTab(session));
+
+    expect(agc, 'the AGC panel in the DSP tab').not.toBeNull();
+    expect(labels(keysIn(agc!))).toEqual(servedKeys(model));
+    const reported = (envelope.data.main as { agc: number }).agc;
+    expect(lit(agc!)).toEqual([connectedCapabilities(model).agcLabels![String(reported)]]);
+  });
+
+  it.each(AGC_RADIOS)('$model: a pressed key becomes the lit one once the radio confirms it', async ({ model, choose }) => {
+    const caps = connectedCapabilities(model);
+    const session = await connectRadio(caps, liveEnvelope(model));
+    const agc = agcPanelIn(await openPhoneDspTab(session))!;
+    const before = lit(agc);
+    expect(before).toHaveLength(1);
+    expect(before).not.toEqual([choose]);
+    const mode = Number(Object.keys(caps.agcLabels!).find((key) => caps.agcLabels![key] === choose));
+
+    press(agc, choose, session);
+
+    // On the wire, and not yet shown as selected: the lit key is the
+    // confirmed reading, never the request.
+    const frames = session.agcFrames();
+    expect(frames).toHaveLength(1);
+    expect(frames[0].params).toEqual({ mode, receiver: 0 });
+    expect(lit(agc)).toEqual(before);
+
+    session.deliver({ type: 'response', id: frames[0].id, ok: true, result: {} });
+    expect(lit(agc)).toEqual(before);
+
+    session.deliver({ type: 'state_update', data: confirmedEnvelope(model, mode) });
+    expect(lit(agc)).toEqual([choose]);
+  });
+
+  it.each(AGC_RADIOS)('$model: the phone key sends the desktop control\'s command', async ({ model, choose }) => {
+    const session = await connectRadio(connectedCapabilities(model), liveEnvelope(model));
+
+    press(await session.mount(loadDesktopAgc), choose, session);
+    const [desktop] = session.agcFrames();
+    expect(desktop).toBeDefined();
+
+    session.resetCommandLifecycle();
+    press(agcPanelIn(await openPhoneDspTab(session))!, choose, session);
+    const frames = session.agcFrames();
+    expect(frames).toHaveLength(2);
+    expect({ name: frames[1].name, params: frames[1].params })
+      .toEqual({ name: desktop.name, params: desktop.params });
+  });
+
+  it('draws no AGC panel for a radio whose profile declares no AGC', async () => {
+    const entry = goldens[NO_AGC_MODEL];
+    const session = await connectRadio(
+      validateCapabilities(structuredClone(entry.capabilities)), entry.allUnobserved!);
+
+    const tab = await openPhoneDspTab(session);
+
     expect(agcPanelIn(tab)).toBeNull();
     expect(tab.querySelectorAll('.collapsible-panel')).toHaveLength(1);
   });
 
-  it.each([
-    { radio: IC705, reported: 1, key: 'FAST' },
-    { radio: IC705, reported: 3, key: 'SLOW' },
-    { radio: X6200, reported: 0, key: 'OFF' },
-    { radio: X6200, reported: 3, key: 'AUTO' },
-  ])('lights $key when the $radio.name radio reports AGC $reported', ({ radio, reported, key }) => {
-    connect(radio, reported);
-    expect(lit(keysIn(agcPanelIn(openPhoneDspTab())!))).toEqual([key]);
+  it('draws no AGC panel while the server publishes no agc capability', async () => {
+    // The radio-less document: the profile's AGC table is served, the tag
+    // is not. The table alone must not draw the control.
+    const entry = goldens['X6200'];
+    expect(servedKeys('X6200').length).toBeGreaterThan(0);
+    const session = await connectRadio(
+      validateCapabilities(structuredClone(entry.capabilities)), entry.allObserved!);
+
+    expect(agcPanelIn(await openPhoneDspTab(session))).toBeNull();
   });
 
-  it.each([
-    { radio: IC705, reported: 1, choose: 'SLOW', mode: 3 },
-    { radio: X6200, reported: 1, choose: 'OFF', mode: 0 },
-  ])('choosing $choose on $radio.name sends the desktop control\'s command', ({ radio, reported, choose, mode }) => {
-    connect(radio, reported);
+  it('keeps one AGC home on the phone: the SETUP sheet no longer carries it', async () => {
+    const session = await connectRadio(connectedCapabilities('IC-705'), liveEnvelope('IC-705'));
+    const root = await session.mount(loadPhone);
 
-    // The desktop control: the sidebar's own `AgcPanel`, mounted bare.
-    const desktop = mountInto(AgcPanel);
-    keysIn(desktop).find((k) => k.textContent?.trim() === choose)!.click();
-    expect(wsFrameSpy).toHaveBeenCalledTimes(1);
-    const [desktopName, desktopParams] = wsFrameSpy.mock.calls[0] as unknown as [string, unknown];
-    expect(desktopName).toBe('set_agc');
-    expect(desktopParams).toEqual({ mode, receiver: 0 });
-
-    wsFrameSpy.mockClear();
-    resetCommandLifecycle();
-    const phone = agcPanelIn(openPhoneDspTab())!;
-    keysIn(phone).find((k) => k.textContent?.trim() === choose)!.click();
-    expect(wsFrameSpy).toHaveBeenCalledTimes(1);
-    const [phoneName, phoneParams] = wsFrameSpy.mock.calls[0] as unknown as [string, unknown];
-    expect([phoneName, phoneParams]).toEqual([desktopName, desktopParams]);
-  });
-
-  it('keeps one AGC home on the phone: the SETUP sheet no longer carries it', () => {
-    connect(IC705, 2);
-    const root = mountInto(MobileRadioLayout);
     root.querySelector<HTMLButtonElement>('.m-settings-btn')!.click();
-    flushSync();
+    session.flushSync();
+
     expect(document.body.querySelector('[data-panel-id="m-rit"]'), 'the SETUP sheet is open')
       .not.toBeNull();
     expect(document.body.querySelector('[data-panel-id="m-agc"]')).toBeNull();
