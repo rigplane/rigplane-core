@@ -41,11 +41,12 @@ class ScopeHandler:
         self._ws = ws
         self._server = server
         self._streams: dict[ScopeTarget, _Stream] = {}
-        # MOR-4532, per connection: the last requestSeq whose follow width
-        # was applied, and the highest one sent as settled. A fresh
+        # MOR-4532: the last requestSeq whose follow width was applied (per
+        # connection: the client allocates one rising number across all its
+        # targets) and, per target, the highest one sent as settled. A fresh
         # connection starts at 0, which is never a request.
         self._applied_seq = 0
-        self._settled_seq = 0
+        self._settled_seq: dict[ScopeTarget, int] = {}
 
     async def run(self) -> None:
         if self._server is not None:
@@ -152,19 +153,21 @@ class ScopeHandler:
             await self._ws.send_text(encode_json(error))
 
     def _final(self, grant: GrantedSubscription) -> GrantedSubscription:
-        """Settled is final per requestSeq on this connection (MOR-4532).
+        """Settled is final per requestSeq and target (MOR-4532).
 
         Every grant this connection sends passes here: a requestSeq at or
-        below the highest one already sent as settled (0 included) is sent
-        settled, so a delivery buffered before the request settled, or a
-        re-sent subscription, can never send it back to pending.
+        below the highest one already sent as settled for the same target
+        (0 included) is sent settled, so a re-sent subscription can never
+        send it back to pending. Another target's settled request says
+        nothing about this one: targets coexist on one socket.
         """
         if grant.request_seq is None:
             return grant
-        if grant.request_seq <= self._settled_seq:
+        target = ScopeTarget(grant.source_id, grant.receiver)
+        if grant.request_seq <= self._settled_seq.get(target, 0):
             return replace(grant, request_state="settled")
         if grant.request_state == "settled":
-            self._settled_seq = grant.request_seq
+            self._settled_seq[target] = grant.request_seq
         return grant
 
     async def _sender(
