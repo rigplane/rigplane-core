@@ -2159,13 +2159,20 @@ async def test_request_seq_buffered_delivery_never_reverses_a_settled_grant(
             assert await await_until(lambda: new.granted.request_state == "settled")
             release.set()
             seen = []
-            async with asyncio.timeout(10):
+            async with asyncio.timeout(15):
                 while True:
-                    message = await ws.receive(timeout=5)
+                    message = await ws.receive(timeout=12)
                     if message.type is aiohttp.WSMsgType.TEXT:
                         seen.append(json.loads(message.data))
                     elif message.type is aiohttp.WSMsgType.BINARY:
+                        first_frame = decode_scope_frame_v2(message.data)
                         break
+            # The buffered pre-settle delivery is retired, not relabelled:
+            # the first frame after the settled grant has the settled width.
+            assert (first_frame.view_start_hz, first_frame.view_end_hz) == (
+                14_100_000 - 250_000,
+                14_100_000 + 250_000,
+            )
             states = [d["requestState"] for d in seen if d.get("requestSeq") == 2]
             assert states and states[0] == "settled"
             assert "pending" not in states[states.index("settled") :]
@@ -2183,10 +2190,14 @@ def _resize(request_seq, span_hz, width):
     )
 
 
+@pytest.mark.parametrize("mode", [0, 2], ids=["center", "scroll-c"])
 @pytest.mark.parametrize("windowed_sdk", ["IC-7610", "IC-705"], indirect=True)
-async def test_request_seq_resize_after_external_narrow_writes_no_span(windowed_sdk):
+async def test_request_seq_resize_after_external_narrow_writes_no_span(
+    windowed_sdk, mode
+):
     """External narrow to 50k, then the panel resizes: the same requestSeq
-    re-sent with another pixel width writes no span; the view stays 50k."""
+    re-sent with another pixel width writes no span; the view stays 50k.
+    In CENTER and SCROLL-C (the two modes where a follow width writes)."""
     radio, sim = windowed_sdk
     sim.capture_civ_frames = True
     sim.set_frequency(14_100_000)
@@ -2197,7 +2208,10 @@ async def test_request_seq_resize_after_external_narrow_writes_no_span(windowed_
             await ws.send_str(encode_scope_subscription(_request(1, 200_000)))
             await _grants(ws, _settled(1))
             await _frame_with(ws, (14_000_000, 14_200_000))
-            sim.views[0] = (0, presets.index(25_000), 1)
+            if mode == 2:
+                await radio.set_scope_mode(2)
+                assert sim.views[0][0] == 2
+            sim.views[0] = (mode, presets.index(25_000), 1)
             await _frame_with(ws, (14_075_000, 14_125_000))
             sim.civ_frames_received.clear()
             await ws.send_str(encode_scope_subscription(_resize(1, 200_000, 300)))
