@@ -1696,13 +1696,14 @@ class MockIcomRadio(AudioPortMixin):
         if plan is None or plan.is_noop(port, "to_client"):
             proto.send(pkt, addr)
             return
-        planned = plan.decide(port, "to_client", pkt)
+        decided_at = time.monotonic()
+        planned = plan.decide(port, "to_client", pkt, now=decided_at)
         if planned is None:
             # Held in the plan's reorder buffer: arm the flush deadline so a
             # short burst is emitted even if the window never fills.
             self._arm_reorder_flush(plan, port, "to_client", proto, addr, label)
             return
-        self._deliver_planned(planned, "to_client", proto, addr, label)
+        self._deliver_planned(planned, "to_client", proto, addr, label, decided_at)
 
     def _deliver_planned(
         self,
@@ -1711,18 +1712,28 @@ class MockIcomRadio(AudioPortMixin):
         proto: _MockProtocol,
         addr: tuple[str, int],
         label: str,
+        decided_at: float | None = None,
     ) -> None:
         """Emit the plan's emissions for one packet.
 
         Delayed emissions re-check the reboot down-window when they fire: a
         packet the plan delayed into a reboot dies with the radio "off"
         instead of being delivered by a powered-down radio.
+
+        ``decided_at`` is the clock reading the plan used for its delays. A
+        delayed emission is armed at ``decided_at + delay`` (an absolute
+        time), not "delay from whenever the loop gets here": the plan keeps
+        ``preserve_order`` due times only 100 microseconds apart, and a
+        loaded host can deschedule this thread for longer than that between
+        the plan's clock read and a relative timer's own clock read, which
+        shuffled adjacent packets.
         """
         loop = asyncio.get_running_loop()
+        base = time.monotonic() if decided_at is None else decided_at
         for delay, payload in planned:
             if delay > 0.0:
-                loop.call_later(
-                    delay,
+                loop.call_at(
+                    base + delay,
                     self._deliver_planned,
                     [(0.0, payload)],
                     direction,
@@ -1798,12 +1809,15 @@ class MockIcomRadio(AudioPortMixin):
         plan = self.fault_plan
         port = self._port_of(label)
         if plan is not None and not plan.is_noop(port, "from_client"):
-            planned = plan.decide(port, "from_client", data)
+            decided_at = time.monotonic()
+            planned = plan.decide(port, "from_client", data, now=decided_at)
             if planned is None:
                 # Held in the reorder buffer: arm the flush deadline (idle).
                 self._arm_reorder_flush(plan, port, "from_client", proto, addr, label)
                 return
-            self._deliver_planned(planned, "from_client", proto, addr, label)
+            self._deliver_planned(
+                planned, "from_client", proto, addr, label, decided_at
+            )
             return
         self._receive(data, addr, label, proto)
 

@@ -79,7 +79,10 @@ jobs:
     # Operator doc: rigplane-tower/docs/development/mac-mini-self-hosted-runners.md.
     # Build pool, not the 2 GiB gate pool (MOR-4280): the full not-slow suite across three interpreters.
     runs-on: [self-hosted, Linux, X64, build]
-    timeout-minutes: 25
+    # RC dispatch and candidate tags run slow-marked tests (`-m "not benchmark"`);
+    # main@3cb86021 rc dispatches hit the 25-minute job cap at ~25:17. Scheduled
+    # and non-rc dispatches keep the shorter budget.
+    timeout-minutes: ${{ (inputs.rc || github.ref_type == 'tag') && 60 || 25 }}
     strategy:
       matrix:
         python-version: ["3.11", "3.12", "3.13"]
