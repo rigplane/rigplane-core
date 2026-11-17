@@ -11,6 +11,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.2.0rc11] — 2026-11-17
+
+This is the eleventh release candidate of 3.2.0. It contains everything merged to main after 3.2.0rc10 (up to #4636 and #4620).
+
+### Added
+
+- **New: 3D panadapter.** A `3D` key on the spectrum pane (and on the phone SCOPE tab) switches the pane to a stacked-trace view: the recent spectrum history drawn in depth, as rows that narrow toward a vanishing point above the middle of the pane, over a floor grid that converges on the same point. It is off by default and is the user's own choice; where the browser has no WebGL2 the key is disabled with an explanation. Clicking still tunes by the frequency scale (x only, depth ignored), and the tuning marker, passband, coverage hatch, labels and dB scale stay upright and flat. The height of the surface and its colour come from the followed noise floor, so the REF level no longer changes the 3D height. History rows are smoothed across frequency and blended with the previous row; the live front trace is not smoothed. AVG and PEAK act on the flat trace only and are hidden while 3D is on. A gear key opens ten sliders (narrowing, rows, row step, depth, ridge height, haze, sharpness in time, smoothing across frequency, floor below the noise, colour gain) with a Defaults button; values are kept per browser, applied live and send nothing to a radio. New strings `core.scope.stackedTrace.*` in en-US, ru-RU and ja-JP. On the phone the spectrum gets 38 % of the split by default (a stored drag still wins) and the split divider has a finger-sized touch band. (MOR-4463, #4620)
+- Phone layout: the DSP tab now has an `AGC` panel next to NB, NR, NOTCH and A-NOTCH. It offers exactly the AGC modes of the connected radio's profile, in profile order, and is not drawn for a radio without AGC. It is the same control and the same `set_agc` command as on the desktop; the copy in the SETUP sheet is removed, so the phone has one AGC home. (MOR-4528, #4636)
+- `rigplane probe --checks`: offers the profile's write checks after the read pass. It needs a terminal (without one it exits 2 before any port is opened), `--yes` never answers a checks question, and every checks question defaults to No. The customer sees, per check, what it does, what it puts back, the values right now and the profile's warnings, then a question; the results state only what was proved (restore confirmed, sent back but not confirmed, or NOT put back, which exits 4). A leftover journal from an earlier run is printed first, with the instruction to set the values by hand, and checks stay refused until it is set back or deleted. No shipped profile carries check data yet, so for every current profile the flag prints one line saying there are no checks and runs the read-only probe. On Windows the flag prints one line and runs the read-only probe. The probe file records `mode` `"read+checks"` only when the person said yes (`docs/contracts/probe-file-v1.md`). (MOR-4502, #4626)
+
+### Changed
+
+- Russian UI: the word for the operator's own rig is now «радио» instead of «трансивер» or «радиостанция» (34 and 2 strings in the ru-RU catalog: status bar, power confirmations, overlays, toasts, mobile navigation, disabled reasons, transport error). «Станции» is kept for the Station product and «радиостанц-» for broadcast stations. (MOR-4517, #4627)
+
+### Internal
+
+- Test-only: the simulator audio tests own the dummy audio port before probing it for silence, so another xdist worker's simulator can no longer answer there (#4648, MOR-4214).
+
 ## [3.2.0rc10] — 2026-11-17
 
 This is the tenth release candidate of 3.2.0. It contains everything merged to main after 3.2.0rc9 (up to #4646).
@@ -5320,7 +5338,8 @@ These deprecation closures were announced in v0.19 and dropped on schedule.
 - Transport layer, authentication, CI-V commands, meters, PTT, keep-alive.
 - Clean-room Icom LAN UDP protocol implementation.
 
-[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.2.0rc10...HEAD
+[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.2.0rc11...HEAD
+[3.2.0rc11]: https://github.com/rigplane/rigplane-core/compare/v3.2.0rc10...v3.2.0rc11
 [3.2.0rc10]: https://github.com/rigplane/rigplane-core/compare/v3.2.0rc9...v3.2.0rc10
 [3.2.0rc9]: https://github.com/rigplane/rigplane-core/compare/v3.2.0rc8...v3.2.0rc9
 [3.2.0rc8]: https://github.com/rigplane/rigplane-core/compare/v3.2.0rc7...v3.2.0rc8
