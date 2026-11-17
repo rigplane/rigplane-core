@@ -2,8 +2,23 @@
 
 from __future__ import annotations
 
+import threading
+from contextlib import AbstractContextManager
 from dataclasses import asdict, dataclass
 from typing import Any
+
+_NATIVE_LOCK = threading.RLock()
+
+
+def portaudio_native_access() -> AbstractContextManager[bool]:
+    """Hold off a device re-scan while a native query or probe runs (MOR-4338).
+
+    ``Pa_Terminate`` destroys the device tables, so enumeration and format
+    probes must not run while ``PortAudioBackend.refresh_devices`` restarts
+    PortAudio. Re-entrant; stream leases take the same lock.
+    """
+    return _NATIVE_LOCK
+
 
 WASAPI_HOST_API = "Windows WASAPI"
 """PortAudio's name for the Windows WASAPI host API."""
@@ -60,6 +75,11 @@ class PortAudioEnumeration:
 
 
 def read_portaudio_enumeration(sd: Any) -> PortAudioEnumeration:
+    with portaudio_native_access():
+        return _read_portaudio_enumeration(sd)
+
+
+def _read_portaudio_enumeration(sd: Any) -> PortAudioEnumeration:
     return PortAudioEnumeration(
         hostapis=tuple(
             HostApiRecord(
