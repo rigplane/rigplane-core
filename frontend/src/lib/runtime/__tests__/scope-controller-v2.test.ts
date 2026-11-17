@@ -142,6 +142,23 @@ describe('one multiplexed subscribed scope channel', () => {
     expect(port.sendRaw.mock.calls.filter(call => call[0].type === 'subscribe')).toHaveLength(6);
     await owner.hardwareScopeDriver.stop(first); await owner.audioFftDriver.stop(second);
   });
+
+  it('re-sends a tagged subscription on reconnect as requestSeq 0, which is not a request (MOR-4532)', async () => {
+    const { port, change } = channel(); const owner = new ScopeController(() => port as unknown as WsChannel);
+    const hardware = owner.stream('hardware');
+    hardware.setSubscription({ ...request('radio', 0), view: { follow: 'vfo', spanHz: 200_000 }, requestSeq: 3 });
+    const handle = await owner.hardwareScopeDriver.start();
+    change('connected');
+    expect(owner.connectionEpoch).toBe(1);
+    change('disconnected');
+    expect(owner.connectionEpoch).toBe(0);
+    port.sendRaw.mockClear();
+    change('connected');
+    expect(owner.connectionEpoch).toBe(2);
+    const resent = port.sendRaw.mock.calls.map(call => call[0]).filter(message => message.type === 'subscribe');
+    expect(resent).toEqual([{ type: 'subscribe', ...request('radio', 0), view: { follow: 'vfo', spanHz: 200_000 }, requestSeq: 0 }]);
+    await owner.hardwareScopeDriver.stop(handle);
+  });
 });
 
 it('retires observed mode at provider/source boundaries and accepts the next qualified control fact', async () => {
