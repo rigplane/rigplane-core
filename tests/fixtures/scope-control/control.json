@@ -7,14 +7,14 @@
     "width": 475,
     "maxFps": 20
   },
-  "subscribe_with_request_seq": {
+  "subscribe_with_requestSeq": {
     "type": "subscribe",
     "sourceId": "radio",
     "receiver": 0,
     "view": {"follow": "vfo", "spanHz": 500000},
     "width": 475,
     "maxFps": 20,
-    "request_seq": 6
+    "requestSeq": 6
   },
   "granted": {
     "type": "granted",
@@ -33,8 +33,8 @@
     "coverage": {"startHz": 14050000, "endHz": 14150000},
     "width": 475,
     "fps": 20,
-    "request_seq": 6,
-    "request_state": "pending"
+    "requestSeq": 6,
+    "requestState": "pending"
   },
   "granted_settled": {
     "type": "granted",
@@ -44,7 +44,7 @@
     "coverage": {"startHz": 13850000, "endHz": 14350000},
     "width": 475,
     "fps": 20,
-    "request_seq": 6,
-    "request_state": "settled"
+    "requestSeq": 6,
+    "requestState": "settled"
   }
 }

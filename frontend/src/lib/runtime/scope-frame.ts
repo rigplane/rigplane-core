@@ -85,14 +85,14 @@ export function parseScopeGranted(message: unknown): ScopeGranted | null {
     || !view(value.view) || !(value.coverage === null || view(value.coverage))
     || !Number.isInteger(value.width) || (value.width as number) < 1 || (value.width as number) > 65535
     || typeof value.fps !== 'number' || !Number.isFinite(value.fps) || value.fps < 0) return null;
-  // MOR-4532: request_seq and request_state are optional and travel together.
-  const tagged = 'request_seq' in value || 'request_state' in value;
-  if (tagged && (!Number.isSafeInteger(value.request_seq) || (value.request_seq as number) < 0
-    || (value.request_state !== 'pending' && value.request_state !== 'settled'))) return null;
+  // MOR-4532: requestSeq and requestState are optional and travel together.
+  const tagged = 'requestSeq' in value || 'requestState' in value;
+  if (tagged && (!Number.isSafeInteger(value.requestSeq) || (value.requestSeq as number) < 0
+    || (value.requestState !== 'pending' && value.requestState !== 'settled'))) return null;
   const granted = { type: 'granted', sourceId: value.sourceId, receiver: value.receiver as number | null,
     view: { ...value.view }, coverage: value.coverage === null ? null : { ...value.coverage }, width: value.width as number, fps: value.fps } as const;
   return tagged
-    ? { ...granted, request_seq: value.request_seq as number, request_state: value.request_state as ScopeRequestState }
+    ? { ...granted, requestSeq: value.requestSeq as number, requestState: value.requestState as ScopeRequestState }
     : granted;
 }
 

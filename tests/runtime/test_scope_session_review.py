@@ -1803,8 +1803,8 @@ async def test_native_width_known_at_subscribe_needs_no_regrant(windowed_sdk):
             assert decode_scope_frame_v2(message.data).width == native_width
 
 
-# ── MOR-4532 PR-A: the grant echoes request_seq and carries request_state ──
-# The client's request_seq is echoed and ordered, never interpreted; the
+# ── MOR-4532 PR-A: the grant echoes requestSeq and carries requestState ──
+# The client's requestSeq is echoed and ordered, never interpreted; the
 # grant (and only the grant) says when that request is settled. Settling
 # reads ScopeSession's existing facts: the span write's outcome and the
 # first frame after its answer window closed (a muted receiver streams no
@@ -1981,7 +1981,7 @@ async def test_request_seq_another_clients_span_change_leaves_this_grant_settled
     windowed_sdk, monkeypatch
 ):
     """Another client's span request (its ACK held, frames flowing) changes
-    this client's geometry but never its grant's request_seq or state."""
+    this client's geometry but never its grant's requestSeq or state."""
     radio, sim = windowed_sdk
     sim.set_frequency(14_100_000)
     radio._radio_state.main.freq = 14_100_000
@@ -2046,7 +2046,7 @@ async def test_request_seq_tx_deferred_span_stays_pending_until_applied(
             # Frames at the old width flow and settle nothing.
             during = await _texts_until_frames(ws, (14_050_000, 14_150_000), 3)
             assert all(
-                (d["request_seq"], d["request_state"]) == (2, "pending") for d in during
+                (d["requestSeq"], d["requestState"]) == (2, "pending") for d in during
             )
             assert _span_sets(sim) == []
             sim._ptt_state = False
@@ -2057,8 +2057,8 @@ async def test_request_seq_tx_deferred_span_stays_pending_until_applied(
 
 
 async def test_request_seq_absent_leaves_the_grant_document_unchanged(windowed_sdk):
-    """Change D: a subscription without request_seq gets the grant document
-    exactly as before — no request_seq, no request_state."""
+    """Change D: a subscription without requestSeq gets the grant document
+    exactly as before — no requestSeq, no requestState."""
     radio, sim = windowed_sdk
     sim.set_frequency(14_100_000)
     radio._radio_state.main.freq = 14_100_000

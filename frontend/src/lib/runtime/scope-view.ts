@@ -12,7 +12,7 @@ export interface ScopeSubscription {
   readonly width: number;
   readonly maxFps: number;
   /** MOR-4532: the client's own request number, scoped to its connection; echoed, never interpreted. */
-  readonly request_seq?: number;
+  readonly requestSeq?: number;
 }
 
 /** MOR-4532: whether the server still works on the request a grant accounts for. */
@@ -26,10 +26,10 @@ export interface ScopeGranted {
   readonly coverage: View | null;
   readonly width: number;
   readonly fps: number;
-  /** The highest request this grant accounts for (fast requests may fold). Present with request_state or not at all. */
-  readonly request_seq?: number;
+  /** The highest request this grant accounts for (fast requests may fold). Present with requestState or not at all. */
+  readonly requestSeq?: number;
   /** "settled" comes only from a grant; never derive it from scope controls or widths. */
-  readonly request_state?: ScopeRequestState;
+  readonly requestState?: ScopeRequestState;
 }
 
 export function viewCenterHz(view: View): number { return (view.startHz + view.endHz) / 2; }
