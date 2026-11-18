@@ -146,6 +146,7 @@ async def test_lan_radio_recovers_after_a_power_cycle(
                 radio,
                 lambda: sim.drop_session(at=0.0, notice=True),
                 samples,
+                _RECOVERY_LIMIT_S + _PROBE_MARGIN_S,
             )
             await asyncio.sleep(3.0)
             samples.append(f"--- power_cycle {down_for_s} s ---")
