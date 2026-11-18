@@ -129,7 +129,6 @@ export function scopeSubscriptionSurface(_node: Element, initial: {
   facts: import('../canvas/canvas-surface.svelte').CanvasSurfaceFacts | null;
   maxFps?: number;
   revision?: string;
-  frequencyHz?: number | null;
   requestSeq?: number;
 }) {
   let parameters = initial;
@@ -155,7 +154,7 @@ export function scopeSubscriptionSurface(_node: Element, initial: {
       view: context === null ? parameters.view : { follow: 'vfo', spanHz: context.spanHz },
       width, visible: facts?.visible === true && facts.backingW > 0,
       maxFps: parameters.maxFps ?? 20, requestSeq: passive ? 0 : parameters.requestSeq,
-    }), !attempted || attemptedRevision !== parameters.revision, parameters.revision, parameters.frequencyHz);
+    }), !attempted || attemptedRevision !== parameters.revision, parameters.revision);
     if (sent) { attempted = true; attemptedRevision = parameters.revision; }
   };
   const watchError = () => parameters.stream?.error.subscribe(error => {

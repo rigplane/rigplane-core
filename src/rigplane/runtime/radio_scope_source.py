@@ -180,6 +180,11 @@ class RadioScopeSource:
         resolved = self.resolve_view(view, receiver)
         center = self._writer.tuned_frequency(receiver)
         distance = max(abs(resolved.start_hz - center), abs(resolved.end_hz - center))
+        if not isinstance(view, FollowView):
+            # A pinned window is granted once and never re-sent when the VFO
+            # moves, so its span must cover the whole window from ANY VFO
+            # position inside it, not just from the tuned frequency now.
+            distance = max(distance, resolved.end_hz - resolved.start_hz)
         preset = next(
             (
                 preset

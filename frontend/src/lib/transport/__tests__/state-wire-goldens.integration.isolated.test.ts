@@ -144,6 +144,37 @@ describe('state wire goldens → real client chain', () => {
     if (!observed) expect(currentDisplayCount(viewModel!)).toBe(0);
   });
 
+  // ─── MOR-4562: no-readback A/B profiles show the selected VFO's readout ───
+  //
+  // G7250 and X6200 declare `vfoScheme: 'ab'` with `vfoReadback: 'none'`, so
+  // their `allObserved` envelopes (built by the Python producers) observe the
+  // active freq/mode/filter and never an activeSlot or vfoA/vfoB leaf. The
+  // readout must still render: frequency, mode and filter of the selected VFO,
+  // current, with no A/B letter invented (MOR-988).
+  it.each(['G7250', 'X6200'])('%s allObserved: the selected VFO readout is current, no slot letter', async (model) => {
+    const entry = goldens[model];
+    const caps = validateCapabilities(structuredClone(entry.capabilities));
+    expect(caps.vfoScheme).toBe('ab');
+    expect(caps.vfoReadback).toBe('none');
+    fetchCapabilities.mockResolvedValue(caps);
+    const { wsClient, store, capabilities } = await loadModules();
+    expect(capabilities.setCapabilities(caps)).toBe(true);
+
+    wsClient.connect('ws://test/api/v1/ws');
+    instances[0].simulateOpen();
+    sendStateUpdate(instances[0], structuredClone(entry.allObserved!));
+
+    const viewModel = toRadioViewModel(store.getRadioState(), capabilities.getCapabilities());
+    const selected = viewModel!.vfos.filter((vfo) => vfo.slot.kind === 'relative' && vfo.slot.role === 'selected');
+    expect(selected).toHaveLength(1);
+    expect(selected[0].label).toBe('Selected VFO');
+    expect(selected[0].display!.frequencyHz.state).toBe('current');
+    expect(selected[0].display!.mode.state).toBe('current');
+    // The producers' allObserved set declares no filter_num for these profiles;
+    // the real G7250 capture (mor4562-no-readback-readout.test.ts) asserts the filter.
+    expect(viewModel!.vfos.some((vfo) => vfo.slot.kind === 'slotted' || vfo.slot.kind === 'unknown')).toBe(false);
+  });
+
   // ─── MOR-4434: narrow/wide control on a producer-paired envelope ─────
   //
   // `../../runtime/adapters/__tests__/fixtures/fixture-narrow-capabilities.json`
