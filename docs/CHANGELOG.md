@@ -11,6 +11,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.2.2rc1] — 2026-11-18
+
+This is the first release candidate of 3.2.2. It equals 3.2.1 plus two fixes.
+
+### Fixed
+
+- Spectrum pane: with a band or segment preset selected (a pinned scope window), the frequency marker and the passband overlay no longer vanish for a few seconds after a retune. The screen re-sent the pinned window on every confirmed frequency change, so the server re-picked the span and rewrote it to the radio while the VFO moved; the re-send is gone, and for a radio without a fixed window the span is chosen once when the preset is selected, wide enough to cover the whole pinned window from any VFO position inside it (a window wider than the widest span keeps partial coverage). Follow VFO is unchanged. (MOR-4387, #4670)
+- A single-receiver A/B radio that reports no VFO readback (Xiegu G7250, X6100, X6200, TX-500) showed a blank frequency, mode and filter readout although the values were fresh: the surface now shows the selected VFO instead of an unresolved slot. (MOR-4562, #4669)
+
 ## [3.2.1] — 2026-11-18
 
 This is the 3.2.1 release. It equals 3.2.1rc1 (tag v3.2.1rc1, commit 0ccda6fed) and is 3.2.0 plus one fix.
@@ -5346,7 +5355,8 @@ These deprecation closures were announced in v0.19 and dropped on schedule.
 - Transport layer, authentication, CI-V commands, meters, PTT, keep-alive.
 - Clean-room Icom LAN UDP protocol implementation.
 
-[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.2.1...HEAD
+[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.2.2rc1...HEAD
+[3.2.2rc1]: https://github.com/rigplane/rigplane-core/compare/v3.2.1...v3.2.2rc1
 [3.2.1]: https://github.com/rigplane/rigplane-core/compare/v3.2.0...v3.2.1
 [3.2.0]: https://github.com/rigplane/rigplane-core/compare/v3.1.4...v3.2.0
 [3.2.0rc11]: https://github.com/rigplane/rigplane-core/compare/v3.2.0rc10...v3.2.0rc11
