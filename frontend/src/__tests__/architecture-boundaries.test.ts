@@ -59,7 +59,9 @@ const RADIO_AUTHORITY_RULES = new Set([
 
 // Every test in the authority describe spins a fresh ESLint proc; under a
 // loaded CI runner that exceeded vitest's default 5 s testTimeout
-// (MOR-2743). The budget is a machine-speed ceiling sized to CI.
+// (MOR-2743). The budget is a machine-speed ceiling sized to CI. The package
+// boundaries describe needs it too (MOR-4214): its first test pays the one-off
+// ESLint config and parser load (~0.4 s healthy, 5.7 s on the loaded CI runner).
 const ARCH_LINT_TIMEOUT_MS = 120_000;
 
 async function authorityRuleIds(code: string, filePath: string): Promise<string[]> {
@@ -70,7 +72,7 @@ async function authorityRuleIds(code: string, filePath: string): Promise<string[
     .filter((ruleId) => RADIO_AUTHORITY_RULES.has(ruleId));
 }
 
-describe('v3 package boundaries (MOR-1061)', () => {
+describe('v3 package boundaries (MOR-1061)', { timeout: ARCH_LINT_TIMEOUT_MS }, () => {
   it('keeps accepted capability installation owned only by the WS reducer', () => {
     const runtimeSource = readFileSync(
       path.join(FRONTEND_ROOT, 'src/lib/runtime/frontend-runtime.ts'),
