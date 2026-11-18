@@ -372,7 +372,7 @@ async def test_resident_reconnect_loop_republishes_freq_and_mode() -> None:
         # resident reconnect loop.
         radio._session_lifecycle._max_recovery_attempts = 1
         radio._session_lifecycle._recovery_backoff_s = (0.0,)
-        sim.reboot(at=0.0, down_for=20.0, busy_for=0.0)
+        sim.reboot(at=0.0, down_for=8.0, busy_for=0.0)
         await _wait_state(
             web,
             lambda s: s["connection"]["rigConnected"] is False,
