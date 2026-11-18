@@ -12,6 +12,10 @@ Production stack over the LAN simulator, configured like the bench
 the recorded keepalive hold. ``IcomRadio`` with auto reconnect plus
 ``WebServer`` (poller, readiness), watched through ``/readyz`` only, like
 ``fault_probe.py``. Nothing in the connect path is stubbed.
+
+A 35 s outage is pinned too: it outlasts the soft recovery, which gives up
+while the radio is dark and hands over to the full reconnect loop (that path
+recovered on 3.2.0 as well, ~4.7 s after power-on).
 """
 
 from __future__ import annotations
@@ -31,7 +35,7 @@ from rigplane.web.server import WebConfig, WebServer
 from testkit.ic7610_fakes import ic7610_lan_fake
 
 _RECOVERY_LIMIT_S = 30.0  # nightly_steps.RECOVERY_LIMIT_S
-_PROBE_WINDOW_S = 45.0
+_PROBE_MARGIN_S = 15.0
 
 
 class _Trail(logging.Handler):
@@ -51,6 +55,7 @@ async def _probe(
     radio: IcomRadio,
     inject: Any,
     samples: list[str],
+    window_s: float,
 ) -> float | None:
     """Inject, then sample ``/readyz`` every 0.5 s like ``fault_probe.py``.
 
@@ -61,7 +66,7 @@ async def _probe(
     inject()
     last = None
     outage = False
-    while time.monotonic() - t0 < _PROBE_WINDOW_S:
+    while time.monotonic() - t0 < window_s:
         try:
             async with session.get(
                 url + "/readyz", timeout=aiohttp.ClientTimeout(total=2)
@@ -84,7 +89,19 @@ async def _probe(
 
 
 @pytest.mark.realtime(reason="real UDP simulator, real outage and reconnect timing")
-async def test_lan_radio_recovers_after_a_6s_power_cycle() -> None:
+@pytest.mark.parametrize(
+    ("down_for_s", "limit_s"),
+    [
+        # The bench row: ready again within 30 s of the power-off.
+        (6.0, _RECOVERY_LIMIT_S),
+        # Outlasts the soft recovery: ready again within 15 s of power-on.
+        (35.0, 35.0 + 15.0),
+    ],
+    ids=["6s", "35s"],
+)
+async def test_lan_radio_recovers_after_a_power_cycle(
+    down_for_s: float, limit_s: float
+) -> None:
     sim = ic7610_lan_fake(single_owner=True, scope_stream=True)
     await sim.start()
     radio = IcomRadio(
@@ -131,13 +148,14 @@ async def test_lan_radio_recovers_after_a_6s_power_cycle() -> None:
                 samples,
             )
             await asyncio.sleep(3.0)
-            samples.append("--- power_cycle 6 s ---")
+            samples.append(f"--- power_cycle {down_for_s} s ---")
             recovered["power_cycle"] = await _probe(
                 session,
                 url,
                 radio,
-                lambda: sim.reboot(at=0.0, down_for=6.0, notice=False),
+                lambda: sim.reboot(at=0.0, down_for=down_for_s, notice=False),
                 samples,
+                limit_s + _PROBE_MARGIN_S,
             )
     finally:
         if web is not None:
@@ -157,4 +175,4 @@ async def test_lan_radio_recovers_after_a_6s_power_cycle() -> None:
     print(report)
     assert recovered.get("session_drop") is not None, report
     power_cycle = recovered.get("power_cycle")
-    assert power_cycle is not None and power_cycle <= _RECOVERY_LIMIT_S, report
+    assert power_cycle is not None and power_cycle <= limit_s, report
