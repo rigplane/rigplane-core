@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { resolve } from 'node:path';
 import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll } from 'vitest';
-import type { RadioHealthPublic, ReceiverState, ServerState } from '../../types/state';
+import type { ReceiverState, ServerState } from '../../types/state';
 import type { Capabilities } from '../../types/capabilities';
 import { MockWebSocket, instances } from './support/fake-ws-backend';
 
@@ -232,37 +232,6 @@ describe('ws-client → real radio store gate (integration)', () => {
     expect(s?.stateRevision).toBe(5);
     expect(s?.ptt).toBe(false);
     expect(store.getLastRevision()).toBe(5);
-  });
-
-  // MOR-4014 wire -> store: the scope-hidden fact the server publishes as
-  // `radioHealth.scopeHidden` reaches the real store through the real client.
-  // Paired producer test: tests/test_scope_health_watchdog_mor3690.py::
-  // test_scope_hidden_reaches_the_public_state_payload. Store -> panel:
-  // SpectrumPanel.component.test.ts "scope-hidden-on-the-radio note".
-  it('delivers radioHealth.scopeHidden to the store and clears it when frames return', async () => {
-    const { wsClient, capabilities } = await loadModules();
-    const connection = await import('../../stores/connection.svelte');
-    capabilities.setCapabilities(makeCapabilities());
-    wsClient.connect('ws://test/api/v1/ws');
-    instances[0].simulateOpen();
-    const health = (scopeHidden?: boolean | null): RadioHealthPublic => ({
-      serverReachable: true, radioLink: 'connected', readiness: 'ready', likelyCause: 'unknown',
-      sinceMs: 0, lastError: null, ...(scopeHidden === undefined ? {} : { scopeHidden }),
-    });
-
-    sendStateUpdate(instances[0], fullEnvelope(makeState({ revision: 1, radioHealth: health(true) })));
-    expect(connection.getRadioHealth()?.scopeHidden).toBe(true);
-    // The runtime facade the panel reads is the same real store fact.
-    const { runtime } = await import('../../runtime/frontend-runtime');
-    expect(runtime.radioHealth?.scopeHidden).toBe(true);
-
-    sendStateUpdate(instances[0], fullEnvelope(makeState({ revision: 2, radioHealth: health(false) })));
-    expect(connection.getRadioHealth()?.scopeHidden).toBe(false);
-    expect(runtime.radioHealth?.scopeHidden).toBe(false);
-
-    sendStateUpdate(instances[0], fullEnvelope(makeState({ revision: 3, radioHealth: health(true) })));
-    sendStateUpdate(instances[0], fullEnvelope(makeState({ revision: 4, radioHealth: health() })));
-    expect(connection.getRadioHealth()?.scopeHidden).toBeUndefined();
   });
 
   it('accepts canonical single-receiver full bodies with omitted or null sub', async () => {

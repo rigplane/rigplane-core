@@ -3481,6 +3481,9 @@ class WebServer:
                 timestamp_monotonic=now,
             )
         )
+        # Announce the fact to connected clients now: nothing else would, on a
+        # radio whose polled values are not changing (MOR-4014).
+        self._broadcast_state_update()
         logger.info(
             "scope-health: scope %s%s",
             (

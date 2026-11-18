@@ -2493,21 +2493,13 @@ describe('SpectrumPanel TX-known overlay (MOR-2859)', () => {
 });
 
 describe('SpectrumPanel scope-hidden-on-the-radio note (MOR-4014)', () => {
-  // Paired producer test: tests/test_scope_health_watchdog_mor3690.py::
-  // test_scope_hidden_reaches_the_public_state_payload.
-  const HIDDEN = 'Scope is off on the radio — it is showing a menu or another screen';
+  // The wire -> store -> runtime -> panel chain, on the documents the real
+  // server delivers, is SpectrumPanel.scope-hidden-wire.component.test.ts
+  // (paired with tests/test_scope_hidden_wire_seam_mor4014.py). These cases
+  // pin the panel's own rules over the runtime fact.
   const health = (scopeHidden?: boolean | null): RadioHealthPublic => ({
     serverReachable: true, radioLink: 'connected', readiness: 'ready', likelyCause: 'unknown',
     sinceMs: 0, lastError: null, ...(scopeHidden === undefined ? {} : { scopeHidden }),
-  });
-
-  it('says the scope is hidden on the radio instead of the disconnect overlay', () => {
-    runtimeHarness.state.currentRadioHealth = health(true);
-    runtimeHarness.state.mockScopeConnected = false;
-    const target = mountPanel();
-
-    expect(target.querySelector('[data-testid="scope-hidden-overlay"]')?.textContent).toBe(HIDDEN);
-    expect(target.querySelector('.scope-disconnected-overlay:not([data-testid])')).toBeNull();
   });
 
   it('keeps the ordinary disconnect overlay when the radio does not report the scope hidden', () => {
