@@ -387,8 +387,12 @@ def _prove_changelog_headings(
 
 def _check_pair(
     rx_path: Path, tx_path: Path, tag: str, expected_sha: str, repo: str, now: datetime
-) -> tuple[list[str], str | None]:
-    """Validate one RX/TX pair; exact final receipts skip the repo entirely."""
+) -> tuple[list[str], str | None, str | None]:
+    """Validate one RX/TX pair; exact final receipts skip the repo entirely.
+
+    Returns (violations, ok message, tested commit). The tested commit is the one the
+    radio smoke ran on and the proof above covers: the final itself, or the candidate.
+    """
     expected_version = tag.removeprefix("v")
     rx_payload, rx_error = _read_fragment(rx_path)
     tx_payload, tx_error = _read_fragment(tx_path)
@@ -405,7 +409,7 @@ def _check_pair(
             else:
                 for line in _validate(payload, kind, context[0], context[1], now):
                     violations.append(f"{kind}: {line}")
-        return violations, None
+        return violations, None, None
     rx_id = (rx_payload.get("core_version"), rx_payload.get("git_sha"))
     tx_id = (tx_payload.get("core_version"), tx_payload.get("git_sha"))
     want = (expected_version, expected_sha)
@@ -422,14 +426,14 @@ def _check_pair(
         proof = _prove_version_only(repo, candidate, expected_version, expected_sha)
         violations.extend(proof)
     if violations:
-        return violations, None
+        return violations, None, None
     ok = f"radio smoke receipts OK: {rx_path.name} + {tx_path.name} for {tag} @ {expected_sha}"
     if exact:
-        return [], ok
+        return [], ok, expected_sha
     tested = (
         f"(tested candidate v{candidate[0]} @ {candidate[1]}, version-only diff proven)"
     )
-    return [], f"{ok} {tested}"
+    return [], f"{ok} {tested}", candidate[1]
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -444,9 +448,14 @@ def main(argv: list[str] | None = None) -> int:
     check.add_argument("--rx", required=True, type=Path, help="radio-smoke-rx.json")
     check.add_argument("--tx", required=True, type=Path, help="radio-smoke-tx.json")
     check.add_argument("--repo", default=".", help="repo for the rc-to-final proof")
+    check.add_argument(
+        "--tested-sha-output",
+        type=Path,
+        help="append `tested_sha=<sha>` (GITHUB_OUTPUT format) once the receipts are valid",
+    )
     args = parser.parse_args(argv)
     now = datetime.now(timezone.utc)
-    violations, message = _check_pair(
+    violations, message, tested_sha = _check_pair(
         args.rx, args.tx, args.tag, args.git_sha, args.repo, now
     )
     for line in violations:
@@ -457,6 +466,9 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
     print(message)
+    if args.tested_sha_output is not None:
+        with args.tested_sha_output.open("a", encoding="utf-8") as out:
+            out.write(f"tested_sha={tested_sha}\n")
     return 0
 
 

@@ -200,3 +200,73 @@ def test_validate_job_timeout_covers_the_full_suite() -> None:
         "ARM64 build runner it outgrew 25 minutes (run 44109071644, v3.2.0rc9), "
         "so it needs the same 60-minute budget full.yml gives tag/rc runs"
     )
+
+
+def test_validate_reuses_a_passed_full_matrix_only_after_the_receipts_gate() -> None:
+    """MOR-4544: the suite is skipped only through the `reuse` step, never the receipts."""
+    steps = yaml.safe_load(PUBLISH.read_text())["jobs"]["validate"]["steps"]
+    names = [str(step.get("name")) for step in steps]
+    receipts = names.index("Verify radio smoke receipts")
+    reuse = names.index("Reuse a passed full-matrix run for the tested commit")
+    assert receipts < reuse
+    # the receipts check itself is never conditional on the reuse decision
+    assert "reuse" not in str(steps[receipts].get("if", ""))
+    gate = "steps.reuse.outputs.reuse != 'true'"
+    gated = {
+        str(step["name"]) for step in steps if str(step.get("if", "")).strip() == gate
+    }
+    assert {"Install dependencies", "Ruff", "Run tests"} <= gated
+    # a rehearsal has no release: the reuse step is release-only, so it always runs the suite
+    assert steps[reuse]["if"] == "github.event_name == 'release'"
+    build = yaml.safe_load(PUBLISH.read_text())["jobs"]["build"]["steps"]
+    assert any(
+        step.get("name") == "Wheel version equals the release tag" for step in build
+    )
+
+
+def _reuse_script() -> str:
+    steps = yaml.safe_load(PUBLISH.read_text())["jobs"]["validate"]["steps"]
+    return next(s for s in steps if s.get("id") == "reuse")["run"]
+
+
+def _run_reuse(tmp_path: Path, gh_body: str) -> str:
+    import os
+    import subprocess
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(parents=True)
+    gh = bin_dir / "gh"
+    gh.write_text("#!/bin/sh\n" + gh_body + "\n", encoding="utf-8")
+    gh.chmod(0o755)
+    out = tmp_path / "out"
+    env = dict(os.environ)
+    env.update(
+        PATH=f"{bin_dir}{os.pathsep}{env['PATH']}",
+        GITHUB_OUTPUT=str(out),
+        GITHUB_REPOSITORY="o/r",
+        TESTED_SHA="a" * 40,
+        GH_TOKEN="t",
+    )
+    done = subprocess.run(
+        ["bash", "-c", _reuse_script()], env=env, capture_output=True, text=True
+    )
+    assert done.returncode == 0, done.stderr
+    return out.read_text().strip()
+
+
+def test_reuse_decision_follows_the_lookup_and_never_blocks_a_release(
+    tmp_path: Path,
+) -> None:
+    assert _run_reuse(tmp_path / "a", "echo 1") == "reuse=true"
+    assert _run_reuse(tmp_path / "b", "echo 0") == "reuse=false"
+    # an unavailable Actions API is "no evidence", not a failed release
+    assert _run_reuse(tmp_path / "c", "exit 1") == "reuse=false"
+
+
+def test_reuse_reads_the_commit_the_receipts_checker_validated() -> None:
+    steps = yaml.safe_load(PUBLISH.read_text())["jobs"]["validate"]["steps"]
+    receipts = next(s for s in steps if s.get("id") == "receipts")
+    assert '--tested-sha-output "$GITHUB_OUTPUT"' in receipts["run"]
+    reuse = next(s for s in steps if s.get("id") == "reuse")
+    assert reuse["env"]["TESTED_SHA"] == "${{ steps.receipts.outputs.tested_sha }}"
+    assert "release download" not in reuse["run"]

@@ -25,6 +25,10 @@ jobs:
     # (same pool as quick.yml's quick-frontend job, MOR-4214).
     runs-on: [self-hosted, Linux, ARM64, build]
     timeout-minutes: 60
+    permissions:
+      contents: read
+      id-token: write
+      actions: read  # MOR-4544: look up the passed full-matrix run for the tested commit
     env:
       # Pin uv to the matrix interpreter; unpinned, `uv run` picks the newest
       # interpreter on the runner and both legs would test 3.13 (MOR-590).
@@ -76,6 +80,7 @@ jobs:
         # `uv run --no-project python` (job-level UV_PYTHON pins it),
         # because the runners' system python3 is 3.10 with no tomllib and
         # the checker needs Python >= 3.11.
+        id: receipts
         if: github.event_name == 'release'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -89,9 +94,35 @@ jobs:
             --git-sha "$GITHUB_SHA" \
             --rx "$smoke_dir/radio-smoke-rx.json" \
             --tx "$smoke_dir/radio-smoke-tx.json" \
-            --repo "$GITHUB_WORKSPACE"
+            --repo "$GITHUB_WORKSPACE" \
+            --tested-sha-output "$GITHUB_OUTPUT"
+
+      - name: Reuse a passed full-matrix run for the tested commit
+        # MOR-4544: the receipts step above proved the tag differs from the radio-tested commit
+        # only in the version (or is that commit). If a full-matrix run (3 Pythons, slow-marked
+        # tests, tag push) passed on exactly that commit, validate does not run the suite
+        # again: it took 22-26 min a leg and one flaky or OOM-killed leg blocked PyPI for hours.
+        id: reuse
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Validated by the receipts checker above, not re-read from the release assets.
+          TESTED_SHA: ${{ steps.receipts.outputs.tested_sha }}
+        run: |
+          set -uo pipefail
+          # A failed lookup is "no evidence to reuse": the suite runs, the release is not blocked.
+          passed="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/full.yml/runs?head_sha=$TESTED_SHA&status=success&event=push&per_page=30" \
+            --jq '[.workflow_runs[] | select(.head_branch | startswith("v"))] | length' 2>/dev/null)" || passed=0
+          if [ "${passed:-0}" -gt 0 ] 2>/dev/null; then
+            echo "reuse=true" >> "$GITHUB_OUTPUT"
+            echo "full matrix already passed on a tag run of tested commit $TESTED_SHA: validate skips the suite"
+          else
+            echo "reuse=false" >> "$GITHUB_OUTPUT"
+            echo "no passed full-matrix tag run found for tested commit $TESTED_SHA: validate runs the suite"
+          fi
 
       - name: Install dependencies
+        if: steps.reuse.outputs.reuse != 'true'
         # --all-extras (not --extra dev --extra bridge, MOR-1978): `dev`
         # already installed its packages (pytest, ruff, mypy, pydantic,
         # jsonschema, ...) and `bridge` is `[]` (pyproject.toml, a no-op
@@ -105,6 +136,7 @@ jobs:
         run: uv sync --all-extras
 
       - name: Set up Node.js
+        if: steps.reuse.outputs.reuse != 'true'
         uses: actions/setup-node@v6
         with:
           node-version: '20'
@@ -112,6 +144,7 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
 
       - name: Frontend install + check + tests + build
+        if: steps.reuse.outputs.reuse != 'true'
         env:
           # Same heap as quick.yml: svelte-check on Node 20 needs 1.5-2 GiB, and
           # Node's default limit was ~1 GB here (rc2 publish OOM, run 42565818574).
@@ -127,17 +160,21 @@ jobs:
           cp -r dist/* ../src/rigplane/web/static/
 
       - name: Ruff
+        if: steps.reuse.outputs.reuse != 'true'
         run: |
           uv run ruff check src/ tests/
           uv run ruff format --check src/ tests/
 
       - name: Type-check web boundary
+        if: steps.reuse.outputs.reuse != 'true'
         run: uv run mypy --strict src/rigplane/web
 
       - name: Lint architecture (import-linter)
+        if: steps.reuse.outputs.reuse != 'true'
         run: uv run lint-imports
 
       - name: Run tests
+        if: steps.reuse.outputs.reuse != 'true'
         # The -m replaces the 'not slow and not benchmark' from addopts, so
         # this job also runs the slow-marked tests.
         run: uv run pytest tests/ -n auto -m 'not benchmark' --tb=short --timeout=300 --timeout-method=thread
@@ -180,6 +217,21 @@ jobs:
 
       - name: Build package
         run: uv build
+
+      - name: Wheel version equals the release tag
+        if: github.event_name == 'release'
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          want="${TAG#v}"
+          for wheel in dist/*.whl; do
+            got="$(basename "$wheel" | cut -d- -f2)"
+            if [ "$got" != "$want" ]; then
+              echo "wheel version $got != tag version $want ($wheel)" >&2
+              exit 1
+            fi
+          done
 
       - name: Smoke installed radio profiles
         shell: bash
