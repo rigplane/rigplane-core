@@ -99,7 +99,10 @@ export function relativeVfoIdentityUnknown(
   if (!state || !caps || caps.receivers !== 1 || caps.vfoScheme !== 'ab') return false;
   if (fieldObserved(state, `${receiverKey}.activeSlot`)) return false;
   if (caps.vfoReadback === 'selected_unselected') return true;
-  if (caps.vfoReadback !== undefined) return false;
+  // `none` (a provider with no A/B readback, e.g. the Xiegu G7250/X6100/X6200
+  // over CI-V) names no slot either: it takes the same evidence rule as an
+  // older payload, so the selected VFO's readout is not blanked (MOR-4562).
+  if (caps.vfoReadback !== undefined && caps.vfoReadback !== 'none') return false;
 
   const hasObservedAbsoluteSlots = (['vfoA', 'vfoB'] as const).every((slotKey) =>
     (['freqHz', 'mode', 'filterNum', 'dataMode'] as const).some((leaf) =>

@@ -20,6 +20,7 @@ import {
   toTxProps,
   toVfoControlProps,
   toVfoProps,
+  relativeVfoIdentityUnknown,
 } from '../panel-props';
 import { findActiveBand } from '$lib/radio/band-plan';
 import type { FreqRange } from '$lib/types/capabilities';
@@ -1416,6 +1417,40 @@ describe('A12 — batch-B projections do not fabricate defaults (MOR-1409)', () 
       });
       const caps = { capabilities: [], receivers: 1, vfoScheme: 'ab', vfoReadback: 'selected_unselected' } as any;
       expect(toMemoryPanelProps(state, caps).vfoIdentityKnown).toBe(true);
+    });
+  });
+
+  describe('single-RX A/B radio with no VFO readback (MOR-4562)', () => {
+    // The G7250 on a LAN session (live capture 2026-11-18): vfoScheme 'ab',
+    // vfoReadback 'none', the selected VFO's freq/mode/filter observed and
+    // fresh at main.*, no activeSlot and no vfoA/vfoB observation. The surface
+    // must stay in Selected/Unselected mode and show the selected VFO's
+    // readout; an "identity-unresolved" slot would blank frequency/mode/filter.
+    const caps = { capabilities: [], receivers: 1, vfoScheme: 'ab', vfoReadback: 'none' } as any;
+    const g7250State = () =>
+      makeState({
+        fieldStatus: {
+          'main.freqHz': fieldStatus('available'),
+          'main.mode': fieldStatus('available'),
+          'main.filter': fieldStatus('available'),
+        },
+      });
+
+    it('treats literal A/B identity as unknown when nothing observed names a slot', () => {
+      expect(relativeVfoIdentityUnknown(g7250State(), caps)).toBe(true);
+    });
+
+    it('keeps a provider that reports absolute slots in slotted mode', () => {
+      const state = makeState({
+        fieldStatus: {
+          'main.vfoA.freqHz': fieldStatus('available'),
+          'main.vfoB.freqHz': fieldStatus('available'),
+        },
+      });
+      expect(relativeVfoIdentityUnknown(state, caps)).toBe(false);
+      expect(
+        relativeVfoIdentityUnknown(state, { ...caps, vfoReadback: 'absolute' } as any),
+      ).toBe(false);
     });
   });
 
