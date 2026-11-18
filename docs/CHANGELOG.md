@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A single-receiver A/B radio that reports no VFO readback (Xiegu G7250, X6100, X6200, TX-500) showed a blank frequency, mode and filter readout although the values were fresh: the surface now shows the selected VFO instead of an unresolved slot. (MOR-4562)
+
 ## [3.2.0rc11] — 2026-11-17
 
 This is the eleventh release candidate of 3.2.0. It contains everything merged to main after 3.2.0rc10 (up to #4636 and #4620).
