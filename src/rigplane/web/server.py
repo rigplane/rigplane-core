@@ -2850,6 +2850,10 @@ class WebServer:
         )
         # The advance cleared every entry, this structural fact included.
         self._publish_single_receiver_topology()
+        # ... and the scope-visibility verdict too: forget it was published,
+        # so the monitor's next verdict (even an unchanged one) republishes
+        # instead of being deduplicated against a cleared store (MOR-4014).
+        self._scope_hidden_published = None
 
     def _build_radio_health(self) -> dict[str, Any]:
         """Build radio health and advance the health revision on transitions."""
@@ -3477,6 +3481,9 @@ class WebServer:
                 timestamp_monotonic=now,
             )
         )
+        # Announce the fact to connected clients now: nothing else would, on a
+        # radio whose polled values are not changing (MOR-4014).
+        self._broadcast_state_update()
         logger.info(
             "scope-health: scope %s%s",
             (

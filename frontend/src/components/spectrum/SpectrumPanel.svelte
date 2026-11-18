@@ -212,6 +212,12 @@
   let scopeTxKnown = $derived(
     txSnapshot !== null && (txSnapshot.radioTx === 'on' || txSnapshot.txRisk === 'confirmed-on'),
   );
+  // MOR-4014: the server judges the radio's scope screen hidden while the
+  // operator is on a front-panel menu (`radioHealth.scopeHidden`, MOR-3690).
+  // Say so instead of the generic disconnect overlay. Only the native radio
+  // scope is the radio's display: the menu says nothing about an audio-FFT
+  // or IQ-FFT stream.
+  let scopeHiddenOnRadio = $derived(!audioFft && !sdrSource && runtime.radioHealth?.scopeHidden === true);
   let scopeLease: ReturnType<typeof runtime.acquireHardwareScope> | null = null;
   let brtLevel = $state(0);
   let colorScheme = $state<ColorSchemeName>('classic');
@@ -1874,6 +1880,8 @@
         <div class="scope-disconnected-overlay scope-demand-off-overlay">Scope viewer OFF</div>
       {:else if scopeTxKnown && !scopeConnected}
         <div class="scope-tx-overlay" data-testid="scope-tx-overlay">{t('core.overlay.scopeTransmitting')}</div>
+      {:else if scopeHiddenOnRadio && !scopeConnected}
+        <div class="scope-disconnected-overlay" data-testid="scope-hidden-overlay">{t('core.overlay.scopeHiddenOnRadio')}</div>
       {:else if !scopeConnected}
         <div class="scope-disconnected-overlay">{t('core.overlay.scopeDisconnected')}</div>
       {:else if scopeContentState === 'out-of-range'}

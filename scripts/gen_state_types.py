@@ -119,6 +119,16 @@ _REQUIRED_BY_MODEL: dict[str, set[str]] = {
     # MOR-4279: ``identity`` / ``session`` are additive server-injected fact
     # records with the same optional treatment.
     "ConnectionPublic": {"rigConnected", "radioReady", "controlConnected"},
+    # MOR-4014: ``scopeHidden`` is additive and absent until the scope-health
+    # monitor has judged (older Cores omit it); the rest are always present.
+    "RadioHealthPublic": {
+        "serverReachable",
+        "radioLink",
+        "readiness",
+        "likelyCause",
+        "sinceMs",
+        "lastError",
+    },
     # MOR-4279: a failure record carries ``holder`` only for ``device_in_use``
     # with a resolvable holder and ``candidates`` only when the platform
     # offered any; both keys are absent on an ordinary failure.

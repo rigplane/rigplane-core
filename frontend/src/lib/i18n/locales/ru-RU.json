@@ -112,6 +112,7 @@
   "core.overlay.poweredOff.powerOnButton": "Включить",
   "core.overlay.poweredOff.failedPowerOn": "Не удалось включить: {detail}",
   "core.overlay.scopeDisconnected": "Панорама отключена — переподключение…",
+  "core.overlay.scopeHiddenOnRadio": "Панорама выключена на радио — на нём открыто меню или другой экран",
   "core.overlay.scopeOutOfRange": "Частота за пределами фиксированных границ панорамы ({start}–{end} МГц)",
   "core.overlay.scopeSwitchToCtr": "Переключить в CTR",
   "core.scope.webglRequired": "Для водопада требуется WebGL",

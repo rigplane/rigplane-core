@@ -367,6 +367,10 @@ class RadioHealthPublic(_Strict):
     ]
     sinceMs: int
     lastError: str | None = None
+    # MOR-4014: True while the scope-health monitor judges the radio's scope
+    # screen hidden (operator on a front-panel menu or another screen,
+    # MOR-3690). Absent until it has judged; False once the scope is visible.
+    scopeHidden: bool | None = None
 
 
 class RadioDetailPublic(_Strict):

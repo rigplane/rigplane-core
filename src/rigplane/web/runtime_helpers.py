@@ -220,6 +220,7 @@ _HEALTH_PUBLIC_PATHS = {
     "likely_cause": "radioHealth.likelyCause",
     "since_ms": "radioHealth.sinceMs",
     "last_error": "radioHealth.lastError",
+    "scope_hidden": "radioHealth.scopeHidden",
 }
 # Public ``scopeControls.<suffix>`` leaves the toolbar/LCD gate on, mapped to
 # their backend scope-control field name. The whole group is unobserved until

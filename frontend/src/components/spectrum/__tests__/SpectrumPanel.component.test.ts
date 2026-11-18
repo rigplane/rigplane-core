@@ -196,6 +196,7 @@ const runtimeHarness = vi.hoisted(() => {
     capturedDxMessage: null as ((message: unknown) => void) | null,
     currentState: Object.freeze({ source: 'test-state', providerGeneration: 17, active: 'MAIN' }) as unknown,
     currentCaps: Object.freeze({ source: 'test-capabilities' }) as unknown,
+    currentRadioHealth: null as import('$lib/types/state').RadioHealthPublic | null,
     currentSession: { state: 'connected' as const, epoch: 1 },
     mockScopeConnected: true,
     mockScopeFrameLive: true,
@@ -214,6 +215,7 @@ const runtimeHarness = vi.hoisted(() => {
     get state() { return state.currentState; },
     get caps() { return state.currentCaps; },
     get controlSession() { return state.currentSession; },
+    get radioHealth() { return state.currentRadioHealth; },
     onTxAudioDied: () => () => {},
     defaultScopeStatus: { transport: 'connected' },
     scope: null as unknown as ScopeBridge,
@@ -230,7 +232,12 @@ const runtimeHarness = vi.hoisted(() => {
 
 const runtimeFacts = new SvelteMap<string, unknown>([
   ['caps', runtimeHarness.state.currentCaps], ['state', runtimeHarness.state.currentState],
+  ['radioHealth', null],
 ]);
+Object.defineProperty(runtimeHarness.state, 'currentRadioHealth', {
+  get: () => runtimeFacts.get('radioHealth') as import('$lib/types/state').RadioHealthPublic | null,
+  set: value => runtimeFacts.set('radioHealth', value),
+});
 Object.defineProperty(runtimeHarness.state, 'currentState', {
   get: () => runtimeFacts.get('state'), set: value => runtimeFacts.set('state', value),
 });
@@ -690,7 +697,7 @@ import {
 import statusBarSource from '../../../components-v2/layout/StatusBar.svelte?raw';
 import { IC7300_CAPABILITIES, IC7300_STATE } from '../../../lib/runtime/adapters/__tests__/fixtures/ic7300-profile';
 import type { Capabilities } from '$lib/types/capabilities';
-import type { ServerState } from '$lib/types/state';
+import type { RadioHealthPublic, ServerState } from '$lib/types/state';
 import bandPlanGoldens from './fixtures/band-plan-responses.json';
 import { resetBandPlanRegionForTests } from '$lib/stores/band-plan-region.svelte';
 
@@ -932,6 +939,7 @@ beforeEach(() => {
   runtimeHarness.state.hardwareUnsubscribe = vi.fn();
   runtimeHarness.state.dxUnsubscribe = vi.fn();
   runtimeHarness.state.currentState = Object.freeze({ source: 'test-state', providerGeneration: 17, active: 'MAIN' });
+  runtimeHarness.state.currentRadioHealth = null;
   runtimeHarness.state.currentCaps = Object.freeze({ source: 'test-capabilities' });
   runtimeHarness.state.currentSession = { state: 'connected', epoch: 1 };
   authorityHarness.state.current = authority();
@@ -2481,6 +2489,64 @@ describe('SpectrumPanel TX-known overlay (MOR-2859)', () => {
 
     expect(target.querySelector('[data-testid="scope-tx-overlay"]')).toBeNull();
     expect(target.querySelector('.scope-disconnected-overlay')).toBeNull();
+  });
+});
+
+describe('SpectrumPanel scope-hidden-on-the-radio note (MOR-4014)', () => {
+  // The wire -> store -> runtime -> panel chain, on the documents the real
+  // server delivers, is SpectrumPanel.scope-hidden-wire.component.test.ts
+  // (paired with tests/test_scope_hidden_wire_seam_mor4014.py). These cases
+  // pin the panel's own rules over the runtime fact.
+  const health = (scopeHidden?: boolean | null): RadioHealthPublic => ({
+    serverReachable: true, radioLink: 'connected', readiness: 'ready', likelyCause: 'unknown',
+    sinceMs: 0, lastError: null, ...(scopeHidden === undefined ? {} : { scopeHidden }),
+  });
+
+  it('keeps the ordinary disconnect overlay when the radio does not report the scope hidden', () => {
+    for (const value of [null, health(), health(null), health(false)]) {
+      runtimeHarness.state.currentRadioHealth = value;
+      runtimeHarness.state.mockScopeConnected = false;
+      const target = mountPanel();
+
+      expect(target.querySelector('[data-testid="scope-hidden-overlay"]')).toBeNull();
+      expect(target.querySelector('.scope-disconnected-overlay')).not.toBeNull();
+    }
+  });
+
+  it('does not show the radio-menu note for an IQ-FFT or audio-FFT source', () => {
+    for (const [scopeSource, sourceId] of [['sdr', 'iq_fft'], ['audio_fft', 'audio_fft']] as const) {
+      runtimeHarness.state.currentCaps = validateCapabilities({
+        ...IC7300_CAPABILITIES, scopeSource, scopeSources: [sourceId], scopeDefaultSourceId: sourceId,
+      });
+      runtimeHarness.state.currentRadioHealth = health(true);
+      runtimeHarness.state.mockScopeConnected = false;
+      const target = mountPanel();
+
+      expect(target.querySelector('[data-testid="scope-hidden-overlay"]')).toBeNull();
+    }
+  });
+
+  it('keeps the transmitting overlay while TX is known', () => {
+    txHarness.emitServerSnapshot({ observedPtt: 'on' });
+    runtimeHarness.state.currentRadioHealth = health(true);
+    runtimeHarness.state.mockScopeConnected = false;
+    const target = mountPanel();
+
+    expect(target.querySelector('[data-testid="scope-tx-overlay"]')).not.toBeNull();
+    expect(target.querySelector('[data-testid="scope-hidden-overlay"]')).toBeNull();
+  });
+
+  it('clears the note as soon as live frames return, before the next health update', () => {
+    runtimeHarness.state.currentRadioHealth = health(true);
+    runtimeHarness.state.mockScopeConnected = false;
+    const target = mountPanel();
+    expect(target.querySelector('[data-testid="scope-hidden-overlay"]')).not.toBeNull();
+
+    runtimeHarness.state.mockScopeConnected = true; // health still says hidden
+    emitFrame();
+    flushSync();
+
+    expect(target.querySelector('[data-testid="scope-hidden-overlay"]')).toBeNull();
   });
 });
 

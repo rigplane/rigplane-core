@@ -797,3 +797,45 @@ async def test_scope_ws_deliberate_user_enable_during_menu() -> None:
             await _close_ws(writer2)
     finally:
         await srv.stop()
+
+
+@pytest.mark.timeout(30)
+async def test_scope_hidden_reaches_the_public_state_payload(
+    virtual_clock: VirtualClock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """MOR-4014: the scope-health fact the monitor publishes is a typed public
+    ``radioHealth.scopeHidden`` leaf of the real server payload, and it clears
+    when frames return. Never judged means not claimed."""
+    from rigplane.web.state_schema import RadioHealthPublic
+
+    srv, _radio, _queued = await _virtual_scope_server(monkeypatch, virtual_clock)
+    assert srv.build_public_state()["radioHealth"].get("scopeHidden") is None
+
+    srv._publish_scope_hidden(True, now=virtual_clock())  # noqa: SLF001
+    health = srv.build_public_state()["radioHealth"]
+    assert RadioHealthPublic.model_validate(health).scopeHidden is True
+
+    srv._publish_scope_hidden(False, now=virtual_clock())  # noqa: SLF001
+    health = srv.build_public_state()["radioHealth"]
+    assert RadioHealthPublic.model_validate(health).scopeHidden is False
+
+
+@pytest.mark.timeout(30)
+async def test_unchanged_hidden_verdict_is_republished_after_provider_invalidation(
+    virtual_clock: VirtualClock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """MOR-4014: a reconnect clears the shared store; the menu is still open,
+    so the monitor's next (unchanged) hidden verdict must reach the fresh
+    generation instead of being deduplicated against the cleared store."""
+    srv, _radio, _queued = await _virtual_scope_server(monkeypatch, virtual_clock)
+    srv._publish_scope_hidden(True, now=virtual_clock())  # noqa: SLF001
+    assert _scope_hidden_verdict(srv) is True
+
+    srv.command_state_store.begin_provider_generation()
+    assert _scope_hidden_verdict(srv) is None  # the new generation has no verdict
+
+    srv._publish_scope_hidden(True, now=virtual_clock())  # noqa: SLF001
+    assert _scope_hidden_verdict(srv) is True
+    assert srv.build_public_state()["radioHealth"]["scopeHidden"] is True
