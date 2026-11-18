@@ -254,7 +254,9 @@ def _run_reuse(tmp_path: Path, gh_body: str) -> str:
     return out.read_text().strip()
 
 
-def test_reuse_decision_follows_the_lookup_and_never_blocks_a_release(tmp_path: Path) -> None:
+def test_reuse_decision_follows_the_lookup_and_never_blocks_a_release(
+    tmp_path: Path,
+) -> None:
     assert _run_reuse(tmp_path / "a", "echo 1") == "reuse=true"
     assert _run_reuse(tmp_path / "b", "echo 0") == "reuse=false"
     # an unavailable Actions API is "no evidence", not a failed release
