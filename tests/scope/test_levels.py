@@ -337,7 +337,9 @@ _SILENCE_DB = -266.0
 
 def _real_frames(count: int, seed: int, level_db: float = -100.0) -> list[np.ndarray]:
     rng = np.random.default_rng(seed)
-    return [np.full(129, level_db) + rng.standard_normal(129) * 1.0 for _ in range(count)]
+    return [
+        np.full(129, level_db) + rng.standard_normal(129) * 1.0 for _ in range(count)
+    ]
 
 
 class TestDigitalSilence:
