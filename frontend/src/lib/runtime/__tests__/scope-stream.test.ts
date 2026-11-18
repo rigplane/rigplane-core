@@ -215,3 +215,45 @@ it('exposes selected cached pixel presence through grants, health ticks and pixe
   stream.reset(); expect(stream.lastFrameHasPixels).toBe(false);
   stream.dispose();
 });
+
+describe('ScopeStream grant placeholder retention (MOR-4490)', () => {
+  const grant = { type: 'granted', sourceId: 'scope-1', receiver: 0,
+    view: { startHz: 14_000_000, endHz: 14_050_000 }, coverage: null, width: 3, fps: 20 };
+  const live = () => {
+    const input = source(); const stream = new ScopeStream(input.port, context, 'borrowed');
+    input.emit(); return { input, stream };
+  };
+  it('retains the last received frame geometry on a grant, through the freshness clock, until the next frame', () => {
+    const { input, stream } = live();
+    const frameGeometry = get(stream.geometry)!;
+    stream.handleMessage(grant);
+    expect(get(stream.geometry)).toMatchObject({ hasPixels: false, retained: frameGeometry });
+    stream.setFreshness('fresh');
+    expect(get(stream.geometry)).toMatchObject({ hasPixels: false, retained: frameGeometry });
+    input.emit(); expect(get(stream.geometry)).not.toHaveProperty('retained');
+    stream.dispose();
+  });
+  it('retains nothing after a header-only frame', () => {
+    const { input, stream } = live();
+    stream.setSlotFilter(scopeSlotKey('scope-1', 1));
+    input.emit(fixtures.outOfRange);
+    stream.handleMessage({ ...grant, receiver: 1 });
+    expect(get(stream.geometry)).toMatchObject({ receiver: 1, hasPixels: false });
+    expect(get(stream.geometry)!.retained).toBeUndefined();
+    stream.dispose();
+  });
+  it('retains nothing after a reset', () => {
+    const { stream } = live();
+    stream.reset(); stream.handleMessage(grant);
+    expect(get(stream.geometry)).toMatchObject({ hasPixels: false });
+    expect(get(stream.geometry)!.retained).toBeUndefined();
+    stream.dispose();
+  });
+  it('keeps the mode of the frame, so a later mode readback retires the retention', () => {
+    const { stream } = live();
+    stream.handleMessage(grant); stream.setMode(1);
+    const geometry = get(stream.geometry)!;
+    expect(geometry.mode).toBe(1); expect(geometry.retained?.mode).toBe(0);
+    stream.dispose();
+  });
+});

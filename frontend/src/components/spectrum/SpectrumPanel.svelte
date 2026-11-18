@@ -195,8 +195,7 @@
   // own consumers.
   // MOR-4490: the last frame's geometry stays painted while a grant's
   // pixel-less placeholder waits for its first frame (no zoom hatch flash).
-  let lastPixelGeometry = $state.raw<ScopeGeometry | null>(null);
-  let paintGeometry = $derived(scopeHeldGeometry(frameGeometry, lastPixelGeometry));
+  let paintGeometry = $derived(scopeHeldGeometry(frameGeometry));
   let displayGeometry = $derived(scopeTraceLive ? paintGeometry : null);
   // MOR-2859: the managed TX snapshot is the only TX truth (invariant R9,
   // the same source as the global TX lamp) — never `state.ptt`. The lookup
@@ -1698,13 +1697,7 @@
           settledGrant = { ...settledGrant, [`${grant.sourceId}:${grant.receiver}`]: { epoch, seq: grant.requestSeq } };
         }
       });
-      const stopGeometry = scopeStream.geometry.subscribe((geometry) => {
-        frameGeometry = geometry;
-        // Only a fresh frame's geometry is a painted sample plane; a fresh
-        // pixel-less/out-of-range one retires it (a real lack of data).
-        if (geometry?.hasPixels && geometry.freshness === 'fresh') lastPixelGeometry = geometry;
-        else if (geometry === null || scopeHeldGeometry(geometry, lastPixelGeometry) === geometry) lastPixelGeometry = null;
-      });
+      const stopGeometry = scopeStream.geometry.subscribe((geometry) => { frameGeometry = geometry; });
       cachedWhileOff = false;
       const acceptFrame = (frame: ScopeFrame, slotKey: string) => {
         const geometry = frameGeometry;

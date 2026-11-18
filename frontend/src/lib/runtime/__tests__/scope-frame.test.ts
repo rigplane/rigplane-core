@@ -113,23 +113,24 @@ describe('scopeHeldGeometry (MOR-4490)', () => {
   // The placeholder is built by the producer (the grant adapter), not by hand.
   const grant: ScopeGranted = { type: 'granted', sourceId: 'scope-1', receiver: 0, width: 4,
     view: { startHz: 30, endHz: 70 }, coverage: null, fps: 10 };
-  const placeholder = scopeGrantedGeometry(grant, { ...context, mode: 0 });
-  it('keeps the last pixel-bearing geometry while the grant placeholder waits for its first frame', () => {
+  const placeholder = scopeGrantedGeometry(grant, { ...context, mode: 0 }, geometry);
+  it('keeps the retained frame geometry while the grant placeholder waits for its first frame', () => {
     expect(placeholder.hasPixels).toBe(false);
-    expect(scopeHeldGeometry(placeholder, geometry)).toBe(geometry);
-    expect(projectScopeCoverage(scopeHeldGeometry(placeholder, geometry)!, { startHz: 35, endHz: 65 }).hatched).toEqual([]);
+    expect(scopeHeldGeometry(placeholder)).toBe(geometry);
+    expect(projectScopeCoverage(scopeHeldGeometry(placeholder)!, { startHz: 35, endHz: 65 }).hatched).toEqual([]);
   });
-  it('shows a real lack of pixels: a fresh header-only frame is not held over', () => {
+  it('holds whatever the freshness clock says about the placeholder', () => {
+    expect(scopeHeldGeometry({ ...placeholder, freshness: 'fresh' })).toBe(geometry);
+  });
+  it('shows a real lack of pixels: a frame without retained is not held over', () => {
     const empty = { ...geometry, hasPixels: false };
-    expect(scopeHeldGeometry(empty, geometry)).toBe(empty);
+    expect(scopeHeldGeometry(empty)).toBe(empty);
+    expect(scopeHeldGeometry(scopeGrantedGeometry(grant, context, null))).toMatchObject({ hasPixels: false });
   });
   it('shows an out-of-range placeholder and a different stream or mode as they are', () => {
-    expect(scopeHeldGeometry({ ...placeholder, outOfRange: true }, geometry)?.outOfRange).toBe(true);
-    expect(scopeHeldGeometry({ ...placeholder, receiver: 1 }, geometry)?.receiver).toBe(1);
-    expect(scopeHeldGeometry({ ...placeholder, mode: 3 }, geometry)?.mode).toBe(3);
+    expect(scopeHeldGeometry({ ...placeholder, outOfRange: true })?.outOfRange).toBe(true);
+    expect(scopeHeldGeometry({ ...placeholder, receiver: 1 })?.receiver).toBe(1);
+    expect(scopeHeldGeometry({ ...placeholder, mode: 3 })?.mode).toBe(3);
   });
-  it('shows the placeholder when nothing was ever painted', () => {
-    expect(scopeHeldGeometry(placeholder, null)).toBe(placeholder);
-    expect(scopeHeldGeometry(null, geometry)).toBeNull();
-  });
+  it('passes null through', () => { expect(scopeHeldGeometry(null)).toBeNull(); });
 });

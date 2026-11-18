@@ -22,11 +22,13 @@ export type {
 
 import type { ScopeGranted, ScopeSubscription } from '../scope-view';
 
-export function scopeGrantedGeometry(grant: ScopeGranted, context: CurrentScopeContext): ScopeGeometry {
+export function scopeGrantedGeometry(
+  grant: ScopeGranted, context: CurrentScopeContext, retained: ScopeGeometry | null = null,
+): ScopeGeometry {
   return { source: context.source, sourceId: grant.sourceId, receiver: grant.receiver,
     mode: context.mode ?? 0, width: grant.width, view: grant.view,
     coverage: grant.coverage ?? { startHz: grant.view.startHz, endHz: grant.view.startHz },
-    outOfRange: false, hasPixels: false, freshness: 'stale' };
+    outOfRange: false, hasPixels: false, freshness: 'stale', ...(retained ? { retained } : {}) };
 }
 
 /** The stream accepts pixels and grants only from its selected subscription identity. */

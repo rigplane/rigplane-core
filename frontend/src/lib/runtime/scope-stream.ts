@@ -222,7 +222,7 @@ export class ScopeStream {
     if (granted && (this.subscriptionKey === null || this.matchingSubscription(granted))) {
       this.grantedStore.set(granted); this.errorStore.set(null);
       const selected = this.slotFilter === null || this.slotFilter === `${granted.sourceId}:${granted.receiver === null ? '*' : granted.receiver}`;
-      if (selected && this.matchingSubscription(granted)?.maxFps !== 0) this.publishGeometry(scopeGrantedGeometry(granted, this.context));
+      if (selected && this.matchingSubscription(granted)?.maxFps !== 0) this.publishGeometry(scopeGrantedGeometry(granted, this.context, this.lastPixelGeometry));
     } else if (message && typeof message === 'object' && 'type' in message && message.type === 'error'
       && 'message' in message && typeof message.message === 'string') {
       // A rejected update leaves the server's previous subscription running.
@@ -335,6 +335,7 @@ export class ScopeStream {
   reset(): void {
     if (this.disposed) return;
     this.frames.clear();
+    this.lastPixelGeometry = null;
     this.grantedStore.set(null);
     this.geometryKey = null;
     this.publishGeometry(null);
@@ -354,6 +355,7 @@ export class ScopeStream {
     this.attemptedFacts.clear();
     this.confirmedFrequencies.clear();
     this.frames.clear();
+    this.lastPixelGeometry = null;
     try { this.detach?.(); this.detach = null; }
     finally {
       try { if (this.ownership === 'owned') this.source.close(); }
@@ -368,6 +370,7 @@ export class ScopeStream {
     if (Number.isSafeInteger(this.context.epoch) && this.context.epoch > 0
       && (this.slotFilter === null || this.slotFilter === slotKey)) {
       this.geometryAccepted = this.accepted;
+      this.lastPixelGeometry = geometry.hasPixels ? geometry : null;
       this.geometryKey = slotKey;
       const current = this.geometryValue;
       if (!current || current.source !== geometry.source || current.sourceId !== geometry.sourceId
@@ -385,6 +388,9 @@ export class ScopeStream {
       try { sink(frame, slotKey); } catch (error) { console.warn('Scope stream subscriber failed', error); }
     }
   }
+
+  /** MOR-4490: geometry of the last pixel-bearing frame received; a grant placeholder retains it. */
+  private lastPixelGeometry: ScopeGeometry | null = null;
 
   private publishGeometry(geometry: ScopeGeometry | null): void {
     this.geometryValue = geometry;

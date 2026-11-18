@@ -110,6 +110,8 @@ export interface ScopeGeometry {
   readonly outOfRange: boolean;
   readonly hasPixels: boolean;
   readonly freshness: ScopeFreshness;
+  /** Grant placeholder only: the last received frame's geometry, still on screen until the first new frame. */
+  readonly retained?: ScopeGeometry;
 }
 /** Affine RF-bin coordinates for an AF axis; the original pixel plane is retained. */
 export interface ScopeAudioProjection {
@@ -119,19 +121,19 @@ export interface ScopeAudioProjection {
 }
 
 /**
- * MOR-4490: a grant publishes pixel-less, not-yet-fresh geometry for the new
- * subscription until its first binary frame lands (0-50 ms). That is a
- * placeholder, not a fact about the radio: a REAL lack of pixels arrives as a
- * fresh header-only frame. While the placeholder stands, the last
- * pixel-bearing geometry of the same stream and mode stays the painted one,
- * so a zoom does not flash the "no pixels" hatch. Anything else shows as is.
+ * MOR-4490: a grant publishes pixel-less geometry for the new subscription
+ * until its first binary frame lands (0-50 ms). That placeholder carries the
+ * geometry of the last frame actually received (`retained`); while it stands
+ * that frame stays the painted one, so a zoom does not flash the "no pixels"
+ * hatch. A REAL lack of pixels arrives as a frame, which publishes geometry
+ * without `retained`, so it shows as is.
  */
-export function scopeHeldGeometry(current: ScopeGeometry | null, lastWithPixels: ScopeGeometry | null): ScopeGeometry | null {
-  if (current === null || lastWithPixels === null) return current;
-  const placeholder = !current.hasPixels && !current.outOfRange && current.freshness === 'stale';
-  const sameStream = current.source === lastWithPixels.source && current.sourceId === lastWithPixels.sourceId
-    && current.receiver === lastWithPixels.receiver && current.mode === lastWithPixels.mode;
-  return placeholder && sameStream ? lastWithPixels : current;
+export function scopeHeldGeometry(current: ScopeGeometry | null): ScopeGeometry | null {
+  const held = current?.retained;
+  if (!current || !held) return current;
+  const sameStream = current.source === held.source && current.sourceId === held.sourceId
+    && current.receiver === held.receiver && current.mode === held.mode;
+  return sameStream && !current.hasPixels && !current.outOfRange ? held : current;
 }
 
 export type ScopeHatchReason = 'outOfRange' | 'view wider than coverage' | 'no pixels';
