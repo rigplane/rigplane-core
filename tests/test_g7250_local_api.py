@@ -237,6 +237,41 @@ async def _station(
             max_age=60,
         )
     )
+    # The initial VFO pair a real connect acquires (25/26 selected + unselected
+    # reads, then the connect-time select of VFO A) once the profile declares
+    # `selected_unselected` (MOR-4565).
+    observed_at = asyncio.get_running_loop().time()
+    pair_source = SourceMetadata(
+        source="poll_response",
+        provider="tests",
+        transport="fake",
+        native_id="initial_vfo_pair",
+    )
+    pair = tuple(
+        Observation(
+            path=path,
+            value=value,
+            source=pair_source,
+            timestamp_monotonic=observed_at,
+        )
+        for path, value in (
+            (FieldPath.active("0", "freq_mode", "freq_hz"), 7_100_000),
+            (FieldPath.active("0", "freq_mode", "mode"), "USB"),
+            (FieldPath.unselected("0", "freq_mode", "freq_hz"), 7_050_000),
+            (FieldPath.unselected("0", "freq_mode", "mode"), "USB"),
+        )
+    )
+    generation = poller._provider_generation()  # noqa: SLF001
+    web.command_state_store.apply_relative_vfo_observations(pair, generation=generation)
+    web.command_state_store.apply(
+        Observation(
+            path=FieldPath.active_slot("0"),
+            value="A",
+            source=pair_source,
+            timestamp_monotonic=observed_at,
+        )
+    )
+    web.command_state_store.apply_relative_vfo_observations(pair, generation=generation)
     web._server = await asyncio.start_server(web._accept_client, "127.0.0.1", 0)
     entries: list[Any] = []
     executed = asyncio.Event()

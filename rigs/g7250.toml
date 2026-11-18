@@ -304,6 +304,16 @@ fixed = true
 
 [vfo]
 scheme = "ab"
+# MOR-4565: the radio cannot say which VFO is selected (bare 07 is a SET, there
+# is no get_vfo), but answers the selected/unselected reads 25 00/01 and 26
+# 00/01 (all four LIVE G7250 2026-11-09, see [commands]), the same contract as
+# rigs/ic7300.toml. The VFO selects are Rev 1.2 Table 1-3 / page 3 (07 00 = A,
+# 07 01 = B, 07 A0 = A=B, 07 B0 = swap); not probed on a G7250 before MOR-4565.
+readback = "selected_unselected"
+main_select = [0x00]  # VFO A
+sub_select = [0x01]   # VFO B
+swap_ab = [0xB0]
+equal_ab = [0xA0]
 
 # Xiegu G7250 CI-V Reference Rev 1.2 (2026-11-06), Table 1-3 / page 3:
 # selected-VFO ATT read 11 A, write only A=00 OFF or 20 ON; any other

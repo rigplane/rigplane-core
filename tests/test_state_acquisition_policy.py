@@ -2406,11 +2406,6 @@ _TX_TARGET_UNSUPPORTED: dict[str, str] = {
         "and the RadioPoller derivation requires vfo_readback "
         '"selected_unselected", which this profile does not carry'
     ),
-    "G7250": (
-        "Xiegu-dialect CI-V profile (MOR-4352): same shape as the X6200 — "
-        "no transmit-frequency read is declared and vfo_readback is not "
-        '"selected_unselected"'
-    ),
 }
 
 
