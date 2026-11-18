@@ -1409,6 +1409,25 @@ describe('SpectrumPanel component', () => {
     expect(target.querySelectorAll('.scope-hatch')).toHaveLength(0);
   });
 
+  it('keeps the last frame under a grant until its first frame lands, and hatches a real empty frame (MOR-4490)', async () => {
+    runtimeHarness.state.currentCaps = structuredClone(IC7300_CAPABILITIES);
+    authorityHarness.state.current = authority({ frequencyHz: 14_050_000 });
+    const target = mountPanel(); emitFrame(); await flushWaterfallPaint();
+    const canvas = target.querySelector('.spectrum-area canvas');
+    expect(canvas).not.toBeNull();
+    // A zoom re-subscribes: the grant arrives before the new frame.
+    feedReply(scopeControllerHarness.stream('hardware'), 'seq0-follow-100k-at-14060-native-equal');
+    flushSync();
+    expect(target.querySelector('.scope-hatch[data-reason="no pixels"]')).toBeNull();
+    expect(target.querySelector('.spectrum-area canvas')).toBe(canvas);
+    // A header-only frame is a real lack of data: it hatches, and a later grant does not undo that.
+    emitFrame({ pixels: new Uint8Array(0), sequence: 2 }); await flushWaterfallPaint();
+    expect(target.querySelector('.spectrum-area .scope-hatch[data-reason="no pixels"]')).not.toBeNull();
+    feedReply(scopeControllerHarness.stream('hardware'), 'seq0-follow-100k-at-14060-native-equal');
+    flushSync();
+    expect(target.querySelector('.spectrum-area .scope-hatch[data-reason="no pixels"]')).not.toBeNull();
+  });
+
   it('keeps hatching the undeliverable margin when the granted native coverage is narrower (MOR-4451)', async () => {
     runtimeHarness.state.currentCaps = structuredClone(IC7300_CAPABILITIES);
     authorityHarness.state.current = authority({ frequencyHz: 14_050_000 });

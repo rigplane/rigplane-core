@@ -118,6 +118,22 @@ export interface ScopeAudioProjection {
   readonly spanHz: number;
 }
 
+/**
+ * MOR-4490: a grant publishes pixel-less, not-yet-fresh geometry for the new
+ * subscription until its first binary frame lands (0-50 ms). That is a
+ * placeholder, not a fact about the radio: a REAL lack of pixels arrives as a
+ * fresh header-only frame. While the placeholder stands, the last
+ * pixel-bearing geometry of the same stream and mode stays the painted one,
+ * so a zoom does not flash the "no pixels" hatch. Anything else shows as is.
+ */
+export function scopeHeldGeometry(current: ScopeGeometry | null, lastWithPixels: ScopeGeometry | null): ScopeGeometry | null {
+  if (current === null || lastWithPixels === null) return current;
+  const placeholder = !current.hasPixels && !current.outOfRange && current.freshness === 'stale';
+  const sameStream = current.source === lastWithPixels.source && current.sourceId === lastWithPixels.sourceId
+    && current.receiver === lastWithPixels.receiver && current.mode === lastWithPixels.mode;
+  return placeholder && sameStream ? lastWithPixels : current;
+}
+
 export type ScopeHatchReason = 'outOfRange' | 'view wider than coverage' | 'no pixels';
 
 /**

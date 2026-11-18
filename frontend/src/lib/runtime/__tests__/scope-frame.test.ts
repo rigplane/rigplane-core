@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { scopeFixtures as fixtures } from './scope-wire-fixture';
-import { ingressScopeFrame, parseCurrentScopeFrame, scopeSlotKey } from '../adapters/scope-adapter';
-import { projectScopeCoverage, shouldHatchCoverageGap } from '../scope-frame';
+import { ingressScopeFrame, parseCurrentScopeFrame, scopeGrantedGeometry, scopeSlotKey } from '../adapters/scope-adapter';
+import { projectScopeCoverage, scopeHeldGeometry, shouldHatchCoverageGap } from '../scope-frame';
 import type { ScopeGeometry } from '../scope-frame';
 import type { ScopeGranted } from '../scope-view';
 
@@ -106,5 +106,30 @@ it('fully hatches producer header-only out-of-range bytes without pixels', () =>
   expect(result.geometry).toMatchObject({ outOfRange: true, hasPixels: false });
   expect(projectScopeCoverage(result.geometry, result.geometry.view)).toEqual({
     covered: [], hatched: [{ start: 0, end: 1, reason: 'outOfRange' }],
+  });
+});
+
+describe('scopeHeldGeometry (MOR-4490)', () => {
+  // The placeholder is built by the producer (the grant adapter), not by hand.
+  const grant: ScopeGranted = { type: 'granted', sourceId: 'scope-1', receiver: 0, width: 4,
+    view: { startHz: 30, endHz: 70 }, coverage: null, fps: 10 };
+  const placeholder = scopeGrantedGeometry(grant, { ...context, mode: 0 });
+  it('keeps the last pixel-bearing geometry while the grant placeholder waits for its first frame', () => {
+    expect(placeholder.hasPixels).toBe(false);
+    expect(scopeHeldGeometry(placeholder, geometry)).toBe(geometry);
+    expect(projectScopeCoverage(scopeHeldGeometry(placeholder, geometry)!, { startHz: 35, endHz: 65 }).hatched).toEqual([]);
+  });
+  it('shows a real lack of pixels: a fresh header-only frame is not held over', () => {
+    const empty = { ...geometry, hasPixels: false };
+    expect(scopeHeldGeometry(empty, geometry)).toBe(empty);
+  });
+  it('shows an out-of-range placeholder and a different stream or mode as they are', () => {
+    expect(scopeHeldGeometry({ ...placeholder, outOfRange: true }, geometry)?.outOfRange).toBe(true);
+    expect(scopeHeldGeometry({ ...placeholder, receiver: 1 }, geometry)?.receiver).toBe(1);
+    expect(scopeHeldGeometry({ ...placeholder, mode: 3 }, geometry)?.mode).toBe(3);
+  });
+  it('shows the placeholder when nothing was ever painted', () => {
+    expect(scopeHeldGeometry(placeholder, null)).toBe(placeholder);
+    expect(scopeHeldGeometry(null, geometry)).toBeNull();
   });
 });

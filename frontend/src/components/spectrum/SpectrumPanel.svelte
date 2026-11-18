@@ -39,7 +39,7 @@
   import type { ScopePassbandDiagnostics } from '../../lib/runtime/adapters/scope-passband-display';
   import type { ManagedScopeRegion } from '../../lib/runtime/adapters/scope-display-projection';
   import type { ScopeFrame, ScopeGeometry } from '../../lib/runtime/scope-frame';
-  import { projectScopeCoverage, type ScopeCoverageProjection } from '../../lib/runtime/scope-frame';
+  import { projectScopeCoverage, scopeHeldGeometry, type ScopeCoverageProjection } from '../../lib/runtime/scope-frame';
   import { scopeSlotKey } from '../../lib/runtime/adapters/scope-adapter';
   import {
     createScopeView, confirmedFollowLegView, panView, viewCenterHz, zoomView, scopeSubscription, scopeSubscriptionSurface,
@@ -193,7 +193,11 @@
   // R53: the sample plane (window, mode, coverage) clears when the trace is
   // not live; the geometry store itself keeps the last facts for the store's
   // own consumers.
-  let displayGeometry = $derived(scopeTraceLive ? frameGeometry : null);
+  // MOR-4490: the last frame's geometry stays painted while a grant's
+  // pixel-less placeholder waits for its first frame (no zoom hatch flash).
+  let lastPixelGeometry = $state.raw<ScopeGeometry | null>(null);
+  let paintGeometry = $derived(scopeHeldGeometry(frameGeometry, lastPixelGeometry));
+  let displayGeometry = $derived(scopeTraceLive ? paintGeometry : null);
   // MOR-2859: the managed TX snapshot is the only TX truth (invariant R9,
   // the same source as the global TX lamp) — never `state.ptt`. The lookup
   // is optional: mounts without the provider read as "TX not known".
@@ -945,7 +949,7 @@
       ? Math.min(100, Math.max(0, ((tuneHz - viewportStartFreq) / viewportSpanHz) * 100))
       : 50
   );
-  let spectrumGeometryKey = $derived(`${spectrumAuthority?.providerGeneration ?? 'x'}|${displayGeometry?.receiver ?? 'legacy'}|${startFreq}|${endFreq}|${frameGeometry?.width ?? 0}|${audioProjection?.zero ?? 'legacy'}|${audioProjection?.perHz ?? 0}`);
+  let spectrumGeometryKey = $derived(`${spectrumAuthority?.providerGeneration ?? 'x'}|${displayGeometry?.receiver ?? 'legacy'}|${startFreq}|${endFreq}|${paintGeometry?.width ?? 0}|${audioProjection?.zero ?? 'legacy'}|${audioProjection?.perHz ?? 0}`);
   // MOR-4270: the coverage projection hatches the requested view's
   // uncovered columns with the typed reason — never stretched pixels.
   // MOR-4451: the hatch reads the native width above (the reviewer's P2:
@@ -1160,7 +1164,7 @@
     ...spectrumColorRolesToOptions(resolvedColorRoles),
     spanHz: viewportSpanHz,
     sampleSpanHz: spanHz,
-    coverage: audioFft ? undefined : frameGeometry?.coverage,
+    coverage: audioFft ? undefined : paintGeometry?.coverage,
     // MOR-4451: the ONE hatch decision — the same projectScopeCoverage
     // ranges the DOM overlay renders (empty when the native is as wide as
     // the view, whatever the offset). The renderer paints only these; its
@@ -1694,7 +1698,13 @@
           settledGrant = { ...settledGrant, [`${grant.sourceId}:${grant.receiver}`]: { epoch, seq: grant.requestSeq } };
         }
       });
-      const stopGeometry = scopeStream.geometry.subscribe((geometry) => { frameGeometry = geometry; });
+      const stopGeometry = scopeStream.geometry.subscribe((geometry) => {
+        frameGeometry = geometry;
+        // Only a fresh frame's geometry is a painted sample plane; a fresh
+        // pixel-less/out-of-range one retires it (a real lack of data).
+        if (geometry?.hasPixels && geometry.freshness === 'fresh') lastPixelGeometry = geometry;
+        else if (geometry === null || scopeHeldGeometry(geometry, lastPixelGeometry) === geometry) lastPixelGeometry = null;
+      });
       cachedWhileOff = false;
       const acceptFrame = (frame: ScopeFrame, slotKey: string) => {
         const geometry = frameGeometry;
@@ -1886,7 +1896,7 @@
         </div>
       {/if}
       {#if !audioFft}<BandPlanOverlay startFreq={viewportStartFreq} endFreq={viewportEndFreq} visible={showBandPlan} {hiddenLayers} region={bandPlanRegion} />{/if}
-      {#if scopeTraceLive && scopeContentState !== 'out-of-range' && frameGeometry?.hasPixels !== false}
+      {#if scopeTraceLive && scopeContentState !== 'out-of-range' && paintGeometry?.hasPixels !== false}
       <SpectrumCanvas data={null} options={spectrumOptions} spanHz={viewportSpanHz} absoluteLabels={explicitView !== null || isRadioOwnedWindow} {enableAvg} {enablePeakHold} trace={traceStatus === 'recording' ? trace : null} surface={spectrumSurface} onRegisterPush={(fn) => {
         spectrumPush = fn;
         const geometry = frameGeometry;
