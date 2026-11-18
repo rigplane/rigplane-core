@@ -541,7 +541,8 @@ export class SpectrumRenderer {
       const i = reversed ? step : peaks.length - 1 - step;
       const x = binCentreColumn(i, peaks.length, width, scale, shiftPx,
         window?.start ?? 0, window ? window.end - window.start : 1);
-      if (x < 0 || x >= width || !covered[Math.floor(x)]) continue;
+      const column = Math.round(x);
+      if (column < 0 || column >= width || !covered[column]) continue;
       const y = height * (1 - spectrumDisplayAmplitude(peaks[i], options.refLevel));
       if (lineOpen) area.lineTo(x, y); else { area.moveTo(x, y); lineOpen = true; }
     }

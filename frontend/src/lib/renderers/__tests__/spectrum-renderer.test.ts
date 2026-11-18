@@ -490,7 +490,9 @@ describe('bin-centre rule shared by trace and peak hold (MOR-4496)', () => {
     const base = opts({ spanHz: 100, centerHz: 50, scopeMode: 0, showRfOverlays: false, ...o });
     // Trace measured on its own, with peak hold off.
     const first = createMockCtx();
-    new SpectrumRenderer().render(first.ctx, carrier, width, H, base);
+    const traceOnly = new SpectrumRenderer();
+    traceOnly.setPeakHoldEnabled(false);
+    traceOnly.render(first.ctx, carrier, width, H, base);
     // Trace x = amplitude-weighted centre of the carrier's tent (column x is drawn at x).
     const columns = new Map<number, number>();
     for (const [x, y] of first.log.lineTo) if (x !== width && y < H) columns.set(x, 80 * (1 - y / H) ** 2);
@@ -516,6 +518,21 @@ describe('bin-centre rule shared by trace and peak hold (MOR-4496)', () => {
   carrierCase('zoomed in 2x', 100, 100, 60, 70.5, { sampleSpanHz: 200 });
   carrierCase('zoomed in 2x over a stretched plane', 50, 100, 25, 51.5, { sampleSpanHz: 200 });
   carrierCase('panorama shift', 100, 100, 40, 30, { panoramaShiftHz: 10 });
+  // Carrier in bin 0 of a plane narrower than the view: its centre (24.75) is
+  // inside the plane although floor(24.75) is an uncovered column; the held
+  // peak must survive (the truncated trace has no symmetric tent to measure).
+  it('keeps a held carrier at the left plane boundary', () => {
+    const carrier = new Uint8Array(100); carrier[0] = 80;
+    const base = opts({ spanHz: 200, centerHz: 100, sampleSpanHz: 100, scopeMode: 0, showRfOverlays: false });
+    const renderer = new SpectrumRenderer();
+    renderer.setPeakHoldEnabled(true);
+    renderer.render(createMockCtx().ctx, carrier, 100, H, base);
+    const second = createMockCtx();
+    renderer.render(second.ctx, new Uint8Array(100), 100, H, base);
+    const peaks = second.log.lineTo.filter(([x, y]) => x !== 100 && y === 0);
+    expect(peaks).toHaveLength(1);
+    expect(peaks[0][0]).toBeCloseTo(24.75, 6);
+  });
   carrierCase('reversed sample window', 100, 100, 40, 59, { sampleWindow: { start: 1, end: 0 } });
 });
 
