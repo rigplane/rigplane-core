@@ -269,7 +269,16 @@ for (const [index, model] of ['IC-705', 'IC-7300'].entries()) {
         await expect(marker).toBeVisible();
       }
       const radioState = async () => (await (await page.request.get(`http://127.0.0.1:${port}/api/v1/state`)).json()) as { main?: { freqHz?: number } };
-      await expect.poll(async () => (await radioState()).main?.freqHz, { timeout: 10_000 }).not.toBe(14_250_000);
+      // Each click maps against the viewport visible at click time, and the
+      // view is still gliding after the earlier clicks, so the third target
+      // depends on timing and can be 14.250 itself (measured: 14.246 on an
+      // idle host, 14.252 on a slower one). "The frequency is no longer
+      // 14.250" is therefore not proof that the clicks tuned. The proof is
+      // the three retunes themselves and the radio sitting on the last one.
+      const clickTunes = () => wsCommands.filter(command => command.name === 'set_freq')
+        .map(command => (command.params as { freq?: number }).freq ?? 0);
+      await expect.poll(() => clickTunes().length, { timeout: 10_000 }).toBe(3);
+      await expect.poll(radioState, { timeout: 10_000 }).toMatchObject({ main: { freqHz: clickTunes().at(-1) } });
       const sentBefore = state.sent;
       const commandsBeforeArrows = wsCommands.length;
       // Realistic key-repeat pacing (the MOR-4387 repro's cadence): the
