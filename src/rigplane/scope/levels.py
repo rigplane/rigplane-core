@@ -140,8 +140,27 @@ class AdaptiveLevelMapper:
             return db
         return db[lo : hi + 1]
 
+    def is_silent(self, db: "np.ndarray") -> bool:
+        """Whether ``db`` carries no signal information (digital silence).
+
+        A frame is silent when even its tracked ceiling percentile lies below
+        ``abs_floor_min_db``, the lowest level the window can ever represent
+        (-160 dB by default). Real 16-bit audio never gets there: its
+        quantisation noise sits near -130 dB, while exact-zero input is
+        clamped to about -266 dB by the FFT front ends. Such a frame says
+        nothing about the band, so it must not move the tracked window.
+        """
+        estimation_db = self._estimation_slice(db)
+        obs_ceil = float(self._np.percentile(estimation_db, self._ceil_pct))
+        return obs_ceil < self._abs_floor_min_db
+
     def window(self, db: "np.ndarray") -> tuple[float, float]:
         """Adapt the tracked window to ``db`` and return the display window.
+
+        Digital silence (:meth:`is_silent`) leaves the tracked state
+        untouched: the previous window is returned, or the lowest window
+        when nothing has been tracked yet. The first real frame after the
+        gap is then mapped exactly as if the gap had not happened.
 
         Args:
             db: The per-bin dB array for this frame.
@@ -155,7 +174,9 @@ class AdaptiveLevelMapper:
         obs_floor = float(np.percentile(estimation_db, self._floor_pct))
         obs_ceil = float(np.percentile(estimation_db, self._ceil_pct))
 
-        if self._floor_ema is None or self._ceil_ema is None:
+        if obs_ceil < self._abs_floor_min_db:
+            pass  # No information: keep (or leave unseeded) the tracked state.
+        elif self._floor_ema is None or self._ceil_ema is None:
             # Seed from the first frame so startup is immediately sane.
             self._floor_ema = obs_floor
             self._ceil_ema = obs_ceil
@@ -168,9 +189,13 @@ class AdaptiveLevelMapper:
             )
             self._ceil_ema += (obs_ceil - self._ceil_ema) * ceil_alpha
 
-        # Apply display margins.
-        db_floor = self._floor_ema - self._floor_margin_db
-        db_ceil = self._ceil_ema + self._ceil_margin_db
+        # Apply display margins (lowest window if nothing is tracked yet).
+        if self._floor_ema is None or self._ceil_ema is None:
+            db_floor = self._abs_floor_min_db
+            db_ceil = self._abs_floor_min_db
+        else:
+            db_floor = self._floor_ema - self._floor_margin_db
+            db_ceil = self._ceil_ema + self._ceil_margin_db
 
         # Absolute sanity clamps.
         db_floor = min(max(db_floor, self._abs_floor_min_db), self._abs_floor_max_db)
