@@ -254,6 +254,7 @@ new AsyncFunction('github', 'context', 'core', script)(github, context, core)
                 "full.yml",
                 [
                     "[self-hosted, Linux, X64, build]",
+                    "[self-hosted, Linux, X64, build]",
                     "[self-hosted, Linux, ARM64, build]",
                 ],
             ),
