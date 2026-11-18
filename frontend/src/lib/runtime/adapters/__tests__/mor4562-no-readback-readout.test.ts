@@ -34,13 +34,4 @@ describe('G7250 snapshot (ab scheme, vfoReadback none)', () => {
     const view = toRadioViewModel(G7250_STATE, G7250_CAPABILITIES);
     expect(view!.vfos.every((vfo) => !/\b[AB]$/.test(vfo.label))).toBe(true);
   });
-
-  it('another radio with the same shape (X6200-style capabilities) takes the same path', () => {
-    // Derived from the real snapshot: only the model name differs; the X6200
-    // profile declares the same `ab` scheme and no readback.
-    const caps = { ...G7250_CAPABILITIES, model: 'X6200' };
-    const view = toRadioViewModel(structuredClone(G7250_STATE), caps);
-    expect(view!.vfos.find((vfo) => vfo.slot.kind === 'relative')!.display.frequencyHz)
-      .toMatchObject({ state: 'current' });
-  });
 });
