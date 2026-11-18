@@ -24,9 +24,9 @@ describe('G7250 snapshot (ab scheme, vfoReadback none)', () => {
       && vfo.slot.role === 'selected');
     expect(main).toBeDefined();
     expect(main!.label).toBe('Selected VFO');
-    expect(main!.display.frequencyHz).toMatchObject({ state: 'current', value: G7250_STATE.main!.freqHz });
-    expect(main!.display.mode).toMatchObject({ state: 'current', value: G7250_STATE.main!.mode });
-    expect(main!.display.filter).toMatchObject({ state: 'current' });
+    expect(main!.display!.frequencyHz).toMatchObject({ state: 'current', value: G7250_STATE.main!.freqHz });
+    expect(main!.display!.mode).toMatchObject({ state: 'current', value: G7250_STATE.main!.mode });
+    expect(main!.display!.filter).toMatchObject({ state: 'current' });
     expect(view!.vfos.some((vfo) => vfo.slot.kind === 'slotted')).toBe(false);
   });
 

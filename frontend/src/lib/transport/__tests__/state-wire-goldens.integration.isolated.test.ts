@@ -168,8 +168,8 @@ describe('state wire goldens → real client chain', () => {
     const selected = viewModel!.vfos.filter((vfo) => vfo.slot.kind === 'relative' && vfo.slot.role === 'selected');
     expect(selected).toHaveLength(1);
     expect(selected[0].label).toBe('Selected VFO');
-    expect(selected[0].display.frequencyHz.state).toBe('current');
-    expect(selected[0].display.mode.state).toBe('current');
+    expect(selected[0].display!.frequencyHz.state).toBe('current');
+    expect(selected[0].display!.mode.state).toBe('current');
     // The producers' allObserved set declares no filter_num for these profiles;
     // the real G7250 capture (mor4562-no-readback-readout.test.ts) asserts the filter.
     expect(viewModel!.vfos.some((vfo) => vfo.slot.kind === 'slotted' || vfo.slot.kind === 'unknown')).toBe(false);
