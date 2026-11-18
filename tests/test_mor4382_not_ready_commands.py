@@ -124,8 +124,16 @@ async def _silent_lan_radio(
     model: str,
     *,
     silence_s: float = _SILENT_AFTER_OPEN_S,
+    hold: bool = False,
 ) -> AsyncIterator[tuple[IcomRadio, object]]:
-    """A real ``IcomRadio`` connected to a LAN simulator silent since open."""
+    """A real ``IcomRadio`` connected to a LAN simulator silent since open.
+
+    ``hold=True`` keeps the radio silent until the test calls ``sim.civ_standby(False)``
+    instead of for a fixed ``silence_s`` window, so a test that needs "answers later"
+    releases it when it is ready and never waits a window out.
+    """
+    if hold:
+        silence_s = 0.0
     sim = (
         ic7610_lan_fake(
             single_owner=True,
@@ -140,6 +148,8 @@ async def _silent_lan_radio(
         )
     )
     await sim.start()
+    if hold:
+        sim.civ_standby(True)
     radio = IcomRadio(
         host="127.0.0.1",
         port=sim.control_port,
@@ -229,7 +239,7 @@ class TestWebCommandOverLanSimulator:
     async def test_set_freq_while_silent_fails_retriable_then_recovers(
         self, model: str
     ) -> None:
-        async with _silent_lan_radio(model, silence_s=20.0) as (radio, _sim):
+        async with _silent_lan_radio(model, hold=True) as (radio, sim):
             web = WebServer(radio, WebConfig(host="127.0.0.1", port=0, discovery=False))
             events: list[CommandLifecycleEvent] = []
             unsubscribe = web.command_service.subscribe_lifecycle(events.append)
@@ -257,6 +267,7 @@ class TestWebCommandOverLanSimulator:
                 ), failure
                 # The radio answers: the same command through the same API
                 # now completes on the radio.
+                sim.civ_standby(False)
                 await await_until(
                     lambda: radio.radio_ready,
                     timeout=30.0,
@@ -346,7 +357,11 @@ class TestRigctldMirrorReadiness:
                         f"{live_freq}\n".encode()
                     )
                     await radio.disconnect()
-                    sim.civ_silent_after_open_s = 20.0
+                    # Hold the radio silent until the assertions are done, then release it
+                    # (a fixed 20 s window made this test wait the whole window out).
+                    # the login timer armed at open must not release the hold early
+                    sim.civ_silent_after_open_s = 0.0
+                    sim.civ_standby(True)
                     await radio.connect()
                     assert radio.connected and not radio.radio_ready
                     mirror = (
@@ -358,6 +373,7 @@ class TestRigctldMirrorReadiness:
                     reply = await _exchange(writer, reader, command)
                     assert reply == b"RPRT -5\n", reply
                     assert await _exchange(writer, reader, b"v\n") == b"RPRT -5\n"
+                    sim.civ_standby(False)
                     await await_until(
                         lambda: radio.radio_ready,
                         timeout=30.0,
@@ -386,7 +402,7 @@ class TestRigctldMirrorReadiness:
     async def test_mirror_reads_during_silence(
         self, model: str, command: bytes
     ) -> None:
-        async with _silent_lan_radio(model, silence_s=20.0) as (radio, _sim):
+        async with _silent_lan_radio(model, hold=True) as (radio, _sim):
             server = RigctldServer(
                 radio,
                 RigctldConfig(host="127.0.0.1", port=0, cache_ttl=0, command_timeout=2),
@@ -414,8 +430,9 @@ class TestRigctldMirrorReadiness:
     async def test_unobserved_sub_is_unavailable(
         self, command: bytes, ready: bool
     ) -> None:
-        async with _silent_lan_radio("IC-7610", silence_s=20.0) as (radio, _sim):
+        async with _silent_lan_radio("IC-7610", hold=True) as (radio, sim):
             if ready:
+                sim.civ_standby(False)
                 await await_until(
                     lambda: radio.radio_ready,
                     timeout=30.0,
