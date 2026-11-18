@@ -2,6 +2,13 @@
  * Pure logic extracted from SpectrumPanel.svelte for testability.
  */
 
+// --- Axis helpers ---
+/** MHz decimals that keep neighbouring axis ticks distinct (1 kHz at >= 1 kHz spacing). */
+export function freqTickDecimals(tickSpacingHz: number): number {
+  if (tickSpacingHz >= 1000) return 3;
+  return Math.min(6, 3 + Math.ceil(Math.log10(1000 / Math.max(tickSpacingHz, 1))));
+}
+
 // --- Drag helpers ---
 export function getDragInterval(speed: number): number {
   if (speed > 600) return 700;

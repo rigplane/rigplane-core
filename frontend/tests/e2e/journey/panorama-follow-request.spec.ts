@@ -448,8 +448,8 @@ async function chooseSpan(page: Page, h: Harness, target: number): Promise<void>
 async function expectFollowWindow(page: Page, width: number): Promise<void> {
   await expect.poll(async () => {
     const axis = await page.locator('.freq-axis .tick').allInnerTexts();
-    return [axis[0], axis.at(-1)];
-  }).toEqual([`-${width / 2000}k`, `+${width / 2000}k`]);
+    return Math.round((Number(axis.at(-1)) - Number(axis[0])) * 1e6);
+  }).toBe(width);
   await expect(page.getByTestId('scope-span-value').first()).toHaveText(`±${width / 2000}k`);
 }
 

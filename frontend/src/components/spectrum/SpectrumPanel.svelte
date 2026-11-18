@@ -63,6 +63,7 @@
     getPassbandGeometry,
   } from './passband-geometry';
   import {
+    freqTickDecimals,
     isRadioOwnedWindowScope as isRadioOwnedWindowScopeFn,
     isSpanDisabledScope,
     nativeWidthFromSpanChoice,
@@ -1212,7 +1213,7 @@
       }))
     : viewportSpanHz > 0 ? Array.from({ length: 5 }, (_, index) => ({
         position: index * 25,
-        label: ((viewportStartFreq + viewportSpanHz * index / 4) / 1e6).toFixed(3),
+        label: ((viewportStartFreq + viewportSpanHz * index / 4) / 1e6).toFixed(freqTickDecimals(viewportSpanHz / 4)),
       })) : []);
 
   // Passband overlay position derived from the same geometry as the spectrum renderer.

@@ -4,6 +4,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import {
+  freqTickDecimals,
   getDragInterval,
   isRadioOwnedWindowScope,
   freqFromPixel,
@@ -11,6 +12,18 @@ import {
 } from '../spectrum-logic';
 import { isSpanApplicable } from '../spectrum-toolbar-logic';
 import fixture from '../../../../../contracts/scope-mode-families.json';
+
+describe('freqTickDecimals', () => {
+  it('keeps kHz resolution for wide windows', () => {
+    expect(freqTickDecimals(25_000)).toBe(3);
+    expect(freqTickDecimals(1000)).toBe(3);
+  });
+  it('adds decimals so sub-kHz tick spacing stays distinct', () => {
+    expect(freqTickDecimals(195.3125)).toBe(4);
+    expect(freqTickDecimals(20)).toBe(5);
+    expect(freqTickDecimals(0.5)).toBe(6);
+  });
+});
 
 describe('getDragInterval — adaptive rate limiting', () => {
   it('slow (<= 200 px/s) → 200ms', () => {
