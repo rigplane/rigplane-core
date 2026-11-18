@@ -265,6 +265,11 @@ afterEach(() => {
   expect(h.authoritySubscribers.size).toBe(0);
 });
 
+// MOR-4214: the row below mounts the whole semantic surface twice (fresh, then
+// stale). Healthy ~0.4 s; 5.6 s on the oversubscribed CI runner against the 5 s
+// default. A machine-speed ceiling, not a target.
+const FULL_SURFACE_MOUNT_TIMEOUT_MS = 30_000;
+
 describe('MOR-2425/R41 — freshness is invisible in the semantic tree', () => {
   /** Without this the comparison below would be vacuous for a missing surface. */
   function assertPopulated(root: HTMLElement, freshness: string): void {
@@ -324,5 +329,5 @@ describe('MOR-2425/R41 — freshness is invisible in the semantic tree', () => {
       // feedback-integrated (spread + scoping class serialize after step).
       expect(row.live).toMatch(/^<input type="range" [^>]*min="-1200" max="1200" step="50"[^>]*>$/);
     }
-  });
+  }, FULL_SURFACE_MOUNT_TIMEOUT_MS);
 });

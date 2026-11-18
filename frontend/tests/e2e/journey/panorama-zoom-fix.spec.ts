@@ -94,13 +94,21 @@ test('IC-7610: FIX marker, axis and passband use the displayed window after a CE
       (receipt) => receipt.sub === 0x14).at(-1)?.data[1]).toBe(1);
     const ticks = page.locator('.freq-axis .tick');
     await expect(ticks).toHaveCount(5);
-    // The scope-mode reading reaches the panel asynchronously; FIX display
-    // uses absolute tick labels, so wait for them before reading the window.
+    // Both edge labels in ONE read: two separate reads can straddle a
+    // repaint and pair the old window's start with the new window's end.
+    const windowOf = () => ticks.evaluateAll((elements) =>
+      [Number(elements[0]?.textContent), Number(elements.at(-1)?.textContent)]);
+    // FIX presentation (absolute tick labels) switches on with the scope-mode
+    // reading, one or more repaints BEFORE the view drops the CENTER zoom's
+    // leftover crop: for that moment the axis reads the old ±25k crop with
+    // absolute labels. So "absolute labels" alone is not "the fixed window is
+    // displayed". With no crop requested in FIX the displayed window is the
+    // granted frame window itself — wait for exactly that.
     await expect.poll(async () => (await ticks.first().textContent()) ?? '').toMatch(/^\d{2}\.\d{3}$/);
-    const windowOf = async () => {
-      const [first, last] = [(await ticks.first().textContent())!, (await ticks.last().textContent())!];
-      return [Number(first), Number(last)];
-    };
+    await expect.poll(async () => {
+      const granted = frames.at(-1)!.view.map((hz) => Number((hz / 1e6).toFixed(3)));
+      return (await windowOf()).join('..') === granted.join('..');
+    }).toBe(true);
     const [start, end] = await windowOf();
     expect(end).toBeGreaterThan(start);
     // The in-FIX DOM marker/passband are tuple-bound (the MOR-4345 evidence
