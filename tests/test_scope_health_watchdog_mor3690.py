@@ -819,3 +819,23 @@ async def test_scope_hidden_reaches_the_public_state_payload(
     srv._publish_scope_hidden(False, now=virtual_clock())  # noqa: SLF001
     health = srv.build_public_state()["radioHealth"]
     assert RadioHealthPublic.model_validate(health).scopeHidden is False
+
+
+@pytest.mark.timeout(30)
+async def test_unchanged_hidden_verdict_is_republished_after_provider_invalidation(
+    virtual_clock: VirtualClock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """MOR-4014: a reconnect clears the shared store; the menu is still open,
+    so the monitor's next (unchanged) hidden verdict must reach the fresh
+    generation instead of being deduplicated against the cleared store."""
+    srv, _radio, _queued = await _virtual_scope_server(monkeypatch, virtual_clock)
+    srv._publish_scope_hidden(True, now=virtual_clock())  # noqa: SLF001
+    assert _scope_hidden_verdict(srv) is True
+
+    srv.command_state_store.begin_provider_generation()
+    assert _scope_hidden_verdict(srv) is None  # the new generation has no verdict
+
+    srv._publish_scope_hidden(True, now=virtual_clock())  # noqa: SLF001
+    assert _scope_hidden_verdict(srv) is True
+    assert srv.build_public_state()["radioHealth"]["scopeHidden"] is True

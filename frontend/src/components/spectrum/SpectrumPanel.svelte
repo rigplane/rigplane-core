@@ -212,11 +212,12 @@
   let scopeTxKnown = $derived(
     txSnapshot !== null && (txSnapshot.radioTx === 'on' || txSnapshot.txRisk === 'confirmed-on'),
   );
-  // MOR-4014: the radio sends blank scope frames while the operator is on a
-  // front-panel menu (server fact `radioHealth.scopeHidden`, MOR-3690). Say
-  // so instead of the generic disconnect overlay; the audio-FFT scope is not
-  // the radio's display and is never judged hidden.
-  let scopeHiddenOnRadio = $derived(!audioFft && runtime.radioHealth?.scopeHidden === true);
+  // MOR-4014: the server judges the radio's scope screen hidden while the
+  // operator is on a front-panel menu (`radioHealth.scopeHidden`, MOR-3690).
+  // Say so instead of the generic disconnect overlay. Only the native radio
+  // scope is the radio's display: the menu says nothing about an audio-FFT
+  // or IQ-FFT stream.
+  let scopeHiddenOnRadio = $derived(!audioFft && !sdrSource && runtime.radioHealth?.scopeHidden === true);
   let scopeLease: ReturnType<typeof runtime.acquireHardwareScope> | null = null;
   let brtLevel = $state(0);
   let colorScheme = $state<ColorSchemeName>('classic');

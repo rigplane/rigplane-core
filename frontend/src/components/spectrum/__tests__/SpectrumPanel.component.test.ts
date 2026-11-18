@@ -2521,6 +2521,17 @@ describe('SpectrumPanel scope-hidden-on-the-radio note (MOR-4014)', () => {
     }
   });
 
+  it('does not show the radio-menu note for an IQ-FFT or audio-FFT source', () => {
+    for (const scopeSource of ['sdr', 'audio_fft']) {
+      runtimeHarness.state.currentCaps = Object.freeze({ source: 'test-capabilities', scopeSource });
+      runtimeHarness.state.currentRadioHealth = health(true);
+      runtimeHarness.state.mockScopeConnected = false;
+      const target = mountPanel();
+
+      expect(target.querySelector('[data-testid="scope-hidden-overlay"]')).toBeNull();
+    }
+  });
+
   it('keeps the transmitting overlay while TX is known', () => {
     txHarness.emitServerSnapshot({ observedPtt: 'on' });
     runtimeHarness.state.currentRadioHealth = health(true);
