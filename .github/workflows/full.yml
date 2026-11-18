@@ -82,7 +82,9 @@ jobs:
     # RC dispatch and candidate tags run slow-marked tests (`-m "not benchmark"`);
     # main@3cb86021 rc dispatches hit the 25-minute job cap at ~25:17. Scheduled
     # and non-rc dispatches keep the shorter budget.
-    timeout-minutes: ${{ (inputs.rc || github.ref_type == 'tag') && 60 || 25 }}
+    # MOR-4544: 25 min was shorter than the suite itself (22-29 min on a loaded host), so
+    # every scheduled safety-net run was cancelled before it finished.
+    timeout-minutes: ${{ (inputs.rc || github.ref_type == 'tag') && 60 || 40 }}
     strategy:
       matrix:
         python-version: ["3.11", "3.12", "3.13"]
@@ -132,21 +134,6 @@ jobs:
         run: |
           cd frontend
           npm ci
-
-      - name: i18n catalog lint
-        run: |
-          cd frontend
-          npm run i18n:check
-
-      - name: Frontend type-check
-        run: |
-          cd frontend
-          npm run check
-
-      - name: Frontend tests
-        run: |
-          cd frontend
-          npx vitest run
 
       - name: Build frontend
         run: |
@@ -248,6 +235,44 @@ jobs:
           label: mypy
           message: "0 errors"
           color: blue
+
+  frontend:
+    # MOR-4544: the frontend checks do not depend on the Python version. They ran inside
+    # every `test` matrix leg (about 5 min each on a fast host, 11 on a slow one), so the
+    # wall time of the run paid for them. One parallel job runs them once.
+    needs: fresh
+    if: needs.fresh.outputs.run == 'true'
+    runs-on: [self-hosted, Linux, X64, build]
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        run: |
+          cd frontend
+          npm ci
+
+      - name: i18n catalog lint
+        run: |
+          cd frontend
+          npm run i18n:check
+
+      - name: Frontend type-check
+        run: |
+          cd frontend
+          npm run check
+
+      - name: Frontend unit tests
+        run: |
+          cd frontend
+          npx vitest run
 
   capture-harness:
     needs: fresh
