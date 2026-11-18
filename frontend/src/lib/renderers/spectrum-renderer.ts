@@ -147,6 +147,28 @@ function panoramaShiftPixels(options: SpectrumOptions, width: number): number {
   return (panoramaShiftHz / (options.sampleSpanHz || spanHz)) * width;
 }
 
+// One rule for where a bin sits on screen (MOR-4496). Column x covers
+// [x, x+1) and is drawn at x, so its centre is x + 0.5 in pixel space; bin i
+// of n covers [i/n, (i+1)/n) of the source, so its centre is (i + 0.5) / n.
+// The trace transforms the pixel CENTRE through zoom, shift and sample window
+// into a source fraction; peak hold applies the exact inverse.
+function columnToSourceFraction(
+  x: number, width: number, viewScale: number, shiftPx: number,
+  start: number, range: number,
+): number {
+  const p = width / 2 + (x + 0.5 - width / 2) * viewScale + shiftPx;
+  return start + p / width * range;
+}
+
+// Drawn x (column index convention) of the centre of bin i of n.
+function binCentreColumn(
+  i: number, n: number, width: number, viewScale: number, shiftPx: number,
+  start: number, range: number,
+): number {
+  const p = ((i + 0.5) / n - start) / range * width;
+  return width / 2 + (p - shiftPx - width / 2) / viewScale - 0.5;
+}
+
 // Map data to canvas y-coordinates for the shifted viewport (MOR-2464):
 // every column samples the bin-space position of its source-column centre,
 // (p + 0.5) / width mapped through the sample window into bins, minus half a
@@ -173,9 +195,9 @@ function mapShiftedPoints(
   for (let x = 0; x < width; x++) {
     const hz = centerHz - spanHz / 2 + x / width * spanHz;
     if (coverage && (hz < coverage.startHz || hz >= coverage.endHz)) continue;
-    const p = width / 2 + (x - width / 2) * viewScale + shiftPx;
+    const c = columnToSourceFraction(x, width, viewScale, shiftPx, start, range);
+    const p = width / 2 + (x + 0.5 - width / 2) * viewScale + shiftPx - 0.5;
     if (p < 0 || p > width - 1) continue;
-    const c = start + (p + 0.5) / width * range;
     let sample: number;
     if (c < 0 || c > 1) sample = 0;
     else {
@@ -517,8 +539,8 @@ export class SpectrumRenderer {
     const scale = options.spanHz > 0 && options.sampleSpanHz && options.sampleSpanHz > 0 ? options.spanHz / options.sampleSpanHz : 1;
     for (let step = 0; step < peaks.length; step++) {
       const i = reversed ? step : peaks.length - 1 - step;
-      const fraction = window ? (i / peaks.length - window.start) / (window.end - window.start) : i / peaks.length;
-      const x = width / 2 + (fraction * width - width / 2 - shiftPx) / scale;
+      const x = binCentreColumn(i, peaks.length, width, scale, shiftPx,
+        window?.start ?? 0, window ? window.end - window.start : 1);
       if (x < 0 || x >= width || !covered[Math.floor(x)]) continue;
       const y = height * (1 - spectrumDisplayAmplitude(peaks[i], options.refLevel));
       if (lineOpen) area.lineTo(x, y); else { area.moveTo(x, y); lineOpen = true; }

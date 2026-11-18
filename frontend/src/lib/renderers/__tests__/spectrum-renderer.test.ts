@@ -475,6 +475,47 @@ describe('panorama viewport shift (MOR-2464)', () => {
   });
 });
 
+// ── One bin-centre rule for trace, zoom and peak hold (MOR-4496) ─────────────
+//
+// A single-bin carrier must be drawn at the same x by the trace (amplitude
+// centroid of its interpolated tent) and by the held peak, and that x is the
+// bin centre (i + 0.5) / n pushed through zoom, shift and sample window.
+describe('bin-centre rule shared by trace and peak hold (MOR-4496)', () => {
+  const H = 100;
+  const carrierCase = (
+    name: string, n: number, width: number, bin: number, expectedX: number,
+    o: Partial<SpectrumOptions> = {},
+  ) => it(name, () => {
+    const carrier = new Uint8Array(n); carrier[bin] = 80;
+    const renderer = new SpectrumRenderer();
+    renderer.setPeakHoldEnabled(true);
+    const base = opts({ spanHz: 100, centerHz: 50, scopeMode: 0, showRfOverlays: false, ...o });
+    const first = createMockCtx();
+    renderer.render(first.ctx, carrier, width, H, base);
+    // Trace x = amplitude-weighted centre of the carrier's tent (column x is drawn at x).
+    const columns = new Map<number, number>();
+    for (const [x, y] of first.log.lineTo) if (x !== width && y < H) columns.set(x, 80 * (1 - y / H) ** 2);
+    let weight = 0, moment = 0;
+    for (const [x, a] of columns) { weight += a; moment += a * x; }
+    const traceX = moment / weight;
+    // Second frame is silent: the held carrier peak is the only point at full height.
+    const second = createMockCtx();
+    renderer.render(second.ctx, new Uint8Array(n), width, H, base);
+    const peaks = second.log.lineTo.filter(([x, y]) => x !== width && y === 0);
+    expect(peaks).toHaveLength(1);
+    expect(traceX).toBeCloseTo(expectedX, 6);
+    expect(peaks[0][0]).toBeCloseTo(expectedX, 6);
+  });
+
+  carrierCase('resting view, bins == columns', 100, 100, 40, 40);
+  carrierCase('stretched 475 bins over 1900 columns (bin 137 centres at 549.5)', 475, 1900, 137, 549.5,
+    { spanHz: 1900, centerHz: 950 });
+  carrierCase('zoomed in 2x', 100, 100, 60, 70.5, { sampleSpanHz: 200 });
+  carrierCase('zoomed in 2x over a stretched plane', 50, 100, 25, 51.5, { sampleSpanHz: 200 });
+  carrierCase('panorama shift', 100, 100, 40, 30, { panoramaShiftHz: 10 });
+  carrierCase('reversed sample window', 100, 100, 40, 59, { sampleWindow: { start: 1, end: 0 } });
+});
+
 // ── Source-geometry reset (MOR-2464) ─────────────────────────────────────────
 //
 // Averaging history and peak hold reset when the SOURCE window changes
