@@ -2522,8 +2522,10 @@ describe('SpectrumPanel scope-hidden-on-the-radio note (MOR-4014)', () => {
   });
 
   it('does not show the radio-menu note for an IQ-FFT or audio-FFT source', () => {
-    for (const scopeSource of ['sdr', 'audio_fft']) {
-      runtimeHarness.state.currentCaps = Object.freeze({ source: 'test-capabilities', scopeSource });
+    for (const [scopeSource, sourceId] of [['sdr', 'iq_fft'], ['audio_fft', 'audio_fft']] as const) {
+      runtimeHarness.state.currentCaps = validateCapabilities({
+        ...IC7300_CAPABILITIES, scopeSource, scopeSources: [sourceId], scopeDefaultSourceId: sourceId,
+      });
       runtimeHarness.state.currentRadioHealth = health(true);
       runtimeHarness.state.mockScopeConnected = false;
       const target = mountPanel();

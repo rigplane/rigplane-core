@@ -252,9 +252,13 @@ describe('ws-client → real radio store gate (integration)', () => {
 
     sendStateUpdate(instances[0], fullEnvelope(makeState({ revision: 1, radioHealth: health(true) })));
     expect(connection.getRadioHealth()?.scopeHidden).toBe(true);
+    // The runtime facade the panel reads is the same real store fact.
+    const { runtime } = await import('../../runtime/frontend-runtime');
+    expect(runtime.radioHealth?.scopeHidden).toBe(true);
 
     sendStateUpdate(instances[0], fullEnvelope(makeState({ revision: 2, radioHealth: health(false) })));
     expect(connection.getRadioHealth()?.scopeHidden).toBe(false);
+    expect(runtime.radioHealth?.scopeHidden).toBe(false);
 
     sendStateUpdate(instances[0], fullEnvelope(makeState({ revision: 3, radioHealth: health(true) })));
     sendStateUpdate(instances[0], fullEnvelope(makeState({ revision: 4, radioHealth: health() })));
