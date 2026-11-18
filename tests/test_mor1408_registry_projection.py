@@ -15,7 +15,7 @@ from rigplane.core.state_pipeline_contracts import (
 )
 from rigplane.core.state_store import StateStore
 from rigplane.web.runtime_helpers import build_public_state_payload_from_snapshot
-from rigplane.web.state_schema import StateUpdateEnvelope
+from rigplane.web.state_schema import RadioHealthPublic, StateUpdateEnvelope
 
 _CONTRACT_PATH = (
     Path(__file__).resolve().parents[1]
@@ -368,3 +368,35 @@ def test_connection_health_projection_prefers_store_and_has_pr_a_fallback() -> N
     }
     for path in canonical:
         DEFAULT_FIELD_REGISTRY.require(path)
+
+
+def test_scope_hidden_fact_reaches_the_public_radio_health_payload() -> None:
+    """MOR-4014: the scope-health fact (MOR-3690) is a typed public leaf."""
+    radio = SimpleNamespace(
+        connected=True, radio_ready=True, control_connected=True, conn_state=None
+    )
+    health = {
+        "serverReachable": True,
+        "radioLink": "connected",
+        "readiness": "ready",
+        "likelyCause": "unknown",
+        "sinceMs": 0,
+        "lastError": None,
+    }
+
+    def build(store: StateStore) -> dict[str, Any]:
+        return build_public_state_payload_from_snapshot(
+            store.snapshot(), radio=radio, receiver_count=1, radio_health=health
+        )
+
+    # Never judged: the leaf is not claimed (no false "visible").
+    assert build(StateStore())["radioHealth"].get("scopeHidden") is None
+
+    store = StateStore()
+    _apply(store, _health_path("scope_hidden"), True)
+    payload = build(store)
+    assert payload["radioHealth"]["scopeHidden"] is True
+    RadioHealthPublic.model_validate(payload["radioHealth"])
+
+    _apply(store, _health_path("scope_hidden"), False)
+    assert build(store)["radioHealth"]["scopeHidden"] is False

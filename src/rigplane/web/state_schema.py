@@ -367,6 +367,10 @@ class RadioHealthPublic(_Strict):
     ]
     sinceMs: int
     lastError: str | None = None
+    # MOR-4014: True while the radio sends blank scope frames because the
+    # operator is on a front-panel menu or another screen (MOR-3690). Absent
+    # until the scope-health monitor has judged; False once frames return.
+    scopeHidden: bool | None = None
 
 
 class RadioDetailPublic(_Strict):

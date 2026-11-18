@@ -136,6 +136,7 @@
   "core.overlay.poweredOff.powerOnButton": "電源 ON",
   "core.overlay.poweredOff.failedPowerOn": "電源を入れられませんでした: {detail}",
   "core.overlay.scopeDisconnected": "スコープが切断されました — 再接続中…",
+  "core.overlay.scopeHiddenOnRadio": "無線機のスコープがオフです — メニューまたは別の画面を表示中です",
   "core.overlay.scopeOutOfRange": "周波数が固定スコープの範囲外です（{start}–{end} MHz）",
   "core.overlay.scopeSwitchToCtr": "CTR に切り替え",
   "core.scope.webglRequired": "ウォーターフォールには WebGL が必要です",

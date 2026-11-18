@@ -1684,6 +1684,7 @@ def _global_specs() -> tuple[FieldSpec, ...]:
                         ("likely_cause", "str"),
                         ("since_ms", "int"),
                         ("last_error", "str"),
+                        ("scope_hidden", "bool"),
                     ),
                 ),
             )

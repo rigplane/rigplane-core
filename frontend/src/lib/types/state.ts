@@ -305,6 +305,7 @@ export interface RadioHealthPublic {
     | "unknown";
   sinceMs: number;
   lastError: string | null;
+  scopeHidden?: boolean | null;
 }
 /**
  * WebSocket client counts per channel.
