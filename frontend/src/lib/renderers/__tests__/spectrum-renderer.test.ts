@@ -487,17 +487,20 @@ describe('bin-centre rule shared by trace and peak hold (MOR-4496)', () => {
     o: Partial<SpectrumOptions> = {},
   ) => it(name, () => {
     const carrier = new Uint8Array(n); carrier[bin] = 80;
-    const renderer = new SpectrumRenderer();
-    renderer.setPeakHoldEnabled(true);
     const base = opts({ spanHz: 100, centerHz: 50, scopeMode: 0, showRfOverlays: false, ...o });
+    // Trace measured on its own, with peak hold off.
     const first = createMockCtx();
-    renderer.render(first.ctx, carrier, width, H, base);
+    new SpectrumRenderer().render(first.ctx, carrier, width, H, base);
     // Trace x = amplitude-weighted centre of the carrier's tent (column x is drawn at x).
     const columns = new Map<number, number>();
     for (const [x, y] of first.log.lineTo) if (x !== width && y < H) columns.set(x, 80 * (1 - y / H) ** 2);
     let weight = 0, moment = 0;
     for (const [x, a] of columns) { weight += a; moment += a * x; }
     const traceX = moment / weight;
+    expect(weight).toBeGreaterThan(0);
+    const renderer = new SpectrumRenderer();
+    renderer.setPeakHoldEnabled(true);
+    renderer.render(createMockCtx().ctx, carrier, width, H, base);
     // Second frame is silent: the held carrier peak is the only point at full height.
     const second = createMockCtx();
     renderer.render(second.ctx, new Uint8Array(n), width, H, base);
