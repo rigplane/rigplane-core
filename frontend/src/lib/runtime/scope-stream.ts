@@ -373,7 +373,7 @@ export class ScopeStream {
       this.lastPixelGeometry = geometry.hasPixels ? geometry : null;
       this.geometryKey = slotKey;
       const current = this.geometryValue;
-      if (!current || current.source !== geometry.source || current.sourceId !== geometry.sourceId
+      if (!current || current.retained !== undefined || current.source !== geometry.source || current.sourceId !== geometry.sourceId
         || current.receiver !== geometry.receiver || current.mode !== geometry.mode || current.width !== geometry.width
         || current.view.startHz !== geometry.view.startHz
         || current.view.endHz !== geometry.view.endHz

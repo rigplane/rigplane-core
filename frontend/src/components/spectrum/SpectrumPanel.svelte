@@ -1172,7 +1172,7 @@
     hatchRanges: coverageHatched.length > 0
       ? coverageHatched.map(({ start, end }) => ({ start, end }))
       : null,
-    sampleOffset: audioFft && !audioProjection ? Math.floor((frameGeometry?.width ?? 0) / 2) : 0,
+    sampleOffset: audioFft && !audioProjection ? Math.floor((paintGeometry?.width ?? 0) / 2) : 0,
     sampleWindow: audioSampleWindow,
     sampleAmplitudeMax: audioFft ? 160 : 80,
     showRfOverlays: !audioFft,

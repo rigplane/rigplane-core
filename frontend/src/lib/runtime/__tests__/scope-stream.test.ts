@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { get } from 'svelte/store';
-import { scopeFixtures as fixtures } from './scope-wire-fixture';
+import { scopeFixtures as fixtures, scopeWire } from './scope-wire-fixture';
 import { ScopeStream } from '../scope-stream';
 import type { ScopeMessageSource } from '../scope-stream';
 import { scopeSlotKey } from '../adapters/scope-adapter';
@@ -239,6 +239,20 @@ describe('ScopeStream grant placeholder retention (MOR-4490)', () => {
     input.emit(fixtures.outOfRange);
     stream.handleMessage({ ...grant, receiver: 1 });
     expect(get(stream.geometry)).toMatchObject({ receiver: 1, hasPixels: false });
+    expect(get(stream.geometry)!.retained).toBeUndefined();
+    stream.dispose();
+  });
+  it('replaces a retained placeholder with a header-only frame of identical geometry', () => {
+    const { input, stream } = live();
+    const frame = get(stream.geometry)!;
+    stream.handleMessage({ ...grant, view: { startHz: frame.view.startHz, endHz: frame.view.endHz },
+      width: frame.width, coverage: frame.coverage });
+    stream.setFreshness('fresh');
+    expect(get(stream.geometry)!.retained).toBeDefined();
+    input.emit(Array.from(new Uint8Array(scopeWire({ sourceId: 'scope-1', epoch: 7, receiver: frame.receiver,
+      viewStartHz: frame.view.startHz, viewEndHz: frame.view.endHz,
+      coverageStartHz: frame.coverage.startHz, coverageEndHz: frame.coverage.endHz, pixels: null }))));
+    expect(get(stream.geometry)).toMatchObject({ hasPixels: false });
     expect(get(stream.geometry)!.retained).toBeUndefined();
     stream.dispose();
   });
