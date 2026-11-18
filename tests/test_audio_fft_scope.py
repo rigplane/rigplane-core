@@ -1075,3 +1075,23 @@ class TestDigitalSilenceRecovery:
         # And no frame after the gap is a white wall.
         for pixels in with_gap:
             assert int(np.frombuffer(pixels, dtype=np.uint8).mean()) < 60
+
+    def test_first_frame_after_silence_ignores_pre_gap_averaging_history(self):
+        fft_size = 1024
+
+        def run(avg_count: int) -> list[bytes]:
+            scope = AudioFftScope(fft_size=fft_size, fps=100_000, avg_count=avg_count)
+            scope.set_center_freq(7_000_000)
+            frames: list[ScopeFrame] = []
+            scope.on_frame(frames.append)
+            # Identical pre-gap windows: averaging them equals one frame.
+            scope.feed_audio(_make_pcm_tone(1500, 4 * fft_size / 48000))
+            scope.feed_audio(_make_pcm_silence(fft_size))
+            marker = len(frames)
+            scope.feed_audio(_make_pcm_noise(fft_size, amplitude=3000))
+            return [f.pixels for f in frames[marker:]]
+
+        averaged = run(avg_count=4)
+        reference = run(avg_count=1)
+        assert len(averaged) == len(reference) == 1
+        assert averaged[0] == reference[0]

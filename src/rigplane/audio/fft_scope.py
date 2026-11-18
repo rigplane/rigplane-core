@@ -247,7 +247,7 @@ class AudioFftScope:
         # drop the history and show the silent frame on its own, so the first
         # real frame after the gap is displayed from real data only.
         if self._mapper.is_silent(db):
-            self._avg_buf.clear()
+            pass
             avg_db = db
         else:
             self._avg_buf.append(db)
