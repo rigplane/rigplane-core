@@ -1702,10 +1702,14 @@ class CivRuntime:
                                 "(reject) before the OpenClose patience, "
                                 "requesting recovery now"
                             )
-                            self.request_recovery_now(
-                                "control session dead: reject", from_watchdog=True
-                            )
-                            return
+                            if self.request_recovery_now(
+                                "control session dead: reject"
+                            ):
+                                return
+                            # Refused (MOR-4558): never exit with nothing
+                            # watching the link. Fall through to the patience
+                            # window, whose deadline hands recovery off as for
+                            # any stall.
                         recovering = True
                         self._host._civ_recovering = True
                         # The patience window starts at this stall tick's
@@ -1811,7 +1815,7 @@ class CivRuntime:
             self._pending_replacement = (self._reconnect_task, preempt)
         return self._reconnect_task
 
-    def request_recovery_now(self, reason: str, *, from_watchdog: bool = False) -> None:
+    def request_recovery_now(self, reason: str) -> bool:
         """Start the detached recovery now, unless one is already under way.
 
         A radio "session free" notice calls this from the datagram callback.
@@ -1823,9 +1827,8 @@ class CivRuntime:
         dropped the session AGAIN, so the tail gives way to a fresh recovery.
         Every ignored notice logs exactly one line carrying the reason.
 
-        ``from_watchdog`` skips the "already flagged" check: the data watchdog
-        is the recovery that flag stands for, so its own escalation must not
-        be refused, or it exits with nothing watching the link (MOR-4558).
+        Returns whether a recovery was started (MOR-4558: the data watchdog
+        keeps watching when its own escalation is refused).
         """
         if self._host._conn_state != RadioConnectionState.CONNECTED:
             logger.info(
@@ -1834,7 +1837,7 @@ class CivRuntime:
                 reason,
                 self._host._conn_state.value,
             )
-            return
+            return False
         live = self._reconnect_task
         if live is not None and not live.done():
             if (
@@ -1847,21 +1850,22 @@ class CivRuntime:
                     reason,
                 )
                 self._spawn_recovery_task(full_reconnect_reason=reason, preempt=live)
-                return
+                return True
             logger.info(
                 "civ-data-watchdog: notice ignored (%s): "
                 "a recovery is still re-establishing the session",
                 reason,
             )
-            return
-        if self._host._civ_recovering and not from_watchdog:
+            return False
+        if self._host._civ_recovering:
             logger.info(
                 "civ-data-watchdog: notice ignored (%s): "
                 "the data watchdog is already recovering",
                 reason,
             )
-            return
+            return False
         self._spawn_recovery_task(full_reconnect_reason=reason)
+        return True
 
     async def _watchdog_recover(
         self,

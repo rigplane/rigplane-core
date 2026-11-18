@@ -670,15 +670,15 @@ async def test_watchdog_recover_clears_recovering_when_soft_reconnect_brings_no_
     assert radio.radio_ready is False
 
 
-async def test_watchdog_reject_escalates_even_with_a_stale_recovering_flag(
+async def test_watchdog_reject_refused_keeps_watching_and_hands_off(
     radio: IcomRadio,
 ) -> None:
     """MOR-4558 guard: when the data watchdog's own control-session probe says
-    the session is dead (reject), the watchdog escalates to a full reconnect
-    and exits. A ``_civ_recovering`` flag left set by an earlier soft
-    reconnect (any caller, e.g. the poller's fast reconnect) must not refuse
-    that escalation: the watchdog would exit with no recovery started and
-    nothing watching the link.
+    the session is dead (reject) but ``request_recovery_now`` refuses (here a
+    ``_civ_recovering`` flag left set by an earlier soft reconnect, e.g. the
+    poller's fast reconnect), the watchdog must not exit with no recovery
+    started and nothing watching the link. It keeps watching and hands the
+    stall off at the patience deadline, like any other stall.
     """
     clock = [1000.0]
     radio._conn_state = RadioConnectionState.CONNECTED
@@ -700,7 +700,7 @@ async def test_watchdog_reject_escalates_even_with_a_stale_recovering_flag(
 
     async def fake_sleep(delay: float) -> None:
         sleeps[0] += 1
-        if sleeps[0] > 50:
+        if sleeps[0] > 200:
             raise asyncio.CancelledError()
         clock[0] += delay
 
@@ -719,7 +719,8 @@ async def test_watchdog_reject_escalates_even_with_a_stale_recovering_flag(
     ):
         await radio._civ_runtime._civ_data_watchdog_loop()
 
-    assert spawned == ["control session dead: reject"]
+    # One hand-off, from the patience deadline (no immediate escalation).
+    assert spawned == [None]
 
 
 # ---------------------------------------------------------------------------
