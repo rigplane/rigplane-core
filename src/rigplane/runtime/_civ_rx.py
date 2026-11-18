@@ -1702,7 +1702,9 @@ class CivRuntime:
                                 "(reject) before the OpenClose patience, "
                                 "requesting recovery now"
                             )
-                            self.request_recovery_now("control session dead: reject")
+                            self.request_recovery_now(
+                                "control session dead: reject", from_watchdog=True
+                            )
                             return
                         recovering = True
                         self._host._civ_recovering = True
@@ -1809,7 +1811,7 @@ class CivRuntime:
             self._pending_replacement = (self._reconnect_task, preempt)
         return self._reconnect_task
 
-    def request_recovery_now(self, reason: str) -> None:
+    def request_recovery_now(self, reason: str, *, from_watchdog: bool = False) -> None:
         """Start the detached recovery now, unless one is already under way.
 
         A radio "session free" notice calls this from the datagram callback.
@@ -1820,6 +1822,10 @@ class CivRuntime:
         is past ``_force_cleanup_civ``, i.e. only in its tail) means the radio
         dropped the session AGAIN, so the tail gives way to a fresh recovery.
         Every ignored notice logs exactly one line carrying the reason.
+
+        ``from_watchdog`` skips the "already flagged" check: the data watchdog
+        is the recovery that flag stands for, so its own escalation must not
+        be refused, or it exits with nothing watching the link (MOR-4558).
         """
         if self._host._conn_state != RadioConnectionState.CONNECTED:
             logger.info(
@@ -1848,7 +1854,7 @@ class CivRuntime:
                 reason,
             )
             return
-        if self._host._civ_recovering:
+        if self._host._civ_recovering and not from_watchdog:
             logger.info(
                 "civ-data-watchdog: notice ignored (%s): "
                 "the data watchdog is already recovering",
@@ -1949,6 +1955,14 @@ class CivRuntime:
                 if self._reconnect_task is asyncio.current_task():
                     self._reconnect_task = None
             else:
+                if self._host._conn_state == RadioConnectionState.CONNECTED:
+                    # MOR-4558: this recovery is over. A soft reconnect onto a
+                    # CI-V session the radio no longer serves (back from a
+                    # power cycle) returns with ``_civ_recovering`` still set
+                    # and no data; left set, it refuses the next stall's
+                    # escalation as "already recovering". Readiness stays
+                    # with ``_civ_stream_ready``, which only real data sets.
+                    self._host._civ_recovering = False
                 self._rearm_data_watchdog_after_recovery()
 
     def _hand_off_exhaustion_to_reconnect_loop(
