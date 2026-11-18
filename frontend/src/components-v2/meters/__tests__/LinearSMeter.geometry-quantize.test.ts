@@ -100,11 +100,10 @@ function onHalfUnitGrid(value: number): boolean {
 function writtenGeometry(target: HTMLElement): number[] {
   // Segment x is a fixed grid (it carries the pinned gap), so only the
   // partial fill width and the peak line move with the reading.
+  const segmentWidth = Number(target.querySelector('[data-segment="0"]')?.getAttribute('width'));
   const partial = [...target.querySelectorAll<SVGRectElement>('[data-meter-fill]')]
     .find((rect) => rect.getAttribute('visibility') !== 'hidden'
-      && Number(rect.getAttribute('width')) < Number(
-        target.querySelector('[data-segment="0"]')?.getAttribute('width'),
-      ));
+      && Number(rect.getAttribute('width')) < segmentWidth);
   const peak = target.querySelector('[data-meter-peak]');
   return [
     partial ? Number(partial.getAttribute('width')) : GEOMETRY_FALLBACK_STEP,
@@ -143,6 +142,9 @@ describe('MOR-2613 — jsdom writes the 0.5-unit fallback grid', () => {
   // writes must land on the 0.5-unit fallback. The sweep does not assume how
   // the scale maps a fraction to a position: it only reads what was written.
   const STEPS = 50;
+  // MOR-4214: 51 mount-and-flush steps. Healthy ~0.35 s (~0.5 s with 4 parallel
+  // runs); 5.0 s on the oversubscribed CI runner against the 5 s default.
+  const SWEEP_TIMEOUT_MS = 30_000;
 
   it('keeps fill x/width and the peak line on the 0.5 grid across the range', () => {
     const { target, step } = mountReactive(0, 0.4);
@@ -153,5 +155,5 @@ describe('MOR-2613 — jsdom writes the 0.5-unit fallback grid', () => {
         expect(onHalfUnitGrid(value), `step ${i}: ${value}`).toBe(true);
       }
     }
-  });
+  }, SWEEP_TIMEOUT_MS);
 });
