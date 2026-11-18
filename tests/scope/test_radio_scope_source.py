@@ -47,6 +47,30 @@ async def test_off_vfo_view_keeps_acquisition_at_tuned_frequency(model):
 
 
 @pytest.mark.parametrize("model", ["ic7300", "ic705"])
+@pytest.mark.parametrize("vfo_hz", [14_000_000, 14_100_000, 14_175_000, 14_350_000])
+async def test_pinned_window_span_covers_it_from_any_vfo_position(model, vfo_hz):
+    """A pinned (absolute) view is granted once and never re-sent on a retune
+    (MOR-4387 follow-up): the span must cover the WHOLE window wherever the
+    VFO sits inside it, so tuning toward an edge cannot leave a blank part.
+    A window wider than the widest preset keeps today's partial coverage."""
+    profile = load_rig(Path("rigs") / f"{model}.toml").to_profile()
+    writer = Writer()
+    writer.frequency = vfo_hz
+    source = RadioScopeSource(profile, writer)
+    window = View(14_000_000, 14_350_000)
+    granted = await source.set_view(window)
+    assert granted.coverage.start_hz <= window.start_hz
+    assert granted.coverage.end_hz >= window.end_hz
+    assert writer.writes[-1] == (vfo_hz, 500_000, 0)
+    # The same single grant is what the VFO sees after it moves anywhere
+    # inside the window: no further write is needed.
+    for moved in (14_000_000, 14_350_000):
+        writer.frequency = moved
+        assert source.coverage_for(window).start_hz <= window.start_hz
+        assert source.coverage_for(window).end_hz >= window.end_hz
+
+
+@pytest.mark.parametrize("model", ["ic7300", "ic705"])
 async def test_profile_center_span_and_partial(model):
     profile = load_rig(Path("rigs") / f"{model}.toml").to_profile()
     writer = Writer()
@@ -59,9 +83,12 @@ async def test_profile_center_span_and_partial(model):
         2 * preset for preset in profile.scope_span_presets_hz
     )
     view = View(14_090_000, 14_105_000)
-    assert plugin.coverage_for(view) == Coverage(14_090_000, 14_110_000)
+    # A pinned window is covered from ANY VFO position inside it, so the span
+    # is picked from the window width (15 kHz -> the 25 kHz preset), not from
+    # the VFO's distance to the far edge.
+    assert plugin.coverage_for(view) == Coverage(14_075_000, 14_125_000)
     await plugin.set_view(view)
-    assert writer.writes[-1] == (14_100_000, 10000, 0)
+    assert writer.writes[-1] == (14_100_000, 25000, 0)
     wide = View(13_000_000, 15_000_000)
     assert (await plugin.set_view(wide)).coverage == Coverage(13_600_000, 14_600_000)
     writer.frequency = 7_100_000
