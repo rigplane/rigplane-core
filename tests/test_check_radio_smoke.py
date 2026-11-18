@@ -97,6 +97,7 @@ def _write_and_check(
     tag: str = TAG,
     sha: str = SHA,
     repo: Path | None = None,
+    tested_sha_output: Path | None = None,
 ) -> tuple[int, str, str]:
     """Write the fragments, run ``check``, return (exit, stdout, stderr)."""
     rx_path = tmp_path / "radio-smoke-rx.json"
@@ -122,6 +123,8 @@ def _write_and_check(
     ]
     if repo is not None:
         argv += ["--repo", str(repo)]
+    if tested_sha_output is not None:
+        argv += ["--tested-sha-output", str(tested_sha_output)]
     rc = checker.main(argv)
     captured = capsys.readouterr()
     return rc, captured.out, captured.err
@@ -890,3 +893,26 @@ def test_rc_receipts_fail_when_a_toml_multiline_string_hides_a_change(
     )
     assert rc != 0, "an edit inside a multiline string must fail"
     assert any("pyproject.toml" in line for line in _stderr_lines(stderr)), stderr
+
+
+def test_check_writes_the_validated_tested_commit(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """MOR-4544: the publish reuse step consumes this, not the raw receipt JSON."""
+    out = tmp_path / "out"
+    rc, _, _ = _write_and_check(
+        tmp_path, capsys, rx=_rx_payload(), tx=_tx_payload(), tested_sha_output=out
+    )
+    assert rc == 0
+    assert out.read_text() == f"tested_sha={SHA}\n"
+
+
+def test_check_writes_nothing_when_the_receipts_are_invalid(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    out = tmp_path / "out"
+    rc, _, _ = _write_and_check(
+        tmp_path, capsys, rx="{not json", tx=_tx_payload(), tested_sha_output=out
+    )
+    assert rc == 1
+    assert not out.exists()

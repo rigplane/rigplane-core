@@ -343,6 +343,7 @@ def _run_receipt_step(
             # passes it as --repo, so the harness mirrors it (MOR-3998).
             "GITHUB_WORKSPACE": str(_REPO_ROOT),
             "GH_TOKEN": "stub-token",
+            "GITHUB_OUTPUT": str(tmp_path / "github_output"),
             "STUB_RECEIPTS_DIR": str(receipts_dir),
             "STUB_GH_DOWNLOAD_FAILS": "1" if download_fails else "0",
         }

@@ -80,6 +80,7 @@ jobs:
         # `uv run --no-project python` (job-level UV_PYTHON pins it),
         # because the runners' system python3 is 3.10 with no tomllib and
         # the checker needs Python >= 3.11.
+        id: receipts
         if: github.event_name == 'release'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -93,7 +94,8 @@ jobs:
             --git-sha "$GITHUB_SHA" \
             --rx "$smoke_dir/radio-smoke-rx.json" \
             --tx "$smoke_dir/radio-smoke-tx.json" \
-            --repo "$GITHUB_WORKSPACE"
+            --repo "$GITHUB_WORKSPACE" \
+            --tested-sha-output "$GITHUB_OUTPUT"
 
       - name: Reuse a passed full-matrix run for the tested commit
         # MOR-4544: the receipts step above proved the tag differs from the radio-tested commit
@@ -104,22 +106,19 @@ jobs:
         if: github.event_name == 'release'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ github.event.release.tag_name }}
+          # Validated by the receipts checker above, not re-read from the release assets.
+          TESTED_SHA: ${{ steps.receipts.outputs.tested_sha }}
         run: |
-          set -euo pipefail
-          smoke_dir="$(mktemp -d)"
-          gh release download "$TAG" -p 'radio-smoke-rx.json' --dir "$smoke_dir"
-          tested_sha="$(uv run --no-project python -c \
-            "import json,sys; print(json.load(open(sys.argv[1]))['git_sha'])" \
-            "$smoke_dir/radio-smoke-rx.json")"
-          passed="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/full.yml/runs?head_sha=$tested_sha&status=success&event=push&per_page=30" \
-            --jq '[.workflow_runs[] | select(.head_branch | startswith("v"))] | length')"
-          if [ "$passed" -gt 0 ]; then
+          set -uo pipefail
+          # A failed lookup is "no evidence to reuse": the suite runs, the release is not blocked.
+          passed="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/full.yml/runs?head_sha=$TESTED_SHA&status=success&event=push&per_page=30" \
+            --jq '[.workflow_runs[] | select(.head_branch | startswith("v"))] | length' 2>/dev/null)" || passed=0
+          if [ "${passed:-0}" -gt 0 ] 2>/dev/null; then
             echo "reuse=true" >> "$GITHUB_OUTPUT"
-            echo "full matrix already passed on a tag run of tested commit $tested_sha: validate skips the suite"
+            echo "full matrix already passed on a tag run of tested commit $TESTED_SHA: validate skips the suite"
           else
             echo "reuse=false" >> "$GITHUB_OUTPUT"
-            echo "no passed full-matrix tag run for tested commit $tested_sha: validate runs the suite"
+            echo "no passed full-matrix tag run found for tested commit $TESTED_SHA: validate runs the suite"
           fi
 
       - name: Install dependencies
