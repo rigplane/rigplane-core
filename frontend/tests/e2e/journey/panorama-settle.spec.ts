@@ -160,8 +160,17 @@ for (const [index, [model, zoomMode]] of ([['IC-705', 0], ['IC-7300', 0], ['IC-7
         await page.mouse.move(box!.x + box!.width * (zoom ? 0.1 : 0.45), box!.y + box!.height * 0.3, { steps: 5 });
         await page.mouse.up();
         }
-        // Observation windows, not synchronization delays: 10 s after release,
-        // with the final 5 s isolated from gesture/acknowledgement work.
+        // The gesture's own settling ends with the passband tuple: a tune or
+        // a CTR→FIX switch retires it, and it is recaptured when fresh
+        // evidence arrives — each transition repaints the static layer once.
+        // That recapture took 0.7 to 3.6 s in measured runs and more than the
+        // fixed delay below on a loaded runner, where its one repaint then
+        // landed inside the quiet window. Wait for the settled state itself.
+        await expect(page.locator('.spectrum-panel').first())
+          .toHaveAttribute('data-passband-state', 'current', { timeout: 15_000 });
+        // Observation windows, not synchronization delays: 10 s after the
+        // gesture has settled, with the final 5 s isolated from
+        // gesture/acknowledgement work.
         await page.waitForTimeout(5000);
         const quietStart = { atMs: performance.now(), subscriptions: sent.length, writes: (await writes()).length, commands: commands.length, frames: frames.length, work: await work() };
         await page.waitForTimeout(5000);
