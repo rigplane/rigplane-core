@@ -200,3 +200,25 @@ def test_validate_job_timeout_covers_the_full_suite() -> None:
         "ARM64 build runner it outgrew 25 minutes (run 44109071644, v3.2.0rc9), "
         "so it needs the same 60-minute budget full.yml gives tag/rc runs"
     )
+
+
+def test_validate_reuses_a_passed_full_matrix_only_after_the_receipts_gate() -> None:
+    """MOR-4544: the suite is skipped only through the `reuse` step, never the receipts."""
+    steps = yaml.safe_load(PUBLISH.read_text())["jobs"]["validate"]["steps"]
+    names = [str(step.get("name")) for step in steps]
+    receipts = names.index("Verify radio smoke receipts")
+    reuse = names.index("Reuse a passed full-matrix run for the tested commit")
+    assert receipts < reuse
+    # the receipts check itself is never conditional on the reuse decision
+    assert "reuse" not in str(steps[receipts].get("if", ""))
+    gate = "steps.reuse.outputs.reuse != 'true'"
+    gated = {
+        str(step["name"]) for step in steps if str(step.get("if", "")).strip() == gate
+    }
+    assert {"Install dependencies", "Ruff", "Run tests"} <= gated
+    # a rehearsal has no release: the reuse step is release-only, so it always runs the suite
+    assert steps[reuse]["if"] == "github.event_name == 'release'"
+    build = yaml.safe_load(PUBLISH.read_text())["jobs"]["build"]["steps"]
+    assert any(
+        step.get("name") == "Wheel version equals the release tag" for step in build
+    )
