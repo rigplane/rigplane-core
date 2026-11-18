@@ -352,8 +352,8 @@ def test_full_test_job_timeout_matches_rc_gate_used_for_marker_selection() -> No
         )
 
     assert _rc_gated_timeout(timeout_expr, rc=True) == 60
-    assert _rc_gated_timeout(timeout_expr, rc=False) == 25
-    assert _rc_gated_timeout(timeout_expr, rc=None) == 25
+    assert _rc_gated_timeout(timeout_expr, rc=False) == 40
+    assert _rc_gated_timeout(timeout_expr, rc=None) == 40
     assert _rc_gated_timeout(timeout_expr, tag=True) == 60
 
     with pytest.raises(AssertionError, match="does not evaluate"):
