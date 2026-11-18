@@ -359,6 +359,8 @@ class TestRigctldMirrorReadiness:
                     await radio.disconnect()
                     # Hold the radio silent until the assertions are done, then release it
                     # (a fixed 20 s window made this test wait the whole window out).
+                    # the login timer armed at open must not release the hold early
+                    sim.civ_silent_after_open_s = 0.0
                     sim.civ_standby(True)
                     await radio.connect()
                     assert radio.connected and not radio.radio_ready
