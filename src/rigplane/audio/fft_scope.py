@@ -242,15 +242,21 @@ class AudioFftScope:
         # Convert to dB (normalized to FFT size)
         db = 20.0 * np.log10(magnitudes / self._fft_size)
 
-        # Rolling average
-        self._avg_buf.append(db)
-        if len(self._avg_buf) > self._avg_count:
-            self._avg_buf = self._avg_buf[-self._avg_count :]
-
-        if len(self._avg_buf) > 1:
-            avg_db = np.mean(np.stack(self._avg_buf), axis=0)
-        else:
+        # Rolling average. A digital-silence frame (MOR-1854) carries no
+        # information and must not be averaged into the frames around it:
+        # drop the history and show the silent frame on its own, so the first
+        # real frame after the gap is displayed from real data only.
+        if self._mapper.is_silent(db):
+            self._avg_buf.clear()
             avg_db = db
+        else:
+            self._avg_buf.append(db)
+            if len(self._avg_buf) > self._avg_count:
+                self._avg_buf = self._avg_buf[-self._avg_count :]
+            if len(self._avg_buf) > 1:
+                avg_db = np.mean(np.stack(self._avg_buf), axis=0)
+            else:
+                avg_db = db
 
         # Map dB to pixel values (0-160) through the ADAPTIVE level mapper
         # (linear mapping: db_floor → 0, db_ceil → pixel max, clipped).

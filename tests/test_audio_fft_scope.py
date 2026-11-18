@@ -1034,3 +1034,44 @@ class TestAudioFftScopeAdaptiveAutoRange:
         )
         # And it should be a meaningful, visible level (not collapsed to 0).
         assert min(tail) > 0.30 * _PIXEL_MAX, f"converged peak too low: {tail}"
+
+
+class TestDigitalSilenceRecovery:
+    """MOR-1854: a silent gap must not distort the frames after it."""
+
+    @staticmethod
+    def _run(gap_windows: int) -> list[bytes]:
+        fft_size = 1024
+        scope = AudioFftScope(fft_size=fft_size, fps=100_000, avg_count=4)
+        scope.set_center_freq(7_000_000)
+        frames: list[ScopeFrame] = []
+        scope.on_frame(frames.append)
+        rng = np.random.default_rng(7)
+
+        def noise(windows: int) -> bytes:
+            samples = rng.uniform(-1, 1, fft_size * windows) * 800
+            return samples.astype(np.int16).tobytes()
+
+        scope.feed_audio(noise(12))
+        scope.feed_audio(_make_pcm_silence(fft_size * gap_windows))
+        marker = len(frames)
+        scope.feed_audio(noise(8))
+        return [f.pixels for f in frames[marker:]]
+
+    def test_frames_after_silence_match_frames_without_silence(self):
+        with_gap = self._run(gap_windows=300)
+        without_gap = self._run(gap_windows=0)
+        assert len(with_gap) == len(without_gap) >= 8
+        # The first 3 frames after the gap average fewer real frames than the
+        # no-gap run (a single frame is noisier), which also nudges the slow
+        # window EMA slightly. From the 4th frame on both runs average the
+        # same real frames and must agree within a few pixels of 0..160.
+        for got, want in zip(with_gap[4:], without_gap[4:], strict=True):
+            diff = np.abs(
+                np.frombuffer(got, dtype=np.uint8).astype(int)
+                - np.frombuffer(want, dtype=np.uint8).astype(int)
+            )
+            assert diff.mean() < 4.0, diff.mean()
+        # And no frame after the gap is a white wall.
+        for pixels in with_gap:
+            assert int(np.frombuffer(pixels, dtype=np.uint8).mean()) < 60

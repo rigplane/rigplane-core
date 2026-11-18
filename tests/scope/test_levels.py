@@ -326,3 +326,77 @@ class TestAdaptiveLevelMapper:
             db = np.full(64, -100.0) + rng.standard_normal(64) * 1.0
             values = np.frombuffer(mapper.map(db), dtype=np.uint8)
             assert int(values.max()) <= 100
+
+
+# ── Digital silence (MOR-1854) ───────────────────────────────────────────────
+
+# What an all-zero PCM frame looks like after the scope's 1e-10 magnitude
+# clamp and FFT-size normalisation: far below any 16-bit quantisation floor.
+_SILENCE_DB = -266.0
+
+
+def _real_frames(count: int, seed: int, level_db: float = -100.0) -> list[np.ndarray]:
+    rng = np.random.default_rng(seed)
+    return [np.full(129, level_db) + rng.standard_normal(129) * 1.0 for _ in range(count)]
+
+
+class TestDigitalSilence:
+    """Frames that carry no signal information must not move the window."""
+
+    def test_silence_gap_leaves_window_identical_to_no_gap(self):
+        before = _real_frames(10, seed=1)
+        after = _real_frames(10, seed=2)
+
+        gapped = AdaptiveLevelMapper()
+        control = AdaptiveLevelMapper()
+        for db in before:
+            gapped.map(db)
+            control.map(db)
+        # ~10 s of silence at 30 fps.
+        for _ in range(300):
+            gapped.map(np.full(129, _SILENCE_DB))
+
+        for db in after:
+            assert gapped.window(db) == control.window(db)
+            assert gapped.map(db) == control.map(db)
+
+    def test_first_real_frame_after_silence_is_not_a_white_wall(self):
+        mapper = AdaptiveLevelMapper()
+        for db in _real_frames(10, seed=1):
+            mapper.map(db)
+        for _ in range(300):
+            mapper.map(np.full(129, _SILENCE_DB))
+
+        values = np.frombuffer(mapper.map(_real_frames(1, seed=3)[0]), dtype=np.uint8)
+        assert int(values.max()) < 0.30 * _PIXEL_MAX
+
+    def test_silence_renders_empty_and_leaves_no_state_before_first_frame(self):
+        mapper = AdaptiveLevelMapper()
+        pixels = np.frombuffer(mapper.map(np.full(129, _SILENCE_DB)), dtype=np.uint8)
+        assert int(pixels.max()) == 0
+
+        # Silence at startup must not seed the window: the first real frame
+        # seeds it exactly as on a fresh mapper.
+        fresh = AdaptiveLevelMapper()
+        real = _real_frames(1, seed=4)[0]
+        assert mapper.window(real) == fresh.window(real)
+
+    def test_steady_real_noise_still_adapts(self):
+        mapper = AdaptiveLevelMapper()
+        for db in _real_frames(5, seed=5, level_db=-100.0):
+            mapper.map(db)
+        floor_before, _ = mapper.window(_real_frames(1, seed=6, level_db=-100.0)[0])
+        for db in _real_frames(100, seed=7, level_db=-80.0):
+            mapper.map(db)
+        floor_after, _ = mapper.window(_real_frames(1, seed=8, level_db=-80.0)[0])
+        assert floor_after > floor_before + 15.0
+
+    def test_very_quiet_but_real_signal_still_adapts(self):
+        # Quiet 16-bit audio (a few LSB) sits near -130 dB: above the cut-off.
+        mapper = AdaptiveLevelMapper()
+        for db in _real_frames(5, seed=9, level_db=-100.0):
+            mapper.map(db)
+        for db in _real_frames(100, seed=10, level_db=-130.0):
+            mapper.map(db)
+        floor, _ = mapper.window(_real_frames(1, seed=11, level_db=-130.0)[0])
+        assert floor < -125.0
