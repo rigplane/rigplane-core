@@ -1008,7 +1008,7 @@ class TestScopeCommandBuilders:
                 edge=1,
                 start_hz=14_000_000,
                 end_hz=14_350_000,
-                ranges=rig.scope_fixed_edge_ranges,
+                ranges=rig.to_profile().scope_fixed_edge_ranges,
                 cmd_map=cmd_map,
             )
 

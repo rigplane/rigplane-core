@@ -76,6 +76,25 @@ span_presets_hz = [
 # value (IC-7610 CI-V Reference Guide p.14, "Scope waveform data", quoted
 # in runtime/_civ_rx.py: CivRuntime._publish_scope_span_observation).
 span_preset_semantics = "half_width"
+# source: IC-905 CI-V Reference Guide (IC-905_ENG_CI-V_2), p.29-30, 27 1E: ranges
+# 1-5 below, edges 1-4, entry of digits below 1 kHz is ignored. Range 06
+# (10000-10500 MHz, MOR-4571) is NOT listed: it needs the 14-digit wire form that the
+# fixed-edge writer does not encode. No widest width is stated: a window
+# must lie inside one range.
+fixed_edge_step_hz = 1000
+fixed_edge_ranges = [
+    { range_index = 1, start_hz = 144000000, end_hz = 148000000 },
+    { range_index = 2, start_hz = 430000000, end_hz = 450000000 },
+    { range_index = 3, start_hz = 1240000000, end_hz = 1300000000 },
+    { range_index = 4, start_hz = 2300000000, end_hz = 2450000000 },
+    { range_index = 5, start_hz = 5650000000, end_hz = 5925000000 },
+]
+# MOR-4563: TEMPORARY staging switch, not a per-radio mechanism. The table
+# is recorded for every radio, but runtime consumers see it only when this
+# is true (IC-7610 keeps its shipped behaviour). MOR-4567 step 4 (guarded
+# fixed capture: slot policy, ownership, width limits) DELETES the switch,
+# and FIX turns on for every radio with data at once.
+fixed_edge_capture = false
 # 27 19 (p.28): adjustable range -20.0 ~ +20.0 dB in 0.5 dB steps.
 ref_min_db = -20.0
 ref_max_db = 20.0

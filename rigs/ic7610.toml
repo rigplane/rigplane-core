@@ -61,6 +61,8 @@ span_preset_semantics = "half_width"
 # https://www.icomjapan.com/uploads/support/manual/IC-7610_ENG_CI-V_4.pdf
 # The radio ignores digits below 1 kHz.
 fixed_edge_step_hz = 1000
+# MOR-4563: temporary staging switch; MOR-4567 step 4 deletes it.
+fixed_edge_capture = true
 fixed_edge_ranges = [
     { range_index = 1, start_hz = 30000, end_hz = 1600000 },
     { range_index = 2, start_hz = 1600000, end_hz = 2000000 },
