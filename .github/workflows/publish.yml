@@ -140,7 +140,7 @@ jobs:
       - name: Run tests
         # The -m replaces the 'not slow and not benchmark' from addopts, so
         # this job also runs the slow-marked tests.
-        run: uv run pytest tests/ -n auto -m 'not benchmark' --tb=short --timeout=300 --timeout-method=thread
+        run: uv run pytest tests/ -n auto --maxprocesses 4 -m 'not benchmark' --tb=short --timeout=300 --timeout-method=thread
 
   build:
     needs: validate
