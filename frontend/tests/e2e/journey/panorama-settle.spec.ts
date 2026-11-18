@@ -3,11 +3,15 @@ import { writeFile } from 'node:fs/promises';
 import { expect, test } from '@playwright/test';
 import { parseCurrentScopeFrame, parseScopeGranted } from '../../../src/lib/runtime/scope-frame';
 import type { ScopeGranted, ScopeSubscription } from '../../../src/lib/runtime/scope-view';
+import type { RadioIntent } from '../../../src/lib/runtime/commands/radio-intents';
 import type { WsCommand } from '../../../src/lib/types/protocol';
 import { readPassbandDiagnostics } from './panorama-passband-probe';
 import { startJourneyServer } from './server-process';
 import { parseScopeWriteReceipt } from './panorama-receipt';
 import { expectPanoramaSettled, watchPanoramaErrors } from './panorama-guards';
+
+// The tune command's parameters as the producer declares them.
+type SetFreqParams = Extract<RadioIntent, { name: 'set_freq' }>['params'];
 
 interface Work { raf: number; rafMs: number; texture: number; draw: number; static: number; labels: string[] }
 declare global { interface Window { panoramaWork: Work } }
@@ -278,7 +282,16 @@ for (const [index, model] of ['IC-705', 'IC-7300'].entries()) {
         await expect(marker).toBeVisible();
       }
       const radioState = async () => (await (await page.request.get(`http://127.0.0.1:${port}/api/v1/state`)).json()) as { main?: { freqHz?: number } };
-      await expect.poll(async () => (await radioState()).main?.freqHz, { timeout: 10_000 }).not.toBe(14_250_000);
+      // Each click maps against the viewport visible at click time, and the
+      // view is still gliding after the earlier clicks, so the third target
+      // depends on timing and can be 14.250 itself (measured: 14.246 on an
+      // idle host, 14.252 on a slower one). "The frequency is no longer
+      // 14.250" is therefore not proof that the clicks tuned. The proof is
+      // the three retunes themselves and the radio sitting on the last one.
+      const clickTunes = () => wsCommands.filter(command => command.name === 'set_freq')
+        .map(command => (command.params as SetFreqParams).freq);
+      await expect.poll(() => clickTunes().length, { timeout: 10_000 }).toBe(3);
+      await expect.poll(radioState, { timeout: 10_000 }).toMatchObject({ main: { freqHz: clickTunes().at(-1) } });
       const sentBefore = state.sent;
       const commandsBeforeArrows = wsCommands.length;
       // Realistic key-repeat pacing (the MOR-4387 repro's cadence): the
@@ -293,7 +306,7 @@ for (const [index, model] of ['IC-705', 'IC-7300'].entries()) {
       }
       const arrowSteps = () => wsCommands.slice(commandsBeforeArrows)
         .filter(command => command.name === 'set_freq')
-        .map(command => (command.params as { freq?: number }).freq ?? 0);
+        .map(command => (command.params as SetFreqParams).freq);
       await expect.poll(() => arrowSteps().length, { timeout: 15_000 }).toBe(12);
       const steps = arrowSteps();
       for (let i = 1; i < steps.length; i++) expect(steps[i]! - steps[i - 1]!).toBe(1_000);
