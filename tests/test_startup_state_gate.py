@@ -1117,7 +1117,7 @@ def _real_rigctld_radio(fake: _TcpRigctldServer) -> "RigctldClientRadio":  # noq
 
     The unresolvable model keeps ``WebServer._bootstrap_state_acquisition``
     from replacing the scheduler the test attaches, and the real
-    ``RigctldTransport`` (0.05 s timeout) is what times out on the silent
+    ``RigctldTransport`` (0.5 s timeout) is what times out on the silent
     ``t`` — the production close-on-timeout path the old fake-radio tests
     bypassed (MOR-2757 review).
     """
@@ -1127,7 +1127,9 @@ def _real_rigctld_radio(fake: _TcpRigctldServer) -> "RigctldClientRadio":  # noq
     radio = RigctldClientRadio(
         host=fake.host,
         port=fake.port,
-        timeout=0.05,
+        # MOR-4214: 0.05 s also bounded the ANSWERED reads over local TCP and flaked on a
+        # loaded runner; 0.5 s leaves a silent `t` fast and an answered read safe.
+        timeout=0.5,
         model="FAKE-RIGCTLD-TCP",
     )
     radio._acquisition_scheduler = AcquisitionScheduler(
