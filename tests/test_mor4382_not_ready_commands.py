@@ -346,7 +346,9 @@ class TestRigctldMirrorReadiness:
                         f"{live_freq}\n".encode()
                     )
                     await radio.disconnect()
-                    sim.civ_silent_after_open_s = 20.0
+                    # Hold the radio silent until the assertions are done, then release it
+                    # (a fixed 20 s window made this test wait the whole window out).
+                    sim.civ_standby(True)
                     await radio.connect()
                     assert radio.connected and not radio.radio_ready
                     mirror = (
@@ -358,6 +360,7 @@ class TestRigctldMirrorReadiness:
                     reply = await _exchange(writer, reader, command)
                     assert reply == b"RPRT -5\n", reply
                     assert await _exchange(writer, reader, b"v\n") == b"RPRT -5\n"
+                    sim.civ_standby(False)
                     await await_until(
                         lambda: radio.radio_ready,
                         timeout=30.0,
