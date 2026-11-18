@@ -183,6 +183,29 @@ class _G7250OperatorFake(CivSerialFake):
                     sub=parsed.sub,
                     data=data,
                 )
+            # Selected / unselected VFO GETs (`25 00|01`, `26 00|01`): the
+            # reply echoes the selector then the value, as the real radio
+            # answers (LIVE G7250 2026-11-09: 25 00 -> 7.138000 MHz, 25 01 ->
+            # 7.050000 MHz, 26 00 -> 00 00 01 = LSB / data off / FIL1).
+            # The bare GET `25 00` parses as sub 0x00 with no payload on one
+            # path and as sub None with payload `00` on the other.
+            get_selector = (
+                bytes([parsed.sub])
+                if parsed.sub in (0x00, 0x01) and not parsed.data
+                else bytes(parsed.data)
+                if parsed.sub is None and bytes(parsed.data) in (b"\x00", b"\x01")
+                else None
+            )
+            if parsed.command in (0x25, 0x26) and get_selector is not None:
+                selector = get_selector
+                if parsed.command == 0x25:
+                    hz = self.frequency_hz if selector == b"\x00" else 7_050_000
+                    body = selector + bcd_encode(hz)
+                else:
+                    body = selector + bytes([self.mode, 0x00, 0x01])
+                return build_civ_frame(
+                    CONTROLLER_ADDR, self._civ_addr, parsed.command, data=body
+                )
             # Frequency SET the profile now uses: `25 00` + 5 BCD bytes
             # stores the frequency (the radio applies it and answers FB,
             # like the real radio on serial — reference Table 1-1 — and
