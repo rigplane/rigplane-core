@@ -418,6 +418,11 @@ describe('RxAudioInstrumentHost per-receiver AF knobs (MOR-2579)', () => {
 /* MOR-1676 — with `controls.af_level` published, the radio-AF slider moves on
  * the raw 0..255 range, one raw unit per step, and sends raw r as r / 255, so
  * a step and its reverse come back to the same raw value. */
+// MOR-4214: the 255-value sweep below re-renders the slider 765 times. Healthy
+// it takes ~0.3 s (also with 4 parallel runs); on the oversubscribed CI runner
+// it took 6-6.2 s against the 5 s default. A machine-speed ceiling, not a target.
+const RAW_SWEEP_TIMEOUT_MS = 30_000;
+
 describe('RxAudioInstrumentHost radio-AF raw range (MOR-1676)', () => {
   it('steps 128 to 129 and back by keyboard, sent as 129/255 then 128/255', () => {
     const r = render(rawAfPublication(), audio(128 / 255));
@@ -463,7 +468,7 @@ describe('RxAudioInstrumentHost radio-AF raw range (MOR-1676)', () => {
       expected.push([(raw + 1) / 255], [raw / 255]);
     }
     expect(r.onAfLevelChange.mock.calls).toEqual(expected);
-  });
+  }, RAW_SWEEP_TIMEOUT_MS);
 
   it('reads a normalized 0.5 (raw 127.5, a rounding tie) as raw 128', () => {
     const r = render(rawAfPublication(), audio(0.5));
