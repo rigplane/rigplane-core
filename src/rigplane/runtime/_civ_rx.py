@@ -4466,10 +4466,19 @@ class CivRuntime:
         if scope_frame.mode not in (0, 2) or scope_frame.out_of_range:
             return
         width_hz = scope_frame.end_freq_hz - scope_frame.start_freq_hz
-        if width_hz % 2 != 0:
-            return
-        span_hz = width_hz // 2
-        presets = self._host._profile.scope_span_presets_hz
+        profile = self._host._profile
+        if profile.scope_span_preset_semantics == "full_width":
+            # A ``full_width`` preset (RadioProfile.scope_span_preset_semantics)
+            # is the whole display width: the Xiegu G7250 sends 27 15 as
+            # 192000 and its center-mode waveform as center +/- 96000 (LIVE
+            # G7250 LAN 2026-11-13, MOR-4436), so the width itself is the
+            # preset to look up.
+            span_hz = width_hz
+        else:
+            if width_hz % 2 != 0:
+                return
+            span_hz = width_hz // 2
+        presets = profile.scope_span_presets_hz
         span = _span_index_for_hz(span_hz, presets)
         if span is None:
             return

@@ -292,6 +292,7 @@ scope, where the radio supports one.
 | `ref_step_db`     | float   | no       | Scope reference level step size, dB.                       |
 | `span_presets_hz` | int[]   | no       | Scope span presets in Hz, index-ordered (index 0-7 matches the CI-V `0x27 0x15` span code the radio itself uses). Must be non-empty and strictly ascending. |
 | `span_preset_semantics` | string | with `span_presets_hz` | What one preset entry means on the radio's own wire: `half_width` (the preset is a ±half-width — the CI-V span and the center-mode waveform field) or `full_width` (the preset is the full display width). Required whenever `span_presets_hz` is declared; a load without it is rejected. |
+| `span_value_bytes` | int | no | BCD width of the 0x27 0x15 span value on the wire, 5 or 6. Default 5 (Icom). Replies of either width decode. |
 
 `span_presets_hz` is the only place these values live. The
 waveform-stream span derivation (`runtime/_civ_rx.py:

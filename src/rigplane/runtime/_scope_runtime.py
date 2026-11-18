@@ -236,6 +236,7 @@ class ScopeRuntimeMixin(_MixinBase):  # type: ignore[misc]
                 presets=self._profile.scope_span_presets_hz,
                 receiver=receiver,
                 to_addr=self._radio_addr,
+                value_bytes=self._profile.scope_span_value_bytes,
             )
         else:
             assert isinstance(value, int)

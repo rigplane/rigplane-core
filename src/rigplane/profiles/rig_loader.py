@@ -902,6 +902,7 @@ class RigConfig:
         default=(), kw_only=True
     )
     scope_fixed_edge_step_hz: int | None = field(default=None, kw_only=True)
+    scope_span_value_bytes: int = field(default=5, kw_only=True)
     codec_preference: tuple[str, ...] | None = None
     tx_codec: str | None = None
     default_sample_rate_hz: int | None = None
@@ -1169,6 +1170,7 @@ class RigConfig:
             scope_ref_step_db=self.scope_ref_step_db,
             scope_span_presets_hz=self.scope_span_presets_hz,
             scope_span_preset_semantics=self.scope_span_preset_semantics,
+            scope_span_value_bytes=self.scope_span_value_bytes,
             scope_fixed_edge_ranges=self.scope_fixed_edge_ranges,
             scope_fixed_edge_step_hz=self.scope_fixed_edge_step_hz,
             codec_preference=self.codec_preference,
@@ -3483,6 +3485,7 @@ def load_rig(path: Path) -> RigConfig:
     scope_span_presets_hz: tuple[int, ...] = ()
     scope_span_preset_semantics: SpanPresetSemantics = "half_width"
     scope_fixed_edge_ranges: tuple[ScopeFixedEdgeRange, ...] = ()
+    scope_span_value_bytes = 5
     scope_fixed_edge_step_hz: int | None = None
     if scope_section:
         entries = scope_section.get("fixed_edge_ranges", [])
@@ -3566,6 +3569,13 @@ def load_rig(path: Path) -> RigConfig:
                     " half_width or full_width"
                 )
             scope_span_preset_semantics = semantics
+        if "span_value_bytes" in scope_section:
+            raw_width = scope_section["span_value_bytes"]
+            if raw_width not in (5, 6) or isinstance(raw_width, bool):
+                raise RigLoadError(
+                    f"{filename}: [scope].span_value_bytes must be 5 or 6"
+                )
+            scope_span_value_bytes = int(raw_width)
 
     # Parse attenuator/preamp/agc (optional sections)
     att_section = data.get("attenuator", {})
@@ -4230,6 +4240,7 @@ def load_rig(path: Path) -> RigConfig:
         scope_ref_step_db=scope_ref_step_db,
         scope_span_presets_hz=scope_span_presets_hz,
         scope_span_preset_semantics=scope_span_preset_semantics,
+        scope_span_value_bytes=scope_span_value_bytes,
         scope_fixed_edge_ranges=scope_fixed_edge_ranges,
         scope_fixed_edge_step_hz=scope_fixed_edge_step_hz,
         codec_preference=codec_preference,

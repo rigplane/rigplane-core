@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Xiegu G7250: radio panorama over the network.** In wfview network mode (firmware V1.0.1) the G7250 now feeds the spectrum and waterfall from its own scope (`27 00` wave data, 475 points per sweep, about 17 sweeps a second) instead of the audio-derived panorama. Span presets 48, 96, 192 and 384 kHz (the radio's span number is the full display width), REF -20 to +20 dB. Over USB the radio does not answer scope commands, so a USB connection shows no radio panorama. The span value width on the wire is profile data (`[scope].span_value_bytes`, 6 on the G7250, 5 elsewhere), a six-byte span reply decodes, and a `full_width` span preset is matched by the full waveform width. (MOR-4436)
+
 ## [3.2.0rc11] — 2026-11-17
 
 This is the eleventh release candidate of 3.2.0. It contains everything merged to main after 3.2.0rc10 (up to #4636 and #4620).

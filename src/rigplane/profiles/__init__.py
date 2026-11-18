@@ -704,6 +704,11 @@ class RadioProfile:
     scope_span_preset_semantics: SpanPresetSemantics = field(
         default="half_width", kw_only=True
     )
+    # BCD width of the 0x27 0x15 span value on the wire
+    # (``[scope].span_value_bytes``): 5 on Icom (the default), 6 on the
+    # Xiegu G7250 (LIVE G7250 LAN 2026-11-13, MOR-4436). Replies of either
+    # width decode (commands/scope.py: parse_scope_span_response).
+    scope_span_value_bytes: int = field(default=5, kw_only=True)
     # Optional radio-LAN IQ wire facts from ``[iq_lan]`` (MOR-4398). The
     # dataclass stays in profiles to preserve the profiles/sdr independence.
     iq_lan: IqLanSpec | None = field(default=None, kw_only=True)
