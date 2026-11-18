@@ -797,3 +797,25 @@ async def test_scope_ws_deliberate_user_enable_during_menu() -> None:
             await _close_ws(writer2)
     finally:
         await srv.stop()
+
+
+@pytest.mark.timeout(30)
+async def test_scope_hidden_reaches_the_public_state_payload(
+    virtual_clock: VirtualClock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """MOR-4014: the scope-health fact the monitor publishes is a typed public
+    ``radioHealth.scopeHidden`` leaf of the real server payload, and it clears
+    when frames return. Never judged means not claimed."""
+    from rigplane.web.state_schema import RadioHealthPublic
+
+    srv, _radio, _queued = await _virtual_scope_server(monkeypatch, virtual_clock)
+    assert srv.build_public_state()["radioHealth"].get("scopeHidden") is None
+
+    srv._publish_scope_hidden(True, now=virtual_clock())  # noqa: SLF001
+    health = srv.build_public_state()["radioHealth"]
+    assert RadioHealthPublic.model_validate(health).scopeHidden is True
+
+    srv._publish_scope_hidden(False, now=virtual_clock())  # noqa: SLF001
+    health = srv.build_public_state()["radioHealth"]
+    assert RadioHealthPublic.model_validate(health).scopeHidden is False

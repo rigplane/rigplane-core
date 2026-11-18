@@ -1879,7 +1879,7 @@
         <div class="scope-disconnected-overlay scope-demand-off-overlay">Scope viewer OFF</div>
       {:else if scopeTxKnown && !scopeConnected}
         <div class="scope-tx-overlay" data-testid="scope-tx-overlay">{t('core.overlay.scopeTransmitting')}</div>
-      {:else if scopeHiddenOnRadio}
+      {:else if scopeHiddenOnRadio && !scopeConnected}
         <div class="scope-disconnected-overlay" data-testid="scope-hidden-overlay">{t('core.overlay.scopeHiddenOnRadio')}</div>
       {:else if !scopeConnected}
         <div class="scope-disconnected-overlay">{t('core.overlay.scopeDisconnected')}</div>
