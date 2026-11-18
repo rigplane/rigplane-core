@@ -114,7 +114,7 @@ def test_g7250_span_set_matches_the_applied_bytes() -> None:
     assert profile.command_map is not None
     frame = scope_set_span(
         profile.scope_span_presets_hz.index(192000),
-        profile.civ_addr,
+        to_addr=profile.civ_addr,
         cmd_map=profile.command_map,
         presets=profile.scope_span_presets_hz,
         receiver=0,
