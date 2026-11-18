@@ -637,6 +637,91 @@ async def test_watchdog_recover_cleans_up_then_drives_lifecycle(
     assert order == ["force_cleanup", "soft_reconnect"]
 
 
+async def test_watchdog_recover_clears_recovering_when_soft_reconnect_brings_no_data(
+    radio: IcomRadio,
+) -> None:
+    """MOR-4558: a soft reconnect that lands on a dead CI-V session (a radio
+    back from a power cycle answers discovery but fences CI-V data until a
+    fresh login) returns CONNECTED with no data. Once the detached recovery
+    has finished, nothing is recovering any more: ``_civ_recovering`` must not
+    stay set, or the next stall's "session dead" escalation is refused as
+    "the data watchdog is already recovering" and the link is left unwatched.
+    Readiness stays false until real CI-V data arrives.
+    """
+    ctrl = MagicMock()
+    ctrl._udp_transport = object()
+    radio._ctrl_transport = ctrl
+    radio._force_cleanup_civ = AsyncMock()
+
+    async def soft_reconnect_without_data() -> None:
+        # What ``ControlPhaseRuntime.soft_reconnect`` leaves behind when the
+        # rebuilt CI-V transport opens but no payload ever arrives.
+        radio._civ_recovering = True
+        radio._civ_stream_ready = False
+        radio._conn_state = RadioConnectionState.CONNECTED
+
+    radio.soft_reconnect = soft_reconnect_without_data
+
+    with patch.object(radio._civ_runtime, "start_data_watchdog", MagicMock()):
+        await radio._civ_runtime._watchdog_recover()
+
+    assert radio._civ_recovering is False
+    assert radio._civ_stream_ready is False
+    assert radio.radio_ready is False
+
+
+async def test_watchdog_reject_escalates_even_with_a_stale_recovering_flag(
+    radio: IcomRadio,
+) -> None:
+    """MOR-4558 guard: when the data watchdog's own control-session probe says
+    the session is dead (reject), the watchdog escalates to a full reconnect
+    and exits. A ``_civ_recovering`` flag left set by an earlier soft
+    reconnect (any caller, e.g. the poller's fast reconnect) must not refuse
+    that escalation: the watchdog would exit with no recovery started and
+    nothing watching the link.
+    """
+    clock = [1000.0]
+    radio._conn_state = RadioConnectionState.CONNECTED
+    radio._last_civ_data_received = clock[0] - 10.0
+    radio._last_civ_send_monotonic = clock[0] - 5.0
+    radio._civ_recovering = True  # stale: no recovery is running
+    radio._civ_runtime._reconnect_task = None
+    spawned: list[str | None] = []
+
+    def fake_spawn(
+        *,
+        full_reconnect_reason: str | None = None,
+        preempt: asyncio.Task[None] | None = None,
+    ) -> MagicMock:
+        spawned.append(full_reconnect_reason)
+        return MagicMock()
+
+    sleeps = [0]
+
+    async def fake_sleep(delay: float) -> None:
+        sleeps[0] += 1
+        if sleeps[0] > 50:
+            raise asyncio.CancelledError()
+        clock[0] += delay
+
+    with (
+        patch("asyncio.sleep", side_effect=fake_sleep),
+        patch("rigplane.runtime._civ_rx.time.monotonic", side_effect=lambda: clock[0]),
+        patch.object(radio, "_send_open_close", new=AsyncMock()),
+        patch.object(
+            radio._civ_runtime,
+            "_probe_control_session",
+            new=AsyncMock(return_value="reject"),
+        ),
+        patch.object(
+            radio._civ_runtime, "_spawn_recovery_task", side_effect=fake_spawn
+        ),
+    ):
+        await radio._civ_runtime._civ_data_watchdog_loop()
+
+    assert spawned == ["control session dead: reject"]
+
+
 # ---------------------------------------------------------------------------
 # MOR-2625 — a soft reconnect that restores no CI-V payload escalates once
 # to a full reconnect (control-session release, then the same soft_reconnect).
