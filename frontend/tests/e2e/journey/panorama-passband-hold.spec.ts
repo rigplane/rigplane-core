@@ -118,4 +118,52 @@ for (const [index, model] of ['IC-705', 'IC-7300'].entries()) {
       await server.kill();
     }
   });
+
+  test(`${model}: passband overlay holds through arrow retunes inside a pinned band preset (explicit view)`, async ({ page }, info) => {
+    const port = 18940 + index;
+    const server = await startJourneyServer(port, 14_250_000,
+      ['--model', model, '--evidence', info.outputPath('radio.jsonl')], 'tests/e2e/panorama_web_server.py');
+    const watch = watchPanoramaErrors(page);
+    const frames = watchScopeFrames(page);
+    try {
+      await installSampler(page);
+      await page.goto(`http://127.0.0.1:${port}/?ui=v2`);
+      await settlePassband(page, port);
+      await page.waitForTimeout(1000);
+      await page.getByRole('button', { name: 'More scope controls' }).first().click();
+      // Preset 0 = the band the VFO is in: an ABSOLUTE view (explicitView).
+      await page.getByTestId('scope-preset-select').first().selectOption('0');
+      await page.keyboard.press('Escape');
+      await expect.poll(() => frames.filter(f => f.pixels).length).toBeGreaterThan(2);
+      await expect(page.locator('.waterfall-content .passband-overlay')).toBeVisible({ timeout: 30_000 });
+      await page.waitForTimeout(6000);
+      await page.evaluate(() => { if (document.activeElement instanceof HTMLElement) document.activeElement.blur(); });
+      const beforeHz = await radioFrequency(page, port);
+      const fromT = await page.evaluate(() => performance.now());
+      for (let i = 0; i < 3; i++) {
+        await page.keyboard.press('ArrowRight');
+        await page.waitForTimeout(700);
+      }
+      await expect.poll(async () => await radioFrequency(page, port)).toBe(beforeHz + 3_000);
+      await page.waitForTimeout(8000);
+      const toT = await page.evaluate(() => performance.now());
+      const samples = await page.evaluate(() => window.passbandSamples);
+      const gaps = passbandGaps(samples, fromT, toT);
+      const report = gaps.map((gap) => ({ ...gap, gateDiff: gateDiff(gap) }));
+      await writeFile(info.outputPath('passband-preset-retune.json'),
+        JSON.stringify({ model, fromT, toT, gaps: report, samples }, null, 2));
+      console.log(`[passband-preset-retune ${model}] gaps=${report.length}`);
+      for (const gap of report) {
+        console.log(`  gap ${gap.frames} frames ${gap.durationMs.toFixed(0)} ms ` +
+          `state=${gap.stateAtDrop} diff=${JSON.stringify(gateDiff(gap))}`);
+      }
+      for (const gap of gaps) {
+        expect(gap.frames, `overlay absent ${gap.frames} frames (${gap.durationMs.toFixed(0)} ms); ` +
+          `gate diff: ${JSON.stringify(gateDiff(gap))}`).toBeLessThanOrEqual(1);
+      }
+      expectPanoramaSettled(watch);
+    } finally {
+      await server.kill();
+    }
+  });
 }

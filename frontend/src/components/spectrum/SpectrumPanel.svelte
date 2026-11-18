@@ -1868,7 +1868,6 @@
       receiver: scopeSubscriptionValue.receiver, view: scopeSubscriptionValue.view, facts: spectrumFacts,
       requestSeq: scopeSubscriptionValue.requestSeq,
       revision: audioFft ? audioScopeFactsRevision(runtime.state, runtime.caps) : spectrumAuthority?.digest,
-      frequencyHz: spectrumAuthority?.frequencyHz,
     }} onpointerdown={handleDragStart} onlostpointercapture={handleDragLostCapture} role="presentation">
       {#if !scopeDemandOn}
         <div class="scope-disconnected-overlay scope-demand-off-overlay">Scope viewer OFF</div>
