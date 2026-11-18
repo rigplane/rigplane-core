@@ -20,28 +20,18 @@ const surfaceFacts = (backingW = 100): CanvasSurfaceFacts => ({
   cssW: backingW, cssH: 50, backingW, backingH: 50, pixelScale: 1, visible: true,
 });
 
-it.each([false, true])('refreshes only the selected explicit demand regardless of surface order (follow first: %s)', followFirst => {
+it.each([false, true])('a confirmed retune never re-sends an explicit view, whatever the surface order (follow first: %s)', followFirst => {
   const { value, publish } = stream();
   const params = { stream: value, receiver: 0, view: { startHz: 14_225_000, endHz: 14_275_000 },
-    facts: surfaceFacts(), frequencyHz: 14_250_000, revision: 'initial' };
+    facts: surfaceFacts(), revision: 'initial' };
   const follow = { ...params, facts: surfaceFacts(50), view: { follow: 'vfo' as const, spanHz: 100_000 } };
   const inputs = followFirst ? [follow, params] : [params, follow];
   const actions = inputs.map(input => scopeSubscriptionSurface(document.createElement('div'), input));
-  const peer = scopeSubscriptionSurface(document.createElement('div'), { ...params, receiver: 1, frequencyHz: 7_100_000 });
   const before = publish.mock.calls.length;
   actions.forEach((action, i) => action.update({ ...inputs[i], revision: 'geometry-only' }));
+  actions.forEach((action, i) => action.update({ ...inputs[i], revision: 'confirmed-retune' }));
   expect(publish).toHaveBeenCalledTimes(before);
-  actions.forEach((action, i) => action.update({ ...inputs[i], frequencyHz: 14_290_000 }));
-  expect(publish).toHaveBeenCalledTimes(before + 1);
-  expect(publish.mock.lastCall).toEqual([expect.objectContaining({ view: params.view }), expect.anything(), true]);
-  actions.forEach((action, i) => action.update({ ...inputs[i], frequencyHz: 14_290_000, revision: 'new-frame' }));
-  expect(publish).toHaveBeenCalledTimes(before + 1);
-  actions[followFirst ? 1 : 0].destroy();
-  const followOnly = publish.mock.calls.length;
-  actions[followFirst ? 0 : 1].update({ ...follow, frequencyHz: 14_300_000 });
-  expect(publish).toHaveBeenCalledTimes(followOnly);
   actions.forEach(action => action.destroy());
-  peer.destroy();
 });
 
 describe('ScopeStream subscription negotiation', () => {
@@ -208,7 +198,7 @@ it.each(['error-first', 'facts-first'].flatMap(order => [false, true].map(explic
   const { value, publish } = stream();
   const node = document.createElement('div'); document.body.append(node);
   const params = { stream: value, receiver: 0, view: explicit ? { startHz: 14_225_000, endHz: 14_275_000 } : request().view,
-    facts: surfaceFacts(), frequencyHz: 14_250_000, revision: 'unknown' };
+    facts: surfaceFacts(), revision: 'unknown' };
   const action = scopeSubscriptionSurface(node, params);
   const before = publish.mock.calls.length;
   const error = () => value.handleMessage({ type: 'error', message: 'audio mapping unavailable' });

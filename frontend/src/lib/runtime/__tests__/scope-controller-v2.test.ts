@@ -84,18 +84,19 @@ describe('scope subscription retirement', () => {
 });
 
 describe('one multiplexed subscribed scope channel', () => {
-  it('forwards confirmed-retune refresh through session deduplication exactly once', async () => {
+  it('never re-sends a pinned (absolute) view because the confirmed frequency moved', async () => {
     const { port, change } = channel(); const owner = new ScopeController(() => port as unknown as WsChannel);
     const token = Symbol('surface'), stream = owner.stream('hardware');
     const demand = { ...request('radio', 0), view: { startHz: 14_225_000, endHz: 14_275_000 } };
-    stream.updateSurfaceSubscription(token, demand, true, 'initial', 14_250_000);
+    stream.updateSurfaceSubscription(token, demand, true, 'initial');
     const handle = await owner.hardwareScopeDriver.start(); change('connected');
+    // Frames that do and do not cover the whole pinned view: a retune re-sends in neither case.
+    port.receive(scopeWire({ sourceId: 'radio', receiver: 0, viewStartHz: 14_225_000, viewEndHz: 14_275_000 }));
+    port.receive(scopeWire({ sourceId: 'radio', receiver: 0, viewStartHz: 14_225_000, viewEndHz: 14_275_000,
+      coverageStartHz: 14_225_000, coverageEndHz: 14_250_000 }));
     port.sendRaw.mockClear();
-    stream.updateSurfaceSubscription(token, demand, false, 'geometry', 14_250_000);
+    for (const revision of ['geometry', 'confirmed', 'frame']) stream.updateSurfaceSubscription(token, demand, false, revision);
     expect(port.sendRaw).not.toHaveBeenCalled();
-    stream.updateSurfaceSubscription(token, demand, false, 'confirmed', 14_290_000);
-    stream.updateSurfaceSubscription(token, demand, false, 'frame', 14_290_000);
-    expect(port.sendRaw).toHaveBeenCalledExactlyOnceWith({ type: 'subscribe', ...demand });
     stream.removeSurfaceSubscription(token); await owner.hardwareScopeDriver.stop(handle);
   });
   it('opens once, routes radio/audio zero-copy, pauses hidden demand, and releases one source at a time', async () => {
