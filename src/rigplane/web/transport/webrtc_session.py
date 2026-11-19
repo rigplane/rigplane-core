@@ -46,6 +46,7 @@ from typing import TYPE_CHECKING, Any, Final, cast
 from ...runtime.controller_authority import ControllerError  # noqa: TID251
 from ...ws import WS_OP_TEXT  # noqa: TID251
 from ..channel_attach import ChannelKind, ClientChannelParams  # noqa: TID251
+from .webrtc_contract import WebRtcAnswer  # noqa: TID251
 from .webrtc import (  # noqa: TID251
     WebRtcDataChannelConnection,
     webrtc_available,
@@ -146,7 +147,7 @@ class WebRtcSessionManager:
         offer_type: str,
         ice_servers: list[IceServer] | None = None,
     ) -> dict[str, Any]:
-        """Process an SDP offer and return ``{sessionId, sdp, type}``.
+        """Process an SDP offer and return the :class:`WebRtcAnswer` wire body.
 
         ``ice_servers`` carries the client's STUN/TURN servers (``None`` or
         ``[]`` means host-only gathering with an explicit empty
@@ -224,11 +225,9 @@ class WebRtcSessionManager:
             raise WebRtcSessionError("Failed to generate SDP answer.")
 
         logger.info("WebRTC session %s negotiated (answer generated)", session_id)
-        return {
-            "sessionId": session_id,
-            "sdp": local_desc.sdp,
-            "type": local_desc.type,
-        }
+        return WebRtcAnswer(
+            session_id=session_id, sdp=local_desc.sdp, type=local_desc.type
+        ).to_json()
 
     async def add_ice_candidate(
         self, session_id: str, candidate: dict[str, Any] | None

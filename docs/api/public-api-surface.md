@@ -356,6 +356,19 @@ without a major version.
   `audio.usb_driver.UsbAudioDriver` (and similar audio-stream primitives)
 - Audio pipeline types: `AudioPacket`, `AudioState`, `AudioStats`,
   `AudioStream`, `JitterBuffer`, `AUDIO_HEADER_SIZE`
+- WebRTC wire contracts for an out-of-process offerer or station agent
+  (MOR-272): the data-channel attach frame and its ack
+  (`ClientChannelParams.to_attach_frame` / `from_attach_frame`,
+  `ChannelAttachedAck.encode` / `from_frame`, `ChannelKind`); the
+  answerer's ICE gathering policy (`IceServer`, `IceGatheringPolicy`,
+  `GATHER_TIMEOUT_S`, `install_ice_gathering_policy`,
+  `apply_ice_gathering_policy`); the answerer HTTP contract of
+  `POST /api/v1/transport/webrtc/offer` and `/ice-candidate`
+  (`WebRtcOffer`, `WebRtcAnswer`, `WebRtcIceCandidate`,
+  `WebRtcRequestError`); and the `webrtc` block of
+  `GET /api/v1/capabilities` (`WebRtcTransportStatus`). Canonical modules
+  stay in `rigplane.web.*` (tier 3); import these names from `rigplane`.
+  The server parses and builds the same wire bodies through these types.
 
 Example (valid, lazy-loaded):
 

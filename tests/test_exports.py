@@ -103,6 +103,20 @@ def test_public_api_surface() -> None:
         "Limiter",
         "DspPipeline",
         "UsbAudioDriver",
+        # --- Tier 2 (lazy): WebRTC wire contracts (MOR-272) ---
+        "ClientChannelParams",
+        "ChannelAttachedAck",
+        "ChannelKind",
+        "IceServer",
+        "IceGatheringPolicy",
+        "GATHER_TIMEOUT_S",
+        "install_ice_gathering_policy",
+        "apply_ice_gathering_policy",
+        "WebRtcOffer",
+        "WebRtcAnswer",
+        "WebRtcIceCandidate",
+        "WebRtcRequestError",
+        "WebRtcTransportStatus",
     }
     assert set(rigplane.__all__) == expected_public
 
