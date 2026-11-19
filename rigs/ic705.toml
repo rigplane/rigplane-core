@@ -47,6 +47,35 @@ span_presets_hz = [2500, 5000, 10000, 25000, 50000, 100000, 250000, 500000]
 # "Scope waveform data", quoted in runtime/_civ_rx.py:
 # CivRuntime._publish_scope_span_observation).
 span_preset_semantics = "half_width"
+# source: IC-705 CI-V Reference Guide A7560-8EX-1 (Jul. 2020), p.27, 27 1E:
+# 17 ranges, edges 1-3, entry of digits below 100 Hz is ignored. No widest
+# width is stated: a window must lie inside one range.
+fixed_edge_step_hz = 100
+fixed_edge_ranges = [
+    { range_index = 1, start_hz = 30000, end_hz = 1600000 },
+    { range_index = 2, start_hz = 1600000, end_hz = 2000000 },
+    { range_index = 3, start_hz = 2000000, end_hz = 6000000 },
+    { range_index = 4, start_hz = 6000000, end_hz = 8000000 },
+    { range_index = 5, start_hz = 8000000, end_hz = 11000000 },
+    { range_index = 6, start_hz = 11000000, end_hz = 15000000 },
+    { range_index = 7, start_hz = 15000000, end_hz = 20000000 },
+    { range_index = 8, start_hz = 20000000, end_hz = 22000000 },
+    { range_index = 9, start_hz = 22000000, end_hz = 26000000 },
+    { range_index = 10, start_hz = 26000000, end_hz = 30000000 },
+    { range_index = 11, start_hz = 30000000, end_hz = 45000000 },
+    { range_index = 12, start_hz = 45000000, end_hz = 60000000 },
+    { range_index = 13, start_hz = 60000000, end_hz = 74800000 },
+    { range_index = 14, start_hz = 74800000, end_hz = 108000000 },
+    { range_index = 15, start_hz = 108000000, end_hz = 137000000 },
+    { range_index = 16, start_hz = 137000000, end_hz = 200000000 },
+    { range_index = 17, start_hz = 400000000, end_hz = 470000000 },
+]
+# MOR-4563: TEMPORARY staging switch, not a per-radio mechanism. The table
+# is recorded for every radio, but runtime consumers see it only when this
+# is true (IC-7610 keeps its shipped behaviour). MOR-4567 step 4 (guarded
+# fixed capture: slot policy, ownership, width limits) DELETES the switch,
+# and FIX turns on for every radio with data at once.
+fixed_edge_capture = false
 # 27 19: adjustable range -20.0 ~ +20.0 dB in 0.5 dB steps (MOR-3694;
 # owner-confirmed on the bench IC-705 — the same 27 19 family range the
 # IC-7300MK2 CI-V guide p.25 documents, see ic7300mk2.toml).
