@@ -93,7 +93,9 @@ from ..core.state_store import StateSnapshot, StateStore
 from ..core.transport import IcomTransport
 from ..core.tx_observation import (
     ObservedPtt,
+    TxMeterLog,
     project_observed_ptt,
+    project_tx_meters,
 )
 from ..runtime.controller_authority import (
     ControllerAuthority,
@@ -1451,6 +1453,7 @@ class WebServer:
         # been seen yet: the first snapshot seeds the baseline without
         # emitting, because the page fetches the document on connect anyway.
         self._last_announced_observed_ptt: ObservedPtt | None = None
+        self._tx_meter_log = TxMeterLog()
         # MOR-4279: monotonic counter of managed-TX change notifications;
         # a document builder finishing behind a newer notification drops
         # its (stale) document instead of queueing it.
@@ -2233,6 +2236,9 @@ class WebServer:
         # Announce projection changes with the existing invalidation event so
         # the page refetches the document it actually displays.
         observed_ptt = project_observed_ptt(snapshot)
+        self._tx_meter_log.observe(
+            observed_ptt, project_tx_meters(snapshot), snapshot.generated_at_monotonic
+        )
         if self._last_announced_observed_ptt is None:
             self._last_announced_observed_ptt = observed_ptt
         elif observed_ptt != self._last_announced_observed_ptt:
