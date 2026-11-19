@@ -9,6 +9,7 @@
 import {
   buildTxHeader, TX_BITRATE, SAMPLE_RATE, TX_PCM_SAMPLE_RATES, CHANNELS, CODEC_PCM16,
 } from './constants';
+import { getTxMicProcessing } from '../stores/tx-mic-processing.svelte';
 
 export type TxSendFn = (data: ArrayBuffer) => void;
 type LegacyGetUserMedia = (
@@ -200,22 +201,25 @@ export class TxMic {
     }
 
     const generation = ++this.captureGeneration;
+    const processing = getTxMicProcessing() === 'browser';
     let stream: MediaStream;
     try {
       stream = await getUserMedia({
         audio: {
           channelCount: CHANNELS,
           sampleRate: SAMPLE_RATE,
-          // Raw capture (MOR-4312). The browser's voice-call processing is
-          // wrong for a radio transmitter: noise suppression gates and
-          // darkens speech, automatic gain control pumps and distorts it,
-          // and on Android echo cancellation also moves the capture to the
-          // band-limited call route. The radio's own speech processing
+          // The operator's TX mic processing mode (MOR-4596). The default is
+          // raw (MOR-4312): the browser's voice-call processing is wrong for
+          // a radio transmitter — noise suppression gates and darkens
+          // speech, automatic gain control pumps and distorts it, and on
+          // Android echo cancellation also moves the capture to the
+          // band-limited call route; the radio's own speech processing
           // shapes the audio. Echo cancellation has nothing to cancel: the
-          // receive audio is silent while the radio transmits.
-          echoCancellation: false,
-          noiseSuppression: false,
-          autoGainControl: false,
+          // receive audio is silent while the radio transmits. Operators who
+          // need the processing choose `browser`, which turns all three on.
+          echoCancellation: processing,
+          noiseSuppression: processing,
+          autoGainControl: processing,
         },
       });
     } catch (error: unknown) {
