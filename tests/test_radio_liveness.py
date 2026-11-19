@@ -800,9 +800,22 @@ async def test_identity_only_liveness_refresh_reaches_existing_websocket(
 ) -> None:
     from types import SimpleNamespace
     from rigplane.web import runtime_helpers
+    from rigplane.web._delta_encoder import apply_delta
     from test_web_server import _close_ws, _ws_connect, _ws_recv_frame
 
     radio = IcomRadio("127.0.0.1", model="IC-7610")
+    # MOR-4214: the served frame age is wall-clock. Pin the payload clock to
+    # the latest frame stamp, so every build reports age 0 -- what a loaded
+    # host does when each broadcast is built in the same millisecond as its
+    # frame. Two refreshes then carry an equal age, and the delta encoder
+    # rightly leaves the unchanged ``connection`` block out of the second
+    # delta; the client view below is merged with the producer's
+    # ``apply_delta``, as a real client does.
+    monkeypatch.setattr(
+        runtime_helpers,
+        "time",
+        SimpleNamespace(monotonic=lambda: radio.last_valid_frame_monotonic or 0.0),
+    )
     server = WebServer(radio, WebConfig(host="127.0.0.1", port=0))
     radio.set_state_change_callback(server._on_radio_state_change)
     listener = await asyncio.start_server(server._handle_connection, "127.0.0.1", 0)
@@ -820,7 +833,8 @@ async def test_identity_only_liveness_refresh_reaches_existing_websocket(
 
         try:
             baseline = await receive_state()
-            assert baseline["data"]["connection"]["liveness"]["lastFrameAgeMs"] is None
+            view = apply_delta({}, baseline)
+            assert view["connection"]["liveness"]["lastFrameAgeMs"] is None
             before = radio._state_store.snapshot()
             for _ in range(2):
                 frame = parse_civ_frame(
@@ -832,15 +846,19 @@ async def test_identity_only_liveness_refresh_reaches_existing_websocket(
                     frame, generation=radio._civ_epoch
                 )
                 update = await receive_state()
-                body = update.get("changed", update.get("data"))
-                assert body["connection"]["liveness"]["lastFrameAgeMs"] is not None
+                view = apply_delta(view, update)
+                assert view["connection"]["liveness"]["lastFrameAgeMs"] == 0
                 assert update["transportSeq"] > baseline["transportSeq"]
                 key = server._public_state_delivery_key(before, health_revision=0)
                 with monkeypatch.context() as clock:
                     clock.setattr(
                         runtime_helpers,
                         "time",
-                        SimpleNamespace(monotonic=lambda: time.monotonic() + 1),
+                        SimpleNamespace(
+                            monotonic=lambda: (
+                                (radio.last_valid_frame_monotonic or 0.0) + 1
+                            )
+                        ),
                     )
                     assert (
                         server._public_state_delivery_key(before, health_revision=0)
@@ -859,11 +877,21 @@ async def test_identity_only_liveness_refresh_reaches_existing_websocket(
 @pytest.mark.parametrize("model", ["IC-7300", "IC-705"])
 @pytest.mark.parametrize("command", [0x03, 0x25])
 async def test_relative_vfo_bootstrap_liveness_reaches_existing_websocket(
-    model: str, command: int
+    model: str, command: int, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    from types import SimpleNamespace
+    from rigplane.web import runtime_helpers
+    from rigplane.web._delta_encoder import apply_delta
     from test_web_server import _close_ws, _ws_connect, _ws_recv_frame
 
     radio = IcomRadio("127.0.0.1", model=model)
+    # MOR-4214: payload age pinned to the latest frame stamp (see
+    # test_identity_only_liveness_refresh_reaches_existing_websocket).
+    monkeypatch.setattr(
+        runtime_helpers,
+        "time",
+        SimpleNamespace(monotonic=lambda: radio.last_valid_frame_monotonic or 0.0),
+    )
     server = WebServer(radio, WebConfig(host="127.0.0.1", port=0))
     radio.set_state_change_callback(server._on_radio_state_change)
     listener = await asyncio.start_server(server._handle_connection, "127.0.0.1", 0)
@@ -881,7 +909,8 @@ async def test_relative_vfo_bootstrap_liveness_reaches_existing_websocket(
 
         try:
             baseline = await receive_state()
-            assert baseline["data"]["connection"]["liveness"]["lastFrameAgeMs"] is None
+            view = apply_delta({}, baseline)
+            assert view["connection"]["liveness"]["lastFrameAgeMs"] is None
             store = radio._state_store
             store.configure_relative_vfo_retention(
                 generation=store.provider_generation, max_age=31, coherence_window=5
@@ -901,8 +930,8 @@ async def test_relative_vfo_bootstrap_liveness_reaches_existing_websocket(
                 )
                 assert radio.last_valid_frame_monotonic is not None
                 update = await receive_state()
-                body = update.get("changed", update.get("data"))
-                assert body["connection"]["liveness"]["lastFrameAgeMs"] is not None
+                view = apply_delta(view, update)
+                assert view["connection"]["liveness"]["lastFrameAgeMs"] == 0
                 assert update["transportSeq"] > baseline["transportSeq"]
                 baseline = update
             after = store.snapshot()
