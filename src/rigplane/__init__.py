@@ -113,9 +113,12 @@ if TYPE_CHECKING:
         api_request_messages,
     )
     from .web.channel_attach import (  # noqa: F401, TID251
+        DATA_CHANNELS,
         ChannelAttachedAck,
         ChannelKind,
         ClientChannelParams,
+        DataChannelLabel,
+        DataChannelSpec,
     )
     from .web.transport.ice_gathering import (  # noqa: F401, TID251
         GATHER_TIMEOUT_S,
@@ -157,6 +160,9 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
     "ClientChannelParams": ("rigplane.web.channel_attach", "ClientChannelParams"),
     "ChannelAttachedAck": ("rigplane.web.channel_attach", "ChannelAttachedAck"),
     "ChannelKind": ("rigplane.web.channel_attach", "ChannelKind"),
+    "DataChannelSpec": ("rigplane.web.channel_attach", "DataChannelSpec"),
+    "DataChannelLabel": ("rigplane.web.channel_attach", "DataChannelLabel"),
+    "DATA_CHANNELS": ("rigplane.web.channel_attach", "DATA_CHANNELS"),
     "IceServer": ("rigplane.web.transport.ice_gathering", "IceServer"),
     "IceGatheringPolicy": (
         "rigplane.web.transport.ice_gathering",
@@ -455,6 +461,9 @@ __all__ = [
     "ClientChannelParams",
     "ChannelAttachedAck",
     "ChannelKind",
+    "DataChannelSpec",
+    "DataChannelLabel",
+    "DATA_CHANNELS",
     "IceServer",
     "IceGatheringPolicy",
     "GATHER_TIMEOUT_S",

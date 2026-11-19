@@ -225,11 +225,23 @@ are two gated HTTP signaling routes for the DataChannel transport:
 The gated transport path is a transport alternative for the same handlers and
 wire frames used by WebSockets:
 
-| DataChannel | Reliability | Handler contract |
-|-------------|-------------|------------------|
-| `control` | ordered, reliable | Same JSON control frames as `/api/v1/ws` |
-| `scope` | unordered, `maxRetransmits=0` | Same binary scope frames as `/api/v1/scope` |
-| `audio` | unordered, `maxRetransmits=0` | Same JSON/binary audio frames as `/api/v1/audio` |
+| DataChannel | Reliability | Carries | Handler contract |
+|-------------|-------------|---------|------------------|
+| `control` | ordered, reliable | text and binary | Same JSON control frames as `/api/v1/ws` |
+| `api` | ordered, reliable | text attach, then binary | REST requests over the `api` channel framing |
+| `scope` | unordered, `maxRetransmits=0` | binary only | Binary scope frames of `/api/v1/scope` |
+| `scope-text` | ordered, reliable | text only | Attach frame, ack and JSON frames of `/api/v1/scope` |
+| `audio` | unordered, `maxRetransmits=0` | binary only | Binary audio frames of `/api/v1/audio` |
+| `audio-text` | ordered, reliable | text only | Attach frame, ack and JSON frames (`audio_start`, ...) of `/api/v1/audio` |
+
+The set is the typed contract `DATA_CHANNELS` (`rigplane.DataChannelSpec`),
+also published as `data_channels` in the browser wire contract
+(`api-channel-wire.json`). Each scope/audio pair is ONE connection to its
+handler: text goes on the reliable `*-text` channel, binary on the lossy
+one, and frames from both arrive at the same handler, so a text command
+is never lost. The two channels keep no order between each other. Every
+attach frame is the first text frame on `control`, `api`, `scope-text` or
+`audio-text`; it is never resent.
 
 The gated transport routes are default-off. If `WebConfig.webrtc_enabled` is
 false, or `aiortc` is missing, they return HTTP `503` with

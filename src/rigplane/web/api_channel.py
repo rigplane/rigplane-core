@@ -109,6 +109,7 @@ from typing import (
 from ..ws import WS_OP_BINARY  # noqa: TID251
 
 if TYPE_CHECKING:
+    from .channel_attach import DataChannelSpec  # noqa: TID251
     from .server import WebServer  # noqa: TID251
     from .transport.connection import Connection  # noqa: TID251
 
@@ -370,7 +371,7 @@ def _api_channel_payload_contracts() -> dict[str, ApiWirePayload]:
         ),
         "attach_frame": _payload_contract(
             ClientChannelParams,
-            "first text frame on a client data channel",
+            "first text frame on control, api, scope-text and audio-text",
             constant=("type", '"attach"', "the attach discriminator"),
             rename={"controller_role": "role"},
             optional=frozenset({"controller_key"}),
@@ -383,12 +384,12 @@ def _api_channel_payload_contracts() -> dict[str, ApiWirePayload]:
         ),
         "attach_ack": _payload_contract(
             ChannelAttachedAck,
-            "first server text frame on a scope/audio channel",
+            "first server text frame on a scope-text/audio-text channel",
             constant=("type", '"attached"', "the ack discriminator"),
             rename={"version": "v"},
             required=frozenset({"channel", "version"}),
             notes={
-                "channel": 'the acked label: "scope" | "audio"',
+                "channel": 'the acked kind: "scope" | "audio"',
                 "version": f"ack version, currently {ATTACH_ACK_VERSION}",
             },
         ),
@@ -413,7 +414,9 @@ class ApiWireDefinition:
     """The wire contract as a typed, JSON-serialisable record.
 
     The one machine-readable copy of the header layout, message types,
-    version, chunk size, limits, and the JSON payload contracts. Use
+    version, chunk size, limits, the JSON payload contracts, and the K5
+    data-channel set (``data_channels``: label, kind, ordering,
+    reliability and which frames each channel carries). Use
     :func:`dataclasses.asdict` for the plain-JSON form; every value
     round-trips through ``json`` unchanged.
     """
@@ -423,6 +426,7 @@ class ApiWireDefinition:
     message_types: ApiWireMessageTypes
     limits: ApiWireLimits
     payloads: dict[str, ApiWirePayload]
+    data_channels: tuple[DataChannelSpec, ...]
 
 
 def api_channel_wire_definition() -> ApiWireDefinition:
@@ -432,6 +436,8 @@ def api_channel_wire_definition() -> ApiWireDefinition:
     browser transport will consume and check this instead of re-listing
     values).
     """
+    from .channel_attach import DATA_CHANNELS  # noqa: TID251
+
     return ApiWireDefinition(
         version=API_CHANNEL_VERSION,
         header=ApiWireHeader(
@@ -457,6 +463,7 @@ def api_channel_wire_definition() -> ApiWireDefinition:
             send_low_water_bytes=SEND_LOW_WATER_BYTES,
         ),
         payloads=_api_channel_payload_contracts(),
+        data_channels=DATA_CHANNELS,
     )
 
 
@@ -1296,7 +1303,8 @@ def _golden_frame(
 
 
 def _golden_attach_document(label: str) -> GoldenTextDocument:
-    """The attach frame for one data-channel label (client -> server)."""
+    """The attach frame for one channel kind (client -> server); a split
+    kind's attach rides its reliable ``*-text`` companion."""
     keyless = label == "api"
     decoded = {
         "type": "attach",
@@ -1315,13 +1323,13 @@ def _golden_attach_document(label: str) -> GoldenTextDocument:
         outcome=(
             "silent until the first request (the keyless acquire path)"
             if keyless
-            else "answered by the attach ack; a resent frame is re-acknowledged"
+            else "answered by the attach ack (control: by the hello)"
         ),
     )
 
 
 def _golden_ack_document(kind: str) -> GoldenTextDocument:
-    """The attach ack for one lossy label (server -> client)."""
+    """The attach ack for one split kind (server -> client)."""
     from .channel_attach import ChannelAttachedAck  # noqa: TID251
 
     text = ChannelAttachedAck(kind).encode()
@@ -1331,7 +1339,7 @@ def _golden_ack_document(kind: str) -> GoldenTextDocument:
         text=text,
         decoded=json.loads(text),
         template=None,
-        outcome="the client stops resending its attach",
+        outcome="the client opens its transport",
     )
 
 
@@ -1396,7 +1404,7 @@ def _golden_control_hello_document() -> GoldenTextDocument:
         decoded=json.loads(text),
         template=None,
         outcome=(
-            "the client stops resending its attach and learns the "
+            "the client opens its control transport and learns the "
             "server, radio and capability surface"
         ),
     )

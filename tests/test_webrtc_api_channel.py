@@ -627,6 +627,8 @@ def test_api_wire_definition_is_typed_and_json_stable() -> None:
     assert limits.send_low_water_bytes == 16 * 1024
     wire = dataclasses.asdict(definition)
     wire.pop("payloads")  # pinned in tests/test_api_channel_wire_json.py
+    # The K5 channel set, pinned row by row in tests/test_webrtc_split_channel.py.
+    assert len(wire.pop("data_channels")) == 6
     assert json.loads(json.dumps(wire)) == {
         "version": _API_VERSION,
         "header": {

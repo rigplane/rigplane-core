@@ -5,9 +5,10 @@ Negotiates a loopback ``RTCPeerConnection`` pair, wraps the server-side
 *unchanged* ``ControlHandler`` over it, and asserts the control frames that
 arrive client-side are byte-identical to the WebSocket wire format.
 
-A2.2 extends this to the lossy ``scope`` + ``audio`` channels: a single PC
-carries control (ordered/reliable) plus scope + audio (unordered,
-``maxRetransmits=0``), each dispatched into its unchanged handler concurrently.
+A2.2 extends this to ``scope`` + ``audio`` on the same PC, each a split pair
+(K5, MOR-272): binary frames on an unordered ``maxRetransmits=0`` channel,
+text frames on its reliable ordered ``*-text`` companion, merged into the one
+connection its unchanged handler sees.
 """
 
 from __future__ import annotations
@@ -178,10 +179,11 @@ def test_unavailable_error_is_runtime_error() -> None:
 async def _negotiate_multi() -> tuple[Any, Any, dict[str, Any], dict[str, Any]]:
     """Open control + scope + audio on one PC pair via the production helpers.
 
-    Returns ``(client_pc, server_pc, client_channels, server_channels)`` where
-    each ``*_channels`` maps the label → ``RTCDataChannel``. The client side
-    uses the production ``add_*_channel`` factories so the asserted channel
-    configs are exactly what ships.
+    Returns ``(client_pc, server_pc, client_conns, server_channels)``:
+    ``client_conns`` maps the kind → the offerer's connection (a split pair
+    for scope/audio) and ``server_channels`` maps every label → its inbound
+    ``RTCDataChannel``. The client side uses the production ``add_*_channel``
+    factories so the asserted channel configs are exactly what ships.
     """
     from aiortc import RTCPeerConnection
 
@@ -190,7 +192,7 @@ async def _negotiate_multi() -> tuple[Any, Any, dict[str, Any], dict[str, Any]]:
     server_channels: dict[str, Any] = {}
     ready: dict[str, asyncio.Future[Any]] = {
         label: asyncio.get_event_loop().create_future()
-        for label in ("control", "scope", "audio")
+        for label in ("control", "scope", "scope-text", "audio", "audio-text")
     }
 
     @server_pc.on("datachannel")  # type: ignore[misc, no-untyped-call]
@@ -200,14 +202,11 @@ async def _negotiate_multi() -> tuple[Any, Any, dict[str, Any], dict[str, Any]]:
         if fut is not None and not fut.done():
             fut.set_result(channel)
 
-    # Build the three channels via the production factories (one PC).
-    control_conn = add_control_channel(client_pc)
-    scope_conn = add_scope_channel(client_pc)
-    audio_conn = add_audio_channel(client_pc)
-    client_channels = {
-        "control": control_conn._channel,
-        "scope": scope_conn._channel,
-        "audio": audio_conn._channel,
+    # Build the channels via the production factories (one PC).
+    client_conns = {
+        "control": add_control_channel(client_pc),
+        "scope": add_scope_channel(client_pc),
+        "audio": add_audio_channel(client_pc),
     }
 
     offer = await client_pc.createOffer()
@@ -221,34 +220,25 @@ async def _negotiate_multi() -> tuple[Any, Any, dict[str, Any], dict[str, Any]]:
         asyncio.gather(*ready.values()),
         timeout=15,
     )
-    return client_pc, server_pc, client_channels, server_channels
+    return client_pc, server_pc, client_conns, server_channels
 
 
 @pytest.mark.asyncio
-async def test_scope_channel_is_unordered_lossy() -> None:
-    """add_scope_channel() builds an unordered, maxRetransmits=0 'scope' channel."""
+@pytest.mark.parametrize("kind", ["scope", "audio"])
+async def test_split_kind_is_lossy_binary_plus_reliable_text(kind: str) -> None:
+    """add_scope/audio_channel() build the lossy binary channel and its
+    reliable ordered ``*-text`` companion, merged into one connection."""
     from aiortc import RTCPeerConnection
 
     pc = RTCPeerConnection()
-    conn = add_scope_channel(pc)
+    conn = (add_scope_channel if kind == "scope" else add_audio_channel)(pc)
     assert isinstance(conn, WebRtcDataChannelConnection)
-    assert conn._channel.label == "scope"
+    assert conn._channel.label == kind
     assert conn._channel.ordered is False
     assert conn._channel.maxRetransmits == 0
-    await conn.close()
-
-
-@pytest.mark.asyncio
-async def test_audio_channel_is_unordered_lossy() -> None:
-    """add_audio_channel() builds an unordered, maxRetransmits=0 'audio' channel."""
-    from aiortc import RTCPeerConnection
-
-    pc = RTCPeerConnection()
-    conn = add_audio_channel(pc)
-    assert isinstance(conn, WebRtcDataChannelConnection)
-    assert conn._channel.label == "audio"
-    assert conn._channel.ordered is False
-    assert conn._channel.maxRetransmits == 0
+    assert conn._text_channel.label == f"{kind}-text"
+    assert conn._text_channel.ordered is True
+    assert conn._text_channel.maxRetransmits is None
     await conn.close()
 
 
@@ -264,12 +254,12 @@ async def test_control_scope_audio_flow_concurrently_into_handlers() -> None:
     """
     from rigplane.web.handlers import AudioHandler, ControlHandler, ScopeHandler
 
-    client_pc, server_pc, client_ch, server_ch = await _negotiate_multi()
+    client_pc, server_pc, client_conn, server_ch = await _negotiate_multi()
 
     # control: ControlHandler sends a hello frame client-side on run().
     control_hello: list[Any] = []
 
-    @client_ch["control"].on("message")  # type: ignore[misc, no-untyped-call]
+    @client_conn["control"]._channel.on("message")  # type: ignore[misc, no-untyped-call]
     def _on_control(message: Any) -> None:
         control_hello.append(message)
 
@@ -282,24 +272,28 @@ async def test_control_scope_audio_flow_concurrently_into_handlers() -> None:
     # scope: server=None → ScopeHandler.run() just reads inbound frames; the
     # seam still delivers them. Assert via the wrapped connection directly so
     # no handler edits are needed to observe arrival.
-    scope_conn = WebRtcDataChannelConnection(server_ch["scope"], server_pc)
+    scope_conn = WebRtcDataChannelConnection(
+        server_ch["scope"], server_pc, text_channel=server_ch["scope-text"]
+    )
     scope_handler = ScopeHandler(scope_conn, server=None)
     assert scope_handler is not None  # constructed over the lossy seam
 
     # audio: broadcaster=None → AudioHandler reads inbound frames over the seam.
-    audio_conn = WebRtcDataChannelConnection(server_ch["audio"], server_pc)
+    audio_conn = WebRtcDataChannelConnection(
+        server_ch["audio"], server_pc, text_channel=server_ch["audio-text"]
+    )
     audio_handler = AudioHandler(audio_conn, None, broadcaster=None)
     assert audio_handler is not None  # constructed over the lossy seam
 
     # Wait for all client channels to open.
     for _ in range(100):
-        if all(c.readyState == "open" for c in client_ch.values()):
+        if all(c.is_alive() for c in client_conn.values()):
             break
         await asyncio.sleep(0.05)
 
     # Drive scope + audio client→server concurrently; recv() proves the seam.
-    client_ch["scope"].send(b"\xaa\xbb")
-    client_ch["audio"].send(b"\x01\x02\x03\x04")
+    await client_conn["scope"].send_binary(b"\xaa\xbb")
+    await client_conn["audio"].send_binary(b"\x01\x02\x03\x04")
 
     scope_op, scope_payload = await asyncio.wait_for(scope_conn.recv(), timeout=5)
     audio_op, audio_payload = await asyncio.wait_for(audio_conn.recv(), timeout=5)
@@ -319,12 +313,20 @@ async def test_control_scope_audio_flow_concurrently_into_handlers() -> None:
     assert hello["type"] == "hello"
     assert hello["radio"] == "IC-7610"
 
-    # Config contract: scope/audio lossy, control ordered/reliable — one PC.
+    # Text crosses on the reliable companion and merges into the same recv.
+    await client_conn["audio"].send_text('{"type":"audio_stop"}')
+    text_op, text_payload = await asyncio.wait_for(audio_conn.recv(), timeout=5)
+    assert text_op == WS_OP_TEXT
+    assert text_payload == b'{"type":"audio_stop"}'
+
+    # Config contract: scope/audio binary lossy, their text halves and
+    # control ordered/reliable — one PC.
     assert server_ch["control"].ordered is True
-    assert server_ch["scope"].ordered is False
-    assert server_ch["scope"].maxRetransmits == 0
-    assert server_ch["audio"].ordered is False
-    assert server_ch["audio"].maxRetransmits == 0
+    for label in ("scope", "audio"):
+        assert server_ch[label].ordered is False
+        assert server_ch[label].maxRetransmits == 0
+        assert server_ch[f"{label}-text"].ordered is True
+        assert server_ch[f"{label}-text"].maxRetransmits is None
 
     await control_conn.close()
     control_task.cancel()

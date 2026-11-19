@@ -13,7 +13,7 @@ whole run when any row is skipped, `fixme`, or missing from the results.
 | L1 | The ordinary UI page served by Core talks only to the station: every HTTP request (`page.on('request')`) and every WebSocket (`page.on('websocket')`, ws/wss compared as the http/https station origin) stays on the station origin, and at least one WebSocket is seen. |
 | L2 | Tune in the UI → the simulator's frequency follows; change the frequency on the station side → the UI follows. |
 | L3 | Hold PTT in the phone layout → the simulator reports keyed; release → unkeyed within 1 s (read from the simulator's own PTT journal, not the UI; the helper requires the final state OFF and an OFF at or after this release). The row also pins MOR-4312: the page's `getUserMedia` request has `echoCancellation`, `noiseSuppression` and `autoGainControl` all `false` (the stub records the constraints), and the simulator's own `tx_audio_signal_frames` counter rises, i.e. the captured tone reached the radio through the real WebSocket and Core. The microphone stub honours the page's audio constraints (rate, channel count) so the page's Opus encoder accepts it; the stub is defined on the `MediaDevices` prototype because WebKit may recreate the `navigator.mediaDevices` wrapper and drop an instance property. |
-| P0 | A bare page opens an `RTCPeerConnection` with the four data channels to Core's answerer (`POST /api/v1/transport/webrtc/offer`, offer relayed by the Node test) and the `control` channel delivers `control_hello`, validated against `payloads.control_hello` in the wire contract. The bare page is served on the station's origin with every request routed locally (`**/*`; the row asserts the fulfilled document, status 200): `about:blank` is an insecure context in WebKit, where WebRTC then gathers nothing. |
+| P0 | A bare page opens an `RTCPeerConnection` with the six data channels of the K5 set (`control`, `api`, `scope`, `scope-text`, `audio`, `audio-text`) to Core's answerer (`POST /api/v1/transport/webrtc/offer`, offer relayed by the Node test) and the `control` channel delivers `control_hello`, validated against `payloads.control_hello` in the wire contract. The bare page is served on the station's origin with every request routed locally (`**/*`; the row asserts the fulfilled document, status 200): `about:blank` is an insecure context in WebKit, where WebRTC then gathers nothing. |
 
 The station is `tests/e2e/remote_web_server.py`: the real `WebServer` over
 the IC-7610 LAN fake (`stateful_ptt=True, ptt_on_session_loss="hold"`),
@@ -31,15 +31,15 @@ The required matrix (projects x rows x `repeatEach`) lives in
 
 Fixtures are never hand-written: attach frames come from
 `frontend/src/lib/transport/api-channel-golden.json` documents (the four
-`attach_<label>` texts with `<SESSION-KEY>` substituted from the controller
+`attach_<kind>` texts, each sent once on its kind's text-carrying channel, with `<SESSION-KEY>` substituted from the controller
 API), and `control_hello` is validated against `api-channel-wire.json` by the
 probe's own `payloadMatchesWireContract`, which mirrors the production
 `payloadMatchesContract` (that module cannot be imported by Playwright's
-Node runtime without a `src/` change). The four channel
-labels derive from the golden document set; the ordered/lossy split mirrors
-the production factories in `src/rigplane/web/transport/webrtc.py` and is
-pinned in-row by reading `ordered`/`maxRetransmits` back from the
-negotiated channels.
+Node runtime without a `src/` change). The six channel
+labels, their ordering/reliability and which frames each carries come from
+`data_channels` in `api-channel-wire.json` (producer:
+`rigplane.web.channel_attach.DATA_CHANNELS`) and are pinned in-row by reading
+`ordered`/`maxRetransmits` back from the negotiated channels.
 
 The microphone stub (the only allowed one) replaces
 `navigator.mediaDevices.getUserMedia` in `page.addInitScript` with an

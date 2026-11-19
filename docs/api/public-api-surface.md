@@ -362,7 +362,9 @@ without a major version.
   they freeze into the normal tier-2 policy once a Pro release uses them.
   The data-channel attach frame and its ack
   (`ClientChannelParams.to_attach_frame` / `from_attach_frame`,
-  `ChannelAttachedAck.encode` / `from_frame`, `ChannelKind`); the
+  `ChannelAttachedAck.encode` / `from_frame`, `ChannelKind`); the K5
+  data-channel set (`DATA_CHANNELS` of `DataChannelSpec`, `DataChannelLabel`:
+  `control`, `api`, `scope`, `scope-text`, `audio`, `audio-text`); the
   answerer's ICE gathering policy (`IceServer`, `IceGatheringPolicy`,
   `GATHER_TIMEOUT_S`, `install_ice_gathering_policy`,
   `apply_ice_gathering_policy`); the answerer HTTP contract of
