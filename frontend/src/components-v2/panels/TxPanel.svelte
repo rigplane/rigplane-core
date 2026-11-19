@@ -30,6 +30,7 @@
   import { t } from '$lib/i18n';
   import ModInputTxWarning from './ModInputTxWarning.svelte';
   import ManagedTotControl from '../controls/ManagedTotControl.svelte';
+  import TxMicProcessingControl from '../controls/TxMicProcessingControl.svelte';
 
   let {
     showManagedTotControl = false,
@@ -417,6 +418,7 @@
           renderer="hbar" displayFn={rawTxLevelDisplay} accentColor="var(--v2-accent-orange)"
           issuedStatusPresentation={driveGainStatus} variant="hardware-illuminated" />
       </div>
+      <TxMicProcessingControl />
       {#if autoLan.available}
         <!-- MOR-618: opt-in auto LAN MOD-input for web TX (default OFF) -->
         <div class="auto-lan-section">
