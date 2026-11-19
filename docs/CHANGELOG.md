@@ -11,8 +11,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `rigplane station` accepts `--webrtc` and `--webrtc-include-vpn`, with the same meaning as on `web` (one shared flag definition), so a supervisor can start a managed station that answers WebRTC offers on its loopback listener. (MOR-4584)
+
 ### Fixed
 
+- The `api` WebRTC data channel no longer serves the WebRTC signalling routes (`/api/v1/transport/webrtc/offer`, `/api/v1/transport/webrtc/ice-candidate`); they answer 404 over the channel, so a peer cannot open another peer connection through its own session. HTTP is unchanged. (MOR-4584)
 - A single-receiver A/B radio that reports no VFO readback (Xiegu G7250, X6100, X6200, TX-500) showed a blank frequency, mode and filter readout although the values were fresh: the surface now shows the selected VFO instead of an unresolved slot. (MOR-4562)
 
 ## [3.2.0rc11] — 2026-11-17

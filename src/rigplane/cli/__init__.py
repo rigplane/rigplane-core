@@ -912,6 +912,23 @@ def _build_parser() -> argparse.ArgumentParser:
             help="Probe runtime audio stream stats (1 second RX sample)",
         )
 
+    def _add_webrtc_flags(sp: argparse.ArgumentParser) -> None:
+        """The WebRTC answerer flags, one definition for `web` and `station`."""
+        sp.add_argument(
+            "--webrtc",
+            dest="webrtc_enabled",
+            action="store_true",
+            default=False,
+            help="Enable the gated WebRTC transport entrypoint (requires the [webrtc] extra)",
+        )
+        sp.add_argument(
+            "--webrtc-include-vpn",
+            dest="webrtc_include_vpn",
+            action="store_true",
+            default=False,
+            help="Admit VPN/tunnel interfaces as WebRTC ICE host candidates (default host-only excludes them)",
+        )
+
     # status
     status_p = sub.add_parser("status", help="Show radio status (freq, mode, meters)")
     _add_json(status_p)
@@ -1719,20 +1736,7 @@ def _build_parser() -> argparse.ArgumentParser:
         default=True,
         help="Disable UDP discovery responder (enabled by default on port 8470)",
     )
-    web_p.add_argument(
-        "--webrtc",
-        dest="webrtc_enabled",
-        action="store_true",
-        default=False,
-        help="Enable the gated WebRTC transport entrypoint (requires the [webrtc] extra)",
-    )
-    web_p.add_argument(
-        "--webrtc-include-vpn",
-        dest="webrtc_include_vpn",
-        action="store_true",
-        default=False,
-        help="Admit VPN/tunnel interfaces as WebRTC ICE host candidates (default host-only excludes them)",
-    )
+    _add_webrtc_flags(web_p)
     web_p.add_argument(
         "--allowed-host",
         dest="allowed_hosts",
@@ -1919,6 +1923,7 @@ def _build_parser() -> argparse.ArgumentParser:
         default=True,
         help="Disable UDP discovery responder (enabled by default on port 8470)",
     )
+    _add_webrtc_flags(station_p)
     station_p.set_defaults(
         managed_runtime=True,
         web_bridge=None,

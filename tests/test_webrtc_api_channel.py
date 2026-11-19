@@ -481,6 +481,59 @@ async def test_api_unknown_path_is_404() -> None:
 
 
 @_webrtc
+async def test_api_webrtc_signalling_routes_unreachable() -> None:
+    """A session cannot open another peer connection over its api channel.
+
+    The signalling routes are in the router table (HTTP serves them on a
+    WebRTC-enabled server), but the api channel answers 404 and no second
+    session is negotiated.
+    """
+    from rigplane.web import api_channel as api_mod
+    from rigplane.web import web_routing
+
+    signalling = [
+        route
+        for route in web_routing.API_ROUTE_TABLE
+        if route.path.startswith(api_mod.API_CHANNEL_SIGNALLING_PREFIX)
+    ]
+    assert {route.path for route in signalling} == {
+        "/api/v1/transport/webrtc/offer",
+        "/api/v1/transport/webrtc/ice-candidate",
+    }
+    for route in signalling:
+        for method in route.methods or ("POST",):
+            assert not api_mod.api_path_allowed(method, route.path), route.path
+
+    server = await _stand_up_light()
+    client = _ApiClient()
+    try:
+        await client.connect(server.port)
+        await client.attach(None)
+        sessions_before = len(server._webrtc_session_manager()._sessions)  # noqa: SLF001
+        offer = json.dumps({"sdp": "v=0\r\n", "type": "offer"}).encode()
+        resp = await client.request(
+            1,
+            "POST",
+            "/api/v1/transport/webrtc/offer",
+            headers={"content-type": "application/json"},
+            body=offer,
+        )
+        assert resp.status == 404, (resp.status, resp.body[:200])
+        ice = json.dumps({"sessionId": "x", "candidate": None}).encode()
+        resp = await client.request(
+            2,
+            "POST",
+            "/api/v1/transport/webrtc/ice-candidate",
+            headers={"content-type": "application/json"},
+            body=ice,
+        )
+        assert resp.status == 404, (resp.status, resp.body[:200])
+        assert len(server._webrtc_session_manager()._sessions) == sessions_before  # noqa: SLF001
+    finally:
+        await _tear_down(server, client)
+
+
+@_webrtc
 async def test_api_tx_bodies_refused_before_dispatch() -> None:
     """TX-capable bodies are refused 403 before dispatch, on the light stack.
 
@@ -2096,6 +2149,8 @@ def test_api_tx_classification_sweeps_route_table() -> None:
     from rigplane.web.web_routing import api_channel_tx_refusal
 
     for route in web_routing.API_ROUTE_TABLE:
+        if route.path.startswith(api_mod.API_CHANNEL_SIGNALLING_PREFIX):
+            continue  # pinned unreachable by the signalling-route test below
         methods = (
             route.methods
             if route.methods is not None
