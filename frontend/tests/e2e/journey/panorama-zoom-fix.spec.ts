@@ -382,7 +382,7 @@ test('IC-7610: preset FIX zoom keeps the negotiated subscription and radio windo
     await page.getByTestId('scope-more').first().click();
     await page.getByTestId('scope-zoom-in').first().click();
     await expect.poll(() => frames.at(-1)?.view[1]! - frames.at(-1)?.view[0]!).toBe(50_000);
-    await page.getByTestId('scope-preset-select').first().selectOption('0');
+    await page.getByTestId('scope-zoom-band').first().click();
     const preset = subscriptions.at(-1)!.view;
     expect('startHz' in preset).toBe(true);
     if (!('startHz' in preset)) throw new Error('Preset did not request absolute bounds');

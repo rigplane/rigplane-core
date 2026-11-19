@@ -628,10 +628,7 @@ test('IC-705 pinned 10m band preset wider than any native stays hatched', async 
     // placeholder. The VFO (28.5 MHz) stays inside the pinned window, so
     // the pin holds (MOR-4387: the pin retires on position, and no tuning
     // happens in this row).
-    await page.getByRole('button', { name: 'More scope controls' }).first().click();
-    await page.locator('[data-testid="scope-more-panel"] [data-testid="scope-preset-select"]')
-      .selectOption({ index: 1 });
-    await page.keyboard.press('Escape');
+    await page.getByTestId('scope-zoom-band').first().click();
     await expect.poll(() => sent.at(-1)?.view, { timeout: 30_000 }).toEqual(bandView);
     setupDone = true;
 
