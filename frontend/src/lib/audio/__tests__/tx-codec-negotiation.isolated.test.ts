@@ -130,6 +130,9 @@ function installMediaGlobals({ contextSampleRate = SAMPLE_RATE } = {}) {
     sampleRate: contextSampleRate,
     destination: {},
     createMediaStreamSource: vi.fn(() => ({ connect: vi.fn(), disconnect: vi.fn() })),
+    createMediaStreamDestination: vi.fn(() => ({
+      stream: { getAudioTracks: () => [track] },
+    })),
     createScriptProcessor: vi.fn(() => {
       processor = { connect: vi.fn(), disconnect: vi.fn(), onaudioprocess: null };
       return processor;

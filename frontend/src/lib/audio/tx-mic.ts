@@ -48,6 +48,10 @@ export class TxMic {
   private encoder: AudioEncoder | null = null;
   private reader: ReadableStreamDefaultReader<AudioData> | null = null;
   private audioContext: AudioContext | null = null;
+  // Context that converts whatever the device delivers to SAMPLE_RATE mono for
+  // the Opus encoder (MOR-4594). Separate from `audioContext`: the PCM16 leg
+  // is brought up before this one is torn down on a codec switch.
+  private opusContext: AudioContext | null = null;
   private pcmSource: MediaStreamAudioSourceNode | null = null;
   private pcmProcessor: ScriptProcessorNode | null = null;
   private pcmPending: number[] = [];
@@ -252,7 +256,13 @@ export class TxMic {
       return this.startPcmFallback();
     }
 
-    const processor = new MediaStreamTrackProcessor({ track });
+    // getUserMedia constraints are hints: a device may deliver 44.1 kHz or
+    // stereo, which the 48 kHz mono encoder rejects on its first frame. A
+    // context at SAMPLE_RATE resamples; a one-channel explicit destination
+    // downmixes (MOR-4594).
+    const encoderTrack = this.openEncoderTrack(track);
+
+    const processor = new MediaStreamTrackProcessor({ track: encoderTrack });
     const reader = this.reader = processor.readable.getReader();
 
     let sentFrames = 0;
@@ -276,12 +286,18 @@ export class TxMic {
       },
     });
 
-    this.encoder.configure({
-      codec: 'opus',
-      sampleRate: SAMPLE_RATE,
-      numberOfChannels: CHANNELS,
-      bitrate: TX_BITRATE,
-    });
+    try {
+      this.encoder.configure({
+        codec: 'opus',
+        sampleRate: SAMPLE_RATE,
+        numberOfChannels: CHANNELS,
+        bitrate: TX_BITRATE,
+      });
+    } catch (err) {
+      // Never leave a started capture behind a failed start.
+      this.stop();
+      return `TX MIC: encoder configure failed: ${err instanceof Error ? err.message : String(err)}`;
+    }
 
     // Read loop
     void this.readLoop(reader, encoder, generation);
@@ -323,6 +339,31 @@ export class TxMic {
     this.encoder = null;
     reader?.cancel().catch(() => {});
     try { encoder?.close(); } catch { /* ok */ }
+    this.opusContext?.close().catch(() => {});
+    this.opusContext = null;
+  }
+
+  /**
+   * Track at SAMPLE_RATE mono for the encoder, whatever the device delivers.
+   * Without an AudioContext, or when it cannot run at SAMPLE_RATE, the raw
+   * track is used as before.
+   */
+  private openEncoderTrack(track: MediaStreamTrack): MediaStreamTrack {
+    const audioContextCtor = TxMic.audioContextCtor();
+    if (!audioContextCtor || !this.stream) return track;
+    const context = new audioContextCtor({ sampleRate: SAMPLE_RATE });
+    if (Math.round(context.sampleRate) !== SAMPLE_RATE) {
+      // Cannot convert here; the raw track is no worse than before.
+      context.close().catch(() => {});
+      return track;
+    }
+    const destination = context.createMediaStreamDestination();
+    destination.channelCount = CHANNELS;
+    destination.channelCountMode = 'explicit';
+    context.createMediaStreamSource(this.stream).connect(destination);
+    context.resume?.().catch(() => {});
+    this.opusContext = context;
+    return destination.stream.getAudioTracks()[0] ?? track;
   }
 
   /**
