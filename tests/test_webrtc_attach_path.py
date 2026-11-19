@@ -1682,3 +1682,74 @@ async def test_server_initiated_channel_close_reaches_client_as_that_channels_cl
     finally:
         await peer.close()
         await _tear_down_stack(stack)
+
+
+# ---------------------------------------------------------------------------
+# K5: loss-safe attach order (MOR-272). Control first; each lossy attach is
+# resent every 250 ms until its ack (5 s bound); a repeat is the same attach
+# (``test_resent_attach_after_lost_ack_is_reacknowledged_and_channel_works``);
+# a lossy attach before control is ignored without closing the channel.
+# ---------------------------------------------------------------------------
+
+
+@_webrtc
+@pytest.mark.realtime(
+    reason="waits real resend periods for an ack that must never come"
+)
+async def test_lossy_attach_before_control_is_ignored_then_resend_attaches(
+    tmp_path: Path,
+) -> None:
+    """A scope/audio attach that outruns control gets no ack and no close;
+    the resend after control attaches, and the channel serves."""
+    stack = await _stand_up_stack(tmp_path, audio=True)
+    peer = _LossyAckPeer()
+    try:
+        await peer.connect(
+            stack.web, ("control", "scope", "audio"), lossy=("scope", "audio")
+        )
+        key = await _acquire_session(stack.web.port)
+        for label in ("scope", "audio"):
+            peer.send_text(label, _attach_text(label, key))  # before control
+        await asyncio.sleep(0.75)  # three resend periods
+        for label in ("scope", "audio"):
+            assert peer.take(label) is None, f"{label} acked before control"
+            assert peer._channels[label].readyState == "open"  # noqa: SLF001
+        peer.send_text("control", _attach_text("control", key))
+        assert (await _frame(peer, "control", "hello"))["type"] == "hello"
+        for label in ("scope", "audio"):
+            await _attach_and_serve_label(peer, label, key)  # the resend
+        await _control_alive(peer)
+    finally:
+        await peer.close()
+        await _tear_down_stack(stack)
+
+
+@_webrtc
+@pytest.mark.realtime(
+    reason="resends on the real 250 ms period until the real attach bound closes"
+)
+async def test_lossy_attach_without_control_gives_up_at_the_attach_bound(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Resends never extend the attach bound: with no control attach the
+    scope channel is closed once the bound (patched to 1 s) runs out."""
+    from rigplane.web.transport import webrtc_session
+
+    monkeypatch.setattr(webrtc_session, "_ATTACH_TIMEOUT_S", 1.0)
+    stack = await _stand_up_stack(tmp_path, audio=True)
+    peer = _LossyAckPeer()
+    try:
+        await peer.connect(stack.web, ("control", "scope"), lossy=("scope",))
+        key = await _acquire_session(stack.web.port)
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        scope = peer._channels["scope"]  # noqa: SLF001
+        while scope.readyState == "open" and loop.time() - started < 5.0:
+            peer.send_text("scope", _attach_text("scope", key))
+            await asyncio.sleep(0.25)
+        await _channel_closed(scope)
+        assert loop.time() - started <= 1.0 + 2.0
+        assert peer.take("scope") is None  # never acked
+    finally:
+        await peer.close()
+        await _tear_down_stack(stack)

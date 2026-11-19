@@ -623,8 +623,8 @@ def test_api_wire_definition_is_typed_and_json_stable() -> None:
     assert limits.max_request_body_bytes == 1024 * 1024
     assert limits.max_in_flight_requests == 32
     assert limits.request_deadline_s == 15.0
-    assert limits.send_high_water_bytes == 256 * 1024
-    assert limits.send_low_water_bytes == 64 * 1024
+    assert limits.send_high_water_bytes == 32 * 1024
+    assert limits.send_low_water_bytes == 16 * 1024
     wire = dataclasses.asdict(definition)
     wire.pop("payloads")  # pinned in tests/test_api_channel_wire_json.py
     assert json.loads(json.dumps(wire)) == {
@@ -654,8 +654,8 @@ def test_api_wire_definition_is_typed_and_json_stable() -> None:
             "max_request_body_bytes": 1024 * 1024,
             "max_in_flight_requests": 32,
             "request_deadline_s": 15.0,
-            "send_high_water_bytes": 256 * 1024,
-            "send_low_water_bytes": 64 * 1024,
+            "send_high_water_bytes": 32 * 1024,
+            "send_low_water_bytes": 16 * 1024,
         },
     }
 
@@ -720,8 +720,8 @@ async def test_api_malformed_frames_error_without_closing() -> None:
 async def test_api_deeply_nested_head_is_malformed_not_fatal() -> None:
     """A deeply nested head answers ERROR malformed, not a dead channel.
 
-    ``json.loads`` raises ``RecursionError`` (not ``ValueError``) past ~10k
-    nesting levels; the head parser must normalise it into the existing
+    ``json.loads`` raises ``RecursionError`` (not ``ValueError``) past the
+    interpreter's recursion limit; the head parser must normalise it into the existing
     ``malformed`` ERROR instead of letting it escape and kill the receive
     loop. A valid request on the same channel still works afterwards.
     """
@@ -730,7 +730,8 @@ async def test_api_deeply_nested_head_is_malformed_not_fatal() -> None:
     try:
         await client.connect(server.port)
         await client.attach(None)
-        nested = ("[" * 20_000 + "]" * 20_000).encode()
+        # 8000 levels: past the recursion limit, inside the 16 KB frame rule.
+        nested = ("[" * 8_000 + "]" * 8_000).encode()
         client.send_raw(_frame(_REQ_HEAD, 1, nested))
         await client.expect_error(1, "malformed")
         # The receive loop survived: a fresh id is served on this channel.
@@ -1643,14 +1644,14 @@ async def test_api_repeated_oversize_leaks_no_tasks() -> None:
     "real time before the drain resumes it"
 )
 async def test_api_send_waits_while_buffer_full() -> None:
-    """Sends stall past 256 KB buffered and resume intact on drain."""
+    """Sends stall past 32 KB buffered and resume intact on drain."""
     from rigplane.web import api_channel as api_mod
 
     conn = _StubConn()
     conn.buffered = 300 * 1024
     server = WebServer(None, WebConfig())
     handler = api_mod.ApiChannelHandler(conn, server, ("stub", 0))
-    assert conn.watermark == 64 * 1024
+    assert conn.watermark == 16 * 1024
     task: asyncio.Task[None] = asyncio.ensure_future(
         handler._send_response(
             7, 200, {"Content-Type": "application/json"}, b'{"ok":true}'

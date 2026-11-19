@@ -118,6 +118,14 @@ def test_public_api_surface() -> None:
         "WebRtcRequestError",
         "WebRtcTransportStatus",
         "IceCandidateInit",
+        "UdpReachabilityCache",
+        "select_turn_url",
+        "ApiFrame",
+        "ApiFrameError",
+        "ApiMessageType",
+        "ApiRequestHead",
+        "api_request_messages",
+        "API_SEND_HIGH_WATER_BYTES",
     }
     assert set(rigplane.__all__) == expected_public
 

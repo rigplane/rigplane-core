@@ -7,6 +7,15 @@ transport framing into :class:`ClientChannelParams` first — the
 WebSocket query plus ``Sec-WebSocket-Protocol`` header, or the data
 channel's first-text-frame attach frame — so ticket capture, handler
 construction, caps, keepalive and cleanup never diverge again.
+
+K5, attach order on data channels (loss-safe by rule, MOR-272): every
+channel attaches on its own. The client attaches ``control`` first (its
+``hello`` proves the attach), then sends each ``scope``/``audio`` attach
+and resends it every 250 ms until the ``attached`` ack arrives, giving
+up after 5 s. The server treats a repeated attach as the same attach
+(re-acked, no new ticket or handler) and ignores, without closing the
+channel, a lossy attach that arrives before the session's control
+attach; the next resend attaches. ``api`` is reliable and never acked.
 """
 
 from __future__ import annotations
