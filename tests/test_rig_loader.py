@@ -3217,11 +3217,63 @@ class TestScopeFixedEdgeRanges:
             12, 45_000_000, 60_000_000
         )
         assert rig.to_profile().scope_fixed_edge_ranges == rig.scope_fixed_edge_ranges
-        center = load_rig(RIGS_DIR / "ic7300.toml")
-        assert center.scope_fixed_edge_ranges == ()
-        assert center.to_profile().scope_fixed_edge_ranges == ()
-        assert center.scope_fixed_edge_step_hz is None
-        assert center.to_profile().scope_fixed_edge_step_hz is None
+        assert rig.scope_fixed_edge_capture is True
+        recorded = load_rig(RIGS_DIR / "ic7300.toml")
+        assert len(recorded.scope_fixed_edge_ranges) == 13
+        assert recorded.scope_fixed_edge_step_hz == 1000
+        assert recorded.scope_fixed_edge_capture is False
+        # Gated: runtime consumers see no fixed-edge data for it.
+        assert recorded.to_profile().scope_fixed_edge_ranges == ()
+        assert recorded.to_profile().scope_fixed_edge_step_hz is None
+
+    def test_fixed_edge_data_matches_declared_command_on_every_profile(self):
+        """MOR-4563: a profile declares 27 1E <=> it records the table, and
+        the capture gate is open only where the owner-approved behaviour
+        already ships (IC-7610) until MOR-4567 step 4."""
+        # Radios without an established table (no guessed numbers): the G7250
+        # does not declare the command and needs a bench probe (MOR-4572);
+        # the IC-905 10 GHz range is missing from its table (MOR-4571).
+        # Every other profile must declare the command and carry data.
+        no_data_yet: set[str] = set()
+        checked = 0
+        for path in sorted(RIGS_DIR.glob("[!_]*.toml")):
+            raw = tomllib.loads(path.read_text())
+            commands = raw.get("commands", {})
+            declared = commands.get("get_scope_fixed_edge") == [0x27, 0x1E]
+            rig = load_rig(path)
+            has_data = bool(rig.scope_fixed_edge_ranges)
+            if path.stem in no_data_yet:
+                assert declared and not has_data, path.name
+                continue
+            assert declared == has_data, path.name
+            if not has_data:
+                continue
+            checked += 1
+            step = rig.scope_fixed_edge_step_hz
+            assert step in (100, 1000), path.name
+            for item in rig.scope_fixed_edge_ranges:
+                assert item.start_hz % 1000 == 0 or step == 100, path.name
+                assert item.end_hz % step == 0, path.name
+            assert rig.scope_fixed_edge_capture is (path.stem == "ic7610"), path.name
+            assert bool(rig.to_profile().scope_fixed_edge_ranges) is (
+                path.stem == "ic7610"
+            ), path.name
+        assert checked == 6
+        g7250 = tomllib.loads((RIGS_DIR / "g7250.toml").read_text())
+        assert "get_scope_fixed_edge" not in g7250.get("commands", {})
+        ic905 = load_rig(RIGS_DIR / "ic905.toml")
+        assert [r.range_index for r in ic905.scope_fixed_edge_ranges] == [1, 2, 3, 4, 5]
+
+    def test_capture_gate_requires_fixed_edge_data(self, tmp_path):
+        base = (RIGS_DIR / "ic7300.toml").read_text()
+        broken = base.replace("fixed_edge_capture = false", "fixed_edge_capture = 1")
+        path = tmp_path / "ic7300.toml"
+        path.write_text(broken)
+        (tmp_path / "_ctcss_tables_v1.toml").write_text(
+            (RIGS_DIR / "_ctcss_tables_v1.toml").read_text()
+        )
+        with pytest.raises(RigLoadError, match="fixed_edge_capture"):
+            load_rig(path)
 
     @pytest.mark.parametrize(
         "ranges",

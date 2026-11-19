@@ -903,6 +903,7 @@ class RigConfig:
     )
     scope_fixed_edge_step_hz: int | None = field(default=None, kw_only=True)
     scope_span_value_bytes: int = field(default=5, kw_only=True)
+    scope_fixed_edge_capture: bool = field(default=False, kw_only=True)
     codec_preference: tuple[str, ...] | None = None
     tx_codec: str | None = None
     default_sample_rate_hz: int | None = None
@@ -1171,8 +1172,15 @@ class RigConfig:
             scope_span_presets_hz=self.scope_span_presets_hz,
             scope_span_preset_semantics=self.scope_span_preset_semantics,
             scope_span_value_bytes=self.scope_span_value_bytes,
-            scope_fixed_edge_ranges=self.scope_fixed_edge_ranges,
-            scope_fixed_edge_step_hz=self.scope_fixed_edge_step_hz,
+            # MOR-4563: recorded fixed-edge data reaches runtime consumers
+            # (captures, fixed-edge polling, set limits) only for a profile
+            # that opted in; MOR-4567 step 4 removes the gate.
+            scope_fixed_edge_ranges=(
+                self.scope_fixed_edge_ranges if self.scope_fixed_edge_capture else ()
+            ),
+            scope_fixed_edge_step_hz=(
+                self.scope_fixed_edge_step_hz if self.scope_fixed_edge_capture else None
+            ),
             codec_preference=self.codec_preference,
             tx_codec=self.tx_codec,
             default_sample_rate_hz=self.default_sample_rate_hz,
@@ -3487,6 +3495,7 @@ def load_rig(path: Path) -> RigConfig:
     scope_fixed_edge_ranges: tuple[ScopeFixedEdgeRange, ...] = ()
     scope_span_value_bytes = 5
     scope_fixed_edge_step_hz: int | None = None
+    scope_fixed_edge_capture = False
     if scope_section:
         entries = scope_section.get("fixed_edge_ranges", [])
         step = scope_section.get("fixed_edge_step_hz")
@@ -3525,6 +3534,13 @@ def load_rig(path: Path) -> RigConfig:
                 fixed_ranges.append(item)
             scope_fixed_edge_ranges = tuple(fixed_ranges)
             scope_fixed_edge_step_hz = step
+        capture = scope_section.get("fixed_edge_capture", False)
+        if type(capture) is not bool or (capture and not scope_fixed_edge_ranges):
+            raise RigLoadError(
+                f"{filename}: fixed_edge_capture must be a boolean and needs "
+                "fixed_edge_ranges"
+            )
+        scope_fixed_edge_capture = capture
         scope_ref_min_db = (
             float(scope_section["ref_min_db"])
             if "ref_min_db" in scope_section
@@ -4243,6 +4259,7 @@ def load_rig(path: Path) -> RigConfig:
         scope_span_value_bytes=scope_span_value_bytes,
         scope_fixed_edge_ranges=scope_fixed_edge_ranges,
         scope_fixed_edge_step_hz=scope_fixed_edge_step_hz,
+        scope_fixed_edge_capture=scope_fixed_edge_capture,
         codec_preference=codec_preference,
         tx_codec=tx_codec,
         default_sample_rate_hz=default_sample_rate_hz,
