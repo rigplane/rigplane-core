@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { passbandGaps, requireProbeStimulus } from '../../../../tests/e2e/journey/panorama-passband-probe';
+import { paintedOutages, passbandGaps, requireProbeStimulus } from '../../../../tests/e2e/journey/panorama-passband-probe';
 
 describe('passband probe evidence', () => {
   it('rejects no-op tuning and no-op zoom witnesses', () => {
@@ -29,5 +29,18 @@ describe('passband probe evidence', () => {
   });
   it('carries an absent overlay entering the window as a gap that starts at the window', () => {
     expect(passbandGaps([sample(-10, false), sample(200, true, 'dom')], 0, 1000)).toMatchObject([{ frames: 0, startMs: 0, durationMs: 200 }]);
+  });
+  it('keeps two absent frames one gap when a DOM-only restoration falls between them', () => {
+    const samples = [sample(-10, true), sample(116, false), sample(120, true, 'dom'), sample(125, false, 'dom'), sample(133, false), sample(150, true)];
+    const gaps = passbandGaps(samples, 0, 1000);
+    expect(gaps).toHaveLength(1);
+    expect(gaps[0]).toMatchObject({ frames: 2, durationMs: 34 });
+  });
+  it('lets only painted outages longer than the limit count as a blink', () => {
+    const unpainted = passbandGaps([sample(-10, true), sample(100, false, 'dom'), sample(900, true, 'dom')], 0, 1000);
+    expect(paintedOutages(unpainted, 200)).toEqual([]);
+    const painted = passbandGaps([sample(-10, true), sample(100, false), sample(400, false), sample(600, true)], 0, 1000);
+    expect(paintedOutages(painted, 200)).toHaveLength(1);
+    expect(paintedOutages(painted, 600)).toEqual([]);
   });
 });

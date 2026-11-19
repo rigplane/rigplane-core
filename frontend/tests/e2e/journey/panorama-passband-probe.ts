@@ -69,13 +69,18 @@ interface Gap {
 }
 
 /**
- * Contiguous runs of absent overlay inside [fromT, toT], plus the gate diff at
- * each drop. The state entering the window is the last sample before it (the
- * page was in that state until something changed), so no sample needs to
- * land inside the window for the interval to be covered. A run is closed by
- * the next sample that shows the overlay, frame or DOM alike; its `frames`
- * counts the animation frames that ran while it lasted, so a stretch with no
- * frame painted is not a blink anyone could have seen.
+ * Runs of absent overlay inside [fromT, toT], plus the gate diff at each
+ * drop. The state entering the window is the last sample before it (the page
+ * was in that state until something changed), so no sample needs to land
+ * inside the window for the interval to be covered.
+ *
+ * What an operator could see is decided by painted frames only. A run opens
+ * at the first absent sample (frame or DOM) and is closed only by a frame that
+ * shows the overlay; a DOM-only restoration in between does not close it, so
+ * two consecutive absent frames around a DOM flicker stay one two-frame gap.
+ * `frames` counts the absent frames in the run, and a run no frame ever saw
+ * has `frames: 0` (see `paintedOutages`). `durationMs` runs from the first
+ * absent sample to the last sample seen while the run was open.
  */
 export function passbandGaps(samples: PassbandSample[], fromT: number, toT: number): Gap[] {
   const entering = samples.filter((sample) => sample.t < fromT).at(-1);
@@ -87,7 +92,7 @@ export function passbandGaps(samples: PassbandSample[], fromT: number, toT: numb
   for (const sample of timeline) {
     if (sample.overlay) {
       if (run) run.durationMs = sample.t - run.startMs;
-      run = null;
+      if (sample.kind === 'frame') run = null;
       lastGood = sample;
       continue;
     }
@@ -102,6 +107,11 @@ export function passbandGaps(samples: PassbandSample[], fromT: number, toT: numb
     run.durationMs = sample.t - run.startMs;
   }
   return gaps;
+}
+
+/** Gaps an operator could have seen (at least one painted absent frame) longer than `minMs`. */
+export function paintedOutages(gaps: Gap[], minMs: number): Gap[] {
+  return gaps.filter((gap) => gap.frames > 0 && gap.durationMs > minMs);
 }
 
 export function gateDiff(gap: Gap): Record<string, unknown> {
