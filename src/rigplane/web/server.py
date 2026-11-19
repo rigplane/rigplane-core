@@ -95,7 +95,6 @@ from ..core.tx_observation import (
     ObservedPtt,
     TxMeterLog,
     project_observed_ptt,
-    project_tx_meters,
 )
 from ..runtime.controller_authority import (
     ControllerAuthority,
@@ -1326,6 +1325,9 @@ class WebServer:
             executor=_SharedControlCommandExecutor(self),
             state_store=self.command_state_store,
         )
+        self._unsubscribe_tx_meter_log = (
+            self.command_state_store.subscribe_observations(TxMeterLog().on_observation)
+        )
         self._unsubscribe_provider_generation = (
             self.command_state_store.subscribe_provider_generation(
                 self._on_provider_generation
@@ -1453,7 +1455,6 @@ class WebServer:
         # been seen yet: the first snapshot seeds the baseline without
         # emitting, because the page fetches the document on connect anyway.
         self._last_announced_observed_ptt: ObservedPtt | None = None
-        self._tx_meter_log = TxMeterLog()
         # MOR-4279: monotonic counter of managed-TX change notifications;
         # a document builder finishing behind a newer notification drops
         # its (stale) document instead of queueing it.
@@ -2236,9 +2237,6 @@ class WebServer:
         # Announce projection changes with the existing invalidation event so
         # the page refetches the document it actually displays.
         observed_ptt = project_observed_ptt(snapshot)
-        self._tx_meter_log.observe(
-            observed_ptt, project_tx_meters(snapshot), snapshot.generated_at_monotonic
-        )
         if self._last_announced_observed_ptt is None:
             self._last_announced_observed_ptt = observed_ptt
         elif observed_ptt != self._last_announced_observed_ptt:
@@ -3871,6 +3869,7 @@ class WebServer:
         if unsubscribe is not None:
             unsubscribe()
         self._unsubscribe_provider_generation()
+        self._unsubscribe_tx_meter_log()
         self._detach_audio_session_listener()
         self._detach_reconnect_status_listener()
         await stop_web_server(self)
