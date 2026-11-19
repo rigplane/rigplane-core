@@ -197,8 +197,10 @@ async def _negotiate_multi() -> tuple[Any, Any, dict[str, Any], dict[str, Any]]:
 
     @server_pc.on("datachannel")  # type: ignore[misc, no-untyped-call]
     def _on_dc(channel: Any) -> None:
-        server_channels[channel.label] = channel
-        fut = ready.get(channel.label)
+        # Keyed by spec label: split halves carry a pair id after "/".
+        base = channel.label.split("/", 1)[0]
+        server_channels[base] = channel
+        fut = ready.get(base)
         if fut is not None and not fut.done():
             fut.set_result(channel)
 
@@ -233,10 +235,11 @@ async def test_split_kind_is_lossy_binary_plus_reliable_text(kind: str) -> None:
     pc = RTCPeerConnection()
     conn = (add_scope_channel if kind == "scope" else add_audio_channel)(pc)
     assert isinstance(conn, WebRtcDataChannelConnection)
-    assert conn._channel.label == kind
+    pair_id = conn._channel.label.removeprefix(f"{kind}/")
+    assert pair_id and conn._channel.label == f"{kind}/{pair_id}"
     assert conn._channel.ordered is False
     assert conn._channel.maxRetransmits == 0
-    assert conn._text_channel.label == f"{kind}-text"
+    assert conn._text_channel.label == f"{kind}-text/{pair_id}"
     assert conn._text_channel.ordered is True
     assert conn._text_channel.maxRetransmits is None
     await conn.close()

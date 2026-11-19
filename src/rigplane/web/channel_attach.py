@@ -21,6 +21,7 @@ control attach lands or the 5 s attach bound closes the channel.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from typing import Final, Literal, Self
 
@@ -30,15 +31,19 @@ __all__ = [
     "ATTACH_ACK_KINDS",
     "ATTACH_ACK_VERSION",
     "DATA_CHANNELS",
+    "PAIR_ID_SEPARATOR",
     "ChannelAttachedAck",
     "ChannelKind",
     "ClientChannelParams",
     "DataChannelLabel",
+    "DataChannelLabelParts",
     "DataChannelSpec",
     "FrameCarriage",
     "TransportKind",
+    "data_channel_label",
     "data_channel_spec",
     "data_channels_for",
+    "parse_data_channel_label",
 ]
 
 #: Client channel kinds. ``rigctl`` exists only on the WebSocket lane;
@@ -99,6 +104,56 @@ def data_channel_spec(label: str) -> DataChannelSpec | None:
 def data_channels_for(kind: str) -> tuple[DataChannelSpec, ...]:
     """The channels that carry ``kind`` (one ``all``, or binary + text)."""
     return tuple(spec for spec in DATA_CHANNELS if spec.kind == kind)
+
+
+#: Separates a split channel's spec label from its pair id on the wire:
+#: ``scope/7f3a`` and ``scope-text/7f3a`` are the two halves of ONE pair.
+PAIR_ID_SEPARATOR: Final = "/"
+
+_PAIR_ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
+
+
+@dataclass(frozen=True, slots=True)
+class DataChannelLabelParts:
+    """A wire data-channel label split into its spec and pair id.
+
+    The two halves of a split kind are matched by IDENTITY: same kind,
+    same ``pair_id`` — never by arrival order (independent channels keep
+    no order between each other). ``pair_id`` is ``""`` for a bare label
+    (``control``, ``api``, or a split half sent without an id, which is
+    only unambiguous while one pair of that kind is open on the peer).
+    """
+
+    spec: DataChannelSpec
+    pair_id: str
+
+
+def data_channel_label(spec: DataChannelSpec, pair_id: str = "") -> str:
+    """The wire label of one channel: ``<spec.label>[/<pair_id>]``.
+
+    Only split halves (``binary``/``text``) take a pair id; it is 1-64
+    characters of ``[A-Za-z0-9_-]``. Raises :class:`ValueError` otherwise.
+    """
+    if not pair_id:
+        return spec.label
+    if spec.carries == "all" or _PAIR_ID.fullmatch(pair_id) is None:
+        raise ValueError(f"invalid pair id {pair_id!r} for {spec.label!r}")
+    return f"{spec.label}{PAIR_ID_SEPARATOR}{pair_id}"
+
+
+def parse_data_channel_label(label: str) -> DataChannelLabelParts | None:
+    """Parse a wire label (inverse of :func:`data_channel_label`).
+
+    ``None`` for anything outside the channel set: an unknown spec label,
+    a pair id on ``control``/``api``, or a malformed pair id.
+    """
+    base, sep, pair_id = label.partition(PAIR_ID_SEPARATOR)
+    spec = data_channel_spec(base)
+    if spec is None:
+        return None
+    if sep and (spec.carries == "all" or _PAIR_ID.fullmatch(pair_id) is None):
+        return None
+    return DataChannelLabelParts(spec, pair_id)
 
 
 #: Version of the attach acknowledgement frame (a versioned wire change).

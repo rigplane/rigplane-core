@@ -48,13 +48,20 @@ export interface DataChannelSpec {
 }
 /** The committed K5 channel set, never re-typed here. */
 export const DATA_CHANNELS: readonly DataChannelSpec[] = wire.data_channels;
+/** A split pair's two labels share one pair id after this separator
+ * (`scope/7f3a` + `scope-text/7f3a`); the answerer pairs them by it. */
+export const PAIR_ID_SEPARATOR: string = wire.data_channel_pair_separator;
 
-/** The `*-text` companion label a lossy binary label needs; null for a
- * label that carries every frame itself (control, api). */
+/** The `*-text` companion label a lossy binary label needs (same pair id);
+ * null for a label that carries every frame itself (control, api). */
 export function textCompanionLabel(label: string): string | null {
-  const spec = DATA_CHANNELS.find((row) => row.label === label);
+  const cut = label.indexOf(PAIR_ID_SEPARATOR);
+  const base = cut < 0 ? label : label.slice(0, cut);
+  const pairSuffix = cut < 0 ? '' : label.slice(cut);
+  const spec = DATA_CHANNELS.find((row) => row.label === base);
   if (spec?.carries !== 'binary') return null;
-  return DATA_CHANNELS.find((row) => row.kind === spec.kind && row.carries === 'text')?.label ?? null;
+  const companion = DATA_CHANNELS.find((row) => row.kind === spec.kind && row.carries === 'text');
+  return companion === undefined ? null : companion.label + pairSuffix;
 }
 
 /** The session key offered as a `rigplane-controller-v1.<key>` token — the

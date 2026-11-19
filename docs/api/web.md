@@ -239,7 +239,12 @@ also published as `data_channels` in the browser wire contract
 (`api-channel-wire.json`). Each scope/audio pair is ONE connection to its
 handler: text goes on the reliable `*-text` channel, binary on the lossy
 one, and frames from both arrive at the same handler, so a text command
-is never lost. The two channels keep no order between each other. Every
+is never lost. The two channels keep no order between each other. The two
+halves of one pair are matched by identity, not arrival order: both labels
+carry the same pair id after `/` (`audio/7f3a` and `audio-text/7f3a`,
+1-64 characters of `[A-Za-z0-9_-]`; a bare `audio` + `audio-text` pair is
+fine while only one pair of that kind is open). Frames a half receives
+before its partner opens are kept. Every
 attach frame is the first text frame on `control`, `api`, `scope-text` or
 `audio-text`; it is never resent.
 

@@ -416,7 +416,8 @@ class ApiWireDefinition:
     The one machine-readable copy of the header layout, message types,
     version, chunk size, limits, the JSON payload contracts, and the K5
     data-channel set (``data_channels``: label, kind, ordering,
-    reliability and which frames each channel carries). Use
+    reliability and which frames each channel carries; a split pair's
+    two labels carry one pair id after ``data_channel_pair_separator``). Use
     :func:`dataclasses.asdict` for the plain-JSON form; every value
     round-trips through ``json`` unchanged.
     """
@@ -427,6 +428,7 @@ class ApiWireDefinition:
     limits: ApiWireLimits
     payloads: dict[str, ApiWirePayload]
     data_channels: tuple[DataChannelSpec, ...]
+    data_channel_pair_separator: str
 
 
 def api_channel_wire_definition() -> ApiWireDefinition:
@@ -436,7 +438,7 @@ def api_channel_wire_definition() -> ApiWireDefinition:
     browser transport will consume and check this instead of re-listing
     values).
     """
-    from .channel_attach import DATA_CHANNELS  # noqa: TID251
+    from .channel_attach import DATA_CHANNELS, PAIR_ID_SEPARATOR  # noqa: TID251
 
     return ApiWireDefinition(
         version=API_CHANNEL_VERSION,
@@ -464,6 +466,7 @@ def api_channel_wire_definition() -> ApiWireDefinition:
         ),
         payloads=_api_channel_payload_contracts(),
         data_channels=DATA_CHANNELS,
+        data_channel_pair_separator=PAIR_ID_SEPARATOR,
     )
 
 

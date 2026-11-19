@@ -52,7 +52,7 @@ from ..channel_attach import (  # noqa: TID251
     ATTACH_ACK_KINDS,
     ChannelKind,
     ClientChannelParams,
-    data_channel_spec,
+    parse_data_channel_label,
 )
 from .webrtc_contract import IceCandidateInit, WebRtcAnswer  # noqa: TID251
 from .webrtc import (  # noqa: TID251
@@ -103,9 +103,12 @@ class _Session:
         # Controller session owners attached through this peer's channels.
         # A ``disconnected``/``failed`` peer fences these immediately.
         self.controller_owners: set[str] = set()
-        # Split-kind halves (scope/audio) waiting for their partner, per
-        # kind and carriage ("binary"/"text"), in arrival order.
-        self.unpaired: dict[str, dict[str, list[RTCDataChannel]]] = {}
+        # Split-kind halves (scope/audio) waiting for their partner, keyed
+        # by IDENTITY — (kind, pair id, carriage) — never by arrival order.
+        # Each waiting half already queues its messages in its connection.
+        self.unpaired: dict[
+            tuple[str, str, str], list[WebRtcDataChannelConnection]
+        ] = {}
 
     async def close(self) -> None:
         for task in self.tasks:
@@ -325,37 +328,39 @@ class WebRtcSessionManager:
         """Wrap an inbound channel and serve it through the shared attach.
 
         A ``control``/``api`` channel is served alone. A split kind's half
-        (``scope``/``audio`` binary, or its ``*-text`` companion) waits
-        for its partner on the same peer; the pair becomes ONE connection.
+        (``scope``/``audio`` binary, or its ``*-text`` companion) is paired
+        with the other half of the SAME pair — same kind and pair id from
+        the label (:func:`~rigplane.web.channel_attach.parse_data_channel_label`)
+        — whatever order they arrive in; the pair becomes ONE connection.
+        The half that arrives first is wrapped at once, so every frame it
+        receives before its partner (the attach frame included) is kept.
         A half whose partner does not arrive within the attach bound is
         closed.
         """
-        spec = data_channel_spec(channel.label)
-        if spec is None:
+        parts = parse_data_channel_label(channel.label)
+        if parts is None:
             logger.info("WebRTC: ignoring unknown data channel %r", channel.label)
             return
+        spec = parts.spec
         if spec.carries == "all":
             conn = WebRtcDataChannelConnection(channel, session.pc)
         else:
-            halves = session.unpaired.setdefault(spec.kind, {"binary": [], "text": []})
             partner_carriage = "text" if spec.carries == "binary" else "binary"
+            partner_key = (spec.kind, parts.pair_id, partner_carriage)
             # A waiting half the peer already closed pairs with nothing.
-            halves[partner_carriage] = [
-                half
-                for half in halves[partner_carriage]
-                if half.readyState not in ("closing", "closed")
-            ]
-            if not halves[partner_carriage]:
-                halves[spec.carries].append(channel)
+            waiting = [c for c in session.unpaired.get(partner_key, []) if c.is_alive()]
+            if not waiting:
+                session.unpaired.pop(partner_key, None)
+                first = WebRtcDataChannelConnection(channel, session.pc)
+                own_key = (spec.kind, parts.pair_id, spec.carries)
+                session.unpaired.setdefault(own_key, []).append(first)
                 asyncio.get_running_loop().call_later(
-                    _ATTACH_TIMEOUT_S, self._close_unpaired, session, spec.kind, channel
+                    _ATTACH_TIMEOUT_S, self._close_unpaired, session, own_key, first
                 )
                 return
-            partner = halves[partner_carriage].pop(0)
-            binary, text = (
-                (channel, partner) if spec.carries == "binary" else (partner, channel)
-            )
-            conn = WebRtcDataChannelConnection(binary, session.pc, text_channel=text)
+            conn = waiting.pop(0)
+            session.unpaired[partner_key] = waiting
+            conn.add_partner(channel, partner_is_text=spec.carries == "text")
         session.tasks.append(
             asyncio.ensure_future(
                 self._attach_and_serve(session_id, session, conn, spec.kind)
@@ -363,15 +368,17 @@ class WebRtcSessionManager:
         )
 
     @staticmethod
-    def _close_unpaired(session: _Session, kind: str, channel: RTCDataChannel) -> None:
+    def _close_unpaired(
+        session: _Session,
+        key: tuple[str, str, str],
+        conn: WebRtcDataChannelConnection,
+    ) -> None:
         """Close a split-kind half still waiting for its partner."""
-        for waiting in session.unpaired.get(kind, {}).values():
-            if channel in waiting:
-                waiting.remove(channel)
-                logger.info("WebRTC: %r channel without its pair; closing", kind)
-                with contextlib.suppress(Exception):
-                    channel.close()
-                return
+        waiting = session.unpaired.get(key, [])
+        if conn in waiting:
+            waiting.remove(conn)
+            logger.info("WebRTC: %r channel without its pair; closing", key[0])
+            conn.abort()
 
     async def _attach_and_serve(
         self,
