@@ -289,6 +289,47 @@ describe('TxMic', () => {
       expect(context.close).toHaveBeenCalled();
     });
 
+    it('ignores a resume failure from an Opus context a newer start retired', async () => {
+      const first = installContext();
+      let rejectOld!: (e: Error) => void;
+      first.context.resume.mockReturnValue(new Promise((_, reject) => { rejectOld = reject; }));
+      const died = vi.fn();
+      const m = new TxMic(vi.fn(), died);
+      expect(await m.start()).toBeNull();
+      m.stop();
+      installContext();
+      expect(await m.start()).toBeNull();
+
+      rejectOld(new Error('late'));
+      await Promise.resolve(); await Promise.resolve();
+
+      expect(died).not.toHaveBeenCalled();
+      expect(m.active).toBe(true);
+      m.stop();
+    });
+
+    it('ignores a resume failure from the Opus context a codec switch retired', async () => {
+      const { context } = installContext();
+      let rejectOld!: (e: Error) => void;
+      context.resume.mockReturnValue(new Promise((_, reject) => { rejectOld = reject; }));
+      (context as any).createScriptProcessor = vi.fn(() => ({
+        connect: vi.fn(), disconnect: vi.fn(), onaudioprocess: null,
+      }));
+      (context as any).destination = {};
+      const died = vi.fn();
+      const m = new TxMic(vi.fn(), died);
+      expect(await m.start()).toBeNull();
+      expect(m.applyServerCodec('pcm16')).toEqual({ switched: true, error: null });
+
+      rejectOld(new Error('late'));
+      await Promise.resolve(); await Promise.resolve();
+
+      expect(died).not.toHaveBeenCalled();
+      expect(m.active).toBe(true);
+      expect(m.codec).toBe('pcm16');
+      m.stop();
+    });
+
     it('does not stay half-started when the encoder refuses its configuration', async () => {
       installContext();
       mockEncoder.configure.mockImplementation(() => { throw new Error('unsupported config'); });

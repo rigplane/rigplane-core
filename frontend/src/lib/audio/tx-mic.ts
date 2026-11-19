@@ -368,7 +368,11 @@ export class TxMic {
       this.opusContext = context;
       // A context that cannot start delivers no audio; end the capture rather
       // than admit TX on a stalled graph.
-      context.resume?.().catch((err: unknown) => {
+      // Only the live Opus context may end the capture: one retired by a
+      // codec switch keeps the generation, so identity is checked too.
+      const live = context;
+      live.resume?.().catch((err: unknown) => {
+        if (this.opusContext !== live) return;
         this.failCapture(generation, `audio context resume failed: ${String(err)}`);
       });
       return converted;
