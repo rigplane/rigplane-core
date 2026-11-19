@@ -153,6 +153,8 @@ class AudioManager {
   private _lastRxResumeError: string | null = null;
   private controller: AudioControllerBinding | null = null;
   private txControllerEpoch = 0;
+  // MOR-4591: true from a PTT press until stopTx (or a failed start).
+  private rxHeldForTx = false;
   private txAdmission: {
     promise: Promise<string | null>;
     resolve: (error: string | null) => void;
@@ -381,6 +383,21 @@ class AudioManager {
     // entry, after the guards, so a stale failure never outlives its retry
     // while the fresh capture is still pending.
     setTxError(false);
+    // MOR-4591: receive playback is held from the press on. The microphone
+    // is raw (MOR-4312, no browser echo canceller), so receive audio still
+    // queued in the jitter buffer, or arriving while the radio keys, would
+    // play from the speaker into the open microphone and go out on the air.
+    this._holdRxForTx();
+    try {
+      return await this._startTxCapture(epoch, startGeneration);
+    } finally {
+      // Only the newest attempt may end the hold, and only when it did not
+      // become a running transmission; stopTx() ends it otherwise.
+      if (startGeneration === this.txStartGeneration && !this._txEnabled) this._releaseRxForTx();
+    }
+  }
+
+  private async _startTxCapture(epoch: number, startGeneration: number): Promise<string | null> {
     let err: string | null;
     let captureEpoch = this.txMic.captureEpoch;
     try {
@@ -441,6 +458,7 @@ class AudioManager {
     this.txAdmission = null;
     admission?.resolve('TX MIC: capture start cancelled');
     this.txMic.stop();
+    this._releaseRxForTx();
     if (!this._txEnabled) return;
     this._txEnabled = false;
     setTxEnabled(false);
@@ -452,6 +470,20 @@ class AudioManager {
       if (this._rxEnabled) this.connect();
     } else this.maybeDisconnect();
     this.notify();
+  }
+
+  /** Stop receive playback now and drop receive frames until released. */
+  private _holdRxForTx(): void {
+    if (this.rxHeldForTx) return;
+    this.rxHeldForTx = true;
+    this.rxPlayer.flush();
+  }
+
+  /** End the TX hold; the player re-primes cleanly on the next frame. */
+  private _releaseRxForTx(): void {
+    if (!this.rxHeldForTx) return;
+    this.rxHeldForTx = false;
+    this.rxPlayer.flush();
   }
 
   /** A dead live socket under browser demand latches a fault per active
@@ -537,6 +569,7 @@ class AudioManager {
 
     ws.onBinary((data) => {
       if (protocols.length > 0 && (this.ws !== ws || this.controller?.current(epoch) !== true)) return;
+      if (this.rxHeldForTx) return;
       this.rxPlayer.feed(data);
     });
 
