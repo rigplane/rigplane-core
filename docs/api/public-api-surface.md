@@ -357,15 +357,19 @@ without a major version.
 - Audio pipeline types: `AudioPacket`, `AudioState`, `AudioStats`,
   `AudioStream`, `JitterBuffer`, `AUDIO_HEADER_SIZE`
 - WebRTC wire contracts for an out-of-process offerer or station agent
-  (MOR-272): the data-channel attach frame and its ack
+  (MOR-272). **Provisional until Pro ships remote access:** names and
+  shapes may still change in a minor release without a deprecation cycle;
+  they freeze into the normal tier-2 policy once a Pro release uses them.
+  The data-channel attach frame and its ack
   (`ClientChannelParams.to_attach_frame` / `from_attach_frame`,
   `ChannelAttachedAck.encode` / `from_frame`, `ChannelKind`); the
   answerer's ICE gathering policy (`IceServer`, `IceGatheringPolicy`,
   `GATHER_TIMEOUT_S`, `install_ice_gathering_policy`,
   `apply_ice_gathering_policy`); the answerer HTTP contract of
   `POST /api/v1/transport/webrtc/offer` and `/ice-candidate`
-  (`WebRtcOffer`, `WebRtcAnswer`, `WebRtcIceCandidate`,
-  `WebRtcRequestError`); and the `webrtc` block of
+  (`WebRtcOffer`, `WebRtcAnswer`, `WebRtcIceCandidate` with its
+  `IceCandidateInit` — `candidate`, `sdpMid`, `sdpMLineIndex`, `None`
+  ends the trickle — and `WebRtcRequestError`); and the `webrtc` block of
   `GET /api/v1/capabilities` (`WebRtcTransportStatus`). Canonical modules
   stay in `rigplane.web.*` (tier 3); import these names from `rigplane`.
   The server parses and builds the same wire bodies through these types.

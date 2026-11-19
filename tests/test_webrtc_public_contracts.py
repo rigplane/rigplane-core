@@ -69,6 +69,7 @@ _PUBLIC = (
     ("WebRtcIceCandidate", "rigplane.web.transport.webrtc_contract"),
     ("WebRtcRequestError", "rigplane.web.transport.webrtc_contract"),
     ("WebRtcTransportStatus", "rigplane.web.transport.webrtc_contract"),
+    ("IceCandidateInit", "rigplane.web.transport.webrtc_contract"),
 )
 
 
@@ -171,13 +172,15 @@ def test_answer_round_trips() -> None:
         rigplane.WebRtcAnswer.from_json({"status": "ok", "sessionId": "abc"})
 
 
+_HOST = "candidate:1 1 udp 1 1.2.3.4 5 typ host"
+
+
 def test_ice_candidate_round_trips_and_codes() -> None:
     cand = rigplane.WebRtcIceCandidate(
         session_id="abc",
-        candidate={
-            "candidate": "candidate:1 1 udp 1 1.2.3.4 5 typ host",
-            "sdpMid": "0",
-        },
+        candidate=rigplane.IceCandidateInit(
+            candidate=_HOST, sdpMid="0", sdpMLineIndex=0
+        ),
     )
     assert rigplane.WebRtcIceCandidate.from_json(cand.to_json()) == cand
     end = rigplane.WebRtcIceCandidate(session_id="abc", candidate=None)
@@ -190,6 +193,53 @@ def test_ice_candidate_round_trips_and_codes() -> None:
         with pytest.raises(rigplane.WebRtcRequestError) as info:
             rigplane.WebRtcIceCandidate.from_json(body)
         assert info.value.code == code
+
+
+def test_ice_candidate_init_wire_matches_k1_shape() -> None:
+    """The wire form carries exactly the three RTCIceCandidateInit fields."""
+    init = rigplane.IceCandidateInit(candidate=_HOST, sdpMid=None, sdpMLineIndex=None)
+    assert init.to_json() == {"candidate": _HOST, "sdpMid": None, "sdpMLineIndex": None}
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        None,
+        {},
+        {"candidate": ""},
+        {"candidate": "", "sdpMid": "0", "sdpMLineIndex": 0},
+    ],
+)
+def test_ice_candidate_end_of_candidates_forms_parse_to_none(raw: Any) -> None:
+    parsed = rigplane.WebRtcIceCandidate.from_json({"sessionId": "s", "candidate": raw})
+    assert parsed.candidate is None
+
+
+def test_ice_candidate_init_tolerates_browser_extra_keys() -> None:
+    raw = {
+        "candidate": _HOST,
+        "sdpMid": "0",
+        "sdpMLineIndex": 0,
+        "usernameFragment": "u",
+    }
+    parsed = rigplane.WebRtcIceCandidate.from_json({"sessionId": "s", "candidate": raw})
+    assert parsed.candidate == rigplane.IceCandidateInit(_HOST, "0", 0)
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        {"candidate": 5},
+        {"candidate": _HOST, "sdpMid": 0},
+        {"candidate": _HOST, "sdpMLineIndex": "0"},
+        {"candidate": _HOST, "sdpMLineIndex": -1},
+        {"candidate": _HOST, "sdpMLineIndex": True},
+    ],
+)
+def test_ice_candidate_init_rejects_mistyped_fields(raw: dict[str, Any]) -> None:
+    with pytest.raises(rigplane.WebRtcRequestError) as info:
+        rigplane.WebRtcIceCandidate.from_json({"sessionId": "s", "candidate": raw})
+    assert info.value.code == "invalid_candidate"
 
 
 def test_request_error_round_trips() -> None:
@@ -235,6 +285,7 @@ async def test_server_offer_errors_parse_as_request_error(
     [
         ({"candidate": None}, 400, "missing_session"),
         ({"sessionId": "abc", "candidate": 1}, 400, "invalid_candidate"),
+        ({"sessionId": "abc", "candidate": {"candidate": 7}}, 400, "invalid_candidate"),
         ({"sessionId": "nope", "candidate": None}, 404, "ice_error"),
     ],
 )

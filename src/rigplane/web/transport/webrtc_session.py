@@ -46,7 +46,7 @@ from typing import TYPE_CHECKING, Any, Final, cast
 from ...runtime.controller_authority import ControllerError  # noqa: TID251
 from ...ws import WS_OP_TEXT  # noqa: TID251
 from ..channel_attach import ChannelKind, ClientChannelParams  # noqa: TID251
-from .webrtc_contract import WebRtcAnswer  # noqa: TID251
+from .webrtc_contract import IceCandidateInit, WebRtcAnswer  # noqa: TID251
 from .webrtc import (  # noqa: TID251
     WebRtcDataChannelConnection,
     webrtc_available,
@@ -230,18 +230,18 @@ class WebRtcSessionManager:
         ).to_json()
 
     async def add_ice_candidate(
-        self, session_id: str, candidate: dict[str, Any] | None
+        self, session_id: str, candidate: IceCandidateInit | None
     ) -> None:
         """Add a trickled ICE candidate to ``session_id``.
 
-        A ``None`` / empty candidate marks end-of-candidates (a no-op for
-        aiortc). Raises :class:`WebRtcSessionError` for an unknown session.
+        ``None`` marks end-of-candidates (a no-op for aiortc). Raises
+        :class:`WebRtcSessionError` for an unknown session.
         """
         session = self._sessions.get(session_id)
         if session is None:
             raise WebRtcSessionError(f"Unknown session: {session_id}")
 
-        if not candidate or not candidate.get("candidate"):
+        if candidate is None:
             # End-of-candidates sentinel; nothing to add.
             return
 
@@ -253,14 +253,12 @@ class WebRtcSessionManager:
         )
 
         try:
+            text = candidate.candidate
             parsed: RTCIceCandidate = candidate_from_sdp(
-                str(candidate["candidate"]).split(":", 1)[-1]
-                if str(candidate["candidate"]).startswith("candidate:")
-                else str(candidate["candidate"])
+                text.split(":", 1)[-1] if text.startswith("candidate:") else text
             )
-            parsed.sdpMid = candidate.get("sdpMid")
-            sdp_mline = candidate.get("sdpMLineIndex")
-            parsed.sdpMLineIndex = int(sdp_mline) if sdp_mline is not None else None
+            parsed.sdpMid = candidate.sdpMid
+            parsed.sdpMLineIndex = candidate.sdpMLineIndex
             await session.pc.addIceCandidate(parsed)
         except Exception as exc:
             raise WebRtcSessionError(f"Failed to add ICE candidate: {exc}") from exc

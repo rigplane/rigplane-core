@@ -115,6 +115,7 @@ if TYPE_CHECKING:
         install_ice_gathering_policy,
     )
     from .web.transport.webrtc_contract import (  # noqa: F401, TID251
+        IceCandidateInit,
         WebRtcAnswer,
         WebRtcIceCandidate,
         WebRtcOffer,
@@ -170,6 +171,7 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
         "rigplane.web.transport.webrtc_contract",
         "WebRtcTransportStatus",
     ),
+    "IceCandidateInit": ("rigplane.web.transport.webrtc_contract", "IceCandidateInit"),
     # --- Backward-compat radio facades ---
     "IcomRadio": ("rigplane.runtime.radio", "IcomRadio"),
     "AudioRecoveryState": ("rigplane.runtime.radio", "AudioRecoveryState"),
@@ -438,4 +440,5 @@ __all__ = [
     "WebRtcIceCandidate",
     "WebRtcRequestError",
     "WebRtcTransportStatus",
+    "IceCandidateInit",
 ]

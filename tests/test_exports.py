@@ -117,6 +117,7 @@ def test_public_api_surface() -> None:
         "WebRtcIceCandidate",
         "WebRtcRequestError",
         "WebRtcTransportStatus",
+        "IceCandidateInit",
     }
     assert set(rigplane.__all__) == expected_public
 

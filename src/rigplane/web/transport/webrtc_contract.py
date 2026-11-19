@@ -17,6 +17,7 @@ from typing import Any, Literal, Self, cast, get_args
 from .ice_gathering import IceServer, parse_ice_servers  # noqa: TID251
 
 __all__ = [
+    "IceCandidateInit",
     "WebRtcAnswer",
     "WebRtcErrorCode",
     "WebRtcIceCandidate",
@@ -131,32 +132,83 @@ class WebRtcAnswer:
         return cls(session_id=session_id, sdp=sdp, type=answer_type)
 
 
+def _invalid_candidate(detail: str) -> WebRtcRequestError:
+    return WebRtcRequestError("invalid_candidate", detail)
+
+
+@dataclass(frozen=True, slots=True)
+class IceCandidateInit:
+    """One trickled candidate: the W3C ``RTCIceCandidateInit`` fields.
+
+    The same three fields as the Tower signalling ``IceCandidateInitV2``.
+    """
+
+    candidate: str
+    sdpMid: str | None = None  # noqa: N815 - W3C wire name
+    sdpMLineIndex: int | None = None  # noqa: N815 - W3C wire name
+
+    @classmethod
+    def from_json(cls, value: object) -> Self | None:
+        """Parse a wire candidate; ``None`` means end of candidates.
+
+        ``null``, ``{}`` and an empty ``candidate`` string all end the
+        trickle (browsers send each form). Other keys a browser adds
+        (``usernameFragment``) are ignored. A mistyped field raises
+        :class:`WebRtcRequestError` ``invalid_candidate``.
+        """
+        if value is None:
+            return None
+        if not isinstance(value, dict):
+            raise _invalid_candidate("'candidate' must be an object or null.")
+        text = value.get("candidate", "")
+        if not isinstance(text, str):
+            raise _invalid_candidate("'candidate.candidate' must be a string.")
+        if not text:
+            return None
+        mid = value.get("sdpMid")
+        if mid is not None and not isinstance(mid, str):
+            raise _invalid_candidate("'candidate.sdpMid' must be a string or null.")
+        index = value.get("sdpMLineIndex")
+        if index is not None and (type(index) is not int or index < 0):
+            raise _invalid_candidate(
+                "'candidate.sdpMLineIndex' must be a non-negative integer or null."
+            )
+        return cls(candidate=text, sdpMid=mid, sdpMLineIndex=index)
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "candidate": self.candidate,
+            "sdpMid": self.sdpMid,
+            "sdpMLineIndex": self.sdpMLineIndex,
+        }
+
+
 @dataclass(frozen=True, slots=True)
 class WebRtcIceCandidate:
     """``POST /api/v1/transport/webrtc/ice-candidate`` request body.
 
-    ``candidate`` mirrors the browser ``RTCIceCandidateInit``
-    (``candidate``, ``sdpMid``, ``sdpMLineIndex``); ``None`` or an empty
-    candidate ends the trickle. The success response is ``{"status": "ok"}``.
+    ``candidate`` ``None`` ends the trickle. The success response is
+    ``{"status": "ok"}``.
     """
 
     session_id: str
-    candidate: dict[str, Any] | None
+    candidate: IceCandidateInit | None
 
     @classmethod
     def from_json(cls, payload: Mapping[str, object]) -> Self:
         session_id = payload.get("sessionId")
         if not isinstance(session_id, str) or not session_id:
             raise WebRtcRequestError("missing_session", "Field 'sessionId' required.")
-        candidate = payload.get("candidate")
-        if candidate is not None and not isinstance(candidate, dict):
-            raise WebRtcRequestError(
-                "invalid_candidate", "'candidate' must be an object or null."
-            )
-        return cls(session_id=session_id, candidate=candidate)
+        return cls(
+            session_id=session_id,
+            candidate=IceCandidateInit.from_json(payload.get("candidate")),
+        )
 
     def to_json(self) -> dict[str, Any]:
-        return {"sessionId": self.session_id, "candidate": self.candidate}
+        return {
+            "sessionId": self.session_id,
+            "candidate": None if self.candidate is None else self.candidate.to_json(),
+        }
 
 
 @dataclass(frozen=True, slots=True)
