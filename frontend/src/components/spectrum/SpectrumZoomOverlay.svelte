@@ -74,7 +74,6 @@
     cursor: pointer;
   }
   button:hover:not(:disabled) { background: rgba(32, 40, 52, 0.85); }
-  button:focus-visible { outline: 2px solid var(--accent, #4aa3ff); outline-offset: 1px; }
   button[aria-pressed='true'] { border-color: var(--accent, #4aa3ff); color: var(--accent, #4aa3ff); }
   button:disabled { opacity: 0.45; color: var(--text-muted); cursor: default; }
 </style>
