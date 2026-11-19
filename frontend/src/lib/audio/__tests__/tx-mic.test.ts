@@ -246,6 +246,49 @@ describe('TxMic', () => {
       m.stop();
     });
 
+    it('uses the raw track when the context constructor refuses, and a retry still encodes', async () => {
+      const { ctor } = installContext();
+      ctor.mockImplementationOnce(function () { throw new DOMException('rate', 'NotSupportedError'); });
+      const created = spyProcessor();
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const m = new TxMic(vi.fn());
+
+      expect(await m.start()).toBeNull();
+      expect(created).toHaveBeenCalledWith({ track: mockTrack });
+      m.stop();
+      expect(await m.start()).toBeNull();
+      expect(mockEncoder.configure).toHaveBeenCalledTimes(2);
+      m.stop();
+    });
+
+    it('closes a half-built graph and uses the raw track when node setup throws', async () => {
+      const { context } = installContext();
+      context.createMediaStreamDestination.mockImplementation(() => { throw new Error('graph'); });
+      const created = spyProcessor();
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const m = new TxMic(vi.fn());
+
+      expect(await m.start()).toBeNull();
+      expect(created).toHaveBeenCalledWith({ track: mockTrack });
+      expect(context.close).toHaveBeenCalled();
+      m.stop();
+    });
+
+    it('ends the capture when the context cannot resume', async () => {
+      const { context } = installContext();
+      context.resume.mockRejectedValue(new Error('blocked'));
+      const died = vi.fn();
+      const m = new TxMic(vi.fn(), died);
+
+      expect(await m.start()).toBeNull();
+      await vi.waitFor(() => expect(died).toHaveBeenCalledWith(
+        'TX MIC: audio context resume failed: Error: blocked',
+      ));
+      expect(m.active).toBe(false);
+      expect(mockTrack.stop).toHaveBeenCalled();
+      expect(context.close).toHaveBeenCalled();
+    });
+
     it('does not stay half-started when the encoder refuses its configuration', async () => {
       installContext();
       mockEncoder.configure.mockImplementation(() => { throw new Error('unsupported config'); });

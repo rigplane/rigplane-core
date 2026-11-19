@@ -647,3 +647,112 @@ describe('TxMic adopts the codec the server can accept', () => {
     mic.stop();
   });
 });
+
+/**
+ * MOR-4594 through the real start path: AudioManager.startTx -> TxMic -> the
+ * WebCodecs Opus encoder. The fake device ignores the requested rate and
+ * channels (44.1 kHz stereo, as Chromium's fake mic does); the fake encoder
+ * rejects anything but 48 kHz mono, as the real one does. Only the context
+ * normalisation makes audio reach the socket.
+ */
+describe('AudioManager TX start with a 44.1 kHz stereo microphone (MOR-4594)', () => {
+  type Format = { sampleRate: number; numberOfChannels: number };
+
+  function installDevice({ configureThrows = false } = {}) {
+    const formats = new WeakMap<object, Format>();
+    const track = Object.assign(new EventTarget(), { stop: vi.fn(), kind: 'audio' });
+    const converted = Object.assign(new EventTarget(), { stop: vi.fn(), kind: 'audio' });
+    formats.set(track, { sampleRate: 44100, numberOfChannels: 2 });
+    formats.set(converted, { sampleRate: SAMPLE_RATE, numberOfChannels: 1 });
+
+    (globalThis as any).MediaStreamTrackProcessor = function ({ track: source }: { track: object }) {
+      return {
+        readable: {
+          getReader: () => ({
+            // One 20 ms-ish frame per read, like a live microphone.
+            read: vi.fn(() => new Promise((resolve) => setTimeout(() => resolve({
+              done: false, value: { ...formats.get(source), close: vi.fn() },
+            }), 5))),
+            cancel: vi.fn().mockResolvedValue(undefined),
+          }),
+        },
+      };
+    };
+    (globalThis as any).AudioEncoder = function (this: any, init: AudioEncoderInit) {
+      Object.assign(this, {
+        configure: vi.fn(() => { if (configureThrows) throw new Error('unsupported config'); }),
+        close: vi.fn(),
+        state: 'configured',
+        encode: (data: Format) => {
+          if (data.sampleRate !== SAMPLE_RATE || data.numberOfChannels !== 1) {
+            init.error(new DOMException('Input audio buffer is incompatible with codec parameters'));
+            return;
+          }
+          init.output({ byteLength: 1, copyTo: (dst: Uint8Array) => { dst[0] = 7; } } as any, {} as any);
+        },
+      });
+    };
+    (globalThis as any).AudioContext = vi.fn(function () {
+      return {
+        sampleRate: SAMPLE_RATE,
+        createMediaStreamSource: vi.fn(() => ({ connect: vi.fn(), disconnect: vi.fn() })),
+        createMediaStreamDestination: vi.fn(() => ({
+          stream: { getAudioTracks: () => [converted] },
+        })),
+        resume: vi.fn().mockResolvedValue(undefined),
+        close: vi.fn().mockResolvedValue(undefined),
+      };
+    });
+    const stream = { getTracks: () => [track], getAudioTracks: () => [track] };
+    Object.defineProperty(globalThis, 'navigator', {
+      value: { mediaDevices: { getUserMedia: vi.fn().mockResolvedValue(stream) } },
+      writable: true, configurable: true,
+    });
+    return { track };
+  }
+
+  beforeEach(() => {
+    vi.resetModules();
+    vi.unstubAllGlobals();
+    setTxEnabledMock.mockClear();
+    FakeWebSocket.instances = [];
+    vi.stubGlobal('WebSocket', FakeWebSocket);
+    vi.stubGlobal('location', { protocol: 'http:', host: 'localhost:5173' });
+  });
+
+  afterEach(() => {
+    clearMediaGlobals();
+  });
+
+  it('sends Opus frames on the audio socket and raises no TX failure', async () => {
+    installDevice();
+    const { audioManager } = await import('../audio-manager');
+    const notify = vi.fn();
+    audioManager.setOperatorNotifier(notify);
+
+    expect(await audioManager.startTx()).toBeNull();
+    const ws = FakeWebSocket.instances[0];
+    ws.open();
+
+    await vi.waitFor(() => expect(ws.sent.some((frame) => typeof frame !== 'string')).toBe(true));
+    expect(notify).not.toHaveBeenCalled();
+    expect(audioManager.txEnabled).toBe(true);
+  });
+
+  it('turns an encoder that refuses its configuration into a start failure banner', async () => {
+    const { track } = installDevice({ configureThrows: true });
+    const { audioManager } = await import('../audio-manager');
+    const notify = vi.fn();
+    audioManager.setOperatorNotifier(notify);
+
+    expect(await audioManager.startTx()).toBe('TX MIC: encoder configure failed: unsupported config');
+
+    expect(notify).toHaveBeenCalledWith(
+      'error', 'TX audio failed to start: TX MIC: encoder configure failed: unsupported config',
+      'txAudioStartFailed',
+    );
+    expect(audioManager.txEnabled).toBe(false);
+    expect(track.stop).toHaveBeenCalled();
+    expect(FakeWebSocket.instances).toHaveLength(0);
+  });
+});

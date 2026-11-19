@@ -260,7 +260,7 @@ export class TxMic {
     // stereo, which the 48 kHz mono encoder rejects on its first frame. A
     // context at SAMPLE_RATE resamples; a one-channel explicit destination
     // downmixes (MOR-4594).
-    const encoderTrack = this.openEncoderTrack(track);
+    const encoderTrack = this.openEncoderTrack(track, generation);
 
     const processor = new MediaStreamTrackProcessor({ track: encoderTrack });
     const reader = this.reader = processor.readable.getReader();
@@ -348,22 +348,36 @@ export class TxMic {
    * Without an AudioContext, or when it cannot run at SAMPLE_RATE, the raw
    * track is used as before.
    */
-  private openEncoderTrack(track: MediaStreamTrack): MediaStreamTrack {
+  private openEncoderTrack(track: MediaStreamTrack, generation: number): MediaStreamTrack {
     const audioContextCtor = TxMic.audioContextCtor();
     if (!audioContextCtor || !this.stream) return track;
-    const context = new audioContextCtor({ sampleRate: SAMPLE_RATE });
-    if (Math.round(context.sampleRate) !== SAMPLE_RATE) {
-      // Cannot convert here; the raw track is no worse than before.
-      context.close().catch(() => {});
+    let context: AudioContext | null = null;
+    try {
+      context = new audioContextCtor({ sampleRate: SAMPLE_RATE });
+      if (Math.round(context.sampleRate) !== SAMPLE_RATE) {
+        // Cannot convert here; the raw track is no worse than before.
+        context.close().catch(() => {});
+        return track;
+      }
+      const destination = context.createMediaStreamDestination();
+      destination.channelCount = CHANNELS;
+      destination.channelCountMode = 'explicit';
+      context.createMediaStreamSource(this.stream).connect(destination);
+      const converted = destination.stream.getAudioTracks()[0];
+      if (!converted) throw new Error('no converted track');
+      this.opusContext = context;
+      // A context that cannot start delivers no audio; end the capture rather
+      // than admit TX on a stalled graph.
+      context.resume?.().catch((err: unknown) => {
+        this.failCapture(generation, `audio context resume failed: ${String(err)}`);
+      });
+      return converted;
+    } catch (err) {
+      console.warn(`[TxMic] mic conversion unavailable, using raw track: ${String(err)}`);
+      context?.close().catch(() => {});
+      this.opusContext = null;
       return track;
     }
-    const destination = context.createMediaStreamDestination();
-    destination.channelCount = CHANNELS;
-    destination.channelCountMode = 'explicit';
-    context.createMediaStreamSource(this.stream).connect(destination);
-    context.resume?.().catch(() => {});
-    this.opusContext = context;
-    return destination.stream.getAudioTracks()[0] ?? track;
   }
 
   /**
