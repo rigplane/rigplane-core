@@ -364,9 +364,7 @@ without a major version.
   (`ClientChannelParams.to_attach_frame` / `from_attach_frame`,
   `ChannelAttachedAck.encode` / `from_frame`, `ChannelKind`); the K5
   data-channel set (`DATA_CHANNELS` of `DataChannelSpec`, `DataChannelLabel`:
-  `control`, `api`, `scope`, `scope-text`, `audio`, `audio-text`; a split
-  pair's labels carry one pair id: `data_channel_label`,
-  `parse_data_channel_label`, `DataChannelLabelParts`); the
+  `control`, `api`, `scope`, `scope-text`, `audio`, `audio-text`); the
   answerer's ICE gathering policy (`IceServer`, `IceGatheringPolicy`,
   `GATHER_TIMEOUT_S`, `install_ice_gathering_policy`,
   `apply_ice_gathering_policy`); the answerer HTTP contract of

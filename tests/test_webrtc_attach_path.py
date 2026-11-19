@@ -46,7 +46,7 @@ from rigplane.runtime.managed_tx_state import ManagedTxIntentKind
 from rigplane.testing.timing import await_until
 from rigplane.web import server as server_module
 from rigplane.web.api_channel import api_channel_golden_documents_from_json
-from rigplane.web.channel_attach import data_channel_label, data_channels_for
+from rigplane.web.channel_attach import data_channels_for
 from rigplane.web.protocol import (
     AUDIO_CODEC_PCM16,
     AUDIO_HEADER_SIZE,
@@ -1153,13 +1153,12 @@ class _ChannelSetPeer:
         # appear more than once (re-created channels, same-kind copies).
         self.every_channel: list[tuple[str, Any]] = []
 
-    def open_kind(self, kind: str, pair_id: str = "") -> dict[str, Any]:
-        """Create (or re-create) every channel of ``kind`` on this peer;
-        a split pair's two labels carry ``pair_id`` (bare when empty).
+    def open_kind(self, kind: str) -> dict[str, Any]:
+        """Create (or re-create) every channel of ``kind`` on this peer.
 
         A re-created kind starts with an empty inbox, so nothing from the
         closed channels is mistaken for it. ``_channels`` and the per-label
-        inbox are keyed by the spec label (the newest pair wins).
+        inbox are keyed by label (the newest pair wins).
         """
         opened: dict[str, Any] = {}
         self.received[kind] = []
@@ -1167,9 +1166,7 @@ class _ChannelSetPeer:
             kwargs: dict[str, Any] = {"ordered": spec.ordered}
             if spec.max_retransmits is not None:
                 kwargs["maxRetransmits"] = spec.max_retransmits
-            channel = self._pc.createDataChannel(
-                data_channel_label(spec, pair_id), **kwargs
-            )
+            channel = self._pc.createDataChannel(spec.label, **kwargs)
             self._channels[spec.label] = channel
             self.received_by_label[spec.label] = []
             self.every_channel.append((spec.label, channel))
@@ -1649,30 +1646,27 @@ async def test_server_initiated_channel_close_reaches_client_as_that_channels_cl
     stack = await _stand_up_stack(tmp_path)
     peer = _ChannelSetPeer()
     try:
-        # MAX_PER_IP_PER_CHANNEL is 9: the 10th scope channel's attach
-        # evicts the first — all on one peer, one negotiation.
+        # MAX_PER_IP_PER_CHANNEL is 9: the 10th scope pair's attach evicts
+        # the first — all on one peer, one negotiation. Pairs open one at a
+        # time (a client has one pair of a kind in flight): each pair opens,
+        # attaches and is acked before the next is created, so the server
+        # pairs, registers and evicts in this order.
         await peer.connect(stack.web, ("control",))
-        for index in range(10):  # ten scope pairs, each its own identity
-            peer.open_kind("scope", pair_id=f"p{index}")
-        await await_until(
-            lambda: all(c.readyState == "open" for _, c in peer.every_channel) or None,
-            timeout=15.0,
-            description="ten scope pairs open",
-        )
         key = await _acquire_session(stack.web.port)
         peer.send_text("control", _attach_text("control", key))
         assert (await _frame(peer, "control", "hello"))["type"] == "hello"
-        scope_channels = [
-            channel for label, channel in peer.every_channel if label == "scope"
-        ]
-        text_channels = [
-            channel for label, channel in peer.every_channel if label == "scope-text"
-        ]
-        assert len(scope_channels) == len(text_channels) == 10
-        # Sequential: each ack lands before the next attach, so the server
-        # registers (and evicts) in this order (pairs form by pair id).
-        for channel in text_channels:
-            channel.send(_attach_text("scope", key))
+        scope_channels: list[Any] = []
+        text_channels: list[Any] = []
+        for _ in range(10):
+            pair = peer.open_kind("scope")
+            await await_until(
+                lambda: all(c.readyState == "open" for c in pair.values()) or None,
+                timeout=15.0,
+                description="scope pair open",
+            )
+            scope_channels.append(pair["scope"])
+            text_channels.append(pair["scope-text"])
+            pair["scope-text"].send(_attach_text("scope", key))
             assert await await_until(
                 lambda: peer.take("scope"), timeout=10.0, description="scope ack"
             ) == {"type": "attached", "v": 1, "channel": "scope"}
@@ -1794,8 +1788,8 @@ async def test_split_attach_on_the_text_half_before_its_lossy_partner_opens(
 ) -> None:
     """The browser sends its single attach as soon as the ``*-text`` half
     opens, possibly before the lossy half exists: the answerer keeps that
-    frame, pairs the halves by their pair id when the partner arrives, and
-    the pair is acknowledged and serves normally."""
+    frame, pairs the halves when the partner arrives, and the pair is
+    acknowledged and serves normally."""
     stack = await _stand_up_stack(tmp_path, audio=True)
     peer = _ChannelSetPeer()
     try:
@@ -1803,11 +1797,8 @@ async def test_split_attach_on_the_text_half_before_its_lossy_partner_opens(
         key = await _acquire_session(stack.web.port)
         peer.send_text("control", _attach_text("control", key))
         assert (await _frame(peer, "control", "hello"))["type"] == "hello"
-        specs = {spec.carries: spec for spec in data_channels_for("audio")}
         peer.received["audio"] = []
-        text = peer._pc.createDataChannel(  # noqa: SLF001
-            data_channel_label(specs["text"], "late"), ordered=True
-        )
+        text = peer._pc.createDataChannel("audio-text", ordered=True)  # noqa: SLF001
 
         @text.on("message")  # type: ignore[misc, no-untyped-call]
         def _on_text(message: Any) -> None:
@@ -1821,9 +1812,7 @@ async def test_split_attach_on_the_text_half_before_its_lossy_partner_opens(
         text.send(_attach_text("audio", key))  # the one attach, partner absent
         await asyncio.sleep(0.3)
         binary = peer._pc.createDataChannel(  # noqa: SLF001
-            data_channel_label(specs["binary"], "late"),
-            ordered=False,
-            maxRetransmits=0,
+            "audio", ordered=False, maxRetransmits=0
         )
         await await_until(
             lambda: binary.readyState == "open" or None,

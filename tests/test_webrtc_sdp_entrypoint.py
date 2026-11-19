@@ -250,11 +250,10 @@ async def test_full_session_negotiates_control_scope_audio() -> None:
     # binary halves lossy, text halves (and control) ordered + reliable.
     assert control_conn._channel.ordered is True
     for conn, label in ((scope_conn, "scope"), (audio_conn, "audio")):
-        binary_id = conn._channel.label.removeprefix(f"{label}/")
-        assert conn._channel.label == f"{label}/{binary_id}"
+        assert conn._channel.label == label
         assert conn._channel.ordered is False
         assert conn._channel.maxRetransmits == 0
-        assert conn._text_channel.label == f"{label}-text/{binary_id}"
+        assert conn._text_channel.label == f"{label}-text"
         assert conn._text_channel.ordered is True
         assert conn._text_channel.maxRetransmits is None
 

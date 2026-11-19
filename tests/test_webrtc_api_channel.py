@@ -629,7 +629,6 @@ def test_api_wire_definition_is_typed_and_json_stable() -> None:
     wire.pop("payloads")  # pinned in tests/test_api_channel_wire_json.py
     # The K5 channel set, pinned row by row in tests/test_webrtc_split_channel.py.
     assert len(wire.pop("data_channels")) == 6
-    assert wire.pop("data_channel_pair_separator") == "/"
     assert json.loads(json.dumps(wire)) == {
         "version": _API_VERSION,
         "header": {

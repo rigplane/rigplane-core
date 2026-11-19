@@ -135,20 +135,6 @@ describe('DataChannelTransport', () => {
     expect(textCompanionLabel('scope')).toBe('scope-text');
     expect(textCompanionLabel('audio')).toBe('audio-text');
     expect(textCompanionLabel('control')).toBeNull();
-    // A pair id travels to the companion: the answerer pairs by identity.
-    expect(textCompanionLabel('audio/7f3a')).toBe('audio-text/7f3a');
-  });
-  it('a pair-id label needs the companion with the SAME pair id', async () => {
-    const good = new DataChannelTransport(new FakeDataChannel('scope/p1'), new FakeDataChannel('scope-text/p1'));
-    const crossed = new DataChannelTransport(new FakeDataChannel('scope/p1'), new FakeDataChannel('scope-text/p2'));
-    const closes: unknown[] = [];
-    good.onClose((info) => closes.push(info));
-    crossed.onClose((info) => closes.push(info));
-    good.open('ignored://', { protocols: [token], role: 'primary' });
-    crossed.open('ignored://', { protocols: [token], role: 'primary' });
-    await vi.advanceTimersByTimeAsync(0);
-    expect(closes).toEqual([{ code: 1006, reason: 'text channel does not match the channel set', wasClean: false }]);
-    expect(good.state).toBe('connecting');
   });
   it('scope: sends the golden attach ONCE on scope-text, never resent; opens on the golden ack', () => {
     const pair = splitPair('scope');

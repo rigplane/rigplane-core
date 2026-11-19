@@ -17,12 +17,7 @@ from typing import Any
 import pytest
 
 from rigplane.web import channel_attach
-from rigplane.web.channel_attach import (
-    DATA_CHANNELS,
-    data_channel_label,
-    data_channel_spec,
-    parse_data_channel_label,
-)
+from rigplane.web.channel_attach import DATA_CHANNELS, data_channel_spec
 from rigplane.web.transport import webrtc, webrtc_session
 from rigplane.web.transport.webrtc import WebRtcDataChannelConnection
 from rigplane.ws import WS_OP_BINARY, WS_OP_TEXT
@@ -163,15 +158,10 @@ def test_factory_builds_the_pair_from_the_contract(
     monkeypatch.setattr(webrtc, "webrtc_available", lambda: True)
     pc = _FakePc()
     conn = webrtc.add_data_channel(pc, kind)  # type: ignore[arg-type]
-    pair_id = pc.created[0].label.removeprefix(f"{kind}/")
-    assert pair_id
     assert [(c.label, c.ordered, c.maxRetransmits) for c in pc.created] == [
-        (f"{kind}/{pair_id}", False, 0),
-        (f"{kind}-text/{pair_id}", True, None),
+        (kind, False, 0),
+        (f"{kind}-text", True, None),
     ]
-    # Every pair gets its own identity.
-    webrtc.add_data_channel(pc, kind)  # type: ignore[arg-type]
-    assert pc.created[2].label != pc.created[0].label
     assert conn._channel is pc.created[0]
     assert conn._text_channel is pc.created[1]
 
@@ -189,77 +179,101 @@ def test_lossy_attach_resend_mechanism_is_gone() -> None:
     assert "setInterval" not in client
 
 
-def test_pair_labels_round_trip_and_reject_ids_outside_the_contract() -> None:
-    scope, scope_text = data_channel_spec("scope"), data_channel_spec("scope-text")
-    control = data_channel_spec("control")
-    assert scope is not None and scope_text is not None and control is not None
-    assert data_channel_label(scope, "a1") == "scope/a1"
-    parts = parse_data_channel_label("scope-text/a1")
-    assert parts is not None and (parts.spec, parts.pair_id) == (scope_text, "a1")
-    bare = parse_data_channel_label("scope")
-    assert bare is not None and bare.pair_id == ""
-    for label in ("control/a1", "scope/", "scope/a b", "nope/a1", "scope/" + "x" * 65):
-        assert parse_data_channel_label(label) is None, label
-    with pytest.raises(ValueError):
-        data_channel_label(control, "a1")
-
-
-def _dispatch(labels: list[str]) -> tuple[list[_FakeChannel], list[Any]]:
-    """Announce ``labels`` to the answerer in this order; return the fake
-    channels and the merged connections it would serve, in serve order."""
+def _answerer() -> tuple[Any, Any, list[Any]]:
+    """A session manager whose serve step only records the connections it
+    would serve, plus one fake peer session."""
     served: list[Any] = []
-    channels = [_FakeChannel(label) for label in labels]
+    manager = webrtc_session.WebRtcSessionManager(None, None, "IC-7610")
 
+    async def _capture(_sid: str, _session: Any, conn: Any, _kind: str) -> None:
+        served.append(conn)
+
+    manager._attach_and_serve = _capture  # type: ignore[method-assign]
+    session = webrtc_session._Session(_FakePc())  # type: ignore[arg-type]
+    return manager, session, served
+
+
+def test_halves_pair_in_either_order() -> None:
     async def _run() -> None:
-        manager = webrtc_session.WebRtcSessionManager(None, None, "IC-7610")
-
-        async def _capture(_sid: str, _session: Any, conn: Any, _kind: str) -> None:
-            served.append(conn)
-
-        manager._attach_and_serve = _capture  # type: ignore[method-assign]
-        session = webrtc_session._Session(_FakePc())  # type: ignore[arg-type]
-        for channel in channels:
-            manager._dispatch_channel("sid", session, channel)  # type: ignore[arg-type]
+        manager, session, served = _answerer()
+        text, binary = _FakeChannel("audio-text"), _FakeChannel("audio")
+        manager._dispatch_channel("sid", session, text)
+        manager._dispatch_channel("sid", session, binary)
         await asyncio.gather(*session.tasks)
+        (conn,) = served
+        assert (conn._channel, conn._text_channel) == (binary, text)
+        assert session.unpaired == {}
 
     asyncio.run(_run())
-    return channels, served
 
 
-def test_answerer_pairs_halves_by_identity_not_arrival_order() -> None:
-    """Two audio pairs announced interleaved (A.binary, B.text, B.binary,
-    A.text) become A+A and B+B — never a crossed pair."""
-    (a_bin, b_text, b_bin, a_text), served = _dispatch(
-        ["audio/A", "audio-text/B", "audio/B", "audio-text/A"]
-    )
-    pairs = {(c._channel, c._text_channel) for c in served}
-    assert pairs == {(b_bin, b_text), (a_bin, a_text)}
+def test_a_second_simultaneous_half_of_the_same_key_is_closed_at_once() -> None:
+    """One pair per kind at a time: while an ``audio`` half waits, another
+    ``audio`` half is closed instead of risking a crossed pair; the waiting
+    half still pairs with the next ``audio-text``."""
+
+    async def _run() -> None:
+        manager, session, served = _answerer()
+        first, second = _FakeChannel("audio"), _FakeChannel("audio")
+        text = _FakeChannel("audio-text")
+        manager._dispatch_channel("sid", session, first)
+        manager._dispatch_channel("sid", session, second)
+        assert (first.readyState, second.readyState) == ("open", "closed")
+        manager._dispatch_channel("sid", session, text)
+        await asyncio.gather(*session.tasks)
+        (conn,) = served
+        assert (conn._channel, conn._text_channel) == (first, text)
+
+    asyncio.run(_run())
 
 
 def test_frames_before_the_partner_arrives_are_kept() -> None:
     """The text half arrives first and carries the attach before its lossy
     partner exists: the merged connection still yields that attach first."""
-    served: list[Any] = []
 
     async def _run() -> list[tuple[int, bytes]]:
-        manager = webrtc_session.WebRtcSessionManager(None, None, "IC-7610")
-
-        async def _capture(_sid: str, _session: Any, conn: Any, _kind: str) -> None:
-            served.append(conn)
-
-        manager._attach_and_serve = _capture  # type: ignore[method-assign]
-        session = webrtc_session._Session(_FakePc())  # type: ignore[arg-type]
-        text, binary = _FakeChannel("scope-text/p"), _FakeChannel("scope/p")
-        manager._dispatch_channel("sid", session, text)  # type: ignore[arg-type]
+        manager, session, served = _answerer()
+        text, binary = _FakeChannel("scope-text"), _FakeChannel("scope")
+        manager._dispatch_channel("sid", session, text)
         text.deliver('{"type":"attach"}')
-        manager._dispatch_channel("sid", session, binary)  # type: ignore[arg-type]
+        manager._dispatch_channel("sid", session, binary)
         binary.deliver(b"\x01")
         await asyncio.gather(*session.tasks)
         (conn,) = served
-        assert (conn._channel, conn._text_channel) == (binary, text)
         return [await conn.recv(), await conn.recv()]
 
     assert asyncio.run(_run()) == [
         (WS_OP_TEXT, b'{"type":"attach"}'),
         (WS_OP_BINARY, b"\x01"),
     ]
+
+
+@pytest.mark.parametrize("label", ["scope/a/b", "scope/a", "rigctl", "nope"])
+def test_a_label_outside_the_channel_set_is_closed(label: str) -> None:
+    async def _run() -> None:
+        manager, session, served = _answerer()
+        channel = _FakeChannel(label)
+        manager._dispatch_channel("sid", session, channel)
+        assert channel.readyState == "closed"
+        assert served == [] and session.unpaired == {}
+
+    asyncio.run(_run())
+
+
+def test_frames_before_serve_are_bounded_then_unbounded_once_served() -> None:
+    """Every channel, not only a waiting half: unread frames before the
+    connection is served are capped; past the cap the connection closes.
+    Once served, the handler's own pace governs (no cap)."""
+    conn, binary, text = _pair()
+    for _ in range(webrtc.MAX_FRAMES_BEFORE_SERVE):
+        text.deliver("{}")
+    assert conn.is_alive()
+    binary.deliver(b"\x00")  # one too many before serve
+    assert not conn.is_alive()
+    assert (binary.readyState, text.readyState) == ("closed", "closed")
+
+    served_conn, served_binary, _ = _pair()
+    served_conn.serving = True
+    for _ in range(webrtc.MAX_FRAMES_BEFORE_SERVE * 2):
+        served_binary.deliver(b"\x00")
+    assert served_conn.is_alive()

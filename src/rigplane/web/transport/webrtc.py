@@ -20,8 +20,8 @@ never be lost). :class:`WebRtcDataChannelConnection` merges the pair into
 the ONE ``Connection`` the unchanged ``ScopeHandler`` / ``AudioHandler``
 see: ``send_text`` goes to the companion, ``send_binary`` to the lossy
 channel, and ``recv`` yields from both (:func:`add_scope_channel` /
-:func:`add_audio_channel` build the pair on the offerer side under one
-pair id; the answerer pairs the two inbound channels by that identity).
+:func:`add_audio_channel` build the pair on the offerer side; the answerer
+pairs the two inbound channels, one pending half per kind and carriage).
 
 ``aiortc`` is an optional dependency behind the ``[webrtc]`` extra. This
 module therefore imports it lazily: importing the module never fails, and
@@ -32,15 +32,11 @@ gracefully instead of crashing.
 from __future__ import annotations
 
 import asyncio
-import secrets
+import logging
 from typing import TYPE_CHECKING, Final
 
 from ...ws import WS_OP_BINARY, WS_OP_TEXT  # noqa: TID251
-from ..channel_attach import (  # noqa: TID251
-    DataChannelSpec,
-    data_channel_label,
-    data_channels_for,
-)
+from ..channel_attach import DataChannelSpec, data_channels_for  # noqa: TID251
 
 if TYPE_CHECKING:
     from aiortc import (  # type: ignore[import-not-found]
@@ -63,6 +59,14 @@ _INSTALL_HINT: Final = "WebRTC backend unavailable; install rigplane[webrtc]."
 
 # Sentinel enqueued on channel/PC close so a blocked recv() wakes and raises.
 _CLOSE_SENTINEL: Final = object()
+
+#: Frames a connection queues before it is served (waiting for its attach,
+#: its split partner or its session's control attach). A well-behaved
+#: client sends one attach and waits for the ack; more than this many
+#: unread frames ends the connection instead of growing the queue.
+MAX_FRAMES_BEFORE_SERVE: Final = 64
+
+logger = logging.getLogger(__name__)
 
 
 class WebRtcUnavailableError(RuntimeError):
@@ -110,6 +114,8 @@ class WebRtcDataChannelConnection:
         self._pc = pc
         self._queue: asyncio.Queue[tuple[int, bytes] | object] = asyncio.Queue()
         self._closed = False
+        # Until served, unread frames are bounded (MAX_FRAMES_BEFORE_SERVE).
+        self.serving = False
         for source in self._channels():
             self._listen(source)
 
@@ -117,6 +123,14 @@ class WebRtcDataChannelConnection:
         """Queue every message of ``source``; its close ends the connection."""
 
         def _on_message(message: str | bytes) -> None:
+            if self._closed:
+                return
+            if not self.serving and self._queue.qsize() >= MAX_FRAMES_BEFORE_SERVE:
+                logger.info(
+                    "WebRTC: %d frames before serve; closing", self._queue.qsize()
+                )
+                self.abort()
+                return
             if isinstance(message, str):
                 self._queue.put_nowait((WS_OP_TEXT, message.encode("utf-8")))
             else:
@@ -236,15 +250,12 @@ class WebRtcDataChannelConnection:
             pass
 
 
-def _create_channel(
-    pc: RTCPeerConnection, spec: DataChannelSpec, pair_id: str = ""
-) -> RTCDataChannel:
+def _create_channel(pc: RTCPeerConnection, spec: DataChannelSpec) -> RTCDataChannel:
     """Create one channel of the K5 set exactly as its spec configures it."""
-    label = data_channel_label(spec, pair_id)
     if spec.max_retransmits is None:
-        return pc.createDataChannel(label, ordered=spec.ordered)
+        return pc.createDataChannel(spec.label, ordered=spec.ordered)
     return pc.createDataChannel(
-        label, ordered=spec.ordered, maxRetransmits=spec.max_retransmits
+        spec.label, ordered=spec.ordered, maxRetransmits=spec.max_retransmits
     )
 
 
@@ -253,9 +264,7 @@ def add_data_channel(pc: RTCPeerConnection, kind: str) -> WebRtcDataChannelConne
 
     ``control``/``api`` get their one ordered/reliable channel; a split
     kind (``scope``/``audio``) gets its lossy binary channel plus its
-    reliable text companion, both labelled with one fresh pair id (see
-    :func:`~rigplane.web.channel_attach.data_channel_label`) so the
-    answerer pairs them by identity, and merged into one connection. Raises
+    reliable text companion, merged into one connection. Raises
     :class:`WebRtcUnavailableError` if ``aiortc`` is not installed and
     :class:`ValueError` for a kind outside the channel set.
     """
@@ -266,9 +275,8 @@ def add_data_channel(pc: RTCPeerConnection, kind: str) -> WebRtcDataChannelConne
         return WebRtcDataChannelConnection(_create_channel(pc, specs["all"]), pc)
     if "binary" not in specs or "text" not in specs:
         raise ValueError(f"no data channel for kind {kind!r}")
-    pair_id = secrets.token_hex(4)
-    binary = _create_channel(pc, specs["binary"], pair_id)
-    text = _create_channel(pc, specs["text"], pair_id)
+    binary = _create_channel(pc, specs["binary"])
+    text = _create_channel(pc, specs["text"])
     return WebRtcDataChannelConnection(binary, pc, text_channel=text)
 
 
