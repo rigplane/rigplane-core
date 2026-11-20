@@ -494,6 +494,92 @@ describe('scope-control intents', () => {
     flushSync();
     for (const [, spy] of scopeSpies()) expect(spy).not.toHaveBeenCalled();
   });
+
+  // MOR-4605: while AUTO is on, REF is the waterfall's offset from the
+  // tracked floor — a client-side step (never a scope intent), live even
+  // with the radio REF unread. The offset leaves through the bindable
+  // autoFloorRef prop; the panel feeds it to the waterfall renderer only.
+  describe('AUTO on: REF steps the client-side waterfall offset', () => {
+    /** The desktop REF cluster: [−, value, +, AUTO] buttons plus the value slot. */
+    function desktopRefCluster(root: HTMLElement) {
+      const group = Array.from(root.querySelectorAll<HTMLElement>('.toolbar-group.hide-mobile'))
+        .find((item) => item.querySelector('.toolbar-label')?.textContent?.trim() === 'REF')!;
+      return {
+        minus: group.querySelectorAll<HTMLButtonElement>('button')[0]!,
+        plus: group.querySelectorAll<HTMLButtonElement>('button')[1]!,
+        auto: group.querySelector<HTMLButtonElement>('[data-testid="scope-auto-floor-toggle"]')!,
+        value: group.querySelector('.toolbar-value')!,
+      };
+    }
+
+    it('steps minus/plus/reset on the bindable offset and never dispatches onRefChange', () => {
+      authorityHarness.current = authority({ scopeControls: scopeFacts({ refDb: field(5) }) });
+      const target = mountToolbar({ autoFloor: true, autoFloorRef: 0 });
+      const cluster = desktopRefCluster(target);
+      // The slot shows the OFFSET (0), not the radio readback (+5).
+      expect(cluster.value.textContent).toBe('0');
+      cluster.plus.click();
+      flushSync();
+      expect(cluster.value.textContent).toBe('+5');
+      cluster.minus.click();
+      flushSync();
+      expect(cluster.value.textContent).toBe('0');
+      cluster.plus.click();
+      cluster.plus.click();
+      flushSync();
+      expect(cluster.value.textContent).toBe('+10');
+      for (const [, spy] of scopeSpies()) expect(spy).not.toHaveBeenCalled();
+      expect(sendCommandAlarm).not.toHaveBeenCalled();
+
+      target.querySelector<HTMLButtonElement>('[aria-label="Display settings"]')!.click();
+      flushSync();
+      target.querySelector<HTMLButtonElement>('[aria-label="Reset reference"]')!.click();
+      flushSync();
+      expect(cluster.value.textContent).toBe('0');
+      for (const [, spy] of scopeSpies()) expect(spy).not.toHaveBeenCalled();
+    });
+
+    it('clamps the offset to the ±30 dB display range BRT uses', () => {
+      authorityHarness.current = authority({ scopeControls: scopeFacts({ refDb: field(5) }) });
+      const target = mountToolbar({ autoFloor: true, autoFloorRef: 25 });
+      const cluster = desktopRefCluster(target);
+      cluster.plus.click();
+      flushSync();
+      expect(cluster.value.textContent).toBe('+30');
+      cluster.plus.click();
+      flushSync();
+      expect(cluster.value.textContent).toBe('+30');
+      for (const [, spy] of scopeSpies()) expect(spy).not.toHaveBeenCalled();
+    });
+
+    it('stays live with the radio REF unread: no range, offset still steps', () => {
+      authorityHarness.current = authority({
+        scopeControls: scopeFacts({ refDb: field(0, { known: false }), refRange: null }),
+      });
+      const target = mountToolbar({ autoFloor: true, autoFloorRef: 0 });
+      const cluster = desktopRefCluster(target);
+      expect(cluster.minus.disabled).toBe(false);
+      expect(cluster.plus.disabled).toBe(false);
+      expect(cluster.value.textContent).toBe('0');
+      cluster.plus.click();
+      flushSync();
+      expect(cluster.value.textContent).toBe('+5');
+      for (const [, spy] of scopeSpies()) expect(spy).not.toHaveBeenCalled();
+    });
+
+    it('turning AUTO off returns REF to the radio readback and the radio intent', () => {
+      authorityHarness.current = authority({ scopeControls: scopeFacts({ refDb: field(5) }) });
+      const target = mountToolbar({ autoFloor: true, autoFloorRef: 10 });
+      const cluster = desktopRefCluster(target);
+      cluster.auto.click();
+      flushSync();
+      expect(cluster.auto.getAttribute('aria-pressed')).toBe('false');
+      expect(cluster.value.textContent).toBe('+5');
+      cluster.plus.click();
+      flushSync();
+      expectOnlyScopeCall('onRefChange', 10);
+    });
+  });
 });
 
 // ── Exact known domains and fail-closed fields ─────────────────────────────

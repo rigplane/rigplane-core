@@ -6416,4 +6416,52 @@ describe('SpectrumPanel waterfall stream identity (MOR-4383)', () => {
       capture.restore();
     }
   });
+
+  it('AUTO on: the real REF keys step the waterfall offset, never the radio REF (MOR-4605)', async () => {
+    const capture = captureWaterfallFixtures();
+    try {
+      const target = mountPanel();
+      const update = vi.spyOn(WaterfallRenderer.prototype, 'updateOptions');
+      try {
+        emitFrame({ sequence: 1 });
+        await flushWaterfallPaint();
+        const auto = target.querySelector<HTMLButtonElement>('[data-testid="scope-auto-floor-toggle"]')!;
+        auto.click();
+        flushSync();
+        // The desktop REF cluster of the panel's own toolbar: [−, value, +].
+        const refGroup = Array.from(target.querySelectorAll<HTMLElement>('.toolbar-group.hide-mobile'))
+          .find((item) => item.querySelector('.toolbar-label')?.textContent?.trim() === 'REF')!;
+        const refButtons = Array.from(refGroup.querySelectorAll<HTMLButtonElement>('button'));
+        // No radio REF intent was dispatched while stepping the offset
+        // (SpectrumToolbar.component.test.ts pins the dispatch side).
+        refButtons[1]!.click();
+        flushSync();
+        expect(refGroup.querySelector('.toolbar-value')!.textContent).toBe('+5');
+        emitFrame({ sequence: 2 });
+        await flushWaterfallPaint();
+        // The REF adjustment feeds the waterfall offset (BRT 0 + offset 5);
+        // with AUTO off this same click would have written the radio REF.
+        expect(update.mock.calls.at(-1)?.[0]).toMatchObject({ autoFloor: true, refLevel: 5 });
+        // BRT keeps shifting the waterfall on top of the REF offset.
+        const brtGroup = Array.from(target.querySelectorAll<HTMLElement>('.toolbar-group.hide-mobile'))
+          .find((item) => item.querySelector('.toolbar-label')?.textContent?.trim() === 'BRT')!;
+        Array.from(brtGroup.querySelectorAll<HTMLButtonElement>('button'))[0]!.click();
+        flushSync();
+        emitFrame({ sequence: 3 });
+        await flushWaterfallPaint();
+        expect(update.mock.calls.at(-1)?.[0]).toMatchObject({ autoFloor: true, refLevel: 0 });
+        // AUTO off: the waterfall returns to the pure BRT scale and the
+        // offset stops applying.
+        auto.click();
+        flushSync();
+        emitFrame({ sequence: 4 });
+        await flushWaterfallPaint();
+        expect(update.mock.calls.at(-1)?.[0]).toMatchObject({ autoFloor: false, refLevel: -5 });
+      } finally {
+        update.mockRestore();
+      }
+    } finally {
+      capture.restore();
+    }
+  });
 });

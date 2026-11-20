@@ -221,6 +221,9 @@
   let scopeHiddenOnRadio = $derived(!audioFft && !sdrSource && runtime.radioHealth?.scopeHidden === true);
   let scopeLease: ReturnType<typeof runtime.acquireHardwareScope> | null = null;
   let brtLevel = $state(0);
+  // MOR-4605: while AUTO is on, the REF keys step this client-side offset
+  // from the tracked noise floor (bound to the toolbar like brtLevel).
+  let autoFloorRef = $state(0);
   let colorScheme = $state<ColorSchemeName>('classic');
   let spectrumPush: ((data: Uint8Array, token?: TraceToken | null) => void) | null = null;
   let waterfallPush: ((data: Uint8Array, options?: WaterfallOptions, token?: TraceToken | null, identity?: WaterfallFrameIdentity) => void) | null = null;
@@ -1161,6 +1164,12 @@
   // scope data that the IC-7610 sends over LAN, so applying refDb here
   // would double-shift. BRT is the frontend-only display adjustment.
   let refLevel = $derived(brtLevel);
+  // MOR-4605: while AUTO is on, REF is an offset from the tracked floor —
+  // the waterfall alone receives it (the spectrum trace keeps true levels,
+  // so its calibration stays BRT-only) and the toolbar never writes the
+  // radio REF then. With AUTO off the waterfall keeps the BRT scale,
+  // pixel-identical to before the toggle existed.
+  let waterfallRefLevel = $derived(autoFloor ? brtLevel + autoFloorRef : refLevel);
 
   let spectrumOptions = $derived<SpectrumOptions>({
     ...defaultSpectrumOptions,
@@ -1204,7 +1213,7 @@
     sampleAmplitudeMax: audioFft ? 160 : 80,
     centerHz: panoramaViewportHz,
     panoramaShiftHz: viewportShiftHz,
-    refLevel,
+    refLevel: waterfallRefLevel,
     colorScheme,
   });
 
@@ -1854,7 +1863,7 @@
        tab instead. An audio-FFT source keeps its original no-toolbar
        branch. -->
   {:else if !hideToolbar}
-    <SpectrumToolbar bind:enableAvg bind:enablePeakHold bind:enableSmooth bind:autoFloor bind:brtLevel bind:colorScheme bind:fullscreen bind:showBandPlan bind:hiddenLayers bind:showEiBi {scopeDemandOn} onScopeDemandChange={setScopeDemand} {hideSourceControls} {hideScopeControls} {hideAutoStepToggle} {scopeControls} scopePresets={scopePresetOptions} onScopePresetSelect={applyScopePreset} onScopeZoom={nudgeScopeZoom} scopeStatusIndicator={sdrSource || scopeStatusIndicator || scopeError ? panelScopeStatus : undefined} />
+    <SpectrumToolbar bind:enableAvg bind:enablePeakHold bind:enableSmooth bind:autoFloor bind:autoFloorRef bind:brtLevel bind:colorScheme bind:fullscreen bind:showBandPlan bind:hiddenLayers bind:showEiBi {scopeDemandOn} onScopeDemandChange={setScopeDemand} {hideSourceControls} {hideScopeControls} {hideAutoStepToggle} {scopeControls} scopePresets={scopePresetOptions} onScopePresetSelect={applyScopePreset} onScopeZoom={nudgeScopeZoom} scopeStatusIndicator={sdrSource || scopeStatusIndicator || scopeError ? panelScopeStatus : undefined} />
   {/if}
   {#if (audioFft || hideToolbar) && scopeError}{@render panelScopeStatus()}{/if}
   <div
