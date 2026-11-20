@@ -6,6 +6,7 @@ import type { WsCommand } from '../../../src/lib/types/protocol';
 import type { ScopeSubscription } from '../../../src/lib/runtime/scope-view';
 import { startJourneyServer } from './server-process';
 import { parseScopeWriteReceipt } from './panorama-receipt';
+import { awaitRenderPipeline, openPanorama } from './panorama-ready';
 import { expectPanoramaClean, expectPanoramaSettled, watchPanoramaErrors } from './panorama-guards';
 
 // ── MOR-4392 ──
@@ -32,7 +33,7 @@ for (const [index, [model, withFix]] of ([['IC-705', false], ['IC-7610', true]] 
     const watch = watchPanoramaErrors(page);
     const frames = watchScopeFrames(page);
     try {
-      await page.goto(`http://127.0.0.1:${port}/?ui=v2`);
+      await openPanorama(page, `http://127.0.0.1:${port}/?ui=v2`);
       await expect.poll(() => frames.length, { timeout: 30_000 }).toBeGreaterThan(10);
       const more = page.getByRole('button', { name: 'More scope controls' }).first();
       await more.click();
@@ -77,7 +78,7 @@ test('IC-7610: FIX marker, axis and passband use the displayed window after a CE
   const watch = watchPanoramaErrors(page);
   const frames = watchScopeFrames(page);
   try {
-    await page.goto(`http://127.0.0.1:${port}/?ui=v2`);
+    await openPanorama(page, `http://127.0.0.1:${port}/?ui=v2`);
     await expect.poll(() => frames.length, { timeout: 30_000 }).toBeGreaterThan(10);
     // A CENTER zoom leaves a requested width behind; it must not leak into
     // the FIX marker/viewport math. The displayed window is whatever the
@@ -150,7 +151,7 @@ test('IC-7610: FIX names the disabled SPAN reason and returns to CTR in one tap 
   const watch = watchPanoramaErrors(page);
   const frames = watchScopeFrames(page);
   try {
-    await page.goto(`http://127.0.0.1:${port}/?ui=v2`);
+    await openPanorama(page, `http://127.0.0.1:${port}/?ui=v2`);
     await expect.poll(() => frames.length, { timeout: 30_000 }).toBeGreaterThan(10);
     const spanStepper = page.getByTestId('scope-span').first();
     const spanUp = page.getByRole('button', { name: 'Increase scope span', exact: true }).first();
@@ -185,7 +186,7 @@ test('IC-7610: the real SPAN key in SCROLL-C writes the span only, no mode write
   const watch = watchPanoramaErrors(page);
   const frames = watchScopeFrames(page);
   try {
-    await page.goto(`http://127.0.0.1:${port}/?ui=v2`);
+    await openPanorama(page, `http://127.0.0.1:${port}/?ui=v2`);
     await expect.poll(() => frames.length, { timeout: 30_000 }).toBeGreaterThan(10);
     // S-C lives in the More panel's mode choice.
     await page.getByRole('button', { name: 'More scope controls' }).first().click();
@@ -243,7 +244,7 @@ test('IC-7610: passband overlay survives CTR↔FIX at ±250k, LSB 3 kHz, after a
     expect(Math.abs(band!.x + band!.width - (line!.x + line!.width / 2))).toBeLessThanOrEqual(2);
   };
   try {
-    await page.goto(`http://127.0.0.1:${port}/?ui=v2`);
+    await openPanorama(page, `http://127.0.0.1:${port}/?ui=v2`);
     await expect.poll(() => frames.length, { timeout: 30_000 }).toBeGreaterThan(10);
     // The harness models CI-V 1A 03 (DSP filter width) locally, so the
     // width is observed and the control is enabled.
@@ -267,6 +268,7 @@ test('IC-7610: passband overlay survives CTR↔FIX at ±250k, LSB 3 kHz, after a
     // the same overlay (the owner's loss survived a reload on build 1).
     const mark = frames.length;
     await page.reload();
+    await awaitRenderPipeline(page);
     await expect.poll(() => frames.length - mark, { timeout: 30_000 }).toBeGreaterThan(10);
     await expect.poll(radioState).toMatchObject({ main: { mode: 'LSB', filterWidth: 3000 } });
     await stepTo250k();
@@ -295,7 +297,7 @@ for (const [index, model] of ['IC-705', 'IC-7300'].entries()) {
     }));
     try {
       await installSampler(page);
-      await page.goto(`http://127.0.0.1:${port}/?ui=v2`);
+      await openPanorama(page, `http://127.0.0.1:${port}/?ui=v2`);
       await settlePassband(page, port);
       await page.getByRole('radio', { name: 'FIX', exact: true }).first().click();
       await expect.poll(async () => (await scopeWriteReceipts(evidence)).filter(r => r.sub === 0x14).at(-1)?.data[1]).toBe(1);
@@ -377,7 +379,7 @@ test('IC-7610: preset FIX zoom keeps the negotiated subscription and radio windo
   });
   try {
     await installSampler(page);
-    await page.goto(`http://127.0.0.1:${port}/?ui=v2`);
+    await openPanorama(page, `http://127.0.0.1:${port}/?ui=v2`);
     await settlePassband(page, port);
     await page.getByTestId('scope-more').first().click();
     await page.getByTestId('scope-zoom-in').first().click();
