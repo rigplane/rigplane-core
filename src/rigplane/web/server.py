@@ -182,6 +182,12 @@ from ..core.host_guard import (  # noqa: TID251
 )
 from .managed_tx_view import build_managed_tx_view  # noqa: TID251
 from .transport.webrtc import webrtc_available  # noqa: TID251
+from .transport.webrtc_contract import (  # noqa: TID251
+    WebRtcIceCandidate,
+    WebRtcOffer,
+    WebRtcRequestError,
+    WebRtcTransportStatus,
+)
 from .radio_poller import (  # noqa: TID251
     CommandQueue,
     CommandQueueEntry,
@@ -4987,10 +4993,9 @@ class WebServer:
                 payload["controls"] = profile.controls
             payload["txBands"] = _serialize_tx_bands(profile)
             payload.update(_serialize_max_power(profile, self._radio))
-        payload["webrtc"] = {
-            "available": webrtc_available(),
-            "enabled": self._config.webrtc_enabled,
-        }
+        payload["webrtc"] = WebRtcTransportStatus(
+            available=webrtc_available(), enabled=self._config.webrtc_enabled
+        ).to_json()
         payload.update(self._get_meter_cal_payload())
         if self.command_state_store.provider_generation != snapshot.provider_generation:
             if _delivery_attempt + 1 < _DELIVERY_EPOCH_ATTEMPTS:
@@ -7303,20 +7308,28 @@ class WebServer:
             )
         return self._webrtc_sessions
 
+    async def _webrtc_error(
+        self,
+        writer: asyncio.StreamWriter,
+        status: int,
+        reason: str,
+        error: WebRtcRequestError,
+    ) -> None:
+        """Send one answerer error envelope (the K6 contract)."""
+        body = json.dumps(error.to_json(), separators=(",", ":")).encode()
+        await _send_response(
+            writer, status, reason, body, {"Content-Type": "application/json"}
+        )
+
     async def _webrtc_unavailable(
         self, writer: asyncio.StreamWriter, reason: str
     ) -> None:
         """Send a clean 'unavailable' response without crashing."""
-        body = json.dumps(
-            {"status": "error", "code": "webrtc_unavailable", "message": reason},
-            separators=(",", ":"),
-        ).encode()
-        await _send_response(
+        await self._webrtc_error(
             writer,
             503,
             "Service Unavailable",
-            body,
-            {"Content-Type": "application/json"},
+            WebRtcRequestError("webrtc_unavailable", reason),
         )
 
     async def _handle_webrtc_offer(
@@ -7330,6 +7343,7 @@ class WebServer:
         Gated behind ``WebConfig.webrtc_enabled`` AND the ``[webrtc]`` extra.
         Negotiates a full session: wraps the offerer's control/scope/audio
         DataChannels into the unchanged handlers and returns the answer SDP.
+        The body is parsed by :class:`WebRtcOffer` (the public contract).
         """
         if not self._config.webrtc_enabled:
             await self._webrtc_unavailable(
@@ -7345,59 +7359,25 @@ class WebServer:
         payload = await self._read_json_body(writer, headers, reader)
         if payload is None:
             return
-        sdp = payload.get("sdp")
-        offer_type = payload.get("type", "offer")
-        if not isinstance(sdp, str) or not sdp.strip():
-            err = json.dumps(
-                {
-                    "status": "error",
-                    "code": "missing_sdp",
-                    "message": "Field 'sdp' required.",
-                },
-                separators=(",", ":"),
-            ).encode()
-            await _send_response(
-                writer, 400, "Bad Request", err, {"Content-Type": "application/json"}
-            )
+        try:
+            offer = WebRtcOffer.from_json(payload)
+        except WebRtcRequestError as exc:
+            await self._webrtc_error(writer, 400, "Bad Request", exc)
             return
 
         from .transport.webrtc_session import WebRtcSessionError  # noqa: TID251
-        from .transport.ice_gathering import parse_ice_servers  # noqa: TID251
-
-        ice_servers_raw = payload.get("ice_servers", None)
-        try:
-            ice_servers = parse_ice_servers(ice_servers_raw)
-        except ValueError as exc:
-            err = json.dumps(
-                {
-                    "status": "error",
-                    "code": "invalid_ice_servers",
-                    "message": str(exc),
-                },
-                separators=(",", ":"),
-            ).encode()
-            await _send_response(
-                writer, 400, "Bad Request", err, {"Content-Type": "application/json"}
-            )
-            return
 
         try:
             result = await self._webrtc_session_manager().negotiate(
-                sdp, offer_type, ice_servers
+                offer.sdp, offer.type, offer.ice_servers
             )
         except WebRtcSessionError as exc:
-            err = json.dumps(
-                {"status": "error", "code": "sdp_error", "message": str(exc)},
-                separators=(",", ":"),
-            ).encode()
-            await _send_response(
-                writer, 400, "Bad Request", err, {"Content-Type": "application/json"}
+            await self._webrtc_error(
+                writer, 400, "Bad Request", WebRtcRequestError("sdp_error", str(exc))
             )
             return
 
-        resp_body = json.dumps(
-            {"status": "ok", **result}, separators=(",", ":")
-        ).encode()
+        resp_body = json.dumps(result, separators=(",", ":")).encode()
         await _send_response(
             writer, 200, "OK", resp_body, {"Content-Type": "application/json"}
         )
@@ -7410,9 +7390,10 @@ class WebServer:
     ) -> None:
         """Handle POST /api/v1/transport/webrtc/ice-candidate — ICE trickle.
 
-        Body: ``{"sessionId": <id>, "candidate": {...}}``. The candidate dict
-        mirrors the browser ``RTCIceCandidateInit`` (``candidate`` string plus
-        ``sdpMid`` / ``sdpMLineIndex``). An empty candidate ends gathering.
+        Body: ``{"sessionId": <id>, "candidate": {...}}``, parsed by
+        :class:`WebRtcIceCandidate`. The candidate dict mirrors the browser
+        ``RTCIceCandidateInit`` (``candidate`` string plus ``sdpMid`` /
+        ``sdpMLineIndex``). An empty candidate ends gathering.
         """
         if not self._config.webrtc_enabled:
             await self._webrtc_unavailable(
@@ -7428,49 +7409,21 @@ class WebServer:
         payload = await self._read_json_body(writer, headers, reader)
         if payload is None:
             return
-        session_id = payload.get("sessionId")
-        if not isinstance(session_id, str) or not session_id:
-            err = json.dumps(
-                {
-                    "status": "error",
-                    "code": "missing_session",
-                    "message": "Field 'sessionId' required.",
-                },
-                separators=(",", ":"),
-            ).encode()
-            await _send_response(
-                writer, 400, "Bad Request", err, {"Content-Type": "application/json"}
-            )
-            return
-
-        candidate = payload.get("candidate")
-        if candidate is not None and not isinstance(candidate, dict):
-            err = json.dumps(
-                {
-                    "status": "error",
-                    "code": "invalid_candidate",
-                    "message": "'candidate' must be an object or null.",
-                },
-                separators=(",", ":"),
-            ).encode()
-            await _send_response(
-                writer, 400, "Bad Request", err, {"Content-Type": "application/json"}
-            )
+        try:
+            trickle = WebRtcIceCandidate.from_json(payload)
+        except WebRtcRequestError as exc:
+            await self._webrtc_error(writer, 400, "Bad Request", exc)
             return
 
         from .transport.webrtc_session import WebRtcSessionError  # noqa: TID251
 
         try:
             await self._webrtc_session_manager().add_ice_candidate(
-                session_id, candidate
+                trickle.session_id, trickle.candidate
             )
         except WebRtcSessionError as exc:
-            err = json.dumps(
-                {"status": "error", "code": "ice_error", "message": str(exc)},
-                separators=(",", ":"),
-            ).encode()
-            await _send_response(
-                writer, 404, "Not Found", err, {"Content-Type": "application/json"}
+            await self._webrtc_error(
+                writer, 404, "Not Found", WebRtcRequestError("ice_error", str(exc))
             )
             return
 
