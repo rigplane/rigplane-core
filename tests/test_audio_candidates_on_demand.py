@@ -19,9 +19,10 @@ import pytest
 from test_icom7610_serial_radio import _FakeSerialCivLink
 from test_usb_pairing_linux import LINUX_PORT, _inject_linux
 from test_usb_pairing_macos import FTX_PORT, MAC_PORT, _inject_macos, _macos_session
-from test_usb_pairing_windows import _inject_windows, _w1_session, _w3_session
+from test_usb_pairing_windows import _inject_windows, _w1_session
 from test_web_audio_rx_start_status import _SessionLanRadio
 from test_web_auth_compare_digest import _MemoryWriter
+from test_web_usb_pairing_integration import _w3_padded_session
 
 from rigplane.audio import usb_driver
 from rigplane.audio._usb_adapt_windows import adapt_windows
@@ -94,7 +95,7 @@ async def test_driver_lists_topology_candidates_for_each_windows_radio(
     monkeypatch, model
 ):
     port, near = W3_RADIOS[model]
-    backend, _ = _inject_windows(monkeypatch, _w3_session())
+    backend, _ = _inject_windows(monkeypatch, _w3_padded_session())
     identity = get_radio_profile(model).usb_identity
     result = await _driver(backend, port, identity).audio_candidates()
     assert result.source == "usb_topology"
@@ -150,7 +151,7 @@ def _timeout_topology(monkeypatch):
 
 
 async def test_driver_late_windows_topology_lists_name_fallback(monkeypatch):
-    backend, _ = _inject_windows(monkeypatch, _w3_session())
+    backend, _ = _inject_windows(monkeypatch, _w3_padded_session())
     _timeout_topology(monkeypatch)
     result = await _driver(
         backend, "COM3", get_radio_profile("IC-7300").usb_identity
@@ -167,7 +168,7 @@ async def test_driver_late_windows_topology_lists_name_fallback(monkeypatch):
 
 
 async def test_driver_missing_windows_topology_lists_name_fallback(monkeypatch):
-    backend, _ = _inject_windows(monkeypatch, _w3_session())
+    backend, _ = _inject_windows(monkeypatch, _w3_padded_session())
     monkeypatch.setattr(
         "rigplane.audio._usb_raw_windows.read_raw_windows",
         lambda timeout_s: RawWindows("cfgmgr32", ()),
@@ -202,7 +203,7 @@ def _icom_radio():
 
 
 async def test_endpoint_serves_candidates_without_rx_start(monkeypatch):
-    backend, _ = _inject_windows(monkeypatch, _w3_session())
+    backend, _ = _inject_windows(monkeypatch, _w3_padded_session())
     monkeypatch.setattr(usb_driver, "PortAudioBackend", lambda: backend)
     radio = _icom_radio()
     server = WebServer(radio, WebConfig(host="127.0.0.1", port=0))
@@ -233,7 +234,7 @@ async def test_endpoint_serves_candidates_without_rx_start(monkeypatch):
 
 
 async def test_endpoint_reports_name_fallback_source(monkeypatch):
-    backend, _ = _inject_windows(monkeypatch, _w3_session())
+    backend, _ = _inject_windows(monkeypatch, _w3_padded_session())
     monkeypatch.setattr(usb_driver, "PortAudioBackend", lambda: backend)
     _timeout_topology(monkeypatch)
     server = WebServer(_icom_radio(), WebConfig(host="127.0.0.1", port=0))
