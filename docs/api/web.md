@@ -128,6 +128,7 @@ These routes are part of the Pro/supervisor compatibility surface:
 | `GET` | `/api/v1/state` | Canonical current state snapshot |
 | `GET` | `/api/v1/capabilities` | Full profile-backed capabilities |
 | `GET` | `/api/v1/audio/analysis` | Audio analysis snapshot when analyzer is active |
+| `GET` | `/api/v1/audio/candidates` | On-demand USB audio device candidates for the configured radio (`404` without a USB audio driver; `source` names the topology or name-fallback path) |
 | `GET` | `/api/v1/managed-transmit` | Managed transmit authority snapshot |
 | `POST` | `/api/v1/managed-transmit/command` | Submit a latched transmit or force-off intent |
 | `PUT` | `/api/v1/managed-transmit/tot` | Update the managed transmit time-out |
