@@ -60,6 +60,15 @@ export function clampBrt(current: number, delta: number): number {
   return Math.max(-30, Math.min(30, current + delta));
 }
 
+/** MOR-4605: while AUTO is on, a hosted REF slot shows and steps this
+ *  client-side waterfall offset (dB from the tracked floor) instead of the
+ *  radio REF. The toolbar owns the binding; the semantic scope surface only
+ *  renders `db` and calls `step` — it never reaches the radio then. */
+export interface ScopeRefOffset {
+  readonly db: number;
+  step(delta: -5 | 5): void;
+}
+
 /* ── Scope REF stepping (MOR-3694) ── */
 
 /** The radio's declared scope REF adjustable range, from the profile's

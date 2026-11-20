@@ -9,7 +9,7 @@
  */
 
 import { RxPlayer, type RxAudioFocus } from './rx-player';
-import { TxMic, type TxCodec } from './tx-mic';
+import { TxMic, type TxCaptureFailure, type TxCaptureFailureCode, type TxCodec } from './tx-mic';
 import { SAMPLE_RATE, TX_PCM_SAMPLE_RATES } from './constants';
 import { setAudioConnected } from '../stores/connection.svelte';
 import { setRxEnabled, setTxEnabled, setTxCodecFallback, setRxError, setTxError } from '../stores/audio.svelte';
@@ -35,9 +35,10 @@ const BACKOFF_MAX = 10000;
 const AUDIO_STATS_INTERVAL_MS = 1500;
 
 // Exact wire/reason strings from src/rigplane/web/handlers/audio.py
-// (_send_error) and tx-mic.ts, mapped to toast codes. An unrecognised
-// non-cancel start-failure reason falls back to txAudioStartFailed;
-// _failTxAudio (mid-TX death) falls back to txAudioStopped.
+// (_send_error), mapped to toast codes. Mid-capture browser failures carry a
+// typed TxCaptureFailure instead (MOR-4602) and map through
+// TX_FAILURE_TOAST_CODES; a string reason here is a server refusal path and
+// keeps the generic txAudioStopped behaviour.
 const SERVER_TX_REFUSAL = 'audio_start: TX audio unavailable';
 const SERVER_RX_REFUSAL_PREFIX = 'audio_start: RX audio failed to start:';
 // The publishable RX-start failure categories (src/rigplane/audio/
@@ -55,15 +56,19 @@ const SERVER_RX_DEVICE_IN_USE = 'device_in_use';
 // The server names the holding program by its executable FILE name only. Show
 // it only when it still looks like one (no path, no control characters, short).
 const HOLDER_PROGRAM_NAME = /^[^\\/\u0000-\u001f\u007f]{1,64}$/;
-const TX_START_SILENT_REASONS = new Set([
-  'TX MIC: capture start cancelled',
-  'TX MIC: capture stopped before start completed',
-]);
-const TX_START_REASON_CODES: Readonly<Record<string, string>> = {
-  'TX MIC: permission denied': 'txAudioMicPermissionDenied',
-  'TX MIC: microphone capture not supported': 'txAudioCaptureUnsupported',
-  'TX MIC: insecure context': 'txAudioInsecureContext',
-  'TX MIC: PCM capture not supported': 'txAudioCaptureUnsupported',
+// Typed capture-failure code → toast reason code. English failure text is
+// never matched: the code classifies, the `reason` is display-only.
+const TX_FAILURE_TOAST_CODES: Readonly<Record<TxCaptureFailureCode, string>> = {
+  // Unreachable through _notifyTxStartFailure (cancelled is silent there);
+  // listed so the record stays total.
+  cancelled: 'txAudioStartFailed',
+  permission: 'txAudioMicPermissionDenied',
+  'insecure-context': 'txAudioInsecureContext',
+  unsupported: 'txAudioCaptureUnsupported',
+  capture: 'txAudioStartFailed',
+  'device-lost': 'txAudioDeviceLost',
+  encoder: 'txAudioEncoderFailed',
+  'sample-rate': 'txAudioSampleRateUnsupported',
 };
 
 /** Sink for an operator-facing error banner: (level, message, code). */
@@ -191,7 +196,7 @@ class AudioManager {
           console.warn(`[audio-ws] TX frame dropped, transport state=${this.ws?.state}`);
         }
       }
-    }, (reason) => this._failTxAudio(reason));
+    }, (failure) => this._failTxAudio(failure));
   }
 
   /** Inject (or clear, with null) the sink for audio-failure banners. */
@@ -398,18 +403,23 @@ class AudioManager {
   }
 
   private async _startTxCapture(epoch: number, startGeneration: number): Promise<string | null> {
-    let err: string | null;
+    let err: TxCaptureFailure | null;
     let captureEpoch = this.txMic.captureEpoch;
     try {
       const capture = this.txMic.start();
       captureEpoch = this.txMic.captureEpoch;
       err = await capture;
     } catch (error) {
-      // Preserve the original rejection, but only the current capture and
-      // controller attempt may publish a new failure after this await.
-      if (startGeneration === this.txStartGeneration && captureEpoch === this.txMic.captureEpoch
-        && (!this.controller || this.controller.current(epoch))) setTxError(true);
-      throw error;
+      // TxMic.start() resolves a typed failure for every capture refusal and
+      // never throws; an unexpected throw is converted into the same typed
+      // failure path instead of propagating (MOR-4602). Only the current
+      // capture and controller attempt may publish a new failure; an obsolete
+      // attempt settles as the silent superseded marker.
+      if (startGeneration !== this.txStartGeneration || captureEpoch !== this.txMic.captureEpoch
+        || (this.controller && !this.controller.current(epoch))) {
+        return 'TX MIC: capture start cancelled';
+      }
+      err = { code: 'capture', category: 'unexpected-throw', reason: String(error), at: Date.now() };
     }
     if (startGeneration !== this.txStartGeneration) return 'TX MIC: capture start cancelled';
     if (this.controller && !this.controller.current(epoch)) {
@@ -422,9 +432,9 @@ class AudioManager {
       this._sendAudioStats();
       this._notifyTxStartFailure(err);
       // MOR-3753: a genuine refusal latches the failed state; the silent
-      // cancellation reasons above latch nothing.
-      if (!TX_START_SILENT_REASONS.has(err)) setTxError(true);
-      return err;
+      // cancellation reason above latches nothing.
+      if (err.code !== 'cancelled') setTxError(true);
+      return err.reason;
     }
     if (!this.txMic.active) return 'TX MIC: capture stopped before start completed';
     let admission: Promise<string | null> | null = null;
@@ -735,28 +745,42 @@ class AudioManager {
     admission?.resolve(null);
   }
 
-  /** Surface a startTx failure reason to the operator. Operator-initiated
+  /** Surface a startTx failure to the operator. Operator-initiated
    *  cancellations are silent (a console line at most). */
-  private _notifyTxStartFailure(reason: string): void {
-    if (TX_START_SILENT_REASONS.has(reason)) {
-      console.log(`[audio-ws] TX start cancelled: ${reason}`);
+  private _notifyTxStartFailure(failure: TxCaptureFailure): void {
+    if (failure.code === 'cancelled') {
+      console.log(`[audio-ws] TX start cancelled: ${failure.reason}`);
       return;
     }
-    const code = TX_START_REASON_CODES[reason] ?? 'txAudioStartFailed';
-    this._operatorNotifier?.('error', `TX audio failed to start: ${reason}`, code);
+    this._operatorNotifier?.(
+      'error',
+      `TX audio failed to start: ${failure.reason}`,
+      TX_FAILURE_TOAST_CODES[failure.code],
+      { reason: failure.reason },
+    );
   }
 
   /** End failed capture/codec audio and notify the existing canonical de-key path. */
-  private _failTxAudio(reason: string): void {
+  private _failTxAudio(failure: TxCaptureFailure | string): void {
     // A failure during preparation is returned by startTx, before TX admission.
     if (!this._txEnabled) return;
+    const reason = typeof failure === 'string' ? failure : failure.reason;
     this.txAdmission?.resolve(reason);
     console.error(`[audio-ws] TX audio failed, stopping TX audio: ${reason}`);
-    this._operatorNotifier?.(
-      'error',
-      `TX audio failed: ${reason}`,
-      reason === SERVER_TX_REFUSAL ? 'txAudioServerUnavailable' : 'txAudioStopped',
-    );
+    if (typeof failure === 'string') {
+      this._operatorNotifier?.(
+        'error',
+        `TX audio failed: ${reason}`,
+        failure === SERVER_TX_REFUSAL ? 'txAudioServerUnavailable' : 'txAudioStopped',
+      );
+    } else {
+      this._operatorNotifier?.(
+        'error',
+        `TX audio failed: ${reason}`,
+        TX_FAILURE_TOAST_CODES[failure.code],
+        { reason },
+      );
+    }
     this._setTxCodecFallback(false);
     this.stopTx();
     // MOR-3753: stopTx cleared the demand, so latch the failure itself —

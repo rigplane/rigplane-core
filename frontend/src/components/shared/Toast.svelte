@@ -81,12 +81,22 @@
    * no `code` is present, keep the legacy English `message` verbatim so
    * out-of-tree producers continue to work. `$derived` re-resolves on
    * locale changes.
+   *
+   * MOR-4602: a non-empty `params.reason` is the English failure cause; the
+   * localized catalog line never contains it, so append it after an em dash
+   * unless the rendered text already includes it (some templates, e.g.
+   * `commandExecutionFailed`, thread `{reason}` into the message itself).
    */
   function renderToast(toast: ToastItem): string {
+    const reason = toast.params?.reason;
+    const withCause = (text: string): string =>
+      typeof reason === 'string' && reason !== '' && !text.includes(reason)
+        ? `${text} — ${reason}`
+        : text;
     if (toast.code) {
-      return messageFromReasonCode(toast.code, toast.params);
+      return withCause(messageFromReasonCode(toast.code, toast.params));
     }
-    return toast.message;
+    return withCause(toast.message);
   }
 
   /**

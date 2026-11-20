@@ -1,4 +1,5 @@
 import type { Snippet } from 'svelte';
+import type { ScopeRefOffset } from '../../components/spectrum/spectrum-toolbar-logic';
 import type { ManagedScopeRegion } from '$lib/runtime/adapters/scope-display-projection';
 import type { TxAuxLevelField, TxAuxScalarHandles } from '../../semantic/tx-aux-scalar';
 import type { TxAuxFiniteHandles } from '../../semantic/tx-aux-finite';
@@ -102,6 +103,7 @@ export interface InstrumentComposition {
   readonly scopeDisplay: Snippet<[allowBare?: boolean]>;
   readonly scopeControls: Snippet<[
     allowBare?: boolean, screenGroup?: Snippet, rowTail?: Snippet, moreAsSheet?: boolean,
+    refOffset?: ScopeRefOffset,
   ]>;
   readonly txFaultRecovery: Snippet;
   readonly modInputTxWarning: Snippet;
