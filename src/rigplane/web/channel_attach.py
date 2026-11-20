@@ -7,51 +7,116 @@ transport framing into :class:`ClientChannelParams` first — the
 WebSocket query plus ``Sec-WebSocket-Protocol`` header, or the data
 channel's first-text-frame attach frame — so ticket capture, handler
 construction, caps, keepalive and cleanup never diverge again.
+
+K5, attach order on data channels (MOR-272): every channel kind attaches
+on its own, and every attach frame travels on a reliable ordered channel
+(see :data:`DATA_CHANNELS`: the text frames of ``scope``/``audio`` ride
+their reliable ``*-text`` companion), so an attach is never lost and
+never resent. The client attaches ``control`` first (its ``hello``
+proves the attach); the server holds a ``scope``/``audio`` attach that
+arrives before its session's control attach, re-checking it until the
+control attach lands or the 5 s attach bound closes the channel.
 """
 
 from __future__ import annotations
 
-import contextlib
 import json
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Final, Literal, Self
+from typing import Final, Literal, Self
 
 from ..runtime.controller_authority import ControllerError
-from ..ws import WS_OP_TEXT  # noqa: TID251
-
-if TYPE_CHECKING:
-    from .transport.connection import Connection  # noqa: TID251
 
 __all__ = [
     "ATTACH_ACK_KINDS",
     "ATTACH_ACK_VERSION",
+    "DATA_CHANNELS",
     "ChannelAttachedAck",
     "ChannelKind",
     "ClientChannelParams",
-    "ReAckingConnection",
+    "DataChannelLabel",
+    "DataChannelSpec",
+    "FrameCarriage",
     "TransportKind",
+    "data_channel_spec",
+    "data_channels_for",
 ]
 
 #: Client channel kinds. ``rigctl`` exists only on the WebSocket lane;
-#: data channels carry ``control`` / ``scope`` / ``audio`` / ``api`` labels.
+#: data channels carry the ``control`` / ``scope`` / ``audio`` / ``api``
+#: kinds through the labels of :data:`DATA_CHANNELS`.
 ChannelKind = Literal["control", "scope", "audio", "api", "rigctl"]
+
+#: Every WebRTC data-channel label (the K5 channel set).
+DataChannelLabel = Literal[
+    "control", "api", "scope", "scope-text", "audio", "audio-text"
+]
+
+#: Which frames a data channel carries: ``all`` (text and binary, one
+#: channel per kind), ``binary`` (the lossy half of a split kind) or
+#: ``text`` (the reliable half of a split kind).
+FrameCarriage = Literal["all", "binary", "text"]
+
+
+@dataclass(frozen=True, slots=True)
+class DataChannelSpec:
+    """One WebRTC data channel of the K5 channel set.
+
+    ``max_retransmits`` ``None`` means fully reliable. A kind with one
+    ``all`` channel is served over that channel alone; a split kind
+    (``scope``, ``audio``) has a lossy ``binary`` channel and a reliable
+    ordered ``text`` companion, which both ends merge into the ONE
+    :class:`~rigplane.web.transport.connection.Connection` its handler
+    sees: text goes out on the companion, bytes on the lossy channel,
+    and ``recv`` yields from both. Text commands (``audio_start``, scope
+    subscriptions, the attach frame) can therefore never be lost; only
+    time-sensitive binary frames tolerate loss.
+    """
+
+    label: DataChannelLabel
+    kind: ChannelKind
+    ordered: bool
+    max_retransmits: int | None
+    carries: FrameCarriage
+
+
+#: The K5 channel set: the offerer creates every one of these on one peer
+#: connection; the answerer serves exactly these labels.
+DATA_CHANNELS: Final[tuple[DataChannelSpec, ...]] = (
+    DataChannelSpec("control", "control", True, None, "all"),
+    DataChannelSpec("api", "api", True, None, "all"),
+    DataChannelSpec("scope", "scope", False, 0, "binary"),
+    DataChannelSpec("scope-text", "scope", True, None, "text"),
+    DataChannelSpec("audio", "audio", False, 0, "binary"),
+    DataChannelSpec("audio-text", "audio", True, None, "text"),
+)
+
+
+def data_channel_spec(label: str) -> DataChannelSpec | None:
+    """The :data:`DATA_CHANNELS` entry for ``label``; ``None`` if unknown."""
+    return next((spec for spec in DATA_CHANNELS if spec.label == label), None)
+
+
+def data_channels_for(kind: str) -> tuple[DataChannelSpec, ...]:
+    """The channels that carry ``kind`` (one ``all``, or binary + text)."""
+    return tuple(spec for spec in DATA_CHANNELS if spec.kind == kind)
+
 
 #: Version of the attach acknowledgement frame (a versioned wire change).
 ATTACH_ACK_VERSION: Final = 1
 
 #: The only channel kinds that get an attach ack: ``scope`` and
-#: ``audio`` are unordered with ``maxRetransmits=0`` — the only channels
-#: whose attach frame can be LOST. ``control`` (``hello`` proves the
-#: attach) and ``api`` (binary, reliable) never send one.
+#: ``audio`` open their transport on it (their handlers send nothing
+#: until asked). ``control`` (``hello`` proves the attach) and ``api``
+#: (binary, reliable) never send one.
 ATTACH_ACK_KINDS: Final = frozenset({"scope", "audio"})
 
 
 @dataclass(frozen=True, slots=True)
 class ChannelAttachedAck:
-    """The attach ack: one text frame sent after a lossy-channel attach
-    (scope/audio only) and before the first handler byte, so the client
-    can stop resending its attach; control, api and the WebSocket lane
-    never send one."""
+    """The attach ack: one text frame sent after a scope/audio
+    data-channel attach and before the first handler byte, so the client
+    opens its transport only once the server serves the channel; control,
+    api and the WebSocket lane never send one."""
 
     channel: str
     version: int = ATTACH_ACK_VERSION
@@ -80,55 +145,6 @@ class ChannelAttachedAck:
         if type(version) is not int or type(channel) is not str:
             raise ValueError("attach ack needs an int 'v' and a str 'channel'")
         return cls(channel=channel, version=version)
-
-
-def _is_attach_frame(payload: bytes) -> bool:
-    """True for a JSON ``{"type": "attach", ...}`` frame."""
-    try:
-        obj = json.loads(payload.decode("utf-8"))
-    except (UnicodeDecodeError, ValueError, RecursionError):
-        return False
-    return isinstance(obj, dict) and obj.get("type") == "attach"
-
-
-class ReAckingConnection:
-    """Re-acknowledge a repeated attach frame on a lossy data channel.
-
-    Wraps an ALREADY-attached scope/audio channel: a resent attach frame
-    (its ack was lost) is answered with the same ack inside ``recv`` and
-    never reaches the handler — no new ticket, no new handler. A dead
-    re-ack send does not kill the channel; its own EOF handles the rest.
-    """
-
-    __slots__ = ("_ack_text", "_conn")
-
-    def __init__(self, conn: Connection, kind: str) -> None:
-        self._conn = conn
-        self._ack_text = ChannelAttachedAck(kind).encode()
-
-    async def recv(self) -> tuple[int, bytes]:
-        while True:
-            opcode, payload = await self._conn.recv()
-            if opcode == WS_OP_TEXT and _is_attach_frame(payload):
-                with contextlib.suppress(Exception):
-                    await self._conn.send_text(self._ack_text)
-                continue
-            return opcode, payload
-
-    async def send_text(self, text: str) -> None:
-        await self._conn.send_text(text)
-
-    async def send_binary(self, data: bytes) -> None:
-        await self._conn.send_binary(data)
-
-    async def close(self, code: int = 1000, reason: str = "") -> None:
-        await self._conn.close(code, reason)
-
-    def abort(self) -> None:
-        self._conn.abort()
-
-    def is_alive(self) -> bool:
-        return self._conn.is_alive()
 
 
 #: Per-transport tag carried explicitly from the adapter into the shared

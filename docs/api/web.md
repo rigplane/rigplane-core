@@ -128,6 +128,7 @@ These routes are part of the Pro/supervisor compatibility surface:
 | `GET` | `/api/v1/state` | Canonical current state snapshot |
 | `GET` | `/api/v1/capabilities` | Full profile-backed capabilities |
 | `GET` | `/api/v1/audio/analysis` | Audio analysis snapshot when analyzer is active |
+| `GET` | `/api/v1/audio/candidates` | On-demand USB audio device candidates for the configured radio (`404` without a USB audio driver; `source` names the topology or name-fallback path) |
 | `GET` | `/api/v1/managed-transmit` | Managed transmit authority snapshot |
 | `POST` | `/api/v1/managed-transmit/command` | Submit a latched transmit or force-off intent |
 | `PUT` | `/api/v1/managed-transmit/tot` | Update the managed transmit time-out |
@@ -225,11 +226,28 @@ are two gated HTTP signaling routes for the DataChannel transport:
 The gated transport path is a transport alternative for the same handlers and
 wire frames used by WebSockets:
 
-| DataChannel | Reliability | Handler contract |
-|-------------|-------------|------------------|
-| `control` | ordered, reliable | Same JSON control frames as `/api/v1/ws` |
-| `scope` | unordered, `maxRetransmits=0` | Same binary scope frames as `/api/v1/scope` |
-| `audio` | unordered, `maxRetransmits=0` | Same JSON/binary audio frames as `/api/v1/audio` |
+| DataChannel | Reliability | Carries | Handler contract |
+|-------------|-------------|---------|------------------|
+| `control` | ordered, reliable | text and binary | Same JSON control frames as `/api/v1/ws` |
+| `api` | ordered, reliable | text attach, then binary | REST requests over the `api` channel framing |
+| `scope` | unordered, `maxRetransmits=0` | binary only | Binary scope frames of `/api/v1/scope` |
+| `scope-text` | ordered, reliable | text only | Attach frame, ack and JSON frames of `/api/v1/scope` |
+| `audio` | unordered, `maxRetransmits=0` | binary only | Binary audio frames of `/api/v1/audio` |
+| `audio-text` | ordered, reliable | text only | Attach frame, ack and JSON frames (`audio_start`, ...) of `/api/v1/audio` |
+
+The set is the typed contract `DATA_CHANNELS` (`rigplane.DataChannelSpec`),
+also published as `data_channels` in the browser wire contract
+(`api-channel-wire.json`). Each scope/audio pair is ONE connection to its
+handler: text goes on the reliable `*-text` channel, binary on the lossy
+one, and frames from both arrive at the same handler, so a text command
+is never lost. The two channels keep no order between each other. A client
+opens one pair per kind at a time; the halves may open in either order,
+and frames a half receives before its partner opens are kept. A second
+half of the same label while one already waits for its partner is closed
+at once, and so is a channel with a label outside the set. Until a channel
+is served, at most 64 unread frames are queued; more closes it. Every
+attach frame is the first text frame on `control`, `api`, `scope-text` or
+`audio-text`; it is never resent.
 
 The gated transport routes are default-off. If `WebConfig.webrtc_enabled` is
 false, or `aiortc` is missing, they return HTTP `503` with

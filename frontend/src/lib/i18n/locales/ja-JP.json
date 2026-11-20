@@ -237,6 +237,8 @@
   "core.toast.txAudioDeviceLost": "マイクが切断されました — TX オーディオを停止しました",
   "core.toast.txAudioEncoderFailed": "TX オーディオのエンコーダーが失敗しました — 送信を中断しました",
   "core.toast.txAudioSampleRateUnsupported": "このマイクのサンプリングレートには対応していません — TX オーディオを開始できません",
+  "core.toast.txAudioDropped": "マイク音声が無線機に届いていません。TX オーディオのフレームが破棄されています",
+  "core.toast.txAudioNoFrames": "TX オーディオが停止しました — ブラウザからオーディオフレームが 1 つも受信されませんでした",
   "core.toast.unknown": "問題が発生しました。しばらくしてから再試行してください。",
   "core.memory.open": "メモリー",
   "core.mobile.nav.label": "トランシーバーのナビゲーション",

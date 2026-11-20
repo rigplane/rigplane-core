@@ -157,7 +157,6 @@ from .channel_attach import (  # noqa: TID251
     ChannelAttachedAck,
     ChannelKind,
     ClientChannelParams,
-    ReAckingConnection,
     TransportKind,
 )
 from .discovery import DiscoveryResponder  # noqa: TID251
@@ -4862,6 +4861,44 @@ class WebServer:
         ).encode()
         await _send_json(writer, body, headers)
 
+    async def _serve_audio_candidates(
+        self, writer: asyncio.StreamWriter, headers: dict[str, str] | None = None
+    ) -> None:
+        """GET /api/v1/audio/candidates -- on-demand radio audio candidates."""
+        try:
+            record = await self._audio_broadcaster.audio_candidates()
+        except Exception:
+            logger.warning("audio-candidates: listing failed", exc_info=True)
+            body = json.dumps(
+                {
+                    "error": "unavailable",
+                    "message": "Audio device enumeration failed",
+                },
+                separators=(",", ":"),
+            ).encode()
+            await _send_response(
+                writer,
+                503,
+                "Service Unavailable",
+                body,
+                {"Content-Type": "application/json"},
+            )
+            return
+        if record is None:
+            body = json.dumps(
+                {
+                    "error": "unavailable",
+                    "message": "No USB audio driver for the active radio",
+                },
+                separators=(",", ":"),
+            ).encode()
+            await _send_response(
+                writer, 404, "Not Found", body, {"Content-Type": "application/json"}
+            )
+            return
+        body = json.dumps(record, separators=(",", ":")).encode()
+        await _send_json(writer, body, headers)
+
     def _get_meter_cal_payload(self) -> dict[str, Any]:
         """Extract meter calibration from radio backend or profile."""
         result: dict[str, Any] = {}
@@ -8014,11 +8051,13 @@ class WebServer:
         the WebSocket upgrade calls :meth:`_resolve_client_ticket` and
         :meth:`serve_client_channel` with ``transport="ws"`` around the
         101 handshake, which must stay between the refusal decision and
-        the first handler byte. A lossy data-channel attach (scope/audio,
-        the only channels that can lose the attach frame) is acknowledged
-        there with one ``ChannelAttachedAck`` text frame; control/api and
-        the WebSocket lane never send one. When ``track_owners`` is given,
-        the attached session owner is recorded in it for the channel's        lifetime, so a transport-loss signal can fence that session
+        the first handler byte. A scope/audio data-channel attach is
+        acknowledged there with one ``ChannelAttachedAck`` text frame (it
+        rides the reliable ``*-text`` companion, so it is never lost);
+        control/api and the WebSocket lane never send one. When
+        ``track_owners`` is given, the attached session owner is recorded
+        in it for the channel's lifetime, so a transport-loss signal can
+        fence that session
         through the existing session-loss path. A keyless ``api`` attach
         resolves to no ticket (``None``): nothing is tracked and the
         channel holds no session.
@@ -8032,10 +8071,7 @@ class WebServer:
             track_owners.add(ticket.tx_owner)
         if transport == "datachannel" and kind in ATTACH_ACK_KINDS:
             # The ack, before the first handler byte (a dead send must
-            # not kill the attach). The wrapper re-acknowledges a REPEAT
-            # attach: the retry never reaches the handler and builds no
-            # new ticket or handler.
-            conn = ReAckingConnection(conn, kind)
+            # not kill the attach).
             try:
                 await conn.send_text(ChannelAttachedAck(kind).encode())
             except Exception:
@@ -8123,6 +8159,7 @@ class WebServer:
                 controller_audio_loss=self._controller_audio_loss,
                 controller_track_stop=self._controller_track_audio_stop,
                 managed_tx_authority=self._managed_tx_authority(),
+                server=self,
             )
         elif kind == "rigctl":
             owner = ticket.tx_owner

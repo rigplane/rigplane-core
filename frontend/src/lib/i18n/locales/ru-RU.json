@@ -213,6 +213,8 @@
   "core.toast.txAudioDeviceLost": "Микрофон отключён — TX-аудио остановлено",
   "core.toast.txAudioEncoderFailed": "Сбой кодировщика TX-аудио — передача прервана",
   "core.toast.txAudioSampleRateUnsupported": "Неподдерживаемая частота дискретизации микрофона — TX-аудио не запустить",
+  "core.toast.txAudioDropped": "Звук с микрофона не доходит до радио: кадры TX-аудио отбрасываются",
+  "core.toast.txAudioNoFrames": "TX-аудио прервано — от браузера не поступило ни одного кадра аудио",
   "core.toast.unknown": "Что-то пошло не так. Попробуйте позже.",
   "core.memory.open": "Память",
   "core.mobile.nav.label": "Навигация по радио",
