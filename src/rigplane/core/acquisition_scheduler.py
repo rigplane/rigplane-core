@@ -469,6 +469,12 @@ _CLASS_RANK: dict[AcquisitionClass, int] = {
 _MIN_RECONCILIATION_MAX_AGE = 1e-9
 #: MOR-4058: the failure reason of a read the radio refused (CI-V ``FA``).
 _REFUSED: Final[str] = "acquisition_request_refused"
+#: MOR-3856: the failure reason of a read that got no answer within its
+#: declared window — recorded when an unanswered path completes a
+#: still-pending request itself (the Yaesu lane shape; a drain seat's
+#: terminal timeout is counted under ``acquisition_request_timeout``
+#: before the marking runs and finds the request already dropped).
+_UNANSWERED: Final[str] = "acquisition_request_unanswered"
 #: MOR-1898: liveness budget for a request whose ``max_age`` is the
 #: freshness epsilon (``_MIN_RECONCILIATION_MAX_AGE`` or below) and that
 #: carries no explicit ``timeout``. Such a
@@ -545,7 +551,13 @@ def civ_transport_budget_hz(radio: object) -> float | None:
 
 @dataclass(slots=True)
 class _ReadRefusal:
-    """A path whose read the radio refused, and when to ask again (MOR-4058)."""
+    """A path whose read cannot answer now, and when to ask again.
+
+    MOR-4058: the radio refused it (a NAK — a terminal answer). MOR-3856:
+    it got no answer within its declared window. Both marks keep the same
+    ledger shape — how many times in a row, and the monotonic time before
+    which an automatic ask is withheld.
+    """
 
     count: int
     retry_at: float
@@ -579,6 +591,7 @@ class AcquisitionScheduler:
         "_prime_cursor",
         "_profile",
         "_refused_paths",
+        "_unanswered_paths",
         "_requests_by_key",
         "_startup_defect",
         "_tx_active",
@@ -606,6 +619,9 @@ class AcquisitionScheduler:
         # MOR-4058: paths whose read the radio refused (NAK); any answer for
         # the path drops it.
         self._refused_paths: dict[FieldPath, _ReadRefusal] = {}
+        # MOR-3856: paths whose read got no answer within its declared
+        # window; any answer for the path drops it the same way.
+        self._unanswered_paths: dict[FieldPath, _ReadRefusal] = {}
         self._claims_by_request_id: dict[str, _AcquisitionClaim] = {}
         # request id -> per-path timestamp of the drain pass that sent it,
         # dropped where the request is removed from ``_requests_by_key``.
@@ -993,20 +1009,22 @@ class AcquisitionScheduler:
             return availability
 
         if normalized_priority in _AUTOMATIC_PRIORITIES:
-            # MOR-4058: automatic work (priming, cadence, reconciliation)
-            # waits out a refusal's retry delay; a read asked for by name
-            # goes out regardless.
+            # MOR-4058/MOR-3856: automatic work (priming, cadence,
+            # reconciliation) waits out a refusal's or an unanswered
+            # window's retry delay; a read asked for by name goes out
+            # regardless.
             askable = tuple(
                 path
                 for path in normalized_paths
-                if not self._refusal_withheld(path, now)
+                if not self._unavailable_withheld(path, now)
             )
             if not askable:
                 return EnsureFreshResult(
                     status=AcquisitionStatus.UNAVAILABLE,
                     message=(
                         f"{', '.join(str(path) for path in normalized_paths)}: "
-                        "refused by the radio; asked again after its retry delay"
+                        "unavailable (refused, or no answer within its "
+                        "window); asked again after its retry delay"
                     ),
                 )
             normalized_paths = askable
@@ -1237,7 +1255,7 @@ class AcquisitionScheduler:
         now = self._clock.now()
         return request.priority in _AUTOMATIC_PRIORITIES and all(
             self._availability.get(path, True) is False
-            or self._refusal_withheld(path, now)
+            or self._unavailable_withheld(path, now)
             for path in request.paths
         )
 
@@ -1643,7 +1661,12 @@ class AcquisitionScheduler:
         answered — unavailable on this radio as it is set up now — and leaves
         the set, unless it is safety-critical (``startup_critical_path``);
         the gate counts a critical path's refusals as failed reads instead
-        (:meth:`consecutive_refusals`).
+        (:meth:`consecutive_refusals`). MOR-3856: a path whose read got no
+        answer within its declared window (:meth:`record_read_timeout`)
+        leaves the set the same way — an optional read must not hold the
+        initial-state gate forever — while a critical one keeps blocking
+        and counts its failed attempts through
+        :meth:`consecutive_request_timeouts`.
 
         ``availability`` carries what :func:`resolve_available_when` made of
         each conditional field's declared clauses. A path it omits is
@@ -1670,7 +1693,11 @@ class AcquisitionScheduler:
                     and profile.capability_for(path).startup_required
                     and not profile.policy_for(path).tx_only
                     and availability.get(path, True) is not False
-                    and (path not in self._refused_paths or startup_critical_path(path))
+                    and (
+                        path not in self._refused_paths
+                        and path not in self._unanswered_paths
+                        or startup_critical_path(path)
+                    )
                 ),
                 key=str,
             )
@@ -1794,22 +1821,36 @@ class AcquisitionScheduler:
 
         return frozenset(self._refused_paths)
 
-    def end_refusals(self, paths: Iterable[FieldPath]) -> None:
-        """The radio answered *paths*: their refusal and its delay are over.
+    def unanswered_paths(self) -> frozenset[FieldPath]:
+        """Return the paths whose last read got no answer (MOR-3856)."""
 
-        Called for every accepted observation, whether or not a request was
-        waiting for it (a direct getter's answer counts too).
+        return frozenset(self._unanswered_paths)
+
+    def end_refusals(self, paths: Iterable[FieldPath]) -> None:
+        """The radio answered *paths*: their unavailability is over.
+
+        Called for every accepted observation, whether or not a request
+        was waiting for it (a direct getter's answer counts too). Clears
+        both marks — the refusal (MOR-4058) and the unanswered window
+        (MOR-3856).
         """
 
-        answered = sorted(
-            (path for path in paths if path in self._refused_paths), key=str
+        marked = sorted(
+            (
+                path
+                for path in paths
+                if path in self._refused_paths or path in self._unanswered_paths
+            ),
+            key=str,
         )
-        for path in answered:
-            del self._refused_paths[path]
-        if answered:
+        for path in marked:
+            self._refused_paths.pop(path, None)
+            self._unanswered_paths.pop(path, None)
+        if marked:
             logger.info(
-                "acquisition: %s answered again after a refusal",
-                ", ".join(str(path) for path in answered),
+                "acquisition: %s answered again after a refusal or an "
+                "unanswered window",
+                ", ".join(str(path) for path in marked),
             )
 
     def consecutive_refusals(self, path: FieldPath) -> int:
@@ -1868,6 +1909,68 @@ class AcquisitionScheduler:
                     link_healthy=False,
                 )
 
+    def record_read_timeout(
+        self,
+        paths: Iterable[FieldPath],
+        *,
+        now: float,
+    ) -> None:
+        """A read of *paths* got no answer within its window (MOR-3856).
+
+        The unanswered twin of :meth:`record_read_refusal`. Whether a
+        radio answers a declared read at all can depend on its mode or
+        setup (FTX-1 ``NA;`` in C4FM), exactly like a refusal, so the
+        lapse is recorded at runtime, not declared. The paths stop
+        holding the startup gate (:meth:`unobserved_startup_paths`)
+        unless they are safety-critical (``startup_critical_path`` —
+        those keep blocking and count their failed attempts elsewhere),
+        and an automatic ask waits out the same idle-ceiling retry a
+        refusal gets; the cadence machinery keeps its MOR-2614 retry.
+        An answer ends the mark (:meth:`end_refusals`).
+
+        A drain seat whose request terminally timed out reaches this
+        through :meth:`record_acquisition_failure` (which drops the
+        request first); a lane-based backend without scheduler requests
+        — the Yaesu CAT observation adapter — calls this directly.
+        """
+
+        unanswered = frozenset(paths)
+        if not unanswered:
+            return
+        newly = sorted(
+            (path for path in unanswered if path not in self._unanswered_paths),
+            key=str,
+        )
+        for path in unanswered:
+            self._unanswered_paths[path] = _ReadRefusal(
+                count=self._consecutive_unanswered(path) + 1,
+                retry_at=now + self._refusal_retry_seconds(path),
+            )
+        if newly:
+            logger.info(
+                "acquisition: the radio did not answer the read of %s "
+                "within its window; treating it as unavailable until it "
+                "answers",
+                ", ".join(str(path) for path in newly),
+            )
+        for request in self.pending_requests():
+            matched = tuple(path for path in request.paths if path in unanswered)
+            if not matched:
+                continue
+            subset = replace(request, paths=matched)
+            if self.may_credit(subset, observation_timestamp=now):
+                self.record_acquisition_failure(
+                    subset,
+                    reason=_UNANSWERED,
+                    failed_paths=matched,
+                    now=now,
+                    link_healthy=False,
+                )
+
+    def _consecutive_unanswered(self, path: FieldPath) -> int:
+        unanswered = self._unanswered_paths.get(path)
+        return 0 if unanswered is None else unanswered.count
+
     def _refusal_retry_seconds(self, path: FieldPath) -> float:
         """How long a refused path waits before its next read (MOR-4058).
 
@@ -1886,6 +1989,24 @@ class AcquisitionScheduler:
     def _refusal_withheld(self, path: FieldPath, now: float) -> bool:
         refusal = self._refused_paths.get(path)
         return refusal is not None and refusal.retry_at > now
+
+    def _unavailable_withheld(self, path: FieldPath, now: float) -> bool:
+        """Whether an automatic ask of *path* waits (MOR-4058/MOR-3856).
+
+        True while either unavailability mark — a refusal (NAK) or a read
+        that got no answer within its declared window — has its retry
+        delay still running. Cadence polling is NOT gated here: a
+        terminal timeout keeps its MOR-2614 cadence retry.
+        """
+
+        return (
+            self._refusal_withheld(path, now)
+            or self._unanswered_withheld(path, now)
+        )
+
+    def _unanswered_withheld(self, path: FieldPath, now: float) -> bool:
+        unanswered = self._unanswered_paths.get(path)
+        return unanswered is not None and unanswered.retry_at > now
 
     def record_acquisition_failure(
         self,
@@ -1953,6 +2074,13 @@ class AcquisitionScheduler:
                 self._claims_by_request_id.pop(request.id, None)
                 self._forget_dispatch(request.id)
                 self._pending_cadence_by_key.pop(key, None)
+
+        # MOR-3856 is deliberately NOT wired here: a drain seat's terminal
+        # timeout keeps its seat-specific gate behaviour (the web gate's
+        # MOR-2749/MOR-4456 non-critical deadline serves the path unknown
+        # after 10 s and leaves it in the startup set). The unanswered
+        # window is recorded by the backend that owns the window — the
+        # Yaesu CAT observation adapter, where no such deadline existed.
 
         if request.policy.cadence_seconds is None:
             return

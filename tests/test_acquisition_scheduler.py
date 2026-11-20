@@ -454,12 +454,14 @@ def test_unanswered_optional_read_leaves_the_startup_set() -> None:
     assert scheduler.unanswered_paths() == frozenset({_TUNER, freq, ptt})
 
 
-def test_terminal_timeout_marks_its_paths_unanswered() -> None:
-    """A drain seat's terminal timeout is the MOR-3856 window lapse.
+def test_terminal_timeout_on_a_drain_seat_keeps_the_gate_deadline() -> None:
+    """A drain seat's terminal timeout is NOT the MOR-3856 window.
 
-    ``record_acquisition_failure`` with the real-timeout shape (the
-    suppressed healthy-link expiry returns before it) marks the failed
-    paths unanswered; the cadence machinery keeps its MOR-2614 retry.
+    The web gate's MOR-2749/MOR-4456 non-critical deadline owns that
+    case for CI-V seats: the path stays in the startup set and is served
+    unknown after the gate's own deadline, so the terminal failure
+    records no unanswered mark. Only a backend that owns its read window
+    (the Yaesu CAT adapter) records one.
     """
     clock = FreshnessClock(start=100.0)
     scheduler = _refusal_scheduler(clock, _TUNER)
@@ -472,28 +474,8 @@ def test_terminal_timeout_marks_its_paths_unanswered() -> None:
         link_healthy=False,
     )
 
-    assert scheduler.unanswered_paths() == frozenset({_TUNER})
-    assert scheduler.unobserved_startup_paths(()) == ()
-    # MOR-2614's expedited retry is untouched: the first terminal timeout
-    # keeps the interrupted cadence clock, so the next pass re-asks.
-    assert scheduler.due_requests(now=clock.now())[0].paths == (_TUNER,)
-
-
-def test_suppressed_healthy_link_expiry_marks_nothing() -> None:
-    clock = FreshnessClock(start=100.0)
-    scheduler = _refusal_scheduler(clock, _TUNER)
-    request = _dispatch(scheduler, clock.now())
-
-    scheduler.record_acquisition_failure(
-        request,
-        reason="acquisition_request_timeout",
-        now=clock.now() + 0.5,
-        link_healthy=True,
-    )
-
     assert scheduler.unanswered_paths() == frozenset()
     assert scheduler.unobserved_startup_paths(()) == (_TUNER,)
-    assert scheduler.pending_requests() != (), "the request stays in flight"
 
 
 def test_unanswered_read_is_marked_on_the_scheduler_and_logged(

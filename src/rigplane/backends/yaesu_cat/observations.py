@@ -1218,12 +1218,17 @@ class YaesuObservationAdapter:
                 observations.append(
                     adapter.observation(_SUB_IF_SHIFT, value, native_id="read_if_shift")
                 )
+        # MOR-3856: the narrow reads are contained — one optional read the
+        # radio never answers (FTX-1 ``NA;`` in C4FM) must not abort the
+        # lane cycle and starve the reads after it; the timeout still
+        # marks the path unanswered on the acquisition scheduler.
         if self._can_poll(_MAIN_NARROW):
             ok, value = await self._safe_read(
                 "main.narrow",
                 self.radio.read_narrow(0),
                 lambda: self.radio.read_narrow(0),
                 paths=(_MAIN_NARROW,),
+                contain_timeout=True,
             )
             if ok:
                 observations.append(
@@ -1239,6 +1244,7 @@ class YaesuObservationAdapter:
                 self.radio.read_narrow(1),
                 lambda: self.radio.read_narrow(1),
                 paths=(_SUB_NARROW,),
+                contain_timeout=True,
             )
             if ok:
                 observations.append(
@@ -2031,11 +2037,19 @@ class YaesuObservationAdapter:
         the refusal re-read contains exactly like a first-read timeout; a
         refused or malformed read still skips the field below (PTT/split
         record no defect), and transport failures still raise untouched.
+
+        MOR-3856: every timeout of declared paths — contained or raised —
+        marks those paths unanswered on the acquisition scheduler, so an
+        optional read stops holding the initial-state gate the moment its
+        window lapses while its own lane cadence keeps asking. A read
+        naming a critical path (freq/mode) still raises for the reconnect
+        path.
         """
         try:
             value = await read
         except CatTimeoutError as exc:
             self._count_critical_read_timeouts(label, exc, paths)
+            self._record_unanswered_reads(paths)
             if contain_timeout:
                 return False, None
             raise
@@ -2055,6 +2069,7 @@ class YaesuObservationAdapter:
                 value = await remake()
             except CatTimeoutError as retry_exc:
                 self._count_critical_read_timeouts(label, retry_exc, paths)
+                self._record_unanswered_reads(paths)
                 if contain_timeout:
                     return False, None
                 raise
@@ -2094,14 +2109,39 @@ class YaesuObservationAdapter:
             return counts
         return None
 
+    def _record_unanswered_reads(self, paths: tuple[FieldPath, ...]) -> None:
+        """Tell the acquisition scheduler which declared reads stayed silent.
+
+        MOR-3856: the read waited its declared window (the transport's
+        read timeout) and no answer came. The scheduler marks the paths
+        unavailable, so an optional read stops holding the initial-state
+        gate; no scheduler attached (tests, non-web embeds) records
+        nothing — the containment the read site asked for is the part
+        that keeps the cycle.
+        """
+
+        if not paths:
+            return
+        scheduler = getattr(self.radio, "_acquisition_scheduler", None)
+        if isinstance(scheduler, AcquisitionScheduler):
+            scheduler.record_read_timeout(paths, now=self.clock())
+
     def _note_critical_read_answers(self, paths: tuple[FieldPath, ...]) -> None:
-        """Reset the unanswered tally of every *path* that just answered."""
+        """Reset the unanswered tally of every *path* that just answered.
+
+        MOR-3856: the same answer also ends the scheduler-side
+        unavailability marks (refusal or unanswered window), so the read
+        is asked on its ordinary schedule again the moment it answers.
+        """
 
         counts = self._critical_read_timeout_counts()
-        if counts is None:
-            return
-        for path in paths:
-            counts.pop(path, None)
+        if counts is not None:
+            for path in paths:
+                counts.pop(path, None)
+        if paths:
+            scheduler = getattr(self.radio, "_acquisition_scheduler", None)
+            if isinstance(scheduler, AcquisitionScheduler):
+                scheduler.end_refusals(paths)
 
     def _count_critical_read_timeouts(
         self,
@@ -2267,6 +2307,7 @@ class YaesuObservationAdapter:
             self.radio.read_narrow(receiver),
             lambda: self.radio.read_narrow(receiver),
             paths=(narrow,),
+            contain_timeout=True,
         )
         if not ok:
             return
