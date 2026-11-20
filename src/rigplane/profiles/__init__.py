@@ -397,7 +397,8 @@ class CwTextSpec:
 
 
 # MOR-4385: the meaning of one ``scope_span_presets_hz`` entry on the
-# radio's own wire — a +/- half-width (Icom CI-V) or a full display width.
+# radio's own wire — a +/- half-width (the Icom rigs' ``0x27 0x15``) or a
+# full display width (the Xiegu G7250, MOR-4436).
 SpanPresetSemantics: TypeAlias = Literal["half_width", "full_width"]
 
 
@@ -696,14 +697,20 @@ class RadioProfile:
     # CI-V Reference Guide p.14; runtime/_civ_rx.py:
     # CivRuntime._publish_scope_span_observation derives frame edges as
     # center - span / center + span). ``"full_width"``: the preset is the
-    # full display width. Every shipped profile with presets (all Icom
-    # CI-V) declares ``"half_width"``; the loader requires the field
+    # full display width. The shipped Icom rigs with a ±half-width span
+    # declare ``"half_width"`` and the Xiegu G7250 (MOR-4436) declares
+    # ``"full_width"``; the loader requires the field
     # whenever presets are declared. The default covers direct Python
     # construction of CI-V-style profiles. Keyword-only and appended so
     # no positional argument shifts.
     scope_span_preset_semantics: SpanPresetSemantics = field(
         default="half_width", kw_only=True
     )
+    # BCD width of the 0x27 0x15 span value on the wire
+    # (``[scope].span_value_bytes``): 5 on Icom (the default), 6 on the
+    # Xiegu G7250 (LIVE G7250 LAN 2026-11-13, MOR-4436). Replies of either
+    # width decode (commands/scope.py: parse_scope_span_response).
+    scope_span_value_bytes: int = field(default=5, kw_only=True)
     # Optional radio-LAN IQ wire facts from ``[iq_lan]`` (MOR-4398). The
     # dataclass stays in profiles to preserve the profiles/sdr independence.
     iq_lan: IqLanSpec | None = field(default=None, kw_only=True)
@@ -738,9 +745,9 @@ class RadioProfile:
 
         MOR-4385: the single preset-to-view-width conversion, consumed by
         the scope source capabilities and the web capabilities endpoint.
-        A ``half_width`` preset (Icom CI-V) covers twice its number, a
-        ``full_width`` preset covers exactly its number. Empty when no
-        presets are declared.
+        A ``half_width`` preset (the Icom ±half-width rigs) covers twice
+        its number, a ``full_width`` preset covers exactly its number.
+        Empty when no presets are declared.
         """
         if not self.scope_span_presets_hz:
             return ()

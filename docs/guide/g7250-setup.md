@@ -79,8 +79,8 @@ between you and the radio.
   it.
 - Frequency, mode and S-meter polling works over the network.
 - Do not use USB and network control of the same radio at the same time.
-- Panorama (scope and waterfall) over the network is not supported yet: the
-  shipped profile declares no scope. The audio-derived panorama is available.
+- Panorama (scope and waterfall) over the network comes from the radio's own
+  scope. Span presets: 48, 96, 192 and 384 kHz.
 - TX and TX audio over the network are not verified.
 
 ## Not Exposed

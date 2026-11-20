@@ -1,7 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { TxMic } from '../tx-mic';
+import type { TxCaptureFailureCode } from '../tx-mic';
 import { setTxMicProcessing, reloadTxMicProcessingForTests, TX_MIC_PROCESSING_KEY } from '../../stores/tx-mic-processing.svelte';
 import { SAMPLE_RATE, CHANNELS, TX_BITRATE, AUDIO_HEADER_SIZE, CODEC_PCM16 } from '../constants';
+
+const failureWith = (code: TxCaptureFailureCode, category: string, reason: string) =>
+  expect.objectContaining({ code, category, reason });
 
 let mockTrack: any, mockEncoder: any, mockReader: any;
 beforeEach(() => {
@@ -54,7 +58,9 @@ describe('TxMic', () => {
   it('errors when WebCodecs missing', async () => {
     delete (globalThis as any).AudioEncoder;
     const m = new TxMic(vi.fn());
-    expect(await m.start()).toContain('microphone capture not supported');
+    await expect(m.start()).resolves.toMatchObject({
+      code: 'unsupported', category: 'capture-unsupported',
+    });
   });
   it('requests raw mic capture: no browser voice processing (MOR-4312)', async () => {
     const m = new TxMic(vi.fn()); await m.start();
@@ -107,7 +113,9 @@ describe('TxMic', () => {
     vi.mocked(navigator.mediaDevices.getUserMedia).mockRejectedValueOnce(
       new DOMException('denied', 'NotAllowedError'),
     );
-    expect(await new TxMic(vi.fn()).start()).toContain('permission denied');
+    await expect(new TxMic(vi.fn()).start()).resolves.toMatchObject({
+      code: 'permission', category: 'NotAllowedError', reason: 'permission denied',
+    });
   });
 
   it('a rejection settling after stop() is the cancellation, not a refusal (MOR-3753)', async () => {
@@ -121,7 +129,9 @@ describe('TxMic', () => {
     mic.stop();
     rejectCapture(new DOMException('denied late', 'NotAllowedError'));
 
-    await expect(starting).resolves.toBe('TX MIC: capture start cancelled');
+    await expect(starting).resolves.toMatchObject({
+      code: 'cancelled', category: 'cancelled', reason: 'capture start cancelled',
+    });
     expect(mic.lastCaptureFailureCategory).toBeNull();
     expect(warn).not.toHaveBeenCalled();
     expect(mic.active).toBe(false);
@@ -141,22 +151,24 @@ describe('TxMic', () => {
       getTracks: () => [mockTrack], getAudioTracks: () => [mockTrack],
     } as unknown as MediaStream);
 
-    await expect(starting).resolves.toBe('TX MIC: capture start cancelled');
+    await expect(starting).resolves.toMatchObject({
+      code: 'cancelled', category: 'cancelled', reason: 'capture start cancelled',
+    });
     expect(mockTrack.stop).toHaveBeenCalledOnce();
     expect(mockEncoder.configure).not.toHaveBeenCalled();
     expect(send).not.toHaveBeenCalled();
     expect(mic.active).toBe(false);
   });
   it.each([
-    ['NotAllowedError', 'TX MIC: permission denied'],
-    ['NotFoundError', 'TX MIC: capture failed (NotFoundError)'],
-    ['NotReadableError', 'TX MIC: capture failed (NotReadableError)'],
-    ['OverconstrainedError', 'TX MIC: capture failed (OverconstrainedError)'],
-    ['AbortError', 'TX MIC: capture failed (AbortError)'],
-    ['SecurityError', 'TX MIC: capture failed (SecurityError)'],
-    ['InvalidStateError', 'TX MIC: capture failed (InvalidStateError)'],
-    ['TypeError', 'TX MIC: capture failed (TypeError)'],
-  ])('preserves %s without opening capture or leaking the message', async (name, reason) => {
+    ['NotAllowedError', 'permission'],
+    ['NotFoundError', 'capture'],
+    ['NotReadableError', 'capture'],
+    ['OverconstrainedError', 'capture'],
+    ['AbortError', 'capture'],
+    ['SecurityError', 'capture'],
+    ['InvalidStateError', 'capture'],
+    ['TypeError', 'capture'],
+  ])('preserves %s without opening capture or leaking the message', async (name, code) => {
     const log = vi.spyOn(console, 'warn').mockImplementation(() => {});
     vi.mocked(navigator.mediaDevices.getUserMedia).mockRejectedValueOnce(
       new DOMException('private device label and driver details', name),
@@ -164,7 +176,7 @@ describe('TxMic', () => {
     const send = vi.fn();
     const mic = new TxMic(send);
 
-    await expect(mic.start()).resolves.toBe(reason);
+    await expect(mic.start()).resolves.toMatchObject({ code, category: name });
 
     expect(log).toHaveBeenCalledExactlyOnceWith(`[TxMic] getUserMedia rejected: ${name}`);
     expect(mic.lastCaptureFailureCategory).toBe(name);
@@ -186,7 +198,7 @@ describe('TxMic', () => {
     const send = vi.fn();
     const mic = new TxMic(send);
 
-    await expect(mic.start()).resolves.toBe('TX MIC: capture failed (unknown)');
+    await expect(mic.start()).resolves.toMatchObject({ code: 'capture', category: 'unknown' });
 
     expect(log).toHaveBeenCalledExactlyOnceWith('[TxMic] getUserMedia rejected: unknown');
     expect(mic.lastCaptureFailureCategory).toBe('unknown');
@@ -201,9 +213,9 @@ describe('TxMic', () => {
     capture.mockRejectedValueOnce(new DOMException('', 'NotReadableError'));
     const mic = new TxMic(vi.fn());
 
-    await expect(mic.start()).resolves.toBe('TX MIC: capture failed (NotFoundError)');
+    await expect(mic.start()).resolves.toMatchObject({ code: 'capture', category: 'NotFoundError' });
     mic.stop();
-    await expect(mic.start()).resolves.toBe('TX MIC: capture failed (NotReadableError)');
+    await expect(mic.start()).resolves.toMatchObject({ code: 'capture', category: 'NotReadableError' });
     mic.stop();
     expect(capture).toHaveBeenCalledTimes(2);
     expect(mockEncoder.configure).not.toHaveBeenCalled();
@@ -226,6 +238,89 @@ describe('TxMic', () => {
     });
     m.stop();
   });
+
+  describe('typed capture failures (MOR-4602)', () => {
+    it('resolves an encoder-init failure and tears the capture down when the encoder constructor throws', async () => {
+      (globalThis as any).AudioEncoder = function () { throw new Error('boom'); };
+      const send = vi.fn();
+      const mic = new TxMic(send);
+
+      const failure = await mic.start();
+
+      expect(failure).toMatchObject({ code: 'encoder', category: 'encoder-init' });
+      expect(failure?.reason).toBe('encoder init failed: boom');
+      expect(mic.active).toBe(false);
+      expect(mockTrack.stop).toHaveBeenCalled();
+      expect(mockReader.cancel).toHaveBeenCalled();
+      expect(send).not.toHaveBeenCalled();
+      // lastCaptureFailure carries the category and the failure timestamp.
+      expect(mic.lastCaptureFailure?.category).toBe('encoder-init');
+      expect(mic.lastCaptureFailure?.at).toEqual(expect.any(Number));
+    });
+
+    it('resolves a pcm-context-init failure when the PCM AudioContext constructor throws', async () => {
+      delete (globalThis as any).AudioEncoder;
+      delete (globalThis as any).MediaStreamTrackProcessor;
+      (globalThis as any).AudioContext = function () { throw new Error('no audio device'); };
+      const send = vi.fn();
+      const mic = new TxMic(send);
+
+      await expect(mic.start()).resolves.toMatchObject({
+        code: 'capture', category: 'pcm-context-init',
+        reason: 'audio context init failed: no audio device',
+      });
+
+      expect(mic.active).toBe(false);
+      expect(mockTrack.stop).toHaveBeenCalled();
+      expect(send).not.toHaveBeenCalled();
+    });
+
+    it('resolves a sample-rate failure when the device rate is not SAMPLE_RATE', async () => {
+      delete (globalThis as any).AudioEncoder;
+      delete (globalThis as any).MediaStreamTrackProcessor;
+      const context = {
+        sampleRate: 44100,
+        destination: {},
+        close: vi.fn().mockResolvedValue(undefined),
+        createMediaStreamSource: vi.fn(),
+        createScriptProcessor: vi.fn(),
+      };
+      (globalThis as any).AudioContext = vi.fn(function () { return context; });
+      const mic = new TxMic(vi.fn());
+
+      await expect(mic.start()).resolves.toMatchObject({
+        code: 'sample-rate', category: 'sample-rate',
+        reason: 'unsupported mic sample rate 44100 Hz',
+      });
+
+      expect(mic.active).toBe(false);
+      expect(context.close).toHaveBeenCalled();
+      expect(context.createMediaStreamSource).not.toHaveBeenCalled();
+    });
+
+    it('reports a device-lost failure through onCaptureDied when the track ends mid-capture', async () => {
+      const died = vi.fn();
+      const mic = new TxMic(vi.fn(), died);
+      expect(await mic.start()).toBeNull();
+
+      mockTrack.dispatchEvent(new Event('ended'));
+
+      expect(died).toHaveBeenCalledWith(failureWith('device-lost', 'track-ended', 'microphone track ended'));
+      expect(mic.active).toBe(false);
+      expect(mic.lastCaptureFailure?.code).toBe('device-lost');
+    });
+
+    it.each([
+      ['NotAllowedError', 'permission'],
+      ['NotFoundError', 'capture'],
+    ])('classifies getUserMedia %s as code %s', async (name, code) => {
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+      vi.mocked(navigator.mediaDevices.getUserMedia).mockRejectedValueOnce(
+        new DOMException('', name),
+      );
+      await expect(new TxMic(vi.fn()).start()).resolves.toMatchObject({ code, category: name });
+    });
+  });
   describe('device-independent Opus capture (MOR-4594)', () => {
     // getUserMedia constraints are hints: a 44.1 kHz stereo device must still
     // reach the 48 kHz mono encoder through a context created at SAMPLE_RATE.
@@ -238,6 +333,7 @@ describe('TxMic', () => {
       };
       const context = {
         sampleRate: rate,
+        state: 'running' as AudioContextState,
         createMediaStreamSource: vi.fn(() => source),
         createMediaStreamDestination: vi.fn(() => destination),
         resume: vi.fn().mockResolvedValue(undefined),
@@ -321,12 +417,106 @@ describe('TxMic', () => {
       const m = new TxMic(vi.fn(), died);
 
       expect(await m.start()).toBeNull();
-      await vi.waitFor(() => expect(died).toHaveBeenCalledWith(
-        'TX MIC: audio context resume failed: Error: blocked',
-      ));
+      await vi.waitFor(() => expect(died).toHaveBeenCalledWith(failureWith(
+        'capture', 'context-resume', 'audio context resume failed: Error: blocked',
+      )));
       expect(m.active).toBe(false);
       expect(mockTrack.stop).toHaveBeenCalled();
       expect(context.close).toHaveBeenCalled();
+    });
+
+    describe('context that never starts (no user gesture behind PTT)', () => {
+      beforeEach(() => { vi.useFakeTimers(); });
+      afterEach(() => { vi.useRealTimers(); });
+
+      it('keeps the capture when the context is running by the deadline', async () => {
+        installContext();
+        const died = vi.fn();
+        const m = new TxMic(vi.fn(), died);
+        expect(await m.start()).toBeNull();
+
+        await vi.advanceTimersByTimeAsync(1000);
+
+        expect(died).not.toHaveBeenCalled();
+        expect(m.active).toBe(true);
+        m.stop();
+      });
+
+      it('ends the capture when resume never settles and the context stays suspended', async () => {
+        const { context } = installContext();
+        context.state = 'suspended';
+        context.resume.mockReturnValue(new Promise(() => {}));
+        const died = vi.fn();
+        const m = new TxMic(vi.fn(), died);
+        expect(await m.start()).toBeNull();
+
+        await vi.advanceTimersByTimeAsync(499);
+        expect(died).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(1);
+
+        expect(died).toHaveBeenCalledExactlyOnceWith(failureWith(
+          'capture', 'context-not-running', 'audio context not running (suspended)',
+        ));
+        expect(m.active).toBe(false);
+        expect(mockTrack.stop).toHaveBeenCalled();
+        expect(context.close).toHaveBeenCalled();
+      });
+
+      it('keeps the capture when the context starts running at 400 ms', async () => {
+        const { context } = installContext();
+        context.state = 'suspended';
+        context.resume.mockReturnValue(new Promise(() => {}));
+        const died = vi.fn();
+        const m = new TxMic(vi.fn(), died);
+        expect(await m.start()).toBeNull();
+
+        await vi.advanceTimersByTimeAsync(400);
+        context.state = 'running';
+        await vi.advanceTimersByTimeAsync(600);
+
+        expect(died).not.toHaveBeenCalled();
+        expect(m.active).toBe(true);
+        m.stop();
+      });
+
+      it('a stop before the deadline leaves no late failure', async () => {
+        const { context } = installContext();
+        context.state = 'suspended';
+        context.resume.mockReturnValue(new Promise(() => {}));
+        const died = vi.fn();
+        const m = new TxMic(vi.fn(), died);
+        expect(await m.start()).toBeNull();
+        m.stop();
+        installContext();
+        expect(await m.start()).toBeNull();
+
+        await vi.advanceTimersByTimeAsync(1000);
+
+        expect(died).not.toHaveBeenCalled();
+        expect(m.active).toBe(true);
+        m.stop();
+      });
+
+      it('a codec switch before the deadline leaves no late failure', async () => {
+        const { context } = installContext();
+        context.state = 'suspended';
+        context.resume.mockReturnValue(new Promise(() => {}));
+        (context as any).createScriptProcessor = vi.fn(() => ({
+          connect: vi.fn(), disconnect: vi.fn(), onaudioprocess: null,
+        }));
+        (context as any).destination = {};
+        const died = vi.fn();
+        const m = new TxMic(vi.fn(), died);
+        expect(await m.start()).toBeNull();
+        expect(m.applyServerCodec('pcm16')).toEqual({ switched: true, error: null });
+
+        await vi.advanceTimersByTimeAsync(1000);
+
+        expect(died).not.toHaveBeenCalled();
+        expect(m.active).toBe(true);
+        expect(m.codec).toBe('pcm16');
+        m.stop();
+      });
     });
 
     it('ignores a resume failure from an Opus context a newer start retired', async () => {
@@ -375,7 +565,10 @@ describe('TxMic', () => {
       mockEncoder.configure.mockImplementation(() => { throw new Error('unsupported config'); });
       const m = new TxMic(vi.fn());
 
-      expect(await m.start()).toBe('TX MIC: encoder configure failed: unsupported config');
+      await expect(m.start()).resolves.toMatchObject({
+        code: 'encoder', category: 'encoder-configure',
+        reason: 'encoder configure failed: unsupported config',
+      });
       expect(m.active).toBe(false);
       expect(mockTrack.stop).toHaveBeenCalled();
     });
@@ -459,7 +652,9 @@ describe('TxMic', () => {
 
     it('blames the connection, not the browser, on a plain-HTTP page', async () => {
       Object.defineProperty(window, 'isSecureContext', { value: false, configurable: true });
-      expect(await new TxMic(vi.fn()).start()).toBe('TX MIC: insecure context');
+      await expect(new TxMic(vi.fn()).start()).resolves.toMatchObject({
+        code: 'insecure-context', category: 'insecure-context', reason: 'insecure context',
+      });
     });
 
     it('still blames the browser when a secure context lacks getUserMedia', async () => {
@@ -468,7 +663,9 @@ describe('TxMic', () => {
         value: {},
         writable: true, configurable: true,
       });
-      expect(await new TxMic(vi.fn()).start()).toBe('TX MIC: microphone capture not supported');
+      await expect(new TxMic(vi.fn()).start()).resolves.toMatchObject({
+        code: 'unsupported', category: 'capture-unsupported',
+      });
     });
   });
 

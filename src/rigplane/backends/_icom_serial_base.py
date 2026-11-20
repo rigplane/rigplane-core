@@ -34,6 +34,7 @@ from ..types import AudioCodec, ScopeCompletionPolicy, get_audio_capabilities
 
 if TYPE_CHECKING:
     from ..audio.backend import CaptureMode
+    from ..audio.usb_driver import AudioCandidateList
     from .discovery import SerialPortCandidate
     from .icom7610.drivers.serial_civ_link import SerialCivLink
     from .icom7610.drivers.serial_session import SerialSessionDriver
@@ -376,6 +377,18 @@ class _IcomSerialRadioBase(CoreRadio):
         """Effective OS audio contract reported by the USB audio driver."""
 
         return getattr(self._serial_audio_driver, "usb_audio_contract", None)
+
+    def audio_candidates(self) -> Awaitable[AudioCandidateList] | None:
+        """On-demand USB audio device candidates (MOR-3883).
+
+        Delegates to the USB audio driver via ``getattr`` so the internal
+        ``_SerialAudioDriver`` protocol stays narrow, like
+        :attr:`usb_audio_contract`; ``None`` when the driver does not offer
+        the list (test doubles), which the web surface reports as
+        unavailable.
+        """
+        getter = getattr(self._serial_audio_driver, "audio_candidates", None)
+        return getter() if callable(getter) else None
 
     @property
     def audio_tx_codec(self) -> AudioCodec:

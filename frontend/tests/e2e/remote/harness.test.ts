@@ -64,8 +64,8 @@ const everyCase = (filter: (c: Executed) => boolean = () => true): Executed[] =>
     .filter(filter);
 
 describe('NoSkipsReporter: the required matrix, not the filtered suite', () => {
-  it('passes the full matrix (16 cases)', async () => {
-    expect(everyCase()).toHaveLength(16);
+  it('passes the full matrix (24 cases)', async () => {
+    expect(everyCase()).toHaveLength(24);
     expect(await verdict(everyCase())).toBeUndefined();
   });
 

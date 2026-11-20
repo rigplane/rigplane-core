@@ -52,6 +52,7 @@
   import { getManagedAppTxController } from '../../lib/runtime/tx-controller/managed-app-host';
   import type { ManagedTxState } from '../../lib/runtime/tx-controller/managed-state';
   import SpectrumToolbar from './SpectrumToolbar.svelte';
+  import type { ScopeRefOffset } from './spectrum-toolbar-logic';
   import StatusIndicator from '../../lib/Button/StatusIndicator.svelte';
   import { getBandPlanRegion, loadBandPlanConfig } from '$lib/stores/band-plan-region.svelte';
   import BandPlanOverlay from './BandPlanOverlay.svelte';
@@ -111,6 +112,8 @@
   // phone layout can own them from its SCOPE chip tab. Callers that do not
   // bind them behave exactly as before. MOR-4383 adds `enableSmooth` (the
   // waterfall temporal-smoothing toggle, default ON) to the same mechanism.
+  // MOR-4605 adds `autoFloor` (the AUTO waterfall noise-floor toggle,
+  // default OFF until the owner's bench look) the same way.
   //
   // `colorRoles` is resolved over the defaults once, and the one resolved
   // record feeds the canvas renderer options, the CSS custom properties the
@@ -118,12 +121,15 @@
   // panel root — one resolution for all three, pinned by `resolves the roles
   // once per mount for both the root attribute and the renderer options`.
   let { hideSourceControls = false, hideScopeControls = false, hideAutoStepToggle = false, hideToolbar = false,
-    enableAvg = $bindable(true), enablePeakHold = $bindable(true), enableSmooth = $bindable(true), showBandPlan = $bindable(true), scopeControls,
+    enableAvg = $bindable(true), enablePeakHold = $bindable(true), enableSmooth = $bindable(true), autoFloor = $bindable(false), showBandPlan = $bindable(true), scopeControls,
     scopeStatusIndicator, scopeRegion, scopeDemanded = true, onScopeDemandChange, colorRoles,
     captureTraceTimeline = false, onTraceComplete, defaultSplitRatio = 0.3 }: {
     hideSourceControls?: boolean; hideScopeControls?: boolean; hideAutoStepToggle?: boolean; hideToolbar?: boolean;
-    enableAvg?: boolean; enablePeakHold?: boolean; enableSmooth?: boolean; showBandPlan?: boolean;
-    scopeControls?: Snippet<[allowBare?: boolean, screenGroup?: Snippet]>;
+    enableAvg?: boolean; enablePeakHold?: boolean; enableSmooth?: boolean; autoFloor?: boolean; showBandPlan?: boolean;
+    scopeControls?: Snippet<[
+      allowBare?: boolean, screenGroup?: Snippet, rowTail?: Snippet, moreAsSheet?: boolean,
+      refOffset?: ScopeRefOffset,
+    ]>;
     scopeStatusIndicator?: Snippet;
     scopeRegion?: ManagedScopeRegion | null;
     scopeDemanded?: boolean; onScopeDemandChange?: (enabled: boolean) => void;
@@ -219,6 +225,9 @@
   let scopeHiddenOnRadio = $derived(!audioFft && !sdrSource && runtime.radioHealth?.scopeHidden === true);
   let scopeLease: ReturnType<typeof runtime.acquireHardwareScope> | null = null;
   let brtLevel = $state(0);
+  // MOR-4605: while AUTO is on, the REF keys step this client-side offset
+  // from the tracked noise floor (bound to the toolbar like brtLevel).
+  let autoFloorRef = $state(0);
   let colorScheme = $state<ColorSchemeName>('classic');
   let spectrumPush: ((data: Uint8Array, token?: TraceToken | null) => void) | null = null;
   let waterfallPush: ((data: Uint8Array, options?: WaterfallOptions, token?: TraceToken | null, identity?: WaterfallFrameIdentity) => void) | null = null;
@@ -535,7 +544,15 @@
   let canPan = $derived(
     spectrumAuthority !== null && spectrumAuthority.frequencyHz !== null && spanHz > 0,
   );
-  let scopeMode = $derived(frameScopeMode);
+  // MOR-4214: the radio-owned window is an OBSERVED radio fact. The
+  // frame-stream context mode reads 0 through a reconnect's clearMode()
+  // while the radio is still in FIX — keying `fixed` on it let the panel
+  // wipe the user's FIX crop and repaint the follow window with a CENTER
+  // zoom's leftover requested width (merge-group run 44770631929, the
+  // MOR-4392 journey row). The tune-line doctrine applies: only observed
+  // scope-control facts establish CENTER; the frame mode stays the
+  // fallback while the readback is unobserved.
+  let scopeMode = $derived(scopeControlsMode ?? frameScopeMode);
   let isRadioOwnedWindow = $derived(isRadioOwnedWindowScopeFn(scopeMode));
   let displayTuple = $derived(!managedUnavailable && scopeRegion
     && scopeContentState !== 'out-of-range'
@@ -1159,6 +1176,12 @@
   // scope data that the IC-7610 sends over LAN, so applying refDb here
   // would double-shift. BRT is the frontend-only display adjustment.
   let refLevel = $derived(brtLevel);
+  // MOR-4605: while AUTO is on, REF is an offset from the tracked floor —
+  // the waterfall alone receives it (the spectrum trace keeps true levels,
+  // so its calibration stays BRT-only) and the toolbar never writes the
+  // radio REF then. With AUTO off the waterfall keeps the BRT scale,
+  // pixel-identical to before the toggle existed.
+  let waterfallRefLevel = $derived(autoFloor ? brtLevel + autoFloorRef : refLevel);
 
   let spectrumOptions = $derived<SpectrumOptions>({
     ...defaultSpectrumOptions,
@@ -1193,6 +1216,7 @@
   let waterfallOptions = $derived<WaterfallOptions>({
     ...defaultWaterfallOptions,
     temporalSmoothing: enableSmooth,
+    autoFloor,
     spanHz: viewportSpanHz,
     sampleSpanHz: spanHz,
     coverage: audioFft ? undefined : frameGeometry?.coverage,
@@ -1201,7 +1225,7 @@
     sampleAmplitudeMax: audioFft ? 160 : 80,
     centerHz: panoramaViewportHz,
     panoramaShiftHz: viewportShiftHz,
-    refLevel,
+    refLevel: waterfallRefLevel,
     colorScheme,
   });
 
@@ -1851,7 +1875,7 @@
        tab instead. An audio-FFT source keeps its original no-toolbar
        branch. -->
   {:else if !hideToolbar}
-    <SpectrumToolbar bind:enableAvg bind:enablePeakHold bind:enableSmooth bind:brtLevel bind:colorScheme bind:fullscreen bind:showBandPlan bind:hiddenLayers bind:showEiBi {scopeDemandOn} onScopeDemandChange={setScopeDemand} {hideSourceControls} {hideScopeControls} {hideAutoStepToggle} {scopeControls} scopePresets={scopePresetOptions} onScopePresetSelect={applyScopePreset} onScopeZoom={nudgeScopeZoom} scopeStatusIndicator={sdrSource || scopeStatusIndicator || scopeError ? panelScopeStatus : undefined} />
+    <SpectrumToolbar bind:enableAvg bind:enablePeakHold bind:enableSmooth bind:autoFloor bind:autoFloorRef bind:brtLevel bind:colorScheme bind:fullscreen bind:showBandPlan bind:hiddenLayers bind:showEiBi {scopeDemandOn} onScopeDemandChange={setScopeDemand} {hideSourceControls} {hideScopeControls} {hideAutoStepToggle} {scopeControls} scopePresets={scopePresetOptions} onScopePresetSelect={applyScopePreset} onScopeZoom={nudgeScopeZoom} scopeStatusIndicator={sdrSource || scopeStatusIndicator || scopeError ? panelScopeStatus : undefined} />
   {/if}
   {#if (audioFft || hideToolbar) && scopeError}{@render panelScopeStatus()}{/if}
   <div
