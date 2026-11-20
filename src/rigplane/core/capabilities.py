@@ -292,6 +292,7 @@ KNOWN_CAPABILITIES: frozenset[str] = frozenset(
         # Repeater shift (direction only)
         CAP_REPEATER_SHIFT,
         CAP_REPEATER_SHIFT_ARS,
+        CAP_REPEATER_OFFSET,
         CAP_VOICE_TX,
         CAP_SPEECH,
         # Data
