@@ -9,6 +9,8 @@ opener. Discovery selection through the real parser + dispatch lives in
 from __future__ import annotations
 
 import asyncio
+import io
+import sys
 from pathlib import Path
 
 import pytest
@@ -452,6 +454,20 @@ def test_default_save_falls_back_when_documents_missing(tmp_path, monkeypatch) -
 # --- Folder opener ---
 
 
+class _TtyStdout(io.StringIO):
+    """Stdout on a terminal (isatty True) that still captures writes."""
+
+    def isatty(self) -> bool:
+        return True
+
+
+class _PipedStdout(io.StringIO):
+    """Stdout without a terminal (a pipe, a capture, a sidecar hand-over)."""
+
+    def isatty(self) -> bool:
+        return False
+
+
 def test_folder_opener_called_only_when_interactive(tmp_path, monkeypatch) -> None:
     opened: list[Path] = []
     monkeypatch.chdir(tmp_path)
@@ -472,6 +488,7 @@ def test_folder_opener_called_only_when_interactive(tmp_path, monkeypatch) -> No
         open_folder=opened.append,
     )
     # --yes: no folder is opened even on a TTY.
+    monkeypatch.setattr(sys, "stdout", _TtyStdout())
     code = asyncio.run(
         execute(
             **common,  # type: ignore[arg-type]
@@ -483,7 +500,22 @@ def test_folder_opener_called_only_when_interactive(tmp_path, monkeypatch) -> No
     )
     assert code == 0
     assert opened == []
-    # Interactive without --yes: the folder is opened after saving.
+    # Stdin is a TTY but stdout is not: a piped run never opens the folder.
+    monkeypatch.setattr(sys, "stdout", _PipedStdout())
+    answers = iter(["y", "y"])
+    code = asyncio.run(
+        execute(
+            **common,  # type: ignore[arg-type]
+            yes=False,
+            is_tty=True,
+            ask=lambda prompt: next(answers),
+            exchange_factory=_stub_answers([]),
+        )
+    )
+    assert code == 0
+    assert opened == []
+    # Interactive without --yes (both streams terminals): opened exactly once.
+    monkeypatch.setattr(sys, "stdout", _TtyStdout())
     answers = iter(["y", "y"])
     code = asyncio.run(
         execute(
@@ -502,6 +534,8 @@ def test_folder_opener_failure_is_silent(tmp_path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
     docs = tmp_path / "Documents"
     docs.mkdir(exist_ok=True)
+    # A terminal stdout so the opener really runs and its failure is swallowed.
+    monkeypatch.setattr(sys, "stdout", _TtyStdout())
 
     def boom(path: Path) -> None:
         raise RuntimeError("no desktop here")
@@ -531,6 +565,23 @@ def test_folder_opener_failure_is_silent(tmp_path, monkeypatch) -> None:
     assert code == 0
     assert list(docs.glob("FT-991A-radio-probe-*.json"))
     assert any("Saved to" in line for line in lines)
+    assert any(line.startswith("Opening the folder: ") for line in lines)
+
+
+def test_no_real_gui_opener_guard_intercepts_the_call(_no_real_gui_opener) -> None:
+    """The suite guard patches the real opener instead of opening a folder."""
+    probe_cli.open_result_folder(Path("/tmp/should-never-open"))
+    assert _no_real_gui_opener == [Path("/tmp/should-never-open")]
+    _no_real_gui_opener.clear()
+
+
+def test_no_real_gui_opener_guard_fails_when_called() -> None:
+    """The guard's verdict: silence on no calls, a clear failure on any call."""
+    from conftest import _assert_no_gui_opener_calls
+
+    _assert_no_gui_opener_calls([])  # passes quietly
+    with pytest.raises(AssertionError, match="real radio-probe folder opener"):
+        _assert_no_gui_opener_calls([Path("/tmp/x")])
 
 
 # --- Discovery selection (unit level; dispatch level is in test_zero_arg_seam) ---
