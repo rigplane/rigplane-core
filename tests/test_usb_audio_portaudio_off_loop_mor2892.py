@@ -35,7 +35,7 @@ from rigplane.audio.usb_driver import (
 )
 
 from _portaudio_pool_helpers import drain_pool
-from rigplane.testing.timing import VirtualClock, await_until
+from rigplane.testing.timing import VirtualClock, await_until, virtual_clock
 
 _LOGGER_NAME = "rigplane.audio.usb_driver"
 # Tiny relative to the production default — keeps this suite fast while
@@ -1023,11 +1023,57 @@ async def test_windows_valid_topology_and_wrong_parent_never_share_fallback(
     else:
         with pytest.raises(RuntimeError) as raised:
             await driver.start_rx(lambda _frame: None)
-        assert raised.value.reason == reason
-        assert audio_start_failure_reason(raised.value) == category
+        if isinstance(raised.value, AudioCaptureOpenTimeoutError):
+            # Loaded CI host: the mapping never ran before the shared
+            # selection deadline expired (MOR-4214). The timeout carries
+            # the same typed reason shape as the refusal.
+            assert raised.value.reason == "open_timeout"
+            assert audio_start_failure_reason(raised.value) == "open_timeout"
+        else:
+            assert raised.value.reason == reason
+            assert audio_start_failure_reason(raised.value) == category
         assert not backend.rx_streams
         assert driver.selected_rx_device is None
     assert thread_ids and all(t != threading.get_ident() for t in thread_ids)
+
+
+@virtual_clock
+@pytest.mark.timeout(30)
+async def test_capture_open_timeout_carries_typed_reason(
+    clock: VirtualClock, monkeypatch: pytest.MonkeyPatch, windows_selection: None
+) -> None:
+    """The selection-deadline timeout must carry the typed reason (MOR-4214).
+
+    Regression: the timeout error had no ``.reason``, so when a slow host
+    expired the shared selection deadline before the mapping ran, the
+    failure crashed with ``AttributeError`` instead of a classifiable
+    ``open_timeout``. The virtual clock burns the whole budget inside
+    enumeration, so the timeout path is reached with no real-time race.
+    """
+    from rigplane.audio.usb_driver import audio_start_failure_reason
+    from test_usb_pairing_windows import _inject_windows, _synthetic_session
+
+    total_budget = 0.5
+    backend, _sd = _inject_windows(monkeypatch, _synthetic_session())
+    devices = backend.list_devices()
+    driver = UsbAudioDriver(
+        backend=backend,
+        serial_port="COM3",
+        capture_open_timeout=total_budget,
+        monotonic=clock,
+    )
+
+    def delayed_list():
+        clock.advance(total_budget + 1.0)
+        return devices
+
+    monkeypatch.setattr(backend, "list_devices", delayed_list)
+    with pytest.raises(AudioCaptureOpenTimeoutError) as raised:
+        await driver.start_rx(lambda _frame: None)
+    assert raised.value.reason == "open_timeout"
+    assert audio_start_failure_reason(raised.value) == "open_timeout"
+    assert not backend.rx_streams
+    assert driver.selected_rx_device is None
 
 
 @pytest.mark.timeout(10)
