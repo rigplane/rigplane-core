@@ -1,0 +1,278 @@
+/**
+ * MOR-4591: receive playback is held for the whole transmission.
+ *
+ * The phone microphone is captured raw since MOR-4312 (no browser echo
+ * canceller), so receive audio still queued in the jitter buffer at the PTT
+ * press, or arriving while the radio keys, played from the speaker into the
+ * open microphone and went out on the air as a short burst. The manager now
+ * flushes the player at the press, drops receive frames while TX is wanted,
+ * and re-primes the player when TX ends or fails to start.
+ *
+ * Wire contract: the `audio_start` request and every RX frame built here come
+ * from tests/fixtures/audio_rx_session_wire.json, shared with the paired
+ * handler test tests/test_web_audio_rx_wire_fixture.py (it drives the REAL
+ * /api/v1/audio handler with the same request and verifies the emitted frame
+ * against the same fixture), the same pairing as
+ * audio-manager-hidden-burst.isolated.test.ts. The real AudioManager and the
+ * real RxPlayer run over a fake AudioContext; only the microphone, the stores
+ * and the socket are doubled, so the assertions observe what would be played.
+ */
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { SAMPLE_RATE } from '../constants';
+import type { TxCodec, TxCodecSwitch, TxMic } from '../tx-mic';
+import type * as audioStore from '../../stores/audio.svelte';
+import type * as connectionStore from '../../stores/connection.svelte';
+import type * as capabilitiesStore from '$lib/stores/capabilities.svelte';
+import wire from '../../../../../tests/fixtures/audio_rx_session_wire.json';
+
+const rxWire = wire.rx_frame_pcm16_mono_20ms;
+const rxRequestWire = wire.audio_start_rx;
+
+const txStart = vi.fn((): Promise<string | null> => Promise.resolve(null));
+const txStop = vi.fn();
+const txApplyServerCodec = vi.fn(
+  (_codec: TxCodec, _sampleRate: number): TxCodecSwitch => ({ switched: false, error: null }),
+);
+
+// The members AudioManager consumes, taken from the producer's own class
+// so a changed member fails type checking here.
+type ConsumedTxMic = Pick<TxMic,
+  'start' | 'stop' | 'active' | 'captureEpoch' | 'codec' | 'lastCaptureFailureCategory'
+  | 'applyServerCodec'>;
+
+vi.mock('../tx-mic', () => ({
+  TxMic: class implements ConsumedTxMic {
+    start = txStart;
+    stop = txStop;
+    applyServerCodec = txApplyServerCodec;
+    get active() { return true; }
+    get codec(): TxCodec | null { return 'opus'; }
+    get captureEpoch(): number { return 0; }
+    get lastCaptureFailureCategory(): string | null { return null; }
+    static supported() { return true; }
+  },
+}));
+
+// Store doubles typed against the producer modules' own exported surface.
+const audioStoreDouble = {
+  setRxEnabled: vi.fn((_v: boolean) => {}),
+  setTxEnabled: vi.fn((_v: boolean) => {}),
+  setTxCodecFallback: vi.fn((_v: boolean) => {}),
+  setRxError: vi.fn((_v: boolean) => {}),
+  setTxError: vi.fn((_v: boolean) => {}),
+} satisfies Pick<typeof audioStore,
+  'setRxEnabled' | 'setTxEnabled' | 'setTxCodecFallback' | 'setRxError' | 'setTxError'>;
+const connectionStoreDouble = {
+  setAudioConnected: vi.fn((_v: boolean) => {}),
+} satisfies Pick<typeof connectionStore, 'setAudioConnected'>;
+const capabilitiesStoreDouble = {
+  getCapabilities: vi.fn((): null => null),
+  subscribeCapabilities: vi.fn((): (() => void) => () => {}),
+} satisfies Pick<typeof capabilitiesStore, 'getCapabilities' | 'subscribeCapabilities'>;
+
+vi.mock('../../stores/connection.svelte', () => connectionStoreDouble);
+vi.mock('../../stores/audio.svelte', () => audioStoreDouble);
+vi.mock('$lib/stores/capabilities.svelte', () => capabilitiesStoreDouble);
+
+class FakeWebSocket {
+  static OPEN = 1;
+  static CONNECTING = 0;
+  static instances: FakeWebSocket[] = [];
+
+  readyState = FakeWebSocket.CONNECTING;
+  binaryType = '';
+  sent: unknown[] = [];
+  onopen: (() => void) | null = null;
+  onmessage: ((event: { data: unknown }) => void) | null = null;
+  onerror: ((event: unknown) => void) | null = null;
+  onclose: ((event: { code: number; reason: string }) => void) | null = null;
+
+  protocol: string;
+  constructor(public url: string, public protocols: string[] = []) {
+    this.protocol = protocols[0] ?? '';
+    FakeWebSocket.instances.push(this);
+  }
+
+  send(data: unknown) {
+    this.sent.push(data);
+  }
+
+  close() {
+    this.readyState = 3;
+  }
+
+  open() {
+    this.readyState = FakeWebSocket.OPEN;
+    this.onopen?.();
+  }
+
+  /** Simulate the server dropping this socket: fires onclose so the manager's reconnect path runs. */
+  serverClose(code = 1006, reason = 'rearm') {
+    this.readyState = 3;
+    this.onclose?.({ code, reason });
+  }
+}
+
+let ctx: any;
+
+// Fake AudioContext from rx-player.test.ts: controllable currentTime,
+// tracked sources with start/stop/addEventListener.
+function installFakeAudioContext(): void {
+  const srcs: any[] = [];
+  ctx = {
+    state: 'running', sampleRate: SAMPLE_RATE, currentTime: 0, destination: {},
+    resume: vi.fn().mockResolvedValue(undefined),
+    close: vi.fn().mockResolvedValue(undefined),
+    createGain: vi.fn(() => ({ gain: { value: 1 }, connect: vi.fn() })),
+    createStereoPanner: vi.fn(() => ({ pan: { value: 0 }, connect: vi.fn() })),
+    createChannelSplitter: vi.fn(() => ({ connect: vi.fn() })),
+    createWaveShaper: vi.fn(() => ({ curve: null, oversample: 'none', connect: vi.fn() })),
+    createBuffer: vi.fn((channels: number, frameCount: number, rate: number) => {
+      const planes = Array.from({ length: channels }, () => new Float32Array(frameCount));
+      return {
+        duration: frameCount / rate, length: frameCount, numberOfChannels: channels,
+        getChannelData: (channel: number) => planes[channel],
+      };
+    }),
+    _srcs: srcs,
+    createBufferSource: vi.fn(() => {
+      const src = {
+        buffer: null, connect: vi.fn(), start: vi.fn(), stop: vi.fn(),
+        addEventListener: vi.fn(), removeEventListener: vi.fn(),
+      };
+      srcs.push(src);
+      return src;
+    }),
+  };
+  vi.stubGlobal('AudioContext', function () { return ctx; } as any);
+}
+
+function hexToBytes(hex: string): Uint8Array {
+  const out = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < out.length; i++) {
+    out[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+  }
+  return out;
+}
+
+// One 20 ms mono PCM16 RX frame built from the shared wire fixture: header
+// bytes from `headerHexWithSequence0`, payload from the payload rule
+// (`sample[i] = i % 100` as int16 LE). Only the sequence field varies.
+let rxSequence = 0;
+function rxFrame(): ArrayBuffer {
+  const header = hexToBytes(rxWire.headerHexWithSequence0);
+  new DataView(header.buffer).setUint16(2, rxSequence & 0xffff, true);
+  rxSequence += 1;
+  const samples = rxWire.payload.samples;
+  const buf = new ArrayBuffer(header.length + samples * 2);
+  new Uint8Array(buf).set(header, 0);
+  const view = new DataView(buf);
+  for (let i = 0; i < samples; i++) {
+    view.setInt16(header.length + i * 2, i % 100, true);
+  }
+  return buf;
+}
+
+/** The audio request the manager sent must match the shared fixture: the
+ *  stable subset equal, and the key set exactly stable + variable keys. */
+function expectRxSubscription(sent: unknown[]): void {
+  const stable = rxRequestWire.stable as Record<string, unknown>;
+  const expectedKeys = [...Object.keys(stable), ...rxRequestWire.variableKeys].sort();
+  const match = sent
+    .map((m) => JSON.parse(String(m)) as Record<string, unknown>)
+    .find((m) => Object.keys(stable).every((k) => m[k] === stable[k]));
+  expect(match).toBeDefined();
+  expect(Object.keys(match as Record<string, unknown>).sort()).toEqual(expectedKeys);
+}
+
+
+function sources(): any[] { return ctx._srcs; }
+/** Sources still scheduled to play: started by the player and not stopped. */
+function audible(): number {
+  return sources().filter((src) => src.stop.mock.calls.length === 0).length;
+}
+
+describe('receive playback is held while transmitting (MOR-4591)', () => {
+  beforeEach(() => {
+    vi.resetModules(); vi.clearAllMocks(); vi.useFakeTimers();
+    rxSequence = 0;
+    FakeWebSocket.instances = [];
+    vi.stubGlobal('WebSocket', FakeWebSocket);
+    vi.stubGlobal('location', { protocol: 'https:', host: 'station.test' });
+    installFakeAudioContext();
+  });
+  afterEach(async () => {
+    const { audioManager } = await import('../audio-manager');
+    audioManager.destroy();
+    vi.unstubAllGlobals(); vi.useRealTimers();
+    txStart.mockImplementation(() => Promise.resolve(null));
+  });
+
+  /** RX already playing on an open socket, as on a phone listening to the band. */
+  async function listening() {
+    const { audioManager } = await import('../audio-manager');
+    audioManager.startRx();
+    const socket = FakeWebSocket.instances[0];
+    socket.open();
+    expectRxSubscription(socket.sent);
+    ctx.currentTime = 0;
+    for (let i = 0; i < 5; i++) socket.onmessage?.({ data: rxFrame() });
+    expect(sources()).toHaveLength(5);
+    expect(audible()).toBe(5);
+    return { audioManager, socket };
+  }
+
+  /** Frames received after this call: how many new sources got scheduled. */
+  function scheduledAfter(socket: FakeWebSocket, frames = 3): number {
+    const before = sources().length;
+    for (let i = 0; i < frames; i++) socket.onmessage?.({ data: rxFrame() });
+    return sources().length - before;
+  }
+
+  it('flushes queued receive audio at the press and drops frames until TX ends', async () => {
+    const { audioManager, socket } = await listening();
+    let settle!: (error: string | null) => void;
+    txStart.mockImplementationOnce(() => new Promise((resolve) => { settle = resolve; }));
+
+    const starting = audioManager.startTx();
+    // At the press, before the microphone has even opened: the queued
+    // receive audio is stopped so it cannot play into the microphone.
+    expect(audible()).toBe(0);
+    expect(scheduledAfter(socket)).toBe(0);
+
+    settle(null);
+    expect(await starting).toBeNull();
+    expect(audioManager.txEnabled).toBe(true);
+    expect(scheduledAfter(socket)).toBe(0);
+
+    audioManager.stopTx();
+    // Playback resumes on release.
+    expect(scheduledAfter(socket)).toBe(3);
+    expect(audible()).toBe(3);
+  });
+
+  it('gives receive audio back when the microphone refuses to start', async () => {
+    const { audioManager, socket } = await listening();
+    txStart.mockImplementationOnce(() => Promise.resolve('TX MIC: permission denied'));
+    expect(await audioManager.startTx()).toBe('TX MIC: permission denied');
+    expect(audioManager.txEnabled).toBe(false);
+    expect(scheduledAfter(socket)).toBe(3);
+  });
+
+  it('a superseded start does not end the hold of the newer press', async () => {
+    const { audioManager, socket } = await listening();
+    const settles: ((error: string | null) => void)[] = [];
+    txStart.mockImplementation(() => new Promise((resolve) => { settles.push(resolve); }));
+    const first = audioManager.startTx();
+    audioManager.stopTx();
+    const second = audioManager.startTx();
+    settles[0](null);
+    expect(await first).toBe('TX MIC: capture start cancelled');
+    expect(scheduledAfter(socket)).toBe(0);
+    settles[1](null);
+    expect(await second).toBeNull();
+    expect(scheduledAfter(socket)).toBe(0);
+    audioManager.stopTx();
+    expect(scheduledAfter(socket)).toBe(3);
+  });
+});

@@ -227,7 +227,10 @@ describe('audio channel attach acknowledgement compatibility (MOR-4478)', () => 
     );
     expect(audioManager.txCodecFallback).toBe(false);
 
-    // And an RX binary audio frame reaches the player untouched.
+    // And an RX binary audio frame reaches the player untouched once the
+    // transmission ends (MOR-4591 holds receive playback while TX is on).
+    audioManager.stopTx();
+    expect(socket.readyState).toBe(FakeWebSocket.OPEN);
     const frame = new ArrayBuffer(512);
     socket.onmessage?.({ data: frame });
     expect(rxFed).toHaveBeenCalledTimes(1);

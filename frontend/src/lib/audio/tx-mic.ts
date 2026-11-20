@@ -9,6 +9,7 @@
 import {
   buildTxHeader, TX_BITRATE, SAMPLE_RATE, TX_PCM_SAMPLE_RATES, CHANNELS, CODEC_PCM16,
 } from './constants';
+import { getTxMicProcessing } from '../stores/tx-mic-processing.svelte';
 
 export type TxSendFn = (data: ArrayBuffer) => void;
 type LegacyGetUserMedia = (
@@ -48,6 +49,10 @@ export class TxMic {
   private encoder: AudioEncoder | null = null;
   private reader: ReadableStreamDefaultReader<AudioData> | null = null;
   private audioContext: AudioContext | null = null;
+  // Context that converts whatever the device delivers to SAMPLE_RATE mono for
+  // the Opus encoder (MOR-4594). Separate from `audioContext`: the PCM16 leg
+  // is brought up before this one is torn down on a codec switch.
+  private opusContext: AudioContext | null = null;
   private pcmSource: MediaStreamAudioSourceNode | null = null;
   private pcmProcessor: ScriptProcessorNode | null = null;
   private pcmPending: number[] = [];
@@ -196,22 +201,25 @@ export class TxMic {
     }
 
     const generation = ++this.captureGeneration;
+    const processing = getTxMicProcessing() === 'browser';
     let stream: MediaStream;
     try {
       stream = await getUserMedia({
         audio: {
           channelCount: CHANNELS,
           sampleRate: SAMPLE_RATE,
-          // Raw capture (MOR-4312). The browser's voice-call processing is
-          // wrong for a radio transmitter: noise suppression gates and
-          // darkens speech, automatic gain control pumps and distorts it,
-          // and on Android echo cancellation also moves the capture to the
-          // band-limited call route. The radio's own speech processing
+          // The operator's TX mic processing mode (MOR-4596). The default is
+          // raw (MOR-4312): the browser's voice-call processing is wrong for
+          // a radio transmitter — noise suppression gates and darkens
+          // speech, automatic gain control pumps and distorts it, and on
+          // Android echo cancellation also moves the capture to the
+          // band-limited call route; the radio's own speech processing
           // shapes the audio. Echo cancellation has nothing to cancel: the
-          // receive audio is silent while the radio transmits.
-          echoCancellation: false,
-          noiseSuppression: false,
-          autoGainControl: false,
+          // receive audio is silent while the radio transmits. Operators who
+          // need the processing choose `browser`, which turns all three on.
+          echoCancellation: processing,
+          noiseSuppression: processing,
+          autoGainControl: processing,
         },
       });
     } catch (error: unknown) {
@@ -252,7 +260,13 @@ export class TxMic {
       return this.startPcmFallback();
     }
 
-    const processor = new MediaStreamTrackProcessor({ track });
+    // getUserMedia constraints are hints: a device may deliver 44.1 kHz or
+    // stereo, which the 48 kHz mono encoder rejects on its first frame. A
+    // context at SAMPLE_RATE resamples; a one-channel explicit destination
+    // downmixes (MOR-4594).
+    const encoderTrack = this.openEncoderTrack(track, generation);
+
+    const processor = new MediaStreamTrackProcessor({ track: encoderTrack });
     const reader = this.reader = processor.readable.getReader();
 
     let sentFrames = 0;
@@ -276,12 +290,18 @@ export class TxMic {
       },
     });
 
-    this.encoder.configure({
-      codec: 'opus',
-      sampleRate: SAMPLE_RATE,
-      numberOfChannels: CHANNELS,
-      bitrate: TX_BITRATE,
-    });
+    try {
+      this.encoder.configure({
+        codec: 'opus',
+        sampleRate: SAMPLE_RATE,
+        numberOfChannels: CHANNELS,
+        bitrate: TX_BITRATE,
+      });
+    } catch (err) {
+      // Never leave a started capture behind a failed start.
+      this.stop();
+      return `TX MIC: encoder configure failed: ${err instanceof Error ? err.message : String(err)}`;
+    }
 
     // Read loop
     void this.readLoop(reader, encoder, generation);
@@ -323,6 +343,49 @@ export class TxMic {
     this.encoder = null;
     reader?.cancel().catch(() => {});
     try { encoder?.close(); } catch { /* ok */ }
+    this.opusContext?.close().catch(() => {});
+    this.opusContext = null;
+  }
+
+  /**
+   * Track at SAMPLE_RATE mono for the encoder, whatever the device delivers.
+   * Without an AudioContext, or when it cannot run at SAMPLE_RATE, the raw
+   * track is used as before.
+   */
+  private openEncoderTrack(track: MediaStreamTrack, generation: number): MediaStreamTrack {
+    const audioContextCtor = TxMic.audioContextCtor();
+    if (!audioContextCtor || !this.stream) return track;
+    let context: AudioContext | null = null;
+    try {
+      context = new audioContextCtor({ sampleRate: SAMPLE_RATE });
+      if (Math.round(context.sampleRate) !== SAMPLE_RATE) {
+        // Cannot convert here; the raw track is no worse than before.
+        context.close().catch(() => {});
+        return track;
+      }
+      const destination = context.createMediaStreamDestination();
+      destination.channelCount = CHANNELS;
+      destination.channelCountMode = 'explicit';
+      context.createMediaStreamSource(this.stream).connect(destination);
+      const converted = destination.stream.getAudioTracks()[0];
+      if (!converted) throw new Error('no converted track');
+      this.opusContext = context;
+      // A context that cannot start delivers no audio; end the capture rather
+      // than admit TX on a stalled graph.
+      // Only the live Opus context may end the capture: one retired by a
+      // codec switch keeps the generation, so identity is checked too.
+      const live = context;
+      live.resume?.().catch((err: unknown) => {
+        if (this.opusContext !== live) return;
+        this.failCapture(generation, `audio context resume failed: ${String(err)}`);
+      });
+      return converted;
+    } catch (err) {
+      console.warn(`[TxMic] mic conversion unavailable, using raw track: ${String(err)}`);
+      context?.close().catch(() => {});
+      this.opusContext = null;
+      return track;
+    }
   }
 
   /**
