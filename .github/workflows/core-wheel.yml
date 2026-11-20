@@ -216,6 +216,14 @@ jobs:
             --root core
 
       - name: Build frontend
+        # npm's cache is redirected to the per-job RUNNER_TEMP, never the
+        # runner's persistent ~/.npm (CodeQL cache-poisoning alert on this
+        # step, MOR-4408): this workflow builds an arbitrary Core ref and
+        # the nightly schedule gives it default-branch privileges, so
+        # nothing it executes may seed a package cache a later privileged
+        # build would restore. RUNNER_TEMP is wiped between jobs.
+        env:
+          npm_config_cache: ${{ runner.temp }}/core-wheel-npm-cache
         run: |
           cd core/frontend
           npm ci

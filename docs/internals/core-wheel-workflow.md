@@ -59,7 +59,11 @@ The build job runs deliberately without Actions caches (`setup-uv` with
 `enable-cache: false`, `setup-node` without `cache`): it executes code
 from the checked-out target ref, and a shared cache would be a poisoning
 path in the privileged scheduled context. The cost — a cold `npm ci` and
-a cold `uv` install per build — is accepted.
+a cold `uv` install per build — is accepted. `npm ci` still writes npm's
+own cache, so the "Build frontend" step redirects it to the per-job
+`RUNNER_TEMP` (`npm_config_cache`): on a persistent self-hosted runner
+the shared `~/.npm` would be the same poisoning path, which CodeQL
+flagged as a third HIGH alert.
 
 The installed-profile smoke script is the one control that does NOT come
 from the workflow's own commit: it is taken from the TARGET revision (see
@@ -195,5 +199,7 @@ Cross-workflow invocation, `publish.yml`'s delegation on a real run, the
 called workflow's commit as documented are GitHub-side facts; the pinned
 structure is enforced by `.github/scripts/core-wheel.test.py`. So is the
 CodeQL verdict: the two cache-poisoning HIGH alerts on `inputs.controls_ref`
-are gone by construction (the input and the caches no longer exist), but
-only the next CodeQL run on the pushed head can show green.
+are gone by construction (the input and the caches no longer exist), and
+the third — npm's own cache on the persistent runner — is closed by the
+`npm_config_cache` redirect, but only the next CodeQL run on the pushed
+head can show green.
