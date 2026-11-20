@@ -6,13 +6,19 @@ import {
   collectFirstTexts,
   expectReadoutHz,
   foreignDestinations,
+  installPlaybackWitness,
   openRemoteUi,
   acquireControllerKey,
+  countManagedCommandPosts,
   parseRelayedAnswer,
+  playbackBuffers,
   setStationFrequency,
   simState,
   simUnkeyLatencyMs,
   STATION_ORIGIN,
+  stationManagedTransmit,
+  stationState,
+  supportBundleLogCount,
   trackDestinations,
   type RelayedAnswer,
 } from './station';
@@ -150,26 +156,153 @@ test.describe('phone layout', () => {
   });
 });
 
-// The four data-channel labels come from the committed golden documents
-// (the attach_api/attach_scope/... document set); the ordered/lossy split
-// mirrors the production factories the answerer serves
-// (src/rigplane/web/transport/webrtc.py: add_control_channel and
-// add_api_channel are ordered+reliable, _add_lossy_channel is unordered
-// with maxRetransmits=0). The readback in the row pins the table against
-// the negotiated channels. maxRetransmits is null where the browser
-// default (reliable) applies.
+// Desktop layout (the config's 1728 x 1200 viewport). On a local-mode station
+// the desktop key is the latching "Key transmitter" button (RxTxSurface with
+// momentary = runtime.remoteController = false): a click keys, UNKEY unkeys.
+test('L4: desktop PTT keys the simulator, UNKEY unkeys it within 1 s and RX audio resumes', async ({ page }) => {
+  await installPlaybackWitness(page);
+  const managedPosts = countManagedCommandPosts(page);
+  await openRemoteUi(page);
+  await expectControlLink();
+
+  // RX audio is live first: decoded receive buffers reach the AudioContext.
+  await page.getByTestId('rx-audio-monitor-live').click();
+  await expect.poll(() => playbackBuffers(page), { timeout: 15_000 }).toBeGreaterThan(5);
+
+  const key = page.getByTestId('rx-tx-key');
+  const unkey = page.getByTestId('rx-tx-unkey');
+  await expect(key).toBeEnabled();
+  await expect(key).toHaveAttribute('aria-pressed', 'false');
+  expect((await simState()).ptt_on).toBe(false);
+  const signalFramesBefore = (await simState()).tx_audio_signal_frames;
+
+  // Key: the simulator reports keyed and the page shows the key pressed.
+  const keyedAtMs = Date.now();
+  await key.click();
+  await expect.poll(async () => (await simState()).ptt_on).toBe(true);
+  await expect(key).toHaveAttribute('aria-pressed', 'true');
+  // The (stubbed) microphone tone reaches the simulated radio.
+  await expect
+    .poll(async () => (await simState()).tx_audio_signal_frames, { timeout: 15_000 })
+    .toBeGreaterThan(signalFramesBefore);
+  // The POST counter saw this transmission (its positive control for L5).
+  expect(managedPosts()).toBeGreaterThan(0);
+  // No receive audio plays while the radio is keyed: across a fresh interval
+  // in which more TX frames reach the simulator, no receive buffer is
+  // scheduled for playback.
+  const heldAtKeyed = await playbackBuffers(page);
+  const signalFramesAtKeyed = (await simState()).tx_audio_signal_frames;
+  await expect
+    .poll(async () => (await simState()).tx_audio_signal_frames, { timeout: 15_000 })
+    .toBeGreaterThan(signalFramesAtKeyed + 25);
+  const heldAtUnkey = await playbackBuffers(page);
+  expect(heldAtUnkey, 'receive playback must stay held while keyed').toBe(heldAtKeyed);
+
+  // Unkey: the simulator's own journal shows OFF within 1 s of the click,
+  // and this key/unkey left exactly one ON then one OFF in it.
+  const unkeyedAtMs = Date.now();
+  await unkey.click();
+  const latencyMs = await simUnkeyLatencyMs(keyedAtMs, unkeyedAtMs);
+  expect(latencyMs).toBeLessThanOrEqual(1000);
+  const journal = (await simState()).ptt_transitions
+    .filter(([at]) => at * 1000 >= keyedAtMs)
+    .map(([, keyed]) => keyed);
+  expect(journal).toEqual([true, false]);
+  await expect(key).toHaveAttribute('aria-pressed', 'false');
+
+  // RX resumes: new receive buffers reach the AudioContext after the unkey.
+  await expect
+    .poll(() => playbackBuffers(page), { timeout: 15_000 })
+    .toBeGreaterThan(heldAtUnkey + 5);
+});
+
+// The station logs this line (web/handlers/audio.py AudioHandler
+// ._handle_audio_stats) when the page's audio_stats report a refused
+// microphone; the logs contributor carries it into the support bundle.
+const MIC_REFUSAL_LOG = 'browser microphone capture rejected: category=NotAllowedError';
+
+test('L5: a refused microphone never keys, stays on screen and reaches the support bundle', async ({ page }) => {
+  await installPlaybackWitness(page);
+  const managedPosts = countManagedCommandPosts(page);
+  await openRemoteUi(page, 'refuse');
+  await expectControlLink();
+
+  // RX audio is live: the page reports to the station on the audio socket.
+  await page.getByTestId('rx-audio-monitor-live').click();
+  await expect.poll(() => playbackBuffers(page), { timeout: 15_000 }).toBeGreaterThan(0);
+
+  const key = page.getByTestId('rx-tx-key');
+  await expect(key).toBeEnabled();
+  const bundleBefore = await supportBundleLogCount(MIC_REFUSAL_LOG);
+  const journalBefore = (await simState()).ptt_transitions.length;
+  const signalFramesBefore = (await simState()).tx_audio_signal_frames;
+
+  await key.click();
+
+  // On screen: an error toast that names the cause, and the status bar's
+  // audio indicator reads failed.
+  const toast = page.locator('.toast.error').filter({
+    hasText: 'Microphone access denied — TX audio cannot start',
+  });
+  await expect(toast).toHaveCount(1);
+  await expect(toast).toBeVisible();
+  const audioChip = page.getByTestId('audio-chip');
+  await expect(audioChip).toHaveAttribute('title', 'Audio connection failed');
+
+  // Not half-keyed: no transmit request left the page; the simulator was
+  // never keyed and received no TX audio; the station's managed TX stays in
+  // receive with PTT observed off; the key is not shown pressed.
+  expect(managedPosts()).toBe(0);
+  const sim = await simState();
+  expect(sim.ptt_on).toBe(false);
+  expect(sim.ptt_transitions).toHaveLength(journalBefore);
+  expect(sim.tx_audio_signal_frames).toBe(signalFramesBefore);
+  const managed = await stationManagedTransmit();
+  expect(managed.txObservation.observedPtt).toBe('off');
+  expect(managed.managedTransmit).toMatchObject({ status: 'available', intent: { kind: 'rx' } });
+  expect((await stationState()).ptt).not.toBe(true);
+  await expect(key).toHaveAttribute('aria-pressed', 'false');
+
+  // Not only a toast: once the operator dismisses the toast, the status bar
+  // still reads failed.
+  await toast.click();
+  await expect(toast).toHaveCount(0);
+  await expect(audioChip).toHaveAttribute('title', 'Audio connection failed');
+
+  // Traced: the support bundle a diagnostics preview builds now carries the
+  // refusal (one more occurrence than before this press; earlier rows and
+  // repetitions share the station and its log).
+  await expect
+    .poll(() => supportBundleLogCount(MIC_REFUSAL_LOG), { timeout: 20_000, intervals: [1_000] })
+    .toBeGreaterThan(bundleBefore);
+});
+
+// The six data-channel labels, their ordering/reliability and which frames
+// each carries come from the committed wire contract's K5 channel set
+// (`data_channels`, producer: rigplane.web.channel_attach.DATA_CHANNELS):
+// control and api are one reliable channel each; scope and audio are a
+// lossy binary channel plus a reliable ordered `*-text` companion that
+// carries their text frames (the attach included). The readback in the row
+// pins the contract against the negotiated channels. maxRetransmits is null
+// where the browser default (reliable) applies.
 interface ChannelSpec {
   label: string;
   ordered: boolean;
   maxRetransmits: number | null;
 }
 
-const CHANNELS: readonly ChannelSpec[] = [
-  { label: 'control', ordered: true, maxRetransmits: null },
-  { label: 'scope', ordered: false, maxRetransmits: 0 },
-  { label: 'audio', ordered: false, maxRetransmits: 0 },
-  { label: 'api', ordered: true, maxRetransmits: null },
-] as const;
+const CHANNELS: readonly ChannelSpec[] = wire.data_channels.map((spec) => ({
+  label: spec.label,
+  ordered: spec.ordered,
+  maxRetransmits: spec.max_retransmits,
+}));
+
+/** Kind -> the label that carries its text frames (and so its attach). */
+const ATTACH_LABEL: Record<string, string> = Object.fromEntries(
+  wire.data_channels
+    .filter((spec) => spec.carries !== 'binary')
+    .map((spec) => [spec.kind, spec.label]),
+);
 
 // The golden documents the harness reads are the ones with frame text and a
 // decoded form; the file also holds request/response documents of other shapes.
@@ -179,19 +312,20 @@ const ATTACH_DOCUMENTS = (
   }
 ).documents;
 
-/** The attach frame texts for the four labels, from the golden documents
- * keyed attach_<label>; their <SESSION-KEY> placeholder takes the live key. */
+/** The attach frame text per attach-carrying label, from the golden
+ * documents keyed attach_<kind>; their <SESSION-KEY> placeholder takes the
+ * live key. */
 function attachTexts(): Record<string, string> {
   const texts: Record<string, string> = {};
-  for (const { label } of CHANNELS) {
-    const document = ATTACH_DOCUMENTS[`attach_${label}`];
-    if (!document) throw new Error(`no attach_${label} golden document`);
+  for (const [kind, label] of Object.entries(ATTACH_LABEL)) {
+    const document = ATTACH_DOCUMENTS[`attach_${kind}`];
+    if (!document) throw new Error(`no attach_${kind} golden document`);
     texts[label] = document.text;
   }
   return texts;
 }
 
-test('P0: a bare page connects four data channels and reaches control_hello', async ({ page }) => {
+test('P0: a bare page connects the K5 data channels and reaches control_hello', async ({ page }) => {
   // A bare page on the station's origin (a secure context; about:blank is
   // not one in WebKit, where WebRTC then gathers nothing). Every page
   // request is intercepted and answered locally, so the page itself never
@@ -284,22 +418,24 @@ test('P0: a bare page connects four data channels and reaches control_hello', as
         });
         check();
       });
-      // Every channel attaches as its FIRST text frame (the golden
-      // document), all sent at once right after open — the server closes
-      // a channel whose attach lands more than 5 s after dispatch.
+      // Every kind attaches with its FIRST text frame (the golden
+      // document) on its text-carrying channel, all sent once right after
+      // open (never resent) — the server closes a channel whose attach
+      // lands more than 5 s after dispatch.
       const key = await relayWindow.__controllerKey();
       // Receive listeners for all three acknowledgement channels exist
-      // before any attach goes out (scope/audio are unordered and can
-      // answer before control_hello); then await them together.
+      // before any attach goes out (the channels keep no order between
+      // each other, so scope/audio may answer before control_hello); then
+      // await them together.
       const collect = new Function(`return ${collectSource}`)() as typeof collectFirstTexts;
       const frames = await collect(
-        { control: created.control, scope: created.scope, audio: created.audio },
+        { control: created.control, 'scope-text': created['scope-text'], 'audio-text': created['audio-text'] },
         () => {
-          for (const { label } of channels) {
-            created[label].send(attachText[label].replaceAll('<SESSION-KEY>', key));
+          for (const [label, text] of Object.entries(attachText)) {
+            created[label].send(text.replaceAll('<SESSION-KEY>', key));
           }
         },
-        { control: 10_000, scope: 5_000, audio: 5_000 },
+        { control: 10_000, 'scope-text': 5_000, 'audio-text': 5_000 },
       );
       const readback = channels.map(({ label }) => ({
         label: created[label].label,
@@ -308,8 +444,8 @@ test('P0: a bare page connects four data channels and reaches control_hello', as
       }));
       const result = {
         hello: frames.control!,
-        scopeAck: frames.scope!,
-        audioAck: frames.audio!,
+        scopeAck: frames['scope-text']!,
+        audioAck: frames['audio-text']!,
         channels: readback,
       };
       pc.close();
@@ -326,8 +462,8 @@ test('P0: a bare page connects four data channels and reaches control_hello', as
   expect(hello.type).toBe('hello');
   expect(payloadMatchesWireContract(wire.payloads.control_hello, hello)).toBe(true);
   expect(hello.radio).toBe('IC-7610');
-  // The lossy channels' first frames are their attach acks, exactly the
-  // golden documents.
+  // The scope/audio text channels' first frames are their attach acks,
+  // exactly the golden documents.
   expect(JSON.parse(outcome.scopeAck)).toEqual(ATTACH_DOCUMENTS.attach_ack_scope.decoded);
   expect(JSON.parse(outcome.audioAck)).toEqual(ATTACH_DOCUMENTS.attach_ack_audio.decoded);
 });

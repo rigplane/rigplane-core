@@ -1,24 +1,26 @@
 /**
- * `DataChannelTransport`: the `MessageTransport` over one injected native
- * `RTCDataChannel` (C5a). The first text frame sent is the attach frame,
- * built from the committed wire contract: keyed labels take their key from
- * the offered `rigplane-controller-v1.<key>` token; every label, the
- * keyless api acquire included, takes its role from the caller's attach
- * (no attach or no role is refused, never defaulted). The transport
- * opens only once the attach is acknowledged (scope/audio: the
- * `attach_ack`; control: the contract-validated `control_hello`; api: on
- * send — reliable), so no client
- * frame can precede the attach on the wire; lossy labels resend until the
- * ack or error+close after 5 s; `attachedProtocol` is the token.
+ * `DataChannelTransport`: the `MessageTransport` over injected native
+ * `RTCDataChannel`s (C5a). The channel set is the committed wire contract's
+ * `data_channels` (K5): `control` and `api` are one reliable channel each;
+ * `scope` and `audio` are a split pair — the lossy binary channel plus its
+ * reliable ordered `*-text` companion, passed as `textChannel` — merged into
+ * this one transport: text goes out on the companion, binary on the lossy
+ * channel, and frames from both arrive here. The first text frame sent is
+ * the attach frame (on the text-carrying channel), built from the committed
+ * wire contract: keyed labels take their key from the offered
+ * `rigplane-controller-v1.<key>` token; every label, the keyless api acquire
+ * included, takes its role from the caller's attach (no attach or no role is
+ * refused, never defaulted). The attach rides a reliable channel and is
+ * never resent. The transport opens only once the attach is acknowledged
+ * (scope/audio: the `attach_ack`, with both channels open; control: the
+ * contract-validated `control_hello`; api: on send — reliable), so no client
+ * frame can precede the attach on the wire; `attachedProtocol` is the token.
  */
 import wire from './api-channel-wire.json';
 import type {
   MessageTransport, MessageTransportState, TransportAttach, TransportBinaryHandler,
   TransportCloseHandler, TransportCloseInfo, TransportErrorHandler, TransportOpenHandler, TransportTextHandler,
 } from './message-transport';
-
-export const ATTACH_RESEND_MS = 250; // resend until the ack arrives
-export const ATTACH_TIMEOUT_MS = 5000; // give-up bound for the attach step
 
 /** The `RTCDataChannel` surface this transport consumes. */
 export type DataChannelLike = Pick<RTCDataChannel, 'label' | 'readyState' | 'bufferedAmount' | 'binaryType' | 'onopen' | 'onmessage' | 'onclose' | 'onerror' | 'send' | 'close'>;
@@ -35,6 +37,25 @@ export interface PayloadContract { readonly fields: readonly (string | boolean)[
 /** The typed, contract-validated `attach_ack` payload. */
 interface AttachAck { readonly type: 'attached'; readonly v: number; readonly channel: string }
 const CONTROLLER_PROTOCOL_PREFIX = 'rigplane-controller-v1.';
+
+/** One row of the committed K5 channel set (`data_channels`). */
+export interface DataChannelSpec {
+  readonly label: string;
+  readonly kind: string;
+  readonly ordered: boolean;
+  readonly max_retransmits: number | null;
+  readonly carries: string;
+}
+/** The committed K5 channel set, never re-typed here. */
+export const DATA_CHANNELS: readonly DataChannelSpec[] = wire.data_channels;
+
+/** The `*-text` companion label a lossy binary label needs; null for a
+ * label that carries every frame itself (control, api). */
+export function textCompanionLabel(label: string): string | null {
+  const spec = DATA_CHANNELS.find((row) => row.label === label);
+  if (spec?.carries !== 'binary') return null;
+  return DATA_CHANNELS.find((row) => row.kind === spec.kind && row.carries === 'text')?.label ?? null;
+}
 
 /** The session key offered as a `rigplane-controller-v1.<key>` token — the
  * shape `ControllerClient.protocols()` offers; null when no token is offered. */
@@ -106,17 +127,29 @@ export class DataChannelTransport implements MessageTransport {
   private acked = false;
   private offeredToken: string | null = null;
   private acceptedToken = '';
-  private resendTimer: ReturnType<typeof setInterval> | null = null;
-  private deadlineTimer: ReturnType<typeof setTimeout> | null = null;
+  private openNotified = false;
   private live = false;
-  constructor(private readonly channel: DataChannelLike) {}
+  private readonly text: DataChannelLike;
+  /**
+   * @param channel the label's channel; for scope/audio the lossy binary one
+   * @param textChannel the reliable `*-text` companion of a scope/audio
+   *   channel (required there, refused elsewhere)
+   */
+  constructor(private readonly channel: DataChannelLike, private readonly textChannel: DataChannelLike | null = null) {
+    this.text = textChannel ?? channel;
+  }
+  private channels(): DataChannelLike[] {
+    return this.text === this.channel ? [this.channel] : [this.channel, this.text];
+  }
+  private allOpen(): boolean {
+    return this.channels().every((c) => c.readyState === 'open');
+  }
   get state(): MessageTransportState {
-    const ready = this.channel.readyState;
-    if (!this.live || ready === 'closing' || ready === 'closed') return 'closed';
-    // Open only after the attach step is acknowledged, never on the native
-    // channel's readyState: a client frame sent earlier would precede the
-    // attach on the wire.
-    return this.acked ? 'open' : 'connecting';
+    if (!this.live || this.channels().some((c) => c.readyState === 'closing' || c.readyState === 'closed')) return 'closed';
+    // Open only after the attach step is acknowledged (and both halves of a
+    // pair are open), never on a native channel's readyState: a client frame
+    // sent earlier would precede the attach on the wire.
+    return this.acked && this.allOpen() ? 'open' : 'connecting';
   }
   get attachedProtocol(): string { return this.acked ? this.acceptedToken : ''; }
   get bufferedAmount(): number { return this.channel.bufferedAmount; }
@@ -124,6 +157,14 @@ export class DataChannelTransport implements MessageTransport {
     void url; // unused: the injected channel's label names the connection
     this.live = true;
     this.acked = false;
+    this.openNotified = false;
+    const companion = textCompanionLabel(this.channel.label);
+    if ((this.textChannel?.label ?? null) !== companion) {
+      // A split label needs exactly its committed text companion, and a
+      // label that carries every frame takes none.
+      this.refuseAttach('text channel does not match the channel set');
+      return;
+    }
     const key = controllerKeyFromProtocols(attach?.protocols);
     this.offeredToken = key === null ? null : CONTROLLER_PROTOCOL_PREFIX + key;
     this.acceptedToken = '';
@@ -142,24 +183,30 @@ export class DataChannelTransport implements MessageTransport {
       return;
     }
     this.attachFrame = buildContractPayload(wire.payloads.attach_frame, { type: 'attach', controller_key: key, role, state_delta: 2 });
-    this.channel.binaryType = 'arraybuffer';
-    this.channel.onopen = () => this.onChannelOpen();
-    this.channel.onmessage = (event) => this.onChannelMessage(event.data);
-    this.channel.onclose = () => this.finish({ code: 1006, reason: '', wasClean: false });
-    this.channel.onerror = () => {
-      for (const handler of [...this.errorHandlers]) handler();
-    };
-    if (this.channel.readyState === 'open') {
+    for (const channel of this.channels()) {
+      channel.binaryType = 'arraybuffer';
+      channel.onmessage = (event) => this.onChannelMessage(event.data);
+      channel.onclose = () => this.finish({ code: 1006, reason: '', wasClean: false });
+      channel.onerror = () => {
+        for (const handler of [...this.errorHandlers]) handler();
+      };
+    }
+    // The attach goes out when the text-carrying channel opens; a lossy
+    // binary half opening later may complete an already-acked attach.
+    this.text.onopen = () => this.onChannelOpen();
+    if (this.text !== this.channel) this.channel.onopen = () => this.notifyOpenWhenReady();
+    if (this.text.readyState === 'open') {
       // Already open: still notify listeners registered right after open().
       queueMicrotask(() => {
-        if (this.live && this.channel.readyState === 'open') this.onChannelOpen();
+        if (this.live && this.text.readyState === 'open') this.onChannelOpen();
       });
     }
   }
   send(data: string | ArrayBuffer): void {
     if (this.state !== 'open') throw new Error('DataChannelTransport: send while not open');
+    // Text on the reliable (companion) channel, binary on the label's own.
     // Narrow per call: the native send overloads take one payload kind each.
-    if (typeof data === 'string') this.channel.send(data);
+    if (typeof data === 'string') this.text.send(data);
     else this.channel.send(data);
   }
   close(): void { this.finish({ code: 1000, reason: '', wasClean: true }); }
@@ -181,28 +228,24 @@ export class DataChannelTransport implements MessageTransport {
   }
   private onChannelOpen(): void {
     // open() builds the frame before wiring this handler, so it is set here.
-    this.channel.send(this.attachFrame as string);
+    // Sent once on a reliable channel: never resent. A peer that never
+    // answers closes the channel itself (the server's attach bound).
+    this.text.send(this.attachFrame as string);
     if (this.channel.label === 'api') {
-      this.resolveAttach(); // reliable: nothing to lose
+      this.resolveAttach(); // reliable: nothing to wait for
       return;
     }
     this.awaitingAck = true;
-    if (this.channel.label !== 'control') {
-      // Lossy labels only: a silent control/api channel is closed by the peer.
-      this.resendTimer = setInterval(() => {
-        if (this.awaitingAck) this.channel.send(this.attachFrame as string);
-      }, ATTACH_RESEND_MS);
-      this.deadlineTimer = setTimeout(() => {
-        for (const handler of [...this.errorHandlers]) handler();
-        this.finish({ code: 1006, reason: 'attach timeout', wasClean: false });
-      }, ATTACH_TIMEOUT_MS);
-    }
   }
   private resolveAttach(): void {
     this.awaitingAck = false;
-    this.clearAttachTimers();
     this.acked = true;
     this.acceptedToken = this.offeredToken ?? '';
+    this.notifyOpenWhenReady();
+  }
+  private notifyOpenWhenReady(): void {
+    if (!this.live || !this.acked || this.openNotified || !this.allOpen()) return;
+    this.openNotified = true;
     for (const handler of [...this.openHandlers]) handler();
   }
   private onChannelMessage(data: unknown): void {
@@ -228,25 +271,21 @@ export class DataChannelTransport implements MessageTransport {
       for (const handler of [...this.binaryHandlers]) handler(data);
     }
   }
-  private clearAttachTimers(): void {
-    if (this.resendTimer !== null) { clearInterval(this.resendTimer); this.resendTimer = null; }
-    if (this.deadlineTimer !== null) { clearTimeout(this.deadlineTimer); this.deadlineTimer = null; }
-  }
   private finish(info: TransportCloseInfo): void {
-    this.clearAttachTimers();
     if (!this.live) return;
     this.live = false;
     this.awaitingAck = false;
     this.acked = false;
-    const { channel } = this;
-    channel.onopen = null;
-    channel.onmessage = null;
-    channel.onclose = null;
-    channel.onerror = null;
-    try {
-      channel.close();
-    } catch {
-      // Already gone — the close event (if any) carries the outcome.
+    for (const channel of this.channels()) {
+      channel.onopen = null;
+      channel.onmessage = null;
+      channel.onclose = null;
+      channel.onerror = null;
+      try {
+        channel.close();
+      } catch {
+        // Already gone — the close event (if any) carries the outcome.
+      }
     }
     for (const handler of [...this.closeHandlers]) handler(info);
   }

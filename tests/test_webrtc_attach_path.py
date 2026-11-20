@@ -46,6 +46,7 @@ from rigplane.runtime.managed_tx_state import ManagedTxIntentKind
 from rigplane.testing.timing import await_until
 from rigplane.web import server as server_module
 from rigplane.web.api_channel import api_channel_golden_documents_from_json
+from rigplane.web.channel_attach import data_channels_for
 from rigplane.web.protocol import (
     AUDIO_CODEC_PCM16,
     AUDIO_HEADER_SIZE,
@@ -447,18 +448,21 @@ class _WsControlClient:
 
 
 class _DcAvPeer:
-    """A control + audio peer over two WebRTC data channels on one pc.
+    """A control + audio peer over WebRTC data channels on one pc.
 
-    Mirrors the production browser: the control channel is ordered and
-    reliable, the audio channel is unordered. Each channel carries its
-    session's attach frame; the control channel attaches first because
-    the audio attach is an auxiliary one and needs the primary in place.
+    Mirrors the production offerer: control is ordered and reliable;
+    audio is the split pair — binary frames on the lossy ``audio``
+    channel, text frames (attach, ``audio_start``) on the reliable
+    ordered ``audio-text`` companion. Each kind carries its session's
+    attach frame; control attaches first because the audio attach is an
+    auxiliary one and needs the primary in place.
     """
 
     def __init__(self) -> None:
         self._pc: Any = None
         self._control: Any = None
         self._audio: Any = None
+        self._audio_text: Any = None
         self._received: list[Any] = []
         self._audio_received: list[Any] = []
 
@@ -467,18 +471,23 @@ class _DcAvPeer:
 
         self._pc = RTCPeerConnection()
         self._control = self._pc.createDataChannel("control", ordered=True)
-        # Ordered here (production uses lossy): attach_audio sends the
-        # attach frame and audio_start back to back, and the server reads
-        # the FIRST frame as the attach — order must be deterministic.
-        self._audio = self._pc.createDataChannel("audio", ordered=True)
+        # The production split pair: attach_audio sends the attach frame and
+        # audio_start back to back on the ordered text half, so the server
+        # reads the attach FIRST; TX frames ride the lossy binary half.
+        self._audio = self._pc.createDataChannel(
+            "audio", ordered=False, maxRetransmits=0
+        )
+        self._audio_text = self._pc.createDataChannel("audio-text", ordered=True)
 
         @self._control.on("message")  # type: ignore[misc, no-untyped-call]
         def _on_control(message: Any) -> None:
             self._received.append(message)
 
-        @self._audio.on("message")  # type: ignore[misc, no-untyped-call]
-        def _on_audio(message: Any) -> None:
-            self._audio_received.append(message)
+        for half in (self._audio, self._audio_text):
+
+            @half.on("message")  # type: ignore[misc, no-untyped-call]
+            def _on_audio(message: Any) -> None:
+                self._audio_received.append(message)
 
         offer = await self._pc.createOffer()
         await self._pc.setLocalDescription(offer)
@@ -490,8 +499,9 @@ class _DcAvPeer:
             RTCSessionDescription(sdp=answer["sdp"], type=answer["type"])
         )
         await await_until(
-            lambda: (
-                self._control.readyState == "open" and self._audio.readyState == "open"
+            lambda: all(
+                c.readyState == "open"
+                for c in (self._control, self._audio, self._audio_text)
             ),
             timeout=15.0,
             description="data channels open",
@@ -531,8 +541,8 @@ class _DcAvPeer:
 
     async def attach_audio(self, key: str) -> dict[str, Any]:
         """Attach the audio channel, arm TX, return the audio_tx_format."""
-        assert self._audio is not None
-        self._audio.send(
+        assert self._audio_text is not None
+        self._audio_text.send(
             json.dumps(
                 {
                     "type": "attach",
@@ -542,7 +552,7 @@ class _DcAvPeer:
                 }
             )
         )
-        self._audio.send(json.dumps({"type": "audio_start", "direction": "tx"}))
+        self._audio_text.send(json.dumps({"type": "audio_start", "direction": "tx"}))
         return await self._until(
             self._audio_received,
             lambda m: m.get("type") == "audio_tx_format",
@@ -1123,58 +1133,80 @@ async def test_websocket_scope_output_shape(tmp_path: Path) -> None:
         await _tear_down_stack(stack)
 
 
-class _LossyAckPeer:
-    """A control+scope+audio peer that can lose its first attach ack:
-    ``take(drop_first_ack=True)`` discards it, modelling the transit
-    loss that makes a client resend its attach frame."""
+class _ChannelSetPeer:
+    """A peer that opens production data channels per KIND (K5 set).
+
+    ``control``/``api`` are one ordered reliable channel; ``scope`` and
+    ``audio`` are the split pair (lossy binary channel + reliable ordered
+    ``*-text`` companion), exactly as ``DATA_CHANNELS`` configures them.
+    Text goes out on the kind's text-carrying channel; frames from every
+    channel of a kind land in ``received[kind]`` (and per label in
+    ``received_by_label``).
+    """
 
     def __init__(self) -> None:
         self._pc: Any = None
         self._channels: dict[str, Any] = {}
         self.received: dict[str, list[Any]] = {}
-        self._dropped: set[str] = set()
+        self.received_by_label: dict[str, list[Any]] = {}
         # Every channel ever opened, in order, label included: a label can
-        # appear more than once (re-created channels, same-label copies).
+        # appear more than once (re-created channels, same-kind copies).
         self.every_channel: list[tuple[str, Any]] = []
 
-    def open_channel(self, label: str, *, lossy: bool = False) -> Any:
-        """Create (or re-create) the channel for ``label`` on this peer.
+    def open_kind(self, kind: str) -> dict[str, Any]:
+        """Create (or re-create) every channel of ``kind`` on this peer.
 
-        ``lossy`` is the production scope/audio configuration (unordered,
-        ``maxRetransmits=0``). A re-created label starts with an empty
-        inbox, so nothing from the closed channel is mistaken for it.
+        A re-created kind starts with an empty inbox, so nothing from the
+        closed channels is mistaken for it. ``_channels`` and the per-label
+        inbox are keyed by label (the newest pair wins).
         """
-        kwargs: dict[str, Any] = (
-            {"ordered": False, "maxRetransmits": 0} if lossy else {"ordered": True}
-        )
-        channel = self._pc.createDataChannel(label, **kwargs)
-        self._channels[label] = channel
-        self.received[label] = []
-        self.every_channel.append((label, channel))
+        opened: dict[str, Any] = {}
+        self.received[kind] = []
+        for spec in data_channels_for(kind):
+            kwargs: dict[str, Any] = {"ordered": spec.ordered}
+            if spec.max_retransmits is not None:
+                kwargs["maxRetransmits"] = spec.max_retransmits
+            channel = self._pc.createDataChannel(spec.label, **kwargs)
+            self._channels[spec.label] = channel
+            self.received_by_label[spec.label] = []
+            self.every_channel.append((spec.label, channel))
+            opened[spec.label] = channel
 
-        @channel.on("message")  # type: ignore[misc, no-untyped-call]
-        def _on_message(message: Any, _label: str = label) -> None:
-            self.received[_label].append(message)
+            @channel.on("message")  # type: ignore[misc, no-untyped-call]
+            def _on_message(
+                message: Any, _kind: str = kind, _label: str = spec.label
+            ) -> None:
+                self.received[_kind].append(message)
+                self.received_by_label[_label].append(message)
 
-        return channel
+        return opened
 
-    def close_channel(self, label: str) -> None:
-        """Close only this label's channel (the peer connection stays)."""
-        self._channels[label].close()
+    def text_channel(self, kind: str) -> Any:
+        """The channel that carries ``kind``'s text frames."""
+        spec = next(s for s in data_channels_for(kind) if s.carries != "binary")
+        return self._channels[spec.label]
+
+    def close_kind(self, kind: str) -> None:
+        """Close every channel of ``kind`` (the peer connection stays)."""
+        for spec in data_channels_for(kind):
+            self._channels[spec.label].close()
 
     async def connect(
         self,
         web: WebServer,
-        labels: tuple[str, ...],
+        kinds: tuple[str, ...],
         *,
-        lossy: tuple[str, ...] = (),
+        lone_labels: tuple[str, ...] = (),
     ) -> None:
-        """Open one data channel per label (``lossy`` ones unordered)."""
+        """Open every production channel of each kind on one peer, plus
+        ``lone_labels`` as single ordered channels (a half without its pair)."""
         from aiortc import RTCPeerConnection, RTCSessionDescription
 
         self._pc = RTCPeerConnection()
-        for label in labels:
-            self.open_channel(label, lossy=label in lossy)
+        for kind in kinds:
+            self.open_kind(kind)
+        for label in lone_labels:
+            self._channels[label] = self._pc.createDataChannel(label, ordered=True)
 
         offer = await self._pc.createOffer()
         await self._pc.setLocalDescription(offer)
@@ -1191,24 +1223,16 @@ class _LossyAckPeer:
             description="data channels open",
         )
 
-    def send_text(self, label: str, text: str) -> None:
-        """Send one text frame on the label's channel."""
-        self._channels[label].send(text)
+    def send_text(self, kind: str, text: str) -> None:
+        """Send one text frame on the kind's text-carrying channel."""
+        self.text_channel(kind).send(text)
 
-    def take(
-        self, label: str, *, drop_first_ack: bool = False
-    ) -> dict[str, Any] | None:
-        """The next text frame as parsed JSON (binary frames skipped)."""
-        while self.received[label]:
-            message = self.received[label].pop(0)
-            if not isinstance(message, str):
-                continue
-            parsed = json.loads(message)
-            first_ack = parsed.get("type") == "attached" and label not in self._dropped
-            if drop_first_ack and first_ack:
-                self._dropped.add(label)  # lost: the client never saw it
-                continue
-            return parsed
+    def take(self, kind: str) -> dict[str, Any] | None:
+        """The kind's next text frame as parsed JSON (binary skipped)."""
+        while self.received[kind]:
+            message = self.received[kind].pop(0)
+            if isinstance(message, str):
+                return dict(json.loads(message))
         return None
 
     async def close(self) -> None:
@@ -1219,40 +1243,25 @@ class _LossyAckPeer:
 
 
 @_webrtc
-async def test_attach_ack_on_lossy_channels_only(tmp_path: Path) -> None:
-    """The ack exists only where the attach frame can be lost: the lossy
-    scope/audio labels get one ``{"type":"attached","v":1,...}`` text
-    frame as the FIRST frame (an ack-ignoring audio client is proven by
+async def test_attach_ack_on_split_channels_only(tmp_path: Path) -> None:
+    """The scope/audio kinds get one ``{"type":"attached","v":1,...}`` text
+    frame as their FIRST frame (an ack-ignoring audio client is proven by
     ``test_only_holders_audio...``); control's first frame is its
     ``hello``, and api gets none — every ``test_webrtc_api_channel.py``
     pump asserts each inbound frame is bytes.
     """
     stack = await _stand_up_stack(tmp_path, audio=True)
-    peer = _LossyAckPeer()
+    peer = _ChannelSetPeer()
     try:  # peer setup, negotiation and acquisition are in cleanup scope
         await peer.connect(stack.web, ("control", "scope", "audio"))
         key = await _acquire_session(stack.web.port)
-
-        def _attach(label: str) -> None:
-            peer.send_text(
-                label,
-                json.dumps(
-                    {
-                        "type": "attach",
-                        "controller_key": key,
-                        "state_delta": 2,
-                        "role": "primary",
-                    }
-                ),
-            )
-
-        _attach("control")
+        peer.send_text("control", _attach_text("control", key))
         first = await await_until(
             lambda: peer.take("control"), timeout=10.0, description="control hello"
         )
         assert first is not None and first["type"] == "hello", first
         for label in ("scope", "audio"):  # the ack is the first frame
-            _attach(label)
+            peer.send_text(label, _attach_text(label, key))
             assert await await_until(
                 lambda bound=label: peer.take(bound), timeout=10.0, description=label
             ) == {"type": "attached", "v": 1, "channel": label}
@@ -1262,58 +1271,41 @@ async def test_attach_ack_on_lossy_channels_only(tmp_path: Path) -> None:
 
 
 @_webrtc
-async def test_resent_attach_after_lost_ack_is_reacknowledged_and_channel_works(
+async def test_split_kind_text_rides_the_reliable_half_and_bytes_the_lossy_half(
     tmp_path: Path,
 ) -> None:
-    """The lossy-channel retry: the first ack is dropped in transit, the
-    client resends its attach, and the ONE attach path re-acknowledges it
-    (the retry never builds a new ticket or handler) — then both lossy
-    channels keep working: ping/pong on scope, the audio format on audio.
-    """
+    """K5 split (MOR-272): the attach and every text command of scope/audio
+    travel on the reliable ``*-text`` channel and every server text reply
+    (ack, pong, ``audio_tx_format``) comes back on it; the lossy binary
+    channel carries no text at all. Both halves serve ONE handler: a text
+    command on the reliable half arms TX, and the TX frames sent on the
+    lossy half reach the air."""
     stack = await _stand_up_stack(tmp_path, audio=True)
-    peer = _LossyAckPeer()
-    try:  # peer setup, negotiation and acquisition are in cleanup scope
+    peer = _ChannelSetPeer()
+    try:
         await peer.connect(stack.web, ("control", "scope", "audio"))
         key = await _acquire_session(stack.web.port)
-
-        def _attach(label: str) -> None:
-            peer.send_text(
-                label,
-                json.dumps(
-                    {
-                        "type": "attach",
-                        "controller_key": key,
-                        "state_delta": 2,
-                        "role": "primary",
-                    }
-                ),
-            )
-
-        _attach("control")
-        hello = await await_until(
-            lambda: peer.take("control"), timeout=10.0, description="control hello"
-        )
-        assert hello is not None and hello["type"] == "hello", hello
+        peer.send_text("control", _attach_text("control", key))
+        assert (await _frame(peer, "control", "hello"))["type"] == "hello"
         for label in ("scope", "audio"):
-            _attach(label)  # its ack is lost in transit (dropped below)
-            _attach(label)  # the ackless client resends its attach
-            ack = await await_until(
-                lambda bound=label: peer.take(bound, drop_first_ack=True),
-                timeout=5.0,
-                description=f"re-acknowledged {label} attach",
-            )
-            assert ack == {"type": "attached", "v": 1, "channel": label}, ack
-        # Both channels still work after the re-acknowledged retry.
-        peer.send_text("scope", json.dumps({"type": "ping"}))
-        pong = await await_until(
-            lambda: peer.take("scope"), timeout=10.0, description="scope pong"
+            await _attach_and_serve_label(peer, label, key)
+        peer.send_text(
+            "control",
+            json.dumps({"type": "cmd", "id": "k1", "name": "ptt_on", "params": {}}),
         )
-        assert pong == {"type": "pong"}, pong
-        peer.send_text("audio", json.dumps({"type": "audio_start", "direction": "tx"}))
-        fmt = await await_until(
-            lambda: peer.take("audio"), timeout=10.0, description="audio format"
+        keyed = await _frame(peer, "control", "response")
+        assert keyed.get("ok") is True, keyed
+        for _ in range(10):
+            peer._channels["audio"].send(_pcm_tx_frame(480))  # noqa: SLF001
+        await _wait_air(stack)
+        for label in ("scope", "audio"):
+            replies = peer.received_by_label[label]
+            assert not [m for m in replies if isinstance(m, str)], replies
+        peer.send_text(
+            "control",
+            json.dumps({"type": "cmd", "id": "u1", "name": "ptt_off", "params": {}}),
         )
-        assert fmt is not None and fmt["type"] == "audio_tx_format", fmt
+        assert (await _frame(peer, "control", "response")).get("ok") is True
     finally:
         await peer.close()
         await _tear_down_stack(stack)
@@ -1359,7 +1351,7 @@ def _registered(stack: _Stack, label: str) -> int:
     return sum(len(c) for (_, p), c in registry.items() if p == path)
 
 
-async def _frame(peer: _LossyAckPeer, label: str, want: str) -> dict[str, Any]:
+async def _frame(peer: _ChannelSetPeer, label: str, want: str) -> dict[str, Any]:
     """Next ``want``-typed text frame on ``label`` (others skipped)."""
 
     def _next() -> dict[str, Any] | None:
@@ -1371,12 +1363,12 @@ async def _frame(peer: _LossyAckPeer, label: str, want: str) -> dict[str, Any]:
     return await await_until(_next, timeout=10.0, description=f"{label} {want}")
 
 
-async def _control_alive(peer: _LossyAckPeer) -> None:
+async def _control_alive(peer: _ChannelSetPeer) -> None:
     peer.send_text("control", json.dumps({"type": "controller_heartbeat"}))
     await _frame(peer, "control", "controller_heartbeat")
 
 
-async def _attach_and_serve_label(peer: _LossyAckPeer, label: str, key: str) -> None:
+async def _attach_and_serve_label(peer: _ChannelSetPeer, label: str, key: str) -> None:
     """Attach ``label`` with the golden frame; assert its ack and service."""
     peer.send_text(label, _attach_text(label, key))
     ack = await await_until(
@@ -1389,6 +1381,10 @@ async def _attach_and_serve_label(peer: _LossyAckPeer, label: str, key: str) -> 
     else:
         peer.send_text("audio", json.dumps({"type": "audio_start", "direction": "tx"}))
         await _frame(peer, "audio", "audio_tx_format")
+    # Every text reply of the kind came back on its reliable half.
+    assert not [m for m in peer.received_by_label[label] if isinstance(m, str)], (
+        f"text on the lossy {label} channel"
+    )
 
 
 async def _channel_closed(channel: Any, timeout: float = 10.0) -> None:
@@ -1426,17 +1422,17 @@ async def _release_session(port: int, key: str) -> int:
 async def test_closed_channel_label_can_be_recreated_on_the_same_peer(
     tmp_path: Path, label: str, wait_for_cleanup: bool
 ) -> None:
-    """Close the scope/audio channel from the client, re-create the SAME
-    label on the SAME peer connection (production lossy config), attach
-    it with the same key: a fresh ack and normal service, while control
-    stays healthy. With ``wait_for_cleanup`` the first channel's server
-    handler must have ended and unregistered (the connection registry
-    drops it) before the second is created; without it the second is
-    created straight after the close."""
+    """Close the scope/audio pair from the client, re-create the SAME kind
+    on the SAME peer connection (production split config), attach it with
+    the same key: a fresh ack and normal service, while control stays
+    healthy. With ``wait_for_cleanup`` the first pair's server handler must
+    have ended and unregistered (the connection registry drops it) before
+    the second is created; without it the second is created straight
+    after the close."""
     stack = await _stand_up_stack(tmp_path, audio=True)
-    peer = _LossyAckPeer()
+    peer = _ChannelSetPeer()
     try:
-        await peer.connect(stack.web, ("control", label), lossy=(label,))
+        await peer.connect(stack.web, ("control", label))
         key = await _acquire_session(stack.web.port)
         peer.send_text("control", _attach_text("control", key))
         assert (await _frame(peer, "control", "hello"))["type"] == "hello"
@@ -1445,7 +1441,7 @@ async def test_closed_channel_label_can_be_recreated_on_the_same_peer(
         if label == "scope":
             assert len(stack.web._scope_handlers) == 1  # noqa: SLF001
 
-        peer.close_channel(label)
+        peer.close_kind(label)
         if wait_for_cleanup:
             await await_until(
                 lambda: _registered(stack, label) == 0 or None,
@@ -1456,11 +1452,11 @@ async def test_closed_channel_label_can_be_recreated_on_the_same_peer(
                 assert not stack.web._scope_handlers  # noqa: SLF001
             await _control_alive(peer)
 
-        channel = peer.open_channel(label, lossy=True)
+        pair = peer.open_kind(label)
         await await_until(
-            lambda: channel.readyState == "open" or None,
+            lambda: all(c.readyState == "open" for c in pair.values()) or None,
             timeout=15.0,
-            description=f"re-created {label} channel open",
+            description=f"re-created {label} pair open",
         )
         await _attach_and_serve_label(peer, label, key)
         await _control_alive(peer)
@@ -1487,9 +1483,9 @@ async def test_attach_timeout_closes_only_that_channel(tmp_path: Path) -> None:
     attach timeout — and ONLY that channel: control keeps answering on the
     same peer, which stays ``connected``."""
     stack = await _stand_up_stack(tmp_path)
-    peer = _LossyAckPeer()
+    peer = _ChannelSetPeer()
     try:
-        await peer.connect(stack.web, ("control", "scope"), lossy=("scope",))
+        await peer.connect(stack.web, ("control", "scope"))
         key = await _acquire_session(stack.web.port)
         peer.send_text("control", _attach_text("control", key))
         assert (await _frame(peer, "control", "hello"))["type"] == "hello"
@@ -1510,9 +1506,9 @@ async def test_refused_attach_closes_only_that_channel(tmp_path: Path) -> None:
     closes ONLY the refused channel: control keeps answering and the peer
     stays ``connected``."""
     stack = await _stand_up_stack(tmp_path)
-    peer = _LossyAckPeer()
+    peer = _ChannelSetPeer()
     try:
-        await peer.connect(stack.web, ("control", "audio"), lossy=("audio",))
+        await peer.connect(stack.web, ("control", "audio"))
         key = await _acquire_session(stack.web.port)
         peer.send_text("control", _attach_text("control", key))
         assert (await _frame(peer, "control", "hello"))["type"] == "hello"
@@ -1583,13 +1579,9 @@ async def test_server_ended_session_closes_only_its_channels(tmp_path: Path) -> 
     (PR-B may build on it; nothing is built on it now), and the peer itself
     stays ``connected``."""
     stack = await _stand_up_stack(tmp_path, audio=True)
-    peer = _LossyAckPeer()
+    peer = _ChannelSetPeer()
     try:
-        await peer.connect(
-            stack.web,
-            ("control", "scope", "audio", "api"),
-            lossy=("scope", "audio"),
-        )
+        await peer.connect(stack.web, ("control", "scope", "audio", "api"))
         key = await _acquire_session(stack.web.port)
         peer.send_text("control", _attach_text("control", key))
         assert (await _frame(peer, "control", "hello"))["type"] == "hello"
@@ -1652,33 +1644,188 @@ async def test_server_initiated_channel_close_reaches_client_as_that_channels_cl
     evicted channel closes, the other nine and control stay open, and the
     peer stays ``connected``."""
     stack = await _stand_up_stack(tmp_path)
-    peer = _LossyAckPeer()
+    peer = _ChannelSetPeer()
     try:
-        # MAX_PER_IP_PER_CHANNEL is 9: the 10th scope channel's attach
-        # evicts the first — all on one peer, one negotiation.
-        await peer.connect(stack.web, ("control",) + ("scope",) * 10, lossy=("scope",))
+        # MAX_PER_IP_PER_CHANNEL is 9: the 10th scope pair's attach evicts
+        # the first — all on one peer, one negotiation. Pairs open one at a
+        # time (a client has one pair of a kind in flight): each pair opens,
+        # attaches and is acked before the next is created, so the server
+        # pairs, registers and evicts in this order.
+        await peer.connect(stack.web, ("control",))
         key = await _acquire_session(stack.web.port)
         peer.send_text("control", _attach_text("control", key))
         assert (await _frame(peer, "control", "hello"))["type"] == "hello"
-        scope_channels = [
-            channel for label, channel in peer.every_channel if label == "scope"
-        ]
-        assert len(scope_channels) == 10
-        # Sequential: each ack lands before the next attach, so the server
-        # registers (and evicts) in this order.
-        for channel in scope_channels:
-            channel.send(_attach_text("scope", key))
+        scope_channels: list[Any] = []
+        text_channels: list[Any] = []
+        for _ in range(10):
+            pair = peer.open_kind("scope")
+            await await_until(
+                lambda: all(c.readyState == "open" for c in pair.values()) or None,
+                timeout=15.0,
+                description="scope pair open",
+            )
+            scope_channels.append(pair["scope"])
+            text_channels.append(pair["scope-text"])
+            pair["scope-text"].send(_attach_text("scope", key))
             assert await await_until(
                 lambda: peer.take("scope"), timeout=10.0, description="scope ack"
             ) == {"type": "attached", "v": 1, "channel": "scope"}
         await _channel_closed(scope_channels[0])
-        for channel in scope_channels[1:]:
+        await _channel_closed(text_channels[0])
+        for channel in scope_channels[1:] + text_channels[1:]:
             assert channel.readyState == "open"
         await _control_alive(peer)
         assert peer._pc.connectionState == "connected"  # noqa: SLF001
         # The surviving scope channel still serves.
-        scope_channels[-1].send(json.dumps({"type": "ping"}))
+        text_channels[-1].send(json.dumps({"type": "ping"}))
         assert await _frame(peer, "scope", "pong") == {"type": "pong"}
+    finally:
+        await peer.close()
+        await _tear_down_stack(stack)
+
+
+# ---------------------------------------------------------------------------
+# K5: attach order (MOR-272). Control first; every attach rides a reliable
+# channel and is never resent; a scope/audio attach that arrives before
+# control is held (no ack, no close) until control attaches, within the
+# attach bound.
+# ---------------------------------------------------------------------------
+
+
+@_webrtc
+@pytest.mark.realtime(reason="lets a held attach sit on the server for real time")
+async def test_split_attach_before_control_is_held_then_attaches(
+    tmp_path: Path,
+) -> None:
+    """A scope/audio attach that outruns control gets no ack and no close;
+    once control attaches, the SAME (single, never resent) attach lands:
+    the ack arrives and the channel serves."""
+    stack = await _stand_up_stack(tmp_path, audio=True)
+    peer = _ChannelSetPeer()
+    try:
+        await peer.connect(stack.web, ("control", "scope", "audio"))
+        key = await _acquire_session(stack.web.port)
+        for label in ("scope", "audio"):
+            peer.send_text(label, _attach_text(label, key))  # once, before control
+        await asyncio.sleep(0.5)  # ten re-check periods with no control
+        for label in ("scope", "audio"):
+            assert peer.take(label) is None, f"{label} acked before control"
+            assert peer._channels[label].readyState == "open"  # noqa: SLF001
+        peer.send_text("control", _attach_text("control", key))
+        assert (await _frame(peer, "control", "hello"))["type"] == "hello"
+        for label in ("scope", "audio"):
+            ack = await await_until(
+                lambda bound=label: peer.take(bound),
+                timeout=10.0,
+                description=f"held {label} attach acked",
+            )
+            assert ack == _golden_ack(label)
+        peer.send_text("scope", json.dumps({"type": "ping"}))
+        assert await _frame(peer, "scope", "pong") == {"type": "pong"}
+        await _control_alive(peer)
+    finally:
+        await peer.close()
+        await _tear_down_stack(stack)
+
+
+@_webrtc
+@pytest.mark.realtime(reason="waits for the real (patched 1 s) attach bound")
+async def test_split_attach_without_control_closes_at_the_attach_bound(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A held attach never extends the attach bound: with no control attach
+    the scope pair is closed once the bound (patched to 1 s) runs out."""
+    from rigplane.web.transport import webrtc_session
+
+    monkeypatch.setattr(webrtc_session, "_ATTACH_TIMEOUT_S", 1.0)
+    stack = await _stand_up_stack(tmp_path, audio=True)
+    peer = _ChannelSetPeer()
+    try:
+        await peer.connect(stack.web, ("control", "scope"))
+        key = await _acquire_session(stack.web.port)
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        peer.send_text("scope", _attach_text("scope", key))  # once
+        await _channel_closed(peer._channels["scope-text"])  # noqa: SLF001
+        await _channel_closed(peer._channels["scope"])  # noqa: SLF001
+        assert loop.time() - started <= 1.0 + 2.0
+        assert peer.take("scope") is None  # never acked
+    finally:
+        await peer.close()
+        await _tear_down_stack(stack)
+
+
+@_webrtc
+@pytest.mark.realtime(reason="waits for the real (patched 1 s) attach bound")
+async def test_split_half_without_its_pair_is_closed_at_the_attach_bound(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A lone ``scope-text`` channel (its lossy partner never opened) is
+    closed by the attach bound and serves nothing; control stays up."""
+    from rigplane.web.transport import webrtc_session
+
+    monkeypatch.setattr(webrtc_session, "_ATTACH_TIMEOUT_S", 1.0)
+    stack = await _stand_up_stack(tmp_path)
+    peer = _ChannelSetPeer()
+    try:
+        await peer.connect(stack.web, ("control",), lone_labels=("scope-text",))
+        lone = peer._channels["scope-text"]  # noqa: SLF001
+        key = await _acquire_session(stack.web.port)
+        peer.send_text("control", _attach_text("control", key))
+        assert (await _frame(peer, "control", "hello"))["type"] == "hello"
+        await _channel_closed(lone, timeout=1.0 + 5.0)
+        assert _registered(stack, "scope") == 0
+        await _control_alive(peer)
+    finally:
+        await peer.close()
+        await _tear_down_stack(stack)
+
+
+@_webrtc
+@pytest.mark.realtime(reason="leaves the attach waiting for its absent partner")
+async def test_split_attach_on_the_text_half_before_its_lossy_partner_opens(
+    tmp_path: Path,
+) -> None:
+    """The browser sends its single attach as soon as the ``*-text`` half
+    opens, possibly before the lossy half exists: the answerer keeps that
+    frame, pairs the halves when the partner arrives, and the pair is
+    acknowledged and serves normally."""
+    stack = await _stand_up_stack(tmp_path, audio=True)
+    peer = _ChannelSetPeer()
+    try:
+        await peer.connect(stack.web, ("control",))
+        key = await _acquire_session(stack.web.port)
+        peer.send_text("control", _attach_text("control", key))
+        assert (await _frame(peer, "control", "hello"))["type"] == "hello"
+        peer.received["audio"] = []
+        text = peer._pc.createDataChannel("audio-text", ordered=True)  # noqa: SLF001
+
+        @text.on("message")  # type: ignore[misc, no-untyped-call]
+        def _on_text(message: Any) -> None:
+            peer.received["audio"].append(message)
+
+        await await_until(
+            lambda: text.readyState == "open" or None,
+            timeout=15.0,
+            description="text half open",
+        )
+        text.send(_attach_text("audio", key))  # the one attach, partner absent
+        await asyncio.sleep(0.3)
+        binary = peer._pc.createDataChannel(  # noqa: SLF001
+            "audio", ordered=False, maxRetransmits=0
+        )
+        await await_until(
+            lambda: binary.readyState == "open" or None,
+            timeout=15.0,
+            description="lossy half open",
+        )
+        ack = await await_until(
+            lambda: peer.take("audio"), timeout=10.0, description="audio ack"
+        )
+        assert ack == _golden_ack("audio")
+        text.send(json.dumps({"type": "audio_start", "direction": "tx"}))
+        await _frame(peer, "audio", "audio_tx_format")
+        await _control_alive(peer)
     finally:
         await peer.close()
         await _tear_down_stack(stack)
