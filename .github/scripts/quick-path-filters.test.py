@@ -490,7 +490,6 @@ new AsyncFunction('github', 'context', 'core', script)(github, context, core)
             set(jobs),
             {
                 "classify",
-                "merge-group-live",
                 "quick-frontend",
                 "quick-frontend-e2e",
                 "quick-python",
@@ -518,8 +517,7 @@ new AsyncFunction('github', 'context', 'core', script)(github, context, core)
         for half in pools:
             with self.subTest(job=half):
                 block = jobs[half]
-                self.assertIn("    needs: [classify, merge-group-live]\n", block)
-                self.assertIn("needs.merge-group-live.outputs.live == 'true'", block)
+                self.assertIn("    needs: classify\n", block)
                 self.assertIn(pools[half], block)
                 self.assertIn("    timeout-minutes: 25\n", block)
                 self.assertIn("needs.classify.outputs.docs != 'true'", block)
@@ -630,7 +628,7 @@ new AsyncFunction('github', 'context', 'core', script)(github, context, core)
         self.assertIn(event_types, quick)
         self.assertIn(event_types, visual)
         self.assertIn("runs-on: [self-hosted, Linux, ARM64, light]", quick)
-        self.assertIn("needs: [classify, merge-group-live]", quick)
+        self.assertIn("needs: classify", quick)
         self.assertIn("needs.classify.outputs.docs != 'true'", quick)
         self.assertIn("needs.classify.outputs.ci == 'true'", quick)
         self.assertIn("needs.classify.outputs.core == 'true'", quick)
