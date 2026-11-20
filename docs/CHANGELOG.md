@@ -11,10 +11,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
-
-- New TX setting **Microphone processing**: Raw (default, as before) sends the microphone without the browser's echo cancellation, noise suppression and automatic gain control; Browser processing turns all three on for a noisy room or a weak microphone. It is in the TX levels dialog on the phone and the standard sidebars, and under TX AUDIO in the desktop Settings dialog; the choice is kept per browser (and per desktop app) and applies from the next transmission. New strings `core.txMic.processing.*` in en-US, ru-RU and ja-JP. (MOR-4596)
-
 ### Fixed
 
 - A single-receiver A/B radio that reports no VFO readback (Xiegu G7250, X6100, X6200, TX-500) showed a blank frequency, mode and filter readout although the values were fresh: the surface now shows the selected VFO instead of an unresolved slot. (MOR-4562)
