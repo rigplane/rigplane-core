@@ -83,7 +83,9 @@ class _Socket:
 
 
 async def _replay() -> tuple[list[dict], bytes]:
-    server = WebServer(_RelayRadio(sample_rate=SAMPLE_RATE), WebConfig(radio_model="ic7300"))
+    server = WebServer(
+        _RelayRadio(sample_rate=SAMPLE_RATE), WebConfig(radio_model="ic7300")
+    )
     assert server._audio_scope_source is not None
     _seed_audio_facts(server, mode="USB", frequency=TUNED_HZ, width=FILTER_HZ)
     socket = _Socket()
@@ -139,7 +141,9 @@ async def test_passband_grant_gives_the_trapezoid_native_resolution() -> None:
     final = grants[-1]
     assert final["view"] == {"startHz": 14_099_700.0, "endHz": 14_102_700.0}
     frame = decode_scope_frame_v2(wire)
-    assert frame.pixels is not None and frame.width == final["width"] == len(frame.pixels)
+    assert frame.pixels is not None and frame.width == final["width"] == len(
+        frame.pixels
+    )
     span = frame.view_end_hz - frame.view_start_hz
     passband_columns = frame.width * FILTER_HZ / span
     # The 400-px Audio Scope draws the 2400 Hz passband over about 226 CSS

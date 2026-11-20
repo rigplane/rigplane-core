@@ -84,3 +84,22 @@ export function loadAudioScopeGolden(name: string): { buffer: ArrayBuffer; expec
   return { buffer: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer,
     expected: JSON.parse(readFileSync(resolve(root, `${name}.json`), 'utf8')) };
 }
+
+/**
+ * MOR-4604: the socket messages the real server path sends for the audio
+ * passband subscription (tests/test_audio_scope_passband_replay.py asserts
+ * these exact documents and frame bytes).
+ */
+export type AudioPassbandReplay = {
+  case: {
+    tunedHz: number; mode: string; filterWidthHz: number; toneHz: number; sampleRateHz: number;
+    subscribe: Record<string, unknown>;
+  };
+  messages: Record<string, unknown>[];
+};
+export function loadAudioPassbandReplay(name: string): { replay: AudioPassbandReplay; frame: ArrayBuffer } {
+  const root = resolve(process.cwd(), '../tests/fixtures/audio-scope-passband');
+  const bytes = readFileSync(resolve(root, `${name}.bin`));
+  return { replay: JSON.parse(readFileSync(resolve(root, `${name}.json`), 'utf8')) as AudioPassbandReplay,
+    frame: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer };
+}

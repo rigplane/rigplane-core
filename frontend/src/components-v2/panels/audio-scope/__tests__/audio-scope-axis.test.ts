@@ -1,14 +1,12 @@
 /**
  * MOR-4604 — the AudioScope axis labels the scale the trace is actually drawn
  * at: audio 0..filterHz across the trapezoid, so a test tone sits under its
- * own label, and a passband-matched view lets adjacent screen columns read
- * distinct native bins.
+ * own label.
  */
 import { describe, expect, it } from 'vitest';
 import {
   renderAudioSpectrum as rawRenderAudioSpectrum,
   AudioSpectrumRendererState,
-  audioSpectrumTraceSample,
   type SpectrumState,
 } from '../audio-spectrum-renderer';
 import { recordCanvasLayers } from '$lib/renderers/__tests__/canvas-layers-fixture';
@@ -58,8 +56,6 @@ const SLOPE = TRAP_H * 0.35;                // 44.1
 const FILTER_RATIO = Math.min(1, 2400 / 3600) * 0.75;
 const TOP_HALF_W = (W * 0.45 - SLOPE) * FILTER_RATIO;
 const BL = W / 2 - TOP_HALF_W - SLOPE;      // 87.95
-const BR = W / 2 + TOP_HALF_W + SLOPE;      // 312.05
-const NUM_POINTS = Math.ceil(BR) - Math.floor(BL); // 226
 
 /** Passband view [carrier−300, carrier+2700] for a 2400 Hz SSB filter. */
 const USB_PROJECTION: ScopeAudioProjection = { zero: 0.1, perHz: 1 / 3000, spanHz: 2700 };
@@ -99,22 +95,22 @@ describe('audio axis labels the drawn passband (MOR-4604)', () => {
     expect(Math.abs(zero!.x - BL)).toBeLessThan(1);
     expect(texts.some((entry) => entry.text === '+1k' || entry.text === '−1k')).toBe(false);
   });
+  // The resolution acceptance (distinct bins across half the trapezoid) is
+  // pinned on the real server grant, not a hand-sized frame:
+  // RadioLayout.audio-fft.component.test.ts, 'MOR-4604 Audio Scope beside the
+  // audio SpectrumPanel', replaying tests/test_audio_scope_passband_replay.py.
+});
 
-  it('samples distinct native bins across at least half the trapezoid width', () => {
-    const seen = new Set<number>();
-    for (let i = 0; i < NUM_POINTS; i++) {
-      seen.add(audioSpectrumTraceSample(i, NUM_POINTS, 160, 2400, 2700, USB_PROJECTION, true).index);
-    }
-    // 128 distinct bins (0.8 of the 160-bin frame) over 226 columns.
-    expect(seen.size).toBeGreaterThanOrEqual(NUM_POINTS / 2);
-    // The 48 kHz view this fix replaces stretched ~9 bins over the same
-    // trapezoid — the stepped trace from the ticket screenshot.
-    const wideView: ScopeAudioProjection = { zero: 0.5, perHz: 1 / 48000, spanHz: 24000 };
-    const seenWide = new Set<number>();
-    for (let i = 0; i < NUM_POINTS; i++) {
-      seenWide.add(audioSpectrumTraceSample(i, NUM_POINTS, 160, 2400, 24000, wideView, true).index);
-    }
-    expect(seenWide.size).toBeLessThan(NUM_POINTS / 2);
+describe('narrow CW filters keep a usable audio axis (MOR-4604 gate P2)', () => {
+  it.each([
+    [50, ['0', '10', '20', '30', '40', '50']],
+    [100, ['0', '20', '40', '60', '80', '100']],
+    [150, ['0', '20', '40', '60', '80', '100', '120', '140']],
+  ] as const)('labels a %i Hz filter with nonzero ticks', (filterWidth, labels) => {
+    const pixels = new Uint8Array(64).fill(8);
+    const { ctx, texts } = captureCtx(W, H);
+    renderAudioSpectrum(ctx, W, H, { ...baseState(pixels, USB_PROJECTION), filterWidth });
+    expect(texts.filter((entry) => entry.y === H - 3).map((entry) => entry.text)).toEqual(labels);
   });
 });
 
