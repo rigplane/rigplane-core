@@ -1,5 +1,11 @@
+import { inflateRawSync } from 'node:zlib';
 import { expect, type Page } from '@playwright/test';
+import { deletePreview, previewBundle, saveBundle } from '../../../src/lib/api/diagnostics';
 import { ControllerClient } from '../../../src/lib/transport/controller-client';
+import {
+  validateManagedTransmitDocument,
+  type ManagedTransmitDocument,
+} from '../../../src/lib/types/managed-transmit';
 import type { ServerStatePublic } from '../../../src/lib/types/state';
 
 /**
@@ -104,6 +110,14 @@ export async function stationState(): Promise<ServerStatePublic> {
   return state as ServerStatePublic;
 }
 
+/** The station's managed-transmit document (``GET /api/v1/managed-transmit``
+ * from Node), through the production validator. */
+export async function stationManagedTransmit(): Promise<ManagedTransmitDocument> {
+  const response = await fetch(`${STATION_ORIGIN}/api/v1/managed-transmit`);
+  if (!response.ok) throw new Error(`/api/v1/managed-transmit answered ${response.status}`);
+  return validateManagedTransmitDocument(await response.json());
+}
+
 /** Wait until the UI's control link is up, read from the server's
  * wsClients count — DOM-free, so it holds in both layouts and browsers. */
 export async function expectControlLink(): Promise<void> {
@@ -197,20 +211,28 @@ export function trackDestinations(page: Page): () => { requests: string[]; socke
   return () => ({ requests, sockets });
 }
 
+/** What the stubbed microphone does: `tone` gives the oscillator stream,
+ * `refuse` rejects getUserMedia as a denied permission does. */
+export type MicrophoneMode = 'tone' | 'refuse';
+
 /**
  * The ONLY allowed microphone stub (adviser brief §5): replace
  * navigator.mediaDevices.getUserMedia with an oscillator →
  * MediaStreamDestination stream, in page.addInitScript, so it works in
  * Chromium and WebKit alike. Everything after getUserMedia is the
- * production path.
+ * production path. In `refuse` mode the same stub rejects with a
+ * `NotAllowedError` DOMException instead.
  */
-export async function stubMicrophone(page: Page): Promise<void> {
-  await page.addInitScript(() => {
+export async function stubMicrophone(page: Page, mode: MicrophoneMode = 'tone'): Promise<void> {
+  await page.addInitScript((micMode: MicrophoneMode) => {
     const media = navigator.mediaDevices;
     if (!media) throw new Error('navigator.mediaDevices is missing');
     // Define it on the prototype: WebKit may recreate the navigator
     // .mediaDevices wrapper object, which would drop an instance property.
     const stub = async (constraints?: MediaStreamConstraints) => {
+      if (micMode === 'refuse') {
+        throw new DOMException('Permission denied', 'NotAllowedError');
+      }
       // Honour the audio constraints the page asks for, as a real device
       // does: the page's Opus encoder is configured for that rate and
       // channel count and refuses a stream that differs (a default
@@ -234,14 +256,73 @@ export async function stubMicrophone(page: Page): Promise<void> {
       configurable: true,
       writable: true,
     });
-  });
+  }, mode);
 }
 
 /** Open the ordinary UI page served by Core, with the microphone stub in
  * place (rows that never transmit are unaffected by it). */
-export async function openRemoteUi(page: Page): Promise<void> {
-  await stubMicrophone(page);
+export async function openRemoteUi(page: Page, microphone: MicrophoneMode = 'tone'): Promise<void> {
+  await stubMicrophone(page, microphone);
   await page.goto('/?ui=v2', { waitUntil: 'domcontentloaded' });
+}
+
+/**
+ * Count the decoded receive buffers the page hands to its AudioContext for
+ * playback (every `AudioBufferSourceNode.start` with a buffer of at least
+ * 200 frames), observed unchanged, as the panorama journey witness does.
+ */
+export async function installPlaybackWitness(page: Page): Promise<void> {
+  await page.addInitScript(() => {
+    const win = window as Window & { __playbackBuffers?: number };
+    win.__playbackBuffers = 0;
+    const nativeStart = AudioBufferSourceNode.prototype.start;
+    AudioBufferSourceNode.prototype.start = function (...args: Parameters<typeof nativeStart>) {
+      nativeStart.apply(this, args);
+      if (this.buffer && this.buffer.length >= 200) win.__playbackBuffers! += 1;
+    };
+  });
+}
+
+/** Receive buffers scheduled for playback so far (installPlaybackWitness). */
+export async function playbackBuffers(page: Page): Promise<number> {
+  return page.evaluate(
+    () => (window as Window & { __playbackBuffers?: number }).__playbackBuffers ?? 0,
+  );
+}
+
+/** What the page sent so far: the names of its control-socket commands,
+ * the directions of its audio_start frames, and the operations it POSTed
+ * to the managed-transmit command endpoint. */
+export interface SentTraffic {
+  commands: string[];
+  audioStarts: string[];
+  managedCommands: string[];
+}
+
+export function trackSentTraffic(page: Page): () => SentTraffic {
+  const traffic: SentTraffic = { commands: [], audioStarts: [], managedCommands: [] };
+  const parse = (text: string | null | undefined): Record<string, unknown> | null => {
+    try {
+      const value: unknown = JSON.parse(text ?? '');
+      return typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : null;
+    } catch {
+      return null;
+    }
+  };
+  page.on('websocket', (socket) => {
+    socket.on('framesent', ({ payload }) => {
+      const frame = typeof payload === 'string' ? parse(payload) : null;
+      if (!frame) return;
+      if (frame.type === 'cmd' || frame.type === 'command') traffic.commands.push(String(frame.name));
+      if (frame.type === 'audio_start') traffic.audioStarts.push(String(frame.direction));
+    });
+  });
+  page.on('request', (request) => {
+    if (request.method() !== 'POST') return;
+    if (new URL(request.url()).pathname !== '/api/v1/managed-transmit/command') return;
+    traffic.managedCommands.push(String(parse(request.postData())?.operation));
+  });
+  return () => traffic;
 }
 
 /** The frequency readout renders MHz.kHz.Hz digit groups; compare digits.
@@ -320,22 +401,89 @@ export function parseRelayedAnswer(value: unknown): RelayedAnswer {
  * calls are pointed at the station for the duration of the call.
  */
 export async function acquireControllerKey(): Promise<string> {
+  const client = new ControllerClient();
+  try {
+    return await withStationFetch(async () => {
+      await client.prepare();
+      // A local-mode station whose grant the client rejects leaves it
+      // sessionless instead of throwing (its own tolerance for older cores).
+      const key = client.headers()['X-RigPlane-Controller'];
+      if (!key) throw new Error('the station granted no session the ControllerClient accepts');
+      return key;
+    });
+  } finally {
+    client.lose(); // stops the heartbeat timer; no DELETE, the TTL reaps it
+  }
+}
+
+/** Run a production client whose relative `/api/v1/...` calls must reach
+ * the station from Node: they are pointed at it for the duration of `run`. */
+async function withStationFetch<T>(run: () => Promise<T>): Promise<T> {
   const original = globalThis.fetch;
   globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) =>
     original(
       typeof input === 'string' && input.startsWith('/') ? `${STATION_ORIGIN}${input}` : input,
       init,
     )) as typeof fetch;
-  const client = new ControllerClient();
   try {
-    await client.prepare();
-    // A local-mode station whose grant the client rejects leaves it
-    // sessionless instead of throwing (its own tolerance for older cores).
-    const key = client.headers()['X-RigPlane-Controller'];
-    if (!key) throw new Error('the station granted no session the ControllerClient accepts');
-    return key;
+    return await run();
   } finally {
     globalThis.fetch = original;
-    client.lose(); // stops the heartbeat timer; no DELETE, the TTL reaps it
   }
+}
+
+/**
+ * The log files of the support bundle the station builds for a diagnostics
+ * preview, read through the PRODUCTION diagnostics client
+ * (src/lib/api/diagnostics.ts: previewBundle, then saveBundle of that same
+ * preview, which is the bundle a Send would upload; the preview is deleted
+ * afterwards). Returns the text of every `logs/` entry, concatenated.
+ */
+export async function supportBundleLogs(): Promise<string> {
+  return withStationFetch(async () => {
+    const preview = await previewBundle({});
+    try {
+      const zip = Buffer.from(await (await saveBundle(preview.preview_id, preview.csrf_token)).arrayBuffer());
+      return [...readZip(zip)]
+        .filter(([name]) => name.startsWith('logs/'))
+        .map(([, data]) => data.toString('utf8'))
+        .join('\n');
+    } finally {
+      await deletePreview(preview.preview_id, preview.csrf_token);
+    }
+  });
+}
+
+/** Occurrences of `needle` in the support bundle's logs. */
+export async function supportBundleLogCount(needle: string): Promise<number> {
+  return (await supportBundleLogs()).split(needle).length - 1;
+}
+
+/**
+ * Entries of a ZIP archive (name -> uncompressed bytes), read from its
+ * central directory. Only what Python's zipfile writes for a support bundle
+ * is accepted (stored or deflated entries, no ZIP64); anything else throws.
+ */
+export function readZip(zip: Buffer): Map<string, Buffer> {
+  let end = zip.length - 22;
+  while (end >= 0 && zip.readUInt32LE(end) !== 0x06054b50) end -= 1;
+  if (end < 0) throw new Error('not a ZIP archive: no end-of-central-directory record');
+  const entries = new Map<string, Buffer>();
+  let at = zip.readUInt32LE(end + 16);
+  for (let index = zip.readUInt16LE(end + 10); index > 0; index -= 1) {
+    if (zip.readUInt32LE(at) !== 0x02014b50) throw new Error(`bad central directory entry at ${at}`);
+    const method = zip.readUInt16LE(at + 10);
+    const compressedSize = zip.readUInt32LE(at + 20);
+    const nameLength = zip.readUInt16LE(at + 28);
+    const local = zip.readUInt32LE(at + 42);
+    const name = zip.toString('utf8', at + 46, at + 46 + nameLength);
+    if (zip.readUInt32LE(local) !== 0x04034b50) throw new Error(`bad local header for ${name}`);
+    const start = local + 30 + zip.readUInt16LE(local + 26) + zip.readUInt16LE(local + 28);
+    const data = zip.subarray(start, start + compressedSize);
+    if (method === 0) entries.set(name, data);
+    else if (method === 8) entries.set(name, inflateRawSync(data));
+    else throw new Error(`unsupported compression method ${method} for ${name}`);
+    at += 46 + nameLength + zip.readUInt16LE(at + 30) + zip.readUInt16LE(at + 32);
+  }
+  return entries;
 }

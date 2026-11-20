@@ -6,14 +6,20 @@ import {
   collectFirstTexts,
   expectReadoutHz,
   foreignDestinations,
+  installPlaybackWitness,
   openRemoteUi,
   acquireControllerKey,
   parseRelayedAnswer,
+  playbackBuffers,
   setStationFrequency,
   simState,
   simUnkeyLatencyMs,
   STATION_ORIGIN,
+  stationManagedTransmit,
+  stationState,
+  supportBundleLogCount,
   trackDestinations,
+  trackSentTraffic,
   type RelayedAnswer,
 } from './station';
 
@@ -148,6 +154,120 @@ test.describe('phone layout', () => {
     const latencyMs = await simUnkeyLatencyMs(pressedAtMs, releasedAtMs);
     expect(latencyMs).toBeLessThanOrEqual(1000);
   });
+});
+
+// Desktop layout (the config's 1728 x 1200 viewport). On a local-mode station
+// the desktop key is the latching "Key transmitter" button (RxTxSurface with
+// momentary = runtime.remoteController = false): a click keys, UNKEY unkeys.
+test('L4: desktop PTT keys the simulator, UNKEY unkeys it within 1 s and RX audio resumes', async ({ page }) => {
+  await installPlaybackWitness(page);
+  await openRemoteUi(page);
+  await expectControlLink();
+
+  // RX audio is live first: decoded receive buffers reach the AudioContext.
+  await page.getByTestId('rx-audio-monitor-live').click();
+  await expect.poll(() => playbackBuffers(page), { timeout: 15_000 }).toBeGreaterThan(5);
+
+  const key = page.getByTestId('rx-tx-key');
+  const unkey = page.getByTestId('rx-tx-unkey');
+  await expect(key).toBeEnabled();
+  await expect(key).toHaveAttribute('aria-pressed', 'false');
+  expect((await simState()).ptt_on).toBe(false);
+  const signalFramesBefore = (await simState()).tx_audio_signal_frames;
+
+  // Key: the simulator reports keyed and the page shows the key pressed.
+  const keyedAtMs = Date.now();
+  await key.click();
+  await expect.poll(async () => (await simState()).ptt_on).toBe(true);
+  await expect(key).toHaveAttribute('aria-pressed', 'true');
+  // The (stubbed) microphone tone reaches the simulated radio.
+  await expect
+    .poll(async () => (await simState()).tx_audio_signal_frames, { timeout: 15_000 })
+    .toBeGreaterThan(signalFramesBefore);
+  // No receive audio plays while the radio is keyed: no receive buffer is
+  // scheduled for playback between these two reads.
+  const heldAtKeyed = await playbackBuffers(page);
+  await expect.poll(async () => (await simState()).tx_audio_signal_frames).toBeGreaterThan(signalFramesBefore + 5);
+  const heldAtUnkey = await playbackBuffers(page);
+  expect(heldAtUnkey, 'receive playback must stay held while keyed').toBe(heldAtKeyed);
+
+  // Unkey: the simulator's own journal shows OFF within 1 s of the click,
+  // and this key/unkey left exactly one ON then one OFF in it.
+  const unkeyedAtMs = Date.now();
+  await unkey.click();
+  const latencyMs = await simUnkeyLatencyMs(keyedAtMs, unkeyedAtMs);
+  expect(latencyMs).toBeLessThanOrEqual(1000);
+  const journal = (await simState()).ptt_transitions
+    .filter(([at]) => at * 1000 >= keyedAtMs)
+    .map(([, keyed]) => keyed);
+  expect(journal).toEqual([true, false]);
+  await expect(key).toHaveAttribute('aria-pressed', 'false');
+
+  // RX resumes: new receive buffers reach the AudioContext after the unkey.
+  await expect
+    .poll(() => playbackBuffers(page), { timeout: 15_000 })
+    .toBeGreaterThan(heldAtUnkey + 5);
+});
+
+// The station logs this line (web/handlers/audio.py AudioHandler
+// ._handle_audio_stats) when the page's audio_stats report a refused
+// microphone; the logs contributor carries it into the support bundle.
+const MIC_REFUSAL_LOG = 'browser microphone capture rejected: category=NotAllowedError';
+
+test('L5: a refused microphone never keys, stays on screen and reaches the support bundle', async ({ page }) => {
+  await installPlaybackWitness(page);
+  await openRemoteUi(page, 'refuse');
+  await expectControlLink();
+  const sent = trackSentTraffic(page);
+
+  // RX audio is live: the page reports to the station on the audio socket.
+  await page.getByTestId('rx-audio-monitor-live').click();
+  await expect.poll(() => playbackBuffers(page), { timeout: 15_000 }).toBeGreaterThan(0);
+
+  const key = page.getByTestId('rx-tx-key');
+  await expect(key).toBeEnabled();
+  const bundleBefore = await supportBundleLogCount(MIC_REFUSAL_LOG);
+  const journalBefore = (await simState()).ptt_transitions.length;
+
+  await key.click();
+
+  // On screen: an error toast that names the cause, and the status bar's
+  // audio indicator reads failed.
+  const toast = page.locator('.toast.error').filter({
+    hasText: 'Microphone access denied — TX audio cannot start',
+  });
+  await expect(toast).toHaveCount(1);
+  await expect(toast).toBeVisible();
+  const audioChip = page.getByTestId('audio-chip');
+  await expect(audioChip).toHaveAttribute('title', 'Audio connection failed');
+
+  // Not half-keyed: no transmit request, no ptt_on and no TX audio start left
+  // the page; the simulator was never keyed; the station's managed TX stays in
+  // receive with PTT observed off; the key is not shown pressed.
+  expect(sent().managedCommands).toEqual([]);
+  expect(sent().commands.filter((name) => name === 'ptt_on')).toEqual([]);
+  expect(sent().audioStarts.filter((direction) => direction === 'tx')).toEqual([]);
+  const sim = await simState();
+  expect(sim.ptt_on).toBe(false);
+  expect(sim.ptt_transitions).toHaveLength(journalBefore);
+  const managed = await stationManagedTransmit();
+  expect(managed.txObservation.observedPtt).toBe('off');
+  expect(managed.managedTransmit).toMatchObject({ status: 'available', intent: { kind: 'rx' } });
+  expect((await stationState()).ptt).not.toBe(true);
+  await expect(key).toHaveAttribute('aria-pressed', 'false');
+
+  // Not only a toast: once the operator dismisses the toast, the status bar
+  // still reads failed.
+  await toast.click();
+  await expect(toast).toHaveCount(0);
+  await expect(audioChip).toHaveAttribute('title', 'Audio connection failed');
+
+  // Traced: the support bundle a diagnostics preview builds now carries the
+  // refusal (one more occurrence than before this press; earlier rows and
+  // repetitions share the station and its log).
+  await expect
+    .poll(() => supportBundleLogCount(MIC_REFUSAL_LOG), { timeout: 20_000, intervals: [1_000] })
+    .toBeGreaterThan(bundleBefore);
 });
 
 // The six data-channel labels, their ordering/reliability and which frames
