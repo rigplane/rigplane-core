@@ -535,7 +535,15 @@
   let canPan = $derived(
     spectrumAuthority !== null && spectrumAuthority.frequencyHz !== null && spanHz > 0,
   );
-  let scopeMode = $derived(frameScopeMode);
+  // MOR-4214: the radio-owned window is an OBSERVED radio fact. The
+  // frame-stream context mode reads 0 through a reconnect's clearMode()
+  // while the radio is still in FIX — keying `fixed` on it let the panel
+  // wipe the user's FIX crop and repaint the follow window with a CENTER
+  // zoom's leftover requested width (merge-group run 44770631929, the
+  // MOR-4392 journey row). The tune-line doctrine applies: only observed
+  // scope-control facts establish CENTER; the frame mode stays the
+  // fallback while the readback is unobserved.
+  let scopeMode = $derived(scopeControlsMode ?? frameScopeMode);
   let isRadioOwnedWindow = $derived(isRadioOwnedWindowScopeFn(scopeMode));
   let displayTuple = $derived(!managedUnavailable && scopeRegion
     && scopeContentState !== 'out-of-range'
