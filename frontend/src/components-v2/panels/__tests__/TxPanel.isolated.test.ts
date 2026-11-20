@@ -419,6 +419,73 @@ describe('auto LAN MOD-input toggle (MOR-618)', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// TX levels dialog geometry (MOR-4596 / MOR-3845)
+// ---------------------------------------------------------------------------
+
+describe('TX levels dialog geometry (MOR-4596)', () => {
+  function styleOf(t: HTMLElement): Record<string, string> {
+    const raw = t.querySelector<HTMLElement>('.tx-modal')?.getAttribute('style') ?? '';
+    return Object.fromEntries(
+      raw.split(';').map((part) => part.trim()).filter(Boolean).map((part) => {
+        const at = part.indexOf(':');
+        return [part.slice(0, at).trim(), part.slice(at + 1).trim()];
+      }),
+    );
+  }
+
+  function anchorPanelBottom(t: HTMLElement, bottom: number): void {
+    const panel = t.querySelector<HTMLElement>('.tx-panel');
+    if (!panel) throw new Error('TxPanel root not found');
+    panel.getBoundingClientRect = () => ({
+      x: 20, y: bottom - 40, top: bottom - 40, bottom, left: 20, right: 260,
+      width: 240, height: 40, toJSON: () => ({}),
+    });
+  }
+
+  afterEach(() => {
+    document.documentElement.style.removeProperty('--rp-chrome-top');
+  });
+
+  it('caps the dialog to the viewport below the anchor and scrolls its rows', () => {
+    document.documentElement.style.setProperty('--rp-chrome-top', '48px');
+    const t = mountPanel();
+    anchorPanelBottom(t, 300);
+    openTxSettings(t);
+    const style = styleOf(t);
+    expect(style['overflow-y']).toBe('auto');
+    const top = Number.parseFloat(style.top);
+    expect(top).toBe(306); // anchor bottom + 6, below the 48px chrome
+    // max-height keeps the bottom edge at viewport floor - 8px, whatever the content.
+    const cap = Number.parseFloat(style['max-height'].match(/- ([\d.]+)px/)?.[1] ?? '');
+    expect(Number.isFinite(cap)).toBe(true);
+    expect(top + (window.innerHeight - cap)).toBeLessThanOrEqual(window.innerHeight - 8);
+  });
+
+  it('never opens above the shell chrome (MOR-3845)', () => {
+    document.documentElement.style.setProperty('--rp-chrome-top', '48px');
+    const t = mountPanel();
+    anchorPanelBottom(t, 40); // anchor strip sits under the chrome
+    openTxSettings(t);
+    const top = Number.parseFloat(styleOf(t).top);
+    expect(top).toBe(56); // chromeTop + 8
+  });
+
+  it('keeps the dialog usable when the anchor sits at the viewport floor (phone TX sheet)', () => {
+    const t = mountPanel();
+    anchorPanelBottom(t, window.innerHeight - 4);
+    openTxSettings(t);
+    const style = styleOf(t);
+    const top = Number.parseFloat(style.top);
+    const cap = Number.parseFloat(style['max-height'].match(/- ([\d.]+)px/)?.[1] ?? '');
+    expect(top).toBeGreaterThanOrEqual(8);
+    expect(top).toBeLessThanOrEqual(window.innerHeight - 8 - 160);
+    // At least 160px of the dialog stay reachable above the viewport floor.
+    expect(window.innerHeight - cap).toBeGreaterThanOrEqual(160);
+    expect(top + (window.innerHeight - cap)).toBeLessThanOrEqual(window.innerHeight - 8);
+  });
+});
+
 describe('tuning state', () => {
   it('adds tuning class to TUNE button when atuTuning is true', () => {
     const t = mountPanel({ atuTuning: true });
