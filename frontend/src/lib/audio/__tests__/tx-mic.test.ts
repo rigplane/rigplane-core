@@ -1,9 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { TxMic } from '../tx-mic';
+import { setTxMicProcessing, reloadTxMicProcessingForTests, TX_MIC_PROCESSING_KEY } from '../../stores/tx-mic-processing.svelte';
 import { SAMPLE_RATE, CHANNELS, TX_BITRATE, AUDIO_HEADER_SIZE, CODEC_PCM16 } from '../constants';
 
 let mockTrack: any, mockEncoder: any, mockReader: any;
 beforeEach(() => {
+  localStorage.removeItem(TX_MIC_PROCESSING_KEY);
+  reloadTxMicProcessingForTests();
   delete (globalThis as any).AudioContext;
   delete (globalThis as any).webkitAudioContext;
   mockTrack = Object.assign(new EventTarget(), { stop: vi.fn(), kind: 'audio' });
@@ -62,6 +65,43 @@ describe('TxMic', () => {
       },
     });
     expect(m.active).toBe(true); m.stop();
+  });
+  it('requests all browser voice processing when the mode is browser (MOR-4596)', async () => {
+    setTxMicProcessing('browser');
+    const m = new TxMic(vi.fn()); await m.start();
+    expect(navigator.mediaDevices.getUserMedia).toHaveBeenCalledWith({
+      audio: {
+        channelCount: CHANNELS, sampleRate: SAMPLE_RATE,
+        echoCancellation: true, noiseSuppression: true, autoGainControl: true,
+      },
+    });
+    m.stop();
+  });
+  it('applies a mode change from the next start and keeps raw as the default (MOR-4596)', async () => {
+    const m = new TxMic(vi.fn());
+    await m.start(); m.stop();
+    setTxMicProcessing('browser');
+    await m.start(); m.stop();
+    setTxMicProcessing('raw');
+    await m.start(); m.stop();
+    const flags = vi.mocked(navigator.mediaDevices.getUserMedia).mock.calls
+      .map(([c]) => (c?.audio as MediaTrackConstraints).echoCancellation);
+    expect(flags).toEqual([false, true, false]);
+  });
+  it('keeps the chosen mode across a reload (MOR-4596)', async () => {
+    setTxMicProcessing('browser');
+    expect(localStorage.getItem(TX_MIC_PROCESSING_KEY)).toBe('browser');
+    reloadTxMicProcessingForTests();
+    const m = new TxMic(vi.fn()); await m.start();
+    expect((vi.mocked(navigator.mediaDevices.getUserMedia).mock.calls[0]?.[0]?.audio as MediaTrackConstraints)
+      .noiseSuppression).toBe(true);
+    m.stop();
+    localStorage.setItem(TX_MIC_PROCESSING_KEY, 'garbage');
+    reloadTxMicProcessingForTests();
+    await m.start();
+    expect((vi.mocked(navigator.mediaDevices.getUserMedia).mock.calls[1]?.[0]?.audio as MediaTrackConstraints)
+      .noiseSuppression).toBe(false);
+    m.stop();
   });
   it('handles permission denied', async () => {
     vi.mocked(navigator.mediaDevices.getUserMedia).mockRejectedValueOnce(
@@ -186,6 +226,176 @@ describe('TxMic', () => {
     });
     m.stop();
   });
+  describe('device-independent Opus capture (MOR-4594)', () => {
+    // getUserMedia constraints are hints: a 44.1 kHz stereo device must still
+    // reach the 48 kHz mono encoder through a context created at SAMPLE_RATE.
+    function installContext(rate = SAMPLE_RATE) {
+      const convertedTrack = Object.assign(new EventTarget(), { stop: vi.fn(), kind: 'audio' });
+      const source = { connect: vi.fn(), disconnect: vi.fn() };
+      const destination: any = {
+        channelCount: 2, channelCountMode: 'max',
+        stream: { getAudioTracks: () => [convertedTrack], getTracks: () => [convertedTrack] },
+      };
+      const context = {
+        sampleRate: rate,
+        createMediaStreamSource: vi.fn(() => source),
+        createMediaStreamDestination: vi.fn(() => destination),
+        resume: vi.fn().mockResolvedValue(undefined),
+        close: vi.fn().mockResolvedValue(undefined),
+      };
+      const ctor = vi.fn(function () { return context; });
+      (globalThis as any).AudioContext = ctor;
+      return { context, ctor, source, destination, convertedTrack };
+    }
+    function spyProcessor() {
+      const created = vi.fn();
+      (globalThis as any).MediaStreamTrackProcessor = function (init: unknown) {
+        created(init);
+        return { readable: { getReader: () => mockReader } };
+      };
+      return created;
+    }
+
+    it('feeds the encoder a 48 kHz mono track made by a SAMPLE_RATE context', async () => {
+      const { context, ctor, source, destination, convertedTrack } = installContext();
+      const created = spyProcessor();
+      const m = new TxMic(vi.fn());
+
+      expect(await m.start()).toBeNull();
+      expect(ctor).toHaveBeenCalledWith({ sampleRate: SAMPLE_RATE });
+      expect(source.connect).toHaveBeenCalledWith(destination);
+      expect(destination.channelCount).toBe(CHANNELS);
+      expect(destination.channelCountMode).toBe('explicit');
+      expect(created).toHaveBeenCalledWith({ track: convertedTrack });
+      expect(mockEncoder.configure).toHaveBeenCalledWith(
+        expect.objectContaining({ sampleRate: SAMPLE_RATE, numberOfChannels: CHANNELS }),
+      );
+      m.stop();
+      expect(context.close).toHaveBeenCalled();
+      expect(mockTrack.stop).toHaveBeenCalled();
+    });
+
+    it('falls back to the raw track when the context cannot run at the encoder rate', async () => {
+      const { context } = installContext(44100);
+      const created = spyProcessor();
+      const m = new TxMic(vi.fn());
+
+      expect(await m.start()).toBeNull();
+      expect(created).toHaveBeenCalledWith({ track: mockTrack });
+      expect(context.close).toHaveBeenCalled();
+      m.stop();
+    });
+
+    it('uses the raw track when the context constructor refuses, and a retry still encodes', async () => {
+      const { ctor } = installContext();
+      ctor.mockImplementationOnce(function () { throw new DOMException('rate', 'NotSupportedError'); });
+      const created = spyProcessor();
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const m = new TxMic(vi.fn());
+
+      expect(await m.start()).toBeNull();
+      expect(created).toHaveBeenCalledWith({ track: mockTrack });
+      m.stop();
+      expect(await m.start()).toBeNull();
+      expect(mockEncoder.configure).toHaveBeenCalledTimes(2);
+      m.stop();
+    });
+
+    it('closes a half-built graph and uses the raw track when node setup throws', async () => {
+      const { context } = installContext();
+      context.createMediaStreamDestination.mockImplementation(() => { throw new Error('graph'); });
+      const created = spyProcessor();
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const m = new TxMic(vi.fn());
+
+      expect(await m.start()).toBeNull();
+      expect(created).toHaveBeenCalledWith({ track: mockTrack });
+      expect(context.close).toHaveBeenCalled();
+      m.stop();
+    });
+
+    it('ends the capture when the context cannot resume', async () => {
+      const { context } = installContext();
+      context.resume.mockRejectedValue(new Error('blocked'));
+      const died = vi.fn();
+      const m = new TxMic(vi.fn(), died);
+
+      expect(await m.start()).toBeNull();
+      await vi.waitFor(() => expect(died).toHaveBeenCalledWith(
+        'TX MIC: audio context resume failed: Error: blocked',
+      ));
+      expect(m.active).toBe(false);
+      expect(mockTrack.stop).toHaveBeenCalled();
+      expect(context.close).toHaveBeenCalled();
+    });
+
+    it('ignores a resume failure from an Opus context a newer start retired', async () => {
+      const first = installContext();
+      let rejectOld!: (e: Error) => void;
+      first.context.resume.mockReturnValue(new Promise((_, reject) => { rejectOld = reject; }));
+      const died = vi.fn();
+      const m = new TxMic(vi.fn(), died);
+      expect(await m.start()).toBeNull();
+      m.stop();
+      installContext();
+      expect(await m.start()).toBeNull();
+
+      rejectOld(new Error('late'));
+      await Promise.resolve(); await Promise.resolve();
+
+      expect(died).not.toHaveBeenCalled();
+      expect(m.active).toBe(true);
+      m.stop();
+    });
+
+    it('ignores a resume failure from the Opus context a codec switch retired', async () => {
+      const { context } = installContext();
+      let rejectOld!: (e: Error) => void;
+      context.resume.mockReturnValue(new Promise((_, reject) => { rejectOld = reject; }));
+      (context as any).createScriptProcessor = vi.fn(() => ({
+        connect: vi.fn(), disconnect: vi.fn(), onaudioprocess: null,
+      }));
+      (context as any).destination = {};
+      const died = vi.fn();
+      const m = new TxMic(vi.fn(), died);
+      expect(await m.start()).toBeNull();
+      expect(m.applyServerCodec('pcm16')).toEqual({ switched: true, error: null });
+
+      rejectOld(new Error('late'));
+      await Promise.resolve(); await Promise.resolve();
+
+      expect(died).not.toHaveBeenCalled();
+      expect(m.active).toBe(true);
+      expect(m.codec).toBe('pcm16');
+      m.stop();
+    });
+
+    it('does not stay half-started when the encoder refuses its configuration', async () => {
+      installContext();
+      mockEncoder.configure.mockImplementation(() => { throw new Error('unsupported config'); });
+      const m = new TxMic(vi.fn());
+
+      expect(await m.start()).toBe('TX MIC: encoder configure failed: unsupported config');
+      expect(m.active).toBe(false);
+      expect(mockTrack.stop).toHaveBeenCalled();
+    });
+
+    it('keeps the PCM16 path at the encoder rate and mono', async () => {
+      delete (globalThis as any).AudioEncoder;
+      delete (globalThis as any).MediaStreamTrackProcessor;
+      const { context, ctor } = installContext();
+      const processor = { connect: vi.fn(), disconnect: vi.fn(), onaudioprocess: null };
+      (context as any).createScriptProcessor = vi.fn(() => processor);
+      (context as any).destination = {};
+      const m = new TxMic(vi.fn());
+
+      expect(await m.start()).toBeNull();
+      expect(ctor).toHaveBeenCalledWith({ sampleRate: SAMPLE_RATE });
+      expect((context as any).createScriptProcessor).toHaveBeenCalledWith(1024, CHANNELS, CHANNELS);
+      m.stop();
+    });
+  });
+
   it('cleans up all resources on stop', async () => {
     const m = new TxMic(vi.fn()); await m.start(); m.stop();
     expect(mockTrack.stop).toHaveBeenCalled();
