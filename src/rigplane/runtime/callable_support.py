@@ -17,6 +17,7 @@ from rigplane.commands import (
     get_antenna_1,
     get_antenna_2,
     get_attenuator,
+    get_freq_offset,
     get_mode,
     get_rx_antenna_ant1,
     get_scope_main_sub,
@@ -31,6 +32,7 @@ from rigplane.commands import (
     set_attenuator_level,
     set_dual_watch_off,
     set_dual_watch_on,
+    set_freq_offset,
     set_rx_antenna_ant1,
     stop_cw,
 )
@@ -82,6 +84,7 @@ BUILDER_RELATIONS: tuple[BuilderAllOf, ...] = (
     BuilderAllOf("get_antenna_1", (get_antenna_1,), "alias"),
     BuilderAllOf("get_antenna_2", (get_antenna_2,), "alias"),
     BuilderAllOf("get_attenuator_level", (get_attenuator,), "alias"),
+    BuilderAllOf("get_repeater_offset", (get_freq_offset,), "alias"),
     BuilderAllOf("get_rx_antenna_ant1", (get_rx_antenna_ant1,), "alias"),
     BuilderAllOf("get_scope_dual", (get_scope_single_dual,), "alias"),
     BuilderAllOf("get_scope_receiver", (get_scope_main_sub,), "alias"),
@@ -90,6 +93,7 @@ BUILDER_RELATIONS: tuple[BuilderAllOf, ...] = (
     BuilderAllOf("set_antenna_1", (set_antenna_1,), "alias"),
     BuilderAllOf("set_antenna_2", (set_antenna_2,), "alias"),
     BuilderAllOf("set_attenuator_level", (set_attenuator_level,), "alias"),
+    BuilderAllOf("set_repeater_offset", (set_freq_offset,), "alias"),
     BuilderAllOf("set_rx_antenna_ant1", (set_rx_antenna_ant1,), "alias"),
     BuilderAllOf("set_scope_receiver", (scope_main_sub,), "alias"),
     BuilderAllOf("stop_cw_text", (stop_cw,), "alias"),
@@ -217,7 +221,7 @@ CALLABLE_RELATIONS: Mapping[str, SupportRelation] = MappingProxyType(
     {relation.operation: relation for relation in _RELATIONS}
 )
 
-if len(CALLABLE_RELATIONS) != 34:  # pragma: no cover - import-time invariant
+if len(CALLABLE_RELATIONS) != 36:  # pragma: no cover - import-time invariant
     raise ValueError("callable-support registry must contain exactly 34 operations")
 if set(CALLABLE_RELATIONS) & EXCLUDED_OPERATIONS:  # pragma: no cover
     raise ValueError("excluded operations must not have callable-support relations")
