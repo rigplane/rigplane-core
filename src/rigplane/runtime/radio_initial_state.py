@@ -19,6 +19,8 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING
 
+from rigplane.core.radio_transport import control_transport_of
+
 if TYPE_CHECKING:
     from rigplane.core.acquisition_scheduler import AcquisitionQuery
 
@@ -41,7 +43,13 @@ async def fetch_initial_state(radio: IcomRadio) -> None:
     from ._state_queries import availability_source_queries, build_state_queries
 
     try:
-        is_serial = not radio._profile.has_lan
+        # MOR-4437: serial pacing follows the transport of the backend in
+        # use, not ``profile.has_lan`` (a profile field describes the
+        # radio model, not the current connection).  Backends with no
+        # explicit transport keep the legacy has_lan-based answer.
+        is_serial = control_transport_of(radio).paces_like_serial(
+            has_lan=radio._profile.has_lan
+        )
         gap = (
             radio._INITIAL_STATE_GAP_SERIAL
             if is_serial

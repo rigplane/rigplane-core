@@ -7,6 +7,9 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 
+from rigplane.core.radio_transport import (
+    RadioTransport,  # noqa: F401  (re-export — canonical home, MOR-4437)
+)
 from rigplane.types import AudioCodec, get_audio_capabilities
 
 if TYPE_CHECKING:
@@ -43,15 +46,6 @@ _CHANNELS_BY_CODEC: dict[AudioCodec, int] = {
     AudioCodec.OPUS_1CH: 1,
     AudioCodec.OPUS_2CH: 2,
 }
-
-
-class RadioTransport(StrEnum):
-    """Control transport family used by the active radio backend."""
-
-    LAN = "lan"
-    SERIAL = "serial"
-    REMOTE = "remote"
-    UNKNOWN = "unknown"
 
 
 class TxAudioSource(StrEnum):

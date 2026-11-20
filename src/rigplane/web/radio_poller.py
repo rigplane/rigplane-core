@@ -42,6 +42,7 @@ from ..exceptions import CommandError
 from ..exceptions import ConnectionError as RadioConnectionError
 from ..core.exceptions import BackgroundSendDropped, ReceiverNotSelectedError
 from ..core.exceptions import TimeoutError as RigplaneTimeoutError
+from ..core.radio_transport import control_transport_of
 from ..capabilities import (
     CAP_AGC,
     CAP_ANTENNA,
@@ -598,8 +599,15 @@ class RadioPoller:
         # map at all, which `_send_cmd` treats as a miss on every name rather
         # than crashing construction (MOR-2004 step 3b).
         self._cmd_map: CommandMap | None = self._profile.command_map
-        # Serial backends need slower polling to avoid flooding the CI-V link
-        self._is_serial: bool = not self._profile.has_lan
+        # Serial backends need slower polling to avoid flooding the CI-V
+        # link.  MOR-4437: the answer comes from the transport of the
+        # backend actually in use — not from ``profile.has_lan``, which
+        # only says the radio model offers a LAN interface (a USB-connected
+        # IC-705/7610/7300MK2 is serial-paced regardless).  Backends with
+        # no explicit transport keep the legacy has_lan-based answer.
+        self._is_serial: bool = control_transport_of(radio).paces_like_serial(
+            has_lan=self._profile.has_lan
+        )
         self._gap: float = _GAP_SERIAL if self._is_serial else _GAP
         self._fast_interval: float = (
             _FAST_INTERVAL_SERIAL if self._is_serial else _FAST_INTERVAL

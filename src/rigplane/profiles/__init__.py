@@ -11,7 +11,7 @@ import asyncio
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Collection
 from typing import (
     TYPE_CHECKING,
     Literal,
@@ -33,6 +33,7 @@ from rigplane.commands._codec import (
 )
 from rigplane.commands.command_map import CommandMap, ReverseCommandIndex
 from rigplane.core.exceptions import CommandError
+from rigplane.core.radio_transport import RadioTransport
 from rigplane.core.state_acquisition_policy import RadioAcquisitionProfile
 from rigplane.core.state_pipeline_contracts import PowerWriteQuantum
 from rigplane.core.types import (
@@ -63,6 +64,7 @@ __all__ = [
     "PowerWriteQuantum",
     "RadioProfile",
     "RuleSpec",
+    "TransportCapabilityGaps",
     "TxPolicy",
     "get_radio_profile",
     "preferred_serial_bauds",
@@ -418,6 +420,40 @@ class IqLanSpec:
 
 
 @dataclass(frozen=True, slots=True)
+class TransportCapabilityGaps:
+    """Per-transport capability gaps (MOR-4437).
+
+    Capability tags the profile declares NOT available on a specific
+    control transport.  ``RadioProfile.has_lan`` only says the radio model
+    offers a LAN interface; these fields say which declared capabilities a
+    given transport actually answers — e.g. the Xiegu G7250 firmware
+    V1.0.1 answers CI-V scope ``27 00`` over LAN and stays silent over USB
+    serial (LIVE 2026-11-09/13, MOR-4352/MOR-4436).  All-empty (the default
+    for every profile that declares no difference) keeps the declared
+    capability set unchanged on every transport, so existing profiles keep
+    today's behaviour.
+
+    Populated from ``[capabilities.transport_gaps]`` in the rig TOML by
+    ``profiles/rig_loader.py``.  This dataclass — not raw dict keys — is
+    the typed contract the loader validates into.
+    """
+
+    lan: frozenset[str] = frozenset()
+    serial: frozenset[str] = frozenset()
+    remote: frozenset[str] = frozenset()
+
+    def for_transport(self, transport: RadioTransport) -> frozenset[str]:
+        """The gap set applying to *transport* (empty for UNKNOWN)."""
+        if transport is RadioTransport.LAN:
+            return self.lan
+        if transport is RadioTransport.SERIAL:
+            return self.serial
+        if transport is RadioTransport.REMOTE:
+            return self.remote
+        return frozenset()
+
+
+@dataclass(frozen=True, slots=True)
 class RadioProfile:
     """Runtime radio profile used by command routing and capability checks."""
 
@@ -722,6 +758,18 @@ class RadioProfile:
     # Keyword-only and appended so no positional argument shifts
     # (tests/test_discovery_probe_baud_order.py).
     tx_func: TxFuncSpec | None = field(default=None, kw_only=True)
+    # MOR-4437: per-transport capability gaps
+    # (``[capabilities.transport_gaps]`` in the rig TOML) — capability
+    # tags a declared capability set does NOT get on a specific control
+    # transport, e.g. the G7250's CI-V scope answers over LAN only.
+    # All-empty (the default) keeps the declared set on every transport.
+    # The transport of the CURRENT connection comes from the backend in
+    # use (``rigplane.core.radio_transport.control_transport_of``), never
+    # from ``has_lan`` above. Keyword-only and appended so no positional
+    # argument shifts.
+    transport_capability_gaps: TransportCapabilityGaps = field(
+        default_factory=TransportCapabilityGaps, kw_only=True
+    )
 
     @property
     def vfo_swap_code(self) -> int | None:
@@ -756,6 +804,24 @@ class RadioProfile:
 
     def supports_capability(self, capability: str) -> bool:
         return capability in self.capabilities
+
+    def capabilities_for_transport(
+        self, transport: RadioTransport, capabilities: Collection[str]
+    ) -> set[str]:
+        """Capability tags from *capabilities* that are available on *transport*.
+
+        MOR-4437: applies the profile's per-transport capability gaps.
+        A profile with no gaps (the default) returns the input unchanged
+        on every transport — existing profiles keep today's behaviour.
+        ``UNKNOWN`` transports carry no gaps and likewise keep the input.
+        Callers pass the transport of the connection actually in use
+        (``rigplane.core.radio_transport.control_transport_of``), which
+        comes from the backend, not from this profile's ``has_lan``.
+        """
+        gap = self.transport_capability_gaps.for_transport(transport)
+        if not gap:
+            return set(capabilities)
+        return set(capabilities) - set(gap)
 
     def supports_receiver(self, receiver: int) -> bool:
         return 0 <= receiver < self.receiver_count

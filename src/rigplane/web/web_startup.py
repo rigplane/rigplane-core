@@ -29,6 +29,7 @@ from ..core.radio_protocol import (
     StateStoreCapable,
     serial_identity_hold,
 )
+from ..core.radio_transport import control_transport_of
 from ..core.state_pipeline_contracts import (
     FieldPath,
     Observation,
@@ -216,14 +217,20 @@ def _observed_paths(
 
 
 def _startup_gap_seconds(radio: object) -> float:
-    """Return the per-query gap ``runtime.radio_initial_state`` uses."""
+    """Return the per-query gap ``runtime.radio_initial_state`` uses.
+
+    MOR-4437: the LAN-vs-serial choice follows the transport of the
+    backend actually in use, not the profile's ``has_lan`` (which only
+    says the radio model offers a LAN interface — a USB-connected
+    IC-705/7610/7300MK2 is serial-paced).  Backends with no explicit
+    transport keep the legacy has_lan-based answer.
+    """
 
     profile = getattr(radio, "_profile", None)
-    attribute = (
-        "_INITIAL_STATE_GAP_LAN"
-        if getattr(profile, "has_lan", False)
-        else "_INITIAL_STATE_GAP_SERIAL"
+    is_serial = control_transport_of(radio).paces_like_serial(
+        has_lan=bool(getattr(profile, "has_lan", False))
     )
+    attribute = "_INITIAL_STATE_GAP_SERIAL" if is_serial else "_INITIAL_STATE_GAP_LAN"
     gap = getattr(radio, attribute, None)
     if isinstance(gap, (int, float)) and not isinstance(gap, bool) and gap > 0:
         return float(gap)
