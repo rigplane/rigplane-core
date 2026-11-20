@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import time
 from unittest import mock
 from unittest.mock import AsyncMock
 
@@ -46,8 +45,10 @@ from rigplane.rigctld.contract import (
     RigctldCommand,
     RigctldConfig,
 )
+import rigplane.rigctld.handler as rigctld_handler_module
 from rigplane.rigctld.handler import RigctldHandler
 from rigplane.rigctld.protocol import format_response, parse_line
+from rigplane.testing.timing import VirtualClock
 from rigplane.types import CivFrame, Mode
 from rigplane_testkit.leaked_radio_guard import fake_connected
 
@@ -2951,7 +2952,16 @@ async def test_get_level_preamp_ic9700_ingress_combination_is_unavailable() -> N
 
     with mock.patch.object(
         radio, "get_preamp", AsyncMock(spec=IcomRadio.get_preamp)
-    ) as read:
+    ) as read, mock.patch.object(
+        # MOR-4157: the radio in this test is never connected, and the
+        # link-loss gate would refuse with ETIMEOUT before the profile's
+        # own ENAVAIL answer. The subject here is that static availability
+        # verdict, so present a connected radio.
+        IcomRadio,
+        "connected",
+        new_callable=mock.PropertyMock,
+        return_value=True,
+    ):
         resp = await handler.execute(get_cmd("get_level", "PREAMP"))
 
     assert resp.error == HamlibError.ENAVAIL
@@ -7085,17 +7095,21 @@ async def test_link_down_refuses_writes_including_unkey(
 @pytest.mark.asyncio
 async def test_stale_liveness_answers_error_and_recovers(
     mock_radio: AsyncMock,
+    virtual_clock: VirtualClock,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A liveness stamp past the backend-declared stale window refuses reads.
 
     The stamp/threshold pair is the existing MOR-3845 link-health source
     (``last_valid_frame_monotonic`` / ``liveness_stale_after_ms``); no new
-    tracker. Ages are set relative to ``time.monotonic()`` with no sleeps.
+    tracker. Virtual time: the handler's ``time.monotonic`` is the scoped
+    ManualClock and the stamps are set against it, with no sleeps.
     """
+    virtual_clock.scope_to(monkeypatch, rigctld_handler_module)
     radio = _mirror_radio_with_cached_state(mock_radio)
     radio.connected = True
     radio.liveness_stale_after_ms = 2000
-    radio.last_valid_frame_monotonic = time.monotonic() - 30.0
+    radio.last_valid_frame_monotonic = virtual_clock.now - 30.0
     radio.get_freq.return_value = 14_090_000
     handler = RigctldHandler(radio, RigctldConfig())
 
@@ -7105,19 +7119,24 @@ async def test_stale_liveness_answers_error_and_recovers(
     assert stale.error == HamlibError.ETIMEOUT
     radio.get_freq.assert_not_awaited()
 
-    # Link answers again: the stamp refreshes and the read goes through.
-    radio.last_valid_frame_monotonic = time.monotonic()
+    # Link answers again: the stamp refreshes and the read goes through
+    # (from the legacy mirror, the pre-existing healthy path for this fake).
+    radio.last_valid_frame_monotonic = virtual_clock.now
     fresh = await handler.execute(get_cmd("get_freq"))
 
     assert fresh.ok
-    assert fresh.values == ["14090000"]
+    assert fresh.values == ["14070000"]
 
 
 @pytest.mark.asyncio
 async def test_link_loss_transition_logged_once_with_reason(
-    mock_radio: AsyncMock, caplog: pytest.LogCaptureFixture
+    mock_radio: AsyncMock,
+    caplog: pytest.LogCaptureFixture,
+    virtual_clock: VirtualClock,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The down transition logs one warning with its reason, not per command."""
+    virtual_clock.scope_to(monkeypatch, rigctld_handler_module)
     radio = _mirror_radio_with_cached_state(mock_radio)
     radio.connected = False
     handler = RigctldHandler(radio, RigctldConfig())
@@ -7135,7 +7154,7 @@ async def test_link_loss_transition_logged_once_with_reason(
     # Recovery clears the latch so a later loss logs again.
     radio.connected = True
     radio.liveness_stale_after_ms = 2000
-    radio.last_valid_frame_monotonic = time.monotonic()
+    radio.last_valid_frame_monotonic = virtual_clock.now
     radio.get_freq.return_value = 14_090_000
     await handler.execute(get_cmd("get_freq"))
     radio.connected = False
