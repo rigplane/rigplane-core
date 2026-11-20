@@ -13,7 +13,6 @@
 <script lang="ts">
   import { onDestroy } from 'svelte';
   import Toast from './components/shared/Toast.svelte';
-  import RadioLinkBanner from './components/shared/RadioLinkBanner.svelte';
   import { getHostUi, powerRequestAllowed } from '$lib/local-extensions/host-ui';
   import { runtime } from '$lib/runtime';
   import { getManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
@@ -105,11 +104,6 @@
 
 <div class="app-global-host" data-testid="app-global-host">
   <Toast />
-  <!-- MOR-2241: the power-off overlay already owns the full-screen
-       disconnected presentation; the banner must not stack on top of it. -->
-  {#if !overlayVisible}
-    <RadioLinkBanner />
-  {/if}
 
   {#if showTxIndication && txIndication}
     <div

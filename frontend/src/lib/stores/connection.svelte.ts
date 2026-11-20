@@ -160,14 +160,6 @@ export function getRigConnected(): boolean {
   return rigConnected;
 }
 
-// Read-side accessor for the MOR-1526 F2 guard above: whether a state_update
-// has landed on the CURRENT transport session. Display surfaces that key on
-// rigConnected=false (the MOR-2241 disconnect banner) use it to avoid firing
-// on a cold start, before the first facts arrive.
-export function hasObservedFactsThisSession(): boolean {
-  return factsObservedThisSession;
-}
-
 export function setRadioReady(v: boolean): void {
   radioReady = v;
 }
