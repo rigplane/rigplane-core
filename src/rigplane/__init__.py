@@ -102,10 +102,23 @@ from .types import (  # noqa: F401, E402
 # Static types for the lazy WebRTC wire contracts (MOR-272): type checkers
 # see the real classes; at runtime they stay lazy (``_LAZY_MAP`` below).
 if TYPE_CHECKING:
+    from .web.api_channel import (  # noqa: F401, TID251
+        SEND_HIGH_WATER_BYTES as API_SEND_HIGH_WATER_BYTES,
+    )
+    from .web.api_channel import (  # noqa: F401, TID251
+        ApiFrame,
+        ApiFrameError,
+        ApiMessageType,
+        ApiRequestHead,
+        api_request_messages,
+    )
     from .web.channel_attach import (  # noqa: F401, TID251
+        DATA_CHANNELS,
         ChannelAttachedAck,
         ChannelKind,
         ClientChannelParams,
+        DataChannelLabel,
+        DataChannelSpec,
     )
     from .web.transport.ice_gathering import (  # noqa: F401, TID251
         GATHER_TIMEOUT_S,
@@ -121,6 +134,10 @@ if TYPE_CHECKING:
         WebRtcOffer,
         WebRtcRequestError,
         WebRtcTransportStatus,
+    )
+    from .web.transport.turn_selection import (  # noqa: F401, TID251
+        UdpReachabilityCache,
+        select_turn_url,
     )
 
 # === Tier 2 — lazy via PEP 562 ===
@@ -143,6 +160,9 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
     "ClientChannelParams": ("rigplane.web.channel_attach", "ClientChannelParams"),
     "ChannelAttachedAck": ("rigplane.web.channel_attach", "ChannelAttachedAck"),
     "ChannelKind": ("rigplane.web.channel_attach", "ChannelKind"),
+    "DataChannelSpec": ("rigplane.web.channel_attach", "DataChannelSpec"),
+    "DataChannelLabel": ("rigplane.web.channel_attach", "DataChannelLabel"),
+    "DATA_CHANNELS": ("rigplane.web.channel_attach", "DATA_CHANNELS"),
     "IceServer": ("rigplane.web.transport.ice_gathering", "IceServer"),
     "IceGatheringPolicy": (
         "rigplane.web.transport.ice_gathering",
@@ -172,6 +192,17 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
         "WebRtcTransportStatus",
     ),
     "IceCandidateInit": ("rigplane.web.transport.webrtc_contract", "IceCandidateInit"),
+    "UdpReachabilityCache": (
+        "rigplane.web.transport.turn_selection",
+        "UdpReachabilityCache",
+    ),
+    "select_turn_url": ("rigplane.web.transport.turn_selection", "select_turn_url"),
+    "ApiFrame": ("rigplane.web.api_channel", "ApiFrame"),
+    "ApiFrameError": ("rigplane.web.api_channel", "ApiFrameError"),
+    "ApiMessageType": ("rigplane.web.api_channel", "ApiMessageType"),
+    "ApiRequestHead": ("rigplane.web.api_channel", "ApiRequestHead"),
+    "api_request_messages": ("rigplane.web.api_channel", "api_request_messages"),
+    "API_SEND_HIGH_WATER_BYTES": ("rigplane.web.api_channel", "SEND_HIGH_WATER_BYTES"),
     # --- Backward-compat radio facades ---
     "IcomRadio": ("rigplane.runtime.radio", "IcomRadio"),
     "AudioRecoveryState": ("rigplane.runtime.radio", "AudioRecoveryState"),
@@ -430,6 +461,9 @@ __all__ = [
     "ClientChannelParams",
     "ChannelAttachedAck",
     "ChannelKind",
+    "DataChannelSpec",
+    "DataChannelLabel",
+    "DATA_CHANNELS",
     "IceServer",
     "IceGatheringPolicy",
     "GATHER_TIMEOUT_S",
@@ -441,4 +475,12 @@ __all__ = [
     "WebRtcRequestError",
     "WebRtcTransportStatus",
     "IceCandidateInit",
+    "UdpReachabilityCache",
+    "select_turn_url",
+    "ApiFrame",
+    "ApiFrameError",
+    "ApiMessageType",
+    "ApiRequestHead",
+    "api_request_messages",
+    "API_SEND_HIGH_WATER_BYTES",
 ]
