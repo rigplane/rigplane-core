@@ -61,6 +61,26 @@ class ChannelAttachedAck:
             {"type": "attached", "v": self.version, "channel": self.channel}
         )
 
+    @classmethod
+    def from_frame(cls, payload: str | bytes) -> Self:
+        """Parse an ack frame (the offerer side of :meth:`encode`).
+
+        Raises :class:`ValueError` for anything that is not a JSON
+        ``{"type": "attached", "v": int, "channel": str}`` object.
+        """
+        try:
+            text = payload.decode("utf-8") if isinstance(payload, bytes) else payload
+            obj = json.loads(text)
+        except (UnicodeDecodeError, ValueError) as exc:
+            raise ValueError(f"invalid attach ack: {exc}") from exc
+        if not isinstance(obj, dict) or obj.get("type") != "attached":
+            raise ValueError("attach ack must carry {'type': 'attached', ...}")
+        version = obj.get("v")
+        channel = obj.get("channel")
+        if type(version) is not int or type(channel) is not str:
+            raise ValueError("attach ack needs an int 'v' and a str 'channel'")
+        return cls(channel=channel, version=version)
+
 
 def _is_attach_frame(payload: bytes) -> bool:
     """True for a JSON ``{"type": "attach", ...}`` frame."""
@@ -208,4 +228,19 @@ class ClientChannelParams:
             controller_key=key,
             controller_role=role,
             state_delta=raw_delta,
+        )
+
+    def to_attach_frame(self) -> str:
+        """Encode the data-channel attach frame (the offerer side).
+
+        The inverse of :meth:`from_attach_frame`: an offerer sends this as
+        the first text frame on each data channel.
+        """
+        return json.dumps(
+            {
+                "type": "attach",
+                "controller_key": self.controller_key,
+                "role": self.controller_role,
+                "state_delta": self.state_delta,
+            }
         )

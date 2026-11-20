@@ -4,6 +4,8 @@ import { parseCurrentScopeFrame } from '../../../src/lib/runtime/scope-frame';
 
 interface PassbandSample {
   t: number;
+  /** 'frame': an animation frame ran; 'dom': the panel's DOM changed. */
+  kind: 'frame' | 'dom';
   overlay: boolean;
   gates: ScopePassbandDiagnostics | null;
   state: string | null;
@@ -13,48 +15,105 @@ declare global {
   interface Window { passbandSamples: PassbandSample[] }
 }
 
+/**
+ * Records the passband overlay's presence from two independent triggers:
+ * every animation frame (what the operator could see) and every DOM change
+ * under the document (what the page did). MOR-4214: the first alone made the
+ * probe a measure of the host. Under software WebGL on a loaded runner the
+ * page can go seconds without producing a frame, and a frame-only sampler
+ * then reported "samples do not cover the interval" for a page that was
+ * simply not painting. A DOM-driven record is made at the moment of each
+ * change whatever the frame rate, so a missing sample means "nothing
+ * changed", never "the sampler was not running".
+ */
 export async function installSampler(page: import('@playwright/test').Page): Promise<void> {
   await page.addInitScript(() => {
     window.passbandSamples = [];
-    const loop = () => {
+    const snapshot = (kind: 'frame' | 'dom') => {
       const panel = document.querySelector('.spectrum-panel');
       const overlay = panel?.querySelector('.waterfall-content .passband-overlay');
       const gatesRaw = panel?.getAttribute('data-passband-gates');
-      window.passbandSamples.push({
+      const sample: PassbandSample = {
         t: performance.now(),
+        kind,
         overlay: overlay instanceof HTMLElement && overlay.getBoundingClientRect().width > 0,
         gates: gatesRaw ? JSON.parse(gatesRaw) as ScopePassbandDiagnostics : null,
         state: panel?.getAttribute('data-passband-state') ?? null,
-      });
+      };
+      // A DOM record that repeats the previous state adds nothing.
+      const last = window.passbandSamples.at(-1);
+      if (kind === 'dom' && last && last.overlay === sample.overlay && last.state === sample.state
+        && JSON.stringify(last.gates) === JSON.stringify(sample.gates)) return;
+      window.passbandSamples.push(sample);
+    };
+    const loop = () => {
+      snapshot('frame');
       requestAnimationFrame(loop);
     };
     requestAnimationFrame(loop);
+    new MutationObserver(() => snapshot('dom')).observe(document, {
+      subtree: true, childList: true, attributes: true,
+    });
   });
 }
 
 interface Gap {
   startMs: number;
+  /** Animation frames that ran with the overlay absent (what could be seen). */
   frames: number;
   durationMs: number;
-  /** Gate JSON at the last good frame and the first bad frame. */
+  /** Gate JSON at the last good sample and the first bad one. */
   before: ScopePassbandDiagnostics | null;
   atDrop: ScopePassbandDiagnostics | null;
   stateAtDrop: string | null;
 }
 
-/** Contiguous runs of absent overlay inside [fromT, toT], plus the gate diff at each drop. */
+/**
+ * Runs of absent overlay inside [fromT, toT], plus the gate diff at each
+ * drop. The page is in the state of the last sample before the window until
+ * something changes, so no sample needs to land inside the window for the
+ * interval to be covered.
+ *
+ * Only painted frames are evidence of what an operator saw. A run opens at the
+ * first absent sample (frame or DOM) and `frames` counts the absent frames in
+ * it. A run a frame has seen (`frames > 0`) is closed only by a frame that
+ * shows the overlay, so a DOM-only restoration between two absent frames does
+ * not split one outage. A run no frame has seen (`frames === 0`) is closed by
+ * the first sample that shows the overlay, so an unpainted hole never merges
+ * into, or hides, a later painted outage. `paintedOutages` keeps the runs a
+ * frame saw.
+ *
+ * A run still open when the window starts (absent in the last sample before
+ * it, or a painted outage a DOM restoration has not yet closed) continues
+ * into the window as a gap starting at the window start, keeping the painted
+ * frames already counted.
+ */
 export function passbandGaps(samples: PassbandSample[], fromT: number, toT: number): Gap[] {
-  const windowed = samples.filter((sample) => sample.t >= fromT && sample.t <= toT);
-  if (windowed.length < 3 || windowed[0]!.t > fromT + 250 || windowed.at(-1)!.t < toT - 250
-    || windowed.some((sample, i) => i > 0 && sample.t - windowed[i - 1]!.t > 500)) {
-    throw new Error('Passband samples do not cover the stimulus interval');
+  if (!samples.some((sample) => sample.t < fromT)) {
+    throw new Error('Passband sampler recorded nothing before the stimulus interval');
   }
   const gaps: Gap[] = [];
   let run: Gap | null = null;
   let lastGood: PassbandSample | null = null;
-  for (const sample of windowed) {
+  let entered = false;
+  for (const sample of samples) {
+    if (sample.t > toT) break;
+    if (!entered && sample.t >= fromT) {
+      entered = true;
+      if (run !== null) {
+        // Annotation required: without it the clone's flow type derives from
+        // `run` while `run`'s does from the clone (TS7022), and the spread
+        // in the next statement then reports TS2698 on TS 5.9.
+        const carried: Gap = run;
+        run = { ...carried, startMs: fromT, durationMs: 0 };
+        gaps.push(run);
+      }
+    }
     if (sample.overlay) {
-      run = null;
+      if (run) {
+        run.durationMs = sample.t - run.startMs;
+        if (sample.kind === 'frame' || run.frames === 0) run = null;
+      }
       lastGood = sample;
       continue;
     }
@@ -63,12 +122,18 @@ export function passbandGaps(samples: PassbandSample[], fromT: number, toT: numb
         startMs: sample.t, frames: 0, durationMs: 0,
         before: lastGood?.gates ?? null, atDrop: sample.gates, stateAtDrop: sample.state,
       };
-      gaps.push(run);
+      if (entered) gaps.push(run);
     }
-    run.frames += 1;
+    if (sample.kind === 'frame') run.frames += 1;
     run.durationMs = sample.t - run.startMs;
   }
+  if (!entered && run !== null) gaps.push({ ...run, startMs: fromT, durationMs: 0 });
   return gaps;
+}
+
+/** Gaps an operator could have seen (at least one painted absent frame) longer than `minMs`. */
+export function paintedOutages(gaps: Gap[], minMs: number): Gap[] {
+  return gaps.filter((gap) => gap.frames > 0 && gap.durationMs > minMs);
 }
 
 export function gateDiff(gap: Gap): Record<string, unknown> {
