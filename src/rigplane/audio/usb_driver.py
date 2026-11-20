@@ -1861,7 +1861,6 @@ class UsbAudioDriver:
             _candidates(snapshot, None, {}, include_unmatched=True),
         )
 
-
     def _sample_rate_candidates(self, requested: int) -> tuple[int, ...]:
         return tuple(dict.fromkeys((requested, *_DEFAULT_SAMPLE_RATE_CANDIDATES)))
 
