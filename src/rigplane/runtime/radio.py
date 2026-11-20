@@ -1613,8 +1613,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         """RX frames resumed and are still flowing: stop without teardown.
 
         Newer than the episode start is not enough — one buffered
-        pre-death frame landing mid-task, or the teardown's own
-        jitter-buffer flush, must not stop the repair. Only a heartbeat
+        pre-death frame landing mid-task must not stop the repair. Only a heartbeat
         that is both newer than the last teardown completion and fresher
         than the session's own silence definition
         (``RX_LIVENESS_TIMEOUT_S``, the same threshold

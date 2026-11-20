@@ -23,9 +23,13 @@ import json
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
 from _order_sensitive_radios import LanLikeRadio
+from test_audio import _make_audio_bytes, _mock_transport
 
 from rigplane.audio import AudioPacket
+from rigplane.audio.bus import AudioBus
+from rigplane.audio.lan_stream import AudioStream
 from rigplane.audio.session import (
     RX_LIVENESS_TIMEOUT_S,
     WATCHDOG_INTERVAL_S,
@@ -172,6 +176,61 @@ async def test_frames_resuming_returns_to_demand_state() -> None:
     assert await await_until(lambda: session.state is AudioSessionState.RX_ONLY)
     # The clock no longer moves, so no further event can possibly fire.
     assert [e.reason for e in events] == ["rx_silent", "rx_resumed"]
+    await sub.release()
+
+
+class _LanStreamRadio:
+    """Radio whose RX leg is the real LAN ``AudioStream`` and jitter buffer."""
+
+    def __init__(self, transport: Any, clock: _ManualClock) -> None:
+        self.stream = AudioStream(transport)
+        self.audio_bus = AudioBus(self, monotonic=clock)
+
+    async def start_rx(self, callback: Any, *, jitter_depth: int | None = None) -> None:
+        await self.stream.start_rx(callback, jitter_depth=jitter_depth)
+
+    async def stop_rx(self) -> None:
+        await self.stream.stop_rx()
+
+
+async def test_rx_teardown_never_replays_held_frames_as_a_resume() -> None:
+    """MOR-4214: frames still held in the jitter buffer when RX stops arrived
+    before the silence. The teardown of a dead leg (``stop_rx``) must not
+    hand them to the bus: they would stamp a fresh heartbeat, and the
+    watchdog would report ``rx_resumed`` while the audio is still dead."""
+    raws = [_make_audio_bytes(b"\x01\x00", send_seq=seq) for seq in (0, 1)]
+    dead = asyncio.Event()
+
+    async def receive_packet(timeout: float | None = None) -> bytes:
+        if raws:
+            return raws.pop(0)
+        await dead.wait()
+        raise asyncio.CancelledError
+
+    transport = _mock_transport()
+    transport.receive_packet = receive_packet
+    clock = _ManualClock()
+    radio = _LanStreamRadio(transport, clock)
+    session = _clocked_session(radio, clock)
+    events: list[AudioSessionEvent] = []
+    session.add_listener(events.append)
+    sub = await session.subscribe_rx("a")
+    # Two frames arrive, fewer than the jitter depth: both stay held.
+    held = radio.stream._jitter_buffer  # noqa: SLF001
+    assert held is not None
+    assert await await_until(lambda: held.pending == 2)
+    clock.advance(2 * _TIMEOUT)
+    assert await await_until(lambda: session.state is AudioSessionState.RECOVERING)
+
+    await radio.stop_rx()  # the repair's teardown of the dead leg
+
+    assert session.bus.last_rx_frame_monotonic is None
+    reads = clock.calls
+    assert await await_until(lambda: clock.calls > reads)
+    assert session.state is AudioSessionState.RECOVERING
+    assert [e.reason for e in events] == ["rx_silent"]
+    with pytest.raises(asyncio.QueueEmpty):
+        sub.get_nowait()
     await sub.release()
 
 
