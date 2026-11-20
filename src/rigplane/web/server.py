@@ -8123,6 +8123,7 @@ class WebServer:
                 controller_audio_loss=self._controller_audio_loss,
                 controller_track_stop=self._controller_track_audio_stop,
                 managed_tx_authority=self._managed_tx_authority(),
+                server=self,
             )
         elif kind == "rigctl":
             owner = ticket.tx_owner

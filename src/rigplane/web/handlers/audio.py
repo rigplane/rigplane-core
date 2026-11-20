@@ -110,6 +110,12 @@ _CAPTURE_ERROR_NAMES = frozenset(
     }
 )
 
+# Consecutive TX frames dropped at the codec/push boundary before the
+# operator's session gets its one-per-transmission toast (MOR-4602). At
+# the nominal browser cadence (~50 frames/s) this is a few hundred
+# milliseconds of dead carrier; a single lost frame never toasts.
+TX_DROP_NOTIFY_AFTER = 10
+
 
 class AudioTxFormat(TypedDict):
     """The ``audio_tx_format`` ack payload (MOR-1791) as ONE typed
@@ -1640,6 +1646,9 @@ class AudioHandler:
             so mic audio flows only while RigPlane holds the key: managed
             intent keyed or a fresh ``ObservedPtt.ON`` (MOR-2870). ``None``
             leaves the handler ungated (direct-construction test doubles).
+        server: Optional WebServer owning the session notification bus;
+            with the controller ticket it carries the MOR-4602 TX operator
+            toasts to this channel's session control channel.
     """
 
     def __init__(
@@ -1656,11 +1665,13 @@ class AudioHandler:
         controller_track_stop: Callable[[Awaitable[None]], Awaitable[None]]
         | None = None,
         managed_tx_authority: ManagedTxAuthority | None = None,
+        server: Any = None,
     ) -> None:
         self._ws = ws
         self._radio = radio
         self._broadcaster = broadcaster
         self._tx_gate = tx_gate
+        self._server = server
         self._controller = controller
         self._controller_ticket = controller_ticket
         self._controller_audio_source = controller_audio_source
@@ -1678,6 +1689,12 @@ class AudioHandler:
         # Per-key counters for once-per-frame TX warnings (MOR-1788), applied
         # by ``_warn_tx_throttled``; cleared at every TX session start.
         self._tx_warn_counts: dict[str, int] = {}
+        # Per-transmission TX frame accounting (MOR-4602): reset at every
+        # TX start by ``_reset_tx_frame_accounting``.
+        self._tx_frames_received = 0
+        self._tx_frames_pushed = 0
+        self._tx_drop_streak = 0
+        self._tx_drop_notified = False
         self._tx_stop_lock = asyncio.Lock()
         self._seq: int = 0
         self._last_logged_capture_category: str | None = None
@@ -1856,10 +1873,16 @@ class AudioHandler:
                     await self._abort_tx_start(previous_facts, was_active)
                     raise
                 self._tx_facts = facts
-                self._tx_active = True
-                # New TX session: clear the MOR-1788 warning counters so a
-                # recurrence is never hidden by an earlier session's backlog.
+                # Clear the MOR-1788 warning counters so a recurrence is
+                # never hidden by an earlier session's backlog.
                 self._tx_warn_counts.clear()
+                if not was_active:
+                    # A genuinely new transmission zeroes the frame
+                    # accounting (MOR-4602); a duplicate ``audio_start``
+                    # on a live transmission keeps its totals — it is the
+                    # same transmission, not a new one.
+                    self._reset_tx_frame_accounting()
+                self._tx_active = True
                 logger.info("audio: TX active")
                 await self._send_tx_format(transcoder_ready)
         elif msg_type == "audio_stop":
@@ -1939,6 +1962,10 @@ class AudioHandler:
             was_active = self._tx_active
             self._tx_active = False
             facts, self._tx_facts = self._tx_facts, None
+            # Frames stop being counted the moment ``_tx_active`` drops;
+            # close the transmission's accounting whatever happens to the
+            # radio stop below (MOR-4602).
+            tx_frame_totals = self._close_tx_frame_accounting() if was_active else None
 
             try:
                 lease = self._tx_lease
@@ -2014,7 +2041,15 @@ class AudioHandler:
             else:
                 if self._controller_track_stop is None:
                     self._release_controller_audio()
-                logger.info("audio: TX stopped (%s)", reason)
+                if tx_frame_totals is None:
+                    logger.info("audio: TX stopped (%s)", reason)
+                else:
+                    logger.info(
+                        "audio: TX stopped (%s) frames=%d pushed=%d",
+                        reason,
+                        tx_frame_totals[0],
+                        tx_frame_totals[1],
+                    )
 
     async def _await_bounded_tx_stop(
         self,
@@ -2276,10 +2311,15 @@ class AudioHandler:
         *,
         legacy_method: str,
         tx_currency: tuple[int, int, str] | None = None,
-    ) -> None:
+    ) -> bool:
         """Push TX bytes via the held session lease (MOR-580); without one,
         via neutral ``push_tx``, falling back to the named legacy per-codec
-        push method (MOR-544)."""
+        push method (MOR-544).
+
+        Returns whether the bytes were submitted toward the radio:
+        ``False`` when the admission guard closed between the caller's
+        gate check and submission (withheld fail-closed — the caller
+        neither counts a push nor a drop for it)."""
         ticket = self._controller_ticket
         remote = ticket is not None and ticket.remote
 
@@ -2295,27 +2335,28 @@ class AudioHandler:
         if self._tx_gate is not None or remote:
             try:
                 if await submission_guard() is not True:
-                    return
+                    return False
             except Exception:
-                return
+                return False
         lease = self._tx_lease
         if lease is not None and not lease.released:
             if self._tx_gate is None and not remote:
                 await lease.push(data)
             else:
                 await lease.push(data, submission_guard=submission_guard)
-            return
+            return True
         facts = self._tx_facts
         if facts is not None and facts.lifecycle is not None:
             if facts.path == "session":
                 raise RuntimeError("browser TX audio session lease is unavailable")
             await facts.lifecycle[1](data)
-            return
+            return True
         push_tx = getattr(self._radio, "push_tx", None)
         if push_tx is not None:
             await push_tx(data)
         else:
             await getattr(self._radio, legacy_method)(data)
+        return True
 
     async def _start_rx(
         self,
@@ -2379,6 +2420,110 @@ class AudioHandler:
                 exc_info=exc_info,
             )
 
+    def _reset_tx_frame_accounting(self) -> None:
+        """Zero the per-transmission TX frame counters (MOR-4602)."""
+        self._tx_frames_received = 0
+        self._tx_frames_pushed = 0
+        self._tx_drop_streak = 0
+        self._tx_drop_notified = False
+
+    def _close_tx_frame_accounting(self) -> tuple[int, int]:
+        """Close the counters of a transmission that just ended (MOR-4602).
+
+        Returns the ``(received, pushed)`` totals for the stop log line.
+        A transmission that ends with zero frames received — the 44.1 kHz
+        encoder class, where the browser opens TX and never sends a frame
+        (MOR-4594) — is surfaced to the operator's session as one toast.
+        """
+        totals = (self._tx_frames_received, self._tx_frames_pushed)
+        if self._tx_frames_received == 0:
+            self._notify_tx_session(
+                code="txAudioNoFrames",
+                message="TX stopped with no audio frames received from the browser",
+            )
+        return totals
+
+    def _account_tx_drop(self, site: str) -> None:
+        """Account one TX frame dropped at the codec/push boundary (MOR-4602).
+
+        A single dropped frame is routine; a sustained run means the
+        operator transmits a dead carrier while the browser keeps
+        sending. After ``TX_DROP_NOTIFY_AFTER`` consecutive dropped
+        frames, one toast per transmission tells that operator's session.
+        """
+        self._tx_drop_streak += 1
+        if self._tx_drop_streak < TX_DROP_NOTIFY_AFTER or self._tx_drop_notified:
+            return
+        self._tx_drop_notified = True
+        self._notify_tx_session(
+            code="txAudioDropped",
+            message=(
+                "TX audio frames were dropped; microphone audio is not "
+                "reaching the radio"
+            ),
+            params={"reason": site},
+        )
+
+    def _tx_control_session_ids(self) -> list[str]:
+        """Registration ids of this channel's session control channels.
+
+        Resolved at send time, so a control-channel reconnect stays
+        targetable for the life of the audio channel. Empty
+        (direct-construction doubles, sessionless channels, expired
+        sessions) leaves the toast undelivered.
+        """
+        if self._controller is None or self._controller_ticket is None:
+            return []
+        try:
+            # Annotated: controller_authority is outside mypy's analyzed
+            # set (follow_imports=skip), so the call's type is Any here.
+            ids: list[str] = self._controller.control_session_ids(
+                self._controller_ticket
+            )
+        except ControllerError:
+            return []
+        return ids
+
+    def _notify_tx_session(
+        self,
+        *,
+        code: str,
+        message: str,
+        params: dict[str, Any] | None = None,
+    ) -> None:
+        """Send one operator toast to this channel's session (MOR-4602).
+
+        Uses the WebServer session-notification path — the same wire and
+        toast surface every other notification uses, never a second
+        channel — fanned out to the session's registered control
+        channels (the browser can be an auxiliary while a native
+        controller holds the primary). Without ``server``, or with no
+        resolvable control channel, the toast is not sent and only the
+        log lines remain, which is the pre-MOR-4602 behavior.
+        """
+        if self._server is None:
+            return
+        session_ids = self._tx_control_session_ids()
+        if not session_ids:
+            return
+        delivered = 0
+        for session_id in session_ids:
+            if self._server.send_notification_to_session(
+                session_id,
+                "error",
+                message,
+                "audio",
+                code=code,
+                params=params,
+            ):
+                delivered += 1
+        logger.info(
+            "audio: TX operator toast code=%s targets=%d delivered=%d",
+            code,
+            len(session_ids),
+            delivered,
+        )
+
     async def _handle_tx_audio(self, payload: bytes) -> None:
         """Forward TX audio from browser to radio."""
         if not self._tx_active:
@@ -2386,6 +2531,9 @@ class AudioHandler:
                 "audio: TX frame ignored (tx_active=False), size=%d", len(payload)
             )
             return
+        # Per-transmission accounting (MOR-4602): every frame the browser
+        # sent while TX was active counts as received, wherever it dies.
+        self._tx_frames_received += 1
         tx_currency = None
         ticket = self._controller_ticket
         if ticket is not None and ticket.remote:
@@ -2450,7 +2598,7 @@ class AudioHandler:
                     browser_codec == AUDIO_CODEC_PCM16
                     and tx_codec == AudioCodec.PCM_1CH_16BIT
                 ):
-                    await self._push_tx(
+                    submitted = await self._push_tx(
                         audio_data,
                         legacy_method="push_audio_tx_pcm",
                         tx_currency=tx_currency,
@@ -2469,6 +2617,7 @@ class AudioHandler:
                             tx_codec.name,
                             self._tx_sample_rate(),
                         )
+                        self._account_tx_drop("dropped_no_transcoder")
                         return
                     try:
                         # Decode Opus → PCM16
@@ -2483,10 +2632,11 @@ class AudioHandler:
                             self._tx_sample_rate(),
                             e,
                         )
+                        self._account_tx_drop("dropped_transcode_failed")
                         return
                     # A native playback refusal belongs to the outer push
                     # error boundary, not the successfully completed decoder.
-                    await self._push_tx(
+                    submitted = await self._push_tx(
                         pcm_data,
                         legacy_method="push_audio_tx_pcm",
                         tx_currency=tx_currency,
@@ -2494,7 +2644,7 @@ class AudioHandler:
                     tx_data_desc = f"{len(pcm_data)} bytes pcm"
                 elif browser_codec == AUDIO_CODEC_OPUS:
                     # Radio uses Opus or PCM_1CH_8BIT/etc → send Opus as-is
-                    await self._push_tx(
+                    submitted = await self._push_tx(
                         audio_data,
                         legacy_method="push_audio_tx_opus",
                         tx_currency=tx_currency,
@@ -2506,8 +2656,20 @@ class AudioHandler:
                         "audio: unsupported browser TX codec 0x%02x, dropping frame",
                         browser_codec,
                     )
+                    self._account_tx_drop("unsupported_codec")
                     return
 
+                if not submitted:
+                    # Withheld by the admission guard between the outer
+                    # gate check and submission: neither pushed nor
+                    # dropped — the outer gate site logs its own warning
+                    # when it is the one that closes. (The lease re-checks
+                    # the guard internally, fail-closed; a frame withheld
+                    # there is not distinguishable here — see MOR-4602
+                    # follow-up on propagating the lease push outcome.)
+                    return
+                self._tx_frames_pushed += 1
+                self._tx_drop_streak = 0
                 # Log every 50th frame to avoid spam
                 if not hasattr(self, "_tx_frame_count"):
                     self._tx_frame_count = 0
@@ -2522,6 +2684,7 @@ class AudioHandler:
                 self._warn_tx_throttled(
                     "push_tx_error", "audio: push TX error", exc_info=True
                 )
+                self._account_tx_drop("push_tx_error")
 
     async def _sender_loop(self) -> None:
         """Send queued audio frames to the WebSocket client."""
