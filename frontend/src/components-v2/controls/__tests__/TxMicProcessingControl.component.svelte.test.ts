@@ -135,4 +135,27 @@ describe('TX mic processing: control -> AudioManager -> getUserMedia (MOR-4596)'
       echoCancellation: true, noiseSuppression: true, autoGainControl: true,
     });
   });
+
+  it('gives each mounted copy its own radio group (phone sheet + nested dialog)', async () => {
+    await loadPage();
+    const { default: Control } = await import('../TxMicProcessingControl.svelte');
+    const second = document.createElement('div');
+    document.body.append(second);
+    const secondMount = svelte.mount(Control, { target: second });
+    svelte.flushSync();
+
+    const first = target.querySelector<HTMLInputElement>('[data-testid="tx-mic-processing-raw"]')!;
+    const other = second.querySelector<HTMLInputElement>('[data-testid="tx-mic-processing-raw"]')!;
+    // One shared name would couple the copies through native radio grouping.
+    expect(first.name).not.toBe(other.name);
+    // Re-clicking the already-selected mode in the second copy leaves the
+    // first copy's selection rendered instead of silently unchecking it.
+    other.click();
+    svelte.flushSync();
+    expect(first.checked).toBe(true);
+    expect(other.checked).toBe(true);
+
+    svelte.unmount(secondMount);
+    second.remove();
+  });
 });

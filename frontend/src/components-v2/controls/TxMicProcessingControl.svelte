@@ -13,6 +13,11 @@
 
   const modes: readonly TxMicProcessing[] = ['raw', 'browser'];
   const mode = $derived(getTxMicProcessing());
+  // Instance-unique radio-group name: the sheet and the nested TX levels
+  // dialog can mount a copy each (phone TX settings), and one shared name
+  // would let the native grouping uncheck the other copy's input.
+  const groupId = $props.id();
+  const groupName = `tx-mic-processing-${groupId}`;
 </script>
 
 <fieldset class="tx-mic-processing" data-testid="tx-mic-processing">
@@ -21,7 +26,7 @@
     <label class="tx-mic-processing-row">
       <input
         type="radio"
-        name="tx-mic-processing"
+        name={groupName}
         value={option}
         data-testid={`tx-mic-processing-${option}`}
         checked={mode === option}
