@@ -1376,6 +1376,37 @@ describe('SpectrumPanel component', () => {
     expect(spectrumRendererHarness.lastOptions).toMatchObject({ centerHz: 14_050_250, spanHz: 50_000, sampleSpanHz: 100_000 });
   });
 
+  it('keeps the FIX crop through a stream-mode dropout while the readback still says FIX (MOR-4214)', async () => {
+    runtimeHarness.state.currentCaps = structuredClone(IC7300_CAPABILITIES);
+    authorityHarness.state.current = authority({ scopeControls: testScopeControls(1) });
+    refreshSpectrumAuthority();
+    const target = mountPanel(); emitFrame({ mode: 1 });
+    await flushWaterfallPaint();
+    target.querySelector<HTMLButtonElement>('[data-testid="scope-zoom-in"]')!.click();
+    flushSync(); await flushWaterfallPaint();
+    // The FIX crop is displayed: half the 100 kHz fixed window.
+    expect(spectrumRendererHarness.lastOptions).toMatchObject({ spanHz: 50_000, sampleSpanHz: 100_000 });
+    // A reconnect drops the stream's context mode (ScopeStream.clearMode)
+    // while the OBSERVED radio mode stays FIX. Frames keep flowing with the
+    // fixed window, so the dropout is visible only in the mode: with
+    // `fixed` keyed on the frame mode the panel read this moment as "back
+    // in CENTER", wiped the crop (the MOR-4392 clearing branch) and
+    // repainted the follow window from the CENTER zoom's leftover requested
+    // width — merge-group run 44770631929 failed exactly there. The new
+    // frame below is delivered WITHOUT setMode, as after a reconnect.
+    scopeControllerHarness.stream('hardware').clearMode();
+    harnessChannels.scope!.fire(encodeScopeWire({ startFreq: 14_000_000, endFreq: 14_100_000 }));
+    flushSync(); await flushWaterfallPaint();
+    expect(spectrumRendererHarness.lastOptions).toMatchObject({ spanHz: 50_000, sampleSpanHz: 100_000 });
+    // The readback is the evidence: a genuine CTR return (readback 0)
+    // still clears the leftover crop at once (MOR-4392 semantics).
+    authorityHarness.state.current = authority({ scopeControls: testScopeControls(0) });
+    scopeControllerHarness.stream('hardware').setMode(0);
+    refreshSpectrumAuthority();
+    flushSync(); await flushWaterfallPaint();
+    expect(spectrumRendererHarness.lastOptions).toMatchObject({ spanHz: 100_000 });
+  });
+
   it('hatches the uncovered requested margin of a band preset with a typed reason', async () => {
     runtimeHarness.state.currentCaps = structuredClone(IC7300_CAPABILITIES);
     authorityHarness.state.current = authority({ frequencyHz: 14_050_250 });
