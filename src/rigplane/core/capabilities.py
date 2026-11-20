@@ -181,9 +181,12 @@ CAP_SQL_TYPE = "sql_type"
 
 # Repeater shift DIRECTION (simplex/plus/minus/ARS) — MOR-2111. Distinct from
 # the tone-family tags above: gates ``RepeaterShiftCapable``, not
-# ``RepeaterControlCapable``. Shift magnitude has no capability tag yet — it
-# is a separate, not-yet-built surface.
+# ``RepeaterControlCapable``.
 CAP_REPEATER_SHIFT = "repeater_shift"
+# Repeater offset MAGNITUDE in Hz (MOR-3624): gates ``RepeaterOffsetCapable``
+# and the ``set_repeater_offset`` command descriptor. Distinct from
+# ``CAP_REPEATER_SHIFT`` (direction).
+CAP_REPEATER_OFFSET = "repeater_offset"
 # Automatic Repeater Shift (``RepeaterShiftDirection.ARS``) as a fourth shift
 # direction.
 CAP_REPEATER_SHIFT_ARS = "repeater_shift_ars"

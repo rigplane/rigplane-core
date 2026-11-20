@@ -36,6 +36,7 @@ from rigplane.commands import (
     parse_system_date_response,
     parse_civ_frame,
     parse_frequency_response,
+    parse_freq_offset_response,
     parse_level_response,
     parse_mode_response,
     parse_repeater_shift_response,
@@ -3456,6 +3457,25 @@ class CivRuntime:
                             receiver_id, "operator_controls", "repeater_shift"
                         ),
                         int(shift),
+                        frame=frame,
+                    )
+                )
+        elif frame.command == 0x0C and frame.data:
+            # The duplex offset magnitude (MOR-3624), published only where
+            # the profile declares the offset getter.
+            offset_hz = parse_freq_offset_response(frame.data)
+            command_map = self._host._profile.command_map
+            if (
+                offset_hz is not None
+                and command_map is not None
+                and command_map.has("get_freq_offset")
+            ):
+                observations.append(
+                    self._observation(
+                        FieldPath.receiver(
+                            receiver_id, "operator_controls", "repeater_offset_hz"
+                        ),
+                        offset_hz,
                         frame=frame,
                     )
                 )

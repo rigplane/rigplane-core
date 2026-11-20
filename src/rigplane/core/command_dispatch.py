@@ -19,7 +19,7 @@ from functools import partial
 from types import MappingProxyType
 from typing import Any, Literal, Protocol
 
-from rigplane.core.capabilities import CAP_REPEATER_TONE, CAP_TSQL
+from rigplane.core.capabilities import CAP_REPEATER_OFFSET, CAP_REPEATER_TONE, CAP_TSQL
 from rigplane.core.exceptions import CommandError
 from rigplane.core.state_pipeline_contracts import (
     CommandIntent,
@@ -175,6 +175,39 @@ def _bind_repeater_shift(params: Mapping[str, Any]) -> dict[str, Any]:
 def _repeater_shift_target(params: Mapping[str, Any]) -> FieldPath:
     return FieldPath.receiver(
         str(params["receiver"]), "operator_controls", "repeater_shift"
+    )
+
+
+def _bind_repeater_offset(params: Mapping[str, Any]) -> dict[str, Any]:
+    """Bind a duplex-offset write in exact Hz (MOR-3624).
+
+    The wire resolution check (multiple of 100 Hz) is duplicated here so a
+    unit mix-up is refused at dispatch, before any radio call; the
+    per-band maximum and the TX-range guard belong to the Radio method,
+    which knows the tuned frequency.
+    """
+    raw_offset = params["offset_hz"]
+    raw_receiver = params.get("receiver", 0)
+    if isinstance(raw_offset, bool) or not isinstance(raw_offset, int):
+        raise ValueError("offset_hz must be an integer in Hz")
+    if raw_offset < 0:
+        raise ValueError("offset_hz must be non-negative")
+    if raw_offset % 100:
+        raise ValueError("offset_hz must be a multiple of 100 (the wire resolution)")
+    if isinstance(raw_receiver, bool) or not isinstance(raw_receiver, int):
+        raise ValueError("receiver must be 0 or 1")
+    if raw_receiver not in (0, 1):
+        raise ValueError("receiver must be 0 or 1")
+    return {
+        "offset_hz": int(raw_offset),
+        "receiver": int(raw_receiver),
+        "repeater_offset_hz": int(raw_offset),
+    }
+
+
+def _repeater_offset_target(params: Mapping[str, Any]) -> FieldPath:
+    return FieldPath.receiver(
+        str(params["receiver"]), "operator_controls", "repeater_offset_hz"
     )
 
 
@@ -382,6 +415,20 @@ _COMMAND_DESCRIPTORS: Mapping[str, CommandDescriptor] = MappingProxyType(
             argument_names=("direction", "receiver"),
             tx_policy=DescriptorTxPolicy.TX_SAFE,
             public_names=("set_repeater_shift",),
+        ),
+        # Repeater offset magnitude (MOR-3624): the same shape as
+        # ``set_repeater_shift`` one ticket later — receiver rides the Radio
+        # call, the capability tag gates web reach, and the Radio method owns
+        # the G4 per-band and TX-range refusals before any wire traffic.
+        "set_repeater_offset": CommandDescriptor(
+            name="set_repeater_offset",
+            method_name="set_repeater_offset",
+            bind=_bind_repeater_offset,
+            target=_repeater_offset_target,
+            argument_names=("offset_hz", "receiver"),
+            tx_policy=DescriptorTxPolicy.TX_SAFE,
+            public_names=("set_repeater_offset",),
+            required_capability=CAP_REPEATER_OFFSET,
         ),
         # Repeater tone family (MOR-2111): like ``set_repeater_shift``, the
         # receiver rides the Radio call itself and every backend refuses an

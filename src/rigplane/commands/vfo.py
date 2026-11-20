@@ -70,7 +70,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from ..core.types import RepeaterShiftDirection
-from ._codec import _bcd_byte, bcd_encode_value
+from ._codec import _bcd_byte, _bcd_decode_value, bcd_encode_value
 from ._frame import (
     CONTROLLER_ADDR,
     _build_from_map,
@@ -217,6 +217,70 @@ def parse_repeater_shift_response(data: bytes) -> RepeaterShiftDirection | None:
     if not data:
         return None
     return _REPEATER_SHIFT_READBACK.get(data[0])
+
+
+# Repeater offset magnitude, 0C read / 0D send (MOR-3624). IC-705 CI-V
+# Reference Guide (A7560-8EX-1) p.3 and IC-9700 CI-V Reference Guide
+# (Icom, 2019) p.4: 3-byte BCD, 100 Hz units, least-significant byte
+# first (the packing Hamlib's ``icom_set_rptr_offs`` uses with ``to_bcd``).
+# The 10 MHz digit is valid on a 1.2 GHz band only, so the per-band
+# maximum is profile data (``freq_ranges.ranges[].max_repeater_offset_hz``),
+# not a code constant.
+_OFFSET_BCD_BYTES = 3
+_OFFSET_UNIT_HZ = 100
+
+
+@expose_command_key(lambda cmd_map: "get_freq_offset")
+@require_cmd_map
+def get_freq_offset(
+    to_addr: int, from_addr: int = CONTROLLER_ADDR, *, cmd_map: CommandMap
+) -> bytes:
+    """Build CI-V command to read the duplex offset frequency (0x0C)."""
+    return _build_from_map(cmd_map, "get_freq_offset", to_addr=to_addr, from_addr=from_addr)
+
+
+@expose_command_key(lambda cmd_map: "set_freq_offset")
+@require_cmd_map
+def set_freq_offset(
+    offset_hz: int,
+    to_addr: int,
+    from_addr: int = CONTROLLER_ADDR,
+    *,
+    cmd_map: CommandMap,
+) -> bytes:
+    """Set the duplex offset frequency in Hz (``0D``), 100 Hz resolution.
+
+    Raises ``ValueError`` for a negative value, a value the wire cannot
+    carry (not a multiple of 100 Hz, or above the 3-byte BCD maximum).
+    """
+    if isinstance(offset_hz, bool) or not isinstance(offset_hz, int):
+        raise ValueError(f"duplex offset must be an integer in Hz, got {offset_hz!r}")
+    if offset_hz < 0:
+        raise ValueError(f"duplex offset must be non-negative, got {offset_hz}")
+    if offset_hz % _OFFSET_UNIT_HZ:
+        raise ValueError(
+            f"duplex offset must be a multiple of {_OFFSET_UNIT_HZ} Hz, got {offset_hz}"
+        )
+    data = bcd_encode_value(
+        offset_hz // _OFFSET_UNIT_HZ, byte_count=_OFFSET_BCD_BYTES
+    )[::-1]
+    return _build_from_map(
+        cmd_map, "set_freq_offset", to_addr=to_addr, from_addr=from_addr, data=data
+    )
+
+
+def parse_freq_offset_response(data: bytes) -> int | None:
+    """Return the offset in Hz a 0C reply reports, or ``None``.
+
+    The reply must be exactly three BCD bytes in 100 Hz units; a hex digit
+    above 9 in any nibble is not BCD and reports ``None``.
+    """
+    if len(data) != _OFFSET_BCD_BYTES:
+        return None
+    if any(nibble > 9 for byte in data for nibble in (byte >> 4, byte & 0x0F)):
+        return None
+    units = _bcd_decode_value(data[::-1])
+    return units * _OFFSET_UNIT_HZ
 
 
 @expose_command_key(lambda cmd_map: "get_tuning_step")

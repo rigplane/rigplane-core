@@ -238,6 +238,13 @@ class FreqRangeInfo:
     #: strip on a receiver's own frequency falling inside a flagged range;
     #: no band name or frequency lives in code.
     repeater: bool = False
+    #: Maximum duplex offset magnitude in Hz admitted on this repeater range
+    #: (MOR-3624). Profile data, not a code constant: the guides' 3-byte BCD
+    #: offset carries a 10 MHz digit valid on a 1.2 GHz band only, so every
+    #: other band's maximum is one digit lower. ``None`` on a ``repeater``
+    #: range makes the range refuse offset writes (guard G4); ``None`` on a
+    #: non-repeater range is unused.
+    max_repeater_offset_hz: int | None = None
 
 
 @dataclass(frozen=True, slots=True)

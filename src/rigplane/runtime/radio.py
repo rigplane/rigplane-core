@@ -166,6 +166,7 @@ from rigplane.commands import (
     parse_memory_entry,
     parse_data_mode_response,
     parse_frequency_response,
+    parse_freq_offset_response,
     parse_level_response,
     parse_meter_response,
     parse_mode_response,
@@ -4947,6 +4948,132 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         resp = await self._send_civ_expect(civ, label="set_repeater_shift")
         if parse_ack_nak(resp) is False:
             raise CommandError(f"Radio rejected repeater shift {direction!r}")
+
+    def _repeater_offset_guard(self, offset_hz: int, receiver: int) -> None:
+        """Guard G4 (MOR-3591 design note §3): refuse an offset whose
+        transmit result would leave the profile's TX ranges, and refuse
+        unit mix-ups, before any wire traffic.
+
+        Every limit is profile data: the repeater band and its
+        ``max_repeater_offset_hz``, and the TX bands (``rx_only`` rows
+        excluded). No band or frequency knowledge means refusal, never a
+        silent pass.
+        """
+        if offset_hz > 99_999_900:
+            raise ValueError(
+                "repeater offset refused: unit-mixup — above the 3-byte BCD "
+                f"wire maximum (99,999,900 Hz), got {offset_hz} Hz"
+            )
+        receiver_id = str(receiver)
+        try:
+            freq_field = self._state_store.field(
+                FieldPath.active(receiver_id, "freq_mode", "freq_hz")
+            )
+        except KeyError:
+            freq_field = None
+        rx_hz = freq_field.value if freq_field is not None else None
+        if not isinstance(rx_hz, int):
+            raise ValueError(
+                "repeater offset refused: receiver frequency is unknown"
+            )
+        band = next(
+            (
+                rng
+                for rng in self._profile.freq_ranges
+                if rng.repeater and rng.start <= rx_hz <= rng.end
+            ),
+            None,
+        )
+        if band is None or band.max_repeater_offset_hz is None:
+            raise ValueError(
+                "repeater offset refused: not-a-repeater-band "
+                f"({rx_hz} Hz is outside every profile repeater range)"
+            )
+        if offset_hz > band.max_repeater_offset_hz:
+            raise ValueError(
+                "repeater offset refused: above-band-max — the band's profile "
+                f"maximum is {band.max_repeater_offset_hz} Hz, got {offset_hz} Hz"
+            )
+        tx_bands = [
+            (band_info.start, band_info.end)
+            for rng in self._profile.freq_ranges
+            for band_info in rng.bands
+            if not band_info.rx_only
+        ]
+        try:
+            shift_field = self._state_store.field(
+                FieldPath.receiver(
+                    receiver_id, "operator_controls", "repeater_shift"
+                )
+            )
+        except KeyError:
+            shift_field = None
+        shift = shift_field.value if shift_field is not None else None
+        # 0=SIMPLEX (TX = RX), 1=PLUS, 2=MINUS, 3=ARS. With the direction
+        # unknown or automatic, either direction may be keyed, so the offset
+        # passes when any candidate stays inside the TX ranges.
+        deltas: tuple[int, ...]
+        if shift == 0:
+            deltas = ()
+        elif shift == 1:
+            deltas = (offset_hz,)
+        elif shift == 2:
+            deltas = (-offset_hz,)
+        else:
+            deltas = (offset_hz, -offset_hz)
+        if deltas and not any(
+            any(start <= rx_hz + delta <= end for start, end in tx_bands)
+            for delta in deltas
+        ):
+            candidates = ", ".join(str(rx_hz + delta) for delta in deltas)
+            raise ValueError(
+                "repeater offset refused: tx-outside-band — TX would be "
+                f"{candidates} Hz, outside the profile TX ranges"
+            )
+
+    async def get_repeater_offset(self, receiver: int = 0) -> int:
+        """Read the duplex offset magnitude in Hz (CI-V ``0x0C``, MOR-3624).
+
+        MOR-3591: the plain command reaches only the selected receiver --
+        any other receiver, or either receiver while the selection is
+        unknown, raises ``ReceiverNotSelectedError`` and sends nothing.
+        """
+        self._check_connected()
+        self._require_receiver(receiver, operation="get_repeater_offset")
+        self._require_cmd29_route(
+            0x0C, None, receiver=receiver, operation="get_repeater_offset"
+        )
+        civ = self._commands.get_freq_offset(to_addr=self._radio_addr)
+        resp = await self._send_civ_expect(civ, label="get_repeater_offset")
+        offset_hz = parse_freq_offset_response(resp.data)
+        if offset_hz is None:
+            raise CommandError(
+                f"invalid repeater offset readback: {resp.data.hex() or 'empty'}"
+            )
+        return offset_hz
+
+    async def set_repeater_offset(self, offset_hz: int, receiver: int = 0) -> None:
+        """Set the duplex offset magnitude in Hz (CI-V ``0x0D``, MOR-3624).
+
+        The value must be a non-negative multiple of 100 Hz. Guard G4
+        (see ``_repeater_offset_guard``) refuses an offset the tuned
+        band does not admit, or whose transmit result would leave the
+        profile's TX ranges, before anything is sent.
+
+        MOR-3591: the plain command reaches only the selected receiver --
+        any other receiver, or either receiver while the selection is
+        unknown, raises ``ReceiverNotSelectedError`` and sends nothing.
+        """
+        self._check_connected()
+        self._require_receiver(receiver, operation="set_repeater_offset")
+        self._require_cmd29_route(
+            0x0C, None, receiver=receiver, operation="set_repeater_offset"
+        )
+        self._repeater_offset_guard(offset_hz, receiver)
+        civ = self._commands.set_freq_offset(offset_hz, to_addr=self._radio_addr)
+        resp = await self._send_civ_expect(civ, label="set_repeater_offset")
+        if parse_ack_nak(resp) is False:
+            raise CommandError(f"Radio rejected repeater offset {offset_hz} Hz")
 
     async def get_tone_squelch_type(self, receiver: int = 0) -> ToneSquelchType:
         """Read the exclusive tone squelch selector (CI-V ``0x16 0x5D``).

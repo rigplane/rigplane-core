@@ -2158,6 +2158,28 @@ class RepeaterShiftCapable(Protocol):
 
 
 @runtime_checkable
+class RepeaterOffsetCapable(Protocol):
+    """Repeater offset MAGNITUDE control (the duplex offset in Hz).
+
+    Sibling to :class:`RepeaterShiftCapable` (which covers the direction
+    only): this protocol covers the magnitude a shift applies, in exact
+    Hz with a 100 Hz wire resolution on Icom (``0C`` read / ``0D`` send,
+    MOR-3624). An implementer refuses an offset the profile's repeater
+    bands do not admit — see the per-band ``max_repeater_offset_hz`` rig
+    profile data — and one whose transmit result would leave the
+    profile's TX ranges.
+    """
+
+    async def get_repeater_offset(self, receiver: int = 0) -> int:
+        """Get the duplex offset magnitude in Hz."""
+        ...
+
+    async def set_repeater_offset(self, offset_hz: int, receiver: int = 0) -> None:
+        """Set the duplex offset magnitude in Hz (multiple of 100)."""
+        ...
+
+
+@runtime_checkable
 class AdvancedControlCapable(
     DspControlCapable,
     AntennaControlCapable,
