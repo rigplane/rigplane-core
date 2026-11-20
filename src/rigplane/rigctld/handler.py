@@ -1224,9 +1224,11 @@ class RigctldHandler:
         return state if isinstance(state, RadioState) else None
 
     def _link_loss_reason(self) -> str | None:
-        """Why the answer path must refuse commands, or ``None`` when reachable.
+        """Why the link-loss gate may refuse commands, or ``None`` when reachable.
 
-        MOR-4157: reads existing health sources only, adds no tracker. The
+        The reason names the fact, not the refusal scope: which commands a
+        reason refuses is :meth:`_link_loss_refusal`'s decision. MOR-4157:
+        reads existing health sources only, adds no tracker. The
         ``Radio.connected`` member is the link fact; the decode-point
         liveness stamp ``last_valid_frame_monotonic`` with its
         backend-declared ``liveness_stale_after_ms`` window (the same pair
