@@ -483,6 +483,7 @@ def scope_set_span(
     cmd_map: CommandMap,
     presets: tuple[int, ...],
     receiver: int | None = None,
+    value_bytes: int = 5,
 ) -> bytes:
     """Build the 0x27 0x15 SET frame for span-preset index *span*.
 
@@ -494,10 +495,15 @@ def scope_set_span(
     the wire, so a profile that declares no presets rejects every index
     through the same ``_validate_scope_range`` error every other
     out-of-range span raises.
+
+    ``value_bytes`` is the BCD width of the span value
+    (``RadioProfile.scope_span_value_bytes``): 5 on Icom, 6 on the Xiegu
+    G7250, whose span SET was only ever seen applied as six bytes (LIVE
+    G7250 LAN 2026-11-13, MOR-4436).
     """
     _validate_scope_range("scope span", span, 0, len(presets) - 1)
     span_hz = presets[span]
-    span_bcd = bcd_encode(span_hz)
+    span_bcd = bcd_encode(span_hz, width=value_bytes)
     return _build_from_map(
         cmd_map,
         "get_scope_span",
@@ -991,9 +997,15 @@ def parse_scope_span_response(
     the five-byte BCD form is matched exactly against the table by
     ``_span_index_for_hz``. No match raises ``ValueError``, unchanged --
     a profile that declares no presets therefore decodes no span at all.
+
+    A six-byte BCD form decodes the same way: the Xiegu G7250 answers its
+    span as the five frequency bytes plus one trailing zero byte (LIVE
+    G7250 LAN 2026-11-13, MOR-4436: ``27 15 00 | 00 20 19 00 00 00`` =
+    192000 Hz). The trailing byte is the most significant BCD pair, so a
+    non-zero value there is a span no preset table holds and still raises.
     """
     data = _parse_scope_frame(frame, sub, command=command)
-    receiver, payload = _split_scope_receiver_prefix(data, expected_lengths=(1, 5))
+    receiver, payload = _split_scope_receiver_prefix(data, expected_lengths=(1, 5, 6))
     if len(payload) == 1:
         return receiver, _validate_scope_range(
             "scope span", payload[0], 0, len(presets) - 1
