@@ -50,40 +50,44 @@ function uniform(f: ReturnType<typeof webglFixture>, name: string): number {
 }
 
 describe('MOR-4605 AUTO waterfall noise floor', () => {
-  it('is off by default: the shader gate stays 0 while the floor is tracked', () => {
+  it('is off by default: rows carry no floor and the shader gate stays 0', () => {
     const f = webglFixture(100, 50);
     const r = new WaterfallRenderer(f.canvas, options);
     r.pushRow(frame(20, 60));
     r.pushRow(frame(20, 60));
-    // Tracking runs with AUTO off too, so enabling AUTO later recolours the
-    // retained history; while off only the uAutoFloor uniform gates the
-    // subtraction, leaving the colour mapping untouched.
-    expect(lastFloor(f)).toBe(20);
+    // The uploaded bytes are identical to before the option existed: the row
+    // metadata floor slot stays 0 and uAutoFloor is 0, so the colour mapping
+    // is untouched (waterfall-ring.test.ts pins the full row).
+    expect(lastFloor(f)).toBe(0);
     expect(uniform(f, 'uAutoFloor')).toBe(0);
     const background = lastUploadedRow(f)[10];
     expect(background).toBe(20);
-    expect(shade(background, 20, 0, false)).toBe(shade(20, 0, 0, false));
-    expect(shade(background, 20, 0, false)).toBeGreaterThan(0);
+    expect(shade(background, 0, 0, false)).toBeGreaterThan(0);
   });
 
-  it('recolours the retained history when AUTO switches on, and back when it switches off', () => {
+  it('applies the tracked floor to the rows pushed while AUTO is on only', () => {
     const f = webglFixture(100, 50);
     const r = new WaterfallRenderer(f.canvas, options);
     for (let i = 0; i < 5; i++) r.pushRow(frame(20, 60));
-    const floor = lastFloor(f);
-    const background = lastUploadedRow(f)[10];
-    expect(floor).toBe(20);
+    expect(lastFloor(f)).toBe(0);
     expect(uniform(f, 'uAutoFloor')).toBe(0);
-    // No new frame: the toggle alone flips the gate and the history rows
-    // already carry their floor.
+    // The toggle alone flips the gate, without a new frame.
     expect(r.updateOptions({ autoFloor: true })).toBe(true);
     r.draw();
     expect(uniform(f, 'uAutoFloor')).toBe(1);
-    expect(shade(background, floor, 0, true)).toBe(0);
+    // Tracking ran while AUTO was off, so the first row after enabling
+    // already carries the converged floor and its background colours to the
+    // palette start.
+    r.pushRow(frame(20, 60));
+    expect(lastFloor(f)).toBe(20);
+    expect(shade(lastUploadedRow(f)[10], 20, 0, true)).toBe(0);
+    // Off again: the gate closes and rows carry no floor.
     expect(r.updateOptions({ autoFloor: false })).toBe(true);
     r.draw();
     expect(uniform(f, 'uAutoFloor')).toBe(0);
-    expect(shade(background, floor, 0, false)).toBeGreaterThan(0);
+    r.pushRow(frame(20, 60));
+    expect(lastFloor(f)).toBe(0);
+    expect(shade(lastUploadedRow(f)[10], 0, 0, false)).toBeGreaterThan(0);
   });
 
   it('estimates the floor over the covered bins only', () => {

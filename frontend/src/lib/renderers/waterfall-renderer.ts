@@ -210,9 +210,10 @@ export class WaterfallRenderer {
   private lastSeq = -1;
   // MOR-4605 AUTO floor: the tracked noise floor in the shader's 0..80
   // scale (the MOR-4463 estimator/follower shared with the stacked-trace
-  // renderer), null until the first frame of a run seeds it. Stored per row
-  // in metadata slot 11 (grid.w); the shader subtracts it only while
-  // uAutoFloor is 1, so AUTO off leaves the colour mapping untouched.
+  // renderer), null until the first frame of a run seeds it. It reaches the
+  // per-row metadata slot 11 (grid.w) only while AUTO is on; the shader
+  // subtracts it only while uAutoFloor is 1, so AUTO off leaves the colour
+  // mapping — and the uploaded row bytes — untouched.
   private floor: number | null = null;
 
   constructor(private readonly canvas: HTMLCanvasElement, options: WaterfallOptions) {
@@ -388,13 +389,14 @@ export class WaterfallRenderer {
     // MOR-4605: the row's noise floor is tracked with the shared MOR-4463
     // estimator/follower, converted to the 0..80 scale the shader colours in
     // (jump 24 of 80 — another band, not drift — as in the stacked trace).
-    // Tracking runs with AUTO off too: the uAutoFloor uniform alone gates
-    // the subtraction, so switching AUTO on recolours the retained history
-    // with the floor each row carried. A new stream (above) or clear()
-    // reseeds; geometry runs keep following, so an animated pan cannot
-    // unsmooth the floor. Only the covered bins estimate: rows can carry
-    // zero-filled columns outside the granted coverage, and zeros would
-    // drag the estimate down.
+    // Tracking also runs with AUTO off, so enabling AUTO starts from a
+    // converged floor instead of seeding at that frame; but the floor enters
+    // the row metadata only while AUTO is on, keeping the uniform bytes with
+    // AUTO off identical to before this option existed. A new stream (above)
+    // or clear() reseeds; geometry runs keep following, so an animated pan
+    // cannot unsmooth the floor. Only the covered bins estimate: rows can
+    // carry zero-filled columns outside the granted coverage, and zeros
+    // would drag the estimate down.
     const amplitudeMax = o.sampleAmplitudeMax ?? 80;
     const sampleStart = centre - span / 2 - start * span / range;
     let floorLo = 0, floorHi = samples - 1;
@@ -430,7 +432,7 @@ export class WaterfallRenderer {
     this.row[4] = (o.coverage?.endHz ?? Math.max(sampleStart, sampleStart + span / range)) - sampleStart;
     this.row[5] = amplitudeMax; this.row[6] = samples; this.row[7] = offset;
     this.row[8] = this.width; this.row[9] = start; this.row[10] = range;
-    this.row[11] = this.floor ?? 0;
+    this.row[11] = o.autoFloor ? (this.floor ?? 0) : 0;
     const group = Math.min(3, this.rows);
     const blend = this.previousValid && keep;
     for (let k = 1; k <= group; k++) {
