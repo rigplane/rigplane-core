@@ -101,7 +101,11 @@ export function passbandGaps(samples: PassbandSample[], fromT: number, toT: numb
     if (!entered && sample.t >= fromT) {
       entered = true;
       if (run !== null) {
-        run = { ...run, startMs: fromT, durationMs: 0 };
+        // Annotation required: without it the clone's flow type derives from
+        // `run` while `run`'s does from the clone (TS7022), and the spread
+        // in the next statement then reports TS2698 on TS 5.9.
+        const carried: Gap = run;
+        run = { ...carried, startMs: fromT, durationMs: 0 };
         gaps.push(run);
       }
     }
