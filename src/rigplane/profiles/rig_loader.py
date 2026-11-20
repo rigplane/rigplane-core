@@ -895,8 +895,8 @@ class RigConfig:
     scope_span_presets_hz: tuple[int, ...] = ()
     # MOR-4385: meaning of one preset entry on the radio's wire — see
     # RadioProfile.scope_span_preset_semantics. Required (in the TOML)
-    # whenever span_presets_hz is declared; "half_width" for every
-    # shipped Icom profile.
+    # whenever span_presets_hz is declared; "half_width" on the Icom
+    # rigs, "full_width" on the Xiegu G7250 (MOR-4436).
     scope_span_preset_semantics: SpanPresetSemantics = "half_width"
     scope_fixed_edge_ranges: tuple[ScopeFixedEdgeRange, ...] = field(
         default=(), kw_only=True
