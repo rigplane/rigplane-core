@@ -77,6 +77,7 @@ import type { ServerState } from '../../../src/lib/types/state';
 import {
   installSampler,
   passbandGaps,
+  paintedOutages,
   gateDiff,
   settlePassband,
 } from '../journey/panorama-passband-probe';
@@ -479,7 +480,7 @@ for (const zoom of ZOOMS) {
             && (f.view[1] - f.view[0]) - (f.coverage[1] - f.coverage[0]) > 1);
           const hatchedBurst = burstSamples.filter((s) => s.hatchCount > 0);
           const gaps = passbandGaps(passbandSamples, burstStartPerf, settleEndPerf);
-          const longGaps = gaps.filter((gap) => gap.durationMs > 200).map((gap) => ({
+          const longGaps = paintedOutages(gaps, 200).map((gap) => ({
             startRelMs: gap.startMs - burstStartPerf,
             frames: gap.frames,
             durationMs: gap.durationMs,
@@ -1543,7 +1544,7 @@ test('IC-705 FIX unzoomed held ArrowRight keeps the fixed window with a forward 
     const burstFrames = frames.filter((f) => f.tWall >= burstStartWall && f.tWall <= burstEndWall);
     const hatchedBurst = inWindow.filter((s) => s.hatchCount > 0);
     const gaps = passbandGaps(passbandSamples, burstStartPerf, settleEndPerf);
-    const longGaps = gaps.filter((gap) => gap.durationMs > 200);
+    const longGaps = paintedOutages(gaps, 200);
     const receiptsAfter = await readScopeWriteReceipts(evidence);
     const newSpanSets = receiptsAfter.slice(receiptsBaseline)
       .filter((receipt) => receipt.sub === 0x15 && receipt.data.length === 6);
@@ -1815,7 +1816,7 @@ test('IC-705 FIX zoomed crop follows the VFO centred, clamps at the window edge,
     const burstFrames = frames.filter((f) => f.tWall >= burstStartWall && f.tWall <= burstEndWall);
     const hatchedBurst = inWindow.filter((s) => s.hatchCount > 0);
     const gaps = passbandGaps(passbandSamples, burstStartPerf, settleEndPerf);
-    const longGaps = gaps.filter((gap) => gap.durationMs > 200);
+    const longGaps = paintedOutages(gaps, 200);
     const receiptsAfter = await readScopeWriteReceipts(evidence);
     const newScopeSets = receiptsAfter.slice(receiptsBaseline)
       .filter((receipt) => (receipt.sub === 0x15 && receipt.data.length === 6) || receipt.sub === 0x14);
