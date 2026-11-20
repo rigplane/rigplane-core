@@ -502,17 +502,29 @@ new AsyncFunction('github', 'context', 'core', script)(github, context, core)
         # arch-neutral build set, so any ARM64 or X64 build runner may serve
         # them; only the visual e2e leg keeps an ARM64 pin — its pixel
         # baselines are arm64 Linux renders — resolved per leg by the matrix
-        # expression in its runs-on.
-        e2e_runs_on = (
-            "    runs-on: ${{ matrix.group == 'visual' && "
-            "fromJSON('[\"self-hosted\", \"Linux\", \"ARM64\", \"build\"]') || "
+        # expression in its runs-on. MOR-4097: merge groups request the
+        # reserved queue lane (self-hosted,Linux,queue, no build label) with
+        # the same per-leg split, so they no longer wait FIFO behind
+        # pull-request runs on the build pool; pull-request runs keep it.
+        worker_runs_on = (
+            "    runs-on: ${{ github.event_name == 'merge_group' && "
+            "fromJSON('[\"self-hosted\", \"Linux\", \"queue\"]') || "
             "fromJSON('[\"self-hosted\", \"Linux\", \"build\"]') }}\n"
         )
+        e2e_runs_on = (
+            "    runs-on: ${{ github.event_name == 'merge_group' && "
+            "(matrix.group == 'visual' && "
+            "fromJSON('[\"self-hosted\", \"Linux\", \"ARM64\", \"queue-arm64\"]') || "
+            "fromJSON('[\"self-hosted\", \"Linux\", \"queue\"]')) || "
+            "(matrix.group == 'visual' && "
+            "fromJSON('[\"self-hosted\", \"Linux\", \"ARM64\", \"build\"]') || "
+            "fromJSON('[\"self-hosted\", \"Linux\", \"build\"]')) }}\n"
+        )
         pools = {
-            "quick-frontend": "    runs-on: [self-hosted, Linux, build]\n",
+            "quick-frontend": worker_runs_on,
             "quick-frontend-e2e": e2e_runs_on,
-            "quick-python": "    runs-on: [self-hosted, Linux, build]\n",
-            "quick-python-tests": "    runs-on: [self-hosted, Linux, build]\n",
+            "quick-python": worker_runs_on,
+            "quick-python-tests": worker_runs_on,
         }
         for half in pools:
             with self.subTest(job=half):

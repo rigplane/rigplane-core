@@ -13,6 +13,7 @@ import — visibly, not silently.
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 from typing import Any
@@ -109,11 +110,20 @@ def test_validate_runs_on_the_pool_quick_runs_its_frontend_on() -> None:
         r"^  quick-frontend:\n(.*?)(?=^  \w[\w-]*:\n|\Z)", quick, re.S | re.M
     )
     assert frontend, "quick.yml has no `quick-frontend` job"
-    quick_pool = re.search(r"^    runs-on: (\[.*\])$", frontend.group(1), re.M)
-    assert quick_pool, "quick-frontend declares no list-form `runs-on`"
-    validate_pool = re.search(r"^    runs-on: (\[.*\])$", _job("validate"), re.M)
+    # quick-frontend picks the reserved merge-queue lane only for merge groups
+    # (MOR-4097); validate matches the pool it uses on every other event, i.e.
+    # the fallback list of its runs-on expression.
+    runs_on = re.search(r"^    runs-on: (.*)$", frontend.group(1), re.M)
+    assert runs_on, "quick-frontend declares no `runs-on`"
+    fallback = re.search(r"\|\| fromJSON\('(\[[^']*\])'\)", runs_on.group(1))
+    quick_list = json.loads(fallback.group(1)) if fallback else None
+    if quick_list is None:
+        plain = re.fullmatch(r"\[(.*)\]", runs_on.group(1).strip())
+        assert plain, "quick-frontend runs-on is neither a list nor a lane expression"
+        quick_list = [x.strip() for x in plain.group(1).split(",")]
+    validate_pool = re.search(r"^    runs-on: \[(.*)\]$", _job("validate"), re.M)
     assert validate_pool, "validate declares no list-form `runs-on`"
-    assert validate_pool.group(1) == quick_pool.group(1)
+    assert [x.strip() for x in validate_pool.group(1).split(",")] == quick_list
 
 
 # --- Nightly untagged rehearsal (MOR-4375): structural pins on the parsed
