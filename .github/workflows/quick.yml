@@ -166,7 +166,13 @@ jobs:
     # needs 1.5-2 GiB of Node heap (MOR-4214). Arch-neutral labels (owner
     # direction 2026-11-20): every build runner, ARM64 or X64, carries
     # self-hosted,Linux,build, so either pool may pick this job up.
-    runs-on: [self-hosted, Linux, build]
+    # Merge groups request the reserved queue lane (MOR-4097): queue runners
+    # carry self-hosted,Linux,queue plus their architecture label and no build
+    # label, so a merge group no longer waits FIFO behind pull-request runs on
+    # the shared build pool. Pull-request runs keep the build pool.
+    # runs-on-allowlist: event-conditional pool — merge_group requests
+    # [self-hosted, Linux, queue], every other event [self-hosted, Linux, build].
+    runs-on: ${{ github.event_name == 'merge_group' && fromJSON('["self-hosted", "Linux", "queue"]') || fromJSON('["self-hosted", "Linux", "build"]') }}
     timeout-minutes: 25
     # MOR-3778: presetting the variables Chromium's browser process adds at
     # startup removed a headless_shell SIGSEGV in getenv in a minimal-environment
@@ -292,10 +298,16 @@ jobs:
     # architecture as the visual.yml pixel-diff job, so it stays on
     # [self-hosted, Linux, ARM64, build] and must not regenerate baselines
     # from an X64 render.
-    # runs-on-allowlist: matrix-conditional pool — the visual leg pins
-    # [self-hosted, Linux, ARM64, build] (arm64 pixel baselines); guards and
-    # journey request the arch-neutral build set.
-    runs-on: ${{ matrix.group == 'visual' && fromJSON('["self-hosted", "Linux", "ARM64", "build"]') || fromJSON('["self-hosted", "Linux", "build"]') }}
+    # Merge groups request the reserved queue lane (MOR-4097) with the same
+    # per-leg split: visual -> [self-hosted, Linux, ARM64, queue], guards and
+    # journey -> [self-hosted, Linux, queue]. Pull-request runs keep the build
+    # pool.
+    # runs-on-allowlist: event- and matrix-conditional pool — merge_group:
+    # visual [self-hosted, Linux, ARM64, queue], guards/journey
+    # [self-hosted, Linux, queue]; other events: visual
+    # [self-hosted, Linux, ARM64, build] (arm64 pixel baselines), guards/journey
+    # [self-hosted, Linux, build].
+    runs-on: ${{ github.event_name == 'merge_group' && (matrix.group == 'visual' && fromJSON('["self-hosted", "Linux", "ARM64", "queue"]') || fromJSON('["self-hosted", "Linux", "queue"]')) || (matrix.group == 'visual' && fromJSON('["self-hosted", "Linux", "ARM64", "build"]') || fromJSON('["self-hosted", "Linux", "build"]')) }}
     timeout-minutes: 25
     strategy:
       fail-fast: false
@@ -481,7 +493,13 @@ jobs:
     # Arch-neutral labels (owner direction 2026-11-20): the suite has no
     # architecture requirement — before MOR-4214 it ran on ARM64 — so any
     # build runner may pick this job up.
-    runs-on: [self-hosted, Linux, build]
+    # Merge groups request the reserved queue lane (MOR-4097): queue runners
+    # carry self-hosted,Linux,queue plus their architecture label and no build
+    # label, so a merge group no longer waits FIFO behind pull-request runs on
+    # the shared build pool. Pull-request runs keep the build pool.
+    # runs-on-allowlist: event-conditional pool — merge_group requests
+    # [self-hosted, Linux, queue], every other event [self-hosted, Linux, build].
+    runs-on: ${{ github.event_name == 'merge_group' && fromJSON('["self-hosted", "Linux", "queue"]') || fromJSON('["self-hosted", "Linux", "build"]') }}
     timeout-minutes: 25
     # MOR-3778: presetting the variables Chromium's browser process adds at
     # startup removed a headless_shell SIGSEGV in getenv in a minimal-environment
@@ -641,7 +659,13 @@ jobs:
     # Arch-neutral labels (owner direction 2026-11-20): the suite has no
     # architecture requirement — before MOR-4214 it ran on ARM64 — so any
     # build runner may pick this job up.
-    runs-on: [self-hosted, Linux, build]
+    # Merge groups request the reserved queue lane (MOR-4097): queue runners
+    # carry self-hosted,Linux,queue plus their architecture label and no build
+    # label, so a merge group no longer waits FIFO behind pull-request runs on
+    # the shared build pool. Pull-request runs keep the build pool.
+    # runs-on-allowlist: event-conditional pool — merge_group requests
+    # [self-hosted, Linux, queue], every other event [self-hosted, Linux, build].
+    runs-on: ${{ github.event_name == 'merge_group' && fromJSON('["self-hosted", "Linux", "queue"]') || fromJSON('["self-hosted", "Linux", "build"]') }}
     timeout-minutes: 25
     strategy:
       fail-fast: false
