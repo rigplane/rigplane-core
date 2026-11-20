@@ -30,7 +30,6 @@ const DROP_PORT = 18769;
 const DROP_URL = `http://127.0.0.1:${DROP_PORT}`;
 // connection.svelte.ts trips staleness at 5 s; give it margin.
 const STALENESS_WAIT_MS = 6_500;
-const HERE = path.dirname(new URL(import.meta.url).pathname);
 
 // The live scope canvas can keep the headless compositor busy enough that the
 // high-level screenshot call stalls on this host; the CDP path does not wait.
@@ -70,6 +69,7 @@ interface LayoutObservation {
 }
 
 const observations: LayoutObservation[] = [];
+let outputDir: string | undefined;
 
 async function seedWorkspaceLayout(page: Page, layout: string): Promise<void> {
   await page.addInitScript(
@@ -110,6 +110,7 @@ test.describe.configure({ mode: 'serial' });
 for (const layout of DESKTOP_LAYOUTS) {
   test(`link loss in layout: ${layout}`, async ({ page }, testInfo) => {
     test.setTimeout(90_000);
+    outputDir = testInfo.outputDir;
     const dir = await mkdtemp(path.join(tmpdir(), 'rig-drop-'));
     const dropFile = path.join(dir, 'drop');
     let server: JourneyServerHandle | undefined;
@@ -180,6 +181,7 @@ for (const layout of DESKTOP_LAYOUTS) {
 // Phone layout: the mobile skin is chosen by the viewport, not the workspace.
 test('link loss in layout: phone', async ({ page }, testInfo) => {
   test.setTimeout(90_000);
+  outputDir = testInfo.outputDir;
   await page.setViewportSize({ width: 430, height: 932 });
   const dir = await mkdtemp(path.join(tmpdir(), 'rig-drop-'));
   const dropFile = path.join(dir, 'drop');
@@ -236,6 +238,6 @@ test('link loss in layout: phone', async ({ page }, testInfo) => {
 });
 
 test.afterAll(async () => {
-  const reportPath = path.resolve(HERE, '../../.playwright-output/link-loss-report.json');
-  await writeFile(reportPath, JSON.stringify(observations, null, 2));
+  if (!outputDir) return;
+  await writeFile(path.join(outputDir, 'link-loss-report.json'), JSON.stringify(observations, null, 2));
 });
