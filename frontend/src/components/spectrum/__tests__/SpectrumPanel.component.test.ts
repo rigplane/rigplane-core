@@ -3204,7 +3204,8 @@ describe('SpectrumPanel Observation authority and final-gesture intents', () => 
     // in the 14.000-14.100 frame window, not centred.
     expect(target.querySelector<HTMLElement>('.tune-line')?.style.left).toBe('25%');
     await vi.waitFor(() => expect(spectrumRendererHarness.render).toHaveBeenCalled());
-    expect(spectrumRendererHarness.lastOptions.scopeMode).toBe(3);
+    // A radio-owned window is drawn proportionally: the renderer is told mode 1.
+    expect(spectrumRendererHarness.lastOptions.scopeMode).toBe(1);
     expect(spectrumRendererHarness.render.mock.calls.at(-1)?.[1]).toHaveLength(475);
   });
 
@@ -5913,6 +5914,8 @@ describe('SpectrumPanel band-plan region wiring (MOR-3631)', () => {
       return { ok: false, status: 404 } as Response;
     }));
 
+    // FIX frames: the observed readback says FIX too.
+    authorityHarness.state.current = authority({ scopeControls: testScopeControls(1) });
     const target = mountPanel();
     emitFrame({ mode: 1, ...VIEW });
 
@@ -5956,6 +5959,8 @@ describe('SpectrumPanel band-plan region wiring (MOR-3631)', () => {
       return ok({ segments: [], plansLoaded: false });
     }));
 
+    // FIX frames: the observed readback says FIX too.
+    authorityHarness.state.current = authority({ scopeControls: testScopeControls(1) });
     const target = mountPanel();
     emitFrame({ mode: 1, ...VIEW });
     await vi.waitFor(() => {
@@ -5986,6 +5991,7 @@ describe('SpectrumPanel band-plan region wiring (MOR-3631)', () => {
         }
         return { ok: false, status: 404 } as Response;
       }));
+      authorityHarness.state.current = authority({ scopeControls: testScopeControls(1) });
       const target = mountPanel({ hideToolbar: true });
       emitFrame({ mode: 1, ...SIXTY_M });
       expect(target.querySelector('.layer-toggle-btn')).toBeNull();
