@@ -451,22 +451,23 @@ class ProfileSmokeCatalogContractTest(unittest.TestCase):
     """Why the profile smoke must run the TARGET revision's script (P1).
 
     The profile catalog is revision-specific: v3.1.4 shipped nine radio
-    profiles, current Core ships eleven (g7250.toml, ic905.toml). Judging a
-    historical wheel by the controls' current catalog rejects a valid
-    release, so the workflow runs the target's own smoke script — while a
-    wheel genuinely missing one of the TARGET's own resources is still
-    rejected (the switch must not weaken the smoke into a no-op).
+    profiles, current Core ships more (ft991a.toml, g7250.toml,
+    ic905.toml were added since). Judging a historical wheel by the
+    controls' current catalog rejects a valid release, so the workflow
+    runs the target's own smoke script — while a wheel genuinely missing
+    one of the TARGET's own resources is still rejected (the switch must
+    not weaken the smoke into a no-op).
     """
 
     def setUp(self) -> None:
         self.smoke = _load(SMOKE_SCRIPT)
 
     def _older_catalog(self) -> dict[str, tuple[str, str]]:
-        # The v3.1.4 catalog: everything but g7250.toml and ic905.toml.
+        # The v3.1.4 catalog: everything added after it is excluded.
         return {
             name: identity
             for name, identity in self.smoke.EXPECTED_PROFILES.items()
-            if name not in ("g7250.toml", "ic905.toml")
+            if name not in ("ft991a.toml", "g7250.toml", "ic905.toml")
         }
 
     def test_an_older_complete_target_catalog_passes_its_own_contract(self) -> None:
@@ -1010,7 +1011,7 @@ class CoreWheelWorkflowPinsTest(unittest.TestCase):
 
     def test_installed_profile_smoke_judges_the_target_revision(self) -> None:
         # P1 (MOR-4408): the profile catalog is revision-specific — v3.1.4
-        # shipped nine profiles, current Core ships eleven — so the smoke
+        # shipped nine profiles, current Core ships more — so the smoke
         # must run the TARGET revision's own script, never the controls'
         # current catalog (see ProfileSmokeCatalogContractTest for why).
         # Provenance (stamp) verification stays with the controls.

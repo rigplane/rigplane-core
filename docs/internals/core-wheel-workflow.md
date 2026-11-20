@@ -130,7 +130,7 @@ the contract, not by re-guessing a raw dict.
 The profile smoke is run with the TARGET revision's own
 `.github/scripts/installed_profile_smoke.py`, never the controls' copy: the
 profile catalog is revision-specific (`v3.1.4` shipped nine radio profiles;
-current Core ships eleven), so judging a historical wheel by the controls'
+current Core ships more), so judging a historical wheel by the controls'
 current catalog would reject a valid release.
 
 A target revision older than the script (it first shipped in `v3.0.0b10`)

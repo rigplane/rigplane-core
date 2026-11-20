@@ -259,7 +259,7 @@ jobs:
         # the produced wheel, with the resolved SHA as the candidate — but
         # judged by the TARGET revision's own smoke script: the profile
         # catalog is revision-specific (v3.1.4 shipped nine radio profiles,
-        # current Core ships eleven), so the controls' current catalog
+        # current Core ships more), so the controls' current catalog
         # would reject a valid historical wheel. A target older than the
         # script is never silently passed: the skip is recorded as
         # profile_smoke=not_available_for_target in the manifest (through
