@@ -189,4 +189,29 @@ describe('deriveRepeater (per-receiver repeater facts, MOR-2111)', () => {
     );
     expect(view!.repeater!.main.shift.availability.structural).toBe(false);
   });
+
+  it('reads the exact Hz duplex offset, gated on repeater_offset (MOR-3624)', () => {
+    const offsetState = (): ServerState => {
+      const base = repeaterState(
+        receiver(144_700_000, false, false, 8850, 0),
+        receiver(14_250_000, false, false, 8850, 0),
+      );
+      return {
+        ...base,
+        main: { ...base.main, repeaterOffsetHz: 600_000 },
+        fieldStatus: { ...base.fieldStatus, 'main.repeaterOffsetHz': fresh },
+      } as ServerState;
+    };
+    const withCap = {
+      ...repeaterCaps(),
+      capabilities: [...repeaterCaps().capabilities, 'repeater_offset'],
+    } as Capabilities;
+    const view = toRadioViewModel(offsetState(), withCap);
+    expect(view!.repeater!.main.offsetHz.reading).toEqual({ status: 'known', value: 600_000 });
+    expect(view!.repeater!.main.offsetHz.availability.structural).toBe(true);
+
+    const withoutCap = toRadioViewModel(offsetState(), repeaterCaps());
+    expect(withoutCap!.repeater!.main.offsetHz.availability.structural).toBe(false);
+    expect(withoutCap!.repeater!.main.offsetHz.reading.status).toBe('unknown');
+  });
 });
