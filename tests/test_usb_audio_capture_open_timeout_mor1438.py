@@ -38,6 +38,7 @@ import pytest
 
 from rigplane.audio.backend import AudioDeviceId, AudioDeviceInfo, FakeAudioBackend
 from rigplane.audio.usb_driver import AudioCaptureOpenTimeoutError, UsbAudioDriver
+from rigplane.testing.timing import await_until
 
 from _portaudio_pool_helpers import drain_pool
 
@@ -255,11 +256,24 @@ async def test_rx_open_cancelled_mid_open_closes_late_handle_and_recovers() -> N
     RX dead until process restart.
     """
     gate = threading.Event()
+    entered = threading.Event()
+
+    def _block_in_open() -> None:
+        # Set by the worker thread itself once it is INSIDE the blocked
+        # device open: cancelling only after this fires is what makes this
+        # a mid-open cancellation. The old fixed 0.01 s sleep let the
+        # cancel land before open_rx() ran on a loaded runner, leaving
+        # backend.rx_streams empty (MOR-4214 IndexError flake).
+        entered.set()
+        gate.wait()
+
     driver, backend = _make_driver()
-    backend.block_rx_open = gate.wait
+    backend.block_rx_open = _block_in_open
 
     task = asyncio.create_task(driver.start_rx(lambda _frame: None))
-    await asyncio.sleep(0.01)  # let it reach the blocked open
+    assert await await_until(
+        entered.is_set, timeout=5.0, description="background open to block"
+    )
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
@@ -268,10 +282,11 @@ async def test_rx_open_cancelled_mid_open_closes_late_handle_and_recovers() -> N
 
     late_stream = backend.rx_streams[-1]
     gate.set()  # release the background open so it can finally complete
-    for _ in range(50):
-        await asyncio.sleep(0.01)
-        if late_stream.stopped_count:
-            break
+    assert await await_until(
+        lambda: late_stream.stopped_count,
+        timeout=5.0,
+        description="late handle to be closed",
+    )
 
     assert late_stream.started_count == 1
     assert late_stream.stopped_count == 1, (
