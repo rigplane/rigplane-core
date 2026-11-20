@@ -2,6 +2,7 @@ import { expect, test } from '@playwright/test';
 import { startJourneyServer } from './server-process';
 import { settlePassband, watchScopeFrames } from './panorama-passband-probe';
 import { expectPanoramaClean, watchPanoramaErrors } from './panorama-guards';
+import { readScopeWriteReceipts } from './panorama-receipt';
 
 /**
  * MOR-4386: the panorama zoom cluster ([-] [+] over [S] [B], bottom-right of
@@ -71,6 +72,51 @@ test('IC-705 at 7.200 LSB: S, B and the zoom keys drive the view; the cluster ne
     await page.mouse.up();
     await expect.poll(async () => ((await (await page.request.get(`http://127.0.0.1:${PORT}/api/v1/state`)).json()) as
       { main: { freqHz: number } }).main.freqHz).not.toBe(freqBefore);
+    expectPanoramaClean(watch);
+  } finally {
+    await server.kill();
+  }
+});
+
+test('IC-7610: the lit B key returns a pinned band to follow and writes CTR, and the window follows a retune (MOR-4386 review P1)', async ({ page }, info) => {
+  const port = 22341;
+  const evidence = info.outputPath('radio.jsonl');
+  const server = await startJourneyServer(port, 14_250_000,
+    ['--model', 'IC-7610', '--evidence', evidence], 'tests/e2e/panorama_web_server.py');
+  const watch = watchPanoramaErrors(page);
+  const frames = watchScopeFrames(page);
+  const centerHz = () => { const v = frames.at(-1)?.view; return v ? (v[0]! + v[1]!) / 2 : 0; };
+  const radioFreq = async () => ((await (await page.request.get(`http://127.0.0.1:${port}/api/v1/state`)).json()) as
+    { main: { freqHz: number } }).main.freqHz;
+  try {
+    await page.goto(`http://127.0.0.1:${port}/?ui=v2`);
+    await expect.poll(() => frames.length, { timeout: 30_000 }).toBeGreaterThan(10);
+    await settlePassband(page, port);
+    const bandKey = page.getByTestId('scope-zoom-band').first();
+
+    // [B] pins the 20 m band: the IC-7610 owns the window (FIX) and the
+    // frames carry the fixed band edges.
+    await bandKey.click();
+    await expect.poll(() => frames.at(-1)?.view).toEqual([14_000_000, 14_350_000]);
+
+    // The lit key again returns the preset to follow: without the fix the
+    // key goes dark but the radio stays in FIX and nothing follows the VFO.
+    // With the fix the panel writes scope mode 0 (CTR) through the existing
+    // scope-controls path and the displayed window re-centres on the VFO.
+    await bandKey.click();
+    await expect.poll(async () => (await readScopeWriteReceipts(evidence)).filter(
+      (receipt) => receipt.sub === 0x14).at(-1)?.data[1]).toBe(0);
+    await expect.poll(() => centerHz()).toBe(14_250_000);
+
+    // Following again: a retune re-centres the displayed window on the VFO.
+    const area = (await page.locator('.spectrum-area').first().boundingBox())!;
+    const y = area.y + area.height / 2;
+    await page.mouse.move(area.x + area.width * 0.8, y);
+    await page.mouse.down();
+    await page.mouse.move(area.x + area.width * 0.5, y, { steps: 8 });
+    await page.mouse.up();
+    await expect.poll(async () => (await radioFreq())).not.toBe(14_250_000);
+    await expect.poll(() => centerHz()).toBe(await radioFreq());
     expectPanoramaClean(watch);
   } finally {
     await server.kill();
