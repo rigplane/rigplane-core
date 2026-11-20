@@ -1804,13 +1804,14 @@ def _build_parser() -> argparse.ArgumentParser:
         type=int,
         default=argparse.SUPPRESS,
         metavar="HZ",
-        help="SDR IF-tap centre offset in Hz (default 0 = antenna tap)",
+        help="Shift the SDR tuning to VFO + HZ (default 0 = antenna tap; "
+        "not a working IF-tap setting yet)",
     )
     sdr_group.add_argument(
         "--sdr-invert",
         action="store_true",
         default=argparse.SUPPRESS,
-        help="Flip the SDR frequency axis (inverted IF tap)",
+        help="Flip the SDR frequency axis (IF taps are not supported yet)",
     )
     sdr_group.add_argument(
         "--sdr-setting",
