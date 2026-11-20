@@ -1,3 +1,6 @@
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { defineConfig } from '@playwright/test';
 import { REQUIRED_MATRIX } from './tests/e2e/remote/no-skips-reporter';
 
@@ -14,6 +17,11 @@ import { REQUIRED_MATRIX } from './tests/e2e/remote/no-skips-reporter';
  *   npx playwright test -c ./playwright.remote.config.ts
  */
 const PORT = 18780;
+// One directory per run: workers re-evaluate this config and inherit the
+// runner's environment, so they reuse the runner's directory.
+const LOG_DIR = (process.env.RIGPLANE_REMOTE_E2E_LOG_DIR ??= mkdtempSync(
+  path.join(tmpdir(), 'rigplane-remote-e2e-logs-'),
+));
 
 export default defineConfig({
   testDir: './tests/e2e/remote',
@@ -39,6 +47,9 @@ export default defineConfig({
     url: `http://127.0.0.1:${PORT}/api/v1/state`,
     reuseExistingServer: false,
     timeout: 90_000,
+    // The L5 row reads the station's log back from a support bundle: the
+    // station logs into a fresh directory instead of the host's Core log.
+    env: { RIGPLANE_LOG_DIR: LOG_DIR },
   },
   use: {
     baseURL: `http://127.0.0.1:${PORT}`,
