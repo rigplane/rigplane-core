@@ -235,7 +235,7 @@ async def test_rx_silent_repairs_but_soft_reconnect_and_error_watchdog_do_not() 
             assert session.rx_demand > 0
             assert session._bus.rx_active, "repair did not re-arm RX before subscribing"
 
-            # stop_rx flushes the old jitter buffer; those queued frames cannot
+            # Frames queued on the old subscription before the death cannot
             # prove recovery. Keep its demand while opening a fresh empty queue.
             _drain(sub)
             post_sub = await asyncio.wait_for(
