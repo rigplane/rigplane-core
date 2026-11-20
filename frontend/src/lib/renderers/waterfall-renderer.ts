@@ -1,5 +1,6 @@
 import type { View } from '../runtime/scope-view';
 import type { ScopeFrame } from '../runtime/scope-frame';
+import { estimateNoiseFloor, followNoiseFloor } from './noise-floor';
 
 interface ColorStop {
   stop: number;
@@ -48,6 +49,10 @@ export interface WaterfallOptions {
   // waterfall rows. Default on; the spatial [1 2 1]/4 and the 3-row blended
   // groups are part of the single render path and always apply.
   temporalSmoothing?: boolean;
+  /** MOR-4605: subtract the tracked per-row noise floor when colouring (the
+   * AUTO toggle beside REF); `refLevel` is then an offset from that floor.
+   * Default off: the fixed colour scale, pixel-identical to before. */
+  autoFloor?: boolean;
 }
 
 export const defaultWaterfallOptions: WaterfallOptions = {
@@ -58,6 +63,7 @@ export const defaultWaterfallOptions: WaterfallOptions = {
   spanHz: 0,
   panoramaShiftHz: 0,
   temporalSmoothing: true,
+  autoFloor: false,
 };
 
 /** Frame identity for the per-frame dedupe (MOR-4383): one row group per NEW
@@ -95,7 +101,7 @@ uniform highp sampler2D uRing;
 uniform vec2 uView;
 uniform vec2 uSize;
 uniform int uHead, uCount, uRows;
-uniform float uRef, uViewLow;
+uniform float uRef, uViewLow, uAutoFloor;
 uniform vec3 uColors[6];
 uniform float uStops[6];
 uniform int uColorCount;
@@ -143,7 +149,9 @@ void main() {
   float column = (delta / info.z - grid.y) / grid.z * grid.x
     + (floor(gl_FragCoord.x) + 0.5) * (spanScale / grid.z) * pixelScale;
   float sampleValue = profile(column, grid, extra, row);
-  float t = floor(sqrt(clamp((sampleValue + uRef * (40.0/60.0)) / 80.0, 0.0, 1.0)) * 255.0) / 255.0;
+  // MOR-4605: grid.w is the row's tracked noise floor, subtracted only while
+  // AUTO is on (uAutoFloor 0 and a 0 floor leave the mapping untouched).
+  float t = floor(sqrt(clamp((sampleValue - uAutoFloor * grid.w + uRef * (40.0/60.0)) / 80.0, 0.0, 1.0)) * 255.0) / 255.0;
   vec3 rgb = uColors[0];
   for (int i = 1; i < 6; i++) {
     if (i >= uColorCount) break;
@@ -200,6 +208,13 @@ export class WaterfallRenderer {
   // a valid seq 0 is a real row, never a replay) and its latest sequence.
   private lastStream: { slot: string; epoch: number } | null = null;
   private lastSeq = -1;
+  // MOR-4605 AUTO floor: the tracked noise floor in the shader's 0..80
+  // scale (the MOR-4463 estimator/follower shared with the stacked-trace
+  // renderer), null until the first frame of a run seeds it. It reaches the
+  // per-row metadata slot 11 (grid.w) only while AUTO is on; the shader
+  // subtracts it only while uAutoFloor is 1, so AUTO off leaves the colour
+  // mapping — and the uploaded row bytes — untouched.
+  private floor: number | null = null;
 
   constructor(private readonly canvas: HTMLCanvasElement, options: WaterfallOptions) {
     const gl = canvas.getContext('webgl2', { alpha: false, antialias: false, depth: false, stencil: false });
@@ -248,7 +263,7 @@ export class WaterfallRenderer {
     } finally { gl.deleteShader(vertex); gl.deleteShader(fragment); }
     gl.useProgram(program);
     for (const name of ['uRing', 'uView', 'uViewLow', 'uSize', 'uHead', 'uCount', 'uRows',
-      'uRef', 'uColors', 'uStops', 'uColorCount']) {
+      'uRef', 'uAutoFloor', 'uColors', 'uStops', 'uColorCount']) {
       this.uniforms.set(name, gl.getUniformLocation(program, name));
     }
     gl.uniform1i(this.uniforms.get('uRing')!, 0);
@@ -359,6 +374,7 @@ export class WaterfallRenderer {
         this.lastSeq = -1;
         this.smoothBins = 0;
         this.previousValid = false;
+        this.floor = null;
       }
       if (identity.seq <= this.lastSeq) return;
       this.lastSeq = identity.seq;
@@ -370,6 +386,27 @@ export class WaterfallRenderer {
     const centre = o.centerHz - o.panoramaShiftHz;
     const keep = this.smoothBins === samples && this.smoothSpan === span
       && this.smoothStart === start && this.smoothRange === range && this.smoothCentre === centre;
+    // MOR-4605: the row's noise floor is tracked with the shared MOR-4463
+    // estimator/follower, converted to the 0..80 scale the shader colours in
+    // (jump 24 of 80 — another band, not drift — as in the stacked trace).
+    // Tracking also runs with AUTO off, so enabling AUTO starts from a
+    // converged floor instead of seeding at that frame; but the floor enters
+    // the row metadata only while AUTO is on, keeping the uniform bytes with
+    // AUTO off identical to before this option existed. A new stream (above)
+    // or clear() reseeds; geometry runs keep following, so an animated pan
+    // cannot unsmooth the floor. Only the covered bins estimate: rows can
+    // carry zero-filled columns outside the granted coverage, and zeros
+    // would drag the estimate down.
+    const amplitudeMax = o.sampleAmplitudeMax ?? 80;
+    const sampleStart = centre - span / 2 - start * span / range;
+    let floorLo = 0, floorHi = samples - 1;
+    if (o.coverage) {
+      const binHz = span / range / samples;
+      floorLo = Math.min(Math.max(Math.ceil((o.coverage.startHz - sampleStart) / binHz - 0.5), 0), samples - 1);
+      floorHi = Math.min(Math.max(Math.floor((o.coverage.endHz - sampleStart) / binHz - 0.5), floorLo), samples - 1);
+    }
+    this.floor = followNoiseFloor(this.floor,
+      estimateNoiseFloor(data, offset + floorLo, floorHi - floorLo + 1) * 80 / amplitudeMax, 24);
     if (this.smoothState.length !== samples) {
       this.smoothState = new Float32Array(samples);
       this.filtered = new Float32Array(samples);
@@ -389,13 +426,13 @@ export class WaterfallRenderer {
       this.filtered[i] = (left + 2 * this.smoothState[i] + right) / 4;
       this.currentRow[i] = Math.round(this.filtered[i]);
     }
-    const sampleStart = centre - span / 2 - start * span / range;
     const delta = sampleStart - this.originHz;
     this.row[0] = Math.fround(delta); this.row[1] = delta - this.row[0]; this.row[2] = span / range;
     this.row[3] = (o.coverage?.startHz ?? Math.min(sampleStart, sampleStart + span / range)) - sampleStart;
     this.row[4] = (o.coverage?.endHz ?? Math.max(sampleStart, sampleStart + span / range)) - sampleStart;
-    this.row[5] = o.sampleAmplitudeMax ?? 80; this.row[6] = samples; this.row[7] = offset;
+    this.row[5] = amplitudeMax; this.row[6] = samples; this.row[7] = offset;
     this.row[8] = this.width; this.row[9] = start; this.row[10] = range;
+    this.row[11] = o.autoFloor ? (this.floor ?? 0) : 0;
     const group = Math.min(3, this.rows);
     const blend = this.previousValid && keep;
     for (let k = 1; k <= group; k++) {
@@ -444,6 +481,7 @@ export class WaterfallRenderer {
     }
     if (this.appearanceDirty) {
       gl.uniform1f(this.uniforms.get('uRef')!, o.refLevel);
+      gl.uniform1f(this.uniforms.get('uAutoFloor')!, o.autoFloor ? 1 : 0);
       const palette = COLOR_SCHEMES[o.colorScheme];
       if (this.palette !== o.colorScheme) {
         this.palette = o.colorScheme;
@@ -465,7 +503,8 @@ export class WaterfallRenderer {
 
   updateOptions(options: Partial<WaterfallOptions>): boolean {
     if ((options.colorScheme !== undefined && options.colorScheme !== this.options.colorScheme)
-      || (options.refLevel !== undefined && options.refLevel !== this.options.refLevel)) this.appearanceDirty = true;
+      || (options.refLevel !== undefined && options.refLevel !== this.options.refLevel)
+      || (options.autoFloor !== undefined && options.autoFloor !== this.options.autoFloor)) this.appearanceDirty = true;
     Object.assign(this.options, options);
     if (this.options.spanHz > 0 && Number.isFinite(this.options.centerHz)) {
       if (this.viewCenter !== this.options.centerHz || this.viewSpan !== this.options.spanHz) this.viewDirty = true;
@@ -483,6 +522,7 @@ export class WaterfallRenderer {
   clear(): void {
     this.head = -1; this.count = 0;
     this.smoothBins = 0; this.previousValid = false;
+    this.floor = null;
     this.draw();
   }
   destroy(): void {
