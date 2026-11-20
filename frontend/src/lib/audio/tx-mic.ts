@@ -25,6 +25,9 @@ type NavigatorWithLegacyMedia = Navigator & {
 
 export type TxCodec = 'opus' | 'pcm16';
 
+/** How long the Opus conversion context may take to reach `running` (MOR-4594). */
+const CONTEXT_RUNNING_DEADLINE_MS = 500;
+
 const CAPTURE_ERROR_NAMES = new Set([
   'NotAllowedError', 'NotFoundError', 'NotReadableError', 'OverconstrainedError',
   'AbortError', 'SecurityError', 'InvalidStateError', 'TypeError',
@@ -371,10 +374,16 @@ export class TxMic {
       // Only the live Opus context may end the capture: one retired by a
       // codec switch keeps the generation, so identity is checked too.
       const live = context;
-      live.resume?.().catch((err: unknown) => {
+      const fail = (reason: string) => {
         if (this.opusContext !== live) return;
-        this.failCapture(generation, `audio context resume failed: ${String(err)}`);
-      });
+        this.failCapture(generation, reason);
+      };
+      live.resume?.().catch((err: unknown) => fail(`audio context resume failed: ${String(err)}`));
+      // Without a user gesture (hardware PTT, RC-28, CAT) resume() may never
+      // settle; a context still not running by the deadline is the same failure.
+      setTimeout(() => {
+        if (live.state !== 'running') fail(`audio context not running (${live.state})`);
+      }, CONTEXT_RUNNING_DEADLINE_MS);
       return converted;
     } catch (err) {
       console.warn(`[TxMic] mic conversion unavailable, using raw track: ${String(err)}`);
