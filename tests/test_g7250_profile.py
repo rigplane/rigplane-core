@@ -287,12 +287,13 @@ def test_no_rit_xit_pbt_vox_tone_or_data_mode_capability() -> None:
         "tuner",
         "break_in",
         "data_mode",
-        "scope",
         # MOR-4436 part A: 0x0E scan is unimplemented on the G7250
         # (Reference Table 4-2 / page 13), scan edges FA (Table 1-3 / p3).
         "scan",
     ):
         assert not profile.supports_capability(cap), cap
+    # The scope answers over LAN (MOR-4436 scope PR).
+    assert profile.supports_capability("scope")
     # The audit-proved posture is kept for these.
     for cap in (
         "audio",

@@ -19,7 +19,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SAMPLE_RATE } from '../constants';
-import type { TxCodec, TxCodecSwitch, TxMic } from '../tx-mic';
+import type { TxCaptureFailure, TxCodec, TxCodecSwitch, TxMic } from '../tx-mic';
 import type * as audioStore from '../../stores/audio.svelte';
 import type * as connectionStore from '../../stores/connection.svelte';
 import type * as capabilitiesStore from '$lib/stores/capabilities.svelte';
@@ -28,7 +28,11 @@ import wire from '../../../../../tests/fixtures/audio_rx_session_wire.json';
 const rxWire = wire.rx_frame_pcm16_mono_20ms;
 const rxRequestWire = wire.audio_start_rx;
 
-const txStart = vi.fn((): Promise<string | null> => Promise.resolve(null));
+const txFailure = (code: TxCaptureFailure['code'], category: string, reason: string): TxCaptureFailure => ({
+  code, category, reason, at: Date.now(),
+});
+
+const txStart = vi.fn((): Promise<TxCaptureFailure | null> => Promise.resolve(null));
 const txStop = vi.fn();
 const txApplyServerCodec = vi.fn(
   (_codec: TxCodec, _sampleRate: number): TxCodecSwitch => ({ switched: false, error: null }),
@@ -231,7 +235,7 @@ describe('receive playback is held while transmitting (MOR-4591)', () => {
 
   it('flushes queued receive audio at the press and drops frames until TX ends', async () => {
     const { audioManager, socket } = await listening();
-    let settle!: (error: string | null) => void;
+    let settle!: (failure: TxCaptureFailure | null) => void;
     txStart.mockImplementationOnce(() => new Promise((resolve) => { settle = resolve; }));
 
     const starting = audioManager.startTx();
@@ -253,15 +257,16 @@ describe('receive playback is held while transmitting (MOR-4591)', () => {
 
   it('gives receive audio back when the microphone refuses to start', async () => {
     const { audioManager, socket } = await listening();
-    txStart.mockImplementationOnce(() => Promise.resolve('TX MIC: permission denied'));
-    expect(await audioManager.startTx()).toBe('TX MIC: permission denied');
+    const refused = txFailure('permission', 'NotAllowedError', 'permission denied');
+    txStart.mockImplementationOnce(() => Promise.resolve(refused));
+    expect(await audioManager.startTx()).toBe(refused.reason);
     expect(audioManager.txEnabled).toBe(false);
     expect(scheduledAfter(socket)).toBe(3);
   });
 
   it('a superseded start does not end the hold of the newer press', async () => {
     const { audioManager, socket } = await listening();
-    const settles: ((error: string | null) => void)[] = [];
+    const settles: ((failure: TxCaptureFailure | null) => void)[] = [];
     txStart.mockImplementation(() => new Promise((resolve) => { settles.push(resolve); }));
     const first = audioManager.startTx();
     audioManager.stopTx();

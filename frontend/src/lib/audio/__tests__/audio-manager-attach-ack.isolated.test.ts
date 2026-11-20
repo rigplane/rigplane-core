@@ -19,7 +19,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RxAudioFocus, RxPlaybackDiagnostics, RxPlayer } from '../rx-player';
-import type { TxCodec, TxCodecSwitch, TxMic } from '../tx-mic';
+import type { TxCaptureFailure, TxCodec, TxCodecSwitch, TxMic } from '../tx-mic';
 import type * as audioStore from '../../stores/audio.svelte';
 import type * as connectionStore from '../../stores/connection.svelte';
 import type * as capabilitiesStore from '$lib/stores/capabilities.svelte';
@@ -57,7 +57,7 @@ const playback: RxPlaybackDiagnostics = {
 const rxStats = vi.fn((): ReturnType<RxPlayer['stats']> => ({
   underruns: 0, bufferDepthMs: 0, droppedFrames: 0, playback,
 }));
-const txStart = vi.fn((): Promise<string | null> => Promise.resolve(null));
+const txStart = vi.fn((): Promise<TxCaptureFailure | null> => Promise.resolve(null));
 const txStop = vi.fn();
 const txApplyServerCodec = vi.fn(
   (_codec: TxCodec, _sampleRate: number): TxCodecSwitch => ({ switched: false, error: null }),

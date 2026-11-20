@@ -3183,7 +3183,9 @@ class TestScopeSpanPresetSemantics:
     def test_every_shipped_profile_with_presets_declares_half_width(self):
         """Every shipped profile that declares span presets states the
         semantics explicitly, and all of them are Icom CI-V half-widths
-        (see each profile's CI-V citation)."""
+        (see each profile's CI-V citation) except the Xiegu G7250, whose
+        27 15 span is the full width (LIVE G7250 LAN 2026-11-13, MOR-4436)."""
+        full_width = {"g7250.toml"}
         shipped = sorted(
             path.name
             for path in RIGS_DIR.glob("*.toml")
@@ -3193,7 +3195,8 @@ class TestScopeSpanPresetSemantics:
         for name in shipped:
             profile = load_rig(RIGS_DIR / name).to_profile()
             assert profile.scope_span_presets_hz
-            assert profile.scope_span_preset_semantics == "half_width", name
+            expected = "full_width" if name in full_width else "half_width"
+            assert profile.scope_span_preset_semantics == expected, name
 
 
 class TestScopeFixedEdgeRanges:
