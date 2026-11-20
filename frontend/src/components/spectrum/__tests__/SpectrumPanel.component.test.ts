@@ -1361,6 +1361,8 @@ describe('SpectrumPanel component', () => {
   });
 
   it('switches the radio back to CTR when the lit band key returns a pinned preset to follow in a radio-owned window (MOR-4386 review P1)', async () => {
+    radio.current = structuredClone(IC7300_STATE);
+    expect(setCapabilities(structuredClone(IC7300_CAPABILITIES))).toBe(true);
     runtimeHarness.state.currentCaps = structuredClone(IC7300_CAPABILITIES);
     // The radio owns the window (FIX on the IC-7610): the observed readback
     // says so, as the frame does.
@@ -6406,13 +6408,16 @@ describe('review corrections for requested View and sample retirement', () => {
   });
 
   it('returns a pinned S/B view to following the VFO when the radio leaves its fixed window (CTR) (MOR-4386)', async () => {
-    authorityHarness.state.current = authority({ frequencyHz: 14_200_000 });
+    authorityHarness.state.current = authority({ frequencyHz: 14_200_000, scopeControls: testScopeControls(1) });
     runtimeHarness.state.currentCaps = structuredClone(IC7300_CAPABILITIES);
     const target = mountPanel(); emitFrame({ mode: 1 }); await flushWaterfallPaint();
     const read = () => JSON.parse(target.querySelector('.spectrum-panel')!.getAttribute('data-scope-subscription')!).view;
     target.querySelector<HTMLButtonElement>('[data-testid="scope-zoom-band"]')!.click(); flushSync(); await flushWaterfallPaint();
     expect(read()).toEqual({ startHz: 14_000_000, endHz: 14_350_000 });
-    emitFrame({ mode: 0 }); flushSync(); await flushWaterfallPaint();
+    // The radio leaves FIX: the OBSERVED readback now says CTR (the frame
+    // mode alone is only the fallback — see the MOR-4214 doctrine above).
+    authorityHarness.state.current = authority({ frequencyHz: 14_200_000, scopeControls: testScopeControls(0) });
+    refreshSpectrumAuthority(); flushSync(); await flushWaterfallPaint();
     expect(read().follow).toBe('vfo');
   });
 
