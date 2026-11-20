@@ -1,4 +1,4 @@
-import { scopeWire, audioScopeGoldenNames, loadAudioScopeGolden } from '$lib/runtime/__tests__/scope-wire-fixture';
+import { scopeWire, audioScopeGoldenNames, loadAudioScopeGolden, loadAudioPassbandReplay } from '$lib/runtime/__tests__/scope-wire-fixture';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
@@ -25,6 +25,11 @@ type AmberAfScopePropsProbe = {
   projection?: import('$lib/runtime/scope-frame').ScopeAudioProjection | null;
   onRegisterPush?: (push: (pixels: Uint8Array | null) => void) => void;
 };
+
+const canvasProbe = vi.hoisted(() => ({
+  props: null as AmberAfScopePropsProbe | null,
+  pushed: [] as (Uint8Array | null)[],
+}));
 
 const scopeChildProbe = vi.hoisted(() => ({
   props: null as AmberAfScopePropsProbe | null,
@@ -479,3 +484,121 @@ it.each(['AudioSpectrumPanel', 'AmberScope', 'AmberCockpit'] as const)(
     }
   },
 );
+
+
+/**
+ * MOR-4604 (gate round 2): every audio_fft consumer that leases the shared
+ * stream emits the request tests/test_audio_scope_passband_replay.py was
+ * recorded from (tests/fixtures/audio-scope-passband/usb-tone.json, the
+ * shared contract). Each consumer is mounted ALONE here, so a consumer that
+ * goes back to the 48 kHz follow view fails even when a wider sibling would
+ * otherwise hide it. The SpectrumPanel and LcdAfFft halves of the pairing are
+ * RadioLayout.audio-fft.component.test.ts and
+ * skins/segmentline/__tests__/scope-stream-consumers.component.test.ts.
+ */
+describe('MOR-4604 audio_fft consumers request the recorded passband view', () => {
+  const { replay, frame } = loadAudioPassbandReplay('usb-tone');
+
+  function passbandState(revision: number): ServerState {
+    const state = radioState(revision);
+    state.active = null;
+    state.main = { ...state.main!, freqHz: replay.case.tunedHz, mode: replay.case.mode,
+      filterWidth: replay.case.filterWidthHz };
+    state.fieldStatus = Object.fromEntries(['main.freqHz', 'main.mode', 'main.filterWidth', 'main.dataMode'].map(path => [path,
+      { storePath: path, observed: true, freshness: 'fresh' as const, availability: 'available' as const,
+        lastObservedMonotonic: revision }]));
+    return state;
+  }
+
+  async function harness(widthOf: (element: Element) => number) {
+    vi.resetModules(); vi.clearAllMocks();
+    canvasProbe.props = null; canvasProbe.pushed = [];
+    // After resetModules the file-level child mock would bind a stale Svelte
+    // runtime; re-register it against the fresh module graph.
+    vi.doMock('../AmberAfScope.svelte', async importOriginal => importOriginal());
+    vi.doMock('../../audio-scope/AudioSpectrumCanvas.svelte', async importOriginal => {
+      const actual = await importOriginal<typeof import('../../audio-scope/AudioSpectrumCanvas.svelte')>();
+      const Child = actual.default as unknown as (anchor: Node, props: AmberAfScopePropsProbe) => unknown;
+      return { default: (anchor: Node, props: AmberAfScopePropsProbe) => {
+        const register = props.onRegisterPush;
+        props.onRegisterPush = push => register?.(pixels => { canvasProbe.pushed.push(pixels); push(pixels); });
+        canvasProbe.props = props;
+        return Child(anchor, props);
+      } };
+    });
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, status: 200,
+      json: async () => ({ protocol_version: 1, mode: 'local' }) })));
+    vi.stubGlobal('ResizeObserver', class {
+      constructor(private callback: (entries: { contentRect: { width: number; height: number } }[]) => void) {}
+      observe(element: Element) { this.callback([{ contentRect: { width: widthOf(element), height: 100 } }]); }
+      disconnect() {}
+    });
+    vi.spyOn(document, 'hidden', 'get').mockReturnValue(false);
+    const svelte = await import('svelte');
+    const { runtime } = await import('$lib/runtime/frontend-runtime');
+    const { setRadioState } = await import('$lib/stores/radio.svelte');
+    const { setCapabilities, clearCapabilities } = await import('$lib/stores/capabilities.svelte');
+    const cleanup = await runtime.bootstrap();
+    setCapabilities({ ...canonicalCapabilities, vfoScheme: 'ab' as const, vfoReadback: 'none' as const });
+    expect(setRadioState(passbandState(1))).toBe(true);
+    const subscriptions = () => mocks.channel.sendRaw.mock.calls.map(([message]) => message)
+      .filter(message => message.type === 'subscribe' && message.sourceId === 'audio_fft');
+    return { svelte, runtime, subscriptions, teardown: async () => {
+      await cleanup(); clearCapabilities(); vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.resetModules();
+    } };
+  }
+
+  const components = {
+    AudioSpectrumPanel: async () => (await import('../../audio-scope/AudioSpectrumPanel.svelte')).default,
+    AmberScope: async () => (await import('../AmberScope.svelte')).default,
+    AmberCockpit: async () => (await import('../AmberCockpit.svelte')).default,
+  } as const;
+
+  it.each(Object.keys(components) as (keyof typeof components)[])('%s alone sends the recorded passband request', async name => {
+    const { svelte, subscriptions, teardown } = await harness(() => 400);
+    const target = document.createElement('div'); document.body.append(target);
+    const component = svelte.mount(await components[name](), { target });
+    try {
+      svelte.flushSync(); await Promise.resolve(); svelte.flushSync();
+      await vi.waitFor(() => expect(subscriptions().length).toBeGreaterThan(0));
+      const { width: _sent, ...sent } = subscriptions().at(-1)!;
+      const { width: _recorded, ...recorded } = replay.case.subscribe;
+      expect(sent).toEqual(recorded);
+    } finally {
+      await svelte.unmount(component); target.remove(); await teardown();
+    }
+  });
+
+  it('the wider cockpit beside the sidebar Audio Scope keeps the passband grant at native resolution', async () => {
+    // LcdLayout mounts both; the cockpit strip is the wider surface.
+    const { svelte, runtime, subscriptions, teardown } = await harness(
+      element => element.closest('.audio-spectrum-panel') ? 400 : 800);
+    const targets = [document.createElement('div'), document.createElement('div')];
+    for (const target of targets) document.body.append(target);
+    const cockpit = svelte.mount(await components.AmberCockpit(), { target: targets[0]! });
+    const sidebar = svelte.mount(await components.AudioSpectrumPanel(), { target: targets[1]! });
+    try {
+      svelte.flushSync(); await Promise.resolve(); svelte.flushSync();
+      // The widest surface's width with the shared view: exactly the recorded request.
+      await vi.waitFor(() => expect(subscriptions().at(-1)).toEqual(replay.case.subscribe));
+      for (const message of replay.messages) {
+        mocks.channel.message(message as unknown as import('$lib/types/protocol').WsIncoming);
+      }
+      mocks.channel.fire(frame.slice(0)); svelte.flushSync();
+      const finalGrant = replay.messages.at(-1)!;
+      const pixels = canvasProbe.pushed.at(-1);
+      expect(pixels).toHaveLength(finalGrant['width'] as number);
+      const projection = canvasProbe.props?.projection;
+      expect(projection).toBeTruthy();
+      const geometry = runtime.scope.stream('audio_fft').latest('audio_fft:*');
+      expect(geometry?.pixels).toBe(pixels);
+      // Bins the sidebar trapezoid reads across the drawn passband: at least
+      // half of the ~226 columns a 400-px Audio Scope draws it over.
+      expect(pixels!.length * replay.case.filterWidthHz * Math.abs(projection!.perHz)).toBeGreaterThanOrEqual(113);
+    } finally {
+      await svelte.unmount(sidebar); await svelte.unmount(cockpit);
+      for (const target of targets) target.remove();
+      await teardown();
+    }
+  });
+});

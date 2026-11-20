@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
-import { audioScopeGoldenNames, loadAudioScopeGolden, scopeWire } from '$lib/runtime/__tests__/scope-wire-fixture';
+import { audioScopeGoldenNames, loadAudioPassbandReplay, loadAudioScopeGolden, scopeWire } from '$lib/runtime/__tests__/scope-wire-fixture';
 import { ScopeStream } from '../../../lib/runtime/scope-stream';
 import LcdAfFft from '../LcdAfFft.svelte';
 import LcdRfPanadapter from '../LcdRfPanadapter.svelte';
@@ -47,6 +47,31 @@ function source(kind: 'radio' | 'audio_fft') {
 }
 
 describe('LCD leaves consume ScopeStream directly', () => {
+  // MOR-4604 (gate round 2): LcdAfFft half of the passband-request pairing
+  // with tests/test_audio_scope_passband_replay.py (the recorded request in
+  // tests/fixtures/audio-scope-passband/usb-tone.json); the other consumers
+  // are pinned in panels/lcd/__tests__/audio-fft-demand.isolated.test.ts and
+  // layout/__tests__/RadioLayout.audio-fft.component.test.ts.
+  it('requests the recorded audio_fft passband view', async () => {
+    const { replay } = loadAudioPassbandReplay('usb-tone');
+    const previous = radio.current;
+    radio.current = audioState(replay.case.tunedHz, replay.case.mode);
+    const publish = vi.fn();
+    const stream = new ScopeStream({ subscribe() { return () => {}; }, close() {} },
+      { source: 'audio_fft', sourceId: 'audio_fft', epoch: 1 }, 'borrowed', undefined, publish);
+    const target = document.createElement('div'); document.body.append(target);
+    const component = mount(LcdAfFft, { target, props: {
+      scopeStream: stream, receiver: 'MAIN', inputState: 'live', receiverActivity: 'active',
+    } });
+    try {
+      flushSync();
+      const { width: _sent, ...sent } = publish.mock.lastCall?.[0] as Record<string, unknown>;
+      const { type: _type, width: _recorded, ...recorded } = replay.case.subscribe;
+      expect(sent).toEqual(recorded);
+    } finally {
+      await unmount(component); stream.dispose(); target.remove(); radio.current = previous;
+    }
+  });
   it('retries a refused mounted AF subscription once when observed facts arrive and paints its frame', async () => {
     const previous = radio.current;
     radio.current = null;

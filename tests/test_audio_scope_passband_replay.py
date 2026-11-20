@@ -10,10 +10,19 @@ the socket receives: the grant(s) and the binary frame.
 
 ``tests/fixtures/audio-scope-passband/usb-tone.json`` (text messages, case)
 and ``usb-tone.bin`` (the binary frame) are what this test asserts byte for
-byte; the browser replay
-``frontend/src/components-v2/layout/__tests__/RadioLayout.audio-fft.component.test.ts``
-(describe "MOR-4604 Audio Scope beside the audio SpectrumPanel") feeds only
-these messages into the mounted panels. Regenerate with
+byte. The recorded ``subscribe`` document is the shared contract: the
+frontend tests mount every audio_fft consumer and assert each emits exactly
+this request, then replay the recorded grants and frame:
+
+* ``frontend/src/components-v2/layout/__tests__/RadioLayout.audio-fft.component.test.ts``
+  (the audio SpectrumPanel beside the Audio Scope, rendered trace and tone);
+* ``frontend/src/components-v2/panels/lcd/__tests__/audio-fft-demand.isolated.test.ts``
+  (AudioSpectrumPanel, AmberScope, AmberCockpit each alone, and the wider
+  cockpit beside the sidebar Audio Scope);
+* ``frontend/src/skins/segmentline/__tests__/scope-stream-consumers.component.test.ts``
+  (LcdAfFft).
+
+Regenerate with
 ``RIGPLANE_UPDATE_AUDIO_PASSBAND_REPLAY=1``.
 """
 
