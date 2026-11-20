@@ -89,6 +89,17 @@ test('IC-7610: FIX marker, axis and passband use the displayed window after a CE
     await page.getByRole('button', { name: 'More scope controls' }).first().click();
     await page.getByTestId('scope-zoom-in').first().click();
     await page.keyboard.press('Escape');
+    // The CENTER zoom's one radio write is the span preset (0x15), and it
+    // is issued only after the subscription update reaches the server —
+    // under load that trails the click by more than the gap between the
+    // click and a bare count. Merge-queue run 44739144536 read the
+    // baseline one receipt early, the zoom's own 0x15 landed after it, and
+    // the write-count assertion below reported that legitimate write as a
+    // phantom third one (MOR-4214). The baseline is taken only once that
+    // write has landed; what the FIX window may write is pinned exactly
+    // further down instead of being inferred from a count.
+    await expect.poll(async () => (await scopeWriteReceipts(evidence)).filter(
+      (receipt) => receipt.sub === 0x15).length).toBeGreaterThan(0);
     const writesBeforeFix = (await scopeWriteReceipts(evidence)).length;
     await page.getByRole('radio', { name: 'FIX' }).first().click();
     await expect.poll(async () => (await scopeWriteReceipts(evidence)).filter(
@@ -128,7 +139,17 @@ test('IC-7610: FIX marker, axis and passband use the displayed window after a CE
     expect(cropEnd - cropStart).toBeCloseTo((end - start) / 2, 2);
     expect(cropStart).toBeGreaterThanOrEqual(start - 0.001);
     expect(cropEnd).toBeLessThanOrEqual(end + 0.001);
-    expect((await scopeWriteReceipts(evidence)).length).toBe(writesBeforeFix + 1);
+    // Entering FIX writes EXACTLY the scope mode — 0x14 with mode 1, the
+    // user's gesture — and nothing else: no second span write, no
+    // fixed-edge rewrite, no output re-assert, and the ZOOM inside FIX
+    // writes nothing at all (owner rules). The exact ordered set, not a
+    // count: a count cannot name an intruding write, and it was a count
+    // reading an in-flight write as an extra one that failed run
+    // 44739144536.
+    const inFixWrites = (await scopeWriteReceipts(evidence)).slice(writesBeforeFix);
+    expect(inFixWrites.map(({ sub, data }) => ({ sub, data }))).toEqual([
+      { sub: 0x14, data: [0, 1] },
+    ]);
     // Back to CTR (a user gesture: the mode-0 write is correct). The FIX
     // crop pin survives while the VFO is inside it (MOR-4387 pin
     // semantics), so the marker returns with the passband tuple's recapture
