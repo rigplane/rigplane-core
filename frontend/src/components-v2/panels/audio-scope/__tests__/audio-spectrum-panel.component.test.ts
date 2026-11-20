@@ -118,6 +118,69 @@ afterEach(async () => {
   vi.unstubAllGlobals();
 });
 
+describe('AudioSpectrumPanel passband view subscription (MOR-4604)', () => {
+  function sizeCanvas() {
+    vi.stubGlobal('ResizeObserver', class {
+      constructor(private callback: ResizeObserverCallback) {}
+      observe(element: Element) {
+        this.callback([{ target: element, contentRect: new DOMRect(0, 0, 400, 160) } as ResizeObserverEntry],
+          this as unknown as ResizeObserver);
+      }
+      unobserve() {}
+      disconnect() {}
+    });
+  }
+
+  function patchAudioState(patch: { mode?: string; filterWidth?: number }): void {
+    const state = structuredClone(IC7300_STATE);
+    if (patch.mode !== undefined) state.main.mode = patch.mode;
+    if (patch.filterWidth !== undefined) state.main.filterWidth = patch.filterWidth;
+    for (const path of ['main.freqHz', 'main.mode', 'main.filterWidth']) {
+      state.fieldStatus![path] = { ...state.fieldStatus!['main.freqHz']!,
+        observed: true, freshness: 'fresh', availability: 'available' };
+    }
+    h.state = state;
+  }
+
+  function audioSubscribe(): Record<string, unknown> | undefined {
+    const socket = wsInstances.find((ws) => ws.url.includes('/api/v1/scope'));
+    return socket?.sent
+      .map((raw) => { try { return JSON.parse(raw) as Record<string, unknown>; } catch { return null; } })
+      .filter((msg) => msg?.['type'] === 'subscribe' && msg?.['sourceId'] === 'audio_fft')
+      .at(-1);
+  }
+
+  async function mountAndSubscribe(): Promise<void> {
+    sizeCanvas();
+    instance = mount(AudioSpectrumPanel, { target, props: {} });
+    flushSync();
+    intersectAll(true);
+    flushSync();
+    const socket = wsInstances.find((ws) => ws.url.includes('/api/v1/scope'));
+    expect(socket).toBeDefined();
+    socket!.simulateOpen();
+    await vi.waitFor(() => expect(audioSubscribe()).toBeDefined());
+  }
+
+  it('requests the drawn USB passband plus margin instead of the 48 kHz view', async () => {
+    patchAudioState({ filterWidth: 2400 });
+    await mountAndSubscribe();
+    // IC-7300 capture: USB at 14188000; 2400 Hz drawn, 300 Hz margin each side.
+    expect(audioSubscribe()?.['view']).toEqual({ startHz: 14187700, endHz: 14190700 });
+  });
+
+  it('mirrors the window below the carrier for LSB', async () => {
+    patchAudioState({ mode: 'LSB', filterWidth: 2400 });
+    await mountAndSubscribe();
+    expect(audioSubscribe()?.['view']).toEqual({ startHz: 14185300, endHz: 14188300 });
+  });
+
+  it('keeps the 48 kHz follow view while the filter width is unobserved', async () => {
+    await mountAndSubscribe();
+    expect(audioSubscribe()?.['view']).toEqual({ follow: 'vfo', spanHz: 48000 });
+  });
+});
+
 describe('AudioSpectrumPanel visibility follows the canvas surface facts (MOR-4271)', () => {
   it('a hidden document releases the audio-fft demand lease and clears data-streaming', async () => {
     instance = mount(AudioSpectrumPanel, { target, props: {} });

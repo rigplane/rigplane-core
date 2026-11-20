@@ -103,8 +103,53 @@ function formatHz(hz: number): string {
   return `${sign}${abs}`;
 }
 
+/** Unsigned audio-Hz tick text for the passband axis ('0', '500', '1k', '1.5k'). */
+function formatAudioHz(hz: number): string {
+  if (hz >= 1000) {
+    const k = hz / 1000;
+    return `${k % 1 === 0 ? k.toFixed(0) : k.toFixed(1)}k`;
+  }
+  return `${hz}`;
+}
+
+/** The source bin one trace screen column reads, and whether it fell outside the frame. */
+export interface TraceSample {
+  readonly index: number;
+  readonly outOfFrame: boolean;
+}
+
+/**
+ * The one trace bin mapping: column `i` of `columns` across the drawn region
+ * reads audio 0..filterHz from the carrier through the RF projection when the
+ * frame geometry is known, else the positive half of a symmetric frame.
+ */
+export function audioSpectrumTraceSample(
+  i: number,
+  columns: number,
+  pixelCount: number,
+  filterHz: number,
+  halfBw: number,
+  projection: ScopeAudioProjection | null | undefined,
+  filterOverlay: boolean,
+): TraceSample {
+  const barFrac = i / columns;
+  const dcIdx = Math.floor(pixelCount / 2);
+  const passbandFrac = filterOverlay && Number.isFinite(halfBw) && halfBw > 0
+    ? Math.min(1, filterHz / halfBw) : 1;
+  const coordinate = projection
+    ? projection.zero + barFrac * (filterOverlay ? filterHz : halfBw) * projection.perHz
+    : null;
+  const index = coordinate === null
+    ? (filterOverlay ? dcIdx + Math.floor(barFrac * passbandFrac * (pixelCount - dcIdx)) : Math.floor(barFrac * pixelCount))
+    : Math.floor(coordinate * pixelCount);
+  return {
+    index: Math.max(0, Math.min(pixelCount - 1, index)),
+    outOfFrame: coordinate !== null && (coordinate < 0 || coordinate > 1),
+  };
+}
+
 function chooseGridStep(halfBw: number): number {
-  const steps = [100, 200, 500, 1000, 2000, 5000, 10000];
+  const steps = [100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000];
   for (const s of steps) {
     const n = halfBw / s;
     if (n >= 2 && n <= 8) return s;
@@ -184,6 +229,9 @@ export function renderAudioSpectrum(
   const br = cx + topHalfW + slopeExtra;
 
   const halfBw = state.projection?.spanHz ?? bandwidth / 2;
+  // The drawn trace spans audio 0..filterHz from the carrier; the same value
+  // drives the bin mapping below and the notch/contour overlays.
+  const filterHz = Math.round(rs.animFilterWidth);
   const target = ctx;
   const redraw = audioStaticChanged(rs, ctx, width, height, state);
   if (redraw) {
@@ -203,35 +251,52 @@ export function renderAudioSpectrum(
   }
 
   // ── Frequency grid labels (bottom) ──
-  const step = chooseGridStep(halfBw);
   ctx.font = '9px system-ui, sans-serif';
   ctx.textAlign = 'center';
   ctx.fillStyle = GRID_LABEL_COLOR;
-
-  // Center label
-  ctx.fillText('0', width / 2, height - 3);
   ctx.strokeStyle = GRID_LINE_COLOR;
   ctx.lineWidth = 1;
-  ctx.beginPath();
-  ctx.moveTo(cx, trapTop);
-  ctx.lineTo(cx, trapBottom);
-  ctx.stroke();
 
-  for (let hz = step; hz <= halfBw; hz += step) {
-    const frac = hz / halfBw;
-    const xPlus = width / 2 + frac * (width / 2);
-    const xMinus = width / 2 - frac * (width / 2);
-    ctx.fillText(formatHz(hz), xPlus, height - 3);
-    ctx.fillText(formatHz(-hz), xMinus, height - 3);
-    // Grid lines (subtle)
+  if (showFilterOverlay && filterHz > 0) {
+    // MOR-4604: the trace maps audio 0..filterHz across the trapezoid bottom
+    // [bl, br] — the axis labels that same mapping, so a tone sits under its
+    // own audio-frequency label.
+    const step = chooseGridStep(filterHz);
+    for (let hz = 0; hz <= filterHz; hz += step) {
+      const x = bl + (hz / filterHz) * (br - bl);
+      ctx.fillText(formatAudioHz(hz), x, height - 3);
+      if (hz === 0) continue;
+      ctx.beginPath();
+      ctx.moveTo(x, trapTop);
+      ctx.lineTo(x, trapBottom);
+      ctx.stroke();
+    }
+  } else {
+    const step = chooseGridStep(halfBw);
+
+    // Center label
+    ctx.fillText('0', width / 2, height - 3);
     ctx.beginPath();
-    ctx.moveTo(xPlus, trapTop);
-    ctx.lineTo(xPlus, trapBottom);
+    ctx.moveTo(cx, trapTop);
+    ctx.lineTo(cx, trapBottom);
     ctx.stroke();
-    ctx.beginPath();
-    ctx.moveTo(xMinus, trapTop);
-    ctx.lineTo(xMinus, trapBottom);
-    ctx.stroke();
+
+    for (let hz = step; hz <= halfBw; hz += step) {
+      const frac = hz / halfBw;
+      const xPlus = width / 2 + frac * (width / 2);
+      const xMinus = width / 2 - frac * (width / 2);
+      ctx.fillText(formatHz(hz), xPlus, height - 3);
+      ctx.fillText(formatHz(-hz), xMinus, height - 3);
+      // Grid lines (subtle)
+      ctx.beginPath();
+      ctx.moveTo(xPlus, trapTop);
+      ctx.lineTo(xPlus, trapBottom);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(xMinus, trapTop);
+      ctx.lineTo(xMinus, trapBottom);
+      ctx.stroke();
+    }
   }
 
   // ── Draw trapezoid outline + whiskers ──
@@ -306,10 +371,6 @@ export function renderAudioSpectrum(
   ctx = target;
   ctx.clearRect(0, 0, width, height);
   ctx.drawImage(rs.background, 0, 0, width, height);
-  // ── Passband fraction (used for bin mapping below) ──
-  const filterHz = Math.round(rs.animFilterWidth);
-  const passbandFrac = showFilterOverlay && Number.isFinite(halfBw) && halfBw > 0
-    ? Math.min(1, filterHz / halfBw) : 1;
 
   // ── Spectrum: gradient fill + line, clipped to trapezoid ──
   if (pixels && pixels.length > 0) {
@@ -325,23 +386,15 @@ export function renderAudioSpectrum(
     }
     if (rs.points.length < width) rs.points = new Float32Array(width);
     const points = rs.points;
-    const dcIdx = Math.floor(pixels.length / 2);
-    const positiveLen = pixels.length - dcIdx;
 
     for (let i = 0; i < numPoints; i++) {
       const x = botLeft + i;
 
       // Map x position to passband FFT bin
-      const barFrac = i / numPoints;
-      const pixIdx = showFilterOverlay
-        ? dcIdx + Math.floor(barFrac * passbandFrac * positiveLen)
-        : Math.floor(barFrac * pixels.length);
-      const coordinate = state.projection
-        ? state.projection.zero + barFrac * (showFilterOverlay ? filterHz : halfBw) * state.projection.perHz : null;
-      const index = coordinate === null ? pixIdx : Math.floor(coordinate * pixels.length);
-      const clamped = Math.max(0, Math.min(pixels.length - 1, index));
-      const rawAmp = coordinate !== null && (coordinate < 0 || coordinate > 1) ? 0
-        : Math.min(pixels[clamped], MAX_AMPLITUDE) / MAX_AMPLITUDE;
+      const sample = audioSpectrumTraceSample(i, numPoints, pixels.length, filterHz, halfBw,
+        state.projection, showFilterOverlay);
+      const rawAmp = sample.outOfFrame ? 0
+        : Math.min(pixels[sample.index], MAX_AMPLITUDE) / MAX_AMPLITUDE;
 
       // Smooth
       const prev = rs.smoothed[i];

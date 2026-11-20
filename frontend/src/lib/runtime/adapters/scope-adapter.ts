@@ -20,7 +20,7 @@ export type {
   ScopeParseError, ScopeParseResult,
 } from '$lib/runtime/scope-frame';
 
-import type { ScopeGranted, ScopeSubscription } from '../scope-view';
+import type { ScopeGranted, ScopeSubscription, ScopeViewRequest } from '../scope-view';
 
 export function scopeGrantedGeometry(grant: ScopeGranted, context: CurrentScopeContext): ScopeGeometry {
   return { source: context.source, sourceId: grant.sourceId, receiver: grant.receiver,
@@ -141,9 +141,11 @@ const strictlySeen = (state: ServerState, path: string): boolean => {
     && (status.availability === 'available' || status.availability === 'stale');
 };
 
-/** Map observed audio carrier/polarity into the qualified RF frame without copying bins. */
-export function audioScopeProjection(geometry: ScopeGeometry | null, state: ServerState | null): import('../scope-frame').ScopeAudioProjection | null {
-  if (geometry?.source !== 'audio_fft' || state === null) return null;
+/** The observed RF carrier and sideband polarity the audio FFT is mapped from. */
+export function audioScopeCarrier(
+  state: ServerState | null,
+): { readonly carrierHz: number; readonly lower: boolean } | null {
+  if (state === null) return null;
   const read = <T>(path: string, value: T | undefined): T | null => strictlySeen(state, path) ? value ?? null : null;
   const frequency = read('main.freqHz', state.main?.freqHz);
   const mode = read('main.mode', state.main?.mode)?.toUpperCase();
@@ -157,11 +159,44 @@ export function audioScopeProjection(geometry: ScopeGeometry | null, state: Serv
   }
   // CW/CW-R, RTTY/RTTY-R and DV retain the source's symmetric main mapping.
   // Their correct-side choice remains MOR-4288; no NormalSide is inferred.
-  const carrier = frequency + offset;
+  return { carrierHz: frequency + offset, lower };
+}
+
+/** Map observed audio carrier/polarity into the qualified RF frame without copying bins. */
+export function audioScopeProjection(geometry: ScopeGeometry | null, state: ServerState | null): import('../scope-frame').ScopeAudioProjection | null {
+  if (geometry?.source !== 'audio_fft') return null;
+  const carrier = audioScopeCarrier(state);
+  if (carrier === null) return null;
   const span = geometry.view.endHz - geometry.view.startHz;
-  const sign = lower ? -1 : 1;
-  const spanHz = lower ? carrier - geometry.view.startHz : geometry.view.endHz - carrier;
-  return span > 0 && spanHz > 0 ? { zero: (carrier - geometry.view.startHz) / span, perHz: sign / span, spanHz } : null;
+  const sign = carrier.lower ? -1 : 1;
+  const spanHz = carrier.lower ? carrier.carrierHz - geometry.view.startHz : geometry.view.endHz - carrier.carrierHz;
+  return span > 0 && spanHz > 0
+    ? { zero: (carrier.carrierHz - geometry.view.startHz) / span, perHz: sign / span, spanHz }
+    : null;
+}
+
+/** The full-band follow view every other audio_fft consumer requests. */
+const AUDIO_FFT_FULL_BAND_VIEW: ScopeViewRequest = { follow: 'vfo', spanHz: 48000 };
+
+/**
+ * MOR-4604: the AudioScope panel draws audio 0..filterWidth from the carrier
+ * across its trapezoid, so it subscribes to exactly that RF window plus a
+ * small margin on both sides. The hub grants at most the source's native bin
+ * count across the WHOLE view (no upsampling), so the fixed 48 kHz follow
+ * view left the passband a handful of stretched columns; a passband-sized
+ * view delivers native resolution. While the carrier or the width is
+ * unobserved the panel keeps the full-band follow view.
+ */
+export function audioScopePassbandView(state: ServerState | null, caps: Capabilities | null): ScopeViewRequest {
+  const carrier = audioScopeCarrier(state);
+  const width = state !== null && strictlySeen(state, 'main.filterWidth') ? state.main?.filterWidth : null;
+  if (carrier === null || !finiteNumber(width) || width <= 0) return AUDIO_FFT_FULL_BAND_VIEW;
+  const sampleRate = caps?.audioConfig?.sampleRate;
+  const drawn = Math.min(width, positiveInteger(sampleRate) ? sampleRate / 2 : 24000);
+  const margin = drawn / 8;
+  const startHz = carrier.lower ? carrier.carrierHz - drawn - margin : carrier.carrierHz - margin;
+  const endHz = carrier.lower ? carrier.carrierHz + margin : carrier.carrierHz + drawn + margin;
+  return { startHz: Math.max(0, Math.floor(startHz)), endHz: Math.ceil(endHz) };
 }
 
 /** A retry token for observed primary audio-mapping facts, independent of UI VFO qualification. */
