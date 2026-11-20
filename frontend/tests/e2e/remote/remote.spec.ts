@@ -150,26 +150,32 @@ test.describe('phone layout', () => {
   });
 });
 
-// The four data-channel labels come from the committed golden documents
-// (the attach_api/attach_scope/... document set); the ordered/lossy split
-// mirrors the production factories the answerer serves
-// (src/rigplane/web/transport/webrtc.py: add_control_channel and
-// add_api_channel are ordered+reliable, _add_lossy_channel is unordered
-// with maxRetransmits=0). The readback in the row pins the table against
-// the negotiated channels. maxRetransmits is null where the browser
-// default (reliable) applies.
+// The six data-channel labels, their ordering/reliability and which frames
+// each carries come from the committed wire contract's K5 channel set
+// (`data_channels`, producer: rigplane.web.channel_attach.DATA_CHANNELS):
+// control and api are one reliable channel each; scope and audio are a
+// lossy binary channel plus a reliable ordered `*-text` companion that
+// carries their text frames (the attach included). The readback in the row
+// pins the contract against the negotiated channels. maxRetransmits is null
+// where the browser default (reliable) applies.
 interface ChannelSpec {
   label: string;
   ordered: boolean;
   maxRetransmits: number | null;
 }
 
-const CHANNELS: readonly ChannelSpec[] = [
-  { label: 'control', ordered: true, maxRetransmits: null },
-  { label: 'scope', ordered: false, maxRetransmits: 0 },
-  { label: 'audio', ordered: false, maxRetransmits: 0 },
-  { label: 'api', ordered: true, maxRetransmits: null },
-] as const;
+const CHANNELS: readonly ChannelSpec[] = wire.data_channels.map((spec) => ({
+  label: spec.label,
+  ordered: spec.ordered,
+  maxRetransmits: spec.max_retransmits,
+}));
+
+/** Kind -> the label that carries its text frames (and so its attach). */
+const ATTACH_LABEL: Record<string, string> = Object.fromEntries(
+  wire.data_channels
+    .filter((spec) => spec.carries !== 'binary')
+    .map((spec) => [spec.kind, spec.label]),
+);
 
 // The golden documents the harness reads are the ones with frame text and a
 // decoded form; the file also holds request/response documents of other shapes.
@@ -179,19 +185,20 @@ const ATTACH_DOCUMENTS = (
   }
 ).documents;
 
-/** The attach frame texts for the four labels, from the golden documents
- * keyed attach_<label>; their <SESSION-KEY> placeholder takes the live key. */
+/** The attach frame text per attach-carrying label, from the golden
+ * documents keyed attach_<kind>; their <SESSION-KEY> placeholder takes the
+ * live key. */
 function attachTexts(): Record<string, string> {
   const texts: Record<string, string> = {};
-  for (const { label } of CHANNELS) {
-    const document = ATTACH_DOCUMENTS[`attach_${label}`];
-    if (!document) throw new Error(`no attach_${label} golden document`);
+  for (const [kind, label] of Object.entries(ATTACH_LABEL)) {
+    const document = ATTACH_DOCUMENTS[`attach_${kind}`];
+    if (!document) throw new Error(`no attach_${kind} golden document`);
     texts[label] = document.text;
   }
   return texts;
 }
 
-test('P0: a bare page connects four data channels and reaches control_hello', async ({ page }) => {
+test('P0: a bare page connects the K5 data channels and reaches control_hello', async ({ page }) => {
   // A bare page on the station's origin (a secure context; about:blank is
   // not one in WebKit, where WebRTC then gathers nothing). Every page
   // request is intercepted and answered locally, so the page itself never
@@ -284,22 +291,24 @@ test('P0: a bare page connects four data channels and reaches control_hello', as
         });
         check();
       });
-      // Every channel attaches as its FIRST text frame (the golden
-      // document), all sent at once right after open — the server closes
-      // a channel whose attach lands more than 5 s after dispatch.
+      // Every kind attaches with its FIRST text frame (the golden
+      // document) on its text-carrying channel, all sent once right after
+      // open (never resent) — the server closes a channel whose attach
+      // lands more than 5 s after dispatch.
       const key = await relayWindow.__controllerKey();
       // Receive listeners for all three acknowledgement channels exist
-      // before any attach goes out (scope/audio are unordered and can
-      // answer before control_hello); then await them together.
+      // before any attach goes out (the channels keep no order between
+      // each other, so scope/audio may answer before control_hello); then
+      // await them together.
       const collect = new Function(`return ${collectSource}`)() as typeof collectFirstTexts;
       const frames = await collect(
-        { control: created.control, scope: created.scope, audio: created.audio },
+        { control: created.control, 'scope-text': created['scope-text'], 'audio-text': created['audio-text'] },
         () => {
-          for (const { label } of channels) {
-            created[label].send(attachText[label].replaceAll('<SESSION-KEY>', key));
+          for (const [label, text] of Object.entries(attachText)) {
+            created[label].send(text.replaceAll('<SESSION-KEY>', key));
           }
         },
-        { control: 10_000, scope: 5_000, audio: 5_000 },
+        { control: 10_000, 'scope-text': 5_000, 'audio-text': 5_000 },
       );
       const readback = channels.map(({ label }) => ({
         label: created[label].label,
@@ -308,8 +317,8 @@ test('P0: a bare page connects four data channels and reaches control_hello', as
       }));
       const result = {
         hello: frames.control!,
-        scopeAck: frames.scope!,
-        audioAck: frames.audio!,
+        scopeAck: frames['scope-text']!,
+        audioAck: frames['audio-text']!,
         channels: readback,
       };
       pc.close();
@@ -326,8 +335,8 @@ test('P0: a bare page connects four data channels and reaches control_hello', as
   expect(hello.type).toBe('hello');
   expect(payloadMatchesWireContract(wire.payloads.control_hello, hello)).toBe(true);
   expect(hello.radio).toBe('IC-7610');
-  // The lossy channels' first frames are their attach acks, exactly the
-  // golden documents.
+  // The scope/audio text channels' first frames are their attach acks,
+  // exactly the golden documents.
   expect(JSON.parse(outcome.scopeAck)).toEqual(ATTACH_DOCUMENTS.attach_ack_scope.decoded);
   expect(JSON.parse(outcome.audioAck)).toEqual(ATTACH_DOCUMENTS.attach_ack_audio.decoded);
 });
