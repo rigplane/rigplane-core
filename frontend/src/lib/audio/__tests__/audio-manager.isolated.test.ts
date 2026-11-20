@@ -2,8 +2,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ManagedTxController } from '../../runtime/tx-controller/managed-controller';
 import type { ControllerRole } from '../../transport/message-transport';
 import type { RxAudioFocus, RxPlaybackDiagnostics, RxPlayer } from '../rx-player';
+import type { TxCaptureFailure, TxCaptureFailureCode } from '../tx-mic';
 import { validateCapabilities } from '$lib/types/capabilities';
 import stateWireGoldens from '$lib/transport/__tests__/fixtures/state-wire-goldens.json';
+
+const txFailure = (code: TxCaptureFailureCode, category: string, reason: string): TxCaptureFailure => ({
+  code, category, reason, at: Date.now(),
+});
 
 const rxStart = vi.fn();
 const rxStop = vi.fn();
@@ -33,7 +38,7 @@ const txStop = vi.fn();
 const txApplyServerCodec = vi.fn(() => ({ switched: false, error: null }));
 let txCaptureFailureCategory: string | null = null;
 let txCaptureEpoch = 0;
-let txCaptureDied: ((reason: string) => void) | null = null;
+let txCaptureDied: ((failure: TxCaptureFailure) => void) | null = null;
 let txSend: ((data: ArrayBuffer) => void) | null = null;
 
 // The members AudioManager consumes, taken from the producer's own class so a
@@ -75,7 +80,7 @@ vi.mock('../tx-mic', () => ({
     static supported() { return true; }
     constructor(
       send: (data: ArrayBuffer) => void,
-      onCaptureDied?: (reason: string) => void,
+      onCaptureDied?: (failure: TxCaptureFailure) => void,
     ) {
       txCaptureDied = onCaptureDied ?? null;
       txSend = send;
@@ -314,18 +319,19 @@ describe('AudioManager TX start failure latch (MOR-3753)', () => {
     return { audioManager, setTxError: vi.mocked(audio.setTxError) };
   }
 
-  it.each([
-    'TX MIC: permission denied',
-    'TX MIC: microphone capture not supported',
-    'TX MIC: insecure context',
-    'TX MIC: capture failed (NotFoundError)',
-    'TX MIC: capture failed (unknown)',
-  ])('genuine capture failure %s latches the failed state without TX admission', async (reason) => {
-    txStart.mockResolvedValueOnce(reason);
+  it.each<[TxCaptureFailureCode, string]>([
+    ['permission', 'NotAllowedError'],
+    ['unsupported', 'capture-unsupported'],
+    ['insecure-context', 'insecure-context'],
+    ['capture', 'NotFoundError'],
+    ['capture', 'unknown'],
+  ])('genuine capture failure %s/%s latches the failed state without TX admission', async (code, category) => {
+    const failure = txFailure(code, category, `${category} cause`);
+    txStart.mockResolvedValueOnce(failure);
     const { audioManager, setTxError } = await rig();
     audioManager.setOperatorNotifier(vi.fn());
 
-    await expect(audioManager.startTx()).resolves.toBe(reason);
+    await expect(audioManager.startTx()).resolves.toBe(failure.reason);
 
     expect(audioManager.txEnabled).toBe(false);
     expect(setTxError).toHaveBeenLastCalledWith(true);
@@ -333,26 +339,28 @@ describe('AudioManager TX start failure latch (MOR-3753)', () => {
   });
 
   it('a retry clears the latch at entry while the new capture is pending; a fresh genuine failure re-latches', async () => {
-    txStart.mockResolvedValueOnce('TX MIC: permission denied');
+    const first = txFailure('permission', 'NotAllowedError', 'permission denied');
+    txStart.mockResolvedValueOnce(first);
     const { audioManager, setTxError } = await rig();
-    await expect(audioManager.startTx()).resolves.toBe('TX MIC: permission denied');
+    await expect(audioManager.startTx()).resolves.toBe(first.reason);
     expect(setTxError).toHaveBeenLastCalledWith(true);
 
-    let settleCapture!: (reason: string | null) => void;
+    const second = txFailure('capture', 'NotReadableError', 'capture failed (NotReadableError)');
+    let settleCapture!: (failure: TxCaptureFailure | null) => void;
     txStart.mockImplementationOnce(() => new Promise((resolve) => { settleCapture = resolve; }));
     const retry = audioManager.startTx();
     expect(setTxError).toHaveBeenLastCalledWith(false);
 
-    settleCapture('TX MIC: capture failed (NotReadableError)');
-    await expect(retry).resolves.toBe('TX MIC: capture failed (NotReadableError)');
+    settleCapture(second);
+    await expect(retry).resolves.toBe(second.reason);
     expect(setTxError).toHaveBeenLastCalledWith(true);
   });
 
   it.each([
-    'TX MIC: capture start cancelled',
-    'TX MIC: capture stopped before start completed',
+    'capture start cancelled',
+    'capture stopped before start completed',
   ])('non-failure reason %s never latches', async (reason) => {
-    txStart.mockResolvedValueOnce(reason);
+    txStart.mockResolvedValueOnce(txFailure('cancelled', 'cancelled', reason));
     const { audioManager, setTxError } = await rig();
 
     await expect(audioManager.startTx()).resolves.toBe(reason);
@@ -369,7 +377,7 @@ describe('AudioManager TX start failure latch (MOR-3753)', () => {
       current: (epoch: number) => epoch === 7 && current,
       protocols: () => [], role: () => 'primary',
     });
-    let settleCapture!: (reason: string | null) => void;
+    let settleCapture!: (failure: TxCaptureFailure | null) => void;
     txStart.mockImplementationOnce(() => new Promise((resolve) => { settleCapture = resolve; }));
     const pending = audioManager.startTx();
     current = false;
@@ -393,7 +401,7 @@ describe('AudioManager TX start failure latch (MOR-3753)', () => {
     });
     const failure = new Error('late capture setup failure');
     let rejectCapture!: (reason: Error) => void;
-    txStart.mockImplementationOnce(() => new Promise<string | null>((_resolve, reject) => {
+    txStart.mockImplementationOnce(() => new Promise<TxCaptureFailure | null>((_resolve, reject) => {
       rejectCapture = reject;
     }));
     const pending = audioManager.startTx();
@@ -404,7 +412,9 @@ describe('AudioManager TX start failure latch (MOR-3753)', () => {
     }
     rejectCapture(failure);
 
-    await expect(pending).rejects.toBe(failure);
+    // An unexpected throw from an obsolete attempt is absorbed as the
+    // superseded marker; it neither latches nor rejects the caller (MOR-4602).
+    await expect(pending).resolves.toBe('TX MIC: capture start cancelled');
     expect(setTxError).not.toHaveBeenCalledWith(true);
     expect(audioManager.txEnabled).toBe(false);
     expect(FakeWebSocket.instances).toHaveLength(0);
@@ -418,8 +428,9 @@ describe('AudioManager TX start failure latch (MOR-3753)', () => {
       current: (epoch: number) => epoch === 7 && ready,
       protocols: () => [], role: () => 'primary',
     });
-    txStart.mockResolvedValueOnce('TX MIC: permission denied');
-    await expect(audioManager.startTx()).resolves.toBe('TX MIC: permission denied');
+    const refused = txFailure('permission', 'NotAllowedError', 'permission denied');
+    txStart.mockResolvedValueOnce(refused);
+    await expect(audioManager.startTx()).resolves.toBe(refused.reason);
     expect(setTxError).toHaveBeenLastCalledWith(true);
 
     ready = false;
@@ -590,9 +601,10 @@ describe('remote TX audio admission before managed PTT', () => {
   it.each(['returned', 'rejected'] as const)('a late %s capture failure cannot clean up a fresh PTT preparation', async (outcome) => {
     const r = await rig();
     let finish!: () => void;
-    txStart.mockImplementationOnce(() => new Promise<string | null>((resolve, reject) => {
+    txStart.mockImplementationOnce(() => new Promise<TxCaptureFailure | null>((resolve, reject) => {
       finish = () => outcome === 'returned'
-        ? resolve('TX MIC: permission denied') : reject(new Error('late capture failure'));
+        ? resolve(txFailure('permission', 'NotAllowedError', 'permission denied'))
+        : reject(new Error('late capture failure'));
     }));
     r.controller.pttOn();
     await r.controller.pttOff();
@@ -765,9 +777,9 @@ describe('AudioManager audio_stats uplink (MOR-585)', () => {
     ws.open();
     ws.sent = [];
     txCaptureFailureCategory = 'NotFoundError';
-    txStart.mockResolvedValueOnce('TX MIC: capture failed (NotFoundError)');
+    txStart.mockResolvedValueOnce(txFailure('capture', 'NotFoundError', 'capture failed (NotFoundError)'));
     try {
-      await expect(audioManager.startTx()).resolves.toBe('TX MIC: capture failed (NotFoundError)');
+      await expect(audioManager.startTx()).resolves.toBe('capture failed (NotFoundError)');
       expect(statsMessages(ws)).toContainEqual(expect.objectContaining({
         microphoneCaptureError: 'NotFoundError',
       }));
@@ -1010,34 +1022,52 @@ describe('AudioManager TX failure notifications (MOR-1783)', () => {
   });
 
   it.each([
-    ['TX MIC: permission denied', 'txAudioMicPermissionDenied'],
-    ['TX MIC: microphone capture not supported', 'txAudioCaptureUnsupported'],
-    ['TX MIC: insecure context', 'txAudioInsecureContext'],
-    ['TX MIC: capture failed (NotFoundError)', 'txAudioStartFailed'],
-    ['TX MIC: capture failed (NotReadableError)', 'txAudioStartFailed'],
-    ['TX MIC: capture failed (OverconstrainedError)', 'txAudioStartFailed'],
-    ['TX MIC: capture failed (AbortError)', 'txAudioStartFailed'],
-    ['TX MIC: capture failed (unknown)', 'txAudioStartFailed'],
-    ['TX MIC: PCM capture not supported', 'txAudioCaptureUnsupported'],
-    ['TX MIC: unsupported mic sample rate 48000 Hz', 'txAudioStartFailed'],
-  ])('local startTx failure %s raises the %s banner', async (reason, code) => {
-    txStart.mockResolvedValueOnce(reason);
+    [txFailure('permission', 'NotAllowedError', 'permission denied'), 'txAudioMicPermissionDenied'],
+    [txFailure('unsupported', 'capture-unsupported', 'microphone capture not supported'), 'txAudioCaptureUnsupported'],
+    [txFailure('insecure-context', 'insecure-context', 'insecure context'), 'txAudioInsecureContext'],
+    [txFailure('capture', 'NotFoundError', 'capture failed (NotFoundError)'), 'txAudioStartFailed'],
+    [txFailure('capture', 'NotReadableError', 'capture failed (NotReadableError)'), 'txAudioStartFailed'],
+    [txFailure('capture', 'OverconstrainedError', 'capture failed (OverconstrainedError)'), 'txAudioStartFailed'],
+    [txFailure('capture', 'AbortError', 'capture failed (AbortError)'), 'txAudioStartFailed'],
+    [txFailure('capture', 'unknown', 'capture failed (unknown)'), 'txAudioStartFailed'],
+    [txFailure('unsupported', 'pcm-unsupported', 'PCM capture not supported'), 'txAudioCaptureUnsupported'],
+    [txFailure('sample-rate', 'sample-rate', 'unsupported mic sample rate 48000 Hz'), 'txAudioSampleRateUnsupported'],
+    [txFailure('device-lost', 'track-ended', 'microphone track ended'), 'txAudioDeviceLost'],
+    [txFailure('encoder', 'encoder-configure', 'encoder configure failed: boom'), 'txAudioEncoderFailed'],
+  ])('local startTx failure %s/%s raises the %s banner with the reason param', async (failure, code) => {
+    txStart.mockResolvedValueOnce(failure);
     const audioManager = await withNotifier();
 
-    await expect(audioManager.startTx()).resolves.toBe(reason);
+    await expect(audioManager.startTx()).resolves.toBe(failure.reason);
 
     expect(notifyOperator).toHaveBeenCalledTimes(1);
-    expect(notifyOperator).toHaveBeenCalledWith('error', expect.any(String), code);
+    expect(notifyOperator).toHaveBeenCalledWith(
+      'error', `TX audio failed to start: ${failure.reason}`, code, { reason: failure.reason },
+    );
+    expect(audioManager.txEnabled).toBe(false);
+    expect(FakeWebSocket.instances).toHaveLength(0);
+  });
+
+  it('an unexpected throw from the capture start becomes a typed failure banner, not a rejection', async () => {
+    txStart.mockRejectedValueOnce(new Error('boom'));
+    const audioManager = await withNotifier();
+
+    await expect(audioManager.startTx()).resolves.toBe('Error: boom');
+
+    expect(notifyOperator).toHaveBeenCalledTimes(1);
+    expect(notifyOperator).toHaveBeenCalledWith(
+      'error', 'TX audio failed to start: Error: boom', 'txAudioStartFailed', { reason: 'Error: boom' },
+    );
     expect(audioManager.txEnabled).toBe(false);
     expect(FakeWebSocket.instances).toHaveLength(0);
   });
 
   it.each([
-    'TX MIC: capture start cancelled',
-    'TX MIC: capture stopped before start completed',
+    'capture start cancelled',
+    'capture stopped before start completed',
   ])('operator cancellation %s raises no banner', async (reason) => {
     const logInfo = vi.spyOn(console, 'log').mockImplementation(() => {});
-    txStart.mockResolvedValueOnce(reason);
+    txStart.mockResolvedValueOnce(txFailure('cancelled', 'cancelled', reason));
     const audioManager = await withNotifier();
 
     await expect(audioManager.startTx()).resolves.toBe(reason);
@@ -1047,7 +1077,7 @@ describe('AudioManager TX failure notifications (MOR-1783)', () => {
     expect(audioManager.txEnabled).toBe(false);
   });
 
-  it('mid-TX capture death raises one txAudioStopped banner and fires the died path', async () => {
+  it('mid-TX capture death raises one typed banner and fires the died path', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {});
     const audioManager = await withNotifier();
     const died = vi.fn();
@@ -1055,20 +1085,40 @@ describe('AudioManager TX failure notifications (MOR-1783)', () => {
     await audioManager.startTx();
     FakeWebSocket.instances[0].open();
 
-    txCaptureDied?.('TX MIC: microphone track ended');
+    txCaptureDied?.(txFailure('device-lost', 'track-ended', 'microphone track ended'));
 
     expect(notifyOperator).toHaveBeenCalledTimes(1);
     expect(notifyOperator).toHaveBeenCalledWith(
-      'error', expect.stringContaining('microphone track ended'), 'txAudioStopped',
+      'error', 'TX audio failed: microphone track ended', 'txAudioDeviceLost',
+      { reason: 'microphone track ended' },
     );
     expect(died).toHaveBeenCalledTimes(1);
+    expect(audioManager.txEnabled).toBe(false);
+  });
+
+  it.each<[TxCaptureFailureCode, string, string, string]>([
+    ['encoder', 'encoder-error', 'encoder error: boom', 'txAudioEncoderFailed'],
+    ['sample-rate', 'sample-rate', 'unsupported mic sample rate 44100 Hz', 'txAudioSampleRateUnsupported'],
+    ['device-lost', 'track-ended', 'microphone track ended', 'txAudioDeviceLost'],
+  ])('mid-TX %s/%s death raises the distinct %s banner', async (code, category, reason, toastCode) => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const audioManager = await withNotifier();
+    await audioManager.startTx();
+    FakeWebSocket.instances[0].open();
+
+    txCaptureDied?.(txFailure(code, category, reason));
+
+    expect(notifyOperator).toHaveBeenCalledTimes(1);
+    expect(notifyOperator).toHaveBeenCalledWith(
+      'error', `TX audio failed: ${reason}`, toastCode, { reason },
+    );
     expect(audioManager.txEnabled).toBe(false);
   });
 
   it('capture death while TX is not enabled raises no banner', async () => {
     const audioManager = await withNotifier();
 
-    txCaptureDied?.('TX MIC: microphone track ended');
+    txCaptureDied?.(txFailure('device-lost', 'track-ended', 'microphone track ended'));
 
     expect(notifyOperator).not.toHaveBeenCalled();
     expect(audioManager.txEnabled).toBe(false);
@@ -1076,9 +1126,10 @@ describe('AudioManager TX failure notifications (MOR-1783)', () => {
 
   it('raises no banner and does not throw when no notifier is injected', async () => {
     const { audioManager } = await import('../audio-manager');
-    txStart.mockResolvedValueOnce('TX MIC: permission denied');
+    const failure = txFailure('permission', 'NotAllowedError', 'permission denied');
+    txStart.mockResolvedValueOnce(failure);
 
-    await expect(audioManager.startTx()).resolves.toBe('TX MIC: permission denied');
+    await expect(audioManager.startTx()).resolves.toBe(failure.reason);
 
     expect(audioManager.txEnabled).toBe(false);
   });

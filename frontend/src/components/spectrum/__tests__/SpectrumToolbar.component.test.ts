@@ -133,6 +133,8 @@ globalThis.fetch = vi.fn(() =>
 const fetchMock = vi.mocked(globalThis.fetch);
 
 import SpectrumToolbar from '../SpectrumToolbar.svelte';
+import HostedToolbarWithScopeSurface from './support/HostedToolbarWithScopeSurface.svelte';
+import { topologyFixtures, withScopeControls } from '../../../semantic/fixtures/topologies';
 
 // ── Fact and mount helpers ─────────────────────────────────────────────────
 
@@ -494,6 +496,92 @@ describe('scope-control intents', () => {
     flushSync();
     for (const [, spy] of scopeSpies()) expect(spy).not.toHaveBeenCalled();
   });
+
+  // MOR-4605: while AUTO is on, REF is the waterfall's offset from the
+  // tracked floor — a client-side step (never a scope intent), live even
+  // with the radio REF unread. The offset leaves through the bindable
+  // autoFloorRef prop; the panel feeds it to the waterfall renderer only.
+  describe('AUTO on: REF steps the client-side waterfall offset', () => {
+    /** The desktop REF cluster: [−, value, +, AUTO] buttons plus the value slot. */
+    function desktopRefCluster(root: HTMLElement) {
+      const group = Array.from(root.querySelectorAll<HTMLElement>('.toolbar-group.hide-mobile'))
+        .find((item) => item.querySelector('.toolbar-label')?.textContent?.trim() === 'REF')!;
+      return {
+        minus: group.querySelectorAll<HTMLButtonElement>('button')[0]!,
+        plus: group.querySelectorAll<HTMLButtonElement>('button')[1]!,
+        auto: group.querySelector<HTMLButtonElement>('[data-testid="scope-auto-floor-toggle"]')!,
+        value: group.querySelector('.toolbar-value')!,
+      };
+    }
+
+    it('steps minus/plus/reset on the bindable offset and never dispatches onRefChange', () => {
+      authorityHarness.current = authority({ scopeControls: scopeFacts({ refDb: field(5) }) });
+      const target = mountToolbar({ autoFloor: true, autoFloorRef: 0 });
+      const cluster = desktopRefCluster(target);
+      // The slot shows the OFFSET (0), not the radio readback (+5).
+      expect(cluster.value.textContent).toBe('0');
+      cluster.plus.click();
+      flushSync();
+      expect(cluster.value.textContent).toBe('+5');
+      cluster.minus.click();
+      flushSync();
+      expect(cluster.value.textContent).toBe('0');
+      cluster.plus.click();
+      cluster.plus.click();
+      flushSync();
+      expect(cluster.value.textContent).toBe('+10');
+      for (const [, spy] of scopeSpies()) expect(spy).not.toHaveBeenCalled();
+      expect(sendCommandAlarm).not.toHaveBeenCalled();
+
+      target.querySelector<HTMLButtonElement>('[aria-label="Display settings"]')!.click();
+      flushSync();
+      target.querySelector<HTMLButtonElement>('[aria-label="Reset reference"]')!.click();
+      flushSync();
+      expect(cluster.value.textContent).toBe('0');
+      for (const [, spy] of scopeSpies()) expect(spy).not.toHaveBeenCalled();
+    });
+
+    it('clamps the offset to the ±30 dB display range BRT uses', () => {
+      authorityHarness.current = authority({ scopeControls: scopeFacts({ refDb: field(5) }) });
+      const target = mountToolbar({ autoFloor: true, autoFloorRef: 25 });
+      const cluster = desktopRefCluster(target);
+      cluster.plus.click();
+      flushSync();
+      expect(cluster.value.textContent).toBe('+30');
+      cluster.plus.click();
+      flushSync();
+      expect(cluster.value.textContent).toBe('+30');
+      for (const [, spy] of scopeSpies()) expect(spy).not.toHaveBeenCalled();
+    });
+
+    it('stays live with the radio REF unread: no range, offset still steps', () => {
+      authorityHarness.current = authority({
+        scopeControls: scopeFacts({ refDb: field(0, { known: false }), refRange: null }),
+      });
+      const target = mountToolbar({ autoFloor: true, autoFloorRef: 0 });
+      const cluster = desktopRefCluster(target);
+      expect(cluster.minus.disabled).toBe(false);
+      expect(cluster.plus.disabled).toBe(false);
+      expect(cluster.value.textContent).toBe('0');
+      cluster.plus.click();
+      flushSync();
+      expect(cluster.value.textContent).toBe('+5');
+      for (const [, spy] of scopeSpies()) expect(spy).not.toHaveBeenCalled();
+    });
+
+    it('turning AUTO off returns REF to the radio readback and the radio intent', () => {
+      authorityHarness.current = authority({ scopeControls: scopeFacts({ refDb: field(5) }) });
+      const target = mountToolbar({ autoFloor: true, autoFloorRef: 10 });
+      const cluster = desktopRefCluster(target);
+      cluster.auto.click();
+      flushSync();
+      expect(cluster.auto.getAttribute('aria-pressed')).toBe('false');
+      expect(cluster.value.textContent).toBe('+5');
+      cluster.plus.click();
+      flushSync();
+      expectOnlyScopeCall('onRefChange', 10);
+    });
+  });
 });
 
 // ── Exact known domains and fail-closed fields ─────────────────────────────
@@ -779,6 +867,25 @@ describe('structural and browser-local behavior', () => {
     expect(sendCommandAlarm).not.toHaveBeenCalled();
   });
 
+  it('exposes the AUTO waterfall noise-floor toggle beside REF, default OFF and browser-local (MOR-4605)', () => {
+    const target = mountToolbar({ autoFloor: false });
+    const auto = target.querySelector<HTMLButtonElement>('[data-testid="scope-auto-floor-toggle"]')!;
+    expect(auto).not.toBeNull();
+    // It sits in the REF cluster, after the REF stepper.
+    const refGroup = auto.closest('.toolbar-group')!;
+    expect(refGroup.querySelector('.toolbar-label')!.textContent!.trim()).toBe('REF');
+    const lit = () => auto.getAttribute('aria-pressed') === 'true' || auto.classList.contains('active');
+    expect(lit()).toBe(false);
+    auto.click();
+    flushSync();
+    expect(lit()).toBe(true);
+    auto.click();
+    flushSync();
+    expect(lit()).toBe(false);
+    for (const [, spy] of scopeSpies()) expect(spy).not.toHaveBeenCalled();
+    expect(sendCommandAlarm).not.toHaveBeenCalled();
+  });
+
   it('unmounts cleanly', () => {
     const target = mountToolbar();
     const component = components.pop()!;
@@ -853,8 +960,10 @@ describe('band-plan credential-free HTTP', () => {
 // manual step change (STEP click) still disables auto-step exactly as
 // before — the toggle only restores the way *back*.
 describe('auto-step toggle (MOR-1486)', () => {
+  // The step toggle is the only AUTO key with this class; the MOR-4605
+  // waterfall AUTO floor key beside REF shares the 'AUTO' label.
   function autoToggle(root: HTMLElement) {
-    return button(root, 'AUTO');
+    return root.querySelector<HTMLButtonElement>('.auto-step-toggle') ?? undefined;
   }
 
   it('renders as a real button with aria-pressed, reflecting the store', () => {
@@ -934,8 +1043,10 @@ describe('auto-step toggle (MOR-1486)', () => {
 // prop. This is deliberately a structural prop, not a skin-name check — the
 // toolbar itself has no idea which layout mounted it.
 describe('hideAutoStepToggle gate (MOR-1486 ruling B)', () => {
+  // The step toggle is the only AUTO key with this class; the MOR-4605
+  // waterfall AUTO floor key beside REF shares the 'AUTO' label.
   function autoToggle(root: HTMLElement) {
-    return button(root, 'AUTO');
+    return root.querySelector<HTMLButtonElement>('.auto-step-toggle') ?? undefined;
   }
 
   it('shows the toggle by default (prop omitted)', () => {
@@ -1079,13 +1190,16 @@ describe('hosted one row + More screen group (MOR-2545 PR2)', () => {
   it('hands the screen group AND the row tail to the semantic row as the snippet payload — neither is in the closed DOM', () => {
     capturedPayload = [];
     const target = mountToolbar({ hideScopeControls: true, scopeControls: payloadProbe });
-    // Svelte passes snippet arguments as getters: three slots, the first
+    // Svelte passes snippet arguments as getters: five slots, the first
     // reading back `undefined` (the untouched allowBare slot), then the
-    // renderable screen group and the renderable row tail.
-    expect(capturedPayload.length).toBe(3);
+    // renderable screen group and the renderable row tail, then the untouched
+    // moreAsSheet slot and the REF offset (MOR-4605) — undefined while AUTO is off.
+    expect(capturedPayload.length).toBe(5);
     expect((capturedPayload[0] as () => unknown)()).toBeUndefined();
     expect(typeof (capturedPayload[1] as () => unknown)()).toBe('function');
     expect(typeof (capturedPayload[2] as () => unknown)()).toBe('function');
+    expect((capturedPayload[3] as () => unknown)()).toBeUndefined();
+    expect((capturedPayload[4] as () => unknown)()).toBeUndefined();
     // The closed row itself carries none of the screen-only controls.
     for (const label of ['AUTO', 'AVG', 'PEAK', 'BRT', 'BANDS']) expect(button(target, label)).toBeUndefined();
   });
@@ -1368,4 +1482,50 @@ it('keeps SPAN inert without a subscription grant', () => {
   const target = mountToolbar();
   expect(buttons(target).find(item => item.title === 'Increase span')!.disabled).toBe(true);
   expect(target.textContent).not.toContain('±50k');
+});
+
+// ── MOR-4605: AUTO + REF on the HOSTED (desktop-v2) toolbar ────────────────
+
+describe('hosted toolbar: AUTO REF steps the local waterfall offset (MOR-4605)', () => {
+  it('enables AUTO in More, steps the semantic REF keys and never dispatches set_scope_ref', () => {
+    const base = withScopeControls(topologyFixtures['1/single']);
+    const onRefChange = vi.fn();
+    const states: { autoFloor: boolean; autoFloorRef: number }[] = [];
+    const target = document.createElement('div');
+    document.body.appendChild(target);
+    components.push(mount(HostedToolbarWithScopeSurface, {
+      target, props: { view: base, onRefChange, onState: (state: typeof states[number]) => states.push({ ...state }) },
+    }));
+    flushSync();
+    const last = () => states[states.length - 1]!;
+    const refKey = (label: string) =>
+      target.querySelector<HTMLButtonElement>(`[data-testid="scope-ref"] [aria-label="${label}"]`)!;
+
+    // AUTO off: the semantic REF key reaches the radio callback.
+    refKey('Increase scope reference').click();
+    flushSync();
+    expect(onRefChange).toHaveBeenCalledTimes(1);
+    expect(last()).toEqual({ autoFloor: false, autoFloorRef: 0 });
+    onRefChange.mockClear();
+
+    // AUTO on (the key lives in the More screen group).
+    target.querySelector<HTMLButtonElement>('[data-testid="scope-more"]')?.click();
+    flushSync();
+    target.querySelector<HTMLButtonElement>('[data-testid="scope-auto-floor-toggle"]')!.click();
+    flushSync();
+    expect(last().autoFloor).toBe(true);
+
+    const value = () => target.querySelector('[data-testid="scope-ref-value"]')!.textContent;
+    expect(value()).toBe('0');
+    refKey('Increase scope reference').click();
+    refKey('Increase scope reference').click();
+    flushSync();
+    expect(last()).toEqual({ autoFloor: true, autoFloorRef: 10 });
+    expect(value()).toBe('+10');
+    refKey('Decrease scope reference').click();
+    flushSync();
+    expect(last().autoFloorRef).toBe(5);
+    expect(onRefChange).not.toHaveBeenCalled();
+    expect(sendCommandAlarm).not.toHaveBeenCalled();
+  });
 });

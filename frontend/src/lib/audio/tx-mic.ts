@@ -26,6 +26,26 @@ type NavigatorWithLegacyMedia = Navigator & {
 
 export type TxCodec = 'opus' | 'pcm16';
 
+/**
+ * Stable classification of a TX microphone capture failure (MOR-4602).
+ * Codes drive the operator toast; the English `reason` is display-only and
+ * is never matched on.
+ */
+export type TxCaptureFailureCode =
+  | 'cancelled' | 'permission' | 'insecure-context' | 'unsupported'
+  | 'capture' | 'device-lost' | 'encoder' | 'sample-rate';
+
+export interface TxCaptureFailure {
+  /** Machine-readable classification; maps to the toast reason code. */
+  code: TxCaptureFailureCode;
+  /** DOMException name or pipeline stage, for diagnostics. */
+  category: string;
+  /** English cause, shown as a toast parameter; never matched on. */
+  reason: string;
+  /** Date.now() at the moment of failure. */
+  at: number;
+}
+
 /** How long the Opus conversion context may take to reach `running` (MOR-4594). */
 const CONTEXT_RUNNING_DEADLINE_MS = 500;
 
@@ -44,7 +64,7 @@ export interface TxCodecSwitch {
    * so the caller must end the TX session rather than report a working
    * fallback.
    */
-  error: string | null;
+  error: TxCaptureFailure | null;
 }
 
 export class TxMic {
@@ -64,14 +84,19 @@ export class TxMic {
   private sendFn: TxSendFn;
   // Capture-local identity also cancels getUserMedia that settles after stop().
   private captureGeneration = 0;
-  private _lastCaptureFailureCategory: string | null = null;
+  private _lastCaptureFailure: TxCaptureFailure | null = null;
 
   /** Existing capture identity, for rejecting stale asynchronous outcomes. */
   get captureEpoch(): number { return this.captureGeneration; }
 
   /** Safe last acquisition failure; retained across stop/retry for diagnostics. */
+  get lastCaptureFailure(): TxCaptureFailure | null {
+    return this._lastCaptureFailure;
+  }
+
+  /** Failure category of the last acquisition failure (diagnostic uplink). */
   get lastCaptureFailureCategory(): string | null {
-    return this._lastCaptureFailureCategory;
+    return this._lastCaptureFailure?.category ?? null;
   }
   private removeTrackEnded: (() => void) | null = null;
   // Sticky: the server told us it cannot decode Opus (MOR-1791). Kept across
@@ -83,7 +108,7 @@ export class TxMic {
   // the bench radios that negotiate 48 kHz — keep today's behaviour.
   private pcm16Rate = SAMPLE_RATE;
 
-  constructor(sendFn: TxSendFn, private readonly onCaptureDied?: (reason: string) => void) {
+  constructor(sendFn: TxSendFn, private readonly onCaptureDied?: (failure: TxCaptureFailure) => void) {
     this.sendFn = sendFn;
   }
 
@@ -95,6 +120,17 @@ export class TxMic {
   get codec(): TxCodec | null {
     if (!this._active) return null;
     return this.encoder !== null ? 'opus' : 'pcm16';
+  }
+
+  private makeFailure(code: TxCaptureFailureCode, category: string, reason: string): TxCaptureFailure {
+    return { code, category, reason, at: Date.now() };
+  }
+
+  /** Record a start() failure and return it; the caller tears down. */
+  private failStart(code: TxCaptureFailureCode, category: string, reason: string): TxCaptureFailure {
+    const failure = this.makeFailure(code, category, reason);
+    this._lastCaptureFailure = failure;
+    return failure;
   }
 
   /**
@@ -131,7 +167,12 @@ export class TxMic {
       const admitted = TX_PCM_SAMPLE_RATES.join(', ');
       return {
         switched: false,
-        error: `TX MIC: negotiated sample rate ${sampleRate} Hz is not supported (expected one of ${admitted})`,
+        error: {
+          code: 'sample-rate',
+          category: 'negotiated-rate',
+          reason: `negotiated sample rate ${sampleRate} Hz is not supported (expected one of ${admitted})`,
+          at: Date.now(),
+        },
       };
     }
     this.pcm16Rate = sampleRate;
@@ -188,19 +229,19 @@ export class TxMic {
       });
   }
 
-  async start(): Promise<string | null> {
+  async start(): Promise<TxCaptureFailure | null> {
     if (this._active) return null;
 
     // Plain HTTP (non-localhost) hides getUserMedia entirely, so check the
     // connection before blaming the browser (MOR-2845): the operator can act
     // on "open the --tls address", not on "get another browser".
     if (typeof window !== 'undefined' && window.isSecureContext === false) {
-      return 'TX MIC: insecure context';
+      return this.failStart('insecure-context', 'insecure-context', 'insecure context');
     }
 
     const getUserMedia = TxMic.getUserMedia();
     if (!getUserMedia || !TxMic.supported()) {
-      return 'TX MIC: microphone capture not supported';
+      return this.failStart('unsupported', 'capture-unsupported', 'microphone capture not supported');
     }
 
     const generation = ++this.captureGeneration;
@@ -229,32 +270,42 @@ export class TxMic {
       if (generation !== this.captureGeneration) {
         // A rejection settling after stop() is that cancellation itself, not
         // a genuine refusal (MOR-3753): no category, no failure reason.
-        return 'TX MIC: capture start cancelled';
+        return this.makeFailure('cancelled', 'cancelled', 'capture start cancelled');
       }
       const name = typeof error === 'object' && error !== null && 'name' in error
         ? error.name : undefined;
       const category = typeof name === 'string' && CAPTURE_ERROR_NAMES.has(name)
         ? name : 'unknown';
-      this._lastCaptureFailureCategory = category;
+      const failure = this.makeFailure(
+        category === 'NotAllowedError' ? 'permission' : 'capture',
+        category,
+        category === 'NotAllowedError'
+          ? 'permission denied'
+          : `capture failed (${category})`,
+      );
+      this._lastCaptureFailure = failure;
       console.warn(`[TxMic] getUserMedia rejected: ${category}`);
-      return category === 'NotAllowedError'
-        ? 'TX MIC: permission denied'
-        : `TX MIC: capture failed (${category})`;
+      return failure;
     }
 
     if (generation !== this.captureGeneration) {
       stream.getTracks().forEach(track => track.stop());
-      return 'TX MIC: capture start cancelled';
+      return this.makeFailure('cancelled', 'cancelled', 'capture start cancelled');
     }
     this.stream = stream;
     this._active = true;
     const track = stream.getAudioTracks()[0];
-    const onEnded = () => this.failCapture(generation, 'microphone track ended');
+    const onEnded = () => this.failCapture(generation, 'device-lost', 'track-ended', 'microphone track ended');
     track.addEventListener('ended', onEnded);
     this.removeTrackEnded = () => track.removeEventListener('ended', onEnded);
     if (track.readyState === 'ended') {
-      onEnded();
-      return 'TX MIC: microphone track ended';
+      // The device vanished between grant and wiring: the same device-lost
+      // classification as a mid-capture track end.
+      const failure = this.makeFailure('device-lost', 'track-ended', 'microphone track ended');
+      this._lastCaptureFailure = failure;
+      this.stop();
+      this.onCaptureDied?.(failure);
+      return failure;
     }
     this.seq = 0;
     this.pcmPending = [];
@@ -269,29 +320,41 @@ export class TxMic {
     // downmixes (MOR-4594).
     const encoderTrack = this.openEncoderTrack(track, generation);
 
-    const processor = new MediaStreamTrackProcessor({ track: encoderTrack });
-    const reader = this.reader = processor.readable.getReader();
+    let reader: ReadableStreamDefaultReader<AudioData>;
+    let encoder: AudioEncoder;
+    try {
+      const processor = new MediaStreamTrackProcessor({ track: encoderTrack });
+      reader = this.reader = processor.readable.getReader();
 
-    let sentFrames = 0;
-    const encoder = this.encoder = new AudioEncoder({
-      output: (chunk: EncodedAudioChunk) => {
-        if (!this._active || this.encoder !== encoder || generation !== this.captureGeneration) return;
-        const payload = new Uint8Array(chunk.byteLength);
-        chunk.copyTo(payload);
-        const header = buildTxHeader(this.seq++);
-        const frame = new Uint8Array(header.length + payload.length);
-        frame.set(header);
-        frame.set(payload, header.length);
-        this.sendFn(frame.buffer);
-        sentFrames++;
-        if (sentFrames <= 3 || sentFrames % 50 === 0) {
-          console.log(`[TxMic] sent frame #${sentFrames}, size=${frame.length} bytes`);
-        }
-      },
-      error: (err: DOMException) => {
-        if (this.encoder === encoder) this.failCapture(generation, `encoder error: ${err.message}`);
-      },
-    });
+      let sentFrames = 0;
+      encoder = this.encoder = new AudioEncoder({
+        output: (chunk: EncodedAudioChunk) => {
+          if (!this._active || this.encoder !== encoder || generation !== this.captureGeneration) return;
+          const payload = new Uint8Array(chunk.byteLength);
+          chunk.copyTo(payload);
+          const header = buildTxHeader(this.seq++);
+          const frame = new Uint8Array(header.length + payload.length);
+          frame.set(header);
+          frame.set(payload, header.length);
+          this.sendFn(frame.buffer);
+          sentFrames++;
+          if (sentFrames <= 3 || sentFrames % 50 === 0) {
+            console.log(`[TxMic] sent frame #${sentFrames}, size=${frame.length} bytes`);
+          }
+        },
+        error: (err: DOMException) => {
+          if (this.encoder === encoder) this.failCapture(generation, 'encoder', 'encoder-error', `encoder error: ${err.message}`);
+        },
+      });
+    } catch (err) {
+      // Never leave a started capture behind a failed start.
+      const failure = this.makeFailure(
+        'encoder', 'encoder-init', `encoder init failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      this._lastCaptureFailure = failure;
+      this.stop();
+      return failure;
+    }
 
     try {
       this.encoder.configure({
@@ -302,8 +365,12 @@ export class TxMic {
       });
     } catch (err) {
       // Never leave a started capture behind a failed start.
+      const failure = this.makeFailure(
+        'encoder', 'encoder-configure', `encoder configure failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      this._lastCaptureFailure = failure;
       this.stop();
-      return `TX MIC: encoder configure failed: ${err instanceof Error ? err.message : String(err)}`;
+      return failure;
     }
 
     // Read loop
@@ -378,15 +445,19 @@ export class TxMic {
       // Only the live Opus context may end the capture: one retired by a
       // codec switch keeps the generation, so identity is checked too.
       const live = context;
-      const fail = (reason: string) => {
+      const fail = (category: string, reason: string) => {
         if (this.opusContext !== live) return;
-        this.failCapture(generation, reason);
+        this.failCapture(generation, 'capture', category, reason);
       };
-      live.resume?.().catch((err: unknown) => fail(`audio context resume failed: ${String(err)}`));
+      live.resume?.().catch((err: unknown) => (
+        fail('context-resume', `audio context resume failed: ${String(err)}`)
+      ));
       // Without a user gesture (hardware PTT, RC-28, CAT) resume() may never
       // settle; a context still not running by the deadline is the same failure.
       setTimeout(() => {
-        if (live.state !== 'running') fail(`audio context not running (${live.state})`);
+        if (live.state !== 'running') {
+          fail('context-not-running', `audio context not running (${live.state})`);
+        }
       }, CONTEXT_RUNNING_DEADLINE_MS);
       return converted;
     } catch (err) {
@@ -405,36 +476,67 @@ export class TxMic {
    * a live Opus capture over (`applyServerCodec`), where the running capture
    * must survive a refusal rather than die under a keyed transmitter.
    */
-  private startPcmFallback({ abortCapture = true } = {}): string | null {
+  private startPcmFallback({ abortCapture = true } = {}): TxCaptureFailure | null {
     const audioContextCtor = TxMic.audioContextCtor();
     if (!audioContextCtor || !this.stream) {
-      return 'TX MIC: PCM capture not supported';
+      return this.failStart('unsupported', 'pcm-unsupported', 'PCM capture not supported');
     }
 
-    this.audioContext = new audioContextCtor({ sampleRate: SAMPLE_RATE });
-    const actualRate = this.audioContext.sampleRate;
+    let context: AudioContext;
+    try {
+      context = new audioContextCtor({ sampleRate: SAMPLE_RATE });
+    } catch (err) {
+      const failure = this.makeFailure(
+        'capture', 'pcm-context-init', `audio context init failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      this._lastCaptureFailure = failure;
+      if (abortCapture) this.stop();
+      return failure;
+    }
+    this.audioContext = context;
+    const actualRate = context.sampleRate;
     if (Math.round(actualRate) !== SAMPLE_RATE) {
       // Read the rate BEFORE tearing down: both teardowns null out
       // `audioContext`, and reading it afterwards threw a TypeError instead
-      // of returning this error string.
+      // of returning this failure.
+      const failure = this.makeFailure(
+        'sample-rate', 'sample-rate', `unsupported mic sample rate ${actualRate} Hz`,
+      );
+      this._lastCaptureFailure = failure;
       if (abortCapture) {
         this.stop();
       } else {
-        this.audioContext.close().catch(() => {});
+        context.close().catch(() => {});
         this.audioContext = null;
       }
-      return `TX MIC: unsupported mic sample rate ${actualRate} Hz`;
+      return failure;
     }
 
-    this.pcmSource = this.audioContext.createMediaStreamSource(this.stream);
-    const processor = this.pcmProcessor = this.audioContext.createScriptProcessor(1024, CHANNELS, CHANNELS);
-    this.pcmProcessor.onaudioprocess = (event: AudioProcessingEvent) => {
-      if (!this._active || this.pcmProcessor !== processor) return;
-      const input = event.inputBuffer.getChannelData(0);
-      this.queuePcmSamples(input);
-    };
-    this.pcmSource.connect(this.pcmProcessor);
-    this.pcmProcessor.connect(this.audioContext.destination);
+    try {
+      this.pcmSource = context.createMediaStreamSource(this.stream);
+      const processor = this.pcmProcessor = context.createScriptProcessor(1024, CHANNELS, CHANNELS);
+      this.pcmProcessor.onaudioprocess = (event: AudioProcessingEvent) => {
+        if (!this._active || this.pcmProcessor !== processor) return;
+        const input = event.inputBuffer.getChannelData(0);
+        this.queuePcmSamples(input);
+      };
+      this.pcmSource.connect(this.pcmProcessor);
+      this.pcmProcessor.connect(context.destination);
+    } catch (err) {
+      const failure = this.makeFailure(
+        'capture', 'pcm-graph-init', `audio graph init failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      this._lastCaptureFailure = failure;
+      if (abortCapture) {
+        this.stop();
+      } else {
+        context.close().catch(() => {});
+        this.audioContext = null;
+        this.pcmSource = null;
+        this.pcmProcessor = null;
+      }
+      return failure;
+    }
     return null;
   }
 
@@ -467,10 +569,12 @@ export class TxMic {
     }
   }
 
-  private failCapture(generation: number, reason: string): void {
+  private failCapture(generation: number, code: TxCaptureFailureCode, category: string, reason: string): void {
     if (!this._active || generation !== this.captureGeneration) return;
+    const failure = this.makeFailure(code, category, reason);
+    this._lastCaptureFailure = failure;
     this.stop();
-    this.onCaptureDied?.(`TX MIC: ${reason}`);
+    this.onCaptureDied?.(failure);
   }
 
   private async readLoop(
@@ -482,17 +586,17 @@ export class TxMic {
       try {
         result = await reader.read();
       } catch (err) {
-        if (current()) this.failCapture(generation, `capture reader failed: ${String(err)}`);
+        if (current()) this.failCapture(generation, 'capture', 'reader-failed', `capture reader failed: ${String(err)}`);
         break;
       }
       if (result.done) {
-        if (current()) this.failCapture(generation, 'capture reader ended');
+        if (current()) this.failCapture(generation, 'capture', 'reader-ended', 'capture reader ended');
         break;
       }
       try {
         if (current()) encoder.encode(result.value);
       } catch (err) {
-        if (current()) this.failCapture(generation, `encoder failed: ${String(err)}`);
+        if (current()) this.failCapture(generation, 'encoder', 'encoder-encode', `encoder failed: ${String(err)}`);
       } finally {
         result.value.close();
       }
