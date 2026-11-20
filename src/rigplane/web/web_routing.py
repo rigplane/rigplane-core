@@ -773,6 +773,8 @@ async def _handle_route_tail_get(
         await server._serve_memories(writer, query or {})
     elif path == "/api/v1/audio/analysis":
         await server._serve_audio_analysis(writer, headers)
+    elif path == "/api/v1/audio/candidates":
+        await server._serve_audio_candidates(writer, headers)
     else:  # Unreachable through the table; totality if table and code drift.
         await _server_mod._send_response(writer, 404, "Not Found", b"404 Not Found", {})
 
@@ -832,6 +834,7 @@ API_ROUTE_TABLE: Final[tuple[ApiRoute, ...]] = (
     ApiRoute(("GET", "HEAD"), "/api/v1/band-plan/layers", _handle_route_tail_get),
     ApiRoute(("GET", "HEAD"), "/api/v1/memories", _handle_route_tail_get),
     ApiRoute(("GET", "HEAD"), "/api/v1/audio/analysis", _handle_route_tail_get),
+    ApiRoute(("GET", "HEAD"), "/api/v1/audio/candidates", _handle_route_tail_get),
 )
 
 
@@ -1159,6 +1162,8 @@ async def _dispatch_http_routes(
         await server._serve_memories(writer, query or {})
     elif path == "/api/v1/audio/analysis":
         await server._serve_audio_analysis(writer, headers)
+    elif path == "/api/v1/audio/candidates":
+        await server._serve_audio_candidates(writer, headers)
     elif path == "/" or path == "/index.html":
         await server._serve_static(writer, "index.html")
     elif path.startswith("/"):

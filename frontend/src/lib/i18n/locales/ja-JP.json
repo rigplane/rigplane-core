@@ -240,6 +240,8 @@
   "core.toast.rxAudioDeviceInUseBy": "無線機の音声入力は {program} が使用中です。そのプログラムを閉じてから、オーディオをもう一度オンにしてください。",
   "core.toast.rxAudioStationDeviceNeeded": "無線機の音声デバイスを自動でペアリングできませんでした。ステーションの音声デバイスはステーションのコンピューターで選択する必要があります。ステーションを運用している方が音声デバイス設定から選択できます。",
   "core.toast.txAudioStopped": "TX オーディオが停止しました — 送信が途中で終了しました",
+  "core.toast.txAudioDropped": "マイク音声が無線機に届いていません。TX オーディオのフレームが破棄されています",
+  "core.toast.txAudioNoFrames": "TX オーディオが停止しました — ブラウザからオーディオフレームが 1 つも受信されませんでした",
   "core.toast.unknown": "問題が発生しました。しばらくしてから再試行してください。",
   "core.memory.open": "メモリー",
   "core.mobile.nav.label": "トランシーバーのナビゲーション",
