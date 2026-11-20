@@ -436,6 +436,30 @@ _UNAPPLIED_LIFECYCLE_ERRORS: dict[str, HamlibError] = {
     "timed_out": HamlibError.ETIMEOUT,
 }
 
+# MOR-4157: session/meta commands that never read or write the radio. A lost
+# link must not refuse them: a client still needs static capability data
+# (``dump_state``/``dump_caps``), its own VFO/echo bookkeeping (``chk_vfo``)
+# and a clean session end (``quit``), and the unit conversions never touch
+# the wire.
+_LINK_LOSS_EXEMPT_COMMANDS: frozenset[str] = frozenset(
+    {
+        "dump_state",
+        "dump_caps",
+        "chk_vfo",
+        "get_info",
+        "quit",
+        "power2mW",
+        "mW2power",
+        "get_lock_mode",
+    }
+)
+
+# MOR-4157: fallback liveness stale window (milliseconds) for a radio object
+# that does not declare ``liveness_stale_after_ms`` (test doubles; every
+# shipping backend declares its own). Same value and role as the web seat's
+# ``connection.liveness`` payload default (MOR-3845).
+_LINK_LOSS_DEFAULT_STALE_AFTER_MS: float = 2000.0
+
 
 def _mode_to_hamlib_str(mode: object) -> str:
     """Normalize backend mode values to a hamlib-compatible string."""
@@ -945,6 +969,9 @@ class RigctldHandler:
         self._key_down_backstop_token: int = 0
         self._key_down_backstop_session: str | None = None
         self._routing = create_routing(radio, getattr(config, "max_power_w", 100.0))
+        # MOR-4157: the link-loss reason currently latched for the one-episode
+        # transition log (None = link considered up; see _link_loss_refusal).
+        self._link_loss_reason_logged: str | None = None
         if state_store is None and isinstance(radio, StateStoreCapable):
             state_store = radio.state_store
         self._has_canonical_state_store = isinstance(state_store, StateStore)
@@ -1195,6 +1222,85 @@ class RigctldHandler:
             raise RigplaneTimeoutError("Radio is not ready for mirror reads")
         state = getattr(self._radio, "radio_state", None)
         return state if isinstance(state, RadioState) else None
+
+    def _link_loss_reason(self) -> str | None:
+        """Why the link-loss gate may refuse commands, or ``None`` when reachable.
+
+        The reason names the fact, not the refusal scope: which commands a
+        reason refuses is :meth:`_link_loss_refusal`'s decision. MOR-4157:
+        reads existing health sources only, adds no tracker. The
+        ``Radio.connected`` member is the link fact; the decode-point
+        liveness stamp ``last_valid_frame_monotonic`` with its
+        backend-declared ``liveness_stale_after_ms`` window (the same pair
+        the web seat publishes as ``connection.liveness``, MOR-3845) is the
+        state-freshness fact. A stamp of ``None`` means the radio has not
+        answered on this connection generation; it refutes nothing on its
+        own, so only ``connected is False`` refuses then.
+        """
+        radio = self._radio
+        if getattr(radio, "connected", None) is False:
+            return "link_down"
+        stamp = getattr(radio, "last_valid_frame_monotonic", None)
+        if isinstance(stamp, (int, float)) and not isinstance(stamp, bool):
+            stale_after_ms = getattr(radio, "liveness_stale_after_ms", None)
+            if (
+                not isinstance(stale_after_ms, (int, float))
+                or isinstance(stale_after_ms, bool)
+                or stale_after_ms <= 0
+            ):
+                stale_after_ms = _LINK_LOSS_DEFAULT_STALE_AFTER_MS
+            if (time.monotonic() - float(stamp)) * 1000.0 > float(stale_after_ms):
+                return "state_stale"
+        return None
+
+    def _link_loss_refusal(self, cmd: RigctldCommand) -> RigctldResponse | None:
+        """MOR-4157 gate: a lost radio link must not answer ``RPRT 0``.
+
+        One mechanism for every radio, with the two reasons refusing
+        different scopes:
+
+        * ``link_down`` (``Radio.connected is False``): reads and writes
+          are both refused. Nothing can be delivered, and no cached
+          mirror may answer for the radio.
+        * ``state_stale``: only commands answered from the cached mirror
+          are refused — a read must not return values the radio may no
+          longer hold. Writes are NOT refused: a quiet link is not a
+          down link (an IC-705 over Wi-Fi lags mid-transmission exactly
+          when a client sends PTT off), so every write, an unkey first
+          of all, takes the normal path (:meth:`_route_ptt`, the MOR-1904
+          backstop, managed TX) and this seat reports its real terminal
+          result — success, NAK or timeout.
+
+        The transition into each refusing reason is logged once per
+        episode; the first healthy answer clears the latch.
+        """
+        if cmd.long_cmd in _LINK_LOSS_EXEMPT_COMMANDS:
+            return None
+        reason = self._link_loss_reason()
+        if reason is None:
+            if self._link_loss_reason_logged is not None:
+                logger.info("rigctld link_lost cleared: radio answers again")
+                self._link_loss_reason_logged = None
+            return None
+        if reason == "state_stale" and (cmd.is_set or cmd.long_cmd == "send_raw"):
+            return None
+        if self._link_loss_reason_logged != reason:
+            if reason == "link_down":
+                logger.warning(
+                    "rigctld link_lost: refusing '%s' and further radio "
+                    "commands (reason=link_down); cached state will not be "
+                    "answered as RPRT 0 until the radio answers again",
+                    cmd.long_cmd,
+                )
+            else:
+                logger.warning(
+                    "rigctld state_stale: refusing cached read '%s' "
+                    "(reason=state_stale); writes still go to the radio and "
+                    "report their real result",
+                    cmd.long_cmd,
+                )
+            self._link_loss_reason_logged = reason
+        return _err(HamlibError.ETIMEOUT)
 
     def _main_receiver_state(self) -> ReceiverState | None:
         state = self._radio_state(require_ready=False)
@@ -1550,6 +1656,12 @@ class RigctldHandler:
         ready_token = _RIGCTLD_PTT_READY.set(ptt_ready)
         # Read-only gate
         try:
+            # MOR-4157: link_down refuses reads and writes; state_stale
+            # refuses only cache-answered reads (writes must reach the
+            # radio). Both before any controller seat is taken.
+            link_loss = self._link_loss_refusal(cmd)
+            if link_loss is not None:
+                return link_loss
             controller = getattr(self._radio, "_controller_authority", None)
             if isinstance(controller, ControllerAuthority) and (
                 cmd.is_set or cmd.long_cmd == "send_raw"
