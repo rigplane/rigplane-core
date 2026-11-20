@@ -86,7 +86,7 @@ def _sent_frames(transport: MockTransport) -> list[CivFrame]:
         pytest.param(600_000, bytes([0x00, 0x60, 0x00]), id="600khz"),
         pytest.param(7_600_000, bytes([0x00, 0x60, 0x07]), id="7p6mhz"),
         pytest.param(0, bytes([0x00, 0x00, 0x00]), id="zero"),
-        pytest.param(1_000_000, bytes([0x00, 0x00, 0x10]), id="1mhz"),
+        pytest.param(1_000_000, bytes([0x00, 0x00, 0x01]), id="1mhz"),
     ],
 )
 def test_set_frame_carries_little_endian_bcd(rig, hz, data) -> None:
@@ -122,6 +122,9 @@ def test_read_frame_is_bare_0c(rig) -> None:
         pytest.param(bytes([0x00, 0x60, 0x00]), 600_000, id="600khz"),
         pytest.param(bytes([0x00, 0x00, 0x00]), 0, id="zero"),
         pytest.param(bytes([0x00, 0x60, 0x07]), 7_600_000, id="7p6mhz"),
+        pytest.param(bytes([0x00, 0x00, 0x01]), 1_000_000, id="1mhz"),
+        # 0x10 in the most-significant pair's high digit: 10 MHz, not 1 MHz.
+        pytest.param(bytes([0x00, 0x00, 0x10]), 10_000_000, id="10mhz"),
     ],
 )
 def test_readback_decode(data, hz) -> None:
@@ -150,18 +153,19 @@ async def test_get_decodes_the_readback(transport) -> None:
 @pytest.mark.asyncio
 async def test_set_sends_the_guide_frame_and_reads_back(transport) -> None:
     radio = _radio(transport, "IC-9700")
-    transport.queue_response(_reply(0x0C, 0xA2, bytes([0x00, 0x00, 0x10])))
+    radio._record_selection("MAIN")  # the plain 0C/0D reach MAIN only
+    transport.queue_response(_reply(0x0C, 0xA2, bytes([0x00, 0x00, 0x01])))
     assert await radio.get_repeater_offset() == 1_000_000
-    transport.queue_response(_reply(0x0D, 0xA2))
+    transport.queue_response(_reply(0xFB, 0xA2))
     await radio.set_repeater_offset(1_000_000, receiver=0)
     sent = _sent_frames(transport)[-1]
-    assert (sent.command, sent.data) == (0x0D, bytes([0x00, 0x00, 0x10]))
+    assert (sent.command, sent.data) == (0x0D, bytes([0x00, 0x00, 0x01]))
 
 
 @pytest.mark.asyncio
 async def test_set_raises_when_the_radio_refuses(transport) -> None:
     radio = _radio(transport, "IC-705")
-    transport.queue_response(_reply(0x0D, 0xA4, bytes([0xFA])))
+    transport.queue_response(_reply(0xFA, 0xA4))
     with pytest.raises(CommandError):
         await radio.set_repeater_offset(600_000)
 
@@ -187,7 +191,11 @@ async def test_offset_within_the_profile_maximum_is_sent(
 ) -> None:
     radio = _radio(transport, model)
     addr = 0xA4 if model == "IC-705" else 0xA2
-    transport.queue_response(_reply(0x0D, addr))
+    if model == "IC-9700":
+        # Dual receiver: the plain 0D reaches only the selected receiver
+        # (MOR-3591), so MAIN must be selected before the write.
+        radio._record_selection("MAIN")
+    transport.queue_response(_reply(0xFB, addr))
     await radio.set_repeater_offset(offset)
     assert _sent_frames(transport)[-1].command == 0x0D
 
@@ -242,7 +250,7 @@ def test_unsolicited_offset_change_updates_the_state(transport) -> None:
     """MOR-3610 scenario: the radio moves the offset on its own."""
     radio = _radio(transport, "IC-9700")
     _observe_0c(radio, bytes([0x00, 0x60, 0x00]), 0xA2)
-    _observe_0c(radio, bytes([0x00, 0x00, 0x10]), 0xA2)
+    _observe_0c(radio, bytes([0x00, 0x00, 0x01]), 0xA2)
     assert radio._state_store.snapshot().field(OFFSET_OBSERVED).value == 1_000_000
 
 

@@ -4985,16 +4985,16 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         unknown, raises ``ReceiverNotSelectedError`` and sends nothing.
         """
         self._check_connected()
-        self._require_receiver(receiver, operation="set_repeater_offset")
-        self._require_cmd29_route(
-            0x0D, None, receiver=receiver, operation="set_repeater_offset"
-        )
         maximum = self._profile.repeater_offset_max_hz
         if maximum is not None and offset_hz > maximum:
             raise ValueError(
                 "repeater offset refused: above the profile's declared "
                 f"maximum ({maximum} Hz), got {offset_hz} Hz"
             )
+        self._require_receiver(receiver, operation="set_repeater_offset")
+        self._require_cmd29_route(
+            0x0D, None, receiver=receiver, operation="set_repeater_offset"
+        )
         civ = self._commands.set_freq_offset(offset_hz, to_addr=self._radio_addr)
         resp = await self._send_civ_expect(civ, label="set_repeater_offset")
         if parse_ack_nak(resp) is False:
