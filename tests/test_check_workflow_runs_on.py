@@ -139,7 +139,7 @@ def test_allowlisted_dynamic_runs_on_passes(tmp_path: Path) -> None:
         "[self-hosted, Linux, ARM64, build]",
         "[self-hosted, Linux, X64, build]",
         "[self-hosted, Linux, build]",
-        "[self-hosted, Linux, ARM64, queue]",
+        "[self-hosted, Linux, ARM64, queue-arm64]",
         "[self-hosted, Linux, queue]",
         "[self-hosted, macOS, ARM64, bench]",
     ],

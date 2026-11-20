@@ -178,7 +178,7 @@ async function listAttemptJobs(github, owner, repo, runId, runAttempt) { const j
 // architecture pin left — its pixel baselines are arm64 Linux Chromium
 // renders — so it must request the ARM64 build set.
 // MOR-4097: merge_group runs of the worker jobs request the reserved queue
-// lane (self-hosted,Linux,queue; ARM64,queue for the visual leg) instead of
+// lane (self-hosted,Linux,queue; ARM64,queue-arm64 for the visual leg) instead of
 // the build set. This observer only binds pull_request runs (see
 // assertCanonicalRun), which always request the build set, so the rules
 // below stay build-only: a queue request on an observed run is a mismatch.

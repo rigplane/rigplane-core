@@ -514,7 +514,7 @@ new AsyncFunction('github', 'context', 'core', script)(github, context, core)
         e2e_runs_on = (
             "    runs-on: ${{ github.event_name == 'merge_group' && "
             "(matrix.group == 'visual' && "
-            "fromJSON('[\"self-hosted\", \"Linux\", \"ARM64\", \"queue\"]') || "
+            "fromJSON('[\"self-hosted\", \"Linux\", \"ARM64\", \"queue-arm64\"]') || "
             "fromJSON('[\"self-hosted\", \"Linux\", \"queue\"]')) || "
             "(matrix.group == 'visual' && "
             "fromJSON('[\"self-hosted\", \"Linux\", \"ARM64\", \"build\"]') || "
