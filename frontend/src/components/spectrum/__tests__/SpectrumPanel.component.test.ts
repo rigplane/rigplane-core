@@ -6086,7 +6086,7 @@ describe('golden wire through actual WebSocket transport (MOR-4270)', () => {
       // at the trapezoid's left edge (width 800, height 200, 2400/3600 filter
       // ratio: bl = 400 − (360 − 58.1)·0.5 − 58.1 ≈ 190.95), no longer at the
       // canvas centre of the old 48 kHz scale.
-      const zeroLabel = noopCanvas.fillText.mock.calls.find((call: unknown[]) => call[0] === '0');
+      const zeroLabel = (noopCanvas.fillText as Mock).mock.calls.find((call: unknown[]) => call[0] === '0');
       expect(zeroLabel?.[1]).toBeCloseTo(190.95, 6);
       expect(zeroLabel?.[2]).toBe(197);
       runtimeHarness.state.currentCaps = { ...runtimeHarness.state.currentCaps as typeof IC7300_CAPABILITIES, scopeSource: 'audio_fft' };

@@ -13,6 +13,8 @@ import {
 } from '$lib/runtime/adapters/scope-adapter';
 import type { ScopeGeometry } from '$lib/runtime/scope-frame';
 import type { ServerState } from '$lib/types/state';
+
+type FieldStatus = NonNullable<ServerState['fieldStatus']>[string];
 import {
   IC7300_STATE,
   IC7300_CAPABILITIES,
@@ -27,7 +29,7 @@ function observe(state: ServerState, path: string): void {
   state.fieldStatus![path] = {
     ...state.fieldStatus!['main.freqHz']!,
     observed: true, freshness: 'fresh', availability: 'available',
-  } as ServerState['fieldStatus'][string];
+  } as FieldStatus;
 }
 
 function audioState(base: ServerState, patch: {
@@ -43,7 +45,7 @@ function audioState(base: ServerState, patch: {
       state.fieldStatus!['main.filterWidth'] = {
         ...state.fieldStatus!['main.filterWidth']!, observed: false,
         freshness: 'unknown', availability: 'missing',
-      } as ServerState['fieldStatus'][string];
+      } as FieldStatus;
     }
   }
   if (patch.cwPitch !== undefined) { state.cwPitch = patch.cwPitch; observe(state, 'cwPitch'); }
@@ -105,7 +107,7 @@ describe('audioScopePassbandView (MOR-4604)', () => {
     state.fieldStatus!['main.freqHz'] = {
       ...state.fieldStatus!['main.freqHz']!, observed: false,
       freshness: 'unknown', availability: 'missing',
-    } as ServerState['fieldStatus'][string];
+    } as FieldStatus;
     expect(audioScopePassbandView(state, IC7300_CAPABILITIES))
       .toEqual({ follow: 'vfo', spanHz: 48000 });
   });

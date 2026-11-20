@@ -145,8 +145,8 @@ describe('AudioSpectrumPanel passband view subscription (MOR-4604)', () => {
   function audioSubscribe(): Record<string, unknown> | undefined {
     const socket = wsInstances.find((ws) => ws.url.includes('/api/v1/scope'));
     return socket?.sent
-      .map((raw) => { try { return JSON.parse(raw) as Record<string, unknown>; } catch { return null; } })
-      .filter((msg) => msg?.['type'] === 'subscribe' && msg?.['sourceId'] === 'audio_fft')
+      .map((raw) => { try { return JSON.parse(raw) as Record<string, unknown>; } catch { return undefined; } })
+      .filter((msg): msg is Record<string, unknown> => msg?.['type'] === 'subscribe' && msg?.['sourceId'] === 'audio_fft')
       .at(-1);
   }
 
