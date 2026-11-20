@@ -1360,6 +1360,28 @@ describe('SpectrumPanel component', () => {
     expect(read().view).toEqual({ follow: 'vfo', spanHz: 100_000 });
   });
 
+  it('switches the radio back to CTR when the lit band key returns a pinned preset to follow in a radio-owned window (MOR-4386 review P1)', async () => {
+    runtimeHarness.state.currentCaps = structuredClone(IC7300_CAPABILITIES);
+    // The radio owns the window (FIX on the IC-7610): the observed readback
+    // says so, as the frame does.
+    authorityHarness.state.current = authority({ frequencyHz: 14_050_250, scopeControls: testScopeControls(1) });
+    const target = mountPanel(); emitFrame({ mode: 1 }); await flushWaterfallPaint();
+    const bandKey = () => target.querySelector<HTMLButtonElement>('[data-testid="scope-zoom-band"]')!;
+    bandKey().click(); flushSync(); await flushWaterfallPaint();
+    expect(bandKey().getAttribute('aria-pressed')).toBe('true');
+    // Pressing the lit key again returns the preset to follow: the panel
+    // must hand the window back through the existing scope-controls CTR
+    // path (the same intent as the out-of-range overlay's CTR button).
+    scopeCommandHarness.dispatch.mockClear();
+    bandKey().click(); flushSync(); await flushWaterfallPaint();
+    expect(scopeCommandHarness.dispatch).toHaveBeenCalledExactlyOnceWith({
+      name: 'set_scope_mode', params: { mode: 0 },
+    });
+    expect(bandKey().getAttribute('aria-pressed')).toBe('false');
+    expect(JSON.parse(target.querySelector('.spectrum-panel')!.getAttribute('data-scope-subscription')!).view)
+      .toEqual({ follow: 'vfo', spanHz: 100_000 });
+  });
+
   it('crops a FIX zoom client-side while the subscription stays a follow view', async () => {
     runtimeHarness.state.currentCaps = structuredClone(IC7300_CAPABILITIES);
     // The radio is in FIX: the observed readback says so, as the frame does.

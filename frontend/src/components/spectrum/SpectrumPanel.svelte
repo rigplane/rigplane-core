@@ -1088,6 +1088,12 @@
       requestedView = null;
       requestFollowSpan('spanHz' in preset.view ? preset.view.spanHz : spanHz);
       scopeView.set('gesture', null);
+      // MOR-4386 (review P1): a pinned S/B segment leaves the radio in a
+      // window it owns (FIX on the IC-7610); pressing the lit key again
+      // must hand the window back, which is the radio's CTR mode — the
+      // same scope-controls path the out-of-range overlay's CTR button
+      // already uses, not a new mechanism.
+      if (isRadioOwnedWindow) scopeHandlers.onModeChange(0);
       return;
     }
     if ('startHz' in preset.view && 'endHz' in preset.view) {
