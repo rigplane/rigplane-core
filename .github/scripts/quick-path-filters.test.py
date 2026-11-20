@@ -497,18 +497,28 @@ new AsyncFunction('github', 'context', 'core', script)(github, context, core)
                 "quick",
             },
         )
-        # MOR-4214: both halves need more memory than the 2 GiB gate pool gives.
+        # MOR-4214: both halves need more memory than the 2 GiB gate pool
+        # gives. Owner direction 2026-11-20: the workers request the
+        # arch-neutral build set, so any ARM64 or X64 build runner may serve
+        # them; only the visual e2e leg keeps an ARM64 pin — its pixel
+        # baselines are arm64 Linux renders — resolved per leg by the matrix
+        # expression in its runs-on.
+        e2e_runs_on = (
+            "    runs-on: ${{ matrix.group == 'visual' && "
+            "fromJSON('[\"self-hosted\", \"Linux\", \"ARM64\", \"build\"]') || "
+            "fromJSON('[\"self-hosted\", \"Linux\", \"build\"]') }}\n"
+        )
         pools = {
-            "quick-frontend": "[self-hosted, Linux, ARM64, build]",
-            "quick-frontend-e2e": "[self-hosted, Linux, ARM64, build]",
-            "quick-python": "[self-hosted, Linux, X64, build]",
-            "quick-python-tests": "[self-hosted, Linux, X64, build]",
+            "quick-frontend": "    runs-on: [self-hosted, Linux, build]\n",
+            "quick-frontend-e2e": e2e_runs_on,
+            "quick-python": "    runs-on: [self-hosted, Linux, build]\n",
+            "quick-python-tests": "    runs-on: [self-hosted, Linux, build]\n",
         }
         for half in pools:
             with self.subTest(job=half):
                 block = jobs[half]
                 self.assertIn("    needs: classify\n", block)
-                self.assertIn(f"    runs-on: {pools[half]}\n", block)
+                self.assertIn(pools[half], block)
                 self.assertIn("    timeout-minutes: 25\n", block)
                 self.assertIn("needs.classify.outputs.docs != 'true'", block)
                 self.assertIn("needs.classify.outputs.reuse != 'true'", block)
