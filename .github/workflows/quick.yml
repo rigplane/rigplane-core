@@ -77,6 +77,36 @@ env:
   QUICK_FRONTEND_E2E_LEGS: "visual guards journey"
 
 jobs:
+  # Merge-queue liveness (owner direction 2026-11-20). The queue rebuilds a
+  # group on a new base and deletes the old queue ref, but this workflow's
+  # concurrency group is per ref, so nothing cancels the superseded run: its
+  # heavy jobs would sit queued and then burn runner minutes for a result
+  # nobody can use. This cheap job runs on merge_group only and says whether
+  # the group's own queue ref still exists; the heavy jobs skip when it does
+  # not. Fail-open: any answer other than a clean 404 counts as live.
+  merge-group-live:
+    if: github.event_name == 'merge_group'
+    runs-on: [self-hosted, Linux, ARM64, light]
+    timeout-minutes: 2
+    outputs:
+      live: ${{ steps.ref.outputs.live }}
+    steps:
+      - id: ref
+        env:
+          GH_TOKEN: ${{ github.token }}
+          QUEUE_REF: ${{ github.ref }}
+        run: |
+          code=$(curl -s -o /dev/null -w '%{http_code}' \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/git/ref/${QUEUE_REF#refs/}" || true)
+          if [ "$code" = "404" ]; then
+            echo "live=false" >> "$GITHUB_OUTPUT"
+            echo "Queue ref ${QUEUE_REF} is gone: this merge group was superseded."
+          else
+            echo "live=true" >> "$GITHUB_OUTPUT"
+          fi
+
   classify:
     runs-on: [self-hosted, Linux, ARM64, light]
     outputs:
@@ -145,7 +175,7 @@ jobs:
   # aggregator job below, so branch protection and the merge queue need no
   # change.
   quick-frontend:
-    needs: classify
+    needs: [classify, merge-group-live]
     # Draft pushes are development checkpoints, not immutable review heads.
     # The ready_for_review event starts the one natural expensive run once the
     # candidate is ready. Docs-only diffs never allocate a self-hosted runner,
@@ -153,6 +183,7 @@ jobs:
     # every quick job; the skipped `quick` satisfies the required context.
     if: >-
       always() &&
+      (github.event_name != 'merge_group' || needs.merge-group-live.outputs.live == 'true') &&
       needs.classify.outputs.docs != 'true' &&
       needs.classify.outputs.reuse != 'true' &&
       (github.event_name == 'merge_group' ||
@@ -271,7 +302,7 @@ jobs:
   # are pairwise distinct so parallel legs on one CI host (MOR-2830) cannot
   # collide: visual 4173/5199, guards 5599/5601/18765, journey 18766/18767.
   quick-frontend-e2e:
-    needs: classify
+    needs: [classify, merge-group-live]
     # Draft pushes are development checkpoints, not immutable review heads.
     # The ready_for_review event starts the one natural expensive run once the
     # candidate is ready. Docs-only diffs never allocate a self-hosted runner,
@@ -279,6 +310,7 @@ jobs:
     # every quick job; the skipped `quick` satisfies the required context.
     if: >-
       always() &&
+      (github.event_name != 'merge_group' || needs.merge-group-live.outputs.live == 'true') &&
       needs.classify.outputs.docs != 'true' &&
       needs.classify.outputs.reuse != 'true' &&
       (github.event_name == 'merge_group' ||
@@ -461,9 +493,10 @@ jobs:
           retention-days: 3
 
   quick-python:
-    needs: classify
+    needs: [classify, merge-group-live]
     if: >-
       always() &&
+      (github.event_name != 'merge_group' || needs.merge-group-live.outputs.live == 'true') &&
       needs.classify.outputs.docs != 'true' &&
       needs.classify.outputs.reuse != 'true' &&
       (github.event_name == 'merge_group' ||
@@ -623,9 +656,10 @@ jobs:
   # and a job-level skip collapses the matrix to ONE entry named
   # `quick-python-tests`; the quick-v2 observer accepts both shapes.
   quick-python-tests:
-    needs: classify
+    needs: [classify, merge-group-live]
     if: >-
       always() &&
+      (github.event_name != 'merge_group' || needs.merge-group-live.outputs.live == 'true') &&
       needs.classify.outputs.docs != 'true' &&
       needs.classify.outputs.reuse != 'true' &&
       (github.event_name == 'merge_group' ||
