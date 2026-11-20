@@ -23,12 +23,17 @@ import yaml
 WORKFLOW_DIR = Path(".github/workflows")
 
 # Label sets verified on org runners 2026-10-31 (infra-control MOR-3875).
+# The arch-neutral build set verified 2026-11-20 through the actions/runners
+# API: every build runner (mini-server-build-core-1..3, mm-build-core-1 on
+# ARM64; nsu-build-core-1..3, gtr7-build-core-1 on X64) carries
+# self-hosted,Linux,build in addition to its architecture label.
 APPROVED_LABEL_SETS: frozenset[frozenset[str]] = frozenset(
     {
         frozenset({"self-hosted", "Linux", "ARM64", "light"}),
         frozenset({"self-hosted", "Linux", "ARM64", "gate"}),
         frozenset({"self-hosted", "Linux", "ARM64", "build"}),
         frozenset({"self-hosted", "Linux", "X64", "build"}),
+        frozenset({"self-hosted", "Linux", "build"}),
         frozenset({"self-hosted", "macOS", "ARM64", "bench"}),
         frozenset({"self-hosted", "macOS", "ARM64", "platform"}),
     }
