@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from unittest import mock
 from unittest.mock import AsyncMock
 
@@ -7009,3 +7010,151 @@ def test_fm_legacy_cache_holds_no_raw_index() -> None:
     )
 
     assert radio.state_cache.filter_width != 0
+
+
+# ---------------------------------------------------------------------------
+# MOR-4157: a lost radio link must answer an error RPRT, not cached RPRT 0
+# ---------------------------------------------------------------------------
+
+
+def _mirror_radio_with_cached_state(mock_radio: AsyncMock) -> AsyncMock:
+    """A radio whose link is gone but whose legacy mirror holds state.
+
+    Reproduces the MOR-4157 field shape: ``radio_state`` still returns the
+    last-known values (freq 14 070 000, PTT off), so without the link-loss
+    gate the rigctld read path answers them with RPRT 0.
+    """
+    state = RadioState()
+    state.main.freq = 14_070_000
+    state.main.mode = "USB"
+    state.ptt = False
+    mock_radio.radio_state = state
+    mock_radio.radio_ready = True
+    return mock_radio
+
+
+@pytest.mark.asyncio
+async def test_link_down_reads_answer_error_not_cached_values(
+    mock_radio: AsyncMock,
+) -> None:
+    """``f``/``t`` must answer an error RPRT when the radio is disconnected.
+
+    RED on the old code: the StateStore projection misses (nothing fresh),
+    the legacy ``radio_state`` mirror answers 14070000/0 with RPRT 0.
+    """
+    radio = _mirror_radio_with_cached_state(mock_radio)
+    radio.connected = False
+    handler = RigctldHandler(radio, RigctldConfig())
+
+    resp = await handler.execute(get_cmd("get_freq"))
+
+    assert not resp.ok
+    assert resp.error == HamlibError.ETIMEOUT
+    assert resp.values == []
+
+    resp = await handler.execute(get_cmd("get_ptt"))
+
+    assert not resp.ok
+    assert resp.error == HamlibError.ETIMEOUT
+    assert resp.values == []
+    radio.get_freq.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_link_down_refuses_writes_including_unkey(
+    mock_radio: AsyncMock,
+) -> None:
+    """MOR-4157: ``T 0`` on a lost link reports not-delivered, not RPRT 0."""
+    radio = _mirror_radio_with_cached_state(mock_radio)
+    radio.connected = False
+    handler = RigctldHandler(radio, RigctldConfig())
+
+    resp = await handler.execute(set_cmd("set_ptt", "0"))
+
+    assert not resp.ok
+    assert resp.error == HamlibError.ETIMEOUT
+    radio.set_ptt.assert_not_awaited()
+
+    resp = await handler.execute(set_cmd("set_freq", "14074000"))
+
+    assert not resp.ok
+    assert resp.error == HamlibError.ETIMEOUT
+    radio.set_freq.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_stale_liveness_answers_error_and_recovers(
+    mock_radio: AsyncMock,
+) -> None:
+    """A liveness stamp past the backend-declared stale window refuses reads.
+
+    The stamp/threshold pair is the existing MOR-3845 link-health source
+    (``last_valid_frame_monotonic`` / ``liveness_stale_after_ms``); no new
+    tracker. Ages are set relative to ``time.monotonic()`` with no sleeps.
+    """
+    radio = _mirror_radio_with_cached_state(mock_radio)
+    radio.connected = True
+    radio.liveness_stale_after_ms = 2000
+    radio.last_valid_frame_monotonic = time.monotonic() - 30.0
+    radio.get_freq.return_value = 14_090_000
+    handler = RigctldHandler(radio, RigctldConfig())
+
+    stale = await handler.execute(get_cmd("get_freq"))
+
+    assert not stale.ok
+    assert stale.error == HamlibError.ETIMEOUT
+    radio.get_freq.assert_not_awaited()
+
+    # Link answers again: the stamp refreshes and the read goes through.
+    radio.last_valid_frame_monotonic = time.monotonic()
+    fresh = await handler.execute(get_cmd("get_freq"))
+
+    assert fresh.ok
+    assert fresh.values == ["14090000"]
+
+
+@pytest.mark.asyncio
+async def test_link_loss_transition_logged_once_with_reason(
+    mock_radio: AsyncMock, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The down transition logs one warning with its reason, not per command."""
+    radio = _mirror_radio_with_cached_state(mock_radio)
+    radio.connected = False
+    handler = RigctldHandler(radio, RigctldConfig())
+
+    with caplog.at_level(logging.WARNING, logger="rigplane.rigctld.handler"):
+        await handler.execute(get_cmd("get_freq"))
+        await handler.execute(get_cmd("get_ptt"))
+        await handler.execute(set_cmd("set_ptt", "0"))
+
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    assert "link_lost" in warnings[0].message
+    assert "link_down" in warnings[0].message
+
+    # Recovery clears the latch so a later loss logs again.
+    radio.connected = True
+    radio.liveness_stale_after_ms = 2000
+    radio.last_valid_frame_monotonic = time.monotonic()
+    radio.get_freq.return_value = 14_090_000
+    await handler.execute(get_cmd("get_freq"))
+    radio.connected = False
+    with caplog.at_level(logging.WARNING, logger="rigplane.rigctld.handler"):
+        await handler.execute(get_cmd("get_freq"))
+
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 2
+
+
+@pytest.mark.asyncio
+async def test_link_loss_spares_session_meta_commands(
+    mock_radio: AsyncMock,
+) -> None:
+    """``dump_state``/``chk_vfo``/``quit`` never touch the radio and still work."""
+    radio = _mirror_radio_with_cached_state(mock_radio)
+    radio.connected = False
+    handler = RigctldHandler(radio, RigctldConfig())
+
+    for cmd in ("dump_state", "chk_vfo", "quit"):
+        resp = await handler.execute(get_cmd(cmd))
+        assert resp.ok, cmd
