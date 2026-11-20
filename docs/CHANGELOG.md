@@ -11,6 +11,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.2.3rc1] — 2026-11-19
+
+This is the first release candidate of 3.2.3. It equals 3.2.2 plus two fixes.
+
+### Fixed
+
+- Phone microphone: the receive audio no longer goes back out on the air as a short echo burst when PTT is pressed. Since the microphone is captured without the browser echo canceller, receive audio still playing from the phone speaker reached the open microphone; receive playback is now held while transmitting and resumes cleanly when TX ends. (MOR-4591, #4681)
+- TX audio from the browser or desktop app no longer silently fails when the microphone delivers 44.1 kHz or stereo audio: the microphone is now converted to 48 kHz mono before encoding, so PTT transmits, and a capture that still cannot start shows an error instead of failing quietly. (MOR-4594, #4684)
+
 ## [3.2.2] — 2026-11-18
 
 This is the 3.2.2 release. It equals 3.2.2rc1 (tag v3.2.2rc1, commit 8342fe558) and is 3.2.1 plus two fixes.
@@ -5355,7 +5364,8 @@ These deprecation closures were announced in v0.19 and dropped on schedule.
 - Transport layer, authentication, CI-V commands, meters, PTT, keep-alive.
 - Clean-room Icom LAN UDP protocol implementation.
 
-[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.2.2...HEAD
+[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.2.3rc1...HEAD
+[3.2.3rc1]: https://github.com/rigplane/rigplane-core/compare/v3.2.2...v3.2.3rc1
 [3.2.2]: https://github.com/rigplane/rigplane-core/compare/v3.2.1...v3.2.2
 [3.2.1]: https://github.com/rigplane/rigplane-core/compare/v3.2.0...v3.2.1
 [3.2.0]: https://github.com/rigplane/rigplane-core/compare/v3.1.4...v3.2.0
