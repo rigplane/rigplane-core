@@ -15,6 +15,7 @@
   "core.app.serverUnreachable": "Server unreachable after multiple attempts. Check connection and reload manually.",
   "core.app.retryIndicator": "Retry {attempt}/{max}, next attempt in {seconds}s…",
   "core.app.presentationError": "This layout failed to load. The radio connection is unaffected — reload the page to try again.",
+  "core.banner.radioDisconnected": "Radio disconnected — reconnecting…",
   "core.statusbar.connection.connected": "Connected",
   "core.statusbar.connection.notConnected": "Not Connected",
   "core.statusbar.connection.connectingTo": "Connecting to {radio} on {transport}…",
