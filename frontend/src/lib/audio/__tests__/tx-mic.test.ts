@@ -238,6 +238,7 @@ describe('TxMic', () => {
       };
       const context = {
         sampleRate: rate,
+        state: 'running' as AudioContextState,
         createMediaStreamSource: vi.fn(() => source),
         createMediaStreamDestination: vi.fn(() => destination),
         resume: vi.fn().mockResolvedValue(undefined),
@@ -327,6 +328,98 @@ describe('TxMic', () => {
       expect(m.active).toBe(false);
       expect(mockTrack.stop).toHaveBeenCalled();
       expect(context.close).toHaveBeenCalled();
+    });
+
+    describe('context that never starts (no user gesture behind PTT)', () => {
+      beforeEach(() => { vi.useFakeTimers(); });
+      afterEach(() => { vi.useRealTimers(); });
+
+      it('keeps the capture when the context is running by the deadline', async () => {
+        installContext();
+        const died = vi.fn();
+        const m = new TxMic(vi.fn(), died);
+        expect(await m.start()).toBeNull();
+
+        await vi.advanceTimersByTimeAsync(1000);
+
+        expect(died).not.toHaveBeenCalled();
+        expect(m.active).toBe(true);
+        m.stop();
+      });
+
+      it('ends the capture when resume never settles and the context stays suspended', async () => {
+        const { context } = installContext();
+        context.state = 'suspended';
+        context.resume.mockReturnValue(new Promise(() => {}));
+        const died = vi.fn();
+        const m = new TxMic(vi.fn(), died);
+        expect(await m.start()).toBeNull();
+
+        await vi.advanceTimersByTimeAsync(499);
+        expect(died).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(1);
+
+        expect(died).toHaveBeenCalledExactlyOnceWith('TX MIC: audio context not running (suspended)');
+        expect(m.active).toBe(false);
+        expect(mockTrack.stop).toHaveBeenCalled();
+        expect(context.close).toHaveBeenCalled();
+      });
+
+      it('keeps the capture when the context starts running at 400 ms', async () => {
+        const { context } = installContext();
+        context.state = 'suspended';
+        context.resume.mockReturnValue(new Promise(() => {}));
+        const died = vi.fn();
+        const m = new TxMic(vi.fn(), died);
+        expect(await m.start()).toBeNull();
+
+        await vi.advanceTimersByTimeAsync(400);
+        context.state = 'running';
+        await vi.advanceTimersByTimeAsync(600);
+
+        expect(died).not.toHaveBeenCalled();
+        expect(m.active).toBe(true);
+        m.stop();
+      });
+
+      it('a stop before the deadline leaves no late failure', async () => {
+        const { context } = installContext();
+        context.state = 'suspended';
+        context.resume.mockReturnValue(new Promise(() => {}));
+        const died = vi.fn();
+        const m = new TxMic(vi.fn(), died);
+        expect(await m.start()).toBeNull();
+        m.stop();
+        installContext();
+        expect(await m.start()).toBeNull();
+
+        await vi.advanceTimersByTimeAsync(1000);
+
+        expect(died).not.toHaveBeenCalled();
+        expect(m.active).toBe(true);
+        m.stop();
+      });
+
+      it('a codec switch before the deadline leaves no late failure', async () => {
+        const { context } = installContext();
+        context.state = 'suspended';
+        context.resume.mockReturnValue(new Promise(() => {}));
+        (context as any).createScriptProcessor = vi.fn(() => ({
+          connect: vi.fn(), disconnect: vi.fn(), onaudioprocess: null,
+        }));
+        (context as any).destination = {};
+        const died = vi.fn();
+        const m = new TxMic(vi.fn(), died);
+        expect(await m.start()).toBeNull();
+        expect(m.applyServerCodec('pcm16')).toEqual({ switched: true, error: null });
+
+        await vi.advanceTimersByTimeAsync(1000);
+
+        expect(died).not.toHaveBeenCalled();
+        expect(m.active).toBe(true);
+        expect(m.codec).toBe('pcm16');
+        m.stop();
+      });
     });
 
     it('ignores a resume failure from an Opus context a newer start retired', async () => {

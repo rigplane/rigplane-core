@@ -6159,10 +6159,18 @@ describe('review corrections for requested View and sample retirement', () => {
     } finally { restore(); }
   });
 
+  it('labels the CENTER axis strip with real frequencies, same format as FIX (MOR-4482)', async () => {
+    const target = mountPanel(); emitFrame(); await flushWaterfallPaint();
+    const centre = [...target.querySelectorAll('.freq-axis .tick')].map(node => node.textContent);
+    expect(centre).toEqual(['14.000', '14.025', '14.050', '14.075', '14.100']);
+    expect(target.querySelector('.freq-axis')!.textContent).not.toMatch(/[+-]\d+k/);
+  });
+
   it('pairs both zoom legends with the displayed span and click coordinates', async () => {
     const target = mountPanel(); emitFrame(); await flushWaterfallPaint();
     target.querySelector<HTMLButtonElement>('[data-testid="scope-zoom-in"]')!.click(); flushSync(); await flushWaterfallPaint();
-    expect([...target.querySelectorAll('.freq-axis .tick')].map(node => node.textContent)).toEqual(['-25k', '-13k', '0', '+13k', '+25k']);
+    // CENTER shows real frequencies like FIX (MOR-4482); the in-plot legends keep offsets.
+    expect([...target.querySelectorAll('.freq-axis .tick')].map(node => node.textContent)).toEqual(['14.025', '14.037', '14.050', '14.063', '14.075']);
     expect(target.querySelector('.span-left')!.textContent).toBe('-25 kHz');
     expect(target.querySelector('.span-right')!.textContent).toBe('+25 kHz');
     const { spectrum } = prepareGeometry(target); pointer(spectrum, 'pointerdown', 201, 150); pointer(spectrum, 'pointerup', 201, 150);

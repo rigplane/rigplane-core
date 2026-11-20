@@ -4,7 +4,7 @@ The committed JSON pins the frames the browser must handle, from the
 server's own encoders, as ONE typed contract: this file fails when it
 drifts, round-trips it through the producer's own loader, and replays
 EVERY document through the real stack — real aiortc data channels, the
-real attach path (lost-ack retry included), the api channel's real
+real attach path (split scope/audio pairs included), the api channel's real
 request handling — asserting the documented outcome, so browser tests
 reading the same file are pinned to what the server really does."""
 
@@ -31,7 +31,7 @@ from rigplane.web.transport.webrtc import webrtc_available
 from test_api_channel_wire_json import _conform
 from test_webrtc_api_channel import _ApiClient, _ApiError, _frame, _head
 from test_webrtc_attach_path import (
-    _LossyAckPeer,
+    _ChannelSetPeer,
     _acquire_session,
     _stand_up_stack,
     _tear_down_stack,
@@ -95,10 +95,10 @@ async def test_golden_documents_replay_through_real_handlers(
 ) -> None:
     docs = _golden().documents
     stack = await _stand_up_stack(tmp_path, audio=True)
-    peer = _LossyAckPeer()
+    peer = _ChannelSetPeer()
     api = _ApiClient()
     try:
-        # -- attach documents on real lossy channels, ack lost and retried --
+        # -- attach documents on the real K5 channel set (split pairs) --
         await peer.connect(stack.web, ("control", "scope", "audio"))
         key = await _acquire_session(stack.web.port)
 
@@ -120,14 +120,12 @@ async def test_golden_documents_replay_through_real_handlers(
         assert list(hello) == list(hello_doc.decoded), hello
         _conform("control_hello", hello)
         for label in ("scope", "audio"):
-            # The lossy-channel retry: the interceptor drops the first
-            # ack, the client resends the attach, and the ONE attach
-            # path re-acknowledges it — then the channel keeps working.
-            peer.send_text(label, _attach_text(label))
+            # The attach was sent once (above) on the kind's reliable
+            # ``*-text`` half; its ack is the kind's first text frame.
             ack = await await_until(
-                lambda bound=label: peer.take(bound, drop_first_ack=True),
-                timeout=5.0,
-                description=f"re-acknowledged {label} attach",
+                lambda bound=label: peer.take(bound),
+                timeout=10.0,
+                description=f"{label} attach ack",
             )
             assert ack == json.loads(docs[f"attach_ack_{label}"].text), ack
         peer.send_text("scope", json.dumps({"type": "ping"}))

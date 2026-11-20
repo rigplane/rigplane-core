@@ -108,7 +108,11 @@ jobs:
       needs.changes.outputs.frontend == 'true' &&
       (github.event_name != 'pull_request' ||
       github.event.pull_request.draft == false)
-    # Build pool, not the 2 GiB gate pool (MOR-4280): Playwright Chromium pixel diff; same architecture as before.
+    # Build pool, not the 2 GiB gate pool (MOR-4280): Playwright Chromium pixel
+    # diff. Pinned to ARM64 on purpose (owner direction 2026-11-20 keeps this
+    # the one architecture pin beside the quick-frontend-e2e visual leg): the
+    # committed pixel baselines are arm64 Linux Chromium renders, so an X64
+    # render would diff against them.
     runs-on: [self-hosted, Linux, ARM64, build]
     timeout-minutes: 10
     # MOR-3778: presetting the variables Chromium's browser process adds at

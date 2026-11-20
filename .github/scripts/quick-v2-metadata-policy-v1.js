@@ -168,12 +168,30 @@ async function listAttemptJobs(github, owner, repo, runId, runAttempt) { const j
 // suite tier, because the base core route also covers unknown roots whose
 // runs legitimately skip it — the aggregator's own selection check is what
 // fails a skipped selected tier there.
-const FRONTEND_LABELS = Object.freeze(['self-hosted', 'Linux', 'ARM64', 'build']);
-const PYTHON_LABELS = Object.freeze(['self-hosted', 'Linux', 'X64', 'build']);
+// Owner direction 2026-11-20: quick-frontend, the guards/journey e2e legs
+// and the python halves request the arch-neutral build set, so any build
+// runner (ARM64 or X64) may serve them. A job's `labels` field is the
+// REQUESTED runs-on set, not the runner's architecture, so the rules below
+// police the request: an arch-neutral request matches, and an architecture
+// request on an arch-neutral worker is still a routing mismatch (the
+// immutable gate test pins both directions). The visual e2e leg is the one
+// architecture pin left — its pixel baselines are arm64 Linux Chromium
+// renders — so it must request the ARM64 build set.
+const BUILD_POOL_LABELS = Object.freeze(['self-hosted', 'Linux', 'build']);
+const ARM64_BUILD_LABELS = Object.freeze(['self-hosted', 'Linux', 'ARM64', 'build']);
 const LIGHT_LABELS = Object.freeze(['self-hosted', 'Linux', 'ARM64', 'light']);
 const PYTHON_TEST_LEGS = Object.freeze(['quick-python-tests (1)', 'quick-python-tests (2)', 'quick-python-tests (3)', 'quick-python-tests (4)']);
 const FRONTEND_E2E_LEGS = Object.freeze(['quick-frontend-e2e (visual)', 'quick-frontend-e2e (guards)', 'quick-frontend-e2e (journey)']);
 function hasLabels(job, labels) { return Array.isArray(job?.labels) && labels.every((label) => job.labels.includes(label)); }
+// Neutral or ARM64 build request (the pre-2026-11-20 frontend shape) is
+// valid; an X64 request on a frontend worker is not.
+const frontendWorkerPool = (job) => hasLabels(job, BUILD_POOL_LABELS) && !(Array.isArray(job?.labels) && job.labels.includes('X64'));
+// Neutral or X64 build request (the pre-2026-11-20 python shape) is valid;
+// an ARM64 request on a python worker is not.
+const pythonWorkerPool = (job) => hasLabels(job, BUILD_POOL_LABELS) && !(Array.isArray(job?.labels) && job.labels.includes('ARM64'));
+// The visual leg keeps the ARM64 pin (arm64 pixel baselines), so its request
+// must include the ARM64 label.
+const visualLegPool = (job) => hasLabels(job, ARM64_BUILD_LABELS);
 function ranOnRunner(job) { return job !== undefined && job.conclusion !== 'skipped' && typeof job.runner_name === 'string' && job.runner_name.length > 0; }
 function tierShape(jobs, legs, bareName) {
   const bare = jobs.filter((job) => job.name === bareName);
@@ -196,11 +214,11 @@ function evaluateJobTopology(run, jobs, routes, draft) {
   const expectedCount = singleNames.length + (pythonTests.ranInFull ? PYTHON_TEST_LEGS.length : 1) + (frontendE2e.ranInFull ? FRONTEND_E2E_LEGS.length : 1);
   const topologyMatches = singles.every((found) => found.length === 1) && (pythonTests.ranInFull || pythonTests.skipped) && (frontendE2e.ranInFull || frontendE2e.skipped) && jobs.length === expectedCount && jobs.every((job) => job.run_attempt === run.run_attempt && job.status === 'completed');
   const [classify, frontend, python, quick] = singles.map((found) => found[0]);
-  const workers = [[frontend, FRONTEND_LABELS], [python, PYTHON_LABELS], ...pythonTests.legs.map((job) => [job, PYTHON_LABELS]), ...frontendE2e.legs.map((job) => [job, FRONTEND_LABELS])];
+  const workers = [[frontend, frontendWorkerPool], [python, pythonWorkerPool], ...pythonTests.legs.map((job) => [job, pythonWorkerPool]), ...frontendE2e.legs.map((job) => [job, job.name === 'quick-frontend-e2e (visual)' ? visualLegPool : frontendWorkerPool])];
   const frontendRequired = routes.frontend === true;
   const pythonRequired = routes.ci === true;
   const classifyMatches = classify?.conclusion === 'success' && hasLabels(classify, LIGHT_LABELS);
-  const workersBound = workers.every(([job, labels]) => job?.conclusion === 'skipped' || (ranOnRunner(job) && hasLabels(job, labels)));
+  const workersBound = workers.every(([job, pool]) => job?.conclusion === 'skipped' || (ranOnRunner(job) && pool(job)));
   const skippedWork = quick?.conclusion === 'skipped' || (frontendRequired && frontend?.conclusion === 'skipped') || (frontendRequired && frontendE2e.skipped && frontendE2e.bare?.conclusion === 'skipped') || (pythonRequired && python?.conclusion === 'skipped');
   const quickWasSubstantive = ranOnRunner(quick) && (!frontendRequired || (ranOnRunner(frontend) && frontendE2e.legs.every((job) => ranOnRunner(job)))) && (!pythonRequired || ranOnRunner(python));
   const labelsMatch = hasLabels(quick, LIGHT_LABELS) && workersBound;

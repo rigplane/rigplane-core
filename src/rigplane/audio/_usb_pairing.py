@@ -38,6 +38,23 @@ class AudioCandidate:
     near_radio: bool
 
 
+AudioCandidateSource = Literal["usb_topology", "name_heuristic"]
+
+
+@dataclass(frozen=True, slots=True)
+class AudioCandidateList:
+    """On-demand candidate devices plus the path that produced them (MOR-3883).
+
+    ``source`` is ``"usb_topology"`` when USB topology ranked the list (the
+    codec under the serial radio's hub first) and ``"name_heuristic"`` when
+    the English-substring fallback produced it because the topology was
+    missing or late — then every candidate is far.
+    """
+
+    source: AudioCandidateSource
+    candidates: tuple[AudioCandidate, ...]
+
+
 def candidate_stable_id(
     snapshot: UsbSnapshot, record: PortAudioDeviceRecord, api: HostApiRecord, flow: Flow
 ) -> str:
@@ -256,6 +273,46 @@ def _candidates(
     return fallback
 
 
+def _parent_hub(nodes: dict[str, UsbNode], serial: UsbNode) -> UsbNode | None:
+    """The hub the *serial* device sits directly under, or ``None``."""
+    if serial.kind != "device" or serial.parent is None:
+        return None
+    hub = nodes.get(serial.parent.casefold())
+    if hub is None or hub.kind != "hub":
+        return None
+    return hub
+
+
+def candidates_for_serial_port(
+    snapshot: UsbSnapshot, serial_port: str, *, prefer_hostapi: str | None = None
+) -> tuple[AudioCandidate, ...]:
+    """On-demand candidate devices for the radio on *serial_port* (MOR-3883).
+
+    The same ``_candidates()`` ranking an RX-start refusal offers: the codec
+    endpoints under the serial radio's hub sort first (``near_radio``). An
+    unknown hub — serial port absent from the snapshot, or topology
+    incomplete — leaves every candidate far instead of guessing.
+    """
+    nodes = {node.id.casefold(): node for node in snapshot.usb}
+    ports = [
+        port
+        for port in snapshot.serial_ports
+        if port.port.casefold() == serial_port.casefold()
+    ]
+    hub: UsbNode | None = None
+    if len(ports) == 1 and ports[0].node:
+        serial = nodes.get(ports[0].node.casefold())
+        if serial is not None:
+            hub = _parent_hub(nodes, serial)
+    return _candidates(
+        snapshot,
+        hub,
+        nodes,
+        prefer_hostapi,
+        include_unmatched=snapshot.os == "windows",
+    )
+
+
 def _complete(nodes: dict[str, UsbNode]) -> bool:
     for node in nodes.values():
         seen = set()
@@ -333,8 +390,8 @@ def pair(
     if serial is None or len(nodes) != len(snapshot.usb):
         return refuse("topology_incomplete")
     evidence.append("serial:" + serial.id)
-    hub = nodes.get(serial.parent.casefold()) if serial.parent else None
-    if serial.kind != "device" or hub is None or hub.kind != "hub":  # rule: S2
+    hub = _parent_hub(nodes, serial)
+    if hub is None:  # rule: S2
         return refuse("containment_unproven")
     evidence.append("hub:" + hub.id)
     if not _complete(nodes):

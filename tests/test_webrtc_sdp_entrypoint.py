@@ -175,19 +175,16 @@ async def test_full_session_negotiates_control_scope_audio() -> None:
     server = WebServer(radio, WebConfig(webrtc_enabled=True))
     client_pc = RTCPeerConnection()
 
-    # Browser side opens the three channels via the production factories.
+    # Offerer side opens the K5 channel set via the production factories
+    # (scope/audio: the lossy binary channel plus its reliable text pair).
     control_conn = add_control_channel(client_pc)
     scope_conn = add_scope_channel(client_pc)
     audio_conn = add_audio_channel(client_pc)
-    client_ch = {
-        "control": control_conn._channel,
-        "scope": scope_conn._channel,
-        "audio": audio_conn._channel,
-    }
+    client_conn = {"control": control_conn, "scope": scope_conn, "audio": audio_conn}
 
     control_hello: list[Any] = []
 
-    @client_ch["control"].on("message")  # type: ignore[misc, no-untyped-call]
+    @control_conn._channel.on("message")  # type: ignore[misc, no-untyped-call]
     def _on_control(message: Any) -> None:
         control_hello.append(message)
 
@@ -203,12 +200,12 @@ async def test_full_session_negotiates_control_scope_audio() -> None:
         RTCSessionDescription(sdp=body["sdp"], type=body["type"])
     )
 
-    # Wait for all client channels to open.
+    # Wait for all client channels (both halves of a pair) to open.
     for _ in range(200):
-        if all(c.readyState == "open" for c in client_ch.values()):
+        if all(c.is_alive() for c in client_conn.values()):
             break
         await asyncio.sleep(0.05)
-    assert all(c.readyState == "open" for c in client_ch.values())
+    assert all(c.is_alive() for c in client_conn.values())
 
     # Attach every channel through the shared attach path (first text
     # frame). Data channels admit only keyed peers, so acquire a session
@@ -220,8 +217,8 @@ async def test_full_session_negotiates_control_scope_audio() -> None:
     # channel's handler sends its hello.
     grant = server._controller.acquire("pro")  # noqa: SLF001
     key = grant["controller_key"]
-    for label, channel in client_ch.items():
-        channel.send(
+    for label, conn in client_conn.items():
+        await conn.send_text(
             json.dumps(
                 {
                     "type": "attach",
@@ -243,18 +240,22 @@ async def test_full_session_negotiates_control_scope_audio() -> None:
     # scope + audio: client→server frames must reach the server-side seam.
     # We can observe arrival via the server session's wrapped connections by
     # driving traffic and confirming the channels stay open under load.
-    client_ch["scope"].send(b"\xaa\xbb")
-    client_ch["audio"].send(b"\x01\x02\x03\x04")
+    await scope_conn.send_binary(b"\xaa\xbb")
+    await audio_conn.send_binary(b"\x01\x02\x03\x04")
     await asyncio.sleep(0.2)
-    assert client_ch["scope"].readyState == "open"
-    assert client_ch["audio"].readyState == "open"
+    assert scope_conn.is_alive()
+    assert audio_conn.is_alive()
 
-    # Channel config contract still holds on the negotiated session.
-    assert client_ch["control"].ordered is True
-    assert client_ch["scope"].ordered is False
-    assert client_ch["scope"].maxRetransmits == 0
-    assert client_ch["audio"].ordered is False
-    assert client_ch["audio"].maxRetransmits == 0
+    # Channel config contract still holds on the negotiated session:
+    # binary halves lossy, text halves (and control) ordered + reliable.
+    assert control_conn._channel.ordered is True
+    for conn, label in ((scope_conn, "scope"), (audio_conn, "audio")):
+        assert conn._channel.label == label
+        assert conn._channel.ordered is False
+        assert conn._channel.maxRetransmits == 0
+        assert conn._text_channel.label == f"{label}-text"
+        assert conn._text_channel.ordered is True
+        assert conn._text_channel.maxRetransmits is None
 
     await server._webrtc_sessions.close_all()  # type: ignore[union-attr]
     await client_pc.close()

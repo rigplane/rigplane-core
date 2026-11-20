@@ -49,7 +49,7 @@ from collections.abc import (
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from inspect import getattr_static
-from typing import TYPE_CHECKING, Any, Literal, Protocol, TextIO, cast
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple, Protocol, TextIO, cast
 
 from .. import __version__
 from .._bounded_queue import BoundedQueue
@@ -157,7 +157,6 @@ from .channel_attach import (  # noqa: TID251
     ChannelAttachedAck,
     ChannelKind,
     ClientChannelParams,
-    ReAckingConnection,
     TransportKind,
 )
 from .discovery import DiscoveryResponder  # noqa: TID251
@@ -181,6 +180,12 @@ from ..core.host_guard import (  # noqa: TID251
 )
 from .managed_tx_view import build_managed_tx_view  # noqa: TID251
 from .transport.webrtc import webrtc_available  # noqa: TID251
+from .transport.webrtc_contract import (  # noqa: TID251
+    WebRtcIceCandidate,
+    WebRtcOffer,
+    WebRtcRequestError,
+    WebRtcTransportStatus,
+)
 from .radio_poller import (  # noqa: TID251
     CommandQueue,
     CommandQueueEntry,
@@ -302,6 +307,13 @@ _MAX_POST_BODY = 256 * 1024  # 256 KiB — hard ceiling for all POST body reads
 _MAX_COMMAND_BATCH_STEPS = 128
 _COMMAND_BATCH_STEP_TIMEOUT = 10.0
 _DELIVERY_EPOCH_ATTEMPTS = 2
+# MOR-4244 (docs/architecture/state-delivery-liveness.md): a state change whose
+# delivery key differs only in ``PublicStateDeliveryKey.liveness`` goes out at
+# most once per this interval; a content change goes out at once.
+LIVENESS_DELIVERY_INTERVAL_S = 1.0
+# After any command lifecycle event, liveness-only changes go out unthrottled
+# for this long so a same-value post-write read-back confirms the command at once.
+COMMAND_FOLLOWUP_WINDOW_S = 3.0
 # SDR scope tick cadence (MOR-3157): within the issue's 50-100 ms
 # window, faster than the 150 ms retune debounce.
 _SDR_TICK_INTERVAL_S = 0.075
@@ -923,6 +935,31 @@ def _startup_busy_session_payload(
     return {"busy": busy, "retryInSeconds": retry_in_seconds}
 
 
+class PublicStateDeliveryKey(NamedTuple):
+    """What decides whether the public state is re-delivered (MOR-4244).
+
+    ``liveness`` holds the evidence that only proves the radio still answers:
+    ``StateSnapshot.observation_seq`` and the radio's
+    ``last_valid_frame_monotonic``. The ``FieldSnapshot`` attributes that
+    describe only the latest read (``last_observed_monotonic``, ``max_age``,
+    the ``SourceMetadata`` fields other than ``source`` and ``provider``) are
+    in no part of the key: they move together with ``observation_seq``.
+    ``content`` and ``field_metadata`` (each field's observation kind,
+    provider, quality and clock domain) hold everything else; a change there
+    is delivered at once.
+    """
+
+    content: tuple[object, ...]
+    field_metadata: tuple[object, ...]
+    liveness: tuple[object, ...]
+
+    def same_content(self, other: PublicStateDeliveryKey) -> bool:
+        return (
+            self.content == other.content
+            and self.field_metadata == other.field_metadata
+        )
+
+
 def _stable_record_key(record: Mapping[str, object] | None) -> str:
     """A hashable, order-stable key component for one fact record (MOR-4279).
 
@@ -1442,7 +1479,11 @@ class WebServer:
         # This is an encoder baseline only, derived from Store snapshots.  Web
         # never owns or advances the provider generation itself.
         self._last_delta_encoder_generation: int | None = None
-        self._last_broadcast_state_key: tuple[object, ...] | None = None
+        self._last_broadcast_state_key: PublicStateDeliveryKey | None = None
+        # MOR-4244: liveness-only deliveries are spaced from the last delivery.
+        self._last_state_delivery: float = 0.0
+        self._pending_liveness_delivery_task: asyncio.Task[None] | None = None
+        self._liveness_unthrottled_until: float = 0.0
         # Last observed-PTT value announced to managed-transmit clients. The
         # managed-transmit document carries `txObservation.observedPtt`, which
         # is projected from the separate `global.tx_state.observed_ptt` store
@@ -2199,8 +2240,6 @@ class WebServer:
         Sends full state on initial connection, then only changed fields.
         """
         self._update_iq_radio_state()
-        import time
-
         now = time.monotonic()
         if not force and now - self._last_state_broadcast < 0.05:
             try:
@@ -2250,11 +2289,23 @@ class WebServer:
             snapshot,
             health_revision=int(body.get("healthRevision", 0)),
         )
-        if not force and state_key == self._last_broadcast_state_key:
+        last_key = self._last_broadcast_state_key
+        if not force and state_key == last_key:
+            return
+        if (
+            not force
+            and last_key is not None
+            and state_key.same_content(last_key)
+            and now >= self._liveness_unthrottled_until
+            and now - self._last_state_delivery < LIVENESS_DELIVERY_INTERVAL_S
+        ):
+            self._defer_liveness_delivery(
+                LIVENESS_DELIVERY_INTERVAL_S - (now - self._last_state_delivery)
+            )
             return
 
         delta = self._encode_state_update(snapshot, body)
-        self._last_broadcast_state_key = state_key
+        self._mark_state_delivered(state_key, now)
         self._state_diagnostics.record(
             "web_delivery_trigger",
             "web.ws_state",
@@ -2288,8 +2339,11 @@ class WebServer:
         if self.command_state_store.provider_generation != snapshot.provider_generation:
             raise RuntimeError("provider generation changed before state encoding")
         encoded = self._encode_state_update(snapshot, body)
-        self._last_broadcast_state_key = self._public_state_delivery_key(
-            snapshot, health_revision=int(body.get("healthRevision", 0))
+        self._mark_state_delivered(
+            self._public_state_delivery_key(
+                snapshot, health_revision=int(body.get("healthRevision", 0))
+            ),
+            time.monotonic(),
         )
         self._fanout_state_update(peers, encoded, body)
         baseline = self._derive_full_state_update(encoded, body)
@@ -2347,6 +2401,36 @@ class WebServer:
         full["data"] = body
         return full
 
+    def _mark_state_delivered(self, key: PublicStateDeliveryKey, now: float) -> None:
+        """Record one delivered state; it carries any deferred liveness too."""
+        self._last_broadcast_state_key = key
+        self._last_state_delivery = now
+        pending = self._pending_liveness_delivery_task
+        self._pending_liveness_delivery_task = None
+        if pending is None:
+            return
+        try:
+            current = asyncio.current_task()
+        except RuntimeError:
+            current = None
+        if pending is not current:
+            pending.cancel()
+
+    def _defer_liveness_delivery(self, delay: float) -> None:
+        """Flush a held-back liveness-only change once its interval ends."""
+        if (
+            self._pending_liveness_delivery_task is not None
+            and not self._pending_liveness_delivery_task.done()
+        ):
+            return
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        self._pending_liveness_delivery_task = self._spawn(
+            self._delayed_state_broadcast(delay)
+        )
+
     async def _delayed_state_broadcast(self, delay: float) -> None:
         try:
             await asyncio.sleep(delay)
@@ -2376,18 +2460,27 @@ class WebServer:
         snapshot: StateSnapshot,
         *,
         health_revision: int,
-    ) -> tuple[object, ...]:
+    ) -> PublicStateDeliveryKey:
         liveness = connection_liveness_payload(self._radio)
-        evidence = (
-            (
-                getattr(self._radio, "last_valid_frame_monotonic", None)
-                if liveness["lastFrameAgeMs"] is not None
-                else None,
-                liveness["staleAfterMs"],
-                liveness["source"],
-            )
+        frame_stamp = (
+            getattr(self._radio, "last_valid_frame_monotonic", None)
+            if liveness is not None and liveness["lastFrameAgeMs"] is not None
+            else None
+        )
+        liveness_declaration = (
+            (frame_stamp is not None, liveness["staleAfterMs"], liveness["source"])
             if liveness is not None
             else None
+        )
+        field_metadata = tuple(
+            (
+                field.path,
+                field.source.source,
+                field.source.provider,
+                field.quality,
+                field.clock_domain,
+            )
+            for field in snapshot.fields
         )
         # MOR-4279: the server-injected fact records ride in the delivery
         # key so a change in any of them alone re-delivers the state payload
@@ -2395,22 +2488,25 @@ class WebServer:
         identity = self._connection_identity_payload()
         session = self._connection_session_payload()
         audio_receive = self._audio_broadcaster.rx_start_status()
-        return (
-            self.monitor_mute.on,
-            tuple(sorted(self.monitor_mute.saved_af.items())),
-            _stable_record_key(identity),
-            _stable_record_key(session),
-            _stable_record_key(audio_receive),
-            snapshot.state_revision,
-            snapshot.freshness_revision,
-            snapshot.observation_seq,
-            snapshot.provider_generation,
-            health_revision,
-            evidence,
-            len(self._scope_handlers),
-            len(self._control_event_queues),
-            len(self._audio_broadcaster._clients),
-            self._sdr_status_key(),
+        return PublicStateDeliveryKey(
+            content=(
+                self.monitor_mute.on,
+                tuple(sorted(self.monitor_mute.saved_af.items())),
+                _stable_record_key(identity),
+                _stable_record_key(session),
+                _stable_record_key(audio_receive),
+                snapshot.state_revision,
+                snapshot.freshness_revision,
+                snapshot.provider_generation,
+                health_revision,
+                liveness_declaration,
+                len(self._scope_handlers),
+                len(self._control_event_queues),
+                len(self._audio_broadcaster._clients),
+                self._sdr_status_key(),
+            ),
+            field_metadata=field_metadata,
+            liveness=(snapshot.observation_seq, frame_stamp),
         )
 
     def _public_state_etag(
@@ -2424,14 +2520,21 @@ class WebServer:
         # The validator is a strong hash of every delivery-key component:
         # opaque, stable, and well-formed regardless of what a component's
         # repr carries (quotes, spaces, non-ASCII error text).
-        components = self._public_state_delivery_key(
+        key = self._public_state_delivery_key(
             snapshot,
             health_revision=health_revision,
-        ) + (
-            public_state_seq,
-            liveness.get("lastFrameAgeMs") if liveness else None,
-            liveness.get("staleAfterMs") if liveness else None,
-            liveness.get("source") if liveness else None,
+        )
+        # A field-metadata change also advances ``observation_seq`` (in
+        # ``key.liveness``), so ``key.field_metadata`` need not be hashed.
+        components = (
+            key.content
+            + key.liveness
+            + (
+                public_state_seq,
+                liveness.get("lastFrameAgeMs") if liveness else None,
+                liveness.get("staleAfterMs") if liveness else None,
+                liveness.get("source") if liveness else None,
+            )
         )
         digest_source = "\x1f".join(repr(value) for value in components)
         digest = hashlib.sha256(digest_source.encode()).hexdigest()[:32]
@@ -3004,6 +3107,7 @@ class WebServer:
         would leak a hand-maintained "currently acknowledged" set forever.
         Recomputing from history has no such failure mode: nothing to leak.
         """
+        self._liveness_unthrottled_until = time.monotonic() + COMMAND_FOLLOWUP_WINDOW_S
         if not self._send_lifecycle(event, check=True):
             return
         if event.state not in ("failed", "timed_out"):
@@ -4757,6 +4861,44 @@ class WebServer:
         ).encode()
         await _send_json(writer, body, headers)
 
+    async def _serve_audio_candidates(
+        self, writer: asyncio.StreamWriter, headers: dict[str, str] | None = None
+    ) -> None:
+        """GET /api/v1/audio/candidates -- on-demand radio audio candidates."""
+        try:
+            record = await self._audio_broadcaster.audio_candidates()
+        except Exception:
+            logger.warning("audio-candidates: listing failed", exc_info=True)
+            body = json.dumps(
+                {
+                    "error": "unavailable",
+                    "message": "Audio device enumeration failed",
+                },
+                separators=(",", ":"),
+            ).encode()
+            await _send_response(
+                writer,
+                503,
+                "Service Unavailable",
+                body,
+                {"Content-Type": "application/json"},
+            )
+            return
+        if record is None:
+            body = json.dumps(
+                {
+                    "error": "unavailable",
+                    "message": "No USB audio driver for the active radio",
+                },
+                separators=(",", ":"),
+            ).encode()
+            await _send_response(
+                writer, 404, "Not Found", body, {"Content-Type": "application/json"}
+            )
+            return
+        body = json.dumps(record, separators=(",", ":")).encode()
+        await _send_json(writer, body, headers)
+
     def _get_meter_cal_payload(self) -> dict[str, Any]:
         """Extract meter calibration from radio backend or profile."""
         result: dict[str, Any] = {}
@@ -4982,10 +5124,9 @@ class WebServer:
                 payload["controls"] = profile.controls
             payload["txBands"] = _serialize_tx_bands(profile)
             payload.update(_serialize_max_power(profile, self._radio))
-        payload["webrtc"] = {
-            "available": webrtc_available(),
-            "enabled": self._config.webrtc_enabled,
-        }
+        payload["webrtc"] = WebRtcTransportStatus(
+            available=webrtc_available(), enabled=self._config.webrtc_enabled
+        ).to_json()
         payload.update(self._get_meter_cal_payload())
         if self.command_state_store.provider_generation != snapshot.provider_generation:
             if _delivery_attempt + 1 < _DELIVERY_EPOCH_ATTEMPTS:
@@ -7298,20 +7439,28 @@ class WebServer:
             )
         return self._webrtc_sessions
 
+    async def _webrtc_error(
+        self,
+        writer: asyncio.StreamWriter,
+        status: int,
+        reason: str,
+        error: WebRtcRequestError,
+    ) -> None:
+        """Send one answerer error envelope (the K6 contract)."""
+        body = json.dumps(error.to_json(), separators=(",", ":")).encode()
+        await _send_response(
+            writer, status, reason, body, {"Content-Type": "application/json"}
+        )
+
     async def _webrtc_unavailable(
         self, writer: asyncio.StreamWriter, reason: str
     ) -> None:
         """Send a clean 'unavailable' response without crashing."""
-        body = json.dumps(
-            {"status": "error", "code": "webrtc_unavailable", "message": reason},
-            separators=(",", ":"),
-        ).encode()
-        await _send_response(
+        await self._webrtc_error(
             writer,
             503,
             "Service Unavailable",
-            body,
-            {"Content-Type": "application/json"},
+            WebRtcRequestError("webrtc_unavailable", reason),
         )
 
     async def _handle_webrtc_offer(
@@ -7325,6 +7474,7 @@ class WebServer:
         Gated behind ``WebConfig.webrtc_enabled`` AND the ``[webrtc]`` extra.
         Negotiates a full session: wraps the offerer's control/scope/audio
         DataChannels into the unchanged handlers and returns the answer SDP.
+        The body is parsed by :class:`WebRtcOffer` (the public contract).
         """
         if not self._config.webrtc_enabled:
             await self._webrtc_unavailable(
@@ -7340,59 +7490,25 @@ class WebServer:
         payload = await self._read_json_body(writer, headers, reader)
         if payload is None:
             return
-        sdp = payload.get("sdp")
-        offer_type = payload.get("type", "offer")
-        if not isinstance(sdp, str) or not sdp.strip():
-            err = json.dumps(
-                {
-                    "status": "error",
-                    "code": "missing_sdp",
-                    "message": "Field 'sdp' required.",
-                },
-                separators=(",", ":"),
-            ).encode()
-            await _send_response(
-                writer, 400, "Bad Request", err, {"Content-Type": "application/json"}
-            )
+        try:
+            offer = WebRtcOffer.from_json(payload)
+        except WebRtcRequestError as exc:
+            await self._webrtc_error(writer, 400, "Bad Request", exc)
             return
 
         from .transport.webrtc_session import WebRtcSessionError  # noqa: TID251
-        from .transport.ice_gathering import parse_ice_servers  # noqa: TID251
-
-        ice_servers_raw = payload.get("ice_servers", None)
-        try:
-            ice_servers = parse_ice_servers(ice_servers_raw)
-        except ValueError as exc:
-            err = json.dumps(
-                {
-                    "status": "error",
-                    "code": "invalid_ice_servers",
-                    "message": str(exc),
-                },
-                separators=(",", ":"),
-            ).encode()
-            await _send_response(
-                writer, 400, "Bad Request", err, {"Content-Type": "application/json"}
-            )
-            return
 
         try:
             result = await self._webrtc_session_manager().negotiate(
-                sdp, offer_type, ice_servers
+                offer.sdp, offer.type, offer.ice_servers
             )
         except WebRtcSessionError as exc:
-            err = json.dumps(
-                {"status": "error", "code": "sdp_error", "message": str(exc)},
-                separators=(",", ":"),
-            ).encode()
-            await _send_response(
-                writer, 400, "Bad Request", err, {"Content-Type": "application/json"}
+            await self._webrtc_error(
+                writer, 400, "Bad Request", WebRtcRequestError("sdp_error", str(exc))
             )
             return
 
-        resp_body = json.dumps(
-            {"status": "ok", **result}, separators=(",", ":")
-        ).encode()
+        resp_body = json.dumps(result, separators=(",", ":")).encode()
         await _send_response(
             writer, 200, "OK", resp_body, {"Content-Type": "application/json"}
         )
@@ -7405,9 +7521,10 @@ class WebServer:
     ) -> None:
         """Handle POST /api/v1/transport/webrtc/ice-candidate — ICE trickle.
 
-        Body: ``{"sessionId": <id>, "candidate": {...}}``. The candidate dict
-        mirrors the browser ``RTCIceCandidateInit`` (``candidate`` string plus
-        ``sdpMid`` / ``sdpMLineIndex``). An empty candidate ends gathering.
+        Body: ``{"sessionId": <id>, "candidate": {...}}``, parsed by
+        :class:`WebRtcIceCandidate`. The candidate dict mirrors the browser
+        ``RTCIceCandidateInit`` (``candidate`` string plus ``sdpMid`` /
+        ``sdpMLineIndex``). An empty candidate ends gathering.
         """
         if not self._config.webrtc_enabled:
             await self._webrtc_unavailable(
@@ -7423,49 +7540,21 @@ class WebServer:
         payload = await self._read_json_body(writer, headers, reader)
         if payload is None:
             return
-        session_id = payload.get("sessionId")
-        if not isinstance(session_id, str) or not session_id:
-            err = json.dumps(
-                {
-                    "status": "error",
-                    "code": "missing_session",
-                    "message": "Field 'sessionId' required.",
-                },
-                separators=(",", ":"),
-            ).encode()
-            await _send_response(
-                writer, 400, "Bad Request", err, {"Content-Type": "application/json"}
-            )
-            return
-
-        candidate = payload.get("candidate")
-        if candidate is not None and not isinstance(candidate, dict):
-            err = json.dumps(
-                {
-                    "status": "error",
-                    "code": "invalid_candidate",
-                    "message": "'candidate' must be an object or null.",
-                },
-                separators=(",", ":"),
-            ).encode()
-            await _send_response(
-                writer, 400, "Bad Request", err, {"Content-Type": "application/json"}
-            )
+        try:
+            trickle = WebRtcIceCandidate.from_json(payload)
+        except WebRtcRequestError as exc:
+            await self._webrtc_error(writer, 400, "Bad Request", exc)
             return
 
         from .transport.webrtc_session import WebRtcSessionError  # noqa: TID251
 
         try:
             await self._webrtc_session_manager().add_ice_candidate(
-                session_id, candidate
+                trickle.session_id, trickle.candidate
             )
         except WebRtcSessionError as exc:
-            err = json.dumps(
-                {"status": "error", "code": "ice_error", "message": str(exc)},
-                separators=(",", ":"),
-            ).encode()
-            await _send_response(
-                writer, 404, "Not Found", err, {"Content-Type": "application/json"}
+            await self._webrtc_error(
+                writer, 404, "Not Found", WebRtcRequestError("ice_error", str(exc))
             )
             return
 
@@ -7962,11 +8051,13 @@ class WebServer:
         the WebSocket upgrade calls :meth:`_resolve_client_ticket` and
         :meth:`serve_client_channel` with ``transport="ws"`` around the
         101 handshake, which must stay between the refusal decision and
-        the first handler byte. A lossy data-channel attach (scope/audio,
-        the only channels that can lose the attach frame) is acknowledged
-        there with one ``ChannelAttachedAck`` text frame; control/api and
-        the WebSocket lane never send one. When ``track_owners`` is given,
-        the attached session owner is recorded in it for the channel's        lifetime, so a transport-loss signal can fence that session
+        the first handler byte. A scope/audio data-channel attach is
+        acknowledged there with one ``ChannelAttachedAck`` text frame (it
+        rides the reliable ``*-text`` companion, so it is never lost);
+        control/api and the WebSocket lane never send one. When
+        ``track_owners`` is given, the attached session owner is recorded
+        in it for the channel's lifetime, so a transport-loss signal can
+        fence that session
         through the existing session-loss path. A keyless ``api`` attach
         resolves to no ticket (``None``): nothing is tracked and the
         channel holds no session.
@@ -7980,10 +8071,7 @@ class WebServer:
             track_owners.add(ticket.tx_owner)
         if transport == "datachannel" and kind in ATTACH_ACK_KINDS:
             # The ack, before the first handler byte (a dead send must
-            # not kill the attach). The wrapper re-acknowledges a REPEAT
-            # attach: the retry never reaches the handler and builds no
-            # new ticket or handler.
-            conn = ReAckingConnection(conn, kind)
+            # not kill the attach).
             try:
                 await conn.send_text(ChannelAttachedAck(kind).encode())
             except Exception:
@@ -8071,6 +8159,7 @@ class WebServer:
                 controller_audio_loss=self._controller_audio_loss,
                 controller_track_stop=self._controller_track_audio_stop,
                 managed_tx_authority=self._managed_tx_authority(),
+                server=self,
             )
         elif kind == "rigctl":
             owner = ticket.tx_owner
