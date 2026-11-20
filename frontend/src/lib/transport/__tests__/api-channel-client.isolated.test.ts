@@ -214,7 +214,8 @@ describe('createApiChannelFetch', () => {
     ch.bufferedAmount = wire.limits.send_high_water_bytes + 1;
     const early = api('/api/v1/band-plan/layers'); // above high-water: waits for low
     await vi.advanceTimersByTimeAsync(50);
-    ch.bufferedAmount = 131072; // below high-water, above low-water
+    // below high-water, above low-water
+    ch.bufferedAmount = (wire.limits.send_high_water_bytes + wire.limits.send_low_water_bytes) / 2;
     const late = api('/api/v1/band-plan/layers'); // admitted at once
     await vi.advanceTimersByTimeAsync(50);
     // The later request's HEAD left first, so it must carry the lower id.

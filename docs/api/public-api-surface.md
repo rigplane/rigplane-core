@@ -362,7 +362,9 @@ without a major version.
   they freeze into the normal tier-2 policy once a Pro release uses them.
   The data-channel attach frame and its ack
   (`ClientChannelParams.to_attach_frame` / `from_attach_frame`,
-  `ChannelAttachedAck.encode` / `from_frame`, `ChannelKind`); the
+  `ChannelAttachedAck.encode` / `from_frame`, `ChannelKind`); the K5
+  data-channel set (`DATA_CHANNELS` of `DataChannelSpec`, `DataChannelLabel`:
+  `control`, `api`, `scope`, `scope-text`, `audio`, `audio-text`); the
   answerer's ICE gathering policy (`IceServer`, `IceGatheringPolicy`,
   `GATHER_TIMEOUT_S`, `install_ice_gathering_policy`,
   `apply_ice_gathering_policy`); the answerer HTTP contract of
@@ -373,6 +375,13 @@ without a major version.
   `GET /api/v1/capabilities` (`WebRtcTransportStatus`). Canonical modules
   stay in `rigplane.web.*` (tier 3); import these names from `rigplane`.
   The server parses and builds the same wire bodies through these types.
+  Also provisional: TURN selection by transport (`select_turn_url`,
+  `UdpReachabilityCache`: a grant's url order carries no meaning, the one
+  TURN url aiortc uses is chosen from a cached UDP reachability probe), and
+  the `api` channel frame contract (`ApiFrame`, `ApiFrameError`,
+  `ApiMessageType`, `ApiRequestHead`, `api_request_messages`,
+  `API_SEND_HIGH_WATER_BYTES`: frames of at most 16 KB in both directions,
+  at most 32 KB buffered before a sender waits).
 
 Example (valid, lazy-loaded):
 
