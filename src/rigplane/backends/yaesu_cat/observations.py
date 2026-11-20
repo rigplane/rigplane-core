@@ -524,20 +524,14 @@ class YaesuObservationAdapter:
             else:
                 if reading.failure is not None:
                     publish_ptt_error()
-                    if reading.failure == "timeout":
-                        # MOR-4456: a PTT-only timeout is contained in the
-                        # lane — unknown is already published above and the
-                        # cycle continues. The counting call stays (the
-                        # accounting lives here because the raised
-                        # ``CatTimeoutError`` used to be built here; the
-                        # tag carries no wire command, so the defect names
-                        # the field only), but PTT left the critical set,
-                        # so the count filters to nothing and the gate
-                        # serves PTT unknown after the deadline instead of
-                        # ending startup. Only transport failures still
-                        # raise below.
-                        exc = CatTimeoutError("PTT read failed: timeout")
-                        self._count_critical_read_timeouts("ptt", exc, (_PTT,))
+                    # MOR-4456: a PTT-only timeout is contained in the lane —
+                    # unknown is already published above and the cycle
+                    # continues. It feeds no tally: PTT left the critical
+                    # set, so it would never record a defect, and it must
+                    # not take the optional unavailability route either —
+                    # PTT stays in the startup set while the gate serves it
+                    # unknown after the deadline. Only transport failures
+                    # still raise below.
                     if reading.failure == "transport":
                         raise CatTransportError("PTT read failed: transport")
                 else:
@@ -595,6 +589,11 @@ class YaesuObservationAdapter:
                 # gate and timestamp — the flag always emits, including
                 # False, so a stale True cannot persist.
                 if self._can_poll(_MAIN_FILTER_WIDTH_RADIO_DEFAULT):
+                    # MOR-3856: the width read resolves the narrow table
+                    # through an inner narrow read — a silent narrow
+                    # answer must contain here, not abort the cycle that
+                    # already holds frequency/mode. No value is invented:
+                    # a timeout serves the width absent for the cycle.
                     ok, reading = await self._safe_read(
                         "main.filter_width",
                         self.radio.read_filter_width_reading(0, mode=main_mode),
@@ -603,6 +602,7 @@ class YaesuObservationAdapter:
                             _MAIN_FILTER_WIDTH,
                             _MAIN_FILTER_WIDTH_RADIO_DEFAULT,
                         ),
+                        contain_timeout=True,
                     )
                     if ok and reading is not None:
                         timestamp = self.clock()
@@ -623,11 +623,15 @@ class YaesuObservationAdapter:
                             )
                         )
                 else:
+                    # MOR-3856: same containment as the twin-leaf read
+                    # above — the legacy projection shares the inner
+                    # narrow lookup.
                     ok, value = await self._safe_read(
                         "main.filter_width",
                         self.radio.read_filter_width(0, mode=main_mode),
                         lambda: self.radio.read_filter_width(0, mode=main_mode),
                         paths=(_MAIN_FILTER_WIDTH,),
+                        contain_timeout=True,
                     )
                     if ok:
                         observations.append(
@@ -655,6 +659,7 @@ class YaesuObservationAdapter:
                 # twin-leaf read when the profile declares the flag, the
                 # legacy single-value read otherwise.
                 if self._can_poll(_SUB_FILTER_WIDTH_RADIO_DEFAULT):
+                    # MOR-3856: the SUB twin of the MAIN containment above.
                     ok, reading = await self._safe_read(
                         "sub.filter_width",
                         self.radio.read_filter_width_reading(1, mode=sub_mode),
@@ -663,6 +668,7 @@ class YaesuObservationAdapter:
                             _SUB_FILTER_WIDTH,
                             _SUB_FILTER_WIDTH_RADIO_DEFAULT,
                         ),
+                        contain_timeout=True,
                     )
                     if ok and reading is not None:
                         timestamp = self.clock()
@@ -683,11 +689,15 @@ class YaesuObservationAdapter:
                             )
                         )
                 else:
+                    # MOR-3856: same containment as the twin-leaf read
+                    # above — the legacy projection shares the inner
+                    # narrow lookup.
                     ok, value = await self._safe_read(
                         "sub.filter_width",
                         self.radio.read_filter_width(1, mode=sub_mode),
                         lambda: self.radio.read_filter_width(1, mode=sub_mode),
                         paths=(_SUB_FILTER_WIDTH,),
+                        contain_timeout=True,
                     )
                     if ok:
                         observations.append(
@@ -1810,9 +1820,10 @@ class YaesuObservationAdapter:
         # contained as an absent observation within its field (the
         # MOR-4433 ``_read_tx_target`` containment shape) — the completed
         # fields and the reads after split still reach the store. Split
-        # left the critical set, so the contained timeout counts nothing
-        # and a refused/malformed read records no defect: the gate serves
-        # split unknown after the deadline instead of ending startup.
+        # left the critical set, so the contained timeout opts out of the
+        # tally (``count_timeout=False``) and a refused/malformed read
+        # records no defect: the gate serves split unknown after the
+        # deadline instead of ending startup.
         if self._has_runtime_capability("split") and self._can_poll(_SPLIT):
             ok, value = await self._safe_read(
                 "split",
@@ -1820,6 +1831,7 @@ class YaesuObservationAdapter:
                 lambda: self.radio.read_split(),
                 paths=(_SPLIT,),
                 contain_timeout=True,
+                count_timeout=False,
             )
             if ok:
                 observations.append(
@@ -1989,6 +2001,7 @@ class YaesuObservationAdapter:
         *,
         paths: tuple[FieldPath, ...] = (),
         contain_timeout: bool = False,
+        count_timeout: bool = True,
     ) -> tuple[bool, _T | None]:
         """Await one field read, classifying a FIELD-level CAT failure.
 
@@ -2029,27 +2042,28 @@ class YaesuObservationAdapter:
 
         MOR-4456: ``contain_timeout`` serves a contained lane's unanswered
         read as absent for the cycle — completed fields still reach the
-        store and the reads after this one still run. The critical-path
-        accounting above still runs but filters through
-        ``startup_critical_path``: PTT and split left that set, so their
-        contained timeouts count nothing and the gate serves them unknown
-        after the deadline. Only timeouts are contained — a timeout on
-        the refusal re-read contains exactly like a first-read timeout; a
-        refused or malformed read still skips the field below (PTT/split
-        record no defect), and transport failures still raise untouched.
+        store and the reads after this one still run. The unanswered
+        accounting above still runs but the PTT/split lanes opt out with
+        ``count_timeout=False``: those reads left the startup-critical
+        set, so their contained timeouts count nothing and the gate
+        serves them unknown after the deadline. Only timeouts are
+        contained — a timeout on the refusal re-read contains exactly
+        like a first-read timeout; a refused or malformed read still
+        skips the field below (PTT/split record no defect), and transport
+        failures still raise untouched.
 
-        MOR-3856: every timeout of a declared path — contained or raised —
-        counts toward that path's consecutive-unanswered tally; the third
-        in a row is recorded on the acquisition scheduler, so the read
-        stops holding the initial-state gate while its own lane cadence
-        keeps asking. A read naming a critical path (freq/mode) still
-        raises for the reconnect path and keeps the MOR-2757 rule above.
+        MOR-3856: every counted timeout of a declared path — contained or
+        raised — counts once toward that path's consecutive-unanswered
+        tally; the third in a row is recorded, so the read stops holding
+        the initial-state gate while its own lane cadence keeps asking. A
+        read naming a critical path (freq/mode) still raises for the
+        reconnect path and keeps the MOR-2757 rule above.
         """
         try:
             value = await read
         except CatTimeoutError as exc:
-            self._count_critical_read_timeouts(label, exc, paths)
-            self._count_unanswered_reads(paths)
+            if count_timeout:
+                self._count_critical_read_timeouts(label, exc, paths)
             if contain_timeout:
                 return False, None
             raise
@@ -2068,8 +2082,8 @@ class YaesuObservationAdapter:
             try:
                 value = await remake()
             except CatTimeoutError as retry_exc:
-                self._count_critical_read_timeouts(label, retry_exc, paths)
-                self._count_unanswered_reads(paths)
+                if count_timeout:
+                    self._count_critical_read_timeouts(label, retry_exc, paths)
                 if contain_timeout:
                     return False, None
                 raise
@@ -2140,10 +2154,6 @@ class YaesuObservationAdapter:
         if counts is not None:
             for path in paths:
                 counts.pop(path, None)
-        unanswered = getattr(self.radio, "_unanswered_read_timeouts", None)
-        if isinstance(unanswered, dict):
-            for path in paths:
-                unanswered.pop(path, None)
         if paths:
             scheduler = getattr(self.radio, "_acquisition_scheduler", None)
             if isinstance(scheduler, AcquisitionScheduler):
@@ -2155,53 +2165,40 @@ class YaesuObservationAdapter:
         exc: CatTimeoutError,
         paths: tuple[FieldPath, ...],
     ) -> None:
-        """Count one unanswered read per safety-critical path (MOR-2757).
+        """Count one unanswered window per declared path (MOR-2757/MOR-3856).
 
-        The medium poll cycle re-issues every read each interval, so one
-        timeout per cycle is one unanswered attempt. Non-critical paths are
-        not counted here — MOR-3856 counts those in the radio's unanswered
-        tally (:meth:`_count_unanswered_reads`) instead. On the attempt
-        that reaches ``_CRITICAL_READ_TIMEOUT_ATTEMPTS`` the same
-        :class:`DeclaredCommandDefect` a refused read records
-        (:meth:`_record_declared_defect`) is recorded for that one path,
-        naming the field and the command the radio never answered; the
-        startup gate aborts on it. Later records keep only the first
-        (``AcquisitionScheduler.record_startup_defect``).
+        The poll cycle re-issues every read each interval, so one timeout
+        per cycle is one unanswered attempt; any answer resets the count
+        (:meth:`_note_critical_read_answers`). The tally lives in the one
+        radio dictionary (:meth:`_critical_read_timeout_counts`) — one
+        increment per timeout event, never two. On the attempt that
+        reaches ``_CRITICAL_READ_TIMEOUT_ATTEMPTS`` the path's criticality
+        chooses the recording: a safety-critical path (freq/mode) records
+        the same :class:`DeclaredCommandDefect` a refused read records
+        (:meth:`_record_declared_defect`), naming the field and the
+        command the radio never answered — the startup gate aborts on it,
+        and later records keep only the first
+        (``AcquisitionScheduler.record_startup_defect``). Any other path
+        is marked unavailable on the acquisition scheduler
+        (:meth:`_record_unanswered_reads`), so an optional read stops
+        holding the initial-state gate while its own lane cadence keeps
+        asking. The PTT/split lanes never reach this tally
+        (``count_timeout=False`` — MOR-4456 serves them unknown after the
+        deadline instead). A radio object that carries no tally (test
+        doubles) simply does not count.
         """
 
         counts = self._critical_read_timeout_counts()
         if counts is None:
             return
         for path in paths:
-            if not startup_critical_path(path):
-                continue
             count = counts.get(path, 0) + 1
             counts[path] = count
             if count >= _CRITICAL_READ_TIMEOUT_ATTEMPTS:
-                self._record_declared_defect(label, exc, (path,))
-
-    def _count_unanswered_reads(self, paths: tuple[FieldPath, ...]) -> None:
-        """Count one unanswered window per declared path (MOR-3856).
-
-        The same shape as the critical tally above, for every declared
-        path: one timeout per lane cycle is one unanswered attempt, any
-        answer resets the count (:meth:`_note_critical_read_answers`), and
-        on the attempt that reaches ``_CRITICAL_READ_TIMEOUT_ATTEMPTS``
-        the lapse is recorded on the acquisition scheduler
-        (:meth:`_record_unanswered_reads`) — the path is marked
-        unavailable and stops holding the initial-state gate while its
-        own lane cadence keeps asking. A radio object that carries no
-        tally (test doubles) simply does not count.
-        """
-
-        counts = getattr(self.radio, "_unanswered_read_timeouts", None)
-        if not isinstance(counts, dict):
-            return
-        for path in paths:
-            count = counts.get(path, 0) + 1
-            counts[path] = count
-            if count >= _CRITICAL_READ_TIMEOUT_ATTEMPTS:
-                self._record_unanswered_reads((path,))
+                if startup_critical_path(path):
+                    self._record_declared_defect(label, exc, (path,))
+                else:
+                    self._record_unanswered_reads((path,))
 
     def _record_declared_defect(
         self,
@@ -2225,9 +2222,8 @@ class YaesuObservationAdapter:
         startup-critical set and are served unknown after the non-critical
         deadline, so they must never occupy the startup-defect slot (the
         first record wins). Name-scoped, not a criticality filter: every
-        other path keeps its existing record, and the timeout tally in
-        :meth:`_count_critical_read_timeouts` already filters through
-        :func:`startup_critical_path` and switched off by itself.
+        other path keeps its existing record, and counted timeouts never
+        reach it from the PTT/split lanes (``count_timeout=False``).
         """
         paths = tuple(path for path in paths if path.name not in ("ptt", "split"))
         if not paths:

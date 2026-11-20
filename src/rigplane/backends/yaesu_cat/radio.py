@@ -353,16 +353,16 @@ class YaesuCatRadio:
         # unsupported field warns once and then demotes repeats to DEBUG.
         self._poll_warned_fields: set[str] = set()
 
-        # MOR-2757: consecutive unanswered reads per safety-critical path,
-        # kept by the observation adapter (rebuilt every poll cycle) across
-        # cycles — the same "state lives on the radio" idiom as
-        # ``_poll_warned_fields`` above. On the 3rd unanswered read the
-        # adapter records the declared-command defect that ends startup.
+        # MOR-2757/MOR-3856: consecutive unanswered windows per declared
+        # path, kept by the observation adapter (rebuilt every poll cycle)
+        # across cycles — the same "state lives on the radio" idiom as
+        # ``_poll_warned_fields`` above; any answer resets it
+        # (``_note_critical_read_answers``). One increment per timeout
+        # event. On the 3rd unanswered window the adapter records either
+        # the declared-command defect that ends startup (a safety-critical
+        # path) or the path's unavailability on the acquisition scheduler
+        # (any other path) — never both.
         self._critical_read_timeouts: dict[FieldPath, int] = {}
-        # MOR-3856: consecutive unanswered windows per declared path, the
-        # optional-path twin of the critical tally above; any answer
-        # resets it (``_note_critical_read_answers``).
-        self._unanswered_read_timeouts: dict[FieldPath, int] = {}
 
         # MOR-2632: the last nonzero NB/NR level seen per receiver, remembered
         # when turning the function off. Lives only on this object: a radio
