@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import Mapping
+from collections.abc import Awaitable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Literal, Sequence, cast
@@ -69,7 +69,7 @@ if TYPE_CHECKING:
     from ..._poller_types import CommandQueue
     from ...audio.backend import CaptureMode
     from ...audio.session import AudioSession
-    from ...audio.usb_driver import UsbAudioDriver
+    from ...audio.usb_driver import AudioCandidateList, UsbAudioDriver
     from ...audio_bus import AudioBus
     from ...core.state_pipeline_contracts import FieldPath, Observation
     from ...profiles import RadioProfile
@@ -953,6 +953,17 @@ class YaesuCatRadio:
         """Effective OS audio contract reported by the USB audio driver."""
 
         return getattr(self._audio_driver, "usb_audio_contract", None)
+
+    def audio_candidates(self) -> Awaitable[AudioCandidateList] | None:
+        """On-demand USB audio device candidates (MOR-3883).
+
+        Delegates to the USB audio driver via ``getattr`` like
+        :attr:`usb_audio_contract`; ``None`` when the driver does not offer
+        the list (test doubles), which the web surface reports as
+        unavailable.
+        """
+        getter = getattr(self._audio_driver, "audio_candidates", None)
+        return getter() if callable(getter) else None
 
     @property
     def audio_bus(self) -> "AudioBus":
