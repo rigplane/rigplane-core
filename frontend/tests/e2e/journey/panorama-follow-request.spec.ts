@@ -126,11 +126,11 @@ test('IC-705 CENTER: an external narrowing after a wide request is the new width
     const receiptsBefore = await wideThenExternalNarrow(page, h);
     await settleOnFrames(h, 20);
     const area = page.locator('.spectrum-area').first();
-    // CENTER labels are offsets from the centre: a 50 kHz window reads ±25k.
+    // CENTER labels are real frequencies (MHz, 3 decimals): the edges are `narrow` apart.
     await expect.poll(async () => {
       const axis = await page.locator('.freq-axis .tick').allInnerTexts();
-      return [axis[0], axis.at(-1)];
-    }).toEqual([`-${narrow / 2000}k`, `+${narrow / 2000}k`]);
+      return Math.round((Number(axis.at(-1)) - Number(axis[0])) * 1e6);
+    }).toBe(narrow);
     await expect(page.getByTestId('scope-span-value').first()).toHaveText(`±${narrow / 2000}k`);
     await expect(area.locator('.scope-hatch')).toHaveCount(0);
     // Row 5: nothing was written back without a user action.
@@ -233,8 +233,8 @@ for (const change of ['resize', 'reload'] as const) {
       expect(h.coverageWidth()).toBe(50_000);
       await expect.poll(async () => {
         const axis = await page.locator('.freq-axis .tick').allInnerTexts();
-        return [axis[0], axis.at(-1)];
-      }).toEqual(['-25k', '+25k']);
+        return Math.round((Number(axis.at(-1)) - Number(axis[0])) * 1e6);
+      }).toBe(50_000);
       await expect(page.getByTestId('scope-span-value').first()).toHaveText('±25k');
       expectPanoramaSettled(watch);
     } finally {
@@ -448,8 +448,8 @@ async function chooseSpan(page: Page, h: Harness, target: number): Promise<void>
 async function expectFollowWindow(page: Page, width: number): Promise<void> {
   await expect.poll(async () => {
     const axis = await page.locator('.freq-axis .tick').allInnerTexts();
-    return [axis[0], axis.at(-1)];
-  }).toEqual([`-${width / 2000}k`, `+${width / 2000}k`]);
+    return Math.round((Number(axis.at(-1)) - Number(axis[0])) * 1e6);
+  }).toBe(width);
   await expect(page.getByTestId('scope-span-value').first()).toHaveText(`±${width / 2000}k`);
 }
 

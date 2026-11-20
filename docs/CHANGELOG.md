@@ -15,6 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `rigplane station` accepts `--webrtc` and `--webrtc-include-vpn`, with the same meaning as on `web` (one shared flag definition), so a supervisor can start a managed station that answers WebRTC offers on its loopback listener. (MOR-4584)
 
+- WebRTC wire contracts are now public (tier 2, `from rigplane import ...`) for a WebRTC offerer or station agent that runs in another process: the data-channel attach frame with an encoder (`ClientChannelParams.to_attach_frame`) and the attach-ack parser (`ChannelAttachedAck.from_frame`), the answerer's ICE gathering policy (`IceServer`, `IceGatheringPolicy`, `GATHER_TIMEOUT_S`, `install_ice_gathering_policy`, `apply_ice_gathering_policy`), typed bodies of `POST /api/v1/transport/webrtc/offer` and `/ice-candidate` (`WebRtcOffer`, `WebRtcAnswer`, `WebRtcIceCandidate` with a typed `IceCandidateInit`, `WebRtcRequestError`) and the capabilities `webrtc` block (`WebRtcTransportStatus`). They are provisional until Pro ships remote access. The server reads and writes those routes through the same types; wire bytes of valid requests are unchanged, and a mistyped trickled candidate field (a non-string `candidate` or `sdpMid`, a string or negative `sdpMLineIndex`) is now refused with 400 `invalid_candidate` instead of being coerced or failing later. (MOR-272)
+
 ### Fixed
 
 - The `api` WebRTC data channel no longer serves the WebRTC signalling routes (`/api/v1/transport/webrtc/offer`, `/api/v1/transport/webrtc/ice-candidate`); they answer 404 over the channel, so a peer cannot open another peer connection through its own session. HTTP is unchanged. (MOR-4584)

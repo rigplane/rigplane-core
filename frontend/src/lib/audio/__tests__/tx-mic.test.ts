@@ -1,9 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { TxMic } from '../tx-mic';
+import { setTxMicProcessing, reloadTxMicProcessingForTests, TX_MIC_PROCESSING_KEY } from '../../stores/tx-mic-processing.svelte';
 import { SAMPLE_RATE, CHANNELS, TX_BITRATE, AUDIO_HEADER_SIZE, CODEC_PCM16 } from '../constants';
 
 let mockTrack: any, mockEncoder: any, mockReader: any;
 beforeEach(() => {
+  localStorage.removeItem(TX_MIC_PROCESSING_KEY);
+  reloadTxMicProcessingForTests();
   delete (globalThis as any).AudioContext;
   delete (globalThis as any).webkitAudioContext;
   mockTrack = Object.assign(new EventTarget(), { stop: vi.fn(), kind: 'audio' });
@@ -62,6 +65,43 @@ describe('TxMic', () => {
       },
     });
     expect(m.active).toBe(true); m.stop();
+  });
+  it('requests all browser voice processing when the mode is browser (MOR-4596)', async () => {
+    setTxMicProcessing('browser');
+    const m = new TxMic(vi.fn()); await m.start();
+    expect(navigator.mediaDevices.getUserMedia).toHaveBeenCalledWith({
+      audio: {
+        channelCount: CHANNELS, sampleRate: SAMPLE_RATE,
+        echoCancellation: true, noiseSuppression: true, autoGainControl: true,
+      },
+    });
+    m.stop();
+  });
+  it('applies a mode change from the next start and keeps raw as the default (MOR-4596)', async () => {
+    const m = new TxMic(vi.fn());
+    await m.start(); m.stop();
+    setTxMicProcessing('browser');
+    await m.start(); m.stop();
+    setTxMicProcessing('raw');
+    await m.start(); m.stop();
+    const flags = vi.mocked(navigator.mediaDevices.getUserMedia).mock.calls
+      .map(([c]) => (c?.audio as MediaTrackConstraints).echoCancellation);
+    expect(flags).toEqual([false, true, false]);
+  });
+  it('keeps the chosen mode across a reload (MOR-4596)', async () => {
+    setTxMicProcessing('browser');
+    expect(localStorage.getItem(TX_MIC_PROCESSING_KEY)).toBe('browser');
+    reloadTxMicProcessingForTests();
+    const m = new TxMic(vi.fn()); await m.start();
+    expect((vi.mocked(navigator.mediaDevices.getUserMedia).mock.calls[0]?.[0]?.audio as MediaTrackConstraints)
+      .noiseSuppression).toBe(true);
+    m.stop();
+    localStorage.setItem(TX_MIC_PROCESSING_KEY, 'garbage');
+    reloadTxMicProcessingForTests();
+    await m.start();
+    expect((vi.mocked(navigator.mediaDevices.getUserMedia).mock.calls[1]?.[0]?.audio as MediaTrackConstraints)
+      .noiseSuppression).toBe(false);
+    m.stop();
   });
   it('handles permission denied', async () => {
     vi.mocked(navigator.mediaDevices.getUserMedia).mockRejectedValueOnce(
