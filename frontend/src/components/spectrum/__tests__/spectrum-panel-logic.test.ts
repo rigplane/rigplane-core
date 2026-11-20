@@ -4,8 +4,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import {
-  formatFreqOffset,
-  deriveFreqTicks,
+  freqTickDecimals,
   getDragInterval,
   isRadioOwnedWindowScope,
   freqFromPixel,
@@ -14,50 +13,15 @@ import {
 import { isSpanApplicable } from '../spectrum-toolbar-logic';
 import fixture from '../../../../../contracts/scope-mode-families.json';
 
-describe('formatFreqOffset', () => {
-  it('formats zero', () => expect(formatFreqOffset(0)).toBe('0'));
-  it('formats sub-kHz', () => {
-    expect(formatFreqOffset(500)).toBe('+500');
-    expect(formatFreqOffset(-750)).toBe('-750');
+describe('freqTickDecimals', () => {
+  it('keeps kHz resolution for wide windows', () => {
+    expect(freqTickDecimals(25_000)).toBe(3);
+    expect(freqTickDecimals(1000)).toBe(3);
   });
-  it('formats kHz with rounding', () => {
-    expect(formatFreqOffset(12_500)).toBe('+13k');
-    expect(formatFreqOffset(-87_500)).toBe('-88k');
-  });
-  it('formats exact kHz', () => expect(formatFreqOffset(25_000)).toBe('+25k'));
-  it('formats MHz with one decimal', () => {
-    expect(formatFreqOffset(1_500_000)).toBe('+1.5M');
-    expect(formatFreqOffset(-2_000_000)).toBe('-2.0M');
-  });
-  it('boundary: 1000 Hz → kHz, 1 MHz → MHz', () => {
-    expect(formatFreqOffset(1000)).toBe('+1k');
-    expect(formatFreqOffset(1_000_000)).toBe('+1.0M');
-  });
-});
-
-describe('deriveFreqTicks', () => {
-  it('returns empty for spanHz <= 0', () => {
-    expect(deriveFreqTicks(0)).toEqual([]);
-    expect(deriveFreqTicks(-1000)).toEqual([]);
-  });
-
-  it('produces 5 ticks at correct positions', () => {
-    const ticks = deriveFreqTicks(100_000);
-    expect(ticks).toHaveLength(5);
-    expect(ticks.map((t) => t.position)).toEqual([0, 25, 50, 75, 100]);
-  });
-
-  it('center tick is "0", edges are symmetric', () => {
-    const ticks = deriveFreqTicks(350_000);
-    expect(ticks[2].label).toBe('0');
-    expect(ticks[0].label).toBe('-175k');
-    expect(ticks[4].label).toBe('+175k');
-  });
-
-  it('quarter ticks match half of edge offsets', () => {
-    const ticks = deriveFreqTicks(200_000);
-    expect(ticks[1].label).toBe('-50k');
-    expect(ticks[3].label).toBe('+50k');
+  it('adds decimals so sub-kHz tick spacing stays distinct', () => {
+    expect(freqTickDecimals(195.3125)).toBe(4);
+    expect(freqTickDecimals(20)).toBe(5);
+    expect(freqTickDecimals(0.5)).toBe(6);
   });
 });
 

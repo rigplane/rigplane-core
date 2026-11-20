@@ -64,8 +64,7 @@
     getPassbandGeometry,
   } from './passband-geometry';
   import {
-    formatFreqOffset,
-    deriveFreqTicks,
+    freqTickDecimals,
     isRadioOwnedWindowScope as isRadioOwnedWindowScopeFn,
     isSpanDisabledScope,
     nativeWidthFromSpanChoice,
@@ -1237,12 +1236,10 @@
         position: index * 25,
         label: `${Number(((startFreq + spanHz * index / 4) / 1000).toFixed(2))} kHz`,
       }))
-    : explicitView || isRadioOwnedWindow
-      ? viewportSpanHz > 0 ? Array.from({ length: 5 }, (_, index) => ({
-          position: index * 25,
-          label: ((viewportStartFreq + viewportSpanHz * index / 4) / 1e6).toFixed(3),
-        })) : []
-      : deriveFreqTicks(viewportSpanHz));
+    : viewportSpanHz > 0 ? Array.from({ length: 5 }, (_, index) => ({
+        position: index * 25,
+        label: ((viewportStartFreq + viewportSpanHz * index / 4) / 1e6).toFixed(freqTickDecimals(viewportSpanHz / 4)),
+      })) : []);
 
   // Passband overlay position derived from the same geometry as the spectrum renderer.
   let passbandOverlay = $derived(

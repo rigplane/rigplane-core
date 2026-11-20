@@ -3,6 +3,7 @@ import type { ServerState } from '../../../src/lib/types/state';
 import { writeFile } from 'node:fs/promises';
 import { expect, test } from '@playwright/test';
 import { startJourneyServer } from './server-process';
+import { openPanorama } from './panorama-ready';
 import { expectPanoramaSettled, watchPanoramaErrors } from './panorama-guards';
 
 // ── MOR-4387 owner build-4, item 1: the passband overlay must not blink ──
@@ -31,7 +32,7 @@ for (const [index, model] of ['IC-705', 'IC-7300'].entries()) {
     const watch = watchPanoramaErrors(page);
     try {
       await installSampler(page);
-      await page.goto(`http://127.0.0.1:${port}/?ui=v2`);
+      await openPanorama(page, `http://127.0.0.1:${port}/?ui=v2`);
       await settlePassband(page, port);
       await page.waitForTimeout(1000);
       // Width setup can leave a native range input focused; arrow keys
@@ -79,7 +80,7 @@ for (const [index, model] of ['IC-705', 'IC-7300'].entries()) {
     const frames = watchScopeFrames(page);
     try {
       await installSampler(page);
-      await page.goto(`http://127.0.0.1:${port}/?ui=v2`);
+      await openPanorama(page, `http://127.0.0.1:${port}/?ui=v2`);
       await settlePassband(page, port);
       await page.waitForTimeout(1000);
       await page.getByRole('button', { name: 'More scope controls' }).first().click();
@@ -127,7 +128,7 @@ for (const [index, model] of ['IC-705', 'IC-7300'].entries()) {
     const frames = watchScopeFrames(page);
     try {
       await installSampler(page);
-      await page.goto(`http://127.0.0.1:${port}/?ui=v2`);
+      await openPanorama(page, `http://127.0.0.1:${port}/?ui=v2`);
       await settlePassband(page, port);
       await page.waitForTimeout(1000);
       // The B key = the band the VFO is in: an ABSOLUTE view (explicitView).

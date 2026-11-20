@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- WebRTC wire contracts are now public (tier 2, `from rigplane import ...`) for a WebRTC offerer or station agent that runs in another process: the data-channel attach frame with an encoder (`ClientChannelParams.to_attach_frame`) and the attach-ack parser (`ChannelAttachedAck.from_frame`), the answerer's ICE gathering policy (`IceServer`, `IceGatheringPolicy`, `GATHER_TIMEOUT_S`, `install_ice_gathering_policy`, `apply_ice_gathering_policy`), typed bodies of `POST /api/v1/transport/webrtc/offer` and `/ice-candidate` (`WebRtcOffer`, `WebRtcAnswer`, `WebRtcIceCandidate` with a typed `IceCandidateInit`, `WebRtcRequestError`) and the capabilities `webrtc` block (`WebRtcTransportStatus`). They are provisional until Pro ships remote access. The server reads and writes those routes through the same types; wire bytes of valid requests are unchanged, and a mistyped trickled candidate field (a non-string `candidate` or `sdpMid`, a string or negative `sdpMLineIndex`) is now refused with 400 `invalid_candidate` instead of being coerced or failing later. (MOR-272)
+
 ### Fixed
 
 - A single-receiver A/B radio that reports no VFO readback (Xiegu G7250, X6100, X6200, TX-500) showed a blank frequency, mode and filter readout although the values were fresh: the surface now shows the selected VFO instead of an unresolved slot. (MOR-4562)
