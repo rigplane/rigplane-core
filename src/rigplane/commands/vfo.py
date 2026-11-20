@@ -236,7 +236,9 @@ def get_freq_offset(
     to_addr: int, from_addr: int = CONTROLLER_ADDR, *, cmd_map: CommandMap
 ) -> bytes:
     """Build CI-V command to read the duplex offset frequency (0x0C)."""
-    return _build_from_map(cmd_map, "get_freq_offset", to_addr=to_addr, from_addr=from_addr)
+    return _build_from_map(
+        cmd_map, "get_freq_offset", to_addr=to_addr, from_addr=from_addr
+    )
 
 
 @expose_command_key(lambda cmd_map: "set_freq_offset")
@@ -261,9 +263,9 @@ def set_freq_offset(
         raise ValueError(
             f"duplex offset must be a multiple of {_OFFSET_UNIT_HZ} Hz, got {offset_hz}"
         )
-    data = bcd_encode_value(
-        offset_hz // _OFFSET_UNIT_HZ, byte_count=_OFFSET_BCD_BYTES
-    )[::-1]
+    data = bcd_encode_value(offset_hz // _OFFSET_UNIT_HZ, byte_count=_OFFSET_BCD_BYTES)[
+        ::-1
+    ]
     return _build_from_map(
         cmd_map, "set_freq_offset", to_addr=to_addr, from_addr=from_addr, data=data
     )
