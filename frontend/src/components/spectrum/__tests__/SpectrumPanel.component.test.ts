@@ -1364,6 +1364,8 @@ describe('SpectrumPanel component', () => {
 
   it('crops a FIX zoom client-side while the subscription stays a follow view', async () => {
     runtimeHarness.state.currentCaps = structuredClone(IC7300_CAPABILITIES);
+    // The radio is in FIX: the observed readback says so, as the frame does.
+    authorityHarness.state.current = authority({ scopeControls: testScopeControls(1) });
     const target = mountPanel(); emitFrame({ mode: 1 });
     await flushWaterfallPaint();
     const read = () => JSON.parse(target.querySelector('.spectrum-panel')!.getAttribute('data-scope-subscription')!);
@@ -1614,6 +1616,9 @@ describe('SpectrumPanel component', () => {
     select.value = '0'; select.dispatchEvent(new Event('change', { bubbles: true })); flushSync();
     const read = () => JSON.parse(target.querySelector('.spectrum-panel')!.getAttribute('data-scope-subscription')!);
     const preset = read().view;
+    // The radio switches to FIX: readback and frame agree.
+    authorityHarness.state.current = authority({ scopeControls: testScopeControls(1) });
+    refreshSpectrumAuthority(); flushSync();
     emitFrame({ mode: 1, startFreq: preset.startHz, endFreq: preset.endHz });
     await flushWaterfallPaint();
     target.querySelector<HTMLButtonElement>('[data-testid="scope-zoom-in"]')!.click(); flushSync();
@@ -1781,7 +1786,9 @@ describe('SpectrumPanel component', () => {
     // radio delivers a 50 kHz window. The follow width zooms out to 100 kHz
     // while the grant below still carries the old 100 kHz coverage, so only
     // the observed span can hatch the undelivered margins.
-    authorityHarness.state.current = authority({ frequencyHz: 14_050_000, scopeControls: testScopeControls(2, 3) });
+    // The frames below are CENTER frames (mode 0), so the readback says
+    // CENTER too (mode 0, span index 3).
+    authorityHarness.state.current = authority({ frequencyHz: 14_050_000, scopeControls: testScopeControls(0, 3) });
     const target = mountPanel();
     emitFrame({ startFreq: 14_025_000, endFreq: 14_075_000 }); await flushWaterfallPaint();
     target.querySelector<HTMLButtonElement>('[data-testid="scope-zoom-out"]')!.click(); flushSync();
@@ -2090,6 +2097,10 @@ describe('SpectrumPanel component', () => {
     target.querySelector<HTMLButtonElement>('[data-testid="scope-zoom-in"]')!.click(); flushSync();
     // The 50 kHz requested width left over from the CENTER zoom must not
     // leak into FIX: marker, passband and viewport use the fixed window.
+    // The radio then moves to FIX: the readback follows, then the frame.
+    authorityHarness.state.current = authority({ frequencyHz: 14_025_000, mode: 'LSB', filterWidthHz: 3_000,
+      filterWidthDisplay: { state: 'known', hz: 3_000, stale: false }, scopeControls: testScopeControls(1) });
+    refreshSpectrumAuthority(); flushSync();
     emitFrame({ mode: 1 }); flushSync(); await flushWaterfallPaint();
     expect(target.querySelector<HTMLElement>('.waterfall-content .tune-line')!.style.left).toBe('25%');
     expect(spectrumRendererHarness.lastOptions).toMatchObject({
@@ -2141,7 +2152,7 @@ describe('SpectrumPanel component', () => {
     radio.current = structuredClone(IC7300_STATE);
     expect(setCapabilities(structuredClone(IC7300_CAPABILITIES))).toBe(true);
     runtimeHarness.state.currentCaps = structuredClone(IC7300_CAPABILITIES);
-    authorityHarness.state.current = authority({ frequencyHz: 14_050_000 });
+    authorityHarness.state.current = authority({ frequencyHz: 14_050_000, scopeControls: testScopeControls(1) });
     const target = mountPanel();
     emitFrame({ mode: 1 }); await flushWaterfallPaint();
     expect(target.querySelector('[data-testid="zoom-fixed-hint"]')).toBeNull();
@@ -2225,7 +2236,7 @@ describe('SpectrumPanel component', () => {
 
   it('clips a FIX zoom-out to the fixed window instead of hatching beyond it (MOR-4392)', async () => {
     runtimeHarness.state.currentCaps = structuredClone(IC7300_CAPABILITIES);
-    authorityHarness.state.current = authority({ frequencyHz: 14_050_000 });
+    authorityHarness.state.current = authority({ frequencyHz: 14_050_000, scopeControls: testScopeControls(1) });
     const target = mountPanel();
     emitFrame({ mode: 1 }); await flushWaterfallPaint();
     const read = () => JSON.parse(target.querySelector('.spectrum-panel')!.getAttribute('data-scope-subscription')!);
@@ -2743,7 +2754,7 @@ describe('SpectrumPanel Observation authority and final-gesture intents', () => 
     expect(spectrumPanelSource.match(/getVfoHandlers\(\)/g)).toHaveLength(1);
     expect(spectrumPanelSource.match(/getFilterHandlers\(\)/g)).toHaveLength(1);
     expect(spectrumPanelSource).toContain('toSpectrumAuthority(runtime.state, runtime.caps)');
-    expect(spectrumPanelSource).toContain('let scopeMode = $derived(frameScopeMode)');
+    expect(spectrumPanelSource).toContain('let scopeMode = $derived(scopeControlsMode ?? frameScopeMode)');
     expect(spectrumPanelSource).not.toContain('function toSpectrumAuthority');
     expect(spectrumPanelSource).not.toContain('function snapSpectrumFilterWidth');
   });
@@ -2969,7 +2980,7 @@ describe('SpectrumPanel Observation authority and final-gesture intents', () => 
   });
 
   it('normalizes fixed-frame resize X around the captured carrier rather than sample center', () => {
-    authorityHarness.state.current = authority({ frequencyHz: 14_025_000 });
+    authorityHarness.state.current = authority({ frequencyHz: 14_025_000, scopeControls: testScopeControls(1) });
     const target = mountPanel();
     emitFrame({ mode: 1 });
     const { waterfall } = prepareGeometry(target);
@@ -3169,7 +3180,7 @@ describe('SpectrumPanel Observation authority and final-gesture intents', () => 
   });
 
   it('hides confirmed carrier/passband when Observation is outside fixed sample edges', async () => {
-    authorityHarness.state.current = authority({ frequencyHz: 14_200_000 });
+    authorityHarness.state.current = authority({ frequencyHz: 14_200_000, scopeControls: testScopeControls(1) });
     const target = mountPanel();
     emitFrame({ mode: 1 });
     expect(target.querySelector('.tune-line')).toBeNull();
@@ -3178,17 +3189,39 @@ describe('SpectrumPanel Observation authority and final-gesture intents', () => 
     expect(spectrumRendererHarness.lastOptions).toMatchObject({ spanHz: 100_000, sampleSpanHz: 100_000, showTuneIndicator: false, tuneHz: 0, passbandHz: 0 });
   });
 
-  it('keeps frame mode and pixel geometry authoritative over canonical scope-control metadata', async () => {
+  // MOR-4214: the radio-owned window follows the OBSERVED scope-control
+  // readback; the frame's context mode is only the fallback while the
+  // readback is unobserved (it reads 0 through a reconnect while the radio is
+  // still in FIX). Pixel geometry stays the frame's own.
+  it('keeps the observed scope-control mode authoritative over the frame mode, pixels from the frame', async () => {
     authorityHarness.state.current = authority({
       frequencyHz: 14_025_000,
       scopeControls: testScopeControls(3),
     });
     const target = mountPanel();
     emitFrame({ mode: 0 });
-    expect(target.querySelector<HTMLElement>('.tune-line')?.style.left).toBe('50%');
+    // Readback S-F (3) is a radio-owned window: the marker is proportional
+    // in the 14.000-14.100 frame window, not centred.
+    expect(target.querySelector<HTMLElement>('.tune-line')?.style.left).toBe('25%');
     await vi.waitFor(() => expect(spectrumRendererHarness.render).toHaveBeenCalled());
-    expect(spectrumRendererHarness.lastOptions.scopeMode).toBe(0);
+    expect(spectrumRendererHarness.lastOptions.scopeMode).toBe(3);
     expect(spectrumRendererHarness.render.mock.calls.at(-1)?.[1]).toHaveLength(475);
+  });
+
+  it('falls back to the frame mode while the scope-control readback is unobserved', async () => {
+    const unobserved: ScopeControlsViewModel = {
+      ...testScopeControls(0),
+      mode: Object.freeze({
+        reading: Object.freeze({ status: 'unknown' as const }),
+        availability: Object.freeze({ structural: true, operational: true }),
+      }) as ScopeControlsViewModel['mode'],
+    };
+    authorityHarness.state.current = authority({ frequencyHz: 14_025_000, scopeControls: unobserved });
+    const target = mountPanel();
+    emitFrame({ mode: 1 });
+    expect(target.querySelector<HTMLElement>('.tune-line')?.style.left).toBe('25%');
+    await vi.waitFor(() => expect(spectrumRendererHarness.render).toHaveBeenCalled());
+    expect(spectrumRendererHarness.lastOptions.scopeMode).toBe(1);
   });
 
   it.each([
@@ -3212,7 +3245,7 @@ describe('SpectrumPanel Observation authority and final-gesture intents', () => 
   });
 
   it('rejects fixed resize capture when confirmed frequency is outside the sample plane', () => {
-    authorityHarness.state.current = authority({ frequencyHz: 14_200_000 });
+    authorityHarness.state.current = authority({ frequencyHz: 14_200_000, scopeControls: testScopeControls(1) });
     const target = mountPanel();
     emitFrame({ mode: 1 });
     expect(target.querySelector('.passband-resize-zone')).toBeNull();
@@ -3815,6 +3848,8 @@ describe('managed scope projection (MOR-2367)', () => {
       // MOR-4387: in CENTER scope a pin retires as soon as the confirmed VFO
       // leaves it, so a preset excluding the carrier is a FIX-scope scenario
       // (the radio owns the fixed window there).
+      authorityHarness.state.current = authority({ scopeControls: testScopeControls(1) });
+      refreshSpectrumAuthority(); flushSync();
       emitFrame({ mode: 1 });
       const select = target.querySelector<HTMLSelectElement>('[data-testid="scope-preset-select"]')!;
       select.value = '0'; select.dispatchEvent(new Event('change', { bubbles: true }));
@@ -5120,7 +5155,7 @@ describe('drag-to-tune live preview (MOR-4256)', () => {
     try {
       // Confirmed frequency sits OUTSIDE the fixed 14.000-14.100 window:
       // no marker at rest.
-      authorityHarness.state.current = authority({ frequencyHz: 14_200_000 });
+      authorityHarness.state.current = authority({ frequencyHz: 14_200_000, scopeControls: testScopeControls(1) });
       const target = mountPanel();
       emitFrame({ mode: 1 });
       const { spectrum } = prepareGeometry(target);
@@ -5149,7 +5184,7 @@ describe('drag-to-tune live preview (MOR-4256)', () => {
   it('moves the FIX-mode tune marker and passband with the preview and leaves the panorama parked', async () => {
     const restore = stubReducedMotion();
     try {
-      authorityHarness.state.current = authority({ frequencyHz: 14_050_000 });
+      authorityHarness.state.current = authority({ frequencyHz: 14_050_000, scopeControls: testScopeControls(1) });
       const target = mountPanel();
       emitFrame({ mode: 1 });
       const { spectrum } = prepareGeometry(target);
@@ -5488,7 +5523,7 @@ describe('center panorama motion (MOR-2464)', () => {
   });
 
   it('keeps the FIX marker proportional with no panorama shift', async () => {
-    authorityHarness.state.current = authority({ frequencyHz: 14_025_000 });
+    authorityHarness.state.current = authority({ frequencyHz: 14_025_000, scopeControls: testScopeControls(1) });
     const target = mountPanel();
     emitFrame({ mode: 1 });
     expect(target.querySelector<HTMLElement>('.tune-line')!.style.left).toBe('25%');
@@ -6148,7 +6183,7 @@ describe('review corrections for requested View and sample retirement', () => {
   async function selectView(view: { startHz: number; endHz: number }, frequencyHz = 14_050_000, frameMode = 0) {
     const presets = await import('$lib/runtime/scope-presets');
     const spy = vi.spyOn(presets, 'scopePresets').mockReturnValue([{ kind: 'cw', label: 'Requested segment', view }]);
-    authorityHarness.state.current = authority({ frequencyHz });
+    authorityHarness.state.current = authority({ frequencyHz, scopeControls: testScopeControls(frameMode) });
     const target = mountPanel(); emitFrame({ pixels: new Uint8Array(100).fill(80), mode: frameMode }); await flushWaterfallPaint();
     const select = target.querySelector<HTMLSelectElement>('[data-testid="scope-preset-select"]')!;
     select.value = '0'; select.dispatchEvent(new Event('change', { bubbles: true }));
