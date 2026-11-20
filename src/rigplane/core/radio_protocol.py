@@ -2164,10 +2164,11 @@ class RepeaterOffsetCapable(Protocol):
     Sibling to :class:`RepeaterShiftCapable` (which covers the direction
     only): this protocol covers the magnitude a shift applies, in exact
     Hz with a 100 Hz wire resolution on Icom (``0C`` read / ``0D`` send,
-    MOR-3624). An implementer refuses an offset the profile's repeater
-    bands do not admit — see the per-band ``max_repeater_offset_hz`` rig
-    profile data — and one whose transmit result would leave the
-    profile's TX ranges.
+    MOR-3624). An implementer validates the value against the profile's
+    declared maximum (``profiles/__init__.py:
+    RadioProfile.repeater_offset_max_hz``); the tuned band and the
+    resulting TX frequency are the radio's own refusal (owner guard rule
+    2026-10-30).
     """
 
     async def get_repeater_offset(self, receiver: int = 0) -> int:

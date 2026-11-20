@@ -181,19 +181,15 @@ def _repeater_shift_target(params: Mapping[str, Any]) -> FieldPath:
 def _bind_repeater_offset(params: Mapping[str, Any]) -> dict[str, Any]:
     """Bind a duplex-offset write in exact Hz (MOR-3624).
 
-    The wire resolution check (multiple of 100 Hz) is duplicated here so a
-    unit mix-up is refused at dispatch, before any radio call; the
-    per-band maximum and the TX-range guard belong to the Radio method,
-    which knows the tuned frequency.
+    Binding checks parameter types only: the offset VALUE contract lives
+    in exactly one place per rule — the wire resolution and encoding in
+    ``commands/vfo.py: set_freq_offset``, the profile's declared maximum
+    in ``runtime/radio.py: CoreRadio.set_repeater_offset``.
     """
     raw_offset = params["offset_hz"]
     raw_receiver = params.get("receiver", 0)
     if isinstance(raw_offset, bool) or not isinstance(raw_offset, int):
         raise ValueError("offset_hz must be an integer in Hz")
-    if raw_offset < 0:
-        raise ValueError("offset_hz must be non-negative")
-    if raw_offset % 100:
-        raise ValueError("offset_hz must be a multiple of 100 (the wire resolution)")
     if isinstance(raw_receiver, bool) or not isinstance(raw_receiver, int):
         raise ValueError("receiver must be 0 or 1")
     if raw_receiver not in (0, 1):
@@ -419,7 +415,7 @@ _COMMAND_DESCRIPTORS: Mapping[str, CommandDescriptor] = MappingProxyType(
         # Repeater offset magnitude (MOR-3624): the same shape as
         # ``set_repeater_shift`` one ticket later — receiver rides the Radio
         # call, the capability tag gates web reach, and the Radio method owns
-        # the G4 per-band and TX-range refusals before any wire traffic.
+        # the profile-maximum input validation before any wire traffic.
         "set_repeater_offset": CommandDescriptor(
             name="set_repeater_offset",
             method_name="set_repeater_offset",

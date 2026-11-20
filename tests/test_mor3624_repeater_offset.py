@@ -66,9 +66,7 @@ def _radio(transport: MockTransport, model: str) -> IcomRadio:
 
 
 def _reply(command: int, addr: int, data: bytes = b"") -> bytes:
-    return _wrap_civ_in_udp(
-        build_civ_frame(CONTROLLER_ADDR, addr, command, data=data)
-    )
+    return _wrap_civ_in_udp(build_civ_frame(CONTROLLER_ADDR, addr, command, data=data))
 
 
 def _sent_frames(transport: MockTransport) -> list[CivFrame]:
@@ -163,49 +161,32 @@ async def test_set_sends_the_guide_frame_and_reads_back(transport) -> None:
 @pytest.mark.asyncio
 async def test_set_raises_when_the_radio_refuses(transport) -> None:
     radio = _radio(transport, "IC-705")
-    _observe_freq(radio, 146_520_000, 0xA4)
     transport.queue_response(_reply(0x0D, 0xA4, bytes([0xFA])))
     with pytest.raises(CommandError):
         await radio.set_repeater_offset(600_000)
 
 
-# ── Guard G4: offset sanity ──────────────────────────────────────────
-
-
-def _freq_data(hz: int) -> bytes:
-    from rigplane.commands import bcd_encode_value
-
-    return bcd_encode_value(hz // 10, byte_count=5)[::-1]
-
-
-def _observe(radio: IcomRadio, command: int, data: bytes, from_addr: int) -> None:
-    frame = CivFrame(
-        to_addr=CONTROLLER_ADDR, from_addr=from_addr, command=command, sub=None, data=data
-    )
-    radio._civ_runtime._update_state_cache_from_frame(frame)
-
-
-def _observe_freq(radio: IcomRadio, hz: int, from_addr: int) -> None:
-    _observe(radio, 0x03, _freq_data(hz), from_addr)
-
-
-def _observe_shift(radio: IcomRadio, code: int, from_addr: int) -> None:
-    _observe(radio, 0x0F, bytes([code]), from_addr)
+# ── Input validation: the profile's declared maximum ─────────────────
+# Owner guard rule 2026-10-30: G4 (the TX-range guard) is gone; the only
+# validation left is plain value validation against the profile's declared
+# maximum, plus the wire resolution in the builder. The tuned band and the
+# resulting TX frequency are the radio's own refusal.
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("model", "hz", "offset"),
+    ("model", "offset"),
     [
-        pytest.param("IC-705", 146_520_000, 600_000, id="ic705-2m-600k"),
-        pytest.param("IC-9700", 446_000_000, 7_600_000, id="ic9700-70cm"),
-        pytest.param("IC-9700", 1_294_500_000, 20_000_000, id="ic9700-23cm-10mhz-digit"),
+        pytest.param("IC-705", 600_000, id="ic705-600k"),
+        pytest.param("IC-9700", 7_600_000, id="ic9700-70cm"),
+        pytest.param("IC-9700", 20_000_000, id="ic9700-23cm-10mhz-digit"),
     ],
 )
-async def test_in_range_offset_is_sent(transport, model, hz, offset) -> None:
+async def test_offset_within_the_profile_maximum_is_sent(
+    transport, model, offset
+) -> None:
     radio = _radio(transport, model)
     addr = 0xA4 if model == "IC-705" else 0xA2
-    _observe_freq(radio, hz, addr)
     transport.queue_response(_reply(0x0D, addr))
     await radio.set_repeater_offset(offset)
     assert _sent_frames(transport)[-1].command == 0x0D
@@ -213,67 +194,21 @@ async def test_in_range_offset_is_sent(transport, model, hz, offset) -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("model", "hz", "offset", "why"),
+    ("model", "offset"),
     [
-        # G4: TX = RX + shift leaves the TX range (146.52 + 3 MHz > 148).
-        pytest.param(
-            "IC-705", 146_520_000, 3_000_000, "tx-outside-band", id="tx-leaves-range"
-        ),
-        # G4 unit mix-up: 600 kHz entered as Hz-of-MHz scale (600 MHz).
-        pytest.param(
-            "IC-705", 146_520_000, 600_000_000, "unit-mixup", id="unit-mixup"
-        ),
-        # Above the profile band maximum without the 1.2 GHz exception.
-        pytest.param(
-            "IC-9700", 146_520_000, 12_000_000, "band-max", id="above-band-max"
-        ),
-        # Offset is a repeater-band control; refuse on a non-repeater band.
-        pytest.param(
-            "IC-705", 14_074_000, 600_000, "not-a-repeater-band", id="hf-refused"
-        ),
+        # Unit mix-up: 600 kHz entered on the Hz-of-MHz scale (600 MHz).
+        pytest.param("IC-705", 600_000_000, id="ic705-unit-mixup"),
+        # Above the IC-9700 profile maximum (99,999,900 Hz, 23cm).
+        pytest.param("IC-9700", 100_000_000, id="ic9700-above-profile-max"),
     ],
 )
-async def test_out_of_range_offset_is_refused_before_wire_traffic(
-    transport, model, hz, offset, why
+async def test_offset_above_the_profile_maximum_is_refused_before_wire_traffic(
+    transport, model, offset
 ) -> None:
     radio = _radio(transport, model)
-    _observe_freq(radio, hz, 0xA4 if model == "IC-705" else 0xA2)
-    with pytest.raises(ValueError, match=why):
+    with pytest.raises(ValueError, match="profile's declared maximum"):
         await radio.set_repeater_offset(offset)
     assert _sent_frames(transport) == []
-
-
-@pytest.mark.asyncio
-async def test_offset_is_refused_when_the_frequency_is_unknown(transport) -> None:
-    radio = _radio(transport, "IC-705")
-    with pytest.raises(ValueError, match="frequency"):
-        await radio.set_repeater_offset(600_000)
-    assert _sent_frames(transport) == []
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("shift", "offset", "refused"),
-    [
-        pytest.param(0, 3_000_000, False, id="simplex-tx-is-rx"),
-        pytest.param(1, 3_000_000, True, id="plus-out"),
-        pytest.param(2, 3_000_000, False, id="minus-stays-in"),
-    ],
-)
-async def test_tx_range_check_follows_the_shift_direction(
-    transport, shift, offset, refused
-) -> None:
-    radio = _radio(transport, "IC-705")
-    _observe_freq(radio, 147_000_000, 0xA4)
-    _observe_shift(radio, {0: 0x10, 1: 0x12, 2: 0x11}[shift], 0xA4)
-    if refused:
-        with pytest.raises(ValueError, match="tx-outside-band"):
-            await radio.set_repeater_offset(offset)
-        assert _sent_frames(transport) == []
-    else:
-        transport.queue_response(_reply(0x0D, 0xA4))
-        await radio.set_repeater_offset(offset)
-        assert _sent_frames(transport)[-1].command == 0x0D
 
 
 # ── Observation and state ────────────────────────────────────────────
@@ -360,14 +295,28 @@ def test_dispatch_refuses_a_profile_without_the_capability(transport) -> None:
         )
 
 
-def test_dispatch_refuses_a_unit_mixup(transport) -> None:
-    with pytest.raises(ValueError):
+def test_dispatch_refuses_a_non_integer_offset(transport) -> None:
+    """The bind's typed contract: an integer in Hz, nothing looser."""
+    with pytest.raises(ValueError, match="integer"):
         prepare_command_intent(
             _radio(transport, "IC-705"),
             "set_repeater_offset",
-            {"offset_hz": 600_050, "receiver": 0},
+            {"offset_hz": 600_050.5, "receiver": 0},
             source="websocket",
         )
+
+
+def test_profile_offset_maximum_is_the_largest_declared_band_maximum() -> None:
+    """Input validation uses the profile-wide declared maximum; the tuned
+    band is the radio's own refusal (owner guard rule 2026-10-30)."""
+    ic705 = load_rig(IC705_PATH).to_profile()
+    ic9700 = load_rig(IC9700_PATH).to_profile()
+    ic7610 = load_rig(RIGS / "ic7610.toml").to_profile()
+
+    assert ic705.repeater_offset_max_hz == 9_999_900
+    assert ic9700.repeater_offset_max_hz == 99_999_900
+    # No repeater-flagged range declares a maximum: no profile bound.
+    assert ic7610.repeater_offset_max_hz is None
 
 
 def test_profile_band_offset_maxima_are_profile_data() -> None:

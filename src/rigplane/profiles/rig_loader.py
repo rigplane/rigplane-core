@@ -3406,9 +3406,10 @@ def load_rig(path: Path) -> RigConfig:
                 f"{filename}: freq_ranges.ranges[{index}].repeater must be a boolean"
             )
         # MOR-3624: the optional per-range ``max_repeater_offset_hz`` is the
-        # band's duplex-offset ceiling (the 10 MHz BCD digit is valid on a
-        # 1.2 GHz band only). Omitted on a repeater range is a load error —
-        # guard G4 must never silently pass an undeclared ceiling.
+        # band's duplex-offset ceiling as profile data (the 10 MHz BCD digit
+        # is valid on a 1.2 GHz band only). A declared value must be a
+        # positive multiple of 100 within the 3-byte BCD wire maximum, and
+        # only a repeater range may declare one.
         if "max_repeater_offset_hz" in rng:
             value = rng["max_repeater_offset_hz"]
             if (

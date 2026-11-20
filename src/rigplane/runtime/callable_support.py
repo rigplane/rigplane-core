@@ -222,7 +222,7 @@ CALLABLE_RELATIONS: Mapping[str, SupportRelation] = MappingProxyType(
 )
 
 if len(CALLABLE_RELATIONS) != 36:  # pragma: no cover - import-time invariant
-    raise ValueError("callable-support registry must contain exactly 34 operations")
+    raise ValueError("callable-support registry must contain exactly 36 operations")
 if set(CALLABLE_RELATIONS) & EXCLUDED_OPERATIONS:  # pragma: no cover
     raise ValueError("excluded operations must not have callable-support relations")
 
