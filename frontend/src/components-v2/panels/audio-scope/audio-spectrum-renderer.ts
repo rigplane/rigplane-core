@@ -149,7 +149,8 @@ export function audioSpectrumTraceSample(
 }
 
 function chooseGridStep(halfBw: number): number {
-  const steps = [100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000];
+  // 10/20/50 Hz serve the narrowest CW filters (50-150 Hz) on the audio axis.
+  const steps = [10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000];
   for (const s of steps) {
     const n = halfBw / s;
     if (n >= 2 && n <= 8) return s;

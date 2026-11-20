@@ -1427,8 +1427,11 @@ class WebServer:
         pcm_tap_source = self._audio_broadcaster.rx_pcm_tap_source
         if pcm_tap_source is not None:
             tap = WebScopePcmTap(self, sample_rate=pcm_tap_source.sample_rate)
+            # MOR-4604: 4096 points (11.7 Hz bins at 48 kHz) give a 2.4 kHz
+            # SSB passband about 205 native bins, enough for the Audio Scope
+            # trapezoid to read a distinct bin in at least every other column.
             self._audio_scope_source = AudioFftSource(
-                tap, tap.facts, fft_size=2048, sample_rate=pcm_tap_source.sample_rate
+                tap, tap.facts, fft_size=4096, sample_rate=pcm_tap_source.sample_rate
             )
         self._iq_scope_source: IqFftSource | None = None
         self._iq_scope_construction_error: str | None = None

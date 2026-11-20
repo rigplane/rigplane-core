@@ -175,17 +175,21 @@ export function audioScopeProjection(geometry: ScopeGeometry | null, state: Serv
     : null;
 }
 
-/** The full-band follow view every other audio_fft consumer requests. */
+/** The full-band follow view an audio_fft surface requests until the passband is observed. */
 const AUDIO_FFT_FULL_BAND_VIEW: ScopeViewRequest = { follow: 'vfo', spanHz: 48000 };
 
 /**
- * MOR-4604: the AudioScope panel draws audio 0..filterWidth from the carrier
- * across its trapezoid, so it subscribes to exactly that RF window plus a
- * small margin on both sides. The hub grants at most the source's native bin
- * count across the WHOLE view (no upsampling), so the fixed 48 kHz follow
- * view left the passband a handful of stretched columns; a passband-sized
- * view delivers native resolution. While the carrier or the width is
- * unobserved the panel keeps the full-band follow view.
+ * MOR-4604: THE view every audio_fft surface requests (Audio Scope, the
+ * SpectrumPanel in audio mode, the LCD AF scopes). The source only has bins
+ * inside the receiver passband, so the request is that RF window (audio
+ * 0..filterWidth from the carrier, Nyquist-bounded) plus a small margin on
+ * both sides. The hub grants at most the source's native bin count across
+ * the WHOLE view (no upsampling), so a fixed 48 kHz follow view left the
+ * passband a handful of stretched columns; a passband-sized view delivers
+ * native resolution. All surfaces share one wire subscription per source
+ * (ScopeStream keeps the widest surface's request), so they must agree on
+ * the view: one helper, no per-panel views. While the carrier or the width
+ * is unobserved the full-band follow view stays.
  */
 export function audioScopePassbandView(state: ServerState | null, caps: Capabilities | null): ScopeViewRequest {
   const carrier = audioScopeCarrier(state);
