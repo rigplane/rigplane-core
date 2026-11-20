@@ -171,6 +171,17 @@ for (const layout of DESKTOP_LAYOUTS) {
         linkFaultRestored,
         mobileLinkLineRestored,
       });
+
+      // MOR-2241 acceptance, pinned per layout: while the rig link is down the
+      // radio chip leaves 'connected' immediately, the link-fault veil is on
+      // once the state stream has gone stale, and both clear on restore.
+      expect(chipTitleImmediate, `${layout}: chip immediately after the drop`).not.toBe(
+        'Radio ↔ Server: connected',
+      );
+      expect(chipTitleImmediate, `${layout}: chip immediately after the drop`).toBeTruthy();
+      expect(linkFaultSettled, `${layout}: veil once settled`).toBe('radio-silent');
+      expect(linkFaultRestored, `${layout}: veil cleared on restore`).toBeNull();
+      expect(chipTitleRestored, `${layout}: chip after restore`).toBe('Radio ↔ Server: connected');
     } finally {
       await server?.kill();
       await rm(dir, { recursive: true, force: true });
@@ -231,6 +242,13 @@ test('link loss in layout: phone', async ({ page }, testInfo) => {
       linkFaultRestored,
       mobileLinkLineRestored,
     });
+
+    // MOR-2241 acceptance on the phone layout: the radio-link line states the
+    // fault, the veil covers the face once settled, and both clear on restore.
+    expect(mobileLinkLineSettled, 'phone: radio-link line once settled').toBeTruthy();
+    expect(linkFaultSettled, 'phone: veil once settled').toBe('radio-silent');
+    expect(linkFaultRestored, 'phone: veil cleared on restore').toBeNull();
+    expect(mobileLinkLineRestored, 'phone: radio-link line cleared on restore').toBeNull();
   } finally {
     await server?.kill();
     await rm(dir, { recursive: true, force: true });
