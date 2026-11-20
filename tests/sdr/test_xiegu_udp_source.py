@@ -301,7 +301,18 @@ def test_stale_resolver_isolated_across_reopen() -> None:
         assert harness.source.center_freq_hz == 7_183_000
 
 
-def test_transient_resolution_failure_recovers_without_tune_command() -> None:
+def test_transient_resolution_failure_recovers_with_single_tune() -> None:
+    """A failed resolve sends nothing; recovery emits the one deferred VFO write.
+
+    While the peer is unresolvable no tune can go out (mirrors
+    ``test_failed_peer_refresh_blocks_commands_until_retry``). Once the
+    resolver recovers, the settled, stalled source legitimately emits the
+    one deferred VFO write (as ``test_stall_refreshes_peer_before_sending``
+    expects after a stall) -- the old unconditional ``command() is None``
+    after recovery raced the reader's 50 ms loop and flaked (MOR-4214):
+    when the reader iterated before the test's datagrams arrived, that
+    legitimate tune was already in the socket buffer.
+    """
     failed = threading.Event()
     attempts = 0
 
@@ -337,6 +348,11 @@ def test_transient_resolution_failure_recovers_without_tune_command() -> None:
         harness.clock.advance(0.5)
         assert harness.source.stalled is True
         wait_until(lambda: attempts == 2)
+        # Drain the one legitimate recovery tune BEFORE streaming again:
+        # with no datagrams in flight the reader's next iteration must
+        # emit it, so this is deterministic, unlike asserting on whatever
+        # the reader happened to do before our datagrams arrived.
+        assert harness.command(timeout=2.0) == encode_tune(7_175_000)
         harness.send(bytes(768), count=10)
         blocks = harness.wait_for(1)
         assert len(blocks[0].samples) == 1920
