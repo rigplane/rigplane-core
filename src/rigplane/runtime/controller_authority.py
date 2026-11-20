@@ -368,6 +368,38 @@ class ControllerAuthority:
             raise ControllerError("controller_invalid")
         self._controls[ticket.session_id] = ticket
 
+    def control_session_ids(self, ticket: ControllerTicket) -> list[str]:
+        """Registration ids of the live control channels of *ticket*'s side.
+
+        A session's control channels attach with one label each: the
+        primary and every auxiliary control channel (the browser runs as
+        an auxiliary when a native controller holds the primary). An
+        auxiliary data channel (audio, scope) shares the session but
+        carries a different label. This lists the labels of the primary
+        and the session's registered channels, so a targeted
+        notification reaches every control channel of the session; the
+        server's session-queue registry filters out labels that never
+        registered. Empty when the ticket's side has no live primary:
+        the session expired or was released, the control channels
+        detached, or the ticket is the sessionless ambient one.
+        """
+        self.validate(ticket)
+        tickets: list[ControllerTicket] = []
+        if ticket.tx_owner is not None:
+            session = self._sessions.get(ticket.tx_owner)
+            if session is None:
+                return []
+            if session.primary is not None:
+                tickets.append(session.primary)
+            tickets.extend(session.channels)
+        else:
+            if self._primary is not None:
+                tickets.append(self._primary)
+            tickets.extend(self._channels)
+        return list(
+            dict.fromkeys(t.session_id for t in tickets if t.session_id is not None)
+        )
+
     def claim_audio(self, ticket: ControllerTicket, source: object) -> None:
         self.validate(ticket)
         if self._audio is not None and self._audio[1] is not source:
