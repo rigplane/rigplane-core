@@ -181,26 +181,24 @@ const AUDIO_FFT_FULL_BAND_VIEW: ScopeViewRequest = { follow: 'vfo', spanHz: 4800
 /**
  * MOR-4604: THE view every audio_fft surface requests (Audio Scope, the
  * SpectrumPanel in audio mode, the LCD AF scopes). The source only has bins
- * inside the receiver passband, so the request is that RF window (audio
- * 0..filterWidth from the carrier, Nyquist-bounded) plus a small margin on
- * both sides. The hub grants at most the source's native bin count across
- * the WHOLE view (no upsampling), so a fixed 48 kHz follow view left the
- * passband a handful of stretched columns; a passband-sized view delivers
- * native resolution. All surfaces share one wire subscription per source
- * (ScopeStream keeps the widest surface's request), so they must agree on
- * the view: one helper, no per-panel views. While the carrier or the width
- * is unobserved the full-band follow view stays.
+ * inside the receiver passband, and the hub grants at most the source's
+ * native bin count across the WHOLE view (no upsampling), so a 48 kHz view
+ * left the passband a handful of stretched columns. The request is a follow
+ * view as wide as the drawn passband (audio 0..filterWidth, Nyquist-bounded)
+ * plus a 1/8 margin on each side; the audio source anchors a follow window on
+ * the passband itself (`AudioFftSource.resolve_view`), so the server moves it
+ * with every retune, mode or shift and the request changes only when the
+ * filter width does: tuning sends no new subscription. All surfaces share one
+ * wire subscription per source (ScopeStream keeps the widest surface's
+ * request), so they must agree on the view: one helper, no per-panel views.
+ * While the width is unobserved the full-band follow view stays.
  */
 export function audioScopePassbandView(state: ServerState | null, caps: Capabilities | null): ScopeViewRequest {
-  const carrier = audioScopeCarrier(state);
   const width = state !== null && strictlySeen(state, 'main.filterWidth') ? state.main?.filterWidth : null;
-  if (carrier === null || !finiteNumber(width) || width <= 0) return AUDIO_FFT_FULL_BAND_VIEW;
+  if (!finiteNumber(width) || width <= 0) return AUDIO_FFT_FULL_BAND_VIEW;
   const sampleRate = caps?.audioConfig?.sampleRate;
   const drawn = Math.min(width, positiveInteger(sampleRate) ? sampleRate / 2 : 24000);
-  const margin = drawn / 8;
-  const startHz = carrier.lower ? carrier.carrierHz - drawn - margin : carrier.carrierHz - margin;
-  const endHz = carrier.lower ? carrier.carrierHz + margin : carrier.carrierHz + drawn + margin;
-  return { startHz: Math.max(0, Math.floor(startHz)), endHz: Math.ceil(endHz) };
+  return { follow: 'vfo', spanHz: Math.ceil(drawn * 1.25) };
 }
 
 /** A retry token for observed primary audio-mapping facts, independent of UI VFO qualification. */

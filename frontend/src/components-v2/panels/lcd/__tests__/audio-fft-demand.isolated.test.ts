@@ -499,10 +499,10 @@ it.each(['AudioSpectrumPanel', 'AmberScope', 'AmberCockpit'] as const)(
 describe('MOR-4604 audio_fft consumers request the recorded passband view', () => {
   const { replay, frame } = loadAudioPassbandReplay('usb-tone');
 
-  function passbandState(revision: number): ServerState {
+  function passbandState(revision: number, freqHz = replay.case.tunedHz): ServerState {
     const state = radioState(revision);
     state.active = null;
-    state.main = { ...state.main!, freqHz: replay.case.tunedHz, mode: replay.case.mode,
+    state.main = { ...state.main!, freqHz, mode: replay.case.mode,
       filterWidth: replay.case.filterWidthHz };
     state.fieldStatus = Object.fromEntries(['main.freqHz', 'main.mode', 'main.filterWidth', 'main.dataMode'].map(path => [path,
       { storePath: path, observed: true, freshness: 'fresh' as const, availability: 'available' as const,
@@ -543,7 +543,14 @@ describe('MOR-4604 audio_fft consumers request the recorded passband view', () =
     expect(setRadioState(passbandState(1))).toBe(true);
     const subscriptions = () => mocks.channel.sendRaw.mock.calls.map(([message]) => message)
       .filter(message => message.type === 'subscribe' && message.sourceId === 'audio_fft');
-    return { svelte, runtime, subscriptions, teardown: async () => {
+    // A drag: ten observed tuning steps, the filter unchanged.
+    const drag = () => {
+      for (let step = 1; step <= 10; step += 1) {
+        expect(setRadioState(passbandState(1 + step, replay.case.tunedHz + step * 1500))).toBe(true);
+        svelte.flushSync();
+      }
+    };
+    return { svelte, runtime, subscriptions, drag, setRadioState, teardown: async () => {
       await cleanup(); clearCapabilities(); vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.resetModules();
     } };
   }
@@ -554,8 +561,8 @@ describe('MOR-4604 audio_fft consumers request the recorded passband view', () =
     AmberCockpit: async () => (await import('../AmberCockpit.svelte')).default,
   } as const;
 
-  it.each(Object.keys(components) as (keyof typeof components)[])('%s alone sends the recorded passband request', async name => {
-    const { svelte, subscriptions, teardown } = await harness(() => 400);
+  it.each(Object.keys(components) as (keyof typeof components)[])('%s alone sends the recorded passband request and none while tuning', async name => {
+    const { svelte, subscriptions, drag, teardown } = await harness(() => 400);
     const target = document.createElement('div'); document.body.append(target);
     const component = svelte.mount(await components[name](), { target });
     try {
@@ -564,6 +571,11 @@ describe('MOR-4604 audio_fft consumers request the recorded passband view', () =
       const { width: _sent, ...sent } = subscriptions().at(-1)!;
       const { width: _recorded, ...recorded } = replay.case.subscribe;
       expect(sent).toEqual(recorded);
+      // The server moves the passband window with the VFO: a drag publishes
+      // no new demand.
+      const before = subscriptions().length;
+      drag(); await Promise.resolve(); svelte.flushSync();
+      expect(subscriptions()).toHaveLength(before);
     } finally {
       await svelte.unmount(component); target.remove(); await teardown();
     }
@@ -571,7 +583,7 @@ describe('MOR-4604 audio_fft consumers request the recorded passband view', () =
 
   it('the wider cockpit beside the sidebar Audio Scope keeps the passband grant at native resolution', async () => {
     // LcdLayout mounts both; the cockpit strip is the wider surface.
-    const { svelte, runtime, subscriptions, teardown } = await harness(
+    const { svelte, runtime, subscriptions, drag, setRadioState, teardown } = await harness(
       element => element.closest('.audio-spectrum-panel') ? 400 : 800);
     const targets = [document.createElement('div'), document.createElement('div')];
     for (const target of targets) document.body.append(target);
@@ -581,6 +593,10 @@ describe('MOR-4604 audio_fft consumers request the recorded passband view', () =
       svelte.flushSync(); await Promise.resolve(); svelte.flushSync();
       // The widest surface's width with the shared view: exactly the recorded request.
       await vi.waitFor(() => expect(subscriptions().at(-1)).toEqual(replay.case.subscribe));
+      const settled = subscriptions().length;
+      drag(); await Promise.resolve(); svelte.flushSync();
+      expect(subscriptions()).toHaveLength(settled);
+      expect(setRadioState(passbandState(20))).toBe(true); svelte.flushSync();
       for (const message of replay.messages) {
         mocks.channel.message(message as unknown as import('$lib/types/protocol').WsIncoming);
       }

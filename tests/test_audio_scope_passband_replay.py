@@ -1,7 +1,7 @@
 """Audio Scope passband grant, produced by the real server path (MOR-4604).
 
-The browser's audio_fft surfaces all subscribe to the receiver passband plus
-a small margin (``audioScopePassbandView`` in the frontend scope adapter).
+The browser's audio_fft surfaces all subscribe to a follow view as wide as
+the receiver passband plus a small margin (``audioScopePassbandView`` in the frontend scope adapter).
 This test sends that exact subscribe document through the real
 ``ScopeHandler`` and ``ScopeHub`` into the ``AudioFftSource`` the production
 ``WebServer`` builds for a PCM radio (its own FFT size, its own PCM tap), feeds
@@ -55,15 +55,15 @@ TUNED_HZ = 14_100_000
 FILTER_HZ = 2400
 TONE_HZ = 1000
 SAMPLE_RATE = 48_000
-# What the browser sends for USB 14.100 MHz, 2400 Hz filter: the passband
-# 0..2400 Hz above the carrier plus a 300 Hz margin on each side, at the
-# widest surface's backing width (an 800-px audio SpectrumPanel beside a
-# 400-px Audio Scope).
+# What the browser sends for a 2400 Hz filter: a follow view as wide as the
+# passband plus a 300 Hz margin on each side, which the audio source anchors
+# on the passband (so tuning never re-subscribes), at the widest surface's
+# backing width (an 800-px audio SpectrumPanel beside a 400-px Audio Scope).
 SUBSCRIBE = {
     "type": "subscribe",
     "sourceId": "audio_fft",
     "receiver": None,
-    "view": {"startHz": 14_099_700, "endHz": 14_102_700},
+    "view": {"follow": "vfo", "spanHz": 3000},
     "width": 800,
     "maxFps": 20,
 }
@@ -161,3 +161,39 @@ async def test_passband_grant_gives_the_trapezoid_native_resolution() -> None:
     peak = int(np.argmax(np.frombuffer(frame.pixels, dtype=np.uint8)))
     peak_hz = frame.view_start_hz + (peak + 0.5) * span / frame.width - TUNED_HZ
     assert abs(peak_hz - TONE_HZ) <= 2 * span / frame.width
+
+
+async def test_retune_moves_the_follow_window_without_a_new_subscription() -> None:
+    """The browser never re-subscribes while tuning: the source re-anchors."""
+    server = WebServer(
+        _RelayRadio(sample_rate=SAMPLE_RATE), WebConfig(radio_model="ic7300")
+    )
+    _seed_audio_facts(server, mode="USB", frequency=TUNED_HZ, width=FILTER_HZ)
+    socket = _Socket()
+    handler = ScopeHandler(socket, server)
+    task = asyncio.create_task(handler.run())
+    pcm = (
+        (8000 * np.sin(2 * np.pi * TONE_HZ * np.arange(8192) / SAMPLE_RATE))
+        .astype("<i2")
+        .tobytes()
+    )
+    clock = ManualClock(1)
+    try:
+        await await_until(lambda: handler in server._scope_handlers)
+        await socket.incoming.put(json.dumps(SUBSCRIBE))
+        await await_until(lambda: len(socket.text) == 1)
+        with patch.object(fft_scope, "time", SimpleNamespace(monotonic=clock)):
+            server._audio_broadcaster.taps(STAGE_RX_POST_DSP).feed(pcm)
+            await await_until(lambda: len(socket.binary) == 1)
+            _seed_audio_facts(
+                server, mode="USB", frequency=TUNED_HZ + 5000, width=FILTER_HZ
+            )
+            clock.advance(1)
+            server._audio_broadcaster.taps(STAGE_RX_POST_DSP).feed(pcm)
+            await await_until(lambda: len(socket.binary) == 2)
+        first, second = (decode_scope_frame_v2(wire) for wire in socket.binary)
+        assert (first.view_start_hz, first.view_end_hz) == (14_099_700, 14_102_700)
+        assert (second.view_start_hz, second.view_end_hz) == (14_104_700, 14_107_700)
+    finally:
+        await socket.incoming.put(None)
+        await task

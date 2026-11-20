@@ -95,10 +95,10 @@ describe('LCD leaves consume ScopeStream directly', () => {
         storePath: 'receiver.main.active.freq_mode.filter_width' };
       radio.current = usable; flushSync();
       expect(publish).toHaveBeenCalledTimes(2);
-      // MOR-4604: observed passband facts turn the request into the shared
-      // audio_fft passband view (USB 2400 Hz plus a 300 Hz margin each side).
+      // MOR-4604: an observed filter width turns the request into the shared
+      // audio_fft passband view (2400 Hz plus a 300 Hz margin each side).
       expect(publish.mock.lastCall?.[0]).toMatchObject({ receiver: null,
-        view: { startHz: 14_199_700, endHz: 14_202_700 } });
+        view: { follow: 'vfo', spanHz: 3000 } });
       stream.handleMessage({ type: 'error', message: 'same facts rejected' }); flushSync();
       radio.current = { ...radio.current! }; flushSync();
       expect(publish).toHaveBeenCalledTimes(2);

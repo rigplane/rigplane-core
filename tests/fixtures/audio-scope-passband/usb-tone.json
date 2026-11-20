@@ -10,8 +10,8 @@
       "sourceId": "audio_fft",
       "receiver": null,
       "view": {
-        "startHz": 14099700,
-        "endHz": 14102700
+        "follow": "vfo",
+        "spanHz": 3000
       },
       "width": 800,
       "maxFps": 20
@@ -23,8 +23,8 @@
       "sourceId": "audio_fft",
       "receiver": null,
       "view": {
-        "startHz": 14099700,
-        "endHz": 14102700
+        "startHz": 14099700.0,
+        "endHz": 14102700.0
       },
       "coverage": {
         "startHz": 14100000,
@@ -38,8 +38,8 @@
       "sourceId": "audio_fft",
       "receiver": null,
       "view": {
-        "startHz": 14099700,
-        "endHz": 14102700
+        "startHz": 14099700.0,
+        "endHz": 14102700.0
       },
       "coverage": {
         "startHz": 14100000.0,

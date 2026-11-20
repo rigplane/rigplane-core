@@ -162,17 +162,17 @@ describe('AudioSpectrumPanel passband view subscription (MOR-4604)', () => {
     await vi.waitFor(() => expect(audioSubscribe()).toBeDefined());
   }
 
-  it('requests the drawn USB passband plus margin instead of the 48 kHz view', async () => {
+  it('requests the drawn passband width plus margin instead of the 48 kHz view', async () => {
     patchAudioState({ filterWidth: 2400 });
     await mountAndSubscribe();
-    // IC-7300 capture: USB at 14188000; 2400 Hz drawn, 300 Hz margin each side.
-    expect(audioSubscribe()?.['view']).toEqual({ startHz: 14187700, endHz: 14190700 });
+    // 2400 Hz drawn, 300 Hz margin each side; the source anchors it on the passband.
+    expect(audioSubscribe()?.['view']).toEqual({ follow: 'vfo', spanHz: 3000 });
   });
 
-  it('mirrors the window below the carrier for LSB', async () => {
+  it('sends the same request for LSB: the server mirrors the anchor', async () => {
     patchAudioState({ mode: 'LSB', filterWidth: 2400 });
     await mountAndSubscribe();
-    expect(audioSubscribe()?.['view']).toEqual({ startHz: 14185300, endHz: 14188300 });
+    expect(audioSubscribe()?.['view']).toEqual({ follow: 'vfo', spanHz: 3000 });
   });
 
   it('keeps the 48 kHz follow view while the filter width is unobserved', async () => {
