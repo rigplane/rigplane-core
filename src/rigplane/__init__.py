@@ -24,7 +24,7 @@ _configure_diagnostic_logging()
 del _configure_diagnostic_logging
 
 from importlib.metadata import version as _pkg_version  # noqa: E402
-from typing import Any  # noqa: E402
+from typing import TYPE_CHECKING, Any  # noqa: E402
 
 __version__ = _pkg_version("rigplane")
 
@@ -99,6 +99,30 @@ from .types import (  # noqa: F401, E402
     RepeaterShiftDirection,
 )
 
+# Static types for the lazy WebRTC wire contracts (MOR-272): type checkers
+# see the real classes; at runtime they stay lazy (``_LAZY_MAP`` below).
+if TYPE_CHECKING:
+    from .web.channel_attach import (  # noqa: F401, TID251
+        ChannelAttachedAck,
+        ChannelKind,
+        ClientChannelParams,
+    )
+    from .web.transport.ice_gathering import (  # noqa: F401, TID251
+        GATHER_TIMEOUT_S,
+        IceGatheringPolicy,
+        IceServer,
+        apply_ice_gathering_policy,
+        install_ice_gathering_policy,
+    )
+    from .web.transport.webrtc_contract import (  # noqa: F401, TID251
+        IceCandidateInit,
+        WebRtcAnswer,
+        WebRtcIceCandidate,
+        WebRtcOffer,
+        WebRtcRequestError,
+        WebRtcTransportStatus,
+    )
+
 # === Tier 2 — lazy via PEP 562 ===
 #
 # Names below are still importable as ``from rigplane import X`` and
@@ -115,6 +139,39 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
     ),
     # --- LAN radio liveness probe (MOR-3669) ---
     "probe_lan_radio": ("rigplane.backends.discovery", "probe_lan_radio"),
+    # --- WebRTC wire contracts for out-of-process offerers (MOR-272) ---
+    "ClientChannelParams": ("rigplane.web.channel_attach", "ClientChannelParams"),
+    "ChannelAttachedAck": ("rigplane.web.channel_attach", "ChannelAttachedAck"),
+    "ChannelKind": ("rigplane.web.channel_attach", "ChannelKind"),
+    "IceServer": ("rigplane.web.transport.ice_gathering", "IceServer"),
+    "IceGatheringPolicy": (
+        "rigplane.web.transport.ice_gathering",
+        "IceGatheringPolicy",
+    ),
+    "GATHER_TIMEOUT_S": ("rigplane.web.transport.ice_gathering", "GATHER_TIMEOUT_S"),
+    "install_ice_gathering_policy": (
+        "rigplane.web.transport.ice_gathering",
+        "install_ice_gathering_policy",
+    ),
+    "apply_ice_gathering_policy": (
+        "rigplane.web.transport.ice_gathering",
+        "apply_ice_gathering_policy",
+    ),
+    "WebRtcOffer": ("rigplane.web.transport.webrtc_contract", "WebRtcOffer"),
+    "WebRtcAnswer": ("rigplane.web.transport.webrtc_contract", "WebRtcAnswer"),
+    "WebRtcIceCandidate": (
+        "rigplane.web.transport.webrtc_contract",
+        "WebRtcIceCandidate",
+    ),
+    "WebRtcRequestError": (
+        "rigplane.web.transport.webrtc_contract",
+        "WebRtcRequestError",
+    ),
+    "WebRtcTransportStatus": (
+        "rigplane.web.transport.webrtc_contract",
+        "WebRtcTransportStatus",
+    ),
+    "IceCandidateInit": ("rigplane.web.transport.webrtc_contract", "IceCandidateInit"),
     # --- Backward-compat radio facades ---
     "IcomRadio": ("rigplane.runtime.radio", "IcomRadio"),
     "AudioRecoveryState": ("rigplane.runtime.radio", "AudioRecoveryState"),
@@ -369,4 +426,19 @@ __all__ = [
     "Limiter",
     "DspPipeline",
     "UsbAudioDriver",
+    # --- Tier 2 (lazy): WebRTC wire contracts (MOR-272) ---
+    "ClientChannelParams",
+    "ChannelAttachedAck",
+    "ChannelKind",
+    "IceServer",
+    "IceGatheringPolicy",
+    "GATHER_TIMEOUT_S",
+    "install_ice_gathering_policy",
+    "apply_ice_gathering_policy",
+    "WebRtcOffer",
+    "WebRtcAnswer",
+    "WebRtcIceCandidate",
+    "WebRtcRequestError",
+    "WebRtcTransportStatus",
+    "IceCandidateInit",
 ]
