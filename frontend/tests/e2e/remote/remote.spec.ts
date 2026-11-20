@@ -9,6 +9,7 @@ import {
   installPlaybackWitness,
   openRemoteUi,
   acquireControllerKey,
+  countManagedCommandPosts,
   parseRelayedAnswer,
   playbackBuffers,
   setStationFrequency,
@@ -19,7 +20,6 @@ import {
   stationState,
   supportBundleLogCount,
   trackDestinations,
-  trackSentTraffic,
   type RelayedAnswer,
 } from './station';
 
@@ -161,7 +161,7 @@ test.describe('phone layout', () => {
 // momentary = runtime.remoteController = false): a click keys, UNKEY unkeys.
 test('L4: desktop PTT keys the simulator, UNKEY unkeys it within 1 s and RX audio resumes', async ({ page }) => {
   await installPlaybackWitness(page);
-  const sent = trackSentTraffic(page);
+  const managedPosts = countManagedCommandPosts(page);
   await openRemoteUi(page);
   await expectControlLink();
 
@@ -185,9 +185,8 @@ test('L4: desktop PTT keys the simulator, UNKEY unkeys it within 1 s and RX audi
   await expect
     .poll(async () => (await simState()).tx_audio_signal_frames, { timeout: 15_000 })
     .toBeGreaterThan(signalFramesBefore);
-  // The traffic witness saw this transmission (its positive control for L5).
-  expect(sent().managedCommandPosts).toBeGreaterThan(0);
-  expect(sent().audioStarts).toContain('tx');
+  // The POST counter saw this transmission (its positive control for L5).
+  expect(managedPosts()).toBeGreaterThan(0);
   // No receive audio plays while the radio is keyed: across a fresh interval
   // in which more TX frames reach the simulator, no receive buffer is
   // scheduled for playback.
@@ -224,20 +223,19 @@ const MIC_REFUSAL_LOG = 'browser microphone capture rejected: category=NotAllowe
 
 test('L5: a refused microphone never keys, stays on screen and reaches the support bundle', async ({ page }) => {
   await installPlaybackWitness(page);
-  const sent = trackSentTraffic(page);
+  const managedPosts = countManagedCommandPosts(page);
   await openRemoteUi(page, 'refuse');
   await expectControlLink();
 
   // RX audio is live: the page reports to the station on the audio socket.
   await page.getByTestId('rx-audio-monitor-live').click();
   await expect.poll(() => playbackBuffers(page), { timeout: 15_000 }).toBeGreaterThan(0);
-  // The traffic witness sees this page's audio socket (positive control).
-  expect(sent().audioStarts).toContain('rx');
 
   const key = page.getByTestId('rx-tx-key');
   await expect(key).toBeEnabled();
   const bundleBefore = await supportBundleLogCount(MIC_REFUSAL_LOG);
   const journalBefore = (await simState()).ptt_transitions.length;
+  const signalFramesBefore = (await simState()).tx_audio_signal_frames;
 
   await key.click();
 
@@ -251,14 +249,14 @@ test('L5: a refused microphone never keys, stays on screen and reaches the suppo
   const audioChip = page.getByTestId('audio-chip');
   await expect(audioChip).toHaveAttribute('title', 'Audio connection failed');
 
-  // Not half-keyed: no transmit request and no TX audio start left the page;
-  // the simulator was never keyed; the station's managed TX stays in receive
-  // with PTT observed off; the key is not shown pressed.
-  expect(sent().managedCommandPosts).toBe(0);
-  expect(sent().audioStarts.filter((direction) => direction === 'tx')).toEqual([]);
+  // Not half-keyed: no transmit request left the page; the simulator was
+  // never keyed and received no TX audio; the station's managed TX stays in
+  // receive with PTT observed off; the key is not shown pressed.
+  expect(managedPosts()).toBe(0);
   const sim = await simState();
   expect(sim.ptt_on).toBe(false);
   expect(sim.ptt_transitions).toHaveLength(journalBefore);
+  expect(sim.tx_audio_signal_frames).toBe(signalFramesBefore);
   const managed = await stationManagedTransmit();
   expect(managed.txObservation.observedPtt).toBe('off');
   expect(managed.managedTransmit).toMatchObject({ status: 'available', intent: { kind: 'rx' } });

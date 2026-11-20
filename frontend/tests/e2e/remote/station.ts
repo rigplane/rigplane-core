@@ -290,40 +290,18 @@ export async function playbackBuffers(page: Page): Promise<number> {
   );
 }
 
-/** What the page sent so far: the `direction` of every `audio_start` frame
- * on its sockets, and how many POSTs reached the managed-transmit command
- * endpoint (`ManagedTransmitClient.command`). The audio_start literal has no
- * producer type (AudioManager builds it inline), so the rows pin this
- * witness with positive controls: L4 sees its own `tx` start and its
- * transmit POST, L5 its own `rx` start. Install before navigation:
- * `page.on('websocket')` sees only sockets opened after it. */
-export interface SentTraffic {
-  audioStarts: string[];
-  managedCommandPosts: number;
-}
-
-export function trackSentTraffic(page: Page): () => SentTraffic {
-  const traffic: SentTraffic = { audioStarts: [], managedCommandPosts: 0 };
-  page.on('websocket', (socket) => {
-    socket.on('framesent', ({ payload }) => {
-      if (typeof payload !== 'string') return;
-      let frame: unknown;
-      try {
-        frame = JSON.parse(payload);
-      } catch {
-        return;
-      }
-      if (typeof frame !== 'object' || frame === null) return;
-      const { type, direction } = frame as { type?: unknown; direction?: unknown };
-      if (type === 'audio_start') traffic.audioStarts.push(String(direction));
-    });
-  });
+/** How many POSTs the page sent to the managed-transmit command endpoint
+ * (`ManagedTransmitClient.command`, the only path that asks the station to
+ * transmit from the desktop key), counted by path only. L4 sees its own
+ * transmit POST, which pins this counter for L5. */
+export function countManagedCommandPosts(page: Page): () => number {
+  let posts = 0;
   page.on('request', (request) => {
     if (request.method() !== 'POST') return;
     if (new URL(request.url()).pathname !== '/api/v1/managed-transmit/command') return;
-    traffic.managedCommandPosts += 1;
+    posts += 1;
   });
-  return () => traffic;
+  return () => posts;
 }
 
 /** The frequency readout renders MHz.kHz.Hz digit groups; compare digits.
