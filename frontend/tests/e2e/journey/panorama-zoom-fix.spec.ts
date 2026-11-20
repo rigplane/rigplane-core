@@ -89,10 +89,29 @@ test('IC-7610: FIX marker, axis and passband use the displayed window after a CE
     await page.getByRole('button', { name: 'More scope controls' }).first().click();
     await page.getByTestId('scope-zoom-in').first().click();
     await page.keyboard.press('Escape');
+    // The CENTER zoom's one radio write is the span preset (0x15), and it
+    // is issued only after the subscription update reaches the server —
+    // under load that trails the click by more than the gap between the
+    // click and a bare count. Merge-queue run 44739144536 read the
+    // baseline one receipt early, the zoom's own 0x15 landed after it, and
+    // the write-count assertion below reported that legitimate write as a
+    // phantom third one (MOR-4214). The baseline is taken only once that
+    // write has landed; what the FIX window may write is pinned exactly
+    // further down instead of being inferred from a count.
+    await expect.poll(async () => (await scopeWriteReceipts(evidence)).filter(
+      (receipt) => receipt.sub === 0x15).length).toBeGreaterThan(0);
     const writesBeforeFix = (await scopeWriteReceipts(evidence)).length;
     await page.getByRole('radio', { name: 'FIX' }).first().click();
     await expect.poll(async () => (await scopeWriteReceipts(evidence)).filter(
       (receipt) => receipt.sub === 0x14).at(-1)?.data[1]).toBe(1);
+    // Only frames the server pumped AFTER this write was observed are known
+    // to carry the FIX window: the mode readback repaints the axis with
+    // absolute labels one or more frames BEFORE the first post-write frame
+    // arrives, so matching the axis against "the last received frame" in
+    // that moment pins the OLD CENTER window (run 44770631929 read
+    // [14.225, 14.275] that way and every later assertion ran against the
+    // wrong window).
+    const framesAtFixWrite = frames.length;
     const ticks = page.locator('.freq-axis .tick');
     await expect(ticks).toHaveCount(5);
     // Both edge labels in ONE read: two separate reads can straddle a
@@ -100,15 +119,16 @@ test('IC-7610: FIX marker, axis and passband use the displayed window after a CE
     const windowOf = () => ticks.evaluateAll((elements) =>
       [Number(elements[0]?.textContent), Number(elements.at(-1)?.textContent)]);
     // FIX presentation (absolute tick labels) switches on with the scope-mode
-    // reading, one or more repaints BEFORE the view drops the CENTER zoom's
-    // leftover crop: for that moment the axis reads the old ±25k crop with
-    // absolute labels. So "absolute labels" alone is not "the fixed window is
-    // displayed". With no crop requested in FIX the displayed window is the
-    // granted frame window itself — wait for exactly that.
+    // reading, BEFORE the first post-write frame lands: for that moment the
+    // axis reads the old ±25k window with absolute labels. So "absolute
+    // labels" alone is not "the fixed window is displayed". With no crop
+    // requested in FIX the displayed window is the granted frame window
+    // itself — wait for exactly that, on a post-write frame.
     await expect.poll(async () => (await ticks.first().textContent()) ?? '').toMatch(/^\d{2}\.\d{3}$/);
     await expect.poll(async () => {
-      const granted = frames.at(-1)!.view.map((hz) => Number((hz / 1e6).toFixed(3)));
-      return (await windowOf()).join('..') === granted.join('..');
+      const granted = frames.slice(framesAtFixWrite).at(-1)?.view
+        .map((hz) => Number((hz / 1e6).toFixed(3)));
+      return granted !== undefined && (await windowOf()).join('..') === granted.join('..');
     }).toBe(true);
     const [start, end] = await windowOf();
     expect(end).toBeGreaterThan(start);
@@ -119,7 +139,14 @@ test('IC-7610: FIX marker, axis and passband use the displayed window after a CE
     // on the mode change is the item-4 defect, covered by the passband spec.
     // A ZOOM inside FIX is a client crop: the window narrows and NOTHING is
     // written to the radio — no mode flip, no span, no fixed-edge rewrite
-    // (owner rules).
+    // (owner rules). MOR-4214: the crop also has to SURVIVE a stream-mode
+    // dropout — a reconnect clears the frame context's mode while the
+    // readback (and the radio) stay FIX, and with `fixed` keyed on the
+    // frame mode the panel read that moment as "back in CENTER", wiped the
+    // crop and repainted the follow window from this CENTER zoom's leftover
+    // requested width ([14.225, 14.275] — run 44770631929 timed out here).
+    // The panel now keys the radio-owned window on the observed readback;
+    // this poll asserts the crop actually narrows the displayed window.
     await page.getByRole('button', { name: 'More scope controls' }).first().click();
     await page.getByTestId('scope-zoom-in').first().click();
     await page.keyboard.press('Escape');
@@ -128,7 +155,17 @@ test('IC-7610: FIX marker, axis and passband use the displayed window after a CE
     expect(cropEnd - cropStart).toBeCloseTo((end - start) / 2, 2);
     expect(cropStart).toBeGreaterThanOrEqual(start - 0.001);
     expect(cropEnd).toBeLessThanOrEqual(end + 0.001);
-    expect((await scopeWriteReceipts(evidence)).length).toBe(writesBeforeFix + 1);
+    // Entering FIX writes EXACTLY the scope mode — 0x14 with mode 1, the
+    // user's gesture — and nothing else: no second span write, no
+    // fixed-edge rewrite, no output re-assert, and the ZOOM inside FIX
+    // writes nothing at all (owner rules). The exact ordered set, not a
+    // count: a count cannot name an intruding write, and it was a count
+    // reading an in-flight write as an extra one that failed run
+    // 44739144536.
+    const inFixWrites = (await scopeWriteReceipts(evidence)).slice(writesBeforeFix);
+    expect(inFixWrites.map(({ sub, data }) => ({ sub, data }))).toEqual([
+      { sub: 0x14, data: [0, 1] },
+    ]);
     // Back to CTR (a user gesture: the mode-0 write is correct). The FIX
     // crop pin survives while the VFO is inside it (MOR-4387 pin
     // semantics), so the marker returns with the passband tuple's recapture

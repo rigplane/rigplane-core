@@ -20,7 +20,7 @@
     formatSpanHz, SPEED_LABELS, SPEED_STATIC_LABEL, MODE_BUTTONS,
     toggleLayer as toggleLayerFn, isLayerVisible,
     isSpanApplicable, isEdgeApplicable,
-    clampSpeed, clampBrt, stepRef,
+    clampSpeed, clampBrt, stepRef, type ScopeRefOffset,
   } from './spectrum-toolbar-logic';
   import { acceptedBoolean, acceptedLevel, acceptedNumber } from '../../semantic/accepted-scope-values';
 
@@ -34,6 +34,13 @@
     enableAvg?: boolean;
     enablePeakHold?: boolean;
     enableSmooth?: boolean;
+    /** MOR-4605: AUTO waterfall noise floor — a client-side view option
+     * (same category as BRT/SMTH), default OFF until the owner's bench look. */
+    autoFloor?: boolean;
+    /** MOR-4605: while AUTO is on, REF steps THIS client-side offset from
+     * the tracked floor (dB, −30..30 like BRT) instead of the radio REF;
+     * owned by the panel, which feeds it to the waterfall renderer only. */
+    autoFloorRef?: number;
     brtLevel?: number;
     colorScheme?: ColorSchemeName;
     fullscreen?: boolean;
@@ -45,7 +52,10 @@
     hideSourceControls?: boolean;
     hideScopeControls?: boolean;
     hideAutoStepToggle?: boolean;
-    scopeControls?: Snippet<[allowBare?: boolean, screenGroup?: Snippet, rowTail?: Snippet, moreAsSheet?: boolean]>;
+    scopeControls?: Snippet<[
+      allowBare?: boolean, screenGroup?: Snippet, rowTail?: Snippet, moreAsSheet?: boolean,
+      refOffset?: ScopeRefOffset,
+    ]>;
     /** MOR-2545 PR2 — the compact scope-display indicator, mounted at the
      *  row's right end (the standalone status line row is gone). Named
      * `scopeStatusIndicator` so no source pin can confuse it with the dead
@@ -57,6 +67,8 @@
     enableAvg = $bindable(true),
     enablePeakHold = $bindable(true),
     enableSmooth = $bindable(true),
+    autoFloor = $bindable(false),
+    autoFloorRef = $bindable(0),
     brtLevel = $bindable(0),
     colorScheme = $bindable('classic' as ColorSchemeName),
     fullscreen = $bindable(false),
@@ -280,13 +292,35 @@
 
   /* MOR-3694: REF steps on the 5 dB grid against the DECLARED range —
    *  from an off-grid or half-dB readback the value snaps to the
-   *  neighbouring grid point and never leaves the declared range. */
+   *  neighbouring grid point and never leaves the declared range.
+   *  MOR-4605: while AUTO is on, REF is the waterfall's offset from the
+   *  tracked floor instead — a client-side step on the same ±30 dB display
+   *  range BRT uses, never a scope intent: a radio REF write shifts the
+   *  wire data, which the floor tracker subtracts again, so only the
+   *  local offset changes what the user asked for. */
   function changeRef(delta: -5 | 0 | 5) {
+    if (autoFloor) {
+      autoFloorRef = delta === 0 ? 0 : clampBrt(autoFloorRef, delta);
+      return;
+    }
     if (scopeRef === null || scopeRefRange === null) return;
     scopeHandlers.onRefChange(
       delta === 0 ? 0 : stepRef(scopeRef, delta === -5 ? -1 : 1, scopeRefRange),
     );
   }
+
+  /* While AUTO is on the REF slot shows the local offset from the tracked
+   * floor (live without any radio REF readback); otherwise the radio's own
+   * readback, EMPTY while unread (MOR-2658). */
+  let refText = $derived(autoFloor
+    ? `${autoFloorRef > 0 ? '+' : ''}${autoFloorRef}`
+    : scopeRef === null ? '' : `${scopeRef > 0 ? '+' : ''}${scopeRef}`);
+  let refDisabled = $derived(!autoFloor && scopeRef === null);
+  /* The hosted semantic REF slot follows the same AUTO mode and the same
+   * local offset as the unhosted keys above (one binding, two faces). */
+  let hostedRefOffset = $derived<ScopeRefOffset | undefined>(autoFloor
+    ? { db: autoFloorRef, step: (delta) => changeRef(delta) }
+    : undefined);
 
   function toggleDual() {
     if (scopeDual === null) return;
@@ -386,6 +420,13 @@
     <button type="button" class="scope-step-key" onclick={() => (brtLevel = clampBrt(brtLevel, 5))}
       aria-label="Increase brightness">+</button>
   </div>
+  <!-- MOR-4605: AUTO waterfall noise floor — client-side, beside the BRT
+       offset in the More screen group. -->
+  <div class="toolbar-group">
+    <button type="button" class="scope-flat-key" data-lit={autoFloor} aria-pressed={autoFloor}
+      data-testid="scope-auto-floor-toggle"
+      onclick={() => (autoFloor = !autoFloor)} title="Automatic waterfall noise floor">AUTO</button>
+  </div>
   <div class="toolbar-group">
     <select class="scope-capsule-select" bind:value={colorScheme} title="Waterfall palette">
       <option value="classic">Classic</option>
@@ -440,7 +481,7 @@
          the screen group (2nd arg, into More) and the row tail (3rd arg,
          before [MORE ▾]). No separators, no cyan wash; token ground. -->
     <div class="semantic-scope-controls-host">
-      {@render scopeControls(undefined, screenGroup, rowTail)}
+      {@render scopeControls(undefined, screenGroup, rowTail, undefined, hostedRefOffset)}
     </div>
   {:else}
   <!-- Group A: Tuning (no wash) — the UNHOSTED faces only (v1 desktop,
@@ -547,11 +588,19 @@
       <div class="toolbar-sub-separator hide-mobile"></div>
       <div class="toolbar-group hide-mobile">
         <span class="toolbar-label">REF</span>
-        <button class="toolbar-btn small" disabled={scopeRef === null} onclick={() => changeRef(-5)}>−</button>
+        <button class="toolbar-btn small" disabled={refDisabled} onclick={() => changeRef(-5)}>−</button>
         <!-- MOR-2658: an unread REF renders EMPTY in the reserved `.ref-value`
-             slot — never a '—'. -->
-        <span class="toolbar-value ref-value">{scopeRef === null ? '' : `${scopeRef > 0 ? '+' : ''}${scopeRef}`}</span>
-        <button class="toolbar-btn small" disabled={scopeRef === null} onclick={() => changeRef(5)}>+</button>
+             slot — never a '—'. MOR-4605: while AUTO is on the slot carries
+             the local offset from the tracked floor, not the radio readback. -->
+        <span class="toolbar-value ref-value">{refText}</span>
+        <button class="toolbar-btn small" disabled={refDisabled} onclick={() => changeRef(5)}>+</button>
+        <!-- MOR-4605: AUTO tracks the waterfall noise floor; REF is then an
+             offset from that floor, adjusted client-side. View option,
+             never a scope intent — it stays live with REF unread. -->
+        <button type="button" class="toolbar-btn small" class:active={autoFloor} aria-pressed={autoFloor}
+          data-testid="scope-auto-floor-toggle"
+          onclick={() => (autoFloor = !autoFloor)}
+          title="Automatic waterfall noise floor">AUTO</button>
       </div>
       {#if !hideSourceControls && hasDualReceiver()}
         <div class="toolbar-sub-separator"></div>
@@ -610,12 +659,19 @@
           {#if hasCapability('scope') && !hideScopeControls}
             <div class="gear-row">
               <span class="gear-label">REF</span>
-              <button class="gear-btn" disabled={scopeRef === null} onclick={() => changeRef(-5)} aria-label="Decrease reference">−</button>
+              <button class="gear-btn" disabled={refDisabled} onclick={() => changeRef(-5)} aria-label="Decrease reference">−</button>
               <!-- MOR-2658: an unread REF renders EMPTY in the reserved
-                   `.gear-value` slot — never a '—'. -->
-              <span class="gear-value">{scopeRef === null ? '' : `${scopeRef > 0 ? '+' : ''}${scopeRef}`}</span>
-              <button class="gear-btn" disabled={scopeRef === null} onclick={() => changeRef(5)} aria-label="Increase reference">+</button>
-              <button class="gear-btn gear-btn-zero" disabled={scopeRef === null} onclick={() => changeRef(0)} aria-label="Reset reference">0</button>
+                   `.gear-value` slot — never a '—'. MOR-4605: while AUTO is
+                   on the slot carries the local offset from the tracked
+                   floor, not the radio readback. -->
+              <span class="gear-value">{refText}</span>
+              <button class="gear-btn" disabled={refDisabled} onclick={() => changeRef(5)} aria-label="Increase reference">+</button>
+              <button class="gear-btn gear-btn-zero" disabled={refDisabled} onclick={() => changeRef(0)} aria-label="Reset reference">0</button>
+              <!-- MOR-4605: the same client-side AUTO floor toggle as the
+                   desktop REF cluster. -->
+              <button type="button" class="gear-btn" class:active={autoFloor} aria-pressed={autoFloor}
+                data-testid="scope-auto-floor-toggle-mobile"
+                onclick={() => (autoFloor = !autoFloor)} aria-label="Automatic waterfall noise floor">AUTO</button>
             </div>
           {/if}
         </div>
@@ -1224,6 +1280,13 @@
     background: rgba(0, 212, 255, 0.1);
     border-color: rgba(0, 212, 255, 0.4);
     color: #00d4ff;
+  }
+
+  /* MOR-4605: the latched AUTO state mirrors the toolbar's active key. */
+  .gear-btn.active {
+    color: #00d4ff;
+    border-color: rgba(0, 212, 255, 0.3);
+    background: rgba(0, 212, 255, 0.1);
   }
 
   .gear-btn-zero {
