@@ -1999,10 +1999,7 @@ class AcquisitionScheduler:
         terminal timeout keeps its MOR-2614 cadence retry.
         """
 
-        return (
-            self._refusal_withheld(path, now)
-            or self._unanswered_withheld(path, now)
-        )
+        return self._refusal_withheld(path, now) or self._unanswered_withheld(path, now)
 
     def _unanswered_withheld(self, path: FieldPath, now: float) -> bool:
         unanswered = self._unanswered_paths.get(path)

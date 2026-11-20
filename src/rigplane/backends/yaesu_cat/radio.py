@@ -359,6 +359,10 @@ class YaesuCatRadio:
         # ``_poll_warned_fields`` above. On the 3rd unanswered read the
         # adapter records the declared-command defect that ends startup.
         self._critical_read_timeouts: dict[FieldPath, int] = {}
+        # MOR-3856: consecutive unanswered windows per declared path, the
+        # optional-path twin of the critical tally above; any answer
+        # resets it (``_note_critical_read_answers``).
+        self._unanswered_read_timeouts: dict[FieldPath, int] = {}
 
         # MOR-2632: the last nonzero NB/NR level seen per receiver, remembered
         # when turning the function off. Lives only on this object: a radio

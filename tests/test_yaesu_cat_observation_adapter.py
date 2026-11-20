@@ -2835,34 +2835,42 @@ async def test_unanswered_narrow_read_is_contained_and_marked_unanswered() -> No
     """MOR-3856: a silent optional NA read serves absent for the cycle.
 
     The narrow prime inside the medium lane must not abort the cycle —
-    the reads before it (freq/mode) still publish — and the path is
-    marked unanswered on the acquisition scheduler, so an optional read
-    stops holding the initial-state gate. The lane keeps asking on its
-    own cadence, and the moment NA answers again the mark ends and the
-    observation publishes.
+    the reads before it (freq/mode) still publish — and after the same
+    three unanswered windows a critical read needs (MOR-2757's attempt
+    threshold), the path is marked unanswered on the acquisition
+    scheduler, so an optional read stops holding the initial-state gate.
+    The lane keeps asking on its own cadence, and the moment NA answers
+    again the tally and the mark end and the observation publishes.
     """
     from rigplane.backends.yaesu_cat.observations import (
+        _CRITICAL_READ_TIMEOUT_ATTEMPTS,
         _MAIN_FREQ,
         _MAIN_NARROW,
+        _SUB_NARROW,
     )
 
     profile = _profile_state_acquisition()
     scheduler = AcquisitionScheduler(profile=profile)
     radio = _split_containment_radio(scheduler, AsyncMock(return_value=False))
     radio._state_store = StateStore()
-    silent = AsyncMock(side_effect=CatTimeoutError("NA timeout", command="NA0;"))
-    radio.read_narrow = silent
+    radio._unanswered_read_timeouts = {}
+    radio.read_narrow = AsyncMock(
+        side_effect=CatTimeoutError("NA timeout", command="NA0;")
+    )
     assert _MAIN_NARROW in scheduler.unobserved_startup_paths(())
 
-    observations = await YaesuObservationAdapter(
-        radio, profile=profile, clock=_clock
-    ).poll_medium()
+    for _ in range(_CRITICAL_READ_TIMEOUT_ATTEMPTS):
+        observations = await YaesuObservationAdapter(
+            radio, profile=profile, clock=_clock
+        ).poll_medium()
+        paths = {item.path for item in observations}
+        assert _MAIN_FREQ in paths, "the reads before narrow must still reach the store"
+        assert _MAIN_NARROW not in paths
 
-    paths = {item.path for item in observations}
-    assert _MAIN_FREQ in paths, "the reads before narrow must still reach the store"
-    assert _MAIN_NARROW not in paths
-    assert scheduler.unanswered_paths() == frozenset({_MAIN_NARROW})
+    # The sub prime shares the silent read, so both narrow paths lapse.
+    assert scheduler.unanswered_paths() == frozenset({_MAIN_NARROW, _SUB_NARROW})
     assert _MAIN_NARROW not in scheduler.unobserved_startup_paths(())
+    assert _SUB_NARROW not in scheduler.unobserved_startup_paths(())
 
     # The lane retries on its own cadence; an answer ends the mark.
     radio.read_narrow = AsyncMock(return_value=False)
@@ -2875,49 +2883,84 @@ async def test_unanswered_narrow_read_is_contained_and_marked_unanswered() -> No
 
 
 @pytest.mark.asyncio
-async def test_unanswered_slow_lane_read_is_contained_and_marked() -> None:
-    """MOR-3856: the slow lane gets the same containment as the medium.
+async def test_one_noise_timeout_alone_marks_nothing() -> None:
+    """MOR-3856: a single unanswered window is link noise, not absence.
 
-    A silent narrow read in ``poll_slow_controls`` serves absent for the
-    cycle — the reads after it still publish — and marks the path
-    unanswered on the scheduler.
+    One silent narrow read leaves the path in the startup set — the
+    marking needs the same consecutive attempts a critical defect does —
+    and the contained cycle still publishes the reads around it.
     """
-    from rigplane.backends.yaesu_cat.observations import (
-        _MAIN_NARROW,
-        _POWER_LEVEL,
-    )
+    from rigplane.backends.yaesu_cat.observations import _MAIN_FREQ, _MAIN_NARROW
 
     profile = _profile_state_acquisition()
     scheduler = AcquisitionScheduler(profile=profile)
     radio = _split_containment_radio(scheduler, AsyncMock(return_value=False))
     radio._state_store = StateStore()
+    radio._unanswered_read_timeouts = {}
     radio.read_narrow = AsyncMock(
         side_effect=CatTimeoutError("NA timeout", command="NA0;")
     )
 
     observations = await YaesuObservationAdapter(
         radio, profile=profile, clock=_clock
-    ).poll_slow_controls()
+    ).poll_medium()
 
-    paths = {item.path for item in observations}
-    assert _POWER_LEVEL in paths, "the reads after narrow must still reach the store"
-    assert _MAIN_NARROW not in paths
-    assert scheduler.unanswered_paths() == frozenset({_MAIN_NARROW})
+    assert _MAIN_FREQ in {item.path for item in observations}
+    assert scheduler.unanswered_paths() == frozenset()
+    assert _MAIN_NARROW in scheduler.unobserved_startup_paths(())
+
+
+@pytest.mark.asyncio
+async def test_unanswered_slow_lane_read_is_contained_and_marked() -> None:
+    """MOR-3856: the slow lane gets the same containment as the medium.
+
+    A silent narrow read in ``poll_slow_controls`` serves absent for the
+    cycle — the reads after it (NB level) still publish — and after the
+    attempt threshold the path is marked unanswered on the scheduler.
+    """
+    from rigplane.backends.yaesu_cat.observations import (
+        _CRITICAL_READ_TIMEOUT_ATTEMPTS,
+        _MAIN_NARROW,
+        _MAIN_NB_LEVEL,
+        _SUB_NARROW,
+    )
+
+    profile = _profile_state_acquisition()
+    scheduler = AcquisitionScheduler(profile=profile)
+    radio = _split_containment_radio(scheduler, AsyncMock(return_value=False))
+    radio._state_store = StateStore()
+    radio._unanswered_read_timeouts = {}
+    radio.read_narrow = AsyncMock(
+        side_effect=CatTimeoutError("NA timeout", command="NA0;")
+    )
+
+    for _ in range(_CRITICAL_READ_TIMEOUT_ATTEMPTS):
+        observations = await YaesuObservationAdapter(
+            radio, profile=profile, clock=_clock
+        ).poll_slow_controls()
+
+    assert _MAIN_NB_LEVEL in {item.path for item in observations}, (
+        "the reads after narrow must still reach the store"
+    )
+    assert _MAIN_NARROW not in {item.path for item in observations}
+    assert scheduler.unanswered_paths() == frozenset({_MAIN_NARROW, _SUB_NARROW})
     assert _MAIN_NARROW not in scheduler.unobserved_startup_paths(())
 
 
 @pytest.mark.asyncio
 async def test_unanswered_critical_read_still_counts_and_raises() -> None:
-    """MOR-3856 containment is criticality-driven: a freq timeout raises.
+    """MOR-3856 marking is criticality-driven: a freq timeout raises.
 
-    The data-driven rule must not weaken the critical path: a silent
-    freq read counts toward the unanswered-critical tally and still
-    raises for the reconnect path.
+    The critical path keeps its own rule: a silent freq read counts
+    toward the unanswered-critical tally and still raises for the
+    reconnect path; it never takes the optional unavailability route.
     """
     profile = _profile_state_acquisition()
     scheduler = AcquisitionScheduler(profile=profile)
     radio = _split_containment_radio(scheduler, AsyncMock(return_value=False))
     radio._state_store = StateStore()
+    radio._unanswered_read_timeouts = {}
+    freq = FieldPath.active("main", "freq_mode", "freq_hz")
     radio.read_freq = AsyncMock(
         side_effect=CatTimeoutError("FA timeout", command="FA;")
     )
@@ -2927,9 +2970,9 @@ async def test_unanswered_critical_read_still_counts_and_raises() -> None:
             radio, profile=profile, clock=_clock
         ).poll_medium()
 
-    assert scheduler.unanswered_paths() != frozenset(), (
-        "the critical path is marked too — the gate counts it separately"
-    )
+    assert radio._critical_read_timeouts == {freq: 1}
+    assert scheduler.unanswered_paths() == frozenset()
+    assert freq in scheduler.unobserved_startup_paths(())
 
 
 @pytest.mark.asyncio
@@ -4338,6 +4381,7 @@ async def test_silent_na_read_does_not_abort_the_medium_cycle(
     scheduler = AcquisitionScheduler(profile=loaded.state_acquisition)
     radio = YaesuCatRadio("/dev/fixture", profile=loaded)
     radio._acquisition_scheduler = scheduler
+    radio._critical_read_timeouts = {}
     fake = YaesuCatSerialFake.from_profile(_ROOT, sim_path, rig_path=rig_path)
     wire: list[str] = []
     handle = fake.model.handle_with_outcome
@@ -4358,20 +4402,35 @@ async def test_silent_na_read_does_not_abort_the_medium_cycle(
         "rigplane.backends.yaesu_cat.transport.open_serial_port", open_port
     )
     await radio._transport.connect()
-    radio._transport.timeout = 0.05
+    # Shrink the transport's per-attempt read timeout for the test only;
+    # no product margin moves.
+    radio._transport._timeout = 0.05
     try:
-        observations = await YaesuObservationAdapter.from_radio(radio).poll_medium()
+        # The ticket's mode: C4FM/FM, whose filter rule declares no narrow
+        # variant — the width read never resolves narrow internally there,
+        # so the silent ``NA`` the radio gives is read by the clause prime
+        # and the slow lane only.
+        await radio.set_mode("FM")
+        from rigplane.backends.yaesu_cat.observations import (
+            _CRITICAL_READ_TIMEOUT_ATTEMPTS,
+        )
+
+        for _ in range(_CRITICAL_READ_TIMEOUT_ATTEMPTS):
+            medium = await YaesuObservationAdapter.from_radio(radio).poll_medium()
+            assert "receiver.main.active.freq_mode.freq_hz" in {
+                str(item.path) for item in medium
+            }, "the answered reads must still reach the store"
+            observations = medium + await YaesuObservationAdapter.from_radio(
+                radio
+            ).poll_slow_controls()
     finally:
         await radio._transport.close()
 
     assert "NA0;" in wire, "the narrow read never reached the wire"
     by_path = {str(item.path) for item in observations}
-    assert "receiver.main.active.freq_mode.freq_hz" in by_path, (
-        f"the answered reads before narrow were lost: {sorted(by_path)}"
-    )
     assert "receiver.main.operator_toggles.narrow" not in by_path
     narrow = FieldPath.receiver("main", "operator_toggles", "narrow")
-    assert scheduler.unanswered_paths() == frozenset({narrow})
+    assert narrow in scheduler.unanswered_paths()
     assert narrow not in scheduler.unobserved_startup_paths(())
 
 

@@ -2038,18 +2038,18 @@ class YaesuObservationAdapter:
         refused or malformed read still skips the field below (PTT/split
         record no defect), and transport failures still raise untouched.
 
-        MOR-3856: every timeout of declared paths — contained or raised —
-        marks those paths unanswered on the acquisition scheduler, so an
-        optional read stops holding the initial-state gate the moment its
-        window lapses while its own lane cadence keeps asking. A read
-        naming a critical path (freq/mode) still raises for the reconnect
-        path.
+        MOR-3856: every timeout of a declared path — contained or raised —
+        counts toward that path's consecutive-unanswered tally; the third
+        in a row is recorded on the acquisition scheduler, so the read
+        stops holding the initial-state gate while its own lane cadence
+        keeps asking. A read naming a critical path (freq/mode) still
+        raises for the reconnect path and keeps the MOR-2757 rule above.
         """
         try:
             value = await read
         except CatTimeoutError as exc:
             self._count_critical_read_timeouts(label, exc, paths)
-            self._record_unanswered_reads(paths)
+            self._count_unanswered_reads(paths)
             if contain_timeout:
                 return False, None
             raise
@@ -2069,7 +2069,7 @@ class YaesuObservationAdapter:
                 value = await remake()
             except CatTimeoutError as retry_exc:
                 self._count_critical_read_timeouts(label, retry_exc, paths)
-                self._record_unanswered_reads(paths)
+                self._count_unanswered_reads(paths)
                 if contain_timeout:
                     return False, None
                 raise
@@ -2110,10 +2110,12 @@ class YaesuObservationAdapter:
         return None
 
     def _record_unanswered_reads(self, paths: tuple[FieldPath, ...]) -> None:
-        """Tell the acquisition scheduler which declared reads stayed silent.
+        """Tell the acquisition scheduler a declared read stays silent.
 
-        MOR-3856: the read waited its declared window (the transport's
-        read timeout) and no answer came. The scheduler marks the paths
+        MOR-3856: called once a path's consecutive-unanswered tally
+        reaches the shared attempt threshold — the read waited its
+        declared window (the transport's read timeout) that many times in
+        a row, so this is not link noise. The scheduler marks the paths
         unavailable, so an optional read stops holding the initial-state
         gate; no scheduler attached (tests, non-web embeds) records
         nothing — the containment the read site asked for is the part
@@ -2138,6 +2140,10 @@ class YaesuObservationAdapter:
         if counts is not None:
             for path in paths:
                 counts.pop(path, None)
+        unanswered = getattr(self.radio, "_unanswered_read_timeouts", None)
+        if isinstance(unanswered, dict):
+            for path in paths:
+                unanswered.pop(path, None)
         if paths:
             scheduler = getattr(self.radio, "_acquisition_scheduler", None)
             if isinstance(scheduler, AcquisitionScheduler):
@@ -2153,9 +2159,9 @@ class YaesuObservationAdapter:
 
         The medium poll cycle re-issues every read each interval, so one
         timeout per cycle is one unanswered attempt. Non-critical paths are
-        not counted — the web gate's own 10 s deadline already stops them
-        from blocking. On the attempt that reaches
-        ``_CRITICAL_READ_TIMEOUT_ATTEMPTS`` the same
+        not counted here — MOR-3856 counts those in the radio's unanswered
+        tally (:meth:`_count_unanswered_reads`) instead. On the attempt
+        that reaches ``_CRITICAL_READ_TIMEOUT_ATTEMPTS`` the same
         :class:`DeclaredCommandDefect` a refused read records
         (:meth:`_record_declared_defect`) is recorded for that one path,
         naming the field and the command the radio never answered; the
@@ -2173,6 +2179,29 @@ class YaesuObservationAdapter:
             counts[path] = count
             if count >= _CRITICAL_READ_TIMEOUT_ATTEMPTS:
                 self._record_declared_defect(label, exc, (path,))
+
+    def _count_unanswered_reads(self, paths: tuple[FieldPath, ...]) -> None:
+        """Count one unanswered window per declared path (MOR-3856).
+
+        The same shape as the critical tally above, for every declared
+        path: one timeout per lane cycle is one unanswered attempt, any
+        answer resets the count (:meth:`_note_critical_read_answers`), and
+        on the attempt that reaches ``_CRITICAL_READ_TIMEOUT_ATTEMPTS``
+        the lapse is recorded on the acquisition scheduler
+        (:meth:`_record_unanswered_reads`) — the path is marked
+        unavailable and stops holding the initial-state gate while its
+        own lane cadence keeps asking. A radio object that carries no
+        tally (test doubles) simply does not count.
+        """
+
+        counts = getattr(self.radio, "_unanswered_read_timeouts", None)
+        if not isinstance(counts, dict):
+            return
+        for path in paths:
+            count = counts.get(path, 0) + 1
+            counts[path] = count
+            if count >= _CRITICAL_READ_TIMEOUT_ATTEMPTS:
+                self._record_unanswered_reads((path,))
 
     def _record_declared_defect(
         self,
