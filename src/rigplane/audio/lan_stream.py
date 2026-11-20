@@ -532,7 +532,13 @@ class AudioStream:
         logger.info("Audio RX started (jitter_depth=%d)", depth)
 
     async def stop_rx(self) -> None:
-        """Stop receiving audio and flush remaining buffered packets."""
+        """Stop receiving audio and drop the packets still held for reordering.
+
+        Held packets arrived before the stop, often before a silent death
+        of the leg; handing them to the callback now would stamp a fresh RX
+        heartbeat and replay stale audio into the subscriber queues
+        (MOR-4214). The next ``start_rx`` begins with a new jitter buffer.
+        """
         if self._state != AudioState.RECEIVING:
             return
         self._state = AudioState.IDLE
@@ -543,12 +549,6 @@ class AudioStream:
             except asyncio.CancelledError:
                 pass
             self._rx_task = None
-        # Flush remaining jitter buffer
-        if self._jitter_buffer is not None and self._rx_callback is not None:
-            for pkt in self._jitter_buffer.flush():
-                if pkt is not None:
-                    self._rx_packets_delivered += 1
-                self._rx_callback(pkt)
         self._sync_jitter_stats()
         self._jitter_buffer = None
         self._rx_callback = None
