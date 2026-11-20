@@ -62,29 +62,35 @@ _EXPECTED_COUNTS = {
     # with no scope, antenna-relay, or typed-CW surface. The profile's facts
     # drive it: no [cw_text] section, no scope/antenna builders in the map,
     # audio capability present, CI-V protocol relation absent.
-    "FT-991A": (13, 21),
+    # MOR-3624 adds the get/set_repeater_offset alias pair: only the two
+    # profiles declaring the offset opcodes (IC-705, IC-9700) support them,
+    # every other profile gains two unsupported rows.
+    "FT-991A": (13, 23),
     # MOR-3678: send_cw_text is unsupported while [cw_text].supported = false.
-    "FTX-1": (13, 21),
-    "IC-705": (27, 7),
-    "IC-7300": (26, 8),
+    "FTX-1": (13, 23),
+    "IC-705": (29, 7),
+    "IC-7300": (26, 10),
     # MK2 = the IC-7300's 26 plus the four shared ANT1/RX-ANT relations:
     # get/set_antenna [0x12] is declared, and get_antenna_1/set_antenna_1/
     # get_rx_antenna_ant1/set_rx_antenna_ant1 all resolve through it.
     # get_antenna_2/set_antenna_2 stay absent-declared (single SO-239, RX-ANT
     # SMA only), and set_dual_watch/set_scope_receiver stay undeclared
     # (single receiver, no set_scope_main_sub), for exactly 4 unsupported.
-    "IC-7300MK2": (30, 4),
-    "IC-7610": (34, 0),
-    # IC-905 = the IC-705 shape: antenna-select relations are absent-declared.
-    "IC-905": (27, 7),
-    "IC-9700": (34, 0),
-    "TX-500": (11, 23),
-    "X6100": (15, 19),
-    "X6200": (15, 19),
+    "IC-7300MK2": (30, 6),
+    "IC-7610": (34, 2),
+    # IC-905 = the IC-705 shape (antenna-select relations absent-declared),
+    # plus the declared 0x0C/0x0D opcodes: it supports the offset alias pair
+    # at the callable layer. The web `repeater_offset` capability tag, which
+    # gates API reach separately, stays undeclared.
+    "IC-905": (29, 7),
+    "IC-9700": (36, 0),
+    "TX-500": (11, 25),
+    "X6100": (15, 21),
+    "X6200": (15, 21),
     # G7250 (MOR-4352): the X6200 shape — same Xiegu command surface minus
     # band-spectrum/tuner, plus the formally-absent tone/memory/data-mode
     # rows; nets out to the same partition.
-    "G7250": (15, 19),
+    "G7250": (15, 21),
 }
 _ALIASES = {
     "get_scope_dual": ScopeRuntimeMixin,
@@ -97,12 +103,14 @@ _ALIASES = {
             "get_antenna_1",
             "get_antenna_2",
             "get_attenuator_level",
+            "get_repeater_offset",
             "get_rx_antenna_ant1",
             "get_swr_meter",
             "send_cw_text",
             "set_antenna_1",
             "set_antenna_2",
             "set_attenuator_level",
+            "set_repeater_offset",
             "set_rx_antenna_ant1",
             "stop_cw_text",
         )
@@ -203,8 +211,8 @@ def _assert_parity(relations, sources=None) -> None:
 
 class TestProfileDerivedSupport:
     def test_registry_partition_and_all_profile_matrix(self, profiles):
-        assert len(CALLABLE_RELATIONS) == 34
-        assert len(BUILDER_RELATIONS) == 21
+        assert len(CALLABLE_RELATIONS) == 36
+        assert len(BUILDER_RELATIONS) == 23
         assert {r.operation for r in BUILDER_RELATIONS if r.kind == "alias"} == set(
             _ALIASES
         )

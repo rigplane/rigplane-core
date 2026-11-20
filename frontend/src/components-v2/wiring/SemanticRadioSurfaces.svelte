@@ -1963,9 +1963,14 @@
     const group = view?.repeater?.[receiver === 'SUB' ? 'sub' : 'main'];
     const offset = group?.offsetHz.reading;
     if (offset?.status !== 'known') return;
-    const next = stepOffsetHz(offset.value, direction);
-    if (next === offset.value) return;
-    repeaterHandlers.onOffsetChange(next, repeaterWireReceiver(receiver));
+    // MOR-3624 gate round 1: accumulate presses from the pending target
+    // while its readback is still in flight, so two presses before the
+    // radio answers step twice instead of dispatching the same value twice.
+    const wire = repeaterWireReceiver(receiver);
+    const base = getPendingRepeaterOffset(wire) ?? offset.value;
+    const next = stepOffsetHz(base, direction);
+    if (next === base) return;
+    repeaterHandlers.onOffsetChange(next, wire);
   }
 
   function repeaterPendingFor(wire: 0 | 1): RepeaterPending {

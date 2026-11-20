@@ -300,7 +300,7 @@ export const CLAIMED_INTENTS: ReadonlySet<string> = new Set([
 ]);
 
 /** Pinned so a removal (or an undocumented addition) shows up in review. */
-export const CLAIMED_INTENTS_COUNT = 91;
+export const CLAIMED_INTENTS_COUNT = 92;
 
 /**
  * `dispatchKeyboardRadioAction` case labels claimed by a conformance case.

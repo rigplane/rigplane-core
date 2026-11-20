@@ -16,9 +16,17 @@
  *   TSQL → OFF    set_repeater_tsql on:false, set_repeater_tone on:false
  *
  * `set_tsql_freq` is dispatched only in TSQL; `set_tone_freq` otherwise.
+ *
+ * MOR-3624 offset cases share
+ * `../../../../components-v2/wiring/__tests__/fixtures/mor3624-repeater-offset.seam.json`
+ * with the Python replay (`tests/test_mor3624_repeater_offset_api.py`),
+ * which drives the same documents through the production stack and fails
+ * on drift — the request payloads below come from that file, never
+ * hand-written.
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { expectFrames, expectRefusal, h } from './conformance/harness';
+import seam from '../../../../components-v2/wiring/__tests__/fixtures/mor3624-repeater-offset.seam.json';
 import { makeRepeaterHandlers } from '../../commands/panel-commands';
 import { getPendingRepeaterTone } from '../panel-adapters';
 import { resetCommandLifecycle } from '$lib/stores/commands.svelte';
@@ -98,7 +106,9 @@ describe('makeRepeaterHandlers shift and tone-frequency frames (MOR-2111)', () =
   });
 
   it('an offset write dispatches set_repeater_offset in exact Hz (MOR-3624)', () => {
-    expectFrames(() => handlers.onOffsetChange(600_000, 0), [['set_repeater_offset', { offset_hz: 600_000, receiver: 0 }]]);
+    expectFrames(() => handlers.onOffsetChange(seam.offsetsHz.confirmed, 0), [
+      [seam.command.name, { offset_hz: seam.offsetsHz.confirmed, receiver: 0 }],
+    ]);
   });
 });
 
