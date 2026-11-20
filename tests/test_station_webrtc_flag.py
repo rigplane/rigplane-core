@@ -21,6 +21,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from rigplane.cli import _build_parser, _cmd_web
+from rigplane.core.radio_protocol import Radio
 from rigplane.web.server import WebServer
 from rigplane.web.transport.webrtc import webrtc_available
 
@@ -119,7 +120,7 @@ async def _run_station(argv: list[str]) -> dict[str, Any]:
                 await self.stop()
             raise asyncio.CancelledError
 
-    radio = AsyncMock()
+    radio = AsyncMock(spec=Radio)
     radio.model = "IC-7610"
     args: argparse.Namespace = _build_parser().parse_args(argv)
     with (
