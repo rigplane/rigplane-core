@@ -29,8 +29,11 @@ def _upload_steps() -> list[tuple[str, str, dict[str, Any]]]:
 
 
 def _hidden(path: str) -> bool:
-    return any(part.startswith(".") and part not in {".", ".."}
-               for line in path.splitlines() for part in Path(line.strip()).parts)
+    return any(
+        part.startswith(".") and part not in {".", ".."}
+        for line in path.splitlines()
+        for part in Path(line.strip()).parts
+    )
 
 
 def test_dot_path_uploads_include_hidden_files() -> None:
