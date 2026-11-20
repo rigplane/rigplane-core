@@ -304,7 +304,6 @@ def test_pro_web_api_contract_lists_stable_surface() -> None:
     assert ("GET", "/api/v1/state") in http
     assert ("GET", "/api/v1/capabilities") in http
     assert ("GET", "/api/v1/audio/analysis") in http
-    assert ("GET", "/api/v1/audio/candidates") in http
     assert ("GET", "/api/v1/managed-transmit") in http
     assert ("POST", "/api/v1/managed-transmit/command") in http
     assert ("PUT", "/api/v1/managed-transmit/tot") in http

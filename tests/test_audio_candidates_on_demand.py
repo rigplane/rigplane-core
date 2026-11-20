@@ -82,6 +82,13 @@ def test_candidates_rule_without_a_serial_port_leaves_every_candidate_far():
     assert all(not candidate.near_radio for candidate in listed)
 
 
+def test_endpoint_is_part_of_the_stable_surface():
+    from rigplane.web.api_contract import STABLE_HTTP_ENDPOINTS
+
+    http = {(route["method"], route["path"]) for route in STABLE_HTTP_ENDPOINTS}
+    assert ("GET", "/api/v1/audio/candidates") in http
+
+
 # --- driver: topology path, several radio profiles ---------------------------
 
 W3_RADIOS = {
