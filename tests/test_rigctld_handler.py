@@ -2950,17 +2950,20 @@ async def test_get_level_preamp_ic9700_ingress_combination_is_unavailable() -> N
     assert observed.value == 3
     handler = RigctldHandler(radio, RigctldConfig(), state_store=store)
 
-    with mock.patch.object(
-        radio, "get_preamp", AsyncMock(spec=IcomRadio.get_preamp)
-    ) as read, mock.patch.object(
-        # MOR-4157: the radio in this test is never connected, and the
-        # link-loss gate would refuse with ETIMEOUT before the profile's
-        # own ENAVAIL answer. The subject here is that static availability
-        # verdict, so present a connected radio.
-        IcomRadio,
-        "connected",
-        new_callable=mock.PropertyMock,
-        return_value=True,
+    with (
+        mock.patch.object(
+            radio, "get_preamp", AsyncMock(spec=IcomRadio.get_preamp)
+        ) as read,
+        mock.patch.object(
+            # MOR-4157: the radio in this test is never connected, and the
+            # link-loss gate would refuse with ETIMEOUT before the profile's
+            # own ENAVAIL answer. The subject here is that static availability
+            # verdict, so present a connected radio.
+            IcomRadio,
+            "connected",
+            new_callable=mock.PropertyMock,
+            return_value=True,
+        ),
     ):
         resp = await handler.execute(get_cmd("get_level", "PREAMP"))
 
@@ -7177,3 +7180,76 @@ async def test_link_loss_spares_session_meta_commands(
     for cmd in ("dump_state", "chk_vfo", "quit"):
         resp = await handler.execute(get_cmd(cmd))
         assert resp.ok, cmd
+
+
+@pytest.mark.asyncio
+async def test_stale_state_never_blocks_writes_unkey_reaches_radio(
+    mock_radio: AsyncMock,
+    virtual_clock: VirtualClock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """MOR-4157 TX safety: a quiet (``state_stale``) link never blocks a write.
+
+    RED on the pre-fix gate: ``state_stale`` refused writes too, so an
+    IC-705 lagging over Wi-Fi mid-transmission never received the unkey a
+    WSJT-X client sent during the lag — the radio stayed keyed. The link
+    is not known to be down, only quiet, so every write, PTT off first of
+    all, goes through the normal path and returns its real result.
+    """
+    virtual_clock.scope_to(monkeypatch, rigctld_handler_module)
+    radio = _mirror_radio_with_cached_state(mock_radio)
+    radio.connected = True
+    radio.liveness_stale_after_ms = 2000
+    radio.last_valid_frame_monotonic = virtual_clock.now - 30.0
+    handler = RigctldHandler(radio, RigctldConfig())
+
+    resp = await handler.execute(set_cmd("set_ptt", "0"))
+
+    assert resp.ok
+    radio.set_ptt.assert_awaited_once_with(False)
+
+    resp = await handler.execute(set_cmd("set_freq", "14074000"))
+
+    assert resp.ok
+    radio.set_freq.assert_awaited_once_with(14_074_000, receiver=0)
+
+
+@pytest.mark.asyncio
+async def test_stale_state_cached_read_refusal_logged_once(
+    mock_radio: AsyncMock,
+    caplog: pytest.LogCaptureFixture,
+    virtual_clock: VirtualClock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A cached read refused for ``state_stale`` logs its reason once per episode.
+
+    The unkey sent inside the same episode goes through silently: it is
+    not a refusal and logs none.
+    """
+    virtual_clock.scope_to(monkeypatch, rigctld_handler_module)
+    radio = _mirror_radio_with_cached_state(mock_radio)
+    radio.connected = True
+    radio.liveness_stale_after_ms = 2000
+    radio.last_valid_frame_monotonic = virtual_clock.now - 30.0
+    handler = RigctldHandler(radio, RigctldConfig())
+
+    with caplog.at_level(logging.WARNING, logger="rigplane.rigctld.handler"):
+        await handler.execute(get_cmd("get_freq"))
+        await handler.execute(get_cmd("get_ptt"))
+        await handler.execute(set_cmd("set_ptt", "0"))
+
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    assert "state_stale" in warnings[0].message
+
+    # Recovery clears the latch, so a later stale episode logs again.
+    radio.last_valid_frame_monotonic = virtual_clock.now
+    fresh = await handler.execute(get_cmd("get_freq"))
+    assert fresh.ok
+
+    radio.last_valid_frame_monotonic = virtual_clock.now - 30.0
+    with caplog.at_level(logging.WARNING, logger="rigplane.rigctld.handler"):
+        await handler.execute(get_cmd("get_freq"))
+
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 2
