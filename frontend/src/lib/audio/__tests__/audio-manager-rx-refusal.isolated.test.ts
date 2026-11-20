@@ -7,7 +7,12 @@ import { _resetLocale } from '$lib/i18n/store.svelte';
 import { validateCapabilities } from '$lib/types/capabilities';
 import stateWireGoldens from '$lib/transport/__tests__/fixtures/state-wire-goldens.json';
 import type { RxPlayer } from '../rx-player';
+import type { TxCaptureFailure } from '../tx-mic';
 type ConsumedRouting = Pick<RxPlayer, 'focus' | 'splitStereo' | 'setFocus' | 'setSplitStereo'>;
+
+const txFailure = (code: TxCaptureFailure['code'], category: string, reason: string): TxCaptureFailure => ({
+  code, category, reason, at: Date.now(),
+});
 // The rendered-toast describe runs the refusal through the REAL runtime
 // notification path. These imports are static on purpose: Toast, the i18n
 // runtime, the real ws-client bus, the audio manager singleton and the
@@ -94,7 +99,7 @@ vi.mock('../tx-mic', () => ({
     static supported() { return true; }
     constructor(
       _send: (data: ArrayBuffer) => void,
-      _onCaptureDied?: (reason: string) => void,
+      _onCaptureDied?: (failure: TxCaptureFailure) => void,
     ) {}
   },
 }));
@@ -292,9 +297,10 @@ describe('[new contract] AudioManager failure persistence and recovery (MOR-3753
   it('a genuine mic start failure latches txError without TX admission; an explicit stop acknowledges', async () => {
     const { audioManager } = await import('../audio-manager');
     const audio = await import('../../stores/audio.svelte');
-    txStart.mockResolvedValueOnce('TX MIC: permission denied');
+    const refused = txFailure('permission', 'NotAllowedError', 'permission denied');
+    txStart.mockResolvedValueOnce(refused);
 
-    await expect(audioManager.startTx()).resolves.toBe('TX MIC: permission denied');
+    await expect(audioManager.startTx()).resolves.toBe(refused.reason);
 
     expect(audioManager.txEnabled).toBe(false);
     expect(audio.getAudioState().txError).toBe(true);
@@ -307,11 +313,13 @@ describe('[new contract] AudioManager failure persistence and recovery (MOR-3753
   it('a retried capture clears the latched failure at entry, while the new capture is still pending', async () => {
     const { audioManager } = await import('../audio-manager');
     const audio = await import('../../stores/audio.svelte');
-    txStart.mockResolvedValueOnce('TX MIC: permission denied');
-    await expect(audioManager.startTx()).resolves.toBe('TX MIC: permission denied');
+    const refused = txFailure('permission', 'NotAllowedError', 'permission denied');
+    txStart.mockResolvedValueOnce(refused);
+    await expect(audioManager.startTx()).resolves.toBe(refused.reason);
     expect(audio.getAudioState().txError).toBe(true);
 
-    let settleCapture!: (reason: string | null) => void;
+    const retried = txFailure('capture', 'NotFoundError', 'capture failed (NotFoundError)');
+    let settleCapture!: (failure: TxCaptureFailure | null) => void;
     txStart.mockImplementationOnce(() => new Promise((resolve) => {
       settleCapture = resolve;
     }));
@@ -319,8 +327,8 @@ describe('[new contract] AudioManager failure persistence and recovery (MOR-3753
     expect(audio.getAudioState().txError).toBe(false);
     expect(audioManager.txEnabled).toBe(false);
 
-    settleCapture('TX MIC: capture failed (NotFoundError)');
-    await expect(retry).resolves.toBe('TX MIC: capture failed (NotFoundError)');
+    settleCapture(retried);
+    await expect(retry).resolves.toBe(retried.reason);
     expect(audio.getAudioState().txError).toBe(true);
     expect(audioManager.txEnabled).toBe(false);
     audioManager.stopTx();
@@ -329,21 +337,21 @@ describe('[new contract] AudioManager failure persistence and recovery (MOR-3753
   it('operator cancellation of the capture start latches no failure', async () => {
     const { audioManager } = await import('../audio-manager');
     const audio = await import('../../stores/audio.svelte');
-    txStart.mockResolvedValueOnce('TX MIC: capture start cancelled');
+    txStart.mockResolvedValueOnce(txFailure('cancelled', 'cancelled', 'capture start cancelled'));
 
-    await expect(audioManager.startTx()).resolves.toBe('TX MIC: capture start cancelled');
+    await expect(audioManager.startTx()).resolves.toBe('capture start cancelled');
 
     expect(audioManager.txEnabled).toBe(false);
     expect(audio.getAudioState().txError).toBe(false);
   });
 
-  it('a thrown capture-setup failure latches the failed state and still propagates', async () => {
+  it('a thrown capture-setup failure latches the failed state and resolves through the failure path', async () => {
     const { audioManager } = await import('../audio-manager');
     const audio = await import('../../stores/audio.svelte');
     const failure = new Error('AudioContext unavailable');
     txStart.mockRejectedValueOnce(failure);
 
-    await expect(audioManager.startTx()).rejects.toBe(failure);
+    await expect(audioManager.startTx()).resolves.toBe('Error: AudioContext unavailable');
 
     expect(audioManager.txEnabled).toBe(false);
     expect(audio.getAudioState().txError).toBe(true);
@@ -876,7 +884,9 @@ describe('real capture results after manager stop (MOR-3753)', () => {
   it.each(['insecure', 'unsupported'] as const)('a current %s refusal still latches failure', async (reason) => {
     const { audioManager, getAudioState } = await rig();
     refuse(reason);
-    expect(await audioManager.startTx()).toMatch(/^TX MIC:/);
+    expect(await audioManager.startTx()).toBe(
+      reason === 'insecure' ? 'insecure context' : 'microphone capture not supported',
+    );
     expect(getAudioState().txError).toBe(true);
     expect(audioManager.txEnabled).toBe(false);
   });
@@ -884,7 +894,7 @@ describe('real capture results after manager stop (MOR-3753)', () => {
   it('a current PCM refusal still latches when TxMic internally tears capture down', async () => {
     const { audioManager, getAudioState } = await rig();
     enablePcm(44100);
-    await expect(audioManager.startTx()).resolves.toBe('TX MIC: unsupported mic sample rate 44100 Hz');
+    await expect(audioManager.startTx()).resolves.toBe('unsupported mic sample rate 44100 Hz');
     expect(track.stop).toHaveBeenCalledOnce();
     expect(getAudioState().txError).toBe(true);
     expect(audioManager.txEnabled).toBe(false);
