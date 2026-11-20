@@ -1020,6 +1020,12 @@ class CoreWheelWorkflowPinsTest(unittest.TestCase):
         self.assertNotIn("control/.github/scripts/installed_profile_smoke.py", build)
         self.assertEqual(build.count("python installed_profile_smoke.py"), 1)
         self.assertIn('--candidate-sha "$RESOLVED_SHA"', build)
+        # The smoke's throwaway wheel + venv live under RUNNER_TEMP, which
+        # GitHub empties at job boundaries; the default /tmp of a persistent
+        # self-hosted runner is never cleaned (pre-review P2, MOR-4408).
+        self.assertIn(
+            'mktemp -d "$RUNNER_TEMP/core-wheel-smoke.XXXXXXXX"', build
+        )
         self.assertIn('--forbid-root "$GITHUB_WORKSPACE"', build)
         # The smoke evidence artifact name is derived from the wheel
         # artifact name (see CallerContextPinsTest for the distinctness

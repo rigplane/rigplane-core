@@ -269,7 +269,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          smoke_dir="$(mktemp -d)"
+          # RUNNER_TEMP, not the default /tmp: the wheel and venv below are
+          # dead weight after the job, and GitHub empties RUNNER_TEMP at job
+          # boundaries while /tmp on a persistent self-hosted runner is never
+          # cleaned.
+          smoke_dir="$(mktemp -d "$RUNNER_TEMP/core-wheel-smoke.XXXXXXXX")"
           cp "core/dist/$WHEEL_NAME" "$smoke_dir/$WHEEL_NAME"
           # The venv also carries the provenance verification below, so it
           # is built for every target, smoke or not.
