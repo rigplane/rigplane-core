@@ -1,5 +1,5 @@
 ---
-description: Drive the RigPlane spectrum display from an SDR (RTL-SDR first) — remote SoapySDR quick start, HF direct sampling, ppm correction, IF-tap offsets, span limits, environment variables, and the licensing boundary.
+description: Drive the RigPlane spectrum display from an SDR (RTL-SDR first) — remote SoapySDR quick start, HF direct sampling, ppm correction, antenna-tap versus IF-tap support, span limits, environment variables, and the licensing boundary.
 ---
 
 # SDR Panadapter Scope
@@ -44,18 +44,25 @@ Every RTL-SDR stick has a small frequency error, in parts per million. Once you
 know yours (comparing a known signal against where it appears), correct it with
 `--sdr-ppm 23`.
 
-### IF tap vs antenna tap
+### Antenna tap and IF tap
 
-Tapping a transceiver's IF requires telling RigPlane where the SDR is tuned
-relative to the radio VFO, and sometimes flipping the displayed axis:
+Supported: an antenna tap, where the SDR sees the same RF the radio hears (an
+RF splitter or a second antenna on the same band). Leave `--sdr-offset-hz` at
+its default of 0 and do not pass `--sdr-invert`. The SDR follows the radio VFO
+and the display is labelled in RF.
 
-```bash
---sdr-offset-hz 8830000   # SDR center = VFO + 8.83 MHz (IF frequency)
---sdr-invert              # mirrored IF output
-```
+Not supported yet: an IF tap, where the SDR is connected to the radio's
+intermediate-frequency output (for example the 69.450 MHz tap on an FT-991A or
+a 9 MHz tap). `--sdr-offset-hz` and `--sdr-invert` do not implement it. The
+offset only shifts the frequency the SDR is tuned to (VFO + offset), so the SDR
+leaves the IF and is retuned on every VFO change, and the spectrum frames are
+labelled with the SDR's own centre frequency, not with the RF frequency. With
+an IF tap the display therefore shows the wrong frequencies and does not follow
+the radio. Do not use these two flags for an IF tap.
 
-With the plain antenna tap the offset stays 0 (the default) and no inversion
-is needed.
+Proper IF-tap support, where the SDR stays on the IF and the display is mapped
+back to RF, is planned and tracked as open work. This section will be updated
+when it lands.
 
 ### Span limit
 

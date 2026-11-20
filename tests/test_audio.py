@@ -261,7 +261,9 @@ class TestAudioStreamRx:
 
         received = []
         stream = AudioStream(t)
-        await stream.start_rx(lambda pkt: received.append(pkt))
+        # No jitter buffer: stop_rx drops held packets (MOR-4214), and one
+        # packet stays held below the default depth.
+        await stream.start_rx(lambda pkt: received.append(pkt), jitter_depth=0)
 
         # Give the rx loop a moment to process
         await asyncio.sleep(0.05)
