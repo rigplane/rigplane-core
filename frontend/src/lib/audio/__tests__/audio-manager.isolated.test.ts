@@ -319,7 +319,7 @@ describe('AudioManager TX start failure latch (MOR-3753)', () => {
     return { audioManager, setTxError: vi.mocked(audio.setTxError) };
   }
 
-  it.each([
+  it.each<[TxCaptureFailureCode, string]>([
     ['permission', 'NotAllowedError'],
     ['unsupported', 'capture-unsupported'],
     ['insecure-context', 'insecure-context'],
@@ -1096,7 +1096,7 @@ describe('AudioManager TX failure notifications (MOR-1783)', () => {
     expect(audioManager.txEnabled).toBe(false);
   });
 
-  it.each([
+  it.each<[TxCaptureFailureCode, string, string, string]>([
     ['encoder', 'encoder-error', 'encoder error: boom', 'txAudioEncoderFailed'],
     ['sample-rate', 'sample-rate', 'unsupported mic sample rate 44100 Hz', 'txAudioSampleRateUnsupported'],
     ['device-lost', 'track-ended', 'microphone track ended', 'txAudioDeviceLost'],
