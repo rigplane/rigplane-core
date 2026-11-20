@@ -31,10 +31,11 @@ import '../src/components-v2/theme/index';
 import SpectrumPanel from '../src/components/spectrum/SpectrumPanel.svelte';
 import { ScopeStream } from '../src/lib/runtime/scope-stream';
 import type { ScopeMessageSource } from '../src/lib/runtime/scope-stream';
+import type { ScopeSubscription } from '../src/lib/runtime/scope-view';
 import { runtime } from '../src/lib/runtime/frontend-runtime';
 import { radio } from '../src/lib/stores/radio.svelte';
 import { setCapabilities } from '../src/lib/stores/capabilities.svelte';
-import { harness } from './harness-state';
+import { WsChannel } from '../src/lib/transport/ws-client';
 import radioWireUrl from '../../tests/fixtures/scope-wire/radio.bin?url';
 import ic7300StateJson from '../src/lib/runtime/adapters/__tests__/fixtures/ic7300-state.json';
 import ic7300CapsJson from '../src/lib/runtime/adapters/__tests__/fixtures/ic7300-capabilities.json';
@@ -53,8 +54,9 @@ declare global {
   interface Window {
     __spectrumWitness: {
       commands: WitnessCommand[];
-      /** MOR-4605: the scope-control intents the fixture bus recorded
-       * (`scopeControls.<handler>` — the stub binder records, never commands). */
+      /** MOR-4605: every radio command the page tried to send
+       * (`name(params)`), recorded at the WsChannel send seam — the
+       * offline witness ships nothing. */
       scopeIntents(): string[];
       autoFloor?: {
         deliverFrames(count: number, noise: number, carrier: number): Promise<void>;
@@ -64,11 +66,10 @@ declare global {
 }
 
 const commands: WitnessCommand[] = [];
+const sentCommands: string[] = [];
 window.__spectrumWitness = {
   commands,
-  scopeIntents: () => harness.calls
-    .filter((call) => call.fn.startsWith('scopeControls.'))
-    .map((call) => `${call.fn}(${call.args.map(JSON.stringify).join(', ')})`),
+  scopeIntents: () => [...sentCommands],
 };
 const vfoHandlers = getVfoHandlers();
 const filterHandlers = getFilterHandlers();
@@ -153,34 +154,62 @@ function encodeWitnessFrame(): ArrayBuffer {
  * mounts the toolbar (hideScopeControls=false) against the REAL captured
  * IC-7300 state/capabilities pair — the one pair in the tree whose
  * `scopeControls.refDb` is observed with a declared −20..20 range, so the
- * REF keys render live exactly as on the bench. Frames stay flat noise plus
- * one 5-bin carrier (integer levels, converging to exact row bytes after a
- * level change) and are delivered on demand through the SAME ingress: the
- * production v2 header, the real parser, the real ScopeStream. */
+ * REF keys render live exactly as on the bench. The capture's VFO sits at
+ * 14.188 MHz; the clone moves it to TUNE_HZ so the panel's follow view (the
+ * confirmed frequency ± the requested span) is covered exactly by the
+ * delivered frames — no "view wider than coverage" state. Frames stay flat
+ * noise plus one 5-bin carrier (integer levels, converging to exact row
+ * bytes after a level change) and are delivered on demand through the SAME
+ * ingress: the production v2 header, the real parser, the real ScopeStream.
+ * Radio commands the page tries to send (the AUTO-off REF write) are
+ * recorded at the WsChannel send seam and ship nothing: the witness owns no
+ * socket. */
 const autoFloorMode = new URLSearchParams(location.search).has('autoFloor');
 /** Carrier bins 120..124 — the exact-carrier middle is bin 122. */
 const AUTO_FLOOR_CARRIER = [120, 125] as const;
 /** The first delivered frame's levels; the spec's phases continue from it. */
 const AUTO_FLOOR_FIRST = { noise: 10, carrier: 50 } as const;
 
+let autoFloorWindow: { start: number; end: number } | null = null;
+
+/** The frame window for a surface request: an explicit view as-is, a follow
+ *  request centred on the confirmed frequency the clone pins to TUNE_HZ. */
+function autoFloorViewWindow(subscription: ScopeSubscription): { start: number; end: number } {
+  const view = subscription.view;
+  if ('startHz' in view && 'endHz' in view) return { start: view.startHz, end: view.endHz };
+  const span = 'spanHz' in view ? view.spanHz : 100_000;
+  return { start: TUNE_HZ - span / 2, end: TUNE_HZ + span / 2 };
+}
+
 function encodeAutoFloorFrame(noise: number, carrier: number, seq: number): ArrayBuffer {
+  if (!autoFloorWindow) throw new Error('autoFloor frame before any subscription');
   const bytes = new Uint8Array(pixelOffset + BIN_COUNT);
   bytes.set(new Uint8Array(template, 0, pixelOffset));
   const view = new DataView(bytes.buffer);
   view.setUint16(6, BIN_COUNT, true);
   view.setUint32(12, seq, true);
-  view.setFloat64(24, START_HZ, true);
-  view.setFloat64(32, END_HZ, true);
-  view.setFloat64(40, START_HZ, true);
-  view.setFloat64(48, END_HZ, true);
+  view.setFloat64(24, autoFloorWindow.start, true);
+  view.setFloat64(32, autoFloorWindow.end, true);
+  view.setFloat64(40, autoFloorWindow.start, true);
+  view.setFloat64(48, autoFloorWindow.end, true);
   bytes.fill(noise, pixelOffset);
   bytes.fill(carrier, pixelOffset + AUTO_FLOOR_CARRIER[0], pixelOffset + AUTO_FLOOR_CARRIER[1]);
   return bytes.buffer;
 }
 
 if (autoFloorMode) {
-  radio.current = ic7300StateJson as unknown as typeof radio.current;
-  setCapabilities(ic7300CapsJson as Parameters<typeof setCapabilities>[0]);
+  const state = structuredClone(ic7300StateJson) as { main: { freqHz: number } };
+  state.main.freqHz = TUNE_HZ;
+  radio.current = state as unknown as typeof radio.current;
+  setCapabilities(ic7300CapsJson as unknown as Parameters<typeof setCapabilities>[0]);
+  const channelSend = WsChannel.prototype.send;
+  WsChannel.prototype.send = function (this: WsChannel, cmd: { type: string; name?: string; params?: unknown }) {
+    if (cmd.type === 'cmd' && cmd.name) {
+      sentCommands.push(`${cmd.name}(${JSON.stringify(cmd.params)})`);
+      return false;
+    }
+    return channelSend.call(this, cmd as Parameters<typeof channelSend>[0]);
+  };
 }
 
 let deliverWitness: ((buffer: ArrayBuffer) => void) | null = null;
@@ -194,7 +223,9 @@ const witnessSource: ScopeMessageSource = {
 };
 const witnessStream = new ScopeStream(witnessSource,
   context, 'borrowed', undefined, (subscription) => {
-    if (!subscription || subscription.maxFps === 0 || subscription.width < 1 || delivered) return;
+    if (!subscription || subscription.maxFps === 0 || subscription.width < 1) return;
+    if (autoFloorMode) autoFloorWindow = autoFloorViewWindow(subscription);
+    if (delivered) return;
     delivered = true;
     queueMicrotask(() => {
       if (autoFloorMode) {

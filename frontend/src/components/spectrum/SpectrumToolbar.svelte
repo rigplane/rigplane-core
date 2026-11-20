@@ -21,7 +21,7 @@
     formatSpanHz, SPEED_LABELS, SPEED_STATIC_LABEL, MODE_BUTTONS,
     toggleLayer as toggleLayerFn, isLayerVisible,
     isSpanApplicable, isEdgeApplicable,
-    clampSpeed, clampBrt, stepRef,
+    clampSpeed, clampBrt, stepRef, type ScopeRefOffset,
   } from './spectrum-toolbar-logic';
   import { acceptedBoolean, acceptedLevel, acceptedNumber } from '../../semantic/accepted-scope-values';
 
@@ -58,7 +58,10 @@
     hideSourceControls?: boolean;
     hideScopeControls?: boolean;
     hideAutoStepToggle?: boolean;
-    scopeControls?: Snippet<[allowBare?: boolean, screenGroup?: Snippet, rowTail?: Snippet, moreAsSheet?: boolean]>;
+    scopeControls?: Snippet<[
+      allowBare?: boolean, screenGroup?: Snippet, rowTail?: Snippet, moreAsSheet?: boolean,
+      refOffset?: ScopeRefOffset,
+    ]>;
     /** MOR-2545 PR2 — the compact scope-display indicator, mounted at the
      *  row's right end (the standalone status line row is gone). Named
      * `scopeStatusIndicator` so no source pin can confuse it with the dead
@@ -322,6 +325,11 @@
     ? `${autoFloorRef > 0 ? '+' : ''}${autoFloorRef}`
     : scopeRef === null ? '' : `${scopeRef > 0 ? '+' : ''}${scopeRef}`);
   let refDisabled = $derived(!autoFloor && scopeRef === null);
+  /* The hosted semantic REF slot follows the same AUTO mode and the same
+   * local offset as the unhosted keys above (one binding, two faces). */
+  let hostedRefOffset = $derived<ScopeRefOffset | undefined>(autoFloor
+    ? { db: autoFloorRef, step: (delta) => changeRef(delta) }
+    : undefined);
 
   function toggleDual() {
     if (scopeDual === null) return;
@@ -509,7 +517,7 @@
          the screen group (2nd arg, into More) and the row tail (3rd arg,
          before [MORE ▾]). No separators, no cyan wash; token ground. -->
     <div class="semantic-scope-controls-host">
-      {@render scopeControls(undefined, screenGroup, rowTail)}
+      {@render scopeControls(undefined, screenGroup, rowTail, undefined, hostedRefOffset)}
     </div>
   {:else}
   <!-- Group A: Tuning (no wash) — the UNHOSTED faces only (v1 desktop,

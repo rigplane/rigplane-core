@@ -57,7 +57,7 @@
   import { readingText } from '../primitives/reading-text';
   import {
     MODE_BUTTONS, formatSpanHz, SPEED_LABELS,
-    isSpanApplicable, isEdgeApplicable, clampSpeed, stepRef,
+    isSpanApplicable, isEdgeApplicable, clampSpeed, stepRef, type ScopeRefOffset,
   } from '../components/spectrum/spectrum-toolbar-logic';
 
   /** On/off leaves, `[field, label, reservedWidth]`. */
@@ -124,6 +124,9 @@
     onSpanChange?: (delta: -1 | 1) => void;
     onSpeedChange?: (speed: number) => void;
     onRefChange?: (ref: number) => void;
+    /** MOR-4605: set while the toolbar's AUTO waterfall floor is on — the REF
+     *  slot then shows and steps this local offset and never calls onRefChange. */
+    refOffset?: ScopeRefOffset;
     /**
      * MOR-2545 PR2 — the toolbar's screen-only control group (VIEW, AUTO,
      * AVG/PEAK, BRT, palette, band-plan layers, the STEP overflow copy),
@@ -156,7 +159,7 @@
     | { finiteAppearance: FiniteControlAppearance<number>; rendererContext: FiniteRendererContext | null };
   type Props = ExistingProps & RendererSelection;
   let {
-    view, onToggleChange, onChoiceChange, spanHz = null, onSpanChange, onSpeedChange, onRefChange,
+    view, onToggleChange, onChoiceChange, spanHz = null, onSpanChange, onSpeedChange, onRefChange, refOffset,
     moreScreen, rowTail, moreAsSheet = false, finiteAppearance, rendererContext,
   }: Props = $props();
 
@@ -229,8 +232,14 @@
    *  (`sc.refRange`, from capabilities). No declared range ⇒ blocked —
    *  the keys render disabled and invoke is a no-op (fail closed, never
    *  a fallback range). */
+  const LOCAL_OFFSET_AVAILABILITY = { structural: true, operational: true } as const;
   function refInstrument(delta: -5 | 5) {
     return bindActionInstrument(() => {
+      // AUTO (MOR-4605): the local offset is live with or without a radio
+      // REF readback, so availability replaces the field's reading gate.
+      if (refOffset) {
+        return { availability: LOCAL_OFFSET_AVAILABILITY, invoke: () => refOffset.step(delta) };
+      }
       const field = sc?.refDb;
       const range = sc?.refRange ?? null;
       return {
@@ -240,6 +249,12 @@
       };
     });
   }
+
+  /** The REF slot's text: the local AUTO offset when the toolbar supplies it
+   *  (MOR-4605), else the radio's own reading. */
+  let refText = $derived(refOffset
+    ? `${refOffset.db > 0 ? '+' : ''}${refOffset.db}`
+    : sc ? readingText(sc.refDb) : '');
 
   const toggleSeats = new Map<ScopeToggleField, ToggleRendererSeat>();
   const choiceSeats = new Map<ScopeChoiceField, ChoiceRendererSeat<number>>();
@@ -271,7 +286,11 @@
     const key = `${field}:${delta}`;
     let seat = actionSeats.get(key);
     if (!seat) {
-      seat = createActionRendererSeat(() => ({
+      seat = createActionRendererSeat(() => field === 'refDb' && refOffset ? {
+        context: rendererContext ?? null, availability: LOCAL_OFFSET_AVAILABILITY, label: delta < 0 ? '−' : '+',
+        accessibleLabel: `${delta < 0 ? 'Decrease' : 'Increase'} ${label}`,
+        invoke: () => refOffset.step(delta as -5 | 5),
+      } : ({
         context: rendererContext ?? null, field: field === 'span' ? spanField : sc?.[field], label: delta < 0 ? '−' : '+',
         accessibleLabel: `${delta < 0 ? 'Decrease' : 'Increase'} ${label}`,
         // MOR-2565: the span keys stay inert while the mode is unread.
@@ -358,7 +377,7 @@
           {#key rendererContext}{#key finiteAppearance.action}<ControlInstrumentRendererHost
             seat={actionSeat('refDb', -5, 'scope reference')} renderer={finiteAppearance.action}
           />{/key}{/key}
-          <output class="scope-finite-value" data-testid="scope-ref-value">{readingText(sc.refDb)}</output>
+          <output class="scope-finite-value" data-testid="scope-ref-value">{refText}</output>
           {#key rendererContext}{#key finiteAppearance.action}<ControlInstrumentRendererHost
             seat={actionSeat('refDb', 5, 'scope reference')} renderer={finiteAppearance.action}
           />{/key}{/key}
@@ -416,7 +435,7 @@
             <span class="scope-name">REF</span>
             <button type="button" class="scope-step-key" aria-label="Decrease scope reference"
               disabled={!refDown.available} onclick={() => refDown.invoke()}>&#8249;</button>
-            <output class="scope-step-value" data-testid="scope-ref-value">{readingText(sc.refDb)}</output>
+            <output class="scope-step-value" data-testid="scope-ref-value">{refText}</output>
             <button type="button" class="scope-step-key" aria-label="Increase scope reference"
               disabled={!refUp.available} onclick={() => refUp.invoke()}>&#8250;</button>
           </span>
@@ -595,7 +614,7 @@
                     <div class="scope-more-row scope-stepper" class:scope-capsule={hosted} data-overflow="ref" data-testid="scope-overflow-ref">
                       <span class="scope-name">REF</span>
                       <button type="button" class="scope-step-key" aria-label="Decrease scope reference" disabled={!overflowRefDown.available} onclick={() => overflowRefDown.invoke()}>&#8249;</button>
-                      <output class="scope-step-value" data-testid="scope-overflow-ref-value">{readingText(sc.refDb)}</output>
+                      <output class="scope-step-value" data-testid="scope-overflow-ref-value">{refText}</output>
                       <button type="button" class="scope-step-key" aria-label="Increase scope reference" disabled={!overflowRefUp.available} onclick={() => overflowRefUp.invoke()}>&#8250;</button>
                     </div>
                   {/if}

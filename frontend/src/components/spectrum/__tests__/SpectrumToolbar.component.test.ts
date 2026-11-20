@@ -133,6 +133,8 @@ globalThis.fetch = vi.fn(() =>
 const fetchMock = vi.mocked(globalThis.fetch);
 
 import SpectrumToolbar from '../SpectrumToolbar.svelte';
+import HostedToolbarWithScopeSurface from './support/HostedToolbarWithScopeSurface.svelte';
+import { topologyFixtures, withScopeControls } from '../../../semantic/fixtures/topologies';
 
 // ── Fact and mount helpers ─────────────────────────────────────────────────
 
@@ -1188,13 +1190,16 @@ describe('hosted one row + More screen group (MOR-2545 PR2)', () => {
   it('hands the screen group AND the row tail to the semantic row as the snippet payload — neither is in the closed DOM', () => {
     capturedPayload = [];
     const target = mountToolbar({ hideScopeControls: true, scopeControls: payloadProbe });
-    // Svelte passes snippet arguments as getters: three slots, the first
+    // Svelte passes snippet arguments as getters: five slots, the first
     // reading back `undefined` (the untouched allowBare slot), then the
-    // renderable screen group and the renderable row tail.
-    expect(capturedPayload.length).toBe(3);
+    // renderable screen group and the renderable row tail, then the untouched
+    // moreAsSheet slot and the REF offset (MOR-4605) — undefined while AUTO is off.
+    expect(capturedPayload.length).toBe(5);
     expect((capturedPayload[0] as () => unknown)()).toBeUndefined();
     expect(typeof (capturedPayload[1] as () => unknown)()).toBe('function');
     expect(typeof (capturedPayload[2] as () => unknown)()).toBe('function');
+    expect((capturedPayload[3] as () => unknown)()).toBeUndefined();
+    expect((capturedPayload[4] as () => unknown)()).toBeUndefined();
     // The closed row itself carries none of the screen-only controls.
     for (const label of ['AUTO', 'AVG', 'PEAK', 'BRT', 'BANDS']) expect(button(target, label)).toBeUndefined();
   });
@@ -1477,4 +1482,50 @@ it('keeps SPAN inert without a subscription grant', () => {
   const target = mountToolbar();
   expect(buttons(target).find(item => item.title === 'Increase span')!.disabled).toBe(true);
   expect(target.textContent).not.toContain('±50k');
+});
+
+// ── MOR-4605: AUTO + REF on the HOSTED (desktop-v2) toolbar ────────────────
+
+describe('hosted toolbar: AUTO REF steps the local waterfall offset (MOR-4605)', () => {
+  it('enables AUTO in More, steps the semantic REF keys and never dispatches set_scope_ref', () => {
+    const base = withScopeControls(topologyFixtures['1/single']);
+    const onRefChange = vi.fn();
+    const states: { autoFloor: boolean; autoFloorRef: number }[] = [];
+    const target = document.createElement('div');
+    document.body.appendChild(target);
+    components.push(mount(HostedToolbarWithScopeSurface, {
+      target, props: { view: base, onRefChange, onState: (state: typeof states[number]) => states.push({ ...state }) },
+    }));
+    flushSync();
+    const last = () => states[states.length - 1]!;
+    const refKey = (label: string) =>
+      target.querySelector<HTMLButtonElement>(`[data-testid="scope-ref"] [aria-label="${label}"]`)!;
+
+    // AUTO off: the semantic REF key reaches the radio callback.
+    refKey('Increase scope reference').click();
+    flushSync();
+    expect(onRefChange).toHaveBeenCalledTimes(1);
+    expect(last()).toEqual({ autoFloor: false, autoFloorRef: 0 });
+    onRefChange.mockClear();
+
+    // AUTO on (the key lives in the More screen group).
+    target.querySelector<HTMLButtonElement>('[data-testid="scope-more"]')?.click();
+    flushSync();
+    target.querySelector<HTMLButtonElement>('[data-testid="scope-auto-floor-toggle"]')!.click();
+    flushSync();
+    expect(last().autoFloor).toBe(true);
+
+    const value = () => target.querySelector('[data-testid="scope-ref-value"]')!.textContent;
+    expect(value()).toBe('0');
+    refKey('Increase scope reference').click();
+    refKey('Increase scope reference').click();
+    flushSync();
+    expect(last()).toEqual({ autoFloor: true, autoFloorRef: 10 });
+    expect(value()).toBe('+10');
+    refKey('Decrease scope reference').click();
+    flushSync();
+    expect(last().autoFloorRef).toBe(5);
+    expect(onRefChange).not.toHaveBeenCalled();
+    expect(sendCommandAlarm).not.toHaveBeenCalled();
+  });
 });

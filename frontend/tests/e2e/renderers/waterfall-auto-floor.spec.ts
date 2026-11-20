@@ -1,15 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
 
-declare global {
-  interface Window {
-    __spectrumWitness: {
-      commands: unknown[];
-      scopeIntents(): string[];
-      autoFloor?: { deliverFrames(count: number, noise: number, carrier: number): Promise<void> };
-    };
-  }
-}
-
 /**
  * MOR-4605 — the AUTO waterfall noise floor through the PRODUCT seam: the
  * real SpectrumPanel (toolbar visible, REF live from the captured IC-7300
@@ -148,12 +138,13 @@ test('with AUTO on the real REF keys step the waterfall offset, never the radio 
   const refPlus = refGroup.locator('button', { hasText: /^\+$/ });
 
   // AUTO off: REF + steps the radio's own reference from the captured +5
-  // readback — the recorded intent the toolbar used to send in every mode.
+  // readback — the command the toolbar used to send in every mode, recorded
+  // at the WsChannel send seam (the offline witness ships nothing).
   await refPlus.click();
-  expect(await intents()).toEqual(['scopeControls.onRefChange(10)']);
+  expect(await intents()).toEqual(['set_scope_ref({"ref":10})']);
 
   // AUTO on: the REF slot carries the client-side offset (0), and stepping
-  // it never reaches the scope bus.
+  // it never reaches the command bus.
   await page.getByTestId('scope-auto-floor-toggle').click();
   await deliver(page, 1, 10, 50);
   await expect(refGroup.locator('.toolbar-value')).toHaveText('0');
@@ -162,7 +153,7 @@ test('with AUTO on the real REF keys step the waterfall offset, never the radio 
   await refPlus.click();
   await deliver(page, 1, 10, 50);
   await expect(refGroup.locator('.toolbar-value')).toHaveText('+5');
-  expect(await intents()).toEqual(['scopeControls.onRefChange(10)']);
+  expect(await intents()).toEqual(['set_scope_ref({"ref":10})']);
   const offset = await readRow(page);
   expect(offset.error).toBe(0);
   // REF +5 dB is 5 * 40/60 of the 80 scale above the tracked floor: both

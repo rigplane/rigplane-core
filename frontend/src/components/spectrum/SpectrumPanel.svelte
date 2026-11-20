@@ -52,6 +52,7 @@
   import { getManagedAppTxController } from '../../lib/runtime/tx-controller/managed-app-host';
   import type { ManagedTxState } from '../../lib/runtime/tx-controller/managed-state';
   import SpectrumToolbar from './SpectrumToolbar.svelte';
+  import type { ScopeRefOffset } from './spectrum-toolbar-logic';
   import StatusIndicator from '../../lib/Button/StatusIndicator.svelte';
   import { getBandPlanRegion, loadBandPlanConfig } from '$lib/stores/band-plan-region.svelte';
   import BandPlanOverlay from './BandPlanOverlay.svelte';
@@ -125,7 +126,10 @@
     captureTraceTimeline = false, onTraceComplete, defaultSplitRatio = 0.3 }: {
     hideSourceControls?: boolean; hideScopeControls?: boolean; hideAutoStepToggle?: boolean; hideToolbar?: boolean;
     enableAvg?: boolean; enablePeakHold?: boolean; enableSmooth?: boolean; autoFloor?: boolean; showBandPlan?: boolean;
-    scopeControls?: Snippet<[allowBare?: boolean, screenGroup?: Snippet]>;
+    scopeControls?: Snippet<[
+      allowBare?: boolean, screenGroup?: Snippet, rowTail?: Snippet, moreAsSheet?: boolean,
+      refOffset?: ScopeRefOffset,
+    ]>;
     scopeStatusIndicator?: Snippet;
     scopeRegion?: ManagedScopeRegion | null;
     scopeDemanded?: boolean; onScopeDemandChange?: (enabled: boolean) => void;
