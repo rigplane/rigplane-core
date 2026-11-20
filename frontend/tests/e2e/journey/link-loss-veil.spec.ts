@@ -30,6 +30,20 @@ const DROP_PORT = 18769;
 const DROP_URL = `http://127.0.0.1:${DROP_PORT}`;
 // connection.svelte.ts trips staleness at 5 s; give it margin.
 const STALENESS_WAIT_MS = 6_500;
+const HERE = path.dirname(new URL(import.meta.url).pathname);
+
+// The live scope canvas can keep the headless compositor busy enough that the
+// high-level screenshot call stalls on this host; the CDP path does not wait.
+async function snap(page: Page, filePath: string): Promise<void> {
+  try {
+    await page.screenshot({ path: filePath, timeout: 15_000 });
+  } catch {
+    const cdp = await page.context().newCDPSession(page);
+    const { data } = await cdp.send('Page.captureScreenshot', { format: 'png' });
+    await writeFile(filePath, Buffer.from(data, 'base64'));
+    await cdp.detach();
+  }
+}
 
 const DESKTOP_LAYOUTS = [
   'standard',
@@ -111,7 +125,7 @@ for (const layout of DESKTOP_LAYOUTS) {
       await expect
         .poll(async () => (await (await page.request.get(`${DROP_URL}/api/v1/state`)).json()))
         .toMatchObject({ connection: { rigConnected: true } });
-      await page.screenshot({ path: testInfo.outputPath(`${layout}-1-connected.png`), fullPage: false });
+      await snap(page, testInfo.outputPath(`${layout}-1-connected.png`));
 
       // Rig link lost.
       await writeFile(dropFile, 'drop');
@@ -123,7 +137,7 @@ for (const layout of DESKTOP_LAYOUTS) {
       await page.waitForTimeout(1_000);
       const chipTitleImmediate = await firstMatchingTitle(page);
       const linkFaultImmediate = await linkFaultOf(page);
-      await page.screenshot({ path: testInfo.outputPath(`${layout}-2-link-lost-immediate.png`), fullPage: false });
+      await snap(page, testInfo.outputPath(`${layout}-2-link-lost-immediate.png`));
 
       // Settled: past the staleness threshold, whatever main does has done it.
       await page.waitForTimeout(STALENESS_WAIT_MS);
@@ -131,7 +145,7 @@ for (const layout of DESKTOP_LAYOUTS) {
       const badLinkChipSettled = (await page.getByTestId('bad-link-chip').count()) > 0;
       const linkFaultSettled = await linkFaultOf(page);
       const mobileLinkLineSettled = await mobileLinkLineOf(page);
-      await page.screenshot({ path: testInfo.outputPath(`${layout}-3-link-lost-settled.png`), fullPage: false });
+      await snap(page, testInfo.outputPath(`${layout}-3-link-lost-settled.png`));
 
       // Restored: the indicators clear.
       await rm(dropFile);
@@ -142,7 +156,7 @@ for (const layout of DESKTOP_LAYOUTS) {
       const chipTitleRestored = await firstMatchingTitle(page);
       const linkFaultRestored = await linkFaultOf(page);
       const mobileLinkLineRestored = await mobileLinkLineOf(page);
-      await page.screenshot({ path: testInfo.outputPath(`${layout}-4-restored.png`), fullPage: false });
+      await snap(page, testInfo.outputPath(`${layout}-4-restored.png`));
 
       observations.push({
         layout,
@@ -178,7 +192,7 @@ test('link loss in layout: phone', async ({ page }, testInfo) => {
     await expect
       .poll(async () => (await (await page.request.get(`${DROP_URL}/api/v1/state`)).json()))
       .toMatchObject({ connection: { rigConnected: true } });
-    await page.screenshot({ path: testInfo.outputPath('phone-1-connected.png'), fullPage: false });
+    await snap(page, testInfo.outputPath('phone-1-connected.png'));
 
     await writeFile(dropFile, 'drop');
     await expect
@@ -187,12 +201,12 @@ test('link loss in layout: phone', async ({ page }, testInfo) => {
     await page.waitForTimeout(1_000);
     const linkFaultImmediate = await linkFaultOf(page);
     const mobileLineImmediate = await mobileLinkLineOf(page);
-    await page.screenshot({ path: testInfo.outputPath('phone-2-link-lost-immediate.png'), fullPage: false });
+    await snap(page, testInfo.outputPath('phone-2-link-lost-immediate.png'));
 
     await page.waitForTimeout(STALENESS_WAIT_MS);
     const linkFaultSettled = await linkFaultOf(page);
     const mobileLinkLineSettled = await mobileLinkLineOf(page);
-    await page.screenshot({ path: testInfo.outputPath('phone-3-link-lost-settled.png'), fullPage: false });
+    await snap(page, testInfo.outputPath('phone-3-link-lost-settled.png'));
 
     await rm(dropFile);
     await expect
@@ -201,7 +215,7 @@ test('link loss in layout: phone', async ({ page }, testInfo) => {
     await page.waitForTimeout(1_500);
     const linkFaultRestored = await linkFaultOf(page);
     const mobileLinkLineRestored = await mobileLinkLineOf(page);
-    await page.screenshot({ path: testInfo.outputPath('phone-4-restored.png'), fullPage: false });
+    await snap(page, testInfo.outputPath('phone-4-restored.png'));
 
     observations.push({
       layout: 'phone',
@@ -222,6 +236,6 @@ test('link loss in layout: phone', async ({ page }, testInfo) => {
 });
 
 test.afterAll(async () => {
-  const reportPath = path.resolve(__dirname, '../../.playwright-output/link-loss-report.json');
+  const reportPath = path.resolve(HERE, '../../.playwright-output/link-loss-report.json');
   await writeFile(reportPath, JSON.stringify(observations, null, 2));
 });
