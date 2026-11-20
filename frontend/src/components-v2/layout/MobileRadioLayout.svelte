@@ -70,7 +70,9 @@
   import { getKeyboardConfig } from '$lib/stores/capabilities.svelte';
   import {
     getRadioHealth, getRadioLinkState, getRadioPowerOn, getRadioReady, getRigConnected,
+    getWsConnected, hasEverConnected,
   } from '$lib/stores/connection.svelte';
+  import { deriveLinkFault } from '$lib/runtime/adapters/link-fault';
   import { deriveRadioHealthLabel } from '$lib/runtime/adapters/radio-health-label';
   import { toRadioViewModel } from '$lib/runtime/adapters/radio-view-model-adapter';
   import { projectHeaderFrequency } from '$lib/runtime/adapters/tx-capabilities';
@@ -98,6 +100,16 @@
     radioReady: getRadioReady(),
     radioState: getRadioPowerOn() === false ? 'disconnected' : getRadioLinkState(),
   }) : '');
+
+  // MOR-2241 — the same link-fault veil RadioLayout carries (app.css keys the
+  // shared rule on `[data-link-fault]`); this layout has no status bar, its
+  // `.m-radio-link-line` states the fault and is exempt from the filter there.
+  let linkFault = $derived(deriveLinkFault({
+    everConnected: hasEverConnected(),
+    wsConnected: getWsConnected(),
+    connectionStale: runtime.connectionStale,
+  }));
+  let linkFaultAttribute = $derived(linkFault === 'none' ? undefined : linkFault);
 
   // MOR-2442 — the PORTRAIT mount's managed scope region: the bare
   // `scopeManaged` SRS instance below binds it out here, and the portrait
@@ -554,7 +566,7 @@
 
 {#if isLandscape}
 <!-- ═══ LANDSCAPE: fullscreen spectrum + VFO overlay ═══ -->
-<div class="m-landscape">
+<div class="m-landscape" data-link-fault={linkFaultAttribute}>
   <KeyboardHandler config={keyboardConfig} onAction={keyboardHandlers.dispatch} />
   <!-- Radio-link reason line: in the layout flow, so .m-ls-body (spectrum and
        overlay bar) starts below it. -->
@@ -661,7 +673,7 @@
 </div>
 {:else}
 <!-- ═══ PORTRAIT: normal mobile layout ═══ -->
-<div class="m-layout">
+<div class="m-layout" data-link-fault={linkFaultAttribute}>
   <KeyboardHandler config={keyboardConfig} onAction={keyboardHandlers.dispatch} />
 
   <!-- ═══ STICKY VFO HEADER ═══ -->

@@ -1046,34 +1046,11 @@
     grid-template-rows: 28px 200px minmax(0, 1fr) auto;
   }
 
-  /* MOR-2425 C-R3 — the link-fault veil.
-
-     One rule set, keyed on the face root's `data-link-fault`, with no
-     per-skin variant: a desaturation plus a contrast reduction, so it reads
-     the same in every palette and cannot collide with an accent colour. The
-     brightness term is there because reducing contrast on a dark face raises
-     its blacks — without it the veiled face reads as brighter, not deader.
-
-     `.status-bar` and `.control-link-lost` are exempt, for two reasons that
-     point the same way. They carry the words for both arms of the fault —
-     the disconnect bar for ws-down, the bad-link chip inside the bar for
-     radio-silent — so they must keep their colour while the face loses its.
-     And a CSS filter makes the element it is set on a containing block for
-     its `position: fixed` descendants: filtering `.status-bar` re-anchors
-     the popovers it hosts to that 28px strip (row 2 of the grid below).
-
-     The receiver deck is skipped on its own line and its children taken
-     instead, because on the two desktop faces the deck is `display: contents`
-     (`.desktop-control-face > .receiver-deck` below), where a filter would
-     generate no box at all and veil nothing. On the generic root the deck IS
-     a box, so skipping it leaves that box's own background and border
-     unveiled; that root is reached only when the active manifest declares no
-     `vfo` surface, and the manifests of the two skins that mount this shell
-     (`desktop-v2`, `sdr-test`) both declare it. */
-  :global(.radio-layout[data-link-fault] > *:not(.status-bar, .control-link-lost, .receiver-deck)),
-  :global(.radio-layout[data-link-fault] > .receiver-deck > *) {
-    filter: saturate(0.08) contrast(0.5) brightness(0.62);
-  }
+  /* MOR-2425 C-R3 — the link-fault veil. The rule itself lives in app.css,
+     keyed on `[data-link-fault]` so every layout shell shares it (MOR-2241
+     widened it from this face); this root is one of its carriers. The
+     comment that explains the filter, the status-bar exemptions and the
+     receiver-deck special case sits with the rule there. */
 
   .radio-layout.semantic-deck:not(.desktop-control-face) {
     grid-template-rows: 28px minmax(240px, auto) minmax(320px, 1fr) auto;
