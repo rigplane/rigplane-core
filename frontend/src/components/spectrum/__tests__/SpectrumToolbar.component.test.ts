@@ -779,6 +779,25 @@ describe('structural and browser-local behavior', () => {
     expect(sendCommandAlarm).not.toHaveBeenCalled();
   });
 
+  it('exposes the AUTO waterfall noise-floor toggle beside REF, default OFF and browser-local (MOR-4605)', () => {
+    const target = mountToolbar({ autoFloor: false });
+    const auto = target.querySelector<HTMLButtonElement>('[data-testid="scope-auto-floor-toggle"]')!;
+    expect(auto).not.toBeNull();
+    // It sits in the REF cluster, after the REF stepper.
+    const refGroup = auto.closest('.toolbar-group')!;
+    expect(refGroup.querySelector('.toolbar-label')!.textContent!.trim()).toBe('REF');
+    const lit = () => auto.getAttribute('aria-pressed') === 'true' || auto.classList.contains('active');
+    expect(lit()).toBe(false);
+    auto.click();
+    flushSync();
+    expect(lit()).toBe(true);
+    auto.click();
+    flushSync();
+    expect(lit()).toBe(false);
+    for (const [, spy] of scopeSpies()) expect(spy).not.toHaveBeenCalled();
+    expect(sendCommandAlarm).not.toHaveBeenCalled();
+  });
+
   it('unmounts cleanly', () => {
     const target = mountToolbar();
     const component = components.pop()!;
@@ -853,8 +872,10 @@ describe('band-plan credential-free HTTP', () => {
 // manual step change (STEP click) still disables auto-step exactly as
 // before — the toggle only restores the way *back*.
 describe('auto-step toggle (MOR-1486)', () => {
+  // The step toggle is the only AUTO key with this class; the MOR-4605
+  // waterfall AUTO floor key beside REF shares the 'AUTO' label.
   function autoToggle(root: HTMLElement) {
-    return button(root, 'AUTO');
+    return root.querySelector<HTMLButtonElement>('.auto-step-toggle') ?? undefined;
   }
 
   it('renders as a real button with aria-pressed, reflecting the store', () => {
@@ -934,8 +955,10 @@ describe('auto-step toggle (MOR-1486)', () => {
 // prop. This is deliberately a structural prop, not a skin-name check — the
 // toolbar itself has no idea which layout mounted it.
 describe('hideAutoStepToggle gate (MOR-1486 ruling B)', () => {
+  // The step toggle is the only AUTO key with this class; the MOR-4605
+  // waterfall AUTO floor key beside REF shares the 'AUTO' label.
   function autoToggle(root: HTMLElement) {
-    return button(root, 'AUTO');
+    return root.querySelector<HTMLButtonElement>('.auto-step-toggle') ?? undefined;
   }
 
   it('shows the toggle by default (prop omitted)', () => {

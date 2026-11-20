@@ -35,6 +35,9 @@
     enableAvg?: boolean;
     enablePeakHold?: boolean;
     enableSmooth?: boolean;
+    /** MOR-4605: AUTO waterfall noise floor — a client-side view option
+     * (same category as BRT/SMTH), default OFF until the owner's bench look. */
+    autoFloor?: boolean;
     brtLevel?: number;
     colorScheme?: ColorSchemeName;
     fullscreen?: boolean;
@@ -63,6 +66,7 @@
     enableAvg = $bindable(true),
     enablePeakHold = $bindable(true),
     enableSmooth = $bindable(true),
+    autoFloor = $bindable(false),
     brtLevel = $bindable(0),
     colorScheme = $bindable('classic' as ColorSchemeName),
     fullscreen = $bindable(false),
@@ -421,6 +425,13 @@
     <button type="button" class="scope-step-key" onclick={() => (brtLevel = clampBrt(brtLevel, 5))}
       aria-label="Increase brightness">+</button>
   </div>
+  <!-- MOR-4605: AUTO waterfall noise floor — client-side, beside the BRT
+       offset in the More screen group. -->
+  <div class="toolbar-group">
+    <button type="button" class="scope-flat-key" data-lit={autoFloor} aria-pressed={autoFloor}
+      data-testid="scope-auto-floor-toggle"
+      onclick={() => (autoFloor = !autoFloor)} title="Automatic waterfall noise floor">AUTO</button>
+  </div>
   <div class="toolbar-group">
     <select class="scope-capsule-select" bind:value={colorScheme} title="Waterfall palette">
       <option value="classic">Classic</option>
@@ -588,6 +599,13 @@
              slot — never a '—'. -->
         <span class="toolbar-value ref-value">{scopeRef === null ? '' : `${scopeRef > 0 ? '+' : ''}${scopeRef}`}</span>
         <button class="toolbar-btn small" disabled={scopeRef === null} onclick={() => changeRef(5)}>+</button>
+        <!-- MOR-4605: AUTO tracks the waterfall noise floor; the display
+             offset is then relative to that floor. Client-side view option,
+             never a scope intent — it stays live with REF unread. -->
+        <button type="button" class="toolbar-btn small" class:active={autoFloor} aria-pressed={autoFloor}
+          data-testid="scope-auto-floor-toggle"
+          onclick={() => (autoFloor = !autoFloor)}
+          title="Automatic waterfall noise floor">AUTO</button>
       </div>
       {#if !hideSourceControls && hasDualReceiver()}
         <div class="toolbar-sub-separator"></div>
@@ -652,6 +670,11 @@
               <span class="gear-value">{scopeRef === null ? '' : `${scopeRef > 0 ? '+' : ''}${scopeRef}`}</span>
               <button class="gear-btn" disabled={scopeRef === null} onclick={() => changeRef(5)} aria-label="Increase reference">+</button>
               <button class="gear-btn gear-btn-zero" disabled={scopeRef === null} onclick={() => changeRef(0)} aria-label="Reset reference">0</button>
+              <!-- MOR-4605: the same client-side AUTO floor toggle as the
+                   desktop REF cluster. -->
+              <button type="button" class="gear-btn" class:active={autoFloor} aria-pressed={autoFloor}
+                data-testid="scope-auto-floor-toggle-mobile"
+                onclick={() => (autoFloor = !autoFloor)} aria-label="Automatic waterfall noise floor">AUTO</button>
             </div>
           {/if}
         </div>
@@ -1261,6 +1284,13 @@
     background: rgba(0, 212, 255, 0.1);
     border-color: rgba(0, 212, 255, 0.4);
     color: #00d4ff;
+  }
+
+  /* MOR-4605: the latched AUTO state mirrors the toolbar's active key. */
+  .gear-btn.active {
+    color: #00d4ff;
+    border-color: rgba(0, 212, 255, 0.3);
+    background: rgba(0, 212, 255, 0.1);
   }
 
   .gear-btn-zero {

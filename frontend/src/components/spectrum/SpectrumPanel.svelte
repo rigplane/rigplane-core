@@ -112,6 +112,8 @@
   // phone layout can own them from its SCOPE chip tab. Callers that do not
   // bind them behave exactly as before. MOR-4383 adds `enableSmooth` (the
   // waterfall temporal-smoothing toggle, default ON) to the same mechanism.
+  // MOR-4605 adds `autoFloor` (the AUTO waterfall noise-floor toggle,
+  // default OFF until the owner's bench look) the same way.
   //
   // `colorRoles` is resolved over the defaults once, and the one resolved
   // record feeds the canvas renderer options, the CSS custom properties the
@@ -119,11 +121,11 @@
   // panel root — one resolution for all three, pinned by `resolves the roles
   // once per mount for both the root attribute and the renderer options`.
   let { hideSourceControls = false, hideScopeControls = false, hideAutoStepToggle = false, hideToolbar = false,
-    enableAvg = $bindable(true), enablePeakHold = $bindable(true), enableSmooth = $bindable(true), showBandPlan = $bindable(true), scopeControls,
+    enableAvg = $bindable(true), enablePeakHold = $bindable(true), enableSmooth = $bindable(true), autoFloor = $bindable(false), showBandPlan = $bindable(true), scopeControls,
     scopeStatusIndicator, scopeRegion, scopeDemanded = true, onScopeDemandChange, colorRoles,
     captureTraceTimeline = false, onTraceComplete, defaultSplitRatio = 0.3 }: {
     hideSourceControls?: boolean; hideScopeControls?: boolean; hideAutoStepToggle?: boolean; hideToolbar?: boolean;
-    enableAvg?: boolean; enablePeakHold?: boolean; enableSmooth?: boolean; showBandPlan?: boolean;
+    enableAvg?: boolean; enablePeakHold?: boolean; enableSmooth?: boolean; autoFloor?: boolean; showBandPlan?: boolean;
     scopeControls?: Snippet<[allowBare?: boolean, screenGroup?: Snippet]>;
     scopeStatusIndicator?: Snippet;
     scopeRegion?: ManagedScopeRegion | null;
@@ -1194,6 +1196,7 @@
   let waterfallOptions = $derived<WaterfallOptions>({
     ...defaultWaterfallOptions,
     temporalSmoothing: enableSmooth,
+    autoFloor,
     spanHz: viewportSpanHz,
     sampleSpanHz: spanHz,
     coverage: audioFft ? undefined : frameGeometry?.coverage,
@@ -1854,7 +1857,7 @@
        tab instead. An audio-FFT source keeps its original no-toolbar
        branch. -->
   {:else if !hideToolbar}
-    <SpectrumToolbar bind:enableAvg bind:enablePeakHold bind:enableSmooth bind:brtLevel bind:colorScheme bind:fullscreen bind:showBandPlan bind:hiddenLayers bind:showEiBi {scopeDemandOn} onScopeDemandChange={setScopeDemand} {hideSourceControls} {hideScopeControls} {hideAutoStepToggle} {scopeControls} scopePresets={scopePresetOptions} onScopePresetSelect={applyScopePreset} onScopeZoom={nudgeScopeZoom} scopeStatusIndicator={sdrSource || scopeStatusIndicator || scopeError ? panelScopeStatus : undefined} />
+    <SpectrumToolbar bind:enableAvg bind:enablePeakHold bind:enableSmooth bind:autoFloor bind:brtLevel bind:colorScheme bind:fullscreen bind:showBandPlan bind:hiddenLayers bind:showEiBi {scopeDemandOn} onScopeDemandChange={setScopeDemand} {hideSourceControls} {hideScopeControls} {hideAutoStepToggle} {scopeControls} scopePresets={scopePresetOptions} onScopePresetSelect={applyScopePreset} onScopeZoom={nudgeScopeZoom} scopeStatusIndicator={sdrSource || scopeStatusIndicator || scopeError ? panelScopeStatus : undefined} />
   {/if}
   {#if (audioFft || hideToolbar) && scopeError}{@render panelScopeStatus()}{/if}
   <div
