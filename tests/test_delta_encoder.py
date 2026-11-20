@@ -649,6 +649,8 @@ def test_each_control_queue_gets_the_rendering_it_registered_for() -> None:
     # A re-read of the same value: only its freshness stamp and counters move.
     srv.command_state_store.apply(_store_observation(2.0))
     srv._last_state_broadcast = 0.0  # noqa: SLF001
+    # Liveness-only, so past the MOR-4244 once-per-second hold as well.
+    srv._last_state_delivery = 0.0  # noqa: SLF001
     srv._broadcast_state_update()  # noqa: SLF001
     [leaf] = _drain(leaf_queue)
     [default] = _drain(default_queue)

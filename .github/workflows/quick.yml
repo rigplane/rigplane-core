@@ -163,8 +163,10 @@ jobs:
     # job avoids the ubuntu-latest pickup + apt install passes. Operator
     # doc: rigplane-tower/docs/development/mac-mini-self-hosted-runners.md.
     # Build pool, not the 2 GiB gate pool (sized for 5-35 s guard jobs): svelte-check
-    # needs 1.5-2 GiB of Node heap (MOR-4214).
-    runs-on: [self-hosted, Linux, ARM64, build]
+    # needs 1.5-2 GiB of Node heap (MOR-4214). Arch-neutral labels (owner
+    # direction 2026-11-20): every build runner, ARM64 or X64, carries
+    # self-hosted,Linux,build, so either pool may pick this job up.
+    runs-on: [self-hosted, Linux, build]
     timeout-minutes: 25
     # MOR-3778: presetting the variables Chromium's browser process adds at
     # startup removed a headless_shell SIGSEGV in getenv in a minimal-environment
@@ -282,7 +284,18 @@ jobs:
       (github.event_name == 'merge_group' ||
       github.event.pull_request.draft == false) &&
       needs.classify.outputs.frontend == 'true'
-    runs-on: [self-hosted, Linux, ARM64, build]
+    # The guards and journey legs request the arch-neutral build set (owner
+    # direction 2026-11-20: any runner takes any test; both build pools carry
+    # self-hosted,Linux,build). The visual leg alone keeps an architecture
+    # pin: its pixel comparisons (i18n visual smoke, fixture-harness capture)
+    # run against arm64 Linux Chromium renders, the same baseline
+    # architecture as the visual.yml pixel-diff job, so it stays on
+    # [self-hosted, Linux, ARM64, build] and must not regenerate baselines
+    # from an X64 render.
+    # runs-on-allowlist: matrix-conditional pool — the visual leg pins
+    # [self-hosted, Linux, ARM64, build] (arm64 pixel baselines); guards and
+    # journey request the arch-neutral build set.
+    runs-on: ${{ matrix.group == 'visual' && fromJSON('["self-hosted", "Linux", "ARM64", "build"]') || fromJSON('["self-hosted", "Linux", "build"]') }}
     timeout-minutes: 25
     strategy:
       fail-fast: false
@@ -422,6 +435,9 @@ jobs:
         with:
           name: ftx1-rit-e2e-report-${{ matrix.group }}
           path: .playwright-output
+          # upload-artifact >= v4.4 skips hidden paths unless asked; without this the
+          # dot-directory was never uploaded ("No files were found", run 44754002530).
+          include-hidden-files: true
           if-no-files-found: ignore
           retention-days: 3
 
@@ -444,6 +460,9 @@ jobs:
         with:
           name: journey-e2e-report-${{ matrix.group }}
           path: .playwright-output
+          # upload-artifact >= v4.4 skips hidden paths unless asked; without this the
+          # dot-directory was never uploaded ("No files were found", run 44754002530).
+          include-hidden-files: true
           if-no-files-found: ignore
           retention-days: 3
 
@@ -459,7 +478,10 @@ jobs:
       needs.classify.outputs.ci == 'true' ||
       needs.classify.outputs.web == 'true')
     # Build pool, not the 2 GiB gate pool: four pytest workers peak near 2 GiB (MOR-4214).
-    runs-on: [self-hosted, Linux, X64, build]
+    # Arch-neutral labels (owner direction 2026-11-20): the suite has no
+    # architecture requirement — before MOR-4214 it ran on ARM64 — so any
+    # build runner may pick this job up.
+    runs-on: [self-hosted, Linux, build]
     timeout-minutes: 25
     # MOR-3778: presetting the variables Chromium's browser process adds at
     # startup removed a headless_shell SIGSEGV in getenv in a minimal-environment
@@ -616,7 +638,10 @@ jobs:
       github.event.pull_request.draft == false) &&
       needs.classify.outputs.core == 'true'
     # Build pool, not the 2 GiB gate pool: four pytest workers peak near 2 GiB (MOR-4214).
-    runs-on: [self-hosted, Linux, X64, build]
+    # Arch-neutral labels (owner direction 2026-11-20): the suite has no
+    # architecture requirement — before MOR-4214 it ran on ARM64 — so any
+    # build runner may pick this job up.
+    runs-on: [self-hosted, Linux, build]
     timeout-minutes: 25
     strategy:
       fail-fast: false
