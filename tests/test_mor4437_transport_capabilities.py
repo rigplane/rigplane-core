@@ -270,25 +270,27 @@ class TestRuntimeCapabilitiesTransportGate:
     def test_remote_transport_not_serial_gapped(self):
         class _RemoteRadio:
             backend_id = "rigctld"
-            capabilities = {"audio", "tx"}
+            # "tx"/"meters" carry no protocol gate in runtime_capabilities
+            # (unlike "scope"/"audio"), so a bare stub survives unchanged.
+            capabilities = {"tx", "meters"}
             profile = get_radio_profile(G7250)
 
         # The G7250 gap is serial-specific; a REMOTE link keeps the set.
-        assert runtime_capabilities(_RemoteRadio()) == {"audio", "tx"}
+        assert runtime_capabilities(_RemoteRadio()) == {"tx", "meters"}
 
     def test_unknown_transport_keeps_declared_set(self):
         class _BareRadio:
-            capabilities = {"audio", "tx"}
+            capabilities = {"tx", "meters"}
             profile = get_radio_profile(G7250)
 
-        assert runtime_capabilities(_BareRadio()) == {"audio", "tx"}
+        assert runtime_capabilities(_BareRadio()) == {"tx", "meters"}
 
     def test_no_profile_keeps_declared_set(self):
         class _NoProfile:
             backend_id = "icom_serial"
-            capabilities = {"audio", "scope"}
+            capabilities = {"tx", "meters"}
 
-        assert runtime_capabilities(_NoProfile()) == {"audio", "scope"}
+        assert runtime_capabilities(_NoProfile()) == {"tx", "meters"}
 
 
 # ── Pacing: poller, startup gate, initial-state sweep ────────────────
