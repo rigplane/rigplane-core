@@ -32,7 +32,12 @@ import SpectrumPanel from '../src/components/spectrum/SpectrumPanel.svelte';
 import { ScopeStream } from '../src/lib/runtime/scope-stream';
 import type { ScopeMessageSource } from '../src/lib/runtime/scope-stream';
 import { runtime } from '../src/lib/runtime/frontend-runtime';
+import { radio } from '../src/lib/stores/radio.svelte';
+import { setCapabilities } from '../src/lib/stores/capabilities.svelte';
+import { harness } from './harness-state';
 import radioWireUrl from '../../tests/fixtures/scope-wire/radio.bin?url';
+import ic7300StateJson from '../src/lib/runtime/adapters/__tests__/fixtures/ic7300-state.json';
+import ic7300CapsJson from '../src/lib/runtime/adapters/__tests__/fixtures/ic7300-capabilities.json';
 import { parseCurrentScopeFrame } from '../src/lib/runtime/adapters/scope-adapter';
 import {
   getFilterHandlers,
@@ -46,12 +51,25 @@ type WitnessCommand = Readonly<{
 
 declare global {
   interface Window {
-    __spectrumWitness: { commands: WitnessCommand[] };
+    __spectrumWitness: {
+      commands: WitnessCommand[];
+      /** MOR-4605: the scope-control intents the fixture bus recorded
+       * (`scopeControls.<handler>` — the stub binder records, never commands). */
+      scopeIntents(): string[];
+      autoFloor?: {
+        deliverFrames(count: number, noise: number, carrier: number): Promise<void>;
+      };
+    };
   }
 }
 
 const commands: WitnessCommand[] = [];
-window.__spectrumWitness = { commands };
+window.__spectrumWitness = {
+  commands,
+  scopeIntents: () => harness.calls
+    .filter((call) => call.fn.startsWith('scopeControls.'))
+    .map((call) => `${call.fn}(${call.args.map(JSON.stringify).join(', ')})`),
+};
 const vfoHandlers = getVfoHandlers();
 const filterHandlers = getFilterHandlers();
 vfoHandlers.onFreqChange = (...args) => commands.push({ kind: 'frequency', args });
@@ -130,8 +148,44 @@ function encodeWitnessFrame(): ArrayBuffer {
   return bytes.buffer;
 }
 
+/* ── MOR-4605 product-seam mode (`?autoFloor`) ─────────────────────────────
+ * The browser test clicks the panel's real AUTO and REF keys, so this mode
+ * mounts the toolbar (hideScopeControls=false) against the REAL captured
+ * IC-7300 state/capabilities pair — the one pair in the tree whose
+ * `scopeControls.refDb` is observed with a declared −20..20 range, so the
+ * REF keys render live exactly as on the bench. Frames stay flat noise plus
+ * one 5-bin carrier (integer levels, converging to exact row bytes after a
+ * level change) and are delivered on demand through the SAME ingress: the
+ * production v2 header, the real parser, the real ScopeStream. */
+const autoFloorMode = new URLSearchParams(location.search).has('autoFloor');
+/** Carrier bins 120..124 — the exact-carrier middle is bin 122. */
+const AUTO_FLOOR_CARRIER = [120, 125] as const;
+/** The first delivered frame's levels; the spec's phases continue from it. */
+const AUTO_FLOOR_FIRST = { noise: 10, carrier: 50 } as const;
+
+function encodeAutoFloorFrame(noise: number, carrier: number, seq: number): ArrayBuffer {
+  const bytes = new Uint8Array(pixelOffset + BIN_COUNT);
+  bytes.set(new Uint8Array(template, 0, pixelOffset));
+  const view = new DataView(bytes.buffer);
+  view.setUint16(6, BIN_COUNT, true);
+  view.setUint32(12, seq, true);
+  view.setFloat64(24, START_HZ, true);
+  view.setFloat64(32, END_HZ, true);
+  view.setFloat64(40, START_HZ, true);
+  view.setFloat64(48, END_HZ, true);
+  bytes.fill(noise, pixelOffset);
+  bytes.fill(carrier, pixelOffset + AUTO_FLOOR_CARRIER[0], pixelOffset + AUTO_FLOOR_CARRIER[1]);
+  return bytes.buffer;
+}
+
+if (autoFloorMode) {
+  radio.current = ic7300StateJson as unknown as typeof radio.current;
+  setCapabilities(ic7300CapsJson as Parameters<typeof setCapabilities>[0]);
+}
+
 let deliverWitness: ((buffer: ArrayBuffer) => void) | null = null;
 let delivered = false;
+let autoFloorSeq = 0;
 let markReady: () => void;
 const ready = new Promise<void>((resolve) => { markReady = resolve; });
 const witnessSource: ScopeMessageSource = {
@@ -143,12 +197,31 @@ const witnessStream = new ScopeStream(witnessSource,
     if (!subscription || subscription.maxFps === 0 || subscription.width < 1 || delivered) return;
     delivered = true;
     queueMicrotask(() => {
-      deliverWitness?.(encodeWitnessFrame());
+      if (autoFloorMode) {
+        deliverWitness?.(encodeAutoFloorFrame(
+          AUTO_FLOOR_FIRST.noise, AUTO_FLOOR_FIRST.carrier, ++autoFloorSeq));
+      } else deliverWitness?.(encodeWitnessFrame());
       flushSync();
       document.body.dataset.harnessReady = 'true';
       markReady();
     });
   });
+if (autoFloorMode) {
+  // One animation frame per delivered frame: the panel's render scheduler
+  // coalesces wakes inside one frame, so each delivery is awaited out before
+  // the next replaces the pending one.
+  const nextFrame = () => new Promise<void>((resolve) => { requestAnimationFrame(() => resolve()); });
+  window.__spectrumWitness.autoFloor = {
+    async deliverFrames(count: number, noise: number, carrier: number): Promise<void> {
+      for (let index = 0; index < count; index += 1) {
+        await nextFrame();
+        deliverWitness?.(encodeAutoFloorFrame(noise, carrier, ++autoFloorSeq));
+        flushSync();
+      }
+      await nextFrame();
+    },
+  };
+}
 // The witness owns no socket: the synthetic stream replaces the runtime's
 // shared stream and the health getters read as an honest connected viewer.
 (runtime.scope as unknown as { stream(): typeof witnessStream }).stream = () => witnessStream;
@@ -177,7 +250,9 @@ mount(SpectrumPanel, {
   props: {
     scopeRegion: REGION,
     scopeDemanded: true,
-    hideScopeControls: true,
+    // MOR-4605 mode shows the toolbar's REF cluster (the AUTO key beside
+    // REF); the default frozen witness keeps its original props untouched.
+    hideScopeControls: !autoFloorMode,
     hideSourceControls: true,
     hideAutoStepToggle: true,
   },
