@@ -385,16 +385,26 @@ export class WaterfallRenderer {
     const centre = o.centerHz - o.panoramaShiftHz;
     const keep = this.smoothBins === samples && this.smoothSpan === span
       && this.smoothStart === start && this.smoothRange === range && this.smoothCentre === centre;
-    // MOR-4605: AUTO tracks the row's noise floor with the shared MOR-4463
+    // MOR-4605: the row's noise floor is tracked with the shared MOR-4463
     // estimator/follower, converted to the 0..80 scale the shader colours in
     // (jump 24 of 80 — another band, not drift — as in the stacked trace).
-    // A new stream (above) or clear() reseeds; geometry runs keep following,
-    // so an animated pan cannot unsmooth the floor. AUTO off holds no floor,
-    // so re-enabling reseeds from the next frame.
+    // Tracking runs with AUTO off too: the uAutoFloor uniform alone gates
+    // the subtraction, so switching AUTO on recolours the retained history
+    // with the floor each row carried. A new stream (above) or clear()
+    // reseeds; geometry runs keep following, so an animated pan cannot
+    // unsmooth the floor. Only the covered bins estimate: rows can carry
+    // zero-filled columns outside the granted coverage, and zeros would
+    // drag the estimate down.
     const amplitudeMax = o.sampleAmplitudeMax ?? 80;
-    this.floor = o.autoFloor
-      ? followNoiseFloor(this.floor, estimateNoiseFloor(data, offset, samples) * 80 / amplitudeMax, 24)
-      : null;
+    const sampleStart = centre - span / 2 - start * span / range;
+    let floorLo = 0, floorHi = samples - 1;
+    if (o.coverage) {
+      const binHz = span / range / samples;
+      floorLo = Math.min(Math.max(Math.ceil((o.coverage.startHz - sampleStart) / binHz - 0.5), 0), samples - 1);
+      floorHi = Math.min(Math.max(Math.floor((o.coverage.endHz - sampleStart) / binHz - 0.5), floorLo), samples - 1);
+    }
+    this.floor = followNoiseFloor(this.floor,
+      estimateNoiseFloor(data, offset + floorLo, floorHi - floorLo + 1) * 80 / amplitudeMax, 24);
     if (this.smoothState.length !== samples) {
       this.smoothState = new Float32Array(samples);
       this.filtered = new Float32Array(samples);
@@ -414,7 +424,6 @@ export class WaterfallRenderer {
       this.filtered[i] = (left + 2 * this.smoothState[i] + right) / 4;
       this.currentRow[i] = Math.round(this.filtered[i]);
     }
-    const sampleStart = centre - span / 2 - start * span / range;
     const delta = sampleStart - this.originHz;
     this.row[0] = Math.fround(delta); this.row[1] = delta - this.row[0]; this.row[2] = span / range;
     this.row[3] = (o.coverage?.startHz ?? Math.min(sampleStart, sampleStart + span / range)) - sampleStart;

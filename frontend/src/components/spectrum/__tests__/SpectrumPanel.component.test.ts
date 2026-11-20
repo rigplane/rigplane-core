@@ -6380,4 +6380,32 @@ describe('SpectrumPanel waterfall stream identity (MOR-4383)', () => {
       capture.restore();
     }
   });
+
+  it('AUTO beside REF reaches the renderer through the autoFloor binding (MOR-4605)', async () => {
+    const capture = captureWaterfallFixtures();
+    try {
+      const target = mountPanel();
+      const update = vi.spyOn(WaterfallRenderer.prototype, 'updateOptions');
+      try {
+        emitFrame({ sequence: 1 });
+        await flushWaterfallPaint();
+        // Default OFF: the toolbar key beside REF renders unlit and the
+        // renderer gets autoFloor false.
+        expect(update.mock.calls.at(-1)?.[0]).toMatchObject({ autoFloor: false });
+        const auto = target.querySelector<HTMLButtonElement>('[data-testid="scope-auto-floor-toggle"]');
+        expect(auto).not.toBeNull();
+        expect(auto!.getAttribute('aria-pressed')).toBe('false');
+        auto!.click();
+        flushSync();
+        emitFrame({ sequence: 2 });
+        await flushWaterfallPaint();
+        expect(auto!.getAttribute('aria-pressed')).toBe('true');
+        expect(update.mock.calls.at(-1)?.[0]).toMatchObject({ autoFloor: true });
+      } finally {
+        update.mockRestore();
+      }
+    } finally {
+      capture.restore();
+    }
+  });
 });

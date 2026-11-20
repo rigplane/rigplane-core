@@ -50,14 +50,56 @@ function uniform(f: ReturnType<typeof webglFixture>, name: string): number {
 }
 
 describe('MOR-4605 AUTO waterfall noise floor', () => {
-  it('is off by default: every row carries floor 0 and the shader gate stays 0', () => {
+  it('is off by default: the shader gate stays 0 while the floor is tracked', () => {
     const f = webglFixture(100, 50);
     const r = new WaterfallRenderer(f.canvas, options);
     r.pushRow(frame(20, 60));
-    r.pushRow(frame(30, 70));
-    expect(rowMetadata(f).length).toBeGreaterThan(0);
-    for (const row of rowMetadata(f)) expect(row[11]).toBe(0);
+    r.pushRow(frame(20, 60));
+    // Tracking runs with AUTO off too, so enabling AUTO later recolours the
+    // retained history; while off only the uAutoFloor uniform gates the
+    // subtraction, leaving the colour mapping untouched.
+    expect(lastFloor(f)).toBe(20);
     expect(uniform(f, 'uAutoFloor')).toBe(0);
+    const background = lastUploadedRow(f)[10];
+    expect(background).toBe(20);
+    expect(shade(background, 20, 0, false)).toBe(shade(20, 0, 0, false));
+    expect(shade(background, 20, 0, false)).toBeGreaterThan(0);
+  });
+
+  it('recolours the retained history when AUTO switches on, and back when it switches off', () => {
+    const f = webglFixture(100, 50);
+    const r = new WaterfallRenderer(f.canvas, options);
+    for (let i = 0; i < 5; i++) r.pushRow(frame(20, 60));
+    const floor = lastFloor(f);
+    const background = lastUploadedRow(f)[10];
+    expect(floor).toBe(20);
+    expect(uniform(f, 'uAutoFloor')).toBe(0);
+    // No new frame: the toggle alone flips the gate and the history rows
+    // already carry their floor.
+    expect(r.updateOptions({ autoFloor: true })).toBe(true);
+    r.draw();
+    expect(uniform(f, 'uAutoFloor')).toBe(1);
+    expect(shade(background, floor, 0, true)).toBe(0);
+    expect(r.updateOptions({ autoFloor: false })).toBe(true);
+    r.draw();
+    expect(uniform(f, 'uAutoFloor')).toBe(0);
+    expect(shade(background, floor, 0, false)).toBeGreaterThan(0);
+  });
+
+  it('estimates the floor over the covered bins only', () => {
+    const f = webglFixture(100, 50);
+    const r = new WaterfallRenderer(f.canvas, {
+      ...options, autoFloor: true,
+      coverage: { startHz: 14_050_000, endHz: 14_100_000 },
+    });
+    // 100 bins over [14_000_000, 14_100_000), 1 kHz each. The covered half
+    // (bins 50..99) carries noise 20 and a carrier 60; the uncovered half
+    // is zero-filled and must not drag the estimate down.
+    const data = new Uint8Array(100);
+    data.fill(20, 50, 95);
+    data.fill(60, 95, 100);
+    r.pushRow(data);
+    expect(lastFloor(f)).toBe(20);
   });
 
   it('keeps the background dark and the carrier colour across a mid-stream noise rise', () => {
