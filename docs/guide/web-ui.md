@@ -46,6 +46,17 @@ origin; the LAN HTTP URL itself remains insecure. This requirement affects
 browser microphone capture and voice TX; it does not imply that every control
 or receive operation fails over HTTP.
 
+### Microphone processing
+
+The browser microphone is sent raw by default: echo cancellation, noise
+suppression and automatic gain control are all off, and the radio's own speech
+processing shapes the audio. If a noisy room or a weak microphone needs the
+browser's processing, choose **Browser processing** under **Microphone
+processing**: in the phone's TX settings sheet, in the TX levels dialog of the
+sidebar TX panel, or under **TX AUDIO** in Settings on the desktop layout
+where the sidebar TX panel is replaced by the instrument deck. The choice is
+kept per browser or desktop app and applies from the next transmission.
+
 ## What Runs Where
 
 | Layer | Implementation | Notes |
