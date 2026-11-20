@@ -24,6 +24,7 @@ from rigplane.cli import _build_parser, _cmd_web
 from rigplane.core.radio_protocol import Radio
 from rigplane.web.server import WebServer
 from rigplane.web.transport.webrtc import webrtc_available
+from rigplane.web.transport.webrtc_contract import WebRtcRequestError
 
 _webrtc = pytest.mark.skipif(
     not webrtc_available(), reason="aiortc extra not installed"
@@ -139,7 +140,9 @@ _STATION = ["--host", "1.2.3.4", "station", "--port", "0", "--no-discovery"]
 async def test_station_webrtc_answerer_available_on_loopback_only() -> None:
     observed = await _run_station([*_STATION, "--webrtc"])
     status, body = observed["offer"]
-    assert (status, body.get("code")) == (400, "missing_sdp"), (status, body)
+    # from_json also pins the full error envelope, not just the code field.
+    error = WebRtcRequestError.from_json(body)
+    assert (status, error.code) == (400, "missing_sdp"), (status, body)
     assert observed["bound"]
     assert all(ipaddress.ip_address(host).is_loopback for host in observed["bound"])
 
@@ -148,4 +151,5 @@ async def test_station_webrtc_answerer_available_on_loopback_only() -> None:
 async def test_station_without_webrtc_flag_has_no_answerer() -> None:
     observed = await _run_station(list(_STATION))
     status, body = observed["offer"]
-    assert (status, body.get("code")) == (503, "webrtc_unavailable"), (status, body)
+    error = WebRtcRequestError.from_json(body)
+    assert (status, error.code) == (503, "webrtc_unavailable"), (status, body)

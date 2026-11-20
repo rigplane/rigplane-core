@@ -33,6 +33,7 @@ import pytest
 from rigplane.testing.timing import await_until
 from rigplane.web.server import WebConfig, WebServer
 from rigplane.web.transport.webrtc import webrtc_available
+from rigplane.web.transport.webrtc_contract import WebRtcIceCandidate, WebRtcOffer
 
 _webrtc = pytest.mark.skipif(
     not webrtc_available(), reason="aiortc extra not installed"
@@ -510,7 +511,9 @@ async def test_api_webrtc_signalling_routes_unreachable() -> None:
         await client.connect(server.port)
         await client.attach(None)
         sessions_before = len(server._webrtc_session_manager()._sessions)  # noqa: SLF001
-        offer = json.dumps({"sdp": "v=0\r\n", "type": "offer"}).encode()
+        # Signalling bodies come from the producer contracts so the
+        # fixtures cannot drift from the wire the HTTP routes accept.
+        offer = json.dumps(WebRtcOffer(sdp="v=0\r\n").to_json()).encode()
         resp = await client.request(
             1,
             "POST",
@@ -519,7 +522,8 @@ async def test_api_webrtc_signalling_routes_unreachable() -> None:
             body=offer,
         )
         assert resp.status == 404, (resp.status, resp.body[:200])
-        ice = json.dumps({"sessionId": "x", "candidate": None}).encode()
+        ice_dto = WebRtcIceCandidate(session_id="x", candidate=None)
+        ice = json.dumps(ice_dto.to_json()).encode()
         resp = await client.request(
             2,
             "POST",
