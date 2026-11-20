@@ -5,13 +5,17 @@
  *   `src/rigplane/web/server.py: _on_provider_generation` terminates
  *   in-flight commands with reason "provider generation invalidated";
  *   `_on_command_lifecycle_event` forwards each as a targeted notification
- *   with `code: 'commandLinkLost'` and `params: { reason }` (the reason
- *   stays as a diagnostic parameter only).
+ *   with `code: 'commandLinkLost'` and `params: { reason }`.
  *
  * While the radio link is not connected (`getRadioLinkState() !==
  * 'connected'` — the same derivation that drives the StatusBar link chip),
  * those link-loss terminations must not become per-command toasts. The chip
  * is the persistent disconnected indicator.
+ *
+ * MOR-4602: renderToast now appends `params.reason` after an em dash when
+ * the localized template does not already thread it in, so the rendered
+ * link-loss toast carries the English cause (the commandLinkLost catalog
+ * line has no `{reason}` placeholder).
  *
  * The transport layer is mocked: the registered `onMessage` handler is
  * captured and synthetic `notification` payloads are dispatched, mirroring
@@ -126,9 +130,13 @@ function errorMessages(): string[] {
 
 describe('Toast — commandLinkLost code resolution (MOR-2847)', () => {
   /**
-   * A `commandLinkLost` notification renders the plain localized text via
+   * A `commandLinkLost` notification always renders the localized text via
    * `messageFromReasonCode`, whatever the diagnostic reason parameter
-   * carries — the reason text must never select the message.
+   * carries — the reason text must never SELECT the message. Since
+   * MOR-4602 the reason is however DISPLAYED: renderToast appends
+   * `params.reason` after an em dash when the template does not already
+   * thread it in (the commandLinkLost catalog line has no `{reason}`
+   * placeholder).
    */
   it.each([
     undefined,
@@ -136,7 +144,7 @@ describe('Toast — commandLinkLost code resolution (MOR-2847)', () => {
     { reason: 'command invalidated during provider generation change' },
     { reason: 'command invalidated during execution' },
     { reason: 'anything else the server may ever say' },
-  ])('renders the plain message with params %j', (params) => {
+  ])('renders the localized message with params %j', (params) => {
     app = mount(Toast, { target: host });
     flushSync();
 
@@ -149,8 +157,9 @@ describe('Toast — commandLinkLost code resolution (MOR-2847)', () => {
     });
     flushSync();
 
+    const plain = 'Connection to the radio was interrupted; the command was cancelled. Try again.';
     expect(errorMessages()).toEqual([
-      'Connection to the radio was interrupted; the command was cancelled. Try again.',
+      params?.reason ? `${plain} — ${params.reason}` : plain,
     ]);
   });
 
@@ -230,7 +239,8 @@ describe('Toast — link-loss termination suppression (MOR-2241)', () => {
     flushSync();
 
     expect(errorMessages()).toEqual([
-      'Connection to the radio was interrupted; the command was cancelled. Try again.',
+      'Connection to the radio was interrupted; the command was cancelled. Try again.'
+        + ' — provider generation invalidated',
     ]);
   });
 });

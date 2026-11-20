@@ -53,6 +53,34 @@ xiegu_model_id = 0x7250
 type = "civ"
 address = 0xA0
 
+[scope]
+# LIVE G7250 LAN 2026-11-13 (MOR-4436, firmware V1.0.1, wfview mode):
+# 27 15 00 answers 27 15 00 | 00 20 19 00 00 00 (192000 as six BCD bytes)
+# and the SET round trips read back. The 27 15 number is the FULL display
+# width: with 27 15 = 192000 the center-mode waveform carries center
+# +/- 96000, and each preset below gave a waveform half-width of exactly
+# half its number (48000 -> 24000 ... 384000 -> 192000). Waveform: one
+# 27 00 frame per sweep (sequence 01/01), 475 pixels, ~17 sweeps/s. The
+# presets are the vendor wfview file's span table (G7250.rig shipped with
+# firmware V1.0.1, Spans 48/96/192/384 kHz), each one applied live; 24000
+# was accepted live too but is not in the vendor table, so it is left out.
+span_presets_hz = [48000, 96000, 192000, 384000]
+span_preset_semantics = "full_width"
+# The span value is six BCD bytes both ways: replies carry it, and only a
+# six-byte SET was ever sent and applied (LIVE G7250 LAN 2026-11-13).
+span_value_bytes = 6
+# Over USB serial the radio answers no 0x27 read (LIVE pre-1.0.1, see
+# [capabilities]): a USB link gets no radio panorama, as for any radio
+# whose scope does not answer (owner decision 2026-11-18: no per-link
+# profile key; a later firmware may answer on USB).
+# 27 19: the vendor wfview file (G7250.rig, firmware V1.0.1, "Scope Ref"
+# Min -200 / Max 200 in tenths) gives -20.0 .. +20.0 dB; 27 19 00 answered
+# 0.0 dB live. The 0.5 dB step is the IC-7300 family's (the G7250 follows
+# the IC-7300 command set, CI-V Reference Rev 1.2 section 4), not probed.
+ref_min_db = -20.0
+ref_max_db = 20.0
+ref_step_db = 0.5
+
 # HDSDR network mode only: in wfview mode these ports carry control/CI-V/audio.
 [iq_lan]
 protocol = "xiegu_udp"
@@ -95,10 +123,11 @@ codec_preference = ["PCM_1CH_16BIT", "ULAW_1CH"]
 #     TX). Markers stay absent on the bench evidence; activating them needs
 #     the TX-gated follow-up (audit section B, out of scope here).
 #   - no ``data_mode``: 0x1A 0x06 NAKs (LIVE).
-#   - no ``scope``: 0x27 0x10/0x11/0x14/0x15 got NO reply over USB
-#     serial (LIVE pre-1.0.1; the reference lists 27 as unimplemented on
-#     serial). Over LAN in wfview mode the scope answers (LIVE
-#     2026-11-13) — declaring it is a follow-up step, out of scope here.
+#   - ``scope`` IS declared: over LAN in wfview mode the scope answers
+#     (LIVE G7250 LAN 2026-11-13, MOR-4436). Over USB serial 0x27
+#     0x10/0x11/0x14/0x15 got NO reply (LIVE pre-1.0.1; the reference
+#     lists 27 as unimplemented on serial), so a USB link shows no radio
+#     panorama.
 #   - no tone family: 0x16 0x42/0x43 NAK (LIVE).
 #   - no memory channels: 0x1A 0x00 NAKs (LIVE) — but that opcode is only
 #     the *contents* register, unimplemented per the Xiegu G7250 CI-V
@@ -124,6 +153,8 @@ features = [
     "meters",
     "agc",
     "power_control",
+    # Answers over LAN only — see [scope].
+    "scope",
 ]
 
 [state_acquisition]
@@ -157,6 +188,12 @@ polling_only = [
     "global.tx_state.ptt",
     # MOR-4454: SWR is read like the IC-7300's, TX only (policy below).
     "global.meters.swr",
+    # LIVE G7250 LAN 2026-11-13 (MOR-4436): 27 14 00 / 27 15 00 / 27 16 /
+    # 27 19 00 answer over LAN (silent on USB serial).
+    "scope_controls.global.display.mode",
+    "scope_controls.global.display.span",
+    "scope_controls.global.display.edge",
+    "scope_controls.global.display.ref_db",
 ]
 stream_like_meters = [
     "receiver.main.meters.s_meter",
@@ -846,6 +883,40 @@ memory_write              = { absent = "inherited from X6200, not probed on G725
 memory_to_vfo             = { absent = "inherited from X6200, not probed on G7250 — the X6200 V1.0.6 table documents no 0x0A row; the G7250's 0x1A 0x00 memory NAK (LIVE) closes the family" }
 memory_clear              = { absent = "inherited from X6200, not probed on G7250 — the X6200 V1.0.6 table documents no 0x0B row; the G7250's 0x1A 0x00 memory NAK (LIVE) closes the family" }
 
+# ── Scope (answers over LAN only, see [scope]) ── LIVE G7250 LAN 2026-11-13
+# (MOR-4436, wfview mode): each read below was answered over LAN.
+get_scope_wave = [0x27, 0x00]       # LIVE LAN: 27 00 wave frames, 475 px, seq 01/01
+set_scope_wave = [0x27, 0x00]
+scope_on = [0x27, 0x10]             # LIVE LAN: 27 10 read answered 01
+scope_off = [0x27, 0x10]
+scope_data_output = [0x27, 0x11]    # LIVE LAN: read 00; 27 11 01 starts the wave, 27 11 00 restores
+get_scope_mode = [0x27, 0x14]       # LIVE LAN: 27 14 00 answered 00 (center)
+set_scope_mode = [0x27, 0x14]
+get_scope_span = [0x27, 0x15]       # LIVE LAN: 27 15 00 answered 00 20 19 00 00 00 (192000)
+set_scope_span = [0x27, 0x15]       # LIVE LAN: 24000/48000/96000/192000/384000 applied
+get_scope_edge = [0x27, 0x16]       # LIVE LAN: 27 16 00 answered 00 01
+set_scope_edge = [0x27, 0x16]
+get_scope_ref = [0x27, 0x19]        # LIVE LAN: 27 19 00 answered 00 00 00 (0.0 dB)
+set_scope_ref = [0x27, 0x19]
+# These reads came back as the bare command with no value byte (LIVE
+# G7250 LAN 2026-11-13, MOR-4436): nothing to decode, so they are absent.
+get_scope_main_sub = { absent = "LIVE G7250 LAN 2026-11-13 (MOR-4436): 27 12 answered with no value byte" }
+set_scope_main_sub = { absent = "LIVE G7250 LAN 2026-11-13 (MOR-4436): 27 12 answered with no value byte" }
+get_scope_single_dual = { absent = "LIVE G7250 LAN 2026-11-13 (MOR-4436): 27 13 answered with no value byte" }
+set_scope_single_dual = { absent = "LIVE G7250 LAN 2026-11-13 (MOR-4436): 27 13 answered with no value byte" }
+get_scope_hold = { absent = "LIVE G7250 LAN 2026-11-13 (MOR-4436): 27 17 00 answered with no value byte" }
+set_scope_hold = { absent = "LIVE G7250 LAN 2026-11-13 (MOR-4436): 27 17 00 answered with no value byte" }
+get_scope_speed = { absent = "LIVE G7250 LAN 2026-11-13 (MOR-4436): 27 1A 00 answered with no value byte" }
+set_scope_speed = { absent = "LIVE G7250 LAN 2026-11-13 (MOR-4436): 27 1A 00 answered with no value byte" }
+get_scope_during_tx = { absent = "LIVE G7250 LAN 2026-11-13 (MOR-4436): 27 1B answered with no value byte" }
+set_scope_during_tx = { absent = "LIVE G7250 LAN 2026-11-13 (MOR-4436): 27 1B answered with no value byte" }
+get_scope_center_type = { absent = "LIVE G7250 LAN 2026-11-13 (MOR-4436): 27 1C answered with no value byte" }
+set_scope_center_type = { absent = "LIVE G7250 LAN 2026-11-13 (MOR-4436): 27 1C answered with no value byte" }
+get_scope_vbw = { absent = "LIVE G7250 LAN 2026-11-13 (MOR-4436): 27 1D 00 answered with no value byte" }
+set_scope_vbw = { absent = "LIVE G7250 LAN 2026-11-13 (MOR-4436): 27 1D 00 answered with no value byte" }
+get_scope_rbw = { absent = "LIVE G7250 LAN 2026-11-13 (MOR-4436): 27 1F 00 answered with no value byte" }
+set_scope_rbw = { absent = "LIVE G7250 LAN 2026-11-13 (MOR-4436): 27 1F 00 answered with no value byte" }
+
 # ── Reads that answer 0x02, meaning unconfirmed (LIVE G7250 2026-11-09,
 # MOR-4352 — sent and answered, but not with a 00/01 toggle value, so no
 # state is declared from them) ──────────────────────────────────────
@@ -873,8 +944,8 @@ set_dial_lock    = { absent = "LIVE G7250 2026-11-09: read 0x02, meaning unconfi
 #     capability declared.
 #   - 0x1A 0x04 (AGC time constant) answers 00; no key.
 # No reply at all on USB serial (LIVE 2026-11-09): 0x21 0x00/0x01/0x02
-# (RIT/XIT), 0x27 0x10/0x11/0x14/0x15 (scope), 0x12 (antenna) — no keys,
-# no capabilities.
+# (RIT/XIT), 0x12 (antenna) — no keys, no capabilities. 0x27 (scope) is
+# silent on USB too but answers over LAN: see the Scope block above.
 
 [commands.overrides]
 
