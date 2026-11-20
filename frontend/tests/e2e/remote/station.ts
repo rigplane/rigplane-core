@@ -290,37 +290,38 @@ export async function playbackBuffers(page: Page): Promise<number> {
   );
 }
 
-/** What the page sent so far: the names of its control-socket commands,
- * the directions of its audio_start frames, and the operations it POSTed
- * to the managed-transmit command endpoint. */
+/** What the page sent so far: the `direction` of every `audio_start` frame
+ * on its sockets, and how many POSTs reached the managed-transmit command
+ * endpoint (`ManagedTransmitClient.command`). The audio_start literal has no
+ * producer type (AudioManager builds it inline), so the rows pin this
+ * witness with positive controls: L4 sees its own `tx` start and its
+ * transmit POST, L5 its own `rx` start. Install before navigation:
+ * `page.on('websocket')` sees only sockets opened after it. */
 export interface SentTraffic {
-  commands: string[];
   audioStarts: string[];
-  managedCommands: string[];
+  managedCommandPosts: number;
 }
 
 export function trackSentTraffic(page: Page): () => SentTraffic {
-  const traffic: SentTraffic = { commands: [], audioStarts: [], managedCommands: [] };
-  const parse = (text: string | null | undefined): Record<string, unknown> | null => {
-    try {
-      const value: unknown = JSON.parse(text ?? '');
-      return typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : null;
-    } catch {
-      return null;
-    }
-  };
+  const traffic: SentTraffic = { audioStarts: [], managedCommandPosts: 0 };
   page.on('websocket', (socket) => {
     socket.on('framesent', ({ payload }) => {
-      const frame = typeof payload === 'string' ? parse(payload) : null;
-      if (!frame) return;
-      if (frame.type === 'cmd' || frame.type === 'command') traffic.commands.push(String(frame.name));
-      if (frame.type === 'audio_start') traffic.audioStarts.push(String(frame.direction));
+      if (typeof payload !== 'string') return;
+      let frame: unknown;
+      try {
+        frame = JSON.parse(payload);
+      } catch {
+        return;
+      }
+      if (typeof frame !== 'object' || frame === null) return;
+      const { type, direction } = frame as { type?: unknown; direction?: unknown };
+      if (type === 'audio_start') traffic.audioStarts.push(String(direction));
     });
   });
   page.on('request', (request) => {
     if (request.method() !== 'POST') return;
     if (new URL(request.url()).pathname !== '/api/v1/managed-transmit/command') return;
-    traffic.managedCommands.push(String(parse(request.postData())?.operation));
+    traffic.managedCommandPosts += 1;
   });
   return () => traffic;
 }
