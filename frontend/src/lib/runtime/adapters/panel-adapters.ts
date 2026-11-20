@@ -74,7 +74,7 @@ import {
   manualNotchArmed, modeArmed, modInputArmed, preampArmed,
   pendingFilterSelection, pendingFrequencyHz, pendingManualNotchWidth, pendingNbOn,
   pendingNarrow, pendingNotchMode, pendingNrOn, pendingPreampLevel,
-  pendingRepeaterShift, pendingRepeaterTone, pendingToneFreq,
+  pendingRepeaterShift, pendingRepeaterTone, pendingRepeaterOffset, pendingToneFreq,
   type ArmedFact,
   type SupersededPredicate,
 } from './pending-intent-table';
@@ -674,6 +674,12 @@ export function getPendingRepeaterTone(receiver: 0 | 1): 'off' | 'tone' | 'tsql'
 /** Freshest unconfirmed repeater shift direction for `receiver`, or `null`. */
 export function getPendingRepeaterShift(receiver: 0 | 1): number | null {
   return pendingRepeaterShift(getCommandLifecycles(), readRuntimeState, Date.now(), lifecycleSuperseded, receiver);
+}
+
+/** Freshest unconfirmed duplex offset target (Hz) for `receiver`, or
+ *  `null` (MOR-3624). */
+export function getPendingRepeaterOffset(receiver: 0 | 1): number | null {
+  return pendingRepeaterOffset(getCommandLifecycles(), readRuntimeState, Date.now(), lifecycleSuperseded, receiver);
 }
 
 /** Freshest unconfirmed CTCSS tone frequency (centiHz) for `receiver`, or

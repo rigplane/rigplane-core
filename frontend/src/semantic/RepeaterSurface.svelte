@@ -1,9 +1,9 @@
 <!--
   Semantic repeater surface (MOR-2111): OFF/TONE/TSQL, shift SIMP/−/+ (and
-  ARS where `view.repeater.shiftChoices` has it) and the CTCSS tone stepper
-  for ONE receiver. Presentation only: facts come from
-  `view.repeater`, pending targets from `pending`, and every action leaves
-  through a callback naming the receiver.
+  ARS where `view.repeater.shiftChoices` has it), the CTCSS tone stepper
+  and the duplex-offset stepper (MOR-3624) for ONE receiver. Presentation
+  only: facts come from `view.repeater`, pending targets from `pending`,
+  and every action leaves through a callback naming the receiver.
 -->
 <script module lang="ts">
   import type { RadioViewModel, ReceiverId, RepeaterReceiverViewModel } from './radio-view-model';
@@ -26,14 +26,14 @@
     if (receiver === null) return null;
     const rx = receiver === 'MAIN' ? group.main : group.sub;
     return rx.toneMode.availability.structural || rx.toneFreq.availability.structural
-      || rx.shift.availability.structural ? receiver : null;
+      || rx.shift.availability.structural || rx.offsetHz.availability.structural ? receiver : null;
   }
 </script>
 
 <script lang="ts">
   import { ControlButton } from '$lib/Button';
   import { t } from '$lib/i18n';
-  import { formatToneHz, type RepeaterPending } from '$lib/radio/repeater-transitions';
+  import { formatOffsetHz, formatToneHz, type RepeaterPending } from '$lib/radio/repeater-transitions';
   import { bindChoiceInstrument } from '../primitives/control-instruments/control-instrument-behavior';
   import { readingText } from '../primitives/reading-text';
   import type { RepeaterShift, RepeaterToneMode } from './radio-view-model';
@@ -44,9 +44,12 @@
     onToneModeChange?: (receiver: ReceiverId, next: RepeaterToneMode) => void;
     onShiftChange?: (receiver: ReceiverId, shift: RepeaterShift) => void;
     onToneFreqStep?: (receiver: ReceiverId, direction: 1 | -1) => void;
+    onOffsetStep?: (receiver: ReceiverId, direction: 1 | -1) => void;
   }
 
-  let { view, pending = {}, onToneModeChange, onShiftChange, onToneFreqStep }: Props = $props();
+  let {
+    view, pending = {}, onToneModeChange, onShiftChange, onToneFreqStep, onOffsetStep,
+  }: Props = $props();
 
   const TONE_MODES = [['off', 'OFF'], ['tone', 'TONE'], ['tsql', 'TSQL']] as const;
   const SHIFTS = [['simplex', 'SIMP'], ['minus', '−'], ['plus', '+'], ['ars', 'ARS']] as const;
@@ -57,6 +60,7 @@
   let shifts = $derived(SHIFTS.filter(([shift]) => view?.repeater?.shiftChoices.includes(shift) === true));
   let stepAvailable = $derived(rx?.toneFreq.reading.status === 'known'
     && rx.toneMode.reading.status === 'known');
+  let offsetStepAvailable = $derived(rx?.offsetHz.reading.status === 'known');
   const pendingId = $props.id();
 
   const toneBehavior = bindChoiceInstrument<RepeaterToneMode>(() => ({
@@ -70,6 +74,10 @@
 
   function step(direction: 1 | -1): void {
     if (receiver !== null && stepAvailable) onToneFreqStep?.(receiver, direction);
+  }
+
+  function stepOffset(direction: 1 | -1): void {
+    if (receiver !== null && offsetStepAvailable) onOffsetStep?.(receiver, direction);
   }
 </script>
 
@@ -120,6 +128,20 @@
         <button type="button" class="repeater-step-key scope-step-key" aria-label="Increase CTCSS tone"
           data-testid="repeater-tone-freq-up" disabled={!stepAvailable} onclick={() => step(1)}>&#8250;</button>
         {#if rxPending?.toneFreq}<span id={`${pendingId}-freq`} class="sr-only">{t('core.repeater.pendingAnnouncement')}</span>{/if}
+      </div>
+    {/if}
+    {#if rx.offsetHz.availability.structural}
+      <div class="repeater-stepper" data-testid="repeater-offset">
+        <span class="repeater-name">OFFSET</span>
+        <button type="button" class="repeater-step-key scope-step-key" aria-label="Decrease duplex offset"
+          data-testid="repeater-offset-down" disabled={!offsetStepAvailable} onclick={() => stepOffset(-1)}>&#8249;</button>
+        <output class="repeater-step-value" data-testid="repeater-offset-value"
+          data-pending={rxPending?.offsetHz === true}
+          aria-describedby={rxPending?.offsetHz ? `${pendingId}-offset` : undefined}
+        >{readingText(rx.offsetHz, formatOffsetHz)}</output>
+        <button type="button" class="repeater-step-key scope-step-key" aria-label="Increase duplex offset"
+          data-testid="repeater-offset-up" disabled={!offsetStepAvailable} onclick={() => stepOffset(1)}>&#8250;</button>
+        {#if rxPending?.offsetHz}<span id={`${pendingId}-offset`} class="sr-only">{t('core.repeater.pendingAnnouncement')}</span>{/if}
       </div>
     {/if}
   </section>

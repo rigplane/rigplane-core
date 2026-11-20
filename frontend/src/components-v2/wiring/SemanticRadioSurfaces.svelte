@@ -64,7 +64,7 @@
     getPendingFrequencyHz, getTuningBurstFrequencyHz,
     getPendingFilterSelection, getPendingManualNotchWidth, getPendingNarrow, getPendingNbOn, getPendingNotchMode,
     getPendingNrOn, getPendingPreampLevel,
-    getPendingRepeaterShift, getPendingRepeaterTone, getPendingToneFreq,
+    getPendingRepeaterShift, getPendingRepeaterTone, getPendingToneFreq, getPendingRepeaterOffset,
     getRepeaterHandlers,
     getSystemHandlers, getDataModeArmed, getModInputArmed, getFilterShapeArmed,
     getModeArmed, getAgcArmed, getAttenuatorArmed,
@@ -110,7 +110,7 @@
   } from '../../primitives/control-instruments/control-instrument-renderer.svelte';
   import type { ReceiverId, RadioViewModel, VfoSlot } from '../../semantic/radio-view-model';
   import {
-    shiftFromDirection, stepToneFreq, type RepeaterPending, type RepeaterShift,
+    shiftFromDirection, stepOffsetHz, stepToneFreq, type RepeaterPending, type RepeaterShift,
   } from '$lib/radio/repeater-transitions';
   import RfFrontEndSurface, {
     type RfFrontEndLevelField,
@@ -1959,12 +1959,22 @@
     repeaterHandlers.onToneFreqChange(next, mode.value === 'tsql', repeaterWireReceiver(receiver));
   }
 
+  function stepOffsetFor(receiver: ReceiverId, direction: 1 | -1): void {
+    const group = view?.repeater?.[receiver === 'SUB' ? 'sub' : 'main'];
+    const offset = group?.offsetHz.reading;
+    if (offset?.status !== 'known') return;
+    const next = stepOffsetHz(offset.value, direction);
+    if (next === offset.value) return;
+    repeaterHandlers.onOffsetChange(next, repeaterWireReceiver(receiver));
+  }
+
   function repeaterPendingFor(wire: 0 | 1): RepeaterPending {
     const shift = getPendingRepeaterShift(wire);
     return {
       toneMode: getPendingRepeaterTone(wire),
       shift: shift === null ? null : shiftFromDirection(shift),
       toneFreq: getPendingToneFreq(wire) !== null,
+      offsetHz: getPendingRepeaterOffset(wire) !== null,
     };
   }
   let repeaterPending: Partial<Record<ReceiverId, RepeaterPending>> = $derived({
@@ -2768,6 +2778,7 @@
       onToneModeChange={selectToneMode}
       onShiftChange={selectShift}
       onToneFreqStep={stepToneFreqFor}
+      onOffsetStep={stepOffsetFor}
     />
   {/snippet}
 

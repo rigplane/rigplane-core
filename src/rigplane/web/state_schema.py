@@ -168,6 +168,9 @@ class ReceiverStatePublic(_Strict):
     toneFreq: int | None = None
     tsqlFreq: int | None = None
     repeaterShift: int | None = None
+    # Duplex offset magnitude in Hz (MOR-3624): read over CI-V 0C, written
+    # over 0D. ``None`` until observed.
+    repeaterOffsetHz: int | None = None
     # Neutral tone squelch type (MOR-3377): the observation adapters publish
     # the ``core/types.py: ToneSquelchType`` member value as a string, or
     # ``None`` for a selector code outside the profile's

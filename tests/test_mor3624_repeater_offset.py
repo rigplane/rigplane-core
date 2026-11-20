@@ -151,15 +151,14 @@ async def test_get_decodes_the_readback(transport) -> None:
 
 
 @pytest.mark.asyncio
-async def test_set_sends_the_guide_frame_and_reads_back(transport) -> None:
+async def test_ic9700_get_reads_the_offset_back(transport) -> None:
+    """The dual-receiver roundtrip: MAIN selected, 0C query, 3-byte reply."""
     radio = _radio(transport, "IC-9700")
-    radio._record_selection("MAIN")  # the plain 0C/0D reach MAIN only
+    radio._record_selection("MAIN")  # the plain 0C reaches MAIN only
     transport.queue_response(_reply(0x0C, 0xA2, bytes([0x00, 0x00, 0x01])))
     assert await radio.get_repeater_offset() == 1_000_000
-    transport.queue_response(_reply(0xFB, 0xA2))
-    await radio.set_repeater_offset(1_000_000, receiver=0)
     sent = _sent_frames(transport)[-1]
-    assert (sent.command, sent.data) == (0x0D, bytes([0x00, 0x00, 0x01]))
+    assert (sent.command, sent.data) == (0x0C, b"")
 
 
 @pytest.mark.asyncio

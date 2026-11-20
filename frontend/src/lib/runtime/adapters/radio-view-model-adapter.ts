@@ -1510,11 +1510,18 @@ function deriveRepeater(
     const shiftChoice = shiftRaw === undefined ? null : shiftFromDirection(shiftRaw);
     const shift = shiftChoice !== null && shiftChoices.includes(shiftChoice) ? shiftChoice : undefined;
 
+    // MOR-3624: the duplex offset magnitude, exact Hz, gated by the
+    // `repeater_offset` capability tag (distinct from `repeater_shift`).
+    const hasOffset = hasCap(caps, 'repeater_offset');
+    const offsetObserved = topFieldAvailable(state, path('repeaterOffsetHz'));
+    const offsetHz = numOrUndef(rx?.repeaterOffsetHz);
+
     return {
       inRepeaterBand: txAuxField(true, freqObserved, inBand),
       toneMode: txAuxField(hasTone, toneObserved && tsqlObserved, toneMode),
       toneFreq: txAuxField(hasTone, toneFreqObserved, toneFreq),
       shift: txAuxField(hasShift, shiftObserved, shift),
+      offsetHz: txAuxField(hasOffset, offsetObserved, offsetHz),
     };
   };
 

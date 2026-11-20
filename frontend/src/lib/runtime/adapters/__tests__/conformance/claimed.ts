@@ -290,6 +290,9 @@ export const CLAIMED_INTENTS: ReadonlySet<string> = new Set([
   'set_repeater_shift',
   'set_tone_freq',
   'set_tsql_freq',
+  // MOR-3624 — the duplex offset stepper (`onOffsetChange`), claimed in the
+  // same file's offset walk.
+  'set_repeater_offset',
   // MOR-2583 — the server-owned monitor MUTE. Claimed in
   // `panel-commands.intent.isolated.test.ts` ("mutes through the server
   // monitor MUTE ...", "unmutes through the server monitor MUTE ...").

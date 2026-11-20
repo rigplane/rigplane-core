@@ -200,6 +200,8 @@ export interface ReceiverStatePublic {
   toneFreq?: number | null;
   tsqlFreq?: number | null;
   repeaterShift?: number | null;
+  /** Duplex offset magnitude in Hz (MOR-3624), CI-V 0C read / 0D write. */
+  repeaterOffsetHz?: number | null;
   toneSquelchType?:
     | (
         | "off"
