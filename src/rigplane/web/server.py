@@ -4763,6 +4763,44 @@ class WebServer:
         ).encode()
         await _send_json(writer, body, headers)
 
+    async def _serve_audio_candidates(
+        self, writer: asyncio.StreamWriter, headers: dict[str, str] | None = None
+    ) -> None:
+        """GET /api/v1/audio/candidates -- on-demand radio audio candidates."""
+        try:
+            record = await self._audio_broadcaster.audio_candidates()
+        except Exception:
+            logger.warning("audio-candidates: listing failed", exc_info=True)
+            body = json.dumps(
+                {
+                    "error": "unavailable",
+                    "message": "Audio device enumeration failed",
+                },
+                separators=(",", ":"),
+            ).encode()
+            await _send_response(
+                writer,
+                503,
+                "Service Unavailable",
+                body,
+                {"Content-Type": "application/json"},
+            )
+            return
+        if record is None:
+            body = json.dumps(
+                {
+                    "error": "unavailable",
+                    "message": "No USB audio driver for the active radio",
+                },
+                separators=(",", ":"),
+            ).encode()
+            await _send_response(
+                writer, 404, "Not Found", body, {"Content-Type": "application/json"}
+            )
+            return
+        body = json.dumps(record, separators=(",", ":")).encode()
+        await _send_json(writer, body, headers)
+
     def _get_meter_cal_payload(self) -> dict[str, Any]:
         """Extract meter calibration from radio backend or profile."""
         result: dict[str, Any] = {}

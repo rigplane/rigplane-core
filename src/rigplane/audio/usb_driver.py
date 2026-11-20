@@ -26,8 +26,14 @@ from typing import Any, Callable, Coroutine, Iterator, Literal
 
 from rigplane.core.usb_identity import UsbAudioIdentity
 
-from ._portaudio_enum import WASAPI_HOST_API
-from ._usb_pairing import AudioCandidate, candidate_stable_id, same_endpoint_records
+from ._portaudio_enum import PortAudioEnumeration, WASAPI_HOST_API
+from ._usb_pairing import (
+    AudioCandidate,
+    AudioCandidateList,
+    candidate_stable_id,
+    candidates_for_serial_port,
+    same_endpoint_records,
+)
 from ._usb_raw_linux import RawLinux
 from ._usb_raw_macos import RawMacos
 from .loop_handoff import CoalescedLoopHandoff
@@ -1231,6 +1237,46 @@ def _devices_from_backend(backend: AudioBackend) -> list[UsbAudioDevice]:
     return [_device_info_to_usb(info, uid_map) for info in backend.list_devices()]
 
 
+def _read_portaudio_enumeration(
+    sd_module: Any | None,
+) -> PortAudioEnumeration | None:
+    """Read the PortAudio enumeration under the native-access guard."""
+    from ._portaudio_enum import read_portaudio_enumeration
+
+    with portaudio_native_access():
+        return read_portaudio_enumeration(sd_module) if sd_module is not None else None
+
+
+def _snapshot_from_records(
+    records: RawWindows | RawMacos | RawLinux,
+    enumeration: PortAudioEnumeration | None,
+) -> UsbSnapshot:
+    """Adapt raw OS topology plus a PortAudio enumeration into one snapshot."""
+    from ._usb_adapt_linux import adapt_linux
+    from ._usb_adapt_macos import adapt_macos
+    from ._usb_adapt_windows import adapt_windows
+
+    if isinstance(records, (RawMacos, RawLinux)):
+        if enumeration is None:
+            from ._portaudio_enum import PortAudioEnumeration
+
+            enumeration = PortAudioEnumeration((), (), 0, False)
+        return (
+            adapt_linux(records, enumeration)
+            if isinstance(records, RawLinux)
+            else adapt_macos(records, enumeration)
+        )
+    session: dict[str, Any] = {
+        "raw": {
+            "windows": records.to_json_dict(),
+            "serial_ports": [],
+        }
+    }
+    if enumeration is not None:
+        session["raw"]["portaudio"] = enumeration.to_json_dict()
+    return adapt_windows(session)
+
+
 def list_usb_audio_devices(sounddevice_module: Any) -> list[UsbAudioDevice]:
     """Return normalized system audio devices.
 
@@ -1643,10 +1689,6 @@ class UsbAudioDriver:
         records: RawWindows | RawMacos | RawLinux,
         serial_port: str,
     ) -> tuple[UsbAudioDevice, UsbAudioDevice]:
-        from ._portaudio_enum import read_portaudio_enumeration
-        from ._usb_adapt_linux import adapt_linux
-        from ._usb_adapt_macos import adapt_macos
-        from ._usb_adapt_windows import adapt_windows
         from ._usb_pairing import PairRefused, pair, pairing_refusal_error
 
         sd_module = _extract_sounddevice_module(self._backend)
@@ -1656,31 +1698,9 @@ class UsbAudioDriver:
             or self._config.rx_device is not None
             or self._config.tx_device is not None
         ):
-            with portaudio_native_access():
-                enumeration = (
-                    read_portaudio_enumeration(sd_module)
-                    if sd_module is not None
-                    else None
-                )
-            if isinstance(records, (RawMacos, RawLinux)):
-                from ._portaudio_enum import PortAudioEnumeration
-
-                enumeration = enumeration or PortAudioEnumeration((), (), 0, False)
-                snapshot = (
-                    adapt_linux(records, enumeration)
-                    if isinstance(records, RawLinux)
-                    else adapt_macos(records, enumeration)
-                )
-            else:
-                session: dict[str, Any] = {
-                    "raw": {
-                        "windows": records.to_json_dict(),
-                        "serial_ports": [],
-                    }
-                }
-                if enumeration is not None:
-                    session["raw"]["portaudio"] = enumeration.to_json_dict()
-                snapshot = adapt_windows(session)
+            snapshot = _snapshot_from_records(
+                records, _read_portaudio_enumeration(sd_module)
+            )
             # MOR-4030: exclusive-preferred pairs and resolves saved selectors on
             # WASAPI for both directions; shared keeps the first host API.
             prefer = (
@@ -1717,18 +1737,9 @@ class UsbAudioDriver:
             if len(identities) != 1:
                 from ._usb_pairing import _candidates
 
-                with portaudio_native_access():
-                    enumeration = (
-                        read_portaudio_enumeration(sd_module)
-                        if sd_module is not None
-                        else None
-                    )
-                session = {
-                    "raw": {"windows": records.to_json_dict(), "serial_ports": []}
-                }
-                if enumeration is not None:
-                    session["raw"]["portaudio"] = enumeration.to_json_dict()
-                snapshot = adapt_windows(session)
+                snapshot = _snapshot_from_records(
+                    records, _read_portaudio_enumeration(sd_module)
+                )
                 raise AudioTopologyUnavailableError(
                     "Windows USB audio selection is ambiguous or unavailable; "
                     "select explicit RX/TX devices for the serial radio.",
@@ -1739,6 +1750,117 @@ class UsbAudioDriver:
     def list_devices(self) -> list[UsbAudioDevice]:
         """List normalized devices from the active audio backend."""
         return _devices_from_backend(self._backend)
+
+    async def audio_candidates(self) -> AudioCandidateList:
+        """On-demand candidate devices for this radio (MOR-3883).
+
+        The same ``_candidates()`` list an RX-start refusal offers
+        (MOR-4119), without starting RX: the serial radio's hub ranks its
+        codec endpoints first (``near_radio``). A missing or late Windows
+        topology returns the English name fallback's list with source
+        ``"name_heuristic"`` — the same offer that path's refusal makes.
+        Both the topology read and the enumeration run on the bounded
+        PortAudio pool under the selection deadline.
+        """
+        system = platform.system()
+        if system not in {"Windows", "Darwin", "Linux"}:
+            return AudioCandidateList("name_heuristic", ())
+        from ._usb_raw_linux import read_raw_linux
+        from ._usb_raw_macos import read_raw_macos
+        from ._usb_raw_windows import read_raw_windows
+
+        if system == "Linux":
+            empty: RawWindows | RawMacos | RawLinux = RawLinux(
+                unavailable=({"part": "linux", "reason": "reader unavailable"},)
+            )
+        elif system == "Darwin":
+            empty = RawMacos(
+                unavailable=({"part": "macos", "reason": "reader unavailable"},)
+            )
+        else:
+            empty = RawWindows("cfgmgr32", ())
+
+        def query() -> RawWindows | RawMacos | RawLinux:
+            try:
+                if system == "Linux":
+                    return read_raw_linux(timeout_s=topology_timeout)
+                if system == "Darwin":
+                    return read_raw_macos(topology_timeout)
+                return read_raw_windows(topology_timeout)
+            except Exception:  # noqa: BLE001 — optional metadata only
+                logger.warning(
+                    "usb-audio: optional USB topology unavailable", exc_info=True
+                )
+                return empty
+
+        serial_port = self._serial_port or ""
+        deadline = self._monotonic() + self._capture_open_timeout
+        reserve = min(_USB_SELECTION_RESERVE_S, self._capture_open_timeout / 4)
+        topology_timeout = min(
+            _USB_TOPOLOGY_TIMEOUT_S, deadline - self._monotonic() - reserve
+        )
+        records = empty
+        if topology_timeout > 0:
+            try:
+                records = await bounded_portaudio_pool.run_bounded(
+                    query,
+                    what="optional USB topology",
+                    direction="rx",
+                    timeout=topology_timeout,
+                    warn_on_timeout=False,
+                )
+            except AudioCaptureOpenTimeoutError:
+                logger.warning(
+                    "usb-audio: optional USB topology did not settle; "
+                    "listing candidates without it"
+                )
+
+        def remaining() -> float:
+            timeout = deadline - self._monotonic()
+            if timeout <= 0:
+                raise AudioCaptureOpenTimeoutError(
+                    "candidate enumeration exceeded selection deadline."
+                )
+            return timeout
+
+        return await bounded_portaudio_pool.run_bounded(
+            lambda: self._candidates_from_records(records, serial_port),
+            what="device enumeration",
+            direction="rx",
+            timeout=remaining(),
+        )
+
+    def _candidates_from_records(
+        self,
+        records: RawWindows | RawMacos | RawLinux,
+        serial_port: str,
+    ) -> AudioCandidateList:
+        """Candidate devices for *serial_port*'s radio from raw OS *records*."""
+        from ._usb_pairing import _candidates
+
+        sd_module = _extract_sounddevice_module(self._backend)
+        enumeration = _read_portaudio_enumeration(sd_module)
+        snapshot = _snapshot_from_records(records, enumeration)
+        if isinstance(records, (RawMacos, RawLinux)) or records.devnodes:
+            # MOR-4030: the exclusive capture mode ranks the same list on
+            # WASAPI first, exactly like pairing.
+            prefer = (
+                {"prefer_hostapi": WASAPI_HOST_API}
+                if self._config.capture_mode == "exclusive-preferred"
+                and snapshot.os == "windows"
+                else {}
+            )
+            return AudioCandidateList(
+                "usb_topology",
+                candidates_for_serial_port(snapshot, serial_port, **prefer),
+            )
+        # Windows topology empty or late: the English-substring fallback's
+        # offer (every candidate far), with the source recorded.
+        return AudioCandidateList(
+            "name_heuristic",
+            _candidates(snapshot, None, {}, include_unmatched=True),
+        )
+
 
     def _sample_rate_candidates(self, requested: int) -> tuple[int, ...]:
         return tuple(dict.fromkeys((requested, *_DEFAULT_SAMPLE_RATE_CANDIDATES)))
@@ -2747,6 +2869,7 @@ __all__ = [
     "UsbAudioContract",
     "UsbAudioDriver",
     "UsbAudioStreamContract",
+    "AudioCandidateList",
     "list_usb_audio_devices",
     "resolve_usb_duplex_mode",
     "select_usb_audio_devices",

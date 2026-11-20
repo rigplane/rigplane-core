@@ -35,6 +35,8 @@ from ...env_config import (
 from ...runtime.managed_tx_state import ManagedTxIntentKind
 from ...types import AudioCodec
 from ..api_contract import (  # noqa: TID251
+    AudioCandidatesRecord,
+    AudioDeviceCandidateRecord,
     AudioReceiveFailureRecord,
     AudioReceiveRecord,
 )
@@ -136,6 +138,22 @@ def audio_tx_format_message(opus_decode: bool, sample_rate: int) -> AudioTxForma
         opus_decode=opus_decode,
         sample_rate=sample_rate,
     )
+
+
+def audio_candidate_record(candidate: AudioCandidate) -> AudioDeviceCandidateRecord:
+    """The one :class:`AudioCandidate` → wire-record mapper (MOR-3883).
+
+    Serves both the ``audioReceive`` failure offer (MOR-4119) and the
+    on-demand ``GET /api/v1/audio/candidates`` list.
+    """
+    return {
+        "stableId": candidate.stable_id,
+        "displayName": candidate.display_name,
+        "direction": candidate.direction,
+        "hostApi": candidate.hostapi,
+        "portAudioIndex": candidate.portaudio_index,
+        "nearRadio": candidate.near_radio,
+    }
 
 
 def _bounded_audio_stats(message: dict[str, Any]) -> dict[str, Any]:
@@ -747,17 +765,36 @@ class AudioBroadcaster:
                 payload["holder"] = holder
             if candidates:
                 payload["candidates"] = [
-                    {
-                        "stableId": candidate.stable_id,
-                        "displayName": candidate.display_name,
-                        "direction": candidate.direction,
-                        "hostApi": candidate.hostapi,
-                        "portAudioIndex": candidate.portaudio_index,
-                        "nearRadio": candidate.near_radio,
-                    }
-                    for candidate in candidates
+                    audio_candidate_record(candidate) for candidate in candidates
                 ]
         return {"schemaVersion": 1, "failure": payload}
+
+    async def audio_candidates(self) -> AudioCandidatesRecord | None:
+        """On-demand audio device candidates for the configured radio (MOR-3883).
+
+        ``None`` when the active radio exposes no USB audio driver surface
+        (a LAN radio, a test double), which the endpoint reports as
+        unavailable.
+        """
+        radio = self._radio
+        if radio is None:
+            return None
+        getter = getattr(radio, "audio_candidates", None)
+        if not callable(getter):
+            return None
+        listed = getter()
+        if not inspect.isawaitable(listed):
+            return None
+        result = await listed
+        if result is None:
+            return None
+        return {
+            "schemaVersion": 1,
+            "source": result.source,
+            "candidates": [
+                audio_candidate_record(candidate) for candidate in result.candidates
+            ],
+        }
 
     def _rx_start_current(self, attempt: int, radio: object, source: object) -> bool:
         if attempt != self._rx_start_attempt or radio is not self._radio:
