@@ -27,8 +27,38 @@ describe('passband probe evidence', () => {
     const samples = [sample(-10, true), sample(100, false, 'dom'), sample(116, false), sample(133, false), sample(150, true)];
     expect(passbandGaps(samples, 0, 1000)).toMatchObject([{ frames: 2, durationMs: 50 }]);
   });
-  it('carries an absent overlay entering the window as a gap that starts at the window', () => {
-    expect(passbandGaps([sample(-10, false), sample(200, true, 'dom')], 0, 1000)).toMatchObject([{ frames: 0, startMs: 0, durationMs: 200 }]);
+  it('carries a painted absence entering the window as a gap starting at the window', () => {
+    const gaps = passbandGaps([sample(-10, false), sample(200, true)], 0, 1000);
+    expect(gaps).toMatchObject([{ frames: 1, startMs: 0, durationMs: 200 }]);
+    // The last sample before the window was a frame that saw it absent, and the next frame
+    // inside the window sees it absent too: two painted frames.
+    expect(passbandGaps([sample(-10, false), sample(16, false), sample(40, true)], 0, 1000))
+      .toMatchObject([{ frames: 2, startMs: 0, durationMs: 40 }]);
+    expect(paintedOutages(passbandGaps([sample(-10, false), sample(300, true)], 0, 1000), 200)).toHaveLength(1);
+  });
+  it('carries an unpainted absence entering the window, and it is never a painted outage', () => {
+    const gaps = passbandGaps([sample(-10, true), sample(-5, false, 'dom'), sample(200, true, 'dom')], 0, 1000);
+    expect(gaps).toMatchObject([{ frames: 0, startMs: 0, durationMs: 200 }]);
+    expect(paintedOutages(gaps, 100)).toEqual([]);
+  });
+  it('drops a run that closed before the window', () => {
+    expect(passbandGaps([sample(-30, false), sample(-20, true), sample(500, true)], 0, 1000)).toEqual([]);
+  });
+  it('closes an unpainted run before a later painted outage, so neither hides the other', () => {
+    const gaps = passbandGaps([
+      sample(-10, true), sample(100, false, 'dom'), sample(200, true, 'dom'),
+      sample(300, false), sample(316, false), sample(400, true),
+    ], 0, 1000);
+    expect(gaps).toMatchObject([{ frames: 0, durationMs: 100 }, { frames: 2, durationMs: 100 }]);
+    expect(paintedOutages(gaps, 50)).toMatchObject([{ frames: 2, startMs: 300 }]);
+  });
+  it('closes a painted outage before a later unpainted run', () => {
+    const gaps = passbandGaps([
+      sample(-10, true), sample(100, false), sample(116, false), sample(130, true),
+      sample(200, false, 'dom'), sample(900, true, 'dom'),
+    ], 0, 1000);
+    expect(gaps).toMatchObject([{ frames: 2, durationMs: 30 }, { frames: 0, durationMs: 700 }]);
+    expect(paintedOutages(gaps, 20)).toHaveLength(1);
   });
   it('keeps two absent frames one gap when a DOM-only restoration falls between them', () => {
     const samples = [sample(-10, true), sample(116, false), sample(120, true, 'dom'), sample(125, false, 'dom'), sample(133, false), sample(150, true)];
