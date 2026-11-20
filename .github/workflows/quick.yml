@@ -435,6 +435,9 @@ jobs:
         with:
           name: ftx1-rit-e2e-report-${{ matrix.group }}
           path: .playwright-output
+          # upload-artifact >= v4.4 skips hidden paths unless asked; without this the
+          # dot-directory was never uploaded ("No files were found", run 44754002530).
+          include-hidden-files: true
           if-no-files-found: ignore
           retention-days: 3
 
@@ -457,6 +460,9 @@ jobs:
         with:
           name: journey-e2e-report-${{ matrix.group }}
           path: .playwright-output
+          # upload-artifact >= v4.4 skips hidden paths unless asked; without this the
+          # dot-directory was never uploaded ("No files were found", run 44754002530).
+          include-hidden-files: true
           if-no-files-found: ignore
           retention-days: 3
 
