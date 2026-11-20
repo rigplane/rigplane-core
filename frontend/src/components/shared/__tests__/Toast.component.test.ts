@@ -146,6 +146,53 @@ describe('Toast — reason-code resolution', () => {
     expect(getToastText()).toBe('An update is available: 2.1.0.');
   });
 
+  it('appends the English reason param to the localized message when not already present (MOR-4602)', () => {
+    app = mount(Toast, { target: host });
+    flushSync();
+
+    dispatchNotification({
+      level: 'error',
+      message: 'TX audio failed: encoder init failed: boom',
+      code: 'txAudioEncoderFailed',
+      params: { reason: 'encoder init failed: boom' },
+    });
+    flushSync();
+
+    const text = getToastText();
+    expect(text).toContain('TX audio encoder failed');
+    expect(text).toContain('encoder init failed: boom');
+    expect(text).toContain(' — encoder init failed: boom');
+  });
+
+  it('does not duplicate the reason when the localized message already contains it', () => {
+    app = mount(Toast, { target: host });
+    flushSync();
+
+    dispatchNotification({
+      level: 'error',
+      message: 'Command failed: invalid mode for this band',
+      code: 'commandExecutionFailed',
+      params: { reason: 'invalid mode for this band' },
+    });
+    flushSync();
+
+    expect(getToastText()).toBe('Command failed: invalid mode for this band');
+  });
+
+  it('appends the reason param to a legacy message without a code', () => {
+    app = mount(Toast, { target: host });
+    flushSync();
+
+    dispatchNotification({
+      level: 'error',
+      message: 'TX audio failed to start',
+      params: { reason: 'permission denied' },
+    });
+    flushSync();
+
+    expect(getToastText()).toBe('TX audio failed to start — permission denied');
+  });
+
   it('keeps the legacy English message verbatim when no code is provided', () => {
     app = mount(Toast, { target: host });
     flushSync();

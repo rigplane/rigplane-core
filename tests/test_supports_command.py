@@ -89,8 +89,11 @@ _EXPECTED_COUNTS = {
     "X6200": (15, 21),
     # G7250 (MOR-4352): the X6200 shape — same Xiegu command surface minus
     # band-spectrum/tuner, plus the formally-absent tone/memory/data-mode
-    # rows; nets out to the same partition.
-    "G7250": (15, 21),
+    # rows; nets out to the same partition. MOR-4436 scope PR: plus the
+    # LAN scope reads/writes it declares (mode, span, edge, ref).
+    # MOR-3624 adds the get/set_repeater_offset alias pair: like every
+    # profile without the 0C/0D opcodes, G7250 gains two unsupported rows.
+    "G7250": (19, 17),
 }
 _ALIASES = {
     "get_scope_dual": ScopeRuntimeMixin,

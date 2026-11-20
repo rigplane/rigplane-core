@@ -292,6 +292,7 @@ scope, where the radio supports one.
 | `ref_step_db`     | float   | no       | Scope reference level step size, dB.                       |
 | `span_presets_hz` | int[]   | no       | Scope span presets in Hz, index-ordered (index 0-7 matches the CI-V `0x27 0x15` span code the radio itself uses). Must be non-empty and strictly ascending. |
 | `span_preset_semantics` | string | with `span_presets_hz` | What one preset entry means on the radio's own wire: `half_width` (the preset is a ±half-width — the CI-V span and the center-mode waveform field) or `full_width` (the preset is the full display width). Required whenever `span_presets_hz` is declared; a load without it is rejected. |
+| `span_value_bytes` | int | no | BCD width of the 0x27 0x15 span value on the wire, 5 or 6. Default 5 (Icom). Replies of either width decode. |
 
 `span_presets_hz` is the only place these values live. The
 waveform-stream span derivation (`runtime/_civ_rx.py:
@@ -302,18 +303,21 @@ as an argument — `commands/` may not import `profiles/`, so the runtime
 reads the resolved profile and passes the list in. A profile that omits
 this key therefore decodes and encodes no span at all.
 
-`span_preset_semantics` (MOR-4385) says what those numbers mean. Every
-shipped profile with presets is Icom CI-V and declares `half_width`:
-the `0x27 0x15` value is the ±half-width the display spans either side
+`span_preset_semantics` (MOR-4385) says what those numbers mean. The
+Icom CI-V rigs declare `half_width`: the `0x27 0x15` value is the
+±half-width the display spans either side
 of center, and the center-mode waveform payload carries that same value
-(IC-7610 CI-V Reference Guide p.14, "Scope waveform data"). The runtime
+(IC-7610 CI-V Reference Guide p.14, "Scope waveform data"). The Xiegu
+G7250 — also CI-V, in wfview network mode — declares `full_width`: its
+`0x27 0x15` value is the full display width and the center-mode
+waveform carries half of it (MOR-4436). The runtime
 consumes it through one conversion
 (`RadioProfile.scope_span_view_widths_hz`): capabilities publish real
 view widths (twice a `half_width` preset), `RadioScopeSource.coverage_for`
 picks the smallest preset whose coverage contains the requested view,
 and the radio receives that preset's own index — so a UI step and the
-radio's own span table agree. A radio whose presets are full display
-widths would declare `full_width` and keep the width-as-preset reading.
+radio's own span table agree. A `full_width` radio keeps the same
+agreement with the width-as-preset reading (the G7250 above).
 
 The `ref_*_db` triple is the 0x19 reference level's adjustable range
 (MOR-3694). Every shipped profile that declares the `scope` capability and

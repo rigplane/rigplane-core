@@ -1,4 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { TxCaptureFailure } from '../tx-mic';
+
+const txFailure = (code: TxCaptureFailure['code'], category: string, reason: string): TxCaptureFailure => ({
+  code, category, reason, at: Date.now(),
+});
 
 const rxStart = vi.fn();
 const rxStop = vi.fn();
@@ -26,7 +31,7 @@ vi.mock('../rx-player', () => ({
 
 const txStart = vi.fn().mockResolvedValue(null);
 const txStop = vi.fn();
-let txCaptureDied: ((reason: string) => void) | null = null;
+let txCaptureDied: ((failure: TxCaptureFailure) => void) | null = null;
 
 vi.mock('../tx-mic', () => ({
   TxMic: class {
@@ -38,7 +43,7 @@ vi.mock('../tx-mic', () => ({
     static supported() { return true; }
     constructor(
       _send: (data: ArrayBuffer) => void,
-      onCaptureDied?: (reason: string) => void,
+      onCaptureDied?: (failure: TxCaptureFailure) => void,
     ) {
       txCaptureDied = onCaptureDied ?? null;
     }
@@ -191,7 +196,7 @@ describe('TX failure latch across automatic ForceOff (MOR-3753)', () => {
     expect(r.keyed()).toBe(true);
     expect(r.audioManager.txEnabled).toBe(true);
 
-    txCaptureDied?.('TX MIC: capture failed (unit test)');
+    txCaptureDied?.(txFailure('capture', 'reader-failed', 'capture failed (unit test)'));
     await vi.waitFor(() => expect(r.submit).toHaveBeenCalledWith('force_off'));
     // Latched before the automatic cleanup completes …
     expect(r.store.getAudioState().txError).toBe(true);

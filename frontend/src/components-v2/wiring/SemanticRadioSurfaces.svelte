@@ -45,6 +45,7 @@
   import { presentationResources, runtime } from '$lib/runtime';
   import * as componentKitActivation from '../../component-kits/activation';
   import type { ScopeStream } from '$lib/runtime/scope-stream';
+  import type { ScopeRefOffset } from '../../components/spectrum/spectrum-toolbar-logic';
   import type { ScopeGeometry } from '$lib/runtime/scope-frame';
   import { EMPTY_SCOPE_PASSBAND_DISPLAY, projectScopePassbandDisplay } from '$lib/runtime/adapters/scope-passband-display';
   import type { ManagedScopeRegion } from '$lib/runtime/adapters/scope-display-projection';
@@ -2830,7 +2831,7 @@
     which declared this zone in MOR-1370 (S6b-2). `sdr-test` also declares this zone; the remaining
     single-composition layouts (`mobile`/`lcd-*`) keep their existing bare path.
   -->
-  {#snippet scopeControlsSurface(screenGroup?: Snippet, rowTail?: Snippet, moreAsSheet = false)}
+  {#snippet scopeControlsSurface(screenGroup?: Snippet, rowTail?: Snippet, moreAsSheet = false, refOffset?: ScopeRefOffset)}
     {#if view?.scopeControls}
       <ScopeControlsSurface
         {...scopeFiniteRendererSelection}
@@ -2844,6 +2845,7 @@
         onSpanChange={scopeIntents.onSpanChange}
         onSpeedChange={scopeIntents.onSpeedChange}
         onRefChange={scopeIntents.onRefChange}
+        {refOffset}
       />
     {/if}
   {/snippet}
@@ -3010,7 +3012,7 @@
   {#snippet hostedScopeDisplay(allowBare = allowBareSurfaces)}
     {@render zoned('scopeDisplay', view?.scopeDisplay !== undefined, scopeDisplaySurface, allowBare)}
   {/snippet}
-  {#snippet hostedScopeControls(allowBare = allowBareSurfaces, screenGroup?: Snippet, rowTail?: Snippet, moreAsSheet = false)}
+  {#snippet hostedScopeControls(allowBare = allowBareSurfaces, screenGroup?: Snippet, rowTail?: Snippet, moreAsSheet = false, refOffset?: ScopeRefOffset)}
     <!-- MOR-2545 PR2: the toolbar-hosted row hands its screen-only group in
          through the SECOND parameter, so `zoned()` (which renders its body
          argument-less) gets a closing snippet. MOR-2545 PR3: the row TAIL
@@ -3019,7 +3021,7 @@
          [MORE ▾] key. MOR-2987: the FOURTH parameter opts the ⋯ menu into
          a BottomSheet (the phone layout); desktop callers omit it. -->
     {#snippet zonedBody()}
-      {@render scopeControlsSurface(screenGroup, rowTail, moreAsSheet)}
+      {@render scopeControlsSurface(screenGroup, rowTail, moreAsSheet, refOffset)}
     {/snippet}
     {@render zoned('scopeControls', view?.scopeControls !== undefined, zonedBody, allowBare)}
   {/snippet}
