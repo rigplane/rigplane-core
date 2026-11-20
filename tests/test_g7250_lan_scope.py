@@ -237,7 +237,9 @@ class _G7250LanScopeFake(MockIcomRadio):
 
 @pytest.mark.realtime(reason="real LAN simulator, radio and scope websocket")
 @pytest.mark.timeout(60)
-async def test_scope_ws_span_request_writes_six_byte_set_and_streams_full_width() -> None:
+async def test_scope_ws_span_request_writes_six_byte_set_and_streams_full_width() -> (
+    None
+):
     """A span change through the real ``/api/v1/scope`` WebSocket reaches
     the G7250 as a six-byte ``27 15`` SET, and the frames come back
     covering the requested full width.
