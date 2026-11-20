@@ -79,7 +79,9 @@ class ConnectionSessionRecord(TypedDict):
 
 
 class AudioDeviceCandidateRecord(TypedDict):
-    """One offered audio device of an ``audioReceive`` RX-start failure."""
+    """One offered audio device: of an ``audioReceive`` RX-start failure or
+    of the on-demand ``GET /api/v1/audio/candidates`` list (MOR-3883).
+    """
 
     stableId: str
     displayName: str
@@ -87,6 +89,22 @@ class AudioDeviceCandidateRecord(TypedDict):
     hostApi: str
     portAudioIndex: int
     nearRadio: bool
+
+
+class AudioCandidatesRecord(TypedDict):
+    """The wire body of ``GET /api/v1/audio/candidates`` (schema version 1).
+
+    The same candidate records an ``audioReceive`` failure offers
+    (MOR-4119), listed at any time for the configured radio. ``source``
+    records which path produced the list: ``"usb_topology"`` ranked the
+    serial radio's codec endpoints first (``nearRadio``); the English name
+    fallback produced ``"name_heuristic"`` (topology missing or late, every
+    candidate far).
+    """
+
+    schemaVersion: int
+    source: Literal["usb_topology", "name_heuristic"]
+    candidates: list[AudioDeviceCandidateRecord]
 
 
 class AudioReceiveFailureRecord(TypedDict):
@@ -231,6 +249,12 @@ STABLE_HTTP_ENDPOINTS: Final[tuple[HttpEndpoint, ...]] = (
         "method": "GET",
         "path": "/api/v1/audio/analysis",
         "purpose": "audio analyzer snapshot when active",
+        "auth": "none",
+    },
+    {
+        "method": "GET",
+        "path": "/api/v1/audio/candidates",
+        "purpose": "on-demand USB audio device candidates for the configured radio",
         "auth": "none",
     },
     {

@@ -44,8 +44,25 @@ Message types: REQ_HEAD carries UTF-8 JSON
 ``{method, path, query, headers}`` with ``query`` as
 ``{name: [values]}``; REQ_BODY carries raw bytes; a request is one
 REQ_HEAD, zero or more REQ_BODY, then END. The server answers RES_HEAD
-(JSON ``{status, headers}``), zero or more RES_BODY (each at most 16
-KB), then END; or one terminal ERROR (JSON ``{code, message}``).
+(JSON ``{status, headers}``), zero or more RES_BODY, then END; or one
+terminal ERROR (JSON ``{code, message}``).
+
+Chunking is part of the contract, in BOTH directions (MOR-272): no frame
+payload is bigger than ``RESPONSE_CHUNK_BYTES`` (16 KB), so a body is
+always a sequence of small frames carrying its request id, and END
+marks the last one (the channel is ordered and reliable, so position is
+the sequence). A sender never lets more than ``SEND_HIGH_WATER_BYTES``
+(32 KB) sit in the data channel's buffer: it waits on the channel's
+buffered amount before every frame. aiortc moves data-channel messages
+into SCTP one at a time from one queue shared by every channel and
+cannot interleave inside a message, so a single large message, or a deep
+buffer, holds back the ``control`` channel (the controller heartbeat)
+for as long as it takes to send at the current loss. A receiver answers
+an oversize frame with ERROR ``too_large`` and drops that request; a
+sender that relies on the peer to chunk is not conforming.
+:class:`ApiFrame` is the one frame encoder/parser, and
+:func:`api_request_messages` / :func:`api_response_messages` the one
+chunking rule, for Core and for an out-of-process peer.
 CANCEL asks the server to drop a request before it answers. Request ids
 are client-chosen and strictly increasing per channel: a REQ_HEAD with
 an id at or below the highest accepted one answers ERROR ``stale_id``
@@ -61,7 +78,7 @@ unchunked, proxies arbitrary URLs, and fails silently; go-webrtc/http
 max message size but no backpressure (a blocking receive stalls every
 request), no timeouts, and silent drops. This design keeps the
 id-multiplexing plus chunking idea and adds backpressure (wait while the
-data channel reports more than 256 KB buffered, resume on drain),
+data channel reports more than 32 KB buffered, resume on drain),
 per-request deadlines, explicit errors, and an allow-list instead of URL
 proxying.
 """
@@ -93,6 +110,7 @@ from typing import (
 from ..ws import WS_OP_BINARY  # noqa: TID251
 
 if TYPE_CHECKING:
+    from .channel_attach import DataChannelSpec  # noqa: TID251
     from .server import WebServer  # noqa: TID251
     from .transport.connection import Connection  # noqa: TID251
 
@@ -105,6 +123,8 @@ __all__ = [
     "SEND_HIGH_WATER_BYTES",
     "SEND_LOW_WATER_BYTES",
     "ApiChannelHandler",
+    "ApiFrame",
+    "ApiFrameError",
     "ApiMessageType",
     "ApiRequestHead",
     "ApiWireDefinition",
@@ -119,6 +139,7 @@ __all__ = [
     "api_channel_golden_documents_from_json",
     "api_channel_wire_definition",
     "api_path_allowed",
+    "api_request_messages",
     "api_response_messages",
 ]
 
@@ -144,7 +165,8 @@ class ApiMessageType(IntEnum):
 _FRAME_FORMAT: Final = ">BBIB"
 _FRAME_HEADER: Final = struct.Struct(_FRAME_FORMAT)
 
-#: Biggest RES_BODY payload the server ever emits in one frame.
+#: Biggest payload of ANY frame, in both directions (the name predates the
+#: rule covering requests; the browser reads it as its request chunk size).
 RESPONSE_CHUNK_BYTES: Final = 16 * 1024
 
 #: Biggest assembled request body the server accepts; past it ERROR ``too_large``.
@@ -157,11 +179,12 @@ MAX_IN_FLIGHT_REQUESTS: Final = 32
 #: ERROR ``timeout``. Read at request time so tests may patch it.
 REQUEST_DEADLINE_S: Final = 15.0
 
-#: While the data channel reports more than this buffered, sends wait.
-SEND_HIGH_WATER_BYTES: Final = 256 * 1024
+#: While the data channel reports more than this buffered, sends wait: at
+#: most two frames queue ahead of a control frame (see the module docstring).
+SEND_HIGH_WATER_BYTES: Final = 32 * 1024
 
 #: Resume threshold after a high-water wait (also the requested channel mark).
-SEND_LOW_WATER_BYTES: Final = 64 * 1024
+SEND_LOW_WATER_BYTES: Final = 16 * 1024
 
 #: Poll step for the drain wait (a short poll is the portable resume the
 #: wire contract requires; the threshold above is still requested).
@@ -349,7 +372,7 @@ def _api_channel_payload_contracts() -> dict[str, ApiWirePayload]:
         ),
         "attach_frame": _payload_contract(
             ClientChannelParams,
-            "first text frame on a client data channel",
+            "first text frame on control, api, scope-text and audio-text",
             constant=("type", '"attach"', "the attach discriminator"),
             rename={"controller_role": "role"},
             optional=frozenset({"controller_key"}),
@@ -362,12 +385,12 @@ def _api_channel_payload_contracts() -> dict[str, ApiWirePayload]:
         ),
         "attach_ack": _payload_contract(
             ChannelAttachedAck,
-            "first server text frame on a scope/audio channel",
+            "first server text frame on a scope-text/audio-text channel",
             constant=("type", '"attached"', "the ack discriminator"),
             rename={"version": "v"},
             required=frozenset({"channel", "version"}),
             notes={
-                "channel": 'the acked label: "scope" | "audio"',
+                "channel": 'the acked kind: "scope" | "audio"',
                 "version": f"ack version, currently {ATTACH_ACK_VERSION}",
             },
         ),
@@ -392,7 +415,9 @@ class ApiWireDefinition:
     """The wire contract as a typed, JSON-serialisable record.
 
     The one machine-readable copy of the header layout, message types,
-    version, chunk size, limits, and the JSON payload contracts. Use
+    version, chunk size, limits, the JSON payload contracts, and the K5
+    data-channel set (``data_channels``: label, kind, ordering,
+    reliability and which frames each channel carries). Use
     :func:`dataclasses.asdict` for the plain-JSON form; every value
     round-trips through ``json`` unchanged.
     """
@@ -402,6 +427,7 @@ class ApiWireDefinition:
     message_types: ApiWireMessageTypes
     limits: ApiWireLimits
     payloads: dict[str, ApiWirePayload]
+    data_channels: tuple[DataChannelSpec, ...]
 
 
 def api_channel_wire_definition() -> ApiWireDefinition:
@@ -411,6 +437,8 @@ def api_channel_wire_definition() -> ApiWireDefinition:
     browser transport will consume and check this instead of re-listing
     values).
     """
+    from .channel_attach import DATA_CHANNELS  # noqa: TID251
+
     return ApiWireDefinition(
         version=API_CHANNEL_VERSION,
         header=ApiWireHeader(
@@ -436,6 +464,7 @@ def api_channel_wire_definition() -> ApiWireDefinition:
             send_low_water_bytes=SEND_LOW_WATER_BYTES,
         ),
         payloads=_api_channel_payload_contracts(),
+        data_channels=DATA_CHANNELS,
     )
 
 
@@ -508,6 +537,17 @@ class ApiRequestHead:
             headers[key] = value
         return cls(method=method, path=path, query=query, headers=headers)
 
+    def encode(self) -> bytes:
+        """Encode as the JSON payload of a REQ_HEAD frame (the client side)."""
+        return json.dumps(
+            {
+                "method": self.method,
+                "path": self.path,
+                "query": self.query,
+                "headers": self.headers,
+            }
+        ).encode("utf-8")
+
 
 @dataclass(frozen=True, slots=True)
 class ApiResponseHead:
@@ -542,6 +582,50 @@ def _encode_frame(msg_type: int, request_id: int, payload: bytes) -> bytes:
 
 API_CHANNEL_SIGNALLING_PREFIX = "/api/v1/transport/webrtc/"
 """Route prefix the api channel never serves (see :func:`api_path_allowed`)."""
+
+
+class ApiFrameError(ValueError):
+    """A frame :meth:`ApiFrame.parse` refuses: ``code`` is the ERROR code
+    to answer (``malformed``, ``bad_version`` or ``too_large``) and
+    ``request_id`` the id it names (0 when the header is short)."""
+
+    def __init__(self, code: str, request_id: int, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+        self.request_id = request_id
+
+
+@dataclass(frozen=True, slots=True)
+class ApiFrame:
+    """One binary api-channel frame: type, request id, payload.
+
+    ``type`` is the raw byte so an unknown type still parses (the server
+    answers it ``malformed``); compare with :class:`ApiMessageType`.
+    """
+
+    type: int
+    request_id: int
+    payload: bytes = b""
+
+    def encode(self) -> bytes:
+        """The wire bytes; raises :class:`ValueError` past the 16 KB rule."""
+        if len(self.payload) > RESPONSE_CHUNK_BYTES:
+            raise ValueError("api frame payload over RESPONSE_CHUNK_BYTES")
+        return _encode_frame(self.type, self.request_id, self.payload)
+
+    @classmethod
+    def parse(cls, data: bytes) -> ApiFrame:
+        """Parse wire bytes; raises :class:`ApiFrameError` for a short
+        frame, another version, or a payload over 16 KB."""
+        if len(data) < _FRAME_HEADER.size:
+            raise ApiFrameError(_MALFORMED, 0, "frame too short")
+        version, msg_type, request_id, _flags = _FRAME_HEADER.unpack_from(data)
+        if version != API_CHANNEL_VERSION:
+            raise ApiFrameError(_BAD_VERSION, request_id, "unsupported version")
+        payload = bytes(data[_FRAME_HEADER.size :])
+        if len(payload) > RESPONSE_CHUNK_BYTES:
+            raise ApiFrameError(_TOO_LARGE, request_id, "frame payload over 16 KB")
+        return cls(msg_type, request_id, payload)
 
 
 def api_path_allowed(method: str, path: str) -> bool:
@@ -787,18 +871,26 @@ class ApiChannelHandler:
 
     async def _handle_message(self, opcode: int, payload: bytes) -> bool:
         """Route one frame; True asks the receive loop to stop (closing)."""
-        if opcode != WS_OP_BINARY or len(payload) < _FRAME_HEADER.size:
+        if opcode != WS_OP_BINARY:
             await self._send_error(0, _MALFORMED, "frame too short")
             return False
-        version, msg_type, request_id, _flags = _FRAME_HEADER.unpack(
-            payload[: _FRAME_HEADER.size]
-        )
-        body = payload[_FRAME_HEADER.size :]
-        if version != API_CHANNEL_VERSION:
-            await self._send_error(request_id, _BAD_VERSION, "unsupported version")
-            with contextlib.suppress(Exception):
-                await self._conn.close(1000, "bad version")
-            return True
+        try:
+            frame = ApiFrame.parse(payload)
+        except ApiFrameError as exc:
+            state = self._requests.get(exc.request_id)
+            if exc.code == _TOO_LARGE and state is not None:
+                # An accepted request fails; one already dispatched ignores
+                # late frames exactly as ``_on_body`` does.
+                if not state.dispatched:
+                    self._fail_request(exc.request_id, _TOO_LARGE, str(exc))
+                return False
+            await self._send_error(exc.request_id, exc.code, str(exc))
+            if exc.code == _BAD_VERSION:
+                with contextlib.suppress(Exception):
+                    await self._conn.close(1000, "bad version")
+                return True
+            return False
+        msg_type, request_id, body = frame.type, frame.request_id, frame.payload
         if msg_type == ApiMessageType.REQ_HEAD:
             await self._on_head(request_id, body)
         elif msg_type == ApiMessageType.REQ_BODY:
@@ -840,15 +932,18 @@ class ApiChannelHandler:
         if state is None or state.dispatched:
             return
         if len(state.buf) + len(payload) > MAX_REQUEST_BODY_BYTES:
-            state.dispatched = True
-            assert state.task is not None
-            state.task.cancel()
-            self._finish(request_id)
-            self._spawn_send(
-                self._send_error(request_id, _TOO_LARGE, "request body too large")
-            )
+            self._fail_request(request_id, _TOO_LARGE, "request body too large")
             return
         state.buf += payload
+
+    def _fail_request(self, request_id: int, code: str, message: str) -> None:
+        """Drop an accepted request and answer its terminal ERROR."""
+        state = self._requests[request_id]
+        state.dispatched = True
+        assert state.task is not None
+        state.task.cancel()
+        self._finish(request_id)
+        self._spawn_send(self._send_error(request_id, code, message))
 
     def _on_end(self, request_id: int) -> None:
         """Mark a request complete: its task now runs the HTTP dispatch."""
@@ -993,7 +1088,7 @@ class ApiChannelHandler:
     ) -> None:
         """Send one frame, waiting while the transport buffer is full.
 
-        While the data channel reports more than 256 KB still buffered,
+        While the data channel reports more than 32 KB still buffered,
         the send waits (short poll for the drain); the receive loop and
         every other request keep running meanwhile. With *timeout* the
         drain wait is bounded by the existing request deadline: past it
@@ -1017,7 +1112,7 @@ class ApiChannelHandler:
             except TimeoutError:
                 await self._abort_unwritable("send buffer stayed full")
                 raise
-        await self._conn.send_binary(_encode_frame(msg_type, request_id, payload))
+        await self._conn.send_binary(ApiFrame(msg_type, request_id, payload).encode())
 
 
 # Golden documents: the concrete frames the browser must handle,
@@ -1028,6 +1123,20 @@ _API_GOLDEN_TESTED_BY: Final = "tests/test_api_channel_golden.py::test_golden_do
 
 #: Where a live session key goes when replaying a committed attach frame.
 _GOLDEN_KEY_PLACEHOLDER: Final = "<SESSION-KEY>"
+
+
+def api_request_messages(
+    head: ApiRequestHead, body: bytes
+) -> list[tuple[ApiMessageType, bytes]]:
+    """REQ_HEAD, <=16 KB REQ_BODY chunks, END: the client side of the
+    chunking rule (an out-of-process peer sends exactly these)."""
+    messages = [(ApiMessageType.REQ_HEAD, head.encode())]
+    messages.extend(
+        (ApiMessageType.REQ_BODY, bytes(body[off : off + RESPONSE_CHUNK_BYTES]))
+        for off in range(0, len(body), RESPONSE_CHUNK_BYTES)
+    )
+    messages.append((ApiMessageType.END, b""))
+    return messages
 
 
 def api_response_messages(
@@ -1205,7 +1314,8 @@ def _golden_frame(
 
 
 def _golden_attach_document(label: str) -> GoldenTextDocument:
-    """The attach frame for one data-channel label (client -> server)."""
+    """The attach frame for one channel kind (client -> server); a split
+    kind's attach rides its reliable ``*-text`` companion."""
     keyless = label == "api"
     decoded = {
         "type": "attach",
@@ -1224,13 +1334,13 @@ def _golden_attach_document(label: str) -> GoldenTextDocument:
         outcome=(
             "silent until the first request (the keyless acquire path)"
             if keyless
-            else "answered by the attach ack; a resent frame is re-acknowledged"
+            else "answered by the attach ack (control: by the hello)"
         ),
     )
 
 
 def _golden_ack_document(kind: str) -> GoldenTextDocument:
-    """The attach ack for one lossy label (server -> client)."""
+    """The attach ack for one split kind (server -> client)."""
     from .channel_attach import ChannelAttachedAck  # noqa: TID251
 
     text = ChannelAttachedAck(kind).encode()
@@ -1240,7 +1350,7 @@ def _golden_ack_document(kind: str) -> GoldenTextDocument:
         text=text,
         decoded=json.loads(text),
         template=None,
-        outcome="the client stops resending its attach",
+        outcome="the client opens its transport",
     )
 
 
@@ -1305,7 +1415,7 @@ def _golden_control_hello_document() -> GoldenTextDocument:
         decoded=json.loads(text),
         template=None,
         outcome=(
-            "the client stops resending its attach and learns the "
+            "the client opens its control transport and learns the "
             "server, radio and capability surface"
         ),
     )

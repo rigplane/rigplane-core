@@ -8,13 +8,16 @@ handlers.
 
 Negotiation contract (one ``RTCPeerConnection`` per peer):
 
-* The browser (offerer) creates the three DataChannels — ``control`` (ordered/
-  reliable), ``scope`` and ``audio`` (unordered, lossy) — exactly as the A2.2
-  factories configure them, then POSTs its SDP offer.
+* The offerer creates the K5 channel set
+  (:data:`~rigplane.web.channel_attach.DATA_CHANNELS`: ``control`` and
+  ``api`` ordered/reliable; ``scope`` and ``audio`` lossy for binary frames,
+  each with its reliable ordered ``*-text`` companion for text frames)
+  exactly as the factories configure them, then POSTs its SDP offer.
 * :meth:`WebRtcSessionManager.negotiate` creates the answerer
   ``RTCPeerConnection``, registers an ``on("datachannel")`` callback that wraps
-  each inbound channel in :class:`WebRtcDataChannelConnection` (the A2.1 seam)
-  and serves it — by label — through the single shared attach path
+  each inbound channel — a split kind's two channels paired into one — in
+  :class:`WebRtcDataChannelConnection` (the A2.1 seam) and serves it — by
+  kind — through the single shared attach path
   (``WebServer.attach_client_channel``): the same ticket, handlers, caps,
   supervision and cleanup the WebSocket lane uses. Each channel's first text
   frame must be the attach frame; without it the channel closes. Then
@@ -45,7 +48,12 @@ from typing import TYPE_CHECKING, Any, Final, cast
 
 from ...runtime.controller_authority import ControllerError  # noqa: TID251
 from ...ws import WS_OP_TEXT  # noqa: TID251
-from ..channel_attach import ChannelKind, ClientChannelParams  # noqa: TID251
+from ..channel_attach import (  # noqa: TID251
+    ATTACH_ACK_KINDS,
+    ChannelKind,
+    ClientChannelParams,
+    data_channel_spec,
+)
 from .webrtc_contract import IceCandidateInit, WebRtcAnswer  # noqa: TID251
 from .webrtc import (  # noqa: TID251
     WebRtcDataChannelConnection,
@@ -72,16 +80,14 @@ logger = logging.getLogger(__name__)
 
 _INSTALL_HINT: Final = "WebRTC backend unavailable; install rigplane[webrtc]."
 
-# Labels we dispatch into handlers; any other channel is ignored (logged).
-# ``api`` is ordered + reliable like ``control`` (REST multiplexes
-# independent requests); ``scope`` / ``audio`` stay unordered and lossy.
-_CONTROL: Final = "control"
-_SCOPE: Final = "scope"
-_AUDIO: Final = "audio"
-_API: Final = "api"
-
-# A data channel that never sends its attach frame is closed after this.
+# A data channel that never sends its attach frame is closed after this;
+# a split kind's half whose partner never arrives is closed after it too.
 _ATTACH_TIMEOUT_S: Final = 5.0
+
+# How often a scope/audio attach that arrived before its session's
+# control attach is re-checked (K5: held, never closed, until control
+# attaches or the attach bound passes).
+_EARLY_ATTACH_RECHECK_S: Final = 0.05
 
 
 class WebRtcSessionError(RuntimeError):
@@ -97,6 +103,9 @@ class _Session:
         # Controller session owners attached through this peer's channels.
         # A ``disconnected``/``failed`` peer fences these immediately.
         self.controller_owners: set[str] = set()
+        # The split-kind half (scope/audio) waiting for its partner, at most
+        # ONE per (kind, carriage); it already queues its frames.
+        self.unpaired: dict[tuple[str, str], WebRtcDataChannelConnection] = {}
 
     async def close(self) -> None:
         for task in self.tasks:
@@ -313,17 +322,72 @@ class WebRtcSessionManager:
     def _dispatch_channel(
         self, session_id: str, session: _Session, channel: RTCDataChannel
     ) -> None:
-        """Wrap an inbound channel and serve it through the shared attach."""
-        label = channel.label
-        if label not in (_CONTROL, _SCOPE, _AUDIO, _API):
-            logger.info("WebRTC: ignoring unknown data channel %r", label)
+        """Wrap an inbound channel and serve it through the shared attach.
+
+        A ``control``/``api`` channel is served alone. A split kind's half
+        (``scope``/``audio`` binary, or its ``*-text`` companion) is paired
+        with the other half of its kind, whatever order they arrive in; the
+        pair becomes ONE connection. A client opens one pair per kind at a
+        time, so at most one half waits per (kind, carriage): a second
+        simultaneous half of the same key is closed at once. The half that
+        arrives first is wrapped immediately, so every frame it receives
+        before its partner (the attach frame included) is kept. A half
+        whose partner does not arrive within the attach bound is closed,
+        and so is a channel whose label is outside the channel set.
+        """
+        spec = data_channel_spec(channel.label)
+        if spec is None:
+            logger.info("WebRTC: closing unknown data channel %r", channel.label)
+            with contextlib.suppress(Exception):
+                channel.close()
             return
+        if spec.carries == "all":
+            conn = WebRtcDataChannelConnection(channel, session.pc)
+        else:
+            partner_carriage = "text" if spec.carries == "binary" else "binary"
+            own_key = (spec.kind, spec.carries)
+            partner = session.unpaired.pop((spec.kind, partner_carriage), None)
+            if partner is None or not partner.is_alive():
+                waiting = session.unpaired.get(own_key)
+                if waiting is not None and waiting.is_alive():
+                    logger.info(
+                        "WebRTC: second %r half while one waits; closing", spec.label
+                    )
+                    with contextlib.suppress(Exception):
+                        channel.close()
+                    return
+                first = WebRtcDataChannelConnection(channel, session.pc)
+                session.unpaired[own_key] = first
+                asyncio.get_running_loop().call_later(
+                    _ATTACH_TIMEOUT_S, self._close_unpaired, session, own_key, first
+                )
+                return
+            conn = partner
+            conn.add_partner(channel, partner_is_text=spec.carries == "text")
         session.tasks.append(
-            asyncio.ensure_future(self._attach_and_serve(session_id, session, channel))
+            asyncio.ensure_future(
+                self._attach_and_serve(session_id, session, conn, spec.kind)
+            )
         )
 
+    @staticmethod
+    def _close_unpaired(
+        session: _Session,
+        key: tuple[str, str],
+        conn: WebRtcDataChannelConnection,
+    ) -> None:
+        """Close a split-kind half still waiting for its partner."""
+        if session.unpaired.get(key) is conn:
+            del session.unpaired[key]
+            logger.info("WebRTC: %r channel without its pair; closing", key[0])
+            conn.abort()
+
     async def _attach_and_serve(
-        self, session_id: str, session: _Session, channel: RTCDataChannel
+        self,
+        session_id: str,
+        session: _Session,
+        conn: WebRtcDataChannelConnection,
+        kind_label: str,
     ) -> None:
         """Read the attach frame, then serve the channel through the shared path.
 
@@ -336,21 +400,29 @@ class WebRtcSessionManager:
         The ``api`` label alone admits a keyless attach (it is how a
         browser acquires its first key); every other label still
         requires a session key.
+
+        K5 attach order (MOR-272): every attach frame rides a reliable
+        ordered channel (a split kind's ``*-text`` companion), so it is
+        never lost and never resent. A scope/audio attach that arrives
+        before its session's control attach
+        (``controller_primary_required``) is held without closing the
+        channel and re-checked until control attaches; the 5 s attach
+        bound covers the whole wait.
         """
-        conn = WebRtcDataChannelConnection(channel, session.pc)
-        # Validated against the four labels by _dispatch_channel.
-        kind = cast(ChannelKind, channel.label)
+        # Validated against the channel set by _dispatch_channel.
+        kind = cast(ChannelKind, kind_label)
         server = self._server
         if server is None:
             logger.warning("WebRTC: no server for data channel %r; closing", kind)
             with contextlib.suppress(Exception):
                 await conn.close(1008, "no server")
             return
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + _ATTACH_TIMEOUT_S
         try:
-            opcode, payload = await asyncio.wait_for(
-                conn.recv(), timeout=_ATTACH_TIMEOUT_S
-            )
-        except (asyncio.TimeoutError, EOFError):
+            async with asyncio.timeout_at(deadline):
+                opcode, payload = await conn.recv()
+        except (TimeoutError, EOFError):
             with contextlib.suppress(Exception):
                 await conn.close(1000, "no attach frame")
             return
@@ -367,16 +439,29 @@ class WebRtcSessionManager:
             with contextlib.suppress(Exception):
                 await conn.close(1008, "bad attach frame")
             return
-        try:
-            await server.attach_client_channel(
-                conn,
-                kind,
-                params,
-                (session_id, 0),
-                transport="datachannel",
-                track_owners=session.controller_owners,
-            )
-        except ControllerError as exc:
-            logger.info("WebRTC: data channel %r refused: %s", kind, exc.code)
-            with contextlib.suppress(Exception):
-                await conn.close(1008, "refused")
+        while True:
+            conn.serving = True  # past the attach: the handler reads freely
+            try:
+                await server.attach_client_channel(
+                    conn,
+                    kind,
+                    params,
+                    (session_id, 0),
+                    transport="datachannel",
+                    track_owners=session.controller_owners,
+                )
+            except ControllerError as exc:
+                if (
+                    kind in ATTACH_ACK_KINDS
+                    and exc.code == "controller_primary_required"
+                    and loop.time() + _EARLY_ATTACH_RECHECK_S < deadline
+                    and conn.is_alive()
+                ):
+                    logger.debug("WebRTC: %r attach before control; holding", kind)
+                    conn.serving = False  # held: frames stay bounded
+                    await asyncio.sleep(_EARLY_ATTACH_RECHECK_S)
+                    continue
+                logger.info("WebRTC: data channel %r refused: %s", kind, exc.code)
+                with contextlib.suppress(Exception):
+                    await conn.close(1008, "refused")
+            return
