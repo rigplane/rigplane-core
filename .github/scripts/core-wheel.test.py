@@ -740,7 +740,12 @@ class ResolveEndToEndTest(unittest.TestCase):
             env["GITHUB_OUTPUT"] = str(github_output)
         else:
             env.pop("GITHUB_OUTPUT", None)
-        with mock.patch.dict(os.environ, env):
+        # clear=True: patch.dict without it only updates, so a GITHUB_OUTPUT
+        # set by the Actions runner would survive the pop above and the
+        # resolver would write the file instead of stdout JSON (the runner
+        # sets it for every step; seen as the quick-python failure on PR
+        # #4566, 2026-11-14).
+        with mock.patch.dict(os.environ, env, clear=True):
             if github_output is not None:
                 code = RESOLVE.main(["--ref", ref, "--remote", str(self.origin)])
                 if code != 0:
@@ -994,6 +999,14 @@ class CoreWheelWorkflowPinsTest(unittest.TestCase):
         self.assertNotIn("enable-cache: true", self.wheel)
         self.assertNotIn("cache: 'npm'", build)
         self.assertNotIn("cache-dependency-path", self.wheel)
+        # npm's own cache is not an Actions cache but is just as shared on
+        # a persistent self-hosted runner: `npm ci` must keep it inside the
+        # per-job RUNNER_TEMP so an arbitrary Core ref cannot seed the
+        # runner's ~/.npm for a later privileged build (the CodeQL
+        # cache-poisoning alert on the "Build frontend" step).
+        self.assertIn(
+            "npm_config_cache: ${{ runner.temp }}/core-wheel-npm-cache", build
+        )
 
     def test_installed_profile_smoke_judges_the_target_revision(self) -> None:
         # P1 (MOR-4408): the profile catalog is revision-specific — v3.1.4
