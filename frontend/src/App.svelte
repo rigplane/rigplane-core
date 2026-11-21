@@ -47,7 +47,8 @@
     type InstrumentHandlesPresentation, type PresentationComponent,
     type PresentationId, type SelfContainedPresentation, type SkinId,
   } from './skins/registry';
-  import { t } from '$lib/i18n';
+  import { t, messageFromReasonCode } from '$lib/i18n';
+  import { ControllerClientError, CONTROLLER_TOAST_CODES } from '$lib/transport/controller-client';
   import './app.css';
 
   // MOR-1081: the workspace store owns layout, design-language and theme
@@ -325,7 +326,13 @@
       } catch (err) {
         console.error('init error:', err);
         if (!mounted) return;
-        backendError = t('core.app.backendError', { detail: String(err) });
+        // MOR-4250: a coded controller error is already localized through
+        // the catalog — render it directly instead of double-prefixing it
+        // as "Backend error: Error: <text>". The code stays in the console
+        // trace above for support reports.
+        backendError = err instanceof ControllerClientError
+          ? messageFromReasonCode(CONTROLLER_TOAST_CODES[err.code])
+          : t('core.app.backendError', { detail: String(err) });
         if (retryCount < MAX_RETRIES) {
           const delay = RETRY_DELAYS[Math.min(retryCount, RETRY_DELAYS.length - 1)];
           retrying = true;

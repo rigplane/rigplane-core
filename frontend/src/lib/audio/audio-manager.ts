@@ -380,7 +380,7 @@ class AudioManager {
   // ── TX ──
 
   async startTx(): Promise<string | null> {
-    if (this.controller?.remote() && !this.controller.ready()) return 'Удалённое управление недоступно.';
+    if (this.controller?.remote() && !this.controller.ready()) return 'Remote control is unavailable.';
     const epoch = this.controller?.epoch() ?? 0;
     if (this._txEnabled) return this.txAdmission?.promise ?? null;
     const startGeneration = ++this.txStartGeneration;
@@ -424,7 +424,7 @@ class AudioManager {
     if (startGeneration !== this.txStartGeneration) return 'TX MIC: capture start cancelled';
     if (this.controller && !this.controller.current(epoch)) {
       this.txMic.stop();
-      return 'Удалённое управление потеряно. Подключитесь заново.';
+      return 'Remote control was lost. Reconnect.';
     }
     if (err) {
       // Reuse the existing RX stats socket; never open TX or a new connection
@@ -614,7 +614,7 @@ class AudioManager {
       if (this._txEnabled
         && (this.txAdmission !== null
           || (protocols.length > 0 && this.controller?.current(epoch) !== true))) {
-        this._failTxAudio('Удалённое TX-аудио потеряно.');
+        this._failTxAudio('Remote TX audio was lost.');
       }
       // Decoder availability is a fact about the server we are talking to;
       // once the link is gone we no longer know it. Re-learned at the next

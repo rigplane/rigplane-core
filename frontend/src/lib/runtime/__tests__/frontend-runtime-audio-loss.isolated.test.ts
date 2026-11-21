@@ -359,7 +359,7 @@ describe('FrontendRuntime automatic audio-loss cleanup (MOR-3753 B)', () => {
     expect(audioManager.txEnabled).toBe(true);
     socket.onerror?.({});
     socket.onclose?.({ code: 1006, reason: '' });
-    await expect(admission).resolves.toBe('Удалённое TX-аудио потеряно.');
+    await expect(admission).resolves.toBe('Remote TX audio was lost.');
     expect(audioManager.txEnabled).toBe(false);
     expect(store.getAudioState().txError).toBe(true);
 
