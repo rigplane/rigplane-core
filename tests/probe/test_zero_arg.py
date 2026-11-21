@@ -600,9 +600,7 @@ def test_bare_conftest_import_matcher_catches_nonleading_imports() -> None:
     assert _BARE_CONFTEST_IMPORT.search(
         '"""Docstring first."""\nfrom conftest import helper\n'
     )
-    assert _BARE_CONFTEST_IMPORT.search(
-        '"""Docstring first."""\nimport conftest\n'
-    )
+    assert _BARE_CONFTEST_IMPORT.search('"""Docstring first."""\nimport conftest\n')
     assert _BARE_CONFTEST_IMPORT.search(
         "def test_something() -> None:\n    from conftest import helper\n"
     )
