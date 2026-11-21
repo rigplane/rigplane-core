@@ -148,7 +148,10 @@ class TestFilter:
 class TestMeters:
     """Meter reading tests (read-only).
 
-    Note: All meters return 0-255 scale, not physical units.
+    Note: S-meter, ALC and power meters return the raw 0-255 scale, not
+    physical units. get_swr is the exception: it returns the calibrated
+    SWR ratio (float >= 1.0, MetersCapable.get_swr contract); the raw
+    0-255 SWR reading is get_swr_meter.
     """
 
     @staticmethod
@@ -180,11 +183,24 @@ class TestMeters:
         print(f"S-meter: {s} ✓")
 
     async def test_get_swr(self, radio: IcomRadio) -> None:
-        """Read SWR meter value (0-255)."""
+        """Read SWR: calibrated ratio from get_swr, raw scale from get_swr_meter.
+
+        get_swr has returned the calibrated SWR ratio (float >= 1.0), not the
+        raw 0-255 BCD reading, since PR #1177 (MetersCapable.get_swr is typed
+        float; the raw reading moved to get_swr_meter). The old 0-255 int
+        expectation failed the rx-write-restore nightly legs (seen in runs
+        43572642077 and 44885157859): the simulator answers the 15 12 SWR
+        read with raw 10 (rigplane_testkit/icom/simulator.py:
+        IcomSimulator._swr), which the IC-7610 table (rigs/ic7610.toml
+        meters.swr.calibration) maps to 1.0 + (10/48) * 0.5.
+        """
         swr = await radio.get_swr()
-        assert isinstance(swr, int)
-        assert 0 <= swr <= 255
-        print(f"SWR meter: {swr} ✓")
+        assert isinstance(swr, float)
+        assert swr >= 1.0
+        raw = await radio.get_swr_meter()
+        assert isinstance(raw, int)
+        assert 0 <= raw <= 255
+        print(f"SWR: {swr:.3f} (raw meter {raw}) ✓")
 
     async def test_get_alc_meter(self, radio: IcomRadio) -> None:
         """Read ALC value.
