@@ -68,7 +68,11 @@ from typing import Any, Callable
 
 import pytest
 import aiohttp
+from serial_stub import SerialMockRadio
 
+from rigplane.runtime.controller_authority import ControllerAuthority
+from rigplane.testing.timing import VirtualClock
+from rigplane.web.handlers.control import ControlHandler
 from scripts.soak import soak_driver
 
 # asyncio_mode=auto (pyproject.toml) drives the async tests; no marker.
@@ -760,39 +764,57 @@ async def test_soak_multi_session_tx_catches_a_leak_whatever_the_age_of_the_leas
     assert any("left after the cycle" in v for v in tx["violations"]), tx
 
 
-async def test_tx_session_client_drains_and_dispatches_without_a_command() -> None:
-    class Socket:
-        closed = False
+class _TxReplySocket:
+    closed = False
 
-        def __init__(self) -> None:
-            self.incoming: asyncio.Queue[Any] = asyncio.Queue()
-            self.sent: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    def __init__(self) -> None:
+        self.incoming: asyncio.Queue[tuple[str, asyncio.Event]] = asyncio.Queue()
+        self.sent: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        self.transmissions: list[dict[str, Any]] = []
+        self._consumed: asyncio.Event | None = None
 
-        def __aiter__(self) -> Any:
-            return self
+    def __aiter__(self) -> _TxReplySocket:
+        return self
 
-        async def __anext__(self) -> Any:
-            return await self.incoming.get()
+    async def __anext__(self) -> aiohttp.WSMessage:
+        if self._consumed is not None:
+            self._consumed.set()
+        text, self._consumed = await self.incoming.get()
+        return aiohttp.WSMessage(aiohttp.WSMsgType.TEXT, text, "")
 
-        async def send_json(self, data: dict[str, Any]) -> None:
-            self.sent.put_nowait(data)
+    async def send_json(self, data: dict[str, Any]) -> None:
+        self.transmissions.append(data)
+        self.sent.put_nowait(data)
 
-        async def deliver(self, data: dict[str, Any]) -> None:
-            consumed = asyncio.Event()
+    async def send_text(self, text: str) -> None:
+        consumed = asyncio.Event()
+        self.incoming.put_nowait((text, consumed))
+        await consumed.wait()
 
-            def decode() -> dict[str, Any]:
-                consumed.set()
-                return data
+    async def deliver(self, data: dict[str, object]) -> None:
+        await self.send_text(json.dumps(data))
 
-            self.incoming.put_nowait(
-                SimpleNamespace(type=aiohttp.WSMsgType.TEXT, json=decode)
-            )
-            await consumed.wait()
 
+async def test_tx_session_client_drains_and_dispatches_without_a_command(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     client = soak_driver._TxSessionClient("http://unused")
-    ws = Socket()
+    ws = _TxReplySocket()
     client._ws = ws  # type: ignore[assignment]
     client._reader = asyncio.create_task(client._read(), name="soak-tx-reader")
+    handler = ControlHandler(ws, SerialMockRadio(), "test", "IC-7610")  # type: ignore[arg-type]
+
+    async def enqueue(*args: object, **kwargs: object) -> dict[str, object]:
+        return {}
+
+    monkeypatch.setattr(handler, "_enqueue_command", enqueue)
+
+    async def cleanup() -> None:
+        pass
+
+    controller = ControllerAuthority(ready=lambda: True, cleanup=cleanup)
+    grant = controller.acquire("pro")
+    primary = controller.attach(grant["controller_key"], "primary", "soak-test")
     tasks: list[asyncio.Task[Any]] = []
     try:
         # No command is waiting; an event still reaches the single reader.
@@ -803,10 +825,12 @@ async def test_tx_session_client_drains_and_dispatches_without_a_command() -> No
         second = asyncio.create_task(client.command("ptt_off"))
         tasks.append(second)
         unkey = await ws.sent.get()
-        await ws.deliver({"type": "response", "id": unkey["id"], "ok": True})
+        await handler._dispatch_command(unkey["id"], "ptt_off", {})
         assert await second is True
         assert not first.done()
-        await ws.deliver({"type": "response", "id": key["id"], "ok": False})
+        await handler._send_command_failure(
+            key["id"], "ptt_on", RuntimeError("refused")
+        )
         assert await first is False
 
         # renew() cancels an in-flight background beat. Its late reply must
@@ -819,9 +843,9 @@ async def test_tx_session_client_drains_and_dispatches_without_a_command() -> No
         tasks.append(renewal)
         assert (await ws.sent.get())["type"] == "controller_heartbeat"
         assert old_beat.cancelled()
-        await ws.deliver({"type": "controller_heartbeat"})
+        await ws.deliver(controller.heartbeat(primary))
         assert not renewal.done()
-        await ws.deliver({"type": "controller_heartbeat"})
+        await ws.deliver(controller.heartbeat(primary))
         await renewal
         assert not client._responses
         assert not client._heartbeat_replies
@@ -843,6 +867,77 @@ async def test_tx_session_client_drains_and_dispatches_without_a_command() -> No
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
         await client.close()
+        controller.revoke()
+        await controller.settle()
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        [],
+        {"type": "response", "id": [], "ok": True, "result": {}},
+        {"type": "response", "id": "soak-1", "ok": 1, "result": {}},
+        {"type": "response", "id": "soak-1", "ok": True},
+        {"type": "response", "id": "soak-1", "ok": False},
+        {"type": "controller_heartbeat"},
+        {"type": "controller_heartbeat", "generation": True},
+    ],
+)
+def test_tx_reply_rejects_invalid_producer_fields(payload: object) -> None:
+    with pytest.raises(ValueError):
+        soak_driver._parse_tx_reply(json.dumps(payload))
+
+
+async def test_periodic_heartbeat_survives_delayed_reply(
+    virtual_clock: VirtualClock,
+) -> None:
+    async def cleanup() -> None:
+        pass
+
+    controller = ControllerAuthority(
+        ready=lambda: True, cleanup=cleanup, clock=virtual_clock
+    )
+    grant = controller.acquire("pro")
+    primary = controller.attach(grant["controller_key"], "primary", "successor")
+    client = soak_driver._TxSessionClient("http://unused")
+    ws = _TxReplySocket()
+    client._ws = ws  # type: ignore[assignment]
+    client._reader = asyncio.create_task(client._read(), name="soak-tx-reader")
+    processed = 0
+
+    async def serve() -> None:
+        nonlocal processed
+        while True:
+            request = await ws.sent.get()
+            assert request["type"] == "controller_heartbeat"
+            reply = controller.heartbeat(primary)
+            processed += 1
+            if processed == 1:
+                await asyncio.sleep(soak_driver._TX_RENEW_TIMEOUT_S + 0.5)
+            await ws.deliver(reply)
+
+    server = asyncio.create_task(serve())
+    client.start_heartbeat()
+    try:
+        interval = ControllerAuthority.HEARTBEAT_MS / 1000
+        await virtual_clock.elapse(interval + soak_driver._TX_RENEW_TIMEOUT_S + 0.1)
+        assert processed == 1, "the first reply is still delayed"
+        assert len(ws.transmissions) >= 2, "renewal must continue without an ACK"
+        heartbeat = client._heartbeat
+        assert heartbeat is not None and not heartbeat.done()
+        await virtual_clock.elapse(2 * ControllerAuthority.TTL_MS / 1000)
+        assert processed >= 5
+        assert not heartbeat.done()
+        controller.validate(primary)
+        assert controller.is_session_owner(primary.tx_owner)
+        await client.renew()
+        assert not client._heartbeat_replies
+    finally:
+        server.cancel()
+        await asyncio.gather(server, return_exceptions=True)
+        await client.close()
+        controller.revoke()
+        await controller.settle()
 
 
 async def test_renew_gives_a_session_its_full_lease_whatever_its_age() -> None:

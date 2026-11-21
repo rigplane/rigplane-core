@@ -53,6 +53,7 @@ from rigplane.runtime.managed_tx_composition import (
     install_managed_tx_composition,
 )
 from rigplane.runtime.radio import IcomRadio
+from rigplane.web.protocol import decode_json
 from rigplane.web.server import WebConfig, WebServer
 from rigplane.web.web_startup import (
     attach_managed_tx_composition,
@@ -1520,6 +1521,46 @@ def summary_line(report: dict[str, Any]) -> str:
 # ---------------------------------------------------------------------------
 
 
+@dataclass(frozen=True)
+class _CommandReply:
+    id: str
+    ok: bool
+    result: object = None
+    error: str | None = None
+    message: str | None = None
+
+
+@dataclass(frozen=True)
+class _HeartbeatReply:
+    generation: int
+
+
+def _parse_tx_reply(text: str) -> _CommandReply | _HeartbeatReply | None:
+    """Parse ControlHandler response paths and ControllerAuthority.heartbeat.
+
+    Both producers return dictionaries, validated here into typed records.
+    """
+    data = decode_json(text)
+    if data.get("type") == "response":
+        command_id, ok = data.get("id"), data.get("ok")
+        if not isinstance(command_id, str) or not isinstance(ok, bool):
+            raise ValueError("invalid command response id/ok")
+        if ok:
+            if "result" not in data:
+                raise ValueError("command response missing result")
+            return _CommandReply(command_id, ok, result=data["result"])
+        error, message = data.get("error"), data.get("message")
+        if not isinstance(error, str) or not isinstance(message, str):
+            raise ValueError("invalid command response error/message")
+        return _CommandReply(command_id, ok, error=error, message=message)
+    if data.get("type") == "controller_heartbeat":
+        generation = data.get("generation")
+        if type(generation) is not int:
+            raise ValueError("invalid controller heartbeat generation")
+        return _HeartbeatReply(generation)
+    return None
+
+
 class _TxSessionClient:
     """One controller session as a client drives it (MOR-3534).
 
@@ -1533,8 +1574,8 @@ class _TxSessionClient:
         self._ws: aiohttp.ClientWebSocketResponse | None = None
         self._heartbeat: asyncio.Task[None] | None = None
         self._reader: asyncio.Task[None] | None = None
-        self._responses: dict[str, asyncio.Future[dict[str, Any] | None]] = {}
-        self._heartbeat_replies: deque[asyncio.Future[dict[str, Any] | None]] = deque()
+        self._responses: dict[str, asyncio.Future[_CommandReply | None]] = {}
+        self._heartbeat_replies: deque[asyncio.Future[_HeartbeatReply | None]] = deque()
         self.key = ""
         self._next_id = 0
 
@@ -1560,15 +1601,16 @@ class _TxSessionClient:
             async for msg in self._ws:
                 if msg.type is not aiohttp.WSMsgType.TEXT:
                     continue
-                data = msg.json()
-                reply = None
-                if data.get("type") == "response":
-                    reply = self._responses.get(data.get("id"))
-                elif data.get("type") == "controller_heartbeat":
+                data = _parse_tx_reply(msg.data)
+                if isinstance(data, _CommandReply):
+                    reply = self._responses.get(data.id)
+                    if reply is not None and not reply.done():
+                        reply.set_result(data)
+                elif isinstance(data, _HeartbeatReply):
                     if self._heartbeat_replies:
-                        reply = self._heartbeat_replies.popleft()
-                if reply is not None and not reply.done():
-                    reply.set_result(data)
+                        heartbeat_reply = self._heartbeat_replies.popleft()
+                        if not heartbeat_reply.done():
+                            heartbeat_reply.set_result(data)
         finally:
             for reply in (*self._responses.values(), *self._heartbeat_replies):
                 if not reply.done():
@@ -1582,17 +1624,18 @@ class _TxSessionClient:
             await asyncio.gather(self._reader, return_exceptions=True)
             self._reader = None
 
-    async def _renew_once(self) -> None:
+    async def _renew_once(self, *, wait_for_reply: bool = True) -> None:
         assert self._ws is not None
         if self._reader is None or self._reader.done():
             return
-        reply: asyncio.Future[dict[str, Any] | None] = (
+        reply: asyncio.Future[_HeartbeatReply | None] = (
             asyncio.get_running_loop().create_future()
         )
         self._heartbeat_replies.append(reply)
         try:
             await self._ws.send_json({"type": "controller_heartbeat"})
-            await asyncio.wait_for(reply, timeout=_TX_RENEW_TIMEOUT_S)
+            if wait_for_reply:
+                await asyncio.wait_for(reply, timeout=_TX_RENEW_TIMEOUT_S)
         finally:
             # Keep cancelled slots until their replies arrive: renew() must
             # wait for its own beat, not an outstanding background beat.
@@ -1605,7 +1648,7 @@ class _TxSessionClient:
             assert self._ws is not None
             while True:
                 await asyncio.sleep(ControllerAuthority.HEARTBEAT_MS / 1000)
-                await self._renew_once()
+                await self._renew_once(wait_for_reply=False)
 
         self._heartbeat = asyncio.create_task(beat(), name="soak-tx-heartbeat")
 
@@ -1622,7 +1665,7 @@ class _TxSessionClient:
         command_id = f"soak-{self._next_id}"
         if self._reader is None or self._reader.done():
             return False
-        reply: asyncio.Future[dict[str, Any] | None] = (
+        reply: asyncio.Future[_CommandReply | None] = (
             asyncio.get_running_loop().create_future()
         )
         self._responses[command_id] = reply
@@ -1631,7 +1674,7 @@ class _TxSessionClient:
                 {"type": "cmd", "id": command_id, "name": name, "params": params or {}}
             )
             data = await asyncio.wait_for(reply, timeout=timeout_s)
-            return data is not None and data.get("ok") is True
+            return data is not None and data.ok
         finally:
             self._responses.pop(command_id, None)
             reply.cancel()
