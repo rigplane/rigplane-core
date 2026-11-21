@@ -705,7 +705,8 @@ async def _failed_restore_on_terminal(tmp_path, monkeypatch, out: Path, save: st
     """A check whose restore is refused, run through probe_main on a terminal
     without --yes; *save* answers the save question. Returns the exit code."""
     rigs_with(tmp_path, POWER_ASK, monkeypatch)
-    monkeypatch.setattr(_probe, "open_result_folder", lambda folder: None)
+    # No opener stub: the suite guard fails any test that reaches the real
+    # opener, and neither save answer below reaches it (declined / unwritable).
     radio = await cat_radio()
     radio.hold("PC", "020")
 
