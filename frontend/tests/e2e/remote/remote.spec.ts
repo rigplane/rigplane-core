@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import controllerWire from '../../../../tests/fixtures/host-api-v3-wire.json' with { type: 'json' };
 import wire from '../../../src/lib/transport/api-channel-wire.json' with { type: 'json' };
 import golden from '../../../src/lib/transport/api-channel-golden.json' with { type: 'json' };
 import {
@@ -275,6 +276,80 @@ test('L5: a refused microphone never keys, stays on screen and reaches the suppo
   await expect
     .poll(() => supportBundleLogCount(MIC_REFUSAL_LOG), { timeout: 20_000, intervals: [1_000] })
     .toBeGreaterThan(bundleBefore);
+});
+
+// The Python API-channel tests replay both wire documents against Core:
+// test_controller_route_ptt_style and test_api_tx_start_managed_transmit_refused.
+test('L6: a local-mode station advertising momentary PTT shows a hold label and uses control-channel key and release', async ({ page }, testInfo) => {
+  await page.route('**/api/v1/controller', async (route) => {
+    if (route.request().method() !== 'GET') return route.continue();
+    await route.fulfill({ json: controllerWire.controllerStatusApiChannel });
+  });
+  const managedPosts = countManagedCommandPosts(page);
+  await openRemoteUi(page);
+  await expectControlLink();
+  const key = page.getByTestId('rx-tx-key');
+  await expect(key.getByText('Hold to talk', { exact: true })).toBeVisible();
+  await expect(key).toHaveAccessibleName('Hold to talk');
+  await expect(key).toHaveAttribute('title', 'Hold to talk');
+  await expect(key).toBeEnabled();
+  await key.screenshot({ path: testInfo.outputPath('hold-to-talk.png') });
+  await key.focus();
+  try {
+    await page.keyboard.down('Space');
+    await expect.poll(async () => (await simState()).ptt_on).toBe(true);
+  } finally {
+    await page.keyboard.up('Space');
+  }
+  await expect.poll(async () => (await simState()).ptt_on).toBe(false);
+  expect(managedPosts()).toBe(0);
+});
+
+test('L7: a refused latch explains why, logs its code and never shows TX', async ({ page }) => {
+  const code = controllerWire.controllerTxRefusal.error;
+  const diagnostic: string[] = [];
+  page.on('console', (message) => {
+    if (message.text().includes(code)) diagnostic.push(message.text());
+  });
+  await page.route('**/api/v1/managed-transmit/command', async (route) => {
+    if (route.request().postDataJSON().operation !== 'transmit_on') return route.continue();
+    await route.fulfill({ status: 403, json: controllerWire.controllerTxRefusal });
+  });
+  await openRemoteUi(page);
+  await expectControlLink();
+  const key = page.getByTestId('rx-tx-key');
+  await expect(key).toHaveAttribute('aria-label', 'Key transmitter');
+  const journalBefore = (await simState()).ptt_transitions.length;
+  await key.evaluate((button) => {
+    // Observe every change, including a transient optimistic pressed state.
+    button.dataset.txPressedSeen = 'false';
+    new MutationObserver((records) => {
+      if (records.some(({ oldValue }) => oldValue === 'true') || button.getAttribute('aria-pressed') === 'true') {
+        button.dataset.txPressedSeen = 'true';
+      }
+    }).observe(button, { attributeFilter: ['aria-pressed'], attributeOldValue: true });
+  });
+  await key.click();
+  await expect(page.locator('.toast.error').filter({
+    hasText: 'Hold PTT to transmit on this connection',
+  })).toBeVisible();
+  expect(diagnostic).not.toHaveLength(0);
+  await expect(key).toHaveAttribute('aria-pressed', 'false');
+  await expect(key).toHaveAttribute('data-tx-pressed-seen', 'false');
+  const sim = await simState();
+  expect(sim.ptt_on).toBe(false);
+  expect(sim.ptt_transitions).toHaveLength(journalBefore);
+});
+
+test('L8: a missing microphone gets its own message and never submits a latch', async ({ page }) => {
+  const managedPosts = countManagedCommandPosts(page);
+  await openRemoteUi(page, 'missing');
+  await expectControlLink();
+  const key = page.getByTestId('rx-tx-key');
+  await key.click();
+  await expect(page.locator('.toast.error')).toContainText('No microphone found');
+  await expect(key).toHaveAttribute('aria-pressed', 'false');
+  expect(managedPosts()).toBe(0);
 });
 
 // The six data-channel labels, their ordering/reliability and which frames

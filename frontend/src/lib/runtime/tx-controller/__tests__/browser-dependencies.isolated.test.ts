@@ -6,6 +6,7 @@ const h = vi.hoisted(() => ({
   messages: new Set<(message: { type?: string; name?: string; data?: unknown }) => void>(),
   sessionState: 'disconnected' as 'disconnected' | 'connected',
   appliedRevision: 0,
+  notify: vi.fn(),
   send: vi.fn((_name: string, _params: Record<string, unknown>, _id?: string) => true),
   start: vi.fn(async () => null), stop: vi.fn(), submit: vi.fn(async () => 'accepted' as const),
   setTot: vi.fn(async () => {}), ids: 0, stale: true, remainingMs: null as number | null,
@@ -23,6 +24,7 @@ vi.mock('$lib/runtime/adapters/tx-adapter', () => ({ getTxAudioControl: () => ({
 }) }));
 vi.mock('$lib/transport/ws-client', () => ({
   sendCommand: h.send,
+  emitLocalNotification: h.notify,
   onCommandDelivery: (fn: (event: CommandDeliveryEvent) => void) => {
     h.deliveries.add(fn); return () => h.deliveries.delete(fn);
   },
@@ -44,7 +46,7 @@ beforeEach(() => {
   h.sessionState = 'disconnected'; h.appliedRevision = 0;
   h.send.mockReset().mockReturnValue(true);
   h.start.mockClear(); h.stop.mockClear(); h.submit.mockClear(); h.ids = 0;
-  h.setTot.mockClear(); h.stale = true; h.remainingMs = null;
+  h.notify.mockClear(); h.setTot.mockClear(); h.stale = true; h.remainingMs = null;
 });
 describe('managed browser TX dependencies', () => {
   it('is dormant, delegates media, forwards sessions, and disposes idempotently', async () => {
@@ -81,6 +83,7 @@ describe('managed browser TX dependencies', () => {
     await expect(browser.dependencies.submit('force_off')).resolves.toBe('accepted');
     expect(h.submit).toHaveBeenCalledExactlyOnceWith('force_off');
     expect(h.send).toHaveBeenCalledExactlyOnceWith('ptt_on', {}, 'cmd-1');
+    expect(h.notify).toHaveBeenCalledExactlyOnceWith('error', expect.any(String), 'controllerLost');
   });
 
   it('routes TOT edits through the canonical managed HTTP store path', async () => {

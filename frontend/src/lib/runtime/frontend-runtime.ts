@@ -36,7 +36,7 @@ import {
 } from '$lib/stores/audio.svelte';
 import * as transport from '$lib/transport/ws-client';
 import { fetchInfo, fetchMemoryPage } from '$lib/transport/http-client';
-import { controllerClient, CONTROLLER_TOAST_CODES } from '$lib/transport/controller-client';
+import { controllerClient, CONTROLLER_TOAST_CODES, type PttStyle } from '$lib/transport/controller-client';
 import { audioManager } from '$lib/audio/audio-manager';
 import { makeAudioRoutingHandlers } from './commands/panel-commands';
 import { clearLegacyPendingModInputRestore } from './adapters/mod-input-auto.svelte';
@@ -226,6 +226,10 @@ class FrontendRuntime {
   get remoteController(): boolean {
     this._controllerSubscribe();
     return controllerClient.remote;
+  }
+  get pttStyle(): PttStyle {
+    this._controllerSubscribe();
+    return controllerClient.pttStyle;
   }
   get connectionAudio(): boolean { return isAudioConnected(); }
   /** MOR-2792: server RX capture is digital silence. */

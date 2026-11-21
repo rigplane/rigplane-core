@@ -187,7 +187,7 @@
     {
       latched: () => tx.snapshot().intent === 'latched',
       transmitAvailable: () => tx.snapshot().fresh,
-      latchAllowed: () => !runtime.remoteController,
+      latchAllowed: () => runtime.pttStyle !== 'momentary',
     },
     { pttOn: tx.pttOn, pttOff: tx.pttOff, transmitOn: tx.transmitOn, forceOff: tx.forceOff },
     {

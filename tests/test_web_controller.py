@@ -116,6 +116,7 @@ async def test_http_acquisition_is_atomic_anonymous_and_mode_is_local_only(stati
     assert set(status.payload) == {
         "protocol_version",
         "mode",
+        "ptt_style",
         "state",
         "generation",
         "ttl_ms",
