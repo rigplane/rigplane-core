@@ -550,6 +550,12 @@
      "observed": false,
      "storePath": "receiver.main.operator_controls.preamp"
     },
+    "main.repeaterOffsetHz": {
+     "availability": "undeclared",
+     "freshness": "unknown",
+     "observed": false,
+     "storePath": "receiver.main.operator_controls.repeater_offset_hz"
+    },
     "main.repeaterShift": {
      "availability": "undeclared",
      "freshness": "unknown",
@@ -1316,6 +1322,12 @@
      "observed": false,
      "storePath": "receiver.sub.operator_controls.preamp"
     },
+    "sub.repeaterOffsetHz": {
+     "availability": "undeclared",
+     "freshness": "unknown",
+     "observed": false,
+     "storePath": "receiver.sub.operator_controls.repeater_offset_hz"
+    },
     "sub.repeaterShift": {
      "availability": "undeclared",
      "freshness": "unknown",
@@ -1579,6 +1591,7 @@
     "pbtInner": null,
     "pbtOuter": null,
     "preamp": null,
+    "repeaterOffsetHz": null,
     "repeaterShift": null,
     "repeaterTone": null,
     "repeaterTsql": null,
@@ -1705,6 +1718,7 @@
     "pbtInner": null,
     "pbtOuter": null,
     "preamp": null,
+    "repeaterOffsetHz": null,
     "repeaterShift": null,
     "repeaterTone": null,
     "repeaterTsql": null,

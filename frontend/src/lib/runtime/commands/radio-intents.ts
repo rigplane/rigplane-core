@@ -27,6 +27,7 @@ const intentSpecs = [
   { names: ['set_repeater_tone', 'set_repeater_tsql'], params: { on: 'boolean', receiver: 'receiver' } },
   { names: ['set_tone_freq', 'set_tsql_freq'], params: { freq: 'integer', receiver: 'receiver' } },
   { names: ['set_repeater_shift'], params: { direction: 'integer', receiver: 'receiver' } },
+  { names: ['set_repeater_offset'], params: { offset_hz: 'integer', receiver: 'receiver' } },
   { names: [
     'set_anti_vox_gain', 'set_break_in_delay', 'set_compressor_level', 'set_drive_gain', 'set_mic_gain',
     'set_monitor_gain', 'set_nb_depth', 'set_nb_width', 'set_vox_delay', 'set_vox_gain',

@@ -166,6 +166,7 @@ from rigplane.commands import (
     parse_memory_entry,
     parse_data_mode_response,
     parse_frequency_response,
+    parse_freq_offset_response,
     parse_level_response,
     parse_meter_response,
     parse_mode_response,
@@ -4947,6 +4948,57 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         resp = await self._send_civ_expect(civ, label="set_repeater_shift")
         if parse_ack_nak(resp) is False:
             raise CommandError(f"Radio rejected repeater shift {direction!r}")
+
+    async def get_repeater_offset(self, receiver: int = 0) -> int:
+        """Read the duplex offset magnitude in Hz (CI-V ``0x0C``, MOR-3624).
+
+        MOR-3591: the plain command reaches only the selected receiver --
+        any other receiver, or either receiver while the selection is
+        unknown, raises ``ReceiverNotSelectedError`` and sends nothing.
+        """
+        self._check_connected()
+        self._require_receiver(receiver, operation="get_repeater_offset")
+        self._require_cmd29_route(
+            0x0C, None, receiver=receiver, operation="get_repeater_offset"
+        )
+        civ = self._commands.get_freq_offset(to_addr=self._radio_addr)
+        resp = await self._send_civ_expect(civ, label="get_repeater_offset")
+        offset_hz = parse_freq_offset_response(resp.data)
+        if offset_hz is None:
+            raise CommandError(
+                f"invalid repeater offset readback: {resp.data.hex() or 'empty'}"
+            )
+        return offset_hz
+
+    async def set_repeater_offset(self, offset_hz: int, receiver: int = 0) -> None:
+        """Set the duplex offset magnitude in Hz (CI-V ``0x0D``, MOR-3624).
+
+        Input validation only (owner guard rule 2026-10-30): refuse a
+        value above the profile's declared offset maximum
+        (``profiles/__init__.py: RadioProfile.repeater_offset_max_hz``);
+        the wire builder refuses a negative, bool or sub-100 Hz value.
+        Which band the tuned frequency sits in and where TX lands are the
+        radio's own refusal, not a Core guard.
+
+        MOR-3591: the plain command reaches only the selected receiver --
+        any other receiver, or either receiver while the selection is
+        unknown, raises ``ReceiverNotSelectedError`` and sends nothing.
+        """
+        self._check_connected()
+        maximum = self._profile.repeater_offset_max_hz
+        if maximum is not None and offset_hz > maximum:
+            raise ValueError(
+                "repeater offset refused: above the profile's declared "
+                f"maximum ({maximum} Hz), got {offset_hz} Hz"
+            )
+        self._require_receiver(receiver, operation="set_repeater_offset")
+        self._require_cmd29_route(
+            0x0D, None, receiver=receiver, operation="set_repeater_offset"
+        )
+        civ = self._commands.set_freq_offset(offset_hz, to_addr=self._radio_addr)
+        resp = await self._send_civ_expect(civ, label="set_repeater_offset")
+        if parse_ack_nak(resp) is False:
+            raise CommandError(f"Radio rejected repeater offset {offset_hz} Hz")
 
     async def get_tone_squelch_type(self, receiver: int = 0) -> ToneSquelchType:
         """Read the exclusive tone squelch selector (CI-V ``0x16 0x5D``).
