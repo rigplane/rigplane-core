@@ -670,7 +670,11 @@ class TestHttpEndpoints:
                 False,
                 True,
                 {
-                    "radio_transport": "serial",
+                    # MOR-4437: the control transport comes from the one
+                    # shared derivation — a backend without a backend_id is
+                    # UNKNOWN even when it exposes USB audio; the audio
+                    # sources still follow the USB surface.
+                    "radio_transport": "unknown",
                     "tx_audio_source": "usb",
                     "rx_audio_source": "usb",
                     "data_mode_policy": "data1_usb",

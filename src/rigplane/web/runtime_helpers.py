@@ -9,6 +9,7 @@ from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Final, cast
 
 from ..core.acquisition_scheduler import resolve_available_when
+from ..core.radio_transport import control_transport_of
 from ..core.state_acquisition_policy import RadioAcquisitionProfile
 from ..core.state_pipeline_contracts import FieldFamily, FieldScope, FieldPath, VfoSlot
 from ..core.state_store import (
@@ -642,6 +643,16 @@ def runtime_capabilities(radio: "Radio | None") -> set[str]:
     raw_caps = getattr(radio, "capabilities", None)
     if isinstance(raw_caps, set):
         caps = set(raw_caps)
+        # MOR-4437: a profile describes the radio; the transport describes
+        # the connection actually in use.  Drop the capability tags the
+        # profile declares unavailable on the live transport (e.g. the
+        # G7250's CI-V scope answers over LAN only).  The transport comes
+        # from the backend in use, never from ``profile.has_lan``; profiles
+        # without per-transport gaps keep the set unchanged on every
+        # transport.
+        profile = getattr(radio, "profile", None)
+        if isinstance(profile, RadioProfile):
+            caps = profile.capabilities_for_transport(control_transport_of(radio), caps)
         if "scope" in caps and not isinstance(radio, ScopeCapable):
             caps.discard("scope")
         if "audio" in caps and not isinstance(radio, AudioCapable | UsbAudioCapable):
@@ -672,6 +683,9 @@ def runtime_capabilities(radio: "Radio | None") -> set[str]:
         result.add("repeater_shift")
     if isinstance(radio, RepeaterOffsetCapable):
         result.add("repeater_offset")
+    profile = getattr(radio, "profile", None)
+    if isinstance(profile, RadioProfile):
+        result = profile.capabilities_for_transport(control_transport_of(radio), result)
     return result
 
 
