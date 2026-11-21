@@ -16,16 +16,26 @@
  *   TSQL → OFF    set_repeater_tsql on:false, set_repeater_tone on:false
  *
  * `set_tsql_freq` is dispatched only in TSQL; `set_tone_freq` otherwise.
+ *
+ * MOR-3624 offset cases share
+ * `../../../../components-v2/wiring/__tests__/fixtures/mor3624-repeater-offset.seam.json`
+ * with the Python replay (`tests/test_mor3624_repeater_offset_api.py`),
+ * which drives the same documents through the production stack and fails
+ * on drift — the request payloads below come from that file, never
+ * hand-written.
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { expectFrames, expectRefusal, h } from './conformance/harness';
+import seam from '../../../../components-v2/wiring/__tests__/fixtures/mor3624-repeater-offset.seam.json';
 import { makeRepeaterHandlers } from '../../commands/panel-commands';
 import { getPendingRepeaterTone } from '../panel-adapters';
 import { resetCommandLifecycle } from '$lib/stores/commands.svelte';
 import {
+  formatOffsetHz,
   formatToneHz,
   shiftDirection,
   shiftFromDirection,
+  stepOffsetHz,
   stepToneFreq,
 } from '$lib/radio/repeater-transitions';
 
@@ -94,6 +104,12 @@ describe('makeRepeaterHandlers shift and tone-frequency frames (MOR-2111)', () =
   it('tone frequency writes set_tsql_freq in TSQL', () => {
     expectFrames(() => handlers.onToneFreqChange(8850, true, 1), [['set_tsql_freq', { freq: 8850, receiver: 1 }]]);
   });
+
+  it('an offset write dispatches set_repeater_offset in exact Hz (MOR-3624)', () => {
+    expectFrames(() => handlers.onOffsetChange(seam.offsetsHz.confirmed, 0), [
+      [seam.command.name, { offset_hz: seam.offsetsHz.confirmed, receiver: 0 }],
+    ]);
+  });
 });
 
 describe('getPendingRepeaterTone collapses an in-flight transition to its target (MOR-2111)', () => {
@@ -136,6 +152,21 @@ describe('repeater-transitions pure helpers (MOR-2111)', () => {
     expect(stepToneFreq(8850, tones, -1)).toBe(6700);
     expect(stepToneFreq(10000, tones, 1)).toBe(10000);
     expect(stepToneFreq(6700, tones, -1)).toBe(6700);
+  });
+
+  it('stepOffsetHz steps 100 kHz and clamps at [0, OFFSET_MAX_HZ] (MOR-3624)', () => {
+    expect(stepOffsetHz(600_000, -1)).toBe(500_000);
+    expect(stepOffsetHz(9_900_000, 1)).toBe(10_000_000);
+    expect(stepOffsetHz(100_000, -1)).toBe(0);
+    expect(stepOffsetHz(0, -1)).toBe(0);
+    expect(stepOffsetHz(99_999_900, 1)).toBe(99_999_900);
+  });
+
+  it('formatOffsetHz trims trailing zeros in megahertz (MOR-3624)', () => {
+    expect(formatOffsetHz(0)).toBe('0M');
+    expect(formatOffsetHz(600_000)).toBe('0.6M');
+    expect(formatOffsetHz(7_600_000)).toBe('7.6M');
+    expect(formatOffsetHz(20_000_000)).toBe('20M');
   });
 
   it('stepToneFreq moves an off-chart value to the nearest chart value in the pressed direction', () => {

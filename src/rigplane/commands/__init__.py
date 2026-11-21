@@ -177,6 +177,7 @@ from .ptt import ptt_off, ptt_on
 # --- vfo.py ---
 from .vfo import (
     get_dual_watch,
+    get_freq_offset,
     get_main_sub_band,
     get_quick_dual_watch,
     get_quick_split,
@@ -184,6 +185,7 @@ from .vfo import (
     get_split,
     get_tuning_step,
     get_vfo,
+    parse_freq_offset_response,
     parse_repeater_shift_response,
     scan_set_df_span,
     scan_set_resume,
@@ -195,6 +197,7 @@ from .vfo import (
     set_dual_watch,
     set_dual_watch_off,
     set_dual_watch_on,
+    set_freq_offset,
     set_quick_dual_watch,
     set_quick_split,
     set_repeater_shift,
@@ -759,6 +762,9 @@ __all__ = [
     "get_repeater_shift",
     "set_repeater_shift",
     "parse_repeater_shift_response",
+    "get_freq_offset",
+    "set_freq_offset",
+    "parse_freq_offset_response",
     # Memory
     "build_memory_clear",
     "build_memory_contents_get",
