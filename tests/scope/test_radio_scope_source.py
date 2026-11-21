@@ -237,6 +237,117 @@ async def test_granted_preset_frame_uses_every_native_bin(model):
 
 
 @pytest.mark.parametrize(
+    "model,reported_half_hz,preset_half_hz",
+    [
+        # MOR-4452: at the ±50 kHz span preset the radio's SCROLL-C wave
+        # reports its sweep extent (±49.25 kHz of points), not the display
+        # width. The wire view must still be the preset's ±50 kHz, exactly
+        # as CENTER mode synthesises it from centre + span.
+        ("ic705", 49_250, 50_000),
+        ("ic7300", 49_250, 50_000),
+        # A full_width profile: the 96 kHz preset reported as 94.56 kHz.
+        ("g7250", 47_280, 48_000),
+    ],
+)
+async def test_scroll_c_sweep_extent_expands_to_the_span_preset(
+    model, reported_half_hz, preset_half_hz
+):
+    from rigplane.core.types import bcd_encode
+    from rigplane.scope import ScopeAssembler
+    from rigplane.scope.hub import ScopeHub
+    from rigplane.scope.models import Subscription
+    from rigplane.web.protocol import (
+        decode_scope_frame_v2,
+        encode_scope_frame_v2,
+    )
+
+    writer = Writer()
+    source = RadioScopeSource(
+        load_rig(Path("rigs") / f"{model}.toml").to_profile(), writer
+    )
+    hub = ScopeHub(encoder=encode_scope_frame_v2)
+    hub.register("radio", source)
+    sub = await hub.subscribe(
+        Subscription("radio", 0, FollowView("vfo", preset_half_hz * 2), 475, 20)
+    )
+    try:
+        center = writer.frequency
+        payload = (
+            bytes([1, 1, 2])
+            + bcd_encode(center - reported_half_hz)
+            + bcd_encode(center + reported_half_hz)
+            + b"\x00"
+            + bytes(475)
+        )
+        frame = ScopeAssembler().feed(payload, 0)
+        assert frame is not None and frame.mode == 2
+        source.feed_frame(frame)
+        _grant, data = await sub.receive_delivery()
+        wire = decode_scope_frame_v2(data)
+        assert (wire.view_start_hz, wire.view_end_hz) == (
+            center - preset_half_hz,
+            center + preset_half_hz,
+        )
+        assert (wire.coverage_start_hz, wire.coverage_end_hz) == (
+            center - preset_half_hz,
+            center + preset_half_hz,
+        )
+        assert wire.pixels is not None and len(wire.pixels) == 475
+    finally:
+        await sub.close()
+
+
+@pytest.mark.parametrize("mode", [1, 3])
+async def test_edge_mode_window_is_reported_verbatim(mode):
+    """MOR-4452: FIX/SCROLL-F windows are edge-programmed, not span
+    presets — a reported 98.5 kHz window stays 98.5 kHz (the honest
+    width), never snapped to a span preset."""
+    from rigplane.core.types import bcd_encode
+    from rigplane.scope import ScopeAssembler
+
+    source = RadioScopeSource(load_rig(Path("rigs/ic705.toml")).to_profile(), Writer())
+    frames = []
+    source.on_frame(frames.append)
+    await source.start()
+    payload = (
+        bytes([1, 1, mode])
+        + bcd_encode(14_050_750)
+        + bcd_encode(14_149_250)
+        + b"\x00"
+        + bytes(475)
+    )
+    frame = ScopeAssembler().feed(payload, 0)
+    assert frame is not None
+    source.feed_frame(frame)
+    assert frames[-1].coverage == Coverage(14_050_750, 14_149_250)
+    await source.stop()
+
+
+async def test_scroll_c_window_far_from_any_preset_is_reported_verbatim():
+    """MOR-4452: only a sweep extent just below a preset expands; a
+    SCROLL-C window far from every preset keeps its reported width."""
+    from rigplane.core.types import bcd_encode
+    from rigplane.scope import ScopeAssembler
+
+    source = RadioScopeSource(load_rig(Path("rigs/ic705.toml")).to_profile(), Writer())
+    frames = []
+    source.on_frame(frames.append)
+    await source.start()
+    payload = (
+        bytes([1, 1, 2])
+        + bcd_encode(14_025_000)
+        + bcd_encode(14_175_000)
+        + b"\x00"
+        + bytes(475)
+    )
+    frame = ScopeAssembler().feed(payload, 0)
+    assert frame is not None
+    source.feed_frame(frame)
+    assert frames[-1].coverage == Coverage(14_025_000, 14_175_000)
+    await source.stop()
+
+
+@pytest.mark.parametrize(
     "mode,first,last,expected",
     [
         (0, 14_100_000, 2500, Coverage(14_097_500, 14_102_500)),

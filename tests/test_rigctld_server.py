@@ -1670,7 +1670,17 @@ class TestLifecycle:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.timeout(30)
+@pytest.mark.usefixtures("virtual_clock")
 class TestAcceptResponse:
+    """Request/reply round trips, on the virtual clock.
+
+    The ``cfg`` idle timeout (``client_timeout=0.5``) is a loop timer: on real
+    time a starved runner let it fire before the reply was written, so the
+    read returned EOF. Virtual time does not move here, so the idle timeout
+    cannot preempt the reply; the ``timeout`` mark is the real-time watchdog.
+    """
+
     async def test_single_command_response(
         self, server: RigctldServer, proto: MagicMock
     ) -> None:
