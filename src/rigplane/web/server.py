@@ -93,6 +93,7 @@ from ..core.state_store import StateSnapshot, StateStore
 from ..core.transport import IcomTransport
 from ..core.tx_observation import (
     ObservedPtt,
+    TxMeterLog,
     project_observed_ptt,
 )
 from ..runtime.controller_authority import (
@@ -1360,6 +1361,9 @@ class WebServer:
         self.command_service = CommandService(
             executor=_SharedControlCommandExecutor(self),
             state_store=self.command_state_store,
+        )
+        self._unsubscribe_tx_meter_log = (
+            self.command_state_store.subscribe_observations(TxMeterLog().on_observation)
         )
         self._unsubscribe_provider_generation = (
             self.command_state_store.subscribe_provider_generation(
@@ -3969,6 +3973,7 @@ class WebServer:
         if unsubscribe is not None:
             unsubscribe()
         self._unsubscribe_provider_generation()
+        self._unsubscribe_tx_meter_log()
         self._detach_audio_session_listener()
         self._detach_reconnect_status_listener()
         await stop_web_server(self)
