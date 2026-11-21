@@ -10,6 +10,10 @@ import { RecordedPath, recordCanvasLayers } from '$lib/renderers/__tests__/canva
  * MOR-4534: every grant fed here is a document the real handler produced —
  * tests/fixtures/scope-control/replies.json, replayed by
  * tests/web/test_scope_reply_fixture.py::test_reply_fixture_is_what_the_real_handler_sends.
+ * MOR-4452: the SCROLL-C span-preset frames are the exact /api/v1/scope wire
+ * documents the real journey produced from the trimmed hardware wave —
+ * tests/fixtures/scope-scroll-c/*.bin, replayed by
+ * tests/test_scroll_c_span_preset_wire_mor4452.py::test_trimmed_scroll_c_wave_streams_the_span_preset_window.
  * Malformed grants are parser-rejection cases in scope-wire-v2.test.ts.
  */
 import { describe, it, expect, vi, beforeEach, afterEach, type Mock } from 'vitest';
@@ -18,7 +22,7 @@ import { SvelteMap } from 'svelte/reactivity';
 import * as svelteClient from 'svelte/internal/client';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { scopeWire, audioScopeGoldenNames, loadAudioScopeGolden, loadScopeReply } from '../../../lib/runtime/__tests__/scope-wire-fixture';
+import { scopeWire, audioScopeGoldenNames, loadAudioScopeGolden, loadScopeReply, loadScrollCScopeGolden } from '../../../lib/runtime/__tests__/scope-wire-fixture';
 import { EMPTY_SCOPE_PASSBAND_DISPLAY, projectScopePassbandDisplay,
   type ScopePassbandDisplay, type ScopePassbandDisplayInput, type ScopePassbandDiagnostics } from '$lib/runtime/adapters/scope-passband-display';
 import { toRadioViewModel } from '$lib/runtime/adapters/radio-view-model-adapter';
@@ -1070,6 +1074,31 @@ describe('SpectrumPanel component', () => {
     control.step(-1); flushSync();
     expect(view()).toEqual({ follow: 'vfo', spanHz: 50_000 });
     expect(target.querySelector<HTMLButtonElement>('[title="Increase span"]')!.disabled).toBe(false);
+  });
+
+  // MOR-4452: at the ±50 kHz preset the server grants the preset's 100 kHz
+  // window in SCROLL-C too — the radio's raw sweep extent (±49.25 kHz) never
+  // reaches the wire. The frames replayed here are the exact wire documents
+  // the real /api/v1/scope journey produced from that trimmed hardware wave
+  // (tests/test_scroll_c_span_preset_wire_mor4452.py::
+  // test_trimmed_scroll_c_wave_streams_the_span_preset_window, per-profile
+  // goldens in tests/fixtures/scope-scroll-c/), so the SPAN readout and the
+  // edge legends name the preset, not the trimmed extent.
+  it.each(['IC-705', 'IC-7300'])('reads ±50k at the span preset in SCROLL-C on %s (MOR-4452)', async (model) => {
+    runtimeHarness.state.currentCaps = validateCapabilities({ ...IC7300_CAPABILITIES, ...spanCapabilities, model });
+    authorityHarness.state.current = authority({ frequencyHz: 14_050_000, scopeControls: testScopeControls(2, 4) });
+    const target = mountPanel();
+    const { buffer, expected } = loadScrollCScopeGolden(model === 'IC-705' ? 'ic705' : 'ic7300');
+    expect([expected.view_start_hz, expected.view_end_hz]).toEqual([14_000_000, 14_100_000]);
+    scopeControllerHarness.stream('hardware').setMode(2);
+    harnessChannels.scope ??= makeFakeScopeChannel();
+    harnessChannels.scope.fire(new Uint8Array(buffer));
+    flushSync();
+    await flushWaterfallPaint();
+    expect(mockRuntime.scope.spanControl!.spanHz).toBe(100_000);
+    expect(target.querySelector('[title="Scope span"] .toolbar-value')?.textContent).toBe('±50k');
+    expect(target.querySelector('.span-left')!.textContent).toContain('14.000');
+    expect(target.querySelector('.span-right')!.textContent).toContain('14.100');
   });
 
   it('keeps trace controls absent in an ordinary build', () => {
