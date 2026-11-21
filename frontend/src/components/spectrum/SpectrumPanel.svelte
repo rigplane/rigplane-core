@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { resolveScopeSourceId, audioScopeFactsRevision, audioScopeProjection } from '$lib/runtime/adapters/scope-adapter';
+  import { resolveScopeSourceId, audioScopeFactsRevision, audioScopePassbandView, audioScopeProjection } from '$lib/runtime/adapters/scope-adapter';
   import { onDestroy, untrack, type Snippet } from 'svelte';
   import { ScopeRenderTrace, type TraceToken, type TraceSource, type TraceStatus } from '../../lib/runtime/scope-render-trace';
   import SpectrumCanvas from './SpectrumCanvas.svelte';
@@ -1014,8 +1014,12 @@
     // the radio's fixed edges (a radio write for a pure display crop). An
     // explicit band/segment preset keeps the absolute subscription — there
     // the fixed-window change IS the user's intent.
-    const view = !audioFft && explicitView !== null ? explicitView
-      : { follow: 'vfo' as const, spanHz: followSpanHz ?? (audioFft ? 48000 : 100000) };
+    // MOR-4604: every audio_fft surface requests the one passband view
+    // (scope-adapter `audioScopePassbandView`), so the shared stream's
+    // widest-surface grant serves the Audio Scope at native resolution too.
+    const view = audioFft ? audioScopePassbandView(runtime.state, runtime.caps)
+      : explicitView !== null ? explicitView
+      : { follow: 'vfo' as const, spanHz: followSpanHz ?? 100000 };
     const facts = spectrumFacts;
     const requestSeq = followRequestSeq;
     return scopeSubscription({

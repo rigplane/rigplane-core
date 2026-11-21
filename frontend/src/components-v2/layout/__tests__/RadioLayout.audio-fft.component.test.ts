@@ -1,6 +1,8 @@
 import { recordCanvasLayers } from '$lib/renderers/__tests__/canvas-layers-fixture';
 import { webglFixture } from '$lib/renderers/__tests__/webgl-fixture';
-import { scopeWire } from '$lib/runtime/__tests__/scope-wire-fixture';
+import { loadAudioPassbandReplay, scopeWire } from '$lib/runtime/__tests__/scope-wire-fixture';
+import { audioSpectrumTraceSample } from '../../panels/audio-scope/audio-spectrum-renderer';
+import { audioScopeProjection } from '$lib/runtime/adapters/scope-adapter';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import { get } from 'svelte/store';
@@ -45,10 +47,15 @@ import { getVfoHandlers, getFilterHandlers } from '$lib/runtime/adapters/panel-a
 
 function channel() {
   const binary = new Set<(data: ArrayBuffer) => void>();
+  const text = new Set<(message: Record<string, unknown>) => void>();
   return {
     state: 'connected', sessionEpoch: 1,
     connect: vi.fn(), disconnect: vi.fn(),
-    sendRaw: vi.fn(() => true), onMessage: () => () => {},
+    sendRaw: vi.fn((_message: Record<string, unknown>) => true),
+    onMessage: (handler: (message: Record<string, unknown>) => void) => {
+      text.add(handler); return () => { text.delete(handler); };
+    },
+    fireMessage: (message: Record<string, unknown>) => { for (const handler of text) handler(message); },
     onBinary: (handler: (data: ArrayBuffer) => void) => {
       binary.add(handler); return () => { binary.delete(handler); };
     },
@@ -482,5 +489,106 @@ describe('MOR-2355 central default scope source', { timeout: LAYOUT_MOUNT_TIMEOU
     await vi.waitFor(() => expect(host.snapshot('hardware-scope').demand).toBe(0));
     expect(hardware.handlerCount()).toBe(0);
     expect(getCapabilities()?.scopeSource).toBe('hardware');
+  });
+});
+
+/**
+ * MOR-4604 (gate round 1, P1-1/P1-2): the Audio Scope and an audio-mode
+ * SpectrumPanel share one audio_fft wire subscription (ScopeStream keeps the
+ * widest surface's request). Both real panels are mounted at different widths;
+ * the subscription the browser sends and every reply it gets come from
+ * tests/test_audio_scope_passband_replay.py, which drives the real
+ * ScopeHandler, ScopeHub and the server-built AudioFftSource (production FFT
+ * size) and asserts tests/fixtures/audio-scope-passband/usb-tone.{json,bin}.
+ */
+describe('MOR-4604 Audio Scope beside the audio SpectrumPanel', { timeout: LAYOUT_MOUNT_TIMEOUT_MS }, () => {
+  const TRACE_STYLE = 'rgba(0, 220, 220, 0.9)';
+
+  function audioCapture() {
+    let style = '';
+    let path: [number, number][] = [];
+    const strokes: { style: string; points: [number, number][] }[] = [];
+    const texts: { text: string; x: number }[] = [];
+    const ctx = new Proxy({
+      canvas: { width: 400, height: 160 },
+      beginPath() { path = []; },
+      moveTo(x: number, y: number) { path.push([x, y]); },
+      lineTo(x: number, y: number) { path.push([x, y]); },
+      stroke() { strokes.push({ style, points: [...path] }); },
+      fill() {},
+      fillText(value: string, x: number) { texts.push({ text: String(value), x }); },
+      createLinearGradient: () => ({ addColorStop: () => {} }),
+      measureText: () => ({ width: 20 }),
+      set strokeStyle(value: string) { style = value; },
+    }, { get: (obj, key) => Reflect.get(obj, key) ?? (() => {}) }) as unknown as CanvasRenderingContext2D;
+    return { ctx, strokes, texts };
+  }
+
+  it('both panels request one passband view; the Audio Scope renders the native grant with the tone under its label', async () => {
+    const { replay, frame: wire } = loadAudioPassbandReplay('usb-tone');
+    select(true);
+    const fieldStatus = { ...IC7300_STATE.fieldStatus! };
+    for (const path of ['main.freqHz', 'main.mode', 'main.filterWidth']) {
+      fieldStatus[path] = { ...IC7300_STATE.fieldStatus!['main.freqHz']!,
+        observed: true, freshness: 'fresh', availability: 'available' };
+    }
+    radio.current = { ...radio.current!, fieldStatus,
+      main: { ...radio.current!.main!, freqHz: replay.case.tunedHz, mode: replay.case.mode,
+        filterWidth: replay.case.filterWidthHz } };
+    flushSync();
+    // The sidebar Audio Scope is 400 px wide, the central SpectrumPanel 800.
+    const rect = (width: number, height: number) => ({ x: 0, y: 0, left: 0, top: 0, right: width, bottom: height,
+      width, height, toJSON: () => ({}) });
+    vi.mocked(HTMLElement.prototype.getBoundingClientRect).mockImplementation(function (this: HTMLElement) {
+      return this.closest('.audio-spectrum-panel') ? rect(400, 160) : rect(800, 240);
+    });
+    const audioDraw = audioCapture();
+    recordCanvasLayers(audioDraw.ctx);
+    vi.mocked(HTMLCanvasElement.prototype.getContext).mockImplementation(function (this: HTMLCanvasElement, kind: string) {
+      if (kind === 'webgl2') return webglFixture(this.width, this.height).gl;
+      // The Audio Scope's own canvas and its offscreen layer caches.
+      return this.closest('.audio-spectrum-panel') || !this.isConnected ? audioDraw.ctx : context;
+    } as typeof HTMLCanvasElement.prototype.getContext);
+    const render = vi.spyOn(SpectrumRenderer.prototype, 'render');
+    mountPanel();
+    expect(target.querySelector('.content-center .spectrum-panel')).not.toBeNull();
+    expect(target.querySelector('.audio-spectrum-panel')).not.toBeNull();
+    const subscribes = () => audio.sendRaw.mock.calls.map(([message]) => message)
+      .filter(message => message['type'] === 'subscribe' && message['sourceId'] === 'audio_fft');
+    // The widest surface's width, the shared passband view: exactly the
+    // document the server replay was produced from.
+    await vi.waitFor(() => expect(subscribes().at(-1)).toEqual(replay.case.subscribe));
+
+    for (const message of replay.messages) audio.fireMessage(message);
+    const stream = scope.stream('audio_fft');
+    const finalGrant = replay.messages.at(-1)!;
+    expect(get(stream.granted)?.width).toBe(finalGrant['width']);
+    // The filter-width tween and the trace smoothing settle over repeated frames.
+    for (let i = 0; i < 40; i += 1) { audio.fire(wire.slice(0)); draw(); }
+
+    const latest = stream.latest('audio_fft:*');
+    expect(latest?.pixels).toHaveLength(finalGrant['width'] as number);
+    const geometry = get(stream.geometry)!;
+    expect(geometry.view).toEqual(finalGrant['view']);
+    // The central SpectrumPanel renders the same frame.
+    expect(render.mock.calls.at(-1)![1]).toHaveLength(finalGrant['width'] as number);
+
+    const trace = audioDraw.strokes.filter(stroke => stroke.style === TRACE_STYLE).at(-1);
+    expect(trace).toBeDefined();
+    const columns = trace!.points.length;
+    const projection = audioScopeProjection(geometry, radio.current as Parameters<typeof audioScopeProjection>[1])!;
+    expect(projection).not.toBeNull();
+    const bins = new Set<number>();
+    for (let i = 0; i < columns; i += 1) {
+      bins.add(audioSpectrumTraceSample(i, columns, latest!.pixels!.length, replay.case.filterWidthHz,
+        projection.spanHz, projection, true).index);
+    }
+    // Ticket acceptance: distinct source bins across at least half the trapezoid.
+    expect(bins.size).toBeGreaterThanOrEqual(columns / 2);
+    // The 1 kHz test tone peaks under the axis label '1k'.
+    const peakX = trace!.points.reduce((best, point) => (point[1] < best[1] ? point : best))[0];
+    const label = audioDraw.texts.filter(entry => entry.text === '1k').at(-1);
+    expect(label).toBeDefined();
+    expect(Math.abs(label!.x - peakX)).toBeLessThanOrEqual(4);
   });
 });
