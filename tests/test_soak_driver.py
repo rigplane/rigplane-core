@@ -760,6 +760,91 @@ async def test_soak_multi_session_tx_catches_a_leak_whatever_the_age_of_the_leas
     assert any("left after the cycle" in v for v in tx["violations"]), tx
 
 
+async def test_tx_session_client_drains_and_dispatches_without_a_command() -> None:
+    class Socket:
+        closed = False
+
+        def __init__(self) -> None:
+            self.incoming: asyncio.Queue[Any] = asyncio.Queue()
+            self.sent: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+
+        def __aiter__(self) -> Any:
+            return self
+
+        async def __anext__(self) -> Any:
+            return await self.incoming.get()
+
+        async def send_json(self, data: dict[str, Any]) -> None:
+            self.sent.put_nowait(data)
+
+        async def deliver(self, data: dict[str, Any]) -> None:
+            consumed = asyncio.Event()
+
+            def decode() -> dict[str, Any]:
+                consumed.set()
+                return data
+
+            self.incoming.put_nowait(
+                SimpleNamespace(type=aiohttp.WSMsgType.TEXT, json=decode)
+            )
+            await consumed.wait()
+
+    client = soak_driver._TxSessionClient("http://unused")
+    ws = Socket()
+    client._ws = ws  # type: ignore[assignment]
+    client._reader = asyncio.create_task(client._read(), name="soak-tx-reader")
+    tasks: list[asyncio.Task[Any]] = []
+    try:
+        # No command is waiting; an event still reaches the single reader.
+        await ws.deliver({"type": "state_update", "data": {}})
+        first = asyncio.create_task(client.command("ptt_on"))
+        tasks.append(first)
+        key = await ws.sent.get()
+        second = asyncio.create_task(client.command("ptt_off"))
+        tasks.append(second)
+        unkey = await ws.sent.get()
+        await ws.deliver({"type": "response", "id": unkey["id"], "ok": True})
+        assert await second is True
+        assert not first.done()
+        await ws.deliver({"type": "response", "id": key["id"], "ok": False})
+        assert await first is False
+
+        # renew() cancels an in-flight background beat. Its late reply must
+        # not acknowledge the new renewal used by the session-leak check.
+        old_beat = asyncio.create_task(client._renew_once())
+        tasks.append(old_beat)
+        client._heartbeat = old_beat
+        assert (await ws.sent.get())["type"] == "controller_heartbeat"
+        renewal = asyncio.create_task(client.renew())
+        tasks.append(renewal)
+        assert (await ws.sent.get())["type"] == "controller_heartbeat"
+        assert old_beat.cancelled()
+        await ws.deliver({"type": "controller_heartbeat"})
+        assert not renewal.done()
+        await ws.deliver({"type": "controller_heartbeat"})
+        await renewal
+        assert not client._responses
+        assert not client._heartbeat_replies
+
+        pending = asyncio.create_task(client.command("ptt_on"))
+        tasks.append(pending)
+        await ws.sent.get()
+        reader = client._reader
+        assert reader is not None
+        await client.stop_reader()
+        assert reader.cancelled()
+        assert client._reader is None
+        assert await pending is False
+        assert not client._responses
+        await client.renew()
+        assert ws.sent.empty(), "a half_open holder must not renew or restart reading"
+    finally:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        await client.close()
+
+
 async def test_renew_gives_a_session_its_full_lease_whatever_its_age() -> None:
     """The leak check after a TX cycle must not depend on the leases' phase.
 

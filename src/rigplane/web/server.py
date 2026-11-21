@@ -8252,6 +8252,25 @@ class WebServer:
 
         ip = str(peer[0])
         transport_tag = transport
+        channel_started = time.monotonic()
+
+        def log_control_end(reason: str) -> None:
+            if kind == "control":
+                logger.warning(
+                    "control channel closing: connection_id=%x channel_id=%s "
+                    "owner=%s command=%r command_id=%r elapsed_s=%.3f reason=%s",
+                    id(conn),
+                    None if ticket is None else ticket.session_id,
+                    None if ticket is None else ticket.tx_owner,
+                    getattr(handler, "_last_command_name", None),
+                    getattr(handler, "_last_command_id", None),
+                    time.monotonic() - channel_started,
+                    reason,
+                )
+
+        def abort_channel() -> None:
+            log_control_end("controller_authority_fenced")
+            conn.abort()
 
         # Register with connection manager; evict oldest excess connections.
         # MOR-3534: a session-attached channel counts against its session, not
@@ -8296,6 +8315,7 @@ class WebServer:
             except ControllerError:
                 self._controller.detach(ticket)
                 self._conn_manager.unregister(scope, _ATTACH_PATH_FOR_KIND[kind], conn)
+                log_control_end("controller_validation_failed")
                 conn.abort()
                 return
         # WebSocket channels keep their historical ping/pong; data channels
@@ -8308,12 +8328,13 @@ class WebServer:
             )
         if ticket is not None:
             if ticket.tx_owner is not None:
-                self._controller.add_channel(ticket, conn.abort)
+                self._controller.add_channel(ticket, abort_channel)
             if ticket.remote:
-                self._controller.add_channel(ticket, conn.abort)
+                self._controller.add_channel(ticket, abort_channel)
                 task = asyncio.current_task()
                 assert task is not None
                 self._controller_handler_tasks[ticket] = task
+        end_reason = "handler_returned"
         try:
             if ticket is None or kind == "api":
                 # No ambient session on the api channel — keyless or keyed:
@@ -8325,7 +8346,11 @@ class WebServer:
             else:
                 with self._controller.bind(ticket):
                     await handler.run()
+        except asyncio.CancelledError:
+            end_reason = "handler_cancelled"
+            raise
         except Exception as exc:
+            end_reason = f"handler_error:{type(exc).__name__}:{exc}"
             logger.debug(
                 "%s handler error on %s: %s",
                 transport_tag,
@@ -8333,6 +8358,7 @@ class WebServer:
                 exc,
             )
         finally:
+            log_control_end(end_reason)
             if ticket is not None:
                 self._controller.detach(ticket)
                 self._controller_handler_tasks.pop(ticket, None)

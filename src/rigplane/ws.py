@@ -22,12 +22,15 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+import logging
 import os
 import struct
 import time
 import zlib
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "WS_MAGIC",
@@ -268,9 +271,20 @@ class WebSocketConnection:
         self._fragmented_rsv1 = False
         self._fragments: list[bytes] = []
         self._last_pong: float = clock()
+        self._opened_at = self._last_pong
         self._last_frame: float = clock()
         self._pong_timeout: float = 60.0
         self._clock = clock
+        self._outbound_bytes = 0
+
+    @property
+    def outbound_progress(self) -> int | None:
+        """Bytes handed out of the asyncio write buffer, across all senders."""
+        try:
+            buffered = self._writer.transport.get_write_buffer_size()
+        except (AttributeError, NotImplementedError):
+            return None
+        return self._outbound_bytes - buffered
 
     def is_alive(self) -> bool:
         """True if connection is open and a pong was received recently enough."""
@@ -429,6 +443,16 @@ class WebSocketConnection:
         owning task — blocked forever, even once staleness has been
         correctly detected (e.g. by ``keepalive_loop``'s pong timeout).
         """
+        logger.warning(
+            "websocket close: connection_id=%x code=%d reason=%r elapsed_s=%.3f "
+            "pong_age_s=%.3f frame_age_s=%.3f",
+            id(self),
+            code,
+            reason,
+            self._clock() - self._opened_at,
+            self._clock() - self._last_pong,
+            self._clock() - self._last_frame,
+        )
         if not self._closed:
             payload = struct.pack("!H", code) + reason.encode("utf-8")
             try:
@@ -460,6 +484,14 @@ class WebSocketConnection:
         the watchdog teardown always reaches the real transport. Safe
         to call more than once.
         """
+        logger.warning(
+            "websocket abort: connection_id=%x elapsed_s=%.3f "
+            "reason=abort_requested pong_age_s=%.3f frame_age_s=%.3f",
+            id(self),
+            self._clock() - self._opened_at,
+            self._clock() - self._last_pong,
+            self._clock() - self._last_frame,
+        )
         self._closed = True
         try:
             self._writer.transport.abort()
@@ -505,6 +537,7 @@ class WebSocketConnection:
 
     async def _send_raw(self, data: bytes) -> None:
         self._writer.write(data)
+        self._outbound_bytes += len(data)
         await self._writer.drain()
 
 
