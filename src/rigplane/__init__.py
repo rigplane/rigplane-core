@@ -106,11 +106,15 @@ if TYPE_CHECKING:
         SEND_HIGH_WATER_BYTES as API_SEND_HIGH_WATER_BYTES,
     )
     from .web.api_channel import (  # noqa: F401, TID251
+        ApiErrorFrame,
         ApiFrame,
         ApiFrameError,
         ApiMessageType,
+        ApiPayloadError,
         ApiRequestHead,
+        ApiResponseHead,
         api_request_messages,
+        parse_api_server_frame,
     )
     from .web.channel_attach import (  # noqa: F401, TID251
         DATA_CHANNELS,
@@ -197,10 +201,14 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
         "UdpReachabilityCache",
     ),
     "select_turn_url": ("rigplane.web.transport.turn_selection", "select_turn_url"),
+    "ApiErrorFrame": ("rigplane.web.api_channel", "ApiErrorFrame"),
     "ApiFrame": ("rigplane.web.api_channel", "ApiFrame"),
     "ApiFrameError": ("rigplane.web.api_channel", "ApiFrameError"),
     "ApiMessageType": ("rigplane.web.api_channel", "ApiMessageType"),
+    "ApiPayloadError": ("rigplane.web.api_channel", "ApiPayloadError"),
     "ApiRequestHead": ("rigplane.web.api_channel", "ApiRequestHead"),
+    "ApiResponseHead": ("rigplane.web.api_channel", "ApiResponseHead"),
+    "parse_api_server_frame": ("rigplane.web.api_channel", "parse_api_server_frame"),
     "api_request_messages": ("rigplane.web.api_channel", "api_request_messages"),
     "API_SEND_HIGH_WATER_BYTES": ("rigplane.web.api_channel", "SEND_HIGH_WATER_BYTES"),
     # --- Backward-compat radio facades ---
@@ -481,6 +489,10 @@ __all__ = [
     "ApiFrameError",
     "ApiMessageType",
     "ApiRequestHead",
+    "ApiResponseHead",
+    "ApiErrorFrame",
+    "ApiPayloadError",
     "api_request_messages",
+    "parse_api_server_frame",
     "API_SEND_HIGH_WATER_BYTES",
 ]
