@@ -523,8 +523,10 @@ export function scannableText(name, raw) {
   if (!name.endsWith('.svelte')) return [raw];
   const blocks = [];
   // Case-insensitive: HTML tag names are ASCII case-insensitive, so an
-  // uppercase <SCRIPT> block is still script (CodeQL: missed it before).
-  const re = /<script[^>]*>([\s\S]*?)<\/script>/gi;
+  // uppercase <SCRIPT> block is still script. The end tag may carry
+  // whitespace or junk before `>` (`</script >`), which HTML still treats
+  // as the end of the block.
+  const re = /<script[^>]*>([\s\S]*?)<\/script[^>]*>/gi;
   let m;
   while ((m = re.exec(raw)) !== null) blocks.push(m[1]);
   return blocks;

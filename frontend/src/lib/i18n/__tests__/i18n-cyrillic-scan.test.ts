@@ -63,6 +63,16 @@ describe('findCyrillicStringLiterals (i18n-check.mjs MOR-4250 scan)', () => {
     expect(blocks).toHaveLength(1);
     expect(findCyrillicStringLiterals(blocks[0])).toHaveLength(1);
   });
+
+  it('ends a <script> block at an end tag with whitespace before `>`', () => {
+    // `</script >` closes the block in HTML; a scan that misses it would
+    // run past the end tag and treat markup text as script.
+    const blocks = scannableText(
+      'Panel.svelte',
+      '<script>const a = \'Потеряно\';</script >\n<p>Текст</p>\n<script>const b = 1;</script\t\n>\n',
+    );
+    expect(blocks).toEqual(["const a = 'Потеряно';", 'const b = 1;']);
+  });
 });
 
 describe('scanFrontendSources (live tree)', () => {
