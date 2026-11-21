@@ -58,8 +58,8 @@ def job(
 
 
 def busy(name: str) -> Job:
-    over = {"Night-to-night diff": "skipped", "Outcome: busy": "failure"}
-    return job(name, "failure", NOT_RUN | over)
+    over = {"Night-to-night diff": "skipped", "Outcome: busy": "success"}
+    return job(name, "success", NOT_RUN | over)
 
 
 def day(back: int, at: str = "01:31:07") -> str:
@@ -88,6 +88,7 @@ def night(back: int, kind: str, outcome: str) -> Any:
     ("over", "conclusion", "expected"),
     [
         ({}, "success", PASS),
+        (NOT_RUN | {"Outcome: busy": "success"}, "success", "busy"),
         (NOT_RUN | {"Outcome: busy": "failure"}, "failure", "busy"),
         (NOT_RUN | {"Outcome: not configured": "failure"}, "failure", "not configured"),
         (NOT_RUN | {"Outcome: dry run": "failure"}, "failure", "dry run"),

@@ -29,6 +29,8 @@ SATURDAY, SUNDAY = 5, 6  # datetime.weekday(); the cron "30 1 * * 0,6" of the wo
 VALIDATE_STEP = "Validate"
 DIFF_STEP = "Night-to-night diff"
 OUTCOME_PREFIX = "Outcome: "
+BUSY_STEP = "Outcome: busy"
+BUSY = "busy"
 Run = dict[str, Any]
 Job = dict[str, Any]
 NoVerdict = frozenset[tuple[str, str | None]]  # (YYYY-MM-DD, radio label or None)
@@ -51,6 +53,13 @@ def classify_job(job: Job | None) -> str:
     )
     if job.get("conclusion") == "success" and validated:
         return PASS
+    # A busy night ends green with a SKIPPED marker and no failed step; its
+    # marker step still names the night so the streak logic sees `busy`.
+    if any(
+        step["name"] == BUSY_STEP and step.get("conclusion") == "success"
+        for step in steps
+    ):
+        return BUSY
     failed = next(
         (step["name"] for step in steps if step.get("conclusion") == "failure"), None
     )

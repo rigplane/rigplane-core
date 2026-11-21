@@ -51,12 +51,13 @@ Each job:
 2. **Lock.** For real bench radios, `scripts/bench/bench-lock.sh acquire
    <radio>` takes a per-radio `mkdir` lock under `/tmp/rigplane-bench-locks`
    (`BENCH_LOCK_DIR`). A held lock records `<radio>: skipped: busy`, the
-   radio steps are skipped, and the job fails red in the `Outcome: busy`
-   step. A lock is taken over when its owner epoch is older than two hours
-   (`BENCH_LOCK_STALE_SECONDS`), when it has no usable owner file and its
-   directory mtime is older than that bound, or when its owner file records
-   a holder pid that is no longer alive. Only processes that use this script
-   see the lock. The simulator leg
+   radio steps are skipped, and the job ends green in the `Outcome: busy`
+   step with a `SKIPPED` line in the job summary: a held lock is a skip,
+   not a radio verdict. A lock is taken over when its owner epoch is older
+   than two hours (`BENCH_LOCK_STALE_SECONDS`), when it has no usable owner
+   file and its directory mtime is older than that bound, or when its owner
+   file records a holder pid that is no longer alive. Only processes that
+   use this script see the lock. The simulator leg
    skips the lock (no shared bench hardware) but still runs the guard.
 3. **Validate.** `rigplane validate --hardware --allow-hardware --read-only`
    with `--provider native` (or `both` on manual dispatch).
@@ -76,13 +77,16 @@ Each job:
 
 A night passes for a radio only when its job concludes success, which
 requires Validate — and, where they run, the night-to-night diff and the
-hardware pytest subset — to have run and passed. Three endings that used
-to be silent green now fail red with their own step names: `Outcome: not
-configured` (radio secrets missing), `Outcome: busy` (bench lock held by
-another run) and `Outcome: dry run` (a dry run never certifies a radio).
-`rigplane diagnose` and the artifact upload are evidence only and cannot
-decide the night; `Release bench lock` still fails the job when it fails,
-because a leaked lock matters.
+hardware pytest subset — to have run and passed. Two endings that used to
+be silent green fail red with their own step names: `Outcome: not
+configured` (radio secrets missing) and `Outcome: dry run` (a dry run never
+certifies a radio). `Outcome: busy` (bench lock held by another run) is the
+one deliberate skip: the job ends green with a `SKIPPED` line and a notice
+annotation, because a held lock says nothing about the radio — a night the
+radio answered wrongly still fails red in Validate, the diff or the pytest
+step. `rigplane diagnose` and the artifact upload are evidence only and
+cannot decide the night; `Release bench lock` still fails the job when it
+fails, because a leaked lock matters.
 
 ## Modes
 
@@ -149,7 +153,9 @@ The inputs are `radios` (the scope, default `IC-7610`), `nights` (default 3) and
   write-and-restore nights, the other days read-only.
 - **PASS.** The radio's job (its name is the radio label) concluded `success`
   and its `Validate` step concluded `success`. Any other night carries a name:
-  `busy`, `not configured` or `dry run` (the failed `Outcome: …` step),
+  `busy` (the `Outcome: busy` step succeeded: the night ended green with a
+  `SKIPPED` marker and no failed step to read), `not configured` or
+  `dry run` (the failed `Outcome: …` step),
   `validate failed`, `diff failed`, `failed: <step>`, `missing` (no job for that
   radio), `missing night` (no run that day), `job <conclusion>`, or
   `validate not run` (the job concluded `success` but its `Validate` step did

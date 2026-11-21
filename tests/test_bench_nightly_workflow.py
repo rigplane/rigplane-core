@@ -2,9 +2,11 @@
 
 `.github/workflows/bench-nightly.yml` runs one matrix job per bench radio.
 Run 38218526102 concluded success while its IC-7300 and FTX-1 jobs failed,
-because the `radio` job carried `continue-on-error: true`; "skipped: busy"
-and "skipped: not configured" only printed a line and ended green, as did a
-dry run.
+because the `radio` job carried `continue-on-error: true`. Not-configured
+and dry-run nights still fail red with their own step name. A busy night
+(a bench lock held by another run) is the one deliberate skip: the job ends
+green with a visible SKIPPED marker, because a held lock is not a radio
+verdict; every failure that means the radio answered wrongly still fails.
 
 These tests read the workflow as plain text with indentation-anchored
 regular expressions instead of importing `yaml`, like the sibling
@@ -22,9 +24,11 @@ WORKFLOW_TEXT = WORKFLOW_PATH.read_text(encoding="utf-8")
 
 EXPECTED_OUTCOMES = {
     "Outcome: not configured": "steps.config.outputs.configured == 'false'",
-    "Outcome: busy": "steps.lock.outputs.acquired == 'false'",
     "Outcome: dry run": "steps.mode.outputs.dry_run == 'true'",
 }
+
+BUSY_OUTCOME = "Outcome: busy"
+BUSY_CONDITION = "steps.lock.outputs.acquired == 'false'"
 
 EVIDENCE_STEP_NAMES = ("rigplane diagnose", "Upload normalized results")
 
@@ -262,7 +266,7 @@ def test_outcome_steps_fail_the_job() -> None:
     missing = [name for name in EXPECTED_OUTCOMES if name not in steps]
     assert not missing, (
         f"outcome steps missing from the radio job: {missing} — a "
-        "not-configured, busy or dry-run night would end green again"
+        "not-configured or dry-run night would end green again"
     )
     for name, output_condition in EXPECTED_OUTCOMES.items():
         block = steps[name]
@@ -283,6 +287,46 @@ def test_outcome_steps_fail_the_job() -> None:
         assert "exit 1" in run, (
             f"{name!r} does not exit non-zero, so its night would still pass"
         )
+
+
+def test_busy_outcome_ends_green_with_skipped_marker() -> None:
+    """Busy is the one skip: green job, visible SKIPPED marker, no error.
+
+    A bench lock held by another run (radio powered off, bench busy) says
+    nothing about the radio, so it must not fail the night; the marker keeps
+    the skip visible in the job summary. A radio that answered wrongly never
+    reaches this step (acquired is true), so Validate, the diff and pytest
+    still fail red.
+    """
+    steps = _named_steps(_step_blocks(_radio_job_text()))
+    assert BUSY_OUTCOME in steps, (
+        "the busy outcome step is missing from the radio job — a busy night "
+        "would end with no visible marker"
+    )
+    block = steps[BUSY_OUTCOME]
+    assert _continue_on_error(block) is None, (
+        f"{BUSY_OUTCOME!r} needs no continue-on-error: it ends green by itself"
+    )
+    condition_match = _IF_RE.search(block)
+    condition = condition_match.group(1) if condition_match else ""
+    assert "always()" in condition and BUSY_CONDITION in condition, (
+        f"{BUSY_OUTCOME!r} has condition {condition!r}, expected always() "
+        f"gated on {BUSY_CONDITION!r}"
+    )
+    run = _run_text(block) or ""
+    assert "exit 1" not in run, (
+        f"{BUSY_OUTCOME!r} must not exit non-zero: a held lock is not a radio failure"
+    )
+    assert "::error" not in run, (
+        f"{BUSY_OUTCOME!r} must not annotate an error for a skip"
+    )
+    assert "::notice" in run, (
+        f"{BUSY_OUTCOME!r} must annotate the skip so it is visible"
+    )
+    assert "SKIPPED" in run, f"{BUSY_OUTCOME!r} must write a SKIPPED marker"
+    assert "$GITHUB_STEP_SUMMARY" in run, (
+        f"{BUSY_OUTCOME!r} does not report to the job summary"
+    )
 
 
 def test_evidence_steps_do_not_decide_the_verdict() -> None:
