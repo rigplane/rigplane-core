@@ -417,7 +417,9 @@ def open_result_folder(directory: Path) -> None:
     ``xdg-open`` only when it is on PATH. The opener is launched without
     waiting (a foreground file manager must not hold the run or the
     serial port). Any failure is silent: the file is saved either way
-    and its full path is already printed.
+    and its full path is already printed. This is the only GUI opener
+    in ``src``; callers invoke it only for an interactive run (see
+    ``_stdout_is_terminal``), never from tests, pipes or sidecars.
     """
     try:
         if sys.platform == "win32":
@@ -440,6 +442,19 @@ def open_result_folder(directory: Path) -> None:
             )
     except Exception:
         pass
+
+
+def _stdout_is_terminal() -> bool:
+    """Stdout is a terminal the customer watches.
+
+    The save folder opens only for an interactive run: stdin is a
+    terminal (``is_tty``) and stdout is one too. Tests capture stdout,
+    pipes redirect it, and the sidecar hand-over inherits none, so none
+    of them ever opens a Finder window. Every documented customer run
+    (PowerShell, Terminal, a shell) has both streams on the terminal.
+    """
+    isatty = getattr(sys.stdout, "isatty", None)
+    return bool(isatty is not None and isatty())
 
 
 def _is_yes(answer: str) -> bool:
@@ -568,7 +583,9 @@ async def execute(
     save without ``--yes`` outside a TTY, ``--checks`` outside a TTY), 3
     the port cannot be opened or nothing answered at all, 4 a check could
     not put the radio back. The file is written only after the save
-    answer. The tool itself records no port path, host, or user - only
+    answer. The save folder opens only for an interactive run (stdin and
+    stdout are both terminals); anything else never opens a file
+    manager. The tool itself records no port path, host, or user - only
     what you type in ``--label``, plus the radio's answers. The checks
     questions come from *check_lines* (default: the terminal).
     """
@@ -755,7 +772,7 @@ async def _execute_after_open(
         emit(f"Cannot save {saved_abs}: {exc.strerror or exc}")
         return report.exit_code or 1
     emit(render.closing_line(str(actual)))
-    if is_tty and not yes:
+    if is_tty and not yes and _stdout_is_terminal():
         opener = open_folder if open_folder is not None else open_result_folder
         emit(render.opening_folder_line(str(actual.parent)))
         try:

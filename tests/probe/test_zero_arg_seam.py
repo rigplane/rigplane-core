@@ -164,12 +164,14 @@ def _run_probe(
     no_out: bool = False,
     opener=None,
     wire: list[bytes] | None = None,
-) -> tuple[int, str, list[Path]]:
-    """Run ``rigplane probe`` through ``main()``; return (exit, output, opened).
+) -> tuple[int, str]:
+    """Run ``rigplane probe`` through ``main()``; return (exit, output).
 
     ``opener`` replaces the default serial fake; it receives
     ``(monkeypatch, wire)`` so a test can verify device, baud and wire
-    bytes. ``wire`` collects every written frame when given.
+    bytes. ``wire`` collects every written frame when given. Stdout stays
+    a capture (never a terminal), so the save folder must stay closed;
+    the suite guard fails any test that reaches the real opener.
     """
     docs = tmp_path / "Documents"
     docs.mkdir(exist_ok=True)
@@ -181,8 +183,6 @@ def _run_probe(
         opener(monkeypatch, seen)
     else:
         _fake_openers(monkeypatch, seen)
-    opened: list[Path] = []
-    monkeypatch.setattr(probe_cli, "open_result_folder", opened.append)
     out_argv: list[str] = [] if no_out else ["--out", str(tmp_path / "p.json")]
     if tty:
         assert answers is not None
@@ -198,11 +198,11 @@ def _run_probe(
         main()
     assert isinstance(exc_info.value.code, int)
     code: int = exc_info.value.code
-    return code, buf.getvalue(), opened
+    return code, buf.getvalue()
 
 
 def test_zero_arg_single_radio_confirm_with_enter(tmp_path, monkeypatch) -> None:
-    code, out, opened = _run_probe(
+    code, out = _run_probe(
         monkeypatch,
         tmp_path,
         [],
@@ -215,7 +215,9 @@ def test_zero_arg_single_radio_confirm_with_enter(tmp_path, monkeypatch) -> None
     assert "Is this your radio?" in out
     document = ProbeFile.from_json((tmp_path / "p.json").read_text(encoding="utf-8"))
     assert document.radio.identity_matches_profile is True
-    assert opened == [tmp_path]  # --out names the file, so its folder opens
+    # No terminal stdout in tests: the folder stays closed (the suite
+    # guard would fail the test if the real opener ran).
+    assert "Opening the folder" not in out
 
 
 def test_zero_arg_single_radio_decline_sends_nothing(
@@ -241,7 +243,7 @@ def test_zero_arg_single_radio_decline_sends_nothing(
 
 
 def test_zero_arg_several_radios_numbered_choice(tmp_path, monkeypatch) -> None:
-    code, out, _ = _run_probe(
+    code, out = _run_probe(
         monkeypatch,
         tmp_path,
         [],
@@ -257,7 +259,7 @@ def test_zero_arg_several_radios_numbered_choice(tmp_path, monkeypatch) -> None:
 
 
 def test_zero_arg_several_radios_bad_number_then_quit(tmp_path, monkeypatch) -> None:
-    code, out, _ = _run_probe(
+    code, out = _run_probe(
         monkeypatch,
         tmp_path,
         [],
@@ -271,7 +273,7 @@ def test_zero_arg_several_radios_bad_number_then_quit(tmp_path, monkeypatch) -> 
 
 
 def test_zero_arg_no_radios_checklist_exit_3(tmp_path, monkeypatch) -> None:
-    code, out, _ = _run_probe(monkeypatch, tmp_path, [], results=[])
+    code, out = _run_probe(monkeypatch, tmp_path, [], results=[])
     assert code == 3
     assert "No radio found." in out
     assert "the USB cable is firmly connected" in out
@@ -279,7 +281,7 @@ def test_zero_arg_no_radios_checklist_exit_3(tmp_path, monkeypatch) -> None:
 
 
 def test_profile_without_port_filters_discovery(tmp_path, monkeypatch) -> None:
-    code, out, _ = _run_probe(
+    code, out = _run_probe(
         monkeypatch,
         tmp_path,
         ["FTX-1"],
@@ -294,9 +296,7 @@ def test_profile_without_port_filters_discovery(tmp_path, monkeypatch) -> None:
 
 
 def test_port_without_profile_is_exit_2(tmp_path, monkeypatch) -> None:
-    code, out, _ = _run_probe(
-        monkeypatch, tmp_path, ["--port", "COM5"], results=[_cat()]
-    )
+    code, out = _run_probe(monkeypatch, tmp_path, ["--port", "COM5"], results=[_cat()])
     assert code == 2
     assert "name your radio model too" in out
 
@@ -310,13 +310,13 @@ def test_discovered_unsupported_protocol_is_exit_2(tmp_path, monkeypatch) -> Non
         baudrate=38400,
         address="500",
     )
-    code, out, _ = _run_probe(monkeypatch, tmp_path, [], results=[tx500])
+    code, out = _run_probe(monkeypatch, tmp_path, [], results=[tx500])
     assert code == 2
     assert "not supported yet" in out
 
 
 def test_yes_takes_single_radio_without_tty(tmp_path, monkeypatch) -> None:
-    code, out, _ = _run_probe(
+    code, out = _run_probe(
         monkeypatch, tmp_path, ["--yes"], results=[_cat()], answers=None, tty=False
     )
     assert code == 0
@@ -354,14 +354,15 @@ def test_several_radios_without_tty_is_exit_2_listing(tmp_path, monkeypatch) -> 
 
 
 def test_default_save_cat_run_without_out(tmp_path, monkeypatch) -> None:
-    # No --out: the dated Documents file is written, the full path is
-    # printed, and the save folder is opened. The serial fake verifies
-    # the selected device and a baud above the profile default.
+    # No --out: the dated Documents file is written and the full path is
+    # printed; the folder stays closed (no terminal stdout in tests). The
+    # serial fake verifies the selected device and a baud above the
+    # profile default.
     from datetime import datetime, timezone
     from functools import partial
 
     wire: list[bytes] = []
-    code, out, opened = _run_probe(
+    code, out = _run_probe(
         monkeypatch,
         tmp_path,
         [],
@@ -380,7 +381,7 @@ def test_default_save_cat_run_without_out(tmp_path, monkeypatch) -> None:
     closing = [line for line in out.splitlines() if "Saved to" in line]
     assert len(closing) == 1
     assert str(saved.resolve()) in closing[0]
-    assert opened == [saved.resolve().parent]
+    assert "Opening the folder" not in out
     assert wire, "the probe must send on the selected port"
     assert all(not frame.startswith(b"\xfe\xfe") for frame in wire)
     document = ProbeFile.from_json(saved.read_text(encoding="utf-8"))
@@ -401,7 +402,7 @@ def test_default_save_civ_run_without_out_uses_suffix(tmp_path, monkeypatch) -> 
     first = docs / f"IC-7300-radio-probe-{stamp}.json"
     first.write_text('{"other": "run"}', encoding="utf-8")
     wire: list[bytes] = []
-    code, out, opened = _run_probe(
+    code, out = _run_probe(
         monkeypatch,
         tmp_path,
         [],
@@ -425,7 +426,7 @@ def test_default_save_civ_run_without_out_uses_suffix(tmp_path, monkeypatch) -> 
     closing = [line for line in out.splitlines() if "Saved to" in line]
     assert len(closing) == 1
     assert str(second.resolve()) in closing[0]
-    assert opened == [second.resolve().parent]
+    assert "Opening the folder" not in out
     assert wire, "the probe must send on the selected port"
     for frame in wire:
         assert frame[:3] == b"\xfe\xfe\x96"

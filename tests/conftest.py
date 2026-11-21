@@ -328,3 +328,39 @@ async def virtual_clock() -> AsyncGenerator[VirtualClock, None]:
     """
     async with VirtualClock.on_running_loop() as clock:
         yield clock
+
+
+def _assert_no_gui_opener_calls(calls: list[Path]) -> None:
+    assert not calls, (
+        "a test reached the real radio-probe folder opener "
+        f"({len(calls)} call(s), first: {calls[0]}): "
+        "the probe must open the result folder only for an interactive run "
+        "(stdin and stdout both terminals). A test that needs the folder "
+        "path must stub the opener itself (e.g. open_folder=recorder); "
+        "protection stubs are not needed anymore."
+    )
+
+
+@pytest.fixture(autouse=True)
+def _no_real_gui_opener(
+    monkeypatch: pytest.MonkeyPatch,
+) -> Iterator[list[Path]]:
+    """Fail any test that reaches the real radio-probe folder opener (MOR-4214).
+
+    The probe's save step used to call ``open`` on macOS for every run
+    whose stdin looked like a terminal, so suite runs opened dozens of
+    "pytest-of-moroz" Finder windows on the test hosts. The probe now
+    opens the folder only when stdin and stdout are both terminals, and
+    this guard is the backstop: it replaces the per-test protection
+    stubs by recording any call to the real
+    ``rigplane.cli._probe.open_result_folder`` and failing the test at
+    teardown. It cannot raise at call time because the probe swallows
+    opener errors by design, so the failure is reported here instead.
+    A test that asserts on the opener overrides this with its own stub.
+    """
+    from rigplane.cli import _probe
+
+    calls: list[Path] = []
+    monkeypatch.setattr(_probe, "open_result_folder", calls.append)
+    yield calls
+    _assert_no_gui_opener_calls(calls)

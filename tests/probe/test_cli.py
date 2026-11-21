@@ -14,10 +14,12 @@ from typing import Awaitable, Callable
 
 import pytest
 
+from rigplane.cli import _probe as probe_cli
 from rigplane.cli._probe import (
     UnknownProfileError,
     UnsupportedProtocolError,
     execute,
+    open_result_folder as _real_open_result_folder,
     resolve_config,
     run,
 )
@@ -640,10 +642,20 @@ async def test_execute_folder_opener_launches_without_waiting(
 ) -> None:
     # P2-3: the folder opener must not wait on the desktop process. A
     # persistent opener cannot hold the run, and the writer still closes.
+    import io
     import shutil
     import subprocess
     import sys
 
+    class _TtyStdout(io.StringIO):
+        def isatty(self) -> bool:
+            return True
+
+    # This test's subject is the real opener itself, so it opts out of
+    # the suite guard (which fails tests that reach the real opener) and
+    # gives the run a terminal stdout, as an interactive customer run has.
+    monkeypatch.setattr(probe_cli, "open_result_folder", _real_open_result_folder)
+    monkeypatch.setattr(sys, "stdout", _TtyStdout())
     monkeypatch.setattr(sys, "platform", "linux")
     monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/xdg-open")
     launched: list[list[str]] = []
