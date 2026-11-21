@@ -406,9 +406,7 @@ class RadioScopeSource:
         width = end - start
         if width <= 0 or not self._caps.span_choices_hz:
             return start, end
-        preset = min(
-            self._caps.span_choices_hz, key=lambda choice: abs(choice - width)
-        )
+        preset = min(self._caps.span_choices_hz, key=lambda choice: abs(choice - width))
         if width < preset and (preset - width) / preset <= self._SWEEP_EXTENT_TOLERANCE:
             center = (start + end) / 2
             return center - preset / 2, center + preset / 2

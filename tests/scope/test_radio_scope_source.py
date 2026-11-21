@@ -268,9 +268,7 @@ async def test_scroll_c_sweep_extent_expands_to_the_span_preset(
     hub = ScopeHub(encoder=encode_scope_frame_v2)
     hub.register("radio", source)
     sub = await hub.subscribe(
-        Subscription(
-            "radio", 0, FollowView("vfo", preset_half_hz * 2), 475, 20
-        )
+        Subscription("radio", 0, FollowView("vfo", preset_half_hz * 2), 475, 20)
     )
     try:
         center = writer.frequency
@@ -307,9 +305,7 @@ async def test_edge_mode_window_is_reported_verbatim(mode):
     from rigplane.core.types import bcd_encode
     from rigplane.scope import ScopeAssembler
 
-    source = RadioScopeSource(
-        load_rig(Path("rigs/ic705.toml")).to_profile(), Writer()
-    )
+    source = RadioScopeSource(load_rig(Path("rigs/ic705.toml")).to_profile(), Writer())
     frames = []
     source.on_frame(frames.append)
     await source.start()
@@ -333,9 +329,7 @@ async def test_scroll_c_window_far_from_any_preset_is_reported_verbatim():
     from rigplane.core.types import bcd_encode
     from rigplane.scope import ScopeAssembler
 
-    source = RadioScopeSource(
-        load_rig(Path("rigs/ic705.toml")).to_profile(), Writer()
-    )
+    source = RadioScopeSource(load_rig(Path("rigs/ic705.toml")).to_profile(), Writer())
     frames = []
     source.on_frame(frames.append)
     await source.start()
