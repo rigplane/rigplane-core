@@ -730,8 +730,8 @@ def api_path_allowed(method: str, path: str) -> bool:
 class _ChannelHttpWriter:
     """An ``asyncio.StreamWriter`` stand-in capturing one HTTP response.
 
-    Handlers only ``write`` response bytes, ``drain`` them, read
-    ``peername`` (controller acquisition records the client), and
+    Handlers ``write`` response bytes, ``drain`` them, read
+    trusted ingress metadata, and
     ``close`` on oversize bodies — exactly the surface captured here.
     """
 
@@ -748,9 +748,11 @@ class _ChannelHttpWriter:
         """Capture needs no drain; present for the writer surface."""
 
     def get_extra_info(self, name: str, default: Any = None) -> Any:
-        """Answer ``peername`` with the data-channel peer, else the default."""
+        """Expose the peer address and ingress to the shared handlers."""
         if name == "peername":
             return self._peer
+        if name == "rigplane_api_channel":
+            return True
         return default
 
     def close(self) -> None:

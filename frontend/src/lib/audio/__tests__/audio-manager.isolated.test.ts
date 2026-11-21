@@ -777,9 +777,9 @@ describe('AudioManager audio_stats uplink (MOR-585)', () => {
     ws.open();
     ws.sent = [];
     txCaptureFailureCategory = 'NotFoundError';
-    txStart.mockResolvedValueOnce(txFailure('capture', 'NotFoundError', 'capture failed (NotFoundError)'));
+    txStart.mockResolvedValueOnce(txFailure('device-missing', 'NotFoundError', 'no microphone found'));
     try {
-      await expect(audioManager.startTx()).resolves.toBe('capture failed (NotFoundError)');
+      await expect(audioManager.startTx()).resolves.toBe('no microphone found');
       expect(statsMessages(ws)).toContainEqual(expect.objectContaining({
         microphoneCaptureError: 'NotFoundError',
       }));
@@ -1025,7 +1025,7 @@ describe('AudioManager TX failure notifications (MOR-1783)', () => {
     [txFailure('permission', 'NotAllowedError', 'permission denied'), 'txAudioMicPermissionDenied'],
     [txFailure('unsupported', 'capture-unsupported', 'microphone capture not supported'), 'txAudioCaptureUnsupported'],
     [txFailure('insecure-context', 'insecure-context', 'insecure context'), 'txAudioInsecureContext'],
-    [txFailure('capture', 'NotFoundError', 'capture failed (NotFoundError)'), 'txAudioStartFailed'],
+    [txFailure('device-missing', 'NotFoundError', 'no microphone found'), 'txAudioMicMissing'],
     [txFailure('capture', 'NotReadableError', 'capture failed (NotReadableError)'), 'txAudioStartFailed'],
     [txFailure('capture', 'OverconstrainedError', 'capture failed (OverconstrainedError)'), 'txAudioStartFailed'],
     [txFailure('capture', 'AbortError', 'capture failed (AbortError)'), 'txAudioStartFailed'],
