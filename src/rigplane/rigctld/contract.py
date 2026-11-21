@@ -209,7 +209,11 @@ _register(
         description="Get PTT status",
     ),
     CommandDef(
-        "v", "get_vfo", is_set=False, radio_access="cache", description="Get current VFO"
+        "v",
+        "get_vfo",
+        is_set=False,
+        radio_access="cache",
+        description="Get current VFO",
     ),
     CommandDef(
         "j",
