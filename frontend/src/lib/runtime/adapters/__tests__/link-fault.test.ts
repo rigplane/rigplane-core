@@ -1,5 +1,17 @@
-import { describe, expect, it } from 'vitest';
-import { deriveLinkFault } from '../link-fault';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { deriveLinkFault, getLinkFault } from '../link-fault';
+
+const connectionState = vi.hoisted(() => ({
+  everConnected: false,
+  wsConnected: false,
+  stale: false,
+}));
+
+vi.mock('$lib/stores/connection.svelte', () => ({
+  getWsConnected: () => connectionState.wsConnected,
+  hasEverConnected: () => connectionState.everConnected,
+  isStale: () => connectionState.stale,
+}));
 
 describe('deriveLinkFault', () => {
   it('reports no fault when the WS is up and state updates are current', () => {
@@ -38,5 +50,40 @@ describe('deriveLinkFault', () => {
     expect(deriveLinkFault({
       everConnected: false, wsConnected, connectionStale,
     })).toBe('none');
+  });
+});
+
+describe('getLinkFault', () => {
+  beforeEach(() => {
+    connectionState.everConnected = false;
+    connectionState.wsConnected = false;
+    connectionState.stale = false;
+  });
+
+  it('reads no fault before the first connect', () => {
+    connectionState.wsConnected = false;
+    connectionState.stale = true;
+    expect(getLinkFault()).toBe('none');
+  });
+
+  it('reads ws-down once connected and the transport drops', () => {
+    connectionState.everConnected = true;
+    connectionState.wsConnected = false;
+    connectionState.stale = true;
+    expect(getLinkFault()).toBe('ws-down');
+  });
+
+  it('reads radio-silent when the transport is up but updates stalled', () => {
+    connectionState.everConnected = true;
+    connectionState.wsConnected = true;
+    connectionState.stale = true;
+    expect(getLinkFault()).toBe('radio-silent');
+  });
+
+  it('reads no fault when the transport is up and updates are current', () => {
+    connectionState.everConnected = true;
+    connectionState.wsConnected = true;
+    connectionState.stale = false;
+    expect(getLinkFault()).toBe('none');
   });
 });

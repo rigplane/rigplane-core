@@ -1,8 +1,7 @@
 <script lang="ts">
   import { runtime } from '$lib/runtime/frontend-runtime';
   import { scopeSlotKey } from '$lib/runtime/adapters/scope-adapter';
-  import { getWsConnected, hasEverConnected } from '$lib/stores/connection.svelte';
-  import { deriveLinkFault } from '$lib/runtime/adapters/link-fault';
+  import { getLinkFault } from '$lib/runtime/adapters/link-fault';
   import StatusBar from '../../components-v2/layout/StatusBar.svelte';
   import SemanticRadioSurfaces from '../../components-v2/wiring/SemanticRadioSurfaces.svelte';
   import type { RadioViewModel } from '../../semantic/radio-view-model';
@@ -12,11 +11,7 @@
   // link-fault veil (app.css's shared `[data-link-fault]` rule) on its own
   // wrapper; `display: contents` keeps the wrapper out of the box tree, and
   // the rule filters the children, never the wrapper.
-  let linkFault = $derived(deriveLinkFault({
-    everConnected: hasEverConnected(),
-    wsConnected: getWsConnected(),
-    connectionStale: runtime.connectionStale,
-  }));
+  let linkFault = $derived(getLinkFault());
   let linkFaultAttribute = $derived(linkFault === 'none' ? undefined : linkFault);
 
   const hardwareScope = {

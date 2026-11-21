@@ -183,7 +183,9 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-async def _rig_link_seam(radio: JourneyRadio, server: WebServer, drop_file: Path) -> None:
+async def _rig_link_seam(
+    radio: JourneyRadio, server: WebServer, drop_file: Path
+) -> None:
     """Watch ``drop_file``; drop/restore the rig link through the server's own callback."""
     dropped = False
     while True:
