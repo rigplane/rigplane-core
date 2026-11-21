@@ -144,6 +144,23 @@ def radio_not_ready(operation: str, model: str) -> RadioNotReadyError:
     )
 
 
+def selection_unknown_not_ready(operation: str, model: str) -> RadioNotReadyError:
+    """The retriable answer while the selected receiver is not known yet.
+
+    The radio HAS answered CI-V since the link came up, but its 0x07 0xD2
+    selection read has not been answered yet (the connect tail is still
+    catching up, or the bounded on-demand read timed out behind a busy
+    link). No receiver can be addressed in that window -- the selection
+    being unknown is not a receiver being not selected, so the answer is
+    the retriable not-ready timeout, never ``ReceiverNotSelectedError``
+    (rigctld would map that to the terminal ``RPRT -9``).
+    """
+    return RadioNotReadyError(
+        f"{operation}: radio {model} has not reported its receiver "
+        "selection yet; it is not ready yet -- retry shortly"
+    )
+
+
 def require_receiver_for_profile(
     profile: RadioProfile, receiver: int, *, operation: str
 ) -> None:
@@ -237,8 +254,11 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
         explicitly; without one the plain command reaches only the receiver
         the operator has selected, so it is admitted only for that receiver.
         Core never switches the selection to reach the other one: a command
-        for a receiver that is not selected -- or for either receiver while
-        the selection is unknown -- raises :class:`ReceiverNotSelectedError`.
+        for a receiver that is known not to be selected raises
+        :class:`ReceiverNotSelectedError`, and while the selection has never
+        been established in this CI-V generation the answer is the
+        retriable :class:`RadioNotReadyError` -- no receiver can be
+        addressed yet.
         """
         if self._profile.supports_cmd29(command, sub):
             RECEIVER_ADMISSION.set(None)
@@ -250,12 +270,18 @@ class DualRxRuntimeMixin(_MixinBase):  # type: ignore[misc]
                 )
             return
         RECEIVER_ADMISSION.set(None)
-        if self._never_answered_since_connect():
-            # The selection is unknown only because the radio has not
-            # answered anything since the link came up: the command cannot
-            # be answered yet, which is a retriable not-ready outcome, not
-            # a receiver refusal (MOR-4382 follow-up).
-            raise radio_not_ready(operation, self._profile.model)
+        if self._selection_known_since is None:
+            # The selection has never been established in this CI-V
+            # generation. That subsumes the silent radio (MOR-4382
+            # follow-up) and the window the v3.3.0rc1 rehearsal run
+            # 44869231087 failed in: the radio answered CI-V (so
+            # ``radio_ready`` can be True) while the 0x07 0xD2 selection
+            # read is still unanswered, so the command cannot be answered
+            # for ANY receiver yet -- a retriable not-ready outcome, never
+            # a terminal receiver refusal.
+            if self._never_answered_since_connect():
+                raise radio_not_ready(operation, self._profile.model)
+            raise selection_unknown_not_ready(operation, self._profile.model)
         raise receiver_not_selected(
             operation,
             receiver,
