@@ -1073,9 +1073,10 @@ class ControlHandler:
         self._last_ptt_on = False
         self._managed_tx_authority = managed_tx_authority
         self._subscribed_streams: set[str] = set()
+        self._handler_task: asyncio.Task[None] | None = None
         self._event_queue: BoundedQueue[dict[str, Any]] = BoundedQueue(
             maxsize=100,
-            on_replace_overflow=lambda: self._ws.abort(),
+            on_replace_overflow=self._abort_outbound,
         )
         # Per-command rate limiting: coalesce_key -> last physical-enqueue
         # time (MOR-1499: keyed by ``_coalesce_key``, not the bare name).
@@ -1155,11 +1156,11 @@ class ControlHandler:
                 if isinstance(exc, asyncio.CancelledError):
                     raise
                 return
+        self._handler_task = asyncio.current_task()
         event_task: asyncio.Task[None] = asyncio.create_task(self._event_sender_loop())
 
         def sender_stopped(_task: asyncio.Task[None]) -> None:
-            # Abort does not drain; it wakes recv and any direct socket writes.
-            self._ws.abort()
+            self._abort_outbound()
 
         event_task.add_done_callback(sender_stopped)
         try:
@@ -1179,6 +1180,7 @@ class ControlHandler:
         except EOFError:
             pass
         finally:
+            self._handler_task = None
             event_task.remove_done_callback(sender_stopped)
             controller = getattr(self._radio, "_controller_authority", None)
             if isinstance(controller, ControllerAuthority):
@@ -1224,6 +1226,13 @@ class ControlHandler:
                 raise deferred_cancel
             if teardown_error is not None:
                 raise teardown_error
+
+    def _abort_outbound(self) -> None:
+        # Interrupt backend awaits as well as recv; run's finally owns cleanup.
+        task = self._handler_task
+        if task is not None and not task.done() and not task.cancelling():
+            task.cancel()
+        self._ws.abort()
 
     async def _event_sender_loop(self) -> None:
         """Drain event queue and forward events to WebSocket."""
@@ -1769,7 +1778,7 @@ class ControlHandler:
                 )
             )
         except asyncio.QueueFull as exc:
-            self._ws.abort()
+            self._abort_outbound()
             raise EOFError("control event queue full") from exc
         except Exception as exc:
             await self._send_command_failure(cmd_id, name, exc)

@@ -10,12 +10,13 @@ import json
 from collections.abc import Callable
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import aiohttp
 import pytest
 
 from serial_stub import SerialMockRadio
+from test_managed_tx_authority import FakeConfigStore, FakeFence, FakeLane
 from test_web_auth_compare_digest import _MemoryWriter
 
 from rigplane.core._bounded_queue import BoundedQueue
@@ -26,6 +27,8 @@ from rigplane.core.state_pipeline_contracts import (
     SourceMetadata,
 )
 from rigplane.radio import IcomRadio
+from rigplane.runtime.managed_tx_authority import ManagedTxAuthority
+from rigplane.runtime.managed_tx_state import ActuationOperation, ManagedTxIntentKind
 from rigplane.testing.timing import VirtualClock
 from rigplane.web import runtime_helpers
 from rigplane.web import server as server_module
@@ -379,6 +382,129 @@ def test_held_target_observation_precedes_ack_over_ws(
     clock.run(scenario)
 
 
+@pytest.mark.parametrize(
+    "failure", ["sender_error", "baseline_overflow", "fanout_overflow"]
+)
+def test_outbound_failure_cancels_pending_managed_ptt(
+    clock: VirtualClock, monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    monkeypatch.setattr(server_module, "asyncio", asyncio)
+
+    async def scenario() -> None:
+        radio = _GainRadio()
+        await radio.connect()
+        radio._civ_epoch = 1  # noqa: SLF001
+        srv = WebServer(radio, WebConfig(radio_model="IC-7610"))
+        lane = FakeLane()
+        authority = ManagedTxAuthority(
+            lane, FakeConfigStore(), FakeFence(), provider_generation=7, clock=clock
+        )
+        poller = RadioPoller(
+            radio,
+            srv.command_queue,
+            state_store=srv.command_state_store,
+            managed_tx_authority=authority,
+            clock=clock,
+        )
+        assert srv.command_queue.capture_connection_generation() == radio._civ_epoch  # noqa: SLF001
+        reader = asyncio.StreamReader()
+        writer = _StalledWriter(reader)
+        ws = WebSocketConnection(reader, writer, clock=clock)  # type: ignore[arg-type]
+        handler = ControlHandler(
+            ws,
+            radio,
+            "test",
+            "IC-7610",
+            server=srv,
+            session_id="pending-ptt",
+            managed_tx_authority=authority,
+            clock=clock,
+        )
+        disconnect = AsyncMock(wraps=authority.owner_disconnect)
+        monkeypatch.setattr(authority, "owner_disconnect", disconnect)
+        unregister = Mock(wraps=srv.unregister_control_event_queue)
+        monkeypatch.setattr(srv, "unregister_control_event_queue", unregister)
+        task = asyncio.create_task(handler.run())
+        consumer: asyncio.Task[None] | None = None
+        poller_release = asyncio.Event()
+        try:
+            await clock.elapse(0)
+            q = handler._event_queue  # noqa: SLF001
+            assert srv.command_queue.session_is_live("pending-ptt")
+            assert q in srv._control_event_queues  # noqa: SLF001
+            writer.stall = True
+            q.put_nowait({"type": "notification"})
+            await writer.draining.wait()
+            reader.feed_data(
+                make_frame(
+                    WS_OP_TEXT,
+                    json.dumps(
+                        {"type": "cmd", "id": "key", "name": "ptt_on", "params": {}}
+                    ).encode(),
+                )
+            )
+            await clock.elapse(0)
+            entry = srv.command_queue.take_entry()
+            assert entry is not None
+            assert entry.positive_tx_submission is not None
+            assert not entry.positive_tx_submission.done()
+            assert entry.positive_tx_ready is not None
+            assert not entry.positive_tx_ready.done()
+            assert entry.future is not None and not entry.future.done()
+            assert not task.done()
+            assert not lane.effects
+
+            async def consume() -> None:
+                await poller_release.wait()
+                await poller._execute_queued_entry(entry)  # noqa: SLF001
+
+            consumer = asyncio.create_task(consume())
+            if failure == "sender_error":
+                writer.release.set()
+            else:
+                for command_id in range(q.maxsize):
+                    q.put_nowait({"type": "response", "id": command_id, "ok": True})
+                if failure == "baseline_overflow":
+                    srv.enqueue_control_state_baseline(q)
+                else:
+                    srv._broadcast_state_update(force=True)  # noqa: SLF001
+            await clock.elapse(0)
+            poller_release.set()
+            await clock.elapse(0)
+
+            assert task.done()
+            assert consumer.done()
+            await consumer
+            assert ActuationOperation.PTT_ON not in [e.operation for e in lane.effects]
+            assert (
+                await authority.snapshot()
+            ).state.intent.kind is ManagedTxIntentKind.RX
+            assert entry.positive_tx_submission.done()
+            assert entry.future.cancelled()
+            disconnect.assert_awaited_once_with("pending-ptt")
+            assert writer.closed
+            assert not srv.command_queue.session_is_live("pending-ptt")
+            assert not srv.command_queue.has_commands
+            assert q not in srv._control_event_queues  # noqa: SLF001
+            assert "pending-ptt" not in srv._session_queues  # noqa: SLF001
+            unregister.assert_called_once_with(q, session_id="pending-ptt")
+            assert not handler._cmd_pending  # noqa: SLF001
+            assert not handler._cmd_flush_tasks  # noqa: SLF001
+            [outcome] = await asyncio.gather(task, return_exceptions=True)
+            assert isinstance(outcome, (ConnectionError, asyncio.CancelledError))
+        finally:
+            poller_release.set()
+            task.cancel()
+            if consumer is not None:
+                consumer.cancel()
+                await asyncio.gather(consumer, return_exceptions=True)
+            await asyncio.gather(task, return_exceptions=True)
+            await authority.close()
+            await srv.stop()
+
+    clock.run(scenario)
+
+
 class _StalledWriter(_MemoryWriter):
     def __init__(self, reader: asyncio.StreamReader) -> None:
         super().__init__()
@@ -503,7 +629,9 @@ def test_stalled_control_client_tears_down(
                     await task
             else:
                 [outcome] = await asyncio.gather(task, return_exceptions=True)
-                assert outcome is None or isinstance(outcome, ConnectionError)
+                assert outcome is None or isinstance(
+                    outcome, (ConnectionError, asyncio.CancelledError)
+                )
         finally:
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
