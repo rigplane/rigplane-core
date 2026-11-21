@@ -462,3 +462,11 @@ def test_full_schedule_and_workflow_dispatch_preserved() -> None:
     assert "workflow_dispatch:" in full_text, (
         "full.yml must keep its `workflow_dispatch:` trigger"
     )
+
+
+def test_full_matrix_runs_twice_a_day_every_day() -> None:
+    """Adviser decision 2026-11-20: the scheduled full matrix runs at 06:00 and 18:00 UTC every
+    day. The old weekday 3-hourly cron took ~1.7 build slots all day ahead of merge-group jobs
+    and ran nothing on weekends; reverting to it must fail here."""
+    crons = re.findall(r'^\s*-\s*cron:\s*"([^"]+)"', _on_section("full.yml"), re.M)
+    assert crons == ["0 6,18 * * *"]
