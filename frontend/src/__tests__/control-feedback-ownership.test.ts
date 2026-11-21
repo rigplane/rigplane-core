@@ -13,8 +13,13 @@ const FILES = [
 const FS_RUNTIME = `/@fs/${path.resolve(ROOT, 'src/lib/runtime/frontend-runtime')}`;
 const FS_SINGLE_RUNTIME = FS_RUNTIME.replace('/@fs//', '/@fs/');
 
+// One shared linter: constructing ESLint per lintText call re-reads the flat
+// config and plugin graph every time, which took the rejection test past the
+// default vitest timeout on a loaded runner (MOR-4214).
+const eslint = new ESLint({ cwd: ROOT });
+
 async function messages(code: string, filePath: string): Promise<readonly string[]> {
-  const [result] = await new ESLint({ cwd: ROOT }).lintText(code, { filePath });
+  const [result] = await eslint.lintText(code, { filePath });
   return result.messages.map((message) => message.ruleId ?? '<parser>');
 }
 
