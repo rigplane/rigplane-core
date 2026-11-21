@@ -516,6 +516,8 @@ async def test_webrtc_control_handler_receives_explicit_exact_authority(
     )
     manager = WebRtcSessionManager(_radio(), server, "IC-9700")
     session = SimpleNamespace(pc=MagicMock(), tasks=[], controller_owners=set())
+    # Registered like negotiate() does: dispatch serves only a live session.
+    manager._sessions["test-session"] = session  # type: ignore[assignment]  # noqa: SLF001
     channel = SimpleNamespace(label="control", on=MagicMock())
 
     manager._dispatch_channel("test-session", session, channel)  # noqa: SLF001
