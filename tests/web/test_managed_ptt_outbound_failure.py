@@ -113,43 +113,20 @@ class _FaultWriter(asyncio.StreamWriter):
         await super().drain()
 
 
-@pytest.mark.parametrize(
-    "failure",
-    [
-        "write_error",
-        "drain_error",
-        "transport_abort",
-        # Known gap (MOR-4214, same on the rc4 tag and main): when ONLY the event
-        # sender dies (no EOF, no write failure afterwards) the radio still ends
-        # in RX (every assertion before the handler check passes) but the
-        # handler task keeps running until the client goes away. Tracked for the
-        # 3.3.1 ACK-ordering work; strict xfail so that fixing it flips this red.
-        pytest.param(
-            "sender_only_error",
-            marks=pytest.mark.xfail(
-                strict=True, reason="handler lingers after the event sender dies"
-            ),
-        ),
-    ],
-)
-@pytest.mark.parametrize("phase", ["before_admission", "after_admission"])
-@pytest.mark.parametrize(
-    ("name", "params"), [("ptt_off", {}), ("ptt", {"state": False})]
-)
-def test_auxiliary_outbound_failure_during_key_up_releases_radio(
+def _exercise_key_up_outbound_failure(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     failure: Failure,
     phase: Phase,
     name: str,
     params: dict[str, object],
-) -> None:
+) -> bool:
     clock = VirtualClock(start=1000.0)
     clock.scope_to(monkeypatch, server_module)
     monkeypatch.setattr(server_module, "asyncio", asyncio)
     monkeypatch.setattr(runtime_helpers, "time", server_module.time)
 
-    async def scenario() -> None:
+    async def scenario() -> bool:
         radio = _PttRadio(model="IC-7610")
         await radio.connect()
         srv = WebServer(radio, WebConfig(radio_model="IC-7610"))
@@ -261,7 +238,12 @@ def test_auxiliary_outbound_failure_during_key_up_releases_radio(
                 writers[1].drain_error = True
             else:
                 writers[1].fail_one_drain = True
-            handlers[1]._event_queue.put_nowait({"type": "notification"})
+            assert (
+                srv.send_notification_to_session(
+                    auxiliary.session_id, "info", "Exercise outbound delivery failure"
+                )
+                is True
+            )
             await clock.elapse(0)
             assert writers[1].outbound.failed.is_set()
             assert sender_stopped.is_set()
@@ -330,10 +312,19 @@ def test_auxiliary_outbound_failure_during_key_up_releases_radio(
             settled = await releases[0].wait_settlement()
             assert settled is not None
             assert settled.result is ActuationResult.ACCEPTED
-            assert tasks[1].done(), "outbound failure left auxiliary handler running"
+            handler_terminated = tasks[1].done()
+            if not handler_terminated:
+                assert failure == "sender_only_error", (
+                    "outbound failure left auxiliary handler running"
+                )
+                # Observe RX and handler liveness before closing the client side.
+                readers[1].feed_eof()
+                await clock.elapse(0)
+            assert tasks[1].done(), "auxiliary handler did not stop after client EOF"
             result = (await asyncio.gather(tasks[1], return_exceptions=True))[0]
             assert result is None or isinstance(result, ConnectionError)
             assert handlers[1]._event_queue not in srv._control_event_queues
+            assert auxiliary.session_id not in srv._session_queues
             assert not srv.command_queue.session_is_live("releasing-auxiliary")
             assert "releasing-auxiliary" not in controller.control_session_ids(primary)
             assert not srv.command_queue.has_commands
@@ -341,6 +332,7 @@ def test_auxiliary_outbound_failure_during_key_up_releases_radio(
             assert srv.command_queue.session_is_live("live-primary")
             controller.validate(primary)
             assert controller.heartbeat(primary)
+            return handler_terminated
         finally:
             return_admission.set()
             actuator.release_allowed.set()
@@ -355,4 +347,43 @@ def test_auxiliary_outbound_failure_during_key_up_releases_radio(
             await asyncio.gather(*(writer.wait_closed() for writer in writers))
             await radio.disconnect()
 
-    clock.run(scenario)
+    return clock.run(scenario)
+
+
+@pytest.mark.parametrize(
+    "failure", ["write_error", "drain_error", "transport_abort", "sender_only_error"]
+)
+@pytest.mark.parametrize("phase", ["before_admission", "after_admission"])
+@pytest.mark.parametrize(
+    ("name", "params"), [("ptt_off", {}), ("ptt", {"state": False})]
+)
+def test_auxiliary_outbound_failure_during_key_up_releases_radio(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    failure: Failure,
+    phase: Phase,
+    name: str,
+    params: dict[str, object],
+) -> None:
+    _exercise_key_up_outbound_failure(
+        monkeypatch, tmp_path, failure, phase, name, params
+    )
+
+
+class _LingeringHandler(AssertionError):
+    pass
+
+
+@pytest.mark.xfail(
+    raises=_LingeringHandler,
+    strict=True,
+    reason="handler lingers after the event sender dies (MOR-4214)",
+)
+def test_auxiliary_sender_only_failure_handler_terminates(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    handler_terminated = _exercise_key_up_outbound_failure(
+        monkeypatch, tmp_path, "sender_only_error", "before_admission", "ptt_off", {}
+    )
+    if not handler_terminated:
+        raise _LingeringHandler("outbound failure left auxiliary handler running")
