@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { startJourneyServer } from './server-process';
-import { settlePassband, watchScopeFrames } from './panorama-passband-probe';
+import { expectFollowWindowOnVfo, settlePassband, watchScopeFrames } from './panorama-passband-probe';
 import { expectPanoramaClean, watchPanoramaErrors } from './panorama-guards';
 import { readScopeWriteReceipts } from './panorama-receipt';
 
@@ -116,7 +116,13 @@ test('IC-7610: the lit B key returns a pinned band to follow and writes CTR, and
     await page.mouse.move(area.x + area.width * 0.5, y, { steps: 8 });
     await page.mouse.up();
     await expect.poll(async () => (await radioFreq())).not.toBe(14_250_000);
-    await expect.poll(() => centerHz()).toBe(await radioFreq());
+    // The drag's writes land one step at a time and the frame stream
+    // re-centres a beat after the last one, so the window-vs-frequency
+    // comparison must sample both producers inside the poll — a frequency
+    // captured once can pin an intermediate drag step the radio has already
+    // moved past (quick-frontend-e2e run 44878602539: captured 14.273 MHz
+    // mid-gesture, settled retune 14.280 MHz).
+    await expectFollowWindowOnVfo(frames, radioFreq, 14_250_000);
     expectPanoramaClean(watch);
   } finally {
     await server.kill();
