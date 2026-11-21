@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.3.0rc4] — 2026-11-21
+
+Fourth release candidate of 3.3.0: v3.3.0rc3 plus the fix below.
+
 ### Fixed
 
 - Hardcoded Russian UI strings (controller error toasts and related messages) now go through the i18n catalogs (en-US, ja-JP, ru-RU), so non-Russian locales no longer show Russian text (MOR-4250).
@@ -5379,7 +5383,8 @@ These deprecation closures were announced in v0.19 and dropped on schedule.
 - Transport layer, authentication, CI-V commands, meters, PTT, keep-alive.
 - Clean-room Icom LAN UDP protocol implementation.
 
-[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.3.0rc3...HEAD
+[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.3.0rc4...HEAD
+[3.3.0rc4]: https://github.com/rigplane/rigplane-core/compare/v3.3.0rc3...v3.3.0rc4
 [3.3.0rc3]: https://github.com/rigplane/rigplane-core/compare/v3.3.0rc1...v3.3.0rc3
 [3.3.0rc2]: https://github.com/rigplane/rigplane-core/compare/v3.3.0rc1...v3.3.0rc3
 [3.3.0rc1]: https://github.com/rigplane/rigplane-core/compare/v3.2.3...v3.3.0rc1
