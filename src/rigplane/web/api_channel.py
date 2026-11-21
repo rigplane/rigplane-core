@@ -124,8 +124,11 @@ __all__ = [
     "ApiChannelHandler",
     "ApiFrame",
     "ApiFrameError",
+    "ApiErrorFrame",
     "ApiMessageType",
+    "ApiPayloadError",
     "ApiRequestHead",
+    "ApiResponseHead",
     "ApiWireDefinition",
     "ApiWireHeader",
     "ApiWireHeaderField",
@@ -139,6 +142,7 @@ __all__ = [
     "api_channel_wire_definition",
     "api_path_allowed",
     "api_request_messages",
+    "parse_api_server_frame",
     "api_response_messages",
 ]
 
@@ -548,12 +552,53 @@ class ApiRequestHead:
         ).encode("utf-8")
 
 
+class ApiPayloadError(ValueError):
+    """A RES_HEAD or ERROR payload a consumer's parser refuses (not JSON,
+    not an object, or a required field missing or mistyped)."""
+
+
+def _json_object(payload: bytes, what: str) -> dict[str, Any]:
+    """Decode a payload to a JSON object, or raise :class:`ApiPayloadError`."""
+    try:
+        obj = json.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError, RecursionError) as exc:
+        raise ApiPayloadError(f"api {what} is not JSON: {exc}") from exc
+    if not isinstance(obj, dict):
+        raise ApiPayloadError(f"api {what} must be a JSON object")
+    return obj
+
+
 @dataclass(frozen=True, slots=True)
 class ApiResponseHead:
     """A RES_HEAD: the HTTP status line the channel answers with."""
 
     status: int
     headers: dict[str, str]
+
+    @classmethod
+    def parse(cls, payload: bytes) -> ApiResponseHead:
+        """Parse a RES_HEAD payload (the consumer side of :meth:`encode`).
+
+        Raises :class:`ApiPayloadError` on undecodable or non-object JSON,
+        a missing or non-integer ``status``, or ``headers`` that are not an
+        object of strings. Unknown fields are ignored (forward
+        compatibility); a missing ``headers`` reads as empty.
+        """
+        obj = _json_object(payload, "response head")
+        status = obj.get("status")
+        if type(status) is not int:
+            raise ApiPayloadError("api response head 'status' must be an integer")
+        headers_raw = obj.get("headers", {})
+        if not isinstance(headers_raw, dict):
+            raise ApiPayloadError("api response head 'headers' must be an object")
+        headers: dict[str, str] = {}
+        for key, value in headers_raw.items():
+            if type(key) is not str or type(value) is not str:
+                raise ApiPayloadError(
+                    "api response head 'headers' maps strings to strings"
+                )
+            headers[key] = value
+        return cls(status=status, headers=headers)
 
     def encode(self) -> bytes:
         """Encode as the JSON payload of a RES_HEAD frame."""
@@ -568,6 +613,22 @@ class ApiErrorFrame:
 
     code: str
     message: str
+
+    @classmethod
+    def parse(cls, payload: bytes) -> ApiErrorFrame:
+        """Parse an ERROR payload (the consumer side of :meth:`encode`).
+
+        Raises :class:`ApiPayloadError` on undecodable or non-object JSON
+        or a missing or non-string ``code``/``message``. ``code`` is kept
+        as the sender wrote it, so a code added later still parses.
+        Unknown fields are ignored.
+        """
+        obj = _json_object(payload, "error frame")
+        code = obj.get("code")
+        message = obj.get("message")
+        if type(code) is not str or type(message) is not str:
+            raise ApiPayloadError("api error frame 'code'/'message' must be strings")
+        return cls(code=code, message=message)
 
     def encode(self) -> bytes:
         """Encode as the JSON payload of an ERROR frame."""
@@ -621,6 +682,21 @@ class ApiFrame:
         if len(payload) > RESPONSE_CHUNK_BYTES:
             raise ApiFrameError(_TOO_LARGE, request_id, "frame payload over 16 KB")
         return cls(msg_type, request_id, payload)
+
+
+def parse_api_server_frame(frame: ApiFrame) -> ApiResponseHead | ApiErrorFrame | None:
+    """The typed meaning of a server frame's payload, with the producer's parsers.
+
+    RES_HEAD gives an :class:`ApiResponseHead` and ERROR an
+    :class:`ApiErrorFrame`. Every other type (RES_BODY, END, a type added
+    later) gives ``None``: a receiver skips what it does not know. Raises
+    :class:`ApiPayloadError` when a RES_HEAD or ERROR payload is malformed.
+    """
+    if frame.type == ApiMessageType.RES_HEAD:
+        return ApiResponseHead.parse(frame.payload)
+    if frame.type == ApiMessageType.ERROR:
+        return ApiErrorFrame.parse(frame.payload)
+    return None
 
 
 def api_path_allowed(method: str, path: str) -> bool:

@@ -167,6 +167,16 @@ class AudioCaptureOpenTimeoutError(AudioDriverLifecycleError):
     attempt opens a fresh stream from scratch.
     """
 
+    reason: Literal["open_timeout"] = "open_timeout"
+    """Typed failure category, mirroring :func:`audio_start_failure_reason`.
+
+    The same ``.reason`` shape the sibling capture-open refusal
+    (``WindowsAudioTopologyError``) carries. Every raise site is a
+    bound/saturation expiry the classifier reports as ``"open_timeout"``,
+    so the category is a class-level constant — no per-site value to get
+    wrong, no ``getattr`` fallback at the reader.
+    """
+
 
 class AudioFormatUnsupportedError(AudioDriverLifecycleError):
     """Raised when the device accepts none of the requested stream formats."""
