@@ -66,6 +66,7 @@ const TX_FAILURE_TOAST_CODES: Readonly<Record<TxCaptureFailureCode, string>> = {
   'insecure-context': 'txAudioInsecureContext',
   unsupported: 'txAudioCaptureUnsupported',
   capture: 'txAudioStartFailed',
+  'device-missing': 'txAudioMicMissing',
   'device-lost': 'txAudioDeviceLost',
   encoder: 'txAudioEncoderFailed',
   'sample-rate': 'txAudioSampleRateUnsupported',

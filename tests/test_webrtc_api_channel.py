@@ -2018,6 +2018,31 @@ async def test_api_tx_start_batch_steps_refused(tmp_path: Path) -> None:
 
 
 @_webrtc
+async def test_controller_route_ptt_style() -> None:
+    """The same Core controller serves different TX capabilities by ingress."""
+    wire = json.loads(
+        (Path(__file__).parent / "fixtures/host-api-v3-wire.json").read_text()
+    )
+    server = await _stand_up_light()
+    client = _ApiClient()
+    path = "/api/v1/controller"
+    try:
+        status, body = await _http_request(
+            server.port, "GET", path, headers={"x-rigplane-api-channel": "true"}
+        )
+        await client.connect(server.port)
+        await client.attach(None)
+        api = await client.request(1, "GET", path)
+        assert api.status == status == 200
+        assert (json.loads(body), json.loads(api.body)) == (
+            wire["controllerStatus"],
+            wire["controllerStatusApiChannel"],
+        )
+    finally:
+        await _tear_down(server, client)
+
+
+@_webrtc
 async def test_api_tx_start_managed_transmit_refused(tmp_path: Path) -> None:
     """managed transmit_on over api: 403, while force_off stays served."""
     from test_webrtc_attach_path import (  # noqa: E402
@@ -2037,7 +2062,10 @@ async def test_api_tx_start_managed_transmit_refused(tmp_path: Path) -> None:
             headers={"content-type": "application/json"},
             body=json.dumps({"operation": "transmit_on"}).encode(),
         )
-        _tx_refusal_body(resp)
+        wire = json.loads(
+            (Path(__file__).parent / "fixtures/host-api-v3-wire.json").read_text()
+        )
+        assert _tx_refusal_body(resp) == wire["controllerTxRefusal"]
         assert stack.sim.ptt_on is False
         resp = await client.request(
             2,

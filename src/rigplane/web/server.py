@@ -5785,18 +5785,23 @@ class WebServer:
                 writer, 405, "Method Not Allowed", {"error": "method_not_allowed"}
             )
             return
+        # The synthetic WebRTC writer supplies server-owned ingress metadata.
+        momentary_only = writer.get_extra_info("rigplane_api_channel") is True
+        result: Mapping[str, object]
         try:
             if path.endswith("/mode"):
                 peer = writer.get_extra_info("peername")
                 if not peer or not ipaddress.ip_address(peer[0]).is_loopback:
                     raise ControllerError("controller_local_required")
             if method == "GET":
-                result, status = self._controller.status(), 200
+                result = self._controller.status(momentary_only=momentary_only)
+                status = 200
             elif method == "DELETE":
                 await self._controller.release(
                     (headers or {}).get("x-rigplane-controller")
                 )
-                result, status = self._controller.status(), 200
+                result = self._controller.status(momentary_only=momentary_only)
+                status = 200
             else:
                 payload = await self._read_json_object(writer, headers, reader)
                 if payload is None:
@@ -5808,7 +5813,8 @@ class WebServer:
                     if self._audio_bridge is not None:
                         self._audio_bridge._drop_queued_tx()
                     await self._controller.set_mode(payload[field])
-                    result, status = self._controller.status(), 200
+                    result = self._controller.status(momentary_only=momentary_only)
+                    status = 200
                 else:
                     peer = writer.get_extra_info("peername")
                     result = self._controller.acquire(
