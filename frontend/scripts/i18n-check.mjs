@@ -453,9 +453,13 @@ function checkAgainstSource(filePath, catalog, sourceCatalog) {
 //   - `src/lib/i18n/locales/**` — the catalogs themselves;
 //   - test files (`__tests__/` directories and `*.test.*` / `*.spec.*`)
 //     — tests legitimately assert localized output;
-//   - `.svelte` markup outside `<script>` — only script literals are
-//     scanned there (markup text is covered by the placeholder guard and
-//     is not a "string literal");
+//   - Svelte markup TEXT nodes — only `<script>` literals, string literals
+//     inside `{...}` template expressions (including expressions inside
+//     attribute values, e.g. `on:click={() => say('Ошибка')}`) and quoted
+//     attribute values (e.g. `title="Ошибка"`) are scanned; plain markup
+//     text is covered by the placeholder guard and is not a "string
+//     literal";
+//   - HTML/Svelte comments (`<!-- ... -->`) in markup — not scannable;
 //   - `CYRILLIC_LITERAL_ALLOWLIST` — places where Cyrillic text is data,
 //     not user-visible copy. Every entry carries its justification.
 
@@ -515,21 +519,90 @@ function listSourceFiles(rootDir) {
 }
 
 /**
- * Extract the scannable script text. For `.svelte` files only the
- * `<script>` blocks carry string literals we govern; markup text is not a
- * literal. Other files are returned verbatim.
+ * Extract the scannable text. For `.svelte` files that is the `<script>`
+ * blocks plus, from the markup, the regions that carry string literals:
+ * balanced `{...}` template expressions (these render — `{'Потеряно'}` in
+ * markup is a literal on screen exactly like one in script) and quoted
+ * attribute values. Markup text nodes and HTML/Svelte comments are not
+ * string literals and are not scanned. Other files are returned verbatim.
  */
 export function scannableText(name, raw) {
   if (!name.endsWith('.svelte')) return [raw];
-  const blocks = [];
+  const regions = [];
   // Case-insensitive: HTML tag names are ASCII case-insensitive, so an
   // uppercase <SCRIPT> block is still script. The end tag may carry
   // whitespace or junk before `>` (`</script >`), which HTML still treats
   // as the end of the block.
   const re = /<script[^>]*>([\s\S]*?)<\/script[^>]*>/gi;
   let m;
-  while ((m = re.exec(raw)) !== null) blocks.push(m[1]);
-  return blocks;
+  let lastEnd = 0;
+  let markup = '';
+  while ((m = re.exec(raw)) !== null) {
+    markup += raw.slice(lastEnd, m.index);
+    lastEnd = re.lastIndex;
+    regions.push(m[1]);
+  }
+  markup += raw.slice(lastEnd);
+  regions.push(...markupLiteralRegions(markup));
+  return regions;
+}
+
+/**
+ * Markup regions that can hold a hardcoded literal: `{...}` template
+ * expressions and quoted attribute values. Comments are stripped first
+ * (`<!-- {'Потеряно'} -->` is not code), and `{...}` spans inside a quoted
+ * attribute value are blanked there because the expression walker already
+ * scans them once — each literal must be reported exactly once.
+ */
+function markupLiteralRegions(markup) {
+  const withoutComments = markup.replace(/<!--[\s\S]*?-->/g, ' ');
+  const regions = [];
+  const expressionSpans = [];
+  // Balanced `{...}` expressions: a `}` inside a quoted string does not
+  // close the expression, and a quote or brace inside a string does not
+  // count, so `{'{'} {cond ? 'да' : 'нет'}` walks correctly.
+  for (let i = 0; i < withoutComments.length; i++) {
+    if (withoutComments[i] !== '{') continue;
+    let depth = 0;
+    let j = i;
+    for (; j < withoutComments.length; j++) {
+      const ch = withoutComments[j];
+      if (ch === '\'' || ch === '"' || ch === '`') {
+        const quote = ch;
+        j++;
+        while (j < withoutComments.length && withoutComments[j] !== quote) {
+          if (withoutComments[j] === '\\') j++;
+          j++;
+        }
+        continue;
+      }
+      if (ch === '{') depth++;
+      else if (ch === '}') {
+        depth--;
+        if (depth === 0) break;
+      }
+    }
+    if (depth !== 0) continue; // unbalanced: not an expression, skip it
+    regions.push(withoutComments.slice(i, j + 1));
+    expressionSpans.push([i, j]);
+    i = j;
+  }
+  // Quoted attribute values (`title="…"`, `aria-label='…'`): user-visible
+  // copy in their own right, and the only coverage for a value with no
+  // braces at all. `{...}` spans inside a value are blanked, and a match
+  // that lies inside an expression (`{x = 'да'}`) is skipped, because the
+  // expression walker already scans each literal exactly once.
+  const attrRe = /=("[^"]*"|'[^']*')/g;
+  let attr;
+  while ((attr = attrRe.exec(withoutComments)) !== null) {
+    const insideExpression = expressionSpans.some(
+      ([start, end]) => attr.index >= start && attr.index <= end,
+    );
+    if (insideExpression) continue;
+    const region = attr[1].replace(/\{[^{}]*\}/g, ' ');
+    if (region !== '') regions.push(region);
+  }
+  return regions;
 }
 
 /**

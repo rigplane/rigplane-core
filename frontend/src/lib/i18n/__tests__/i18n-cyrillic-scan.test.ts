@@ -73,6 +73,49 @@ describe('findCyrillicStringLiterals (i18n-check.mjs MOR-4250 scan)', () => {
     );
     expect(blocks).toEqual(["const a = 'Потеряно';", 'const b = 1;']);
   });
+
+  it('flags Cyrillic literals inside Svelte template expressions', () => {
+    // `<p>{'Потеряно'}</p>` renders Russian in the English UI exactly like
+    // a script literal; the scan used to stop at the </script> end tag.
+    const regions = scannableText(
+      'Panel.svelte',
+      '<script>const t = 1;</script>\n'
+      + "<p>{'Потеряно'}</p>\n"
+      + "<span>{cond ? 'Да' : 'Нет'}</span>\n"
+      + "<button on:click={() => say('Ошибка')}>x</button>\n",
+    );
+    const hits = regions.flatMap((text) => findCyrillicStringLiterals(text));
+    expect(hits.map((h) => h.snippet)).toEqual(['Потеряно', 'Да', 'Нет', 'Ошибка']);
+  });
+
+  it('flags Cyrillic literals in quoted attribute values, exactly once', () => {
+    const regions = scannableText(
+      'Panel.svelte',
+      '<script>const cond = true;</script>\n'
+      + '<p title="Потеряно">x</p>\n'
+      + "<p aria-label='Закрыть'>y</p>\n"
+      + '<p title="{cond ? \'Да\' : \'Нет\'}">z</p>\n',
+    );
+    const hits = regions.flatMap((text) => findCyrillicStringLiterals(text));
+    // The interpolated value is scanned once (as an expression), not twice
+    // (expression + attribute), so each literal below appears one time.
+    expect(hits.map((h) => h.snippet)).toEqual(['Да', 'Нет', 'Потеряно', 'Закрыть']);
+  });
+
+  it('accepts comments, catalog lookups and markup text', () => {
+    // Catalog lookups (`t('core.…')`) are the sanctioned mechanism; HTML
+    // comments are not code; markup TEXT nodes are guarded by the
+    // placeholder check, not the literal scan.
+    const regions = scannableText(
+      'Panel.svelte',
+      '<script>import { t } from \'$lib/i18n\';</script>\n'
+      + "<!-- {'Потеряно'} и просто текст -->\n"
+      + "<p>{t('core.panel.title')}</p>\n"
+      + '<p aria-label={t(\'core.panel.close\')}>Потеряно как текст</p>\n',
+    );
+    const hits = regions.flatMap((text) => findCyrillicStringLiterals(text));
+    expect(hits).toEqual([]);
+  });
 });
 
 describe('scanFrontendSources (live tree)', () => {
