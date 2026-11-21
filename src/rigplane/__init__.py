@@ -134,6 +134,8 @@ if TYPE_CHECKING:
     from .web.transport.webrtc_contract import (  # noqa: F401, TID251
         IceCandidateInit,
         WebRtcAnswer,
+        WebRtcClose,
+        WebRtcCloseResult,
         WebRtcIceCandidate,
         WebRtcOffer,
         WebRtcRequestError,
@@ -183,6 +185,11 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
     ),
     "WebRtcOffer": ("rigplane.web.transport.webrtc_contract", "WebRtcOffer"),
     "WebRtcAnswer": ("rigplane.web.transport.webrtc_contract", "WebRtcAnswer"),
+    "WebRtcClose": ("rigplane.web.transport.webrtc_contract", "WebRtcClose"),
+    "WebRtcCloseResult": (
+        "rigplane.web.transport.webrtc_contract",
+        "WebRtcCloseResult",
+    ),
     "WebRtcIceCandidate": (
         "rigplane.web.transport.webrtc_contract",
         "WebRtcIceCandidate",
@@ -479,6 +486,8 @@ __all__ = [
     "apply_ice_gathering_policy",
     "WebRtcOffer",
     "WebRtcAnswer",
+    "WebRtcClose",
+    "WebRtcCloseResult",
     "WebRtcIceCandidate",
     "WebRtcRequestError",
     "WebRtcTransportStatus",

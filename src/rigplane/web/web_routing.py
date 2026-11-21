@@ -688,6 +688,19 @@ async def _handle_route_webrtc_ice(
     await server._handle_webrtc_ice(writer, headers, reader)
 
 
+async def _handle_route_webrtc_close(
+    server: WebServer,
+    writer: asyncio.StreamWriter,
+    method: str,
+    path: str,
+    headers: dict[str, str] | None,
+    reader: asyncio.StreamReader | None,
+    query: dict[str, list[str]] | None,
+) -> None:
+    """Run the gated WebRTC session close."""
+    await server._handle_webrtc_close(writer, headers, reader)
+
+
 async def _handle_route_diagnose_preview(
     server: WebServer,
     writer: asyncio.StreamWriter,
@@ -814,6 +827,9 @@ API_ROUTE_TABLE: Final[tuple[ApiRoute, ...]] = (
     ApiRoute(("POST",), "/api/v1/transport/webrtc/offer", _handle_route_webrtc_offer),
     ApiRoute(
         ("POST",), "/api/v1/transport/webrtc/ice-candidate", _handle_route_webrtc_ice
+    ),
+    ApiRoute(
+        ("POST",), "/api/v1/transport/webrtc/close", _handle_route_webrtc_close
     ),
     ApiRoute(("POST",), "/api/v1/diagnose/preview", _handle_route_diagnose_preview),
     ApiRoute(("POST",), "/api/v1/diagnose/send", _handle_route_diagnose_send),

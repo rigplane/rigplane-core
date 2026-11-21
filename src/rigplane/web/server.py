@@ -182,6 +182,8 @@ from ..core.host_guard import (  # noqa: TID251
 from .managed_tx_view import build_managed_tx_view  # noqa: TID251
 from .transport.webrtc import webrtc_available  # noqa: TID251
 from .transport.webrtc_contract import (  # noqa: TID251
+    WebRtcClose,
+    WebRtcCloseResult,
     WebRtcIceCandidate,
     WebRtcOffer,
     WebRtcRequestError,
@@ -7567,6 +7569,67 @@ class WebServer:
             return
 
         resp_body = json.dumps({"status": "ok"}, separators=(",", ":")).encode()
+        await _send_response(
+            writer, 200, "OK", resp_body, {"Content-Type": "application/json"}
+        )
+
+    async def _handle_webrtc_close(
+        self,
+        writer: asyncio.StreamWriter,
+        headers: dict[str, str] | None,
+        reader: asyncio.StreamReader | None,
+    ) -> None:
+        """Handle POST /api/v1/transport/webrtc/close — end live sessions.
+
+        The stop button for already-connected peers (Pro's remote-access
+        switch-off): ``{"sessionId": id}`` ends that peer, an absent or
+        ``null`` ``sessionId`` ends every live session — both through the
+        manager's existing teardown path. Closing when nothing is live is
+        a success that closed nothing, and the manager stays usable, so a
+        later offer is still answered.
+        """
+        if not self._config.webrtc_enabled:
+            await self._webrtc_unavailable(
+                writer, "WebRTC transport disabled (set webrtc_enabled)."
+            )
+            return
+        if not webrtc_available():
+            await self._webrtc_unavailable(
+                writer, "WebRTC backend unavailable; install rigplane[webrtc]."
+            )
+            return
+
+        payload = await self._read_json_body(writer, headers, reader)
+        if payload is None:
+            return
+        try:
+            close = WebRtcClose.from_json(payload)
+        except WebRtcRequestError as exc:
+            await self._webrtc_error(writer, 400, "Bad Request", exc)
+            return
+
+        from .transport.webrtc_session import WebRtcSessionError  # noqa: TID251
+
+        manager = self._webrtc_session_manager()
+        if close.session_id is None:
+            closed = await manager.close_all()
+        else:
+            try:
+                await manager.close_session(close.session_id)
+            except WebRtcSessionError as exc:
+                await self._webrtc_error(
+                    writer,
+                    404,
+                    "Not Found",
+                    WebRtcRequestError("close_error", str(exc)),
+                )
+                return
+            closed = [close.session_id]
+
+        resp_body = json.dumps(
+            WebRtcCloseResult(closed=tuple(closed)).to_json(),
+            separators=(",", ":"),
+        ).encode()
         await _send_response(
             writer, 200, "OK", resp_body, {"Content-Type": "application/json"}
         )

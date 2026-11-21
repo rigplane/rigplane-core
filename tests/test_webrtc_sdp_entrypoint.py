@@ -26,6 +26,7 @@ from _perf_helpers import fast_connect
 from testkit.ic7610_fakes import ic7610_lan_fake
 
 from rigplane.radio import IcomRadio
+from rigplane.testing.timing import await_until
 from rigplane.web.server import WebConfig, WebServer
 from rigplane.web.transport.webrtc import webrtc_available
 
@@ -82,6 +83,17 @@ async def test_ice_unavailable_when_gate_off() -> None:
     server = WebServer(None, WebConfig())
     writer = _FakeWriter()
     await server._handle_webrtc_ice(writer, {"content-length": "10"}, None)
+    code, body = _parse_response(writer)
+    assert code == 503
+    assert body["code"] == "webrtc_unavailable"
+
+
+@pytest.mark.asyncio
+async def test_close_unavailable_when_gate_off() -> None:
+    """The close endpoint is gated off by default, like its siblings."""
+    server = WebServer(None, WebConfig())
+    writer = _FakeWriter()
+    await server._handle_webrtc_close(writer, {"content-length": "10"}, None)
     code, body = _parse_response(writer)
     assert code == 503
     assert body["code"] == "webrtc_unavailable"
@@ -264,6 +276,105 @@ async def test_full_session_negotiates_control_scope_audio() -> None:
             await asyncio.wait_for(radio.disconnect(), 10.0)
     with contextlib.suppress(Exception):
         await sim.stop()
+
+
+async def _post_close(
+    server: WebServer, body: dict[str, Any]
+) -> tuple[int, dict[str, Any]]:
+    """Drive a close body through the entrypoint."""
+    raw = json.dumps(body).encode()
+    reader = asyncio.StreamReader()
+    reader.feed_data(raw)
+    reader.feed_eof()
+    writer = _FakeWriter()
+    await server._handle_webrtc_close(
+        writer, {"content-length": str(len(raw))}, reader
+    )
+    return _parse_response(writer)
+
+
+async def _establish(server: WebServer) -> tuple[Any, Any, str]:
+    """Open one fully-connected peer: offer → answer → open data channel.
+
+    The peer applies the answer and its ``control`` channel opens, so the
+    session is live end to end before any close.
+    """
+    from aiortc import RTCPeerConnection, RTCSessionDescription
+
+    pc = RTCPeerConnection()
+    channel = pc.createDataChannel("control", ordered=True)
+    code, body = await _post_offer(server, pc)
+    assert code == 200, body
+    await pc.setRemoteDescription(
+        RTCSessionDescription(sdp=body["sdp"], type=body["type"])
+    )
+    await await_until(
+        lambda: channel.readyState == "open",
+        timeout=10.0,
+        description="the peer channel to open",
+    )
+    return pc, channel, body["sessionId"]
+
+
+@pytest.mark.asyncio
+@_webrtc
+async def test_close_ends_established_session_and_manager_stays_usable() -> None:
+    """The close route ends a live peer; a later offer is still answered.
+
+    Pro's remote-access switch-off is the only stop button for an
+    already-connected peer: the close must reach the peer (the aborted
+    association closes its data channel within a bounded wait — what a
+    browser peer observes) and the manager must stay usable afterwards.
+    """
+    server = WebServer(None, WebConfig(webrtc_enabled=True))
+    client_pc, channel, session_id = await _establish(server)
+    manager = server._webrtc_sessions  # type: ignore[union-attr]
+    assert session_id in manager.active_session_ids
+
+    code, body = await _post_close(server, {"sessionId": session_id})
+    assert code == 200
+    assert body["status"] == "ok"
+    assert body["closed"] == [session_id]
+    assert session_id not in manager.active_session_ids
+
+    await await_until(
+        lambda: channel.readyState == "closed",
+        timeout=10.0,
+        description="the peer to see the close",
+    )
+
+    # The manager stays usable: a later offer is answered with a new session.
+    client_pc2, _channel2, session_id2 = await _establish(server)
+    assert session_id2 != session_id
+
+    await server._webrtc_sessions.close_all()  # type: ignore[union-attr]
+    await client_pc2.close()
+    await client_pc.close()
+
+
+@pytest.mark.asyncio
+@_webrtc
+async def test_close_all_ends_every_established_session() -> None:
+    """An absent sessionId closes every live session at once."""
+    server = WebServer(None, WebConfig(webrtc_enabled=True))
+    peers = [await _establish(server) for _ in range(2)]
+    ids = {session_id for _pc, _ch, session_id in peers}
+    manager = server._webrtc_sessions  # type: ignore[union-attr]
+    assert set(manager.active_session_ids) == ids
+
+    code, body = await _post_close(server, {})
+    assert code == 200
+    assert body["status"] == "ok"
+    assert set(body["closed"]) == ids
+    assert manager.active_session_ids == []
+
+    for pc, channel, _session_id in peers:
+        await await_until(
+            lambda: channel.readyState == "closed",
+            timeout=10.0,
+            description="the peer to see the close",
+        )
+        await pc.close()
 
 
 @pytest.mark.asyncio

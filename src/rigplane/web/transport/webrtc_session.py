@@ -272,8 +272,13 @@ class WebRtcSessionManager:
         except Exception as exc:
             raise WebRtcSessionError(f"Failed to add ICE candidate: {exc}") from exc
 
-    async def close_all(self) -> None:
-        """Tear down every live session (server shutdown)."""
+    async def close_all(self) -> list[str]:
+        """Tear down every live session; return the ids torn down.
+
+        The one teardown path for the whole peer set: Core shutdown and
+        the ``close`` route's close-all form both end here.
+        """
+        session_ids = list(self._sessions)
         sessions = list(self._sessions.values())
         self._sessions.clear()
         for session in sessions:
@@ -281,6 +286,17 @@ class WebRtcSessionManager:
                 await session.close()
             except Exception:  # noqa: BLE001 - best-effort shutdown
                 logger.debug("session close failed", exc_info=True)
+        return session_ids
+
+    async def close_session(self, session_id: str) -> None:
+        """Tear down one live session through the existing drop path.
+
+        Raises :class:`WebRtcSessionError` for an unknown session, like
+        :meth:`add_ice_candidate`.
+        """
+        if session_id not in self._sessions:
+            raise WebRtcSessionError(f"Unknown session: {session_id}")
+        await self._drop(session_id)
 
     @property
     def active_session_ids(self) -> list[str]:
