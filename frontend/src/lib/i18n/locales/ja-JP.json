@@ -16,6 +16,7 @@
   "core.app.retryIndicator": "再試行 {attempt}/{max}、次の試行まで {seconds} 秒…",
   "core.app.presentationError": "このレイアウトを読み込めませんでした。無線機との接続には影響ありません。ページを再読み込みして再試行してください。",
   "core.rxTx.rf.unconfirmed": "送信が確認されていません",
+  "core.rxTx.holdToTalk": "押している間送信",
   "core.rxTx.fault.reset.action": "TX フォルトを閉じる",
   "core.rxTx.fault.reset.note": "フォルトを消去してキー操作を再度有効にします。送信は行いません。",
   "core.rxTx.fault.reset.blocked": "この TX フォルトはまだ閉じられません: {reason}。無線機が送信機のオフを確認すると閉じられるようになります。",
