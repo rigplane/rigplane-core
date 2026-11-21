@@ -1,8 +1,9 @@
 """Pins the certification-status script and the wiring of its workflow.
 
-Jobs are shaped like the Actions jobs API (an ordered ``steps`` list); the
-workflow files are read as text, as ``tests/test_artifact_cleanup.py`` reads
-its workflow.
+Job fixtures are payloads shaped like the Actions jobs API (an ordered
+``steps`` list) and go through the script's own boundary parser,
+``script.parse_job``. The workflow files are read as text, as
+``tests/test_artifact_cleanup.py`` reads its workflow.
 """
 
 from __future__ import annotations
@@ -42,24 +43,35 @@ STEPS += [
     "Outcome: dry run",
     "Complete job",
 ]
-Job = dict[str, Any]
+Job = script.ActionJob
+# What a busy night's steps look like in bench-nightly.yml: the lock was not
+# acquired, so no radio step runs (Validate, the diff, the hardware pytest
+# subset are skipped) and only the green `Outcome: busy` marker ran.
+BUSY_STEPS = NOT_RUN | {
+    "Night-to-night diff": "skipped",
+    PYTEST: "skipped",
+    "Outcome: busy": "success",
+}
 
 
 def job(
     name: str, conclusion: str = "success", over: dict[str, str] | None = None
 ) -> Job:
-    """A completed job: every step succeeded (Outcome steps skipped) unless overridden."""
+    """A completed job: every step succeeded (Outcome steps skipped) unless
+    overridden. Built as the jobs API shapes it and parsed by the script's
+    boundary parser."""
     done = {s: "skipped" if s.startswith("Outcome: ") else "success" for s in STEPS}
     done |= over or {}
     steps = [
         {"name": s, "conclusion": done[s], "number": n} for n, s in enumerate(STEPS, 1)
     ]
-    return {"id": 1, "name": name, "conclusion": conclusion, "steps": steps}
+    payload = {"id": 1, "name": name, "conclusion": conclusion, "steps": steps}
+    return script.parse_job(payload)
 
 
 def busy(name: str) -> Job:
-    over = {"Night-to-night diff": "skipped", "Outcome: busy": "success"}
-    return job(name, "success", NOT_RUN | over)
+    """A busy night: the radio steps are skipped, the marker ends it green."""
+    return job(name, "success", BUSY_STEPS)
 
 
 def day(back: int, at: str = "01:31:07") -> str:
@@ -88,8 +100,19 @@ def night(back: int, kind: str, outcome: str) -> Any:
     ("over", "conclusion", "expected"),
     [
         ({}, "success", PASS),
-        (NOT_RUN | {"Outcome: busy": "success"}, "success", "busy"),
+        (BUSY_STEPS, "success", "busy"),
+        (BUSY_STEPS, "cancelled", "job cancelled"),
         (NOT_RUN | {"Outcome: busy": "failure"}, "failure", "busy"),
+        # The combined night: BENCH_FTX1_SERIAL missing (the not configured
+        # step fails red) while another run holds the bench lock (the always()
+        # busy marker runs green beside it). The failed step, not the marker,
+        # names the night.
+        (
+            NOT_RUN
+            | {"Outcome: not configured": "failure", "Outcome: busy": "success"},
+            "failure",
+            "not configured",
+        ),
         (NOT_RUN | {"Outcome: not configured": "failure"}, "failure", "not configured"),
         (NOT_RUN | {"Outcome: dry run": "failure"}, "failure", "dry run"),
         ({"Validate": "failure"}, "failure", "validate failed"),
@@ -108,6 +131,25 @@ def test_classification_names_the_outcome_of_one_job(
 
 def test_a_radio_without_a_job_is_missing() -> None:
     assert script.classify_job(None) == "missing"
+
+
+def test_a_busy_night_skips_the_radio_steps_and_ends_green() -> None:
+    """The payload a busy night really carries (bench-nightly.yml): the radio
+    steps are skipped, the marker runs, the job concludes success."""
+    payload = busy("FTX-1")
+    assert payload.conclusion == "success"
+    assert {step.name: step.conclusion for step in payload.steps} == {
+        "Set up job": "success",
+        "Bench lock": "success",
+        "Validate": "skipped",
+        "Night-to-night diff": "skipped",
+        PYTEST: "skipped",
+        "Outcome: not configured": "skipped",
+        "Outcome: busy": "success",
+        "Outcome: dry run": "skipped",
+        "Complete job": "success",
+    }
+    assert script.classify_job(payload) == "busy"
 
 
 @pytest.mark.parametrize(
@@ -361,7 +403,7 @@ def test_jobs_come_from_the_latest_attempt_of_the_run(
 
     monkeypatch.setattr(script, "_get_json", get_json)
     jobs = script.list_jobs("https://api.example", "owner/repo", "token", 42)
-    assert jobs == [{"name": "IC-7610"}]
+    assert jobs == [script.parse_job({"name": "IC-7610"})]
     url = urlparse(requested[0])
     assert url.path == "/repos/owner/repo/actions/runs/42/jobs"
     assert parse_qs(url.query)["filter"] == ["latest"]
