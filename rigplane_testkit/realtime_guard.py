@@ -550,8 +550,13 @@ def base_revision(repo: Path) -> str | None:
 
     An explicit ``RIGPLANE_REALTIME_BASE_REF`` wins. In CI (``CI`` set) it is the first
     parent of the checked-out commit: the base branch for a pull-request or merge-queue merge
-    commit, the previous commit for a push to the base branch. Elsewhere (a local work branch)
-    it is ``origin/main`` when that exists.
+    commit (a pull request into ``release/<major>.<minor>.x`` checks out the head merged onto
+    that release branch, so ``HEAD^1`` is the release base, never main), the previous commit
+    for a push to the base branch. Elsewhere (a local work branch) it is ``origin/main``
+    while the tree still contains main's tip; a tree cut from a branch that diverged from
+    main (a release branch) instead compares at the merge-base with ``origin/main`` — the
+    fork point — so mainline baseline shrinkage after the fork cannot read as entries this
+    tree "gained" (MOR-4214).
     """
     explicit = os.environ.get("RIGPLANE_REALTIME_BASE_REF")
     if explicit:
@@ -563,7 +568,15 @@ def base_revision(repo: Path) -> str | None:
         # branch) or a single commit of the base branch itself (its previous commit).
         return "HEAD^1" if len(fields) >= 2 else None
     main = _git(repo, "rev-parse", "--verify", "--quiet", "origin/main^{commit}")
-    return "origin/main" if main.returncode == 0 else None  # a local work branch
+    if main.returncode != 0:
+        return None  # no mainline base to compare with
+    contained = _git(repo, "merge-base", "--is-ancestor", main.stdout.strip(), "HEAD")
+    if contained.returncode == 0:
+        return "origin/main"  # a local work branch on mainline
+    fork = _git(repo, "merge-base", "HEAD", "origin/main")
+    if fork.returncode != 0 or not fork.stdout.strip():
+        return None
+    return fork.stdout.strip()  # the fork point is this tree's base
 
 
 def main(argv: list[str] | None = None) -> int:

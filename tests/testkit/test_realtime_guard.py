@@ -794,6 +794,98 @@ def test_the_base_revision_is_the_first_parent_in_ci_and_origin_main_elsewhere(
     assert base_revision(tmp_path) == "feature-base"
 
 
+def test_a_ci_merge_checkout_compares_with_its_first_parent_the_pr_base(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A pull_request event checks out refs/pull/N/merge: a merge commit whose
+    # first parent is the PR's base branch tip. That holds for a PR into
+    # release/<major>.<minor>.x exactly as for one into main, so HEAD^1 is
+    # always the tree's own base (MOR-4214).
+    _git(tmp_path, "init", "-q", "-b", "main")
+    (tmp_path / "base.txt").write_text("base", encoding="utf-8")
+    _git(tmp_path, "add", "base.txt")
+    _git(tmp_path, "commit", "-q", "-m", "base tip")
+    base = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    _git(tmp_path, "checkout", "-q", "-b", "feature")
+    (tmp_path / "head.txt").write_text("head", encoding="utf-8")
+    _git(tmp_path, "add", "head.txt")
+    _git(tmp_path, "commit", "-q", "-m", "head")
+    _git(tmp_path, "checkout", "-q", "main")
+    _git(tmp_path, "merge", "--no-ff", "-q", "--no-edit", "feature")
+
+    monkeypatch.delenv("RIGPLANE_REALTIME_BASE_REF", raising=False)
+    monkeypatch.setenv("CI", "true")
+    assert base_revision(tmp_path) == "HEAD^1"
+    first_parent = subprocess.run(
+        ["git", "rev-parse", "HEAD^1"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    assert first_parent == base  # the merge's first parent is the PR base
+
+
+def test_a_diverged_local_tree_compares_at_the_fork_point_not_moved_main(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A local tree cut from a branch that diverged from main (a release
+    # branch) must not compare its baseline with main's moved tip: baseline
+    # entries main deleted after the fork would read as entries this tree
+    # "gained". The merge-base with origin/main — the fork point — is the
+    # tree's base (MOR-4214).
+    monkeypatch.delenv("RIGPLANE_REALTIME_BASE_REF", raising=False)
+    monkeypatch.delenv("CI", raising=False)
+    _git(tmp_path, "init", "-q", "-b", "main")
+    baseline = tmp_path / "baseline.txt"
+    baseline.write_text("# header\na.py::test_a\nb.py::test_b\n", encoding="utf-8")
+    _git(tmp_path, "add", "baseline.txt")
+    _git(tmp_path, "commit", "-q", "-m", "fork point")
+    fork = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    _git(tmp_path, "update-ref", "refs/remotes/origin/main", "HEAD")
+    _git(tmp_path, "checkout", "-q", "-b", "release/3.3.x")
+    _git(tmp_path, "checkout", "-q", "main")
+    baseline.write_text("# header\na.py::test_a\n", encoding="utf-8")  # main shrinks
+    _git(tmp_path, "add", "baseline.txt")
+    _git(tmp_path, "commit", "-q", "-m", "main deletes an entry")
+    _git(tmp_path, "update-ref", "refs/remotes/origin/main", "HEAD")
+    _git(tmp_path, "checkout", "-q", "release/3.3.x")
+    baseline.write_text("# header\na.py::test_a\nb.py::test_b\n", encoding="utf-8")
+
+    # The moved mainline tip would flag the still-listed entry as gained.
+    assert (
+        check_baseline_does_not_grow(baseline, "origin/main", tmp_path).status == "grew"
+    )
+    assert base_revision(tmp_path) == fork
+    check = check_baseline_does_not_grow(baseline, base_revision(tmp_path), tmp_path)
+    assert check.status == "ok"
+
+
+def test_a_mainline_local_tree_keeps_comparing_with_origin_main(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("RIGPLANE_REALTIME_BASE_REF", raising=False)
+    monkeypatch.delenv("CI", raising=False)
+    _repo_with_baseline(tmp_path, "# header\n")
+    _git(tmp_path, "update-ref", "refs/remotes/origin/main", "HEAD")
+    (tmp_path / "x.txt").write_text("x", encoding="utf-8")
+    _git(tmp_path, "add", "x.txt")
+    _git(tmp_path, "commit", "-q", "-m", "work on top of main")
+    assert base_revision(tmp_path) == "origin/main"
+
+
 def test_the_baseline_reader_skips_comments_and_blank_lines(tmp_path: Path) -> None:
     path = tmp_path / "baseline.txt"
     path.write_text("# c\n\na.py::t\n  b.py::u  \n", encoding="utf-8")

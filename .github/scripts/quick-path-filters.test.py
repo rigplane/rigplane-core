@@ -26,6 +26,11 @@ VISUAL_YML = ROOT / ".github" / "workflows" / "visual.yml"
 QUICK_WORKER = ROOT / ".github" / "scripts" / "quick-v2-worker-v1.sh"
 DOC_CITATION_YML = ROOT / ".github" / "workflows" / "doc-citation-gate.yml"
 REBRAND_YML = ROOT / ".github" / "workflows" / "rebrand-gate.yml"
+CONSUMER_CONTRACTS_YML = ROOT / ".github" / "workflows" / "consumer-contracts-gate.yml"
+STATE_TYPES_YML = ROOT / ".github" / "workflows" / "state-types-gate.yml"
+QUICK_V2_YML = ROOT / ".github" / "workflows" / "quick-v2.yml"
+GATE_V2_YML = ROOT / ".github" / "workflows" / "agent-review-gate-v2.yml"
+GATE_YML = ROOT / ".github" / "workflows" / "agent-review-gate.yml"
 BASE_GATES_TEST = ROOT / ".github" / "scripts" / "base-controlled-gates-v1.test.js"
 
 
@@ -508,17 +513,17 @@ new AsyncFunction('github', 'context', 'core', script)(github, context, core)
         # pull-request runs on the build pool; pull-request runs keep it.
         worker_runs_on = (
             "    runs-on: ${{ github.event_name == 'merge_group' && "
-            "fromJSON('[\"self-hosted\", \"Linux\", \"queue\"]') || "
-            "fromJSON('[\"self-hosted\", \"Linux\", \"build\"]') }}\n"
+            'fromJSON(\'["self-hosted", "Linux", "queue"]\') || '
+            'fromJSON(\'["self-hosted", "Linux", "build"]\') }}\n'
         )
         e2e_runs_on = (
             "    runs-on: ${{ github.event_name == 'merge_group' && "
             "(matrix.group == 'visual' && "
-            "fromJSON('[\"self-hosted\", \"Linux\", \"ARM64\", \"queue-arm64\"]') || "
-            "fromJSON('[\"self-hosted\", \"Linux\", \"queue\"]')) || "
+            'fromJSON(\'["self-hosted", "Linux", "ARM64", "queue-arm64"]\') || '
+            'fromJSON(\'["self-hosted", "Linux", "queue"]\')) || '
             "(matrix.group == 'visual' && "
-            "fromJSON('[\"self-hosted\", \"Linux\", \"ARM64\", \"build\"]') || "
-            "fromJSON('[\"self-hosted\", \"Linux\", \"build\"]')) }}\n"
+            'fromJSON(\'["self-hosted", "Linux", "ARM64", "build"]\') || '
+            'fromJSON(\'["self-hosted", "Linux", "build"]\')) }}\n'
         )
         pools = {
             "quick-frontend": worker_runs_on,
@@ -994,11 +999,79 @@ new AsyncFunction('github', 'context', 'core', script)(github, context, core)
 
         self.assertNotIn("paths:", on_block)
         self.assertNotIn("paths-ignore:", on_block)
-        self.assertIn("\n  pull_request:\n    branches: [main]\n", on_block)
+        self.assertIn(
+            "\n  pull_request:\n    branches: [main, 'release/**']\n", on_block
+        )
         self.assertIn("\n  merge_group:\n    types: [checks_requested]\n", on_block)
         self.assertIn("\n  workflow_call:\n", on_block)
         self.assertNotIn("\n  push:", on_block)
         self.assertIn("\n  grep-gate:\n", rebrand)
+
+    def test_cheap_pr_checks_run_for_release_branch_pull_requests(self) -> None:
+        # MOR-4214: code reached release/3.3.x unchecked because the cheap
+        # gates only triggered for base main. quick and the fast
+        # lint/format/snapshot gates now also accept release/<major>.<minor>.x
+        # bases (release branches merge without a queue, so their PRs saw no
+        # checks at all). No new per-branch cases: the glob is the only
+        # branch-specific thing, and what runs on main is unchanged.
+        release_pr = "\n  pull_request:\n    branches: [main, 'release/**']\n"
+        for path in (
+            QUICK_YML,
+            REBRAND_YML,
+            CONSUMER_CONTRACTS_YML,
+            DOC_CITATION_YML,
+            STATE_TYPES_YML,
+        ):
+            with self.subTest(workflow=path.name):
+                self.assertIn(release_pr, path.read_text(encoding="utf-8"))
+
+        # The heavy and trusted-token workflows stay main-only. visual.yml is
+        # a self-hosted ARM64 pixel-diff build job; docs-only-quick.yml
+        # publishes the required `quick` context, which no unprotected
+        # release branch requires; the two v2 observers are never required
+        # checks (docs/internals/base-controlled-required-gates.md: their
+        # observation domain is live main), so no gate needs them to finish
+        # on a release PR.
+        for path, trigger in (
+            (VISUAL_YML, "\n  pull_request:\n"),
+            (DOCS_QUICK_YML, "\n  pull_request_target:\n"),
+            (QUICK_V2_YML, "\n  pull_request_target:\n"),
+            (GATE_V2_YML, "\n  pull_request_target:\n"),
+        ):
+            text = path.read_text(encoding="utf-8")
+            with self.subTest(workflow=path.name, main_only=True):
+                self.assertIn(f"{trigger}    branches: [main]\n", text)
+                self.assertNotIn("release/**", text)
+
+        # The required review gate has no branch filter at all, so it already
+        # evaluates directives on a release-branch pull request.
+        gate = GATE_YML.read_text(encoding="utf-8")
+        self.assertIn("\n  pull_request:\n", gate)
+        self.assertNotIn("\n    branches:", gate)
+
+        # quick.yml's merge_group trigger (main's merge queue) is untouched,
+        # and its diff base is the event's own base branch, so a release PR
+        # is classified against release/<major>.<minor>.x, not main.
+        quick = QUICK_YML.read_text(encoding="utf-8")
+        self.assertIn("\n  merge_group:\n    types: [checks_requested]\n", quick)
+        self.assertIn(
+            "QUICK_BASE_SHA: ${{ github.event.pull_request.base.sha"
+            " || github.event.merge_group.base_sha || github.event.before }}",
+            quick,
+        )
+        # The citation/link baselines shrink against the merge base of the
+        # event's own base and head SHAs, never against main.
+        citation = DOC_CITATION_YML.read_text(encoding="utf-8")
+        self.assertIn(
+            "BASE_SHA: ${{ github.event_name == 'pull_request'"
+            " && github.event.pull_request.base.sha || github.event.before }}",
+            citation,
+        )
+        self.assertIn(
+            "HEAD_SHA: ${{ github.event_name == 'pull_request'"
+            " && github.event.pull_request.head.sha || github.sha }}",
+            citation,
+        )
 
     def test_rebrand_gate_merge_queue_checkout_recovery_contract(self) -> None:
         # merge_group run 43649024650: hung checkout + short job timeout ejected a
@@ -1040,6 +1113,7 @@ new AsyncFunction('github', 'context', 'core', script)(github, context, core)
             full,
         )
         self.assertNotIn("cancel-in-progress", full[full.index("rebrand-gate:") :])
+
 
 if __name__ == "__main__":
     unittest.main()

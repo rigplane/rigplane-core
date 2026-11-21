@@ -10,8 +10,11 @@ name: Consumer contracts gate
 # staleness-gate pattern.
 
 on:
+  # MOR-4214: also runs for pull requests into release/<major>.<minor>.x
+  # (runs from the PR's merge into its base branch, so the release branch
+  # must carry this file; see quick.yml).
   pull_request:
-    branches: [main]
+    branches: [main, 'release/**']
     paths:
       - "src/rigplane/web/server.py"
       - "src/rigplane/web/discovery.py"
