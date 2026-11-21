@@ -18,8 +18,15 @@ from pathlib import Path
 
 import pytest
 
+from rigplane.audio.route import (
+    DataModePolicy,
+    RxAudioSource,
+    TxAudioSource,
+    resolve_audio_route,
+)
 from rigplane.backends.ic705.serial import XieguSerialRadio
 from rigplane.backends.ic7300.serial import Ic7300SerialRadio
+from rigplane.backends.rigctld_client.radio import RigctldClientRadio
 from rigplane.core.radio_state import RadioState
 from rigplane.core.radio_transport import RadioTransport, control_transport_of
 from rigplane.core.state_store import StateStore
@@ -291,6 +298,167 @@ class TestRuntimeCapabilitiesTransportGate:
             capabilities = {"tx", "meters"}
 
         assert runtime_capabilities(_NoProfile()) == {"tx", "meters"}
+
+
+# ── One derivation: the audio route consumes it, never re-classifies ─
+
+
+class TestAudioRouteTransportConsistency:
+    """``resolve_audio_route`` reports the shared transport, not its own.
+
+    Codex round-one P1: the resolver kept a private backend-ID → transport
+    classification that disagreed with ``control_transport_of`` — a rigctld
+    link read ``UNKNOWN`` here while every other consumer said ``REMOTE``,
+    and ``/api/v1/info`` publishes the disagreement through
+    ``audioRoute``.  The control transport now comes from the one shared
+    derivation; this resolver owns only the audio-source consequences.
+    """
+
+    def test_lan_backend(self):
+        radio = IcomRadio(host="192.0.2.1", model="G7250")
+        route = resolve_audio_route(radio)
+        assert route.radio_transport is control_transport_of(radio)
+        assert route.radio_transport is RadioTransport.LAN
+        assert route.tx_audio_source is TxAudioSource.LAN
+        assert route.rx_audio_source is RxAudioSource.LAN
+
+    def test_serial_backend(self):
+        radio = XieguSerialRadio(device="/dev/null", model="G7250")
+        route = resolve_audio_route(radio)
+        assert route.radio_transport is control_transport_of(radio)
+        assert route.radio_transport is RadioTransport.SERIAL
+        assert route.tx_audio_source is TxAudioSource.USB
+        assert route.rx_audio_source is RxAudioSource.USB
+        assert route.data_mode_policy is DataModePolicy.DATA1_USB
+        assert route.bridge_required is True
+
+    def test_rigctld_backend_reports_remote_not_unknown(self):
+        # The P1 case: rigctld used to fall into this resolver's UNKNOWN
+        # arm while every other transport consumer said REMOTE.  The audio
+        # sources stay unavailable (the daemon carries no radio audio), so
+        # only the transport field joins the one derivation.
+        radio = RigctldClientRadio(host="127.0.0.1")
+        route = resolve_audio_route(radio)
+        assert route.radio_transport is control_transport_of(radio)
+        assert route.radio_transport is RadioTransport.REMOTE
+        assert route.tx_audio_source is TxAudioSource.UNAVAILABLE
+        assert route.rx_audio_source is RxAudioSource.UNAVAILABLE
+        assert route.data_mode_policy is DataModePolicy.LEGACY
+        assert route.bridge_required is False
+# ── Pacing: poller, startup gate, initial-state sweep ────────────────
+
+
+class TestPollerPacing:
+    def test_serial_backend_gets_serial_budget(self):
+        radio = XieguSerialRadio(device="/dev/null", model="G7250")
+        poller = RadioPoller(radio, CommandQueue())
+        assert poller._is_serial is True
+        assert poller._gap == _GAP_SERIAL
+        assert poller._fast_interval == _FAST_INTERVAL_SERIAL
+
+    def test_lan_backend_gets_lan_budget_even_for_has_lan_false_profile(self):
+        # The transport of the connection beats the profile's has_lan in
+        # both directions: an IC-7300 profile (has_lan = false) driven over
+        # LAN takes the LAN budget.
+        radio = IcomRadio(host="192.0.2.1", model="IC-7300")
+        poller = RadioPoller(radio, CommandQueue())
+        assert poller._is_serial is False
+        assert poller._gap == _GAP
+        assert poller._fast_interval == _FAST_INTERVAL
+
+    def test_usb_connected_lan_capable_radio_gets_serial_budget(self):
+        # The ticket's case: a USB-connected IC-705/7610/7300MK2 has
+        # has_lan = true in its profile but is a serial link and must be
+        # serial-paced.
+        radio = Ic7300SerialRadio(device="/dev/null", model="IC-7610")
+        poller = RadioPoller(radio, CommandQueue())
+        assert radio.profile.has_lan is True
+        assert poller._is_serial is True
+
+    def test_backend_without_transport_keeps_legacy_has_lan_answer(self):
+        class _BareRadio:
+            # No backend_id, no profile attribute routing: poller resolves
+            # the profile from the model.
+            model = "IC-7300"
+            capabilities = set()
+
+        poller = RadioPoller(_BareRadio(), CommandQueue())
+        # IC-7300 profile has_lan = false → serial, exactly as before.
+        assert poller._is_serial is True
+
+
+class _GapProbeRadio:
+    """Minimal stand-in exposing what the pacing consumers read."""
+
+    _INITIAL_STATE_GAP_LAN = 0.222
+    _INITIAL_STATE_GAP_SERIAL = 0.111
+
+    def __init__(self, profile, backend_id):
+        self._profile = profile
+        self.backend_id = backend_id
+        self._state_store = StateStore()
+        self.radio_state = RadioState()
+        self._initial_state_fetched = False
+
+    async def send_civ(self, *args, **kwargs):
+        raise RuntimeError("no radio connected")
+
+
+def _record_sleep(monkeypatch, sleeps: list) -> None:
+    """Patch ``asyncio.sleep`` (as radio_initial_state sees it) to record."""
+
+    async def _fake_sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    monkeypatch.setattr(radio_initial_state.asyncio, "sleep", _fake_sleep)
+
+
+class TestStartupGap:
+    def test_usb_link_serial_paced_despite_has_lan_profile(self):
+        # The ticket's scenario: profile.has_lan is true (the radio model
+        # offers LAN), but the actual connection is serial.
+        radio = _GapProbeRadio(get_radio_profile(G7250), "icom_serial")
+        assert radio._profile.has_lan is True
+        assert _startup_gap_seconds(radio) == 0.111
+
+    def test_lan_link_lan_paced(self):
+        radio = _GapProbeRadio(get_radio_profile(G7250), "rigplane")
+        assert _startup_gap_seconds(radio) == 0.222
+
+    def test_no_backend_falls_back_to_has_lan(self):
+        radio = _GapProbeRadio(get_radio_profile(G7250), None)
+        assert _startup_gap_seconds(radio) == 0.222
+        radio_no_lan = _GapProbeRadio(get_radio_profile("icom_ic7300"), None)
+        assert radio_no_lan._profile.has_lan is False
+        assert _startup_gap_seconds(radio_no_lan) == 0.111
+
+
+class TestInitialStateGap:
+    @pytest.mark.asyncio
+    async def test_serial_transport_uses_serial_gap(self, monkeypatch):
+        radio = _GapProbeRadio(get_radio_profile(G7250), "icom_serial")
+        sleeps = []
+        _record_sleep(monkeypatch, sleeps)
+        await fetch_initial_state(radio)
+        assert radio._initial_state_fetched is True
+        assert sleeps, "the sweep should sleep between queries"
+        assert set(sleeps) == {0.111}
+
+    @pytest.mark.asyncio
+    async def test_lan_transport_uses_lan_gap(self, monkeypatch):
+        radio = _GapProbeRadio(get_radio_profile(G7250), "rigplane")
+        sleeps = []
+        _record_sleep(monkeypatch, sleeps)
+        await fetch_initial_state(radio)
+        assert set(sleeps) == {0.222}
+
+    @pytest.mark.asyncio
+    async def test_unknown_transport_falls_back_to_has_lan(self, monkeypatch):
+        radio = _GapProbeRadio(get_radio_profile(G7250), None)
+        sleeps = []
+        _record_sleep(monkeypatch, sleeps)
+        await fetch_initial_state(radio)
+        assert set(sleeps) == {0.222}
 
 
 # ── Pacing: poller, startup gate, initial-state sweep ────────────────

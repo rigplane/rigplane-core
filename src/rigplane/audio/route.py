@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 
 from rigplane.core.radio_transport import (
     RadioTransport,  # noqa: F401  (re-export — canonical home, MOR-4437)
+    control_transport_of,
 )
 from rigplane.types import AudioCodec, get_audio_capabilities
 
@@ -290,10 +291,21 @@ def resolve_lan_audio_stream_request(
 
 
 def resolve_audio_route(radio: "Radio") -> AudioRoute:
-    """Resolve the active radio audio route without looking at CLI bridge flags."""
+    """Resolve the active radio audio route without looking at CLI bridge flags.
 
-    backend_id = getattr(radio, "backend_id", None)
-    if backend_id == "rigplane":
+    One transport derivation (MOR-4437): the control transport comes from
+    ``control_transport_of`` — this resolver must not re-classify backend
+    IDs on its own, or the audio route disagrees with every other
+    transport consumer (a ``rigctld`` link used to read ``UNKNOWN`` here
+    while the rest of the server said ``REMOTE``).  What this resolver
+    owns is the audio-source consequence of the transport: which side TX/RX
+    audio enters or leaves the radio on that link, and the WSJT-X DATA
+    policy that follows from it.
+    """
+
+    transport = control_transport_of(radio)
+
+    if transport is RadioTransport.LAN:
         profile = getattr(radio, "profile", None)
         inputs = getattr(profile, "data_mode_inputs", None) or ()
         supports_command = getattr(radio, "supports_command", None)
@@ -310,7 +322,7 @@ def resolve_audio_route(radio: "Radio") -> AudioRoute:
         ):
             data_policy = DataModePolicy.DATA1_LAN
         return AudioRoute(
-            radio_transport=RadioTransport.LAN,
+            radio_transport=transport,
             tx_audio_source=TxAudioSource.LAN,
             rx_audio_source=RxAudioSource.LAN,
             data_mode_policy=data_policy,
@@ -318,11 +330,11 @@ def resolve_audio_route(radio: "Radio") -> AudioRoute:
         )
 
     if (
-        backend_id in {"icom_serial", "yaesu_cat"}
+        transport is RadioTransport.SERIAL
         or getattr(radio, "has_usb_audio", False) is True
     ):
         return AudioRoute(
-            radio_transport=RadioTransport.SERIAL,
+            radio_transport=transport,
             tx_audio_source=TxAudioSource.USB,
             rx_audio_source=RxAudioSource.USB,
             data_mode_policy=DataModePolicy.DATA1_USB,
@@ -330,7 +342,7 @@ def resolve_audio_route(radio: "Radio") -> AudioRoute:
         )
 
     return AudioRoute(
-        radio_transport=RadioTransport.UNKNOWN,
+        radio_transport=transport,
         tx_audio_source=TxAudioSource.UNAVAILABLE,
         rx_audio_source=RxAudioSource.UNAVAILABLE,
         data_mode_policy=DataModePolicy.LEGACY,
