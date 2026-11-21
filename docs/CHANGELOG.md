@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.3.0rc1] — 2026-11-21
+
+This is the first release candidate of 3.3.0. It contains everything merged to main after 3.2.0 (up to #4694 and #4687).
+
 ### Added
 
 - `rigplane station` accepts `--webrtc` and `--webrtc-include-vpn`, with the same meaning as on `web` (one shared flag definition), so a supervisor can start a managed station that answers WebRTC offers on its loopback listener. (MOR-4584)
@@ -5355,7 +5359,8 @@ These deprecation closures were announced in v0.19 and dropped on schedule.
 - Transport layer, authentication, CI-V commands, meters, PTT, keep-alive.
 - Clean-room Icom LAN UDP protocol implementation.
 
-[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.2.0rc11...HEAD
+[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.3.0rc1...HEAD
+[3.3.0rc1]: https://github.com/rigplane/rigplane-core/compare/v3.2.3...v3.3.0rc1
 [3.2.0rc11]: https://github.com/rigplane/rigplane-core/compare/v3.2.0rc10...v3.2.0rc11
 [3.2.0rc10]: https://github.com/rigplane/rigplane-core/compare/v3.2.0rc9...v3.2.0rc10
 [3.2.0rc9]: https://github.com/rigplane/rigplane-core/compare/v3.2.0rc8...v3.2.0rc9
