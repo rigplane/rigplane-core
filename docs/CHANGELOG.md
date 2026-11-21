@@ -13,12 +13,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [3.3.0rc5] — 2026-11-21
 
-Fifth release candidate of 3.3.0: v3.3.0rc4 plus the two fixes below.
+Fifth release candidate of 3.3.0: v3.3.0rc4 plus the changes below. The command-ACK ordering change prepared for this candidate (#4739) was reverted before tagging (#4746).
+
+### Changed
+
+- Remote sessions through RigPlane Tower use press-to-talk: the controller document advertises `ptt_style` (`latch` locally and on paired LAN, `momentary` on the remote data channel), the TX button reads "Hold to talk" before use on a remote connection, and a refused latched start explains why instead of failing silently; a missing microphone gets its own message. (MOR-4587, #4744, #4750)
 
 ### Fixed
 
 - rigctld no longer refuses live split reads (`s`, `i`, `x`) with `RPRT -5` while the stale-state gate is active: the gate now decides by the command table's radio-access metadata, so reads that ask the radio proceed. (#4740)
-- The web UI no longer confirms a same-value command early: a command's acknowledgement and the state baseline now go out through one ordered sender, so a held observation cannot overtake the ACK; a failed outbound send cancels its handler. (#4739)
+- A client whose connection stops taking data can no longer delay a PTT key-up behind its own acknowledgement: direct control writes are bounded, and a client that makes no outbound progress for 3 s is disconnected through the normal cleanup. (MOR-4648, #4749)
+
+### Known issues
+
+- The web UI may show a command that sets a value equal to the current one as confirmed slightly early; the radio state is correct. A fix is planned for 3.3.1. (#4679)
 
 ## [3.3.0rc4] — 2026-11-21
 
