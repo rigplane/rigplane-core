@@ -2168,5 +2168,11 @@ export function makeRepeaterHandlers() {
         dispatchRadioIntent({ name: 'set_tone_freq', params: { freq: freqHz, receiver } });
       }
     },
+    onOffsetChange(offsetHz: number, receiver: Receiver): void {
+      dispatchRadioIntent({
+        name: 'set_repeater_offset',
+        params: { offset_hz: offsetHz, receiver },
+      });
+    },
   });
 }

@@ -8,9 +8,9 @@
 # require review. Not manual completeness or execution evidence.
 # Regenerate, do not hand-edit.
 census	civ_profiles	9
-census	distinct_gap_keys	155
-census	profile_key_gaps	500
-census	public_builders	246
+census	distinct_gap_keys	157
+census	profile_key_gaps	512
+census	public_builders	248
 gap	get_acc1_mod_level	G7250,X6100,X6200
 gap	get_af_mute	G7250,IC-7300,IC-7300MK2,X6100,X6200
 gap	get_agc_time_constant	G7250,X6100,X6200
@@ -34,6 +34,7 @@ gap	get_digisel_shift	G7250,IC-7300,IC-7300MK2,X6100,X6200
 gap	get_drive_gain	G7250,IC-7300,IC-7300MK2,X6100,X6200
 gap	get_dual_watch	G7250,IC-7300,IC-7300MK2,X6100,X6200
 gap	get_filter_shape	G7250,X6100,X6200
+gap	get_freq_offset	G7250,IC-7300,IC-7300MK2,IC-7610,X6100,X6200
 gap	get_id_meter	X6100,X6200
 gap	get_ip_plus	G7250,X6100,X6200
 gap	get_lan_mod_level	G7250,IC-7300,X6100,X6200
@@ -127,6 +128,7 @@ gap	set_dual_watch_off	G7250,IC-7300,IC-7300MK2,X6100,X6200
 gap	set_dual_watch_on	G7250,IC-7300,IC-7300MK2,X6100,X6200
 gap	set_filter_shape	G7250,X6100,X6200
 gap	set_filter_width	G7250,X6100,X6200
+gap	set_freq_offset	G7250,IC-7300,IC-7300MK2,IC-7610,X6100,X6200
 gap	set_ip_plus	G7250,X6100,X6200
 gap	set_lan_mod_level	G7250,IC-7300,X6100,X6200
 gap	set_main_sub_tracking	G7250,IC-7300,IC-7300MK2,X6100,X6200

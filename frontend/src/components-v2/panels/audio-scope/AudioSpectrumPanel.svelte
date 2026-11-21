@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { audioScopeFactsRevision, audioScopeProjection } from '$lib/runtime/adapters/scope-adapter';
+  import { audioScopeFactsRevision, audioScopePassbandView, audioScopeProjection } from '$lib/runtime/adapters/scope-adapter';
   import { scopeSubscriptionSurface } from '$lib/runtime/scope-view';
   import { presentationResources, runtime } from '$lib/runtime/frontend-runtime';
   import { deriveAudioSpectrumProps } from '$lib/runtime/adapters/panel-adapters';
@@ -16,6 +16,11 @@
   let fftProjection = $derived(audioScopeProjection(fftGeometry, runtime.state));
   let fftBandwidth = $state(48000);
   let fftPush: ((data: Uint8Array | null) => void) | null = null;
+  // MOR-4604: subscribe to the RF window the panel actually draws (the audio
+  // passband plus a small margin) so the hub's no-upsample grant delivers
+  // native FFT bins; while the passband facts are unobserved the helper keeps
+  // the full-band follow view.
+  let audioView = $derived(audioScopePassbandView(runtime.state, runtime.caps));
   // MOR-4271: the canvas surface (IntersectionObserver ∧ !document.hidden)
   // is the one visibility mechanism; the panel gates its demand lease and
   // its streaming attribute on the facts the canvas reports.
@@ -58,7 +63,7 @@
 
 <div class="audio-spectrum-panel" data-streaming={visible} use:scopeSubscriptionSurface={{
   stream: runtime.scope.stream('audio_fft'), receiver: null, facts: surfaceFacts,
-  view: { follow: 'vfo', spanHz: 48000 }, revision: audioScopeFactsRevision(runtime.state, runtime.caps),
+  view: audioView, revision: audioScopeFactsRevision(runtime.state, runtime.caps),
 }}>
   <AudioSpectrumCanvas
     projection={fftProjection}

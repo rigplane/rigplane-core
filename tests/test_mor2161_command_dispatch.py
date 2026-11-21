@@ -611,6 +611,7 @@ def test_descriptor_is_the_only_migrated_name_source() -> None:
 
     assert set(command_descriptors()) == {
         "set_repeater_shift",
+        "set_repeater_offset",
         "set_af_level",
         "set_rf_gain",
         "set_squelch",

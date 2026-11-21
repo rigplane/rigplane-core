@@ -240,6 +240,14 @@ class FreqRangeInfo:
     #: strip on a receiver's own frequency falling inside a flagged range;
     #: no band name or frequency lives in code.
     repeater: bool = False
+    #: Maximum duplex offset magnitude in Hz declared for this repeater range
+    #: (MOR-3624). Profile data, not a code constant: the guides' 3-byte BCD
+    #: offset carries a 10 MHz digit valid on a 1.2 GHz band only, so every
+    #: other band's maximum is one digit lower. Input validation for
+    #: ``set_repeater_offset`` uses the largest declared value
+    #: (``RadioProfile.repeater_offset_max_hz``); the tuned band itself is
+    #: the radio's own refusal (owner guard rule 2026-10-30).
+    max_repeater_offset_hz: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1076,6 +1084,26 @@ class RadioProfile:
             return None
         table = rule.narrow_table if narrow and rule.narrow_table else rule.table
         return table[hz_to_table_index(width_hz, table=table)]
+
+    @property
+    def repeater_offset_max_hz(self) -> int | None:
+        """Largest duplex offset (Hz) the profile declares (MOR-3624).
+
+        The maximum ``max_repeater_offset_hz`` over the repeater-flagged
+        frequency ranges — the 10 MHz BCD digit is valid on a 1.2 GHz band
+        only, so a radio with such a band declares a higher ceiling — or
+        ``None`` when no repeater range declares one. This is the
+        input-validation ceiling for ``set_repeater_offset``; which band
+        the tuned frequency sits in, and where TX lands, are the radio's
+        own refusal (owner guard rule 2026-10-30). Pinned by
+        tests/test_mor3624_repeater_offset.py.
+        """
+        maxima = [
+            rng.max_repeater_offset_hz
+            for rng in self.freq_ranges
+            if rng.repeater and rng.max_repeater_offset_hz is not None
+        ]
+        return max(maxima) if maxima else None
 
 
 # ── TOML-driven profile registry ──────────────────────────────────

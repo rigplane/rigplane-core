@@ -5,6 +5,12 @@
  * commands through the real `makeRepeaterHandlers` into a mocked
  * `sendCommand`.
  *
+ * MOR-3624 offset cases share `fixtures/mor3624-repeater-offset.seam.json`
+ * with the Python replay (`tests/test_mor3624_repeater_offset_api.py`),
+ * which drives the same documents through the production stack and fails
+ * on drift — the request payloads below come from that file, never
+ * hand-written.
+ *
  * Isolated pool by name (`*.component.test.ts`), per the MOR-1272 doctrine.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -102,6 +108,7 @@ import { resetRadioState, setRadioState } from '$lib/stores/radio.svelte';
 import { setCapabilities } from '$lib/stores/capabilities.svelte';
 import { setLocale } from '$lib/i18n/store.svelte';
 import HostedRadioLayoutFixture from '../../layout/__tests__/fixtures/HostedRadioLayoutFixture.svelte';
+import seam from './fixtures/mor3624-repeater-offset.seam.json';
 import { desktopV2Layout } from '../../../presentation/layouts/declarations';
 import { readWorkspace } from '../../../presentation/workspace/contract';
 import { resolveSurfacePlan, SURFACE_PLAN_CONTEXT_KEY } from '../../../presentation/workspace/resolution';
@@ -115,17 +122,19 @@ const unread = {
   storePath: 'x', observed: false, freshness: 'unknown', availability: 'missing',
 } as const;
 
-/** One receiver's repeater registers: tone/tsql booleans, CTCSS centiHz and
- *  the wire shift (0 simplex / 1 plus / 2 minus / 3 ARS). */
-interface Repeater { tone: boolean; tsql: boolean; toneFreq: number; shift: number }
-const OFF: Repeater = { tone: false, tsql: false, toneFreq: 7190, shift: 0 };
-const REPEATER_LEAVES = ['repeaterTone', 'repeaterTsql', 'toneFreq', 'repeaterShift'] as const;
+/** One receiver's repeater registers: tone/tsql booleans, CTCSS centiHz,
+ *  the wire shift (0 simplex / 1 plus / 2 minus / 3 ARS) and the duplex
+ *  offset in Hz (MOR-3624). */
+interface Repeater { tone: boolean; tsql: boolean; toneFreq: number; shift: number; offsetHz: number }
+const OFF: Repeater = { tone: false, tsql: false, toneFreq: 7190, shift: 0, offsetHz: 0 };
+const REPEATER_LEAVES = ['repeaterTone', 'repeaterTsql', 'toneFreq', 'repeaterShift', 'repeaterOffsetHz'] as const;
 
 const slot = (freqHz: number, mode: string) => ({ freqHz, mode, filterNum: 1, dataMode: 0 });
 const receiver = (hz: number, rep: Repeater) => ({
   ...slot(hz, 'FM'), vfoA: slot(hz, 'FM'), vfoB: slot(hz + 50_000, 'FM'), activeSlot: 'A',
   filter: 1, sMeter: 0, att: 0, preamp: 0, nb: false, nr: false, afLevel: 0, rfGain: 0, squelch: 0,
   repeaterTone: rep.tone, repeaterTsql: rep.tsql, toneFreq: rep.toneFreq, repeaterShift: rep.shift,
+  repeaterOffsetHz: rep.offsetHz,
 });
 
 function dualState(options: {
@@ -195,7 +204,7 @@ function ic705State(): ServerState {
   for (const leaf of REPEATER_LEAVES) fieldStatus[`main.${leaf}`] = fresh;
   return {
     active: 'MAIN',
-    main: { freqHz: 145_500_000, mode: 'FM', repeaterTone: true, repeaterTsql: false, toneFreq: 8850, repeaterShift: 0 },
+    main: { freqHz: 145_500_000, mode: 'FM', repeaterTone: true, repeaterTsql: false, toneFreq: 8850, repeaterShift: 0, repeaterOffsetHz: 0 },
     fieldStatus,
   } as unknown as ServerState;
 }
@@ -388,6 +397,50 @@ describe('the CTCSS stepper (B4)', () => {
     expect(q('[data-testid="repeater-tone-freq-value"]')!.textContent).toBe('71.9');
     press(up);
     expect(commands()).toEqual([]);
+  });
+});
+
+describe('the duplex offset stepper (MOR-3624)', () => {
+  const offsetUse = (offsetHz: number) => use(
+    dualState({ mainHz: 14_250_000, subHz: 144_700_000, sub: { ...OFF, offsetHz } }),
+    dualCaps(['repeater_tone', 'tsql', 'repeater_shift', 'repeater_offset']),
+  );
+
+  it('renders the exact Hz offset and writes set_repeater_offset in 100 kHz steps', () => {
+    offsetUse(seam.offsetsHz.confirmed);
+    renderHosted();
+    expect(q('[data-testid="repeater-offset-value"]')!.textContent).toBe('0.6M');
+    press(key('repeater-offset-up')!);
+    expect(commands()).toEqual([{ name: seam.command.name, params: { ...seam.command.params, receiver: 1 } }]);
+  });
+
+  it('accumulates two increases from the pending target before any readback', () => {
+    offsetUse(seam.offsetsHz.confirmed);
+    renderHosted();
+    press(key('repeater-offset-up')!);
+    press(key('repeater-offset-up')!);
+    expect(commands()).toEqual([
+      { name: 'set_repeater_offset', params: { offset_hz: seam.offsetsHz.plusOne, receiver: 1 } },
+      { name: 'set_repeater_offset', params: { offset_hz: seam.offsetsHz.plusTwo, receiver: 1 } },
+    ]);
+  });
+
+  it('an increase followed by a decrease returns to the confirmed offset', () => {
+    offsetUse(seam.offsetsHz.confirmed);
+    renderHosted();
+    press(key('repeater-offset-up')!);
+    press(key('repeater-offset-down')!);
+    expect(commands()).toEqual([
+      { name: 'set_repeater_offset', params: { offset_hz: seam.offsetsHz.plusOne, receiver: 1 } },
+      { name: 'set_repeater_offset', params: { offset_hz: seam.offsetsHz.confirmed, receiver: 1 } },
+    ]);
+  });
+
+  it('draws no stepper without the repeater_offset tag', () => {
+    use(dualState({ mainHz: 14_250_000, subHz: 144_700_000, sub: { ...OFF, offsetHz: 600_000 } }), dualCaps());
+    renderHosted();
+    expect(key('repeater-offset-up')).toBeNull();
+    expect(key('repeater-offset-down')).toBeNull();
   });
 });
 

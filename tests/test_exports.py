@@ -127,7 +127,11 @@ def test_public_api_surface() -> None:
         "ApiFrameError",
         "ApiMessageType",
         "ApiRequestHead",
+        "ApiResponseHead",
+        "ApiErrorFrame",
+        "ApiPayloadError",
         "api_request_messages",
+        "parse_api_server_frame",
         "API_SEND_HIGH_WATER_BYTES",
     }
     assert set(rigplane.__all__) == expected_public

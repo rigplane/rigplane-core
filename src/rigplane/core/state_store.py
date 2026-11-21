@@ -278,6 +278,7 @@ class StateStore:
         "_history_floor_state_revision",
         "_max_history_count",
         "_observation_seq",
+        "_observation_subscribers",
         "_ordered_paths",
         "_projected_fields",
         "_provider_generation_notifications",
@@ -303,6 +304,7 @@ class StateStore:
         self._observation_seq = 0
         self._provider_generation = 0
         self._provider_generation_subscribers: list[Callable[[int], None]] = []
+        self._observation_subscribers: list[Callable[[Observation], None]] = []
         self._provider_generation_notifications: deque[
             tuple[int, tuple[Callable[[int], None], ...]]
         ] = deque()
@@ -381,6 +383,25 @@ class StateStore:
                 item
                 for item in self._provider_generation_subscribers
                 if item is not subscriber
+            ]
+
+        return unsubscribe
+
+    def subscribe_observations(
+        self, subscriber: Callable[[Observation], None]
+    ) -> Callable[[], None]:
+        """Subscribe to every observation the store accepts, changed or not.
+
+        Called synchronously from ``apply`` before any broadcast throttling, so
+        a consumer sees each accepted sample. A failing subscriber is logged
+        and never disturbs the store.
+        """
+
+        self._observation_subscribers.append(subscriber)
+
+        def unsubscribe() -> None:
+            self._observation_subscribers[:] = [
+                item for item in self._observation_subscribers if item is not subscriber
             ]
 
         return unsubscribe
@@ -474,6 +495,11 @@ class StateStore:
             freshness=() if freshness_transition is None else (freshness_transition,),
             reconciliation_requests=(),
         )
+        for subscriber in tuple(self._observation_subscribers):
+            try:
+                subscriber(observation)
+            except Exception:
+                logger.warning("observation subscriber failed", exc_info=True)
         return changeset
 
     def configure_relative_vfo_retention(

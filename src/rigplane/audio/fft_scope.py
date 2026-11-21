@@ -86,11 +86,19 @@ class AudioFftScope:
         window: str = "hann",
         avg_count: int = 4,
         sample_rate: int = 48000,
+        hop_size: int | None = None,
     ) -> None:
         np = _import_numpy()
         self._np = np
 
         self._fft_size = fft_size
+        # Samples between window starts (MOR-4604): the window size (windows
+        # tile, the default) or less, so a long high-resolution window
+        # overlaps the next one and keeps the frame rate instead of dropping
+        # to sample_rate / fft_size.
+        self._hop_size = (
+            fft_size if hop_size is None else max(1, min(fft_size, hop_size))
+        )
         self._fps = max(1, fps)
         self._avg_count = max(1, avg_count)
         self._sample_rate = sample_rate
@@ -210,17 +218,14 @@ class AudioFftScope:
         # Append to accumulation buffer
         self._buf = np.concatenate([self._buf, samples])
 
-        # Process as many complete FFT windows as available
+        # Process as many complete FFT windows as available, one hop apart.
+        hop = self._hop_size
         while len(self._buf) >= self._fft_size:
             now = time.monotonic()
-            if now - self._last_frame_time < self._min_interval:
-                # Frame rate limit: skip this window
-                self._buf = self._buf[self._fft_size :]
-                continue
-
-            chunk = self._buf[: self._fft_size]
-            self._buf = self._buf[self._fft_size :]
-            self._process_chunk(chunk, now)
+            if now - self._last_frame_time >= self._min_interval:
+                self._process_chunk(self._buf[: self._fft_size], now)
+            # Frame rate limit: a window inside the interval is skipped.
+            self._buf = self._buf[hop:]
 
     def _process_chunk(self, chunk: Any, now: float) -> None:
         """Perform FFT on one window and emit a ScopeFrame."""

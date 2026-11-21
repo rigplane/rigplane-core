@@ -977,6 +977,7 @@ class RigConfig:
                 end=r["end_hz"],
                 label=r["label"],
                 repeater=r.get("repeater", False),
+                max_repeater_offset_hz=r.get("max_repeater_offset_hz"),
                 bands=tuple(
                     BandInfo(
                         name=b["name"],
@@ -3471,6 +3472,30 @@ def load_rig(path: Path) -> RigConfig:
             raise RigLoadError(
                 f"{filename}: freq_ranges.ranges[{index}].repeater must be a boolean"
             )
+        # MOR-3624: the optional per-range ``max_repeater_offset_hz`` is the
+        # band's duplex-offset ceiling as profile data (the 10 MHz BCD digit
+        # is valid on a 1.2 GHz band only). A declared value must be a
+        # positive multiple of 100 within the 3-byte BCD wire maximum, and
+        # only a repeater range may declare one.
+        if "max_repeater_offset_hz" in rng:
+            value = rng["max_repeater_offset_hz"]
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, int)
+                or value <= 0
+                or value % 100
+                or value > 99_999_900
+            ):
+                raise RigLoadError(
+                    f"{filename}: freq_ranges.ranges[{index}]"
+                    ".max_repeater_offset_hz must be a positive multiple of 100"
+                    " no greater than 99999900 (Hz)"
+                )
+            if not rng.get("repeater", False):
+                raise RigLoadError(
+                    f"{filename}: freq_ranges.ranges[{index}]"
+                    ".max_repeater_offset_hz requires repeater = true"
+                )
         for band_index, band in enumerate(rng.get("bands", ())):
             if (
                 isinstance(band, dict)
