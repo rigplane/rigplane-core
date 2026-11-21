@@ -1,3 +1,5 @@
+# TRIAL CARRIER (MOR-4214 any-build-pool trial; never merge): selects the
+# core quick route so quick-python-tests gets a natural CI run.
 """Tests for IcomRadio high-level API."""
 
 import asyncio
