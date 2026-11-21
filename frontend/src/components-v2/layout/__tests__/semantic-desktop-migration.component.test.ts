@@ -1200,6 +1200,7 @@ describe("the SDR face's centre-top pair is zone-owned (MOR-2231, batch 4)", () 
     '.left-sidebar band',
     '.right-sidebar memory',
     '.settings-modal desktop-language',
+    '.settings-modal desktop-tx-audio',
     '.settings-modal desktop-vfo-ops',
     '.settings-modal desktop-workspace',
     'content-center spectrum-panel',
@@ -1816,7 +1817,7 @@ describe('the legacy-twin suppression channel (MOR-1364, S6-pre)', () => {
       .sort();
     expect(ids).toEqual([
       'band',
-      'desktop-language', 'desktop-vfo-ops', 'desktop-workspace',
+      'desktop-language', 'desktop-tx-audio', 'desktop-vfo-ops', 'desktop-workspace',
     ]);
   });
 
@@ -1843,6 +1844,9 @@ describe('the legacy-twin suppression channel (MOR-1364, S6-pre)', () => {
       + 'tabs and 16 presets that are deliberately not facts and have no other production host. '
       + 'S8 retires only the HAM half, by a `hamBands` prop, never by unmounting the section.',
     'desktop-language': 'S10 row 8 — PERMANENT. Locale is an app preference, not a radio fact.',
+    'desktop-tx-audio': 'MOR-4596 — PERMANENT. The TX microphone processing switch is a per-browser '
+      + 'app preference, not a radio fact, so it has no surface twin. It is mounted in the Settings '
+      + 'modal only while TxPanel (its other home) is suppressed by the semantic deck.',
     'desktop-vfo-ops': 'S10 row 7 (split row) is already gated on `semanticDeck`; the section '
       + 'itself is PERMANENT because of the band tabs above (row 10).',
     'desktop-workspace': 'S10 row 9 — PERMANENT. Workspace preferences are not a radio fact.',

@@ -142,6 +142,13 @@
     "set_quick_dual_watch": null,
     "set_quick_split": null,
     "set_ref_adjust": null,
+    "set_repeater_offset": {
+      "descriptor": "set_repeater_offset",
+      "result_keys": [
+        "offset_hz",
+        "receiver"
+      ]
+    },
     "set_repeater_shift": {
       "descriptor": "set_repeater_shift",
       "result_keys": [

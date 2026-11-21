@@ -1,0 +1,10 @@
+{
+  "doc": "MOR-3624 seam document: the duplex-offset command and its wire bytes, shared by the Python replay (tests/test_mor3624_repeater_offset_api.py) and the frontend twins (semantic-repeater-wiring.component.test.ts in this directory, mor2111-repeater-conformance.isolated.test.ts and repeater-adapter.test.ts under $lib/runtime/adapters/__tests__). The Python replay builds the same documents from the production builders (rigplane.commands set_freq_offset / get_freq_offset) and drives them through the production stack (real WebServer + IcomRadio over UDP + a MockIcomRadio with an offset register); regenerate by running that module — it asserts this file against the producer-built documents and fails on drift. Offsets are exact Hz; the wire carries 3-byte BCD in 100 Hz units, little-endian digit order (IC-705 CI-V Reference Guide A7560-8EX-1 p.3).",
+  "offsetsHz": { "confirmed": 600000, "plusOne": 700000, "plusTwo": 800000 },
+  "command": { "name": "set_repeater_offset", "params": { "offset_hz": 700000, "receiver": 0 } },
+  "wire": {
+    "set0d": { "command": 13, "dataHex": "007000" },
+    "readback0c": { "command": 12, "dataHex": "007000" }
+  },
+  "publicState": { "leaf": "main.repeaterOffsetHz", "value": 700000 }
+}

@@ -265,6 +265,16 @@ export function pendingRepeaterShift(
   return typeof value === 'number' ? value : null;
 }
 
+/** Freshest unconfirmed duplex offset target (Hz) for `receiver`, or
+ *  `null` (MOR-3624, `set_repeater_offset`). */
+export function pendingRepeaterOffset(
+  commands: readonly CommandLifecycle[], readState: ReadServerState,
+  nowMs: number, superseded: SupersededPredicate, receiver: 0 | 1,
+): number | null {
+  const value = latestPendingParam(commands, readState, nowMs, superseded, 'set_repeater_offset', 'offset_hz', receiver, 'repeaterOffsetHz');
+  return typeof value === 'number' ? value : null;
+}
+
 export function pendingToneFreq(
   commands: readonly CommandLifecycle[], readState: ReadServerState,
   nowMs: number, superseded: SupersededPredicate, receiver: 0 | 1,

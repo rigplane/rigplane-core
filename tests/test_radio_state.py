@@ -261,6 +261,8 @@ def test_to_dict_main_keys() -> None:
         "tone_freq",
         "tsql_freq",
         "repeater_shift",
+        # MOR-3624 duplex offset magnitude in Hz; 0 = no offset.
+        "repeater_offset_hz",
         "manual_notch_freq",
         "manual_notch_width",
         # notch_filter (MOR-1548): reclassified receiver-scoped, matching the

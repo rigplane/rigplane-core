@@ -225,5 +225,5 @@ export function makeMemoryHandlers() {
 }
 
 export function makeRepeaterHandlers() {
-  return recorders('repeater', ['onToneModeChange', 'onShiftChange', 'onToneFreqChange'] as const);
+  return recorders('repeater', ['onToneModeChange', 'onShiftChange', 'onToneFreqChange', 'onOffsetChange'] as const);
 }
