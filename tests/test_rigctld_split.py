@@ -17,7 +17,11 @@ from rigplane.core.state_pipeline_contracts import (
     Observation,
     SourceMetadata,
 )
+from rigplane.core.state_store import FreshnessClock
 from rigplane.profiles import get_radio_profile
+import rigplane.rigctld.handler as rigctld_handler_module
+import rigplane.runtime._civ_rx as civ_rx_module
+from rigplane.testing.timing import VirtualClock
 from rigplane.types import Mode
 from test_controller_authority import Safety
 from test_rigctld_wsjtx_split_mk2 import (
@@ -28,6 +32,160 @@ from test_rigctld_wsjtx_split_mk2 import (
     _peer,
     _rf_state,
 )
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(30)
+@pytest.mark.parametrize("model", MODELS)
+@pytest.mark.parametrize(
+    ("command", "expected", "remaining"),
+    [
+        (b"s\n", b"0\n", b"VFOA\n"),
+        (b"i\n", b"7076000\n", b""),
+        (b"x\n", b"PKTLSB\n", b"1800\n"),
+    ],
+)
+async def test_stale_live_split_reads(
+    monkeypatch, virtual_clock: VirtualClock, model, command, expected, remaining
+):
+    virtual_clock.scope_to(monkeypatch, rigctld_handler_module)
+    virtual_clock.scope_to(monkeypatch, civ_rx_module)
+    monkeypatch.setattr(FreshnessClock, "now", lambda self: virtual_clock.now)
+    async with _peer(model) as (radio, peer, _server, reader, writer):
+        stale_stamp = virtual_clock.now - 30
+        radio.last_valid_frame_monotonic = stale_stamp
+        assert await _exchange(writer, reader, command) == expected
+        if remaining:
+            assert await asyncio.wait_for(reader.readline(), 2) == remaining
+        assert peer.requests
+        assert radio.last_valid_frame_monotonic == virtual_clock.now
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(30)
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [(b"s\n", b"0\n"), (b"i\n", b"RPRT -4\n"), (b"x\n", b"RPRT -4\n")],
+)
+async def test_stale_split_reads_keep_dual_receiver_capability_errors(
+    monkeypatch, virtual_clock: VirtualClock, command, expected
+):
+    virtual_clock.scope_to(monkeypatch, rigctld_handler_module)
+    virtual_clock.scope_to(monkeypatch, civ_rx_module)
+    monkeypatch.setattr(FreshnessClock, "now", lambda self: virtual_clock.now)
+    profile = replace(get_radio_profile("IC-7610"), split_tx_target="none")
+    async with _peer("IC-7610", profile=profile) as (
+        radio,
+        _peer_transport,
+        _server,
+        reader,
+        writer,
+    ):
+        radio.last_valid_frame_monotonic = virtual_clock.now - 30
+        assert await _exchange(writer, reader, command) == expected
+        if command == b"s\n":
+            assert await asyncio.wait_for(reader.readline(), 2) == b"VFOA\n"
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(30)
+@pytest.mark.parametrize("model", MODELS)
+async def test_stale_cached_read_refuses_then_live_split_read_recovers(
+    monkeypatch, virtual_clock: VirtualClock, model
+):
+    virtual_clock.scope_to(monkeypatch, rigctld_handler_module)
+    virtual_clock.scope_to(monkeypatch, civ_rx_module)
+    monkeypatch.setattr(FreshnessClock, "now", lambda self: virtual_clock.now)
+    async with _peer(model) as (radio, peer, _server, reader, writer):
+        radio.last_valid_frame_monotonic = virtual_clock.now - 30
+        assert await _exchange(writer, reader, b"f\n") == b"RPRT -5\n"
+        assert not peer.requests
+        assert await _exchange(writer, reader, b"i\n") == b"7076000\n"
+        assert await _exchange(writer, reader, b"f\n") == b"14074000\n"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model", MODELS)
+@pytest.mark.parametrize("command", [b"s\n", b"i\n", b"x\n", b"f\n", b"T 0\n"])
+async def test_link_down_refuses_split_and_cached_reads_and_unkey(model, command):
+    async with _peer(model) as (radio, peer, _server, reader, writer):
+        radio._connected = False
+        assert await _exchange(writer, reader, command) == b"RPRT -5\n"
+        assert not peer.requests
+        assert not peer.ptt_writes
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(30)
+@pytest.mark.parametrize("model", MODELS)
+async def test_stale_unkey_reaches_radio(monkeypatch, virtual_clock: VirtualClock, model):
+    virtual_clock.scope_to(monkeypatch, rigctld_handler_module)
+    virtual_clock.scope_to(monkeypatch, civ_rx_module)
+    monkeypatch.setattr(FreshnessClock, "now", lambda self: virtual_clock.now)
+    async with _peer(model) as (radio, peer, _server, reader, writer):
+        radio.last_valid_frame_monotonic = virtual_clock.now - 30
+        assert await _exchange(writer, reader, b"T 0\n") == b"RPRT 0\n"
+        assert peer.ptt_writes == [False]
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(30)
+@pytest.mark.parametrize("model", MODELS)
+@pytest.mark.parametrize("stale", [False, True])
+@pytest.mark.parametrize("observed", [None, 0, 1, "0"])
+async def test_invalid_live_split_status_never_falls_back_to_cache(
+    monkeypatch, virtual_clock: VirtualClock, model, stale, observed
+):
+    virtual_clock.scope_to(monkeypatch, rigctld_handler_module)
+    virtual_clock.scope_to(monkeypatch, civ_rx_module)
+    monkeypatch.setattr(FreshnessClock, "now", lambda self: virtual_clock.now)
+    async with _peer(model) as (radio, peer, server, reader, writer):
+
+        async def read_split():
+            return observed
+
+        server._state_store.apply_current(
+            Observation(
+                path=FieldPath.global_("tx_state", "split"),
+                value=True,
+                source=SourceMetadata(source="test", provider="tests"),
+                timestamp_monotonic=virtual_clock.now,
+                max_age=60,
+            )
+        )
+        monkeypatch.setattr(radio, "read_split", read_split)
+        radio.last_valid_frame_monotonic = virtual_clock.now - (30 if stale else 0)
+        assert await _exchange(writer, reader, b"s\n") == b"RPRT -11\n"
+        assert not peer.requests
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(30)
+@pytest.mark.parametrize("model", MODELS)
+@pytest.mark.parametrize("stale", [False, True])
+async def test_split_status_without_live_reader_keeps_cache_gate(
+    monkeypatch, virtual_clock: VirtualClock, model, stale
+):
+    virtual_clock.scope_to(monkeypatch, rigctld_handler_module)
+    virtual_clock.scope_to(monkeypatch, civ_rx_module)
+    monkeypatch.setattr(FreshnessClock, "now", lambda self: virtual_clock.now)
+    async with _peer(model) as (radio, peer, server, reader, writer):
+        server._state_store.apply_current(
+            Observation(
+                path=FieldPath.global_("tx_state", "split"),
+                value=True,
+                source=SourceMetadata(source="test", provider="tests"),
+                timestamp_monotonic=virtual_clock.now,
+                max_age=60,
+            )
+        )
+        monkeypatch.setattr(radio, "read_split", None)
+        radio.last_valid_frame_monotonic = virtual_clock.now - (30 if stale else 0)
+        expected = b"RPRT -5\n" if stale else b"1\n"
+        assert await _exchange(writer, reader, b"s\n") == expected
+        if not stale:
+            assert await asyncio.wait_for(reader.readline(), 2) == b"VFOA\n"
+        assert not peer.requests
 
 
 @asynccontextmanager
