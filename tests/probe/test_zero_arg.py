@@ -9,6 +9,9 @@ opener. Discovery selection through the real parser + dispatch lives in
 from __future__ import annotations
 
 import asyncio
+import io
+import re
+import sys
 from pathlib import Path
 
 import pytest
@@ -452,6 +455,20 @@ def test_default_save_falls_back_when_documents_missing(tmp_path, monkeypatch) -
 # --- Folder opener ---
 
 
+class _TtyStdout(io.StringIO):
+    """Stdout on a terminal (isatty True) that still captures writes."""
+
+    def isatty(self) -> bool:
+        return True
+
+
+class _PipedStdout(io.StringIO):
+    """Stdout without a terminal (a pipe, a capture, a sidecar hand-over)."""
+
+    def isatty(self) -> bool:
+        return False
+
+
 def test_folder_opener_called_only_when_interactive(tmp_path, monkeypatch) -> None:
     opened: list[Path] = []
     monkeypatch.chdir(tmp_path)
@@ -472,6 +489,7 @@ def test_folder_opener_called_only_when_interactive(tmp_path, monkeypatch) -> No
         open_folder=opened.append,
     )
     # --yes: no folder is opened even on a TTY.
+    monkeypatch.setattr(sys, "stdout", _TtyStdout())
     code = asyncio.run(
         execute(
             **common,  # type: ignore[arg-type]
@@ -483,7 +501,22 @@ def test_folder_opener_called_only_when_interactive(tmp_path, monkeypatch) -> No
     )
     assert code == 0
     assert opened == []
-    # Interactive without --yes: the folder is opened after saving.
+    # Stdin is a TTY but stdout is not: a piped run never opens the folder.
+    monkeypatch.setattr(sys, "stdout", _PipedStdout())
+    answers = iter(["y", "y"])
+    code = asyncio.run(
+        execute(
+            **common,  # type: ignore[arg-type]
+            yes=False,
+            is_tty=True,
+            ask=lambda prompt: next(answers),
+            exchange_factory=_stub_answers([]),
+        )
+    )
+    assert code == 0
+    assert opened == []
+    # Interactive without --yes (both streams terminals): opened exactly once.
+    monkeypatch.setattr(sys, "stdout", _TtyStdout())
     answers = iter(["y", "y"])
     code = asyncio.run(
         execute(
@@ -502,6 +535,8 @@ def test_folder_opener_failure_is_silent(tmp_path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
     docs = tmp_path / "Documents"
     docs.mkdir(exist_ok=True)
+    # A terminal stdout so the opener really runs and its failure is swallowed.
+    monkeypatch.setattr(sys, "stdout", _TtyStdout())
 
     def boom(path: Path) -> None:
         raise RuntimeError("no desktop here")
@@ -531,6 +566,78 @@ def test_folder_opener_failure_is_silent(tmp_path, monkeypatch) -> None:
     assert code == 0
     assert list(docs.glob("FT-991A-radio-probe-*.json"))
     assert any("Saved to" in line for line in lines)
+    assert any(line.startswith("Opening the folder: ") for line in lines)
+
+
+def test_no_real_gui_opener_guard_intercepts_the_call(_no_real_gui_opener) -> None:
+    """The suite guard patches the real opener instead of opening a folder."""
+    probe_cli.open_result_folder(Path("/tmp/should-never-open"))
+    assert _no_real_gui_opener == [Path("/tmp/should-never-open")]
+    _no_real_gui_opener.clear()
+
+
+def test_no_real_gui_opener_guard_fails_when_called() -> None:
+    """The guard's verdict: silence on no calls, a clear failure on any call."""
+    from tests.conftest import _assert_no_gui_opener_calls
+
+    _assert_no_gui_opener_calls([])  # passes quietly
+    with pytest.raises(AssertionError, match="real radio-probe folder opener"):
+        _assert_no_gui_opener_calls([Path("/tmp/x")])
+
+
+_BARE_CONFTEST_IMPORT = re.compile(
+    r"^\s*(?:from conftest import|import conftest(?=\s|$))", re.MULTILINE
+)
+
+
+def test_bare_conftest_import_matcher_catches_nonleading_imports() -> None:
+    """Pin the guard below: bare imports past the first line must match.
+
+    The matcher is `^`-anchored, so without `re.MULTILINE` it only sees
+    the start of the file and a bare import after a docstring — or an
+    indented one inside a function — escapes the regression check.
+    """
+    assert _BARE_CONFTEST_IMPORT.search(
+        '"""Docstring first."""\nfrom conftest import helper\n'
+    )
+    assert _BARE_CONFTEST_IMPORT.search('"""Docstring first."""\nimport conftest\n')
+    assert _BARE_CONFTEST_IMPORT.search(
+        "def test_something() -> None:\n    from conftest import helper\n"
+    )
+    assert _BARE_CONFTEST_IMPORT.search("x = 1\nimport conftest\n")
+    # Absolute imports and lookalikes must stay clean.
+    assert not _BARE_CONFTEST_IMPORT.search(
+        "from tests.conftest import _assert_no_gui_opener_calls\n"
+    )
+    assert not _BARE_CONFTEST_IMPORT.search(
+        '"""Docstring."""\n    from tests.conftest import helper\n'
+    )
+    assert not _BARE_CONFTEST_IMPORT.search("# from conftest import helper\n")
+    assert not _BARE_CONFTEST_IMPORT.search('x = "from conftest import y"\n')
+
+
+def test_no_test_uses_a_bare_conftest_import() -> None:
+    """No test may import the bare `conftest` module (MOR-4214 follow-up).
+
+    `tests/integration/` has no `__init__.py`, so under pytest's default
+    prepend import mode any integration test module imported in the same
+    worker puts `tests/integration/` on `sys.path` ahead of `tests/`. A
+    bare import then resolves to `tests/integration/conftest.py` instead
+    of `tests/conftest.py` and fails with `cannot import name ...` — but
+    only on workers whose shard happens to import an integration module
+    first, so only one xdist shard went red (PR #4709). Absolute imports
+    from `tests.conftest` are immune to that ordering; this pin keeps the
+    bare form from coming back.
+    """
+    offenders = sorted(
+        str(path.relative_to(REPO_ROOT))
+        for path in (REPO_ROOT / "tests").rglob("*.py")
+        if _BARE_CONFTEST_IMPORT.search(path.read_text(encoding="utf-8"))
+    )
+    assert offenders == [], (
+        "bare `conftest` imports resolve to whichever conftest.py directory "
+        f"happens to be first on sys.path; use `tests.conftest`: {offenders}"
+    )
 
 
 # --- Discovery selection (unit level; dispatch level is in test_zero_arg_seam) ---
