@@ -8,12 +8,15 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import Callable
+from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock
 
 import aiohttp
 import pytest
 
 from serial_stub import SerialMockRadio
+from test_web_auth_compare_digest import _MemoryWriter
 
 from rigplane.core._bounded_queue import BoundedQueue
 from rigplane.core.state_pipeline_contracts import (
@@ -27,6 +30,7 @@ from rigplane.testing.timing import VirtualClock
 from rigplane.web import runtime_helpers
 from rigplane.web import server as server_module
 from rigplane.web._delta_encoder import apply_delta
+from rigplane.web.handlers.control import ControlHandler
 from rigplane.web.radio_poller import RadioPoller
 from rigplane.web.server import (
     COMMAND_FOLLOWUP_WINDOW_S,
@@ -34,6 +38,7 @@ from rigplane.web.server import (
     WebConfig,
     WebServer,
 )
+from rigplane.ws import WS_OP_TEXT, WebSocketConnection, make_frame
 
 PTT = FieldPath.global_("tx_state", "ptt")
 FREQ = FieldPath.active("0", "freq_mode", "freq_hz")
@@ -249,8 +254,6 @@ async def test_held_back_liveness_is_flushed_when_the_interval_ends(
 def test_held_target_observation_precedes_ack_over_ws(
     clock: VirtualClock, monkeypatch: pytest.MonkeyPatch, query: str
 ) -> None:
-    # Use loop timers rather than scope_to's auto-advancing sleep: the held
-    # delivery must stay parked while the real socket handles the command.
     monkeypatch.setattr(server_module, "asyncio", asyncio)
 
     async def scenario() -> None:
@@ -259,6 +262,13 @@ def test_held_target_observation_precedes_ack_over_ws(
         await SerialMockRadio.set_rf_gain(radio, 128, receiver=0)
         srv = WebServer(radio, WebConfig(host="127.0.0.1", port=0))
         gain = FieldPath.receiver("0", "operator_controls", "rf_gain")
+        held_delivery = asyncio.Event()
+
+        async def park_delivery(_delay: float) -> None:
+            # No timer can release the held observation before the ACK.
+            await held_delivery.wait()
+
+        monkeypatch.setattr(srv, "_delayed_state_broadcast", park_delivery)
 
         def observe(path: FieldPath, value: object) -> None:
             srv.command_state_store.apply(_observation(path, value, clock.now))
@@ -364,6 +374,139 @@ def test_held_target_observation_precedes_ack_over_ws(
                         > ack_boundary
                     )
         finally:
+            await srv.stop()
+
+    clock.run(scenario)
+
+
+class _StalledWriter(_MemoryWriter):
+    def __init__(self, reader: asyncio.StreamReader) -> None:
+        super().__init__()
+        self.transport = SimpleNamespace(abort=self.abort)
+        self.reader = reader
+        self.stall = False
+        self.draining = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def drain(self) -> None:
+        if self.stall:
+            self.draining.set()
+            await self.release.wait()
+            raise ConnectionError("peer stopped reading")
+
+    def abort(self) -> None:
+        self.close()
+        self.reader.feed_eof()
+        self.release.set()
+
+
+@pytest.mark.parametrize(
+    "failure", ["ack_overflow", "baseline_overflow", "fanout_overflow", "sender_error"]
+)
+def test_stalled_control_client_tears_down(
+    clock: VirtualClock, monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    monkeypatch.setattr(server_module, "asyncio", asyncio)
+
+    async def scenario() -> None:
+        radio = _GainRadio()
+        await radio.connect()
+        srv = WebServer(radio, WebConfig(radio_model="IC-7610"))
+        srv.command_queue.bind_connection_generation(lambda: radio)
+        assert srv.command_queue.capture_connection_generation() is radio
+        reader = asyncio.StreamReader()
+        writer = _StalledWriter(reader)
+        ws = WebSocketConnection(reader, writer, clock=clock)  # type: ignore[arg-type]
+        disconnect = AsyncMock()
+        handler = ControlHandler(
+            ws,
+            radio,
+            "test",
+            "IC-7610",
+            server=srv,
+            session_id="stalled-channel",
+            tx_owner="ptt-owner",
+            managed_tx_authority=SimpleNamespace(owner_disconnect=disconnect),  # type: ignore[arg-type]
+            clock=clock,
+        )
+        handler._last_ptt_on = True  # noqa: SLF001
+        task = asyncio.create_task(handler.run())
+        try:
+            await clock.elapse(0)
+            assert srv.command_queue.session_is_live("stalled-channel")
+            q = handler._event_queue  # noqa: SLF001
+            assert q in srv._control_event_queues  # noqa: SLF001
+            writer.stall = True
+            q.put_nowait({"type": "notification"})
+            await clock.elapse(0)
+            assert writer.draining.is_set()
+
+            if failure == "ack_overflow":
+                for command_id in range(q.maxsize + 1):
+                    reader.feed_data(
+                        make_frame(
+                            WS_OP_TEXT,
+                            json.dumps(
+                                {
+                                    "type": "cmd",
+                                    "id": command_id,
+                                    "name": "set_rf_gain",
+                                    "params": {"level": 128, "receiver": 0},
+                                }
+                            ).encode(),
+                        )
+                    )
+                    await clock.elapse(POLL_PERIOD_S)
+                    if task.done():
+                        break
+                assert command_id == q.maxsize - 1
+                entries = srv.command_queue.drain_entries()
+                assert entries[-1].command_id == str(command_id)
+                assert entries[-1].connection_generation == (
+                    srv.command_queue.capture_connection_generation()
+                )
+                queued = [q.get_nowait() for _ in range(q.qsize())]
+                assert queued[0]["type"] == "state_update"
+                responses = queued[1:]
+                assert len(responses) == command_id
+                assert all(
+                    response["type"] == "response" and response["ok"] is True
+                    for response in responses
+                )
+                assert [response["id"] for response in responses] == list(
+                    range(command_id)
+                )
+            elif failure in {"baseline_overflow", "fanout_overflow"}:
+                responses = [
+                    {"type": "response", "id": i, "ok": True} for i in range(q.maxsize)
+                ]
+                for response in responses:
+                    q.put_nowait(response)
+                if failure == "baseline_overflow":
+                    srv.enqueue_control_state_baseline(q)
+                else:
+                    srv._broadcast_state_update(force=True)  # noqa: SLF001
+                assert writer.closed
+                assert [q.get_nowait() for _ in range(q.qsize())] == responses
+                await clock.elapse(0)
+            else:
+                writer.release.set()
+                await clock.elapse(0)
+
+            assert task.done()
+            assert writer.closed
+            disconnect.assert_awaited_once_with("ptt-owner")
+            assert not srv.command_queue.session_is_live("stalled-channel")
+            assert q not in srv._control_event_queues  # noqa: SLF001
+            if failure == "sender_error":
+                with pytest.raises(ConnectionError, match="peer stopped reading"):
+                    await task
+            else:
+                [outcome] = await asyncio.gather(task, return_exceptions=True)
+                assert outcome is None or isinstance(outcome, ConnectionError)
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
             await srv.stop()
 
     clock.run(scenario)

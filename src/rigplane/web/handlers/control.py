@@ -1075,6 +1075,7 @@ class ControlHandler:
         self._subscribed_streams: set[str] = set()
         self._event_queue: BoundedQueue[dict[str, Any]] = BoundedQueue(
             maxsize=100,
+            on_replace_overflow=lambda: self._ws.abort(),
         )
         # Per-command rate limiting: coalesce_key -> last physical-enqueue
         # time (MOR-1499: keyed by ``_coalesce_key``, not the bare name).
@@ -1155,6 +1156,12 @@ class ControlHandler:
                     raise
                 return
         event_task: asyncio.Task[None] = asyncio.create_task(self._event_sender_loop())
+
+        def sender_stopped(_task: asyncio.Task[None]) -> None:
+            # Abort does not drain; it wakes recv and any direct socket writes.
+            self._ws.abort()
+
+        event_task.add_done_callback(sender_stopped)
         try:
             # Inside the try, so the finally below owns every exit from here on;
             # ahead of the recv loop, so no command of ours can be enqueued
@@ -1172,6 +1179,7 @@ class ControlHandler:
         except EOFError:
             pass
         finally:
+            event_task.remove_done_callback(sender_stopped)
             controller = getattr(self._radio, "_controller_authority", None)
             if isinstance(controller, ControllerAuthority):
                 controller.disconnect_control(self._session_id)
@@ -1746,7 +1754,7 @@ class ControlHandler:
             )
             if callable(enqueue_baseline):
                 enqueue_baseline(self._event_queue)
-                await self._event_queue.put(
+                self._event_queue.put_nowait(
                     {"type": "response", "id": cmd_id, "ok": True, "result": result}
                 )
                 return
@@ -1760,6 +1768,9 @@ class ControlHandler:
                     }
                 )
             )
+        except asyncio.QueueFull as exc:
+            self._ws.abort()
+            raise EOFError("control event queue full") from exc
         except Exception as exc:
             await self._send_command_failure(cmd_id, name, exc)
 

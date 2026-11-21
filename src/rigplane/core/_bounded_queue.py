@@ -30,10 +30,13 @@ class BoundedQueue(Generic[T]):
     fanout). All operations are single-event-loop only.
     """
 
-    __slots__ = ("_queue",)
+    __slots__ = ("_queue", "_on_replace_overflow")
 
-    def __init__(self, maxsize: int) -> None:
+    def __init__(
+        self, maxsize: int, *, on_replace_overflow: Callable[[], None] | None = None
+    ) -> None:
         self._queue: asyncio.Queue[T] = asyncio.Queue(maxsize=maxsize)
+        self._on_replace_overflow = on_replace_overflow
 
     async def get(self) -> T:
         """Await and return the next item."""
@@ -73,7 +76,9 @@ class BoundedQueue(Generic[T]):
 
         Non-matching entries retain FIFO order.  When a full queue contains no
         match, only its oldest entry is sacrificed to make room, matching the
-        existing state-update priority.  Drained entries are accounted for
+        existing state-update priority. With ``on_replace_overflow``, retain
+        those entries and invoke the callback instead of inserting ``item``.
+        Drained entries are accounted for
         before retained entries are re-queued, so ``join()`` still reflects
         exactly the items that can subsequently be consumed.
         """
@@ -88,6 +93,11 @@ class BoundedQueue(Generic[T]):
                 retained.append(queued)
 
         if self._queue.maxsize > 0 and len(retained) >= self._queue.maxsize:
+            if self._on_replace_overflow is not None:
+                for queued in retained:
+                    self._queue.put_nowait(queued)
+                self._on_replace_overflow()
+                return
             retained.pop(0)
 
         self._queue.put_nowait(item)
