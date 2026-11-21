@@ -131,10 +131,8 @@ for (const [index, model] of ['IC-705', 'IC-7300'].entries()) {
       await openPanorama(page, `http://127.0.0.1:${port}/?ui=v2`);
       await settlePassband(page, port);
       await page.waitForTimeout(1000);
-      await page.getByRole('button', { name: 'More scope controls' }).first().click();
-      // Preset 0 = the band the VFO is in: an ABSOLUTE view (explicitView).
-      await page.getByTestId('scope-preset-select').first().selectOption('0');
-      await page.keyboard.press('Escape');
+      // The B key = the band the VFO is in: an ABSOLUTE view (explicitView).
+      await page.getByTestId('scope-zoom-band').first().click();
       await expect.poll(() => frames.filter(f => f.pixels).length).toBeGreaterThan(2);
       await expect(page.locator('.waterfall-content .passband-overlay')).toBeVisible({ timeout: 30_000 });
       await page.waitForTimeout(6000);

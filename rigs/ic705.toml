@@ -133,6 +133,11 @@ features = [
     # MOR-2930: simplex / DUP− / DUP+ over 0F (guide p.3); 0F has no ARS code,
     # so no "repeater_shift_ars".
     "repeater_shift",
+    # MOR-3624: duplex offset magnitude over 0C/0D (guide p.3). The IC-705
+    # has no 1.2 GHz band, so the 10 MHz BCD digit is never valid and every
+    # repeater band's maximum is 9,999,900 Hz (per-band
+    # max_repeater_offset_hz below).
+    "repeater_offset",
     "dtcs",
     "csql",
     "speech",
@@ -194,6 +199,8 @@ polling_only = [
     "global.tx_state.split",
     # MOR-2930: read by the same 0F query as split.
     "receiver.main.operator_controls.repeater_shift",
+    # MOR-3624: read by the 0C offset query.
+    "receiver.main.operator_controls.repeater_offset_hz",
     # MOR-2915: the TX-aux levels and panel knobs rigs/ic7300.toml polls
     # (MOR-1452, MOR-2425); v3 reads only a declared field
     # (core/acquisition_scheduler.py: AcquisitionScheduler._availability_for).
@@ -946,6 +953,8 @@ label = "2m"
 start_hz = 144_000_000
 end_hz = 148_000_000
 repeater = true
+# MOR-3624: 3-byte BCD offset without the 10 MHz digit (no 1.2 GHz band).
+max_repeater_offset_hz = 9_999_900
 
 [[freq_ranges.ranges.bands]]
 name = "2m"
@@ -960,6 +969,7 @@ label = "70cm"
 start_hz = 430_000_000
 end_hz = 450_000_000
 repeater = true
+max_repeater_offset_hz = 9_999_900
 
 [[freq_ranges.ranges.bands]]
 name = "70cm"

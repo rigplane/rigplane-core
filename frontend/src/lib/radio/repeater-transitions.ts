@@ -20,6 +20,7 @@ export interface RepeaterPending {
   readonly toneMode: RepeaterToneMode | null;
   readonly shift: RepeaterShift | null;
   readonly toneFreq: boolean;
+  readonly offsetHz: boolean;
 }
 
 /** Indexed by the wire `OS` P2 direction. */
@@ -59,4 +60,26 @@ export function stepToneFreq(
 /** One decimal place, e.g. 8850 centiHz → "88.5". */
 export function formatToneHz(centiHz: number): string {
   return (centiHz / 100).toFixed(1);
+}
+
+/** The duplex offset stepper's step (MOR-3624): 100 kHz per press — the
+ * common 600 kHz / 1.6 MHz / 5 MHz / 7.6 MHz offsets all land on it, and
+ * it clears the wire's 100 Hz resolution by three orders. */
+export const OFFSET_STEP_HZ = 100_000;
+
+/** The 3-byte BCD wire ceiling for one duplex offset (99,999,900 Hz); the
+ * stepper clamps there. The profile's own (lower) declared maximum is
+ * enforced server-side by `set_repeater_offset`. */
+export const OFFSET_MAX_HZ = 99_999_900;
+
+/** Step a duplex offset by OFFSET_STEP_HZ, clamped at
+ * [0, OFFSET_MAX_HZ] (never wraps). */
+export function stepOffsetHz(currentHz: number, direction: 1 | -1): number {
+  return Math.min(Math.max(currentHz + direction * OFFSET_STEP_HZ, 0), OFFSET_MAX_HZ);
+}
+
+/** Megahertz with trailing zeros trimmed, e.g. 600000 → "0.6M",
+ *  7600000 → "7.6M", 20000000 → "20M". */
+export function formatOffsetHz(hz: number): string {
+  return `${(hz / 1e6).toFixed(3).replace(/\.?0+$/, '')}M`;
 }

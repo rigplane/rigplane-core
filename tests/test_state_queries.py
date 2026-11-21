@@ -926,9 +926,11 @@ class TestBuildStateQueries:
         # MOR-3623 adds four pollable paths (repeater_tone, repeater_tsql,
         # tone_squelch_type, repeater_shift); the first three collapse into
         # one 16 5D query and repeater_shift into split's existing bare 0F
-        # read; without an observed fixed-edge slot, 39 paths yield 35 queries.
-        assert len(pollable) == 39
-        assert len(queries) == 35
+        # read; MOR-3624 adds repeater_offset_hz (0C) without merging into
+        # any of those; without an observed fixed-edge slot, 40 paths yield
+        # 36 queries.
+        assert len(pollable) == 40
+        assert len(queries) == 36
         assert all(query.receiver is None for query in queries)
         assert not any(
             query.command in {0x25, 0x26} and query.data == b"\x01" for query in queries
