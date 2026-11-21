@@ -48,7 +48,7 @@
     type PresentationId, type SelfContainedPresentation, type SkinId,
   } from './skins/registry';
   import { t, messageFromReasonCode } from '$lib/i18n';
-  import { ControllerClientError, CONTROLLER_TOAST_CODES } from '$lib/transport/controller-client';
+  import { controllerToastCodeOf } from '$lib/controller-toast-codes';
   import './app.css';
 
   // MOR-1081: the workspace store owns layout, design-language and theme
@@ -329,9 +329,11 @@
         // MOR-4250: a coded controller error is already localized through
         // the catalog — render it directly instead of double-prefixing it
         // as "Backend error: Error: <text>". The code stays in the console
-        // trace above for support reports.
-        backendError = err instanceof ControllerClientError
-          ? messageFromReasonCode(CONTROLLER_TOAST_CODES[err.code])
+        // trace above for support reports. Structural lookup, not
+        // instanceof: presentation must not import transport (ADR 2026-04-12).
+        const controllerToast = controllerToastCodeOf(err);
+        backendError = controllerToast !== null
+          ? messageFromReasonCode(controllerToast)
           : t('core.app.backendError', { detail: String(err) });
         if (retryCount < MAX_RETRIES) {
           const delay = RETRY_DELAYS[Math.min(retryCount, RETRY_DELAYS.length - 1)];

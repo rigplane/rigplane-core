@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+// @ts-nocheck -- node lint script, imported by tests only for its detectors;
+// untyped by design like scripts/control-feedback-debt-evaluator.mjs.
 /**
  * RigPlane Core i18n catalog lint (RP-ML-013A).
  *
@@ -517,10 +519,12 @@ function listSourceFiles(rootDir) {
  * `<script>` blocks carry string literals we govern; markup text is not a
  * literal. Other files are returned verbatim.
  */
-function scannableText(name, raw) {
+export function scannableText(name, raw) {
   if (!name.endsWith('.svelte')) return [raw];
   const blocks = [];
-  const re = /<script[^>]*>([\s\S]*?)<\/script>/g;
+  // Case-insensitive: HTML tag names are ASCII case-insensitive, so an
+  // uppercase <SCRIPT> block is still script (CodeQL: missed it before).
+  const re = /<script[^>]*>([\s\S]*?)<\/script>/gi;
   let m;
   while ((m = re.exec(raw)) !== null) blocks.push(m[1]);
   return blocks;

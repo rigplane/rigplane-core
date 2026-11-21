@@ -1,4 +1,8 @@
 import { apiFetch } from '../api/api-fetch';
+import { CONTROLLER_TOAST_CODES } from '../controller-toast-codes';
+
+export { CONTROLLER_TOAST_CODES };
+
 type Role = 'primary' | 'auxiliary';
 type Grant = { controller_key: string; generation: number; controller_role?: Role };
 type Sender = (message: { type: 'controller_heartbeat' }) => void;
@@ -18,22 +22,6 @@ const messages = {
   remote_disabled: 'Remote control is disabled on this host.',
 } as const;
 type Code = keyof typeof messages;
-
-/**
- * Wire code → toast reason code. Toast codes are camelCase because
- * `messageFromReasonCode` resolves `core.toast.<code>` and validates the
- * code shape; the wire codes stay snake_case (they cross the HTTP API and
- * are emitted by the Python server, so they are a protocol contract).
- */
-export const CONTROLLER_TOAST_CODES: { [K in Code]: string } = {
-  controller_busy: 'controllerBusy',
-  controller_invalid: 'controllerInvalid',
-  controller_lost: 'controllerLost',
-  controller_not_ready: 'controllerNotReady',
-  controller_unsupported: 'controllerUnsupported',
-  controller_local_required: 'controllerLocalRequired',
-  remote_disabled: 'remoteDisabled',
-};
 
 export class ControllerClientError extends Error {
   constructor(readonly code: Code) { super(messages[code]); }

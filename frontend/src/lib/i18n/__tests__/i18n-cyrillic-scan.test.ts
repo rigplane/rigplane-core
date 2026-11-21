@@ -13,6 +13,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   findCyrillicStringLiterals,
+  scannableText,
   scanFrontendSources,
 } from '../../../../scripts/i18n-check.mjs';
 
@@ -50,6 +51,17 @@ describe('findCyrillicStringLiterals (i18n-check.mjs MOR-4250 scan)', () => {
     expect(findCyrillicStringLiterals(
       "const a = 'Remote control was lost. Reconnect.'; // ok\n",
     )).toEqual([]);
+  });
+
+  it('extracts uppercase <SCRIPT> blocks: tag names are case-insensitive', () => {
+    // CodeQL flagged the old case-sensitive match: a Cyrillic literal
+    // inside <SCRIPT>…</SCRIPT> escaped the scan entirely.
+    const blocks = scannableText(
+      'Panel.svelte',
+      '<SCRIPT>const a = \'Потеряно\';</SCRIPT>\n<p>Текст</p>\n',
+    );
+    expect(blocks).toHaveLength(1);
+    expect(findCyrillicStringLiterals(blocks[0])).toHaveLength(1);
   });
 });
 
