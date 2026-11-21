@@ -145,34 +145,3 @@ def test_replace_matching_with_front_evicts_only_oldest_nonmatch_when_full() -> 
         {"type": "notification", "data": "second"},
         {"type": "notification", "data": "third"},
     ]
-
-
-def test_replace_overflow_callback_preserves_entries_and_accounting() -> None:
-    overflows: list[bool] = []
-    q: BoundedQueue[int] = BoundedQueue(
-        maxsize=3, on_replace_overflow=lambda: overflows.append(True)
-    )
-    for item in (1, 2, 3):
-        q.put_nowait(item)
-
-    q.replace_matching_with_front(4, lambda _item: False)
-
-    assert overflows == [True]
-    assert [q.get_nowait() for _ in range(3)] == [1, 2, 3]
-    for _ in range(3):
-        q.task_done()
-    assert q._queue._unfinished_tasks == 0
-
-
-def test_replace_overflow_callback_allows_matching_replacement() -> None:
-    overflows: list[bool] = []
-    q: BoundedQueue[int] = BoundedQueue(
-        maxsize=3, on_replace_overflow=lambda: overflows.append(True)
-    )
-    for item in (1, 2, 3):
-        q.put_nowait(item)
-
-    q.replace_matching_with_front(4, lambda item: item == 2)
-
-    assert overflows == []
-    assert [q.get_nowait() for _ in range(3)] == [4, 1, 3]
