@@ -92,6 +92,8 @@ scripts/*
 !scripts/gen_control_domain_vectors.py
 # And the state wire golden generator is tracked.
 !scripts/gen_state_wire_goldens.py
+# And the frontend producer-fixture generator is tracked (MOR-4214).
+!scripts/gen_frontend_producer_fixtures.py
 # And the pre-push quick gate and its selection logic are tracked (MOR-4372).
 !scripts/local-ci.sh
 !scripts/pre_push_scope.py
