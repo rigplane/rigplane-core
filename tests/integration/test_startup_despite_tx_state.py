@@ -97,6 +97,37 @@ def _ptt_actuations(fake: Any) -> list[Any]:
     ]
 
 
+_GATE_LOGGER = "rigplane.web.web_startup"
+
+
+def _gate_no_answer_warnings(caplog: pytest.LogCaptureFixture) -> list[str]:
+    """The startup gate's deadline warnings (warns once, serves without them).
+
+    Scoped to the gate logger and the warning's own shape, following the
+    ``_startup_unkey_records`` pattern in ``test_mor4186_startup_unkey``:
+    unrelated lines from other loggers — e.g. the PTY-dependent
+    ``serial open: ... refused ... deassert`` warnings from
+    ``rigplane.core.serial_open`` — can never match.
+    """
+    return [
+        record.getMessage()
+        for record in caplog.records
+        if record.levelno == logging.WARNING
+        and record.name == _GATE_LOGGER
+        and "no answer for" in record.getMessage()
+        and "serving without them" in record.getMessage()
+    ]
+
+
+def _acquisition_messages(caplog: pytest.LogCaptureFixture) -> list[str]:
+    """The ``acquisition:`` scheduler lines, as in ``test_refused_read_acquisition``."""
+    return [
+        record.getMessage()
+        for record in caplog.records
+        if record.getMessage().startswith("acquisition:")
+    ]
+
+
 @pytest.mark.realtime(
     reason="real PTY echo and the production serial backend/poller; "
     "the gate's non-critical deadline is patched down, no real 10 s wait"
@@ -173,33 +204,50 @@ async def test_icom_unanswered_tx_state_still_serves_with_tx_unknown(
         assert value is None, value
         assert status.observed is False
         if fate == "silent":
-            warnings = [
-                record.getMessage()
-                for record in caplog.records
-                if record.levelno == logging.WARNING
-                and record.name == "rigplane.web.web_startup"
-                and "no answer for" in record.getMessage()
-                and str(path) in record.getMessage()
-            ]
-            assert len(warnings) == 1, [r.getMessage() for r in caplog.records]
-            assert "serving without them" in warnings[0]
-            count_before = len(
-                [f for f in fake.commands if (f.command, f.sub) == (command, sub)]
-            )
-            await await_until(
-                lambda: (
-                    len(
-                        [
-                            f
-                            for f in fake.commands
-                            if (f.command, f.sub) == (command, sub)
-                        ]
-                    )
-                    > count_before
-                ),
-                timeout=15.0,
-                description="poller keeps asking the silent read",
-            )
+            gate_warnings = _gate_no_answer_warnings(caplog)
+            assert len(gate_warnings) == 1, gate_warnings
+            assert "serving without them" in gate_warnings[0]
+            if str(path) in gate_warnings[0]:
+                count_before = len(
+                    [f for f in fake.commands if (f.command, f.sub) == (command, sub)]
+                )
+                await await_until(
+                    lambda: (
+                        len(
+                            [
+                                f
+                                for f in fake.commands
+                                if (f.command, f.sub) == (command, sub)
+                            ]
+                        )
+                        > count_before
+                    ),
+                    timeout=15.0,
+                    description="poller keeps asking the silent read",
+                )
+            else:
+                # A bare FA settles the oldest open read of any kind (the
+                # ``civ`` tracker, MOR-4384), so on a loaded host a native NAK
+                # for a neighbouring startup read can reclassify the silenced
+                # path as refused before the gate deadline (MOR-4058: a refused
+                # path leaves the unobserved set, so the gate warning
+                # legitimately does not name it). The served outcome is the
+                # same TX-unknown, so assert the specified refusal shape
+                # instead, as the refused branch does. Seen once in merge-queue
+                # CI (run 44831944465, silent-ptt-IC-7610 on Linux): the gate
+                # warned once about other still-silent paths while the
+                # silenced ptt read had been recorded as refused.
+                refused = [
+                    message
+                    for message in _acquisition_messages(caplog)
+                    if "refused" in message and str(path) in message
+                ]
+                assert refused, (
+                    "the silenced path is named either by the gate warning "
+                    f"or by an acquisition refusal; gate={gate_warnings!r}"
+                )
+                assert scheduler.consecutive_refusals(path) > 0
+                assert scheduler.startup_defect is None
         else:
             messages = [record.getMessage() for record in caplog.records]
             assert any(
