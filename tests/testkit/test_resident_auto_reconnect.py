@@ -100,7 +100,7 @@ async def test_serve_reconnects_a_lan_radio_after_a_power_cycle(
     async def power_cycle(radio: Any, _args: Any) -> int:
         radio.set_reconnect_status_callback(statuses.append)
         facts["old_token"] = radio._token
-        facts["old_owner"] = sim.owner
+        claims_before = sim.session_claims
         logins_before = sim.login_count
         busy_before = sim.busy_rejects
         sim.reboot(at=0.1, down_for=_DOWN_FOR_S, busy_for=0.0)
@@ -112,6 +112,7 @@ async def test_serve_reconnects_a_lan_radio_after_a_power_cycle(
         facts["conn_state"] = radio.conn_state
         facts["connected"] = radio.connected
         facts["logins"] = sim.login_count - logins_before
+        facts["claims"] = sim.session_claims - claims_before
         facts["busy"] = sim.busy_rejects - busy_before
         facts["owner"] = sim.owner
         await asyncio.sleep(_SETTLE_S)
@@ -138,7 +139,8 @@ async def test_serve_reconnects_a_lan_radio_after_a_power_cycle(
     timeline = "\n".join(trail.lines)
     counts = (
         f"logins={facts['logins']}/{facts['settled_logins']} "
-        f"busy_rejects={facts['busy']}/{facts['settled_busy']}"
+        f"busy_rejects={facts['busy']}/{facts['settled_busy']} "
+        f"claims={facts['claims']}"
     )
     assert rc == 0, capsys.readouterr().err
     # No double reconnect: at most one login was accepted, and the simulator
@@ -153,6 +155,11 @@ async def test_serve_reconnects_a_lan_radio_after_a_power_cycle(
     assert states[-1] == "connected" and states.count("connected") == 1, statuses
     assert "reconnecting" in states[:-1], statuses
     assert facts["settled_logins"] == 1, counts
+    # The held session is a fresh post-reboot claim, not a refresh of the
+    # pre-reboot one: a reconnecting client may legitimately reuse its UDP
+    # source port and my_id, so owner identity cannot prove freshness —
+    # the simulator's claim counter does (MOR-4214).
+    assert facts["claims"] == 1, counts
     assert facts["token"] == facts["sim_token"] != facts["old_token"]
     assert facts["freq"] == 14_074_000
     assert trail.marker_order() == [
@@ -161,4 +168,4 @@ async def test_serve_reconnects_a_lan_radio_after_a_power_cycle(
         "Reconnect attempt",
         "Reconnected successfully",
     ], timeline
-    assert facts["owner"] is not None and facts["owner"] != facts["old_owner"]
+    assert facts["owner"] is not None, counts

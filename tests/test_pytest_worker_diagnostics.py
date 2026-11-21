@@ -56,6 +56,22 @@ def test_full_worker_diagnostics_wiring() -> None:
     assert "rc=${PIPESTATUS[0]}" in text and 'exit "$rc"' in text
 
 
+def test_full_pytest_output_upload_wiring() -> None:
+    """The full-matrix test job always uploads its pytest output (MOR-4214).
+
+    GitHub truncates a long step log in the web UI, so without the artifact a
+    red matrix leg could hide the failed test ids from anyone without a
+    runner-host login.
+    """
+    text = (ROOT / ".github/workflows/full.yml").read_text()
+    upload = text.split("- name: Upload pytest output", 1)[1].split("- name:", 1)[0]
+    assert "if: always()" in upload and "retention-days: 3" in upload
+    assert "actions/upload-artifact" in upload
+    assert "pytest-output-${{ matrix.python-version }}" in upload
+    assert "pytest-output.txt" in upload
+    assert "if-no-files-found: ignore" in upload
+
+
 def test_quick_worker_diagnostics_wiring() -> None:
     text = (ROOT / ".github/workflows/quick.yml").read_text()
     assert "- name: Run tests" in text
