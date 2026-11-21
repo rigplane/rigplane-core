@@ -2232,9 +2232,9 @@ class TestStartupBusyLiveHolder:
             with fast_connect():
                 await owner.connect()
             assert sim.session_held
-            first_owner = sim.owner
             self._silence_owner(owner)
             logins_before = sim.login_count
+            claims_before = sim.session_claims
             busy_before = sim.busy_rejects
             with (
                 patch.object(ControlPhaseRuntime, "_STATUS_REJECT_COOLDOWN", 0.5),
@@ -2250,7 +2250,12 @@ class TestStartupBusyLiveHolder:
             assert sim.login_count - logins_before == 2
             assert sim.busy_rejects - busy_before == 1
             assert sim.session_held
-            assert sim.owner is not None and sim.owner != first_owner
+            # The second client holds a fresh claim, not the dead owner's
+            # session: owner identity cannot prove freshness (a reconnecting
+            # client may legitimately reuse its UDP source port and my_id,
+            # MOR-4214), the claim counter does.
+            assert sim.session_claims - claims_before == 1
+            assert sim.owner is not None
         finally:
             with contextlib.suppress(Exception):
                 await owner.disconnect()
