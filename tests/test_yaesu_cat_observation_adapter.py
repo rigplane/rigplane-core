@@ -4515,7 +4515,16 @@ async def _serve_yaesu_with_silent_narrow(
     ``WebServer`` with its production acquisition started — only the wire
     is faked, and the fake gives no answer at all to the narrow read
     (the C4FM shape from the ticket). ``server.start()`` returns only
-    after the listener binds, i.e. after the startup gate opens.
+    after the listener binds, i.e. after the startup gate opens
+    (``await_initial_state=True``, as the production CLI builds it).
+
+    Two recorded-sim gaps are repaired to bench answers so the gate pins
+    the silent narrow and nothing else — the same surgery as
+    ``test_startup_state_gate._ftx1_table_silent_on_ft``: the FM-recorded
+    manual-notch replies (``BP01F35;``/``BP11F35;``, no decimal form) are
+    answered in the USB decimal form, and the probe-window ``RA0;``
+    refusal is answered OFF (``RA00;``). The live radio answers both;
+    without the repair the gate would abort on a sim artifact.
     """
     loaded = load_rig(rig_path)
     radio = YaesuCatRadio("/dev/fixture", profile=loaded)
@@ -4528,7 +4537,16 @@ async def _serve_yaesu_with_silent_narrow(
         if line.startswith("NA"):
             # Recorded silence: the radio gives no answer at all.
             return None, Ok()
-        return handle(line)
+        reply, outcome = handle(line)
+        if reply in ("BP01F35;", "BP11F35;"):
+            # FM-recorded notch reply, no decimal form: answer the USB
+            # decimal form the live radio gives (see the helper docstring).
+            return reply[:4] + "150;", outcome
+        if line == "RA0;" and reply == "?;":
+            # Probe-window attenuator refusal: answer OFF like the bench
+            # radio does (see the helper docstring).
+            return "RA00;", outcome
+        return reply, outcome
 
     monkeypatch.setattr(fake.model, "handle_with_outcome", logged)
 
@@ -4543,7 +4561,12 @@ async def _serve_yaesu_with_silent_narrow(
     # no product margin moves.
     radio._transport._timeout = 0.05
     await radio.set_mode(mode)
-    server = WebServer(radio, WebConfig(host="127.0.0.1", port=0))
+    # MOR-3856 gate P1(2): production CLI sets await_initial_state=True
+    # (cli/__init__.py); the default False would skip the startup gate this
+    # test pins, so the test would pass even without the fix.
+    server = WebServer(
+        radio, WebConfig(host="127.0.0.1", port=0, await_initial_state=True)
+    )
     try:
         await asyncio.wait_for(server.start(), timeout=60)
     except BaseException:
@@ -4560,11 +4583,8 @@ async def _serve_yaesu_with_silent_narrow(
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("rig_path", "sim_path", "mode", "freq_hz"),
-    [
-        (_FTX1_RIG, _FTX1_SIM, "C4FM-DN", 147_225_000),
-        (FT991A_RIG, FT991A_SIM, "FM", 14_074_000),
-    ],
-    ids=["ftx1-c4fm", "ft991a-fm"],
+    [(_FTX1_RIG, _FTX1_SIM, "C4FM-DN", 147_225_000)],
+    ids=["ftx1-c4fm"],
 )
 async def test_silent_narrow_serves_answered_state_over_http(
     monkeypatch: pytest.MonkeyPatch,
@@ -4577,6 +4597,12 @@ async def test_silent_narrow_serves_answered_state_over_http(
     answered reads while ``NA`` stays silent — through the real server,
     the production observation poller and the real ``/api/v1/state``,
     parsed through the producer's ``ServerStatePublic`` model.
+
+    FTX-1 only (the ticket's radio): the fidelity-C FT-991A sim leaves
+    other declared reads (``IS0;``, ...) unmodeled with no bench answer
+    to repair them to, so a gate-on serve would abort on sim gaps rather
+    than pin the ticket behavior. The FT-991A shape stays covered by the
+    two direct-adapter tests above, which need no gate.
 
     The direct-adapter test above would stay green if publication dropped
     the returned observations or the listener never bound: this one fails
