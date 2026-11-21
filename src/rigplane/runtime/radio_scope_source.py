@@ -378,6 +378,42 @@ class RadioScopeSource:
 
         return unsubscribe
 
+    #: MOR-4452: how far below a span preset's view width a reported
+    #: span-mode window may sit and still be that preset's sweep extent.
+    #: The extent loses only the trimmed outer bins of the sweep (a few
+    #: bins of 475 ≈ up to ~2%); shipped preset ladders space presets at
+    #: least 2× apart, so 5% names exactly one preset and can never reach
+    #: a neighbouring one.
+    _SWEEP_EXTENT_TOLERANCE = 0.05
+
+    def _preset_window(self, start: float, end: float) -> tuple[float, float]:
+        """The display window a span-mode wave's reported extent names.
+
+        MOR-4452: in the span modes the radio's waveform header reports
+        the extent of the sweep points, which sits a few trimmed bins
+        inside the display width the span preset selects (at the ±50 kHz
+        IC-705 preset the wave reports ±49.25 kHz). CENTER mode never
+        shows it: the assembler synthesises centre ± preset, so its bins
+        already span the preset width. A SCROLL-C wave reports raw
+        edges, so adopting them verbatim narrowed the view (and the
+        SPAN readout) by the trimmed fraction. Expand a reported window
+        that sits just below a preset's view width to that width around
+        its own centre — the same "bins span the preset width" rule
+        CENTER already gets. A window at or above the nearest preset, or
+        far from every preset, is reported verbatim: it is not a sweep
+        extent of any preset this profile declares.
+        """
+        width = end - start
+        if width <= 0 or not self._caps.span_choices_hz:
+            return start, end
+        preset = min(
+            self._caps.span_choices_hz, key=lambda choice: abs(choice - width)
+        )
+        if width < preset and (preset - width) / preset <= self._SWEEP_EXTENT_TOLERANCE:
+            center = (start + end) / 2
+            return center - preset / 2, center + preset / 2
+        return start, end
+
     def feed_frame(self, frame: ScopeFrame) -> None:
         if not self._active:
             return
@@ -389,6 +425,8 @@ class RadioScopeSource:
         start, end = frame.start_freq_hz, frame.end_freq_hz
         if frame.out_of_range and frame.mode == 0:
             start, end = start - end, start + end
+        if not frame.out_of_range and frame.mode in SPAN_APPLICABLE_SCOPE_MODES:
+            start, end = self._preset_window(start, end)
         previous = self._native_coverages.get(receiver)
         self._native_coverages[receiver] = (frame.mode, Coverage(start, end))
         native = NativeFrame(

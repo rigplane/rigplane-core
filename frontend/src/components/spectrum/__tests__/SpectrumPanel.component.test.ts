@@ -1072,6 +1072,21 @@ describe('SpectrumPanel component', () => {
     expect(target.querySelector<HTMLButtonElement>('[title="Increase span"]')!.disabled).toBe(false);
   });
 
+  // MOR-4452: at the ±50 kHz preset the server now grants the preset's
+  // 100 kHz window in SCROLL-C too (the radio's raw sweep extent of
+  // ±49.25 kHz no longer reaches the wire), so the SPAN readout and the
+  // edge legends name the preset, not the trimmed extent.
+  it.each(['IC-705', 'IC-7300'])('reads ±50k at the span preset in SCROLL-C on %s (MOR-4452)', async (model) => {
+    runtimeHarness.state.currentCaps = validateCapabilities({ ...IC7300_CAPABILITIES, ...spanCapabilities, model });
+    authorityHarness.state.current = authority({ frequencyHz: 14_050_000, scopeControls: testScopeControls(2, 4) });
+    const target = mountPanel();
+    emitFrame({ mode: 2, startFreq: 14_000_000, endFreq: 14_100_000 }); await flushWaterfallPaint();
+    expect(mockRuntime.scope.spanControl!.spanHz).toBe(100_000);
+    expect(target.querySelector('[title="Scope span"] .toolbar-value')?.textContent).toBe('±50k');
+    expect(target.querySelector('.span-left')!.textContent).toContain('14.000');
+    expect(target.querySelector('.span-right')!.textContent).toContain('14.100');
+  });
+
   it('keeps trace controls absent in an ordinary build', () => {
     const target = mountPanel();
     expect(target.querySelector('[aria-label="Scope render trace"]')).toBeNull();
