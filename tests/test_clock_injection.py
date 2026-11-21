@@ -137,7 +137,7 @@ async def test_control_handler_pacing_window_uses_injected_clock() -> None:
     clock (gate read and flush stamp both follow it)."""
     clock = FakeClock(2000.0)
     handler = ControlHandler(
-        SimpleNamespace(send_text=AsyncMock(), recv=AsyncMock()),
+        SimpleNamespace(outbound_progress=0, send_text=AsyncMock(), recv=AsyncMock()),
         SimpleNamespace(connected=True),
         "9.9.9",
         "IC-7610",

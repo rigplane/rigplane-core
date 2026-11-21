@@ -168,7 +168,7 @@ def _handler(
     )
     radio = _radio()
     handler = ControlHandler(
-        ws=ws or MagicMock(),
+        ws=ws or MagicMock(outbound_progress=0),
         radio=radio,
         server_version="test",
         radio_model="IC-9700",
@@ -222,7 +222,7 @@ async def test_ws_ptt_rejects_non_boolean_state_before_authority(state: object) 
 async def test_rejected_admission_is_a_terminal_ws_error() -> None:
     authority = _Authority()
     authority.next_outcome = ManagedTxOutcome.REJECTED
-    ws = SimpleNamespace(send_text=AsyncMock())
+    ws = SimpleNamespace(outbound_progress=0, send_text=AsyncMock())
     handler, _, _ = _handler(authority, ws=ws)
     await handler._dispatch_command("command-1", "ptt_on", {})
     response = decode_json(ws.send_text.await_args.args[0])
@@ -336,7 +336,8 @@ async def test_cancelled_handler_finishes_cleanup_and_retains_disconnect_release
             raise
 
     handler, server, _ = _handler(
-        authority, ws=SimpleNamespace(send_text=AsyncMock(), recv=recv)
+        authority,
+        ws=SimpleNamespace(outbound_progress=0, send_text=AsyncMock(), recv=recv),
     )
     queue = CommandQueue()
     server.command_queue = queue
@@ -487,6 +488,8 @@ async def test_webrtc_control_handler_receives_explicit_exact_authority(
     _closed: dict[str, Any] = {}
 
     class _FakeDataChannelConn:
+        outbound_progress: int = 0
+
         def __init__(self, *_args: Any, **_kwargs: Any) -> None:
             pass
 
@@ -596,7 +599,7 @@ async def test_managed_ws_send_civ_tx_family_refused_by_payload(
     """
     authority = _Authority()
     queue = CommandQueue()
-    ws = SimpleNamespace(send_text=AsyncMock())
+    ws = SimpleNamespace(outbound_progress=0, send_text=AsyncMock())
     handler, _, radio = _handler(authority, ws=ws, queue=queue)
     radio.send_civ = AsyncMock()
     await handler._dispatch_command("cmd-1", "send_civ", params)

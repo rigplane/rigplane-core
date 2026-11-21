@@ -222,6 +222,7 @@ from ...radio_protocol import (
 __all__ = ["ControlHello", "ControlHandler", "control_hello_message"]
 
 logger = logging.getLogger(__name__)
+
 # Intent param carrying the TX owner `_enqueue_command` checked (MOR-3537).
 _TX_OWNER_PARAM = "_tx_owner"
 # Refusal wording when a rejected PTT receipt proves another owner held (MOR-3684).
@@ -1142,7 +1143,7 @@ class ControlHandler:
                     "type": "state_update",
                     "data": initial,
                 }
-                await self._ws.send_text(encode_json(msg))
+                await self._send_direct(encode_json(msg))
                 self._enqueue_current_dx_spots()
                 await self._send_current_audio_session()
                 await self._send_current_managed_tx_document()
@@ -1254,7 +1255,7 @@ class ControlHandler:
             radio_ready=self._radio_ready(),
             capabilities=self._capabilities(),
         )
-        await self._ws.send_text(encode_json(msg))
+        await self._send_direct(encode_json(msg))
 
     def _capabilities(self) -> set[str]:
         caps = set(runtime_capabilities(self._radio)) - VFO_CAPABILITY_TAGS
@@ -1347,16 +1348,19 @@ class ControlHandler:
         elif msg_type == "controller_heartbeat":
             controller = getattr(self._radio, "_controller_authority", None)
             if isinstance(controller, ControllerAuthority):
-                await self._ws.send_text(
+                await self._send_direct(
                     encode_json(controller.heartbeat(controller.capture()))
                 )
         elif msg_type == "ping":
-            await self._send_json({"type": "pong"})
+            await self._send_direct(encode_json({"type": "pong"}))
         else:
             # Radio connect/disconnect is REST-only (``POST
             # /api/v1/radio/{connect,disconnect}``, MOR-3777); the old
             # ``radio_connect``/``radio_disconnect`` messages land here.
             logger.debug("control: unknown message type: %r", msg_type)
+
+    async def _send_direct(self, text: str) -> None:
+        await self._ws.send_text(text)
 
     async def _send_json(self, obj: dict[str, Any]) -> None:
         """Send a JSON message to the WebSocket client."""
@@ -1398,7 +1402,7 @@ class ControlHandler:
 
         if not callable(enqueue_baseline):
             msg_out = {"type": "state_update", "data": payload}
-            await self._ws.send_text(encode_json(msg_out))
+            await self._send_direct(encode_json(msg_out))
 
         self._enqueue_current_dx_spots()
 
@@ -1430,14 +1434,14 @@ class ControlHandler:
         if data is None:
             return
         try:
-            await self._ws.send_text(
+            await self._send_direct(
                 encode_json({"type": "event", "name": "audio_session", "data": data})
             )
         except BaseException as exc:
             logger.debug(
                 "control: failed to send audio_session snapshot", exc_info=True
             )
-            if isinstance(exc, asyncio.CancelledError):
+            if isinstance(exc, (asyncio.CancelledError, EOFError)):
                 raise
 
     async def _send_current_managed_tx_document(self) -> None:
@@ -1461,7 +1465,7 @@ class ControlHandler:
         if document is None:
             return
         try:
-            await self._ws.send_text(
+            await self._send_direct(
                 encode_json(
                     {
                         "type": "event",
@@ -1475,7 +1479,7 @@ class ControlHandler:
                 "control: failed to send managed-transmit document snapshot",
                 exc_info=True,
             )
-            if isinstance(exc, asyncio.CancelledError):
+            if isinstance(exc, (asyncio.CancelledError, EOFError)):
                 raise
 
     async def _handle_command(self, msg: dict[str, Any]) -> None:
@@ -1640,7 +1644,7 @@ class ControlHandler:
                     (now - last) * 1000,
                     count,
                 )
-            await self._ws.send_text(
+            await self._send_direct(
                 encode_json(
                     {
                         "type": "response",
@@ -1648,7 +1652,7 @@ class ControlHandler:
                         "ok": True,
                         "result": {"superseded": True},
                     }
-                )
+                ),
             )
         self._cmd_pending[key] = (cmd_id, name, params)
         if key not in self._cmd_flush_tasks:
@@ -1721,7 +1725,7 @@ class ControlHandler:
             return
 
         if self._radio is None:
-            await self._ws.send_text(
+            await self._send_direct(
                 encode_json(
                     {
                         "type": "response",
@@ -1730,7 +1734,7 @@ class ControlHandler:
                         "error": "no_radio",
                         "message": "no radio connected",
                     }
-                )
+                ),
             )
             return
 
@@ -1741,7 +1745,10 @@ class ControlHandler:
                 command_id=str(cmd_id),
                 source="websocket",
             )
-            await self._ws.send_text(
+        except Exception as exc:
+            await self._send_command_failure(cmd_id, name, exc)
+        else:
+            await self._send_direct(
                 encode_json(
                     {
                         "type": "response",
@@ -1749,14 +1756,12 @@ class ControlHandler:
                         "ok": True,
                         "result": result,
                     }
-                )
+                ),
             )
-        except Exception as exc:
-            await self._send_command_failure(cmd_id, name, exc)
 
     async def _send_unknown_command(self, cmd_id: Any, name: Any) -> None:
         """Answer a command whose name is unknown (or not a string at all)."""
-        await self._ws.send_text(
+        await self._send_direct(
             encode_json(
                 {
                     "type": "response",
@@ -1765,7 +1770,7 @@ class ControlHandler:
                     "error": "unknown_command",
                     "message": f"unknown command: {name!r}",
                 }
-            )
+            ),
         )
 
     async def _send_command_failure(
@@ -1801,7 +1806,7 @@ class ControlHandler:
             error = "unsupported_command"
         else:
             error = "command_failed"
-        await self._ws.send_text(
+        await self._send_direct(
             encode_json(
                 {
                     "type": "response",
@@ -1810,7 +1815,7 @@ class ControlHandler:
                     "error": error,
                     "message": message,
                 }
-            )
+            ),
         )
 
     def _start_managed_ptt_disconnect(self) -> asyncio.Task[ManagedTxOutcome] | None:

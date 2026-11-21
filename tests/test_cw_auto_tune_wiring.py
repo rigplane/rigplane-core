@@ -33,7 +33,7 @@ def _make_handler(
     ptt_stale: bool = False,
 ) -> ControlHandler:
     """Build a ControlHandler with a fake server and WebSocket."""
-    ws = MagicMock()
+    ws = MagicMock(outbound_progress=0)
     ws.send_text = AsyncMock()
 
     tap_registry = TapRegistry()
@@ -383,7 +383,7 @@ class TestCwAutoTuneWiring:
 
     async def test_no_server_raises(self) -> None:
         """Raises RuntimeError when server is None."""
-        ws = MagicMock()
+        ws = MagicMock(outbound_progress=0)
         ws.send_text = AsyncMock()
         handler = ControlHandler(
             ws=ws,

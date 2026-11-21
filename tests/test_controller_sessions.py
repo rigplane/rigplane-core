@@ -301,7 +301,7 @@ async def test_http_transmit_on_is_owned_by_the_session(station, monkeypatch) ->
 def _handler(server, managed, ticket: ControllerTicket | None = None) -> ControlHandler:
     radio = SimpleNamespace(_controller_authority=server._controller)
     return ControlHandler(
-        SimpleNamespace(),
+        SimpleNamespace(outbound_progress=0),
         radio,
         "test",
         "IC-7610",

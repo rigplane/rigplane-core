@@ -57,7 +57,7 @@ def _radio(model: str) -> SimpleNamespace:
 
 def _handler(radio: SimpleNamespace, queue: CommandQueue) -> ControlHandler:
     return ControlHandler(
-        ws=SimpleNamespace(send_text=AsyncMock()),
+        ws=SimpleNamespace(outbound_progress=0, send_text=AsyncMock()),
         radio=radio,
         server_version="test",
         radio_model=radio.model,

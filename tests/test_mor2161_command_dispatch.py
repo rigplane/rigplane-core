@@ -55,6 +55,8 @@ class _Writer:
 
 
 class _Ws:
+    outbound_progress: int = 0
+
     def __init__(self) -> None:
         self.messages: list[dict[str, object]] = []
 

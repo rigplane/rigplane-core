@@ -1531,7 +1531,7 @@ class TestAudioHandlerCodecDetection:
         from rigplane.web.handlers import AudioBroadcaster, AudioHandler
         from rigplane.ws import WebSocketConnection
 
-        mock_ws = MagicMock(spec=WebSocketConnection)
+        mock_ws = MagicMock(spec=WebSocketConnection, outbound_progress=0)
         mock_radio = MagicMock(spec=AudioCapable)
         mock_radio.capabilities = {"audio"}
         mock_radio.audio_codec = audio_codec
@@ -1606,7 +1606,7 @@ class TestAudioHandlerCodecDetection:
         from rigplane.web.protocol import AUDIO_CODEC_OPUS, AUDIO_HEADER_SIZE
         from rigplane.ws import WebSocketConnection
 
-        mock_ws = MagicMock(spec=WebSocketConnection)
+        mock_ws = MagicMock(spec=WebSocketConnection, outbound_progress=0)
         mock_radio = MagicMock(spec=AudioCapable)
         mock_radio.capabilities = {"audio"}
         mock_radio.audio_codec = AudioCodec.PCM_2CH_16BIT
@@ -1662,7 +1662,7 @@ class TestAudioHandlerCodecDetection:
         from rigplane.web.protocol import AUDIO_CODEC_PCM16, AUDIO_HEADER_SIZE
         from rigplane.ws import WebSocketConnection
 
-        mock_ws = MagicMock(spec=WebSocketConnection)
+        mock_ws = MagicMock(spec=WebSocketConnection, outbound_progress=0)
         mock_radio = MagicMock(spec=AudioCapable)
         mock_radio.backend_id = "icom_serial"
         mock_radio.capabilities = {"audio"}
@@ -1700,7 +1700,7 @@ class TestAudioHandlerCodecDetection:
         from rigplane.web.protocol import AUDIO_CODEC_PCM16, AUDIO_HEADER_SIZE
         from rigplane.ws import WebSocketConnection
 
-        mock_ws = MagicMock(spec=WebSocketConnection)
+        mock_ws = MagicMock(spec=WebSocketConnection, outbound_progress=0)
         mock_radio = MagicMock(spec=AudioCapable)
         mock_radio.capabilities = {"audio"}
         mock_radio.audio_codec = AudioCodec.PCM_2CH_16BIT
@@ -1758,7 +1758,7 @@ class TestAudioHandlerCodecDetection:
         from rigplane.web.protocol import AUDIO_CODEC_PCM16, AUDIO_HEADER_SIZE
         from rigplane.ws import WebSocketConnection
 
-        mock_ws = MagicMock(spec=WebSocketConnection)
+        mock_ws = MagicMock(spec=WebSocketConnection, outbound_progress=0)
         mock_radio = MagicMock(spec=AudioCapable)
         mock_radio.capabilities = {"audio"}
         mock_radio.audio_codec = AudioCodec.PCM_2CH_16BIT
@@ -1804,7 +1804,7 @@ class TestBroadcasterFrameMsInvariant:
         from rigplane.web.handlers import AudioBroadcaster, AudioHandler
         from rigplane.ws import WebSocketConnection
 
-        mock_ws = MagicMock(spec=WebSocketConnection)
+        mock_ws = MagicMock(spec=WebSocketConnection, outbound_progress=0)
         mock_radio = MagicMock(spec=AudioCapable)
         mock_radio.capabilities = {"audio"}
         mock_radio.audio_codec = audio_codec
@@ -1891,7 +1891,7 @@ class TestBroadcasterCodecInvalidation:
         from rigplane.web.handlers import AudioBroadcaster, AudioHandler
         from rigplane.ws import WebSocketConnection
 
-        mock_ws = MagicMock(spec=WebSocketConnection)
+        mock_ws = MagicMock(spec=WebSocketConnection, outbound_progress=0)
         mock_ws.send_text = AsyncMock()
         mock_radio = MagicMock(spec=AudioCapable)
         mock_radio.capabilities = {"audio", "lan_dual_rx_audio_routing"}
@@ -2072,7 +2072,7 @@ class TestAudioHandlerTxTranscoderRate:
         from rigplane.web.handlers import AudioBroadcaster, AudioHandler
         from rigplane.ws import WebSocketConnection
 
-        mock_ws = MagicMock(spec=WebSocketConnection)
+        mock_ws = MagicMock(spec=WebSocketConnection, outbound_progress=0)
         mock_radio = MagicMock(spec=AudioCapable)
         mock_radio.capabilities = {"audio", "tx"}
         mock_radio.backend_id = "yaesu_cat"
@@ -2172,7 +2172,7 @@ class TestAudioConfigRouting:
         from rigplane.web.handlers import AudioBroadcaster, AudioHandler
         from rigplane.ws import WebSocketConnection
 
-        mock_ws = MagicMock(spec=WebSocketConnection)
+        mock_ws = MagicMock(spec=WebSocketConnection, outbound_progress=0)
         mock_ws.send_text = AsyncMock()
         mock_radio = MagicMock(spec=AudioCapable)
         caps = {"audio"}

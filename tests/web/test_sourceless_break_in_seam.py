@@ -87,6 +87,8 @@ def _synthetic_profile():
 class _FrameRecorder:
     """The WS egress the handler writes reply frames to (plumbing only)."""
 
+    outbound_progress: int = 0
+
     def __init__(self) -> None:
         self.frames: list[dict[str, Any]] = []
 
