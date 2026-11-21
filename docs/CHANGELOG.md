@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.3.0rc3] — 2026-11-21
+
+Third release candidate of 3.3.0. 3.3.0rc2 was prepared but never tagged; this candidate is v3.3.0rc1 plus the fixes listed under 3.3.0rc2 and the addition below (found by review of the candidate's remote-access consumer).
+
 ### Added
 
 - `POST /api/v1/transport/webrtc/close` ends live WebRTC sessions over the existing HTTP API: `{"sessionId": id}` ends that peer, an absent or `null` `sessionId` ends every connected peer, both through the session manager's own shutdown teardown; closing with nothing connected is a no-op success and the manager still answers a later offer. The typed bodies `WebRtcClose` / `WebRtcCloseResult` (and the new `invalid_session` / `close_error` codes) are public tier 2 next to the offer contract, so Pro's remote-access switch ("let my other computers use this radio") can, when turned off, end the peers that are already connected. Like its siblings the route is refused (404) over the `api` data channel. (MOR-4587, MOR-272)
@@ -5371,8 +5375,9 @@ These deprecation closures were announced in v0.19 and dropped on schedule.
 - Transport layer, authentication, CI-V commands, meters, PTT, keep-alive.
 - Clean-room Icom LAN UDP protocol implementation.
 
-[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.3.0rc2...HEAD
-[3.3.0rc2]: https://github.com/rigplane/rigplane-core/compare/v3.3.0rc1...v3.3.0rc2
+[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.3.0rc3...HEAD
+[3.3.0rc3]: https://github.com/rigplane/rigplane-core/compare/v3.3.0rc1...v3.3.0rc3
+[3.3.0rc2]: https://github.com/rigplane/rigplane-core/compare/v3.3.0rc1...v3.3.0rc3
 [3.3.0rc1]: https://github.com/rigplane/rigplane-core/compare/v3.2.3...v3.3.0rc1
 [3.2.0rc11]: https://github.com/rigplane/rigplane-core/compare/v3.2.0rc10...v3.2.0rc11
 [3.2.0rc10]: https://github.com/rigplane/rigplane-core/compare/v3.2.0rc9...v3.2.0rc10
