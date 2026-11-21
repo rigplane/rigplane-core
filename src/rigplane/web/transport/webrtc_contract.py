@@ -1,7 +1,8 @@
 """Wire contract of the WebRTC answerer HTTP API (K6, MOR-272).
 
-``POST /api/v1/transport/webrtc/offer`` and
-``POST /api/v1/transport/webrtc/ice-candidate`` bodies, their answers and
+``POST /api/v1/transport/webrtc/offer``,
+``POST /api/v1/transport/webrtc/ice-candidate`` and
+``POST /api/v1/transport/webrtc/close`` bodies, their answers and
 error envelopes, plus the ``webrtc`` block of ``GET /api/v1/capabilities``.
 The server parses requests and builds responses through these types, so
 an out-of-process offerer or station agent that uses them (re-exported
@@ -19,6 +20,8 @@ from .ice_gathering import IceServer, parse_ice_servers  # noqa: TID251
 __all__ = [
     "IceCandidateInit",
     "WebRtcAnswer",
+    "WebRtcClose",
+    "WebRtcCloseResult",
     "WebRtcErrorCode",
     "WebRtcIceCandidate",
     "WebRtcOffer",
@@ -26,7 +29,7 @@ __all__ = [
     "WebRtcTransportStatus",
 ]
 
-#: Every ``code`` the two answerer routes answer an error with.
+#: Every ``code`` the answerer routes answer an error with.
 WebRtcErrorCode = Literal[
     "webrtc_unavailable",
     "missing_sdp",
@@ -35,6 +38,8 @@ WebRtcErrorCode = Literal[
     "missing_session",
     "invalid_candidate",
     "ice_error",
+    "invalid_session",
+    "close_error",
 ]
 
 
@@ -209,6 +214,51 @@ class WebRtcIceCandidate:
             "sessionId": self.session_id,
             "candidate": None if self.candidate is None else self.candidate.to_json(),
         }
+
+
+@dataclass(frozen=True, slots=True)
+class WebRtcClose:
+    """``POST /api/v1/transport/webrtc/close`` request body.
+
+    ``session_id`` ``None`` (absent or ``null``) closes every live
+    session; an id closes just that peer. Closing when nothing is open
+    is a success that closed nothing.
+    """
+
+    session_id: str | None = None
+
+    @classmethod
+    def from_json(cls, payload: Mapping[str, object]) -> Self:
+        session_id = payload.get("sessionId")
+        if session_id is not None and not (
+            isinstance(session_id, str) and session_id
+        ):
+            raise WebRtcRequestError(
+                "invalid_session", "Field 'sessionId' must be a non-empty string."
+            )
+        return cls(session_id=session_id)
+
+    def to_json(self) -> dict[str, str | None]:
+        return {"sessionId": self.session_id}
+
+
+@dataclass(frozen=True, slots=True)
+class WebRtcCloseResult:
+    """Successful close response: the ids of the sessions torn down."""
+
+    closed: tuple[str, ...] = ()
+
+    def to_json(self) -> dict[str, Any]:
+        return {"status": "ok", "closed": list(self.closed)}
+
+    @classmethod
+    def from_json(cls, payload: Mapping[str, object]) -> Self:
+        closed = payload.get("closed")
+        if payload.get("status") != "ok" or not (
+            isinstance(closed, list) and all(isinstance(item, str) for item in closed)
+        ):
+            raise ValueError(f"not a WebRTC close result: {dict(payload)!r}")
+        return cls(closed=tuple(closed))
 
 
 @dataclass(frozen=True, slots=True)

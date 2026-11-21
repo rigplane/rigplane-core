@@ -190,6 +190,8 @@ def _answerer() -> tuple[Any, Any, list[Any]]:
 
     manager._attach_and_serve = _capture  # type: ignore[method-assign]
     session = webrtc_session._Session(_FakePc())  # type: ignore[arg-type]
+    # Registered like negotiate() does: dispatch serves only a live session.
+    manager._sessions["sid"] = session
     return manager, session, served
 
 

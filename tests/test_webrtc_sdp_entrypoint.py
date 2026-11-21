@@ -88,6 +88,17 @@ async def test_ice_unavailable_when_gate_off() -> None:
 
 
 @pytest.mark.asyncio
+async def test_close_unavailable_when_gate_off() -> None:
+    """The close endpoint is gated off by default, like its siblings."""
+    server = WebServer(None, WebConfig())
+    writer = _FakeWriter()
+    await server._handle_webrtc_close(writer, {"content-length": "10"}, None)
+    code, body = _parse_response(writer)
+    assert code == 503
+    assert body["code"] == "webrtc_unavailable"
+
+
+@pytest.mark.asyncio
 async def test_offer_unavailable_when_extra_missing() -> None:
     """Gate on but aiortc absent → still cleanly unavailable.
 

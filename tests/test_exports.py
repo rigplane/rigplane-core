@@ -117,6 +117,8 @@ def test_public_api_surface() -> None:
         "apply_ice_gathering_policy",
         "WebRtcOffer",
         "WebRtcAnswer",
+        "WebRtcClose",
+        "WebRtcCloseResult",
         "WebRtcIceCandidate",
         "WebRtcRequestError",
         "WebRtcTransportStatus",

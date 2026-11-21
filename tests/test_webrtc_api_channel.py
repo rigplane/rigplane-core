@@ -33,7 +33,11 @@ import pytest
 from rigplane.testing.timing import await_until
 from rigplane.web.server import WebConfig, WebServer
 from rigplane.web.transport.webrtc import webrtc_available
-from rigplane.web.transport.webrtc_contract import WebRtcIceCandidate, WebRtcOffer
+from rigplane.web.transport.webrtc_contract import (
+    WebRtcClose,
+    WebRtcIceCandidate,
+    WebRtcOffer,
+)
 
 _webrtc = pytest.mark.skipif(
     not webrtc_available(), reason="aiortc extra not installed"
@@ -500,6 +504,7 @@ async def test_api_webrtc_signalling_routes_unreachable() -> None:
     assert {route.path for route in signalling} == {
         "/api/v1/transport/webrtc/offer",
         "/api/v1/transport/webrtc/ice-candidate",
+        "/api/v1/transport/webrtc/close",
     }
     for route in signalling:
         for method in route.methods or ("POST",):
@@ -530,6 +535,15 @@ async def test_api_webrtc_signalling_routes_unreachable() -> None:
             "/api/v1/transport/webrtc/ice-candidate",
             headers={"content-type": "application/json"},
             body=ice,
+        )
+        assert resp.status == 404, (resp.status, resp.body[:200])
+        close = json.dumps(WebRtcClose().to_json()).encode()
+        resp = await client.request(
+            3,
+            "POST",
+            "/api/v1/transport/webrtc/close",
+            headers={"content-type": "application/json"},
+            body=close,
         )
         assert resp.status == 404, (resp.status, resp.body[:200])
         assert len(server._webrtc_session_manager()._sessions) == sessions_before  # noqa: SLF001

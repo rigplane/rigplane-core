@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `POST /api/v1/transport/webrtc/close` ends live WebRTC sessions over the existing HTTP API: `{"sessionId": id}` ends that peer, an absent or `null` `sessionId` ends every connected peer, both through the session manager's own shutdown teardown; closing with nothing connected is a no-op success and the manager still answers a later offer. The typed bodies `WebRtcClose` / `WebRtcCloseResult` (and the new `invalid_session` / `close_error` codes) are public tier 2 next to the offer contract, so Pro's remote-access switch ("let my other computers use this radio") can, when turned off, end the peers that are already connected. Like its siblings the route is refused (404) over the `api` data channel. (MOR-4587, MOR-272)
+
 ## [3.3.0rc2] — 2026-11-21
 
 Second release candidate of 3.3.0: v3.3.0rc1 plus the fix below (found on the rc1 commit's rehearsal).

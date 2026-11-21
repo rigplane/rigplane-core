@@ -46,7 +46,7 @@ from rigplane.runtime.managed_tx_state import ManagedTxIntentKind
 from rigplane.testing.timing import await_until
 from rigplane.web import server as server_module
 from rigplane.web.api_channel import api_channel_golden_documents_from_json
-from rigplane.web.channel_attach import data_channels_for
+from rigplane.web.channel_attach import ClientChannelParams, data_channels_for
 from rigplane.web.protocol import (
     AUDIO_CODEC_PCM16,
     AUDIO_HEADER_SIZE,
@@ -55,6 +55,13 @@ from rigplane.web.protocol import (
 )
 from rigplane.web.server import WebConfig, WebServer
 from rigplane.web.transport.webrtc import webrtc_available
+from rigplane.web.transport.webrtc_contract import (
+    WebRtcAnswer,
+    WebRtcClose,
+    WebRtcCloseResult,
+    WebRtcOffer,
+    WebRtcRequestError,
+)
 from rigplane.web.web_startup import (
     attach_managed_tx_composition,
     prepare_managed_tx_observation_generation,
@@ -214,6 +221,8 @@ class _DcControlClient:
         self._channel: Any = None
         self._received: list[Any] = []
         self._closed = asyncio.Event()
+        # The answerer's session id, set by ``connect_via_http``.
+        self.session_id: str | None = None
 
     async def _prepare_pc(self) -> None:
         from aiortc import RTCPeerConnection
@@ -261,17 +270,17 @@ class _DcControlClient:
         assert self._pc is not None and self._channel is not None
         offer = await self._pc.createOffer()
         await self._pc.setLocalDescription(offer)
-        status, answer = await _http_post(
-            port,
-            "/api/v1/transport/webrtc/offer",
-            {
-                "sdp": self._pc.localDescription.sdp,
-                "type": self._pc.localDescription.type,
-            },
+        offer_body = WebRtcOffer(
+            sdp=self._pc.localDescription.sdp, type=self._pc.localDescription.type
         )
-        assert status == 200, answer
+        status, body = await _http_post(
+            port, "/api/v1/transport/webrtc/offer", offer_body.to_json()
+        )
+        assert status == 200, body
+        answer = WebRtcAnswer.from_json(body)
+        self.session_id = answer.session_id
         await self._pc.setRemoteDescription(
-            RTCSessionDescription(sdp=answer["sdp"], type=answer["type"])
+            RTCSessionDescription(sdp=answer.sdp, type=answer.type)
         )
         await await_until(
             lambda: self._channel.readyState == "open",
@@ -1110,6 +1119,212 @@ async def test_remote_mode_admissible_after_webrtc_offer(tmp_path: Path) -> None
             description="sim unkeyed",
         )
     finally:
+        await dc.close()
+        await _tear_down_stack(stack)
+
+
+async def _post_close(port: int, close: WebRtcClose) -> tuple[int, dict[str, Any]]:
+    """POST a typed close body through the real HTTP listener and router."""
+    return await _http_post(port, "/api/v1/transport/webrtc/close", close.to_json())
+
+
+@_webrtc
+async def test_close_route_ends_one_peer_and_next_offer_is_answered(
+    tmp_path: Path,
+) -> None:
+    """``POST .../webrtc/close`` with a session id ends that peer only.
+
+    The peer sees its channel close, the other peer keeps being served, a
+    second close of the same id is a typed ``close_error`` 404, and a later
+    offer is still answered (the manager stays usable).
+    """
+    stack = await _stand_up_stack(tmp_path)
+    first = _DcControlClient()
+    second = _DcControlClient()
+    later = _DcControlClient()
+    try:
+        # Attach right after each negotiate: an unattached channel is
+        # closed after 5 s, which would look like the close under test.
+        await first.connect_via_http(stack.web.port)
+        await first.attach(await _acquire_session(stack.web.port))
+        await second.connect_via_http(stack.web.port)
+        await second.attach(await _acquire_session(stack.web.port))
+        assert first.session_id is not None and second.session_id is not None
+        manager = stack.web._webrtc_sessions  # noqa: SLF001
+        assert manager is not None
+
+        status, body = await _post_close(stack.web.port, WebRtcClose(first.session_id))
+        assert status == 200, body
+        assert WebRtcCloseResult.from_json(body).closed == (first.session_id,)
+        assert manager.active_session_ids == [second.session_id]
+        await first.wait_closed()
+        await second.heartbeat()
+
+        status, body = await _post_close(stack.web.port, WebRtcClose(first.session_id))
+        assert status == 404, body
+        assert WebRtcRequestError.from_json(body).code == "close_error"
+
+        await later.connect_via_http(stack.web.port)
+        assert later.session_id not in (first.session_id, second.session_id)
+    finally:
+        await first.close()
+        await second.close()
+        await later.close()
+        await _tear_down_stack(stack)
+
+
+@_webrtc
+async def test_close_route_without_session_id_ends_every_peer(tmp_path: Path) -> None:
+    """A close with no session id ends every live peer through the route."""
+    stack = await _stand_up_stack(tmp_path)
+    peers = [_DcControlClient(), _DcControlClient()]
+    try:
+        for peer in peers:
+            await peer.connect_via_http(stack.web.port)
+            await peer.attach(await _acquire_session(stack.web.port))
+        manager = stack.web._webrtc_sessions  # noqa: SLF001
+        assert manager is not None
+        ids = {peer.session_id for peer in peers}
+
+        status, body = await _post_close(stack.web.port, WebRtcClose())
+        assert status == 200, body
+        assert set(WebRtcCloseResult.from_json(body).closed) == ids
+        assert manager.active_session_ids == []
+        for peer in peers:
+            await peer.wait_closed()
+    finally:
+        for peer in peers:
+            await peer.close()
+        await _tear_down_stack(stack)
+
+
+@_webrtc
+async def test_close_route_under_remote_control_ends_peer_and_releases_ptt(
+    tmp_path: Path,
+) -> None:
+    """The remote-access switch-off while a remote peer holds control and TX.
+
+    Remote mode, the peer keyed the radio over its data channel; a local
+    close through the HTTP route is admitted, the peer sees its channel
+    close, and the session-end path the channel teardown already runs
+    releases the grant and unkeys the radio — well inside the controller
+    TTL, so expiry is not what releases it.
+    """
+    stack = await _stand_up_stack(tmp_path)
+    dc = _DcControlClient()
+    try:
+        await dc.connect_via_http(stack.web.port)
+        status, _ = await _http_post(
+            stack.web.port, "/api/v1/controller/mode", {"mode": "remote"}
+        )
+        assert status == 200, status
+        key = await _acquire_session(stack.web.port)
+        hello = await dc.attach(key)
+        assert hello["type"] == "hello"
+        keyed = await dc.command("key-1", "ptt_on")
+        assert keyed.get("ok") is True, keyed
+        await await_until(
+            lambda: stack.sim.ptt_on is True, timeout=10.0, description="sim keyed"
+        )
+        assert dc.session_id is not None
+
+        status, body = await _post_close(stack.web.port, WebRtcClose(dc.session_id))
+        assert status == 200, body
+        assert WebRtcCloseResult.from_json(body).closed == (dc.session_id,)
+        await dc.wait_closed(timeout=3.0)
+        await await_until(
+            lambda: stack.sim.ptt_on is False,
+            timeout=3.0,
+            description="PTT released by the session end",
+        )
+        await await_until(
+            lambda: stack.web._controller.status()["state"] == "idle",  # noqa: SLF001
+            timeout=3.0,
+            description="remote grant released",
+        )
+    finally:
+        await dc.close()
+        await _tear_down_stack(stack)
+
+
+@_webrtc
+async def test_close_dispatches_no_channel_arriving_during_teardown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A channel that arrives while its session tears down gets no handler.
+
+    The attached handler's cleanup is held open after the close cancels
+    it; meanwhile the peer opens a new channel and sends its attach frame.
+    That channel must be closed without being dispatched (nothing reaches
+    a handler on a peer being closed), and the close completes once the
+    held cleanup finishes.
+    """
+    stack = await _stand_up_stack(tmp_path)
+    dc = _DcControlClient()
+    attached: list[str] = []
+    cleanup_started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def held_attach(
+        conn: Any,
+        kind: str,
+        params: ClientChannelParams,
+        peer: tuple[str, int],
+        *,
+        transport: str,
+        track_owners: set[str] | None = None,
+    ) -> None:
+        attached.append(kind)
+        try:
+            await release.wait()
+        except asyncio.CancelledError:
+            cleanup_started.set()
+            await release.wait()
+            raise
+
+    monkeypatch.setattr(stack.web, "attach_client_channel", held_attach)
+    close_task: asyncio.Task[tuple[int, dict[str, Any]]] | None = None
+    try:
+        await dc.connect_via_http(stack.web.port)
+        assert dc.session_id is not None
+        key = await _acquire_session(stack.web.port)
+        attach_frame = ClientChannelParams(controller_key=key).to_attach_frame()
+        dc._channel.send(attach_frame)  # noqa: SLF001
+        await await_until(
+            lambda: attached == ["control"], timeout=10.0, description="attached"
+        )
+
+        close_task = asyncio.ensure_future(
+            _post_close(stack.web.port, WebRtcClose(dc.session_id))
+        )
+        await await_until(
+            cleanup_started.is_set, timeout=10.0, description="teardown in progress"
+        )
+        late = dc._pc.createDataChannel("api", ordered=True)  # noqa: SLF001
+
+        @late.on("open")  # type: ignore[misc, no-untyped-call]
+        def _on_open() -> None:
+            late.send(attach_frame)
+
+        await await_until(
+            lambda: late.readyState == "closed",
+            timeout=10.0,
+            description="late channel closed undispatched",
+        )
+        assert attached == ["control"]
+        assert not close_task.done()
+
+        release.set()
+        status, body = await asyncio.wait_for(close_task, timeout=10.0)
+        assert status == 200, body
+        assert WebRtcCloseResult.from_json(body).closed == (dc.session_id,)
+    finally:
+        release.set()
+        if close_task is not None:
+            if not close_task.done():
+                close_task.cancel()
+            with contextlib.suppress(BaseException):
+                await close_task
         await dc.close()
         await _tear_down_stack(stack)
 

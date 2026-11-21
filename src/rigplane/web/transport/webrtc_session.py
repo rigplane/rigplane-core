@@ -272,15 +272,34 @@ class WebRtcSessionManager:
         except Exception as exc:
             raise WebRtcSessionError(f"Failed to add ICE candidate: {exc}") from exc
 
-    async def close_all(self) -> None:
-        """Tear down every live session (server shutdown)."""
-        sessions = list(self._sessions.values())
+    async def close_all(self) -> list[str]:
+        """Tear down every live session; return the ids whose teardown completed.
+
+        The one teardown path for the whole peer set: Core shutdown and
+        the ``close`` route's close-all form both end here. A session whose
+        teardown raised is logged and left out of the returned ids.
+        """
+        sessions = list(self._sessions.items())
         self._sessions.clear()
-        for session in sessions:
+        closed: list[str] = []
+        for session_id, session in sessions:
             try:
                 await session.close()
             except Exception:  # noqa: BLE001 - best-effort shutdown
                 logger.debug("session close failed", exc_info=True)
+                continue
+            closed.append(session_id)
+        return closed
+
+    async def close_session(self, session_id: str) -> None:
+        """Tear down one live session through the existing drop path.
+
+        Raises :class:`WebRtcSessionError` for an unknown session, like
+        :meth:`add_ice_candidate`.
+        """
+        if session_id not in self._sessions:
+            raise WebRtcSessionError(f"Unknown session: {session_id}")
+        await self._drop(session_id)
 
     @property
     def active_session_ids(self) -> list[str]:
@@ -334,7 +353,20 @@ class WebRtcSessionManager:
         before its partner (the attach frame included) is kept. A half
         whose partner does not arrive within the attach bound is closed,
         and so is a channel whose label is outside the channel set.
+
+        A channel that arrives for a session already removed from the
+        registry (its teardown is in progress: :meth:`_drop` and
+        :meth:`close_all` remove a session before awaiting its handlers)
+        is closed without a handler, so nothing is dispatched on a peer
+        being closed and its teardown never waits on a late handler.
         """
+        if self._sessions.get(session_id) is not session:
+            logger.info(
+                "WebRTC: closing %r channel of a session being closed", channel.label
+            )
+            with contextlib.suppress(Exception):
+                channel.close()
+            return
         spec = data_channel_spec(channel.label)
         if spec is None:
             logger.info("WebRTC: closing unknown data channel %r", channel.label)
