@@ -63,6 +63,50 @@ expect 0 "lock: acquire after release succeeds" bash "$LOCK" acquire ic7300 run-
 echo "0 run-3" > "$BENCH_LOCK_DIR/ic7300.lock/owner"
 expect 0 "lock: a stale lock is taken over" bash "$LOCK" acquire ic7300 run-4
 expect 0 "lock: the new owner can release it" bash "$LOCK" release ic7300 run-4
+
+# --- lock: stale recovery for ownerless and dead-pid locks (S3) -------------------
+busy_after_acquire() {
+    # A successful takeover must actually hold: a second acquire stays busy.
+    expect 3 "lock: $1 is held after takeover" bash "$LOCK" acquire ftx1 "$2"
+}
+# No owner file at all: the directory mtime ages it, not instant takeover.
+rm -rf "$BENCH_LOCK_DIR/ftx1.lock"
+mkdir "$BENCH_LOCK_DIR/ftx1.lock"
+expect 3 "lock: a fresh ownerless lock is still busy" bash "$LOCK" acquire ftx1 run-5
+touch -t 202001010000 "$BENCH_LOCK_DIR/ftx1.lock"
+expect 0 "lock: an ownerless lock past the stale bound is taken over" bash "$LOCK" acquire ftx1 run-5
+busy_after_acquire "an ownerless lock" run-9
+expect 0 "lock: ownerless takeover is releasable" bash "$LOCK" release ftx1 run-5
+# A lock whose owner file is unreadable garbage ages by mtime too.
+mkdir "$BENCH_LOCK_DIR/ftx1.lock"
+echo "not-an-epoch run-x" > "$BENCH_LOCK_DIR/ftx1.lock/owner"
+expect 3 "lock: a fresh unparsable owner is still busy" bash "$LOCK" acquire ftx1 run-6
+touch -t 202001010000 "$BENCH_LOCK_DIR/ftx1.lock"
+expect 0 "lock: an unparsable-owner lock past the stale bound is taken over" bash "$LOCK" acquire ftx1 run-6
+busy_after_acquire "an unparsable-owner lock" run-9
+expect 0 "lock: unparsable-owner takeover is releasable" bash "$LOCK" release ftx1 run-6
+# A leading-zero epoch must be compared numerically, not abort as bad octal.
+mkdir "$BENCH_LOCK_DIR/ftx1.lock"
+echo "08 run-x" > "$BENCH_LOCK_DIR/ftx1.lock/owner"
+expect 0 "lock: a leading-zero epoch does not abort the stale check" bash "$LOCK" acquire ftx1 run-6b
+busy_after_acquire "a leading-zero-epoch lock" run-9
+expect 0 "lock: leading-zero takeover is releasable" bash "$LOCK" release ftx1 run-6b
+# A dead holder pid is stale even with a fresh epoch.
+sleep 30 & LIVE_PID=$!
+trap 'kill "$LIVE_PID" 2>/dev/null; rm -rf "$WORK"' EXIT
+sleep 0.1 & DEAD_PID=$!
+wait "$DEAD_PID" 2>/dev/null || true
+kill -0 "$DEAD_PID" 2>/dev/null && { echo "test bug: $DEAD_PID should be dead"; exit 1; }
+mkdir "$BENCH_LOCK_DIR/ftx1.lock"
+echo "$(date +%s) run-dead $DEAD_PID" > "$BENCH_LOCK_DIR/ftx1.lock/owner"
+expect 0 "lock: a dead owner pid is taken over" bash "$LOCK" acquire ftx1 run-7
+busy_after_acquire "a dead-pid lock" run-9
+echo "$(date +%s) run-live $LIVE_PID" > "$BENCH_LOCK_DIR/ftx1.lock/owner"
+expect 3 "lock: a live owner pid with a fresh epoch is still busy" bash "$LOCK" acquire ftx1 run-8
+expect 0 "lock: live-pid holder releases" bash "$LOCK" release ftx1 run-live
+kill "$LIVE_PID" 2>/dev/null || true
+wait "$LIVE_PID" 2>/dev/null || true
+LIVE_PID=""  # reaped: clear so the EXIT trap cannot signal a reused pid
 expect 2 "lock: missing arguments are a usage error" bash "$LOCK" acquire
 
 echo "passed=$PASSED failed=$FAILED"
