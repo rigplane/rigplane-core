@@ -1,17 +1,26 @@
 import { apiFetch } from '../api/api-fetch';
+import { CONTROLLER_TOAST_CODES } from '../controller-toast-codes';
+
+export { CONTROLLER_TOAST_CODES };
+
 type Role = 'primary' | 'auxiliary';
 type Grant = { controller_key: string; generation: number; controller_role?: Role };
 type Sender = (message: { type: 'controller_heartbeat' }) => void;
 
+// English-stable fallback text for logs and no-code surfaces. The rendered
+// UI text is localized: `ControllerClientError.code` is a wire-protocol
+// reason code (the Python server emits the same snake_case codes in HTTP
+// error bodies), and CONTROLLER_TOAST_CODES maps it to the camelCase toast
+// code resolved via `core.toast.<code>` in the i18n catalogs (MOR-4250).
 const messages = {
-  controller_busy: 'Управление занято другим клиентом. Подключитесь после освобождения.',
-  controller_invalid: 'Станция отказала в доступе к удалённому управлению.',
-  controller_lost: 'Удалённое управление потеряно. Подключитесь заново.',
-  controller_not_ready: 'Станция пока не готова к удалённому управлению.',
-  controller_unsupported: 'Станция не поддерживает этот протокол управления.',
-  controller_local_required: 'Это действие доступно только на локальном хосте.',
-  remote_disabled: 'Удалённое управление на хосте выключено.',
-};
+  controller_busy: 'Remote control is held by another client. Connect once it is released.',
+  controller_invalid: 'The station denied access to remote control.',
+  controller_lost: 'Remote control was lost. Reconnect.',
+  controller_not_ready: 'The station is not ready for remote control yet.',
+  controller_unsupported: 'The station does not support this control protocol.',
+  controller_local_required: 'This action is only available on the local host.',
+  remote_disabled: 'Remote control is disabled on this host.',
+} as const;
 type Code = keyof typeof messages;
 
 export class ControllerClientError extends Error {

@@ -36,7 +36,7 @@ import {
 } from '$lib/stores/audio.svelte';
 import * as transport from '$lib/transport/ws-client';
 import { fetchInfo, fetchMemoryPage } from '$lib/transport/http-client';
-import { controllerClient } from '$lib/transport/controller-client';
+import { controllerClient, CONTROLLER_TOAST_CODES } from '$lib/transport/controller-client';
 import { audioManager } from '$lib/audio/audio-manager';
 import { makeAudioRoutingHandlers } from './commands/panel-commands';
 import { clearLegacyPendingModInputRestore } from './adapters/mod-input-auto.svelte';
@@ -453,7 +453,7 @@ class FrontendRuntime {
         if (controllerClient.remote) {
           // MOR-3753: automatic teardown — preserve a latched audio failure.
           void systemController.disconnect({ automatic: true }).catch(() => {
-            transport.emitLocalNotification('error', 'Удалённое управление потеряно. Подключитесь заново.', 'controller_lost');
+            transport.emitLocalNotification('error', 'Remote control was lost. Reconnect.', CONTROLLER_TOAST_CODES.controller_lost);
           });
           return;
         }
