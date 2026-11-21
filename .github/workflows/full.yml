@@ -7,12 +7,13 @@ name: Tests (full matrix)
 # only repeated it (MOR-3878).
 on:
   schedule:
-    # Weekdays, every 3 hours from 00:00 UTC. Main only advances through the
-    # merge queue, so this is the broader safety net behind it; three hours
-    # keeps a regression inside the working session of whoever merged it, and
-    # at most 8 runs a day replaces a run per merge. A tick whose commit
-    # already passed this workflow is skipped by the `fresh` job.
-    - cron: "0 */3 * * 1-5"
+    # Twice a day, every day, 06:00 and 18:00 UTC (adviser decision 2026-11-20):
+    # the 3-hourly weekday run's four ~25 min legs took ~1.7 build slots all day,
+    # FIFO ahead of merge-group jobs, while weekends had no full matrix at all.
+    # Main only advances through the merge queue, so this stays the broader safety
+    # net behind it, within half a day. A tick whose commit already passed this
+    # workflow is skipped by the `fresh` job.
+    - cron: "0 6,18 * * *"
   workflow_dispatch:
     inputs:
       rc:
