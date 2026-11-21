@@ -52,8 +52,11 @@ Each job:
    <radio>` takes a per-radio `mkdir` lock under `/tmp/rigplane-bench-locks`
    (`BENCH_LOCK_DIR`). A held lock records `<radio>: skipped: busy`, the
    radio steps are skipped, and the job fails red in the `Outcome: busy`
-   step. A lock older than two hours (`BENCH_LOCK_STALE_SECONDS`) is taken
-   over. Only processes that use this script see the lock. The simulator leg
+   step. A lock is taken over when its owner epoch is older than two hours
+   (`BENCH_LOCK_STALE_SECONDS`), when it has no usable owner file and its
+   directory mtime is older than that bound, or when its owner file records
+   a holder pid that is no longer alive. Only processes that use this script
+   see the lock. The simulator leg
    skips the lock (no shared bench hardware) but still runs the guard.
 3. **Validate.** `rigplane validate --hardware --allow-hardware --read-only`
    with `--provider native` (or `both` on manual dispatch).
