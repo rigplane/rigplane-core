@@ -1073,8 +1073,10 @@ class ControlHandler:
         self._last_ptt_on = False
         self._managed_tx_authority = managed_tx_authority
         self._subscribed_streams: set[str] = set()
+        self._handler_task: asyncio.Task[None] | None = None
         self._event_queue: BoundedQueue[dict[str, Any]] = BoundedQueue(
             maxsize=100,
+            on_replace_overflow=self._abort_outbound,
         )
         # Per-command rate limiting: coalesce_key -> last physical-enqueue
         # time (MOR-1499: keyed by ``_coalesce_key``, not the bare name).
@@ -1154,7 +1156,13 @@ class ControlHandler:
                 if isinstance(exc, asyncio.CancelledError):
                     raise
                 return
+        self._handler_task = asyncio.current_task()
         event_task: asyncio.Task[None] = asyncio.create_task(self._event_sender_loop())
+
+        def sender_stopped(_task: asyncio.Task[None]) -> None:
+            self._abort_outbound()
+
+        event_task.add_done_callback(sender_stopped)
         try:
             # Inside the try, so the finally below owns every exit from here on;
             # ahead of the recv loop, so no command of ours can be enqueued
@@ -1172,6 +1180,8 @@ class ControlHandler:
         except EOFError:
             pass
         finally:
+            self._handler_task = None
+            event_task.remove_done_callback(sender_stopped)
             controller = getattr(self._radio, "_controller_authority", None)
             if isinstance(controller, ControllerAuthority):
                 controller.disconnect_control(self._session_id)
@@ -1217,13 +1227,20 @@ class ControlHandler:
             if teardown_error is not None:
                 raise teardown_error
 
+    def _abort_outbound(self) -> None:
+        # Interrupt backend awaits as well as recv; run's finally owns cleanup.
+        task = self._handler_task
+        if task is not None and not task.done() and not task.cancelling():
+            task.cancel()
+        self._ws.abort()
+
     async def _event_sender_loop(self) -> None:
         """Drain event queue and forward events to WebSocket."""
         try:
             while True:
                 event = await self._event_queue.get()
                 msg_type = event.get("type")
-                if msg_type == "notification":
+                if msg_type in ("notification", "response"):
                     await self._send_json(event)
                 elif msg_type == "state_update":
                     # Always forward state updates (clients need fresh state)
@@ -1741,6 +1758,15 @@ class ControlHandler:
                 command_id=str(cmd_id),
                 source="websocket",
             )
+            enqueue_baseline = getattr(
+                self._server, "enqueue_control_state_baseline", None
+            )
+            if callable(enqueue_baseline):
+                enqueue_baseline(self._event_queue)
+                self._event_queue.put_nowait(
+                    {"type": "response", "id": cmd_id, "ok": True, "result": result}
+                )
+                return
             await self._ws.send_text(
                 encode_json(
                     {
@@ -1751,6 +1777,9 @@ class ControlHandler:
                     }
                 )
             )
+        except asyncio.QueueFull as exc:
+            self._abort_outbound()
+            raise EOFError("control event queue full") from exc
         except Exception as exc:
             await self._send_command_failure(cmd_id, name, exc)
 

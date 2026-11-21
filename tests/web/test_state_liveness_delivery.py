@@ -6,9 +6,18 @@ See ``docs/architecture/state-delivery-liveness.md``.
 from __future__ import annotations
 
 import asyncio
+import json
+from collections.abc import Callable
+from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock, Mock
 
+import aiohttp
 import pytest
+
+from serial_stub import SerialMockRadio
+from test_managed_tx_authority import FakeConfigStore, FakeFence, FakeLane
+from test_web_auth_compare_digest import _MemoryWriter
 
 from rigplane.core._bounded_queue import BoundedQueue
 from rigplane.core.state_pipeline_contracts import (
@@ -18,21 +27,40 @@ from rigplane.core.state_pipeline_contracts import (
     SourceMetadata,
 )
 from rigplane.radio import IcomRadio
+from rigplane.runtime.managed_tx_authority import ManagedTxAuthority
+from rigplane.runtime.managed_tx_state import ActuationOperation, ManagedTxIntentKind
 from rigplane.testing.timing import VirtualClock
 from rigplane.web import runtime_helpers
 from rigplane.web import server as server_module
+from rigplane.web._delta_encoder import apply_delta
+from rigplane.web.handlers.control import ControlHandler
+from rigplane.web.radio_poller import RadioPoller
 from rigplane.web.server import (
     COMMAND_FOLLOWUP_WINDOW_S,
     LIVENESS_DELIVERY_INTERVAL_S,
     WebConfig,
     WebServer,
 )
+from rigplane.ws import WS_OP_TEXT, WebSocketConnection, make_frame
 
 PTT = FieldPath.global_("tx_state", "ptt")
 FREQ = FieldPath.active("0", "freq_mode", "freq_hz")
 # The PTT poll alone runs at ~20/s on a live Icom; 1/16 s keeps the clock exact
 # and clears the 50 ms coalescing window on every answer.
 POLL_PERIOD_S = 0.0625
+
+
+class _GainRadio(SerialMockRadio):
+    def __init__(self) -> None:
+        super().__init__(model="IC-7610")
+        self.gain_writes: list[tuple[int, int]] = []
+
+    def supports_command(self, command: str, *, receiver: int = 0) -> bool:
+        return command == "set_rf_gain" and receiver == 0
+
+    async def set_rf_gain(self, level: int, receiver: int = 0) -> None:
+        self.gain_writes.append((level, receiver))
+        await super().set_rf_gain(level, receiver=receiver)
 
 
 @pytest.fixture
@@ -223,3 +251,390 @@ async def test_held_back_liveness_is_flushed_when_the_interval_ends(
     assert (
         flushed["observationSeq"] == srv.command_state_store.snapshot().observation_seq
     )
+
+
+@pytest.mark.parametrize("query", ["", "?state_delta=2"])
+def test_held_target_observation_precedes_ack_over_ws(
+    clock: VirtualClock, monkeypatch: pytest.MonkeyPatch, query: str
+) -> None:
+    monkeypatch.setattr(server_module, "asyncio", asyncio)
+
+    async def scenario() -> None:
+        radio = _GainRadio()
+        await radio.connect()
+        await SerialMockRadio.set_rf_gain(radio, 128, receiver=0)
+        srv = WebServer(radio, WebConfig(host="127.0.0.1", port=0))
+        gain = FieldPath.receiver("0", "operator_controls", "rf_gain")
+        held_delivery = asyncio.Event()
+
+        async def park_delivery(_delay: float) -> None:
+            # No timer can release the held observation before the ACK.
+            await held_delivery.wait()
+
+        monkeypatch.setattr(srv, "_delayed_state_broadcast", park_delivery)
+
+        def observe(path: FieldPath, value: object) -> None:
+            srv.command_state_store.apply(_observation(path, value, clock.now))
+            srv._broadcast_state_update()  # noqa: SLF001
+
+        srv.command_state_store.apply(_observation(gain, 128, clock.now))
+        srv.command_state_store.apply(_observation(PTT, False, clock.now))
+        # Only start the real listener; no poller consumes the command yet.
+        srv._server = await asyncio.start_server(  # noqa: SLF001
+            srv._accept_client,
+            "127.0.0.1",
+            0,  # noqa: SLF001
+        )
+        try:
+            async with aiohttp.ClientSession() as session:
+                url = f"ws://127.0.0.1:{srv.port}/api/v1/ws{query}"
+                async with session.ws_connect(url) as ws:
+                    state: dict[str, Any] = {}
+
+                    async def receive_until(
+                        matches: Callable[[dict[str, Any]], bool],
+                    ) -> dict[str, Any]:
+                        nonlocal state
+                        while True:
+                            frame = await ws.receive()
+                            assert frame.type == aiohttp.WSMsgType.TEXT
+                            message = json.loads(frame.data)
+                            if message["type"] == "state_update":
+                                state = apply_delta(state, message["data"])
+                            if matches(message):
+                                return message
+
+                    await receive_until(lambda msg: msg["type"] == "state_update")
+                    assert (
+                        state["fieldStatus"]["main.rfGain"]["lastObservedMonotonic"]
+                        == 1000.0
+                    )
+                    assert state["main"]["rfGain"] == pytest.approx(128 / 255)
+
+                    clock.advance(0.1)
+                    observe(gain, 128)  # 1000.1: held pre-command observation
+                    assert srv._pending_liveness_delivery_task is not None  # noqa: SLF001
+
+                    clock.advance(0.1)
+                    await ws.send_json(
+                        {
+                            "type": "cmd",
+                            "id": "same-gain",
+                            "name": "set_rf_gain",
+                            "params": {"level": 128, "receiver": 0},
+                        }
+                    )
+                    ack = await receive_until(
+                        lambda msg: (
+                            msg["type"] == "response" and msg["id"] == "same-gain"
+                        )
+                    )
+                    assert ack["ok"] is True
+                    ack_boundary = state["fieldStatus"]["main.rfGain"][
+                        "lastObservedMonotonic"
+                    ]
+                    assert radio.gain_writes == []
+
+                    clock.advance(0.1)
+                    observe(PTT, False)  # 1000.3: unrelated poll releases the hold
+                    await receive_until(
+                        lambda msg: (
+                            msg["type"] == "state_update"
+                            and state["fieldStatus"]["ptt"]["lastObservedMonotonic"]
+                            == clock.now
+                        )
+                    )
+                    assert radio.gain_writes == []
+                    assert ack_boundary == 1000.1
+                    assert (
+                        state["fieldStatus"]["main.rfGain"]["lastObservedMonotonic"]
+                        == ack_boundary
+                    )
+                    assert state["main"]["rfGain"] == pytest.approx(128 / 255)
+
+                    poller = RadioPoller(
+                        radio,
+                        srv.command_queue,
+                        state_store=srv.command_state_store,
+                        clock=clock,
+                    )
+                    [entry] = srv.command_queue.drain_entries()
+                    await poller._execute_queued_entry(entry)  # noqa: SLF001
+                    assert radio.gain_writes == [(128, 0)]
+                    clock.advance(0.1)
+                    observe(gain, await radio.get_rf_gain(receiver=0))
+                    await receive_until(
+                        lambda msg: (
+                            msg["type"] == "state_update"
+                            and state["fieldStatus"]["main.rfGain"][
+                                "lastObservedMonotonic"
+                            ]
+                            == clock.now
+                        )
+                    )
+                    assert (
+                        state["fieldStatus"]["main.rfGain"]["lastObservedMonotonic"]
+                        > ack_boundary
+                    )
+        finally:
+            await srv.stop()
+
+    clock.run(scenario)
+
+
+@pytest.mark.parametrize(
+    "failure", ["sender_error", "baseline_overflow", "fanout_overflow"]
+)
+def test_outbound_failure_cancels_pending_managed_ptt(
+    clock: VirtualClock, monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    monkeypatch.setattr(server_module, "asyncio", asyncio)
+
+    async def scenario() -> None:
+        radio = _GainRadio()
+        await radio.connect()
+        radio._civ_epoch = 1  # noqa: SLF001
+        srv = WebServer(radio, WebConfig(radio_model="IC-7610"))
+        lane = FakeLane()
+        authority = ManagedTxAuthority(
+            lane, FakeConfigStore(), FakeFence(), provider_generation=7, clock=clock
+        )
+        poller = RadioPoller(
+            radio,
+            srv.command_queue,
+            state_store=srv.command_state_store,
+            managed_tx_authority=authority,
+            clock=clock,
+        )
+        assert srv.command_queue.capture_connection_generation() == radio._civ_epoch  # noqa: SLF001
+        reader = asyncio.StreamReader()
+        writer = _StalledWriter(reader)
+        ws = WebSocketConnection(reader, writer, clock=clock)  # type: ignore[arg-type]
+        handler = ControlHandler(
+            ws,
+            radio,
+            "test",
+            "IC-7610",
+            server=srv,
+            session_id="pending-ptt",
+            managed_tx_authority=authority,
+            clock=clock,
+        )
+        disconnect = AsyncMock(wraps=authority.owner_disconnect)
+        monkeypatch.setattr(authority, "owner_disconnect", disconnect)
+        unregister = Mock(wraps=srv.unregister_control_event_queue)
+        monkeypatch.setattr(srv, "unregister_control_event_queue", unregister)
+        task = asyncio.create_task(handler.run())
+        consumer: asyncio.Task[None] | None = None
+        poller_release = asyncio.Event()
+        try:
+            await clock.elapse(0)
+            q = handler._event_queue  # noqa: SLF001
+            assert srv.command_queue.session_is_live("pending-ptt")
+            assert q in srv._control_event_queues  # noqa: SLF001
+            writer.stall = True
+            q.put_nowait({"type": "notification"})
+            await writer.draining.wait()
+            reader.feed_data(
+                make_frame(
+                    WS_OP_TEXT,
+                    json.dumps(
+                        {"type": "cmd", "id": "key", "name": "ptt_on", "params": {}}
+                    ).encode(),
+                )
+            )
+            await clock.elapse(0)
+            entry = srv.command_queue.take_entry()
+            assert entry is not None
+            assert entry.positive_tx_submission is not None
+            assert not entry.positive_tx_submission.done()
+            assert entry.positive_tx_ready is not None
+            assert not entry.positive_tx_ready.done()
+            assert entry.future is not None and not entry.future.done()
+            assert not task.done()
+            assert not lane.effects
+
+            async def consume() -> None:
+                await poller_release.wait()
+                await poller._execute_queued_entry(entry)  # noqa: SLF001
+
+            consumer = asyncio.create_task(consume())
+            if failure == "sender_error":
+                writer.release.set()
+            else:
+                for command_id in range(q.maxsize):
+                    q.put_nowait({"type": "response", "id": command_id, "ok": True})
+                if failure == "baseline_overflow":
+                    srv.enqueue_control_state_baseline(q)
+                else:
+                    srv._broadcast_state_update(force=True)  # noqa: SLF001
+            await clock.elapse(0)
+            poller_release.set()
+            await clock.elapse(0)
+
+            assert task.done()
+            assert consumer.done()
+            await consumer
+            assert ActuationOperation.PTT_ON not in [e.operation for e in lane.effects]
+            assert (
+                await authority.snapshot()
+            ).state.intent.kind is ManagedTxIntentKind.RX
+            assert entry.positive_tx_submission.done()
+            assert entry.future.cancelled()
+            disconnect.assert_awaited_once_with("pending-ptt")
+            assert writer.closed
+            assert not srv.command_queue.session_is_live("pending-ptt")
+            assert not srv.command_queue.has_commands
+            assert q not in srv._control_event_queues  # noqa: SLF001
+            assert "pending-ptt" not in srv._session_queues  # noqa: SLF001
+            unregister.assert_called_once_with(q, session_id="pending-ptt")
+            assert not handler._cmd_pending  # noqa: SLF001
+            assert not handler._cmd_flush_tasks  # noqa: SLF001
+            [outcome] = await asyncio.gather(task, return_exceptions=True)
+            assert isinstance(outcome, (ConnectionError, asyncio.CancelledError))
+        finally:
+            poller_release.set()
+            task.cancel()
+            if consumer is not None:
+                consumer.cancel()
+                await asyncio.gather(consumer, return_exceptions=True)
+            await asyncio.gather(task, return_exceptions=True)
+            await authority.close()
+            await srv.stop()
+
+    clock.run(scenario)
+
+
+class _StalledWriter(_MemoryWriter):
+    def __init__(self, reader: asyncio.StreamReader) -> None:
+        super().__init__()
+        self.transport = SimpleNamespace(abort=self.abort)
+        self.reader = reader
+        self.stall = False
+        self.draining = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def drain(self) -> None:
+        if self.stall:
+            self.draining.set()
+            await self.release.wait()
+            raise ConnectionError("peer stopped reading")
+
+    def abort(self) -> None:
+        self.close()
+        self.reader.feed_eof()
+        self.release.set()
+
+
+@pytest.mark.parametrize(
+    "failure", ["ack_overflow", "baseline_overflow", "fanout_overflow", "sender_error"]
+)
+def test_stalled_control_client_tears_down(
+    clock: VirtualClock, monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    monkeypatch.setattr(server_module, "asyncio", asyncio)
+
+    async def scenario() -> None:
+        radio = _GainRadio()
+        await radio.connect()
+        srv = WebServer(radio, WebConfig(radio_model="IC-7610"))
+        srv.command_queue.bind_connection_generation(lambda: radio)
+        assert srv.command_queue.capture_connection_generation() is radio
+        reader = asyncio.StreamReader()
+        writer = _StalledWriter(reader)
+        ws = WebSocketConnection(reader, writer, clock=clock)  # type: ignore[arg-type]
+        disconnect = AsyncMock()
+        handler = ControlHandler(
+            ws,
+            radio,
+            "test",
+            "IC-7610",
+            server=srv,
+            session_id="stalled-channel",
+            tx_owner="ptt-owner",
+            managed_tx_authority=SimpleNamespace(owner_disconnect=disconnect),  # type: ignore[arg-type]
+            clock=clock,
+        )
+        handler._last_ptt_on = True  # noqa: SLF001
+        task = asyncio.create_task(handler.run())
+        try:
+            await clock.elapse(0)
+            assert srv.command_queue.session_is_live("stalled-channel")
+            q = handler._event_queue  # noqa: SLF001
+            assert q in srv._control_event_queues  # noqa: SLF001
+            writer.stall = True
+            q.put_nowait({"type": "notification"})
+            await clock.elapse(0)
+            assert writer.draining.is_set()
+
+            if failure == "ack_overflow":
+                for command_id in range(q.maxsize + 1):
+                    reader.feed_data(
+                        make_frame(
+                            WS_OP_TEXT,
+                            json.dumps(
+                                {
+                                    "type": "cmd",
+                                    "id": command_id,
+                                    "name": "set_rf_gain",
+                                    "params": {"level": 128, "receiver": 0},
+                                }
+                            ).encode(),
+                        )
+                    )
+                    await clock.elapse(POLL_PERIOD_S)
+                    if task.done():
+                        break
+                assert command_id == q.maxsize - 1
+                entries = srv.command_queue.drain_entries()
+                assert entries[-1].command_id == str(command_id)
+                assert entries[-1].connection_generation == (
+                    srv.command_queue.capture_connection_generation()
+                )
+                queued = [q.get_nowait() for _ in range(q.qsize())]
+                assert queued[0]["type"] == "state_update"
+                responses = queued[1:]
+                assert len(responses) == command_id
+                assert all(
+                    response["type"] == "response" and response["ok"] is True
+                    for response in responses
+                )
+                assert [response["id"] for response in responses] == list(
+                    range(command_id)
+                )
+            elif failure in {"baseline_overflow", "fanout_overflow"}:
+                responses = [
+                    {"type": "response", "id": i, "ok": True} for i in range(q.maxsize)
+                ]
+                for response in responses:
+                    q.put_nowait(response)
+                if failure == "baseline_overflow":
+                    srv.enqueue_control_state_baseline(q)
+                else:
+                    srv._broadcast_state_update(force=True)  # noqa: SLF001
+                assert writer.closed
+                assert [q.get_nowait() for _ in range(q.qsize())] == responses
+                await clock.elapse(0)
+            else:
+                writer.release.set()
+                await clock.elapse(0)
+
+            assert task.done()
+            assert writer.closed
+            disconnect.assert_awaited_once_with("ptt-owner")
+            assert not srv.command_queue.session_is_live("stalled-channel")
+            assert q not in srv._control_event_queues  # noqa: SLF001
+            if failure == "sender_error":
+                with pytest.raises(ConnectionError, match="peer stopped reading"):
+                    await task
+            else:
+                [outcome] = await asyncio.gather(task, return_exceptions=True)
+                assert outcome is None or isinstance(
+                    outcome, (ConnectionError, asyncio.CancelledError)
+                )
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            await srv.stop()
+
+    clock.run(scenario)

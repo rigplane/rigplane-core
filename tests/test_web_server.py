@@ -255,13 +255,12 @@ async def _ws_skip_handshake(
 
 async def _ws_recv_cmd_response(
     reader: asyncio.StreamReader,
+    command_id: str,
     timeout: float = 10.0,
 ) -> dict[str, Any]:
-    """Read WS frames until we get a command response (has 'ok' or 'error' key).
-
-    Skips hello, state_update, and other broadcast messages.
-    """
+    """Correlate the response and require a full baseline before a success."""
     deadline = asyncio.get_event_loop().time() + timeout
+    saw_baseline = False
     while True:
         remaining = deadline - asyncio.get_event_loop().time()
         if remaining <= 0:
@@ -271,10 +270,12 @@ async def _ws_recv_cmd_response(
             msg = json.loads(payload)
         except (json.JSONDecodeError, UnicodeDecodeError):
             continue
-        # Command responses have 'ok' or 'error' at top level
-        if "ok" in msg or "error" in msg:
+        if msg.get("type") == "state_update" and msg["data"]["type"] == "full":
+            saw_baseline = True
+        if msg.get("type") == "response" and msg.get("id") == command_id:
+            if msg["ok"]:
+                assert saw_baseline, "successful ACK preceded its state baseline"
             return msg
-        # Skip state_update, hello, etc.
 
 
 async def _close_ws(writer: asyncio.StreamWriter) -> None:
@@ -1097,9 +1098,7 @@ class TestControlChannel:
                 "params": {"vfo": "A", "freq": 14_074_000},
             }
             await _ws_send_text(writer, json.dumps(cmd))
-            opcode, payload = await _ws_recv_frame(reader)
-            assert opcode == WS_OP_TEXT
-            resp = json.loads(payload)
+            resp = await _ws_recv_cmd_response(reader, "test-1")
             assert resp["type"] == "response"
             assert resp["id"] == "test-1"
             assert resp["ok"] is True
@@ -1121,8 +1120,7 @@ class TestControlChannel:
                 "params": {"mode": "LSB"},
             }
             await _ws_send_text(writer, json.dumps(cmd))
-            _, payload = await _ws_recv_frame(reader)
-            resp = json.loads(payload)
+            resp = await _ws_recv_cmd_response(reader, "test-2")
             assert resp["ok"] is True
             assert resp["result"]["mode"] == "LSB"
         finally:
@@ -1219,8 +1217,7 @@ class TestControlChannel:
             await _ws_skip_handshake(reader)
             cmd = {"type": "cmd", "id": "vs-1", "name": "vfo_swap", "params": {}}
             await _ws_send_text(writer, json.dumps(cmd))
-            _, payload = await _ws_recv_frame(reader)
-            resp = json.loads(payload)
+            resp = await _ws_recv_cmd_response(reader, "vs-1")
             assert resp["ok"] is True
             # vfo_swap goes through command queue; wait for poller to drain it
             await asyncio.sleep(0.05)
@@ -3609,8 +3606,7 @@ class TestSwitchScopeReceiverCommand:
                 }
             )
             await _ws_send_text(writer, cmd)
-            _, resp_bytes = await _ws_recv_frame(reader)
-            resp = json.loads(resp_bytes)
+            resp = await _ws_recv_cmd_response(reader, "ssr1")
 
             assert resp["ok"] is True
             assert resp["result"]["receiver"] == 1
@@ -3646,8 +3642,7 @@ class TestSwitchScopeReceiverCommand:
                 }
             )
             await _ws_send_text(writer, cmd)
-            _, resp_bytes = await _ws_recv_frame(reader)
-            resp = json.loads(resp_bytes)
+            resp = await _ws_recv_cmd_response(reader, "ssr2")
 
             assert resp["ok"] is True
             assert resp["result"]["receiver"] == 0
@@ -3687,8 +3682,7 @@ class TestScopeAdvancedCommands:
                 }
             )
             await _ws_send_text(writer, cmd)
-            _, resp_bytes = await _ws_recv_frame(reader)
-            resp = json.loads(resp_bytes)
+            resp = await _ws_recv_cmd_response(reader, "sdt1")
 
             assert resp["ok"] is True
             assert resp["result"]["on"] is True
@@ -3716,8 +3710,7 @@ class TestScopeAdvancedCommands:
                 }
             )
             await _ws_send_text(writer, cmd)
-            _, resp_bytes = await _ws_recv_frame(reader)
-            resp = json.loads(resp_bytes)
+            resp = await _ws_recv_cmd_response(reader, "sdt2")
 
             assert resp["ok"] is True
             assert resp["result"]["on"] is False
@@ -3745,8 +3738,7 @@ class TestScopeAdvancedCommands:
                 }
             )
             await _ws_send_text(writer, cmd)
-            _, resp_bytes = await _ws_recv_frame(reader)
-            resp = json.loads(resp_bytes)
+            resp = await _ws_recv_cmd_response(reader, "sct1")
 
             assert resp["ok"] is True
             assert resp["result"]["center_type"] == 2
@@ -3774,8 +3766,7 @@ class TestScopeAdvancedCommands:
                 }
             )
             await _ws_send_text(writer, cmd)
-            _, resp_bytes = await _ws_recv_frame(reader)
-            resp = json.loads(resp_bytes)
+            resp = await _ws_recv_cmd_response(reader, "sfe1")
 
             assert resp["ok"] is True
             assert resp["result"]["edge"] == 1
