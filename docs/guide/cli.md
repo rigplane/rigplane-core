@@ -907,6 +907,12 @@ After the web listener binds, `station` writes one JSON startup event to stdout:
 Use this event for supervisor discovery when `--port 0` asks the OS to allocate
 the actual port.
 
+`station --webrtc` (and `--webrtc-include-vpn`) enables the gated WebRTC
+answerer routes exactly as on `web`; it needs the `rigplane[webrtc]` extra.
+On the managed loopback bind only local processes can post an offer; see
+[the WebRTC transport section of the Web API](../api/web.md) for how the
+routes are reached.
+
 When UDP discovery is enabled, `rigplane station` and `rigplane web` answer
 `RIGPLANE_DISCOVER\n` broadcasts with a `rigplane.station.discovery.v1` JSON
 payload. The payload includes the base URL, `/healthz`, `/readyz`,

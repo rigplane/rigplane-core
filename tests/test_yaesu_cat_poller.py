@@ -494,12 +494,13 @@ async def test_canonical_ptt_publishes_before_later_read(
         return 2400
 
     radio.read_filter_width = AsyncMock(side_effect=width)
-    if later_failure:
-        with pytest.raises(CatTimeoutError, match="later"):
-            await poller._emit_medium_observations()  # noqa: SLF001
-    else:
-        await poller._emit_medium_observations()  # noqa: SLF001
+    await poller._emit_medium_observations()  # noqa: SLF001
     radio.read_filter_width.assert_awaited_once_with(0, mode=None)
+    if later_failure:
+        # MOR-3856: a silent width read is contained — served absent for
+        # the cycle instead of aborting it. The PTT-first ordering the
+        # ``width`` mock asserts above still holds.
+        assert not any("filter_width" in str(item.path) for item in emitted)
     assert [item.value for item in emitted if item.path == OBSERVED_PTT_PATH] == [
         ObservedPtt.ON
     ]
@@ -542,8 +543,10 @@ async def test_canonical_ptt_read_error_reaches_store_even_if_later_field_fails(
                 raise CatTimeoutError("later")
 
             radio.read_filter_width = AsyncMock(side_effect=width)
-            with pytest.raises(CatTimeoutError):
-                await poller._emit_medium_observations()  # noqa: SLF001
+            # MOR-3856: a silent width read is contained — served absent
+            # for the cycle instead of aborting it.
+            await poller._emit_medium_observations()  # noqa: SLF001
+            assert not any("filter_width" in str(item.path) for item in emitted)
         else:
             await poller._emit_medium_observations()  # noqa: SLF001
         assert not any(str(item.path) == "global.tx_state.ptt" for item in emitted)
