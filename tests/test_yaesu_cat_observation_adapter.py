@@ -4416,9 +4416,10 @@ async def test_silent_na_read_does_not_abort_the_medium_cycle(
             assert "receiver.main.active.freq_mode.freq_hz" in {
                 str(item.path) for item in medium
             }, "the answered reads must still reach the store"
-            observations = medium + await YaesuObservationAdapter.from_radio(
-                radio
-            ).poll_slow_controls()
+            observations = (
+                medium
+                + await YaesuObservationAdapter.from_radio(radio).poll_slow_controls()
+            )
     finally:
         await radio._transport.close()
 
