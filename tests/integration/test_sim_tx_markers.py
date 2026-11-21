@@ -33,6 +33,7 @@ pytestmark = pytest.mark.mock_integration
 from rigplane.radio import IcomRadio  # noqa: E402
 from rigplane.runtime import radio_reconnect  # noqa: E402
 from rigplane.runtime.tx_interlock import RfState  # noqa: E402
+from rigplane.testing.timing import VirtualClock  # noqa: E402
 from rigplane.web.protocol import (  # noqa: E402
     AUDIO_CODEC_PCM16,
     MSG_TYPE_AUDIO_RX,
@@ -70,8 +71,50 @@ _FRAME_MS = 20  # one WS TX frame per 20 ms of PCM, paced in real time
 # values, with a 250 ms floor for loaded runners (observed: WS frame sent -> sink 0.004 s; simulator PTT-on ->
 # first sink frame 0.372 s — the latter is mostly the test's own
 # observe-then-send path; both numbers are in the MOR-3256 PR text).
+#
+# The WS -> sink bound reads in wall seconds but is load-independent anyway
+# (MOR-4214): the keyed stream below is paced by a virtual clock, so no wall
+# time passes between the paced sends — the measured interval is pure
+# pipeline callback depth (a few loop turns), which a loaded host cannot
+# stretch the way it stretched the old wall-paced sleeps (0.348 s).
 _WS_TO_SINK_BOUND_S = 0.25
 _PTT_ON_TO_SINK_BOUND_S = 1.5
+
+
+async def _send_pcm_virtual(
+    mic: _WsKeyClient, pcm: bytes, sample_rate: int, clock: VirtualClock
+) -> float:
+    """Stream ``pcm`` as 20 ms TX frames paced by virtual time (MOR-4214).
+
+    Identical to :func:`_send_pcm` except the pacing: wall-clock sleeps would
+    let a loaded host deschedule the loop between the send and the sink
+    delivery (the 0.348 s flake); ``clock.elapse`` advances frame-times with
+    no wall exposure while still settling the real socket callbacks each
+    step, so the WS -> sink latency below measures only pipeline depth.
+    """
+    frame_bytes = sample_rate * 2 * _FRAME_MS // 1000
+    first_nonzero_at = 0.0
+    seq = 0
+    for offset in range(0, len(pcm), frame_bytes):
+        chunk = pcm[offset : offset + frame_bytes]
+        if not first_nonzero_at and any(chunk):
+            # Real stamp to match the simulator's own ``received_at``: the
+            # virtual pacing keeps the interval at pure callback depth.
+            first_nonzero_at = time.monotonic()
+        await mic.send_binary(
+            encode_audio_frame(
+                MSG_TYPE_AUDIO_TX,
+                AUDIO_CODEC_PCM16,
+                seq,
+                sample_rate // 100,
+                1,
+                _FRAME_MS,
+                chunk,
+            )
+        )
+        seq = (seq + 1) & 0xFFFF
+        await clock.elapse(_FRAME_MS / 1000)
+    return first_nonzero_at
 
 
 async def _open_tx_mic(
@@ -225,7 +268,21 @@ async def test_marker_streamed_while_keyed_lands_clean_in_the_sink(
         t_ptt_on = next(t for t, on in reversed(sim.ptt_transitions) if on)
 
         rx_before = len(rx_frames)
-        sent_first = await _send_pcm(mic, pcm, rate)
+        # The keyed stream is paced by the virtual clock (MOR-4214):
+        # installed here — after everything the stack handshake needs,
+        # removed right after the stream — it advances frame-times with
+        # no wall exposure while settling the real socket callbacks each
+        # step, so the WS -> sink latency below measures only pipeline
+        # depth. The stack's session machinery (login handshakes, ping
+        # keepalive, control watchdog) stays on real time throughout:
+        # full virtualization races those handshakes and skews the hold.
+        loop = asyncio.get_running_loop()
+        clock = VirtualClock(start=loop.time())
+        clock.install(loop)
+        try:
+            sent_first = await _send_pcm_virtual(mic, pcm, rate, clock)
+        finally:
+            clock.uninstall(loop)
         await _wait_sink_bytes(sim, len(pcm))
         # RX audio must keep flowing at THIS client for the whole TX
         # stream: the captured marker is exactly the tone (asserted
@@ -250,6 +307,16 @@ async def test_marker_streamed_while_keyed_lands_clean_in_the_sink(
         first = frames[0]
         assert first.received_at - sent_first <= _WS_TO_SINK_BOUND_S
         assert first.received_at - t_ptt_on <= _PTT_ON_TO_SINK_BOUND_S
+        # Defuse the uninstall shift (MOR-4214): the clock advanced ~3 s
+        # past real time, so every pending loop timer fires that late in
+        # real seconds — including the RX burst loop, which would stall
+        # the stream for ~3 s and trip the session watchdog mid-teardown.
+        # All audio evidence is secured, so cancel the watchdog now; the
+        # teardown below releases the demand anyway.
+        _watchdog = arena.stack.radio.audio_session._watchdog_task  # noqa: SLF001
+        if _watchdog is not None and not _watchdog.done():
+            _watchdog.cancel()
+            await asyncio.gather(_watchdog, return_exceptions=True)
         await _assert_session_held(sim)
 
         # PTT off -> frames stop. The audio gate follows the OBSERVED RF

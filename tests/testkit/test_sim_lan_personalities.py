@@ -15,7 +15,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import sys
-import time
 from pathlib import Path
 
 import pytest
@@ -25,6 +24,7 @@ from rigplane.radio import IcomRadio
 from rigplane.core.radio_protocol import RadioIdentityStatus
 from rigplane.rigctld.contract import RigctldConfig
 from rigplane.rigctld.server import RigctldServer
+from rigplane.testing.timing import await_until
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -235,32 +235,89 @@ def test_burst_payloads_carry_exactly_20_ms_of_the_negotiated_pcm16_format():
 
 _PROFILE_CHANNELS = {"PCM_1CH_16BIT": 1, "PCM_2CH_16BIT": 2}
 
+#: Simulator bursts the rate window covers (MOR-4214): 100 bursts of 20 ms =
+#: 2.0 s of simulator audio — the same window the wall-clock version measured,
+#: but counted in the simulator's own emitted frames, not wall seconds.
+_RX_AUDIO_WINDOW_BURSTS = 100
+
 
 @pytest.mark.parametrize(("cli_id", "model", "fidelity"), CASES)
 async def test_rx_audio_matches_the_negotiated_format(
     cli_id: str, model: str, fidelity: str
 ):
-    """The decoded byte rate of what the real client receives is real time in the
-    format it negotiated: mono for the mono profiles, stereo for the IC-7610."""
+    """The decoded bytes of what the real client receives match the negotiated
+    format: mono for the mono profiles, stereo for the IC-7610.
+
+    Measured against the simulator's own sample counter (MOR-4214): the window
+    is 100 emitted bursts (2.0 s of simulator audio), not 2.0 wall seconds, so
+    a loaded host that skips bursts only takes longer in wall time. Every
+    emitted packet is either received or accounted as a client-queue eviction
+    (the bus drops oldest on a full queue); packet positions come from the
+    simulator's own numbering, so the total is exact with no tolerance.
+    """
     profile = resolve_radio_profile(model=model)
     channels = _PROFILE_CHANNELS[profile.codec_preference[0]]
+    payloads = burst_payloads(channels, 48000)
+    per_burst = sum(payloads)
+    window_packets = 3 * _RX_AUDIO_WINDOW_BURSTS
     async with _session(model) as (_sim, radio):
+        sim = _sim
         sub = await radio.audio_session.subscribe_rx("lan-personality")
         try:
             first = await sub.get(timeout=10.0)
             assert first is not None and first.data and any(first.data)
-            start = time.monotonic()
-            received = 0
-            while time.monotonic() - start < 2.0:
-                packet = await sub.get(timeout=2.0)
-                assert packet is not None
-                assert any(packet.data), "RX audio must not be silent"
-                received += len(packet.data)
-            elapsed = time.monotonic() - start
+            start_seq = first.send_seq
+            got: dict[int, bytes] = {start_seq: first.data}
+
+            def _drain() -> None:
+                while True:
+                    try:
+                        packet = sub.get_nowait()
+                    except asyncio.QueueEmpty:
+                        return
+                    if packet is None:
+                        return
+                    got.setdefault(packet.send_seq, packet.data)
+
+            def _window_emitted() -> bool:
+                _drain()
+                return sim.audio_rx_frames_sent >= start_seq + window_packets
+
+            await await_until(
+                _window_emitted,
+                timeout=30.0,
+                description=f"{_RX_AUDIO_WINDOW_BURSTS} simulator RX bursts",
+            )
+
+            settled = {"quiet": 0, "last": -1}
+
+            def _tail_settled() -> bool:
+                _drain()
+                if len(got) == settled["last"]:
+                    settled["quiet"] += 1
+                else:
+                    settled["quiet"] = 0
+                settled["last"] = len(got)
+                return (
+                    settled["quiet"] >= 2
+                    and sim.audio_rx_frames_sent >= start_seq + window_packets
+                )
+
+            await await_until(
+                _tail_settled, timeout=30.0, description="in-flight RX tail"
+            )
+            _drain()
         finally:
             await sub.release()
-    expected_rate = 48000 * 2 * channels
-    assert received / elapsed == pytest.approx(expected_rate, rel=0.12)
+    window = range(start_seq, start_seq + window_packets)
+    assert all(any(data) for data in got.values()), "RX audio must not be silent"
+    received = sum(len(got[seq]) for seq in window if seq in got)
+    missing = [seq for seq in window if seq not in got]
+    evicted = sum(payloads[seq % 3] for seq in missing)
+    assert received + evicted == _RX_AUDIO_WINDOW_BURSTS * per_burst, (
+        f"{model}: {received} received + {evicted} evicted != "
+        f"{_RX_AUDIO_WINDOW_BURSTS} bursts of {per_burst} bytes"
+    )
 
 
 # --- Seam: real IcomRadio over real UDP -----------------------------------------

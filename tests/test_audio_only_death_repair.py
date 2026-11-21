@@ -766,7 +766,9 @@ async def test_serial_backend_does_not_run_lan_repair(monkeypatch) -> None:  # t
         await radio.disconnect()
 
 
-async def test_spent_budget_reopens_after_audio_fixed_by_another_path() -> None:
+async def test_spent_budget_reopens_after_audio_fixed_by_another_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """A budget spent to FAILED does not leak into the next death (MOR-3401
     r3): audio fixed by another path (teardown → ensure → reestablish,
     which emits no ``rx_resumed``) reopens the episode, so a later real
@@ -816,15 +818,41 @@ async def test_spent_budget_reopens_after_audio_fixed_by_another_path() -> None:
 
             # A new real death gets a fresh budget and is repaired again.
             # Kill first, then drain: only post-death frames may pass.
+            session = radio.audio_session
             _kill_client_audio_only(radio)
             _drain(sub)
-            assert await _next_frame_or_none(sub, RESUME_BOUND_S) is not None, (
-                "MOR-3401 r3: the budget spent on the first episode leaked — "
-                "a later real death was never repaired"
+            # Drive the 3 s silence DECISION deterministically (MOR-4214): the
+            # same ManualClock advance the two_rx_silent test uses for its
+            # later-watchdog edge. The liveness budget is a decision
+            # threshold, not a real-time wait — the repair execution and the
+            # frames below stay real, and the real watchdog firing later sees
+            # RECOVERING with a stale heartbeat and schedules nothing new.
+            heartbeat = radio.audio_bus.last_rx_frame_monotonic
+            assert heartbeat is not None, "no RX heartbeat before the second death"
+            decision = ManualClock(start=max(heartbeat, session._rx_armed_at))
+            decision.advance(RX_LIVENESS_TIMEOUT_S)
+            with monkeypatch.context() as patch:
+                patch.setattr(session, "_monotonic", decision)
+                async with session._lock:
+                    session._check_liveness_locked()
+            task = radio._audio_silence_repair_task
+            assert task is not None, (
+                "MOR-3401 r3: rx_silent after the second death scheduled no "
+                "repair — the budget spent on the first episode leaked"
             )
+            await asyncio.wait_for(asyncio.shield(task), RESUME_BOUND_S)
             assert len(teardown_calls) > repaired_teardowns, (
                 "no repair round ran for the second death"
             )
+            # Fresh frames on a fresh subscription: the old queue can still
+            # hold a buffered pre-death frame that would pass vacuously.
+            post_sub = await session.subscribe_rx("post-repair-second")
+            try:
+                assert (
+                    await _next_frame_or_none(post_sub, RESUME_BOUND_S) is not None
+                ), "MOR-3401 r3: no fresh frames after the second death was repaired"
+            finally:
+                await post_sub.release()
         finally:
             radio._ensure_audio_transport = orig_ensure  # type: ignore[method-assign]
             restore_teardown()
