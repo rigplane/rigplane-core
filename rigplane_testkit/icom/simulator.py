@@ -1004,6 +1004,11 @@ class MockIcomRadio(AudioPortMixin):
         self.busy_rejects: int = 0  # number of 0xFFFFFFFF rejects sent
         self.released_count: int = 0  # number of sessions freed (any path)
         self.last_release_reason: str | None = None
+        # Fresh sessions claimed (unheld -> held). Unlike the owner
+        # identity — which a reconnecting client may legitimately reuse
+        # (same UDP source port and my_id) — this distinguishes a new
+        # session from a refresh of the held one (MOR-4214).
+        self.session_claims: int = 0
         # Callers of ``wait_session_released``, woken by ``_release_session``.
         self._release_waiters: list[asyncio.Future[str]] = []
         self._login_count: int = 0  # accepted logins
@@ -1144,7 +1149,13 @@ class MockIcomRadio(AudioPortMixin):
 
     @property
     def owner(self) -> tuple[tuple[str, int], int] | None:
-        """Current owner identity ``((host, port), my_id)`` or ``None``."""
+        """Current owner identity ``((host, port), my_id)`` or ``None``.
+
+        The identity is not unique across sessions: a reconnecting client
+        may reuse both its UDP source port and its ``my_id``. To tell a
+        fresh session from a refreshed one, compare :attr:`session_claims`
+        across the event instead of this tuple.
+        """
         return self._owner
 
     @property
@@ -1566,6 +1577,9 @@ class MockIcomRadio(AudioPortMixin):
 
     def _claim_session(self, owner: tuple[tuple[str, int], int]) -> None:
         """Mark ``owner`` as the holder and arm the keepalive timer."""
+        if self._owner is None:
+            # An unheld radio accepting a conninfo opens a fresh session.
+            self.session_claims += 1
         if self._owner != owner:
             # A newly claimed session starts sequence tracking over: the
             # previous session's CI-V numbering no longer applies
