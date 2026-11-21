@@ -252,7 +252,26 @@ attach frame is the first text frame on `control`, `api`, `scope-text` or
 The gated transport routes are default-off. If `WebConfig.webrtc_enabled` is
 false, or `aiortc` is missing, they return HTTP `503` with
 `code: "webrtc_unavailable"`. The CLI enables the gate with `rigplane --model <MODEL>
-web --webrtc`; programmatic callers set `WebConfig(webrtc_enabled=True)`.
+web --webrtc` or `rigplane --model <MODEL> station --webrtc` (one shared flag
+definition, `src/rigplane/cli/__init__.py: _build_parser._add_webrtc_flags`);
+programmatic callers set `WebConfig(webrtc_enabled=True)`.
+
+The offer and ICE routes carry no application credential, the same as every
+other route on the listener. Who can reach them is decided by the listener's
+bind address: `station` binds `127.0.0.1` unless `--listen` names another
+address (`--listen 0.0.0.0` is also rewritten to `127.0.0.1`,
+`src/rigplane/cli/__init__.py: _apply_managed_runtime_defaults`), so on a
+managed station only processes on the same machine can post an offer. The
+Host and Origin checks that apply to every HTTP route also apply here, so a
+web page in a local browser cannot post one cross-origin. `web` binds
+`0.0.0.0` by default, which makes the routes reachable from the LAN. A
+supervisor that relays remote offers to a local station (RigPlane Pro's home
+role) is the authenticator for those peers; Core does not authenticate them.
+
+The `api` data channel does not serve the WebRTC signalling routes
+(`src/rigplane/web/api_channel.py: API_CHANNEL_SIGNALLING_PREFIX`): a request
+for them over the channel answers 404, so a peer cannot open another peer
+connection through the session it already has.
 
 `/api/v1/info` exposes `capabilities.hasWebrtc` (aiortc importable and the
 radio has audio); it does not show whether the routes are enabled.
