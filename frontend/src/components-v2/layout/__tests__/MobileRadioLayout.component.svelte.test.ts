@@ -286,6 +286,9 @@ import {
 } from '$lib/stores/radio.svelte';
 import { acknowledgeCommand, beginCommand, confirmCommand, failCommand, getCommandLifecycles, resetCommandLifecycle } from '$lib/stores/commands.svelte';
 import { getTxPermit } from '$lib/utils/tx-permit';
+import {
+  getTxMicProcessing, reloadTxMicProcessingForTests, TX_MIC_PROCESSING_KEY,
+} from '$lib/stores/tx-mic-processing.svelte';
 import { toVfoProps, type VfoStateProps } from '$lib/runtime/props/panel-props';
 import {
   getRadioHealth, getRadioLinkState, getRadioPowerOn, getRadioReady, getRigConnected,
@@ -2218,5 +2221,43 @@ describe('MOR-4298 real mobile split TX wire seam', () => {
       globalThis.fetch = originalFetch;
       vi.resetModules();
     }
+  });
+});
+
+describe('MobileRadioLayout TX settings sheet carries the mic processing switch (MOR-4596)', () => {
+  beforeEach(() => {
+    localStorage.removeItem(TX_MIC_PROCESSING_KEY);
+    reloadTxMicProcessingForTests();
+  });
+
+  function openTxSettingsSheet(): HTMLElement {
+    vi.mocked(hasTx).mockReturnValue(true);
+    const t = mountMobile(); // portrait phone viewport (390 px wide)
+    Array.from(t.querySelectorAll<HTMLButtonElement>('.m-chip'))
+      .find((b) => b.textContent?.trim() === 'TX')!.click();
+    flushSync();
+    t.querySelector<HTMLButtonElement>('.m-tx-settings-btn')!.click();
+    flushSync();
+    return t;
+  }
+
+  it('shows both modes inside the open sheet and switches between them', () => {
+    const t = openTxSettingsSheet();
+    expect(window.innerWidth).toBe(390);
+    const control = t.querySelector('[data-testid="tx-mic-processing"]');
+    expect(control, 'the switch is rendered in the phone layout').not.toBeNull();
+    // Directly in the sheet, never inside TxPanel's nested levels dialog.
+    expect(control!.closest('.tx-modal')).toBeNull();
+    expect(control!.closest('.m-sheet')).not.toBeNull();
+
+    const raw = t.querySelector<HTMLInputElement>('[data-testid="tx-mic-processing-raw"]')!;
+    const browser = t.querySelector<HTMLInputElement>('[data-testid="tx-mic-processing-browser"]')!;
+    expect(raw.checked).toBe(true);
+    browser.click();
+    flushSync();
+    expect(getTxMicProcessing()).toBe('browser');
+    raw.click();
+    flushSync();
+    expect(getTxMicProcessing()).toBe('raw');
   });
 });

@@ -59,6 +59,7 @@
   import MobileRadioLayout from './MobileRadioLayout.svelte';
   import LcdLayout from './LcdLayout.svelte';
   import CollapsiblePanel from '../controls/CollapsiblePanel.svelte';
+  import TxMicProcessingControl from '../controls/TxMicProcessingControl.svelte';
   import BandSelector from '../controls/BandSelector.svelte';
   import LanguageSelector from '../controls/LanguageSelector.svelte';
   import { readHostDeclaration } from '$lib/local-extensions/host-ui';
@@ -1022,6 +1023,14 @@
         {#if !declared.has('ritXitScan')}
           <CollapsiblePanel title="RIT / XIT" panelId="desktop-rit">
             <RitXitPanel />
+          </CollapsiblePanel>
+        {/if}
+
+        <!-- MOR-4596: TxPanel carries this switch in its levels dialog; with
+             TxPanel replaced by the semantic deck, Settings is its home. -->
+        {#if semanticRxTx}
+          <CollapsiblePanel title="TX AUDIO" panelId="desktop-tx-audio">
+            <TxMicProcessingControl />
           </CollapsiblePanel>
         {/if}
 
