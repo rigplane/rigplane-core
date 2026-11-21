@@ -6,9 +6,14 @@ See ``docs/architecture/state-delivery-liveness.md``.
 from __future__ import annotations
 
 import asyncio
+import json
+from collections.abc import Callable
 from typing import Any
 
+import aiohttp
 import pytest
+
+from serial_stub import SerialMockRadio
 
 from rigplane.core._bounded_queue import BoundedQueue
 from rigplane.core.state_pipeline_contracts import (
@@ -21,6 +26,8 @@ from rigplane.radio import IcomRadio
 from rigplane.testing.timing import VirtualClock
 from rigplane.web import runtime_helpers
 from rigplane.web import server as server_module
+from rigplane.web._delta_encoder import apply_delta
+from rigplane.web.radio_poller import RadioPoller
 from rigplane.web.server import (
     COMMAND_FOLLOWUP_WINDOW_S,
     LIVENESS_DELIVERY_INTERVAL_S,
@@ -33,6 +40,19 @@ FREQ = FieldPath.active("0", "freq_mode", "freq_hz")
 # The PTT poll alone runs at ~20/s on a live Icom; 1/16 s keeps the clock exact
 # and clears the 50 ms coalescing window on every answer.
 POLL_PERIOD_S = 0.0625
+
+
+class _GainRadio(SerialMockRadio):
+    def __init__(self) -> None:
+        super().__init__(model="IC-7610")
+        self.gain_writes: list[tuple[int, int]] = []
+
+    def supports_command(self, command: str, *, receiver: int = 0) -> bool:
+        return command == "set_rf_gain" and receiver == 0
+
+    async def set_rf_gain(self, level: int, receiver: int = 0) -> None:
+        self.gain_writes.append((level, receiver))
+        await super().set_rf_gain(level, receiver=receiver)
 
 
 @pytest.fixture
@@ -223,3 +243,127 @@ async def test_held_back_liveness_is_flushed_when_the_interval_ends(
     assert (
         flushed["observationSeq"] == srv.command_state_store.snapshot().observation_seq
     )
+
+
+@pytest.mark.parametrize("query", ["", "?state_delta=2"])
+def test_held_target_observation_precedes_ack_over_ws(
+    clock: VirtualClock, monkeypatch: pytest.MonkeyPatch, query: str
+) -> None:
+    # Use loop timers rather than scope_to's auto-advancing sleep: the held
+    # delivery must stay parked while the real socket handles the command.
+    monkeypatch.setattr(server_module, "asyncio", asyncio)
+
+    async def scenario() -> None:
+        radio = _GainRadio()
+        await radio.connect()
+        await SerialMockRadio.set_rf_gain(radio, 128, receiver=0)
+        srv = WebServer(radio, WebConfig(host="127.0.0.1", port=0))
+        gain = FieldPath.receiver("0", "operator_controls", "rf_gain")
+
+        def observe(path: FieldPath, value: object) -> None:
+            srv.command_state_store.apply(_observation(path, value, clock.now))
+            srv._broadcast_state_update()  # noqa: SLF001
+
+        srv.command_state_store.apply(_observation(gain, 128, clock.now))
+        srv.command_state_store.apply(_observation(PTT, False, clock.now))
+        # Only start the real listener; no poller consumes the command yet.
+        srv._server = await asyncio.start_server(  # noqa: SLF001
+            srv._accept_client,
+            "127.0.0.1",
+            0,  # noqa: SLF001
+        )
+        try:
+            async with aiohttp.ClientSession() as session:
+                url = f"ws://127.0.0.1:{srv.port}/api/v1/ws{query}"
+                async with session.ws_connect(url) as ws:
+                    state: dict[str, Any] = {}
+
+                    async def receive_until(
+                        matches: Callable[[dict[str, Any]], bool],
+                    ) -> dict[str, Any]:
+                        nonlocal state
+                        while True:
+                            frame = await ws.receive()
+                            assert frame.type == aiohttp.WSMsgType.TEXT
+                            message = json.loads(frame.data)
+                            if message["type"] == "state_update":
+                                state = apply_delta(state, message["data"])
+                            if matches(message):
+                                return message
+
+                    await receive_until(lambda msg: msg["type"] == "state_update")
+                    assert (
+                        state["fieldStatus"]["main.rfGain"]["lastObservedMonotonic"]
+                        == 1000.0
+                    )
+                    assert state["main"]["rfGain"] == pytest.approx(128 / 255)
+
+                    clock.advance(0.1)
+                    observe(gain, 128)  # 1000.1: held pre-command observation
+                    assert srv._pending_liveness_delivery_task is not None  # noqa: SLF001
+
+                    clock.advance(0.1)
+                    await ws.send_json(
+                        {
+                            "type": "cmd",
+                            "id": "same-gain",
+                            "name": "set_rf_gain",
+                            "params": {"level": 128, "receiver": 0},
+                        }
+                    )
+                    ack = await receive_until(
+                        lambda msg: (
+                            msg["type"] == "response" and msg["id"] == "same-gain"
+                        )
+                    )
+                    assert ack["ok"] is True
+                    ack_boundary = state["fieldStatus"]["main.rfGain"][
+                        "lastObservedMonotonic"
+                    ]
+                    assert radio.gain_writes == []
+
+                    clock.advance(0.1)
+                    observe(PTT, False)  # 1000.3: unrelated poll releases the hold
+                    await receive_until(
+                        lambda msg: (
+                            msg["type"] == "state_update"
+                            and state["fieldStatus"]["ptt"]["lastObservedMonotonic"]
+                            == clock.now
+                        )
+                    )
+                    assert radio.gain_writes == []
+                    assert ack_boundary == 1000.1
+                    assert (
+                        state["fieldStatus"]["main.rfGain"]["lastObservedMonotonic"]
+                        == ack_boundary
+                    )
+                    assert state["main"]["rfGain"] == pytest.approx(128 / 255)
+
+                    poller = RadioPoller(
+                        radio,
+                        srv.command_queue,
+                        state_store=srv.command_state_store,
+                        clock=clock,
+                    )
+                    [entry] = srv.command_queue.drain_entries()
+                    await poller._execute_queued_entry(entry)  # noqa: SLF001
+                    assert radio.gain_writes == [(128, 0)]
+                    clock.advance(0.1)
+                    observe(gain, await radio.get_rf_gain(receiver=0))
+                    await receive_until(
+                        lambda msg: (
+                            msg["type"] == "state_update"
+                            and state["fieldStatus"]["main.rfGain"][
+                                "lastObservedMonotonic"
+                            ]
+                            == clock.now
+                        )
+                    )
+                    assert (
+                        state["fieldStatus"]["main.rfGain"]["lastObservedMonotonic"]
+                        > ack_boundary
+                    )
+        finally:
+            await srv.stop()
+
+    clock.run(scenario)

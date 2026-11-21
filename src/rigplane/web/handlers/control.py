@@ -1223,7 +1223,7 @@ class ControlHandler:
             while True:
                 event = await self._event_queue.get()
                 msg_type = event.get("type")
-                if msg_type == "notification":
+                if msg_type in ("notification", "response"):
                     await self._send_json(event)
                 elif msg_type == "state_update":
                     # Always forward state updates (clients need fresh state)
@@ -1741,6 +1741,15 @@ class ControlHandler:
                 command_id=str(cmd_id),
                 source="websocket",
             )
+            enqueue_baseline = getattr(
+                self._server, "enqueue_control_state_baseline", None
+            )
+            if callable(enqueue_baseline):
+                enqueue_baseline(self._event_queue)
+                await self._event_queue.put(
+                    {"type": "response", "id": cmd_id, "ok": True, "result": result}
+                )
+                return
             await self._ws.send_text(
                 encode_json(
                     {
