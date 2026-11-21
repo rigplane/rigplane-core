@@ -197,6 +197,21 @@ jobs:
           if-no-files-found: ignore
           retention-days: 3
 
+      # The web UI truncates a long step log, so a red matrix leg could hide
+      # which test failed unless someone had a runner-host login. The Run
+      # tests step already tees the full pytest output (the short test
+      # summary info section included) into pytest-output.txt; upload it
+      # unconditionally like the worker diagnostics above.
+      - name: Upload pytest output
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v7
+        with:
+          name: pytest-output-${{ matrix.python-version }}
+          path: pytest-output.txt
+          if-no-files-found: ignore
+          retention-days: 3
+
       - name: Extract version
         if: matrix.python-version == '3.11' && github.ref == 'refs/heads/main'
         id: version
