@@ -39,7 +39,7 @@ export type WsIncoming =
   | { type: 'ack'; id: string }
   | { type: 'error'; id?: string; sourceId?: string; receiver?: number | null; message: string }
   | { type: 'response'; id: string; ok: boolean; result?: Record<string, unknown>; error?: string; message?: string }
-  | { type: 'hello'; proto: number; server: string; version: string; radio: string; connected: boolean; capabilities: string[] }
+  | { type: 'hello'; proto: number; server: string; version: string; radio: string; connected: boolean; radio_ready: boolean; core_sha: string | null; capabilities: string[] }
   | { type: 'state'; data: Record<string, unknown> }
   | { type: 'state_update'; data: Record<string, unknown> }
   | { type: 'companion_state'; tuning_step_hz?: number; [key: string]: unknown }
