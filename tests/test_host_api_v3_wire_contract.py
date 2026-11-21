@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
@@ -173,13 +175,31 @@ async def test_af_handler_dispatch_and_observed_publication(receiver: int) -> No
     fields = server.build_public_state()["fieldStatus"]
     assert {key: fields[key] for key in WIRE["fieldStatus"]} == WIRE["fieldStatus"]
     socket = SimpleNamespace(send_text=AsyncMock())
+    sent: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    socket.send_text.side_effect = lambda payload: sent.put_nowait(json.loads(payload))
     handler = _control_handler(
         ws=socket, radio=radio, server=server, session_id="host-wire"
     )
     request = deepcopy(WIRE["af"]["request"])
     request["params"]["receiver"] = receiver
-    await handler._handle_text(json.dumps(request))
-    assert json.loads(socket.send_text.await_args.args[0])["ok"] is True
+    sender = asyncio.create_task(handler._event_sender_loop())  # noqa: SLF001
+    try:
+        await handler._handle_text(json.dumps(request))
+        # MOR-4214: a successful ACK rides the ordered sender behind a full
+        # state baseline, so correlate the frame by command id instead of
+        # assuming the ACK itself reaches the socket from _handle_text.
+        saw_baseline = False
+        while True:
+            frame = await sent.get()
+            if frame.get("type") == "state_update":
+                saw_baseline |= frame["data"]["type"] == "full"
+            if frame.get("type") == "response" and frame.get("id") == request["id"]:
+                assert frame["ok"] is True
+                assert saw_baseline, "successful ACK preceded its state baseline"
+                break
+    finally:
+        sender.cancel()
+        await asyncio.gather(sender, return_exceptions=True)
     entry = server.command_queue.take_entry()
     assert entry is not None
     poller = RadioPoller(
