@@ -230,9 +230,7 @@ class WebRtcClose:
     @classmethod
     def from_json(cls, payload: Mapping[str, object]) -> Self:
         session_id = payload.get("sessionId")
-        if session_id is not None and not (
-            isinstance(session_id, str) and session_id
-        ):
+        if session_id is not None and not (isinstance(session_id, str) and session_id):
             raise WebRtcRequestError(
                 "invalid_session", "Field 'sessionId' must be a non-empty string."
             )
