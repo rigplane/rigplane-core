@@ -746,9 +746,7 @@ panoramaTest.describe('simulated mixed receiver panorama with real PCM', () => {
       // refuse: ZOOM follows the VFO as a client crop (MOR-4387, covered by
       // panorama-zoom-fix.spec.ts) and is always granted, so the band preset
       // is the operator gesture that still asks the radio for fixed edges.
-      await page.getByTestId('scope-more').click();
-      await page.locator('[data-testid="scope-preset-select"]:visible').selectOption('0');
-      await page.keyboard.press('Escape');
+      await page.locator('[data-testid="scope-zoom-band"]:visible').click();
       await expect.poll(async () => (await panoramaWitness(page)).requests.slice(requestsBefore)
         .some(request => 'startHz' in request.view)).toBe(true);
       await expect.poll(async () => (await panoramaWitness(page)).refusals.length).toBeGreaterThan(refusalsBefore);

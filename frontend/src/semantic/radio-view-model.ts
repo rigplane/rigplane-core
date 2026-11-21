@@ -834,6 +834,9 @@ export interface RepeaterReceiverViewModel {
   toneMode: RepeaterField<RepeaterToneMode>;
   toneFreq: RepeaterField<number>;
   shift: RepeaterField<RepeaterShift>;
+  /** Duplex offset magnitude in Hz (MOR-3624), read from the wire
+   *  `repeaterOffsetHz`; structural only with the `repeater_offset` tag. */
+  offsetHz: RepeaterField<number>;
 }
 
 /** Both map keys are always present; a radio without a SUB receiver simply
@@ -2324,12 +2327,13 @@ const REPEATER_SHIFTS: readonly RepeaterShift[] = ['simplex', 'plus', 'minus', '
 
 function validateRepeaterReceiver(value: unknown, path: string): RepeaterReceiverViewModel {
   const v = record(value, path);
-  exactKeys(v, ['inRepeaterBand', 'toneMode', 'toneFreq', 'shift'], path);
+  exactKeys(v, ['inRepeaterBand', 'toneMode', 'toneFreq', 'shift', 'offsetHz'], path);
   return {
     inRepeaterBand: validateTxAuxField(v.inRepeaterBand, `${path}.inRepeaterBand`, bool),
     toneMode: validateTxAuxField(v.toneMode, `${path}.toneMode`, (val, p) => oneOf(val, REPEATER_TONE_MODES, p)),
     toneFreq: validateTxAuxField(v.toneFreq, `${path}.toneFreq`, num),
     shift: validateTxAuxField(v.shift, `${path}.shift`, (val, p) => oneOf(val, REPEATER_SHIFTS, p)),
+    offsetHz: validateTxAuxField(v.offsetHz, `${path}.offsetHz`, num),
   };
 }
 

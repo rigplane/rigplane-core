@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { CanvasSurfaceFacts } from '$lib/canvas/canvas-surface.svelte';
-  import { audioScopeFactsRevision, audioScopeProjection } from '$lib/runtime/adapters/scope-adapter';
+  import { audioScopeFactsRevision, audioScopePassbandView, audioScopeProjection } from '$lib/runtime/adapters/scope-adapter';
   import { scopeSubscriptionSurface } from '$lib/runtime/scope-view';
   import { onDestroy } from 'svelte';
   import { deriveAmberScopeProps } from '$lib/runtime/adapters/panel-adapters';
@@ -370,7 +370,7 @@
 
     <!-- ═══ Scope: dominant AfScope ═══ -->
     <div class="lcd-scope" style:grid-area="scope" use:scopeSubscriptionSurface={{
-      stream: runtime.scope.stream('audio_fft'), receiver: null, facts: showFft ? surfaceFacts : null, view: { follow: 'vfo', spanHz: 48000 },
+      stream: runtime.scope.stream('audio_fft'), receiver: null, facts: showFft ? surfaceFacts : null, view: audioScopePassbandView(radioState, caps),
       revision: audioScopeFactsRevision(radioState, caps),
     }}>
       {#if showFft}

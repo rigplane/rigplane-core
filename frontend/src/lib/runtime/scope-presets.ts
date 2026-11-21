@@ -36,3 +36,32 @@ export function scopePresets(
   presets.push({ kind: 'follow', label: 'Follow VFO', view: { follow: 'vfo', spanHz: followSpanHz } });
   return presets;
 }
+
+export interface ScopeOverlayTargets {
+  /** The whole-band preset of the band under the frequency, or null. */
+  readonly band: ScopePreset | null;
+  /** The band-plan segment (CW / digital / phone) under the frequency, or null. */
+  readonly segment: ScopePreset | null;
+}
+
+/**
+ * MOR-4386: which of the already-derived presets the panorama overlay's
+ * [B] and [S] buttons open. Pure selection over `scopePresets` output — no
+ * second band-plan lookup. The segment is the one whose range holds the
+ * frequency (start inclusive, end exclusive, so a shared edge belongs to the
+ * upper segment); outside every segment, or with no segment data, it is null.
+ */
+export function scopeOverlayTargets(
+  presets: readonly ScopePreset[], frequencyHz: number | null,
+): ScopeOverlayTargets {
+  const band = presets.find((preset) => preset.kind === 'band') ?? null;
+  const segment = frequencyHz === null ? null : presets.find((preset) =>
+    (preset.kind === 'cw' || preset.kind === 'digital' || preset.kind === 'phone')
+    && 'startHz' in preset.view && 'endHz' in preset.view
+    && frequencyHz >= preset.view.startHz && frequencyHz < preset.view.endHz) ?? null;
+  return { band, segment };
+}
+
+export function followScopePreset(presets: readonly ScopePreset[]): ScopePreset | null {
+  return presets.find((preset) => preset.kind === 'follow') ?? null;
+}

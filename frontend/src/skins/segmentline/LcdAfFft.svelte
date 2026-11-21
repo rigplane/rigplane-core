@@ -2,7 +2,7 @@
   import { untrack } from 'svelte';
   import { CanvasSurface } from '$lib/canvas/canvas-surface.svelte';
   import { getStageScale } from '../../primitives/stage/stage-scale';
-  import { audioScopeFactsRevision, audioScopeProjection } from '$lib/runtime/adapters/scope-adapter';
+  import { audioScopeFactsRevision, audioScopePassbandView, audioScopeProjection } from '$lib/runtime/adapters/scope-adapter';
   import { runtime } from '$lib/runtime/frontend-runtime';
   import { scopeSubscriptionSurface } from '$lib/runtime/scope-view';
   import type { ScopeStream } from '$lib/runtime/scope-stream';
@@ -86,7 +86,7 @@
 
 {#if inputState !== 'unsupported'}
   <svg
-    use:scopeSubscriptionSurface={{ stream: scopeStream, receiver: null, view: { follow: 'vfo', spanHz: 48000 },
+    use:scopeSubscriptionSurface={{ stream: scopeStream, receiver: null, view: audioScopePassbandView(runtime.state, runtime.caps),
       revision: audioScopeFactsRevision(runtime.state, runtime.caps), facts: surface.facts }}
     bind:this={svg}
     data-testid="lcd-af-fft"

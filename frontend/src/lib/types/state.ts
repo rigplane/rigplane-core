@@ -200,6 +200,7 @@ export interface ReceiverStatePublic {
   toneFreq?: number | null;
   tsqlFreq?: number | null;
   repeaterShift?: number | null;
+  repeaterOffsetHz?: number | null;
   toneSquelchType?:
     | (
         | "off"

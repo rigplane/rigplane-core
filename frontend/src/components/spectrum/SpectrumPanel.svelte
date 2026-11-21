@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { resolveScopeSourceId, audioScopeFactsRevision, audioScopeProjection } from '$lib/runtime/adapters/scope-adapter';
+  import { resolveScopeSourceId, audioScopeFactsRevision, audioScopePassbandView, audioScopeProjection } from '$lib/runtime/adapters/scope-adapter';
   import { onDestroy, untrack, type Snippet } from 'svelte';
   import { ScopeRenderTrace, type TraceToken, type TraceSource, type TraceStatus } from '../../lib/runtime/scope-render-trace';
   import SpectrumCanvas from './SpectrumCanvas.svelte';
@@ -48,7 +48,8 @@
   import { ScopeRenderScheduler } from '../../lib/canvas/scope-render-scheduler';
   import { CanvasSurface } from '../../lib/canvas/canvas-surface.svelte';
   import { getStageScale } from '../../primitives/stage/stage-scale';
-  import { scopePresets, type ScopePreset } from '../../lib/runtime/scope-presets';
+  import { followScopePreset, scopeOverlayTargets, scopePresets, type ScopePreset } from '../../lib/runtime/scope-presets';
+  import SpectrumZoomOverlay from './SpectrumZoomOverlay.svelte';
   import { getManagedAppTxController } from '../../lib/runtime/tx-controller/managed-app-host';
   import type { ManagedTxState } from '../../lib/runtime/tx-controller/managed-state';
   import SpectrumToolbar from './SpectrumToolbar.svelte';
@@ -1014,8 +1015,12 @@
     // the radio's fixed edges (a radio write for a pure display crop). An
     // explicit band/segment preset keeps the absolute subscription — there
     // the fixed-window change IS the user's intent.
-    const view = !audioFft && explicitView !== null ? explicitView
-      : { follow: 'vfo' as const, spanHz: followSpanHz ?? (audioFft ? 48000 : 100000) };
+    // MOR-4604: every audio_fft surface requests the one passband view
+    // (scope-adapter `audioScopePassbandView`), so the shared stream's
+    // widest-surface grant serves the Audio Scope at native resolution too.
+    const view = audioFft ? audioScopePassbandView(runtime.state, runtime.caps)
+      : explicitView !== null ? explicitView
+      : { follow: 'vfo' as const, spanHz: followSpanHz ?? 100000 };
     const facts = spectrumFacts;
     const requestSeq = followRequestSeq;
     return scopeSubscription({
@@ -1063,12 +1068,36 @@
     return scopePresets(runtime.caps?.freqRanges ?? [], frequencyHz, bandPlanRegion, undefined,
       spanHz > 0 ? spanHz : 100_000);
   });
+  // MOR-4386: the overlay's [S] / [B] targets come from the same presets.
+  let scopeOverlay = $derived(scopeOverlayTargets(
+    scopePresetOptions, spectrumAuthority?.frequencyHz ?? displayFrequencyHz ?? null));
+  // MOR-4386: S/B pin an absolute view and the radio answers in a window it
+  // owns (FIX). Returning the radio to CTR is the way back to following the
+  // VFO, so leaving a radio-owned window retires the pin.
+  let wasRadioOwnedWindow = false;
+  $effect(() => {
+    const owned = isRadioOwnedWindow;
+    untrack(() => {
+      if (wasRadioOwnedWindow && !owned && explicitView !== null) {
+        explicitView = null;
+        requestedView = null;
+        scopeView.set('gesture', null);
+      }
+      wasRadioOwnedWindow = owned;
+    });
+  });
   function applyScopePreset(preset: ScopePreset): void {
     if (preset.kind === 'follow') {
       explicitView = null;
       requestedView = null;
       requestFollowSpan('spanHz' in preset.view ? preset.view.spanHz : spanHz);
       scopeView.set('gesture', null);
+      // MOR-4386 (review P1): a pinned S/B segment leaves the radio in a
+      // window it owns (FIX on the IC-7610); pressing the lit key again
+      // must hand the window back, which is the radio's CTR mode — the
+      // same scope-controls path the out-of-range overlay's CTR button
+      // already uses, not a new mechanism.
+      if (isRadioOwnedWindow) scopeHandlers.onModeChange(0);
       return;
     }
     if ('startHz' in preset.view && 'endHz' in preset.view) {
@@ -1875,7 +1904,7 @@
        tab instead. An audio-FFT source keeps its original no-toolbar
        branch. -->
   {:else if !hideToolbar}
-    <SpectrumToolbar bind:enableAvg bind:enablePeakHold bind:enableSmooth bind:autoFloor bind:autoFloorRef bind:brtLevel bind:colorScheme bind:fullscreen bind:showBandPlan bind:hiddenLayers bind:showEiBi {scopeDemandOn} onScopeDemandChange={setScopeDemand} {hideSourceControls} {hideScopeControls} {hideAutoStepToggle} {scopeControls} scopePresets={scopePresetOptions} onScopePresetSelect={applyScopePreset} onScopeZoom={nudgeScopeZoom} scopeStatusIndicator={sdrSource || scopeStatusIndicator || scopeError ? panelScopeStatus : undefined} />
+    <SpectrumToolbar bind:enableAvg bind:enablePeakHold bind:enableSmooth bind:autoFloor bind:autoFloorRef bind:brtLevel bind:colorScheme bind:fullscreen bind:showBandPlan bind:hiddenLayers bind:showEiBi {scopeDemandOn} onScopeDemandChange={setScopeDemand} {hideSourceControls} {hideScopeControls} {hideAutoStepToggle} {scopeControls} scopeStatusIndicator={sdrSource || scopeStatusIndicator || scopeError ? panelScopeStatus : undefined} />
   {/if}
   {#if (audioFft || hideToolbar) && scopeError}{@render panelScopeStatus()}{/if}
   <div
@@ -1936,6 +1965,11 @@
       {/if}
       {#if spectrumCenterReferenceVisible}
         <div class="tune-line" style="left:{tuneLinePct}%"></div>
+      {/if}
+      {#if scopePresetOptions.length > 0}
+        <SpectrumZoomOverlay targets={scopeOverlay} pinnedView={explicitView}
+          onZoom={nudgeScopeZoom} onPreset={applyScopePreset}
+          onFollow={() => { const follow = followScopePreset(scopePresetOptions); if (follow) applyScopePreset(follow); }} />
       {/if}
       {#if tuneVisible && spanHz > 0 && pbWidthPct > 0 && canResizePassband}
         <button
