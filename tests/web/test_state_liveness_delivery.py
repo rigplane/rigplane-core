@@ -16,7 +16,7 @@ import aiohttp
 import pytest
 
 from serial_stub import SerialMockRadio
-from test_managed_tx_authority import FakeConfigStore, FakeFence, FakeLane
+from test_managed_tx_authority import FakeConfigStore, FakeFence
 from test_web_auth_compare_digest import _MemoryWriter
 
 from rigplane.core._bounded_queue import BoundedQueue
@@ -27,8 +27,16 @@ from rigplane.core.state_pipeline_contracts import (
     SourceMetadata,
 )
 from rigplane.radio import IcomRadio
+from rigplane.runtime.controller_authority import ControllerAuthority
 from rigplane.runtime.managed_tx_authority import ManagedTxAuthority
-from rigplane.runtime.managed_tx_state import ActuationOperation, ManagedTxIntentKind
+from rigplane.runtime.managed_tx_effect_lane import ManagedTxEffectLane
+from rigplane.runtime.managed_tx_state import (
+    AbortOperation,
+    ActuationOperation,
+    ActuationResult,
+    EffectToken,
+    ManagedTxIntentKind,
+)
 from rigplane.testing.timing import VirtualClock
 from rigplane.web import runtime_helpers
 from rigplane.web import server as server_module
@@ -385,7 +393,7 @@ def test_held_target_observation_precedes_ack_over_ws(
 @pytest.mark.parametrize(
     "failure", ["sender_error", "baseline_overflow", "fanout_overflow"]
 )
-def test_outbound_failure_cancels_pending_managed_ptt(
+def test_outbound_failure_drains_pending_managed_ptt_then_releases(
     clock: VirtualClock, monkeypatch: pytest.MonkeyPatch, failure: str
 ) -> None:
     monkeypatch.setattr(server_module, "asyncio", asyncio)
@@ -395,7 +403,8 @@ def test_outbound_failure_cancels_pending_managed_ptt(
         await radio.connect()
         radio._civ_epoch = 1  # noqa: SLF001
         srv = WebServer(radio, WebConfig(radio_model="IC-7610"))
-        lane = FakeLane()
+        actuator = _RadioPttActuator(radio)
+        lane = ManagedTxEffectLane(actuator, clock=clock)
         authority = ManagedTxAuthority(
             lane, FakeConfigStore(), FakeFence(), provider_generation=7, clock=clock
         )
@@ -452,7 +461,7 @@ def test_outbound_failure_cancels_pending_managed_ptt(
             assert not entry.positive_tx_ready.done()
             assert entry.future is not None and not entry.future.done()
             assert not task.done()
-            assert not lane.effects
+            assert not actuator.operations
 
             async def consume() -> None:
                 await poller_release.wait()
@@ -469,18 +478,26 @@ def test_outbound_failure_cancels_pending_managed_ptt(
                 else:
                     srv._broadcast_state_update(force=True)  # noqa: SLF001
             await clock.elapse(0)
+            assert not task.done()
+            assert not entry.positive_tx_submission.done()
+            assert writer.closed
             poller_release.set()
             await clock.elapse(0)
 
             assert task.done()
             assert consumer.done()
             await consumer
-            assert ActuationOperation.PTT_ON not in [e.operation for e in lane.effects]
+            assert ActuationOperation.PTT_ON in actuator.operations
+            assert actuator.operations[-1] is ActuationOperation.FORCE_RECEIVE
+            assert radio._ptt is False  # noqa: SLF001
             assert (
                 await authority.snapshot()
             ).state.intent.kind is ManagedTxIntentKind.RX
+            assert not (await authority.snapshot()).state.release_required
+            assert authority.tx_holder_nowait() is None
             assert entry.positive_tx_submission.done()
-            assert entry.future.cancelled()
+            assert entry.future.done() and not entry.future.cancelled()
+            assert entry.future.exception() is None
             disconnect.assert_awaited_once_with("pending-ptt")
             assert writer.closed
             assert not srv.command_queue.session_is_live("pending-ptt")
@@ -499,6 +516,250 @@ def test_outbound_failure_cancels_pending_managed_ptt(
                 consumer.cancel()
                 await asyncio.gather(consumer, return_exceptions=True)
             await asyncio.gather(task, return_exceptions=True)
+            await authority.close()
+            await srv.stop()
+
+    clock.run(scenario)
+
+
+class _RadioPttActuator:
+    def __init__(self, radio: _GainRadio) -> None:
+        self.radio = radio
+        self.operations: list[ActuationOperation | AbortOperation] = []
+
+    async def actuate(
+        self,
+        token: EffectToken,
+        operation: ActuationOperation | AbortOperation,
+        *,
+        is_current: Callable[[], bool],
+    ) -> ActuationResult:
+        if not is_current():
+            return ActuationResult.REJECTED
+        self.operations.append(operation)
+        if isinstance(operation, ActuationOperation):
+            await self.radio.set_ptt(operation is not ActuationOperation.FORCE_RECEIVE)
+        return ActuationResult.ACCEPTED
+
+
+def test_authority_identifies_the_keying_channel_during_preparation_and_detach(
+    clock: VirtualClock,
+) -> None:
+    async def scenario() -> None:
+        radio = _GainRadio()
+        lane = ManagedTxEffectLane(_RadioPttActuator(radio), clock=clock)
+        authority = ManagedTxAuthority(
+            lane, FakeConfigStore(), FakeFence(), provider_generation=7, clock=clock
+        )
+        controller = ControllerAuthority(
+            ready=lambda: True,
+            cleanup=AsyncMock(),
+            clock=clock,
+            release_session=authority.owner_disconnect,
+        )
+        authority.bind_controller(controller)
+        key = controller.acquire("browser")["controller_key"]
+        primary = controller.attach(key, "primary", "primary")
+        auxiliary = controller.attach(key, "auxiliary", "auxiliary")
+        owner = auxiliary.tx_owner
+        assert owner is not None
+        entered = asyncio.Event()
+        proceed = asyncio.Event()
+
+        async def before_on() -> bool:
+            entered.set()
+            await proceed.wait()
+            return True
+
+        with controller.bind(auxiliary):
+            pending = authority.start_ptt_submission(True, owner, before_on=before_on)
+        try:
+            await entered.wait()
+            assert authority.ptt_channel_holds_nowait(owner, "auxiliary")
+            assert not authority.ptt_channel_holds_nowait(owner, "primary")
+            proceed.set()
+            submission = await pending
+            await submission.wait_settlement()
+            controller.detach(auxiliary)
+            controller.validate(primary)
+            assert authority.ptt_channel_holds_nowait(owner, "auxiliary")
+            await authority.owner_disconnect(owner)
+            assert not authority.ptt_channel_holds_nowait(owner, "auxiliary")
+            assert not authority.ptt_channel_holds_nowait(owner, "primary")
+            controller.validate(primary)
+        finally:
+            proceed.set()
+            pending.cancel()
+            await asyncio.gather(pending, return_exceptions=True)
+            await controller.release(key)
+            await authority.close()
+
+    clock.run(scenario)
+
+
+@pytest.mark.parametrize(
+    "failure",
+    ["sender_error", "baseline_overflow", "fanout_overflow", "buffered_burst"],
+)
+@pytest.mark.parametrize(
+    ("name", "params"), [("ptt_off", {}), ("ptt", {"state": False})]
+)
+def test_auxiliary_outbound_failure_before_key_up_admission_releases_radio(
+    clock: VirtualClock,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+    name: str,
+    params: dict[str, Any],
+) -> None:
+    monkeypatch.setattr(server_module, "asyncio", asyncio)
+
+    async def scenario() -> None:
+        radio = _GainRadio()
+        await radio.connect()
+        radio._civ_epoch = 1  # noqa: SLF001
+        srv = WebServer(radio, WebConfig(radio_model="IC-7610"))
+        lane = ManagedTxEffectLane(_RadioPttActuator(radio), clock=clock)
+        authority = ManagedTxAuthority(
+            lane, FakeConfigStore(), FakeFence(), provider_generation=7, clock=clock
+        )
+        controller = srv._controller  # noqa: SLF001
+        monkeypatch.setattr(controller, "_clock", clock)
+        authority.bind_controller(controller)
+        radio._controller_authority = controller  # noqa: SLF001
+        key = controller.acquire("browser")["controller_key"]
+        primary = controller.attach(key, "primary", "live-primary")
+        auxiliary = controller.attach(key, "auxiliary", "releasing-auxiliary")
+        assert auxiliary.tx_owner is not None
+        poller = RadioPoller(
+            radio,
+            srv.command_queue,
+            state_store=srv.command_state_store,
+            managed_tx_authority=authority,
+            clock=clock,
+        )
+        readers = [asyncio.StreamReader(), asyncio.StreamReader()]
+        writers = [_StalledWriter(reader) for reader in readers]
+        handlers = [
+            ControlHandler(
+                WebSocketConnection(reader, writer, clock=clock),  # type: ignore[arg-type]
+                radio,
+                "test",
+                "IC-7610",
+                server=srv,
+                session_id=ticket.session_id,
+                tx_owner=ticket.tx_owner,
+                managed_tx_authority=authority,
+                clock=clock,
+            )
+            for reader, writer, ticket in zip(readers, writers, (primary, auxiliary))
+        ]
+        tasks = []
+        for handler, ticket in zip(handlers, (primary, auxiliary)):
+            controller.register_control(ticket)
+            controller.add_channel(ticket, handler._ws.abort)  # noqa: SLF001
+            with controller.bind(ticket):
+                tasks.append(asyncio.create_task(handler.run()))
+        release_started = asyncio.Event()
+        submit_ptt = authority.submit_ptt
+
+        async def observe_release(*args: Any, **kwargs: Any) -> Any:
+            release_started.set()
+            return await submit_ptt(*args, **kwargs)
+
+        monkeypatch.setattr(authority, "submit_ptt", observe_release)
+
+        def command(
+            command_id: str, command_name: str, command_params: dict[str, Any]
+        ) -> None:
+            readers[1].feed_data(
+                make_frame(
+                    WS_OP_TEXT,
+                    json.dumps(
+                        {
+                            "type": "cmd",
+                            "id": command_id,
+                            "name": command_name,
+                            "params": command_params,
+                        }
+                    ).encode(),
+                )
+            )
+
+        try:
+            await clock.elapse(0)
+            command("key", "ptt_on", {})
+            await clock.elapse(0)
+            entry = srv.command_queue.take_entry()
+            assert entry is not None
+            await poller._execute_queued_entry(entry)  # noqa: SLF001
+            await clock.elapse(0)
+            assert radio._ptt is True  # noqa: SLF001
+            assert authority.tx_holder_nowait() == auxiliary.tx_owner
+            if failure == "buffered_burst":
+                send = AsyncMock(wraps=handlers[1]._ws.send_text)  # noqa: SLF001
+                monkeypatch.setattr(handlers[1]._ws, "send_text", send)  # noqa: SLF001
+                for command_id in range(120):
+                    command(str(command_id), "switch_scope_receiver", {"receiver": 0})
+                command("unkey", name, params)
+                await clock.elapse(0)
+                responses = [
+                    json.loads(call.args[0])
+                    for call in send.call_args_list
+                    if json.loads(call.args[0]).get("type") == "response"
+                ]
+                assert [response["id"] for response in responses] == [
+                    *(str(i) for i in range(120)),
+                    "unkey",
+                ]
+                assert all(response["ok"] for response in responses)
+                assert radio._ptt is False  # noqa: SLF001
+                state = (await authority.snapshot()).state
+                assert state.intent.kind is ManagedTxIntentKind.RX
+                assert not state.release_required
+                assert not writers[1].closed
+                assert not tasks[1].done()
+                assert not tasks[0].done()
+                return
+            q = handlers[1]._event_queue  # noqa: SLF001
+            writers[1].stall = True
+            q.put_nowait({"type": "notification"})
+            await writers[1].draining.wait()
+            async with authority._lock:  # noqa: SLF001
+                command("unkey", name, params)
+                await release_started.wait()
+                await clock.elapse(0)
+                assert radio._ptt is True  # noqa: SLF001
+                assert not tasks[1].done()
+                if failure == "sender_error":
+                    writers[1].release.set()
+                else:
+                    for command_id in range(q.maxsize):
+                        q.put_nowait({"type": "response", "id": command_id, "ok": True})
+                    if failure == "baseline_overflow":
+                        srv.enqueue_control_state_baseline(q)
+                    else:
+                        srv._broadcast_state_update(force=True)  # noqa: SLF001
+                await clock.elapse(0)
+            await clock.elapse(0)
+            assert radio._ptt is False  # noqa: SLF001
+            state = (await authority.snapshot()).state
+            assert state.intent.kind is ManagedTxIntentKind.RX
+            assert not state.release_required
+            assert authority.tx_holder_nowait() is None
+            assert tasks[1].done()
+            await asyncio.gather(tasks[1], return_exceptions=True)
+            assert q not in srv._control_event_queues  # noqa: SLF001
+            assert not srv.command_queue.session_is_live("releasing-auxiliary")
+            assert not srv.command_queue.has_commands
+            assert writers[1].closed
+            assert not tasks[0].done()
+            controller.validate(primary)
+            assert controller.heartbeat(primary)
+        finally:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            await authority.force_off()
             await authority.close()
             await srv.stop()
 
@@ -552,10 +813,12 @@ def test_stalled_control_client_tears_down(
             server=srv,
             session_id="stalled-channel",
             tx_owner="ptt-owner",
-            managed_tx_authority=SimpleNamespace(owner_disconnect=disconnect),  # type: ignore[arg-type]
+            managed_tx_authority=SimpleNamespace(  # type: ignore[arg-type]
+                owner_disconnect=disconnect,
+                ptt_channel_holds_nowait=Mock(return_value=True),
+            ),
             clock=clock,
         )
-        handler._last_ptt_on = True  # noqa: SLF001
         task = asyncio.create_task(handler.run())
         try:
             await clock.elapse(0)

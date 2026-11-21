@@ -437,6 +437,16 @@ class ManagedTxAuthority:
                             transition = ManagedTxTransition(
                                 self._state, ManagedTxOutcome.REJECTED
                             )
+                        if controller_ticket is not None:
+                            controller_effects = {
+                                effect.token: controller_ticket
+                                for effect in transition.effects
+                                if isinstance(effect, ManagedTxEffect)
+                                and effect.operation
+                                is not ActuationOperation.FORCE_RECEIVE
+                            }
+                            if controller_effects:
+                                self._controller_effects = controller_effects
                     hook_ran = False
                     if (
                         before_on is not None
@@ -468,16 +478,6 @@ class ManagedTxAuthority:
                             execution = None
                         else:
                             self._wakeup.wake()
-                            if controller_ticket is not None:
-                                controller_effects = {
-                                    effect.token: controller_ticket
-                                    for effect in transition.effects
-                                    if isinstance(effect, ManagedTxEffect)
-                                    and effect.operation
-                                    is not ActuationOperation.FORCE_RECEIVE
-                                }
-                                if controller_effects:
-                                    self._controller_effects = controller_effects
                             execution = asyncio.create_task(
                                 self._execute(transition.effects, full_force=full_force)
                             )
@@ -937,6 +937,17 @@ class ManagedTxAuthority:
         return (
             self._state.intent.kind is not ManagedTxIntentKind.RX
             and self.tx_holder_nowait() != owner
+        )
+
+    def ptt_channel_holds_nowait(self, owner: str, session_id: str) -> bool:
+        """Whether this control channel keyed the currently held PTT intent."""
+        return (
+            self._state.intent.kind is ManagedTxIntentKind.PTT
+            and self.tx_holder_nowait() == owner
+            and any(
+                ticket.tx_owner == owner and ticket.session_id == session_id
+                for ticket in self._controller_effects.values()
+            )
         )
 
     def radio_tx_refusal_nowait(self) -> str | None:

@@ -1066,14 +1066,9 @@ class ControlHandler:
         # Managed-TX owner (MOR-3534): the controller session this channel is
         # attached to, else the socket itself.
         self._tx_owner = tx_owner if tx_owner is not None else self._session_id
-        # MOR-3562: closing a session's channel releases the session's TX only
-        # when this channel's last PTT request was a key; the session's end
-        # releases the rest. A sessionless socket is the owner and always does.
         self._session_attached = tx_owner is not None
-        self._last_ptt_on = False
         self._managed_tx_authority = managed_tx_authority
         self._subscribed_streams: set[str] = set()
-        self._handler_task: asyncio.Task[None] | None = None
         self._event_queue: BoundedQueue[dict[str, Any]] = BoundedQueue(
             maxsize=100,
             on_replace_overflow=self._abort_outbound,
@@ -1156,7 +1151,6 @@ class ControlHandler:
                 if isinstance(exc, asyncio.CancelledError):
                     raise
                 return
-        self._handler_task = asyncio.current_task()
         event_task: asyncio.Task[None] = asyncio.create_task(self._event_sender_loop())
 
         def sender_stopped(_task: asyncio.Task[None]) -> None:
@@ -1180,7 +1174,6 @@ class ControlHandler:
         except EOFError:
             pass
         finally:
-            self._handler_task = None
             event_task.remove_done_callback(sender_stopped)
             controller = getattr(self._radio, "_controller_authority", None)
             if isinstance(controller, ControllerAuthority):
@@ -1228,10 +1221,6 @@ class ControlHandler:
                 raise teardown_error
 
     def _abort_outbound(self) -> None:
-        # Interrupt backend awaits as well as recv; run's finally owns cleanup.
-        task = self._handler_task
-        if task is not None and not task.done() and not task.cancelling():
-            task.cancel()
         self._ws.abort()
 
     async def _event_sender_loop(self) -> None:
@@ -1766,6 +1755,7 @@ class ControlHandler:
                 self._event_queue.put_nowait(
                     {"type": "response", "id": cmd_id, "ok": True, "result": result}
                 )
+                await asyncio.sleep(0)
                 return
             await self._ws.send_text(
                 encode_json(
@@ -1844,7 +1834,10 @@ class ControlHandler:
 
     def _start_managed_ptt_disconnect(self) -> asyncio.Task[ManagedTxOutcome] | None:
         authority = self._managed_tx_authority
-        if authority is None or (self._session_attached and not self._last_ptt_on):
+        if authority is None or (
+            self._session_attached
+            and not authority.ptt_channel_holds_nowait(self._tx_owner, self._session_id)
+        ):
             return None
         release = authority.owner_disconnect(self._tx_owner)
         server = self._server
@@ -2036,8 +2029,6 @@ class ControlHandler:
                 raise ValueError("PTT state must be a boolean")
         else:
             on = name == "ptt_on"
-        # Before the submission: a close while the key is in flight releases.
-        self._last_ptt_on = on
         pending: asyncio.Task[Any] | None = None
         try:
             if on:
