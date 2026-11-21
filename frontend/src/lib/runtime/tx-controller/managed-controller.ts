@@ -11,6 +11,7 @@ export interface ManagedTxDependencies {
   invalidate(): void;
   sendPtt(operation: PttOperation): Promise<Outcome>;
   submit(operation: ManagedOperation): Promise<Outcome>;
+  onLatchRefusal?(error?: unknown): void;
   /** Persists TOT and owns canonical projection invalidation on failure. */
   setTot(configuredSeconds: number | null): Promise<void>;
   /** Browser-only presentation clock; never a TX or transport authority. */
@@ -216,8 +217,9 @@ export class ManagedTxController {
       this.#pttAttempted = false;
     }
     let outcome: Outcome;
+    let failure: unknown;
     try { outcome = await this.dependencies.submit('transmit_on'); }
-    catch { outcome = 'rejected'; this.dependencies.invalidate(); }
+    catch (error) { outcome = 'rejected'; failure = error; }
     if (generation !== this.#generation || this.#flow !== 'transmit') return;
     if (outcome === 'accepted') {
       this.#completeOnCycle();
@@ -225,6 +227,8 @@ export class ManagedTxController {
       this.#onCycle = null;
       this.#flow = 'idle';
       this.#stopAudio();
+      if (failure !== undefined) this.dependencies.invalidate();
+      this.dependencies.onLatchRefusal?.(failure);
     }
     this.#publish();
   }

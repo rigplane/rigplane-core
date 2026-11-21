@@ -871,10 +871,10 @@ async def test_missing_attach_closes_channel_within_timeout(
 
 
 @_webrtc
-async def test_clean_close_while_keyed_releases_ptt_fast(
+async def test_control_ptt_release_and_link_drop_unkey_simulator(
     tmp_path: Path,
 ) -> None:
-    """Clean close of a keyed data channel unkeys within 0.5 s."""
+    """Momentary PTT keys and releases; a live hold ends on link drop."""
     stack = await _stand_up_stack(tmp_path)
     dc = _DcControlClient()
     try:
@@ -887,6 +887,16 @@ async def test_clean_close_while_keyed_releases_ptt_fast(
         assert keyed.get("ok") is True, keyed
         await await_until(
             lambda: stack.sim.ptt_on is True, timeout=10.0, description="sim keyed"
+        )
+        released = await dc.command("release-1", "ptt_off")
+        assert released.get("ok") is True, released
+        await await_until(
+            lambda: stack.sim.ptt_on is False, timeout=5.0, description="sim unkeyed"
+        )
+        keyed = await dc.command("key-2", "ptt_on")
+        assert keyed.get("ok") is True, keyed
+        await await_until(
+            lambda: stack.sim.ptt_on is True, timeout=10.0, description="sim rekeyed"
         )
         started = asyncio.get_running_loop().time()
         await dc.close()
