@@ -13,6 +13,8 @@ connected) on both transports.
 
 from __future__ import annotations
 
+import asyncio
+import json
 import textwrap
 from pathlib import Path
 
@@ -47,7 +49,9 @@ from rigplane.web.radio_poller import (
     RadioPoller,
 )
 from rigplane.web.runtime_helpers import runtime_capabilities
+from rigplane.web.server import WebConfig, WebServer
 from rigplane.web.web_startup import _startup_gap_seconds
+from test_web_server import _http_get
 
 G7250 = "xiegu_g7250"
 
@@ -345,6 +349,76 @@ class TestAudioRouteTransportConsistency:
         assert route.rx_audio_source is RxAudioSource.UNAVAILABLE
         assert route.data_mode_policy is DataModePolicy.LEGACY
         assert route.bridge_required is False
+
+
+# ── The real API: GET /api/v1/capabilities applies the transport gate ─
+
+
+class TestCapabilitiesEndpointTransportGate:
+    """The served capability payload follows the live transport.
+
+    Codex round-one P1: the serial G7250 gate was pinned only on the
+    ``runtime_capabilities`` helper, so a server that stopped applying the
+    helper and advertised serial scope again kept those assertions green.
+    Every case here drives the real public API path — a real ``WebServer``
+    on a real socket, real backend objects (constructed, never connected:
+    hardware/network faked; the transport is a class-level fact of the
+    backend) — and asserts on the ``GET /api/v1/capabilities`` body over
+    the wire, never on the helper directly.
+    """
+
+    @staticmethod
+    async def _served_capabilities(radio: object) -> dict:
+        web = WebServer(radio, WebConfig(host="127.0.0.1", port=0))
+        web._server = await asyncio.start_server(web._accept_client, "127.0.0.1", 0)
+        try:
+            host, port = web._server.sockets[0].getsockname()
+            status, _, body = await _http_get(host, port, "/api/v1/capabilities")
+            assert status == 200, f"GET /api/v1/capabilities: HTTP {status}"
+            return json.loads(body)
+        finally:
+            web._server.close()
+            await web._server.wait_closed()
+            web._server = None
+            tasks = tuple(web._client_tasks)
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    @pytest.mark.asyncio
+    async def test_serial_g7250_serves_no_scope(self):
+        data = await self._served_capabilities(
+            XieguSerialRadio(device="/dev/null", model="G7250")
+        )
+        assert data["scope"] is False
+        assert "scope" not in data["capabilities"]
+        assert "radio" not in data["scopeSources"]
+        # The default scope source must never be the gated radio source
+        # (the audio FFT fallback remains a legitimate scope source).
+        assert data["scopeDefaultSourceId"] != "radio"
+
+    @pytest.mark.asyncio
+    async def test_lan_g7250_keeps_scope_and_radio_source(self):
+        data = await self._served_capabilities(
+            IcomRadio(host="192.0.2.1", model="G7250")
+        )
+        assert data["scope"] is True
+        assert "scope" in data["capabilities"]
+        assert "radio" in data["scopeSources"]
+        assert data["scopeDefaultSourceId"] == "radio"
+
+    @pytest.mark.asyncio
+    async def test_unaffected_radio_keeps_scope_on_both_transports(self):
+        # Control: a profile without transport gaps keeps scope on every
+        # transport, so the gate must not leak beyond the declared gaps.
+        for radio in (
+            IcomRadio(host="192.0.2.1", model="IC-7300"),
+            Ic7300SerialRadio(device="/dev/null", model="IC-7300"),
+        ):
+            data = await self._served_capabilities(radio)
+            assert data["scope"] is True
+            assert "scope" in data["capabilities"]
 # ── Pacing: poller, startup gate, initial-state sweep ────────────────
 
 
