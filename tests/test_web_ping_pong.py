@@ -33,7 +33,7 @@ def _control_handler(ws: object) -> ControlHandler:
 
 
 async def test_control_channel_answers_ping_with_pong() -> None:
-    ws = SimpleNamespace(send_text=AsyncMock())
+    ws = SimpleNamespace(outbound_progress=0, send_text=AsyncMock())
     await _control_handler(ws)._handle_text(json.dumps({"type": "ping"}))
     assert _sent_json(ws.send_text) == [{"type": "pong"}]
 
@@ -41,7 +41,7 @@ async def test_control_channel_answers_ping_with_pong() -> None:
 async def test_control_channel_unknown_type_still_logged_and_unanswered(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    ws = SimpleNamespace(send_text=AsyncMock())
+    ws = SimpleNamespace(outbound_progress=0, send_text=AsyncMock())
     with caplog.at_level(logging.DEBUG, logger="rigplane.web.handlers.control"):
         await _control_handler(ws)._handle_text(json.dumps({"type": "bogus"}))
     assert "control: unknown message type: 'bogus'" in caplog.text
@@ -90,7 +90,7 @@ async def test_non_json_and_non_object_text_gets_no_reply_and_does_not_raise(
     channel: str, text: str
 ) -> None:
     if channel == "control":
-        ws = SimpleNamespace(send_text=AsyncMock())
+        ws = SimpleNamespace(outbound_progress=0, send_text=AsyncMock())
         await _control_handler(ws)._handle_text(text)
     else:
         ws = _scope_ws(text)

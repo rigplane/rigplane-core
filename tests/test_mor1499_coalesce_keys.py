@@ -49,7 +49,9 @@ def _control_handler(
     server: object | None = None,
 ) -> ControlHandler:
     if ws is None:
-        ws = SimpleNamespace(send_text=AsyncMock(), recv=AsyncMock())
+        ws = SimpleNamespace(
+            outbound_progress=0, send_text=AsyncMock(), recv=AsyncMock()
+        )
     return ControlHandler(ws, radio, "9.9.9", "IC-7610", server=server)
 
 
@@ -85,7 +87,7 @@ async def _await_flush(handler: ControlHandler, key: str) -> None:
 
 
 async def test_set_filter_distinct_targets_both_reach_radio() -> None:
-    ws = SimpleNamespace(send_text=AsyncMock(), recv=AsyncMock())
+    ws = SimpleNamespace(outbound_progress=0, send_text=AsyncMock(), recv=AsyncMock())
     queue = _QueueRecorder()
     handler = _control_handler(
         ws=ws,
@@ -132,7 +134,7 @@ async def test_set_filter_distinct_targets_both_reach_radio() -> None:
 
 
 async def test_set_filter_same_target_still_coalesces() -> None:
-    ws = SimpleNamespace(send_text=AsyncMock(), recv=AsyncMock())
+    ws = SimpleNamespace(outbound_progress=0, send_text=AsyncMock(), recv=AsyncMock())
     queue = _QueueRecorder()
     handler = _control_handler(
         ws=ws,
@@ -173,7 +175,7 @@ async def test_set_filter_same_target_still_coalesces() -> None:
 
 
 async def test_set_nb_cross_receiver_both_reach_radio() -> None:
-    ws = SimpleNamespace(send_text=AsyncMock(), recv=AsyncMock())
+    ws = SimpleNamespace(outbound_progress=0, send_text=AsyncMock(), recv=AsyncMock())
     queue = _QueueRecorder()
     radio = SimpleNamespace(
         connected=True,
@@ -211,7 +213,7 @@ async def test_set_nb_cross_receiver_both_reach_radio() -> None:
 
 
 async def test_slider_command_still_coalesces_across_different_values() -> None:
-    ws = SimpleNamespace(send_text=AsyncMock(), recv=AsyncMock())
+    ws = SimpleNamespace(outbound_progress=0, send_text=AsyncMock(), recv=AsyncMock())
     queue = _QueueRecorder()
     radio = SimpleNamespace(connected=True, capabilities={"if_shift"})
     handler = _control_handler(
@@ -255,7 +257,7 @@ async def test_slider_command_still_coalesces_across_different_values() -> None:
 async def test_malformed_params_do_not_raise_and_reply_not_ok(
     bad_params: Any,
 ) -> None:
-    ws = SimpleNamespace(send_text=AsyncMock(), recv=AsyncMock())
+    ws = SimpleNamespace(outbound_progress=0, send_text=AsyncMock(), recv=AsyncMock())
     queue = _QueueRecorder()
     radio = SimpleNamespace(connected=True, capabilities={"nb"})
     handler = _control_handler(

@@ -22,7 +22,7 @@ def _make_run_handler(*, unregister: Any = None) -> tuple[ControlHandler, Comman
         raise EOFError
 
     return ControlHandler(
-        ws=SimpleNamespace(send_text=AsyncMock(), recv=recv),
+        ws=SimpleNamespace(outbound_progress=0, send_text=AsyncMock(), recv=recv),
         radio=SimpleNamespace(connected=True, radio_ready=True),
         server_version="test",
         radio_model="IC-7610",

@@ -197,6 +197,8 @@ def _state_event_ws_clients(event: dict[str, object]) -> dict[str, int]:
 
 
 class _RunOnceControlWs:
+    outbound_progress: int = 0
+
     def __init__(self) -> None:
         self.sent: list[dict[str, object]] = []
 
@@ -1879,7 +1881,7 @@ async def test_websocket_reused_command_ids_are_scoped_per_connection() -> None:
     radio = SimpleNamespace(connected=True, capabilities=set())
     srv = WebServer(radio, WebConfig())
     handler_a = ControlHandler(
-        SimpleNamespace(send_text=AsyncMock(), recv=AsyncMock()),
+        SimpleNamespace(outbound_progress=0, send_text=AsyncMock(), recv=AsyncMock()),
         radio,
         "9.9.9",
         "IC-7610",
@@ -1887,7 +1889,7 @@ async def test_websocket_reused_command_ids_are_scoped_per_connection() -> None:
         session_id="ws-a",
     )
     handler_b = ControlHandler(
-        SimpleNamespace(send_text=AsyncMock(), recv=AsyncMock()),
+        SimpleNamespace(outbound_progress=0, send_text=AsyncMock(), recv=AsyncMock()),
         radio,
         "9.9.9",
         "IC-7610",
@@ -2615,7 +2617,7 @@ async def test_http_snapshot_matches_initial_ws_full_state_for_same_store_revisi
     await srv._serve_state(writer)  # noqa: SLF001
     _, http_body = _response_json(writer)
 
-    ws = MagicMock()
+    ws = MagicMock(outbound_progress=0)
     sent: list[dict[str, object]] = []
 
     async def _send_text(payload: str) -> None:
@@ -2678,7 +2680,7 @@ async def test_same_value_observation_metadata_updates_http_and_initial_ws_full_
     await srv._serve_state(writer)  # noqa: SLF001
     _, http_body = _response_json(writer)
 
-    ws = MagicMock()
+    ws = MagicMock(outbound_progress=0)
     sent: list[dict[str, object]] = []
 
     async def _send_text(payload: str) -> None:
