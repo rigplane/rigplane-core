@@ -7,8 +7,8 @@
  * payload:
  *
  *   - `App.svelte` bootstrap refusal: a real mounted App runs the real
- *     `runtime.bootstrap()` → `controllerClient.prepare()` against wire
- *     replies copied from the real Python handler, and the banner renders
+ *     `runtime.bootstrap()` → `controllerClient.prepare()` against the
+ *     shared golden wire documents, and the banner renders
  *     `messageFromReasonCode(controllerToastCodeOf(err))` with no
  *     `Backend error: Error:` double prefix. Reverting the App change
  *     restores the double prefix and fails these tests.
@@ -17,18 +17,28 @@
  *     emits `CONTROLLER_TOAST_CODES[failure.code]`. Reverting to the
  *     snake_case wire code resolves `core.toast.unknown` and fails.
  *   - `ws-client.ts` controller loss: the control channel's real
- *     `controllerClient.onLoss` callback fires after the REAL server
- *     eviction frame — `{"type":"controller_heartbeat","generation":N}` is
- *     the reply `ControllerAuthority.heartbeat()` sends once the grant's
- *     generation is superseded — routed through the real message handler
- *     to `controllerClient.acknowledge()` → `lose()`. Reverting the toast
- *     code conversion resolves `core.toast.unknown` and fails.
+ *     `controllerClient.onLoss` callback fires after the REAL server loss
+ *     sequence — the station revokes the grant (expiry, local take-back or
+ *     release), `ControllerAuthority.revoke()` fences the generation and
+ *     aborts the registered control channel (`server.py` registers
+ *     `conn.abort`), and a stale holder's heartbeat is refused
+ *     (`controller_invalid`), never answered, so the holder's only wire
+ *     event is the abnormal socket close. The real `ws-client.ts` onClose
+ *     handler sees it and calls `controllerClient.lose()` → the registered
+ *     onLoss callbacks → `emitLocalNotification` with the converted toast
+ *     code. Reverting the toast code conversion resolves `core.toast.unknown`
+ *     and fails.
  *
- * Wire replies mirror `server.py: _handle_http_controller` and
- * `controller_authority.py: status/acquire` exactly: GET returns the
- * status document, POST 201 the grant (`ttl_ms` 6000, `heartbeat_ms`
- * 2000), and a refusal is `ControllerError`'s JSON body
- * (`{"error": "<code>"}`, HTTP 409 for `controller_busy`).
+ * Wire replies are the shared golden documents imported from
+ * `tests/fixtures/host-api-v3-wire.json`, replayed producer-side against
+ * the real Python authority and HTTP handler by
+ * `tests/test_host_api_v3_wire_contract.py::test_controller_documents`
+ * and `::test_controller_remote_loss_documents` (which also proves the
+ * server can never answer a superseded holder's heartbeat, so the socket
+ * close below is the only real loss event): GET returns the status
+ * document, POST 201 the grant (`ttl_ms` 6000, `heartbeat_ms` 2000), and a
+ * refusal is `ControllerError`'s JSON body (`{"error": "<code>"}`, HTTP
+ * 409 for `controller_busy`).
  *
  * Presentation seams (skins, layouts, media session, audio manager) are
  * stubbed exactly like `src/__tests__/first-browser-auth.component.test.ts`
@@ -41,6 +51,7 @@ import { mount, unmount, flushSync } from 'svelte';
 import { MockWebSocket, instances } from '$lib/transport/__tests__/support/fake-ws-backend';
 import stateFixture from '$lib/runtime/adapters/__tests__/fixtures/ic7300-state.json';
 import capsFixture from '$lib/runtime/adapters/__tests__/fixtures/ic7300-capabilities.json';
+import hostWire from '../../../../../tests/fixtures/host-api-v3-wire.json';
 
 vi.mock('../../../skins/registry', async (importOriginal) => ({
   ...await importOriginal<typeof import('../../../skins/registry')>(),
@@ -122,27 +133,13 @@ if (typeof (Element.prototype as any).animate !== 'function') {
   };
 }
 
-// ── Wire replies, copied from the real Python handler ──────────────
-// `controller_authority.py: status()` / `acquire()` and `server.py:
-// _handle_http_controller` (a refusal is `{"error": code}` with
-// ControllerError's HTTP status — 409 for controller_busy).
-
-const GRANT_GENERATION = 7;
-const controllerStatus = () => ({
-  protocol_version: 1,
-  mode: 'remote',
-  state: 'held',
-  generation: GRANT_GENERATION,
-  ttl_ms: 6000,
-  heartbeat_ms: 2000,
-  remaining_ms: 0,
-});
-const controllerGrant = () => ({
-  controller_key: '1f'.repeat(32),
-  generation: GRANT_GENERATION,
-  ttl_ms: 6000,
-  heartbeat_ms: 2000,
-});
+// ── Shared golden wire documents ────────────────────────────────────
+// `tests/fixtures/host-api-v3-wire.json`, replayed producer-side by
+// `tests/test_host_api_v3_wire_contract.py::test_controller_documents`
+// and `::test_controller_remote_loss_documents`: the exact documents the
+// real ControllerAuthority and HTTP handler emit (remote mode; generation
+// 2 because arming remote mode and the grant each bump it once; the
+// all-`1f` key is the monkeypatched token).
 
 /** What POST /api/v1/controller answers in the current test. */
 let controllerPost: 'refuse-busy' | 'grant' = 'refuse-busy';
@@ -210,11 +207,18 @@ beforeEach(() => {
     if (url === '/api/v1/controller') {
       if (init.method === 'POST') {
         return controllerPost === 'grant'
-          ? response(201, controllerGrant())
-          : response(409, { error: 'controller_busy' });
+          ? response(201, hostWire.controllerGrantRemote)
+          : response(409, hostWire.controllerBusyRefusal);
       }
-      if (init.method === 'DELETE') return response(200, controllerStatus());
-      return response(200, controllerStatus());
+      // GET answers the station's real document for the current test:
+      // held by another client ahead of a refusal, idle ahead of our grant
+      // (a held station would refuse the POST — the goldens are the real
+      // handler's outputs, verified producer-side by the Python contract
+      // test named in the header).
+      if (init.method === 'DELETE') return response(200, hostWire.controllerStatusRemoteIdle);
+      return response(200, controllerPost === 'grant'
+        ? hostWire.controllerStatusRemoteIdle
+        : hostWire.controllerStatusRemoteHeld);
     }
     return response(200, url.endsWith('/capabilities') ? caps : {});
   });
@@ -310,15 +314,17 @@ describe('controller loss through the real producers', () => {
       async () => { throw new Error('TX power-off refused'); },
     );
 
-    // The real server reply once another client took over: the grant's
-    // generation is superseded, so the heartbeat ack carries the new one.
-    // The real control-channel handler routes it to
-    // controllerClient.acknowledge() → lose() → the registered onLoss
-    // callbacks → emitLocalNotification with the converted toast code.
-    socket.simulateMessage(JSON.stringify({
-      type: 'controller_heartbeat',
-      generation: GRANT_GENERATION + 1,
-    }));
+    // The REAL server loss sequence, replayed producer-side by
+    // `tests/test_host_api_v3_wire_contract.py::test_controller_remote_loss_documents`:
+    // the grant is superseded, `ControllerAuthority.revoke()` fences the
+    // generation and aborts the registered control channel
+    // (`server.py: add_channel(ticket, conn.abort)`), and a stale holder's
+    // heartbeat is refused (`controller_invalid`), never answered — so the
+    // holder's only wire event is the abnormal socket close. The real
+    // ws-client onClose handler (the `controllerClient.lose()` branch)
+    // routes it to the registered onLoss callbacks → emitLocalNotification
+    // with the converted toast code.
+    socket.simulateClose();
     await settle();
 
     // One localized toast per producer: ws-client's onLoss and
