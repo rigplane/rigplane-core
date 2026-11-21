@@ -167,7 +167,38 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="use the loopback IC-7610 simulator with mixed scope and synthetic PCM",
     )
+    parser.add_argument(
+        "--rig-drop-file",
+        default=None,
+        type=Path,
+        help=(
+            "link-loss seam for the MOR-2241 journey spec: the instant this file appears "
+            "the fake drops the rig link the way a cable pull does — radio.connected "
+            "flips false (the poller backs off and state broadcasts stop) and the "
+            "server's own connection_state callback fires, broadcasting the "
+            "rigConnected=false state update and the 'Radio disconnected' notification. "
+            "When the file disappears again the link is restored the same way."
+        ),
+    )
     return parser.parse_args()
+
+
+async def _rig_link_seam(
+    radio: JourneyRadio, server: WebServer, drop_file: Path
+) -> None:
+    """Watch ``drop_file``; drop/restore the rig link through the server's own callback."""
+    dropped = False
+    while True:
+        present = drop_file.exists()
+        if present and not dropped:
+            await radio.disconnect()
+            server._on_radio_state_change("connection_state", {"connected": False})
+            dropped = True
+        elif not present and dropped:
+            await radio.connect()
+            server._on_radio_state_change("connection_state", {"connected": True})
+            dropped = False
+        await asyncio.sleep(0.1)
 
 
 async def run() -> None:
@@ -237,12 +268,25 @@ async def run() -> None:
                 read_only=args.read_only,
             ),
         )
-        await server.serve_forever(
-            on_started=lambda: print(
-                f"{radio.model} journey fake ready at http://{args.host}:{args.port}/?ui=v2",
-                flush=True,
+        link_seam = (
+            asyncio.get_running_loop().create_task(
+                _rig_link_seam(radio, server, args.rig_drop_file)
             )
+            if args.rig_drop_file is not None
+            else None
         )
+        try:
+            await server.serve_forever(
+                on_started=lambda: print(
+                    f"{radio.model} journey fake ready at http://{args.host}:{args.port}/?ui=v2",
+                    flush=True,
+                )
+            )
+        finally:
+            if link_seam is not None:
+                link_seam.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await link_seam
     finally:
         if simulator is not None:
             try:

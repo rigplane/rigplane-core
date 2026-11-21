@@ -54,3 +54,30 @@ body {
   min-height: 100dvh;
   padding-top: var(--rp-chrome-top, 0px);
 }
+
+/* MOR-2425 C-R3, widened from RadioLayout to every layout shell by MOR-2241 —
+ * the link-fault veil. One rule set keyed on the face root's
+ * `data-link-fault` (lib/runtime/adapters/link-fault.ts: deriveLinkFault),
+ * with no per-skin variant: a desaturation plus a contrast reduction, so it
+ * reads the same in every palette and cannot collide with an accent colour.
+ * The brightness term is there because reducing contrast on a dark face
+ * raises its blacks — without it the veiled face reads as brighter, not
+ * deader.
+ *
+ * `.status-bar` and `.control-link-lost` are exempt: they carry the words for
+ * both arms of the fault — the disconnect bar for ws-down, the bad-link chip
+ * inside the bar for radio-silent — so they must keep their colour while the
+ * face loses its. And a CSS filter makes the element it is set on a
+ * containing block for its `position: fixed` descendants: filtering
+ * `.status-bar` would re-anchor the popovers it hosts to that strip. The
+ * phone layout has no status bar; its `.m-radio-link-line` states the same
+ * fault and is exempt on the same grounds.
+ *
+ * The receiver deck is skipped on its own line and its children taken
+ * instead: on the two desktop faces the deck is `display: contents`
+ * (RadioLayout.svelte's `.desktop-control-face > .receiver-deck`), where a
+ * filter would generate no box at all and veil nothing. */
+[data-link-fault] > *:not(.status-bar, .control-link-lost, .receiver-deck, .m-radio-link-line),
+[data-link-fault] > .receiver-deck > * {
+  filter: saturate(0.08) contrast(0.5) brightness(0.62);
+}

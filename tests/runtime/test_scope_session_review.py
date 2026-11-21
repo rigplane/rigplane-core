@@ -113,6 +113,7 @@ async def test_mixed_journey_server_grants_follow_before_refusing_pinned_view(
             panorama_audio=True,
             freq=14_286_000,
             read_only=False,
+            rig_drop_file=None,
         ),
     )
 
