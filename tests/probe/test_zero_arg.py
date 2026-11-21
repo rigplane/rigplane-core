@@ -577,11 +577,38 @@ def test_no_real_gui_opener_guard_intercepts_the_call(_no_real_gui_opener) -> No
 
 def test_no_real_gui_opener_guard_fails_when_called() -> None:
     """The guard's verdict: silence on no calls, a clear failure on any call."""
-    from conftest import _assert_no_gui_opener_calls
+    from tests.conftest import _assert_no_gui_opener_calls
 
     _assert_no_gui_opener_calls([])  # passes quietly
     with pytest.raises(AssertionError, match="real radio-probe folder opener"):
         _assert_no_gui_opener_calls([Path("/tmp/x")])
+
+
+def test_no_test_uses_a_bare_conftest_import() -> None:
+    """No test may import the bare `conftest` module (MOR-4214 follow-up).
+
+    `tests/integration/` has no `__init__.py`, so under pytest's default
+    prepend import mode any integration test module imported in the same
+    worker puts `tests/integration/` on `sys.path` ahead of `tests/`. A
+    bare import then resolves to `tests/integration/conftest.py` instead
+    of `tests/conftest.py` and fails with `cannot import name ...` — but
+    only on workers whose shard happens to import an integration module
+    first, so only one xdist shard went red (PR #4709). Absolute imports
+    from `tests.conftest` are immune to that ordering; this pin keeps the
+    bare form from coming back.
+    """
+    import re
+
+    bare = re.compile(r"^\s*(?:from conftest import|import conftest(?=\s|$))")
+    offenders = sorted(
+        str(path.relative_to(REPO_ROOT))
+        for path in (REPO_ROOT / "tests").rglob("*.py")
+        if bare.search(path.read_text(encoding="utf-8"))
+    )
+    assert offenders == [], (
+        "bare `conftest` imports resolve to whichever conftest.py directory "
+        f"happens to be first on sys.path; use `tests.conftest`: {offenders}"
+    )
 
 
 # --- Discovery selection (unit level; dispatch level is in test_zero_arg_seam) ---
