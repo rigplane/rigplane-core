@@ -57,9 +57,12 @@ class _Writer:
 class _Ws:
     def __init__(self) -> None:
         self.messages: list[dict[str, object]] = []
+        self.received: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
 
     async def send_text(self, payload: str) -> None:
-        self.messages.append(json.loads(payload))
+        message = json.loads(payload)
+        self.messages.append(message)
+        self.received.put_nowait(message)
 
 
 def _radio(
@@ -842,25 +845,39 @@ async def test_web_rx_antenna_selector_two_reaches_ant2_and_preserves_ack() -> N
     ws = _Ws()
     handler = ControlHandler(ws, radio, "test", "FTX-1", server=server)  # type: ignore[arg-type]
 
+    sender = asyncio.create_task(handler._event_sender_loop())  # noqa: SLF001
     request = asyncio.create_task(
         handler._dispatch_command(  # noqa: SLF001
             "rx-ant", "set_rx_antenna", {"antenna": 2, "on": True}
         )
     )
-    await asyncio.sleep(0)
-    assert not request.done()
+    try:
+        await asyncio.sleep(0)
+        assert not request.done()
 
-    await _drain_yaesu(server, radio)
-    await request
+        await _drain_yaesu(server, radio)
+        await request
 
-    radio.set_rx_antenna_ant1.assert_not_awaited()
-    radio.set_rx_antenna_ant2.assert_awaited_once_with(on=True)
-    assert ws.messages[-1] == {
-        "type": "response",
-        "id": "rx-ant",
-        "ok": True,
-        "result": {"antenna": 2, "on": True},
-    }
+        saw_baseline = False
+        while True:
+            message = await ws.received.get()
+            if message["type"] == "state_update":
+                saw_baseline |= message["data"]["type"] == "full"
+            if message["type"] == "response" and message["id"] == "rx-ant":
+                assert saw_baseline, "successful ACK preceded its state baseline"
+                assert message == {
+                    "type": "response",
+                    "id": "rx-ant",
+                    "ok": True,
+                    "result": {"antenna": 2, "on": True},
+                }
+                break
+        radio.set_rx_antenna_ant1.assert_not_awaited()
+        radio.set_rx_antenna_ant2.assert_awaited_once_with(on=True)
+    finally:
+        sender.cancel()
+        request.cancel()
+        await asyncio.gather(sender, request, return_exceptions=True)
 
 
 def test_antenna_descriptor_preflight_preserves_profile_rejection() -> None:
