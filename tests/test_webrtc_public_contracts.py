@@ -265,9 +265,10 @@ def test_close_result_round_trips() -> None:
     wire = result.to_json()
     assert wire["status"] == "ok"
     assert rigplane.WebRtcCloseResult.from_json(wire) == result
-    assert rigplane.WebRtcCloseResult.from_json(
-        {"status": "ok", "closed": []}
-    ) == rigplane.WebRtcCloseResult()
+    assert (
+        rigplane.WebRtcCloseResult.from_json({"status": "ok", "closed": []})
+        == rigplane.WebRtcCloseResult()
+    )
     for bad in (
         {"status": "ok", "closed": "a"},
         {"status": "ok", "closed": [1]},
