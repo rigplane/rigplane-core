@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import sys
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import pytest
@@ -241,32 +242,66 @@ _PROFILE_CHANNELS = {"PCM_1CH_16BIT": 1, "PCM_2CH_16BIT": 2}
 _RX_AUDIO_WINDOW_BURSTS = 100
 
 
-@pytest.mark.parametrize(("cli_id", "model", "fidelity"), CASES)
-async def test_rx_audio_matches_the_negotiated_format(
-    cli_id: str, model: str, fidelity: str
-):
-    """The decoded bytes of what the real client receives match the negotiated
-    format: mono for the mono profiles, stereo for the IC-7610.
+_RX_SUB_NAME = "lan-personality"
 
-    Measured against the simulator's own sample counter (MOR-4214): the window
-    is 100 emitted bursts (2.0 s of simulator audio), not 2.0 wall seconds, so
-    a loaded host that skips bursts only takes longer in wall time. Every
-    emitted packet is either received or accounted as a client-queue eviction
-    (the bus drops oldest on a full queue); packet positions come from the
-    simulator's own numbering, so the total is exact with no tolerance.
+
+@dataclass(frozen=True)
+class _RxWindow:
+    """What one RX audio window delivered to the real client (MOR-4214)."""
+
+    received_bytes: int
+    expected_bytes: int
+    missing_bytes: int  # bytes of the window's packets that never arrived
+    missing: int  # packets of the window that never arrived
+    evicted: int  # subscriber evictions the audio bus itself counted
+    delivered: bool  # a packet after the window reached the subscription
+
+
+def _bus_evictions(radio: IcomRadio) -> int:
+    """Packets the audio bus dropped from our subscriber's full queue.
+
+    Read from the bus's own per-subscriber counter, never inferred from what
+    went missing: a lost datagram or a dead RX path evicts nothing.
+    """
+    return sum(
+        int(entry["dropped"])
+        for entry in radio.audio_bus.stats["subscribers"]
+        if entry["name"] == _RX_SUB_NAME
+    )
+
+
+async def _collect_rx_window(
+    model: str, *, delivery_wait_s: float = 30.0, drop_after: int | None = None
+) -> _RxWindow:
+    """Read 100 simulator RX bursts at the real client and account for them.
+
+    ``drop_after`` (negative control only) makes the client's subscription
+    silently discard every packet after that many, without ever filling its
+    queue: the simulator keeps emitting and nothing is evicted.
     """
     profile = resolve_radio_profile(model=model)
     channels = _PROFILE_CHANNELS[profile.codec_preference[0]]
     payloads = burst_payloads(channels, 48000)
-    per_burst = sum(payloads)
     window_packets = 3 * _RX_AUDIO_WINDOW_BURSTS
-    async with _session(model) as (_sim, radio):
-        sim = _sim
-        sub = await radio.audio_session.subscribe_rx("lan-personality")
+    async with _session(model) as (sim, radio):
+        sub = await radio.audio_session.subscribe_rx(_RX_SUB_NAME)
         try:
+            if drop_after is not None:
+                inner = sub._inner  # noqa: SLF001
+                real_deliver = inner.deliver
+                seen = 0
+
+                def lossy_deliver(packet: object) -> None:
+                    nonlocal seen
+                    seen += 1
+                    if seen <= drop_after:
+                        real_deliver(packet)  # type: ignore[arg-type]
+
+                inner.deliver = lossy_deliver  # type: ignore[method-assign]
             first = await sub.get(timeout=10.0)
             assert first is not None and first.data and any(first.data)
             start_seq = first.send_seq
+            window_end = start_seq + window_packets
             got: dict[int, bytes] = {start_seq: first.data}
 
             def _drain() -> None:
@@ -281,7 +316,7 @@ async def test_rx_audio_matches_the_negotiated_format(
 
             def _window_emitted() -> bool:
                 _drain()
-                return sim.audio_rx_frames_sent >= start_seq + window_packets
+                return sim.audio_rx_frames_sent >= window_end
 
             await await_until(
                 _window_emitted,
@@ -289,35 +324,80 @@ async def test_rx_audio_matches_the_negotiated_format(
                 description=f"{_RX_AUDIO_WINDOW_BURSTS} simulator RX bursts",
             )
 
-            settled = {"quiet": 0, "last": -1}
-
-            def _tail_settled() -> bool:
+            # Delivery evidence for THIS window: a packet numbered past it has
+            # reached the subscription, so every window packet has had its
+            # turn. Emission alone proves nothing about the client's RX path.
+            def _window_delivered() -> bool:
                 _drain()
-                if len(got) == settled["last"]:
-                    settled["quiet"] += 1
-                else:
-                    settled["quiet"] = 0
-                settled["last"] = len(got)
-                return (
-                    settled["quiet"] >= 2
-                    and sim.audio_rx_frames_sent >= start_seq + window_packets
-                )
+                return max(got) >= window_end
 
-            await await_until(
-                _tail_settled, timeout=30.0, description="in-flight RX tail"
-            )
+            delivered = True
+            try:
+                await await_until(
+                    _window_delivered,
+                    timeout=delivery_wait_s,
+                    description="a packet past the RX window at the client",
+                )
+            except AssertionError:
+                delivered = False
             _drain()
         finally:
             await sub.release()
-    window = range(start_seq, start_seq + window_packets)
+        evicted = _bus_evictions(radio)
+    window = range(start_seq, window_end)
     assert all(any(data) for data in got.values()), "RX audio must not be silent"
-    received = sum(len(got[seq]) for seq in window if seq in got)
     missing = [seq for seq in window if seq not in got]
-    evicted = sum(payloads[seq % 3] for seq in missing)
-    assert received + evicted == _RX_AUDIO_WINDOW_BURSTS * per_burst, (
-        f"{model}: {received} received + {evicted} evicted != "
-        f"{_RX_AUDIO_WINDOW_BURSTS} bursts of {per_burst} bytes"
+    return _RxWindow(
+        received_bytes=sum(len(got[seq]) for seq in window if seq in got),
+        expected_bytes=_RX_AUDIO_WINDOW_BURSTS * sum(payloads),
+        missing_bytes=sum(payloads[seq % 3] for seq in missing),
+        missing=len(missing),
+        evicted=evicted,
+        delivered=delivered,
     )
+
+
+def _assert_rx_window_accounted(model: str, window: _RxWindow) -> None:
+    """Every window byte was received, or its packet was a counted eviction."""
+    assert window.delivered, f"{model}: the RX window never reached the client"
+    assert window.missing <= window.evicted, (
+        f"{model}: {window.missing} window packets missing but the audio bus "
+        f"counted only {window.evicted} evictions: the rest were lost"
+    )
+    assert window.received_bytes + window.missing_bytes == window.expected_bytes
+
+
+@pytest.mark.parametrize(("cli_id", "model", "fidelity"), CASES)
+async def test_rx_audio_matches_the_negotiated_format(
+    cli_id: str, model: str, fidelity: str
+):
+    """The decoded bytes of what the real client receives match the negotiated
+    format: mono for the mono profiles, stereo for the IC-7610.
+
+    Measured against the simulator's own packet numbering (MOR-4214): the
+    window is 100 emitted bursts (2.0 s of simulator audio), not 2.0 wall
+    seconds, so a loaded host that skips bursts only takes longer in wall
+    time. Every window packet is either received or an eviction the audio bus
+    counted itself (it drops oldest on a full queue), so the total is exact
+    with no tolerance and a lost packet is never credited.
+    """
+    _assert_rx_window_accounted(model, await _collect_rx_window(model))
+
+
+async def test_rx_audio_window_rejects_packets_lost_without_queue_overflow():
+    """Negative control (MOR-4214): the simulator keeps emitting but the
+    client receives only the first 5 packets and no queue ever overflows. The
+    old accounting credited every missing packet as an eviction and passed."""
+    window = await _collect_rx_window("IC-7610", delivery_wait_s=1.0, drop_after=5)
+    assert window.evicted == 0 and window.missing > 0
+    with pytest.raises(AssertionError):
+        _assert_rx_window_accounted("IC-7610", window)
+    # Even with the delivery evidence present (packets after the window DID
+    # arrive), missing packets with no counted eviction are loss, not credit.
+    with pytest.raises(AssertionError, match="lost"):
+        _assert_rx_window_accounted(
+            "IC-7610", replace(window, delivered=True, missing=7, evicted=0)
+        )
 
 
 # --- Seam: real IcomRadio over real UDP -----------------------------------------

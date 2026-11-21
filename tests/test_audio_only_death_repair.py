@@ -24,7 +24,8 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 import pytest
 
@@ -34,7 +35,7 @@ from rigplane.core.exceptions import ConnectionError as CoreConnectionError
 from rigplane.runtime._audio_recovery import AudioRecoveryState
 from rigplane.runtime._connection_state import RadioConnectionState
 from scripts.soak import soak_driver
-from rigplane.testing.timing import ManualClock, await_until
+from rigplane.testing.timing import ManualClock, VirtualClock, await_until
 
 #: Bound for "frames reach the subscription again" (the property a fix must give).
 RESUME_BOUND_S = 10.0
@@ -49,6 +50,27 @@ async def _next_frame_or_none(sub: object, timeout_s: float) -> AudioPacket | No
         return await sub.get(timeout=timeout_s)  # type: ignore[union-attr]
     except asyncio.TimeoutError:
         return None
+
+
+async def _resume_within_one_deadline(
+    die_and_repair: Callable[[], Awaitable[None]],
+    subscribe: Callable[[], Awaitable[Any]],
+    bound_s: float = RESUME_BOUND_S,
+) -> AudioPacket | None:
+    """Repair completion, a fresh subscription and its first fresh frame, all
+    inside ONE ``bound_s`` window that starts at the death (MOR-4214).
+
+    Two stacked ``bound_s`` waits would let a 9 s repair plus a 2 s frame pass
+    as an 11 s recovery. Overrunning the shared window raises
+    ``TimeoutError``; returns ``None`` only when the frame wait itself times out.
+    """
+    async with asyncio.timeout(bound_s):
+        await die_and_repair()
+        post_sub = await subscribe()
+        try:
+            return await _next_frame_or_none(post_sub, bound_s)
+        finally:
+            await post_sub.release()
 
 
 def _kill_client_audio_only(radio: object) -> object:
@@ -819,46 +841,91 @@ async def test_spent_budget_reopens_after_audio_fixed_by_another_path(
             # A new real death gets a fresh budget and is repaired again.
             # Kill first, then drain: only post-death frames may pass.
             session = radio.audio_session
-            _kill_client_audio_only(radio)
-            _drain(sub)
-            # Drive the 3 s silence DECISION deterministically (MOR-4214): the
-            # same ManualClock advance the two_rx_silent test uses for its
-            # later-watchdog edge. The liveness budget is a decision
-            # threshold, not a real-time wait — the repair execution and the
-            # frames below stay real, and the real watchdog firing later sees
-            # RECOVERING with a stale heartbeat and schedules nothing new.
-            heartbeat = radio.audio_bus.last_rx_frame_monotonic
-            assert heartbeat is not None, "no RX heartbeat before the second death"
-            decision = ManualClock(start=max(heartbeat, session._rx_armed_at))
-            decision.advance(RX_LIVENESS_TIMEOUT_S)
-            with monkeypatch.context() as patch:
-                patch.setattr(session, "_monotonic", decision)
-                async with session._lock:
-                    session._check_liveness_locked()
-            task = radio._audio_silence_repair_task
-            assert task is not None, (
-                "MOR-3401 r3: rx_silent after the second death scheduled no "
-                "repair — the budget spent on the first episode leaked"
-            )
-            await asyncio.wait_for(asyncio.shield(task), RESUME_BOUND_S)
-            assert len(teardown_calls) > repaired_teardowns, (
-                "no repair round ran for the second death"
-            )
+
+            async def die_and_repair() -> None:
+                _kill_client_audio_only(radio)
+                _drain(sub)
+                # Drive the 3 s silence DECISION deterministically (MOR-4214):
+                # the same ManualClock advance the two_rx_silent test uses for
+                # its later-watchdog edge. The liveness budget is a decision
+                # threshold, not a real-time wait: the repair execution and
+                # the frames below stay real, and the real watchdog firing
+                # later sees RECOVERING with a stale heartbeat and schedules
+                # nothing new.
+                heartbeat = radio.audio_bus.last_rx_frame_monotonic
+                assert heartbeat is not None, "no RX heartbeat before the second death"
+                decision = ManualClock(start=max(heartbeat, session._rx_armed_at))
+                decision.advance(RX_LIVENESS_TIMEOUT_S)
+                with monkeypatch.context() as patch:
+                    patch.setattr(session, "_monotonic", decision)
+                    async with session._lock:
+                        session._check_liveness_locked()
+                task = radio._audio_silence_repair_task
+                assert task is not None, (
+                    "MOR-3401 r3: rx_silent after the second death scheduled no "
+                    "repair — the budget spent on the first episode leaked"
+                )
+                await asyncio.shield(task)
+                assert len(teardown_calls) > repaired_teardowns, (
+                    "no repair round ran for the second death"
+                )
+
             # Fresh frames on a fresh subscription: the old queue can still
             # hold a buffered pre-death frame that would pass vacuously.
-            post_sub = await session.subscribe_rx("post-repair-second")
-            try:
-                assert (
-                    await _next_frame_or_none(post_sub, RESUME_BOUND_S) is not None
-                ), "MOR-3401 r3: no fresh frames after the second death was repaired"
-            finally:
-                await post_sub.release()
+            frame = await _resume_within_one_deadline(
+                die_and_repair,
+                lambda: session.subscribe_rx("post-repair-second"),
+            )
+            assert frame is not None, (
+                "MOR-3401 r3: no fresh frames after the second death was repaired"
+            )
         finally:
             radio._ensure_audio_transport = orig_ensure  # type: ignore[method-assign]
             restore_teardown()
         await sub.release()
     finally:
         await stack.aclose()
+
+
+class _SlowSub:
+    """A subscription whose first frame arrives ``delay_s`` after the ask."""
+
+    def __init__(self, delay_s: float) -> None:
+        self._delay_s = delay_s
+
+    async def get(self, timeout: float) -> object:
+        await asyncio.sleep(self._delay_s)
+        return object()
+
+    async def release(self) -> None:
+        return None
+
+
+@pytest.mark.timeout(30)
+async def test_resume_deadline_is_shared_across_repair_and_fresh_frame(
+    virtual_clock: VirtualClock,
+) -> None:
+    """Negative control (MOR-4214): the 10 s bound covers repair AND the fresh
+    frame together. Each stage takes under 10 s, together 12 s: rejected. The
+    same stages at 4 s + 4 s pass, so the control is not just always red."""
+
+    async def run(repair_s: float, frame_s: float) -> object:
+        async def die_and_repair() -> None:
+            await asyncio.sleep(repair_s)
+
+        async def subscribe() -> _SlowSub:
+            return _SlowSub(frame_s)
+
+        task = asyncio.ensure_future(
+            _resume_within_one_deadline(die_and_repair, subscribe)
+        )
+        await virtual_clock.elapse(RESUME_BOUND_S + 2.0)
+        assert task.done()
+        return await task
+
+    assert await run(4.0, 4.0) is not None
+    with pytest.raises(TimeoutError):
+        await run(6.0, 6.0)
 
 
 async def test_successful_rounds_without_frames_cap_and_report_failed() -> None:
