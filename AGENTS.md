@@ -336,20 +336,22 @@ implementation agent may not be the review agent.
 - A failed `Agent Review Gate` without valid exact-head BLOCKED feedback usually
   means no fresh, valid exact-head PASS directive exists for the current head:
   run `pro-gate.sh` (local review of the head) instead of skipping the PR.
-- A PR based on a branch other than `main` shows a partly-populated check
-  list, which is more misleading than an empty one:
-  `agent-review-gate.yml`'s `pull_request` trigger carries no `branches:`
-  filter and still runs, but the actual test/consistency gates —
-  `quick.yml`, `visual.yml`, `consumer-contracts-gate.yml`,
-  `doc-citation-gate.yml`, `rebrand-gate.yml`, and `state-types-gate.yml` —
-  all scope `pull_request` to `branches: [main]` and do not run at all. It
-  reads as "no problems found" when the tests never ran. Retargeting to
-  `main` afterwards does not by itself start them: that fires an `edited`
-  event, which none of these workflows' triggers list. A push (a new
-  commit) starts them, and so does closing and reopening the PR — none of
-  these six workflows lists an explicit `types:` filter on its
-  `pull_request` trigger, so all of them fall back to GitHub's default
-  `[opened, synchronize, reopened]`, and `reopened` fires on reopen.
+- A PR based on a branch other than `main` or `release/<major>.<minor>.x`
+  shows a partly-populated check list, which is more misleading than an empty
+  one: `agent-review-gate.yml`'s `pull_request` trigger carries no `branches:`
+  filter and still runs, and the cheap gates (`quick.yml`,
+  `consumer-contracts-gate.yml`, `doc-citation-gate.yml`, `rebrand-gate.yml`,
+  `state-types-gate.yml`) accept `main` and `'release/**'` bases (MOR-4214; a
+  release branch picks them up only once it carries the workflow file,
+  because a pull_request run uses the merge of the PR head into its base),
+  but `visual.yml` scopes `pull_request` to `branches: [main]` and does not
+  run on such a PR at all. It reads as "no problems found" when the tests
+  never ran. Retargeting to `main` afterwards does not by itself start them:
+  that fires an `edited` event, which none of these workflows' triggers list.
+  A push (a new commit) starts them, and so does closing and reopening the
+  PR — none of these workflows lists an explicit `types:` filter on its
+  `pull_request` trigger except `quick.yml`, so those fall back to GitHub's
+  default `[opened, synchronize, reopened]`, and `reopened` fires on reopen.
 - Never merge with `--delete-branch` while another PR is based on that
   branch: GitHub auto-closes the child and then refuses to reopen (base
   gone) or retarget (already closed) it. Retarget every child PR onto
