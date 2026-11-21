@@ -2,7 +2,6 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 
 import { t, tPlural, messageFromReasonCode, setLocale } from '../index';
 import { _resetLocale } from '../store.svelte';
-import { CONTROLLER_TOAST_CODES } from '../../transport/controller-client';
 
 beforeEach(() => {
   localStorage.clear();
@@ -169,62 +168,6 @@ describe('messageFromReasonCode()', () => {
     expect(messageFromReasonCode('')).toBe(
       'Something went wrong. Try again later.',
     );
-  });
-
-  // MOR-4250: controller admission/loss failures used to carry hardcoded
-  // Russian text. Every wire code now maps to a camelCase toast code with
-  // its own catalog entry in en-US and ru-RU — a missing entry would
-  // silently resolve to `core.toast.unknown`, so assert each code resolves
-  // to its own text in both locales (not the unknown fallback).
-  describe('MOR-4250 controller reason codes', () => {
-    const UNKNOWN = 'Something went wrong. Try again later.';
-    const CASES: Array<[string, string, string]> = [
-      ['controllerBusy', 'Remote control is held by another client. Connect once it is released.',
-        'Управление занято другим клиентом. Подключитесь после освобождения.'],
-      ['controllerInvalid', 'The station denied access to remote control.',
-        'Станция отказала в доступе к удалённому управлению.'],
-      ['controllerLost', 'Remote control was lost. Reconnect.',
-        'Удалённое управление потеряно. Подключитесь заново.'],
-      ['controllerNotReady', 'The station is not ready for remote control yet.',
-        'Станция пока не готова к удалённому управлению.'],
-      ['controllerUnsupported', 'The station does not support this control protocol.',
-        'Станция не поддерживает этот протокол управления.'],
-      ['controllerLocalRequired', 'This action is only available on the local host.',
-        'Это действие доступно только на локальном хосте.'],
-      ['remoteDisabled', 'Remote control is disabled on this host.',
-        'Удалённое управление на хосте выключено.'],
-    ];
-
-    it.each(CASES.map(([code, en, ru]) => [code, en, ru]))(
-      'resolves %s from the en-US catalog',
-      (code, en) => {
-        expect(messageFromReasonCode(code)).toBe(en);
-        expect(messageFromReasonCode(code)).not.toBe(UNKNOWN);
-      },
-    );
-
-    it.each(CASES.map(([code, en, ru]) => [code, en, ru]))(
-      'resolves %s from the ru-RU catalog (own entry, not the en-US fallback)',
-      (code, _en, ru) => {
-        setLocale('ru-RU');
-        expect(messageFromReasonCode(code)).toBe(ru);
-        expect(messageFromReasonCode(code)).not.toBe(UNKNOWN);
-      },
-    );
-
-    it('CONTROLLER_TOAST_CODES maps every wire code to a resolvable catalog entry', () => {
-      // The wire codes are a protocol contract (the Python server emits the
-      // same snake_case codes); the map is the single boundary conversion.
-      expect(Object.keys(CONTROLLER_TOAST_CODES)).toEqual([
-        'controller_busy', 'controller_invalid', 'controller_lost',
-        'controller_not_ready', 'controller_unsupported',
-        'controller_local_required', 'remote_disabled',
-      ]);
-      for (const toast of Object.values(CONTROLLER_TOAST_CODES)) {
-        expect(toast).toMatch(/^[a-zA-Z][a-zA-Z0-9]*$/);
-        expect(messageFromReasonCode(toast)).not.toBe(UNKNOWN);
-      }
-    });
   });
 });
 

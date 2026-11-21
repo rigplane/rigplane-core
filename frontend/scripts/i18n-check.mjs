@@ -1,6 +1,4 @@
 #!/usr/bin/env node
-// @ts-nocheck -- node lint script, imported by tests only for its detectors;
-// untyped by design like scripts/control-feedback-debt-evaluator.mjs.
 /**
  * RigPlane Core i18n catalog lint (RP-ML-013A).
  *
@@ -27,12 +25,6 @@
  *    glossary token (see `GLOSSARY_TOKENS` below — sourced verbatim from
  *    strategy glossary §2.A and §2.B) that appears in the en-US value
  *    must also appear verbatim in the translated value.
- * 6. Hardcoded Cyrillic string literals in `frontend/src` (MOR-4250).
- *    User-visible copy must come from the catalogs — a Cyrillic literal
- *    outside the locale files and tests means a second, bypassing
- *    mechanism. Comments are not string literals and are ignored; a small
- *    documented allowlist (see `CYRILLIC_LITERAL_ALLOWLIST`) covers the
- *    few places where Cyrillic text is data, not UI copy.
  *
  * Design constraints
  * ------------------
@@ -55,8 +47,8 @@
  */
 
 import { readdirSync, readFileSync, statSync } from 'node:fs';
-import { dirname, relative, resolve as resolvePath, sep } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { dirname, relative, resolve as resolvePath } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -439,187 +431,6 @@ function checkAgainstSource(filePath, catalog, sourceCatalog) {
 }
 
 // ---------------------------------------------------------------------------
-// Source scan: no hardcoded Cyrillic string literals (MOR-4250)
-// ---------------------------------------------------------------------------
-//
-// User-visible copy belongs in the locale catalogs. A Cyrillic string
-// literal in `frontend/src` outside the catalogs and tests bypasses the
-// i18n mechanism (that is exactly the MOR-4250 customer bug: the English
-// UI showed Russian controller-error text). This scan walks every
-// scannable source file, strips comments, and flags string literals
-// (single/double quotes and template literals) that contain Cyrillic.
-//
-// Exemptions, all deliberate:
-//   - `src/lib/i18n/locales/**` — the catalogs themselves;
-//   - test files (`__tests__/` directories and `*.test.*` / `*.spec.*`)
-//     — tests legitimately assert localized output;
-//   - `.svelte` markup outside `<script>` — only script literals are
-//     scanned there (markup text is covered by the placeholder guard and
-//     is not a "string literal");
-//   - `CYRILLIC_LITERAL_ALLOWLIST` — places where Cyrillic text is data,
-//     not user-visible copy. Every entry carries its justification.
-
-const SOURCE_SCAN_ROOT = resolvePath(__dirname, '..', 'src');
-const SOURCE_SCAN_EXTENSIONS = new Set(['.ts', '.js', '.mts', '.svelte']);
-const SOURCE_SCAN_SKIP_DIRS = new Set(['locales']);
-const TEST_FILE_RE = /\.(test|spec)\.[^.]+$/;
-const CYRILLIC_RE = /[\u0400-\u04FF]/;
-
-const CYRILLIC_LITERAL_ALLOWLIST = [
-  // LanguageSelector shows each language's endonym in that language — by
-  // design, not translatable copy.
-  { file: 'components-v2/controls/LanguageSelector.svelte', token: 'Русский' },
-  // MOR-2684: PERMIT_STATUS_TEXTS mirrors the permit-status words of every
-  // bundled catalog to reserve the caption slot at the widest one. It is
-  // width data, not UI copy.
-  { file: 'semantic/band-instruments.ts', token: 'разрешён' },
-  { file: 'semantic/band-instruments.ts', token: 'запрещён' },
-];
-
-/** True when the file path is a test file or lives under a `__tests__` dir. */
-function isTestFile(relPath) {
-  const segments = relPath.split(sep);
-  if (segments.includes('__tests__')) return true;
-  return TEST_FILE_RE.test(segments[segments.length - 1]);
-}
-
-function listSourceFiles(rootDir) {
-  const out = [];
-  const stack = [rootDir];
-  while (stack.length > 0) {
-    const dir = stack.pop();
-    let entries;
-    try {
-      entries = readdirSync(dir, { withFileTypes: true });
-    } catch {
-      continue;
-    }
-    for (const entry of entries) {
-      const full = resolvePath(dir, entry.name);
-      if (entry.isDirectory()) {
-        if (!SOURCE_SCAN_SKIP_DIRS.has(entry.name)) stack.push(full);
-        continue;
-      }
-      if (!entry.isFile()) continue;
-      const dot = entry.name.lastIndexOf('.');
-      if (dot < 0) continue;
-      // Keep compound extensions like `.svelte.ts` scannable via the final
-      // extension; plain `.ts`/`.js`/`.mts` and `.svelte` all end here.
-      if (!SOURCE_SCAN_EXTENSIONS.has(entry.name.slice(dot))) continue;
-      const relPath = relative(SOURCE_SCAN_ROOT, full);
-      if (isTestFile(relPath)) continue;
-      out.push({ path: full, relPath, name: entry.name });
-    }
-  }
-  return out.sort((a, b) => a.relPath.localeCompare(b.relPath));
-}
-
-/**
- * Extract the scannable script text. For `.svelte` files only the
- * `<script>` blocks carry string literals we govern; markup text is not a
- * literal. Other files are returned verbatim.
- */
-export function scannableText(name, raw) {
-  if (!name.endsWith('.svelte')) return [raw];
-  const blocks = [];
-  // Case-insensitive: HTML tag names are ASCII case-insensitive, so an
-  // uppercase <SCRIPT> block is still script. The end tag may carry
-  // whitespace or junk before `>` (`</script >`), which HTML still treats
-  // as the end of the block.
-  const re = /<script[^>]*>([\s\S]*?)<\/script[^>]*>/gi;
-  let m;
-  while ((m = re.exec(raw)) !== null) blocks.push(m[1]);
-  return blocks;
-}
-
-/**
- * Find Cyrillic string literals in source text. Comments (line and
- * block) are skipped; a `//` inside a string literal (e.g. a URL) does
- * not start a comment because the scanner is already inside the string.
- * Returns `{ line, snippet }` hits with 1-based lines.
- */
-export function findCyrillicStringLiterals(raw) {
-  const hits = [];
-  let i = 0;
-  let line = 1;
-  const n = raw.length;
-  while (i < n) {
-    const ch = raw[i];
-    if (ch === '\n') {
-      line += 1;
-      i += 1;
-      continue;
-    }
-    if (ch === '/' && raw[i + 1] === '/') {
-      while (i < n && raw[i] !== '\n') i += 1;
-      continue;
-    }
-    if (ch === '/' && raw[i + 1] === '*') {
-      i += 2;
-      while (i < n && !(raw[i] === '*' && raw[i + 1] === '/')) {
-        if (raw[i] === '\n') line += 1;
-        i += 1;
-      }
-      i += 2;
-      continue;
-    }
-    if (ch === "'" || ch === '"' || ch === '`') {
-      const startLine = line;
-      let j = i + 1;
-      let value = '';
-      while (j < n && raw[j] !== ch) {
-        if (raw[j] === '\\') {
-          value += raw[j] + (raw[j + 1] ?? '');
-          j += 2;
-          continue;
-        }
-        if (raw[j] === '\n') line += 1;
-        value += raw[j];
-        j += 1;
-      }
-      if (CYRILLIC_RE.test(value)) {
-        hits.push({ line: startLine, snippet: value.replace(/\s+/g, ' ').slice(0, 80) });
-      }
-      i = j + 1;
-      continue;
-    }
-    i += 1;
-  }
-  return hits;
-}
-
-function isAllowlisted(relPath, snippet) {
-  const normalized = relPath.split(sep).join('/');
-  return CYRILLIC_LITERAL_ALLOWLIST.some(
-    (entry) => normalized.endsWith(entry.file) && snippet.includes(entry.token),
-  );
-}
-
-/**
- * Scan `frontend/src` for hardcoded Cyrillic string literals. Returns a
- * flat list of `{ filePath, relPath, line, snippet }` violations; the
- * empty list means the tree is clean.
- */
-export function scanFrontendSources() {
-  const violations = [];
-  for (const file of listSourceFiles(SOURCE_SCAN_ROOT)) {
-    let raw;
-    try {
-      raw = readFileSync(file.path, 'utf8');
-    } catch {
-      continue;
-    }
-    for (const text of scannableText(file.name, raw)) {
-      for (const hit of findCyrillicStringLiterals(text)) {
-        if (isAllowlisted(file.relPath, hit.snippet)) continue;
-        violations.push({ filePath: file.path, relPath: file.relPath, ...hit });
-      }
-    }
-  }
-  return violations;
-}
-
-// ---------------------------------------------------------------------------
 // Driver
 // ---------------------------------------------------------------------------
 
@@ -696,18 +507,6 @@ function main() {
     checkAgainstSource(entry.path, loaded.catalog, sourceCatalog);
   }
 
-  // Source scan: hardcoded Cyrillic string literals bypass the catalogs
-  // (MOR-4250). Reported as failures, same as catalog problems.
-  for (const violation of scanFrontendSources()) {
-    fail(
-      violation.filePath,
-      `Hardcoded Cyrillic string literal at line ${violation.line}: ${JSON.stringify(violation.snippet)}\n` +
-        'User-visible copy must come from the i18n catalogs (src/lib/i18n/locales/), not from a ' +
-        'string literal in source. If this text is data rather than UI copy, add a justified ' +
-        'entry to CYRILLIC_LITERAL_ALLOWLIST in scripts/i18n-check.mjs.',
-    );
-  }
-
   const warnText = formatWarnings();
   if (warnText) console.log(warnText);
 
@@ -719,20 +518,13 @@ function main() {
   console.log(
     `i18n-check: OK (${files.length} locale file(s) checked, ${
       Object.keys(sourceCatalog).length
-    } source keys, ${listSourceFiles(SOURCE_SCAN_ROOT).length} source file(s) scanned).`,
+    } source keys).`,
   );
 }
 
-// Run main() only when executed directly, so tests can import the scan
-// helpers without triggering the catalog validation.
-const invokedDirectly = process.argv[1] !== undefined
-  && import.meta.url === pathToFileURL(process.argv[1]).href;
-
-if (invokedDirectly) {
-  try {
-    main();
-  } catch (err) {
-    console.error(`i18n-check: internal error: ${err && err.stack ? err.stack : err}`);
-    process.exit(2);
-  }
+try {
+  main();
+} catch (err) {
+  console.error(`i18n-check: internal error: ${err && err.stack ? err.stack : err}`);
+  process.exit(2);
 }

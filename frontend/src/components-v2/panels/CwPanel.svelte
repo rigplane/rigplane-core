@@ -5,7 +5,7 @@
   import { ValueControl } from '../controls/value-control';
   import { clamp, rawToPercentDisplay, snapToStep } from '../../primitives/scalar/value-control-core';
   import { finiteValue, valueText } from '../../primitives/reading-text';
-  import { t } from '$lib/i18n';
+  import { getLocale, t } from '$lib/i18n';
   import type { PresentationPhase } from '../../primitives/control-feedback/control-feedback-presentation';
   import { createCommittedScalar } from '../../primitives/scalar/committed-scalar.svelte';
   import {
@@ -102,26 +102,25 @@
   // and never a '%' without its number.
   const delayText = (value: number | null): string =>
     value === null ? '' : rawToPercentDisplay(value);
-  const delayLabel = (): string => t('core.cwKeyer.breakInDelay.panel.label');
-  // MOR-4250: phase copy lives in the i18n catalogs (single mechanism); this
-  // map only binds the PresentationPhase union to its catalog key suffix.
-  const DELAY_PHASE_KEY: Record<PresentationPhase, string> = {
-    unavailable: 'unavailable', idle: 'idle', submitted: 'submitted', queued: 'queued',
-    dispatched: 'dispatched', 'awaiting-confirmation': 'awaitingConfirmation',
-    confirmed: 'confirmed', failed: 'failed', 'timed-out': 'timedOut',
-    cancelled: 'cancelled', superseded: 'superseded',
+  const delayLabel = (): string =>
+    getLocale() === 'ru-RU' ? 'Задержка break-in' : 'Break-in Delay';
+  const DELAY_PHASE_COPY: Record<'en' | 'ru', Record<PresentationPhase, string>> = {
+    en: { unavailable: 'Control unavailable', idle: 'Confirmed', submitted: 'Requested',
+      queued: 'Queued', dispatched: 'Dispatched', 'awaiting-confirmation': 'Awaiting',
+      confirmed: 'Radio confirmed', failed: 'Failed', 'timed-out': 'Timed out',
+      cancelled: 'Cancelled', superseded: 'Superseded' },
+    ru: { unavailable: 'Управление недоступно', idle: 'Подтверждено', submitted: 'Запрошено',
+      queued: 'В очереди', dispatched: 'Отправлено', 'awaiting-confirmation': 'Ожидание',
+      confirmed: 'Радио подтвердило', failed: 'Ошибка', 'timed-out': 'Время истекло',
+      cancelled: 'Запрос отменён', superseded: 'Запрос заменён' },
   };
   function breakInDelayMessage(phase: PresentationPhase, target: number | null,
     confirmed: number | null): string {
-    const label = t(`core.cwKeyer.breakInDelay.panel.phase.${DELAY_PHASE_KEY[phase]}`);
-    const canonical = delayText(confirmed);
+    const ru = getLocale() === 'ru-RU';
+    const label = DELAY_PHASE_COPY[ru ? 'ru' : 'en'][phase], canonical = delayText(confirmed);
     if (phase === 'unavailable') return label;
-    if (phase === 'idle' || phase === 'confirmed') {
-      return t('core.cwKeyer.breakInDelay.panel.announce.settled',
-        { phase: label, confirmed: canonical });
-    }
-    return t('core.cwKeyer.breakInDelay.panel.announce.busy',
-      { phase: label, target: delayText(target), confirmed: canonical });
+    if (phase === 'idle' || phase === 'confirmed') return `${label}: ${canonical}`;
+    return `${label} ${delayText(target)}; ${ru ? 'подтверждено' : 'confirmed'} ${canonical}`;
   }
   let retainedBreakInDelayAnnouncement: string | null = null;
   let breakInDelayAnnouncement = $derived.by(() => {
@@ -139,10 +138,7 @@
     !breakInDelayView.editable
       ? breakInDelayMessage('unavailable', null, null)
       : breakInDelayView.editing
-        ? t('core.cwKeyer.breakInDelay.panel.valueText.editing', {
-          draft: delayText(breakInDelayView.draft),
-          confirmed: delayText(breakInDelayView.confirmed),
-        })
+        ? `${getLocale() === 'ru-RU' ? 'Черновик' : 'Draft'} ${delayText(breakInDelayView.draft)}; ${getLocale() === 'ru-RU' ? 'подтверждено' : 'last confirmed'} ${delayText(breakInDelayView.confirmed)}`
         : breakInDelayMessage(
           breakInDelayView.feedback.phase,
           breakInDelayView.feedback.target ?? breakInDelayView.feedback.requestedTarget,
