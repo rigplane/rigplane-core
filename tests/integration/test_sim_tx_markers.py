@@ -425,7 +425,20 @@ async def test_forwarding_latency_check_rejects_a_delayed_first_frame(
     virtual clock. Only the FIRST forwarded frame is held 0.3 s (> the 0.25 s
     bound) by a timer inside the stack; every later frame is prompt. The
     latency assertion must reject it. A real-clock measurement would not: the
-    virtual sleep completes in microseconds of real time."""
+    virtual sleep completes in microseconds of real time.
+
+    The clock starts at 0, not at ``loop.time()``: this control measures the
+    delay EXACTLY at the bound, and at a wall-derived base (~44.9k s, double
+    spacing ~7e-12 s) the paced 20 ms steps are not multiples of that spacing,
+    so the accumulated arrival stamp can land a hair below ``delay_s``
+    (observed on quick: 0.3 - 1.3e-11) and the check flakes on the wall-clock
+    base — wall time through the back door. From 0 the arithmetic is exact:
+    ``sent_first`` is exactly 0.0, the injected sleep timer is due at
+    ``delay_s`` itself, and the first elapse that crosses it stamps the
+    arrival at a step target >= ``delay_s``. Timers the stack scheduled
+    before the install sit ~44.9k s in this clock's future and do not fire
+    during the ~0.3 s window; nothing in the window waits on one.
+    """
     delay_s = _WS_TO_SINK_BOUND_S + 0.05
     real_push_tx = AudioStream.push_tx
     delayed = False
@@ -452,7 +465,7 @@ async def test_forwarding_latency_check_rejects_a_delayed_first_frame(
 
         monkeypatch.setattr(AudioStream, "push_tx", delay_first_push)
         loop = asyncio.get_running_loop()
-        clock = VirtualClock(start=loop.time())
+        clock = VirtualClock(start=0.0)  # exact at the bound; see the docstring
         clock.install(loop)
         try:
             sent_first, arrived_first = await _send_pcm_virtual(
