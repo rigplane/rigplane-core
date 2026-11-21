@@ -365,8 +365,11 @@ def test_auxiliary_outbound_failure_during_key_up_releases_radio(
     name: str,
     params: dict[str, object],
 ) -> None:
-    _exercise_key_up_outbound_failure(
+    handler_terminated = _exercise_key_up_outbound_failure(
         monkeypatch, tmp_path, failure, phase, name, params
+    )
+    assert handler_terminated or failure == "sender_only_error", (
+        "outbound failure left auxiliary handler running"
     )
 
 
@@ -385,5 +388,7 @@ def test_auxiliary_sender_only_failure_handler_terminates(
     handler_terminated = _exercise_key_up_outbound_failure(
         monkeypatch, tmp_path, "sender_only_error", "before_admission", "ptt_off", {}
     )
-    if not handler_terminated:
-        raise _LingeringHandler("outbound failure left auxiliary handler running")
+    try:
+        assert handler_terminated, "outbound failure left auxiliary handler running"
+    except AssertionError as exc:
+        raise _LingeringHandler(str(exc)) from exc
