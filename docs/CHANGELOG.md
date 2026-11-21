@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.3.0rc2] — 2026-11-21
+
+Second release candidate of 3.3.0: v3.3.0rc1 plus the fix below (found on the rc1 commit's rehearsal).
+
 ### Fixed
 
 - A dual-receiver radio that answered CI-V while its receiver selection was still unknown answered receiver-scoped commands with the terminal "receiver not selected" refusal (rigctld `RPRT -9`, web `reason_code="receiver_not_selected"`), telling a WSJT-X polling `f` or a web write that a receiver was not selected when Core in fact did not know the selection yet. `radio_ready` reflects CI-V liveness (the first answer), while the selection is established separately by the 0x07 0xD2 answer (the connect tail's sweep, or the command's own bounded read), so under load the two latches can be seconds apart — the window the v3.3.0rc1 rehearsal run 44869231087 failed in. While the selection has never been established in the current CI-V generation, receiver-scoped commands now answer the retriable not-ready timeout (rigctld `RPRT -5`, web `command_timeout`) regardless of liveness; the genuine unselected-receiver refusal survives unchanged once the selection is known (MOR-3591). (MOR-4382)
@@ -5363,7 +5367,8 @@ These deprecation closures were announced in v0.19 and dropped on schedule.
 - Transport layer, authentication, CI-V commands, meters, PTT, keep-alive.
 - Clean-room Icom LAN UDP protocol implementation.
 
-[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.3.0rc1...HEAD
+[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.3.0rc2...HEAD
+[3.3.0rc2]: https://github.com/rigplane/rigplane-core/compare/v3.3.0rc1...v3.3.0rc2
 [3.3.0rc1]: https://github.com/rigplane/rigplane-core/compare/v3.2.3...v3.3.0rc1
 [3.2.0rc11]: https://github.com/rigplane/rigplane-core/compare/v3.2.0rc10...v3.2.0rc11
 [3.2.0rc10]: https://github.com/rigplane/rigplane-core/compare/v3.2.0rc9...v3.2.0rc10
