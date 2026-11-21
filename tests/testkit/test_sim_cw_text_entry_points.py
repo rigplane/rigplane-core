@@ -43,6 +43,7 @@ from rigplane.runtime.managed_tx_composition import (
     install_managed_tx_composition,
 )
 from rigplane.rig_loader import load_rig
+from rigplane.testing.timing import await_until
 from rigplane.web.server import WebConfig, WebServer
 from rigplane.web.web_startup import (
     attach_managed_tx_composition,
@@ -644,9 +645,37 @@ async def _pending_sends(
     first = asyncio.create_task(outcome(s.port, "AAA"))
     await asyncio.sleep(0.05)
     second = asyncio.create_task(outcome(s.port, "BBB"))
-    await asyncio.sleep(0.05)
-    # Observation only: the first send holds the send lock, KM not yet sent.
-    assert s.radio._cw_text_lock.locked()  # noqa: SLF001
+
+    # Observation only: both sends parked inside send_cw_text, KM not yet
+    # sent. A fixed sleep used to assume both sends cross client, server
+    # and radio within 50 ms; on a saturated box they need more turns, so
+    # wait for the parked state through the shared real-event waiter
+    # (``await_until``) instead of the clock. The lock alone is not
+    # enough: it only proves one send was admitted (its generation
+    # captured), while the other may still be unscheduled and would then
+    # be admitted after the stop below and succeed. One holder plus one
+    # queued waiter proves both were admitted before the stop. A send
+    # that finishes first fails here with its outcome instead of hanging
+    # to the deadline.
+    def both_parked() -> bool:
+        lock = s.radio._cw_text_lock  # noqa: SLF001
+        waiters = getattr(lock, "_waiters", None) or ()
+        finished = [task for task in (first, second) if task.done()]
+        if finished:
+            outcomes = []
+            for task in finished:
+                try:
+                    outcomes.append(task.result())
+                except BaseException as exc:
+                    outcomes.append(repr(exc))
+            raise AssertionError(
+                f"a send finished before parking behind the lock: {outcomes!r}"
+            )
+        return lock.locked() and len(waiters) >= 1
+
+    await await_until(
+        both_parked, timeout=10, description="both sends parked behind the send lock"
+    )
     assert s.model.keying_memory == {}
     assert not first.done() and not second.done()
     return first, second

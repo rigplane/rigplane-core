@@ -4,10 +4,9 @@
  * tests/test_host_api_v3_wire_contract.py::test_af_handler_dispatch_and_observed_publication
  * ACKs acknowledge dispatch; only a subsequent provider observation changes readings.
  */
-import { execFileSync } from 'node:child_process';
-import { resolve } from 'node:path';
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import hostWire from '../../../../../tests/fixtures/host-api-v3-wire.json';
+import hostApiV3Documents from './fixtures/host-api-v3-documents.json';
 import { flushSync, mount, unmount } from 'svelte';
 import App from '../../../App.svelte';
 import { MockWebSocket, instances } from '$lib/transport/__tests__/support/fake-ws-backend';
@@ -47,8 +46,9 @@ vi.mock('$lib/audio/audio-manager', async () => {
 let app: ReturnType<typeof mount> | undefined;
 let caps: Capabilities;
 let powerFails = false;
-let station: EibiResult;
-let frequencyFields: ServerState['fieldStatus'];
+const station: EibiResult = (hostApiV3Documents as unknown as { station: EibiResult }).station;
+const frequencyFields: ServerState['fieldStatus'] =
+  (hostApiV3Documents as unknown as { fields: ServerState['fieldStatus'] }).fields;
 const requests: Array<{ url: string; init?: RequestInit }> = [];
 const info: InfoResponse = { version: 'test', revision: 1, updatedAt: '2026-01-01T00:00:00Z', uptime: 0 };
 const viewport = { width: window.innerWidth, height: window.innerHeight };
@@ -79,21 +79,14 @@ async function start(receivers: 1 | 2) {
   await vi.waitFor(() => { flushSync(); expect(host()?.getListening().enabled).toBe(true); });
 }
 
-beforeAll(() => {
-  // Use the HTTP producer's serializer, including its real display fields.
-  const documents = JSON.parse(execFileSync('uv', ['run', 'python', '-c', [
-    'import json, sys',
-    'sys.path.insert(0, "tests")',
-    'from rigplane.web.eibi import EiBiStation',
-    'from test_host_api_v3_wire_contract import _observe, FieldPath, WebServer, WebConfig, _capable_radio',
-    'server = WebServer(_capable_radio(), WebConfig(radio_model="IC-7610"))',
-    '_observe(server, FieldPath.receiver("0", "freq_mode", "freq_hz"), 14205000)',
-    'station = EiBiStation(freq_khz=14074, time_start=0, time_end=2400, days="", country="USA", station="Host Test Station", language="E", target="NAm", remarks="", persistence=1, start_date="", end_date="")',
-    'fields = server.build_public_state()["fieldStatus"]',
-    'print(json.dumps({"station": {"stations": [station.to_dict()]}, "fields": {"main.freqHz": fields["main.freqHz"]}}))',
-  ].join('\n')], { cwd: resolve(import.meta.dirname, '../../../../..'), encoding: 'utf8', timeout: 30_000 })) as { station: EibiResult; fields: ServerState['fieldStatus'] };
-  station = documents.station; frequencyFields = documents.fields;
-}, 30_000);
+// The station reply and the observed ``main.freqHz`` field status are the
+// HTTP producer's own documents (the ``EiBiStation`` serializer and the web
+// server's ``build_public_state``), committed as a fixture — regenerate with
+// ``uv run python scripts/gen_frontend_producer_fixtures.py``; currency is
+// pinned by ``tests/web/test_frontend_producer_fixtures.py``. The suite must
+// not spawn ``uv run python`` at test time: on a saturated 4-CPU slot the
+// interpreter start alone outlasts the subprocess wall budget (MOR-4214,
+// run 44869233407: ``spawnSync uv ETIMEDOUT``).
 
 beforeEach(() => {
   requests.length = 0; instances.length = 0; powerFails = false;
