@@ -35,7 +35,10 @@ case "$1 $2" in
   "ruff --version") echo "ruff ${FAKE_RUFF:-0.15.2}"; exit 0 ;;
   "python scripts/pre_push_scope.py") shift; exec python3 "$@" ;;
 esac
-[ "$1" != pytest ] || exit "${FAKE_PYTEST_RC:-0}"
+if [ "$1" = pytest ]; then
+  echo "RIGPLANE_REALTIME_BASE_REF=${RIGPLANE_REALTIME_BASE_REF:-}" >> "$FAKE_LOG/pytest-env"
+  exit "${FAKE_PYTEST_RC:-0}"
+fi
 exit 0
 """
 FAKE_NODE_TOOL = """#!/usr/bin/env bash
@@ -169,6 +172,45 @@ def test_the_orchestrator_runs_the_host_steps_on_the_mac_mini_with_the_merge_bas
     remote = (Path(env["FAKE_LOG"]) / "remote-script").read_text(encoding="utf-8")
     assert "uv sync" in remote and "LOCAL_CI_ON_TEST_HOST=1" in remote
     assert "UV_PYTHON=3.11" in remote  # the interpreter CI pins (MOR-590)
+
+
+def test_the_remote_script_pins_the_realtime_guard_base_to_the_merge_base(
+    sandbox,
+) -> None:
+    """Outside CI the MOR-4075 realtime guard compares the baseline with
+    origin/main; a pre-push gate for any other base branch must pin
+    RIGPLANE_REALTIME_BASE_REF to the actual merge base, or a release
+    baseline (which legitimately differs from main's) is reported as growth
+    and the guard's UsageError kills the xdist workers."""
+    repo, env = sandbox
+    _change(repo, "src/rigplane/audio/bridge.py")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "change")
+    _git(repo, "update-ref", "refs/remotes/origin/release/3.3.x", "HEAD^")
+    mb = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD^"],
+        text=True,
+        capture_output=True,
+        check=True,
+    ).stdout.strip()
+    result = _run(repo, env, "--pre-push", "--base", "origin/release/3.3.x")
+    assert result.returncode == 0, result.stdout + result.stderr
+    remote = (Path(env["FAKE_LOG"]) / "remote-script").read_text(encoding="utf-8")
+    script = Path(env["FAKE_LOG"]) / "remote-exec.sh"
+    script.write_text(remote, encoding="utf-8")
+    host = subprocess.run(  # execute the captured script as the host would
+        ["bash", str(script), mb],
+        cwd=repo,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=60,
+    )
+    assert host.returncode == 0, host.stdout + host.stderr
+    assert (Path(env["FAKE_LOG"]) / "pytest-env").read_text(
+        encoding="utf-8"
+    ).splitlines() == [f"RIGPLANE_REALTIME_BASE_REF={mb}"]
 
 
 def test_the_test_host_can_be_overridden(sandbox) -> None:

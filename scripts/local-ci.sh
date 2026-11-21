@@ -227,8 +227,14 @@ pre_push_on_host() {
 
 # Remote shell script of the host job; $1 = the merge base. UV_PYTHON as in quick.yml (MOR-590),
 # `uv sync --all-extras` as in quick.yml (MOR-1978: the extras gate tests that must not skip).
+# The realtime guard (MOR-4075) defaults to origin/main as its comparison base outside CI,
+# which is wrong for a pre-push gate on any other base branch (a release branch's baseline
+# legitimately differs from main's, so the guard reports growth and kills the xdist
+# workers with a UsageError): pin it to the actual merge base (rigplane_testkit/
+# realtime_guard.py: base_revision honours RIGPLANE_REALTIME_BASE_REF).
 PRE_PUSH_REMOTE='
 export UV_PYTHON=3.11
+export RIGPLANE_REALTIME_BASE_REF="$1"
 { uv sync -q --all-extras >/dev/null 2>&1 || uv sync --all-extras; } || { echo "uv sync failed"; exit 1; }
 LOCAL_CI_ON_TEST_HOST=1 exec bash scripts/local-ci.sh --pre-push --base "$1"
 '
