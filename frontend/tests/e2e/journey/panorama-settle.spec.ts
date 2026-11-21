@@ -437,10 +437,7 @@ for (const [index, model] of ['IC-705', 'IC-7300'].entries()) {
       const marker = page.locator('.waterfall-content .tune-line');
       await expect(marker).toBeVisible({ timeout: 30_000 });
       await expect.poll(() => frames.count, { timeout: 30_000 }).toBeGreaterThan(10);
-      await page.getByRole('button', { name: 'More scope controls' }).first().click();
-      const select = page.locator('[data-testid="scope-more-panel"] [data-testid="scope-preset-select"]');
-      await select.selectOption({ index: 1 });
-      await page.keyboard.press('Escape');
+      await page.getByTestId('scope-zoom-band').first().click();
       await expect.poll(() => sent.at(-1)?.view).toEqual({ startHz: 14_000_000, endHz: 14_350_000 });
       for (let i = 0; i < 4; i++) await page.getByRole('button', { name: 'Increase tuning step' }).first().click();
       await expect.poll(() => sent.at(-1)?.view).toEqual({ startHz: 14_000_000, endHz: 14_350_000 });

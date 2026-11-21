@@ -48,7 +48,8 @@
   import { ScopeRenderScheduler } from '../../lib/canvas/scope-render-scheduler';
   import { CanvasSurface } from '../../lib/canvas/canvas-surface.svelte';
   import { getStageScale } from '../../primitives/stage/stage-scale';
-  import { scopePresets, type ScopePreset } from '../../lib/runtime/scope-presets';
+  import { followScopePreset, scopeOverlayTargets, scopePresets, type ScopePreset } from '../../lib/runtime/scope-presets';
+  import SpectrumZoomOverlay from './SpectrumZoomOverlay.svelte';
   import { getManagedAppTxController } from '../../lib/runtime/tx-controller/managed-app-host';
   import type { ManagedTxState } from '../../lib/runtime/tx-controller/managed-state';
   import SpectrumToolbar from './SpectrumToolbar.svelte';
@@ -1067,12 +1068,36 @@
     return scopePresets(runtime.caps?.freqRanges ?? [], frequencyHz, bandPlanRegion, undefined,
       spanHz > 0 ? spanHz : 100_000);
   });
+  // MOR-4386: the overlay's [S] / [B] targets come from the same presets.
+  let scopeOverlay = $derived(scopeOverlayTargets(
+    scopePresetOptions, spectrumAuthority?.frequencyHz ?? displayFrequencyHz ?? null));
+  // MOR-4386: S/B pin an absolute view and the radio answers in a window it
+  // owns (FIX). Returning the radio to CTR is the way back to following the
+  // VFO, so leaving a radio-owned window retires the pin.
+  let wasRadioOwnedWindow = false;
+  $effect(() => {
+    const owned = isRadioOwnedWindow;
+    untrack(() => {
+      if (wasRadioOwnedWindow && !owned && explicitView !== null) {
+        explicitView = null;
+        requestedView = null;
+        scopeView.set('gesture', null);
+      }
+      wasRadioOwnedWindow = owned;
+    });
+  });
   function applyScopePreset(preset: ScopePreset): void {
     if (preset.kind === 'follow') {
       explicitView = null;
       requestedView = null;
       requestFollowSpan('spanHz' in preset.view ? preset.view.spanHz : spanHz);
       scopeView.set('gesture', null);
+      // MOR-4386 (review P1): a pinned S/B segment leaves the radio in a
+      // window it owns (FIX on the IC-7610); pressing the lit key again
+      // must hand the window back, which is the radio's CTR mode — the
+      // same scope-controls path the out-of-range overlay's CTR button
+      // already uses, not a new mechanism.
+      if (isRadioOwnedWindow) scopeHandlers.onModeChange(0);
       return;
     }
     if ('startHz' in preset.view && 'endHz' in preset.view) {
@@ -1879,7 +1904,7 @@
        tab instead. An audio-FFT source keeps its original no-toolbar
        branch. -->
   {:else if !hideToolbar}
-    <SpectrumToolbar bind:enableAvg bind:enablePeakHold bind:enableSmooth bind:autoFloor bind:autoFloorRef bind:brtLevel bind:colorScheme bind:fullscreen bind:showBandPlan bind:hiddenLayers bind:showEiBi {scopeDemandOn} onScopeDemandChange={setScopeDemand} {hideSourceControls} {hideScopeControls} {hideAutoStepToggle} {scopeControls} scopePresets={scopePresetOptions} onScopePresetSelect={applyScopePreset} onScopeZoom={nudgeScopeZoom} scopeStatusIndicator={sdrSource || scopeStatusIndicator || scopeError ? panelScopeStatus : undefined} />
+    <SpectrumToolbar bind:enableAvg bind:enablePeakHold bind:enableSmooth bind:autoFloor bind:autoFloorRef bind:brtLevel bind:colorScheme bind:fullscreen bind:showBandPlan bind:hiddenLayers bind:showEiBi {scopeDemandOn} onScopeDemandChange={setScopeDemand} {hideSourceControls} {hideScopeControls} {hideAutoStepToggle} {scopeControls} scopeStatusIndicator={sdrSource || scopeStatusIndicator || scopeError ? panelScopeStatus : undefined} />
   {/if}
   {#if (audioFft || hideToolbar) && scopeError}{@render panelScopeStatus()}{/if}
   <div
@@ -1940,6 +1965,11 @@
       {/if}
       {#if spectrumCenterReferenceVisible}
         <div class="tune-line" style="left:{tuneLinePct}%"></div>
+      {/if}
+      {#if scopePresetOptions.length > 0}
+        <SpectrumZoomOverlay targets={scopeOverlay} pinnedView={explicitView}
+          onZoom={nudgeScopeZoom} onPreset={applyScopePreset}
+          onFollow={() => { const follow = followScopePreset(scopePresetOptions); if (follow) applyScopePreset(follow); }} />
       {/if}
       {#if tuneVisible && spanHz > 0 && pbWidthPct > 0 && canResizePassband}
         <button
