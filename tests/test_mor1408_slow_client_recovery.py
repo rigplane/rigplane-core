@@ -256,6 +256,8 @@ def test_handshake_b_to_h_to_d_missing_key_counterexample_converges() -> None:
 @pytest.mark.asyncio
 async def test_initial_send_cancellation_unregisters_before_liveness() -> None:
     class CancelInitialSend:
+        outbound_progress: int = 0
+
         def __init__(self) -> None:
             self.calls = 0
 
@@ -319,6 +321,8 @@ def test_disconnect_reconnect_has_no_recovery_structure_and_new_full() -> None:
 @pytest.mark.asyncio
 async def test_subscribe_queues_full_then_dx_and_future_delta_converges() -> None:
     class Ws:
+        outbound_progress: int = 0
+
         async def send_text(self, _payload: str) -> None:
             raise AssertionError(
                 "subscribe must not direct-send beside the sender loop"

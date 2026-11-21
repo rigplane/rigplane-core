@@ -108,22 +108,13 @@ class ControllerAuthority:
             self.revoke()
         now = self._clock()
         for owner in [o for o, s in self._sessions.items() if now >= s.deadline]:
-            self._end_session(owner, reason="lease_expired")
+            self._end_session(owner)
 
-    def _end_session(self, owner: str, *, reason: str = "session_ended") -> None:
+    def _end_session(self, owner: str) -> None:
         """Fence one session synchronously, then release the TX it holds."""
         session = self._sessions.pop(owner, None)
         if session is None:
             return
-        logger.warning(
-            "controller session ended: owner=%s reason=%s channels=%d "
-            "lease_age_s=%.3f lease_remaining_s=%.3f",
-            owner,
-            reason,
-            len(session.channels),
-            self._clock() - session.deadline + self.TTL_MS / 1000,
-            session.deadline - self._clock(),
-        )
         watchdog = self._session_watchdog
         if (
             not self._sessions
@@ -187,7 +178,7 @@ class ControllerAuthority:
         if not self._is_ready():
             raise ControllerError("controller_not_ready", 503)
         for owner in tuple(self._sessions):
-            self._end_session(owner, reason="mode_changed")
+            self._end_session(owner)
         self.generation += 1
         self.mode = mode
         self._state = "idle"
@@ -469,7 +460,7 @@ class ControllerAuthority:
             if session is not None:
                 session.channels.pop(ticket, None)
                 if ticket is session.primary:
-                    self._end_session(ticket.tx_owner, reason="primary_detached")
+                    self._end_session(ticket.tx_owner)
             return
         if self._controls.get(ticket.session_id) is ticket:
             self._controls.pop(ticket.session_id)
@@ -484,7 +475,7 @@ class ControllerAuthority:
     async def release(self, key: object) -> None:
         ticket = self.credential(key)
         if ticket.tx_owner is not None:
-            self._end_session(ticket.tx_owner, reason="client_release")
+            self._end_session(ticket.tx_owner)
         else:
             self.revoke()
         await self.settle()
@@ -494,7 +485,7 @@ class ControllerAuthority:
         if self.mode == "local":
             self.generation += 1
             for owner in tuple(self._sessions):
-                self._end_session(owner, reason="authority_revoked")
+                self._end_session(owner)
             return
         if self._state == "revoking":
             return

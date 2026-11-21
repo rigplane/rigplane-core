@@ -233,6 +233,8 @@ async def test_control_connect_delivers_rx_silent_without_an_edge() -> None:
     sent: list[dict[str, Any]] = []
 
     class _Ws:
+        outbound_progress: int = 0
+
         async def send_text(self, payload: str) -> None:
             sent.append(json.loads(payload))
 

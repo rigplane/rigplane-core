@@ -225,7 +225,9 @@ async def test_remote_unsupported_tx_is_rejected_before_enqueue(station, name, p
     server, _ = station
     _, primary = await remote(server)
     radio = SimpleNamespace(_controller_authority=server._controller)
-    handler = ControlHandler(SimpleNamespace(), radio, "test", "IC-7610", server=server)
+    handler = ControlHandler(
+        SimpleNamespace(outbound_progress=0), radio, "test", "IC-7610", server=server
+    )
     with server._controller.bind(primary), pytest.raises(ControllerError):
         await handler._enqueue_command(name, params)
     assert server.command_queue.drain() == []

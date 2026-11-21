@@ -112,7 +112,7 @@ class _QueueStack(_Stack):
 
     def handler(self, name: str, *, ws: Any = None) -> ControlHandler:
         return ControlHandler(
-            ws or MagicMock(),
+            ws or MagicMock(outbound_progress=0),
             self.radio,
             "test",
             "IC-9700",
@@ -174,7 +174,7 @@ def _handler_on(
         enqueue_managed_positive_tx=enqueue_managed_positive_tx,
     )
     return ControlHandler(
-        MagicMock(),
+        MagicMock(outbound_progress=0),
         _radio(),
         "test",
         "IC-9700",
@@ -254,7 +254,7 @@ async def test_second_client_ws_envelope_carries_the_conflict_message() -> None:
     stack = _QueueStack()
     try:
         await _key(stack, stack.handler("a"))
-        ws = SimpleNamespace(send_text=AsyncMock())
+        ws = SimpleNamespace(outbound_progress=0, send_text=AsyncMock())
         stack.enqueued.clear()
         task = asyncio.create_task(
             stack.handler("b", ws=ws)._dispatch_command("cmd-1", "ptt_on", {})
@@ -316,7 +316,11 @@ async def test_holder_appearing_before_the_handler_sees_an_infra_refusal() -> No
 
 async def test_missing_authority_keeps_the_unavailable_refusal() -> None:
     handler = ControlHandler(
-        MagicMock(), _radio(), "test", "IC-9700", managed_tx_authority=None
+        MagicMock(outbound_progress=0),
+        _radio(),
+        "test",
+        "IC-9700",
+        managed_tx_authority=None,
     )
     with pytest.raises(CommandRejectedError, match=_UNAVAILABLE):
         await handler._enqueue_command("ptt_on", {})
@@ -326,7 +330,7 @@ async def test_ptt_without_a_command_queue_keeps_the_unavailable_refusal() -> No
     stack = _QueueStack()
     try:
         handler = ControlHandler(
-            MagicMock(),
+            MagicMock(outbound_progress=0),
             stack.radio,
             "test",
             "IC-9700",
@@ -650,14 +654,14 @@ async def test_ws_key_down_during_an_unconfirmed_release_says_it_is_releasing(
     monkeypatch.setattr(stack.authority, "submit_ptt", capture)
     gate: asyncio.Event | None = None
     try:
-        holder_ws = SimpleNamespace(send_text=AsyncMock())
+        holder_ws = SimpleNamespace(outbound_progress=0, send_text=AsyncMock())
         holder = stack.handler("a", ws=holder_ws)
         assert (await _ws_command(stack, holder, holder_ws, "1", "ptt_on"))["ok"]
         gate = stack.lane.block_next()
         assert (await _ws_command(stack, holder, holder_ws, "2", "ptt_off"))["ok"]
         assert (await stack.authority.snapshot()).state.release_required
 
-        ws = SimpleNamespace(send_text=AsyncMock())
+        ws = SimpleNamespace(outbound_progress=0, send_text=AsyncMock())
         refused = await _ws_command(stack, stack.handler("b", ws=ws), ws, "3", "ptt_on")
         assert refused["ok"] is False
         assert _RELEASING in refused["message"]

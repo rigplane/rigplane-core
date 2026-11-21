@@ -36,7 +36,7 @@ def _make_handler(
     authority: Any = None,
 ) -> tuple[ControlHandler, CommandQueue]:
     """Build a ControlHandler with a fake server and return (handler, command_queue)."""
-    ws = MagicMock()
+    ws = MagicMock(outbound_progress=0)
 
     command_queue = CommandQueue()
     command_queue.bind_connection_generation(lambda: "test-connection")

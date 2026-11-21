@@ -100,7 +100,7 @@ async def test_control_handler_checks_capabilities_not_model_name() -> None:
 
     Also test that a radio WITHOUT nb capability DOES raise."""
     profile = resolve_radio_profile(model="IC-7300")
-    ws = SimpleNamespace(send_text=AsyncMock(), recv=AsyncMock())
+    ws = SimpleNamespace(outbound_progress=0, send_text=AsyncMock(), recv=AsyncMock())
     queue = SimpleNamespace(put=lambda _cmd: None)
     server = SimpleNamespace(command_queue=queue)
     radio = SimpleNamespace(capabilities=set(profile.capabilities))

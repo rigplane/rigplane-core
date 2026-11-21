@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import struct
 from collections.abc import Callable
 from pathlib import Path
 
@@ -27,7 +28,15 @@ from rigplane.web import server as server_module
 from rigplane.web.handlers import control as control_module
 from rigplane.web.radio_poller import RadioPoller
 from rigplane.web.server import WebConfig, WebServer
-from rigplane.ws import WS_OP_TEXT, WebSocketConnection, make_frame
+from rigplane.ws import (
+    WS_OP_CLOSE,
+    WS_OP_CONTINUATION,
+    WS_OP_PING,
+    WS_OP_PONG,
+    WS_OP_TEXT,
+    WebSocketConnection,
+    make_frame,
+)
 
 
 class _PttRadio(SerialMockRadio):
@@ -113,13 +122,16 @@ def _command(command_id: str, name: str, params: dict[str, object]) -> bytes:
 
 
 @pytest.mark.parametrize("attached", [False, True], ids=["sessionless", "auxiliary"])
+@pytest.mark.parametrize("blocked_write", ["ack", "pong", "close"])
 @pytest.mark.parametrize(
     ("name", "params"), [("ptt_off", {}), ("ptt", {"state": False})]
 )
 def test_stalled_ack_unkeys_through_real_websocket_accept(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
     attached: bool,
+    blocked_write: str,
     name: str,
     params: dict[str, object],
 ) -> None:
@@ -192,11 +204,11 @@ def test_stalled_ack_unkeys_through_real_websocket_accept(
             await connect(key, "auxiliary")
             writer = writers[-1]
             writer.outbound.buffer.clear()
-            writer.stall = True
-            # Both frames are already inbound when the key-down ACK parks.
-            readers[-1].feed_data(
-                _command("key", "ptt_on", {}) + _command("unkey", name, params)
-            )
+            writer.stall = blocked_write == "ack"
+            unkey = _command("unkey", name, params)
+            readers[-1].feed_data(_command("key", "ptt_on", {}))
+            if blocked_write == "ack":
+                readers[-1].feed_data(unkey)
             await clock.elapse(0)
             entry = srv.command_queue.take_entry()
             assert entry is not None
@@ -205,17 +217,53 @@ def test_stalled_ack_unkeys_through_real_websocket_accept(
             assert radio._ptt is True
             assert actuator.operations == [ActuationOperation.PTT_ON]
             assert authority.tx_holder_nowait() is not None
-            assert writer.drain_parked.is_set()
             assert b'"id":"key"' in writer.outbound.buffer
+            if blocked_write != "ack":
+                assert not writer.drain_parked.is_set()
+                # The key-down ACK completed before the event sender filled
+                # the downlink. Uplink remains open with key-up behind PING/CLOSE.
+                writer.stall = True
+                srv.broadcast_notification("info", "x" * (70 * 1024))
+                await clock.elapse(0)
+                assert writer.outbound.get_write_buffer_size() > 64 * 1024
+                opcode = WS_OP_PING if blocked_write == "pong" else WS_OP_CLOSE
+                payload = b"probe" if blocked_write == "pong" else b"\x03\xe8"
+                readers[-1].feed_data(
+                    make_frame(WS_OP_PONG, b"alive", mask=True)
+                    + make_frame(opcode, payload, mask=True)
+                    + unkey
+                )
+                await clock.elapse(0)
+                reply_opcode = WS_OP_PONG if blocked_write == "pong" else WS_OP_CLOSE
+                assert writer.outbound.buffer.endswith(
+                    make_frame(reply_opcode, payload)
+                )
+                assert readers[-1]._buffer == unkey
+            assert writer.drain_parked.is_set()
             assert b'"id":"unkey"' not in writer.outbound.buffer
             assert readers[-1]._buffer
 
-            await clock.elapse(4.0)
+            await clock.elapse(2.99)
+            assert radio._ptt is True
+            assert not writer.outbound.aborted
+            assert not tasks[-1].done()
+            await clock.elapse(0.12)
 
             # These assertions precede rescue cleanup and keep output stalled.
             assert not writer.resume.is_set()
-            assert radio._ptt is False, "stalled ACK prevented prompt hardware unkey"
+            assert radio._ptt is False, (
+                f"stalled {blocked_write} prevented hardware unkey"
+            )
             assert writer.outbound.aborted
+            aborts = [
+                record.getMessage()
+                for record in caplog.records
+                if record.getMessage().startswith("websocket write deadline abort:")
+            ]
+            assert len(aborts) == 1
+            assert "connection_id=" in aborts[0]
+            assert "stalled_s=3." in aborts[0]
+            assert "outbound_progress=" in aborts[0]
             assert tasks[-1].done()
             assert tasks[-1].exception() is None
             state = (await authority.snapshot()).state
@@ -245,6 +293,53 @@ def test_stalled_ack_unkeys_through_real_websocket_accept(
                 writer.close()
                 await writer.wait_closed()
             await radio.disconnect()
+
+    clock.run(scenario)
+
+
+@pytest.mark.parametrize("kind", ["pong", "close-echo", "frame-too-large", "fragments"])
+def test_receive_loop_write_deadline_without_other_senders(kind: str) -> None:
+    clock = VirtualClock()
+
+    async def scenario() -> None:
+        reader = asyncio.StreamReader()
+        writer = _StalledWriter(reader)
+        ws = WebSocketConnection(reader, writer, clock=clock)
+        writer.stall = True
+        if kind == "pong":
+            incoming = make_frame(WS_OP_PING, b"probe", mask=True)
+            reply = make_frame(WS_OP_PONG, b"probe")
+        elif kind == "close-echo":
+            incoming = make_frame(WS_OP_CLOSE, b"\x03\xe8", mask=True)
+            reply = make_frame(WS_OP_CLOSE, b"\x03\xe8")
+        elif kind == "frame-too-large":
+            incoming = struct.pack("!BBQ", 0x81, 0xFF, 64 * 1024 + 1)
+            reply = make_frame(WS_OP_CLOSE, b"\x03\xf1frame too large")
+        else:
+            incoming = make_frame(WS_OP_TEXT, b"x" * (64 * 1024), fin=False)
+            incoming += (
+                make_frame(WS_OP_CONTINUATION, b"x" * (64 * 1024), fin=False) * 4
+            )
+            reply = make_frame(WS_OP_CLOSE, b"\x03\xf1message too large")
+        reader.feed_data(incoming)
+        task = asyncio.create_task(ws.recv())
+        try:
+            await clock.elapse(0)
+            assert writer.drain_parked.is_set()
+            assert writer.outbound.buffer == reply
+            await clock.elapse(2.99)
+            assert not task.done()
+            assert not writer.outbound.aborted
+            await clock.elapse(0.12)
+            assert task.done()
+            assert isinstance(task.exception(), EOFError)
+            assert writer.outbound.aborted
+            assert not writer.resume.is_set()
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            ws.abort()
+            await writer.wait_closed()
 
     clock.run(scenario)
 

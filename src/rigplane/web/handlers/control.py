@@ -223,8 +223,6 @@ __all__ = ["ControlHello", "ControlHandler", "control_hello_message"]
 
 logger = logging.getLogger(__name__)
 
-_CONTROL_WRITE_TIMEOUT = 3.0
-
 # Intent param carrying the TX owner `_enqueue_command` checked (MOR-3537).
 _TX_OWNER_PARAM = "_tx_owner"
 # Refusal wording when a rejected PTT receipt proves another owner held (MOR-3684).
@@ -1074,9 +1072,6 @@ class ControlHandler:
         # releases the rest. A sessionless socket is the owner and always does.
         self._session_attached = tx_owner is not None
         self._last_ptt_on = False
-        self._last_command_name: str | None = None
-        self._last_command_id: Any = None
-        self._channel_started = self._clock()
         self._managed_tx_authority = managed_tx_authority
         self._subscribed_streams: set[str] = set()
         self._event_queue: BoundedQueue[dict[str, Any]] = BoundedQueue(
@@ -1153,18 +1148,7 @@ class ControlHandler:
                 await self._send_current_audio_session()
                 await self._send_current_managed_tx_document()
             except BaseException as exc:
-                logger.warning(
-                    "control channel ended: connection_id=%x channel_id=%s owner=%s "
-                    "command=%r command_id=%r elapsed_s=%.3f "
-                    "reason=initial_state_failed error=%r",
-                    id(self._ws),
-                    self._session_id,
-                    self._tx_owner,
-                    self._last_command_name,
-                    self._last_command_id,
-                    self._clock() - self._channel_started,
-                    exc,
-                )
+                logger.debug("control: failed to send initial state", exc_info=True)
                 self._server.unregister_control_event_queue(
                     self._event_queue, session_id=self._session_id
                 )
@@ -1186,18 +1170,8 @@ class ControlHandler:
                         logger.debug("control: invalid UTF-8: %s", exc)
                         continue
                     await self._handle_text(text)
-        except EOFError as exc:
-            logger.warning(
-                "control channel ended: connection_id=%x channel_id=%s owner=%s command=%r "
-                "command_id=%r elapsed_s=%.3f reason=%r",
-                id(self._ws),
-                self._session_id,
-                self._tx_owner,
-                self._last_command_name,
-                self._last_command_id,
-                self._clock() - self._channel_started,
-                str(exc),
-            )
+        except EOFError:
+            pass
         finally:
             controller = getattr(self._radio, "_controller_authority", None)
             if isinstance(controller, ControllerAuthority):
@@ -1385,73 +1359,8 @@ class ControlHandler:
             # ``radio_connect``/``radio_disconnect`` messages land here.
             logger.debug("control: unknown message type: %r", msg_type)
 
-    async def _send_direct(self, text: str, *, command: str | None = None) -> None:
-        """Bound a receive-loop write; let run() own disconnect cleanup."""
-        loop = asyncio.get_running_loop()
-        started = loop.time()
-        last_progress_at = started
-        progress: int | None = None
-        probe: asyncio.Handle | None = None
-        deadline = asyncio.timeout(None)
-
-        def check_progress(scheduled_deadline: float | None = None) -> None:
-            nonlocal progress, last_progress_at, probe
-            now = loop.time()
-            current = getattr(self._ws, "outbound_progress", None)
-            if type(current) is int:
-                if progress is None or current > progress:
-                    last_progress_at = now
-                progress = current
-            stalled_deadline = last_progress_at + _CONTROL_WRITE_TIMEOUT
-            # asyncio may fire a timer one clock resolution early. A final
-            # probe with no new progress must expire, not reschedule itself
-            # at the same already-ready timestamp indefinitely.
-            if now >= stalled_deadline or scheduled_deadline == stalled_deadline:
-                deadline.reschedule(now)
-            else:
-                next_probe = min(now + 0.1, stalled_deadline)
-                probe = loop.call_at(
-                    next_probe,
-                    check_progress,
-                    stalled_deadline if next_probe == stalled_deadline else None,
-                )
-
-        try:
-            async with deadline:
-                # The first probe runs only if send_text actually suspends,
-                # after its synchronous frame write, so enqueue is not progress.
-                probe = loop.call_soon(check_progress)
-                await self._ws.send_text(text)
-        except TimeoutError as exc:
-            if not deadline.expired():
-                raise
-            try:
-                reply = decode_json(text)
-            except ValueError:
-                reply = {}
-            if not isinstance(reply, dict):
-                reply = {}
-            logger.warning(
-                "control channel abort: connection_id=%x channel_id=%s owner=%s command=%r "
-                "command_id=%r message_type=%r elapsed_s=%.3f "
-                "stalled_s=%.3f outbound_progress=%r deadline_s=%.3f "
-                "reason=direct_write_timeout",
-                id(self._ws),
-                self._session_id,
-                self._tx_owner,
-                command,
-                reply.get("id"),
-                reply.get("type"),
-                loop.time() - started,
-                loop.time() - last_progress_at,
-                progress,
-                _CONTROL_WRITE_TIMEOUT,
-            )
-            self._ws.abort()
-            raise EOFError("control write deadline exceeded") from exc
-        finally:
-            if probe is not None:
-                probe.cancel()
+    async def _send_direct(self, text: str) -> None:
+        await self._ws.send_text(text)
 
     async def _send_json(self, obj: dict[str, Any]) -> None:
         """Send a JSON message to the WebSocket client."""
@@ -1577,8 +1486,6 @@ class ControlHandler:
         cmd_id = msg.get("id", "")
         name = msg.get("name", "")
         params = msg.get("params", {})
-        self._last_command_name = name if isinstance(name, str) else None
-        self._last_command_id = cmd_id
 
         # A non-string ``name`` is malformed client input: answer it with
         # the same ``unknown_command`` reply an unknown string gets, logged
@@ -1746,7 +1653,6 @@ class ControlHandler:
                         "result": {"superseded": True},
                     }
                 ),
-                command=name,
             )
         self._cmd_pending[key] = (cmd_id, name, params)
         if key not in self._cmd_flush_tasks:
@@ -1829,7 +1735,6 @@ class ControlHandler:
                         "message": "no radio connected",
                     }
                 ),
-                command=name,
             )
             return
 
@@ -1852,7 +1757,6 @@ class ControlHandler:
                         "result": result,
                     }
                 ),
-                command=name,
             )
 
     async def _send_unknown_command(self, cmd_id: Any, name: Any) -> None:
@@ -1867,7 +1771,6 @@ class ControlHandler:
                     "message": f"unknown command: {name!r}",
                 }
             ),
-            command=name if isinstance(name, str) else None,
         )
 
     async def _send_command_failure(
@@ -1913,7 +1816,6 @@ class ControlHandler:
                     "message": message,
                 }
             ),
-            command=name,
         )
 
     def _start_managed_ptt_disconnect(self) -> asyncio.Task[ManagedTxOutcome] | None:

@@ -56,6 +56,7 @@ __all__ = [
 ]
 
 WS_KEEPALIVE_INTERVAL = 20.0  # seconds between server-initiated pings
+_WRITE_STALL_TIMEOUT = 3.0
 
 WS_MAGIC = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
@@ -271,11 +272,11 @@ class WebSocketConnection:
         self._fragmented_rsv1 = False
         self._fragments: list[bytes] = []
         self._last_pong: float = clock()
-        self._opened_at = self._last_pong
         self._last_frame: float = clock()
         self._pong_timeout: float = 60.0
         self._clock = clock
-        self._outbound_bytes = 0
+        self._outbound_bytes: int = 0
+        self._write_deadline_aborted = False
 
     @property
     def outbound_progress(self) -> int | None:
@@ -345,10 +346,9 @@ class WebSocketConnection:
                 self._closed = True
                 if not self._writer.is_closing():
                     try:
-                        self._writer.write(
+                        await self._send_raw(
                             make_frame(WS_OP_CLOSE, payload, mask=self._mask_outgoing)
                         )
-                        await self._writer.drain()
                     except OSError:
                         pass
                 raise EOFError("WebSocket closed")
@@ -443,16 +443,6 @@ class WebSocketConnection:
         owning task — blocked forever, even once staleness has been
         correctly detected (e.g. by ``keepalive_loop``'s pong timeout).
         """
-        logger.warning(
-            "websocket close: connection_id=%x code=%d reason=%r elapsed_s=%.3f "
-            "pong_age_s=%.3f frame_age_s=%.3f",
-            id(self),
-            code,
-            reason,
-            self._clock() - self._opened_at,
-            self._clock() - self._last_pong,
-            self._clock() - self._last_frame,
-        )
         if not self._closed:
             payload = struct.pack("!H", code) + reason.encode("utf-8")
             try:
@@ -472,26 +462,13 @@ class WebSocketConnection:
 
         Unlike ``close()``, this never awaits ``drain()`` and therefore
         cannot block: it calls ``transport.abort()``, which discards any
-        buffered output and fires ``connection_lost`` right away. This is
-        the fallback for when a bounded ``close()`` fails to complete
-        promptly against a peer that stopped reading with a saturated
-        write buffer — ``close()``'s close-frame write (and its own
-        best-effort ``self._writer.close()``) can otherwise wedge behind
-        ``drain()`` for as long as the peer never drains its receive
-        window (MOR-1429 review). Runs even when the connection is
-        already protocol-closed (a received CLOSE with a saturated
+        buffered output and fires ``connection_lost`` right away.
+        Runs even when the connection is already protocol-closed (a received
+        CLOSE with a saturated
         echo drain still leaves the transport attached otherwise), so
         the watchdog teardown always reaches the real transport. Safe
         to call more than once.
         """
-        logger.warning(
-            "websocket abort: connection_id=%x elapsed_s=%.3f "
-            "reason=abort_requested pong_age_s=%.3f frame_age_s=%.3f",
-            id(self),
-            self._clock() - self._opened_at,
-            self._clock() - self._last_pong,
-            self._clock() - self._last_frame,
-        )
         self._closed = True
         try:
             self._writer.transport.abort()
@@ -514,7 +491,7 @@ class WebSocketConnection:
         return self._last_frame
 
     async def send_ping(self, payload: bytes = b"") -> None:
-        """Send one ping frame (the caller bounds the write)."""
+        """Send one ping frame through the shared write deadline."""
         await self._send_raw(make_frame(WS_OP_PING, payload, mask=self._mask_outgoing))
 
     async def keepalive_loop(self, interval: float = 20.0) -> None:
@@ -538,7 +515,57 @@ class WebSocketConnection:
     async def _send_raw(self, data: bytes) -> None:
         self._writer.write(data)
         self._outbound_bytes += len(data)
-        await self._writer.drain()
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        last_progress_at = started
+        resolution = time.get_clock_info("monotonic").resolution
+        progress = self.outbound_progress
+        probe: asyncio.Handle | None = None
+        deadline = asyncio.timeout(None)
+
+        def check_progress() -> None:
+            nonlocal progress, last_progress_at, probe
+            now = loop.time()
+            current = self.outbound_progress
+            if current is not None:
+                if progress is None or current > progress:
+                    last_progress_at = now
+                progress = current
+            remaining = last_progress_at + _WRITE_STALL_TIMEOUT - now
+            if remaining <= 0:
+                deadline.reschedule(now)
+            else:
+                # Avoid rescheduling an already-ready timestamp when asyncio
+                # fires a timer up to one clock resolution early.
+                probe = loop.call_later(
+                    max(2 * resolution, min(0.1, remaining)), check_progress
+                )
+
+        try:
+            async with deadline:
+                probe = loop.call_soon(check_progress)
+                await self._writer.drain()
+        except TimeoutError as exc:
+            if not deadline.expired():
+                raise
+            if not self._write_deadline_aborted:
+                self._write_deadline_aborted = True
+                logger.warning(
+                    "websocket write deadline abort: connection_id=%x opcode=%d "
+                    "elapsed_s=%.3f stalled_s=%.3f outbound_progress=%r "
+                    "deadline_s=%.3f reason=write_stalled",
+                    id(self),
+                    data[0] & 0x0F,
+                    loop.time() - started,
+                    loop.time() - last_progress_at,
+                    progress,
+                    _WRITE_STALL_TIMEOUT,
+                )
+            self.abort()
+            raise EOFError("websocket write deadline exceeded") from exc
+        finally:
+            if probe is not None:
+                probe.cancel()
 
 
 @dataclass(frozen=True)

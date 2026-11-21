@@ -746,7 +746,7 @@ async def test_webserver_and_control_handler_use_same_capabilities_and_ready() -
     info = json.loads(text[body_start:])
 
     # WS: capture hello message emitted by ControlHandler
-    ws = MagicMock(spec=WebSocketConnection)
+    ws = MagicMock(outbound_progress=0, spec=WebSocketConnection)
 
     async def _send_text(payload: str) -> None:
         setattr(ws, "_last_payload", payload)
@@ -809,7 +809,7 @@ async def test_websocket_hello_projects_only_trusted_vfo_primitives() -> None:
     ]
 
     for radio, radio_model, expected in cases:
-        ws = MagicMock(spec=WebSocketConnection)
+        ws = MagicMock(outbound_progress=0, spec=WebSocketConnection)
         sent: list[str] = []
 
         async def _send_text(payload: str) -> None:

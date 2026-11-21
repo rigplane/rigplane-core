@@ -167,5 +167,7 @@ async def test_control_queue_poller_core_radio_bound_commands_send_data_off() ->
 
 
 class _Ws:
+    outbound_progress: int = 0
+
     async def send_text(self, _: str) -> None:
         pass

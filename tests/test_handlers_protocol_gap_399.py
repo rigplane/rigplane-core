@@ -168,7 +168,7 @@ def _handler(
     radio: object | None = None,
     server: object | None = None,
 ) -> ControlHandler:
-    ws = SimpleNamespace(send_text=AsyncMock(), recv=AsyncMock())
+    ws = SimpleNamespace(outbound_progress=0, send_text=AsyncMock(), recv=AsyncMock())
     return ControlHandler(ws, radio, "9.9.9", "IC-7610", server=server)
 
 
