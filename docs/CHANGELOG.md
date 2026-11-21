@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Hardcoded Russian UI strings (controller error toasts and related messages) now go through the i18n catalogs (en-US, ja-JP, ru-RU), so non-Russian locales no longer show Russian text (MOR-4250).
+
 ## [3.3.0rc3] — 2026-11-21
 
 Third release candidate of 3.3.0. 3.3.0rc2 was prepared but never tagged; this candidate is v3.3.0rc1 plus the fixes listed under 3.3.0rc2 and the addition below (found by review of the candidate's remote-access consumer).
