@@ -383,7 +383,7 @@ describe('AudioManager TX start failure latch (MOR-3753)', () => {
     current = false;
     settleCapture(null);
 
-    await expect(pending).resolves.toBe('Удалённое управление потеряно. Подключитесь заново.');
+    await expect(pending).resolves.toBe('Remote control was lost. Reconnect.');
 
     expect(setTxError).not.toHaveBeenCalledWith(true);
     expect(txStop).toHaveBeenCalledOnce();
@@ -435,7 +435,7 @@ describe('AudioManager TX start failure latch (MOR-3753)', () => {
 
     ready = false;
     const callsBefore = setTxError.mock.calls.length;
-    await expect(audioManager.startTx()).resolves.toBe('Удалённое управление недоступно.');
+    await expect(audioManager.startTx()).resolves.toBe('Remote control is unavailable.');
     expect(setTxError.mock.calls).toHaveLength(callsBefore);
     expect(txStart).toHaveBeenCalledOnce();
   });
