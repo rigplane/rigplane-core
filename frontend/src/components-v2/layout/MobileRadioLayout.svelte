@@ -20,6 +20,7 @@
   import FilterPanel from '../panels/FilterPanel.svelte';
   import RxAudioPanel from '../panels/RxAudioPanel.svelte';
   import TxPanel from '../panels/TxPanel.svelte';
+  import TxMicProcessingControl from '../controls/TxMicProcessingControl.svelte';
   import DspPanel from '../panels/DspPanel.svelte';
   import AgcPanel from '../panels/AgcPanel.svelte';
   import RfFrontEnd from '../panels/RfFrontEnd.svelte';
@@ -1172,6 +1173,10 @@
           <!-- MOR-1245 — while this sheet is open, the fixed overlay below
                stays the one banner: TxPanel's inline copy is suppressed. -->
           <TxPanel showManagedTotControl={true} suppressModInputTxWarning />
+          <!-- MOR-4596: TxPanel's own copy sits in its nested levels dialog, which
+               is positioned from the panel's viewport box and opens below this
+               bottom-anchored sheet; the phone gets the switch here instead. -->
+          <TxMicProcessingControl />
   </BottomSheet>
 </div>
 {/if}

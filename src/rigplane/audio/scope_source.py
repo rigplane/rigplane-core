@@ -69,8 +69,13 @@ class AudioFftSource:
         self.producer = self._make_producer()
 
     def _make_producer(self) -> AudioFftScope:
+        # Windows start one frame interval of audio apart, so a window longer
+        # than that overlaps and the source keeps its frame rate (MOR-4604).
         return AudioFftScope(
-            fft_size=self._fft_size, sample_rate=self._sample_rate, fps=self._fps
+            fft_size=self._fft_size,
+            sample_rate=self._sample_rate,
+            fps=self._fps,
+            hop_size=self._sample_rate // self._fps,
         )
 
     def capabilities(self) -> SourceCapabilities:
@@ -87,7 +92,18 @@ class AudioFftSource:
         if receiver is not None:
             raise ValueError("audio FFT has no receiver selector")
         if isinstance(view, FollowView):
-            center = self._facts().tuned_hz
+            # MOR-4604: an audio follow view is anchored on the receiver
+            # passband (its Nyquist-bounded RF coverage), not on the dial:
+            # the source has no bins outside it, so a passband-sized span
+            # keeps every granted pixel on real audio while the server, not
+            # the client, moves the window with every retune, mode or shift.
+            facts = self._facts()
+            passband = self._coverage(facts)
+            center = (
+                (passband.start_hz + passband.end_hz) / 2
+                if passband is not None
+                else facts.tuned_hz
+            )
             return View(center - view.span_hz / 2, center + view.span_hz / 2)
         return view
 
@@ -108,7 +124,10 @@ class AudioFftSource:
         self, view: ViewRequest, receiver: int | None = None
     ) -> Coverage | None:
         self.resolve_view(view, receiver)
-        facts = self._facts()
+        return self._coverage(self._facts())
+
+    def _coverage(self, facts: AudioPassband) -> Coverage | None:
+        """The passband's RF coverage within the PCM Nyquist range."""
         if facts.sideband == "both":
             low = max(facts.low_offset_hz, -self._sample_rate / 2)
             high = min(facts.high_offset_hz, self._sample_rate / 2)

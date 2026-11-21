@@ -372,6 +372,33 @@ class TestAudioFftScopeFrameRate:
             f"Too many frames: {len(frames)} (expected <50 at 10fps)"
         )
 
+    def test_long_window_keeps_the_frame_rate(self, monkeypatch):
+        """MOR-4604: a 4096-point window (85 ms) still yields 20 frames a second.
+
+        With a one-frame-interval hop the windows overlap, instead of each
+        consuming a whole window (which capped the rate at 11.7 fps). The
+        production AudioFftSource passes exactly this hop.
+        """
+        from types import SimpleNamespace
+
+        from rigplane.audio import fft_scope
+        from rigplane.testing.timing import ManualClock
+
+        clock = ManualClock(1)
+        monkeypatch.setattr(fft_scope, "time", SimpleNamespace(monotonic=clock))
+        scope = AudioFftScope(
+            fft_size=4096, fps=20, avg_count=1, sample_rate=48000, hop_size=2400
+        )
+        scope.set_center_freq(7_000_000)
+        frames: list[ScopeFrame] = []
+        scope.on_frame(frames.append)
+        pcm = _make_pcm_noise(48000 + 4096)
+        chunk = 2400 * 2  # one frame interval of PCM16 per delivery
+        for start in range(0, len(pcm), chunk):
+            scope.feed_audio(pcm[start : start + chunk])
+            clock.advance(0.05)
+        assert len(frames) >= 20
+
 
 # ── Averaging ───────────────────────────────────────────────────────────────
 

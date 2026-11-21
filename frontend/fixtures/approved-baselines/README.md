@@ -2,7 +2,23 @@
 
 Tracked, reviewed screenshots compared by `npm run test:e2e:visual` (`playwright.visual.config.ts`, whose `testDir` runs every `*.spec.ts` under `tests/e2e/visual/`): `visual-baselines.spec.ts` for a representative slice of the MOR-1070/1085 fixture matrix, `gallery-baselines.spec.ts` (MOR-2219) for the `gallery-*` rows below, which preserve individual instrument looks rendered on the `?demo=control-buttons` page, and `spectrum-baselines.spec.ts` for the `spectrum-panel--managed-frame` row. Distinct from `frontend/fixtures-baselines/` (gitignored capture OUTPUT from `capture.mjs`/`capture-ptt.mjs`) — this directory is the APPROVED, committed comparison target.
 
-## Linux re-pin provenance — 2026-11-12 MOR-4383 spectrum smoothing (current)
+## Linux re-pin provenance — 2026-11-20 MOR-4386 panorama zoom overlay (current)
+
+Intentional re-pin of the spectrum witness for MOR-4386 (#4677). The new
+zoom cluster ([-] [+] over [S] [B], bottom-right of the spectrum area)
+changes the `spectrum-panel--managed-frame` capture by 1,174 pixels (about
+1% of the image), all inside the cluster's 60x60 px corner box; the axes,
+tune line, passband and toolbar layout stay in place.
+
+`spectrum-panel--managed-frame.png` and `manifest.json` come from the Linux
+regeneration run 44839747484 (`visual.yml` with `regenerate=true`) on branch
+`codex/mor-4386-zoom-overlay` at
+`69cc17529f27c31b05834d91f33696a9c0bc23bc`. That run re-pins every capture
+(`--update-snapshots=all`); only this PNG and the manifest were copied, and
+the other captures' same-tree antialiasing noise was left out. No other
+approved PNG was regenerated.
+
+## Linux re-pin provenance — 2026-11-12 MOR-4383 spectrum smoothing (superseded)
 
 Intentional re-pin of the spectrum witness for MOR-4383 (#4562). The smoothed
 trace, the new `SMTH` toolbar key and the denser first waterfall row change

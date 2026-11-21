@@ -1,0 +1,52 @@
+{
+  "case": {
+    "tunedHz": 14100000,
+    "mode": "USB",
+    "filterWidthHz": 2400,
+    "toneHz": 1000,
+    "sampleRateHz": 48000,
+    "subscribe": {
+      "type": "subscribe",
+      "sourceId": "audio_fft",
+      "receiver": null,
+      "view": {
+        "follow": "vfo",
+        "spanHz": 3000
+      },
+      "width": 800,
+      "maxFps": 20
+    }
+  },
+  "messages": [
+    {
+      "type": "granted",
+      "sourceId": "audio_fft",
+      "receiver": null,
+      "view": {
+        "startHz": 14099700.0,
+        "endHz": 14102700.0
+      },
+      "coverage": {
+        "startHz": 14100000,
+        "endHz": 14102400
+      },
+      "width": 800,
+      "fps": 20
+    },
+    {
+      "type": "granted",
+      "sourceId": "audio_fft",
+      "receiver": null,
+      "view": {
+        "startHz": 14099700.0,
+        "endHz": 14102700.0
+      },
+      "coverage": {
+        "startHz": 14100000.0,
+        "endHz": 14102390.625
+      },
+      "width": 205,
+      "fps": 20
+    }
+  ]
+}
