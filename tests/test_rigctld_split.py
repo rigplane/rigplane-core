@@ -118,7 +118,9 @@ async def test_link_down_refuses_split_and_cached_reads_and_unkey(model, command
 @pytest.mark.asyncio
 @pytest.mark.timeout(30)
 @pytest.mark.parametrize("model", MODELS)
-async def test_stale_unkey_reaches_radio(monkeypatch, virtual_clock: VirtualClock, model):
+async def test_stale_unkey_reaches_radio(
+    monkeypatch, virtual_clock: VirtualClock, model
+):
     virtual_clock.scope_to(monkeypatch, rigctld_handler_module)
     virtual_clock.scope_to(monkeypatch, civ_rx_module)
     monkeypatch.setattr(FreshnessClock, "now", lambda self: virtual_clock.now)
