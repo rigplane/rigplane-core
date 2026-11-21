@@ -33,7 +33,7 @@ export type TxCodec = 'opus' | 'pcm16';
  */
 export type TxCaptureFailureCode =
   | 'cancelled' | 'permission' | 'insecure-context' | 'unsupported'
-  | 'capture' | 'device-lost' | 'encoder' | 'sample-rate';
+  | 'capture' | 'device-missing' | 'device-lost' | 'encoder' | 'sample-rate';
 
 export interface TxCaptureFailure {
   /** Machine-readable classification; maps to the toast reason code. */
@@ -276,13 +276,11 @@ export class TxMic {
         ? error.name : undefined;
       const category = typeof name === 'string' && CAPTURE_ERROR_NAMES.has(name)
         ? name : 'unknown';
-      const failure = this.makeFailure(
-        category === 'NotAllowedError' ? 'permission' : 'capture',
-        category,
-        category === 'NotAllowedError'
-          ? 'permission denied'
-          : `capture failed (${category})`,
-      );
+      const failure = category === 'NotAllowedError'
+        ? this.makeFailure('permission', category, 'permission denied')
+        : category === 'NotFoundError'
+          ? this.makeFailure('device-missing', category, 'no microphone found')
+          : this.makeFailure('capture', category, `capture failed (${category})`);
       this._lastCaptureFailure = failure;
       console.warn(`[TxMic] getUserMedia rejected: ${category}`);
       return failure;

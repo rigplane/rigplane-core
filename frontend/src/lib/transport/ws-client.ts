@@ -386,7 +386,7 @@ export class WsChannel {
           } else if (msg.type === 'response') {
             if (msg.ok === false) {
               const errorMsg = msg.message || msg.error || 'Command failed';
-              console.error(`[ws] command ${msg.id} failed: ${errorMsg}`);
+              console.error(`[ws] command ${msg.id} failed (${msg.error ?? "command_failed"}): ${errorMsg}`);
               for (const h of this.messageHandlers) {
                 h({ type: 'notification', level: 'error', message: errorMsg, category: 'command' } as any);
               }
