@@ -209,9 +209,17 @@ describe('RadioLayout link-fault veil (MOR-2425 C-R3)', () => {
     );
   }
 
+  async function veilCssSource(): Promise<string> {
+    const { readFileSync } = await import('node:fs');
+    const { resolve } = await import('node:path');
+    // MOR-2241 moved the rule from RadioLayout.svelte to the shared app.css
+    // so every layout shell carries the same veil; pin it where it lives.
+    return readFileSync(resolve(process.cwd(), 'src/app.css'), 'utf-8');
+  }
+
   /** The selectors of the one rule carrying the veil `filter`, unwrapped. */
   async function veilSelectors(): Promise<string[]> {
-    const source = await layoutSource();
+    const source = await veilCssSource();
     const decl = source.indexOf('filter: saturate(');
     expect(decl, 'the veil declaration must be present').toBeGreaterThan(-1);
     const brace = source.lastIndexOf('{', decl);
@@ -382,14 +390,14 @@ describe('RadioLayout link-fault veil (MOR-2425 C-R3)', () => {
 
   it('declares one veil rule, keyed on the face root attribute', async () => {
     // jsdom computes no filter, so this pins the rule's presence by reading
-    // the component source — a guard against the CSS being dropped, not a
+    // the shared stylesheet — a guard against the CSS being dropped, not a
     // check of how strong the veil looks. The AD judges the rendering.
     const selectors = await veilSelectors();
     expect(selectors.length).toBe(2);
     for (const selector of selectors) {
-      expect(selector).toContain('.radio-layout[data-link-fault]');
+      expect(selector).toContain('[data-link-fault]');
     }
-    expect(await layoutSource())
+    expect(await veilCssSource())
       .toMatch(/filter:\s*saturate\([^)]*\)\s*contrast\([^)]*\)\s*brightness\(/);
   });
 
