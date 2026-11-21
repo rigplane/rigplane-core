@@ -2,11 +2,25 @@
   "controllerStatus": {
     "protocol_version": 1,
     "mode": "local",
+    "ptt_style": "latch",
     "state": "idle",
     "generation": 0,
     "ttl_ms": 6000,
     "heartbeat_ms": 2000,
     "remaining_ms": 0
+  },
+  "controllerStatusApiChannel": {
+    "protocol_version": 1,
+    "mode": "local",
+    "ptt_style": "momentary",
+    "state": "idle",
+    "generation": 0,
+    "ttl_ms": 6000,
+    "heartbeat_ms": 2000,
+    "remaining_ms": 0
+  },
+  "controllerTxRefusal": {
+    "error": "controller_tx_unsupported"
   },
   "controllerGrant": {
     "controller_key": "0000000000000000000000000000000000000000000000000000000000000000",
@@ -21,6 +35,7 @@
   "controllerStatusRemoteIdle": {
     "protocol_version": 1,
     "mode": "remote",
+    "ptt_style": "momentary",
     "state": "idle",
     "generation": 1,
     "ttl_ms": 6000,
@@ -36,6 +51,7 @@
   "controllerStatusRemoteHeld": {
     "protocol_version": 1,
     "mode": "remote",
+    "ptt_style": "momentary",
     "state": "held",
     "generation": 2,
     "ttl_ms": 6000,

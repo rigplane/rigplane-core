@@ -213,7 +213,7 @@ export function trackDestinations(page: Page): () => { requests: string[]; socke
 
 /** What the stubbed microphone does: `tone` gives the oscillator stream,
  * `refuse` rejects getUserMedia as a denied permission does. */
-export type MicrophoneMode = 'tone' | 'refuse';
+export type MicrophoneMode = 'tone' | 'refuse' | 'missing';
 
 /**
  * The ONLY allowed microphone stub (adviser brief §5): replace
@@ -232,6 +232,9 @@ export async function stubMicrophone(page: Page, mode: MicrophoneMode = 'tone'):
     const stub = async (constraints?: MediaStreamConstraints) => {
       if (micMode === 'refuse') {
         throw new DOMException('Permission denied', 'NotAllowedError');
+      }
+      if (micMode === 'missing') {
+        throw new DOMException('No input device', 'NotFoundError');
       }
       // Honour the audio constraints the page asks for, as a real device
       // does: the page's Opus encoder is configured for that rate and

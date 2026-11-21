@@ -161,7 +161,7 @@ describe('TxMic', () => {
   });
   it.each([
     ['NotAllowedError', 'permission'],
-    ['NotFoundError', 'capture'],
+    ['NotFoundError', 'device-missing'],
     ['NotReadableError', 'capture'],
     ['OverconstrainedError', 'capture'],
     ['AbortError', 'capture'],
@@ -213,7 +213,7 @@ describe('TxMic', () => {
     capture.mockRejectedValueOnce(new DOMException('', 'NotReadableError'));
     const mic = new TxMic(vi.fn());
 
-    await expect(mic.start()).resolves.toMatchObject({ code: 'capture', category: 'NotFoundError' });
+    await expect(mic.start()).resolves.toMatchObject({ code: 'device-missing', category: 'NotFoundError' });
     mic.stop();
     await expect(mic.start()).resolves.toMatchObject({ code: 'capture', category: 'NotReadableError' });
     mic.stop();
@@ -312,7 +312,7 @@ describe('TxMic', () => {
 
     it.each([
       ['NotAllowedError', 'permission'],
-      ['NotFoundError', 'capture'],
+      ['NotFoundError', 'device-missing'],
     ])('classifies getUserMedia %s as code %s', async (name, code) => {
       vi.spyOn(console, 'warn').mockImplementation(() => {});
       vi.mocked(navigator.mediaDevices.getUserMedia).mockRejectedValueOnce(

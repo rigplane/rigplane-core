@@ -4,6 +4,7 @@ import { CONTROLLER_TOAST_CODES } from '../controller-toast-codes';
 export { CONTROLLER_TOAST_CODES };
 
 type Role = 'primary' | 'auxiliary';
+export type PttStyle = 'latch' | 'momentary';
 type Grant = { controller_key: string; generation: number; controller_role?: Role };
 type Sender = (message: { type: 'controller_heartbeat' }) => void;
 
@@ -34,6 +35,7 @@ function record(value: unknown): value is Record<string, unknown> {
 export class ControllerClient {
   #grant: Grant | null = null;
   private _remote = false;
+  private _pttStyle: PttStyle | null = null;
   private _localSessions = false;
   private prepared = false;
   private primaryReady = false;
@@ -50,6 +52,10 @@ export class ControllerClient {
   constructor(private readonly clock = () => performance.now()) {}
 
   get remote(): boolean { return this._remote; }
+  get pttStyle(): PttStyle {
+    // Legacy Core versions advertised only the controller mode.
+    return this._pttStyle ?? (this._remote ? 'momentary' : 'latch');
+  }
   get role(): Role { return this.#grant?.controller_role ?? 'primary'; }
   get epoch(): number { return this._epoch; }
   get session(): boolean { return this.#grant !== null; }
@@ -127,6 +133,10 @@ export class ControllerClient {
       throw new ControllerClientError('controller_unsupported');
     }
     this.check(epoch, signal);
+    const pttStyle = status.ptt_style;
+    // Older stations may omit the field. An unknown advertised style must
+    // never grant a latch that a newer producer might intend to forbid.
+    this._pttStyle = pttStyle === undefined ? null : pttStyle === 'latch' ? 'latch' : 'momentary';
     if (status.mode === 'local') {
       this._remote = false;
       this.changed();
