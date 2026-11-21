@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A dual-receiver radio that answered CI-V while its receiver selection was still unknown answered receiver-scoped commands with the terminal "receiver not selected" refusal (rigctld `RPRT -9`, web `reason_code="receiver_not_selected"`), telling a WSJT-X polling `f` or a web write that a receiver was not selected when Core in fact did not know the selection yet. `radio_ready` reflects CI-V liveness (the first answer), while the selection is established separately by the 0x07 0xD2 answer (the connect tail's sweep, or the command's own bounded read), so under load the two latches can be seconds apart — the window the v3.3.0rc1 rehearsal run 44869231087 failed in. While the selection has never been established in the current CI-V generation, receiver-scoped commands now answer the retriable not-ready timeout (rigctld `RPRT -5`, web `command_timeout`) regardless of liveness; the genuine unselected-receiver refusal survives unchanged once the selection is known (MOR-3591). (MOR-4382)
+
 ## [3.3.0rc1] — 2026-11-21
 
 This is the first release candidate of 3.3.0. It contains everything merged to main after 3.2.0 (up to #4677, the commit this candidate was tested on).

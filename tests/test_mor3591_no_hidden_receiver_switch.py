@@ -3,9 +3,12 @@
 Owner rule (2026-10-29): on a radio without a per-receiver addressing
 command (no cmd29 route for that command, no profile-declared direct
 selector) a receiver-scoped write or read goes only to the receiver the
-operator has selected; any other receiver -- and either receiver while the
-selection is unknown -- is refused with ``ReceiverNotSelectedError``
-(``reason_code == "receiver_not_selected"``).
+operator has selected; a receiver that is known not to be that one is
+refused with ``ReceiverNotSelectedError``
+(``reason_code == "receiver_not_selected"``). While the selection has
+never been established in this CI-V generation the answer is instead the
+retriable ``RadioNotReadyError`` (MOR-4382 follow-up): no receiver can be
+addressed yet, which is not a receiver being not selected.
 
 The backbone is one wire-level test over every receiver-scoped operation
 that used to switch the selection, on three profiles (IC-9700: no cmd29,
@@ -27,6 +30,7 @@ import pytest
 from rigplane.commands import CONTROLLER_ADDR, build_civ_frame, parse_civ_frame
 from rigplane.core.exceptions import (
     CommandError,
+    RadioNotReadyError,
     ReceiverNotSelectedError,
     TimeoutError,
 )
@@ -136,10 +140,11 @@ def _radio(model: str) -> tuple[IcomRadio, Wire]:
     radio._radio_state.sub.mode = "USB"
     # The Wire answers, so the radio model is "talking". Deliver one benign
     # answered frame through the real RX path so CI-V liveness
-    # (``last_valid_frame_monotonic``) says so too: a radio that has not
-    # answered since the link came up classifies its refusals as the
-    # retriable RadioNotReadyError, not ReceiverNotSelectedError (MOR-4382
-    # follow-up). The S-meter frame touches no freq/mode/selection path.
+    # (``last_valid_frame_monotonic``) says so too: the selection-unknown
+    # cases below then exercise the window where the radio answered while
+    # its 0x07 0xD2 selection read is still unanswered (the not-ready
+    # answer), not the never-answered window. The S-meter frame touches no
+    # freq/mode/selection path.
     _radio_answered_once(radio)
     return radio, wire
 
@@ -331,6 +336,11 @@ def _expected(radio: IcomRadio, op: Op, receiver: int, selected: int | None) -> 
         return "cmd29"
     if receiver == 0 and (profile.supports_cmd29(*op.cmd) or selected == 0):
         return "sent"
+    if selected is None:
+        # The selection was never established in this CI-V generation (the
+        # radio answered, the 0x07 0xD2 read did not): no receiver can be
+        # addressed yet -- the retriable not-ready answer, not a refusal.
+        return "not_ready"
     if selected == receiver:
         return "plain"
     return "refused"
@@ -369,6 +379,12 @@ class TestNoHiddenSelectionSwitch:
             with pytest.raises(ReceiverNotSelectedError) as excinfo:
                 await op.call(radio, receiver)
             assert excinfo.value.reason_code == "receiver_not_selected"
+            assert wire.frames == []
+        elif expected == "not_ready":
+            with pytest.raises(TimeoutError) as excinfo:
+                await op.call(radio, receiver)
+            assert isinstance(excinfo.value, RadioNotReadyError)
+            assert not isinstance(excinfo.value, ReceiverNotSelectedError)
             assert wire.frames == []
         else:
             await op.call(radio, receiver)
@@ -419,18 +435,23 @@ class TestSelectionIsFailClosed:
     @pytest.mark.asyncio
     async def test_defaulted_cache_is_not_a_selection(self) -> None:
         radio, wire = _radio("IC-9700")
-        # RadioState.active defaults to MAIN before any readback.
+        # RadioState.active defaults to MAIN before any readback, and the
+        # radio answered without reporting a selection: the command is not
+        # answerable for any receiver yet (not-ready), never a refusal that
+        # would lend the defaulted cache the authority of a selection.
         assert radio._radio_state.active == "MAIN"
-        with pytest.raises(ReceiverNotSelectedError):
+        with pytest.raises(RadioNotReadyError):
             await radio.set_freq(_FREQ, receiver=0)
         assert wire.frames == []
 
     @pytest.mark.asyncio
     async def test_lost_d2_reply_then_late_answer(self) -> None:
         radio, wire = _radio("IC-9700")
-        # The connect-time 0x07 0xD2 query's reply was lost: refuse.
+        # The connect-time 0x07 0xD2 query's reply was lost: the radio
+        # answered CI-V but the selection is still unknown, so both
+        # receivers answer the retriable not-ready.
         for receiver in (0, 1):
-            with pytest.raises(ReceiverNotSelectedError):
+            with pytest.raises(RadioNotReadyError):
                 await radio.set_mode("FM", receiver=receiver)
         assert wire.frames == []
         # The next poll's answer establishes the selection.
@@ -470,9 +491,10 @@ class TestSelectionIsFailClosed:
         _observe_selection(radio, 0)
         radio._civ_runtime.advance_generation("reconnect-attempt")
         # The new generation heard the radio again (but not a selection):
-        # the refusal below is the receiver refusal, not not-ready.
+        # the selection was never established in the new generation, so the
+        # answer below is the retriable not-ready, not a refusal.
         _radio_answered_once(radio)
-        with pytest.raises(ReceiverNotSelectedError):
+        with pytest.raises(RadioNotReadyError):
             await radio.set_freq(_FREQ, receiver=0)
         assert wire.frames == []
 
@@ -597,8 +619,8 @@ class TestStableReasonCode:
 
     def test_admission_stays_route_based(self) -> None:
         radio, _ = _radio("IC-9700")
-        # Selection unknown: MAIN is admitted (the call refuses with the
-        # stable code), SUB without a cmd29 route is not admitted.
+        # Selection unknown: MAIN is admitted (the call answers the
+        # retriable not-ready), SUB without a cmd29 route is not admitted.
         assert radio.supports_command("set_af_level", receiver=0) is True
         assert radio.supports_command("set_af_level", receiver=1) is False
 
@@ -821,7 +843,9 @@ class TestMalformedSelectors:
         radio, wire = _radio("IC-9700")
         _feed(radio, 0x07, 0xD2, value)
         assert radio._selected_receiver() is None
-        with pytest.raises(ReceiverNotSelectedError):
+        # A malformed selector establishes nothing, so the selection stays
+        # unknown (never-established): the retriable not-ready answer.
+        with pytest.raises(RadioNotReadyError):
             await radio.set_freq(_FREQ, receiver=1)
         assert wire.frames == []
         with pytest.raises(KeyError):
@@ -867,11 +891,11 @@ class TestMainReadsAreReceiverAware:
         assert wire.frames == []  # the plain 03/04 would read SUB
 
     @pytest.mark.asyncio
-    async def test_main_read_with_unknown_selection_is_refused(self) -> None:
+    async def test_main_read_with_unknown_selection_is_not_ready(self) -> None:
         radio, wire = _radio("IC-9700")
-        with pytest.raises(ReceiverNotSelectedError):
+        with pytest.raises(RadioNotReadyError):
             await radio.get_freq(receiver=0)
-        with pytest.raises(ReceiverNotSelectedError):
+        with pytest.raises(RadioNotReadyError):
             await radio.get_mode_info(receiver=0)
         assert wire.frames == []
 
@@ -1013,7 +1037,10 @@ class TestSelectionEstablishedByReading:
     @pytest.mark.asyncio
     async def test_unanswered_read_stays_fail_closed(self) -> None:
         radio, wire = _radio("IC-9700")
-        with pytest.raises(ReceiverNotSelectedError):
+        # One bounded selection read, nothing established, nothing sent:
+        # fail-closed as the retriable not-ready (never a value, never a
+        # selection switch, never a receiver refusal).
+        with pytest.raises(RadioNotReadyError):
             await radio.get_freq()
         assert len(wire.selection_reads) == 1
         assert wire.frames == []
