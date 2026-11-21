@@ -159,7 +159,15 @@ let toastHost: HTMLDivElement | null = null;
 let toastApp: ReturnType<typeof mount> | null = null;
 
 async function settle() {
+  // Microtask drain for the async chains, then real event-loop turns: the
+  // first bootstrap's refusal path settles a one-time deferred step on a
+  // macrotask (a pure-microtask drain leaves the banner unset), and the
+  // 15ms rounds stay far below App's 3s retry-reload timer.
   for (let i = 0; i < 25; i++) { await Promise.resolve(); flushSync(); }
+  for (let i = 0; i < 6; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 15));
+    for (let j = 0; j < 10; j++) { await Promise.resolve(); flushSync(); }
+  }
 }
 
 function startApp() {
@@ -229,7 +237,7 @@ describe('App bootstrap refusal — MOR-4250 controller reason codes', () => {
     startApp();
     await settle();
 
-    expect(document.querySelector('.error-overlay [role="alert"]')).not.toBeNull();
+    expect(document.querySelector('.error-overlay[role="alert"]')).not.toBeNull();
     const banner = bannerText();
     expect(banner).toBe(CONTROLLER_BUSY_EN);
     // The customer bug: the old path rendered
@@ -271,8 +279,8 @@ describe('system-controller reconnect refusal — real producer path', () => {
   });
 });
 
-describe('ws-client controller loss — real server eviction frame', () => {
-  it('renders the localized toast through the real control channel', async () => {
+describe('controller loss through the real producers', () => {
+  it('renders the localized toast from ws-client and frontend-runtime', async () => {
     controllerPost = 'grant';
     startApp();
     await settle();
@@ -292,6 +300,16 @@ describe('ws-client controller loss — real server eviction frame', () => {
     }));
     await settle();
 
+    // Production case for frontend-runtime's notification: the operator is
+    // mid-transmission when control is lost, so the automatic teardown's
+    // pre-disconnect barrier (a TX power-off) fails. Registered through the
+    // real systemController API; the disconnect then rejects for real and
+    // bootstrap's onLoss catch emits its own localized controller-lost
+    // notice.
+    systemController.registerPreDisconnectBarrier(
+      async () => { throw new Error('TX power-off refused'); },
+    );
+
     // The real server reply once another client took over: the grant's
     // generation is superseded, so the heartbeat ack carries the new one.
     // The real control-channel handler routes it to
@@ -303,12 +321,15 @@ describe('ws-client controller loss — real server eviction frame', () => {
     }));
     await settle();
 
-    expect(errorMessages()).toEqual([CONTROLLER_LOST_EN]);
+    // One localized toast per producer: ws-client's onLoss and
+    // frontend-runtime's teardown catch. Reverting either conversion makes
+    // its toast resolve `core.toast.unknown` and fails this assertion.
+    expect(errorMessages()).toEqual([CONTROLLER_LOST_EN, CONTROLLER_LOST_EN]);
     expect(errorMessages()).not.toContain(UNKNOWN);
 
     setLocale('ru-RU');
     flushSync();
-    expect(errorMessages()).toEqual([CONTROLLER_LOST_RU]);
+    expect(errorMessages()).toEqual([CONTROLLER_LOST_RU, CONTROLLER_LOST_RU]);
   });
 });
 
