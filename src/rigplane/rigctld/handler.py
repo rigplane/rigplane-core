@@ -80,6 +80,7 @@ from ..runtime.managed_tx_submission import (
 from ..types import Mode
 from .contract import (  # noqa: TID251
     CIV_TO_HAMLIB_MODE,
+    COMMAND_TABLE,
     HAMLIB_MODE_MAP,
     HamlibError,
     RigctldCommand,
@@ -435,24 +436,6 @@ _APPLIED_LIFECYCLE_STATES: frozenset[str] = frozenset(
 _UNAPPLIED_LIFECYCLE_ERRORS: dict[str, HamlibError] = {
     "timed_out": HamlibError.ETIMEOUT,
 }
-
-# MOR-4157: session/meta commands that never read or write the radio. A lost
-# link must not refuse them: a client still needs static capability data
-# (``dump_state``/``dump_caps``), its own VFO/echo bookkeeping (``chk_vfo``)
-# and a clean session end (``quit``), and the unit conversions never touch
-# the wire.
-_LINK_LOSS_EXEMPT_COMMANDS: frozenset[str] = frozenset(
-    {
-        "dump_state",
-        "dump_caps",
-        "chk_vfo",
-        "get_info",
-        "quit",
-        "power2mW",
-        "mW2power",
-        "get_lock_mode",
-    }
-)
 
 # MOR-4157: fallback liveness stale window (milliseconds) for a radio object
 # that does not declare ``liveness_stale_after_ms`` (test doubles; every
@@ -1262,10 +1245,12 @@ class RigctldHandler:
         * ``link_down`` (``Radio.connected is False``): reads and writes
           are both refused. Nothing can be delivered, and no cached
           mirror may answer for the radio.
-        * ``state_stale``: only commands answered from the cached mirror
-          are refused — a read must not return values the radio may no
-          longer hold. Writes are NOT refused: a quiet link is not a
-          down link (an IC-705 over Wi-Fi lags mid-transmission exactly
+        * ``state_stale``: commands that may answer from cache are refused
+          unless their declared live-read method is available. A cached
+          read must not return values the radio may no longer hold.
+          Inferred power status also requires freshness. Writes are NOT
+          refused: a quiet link is not a down link (an IC-705 over Wi-Fi
+          lags mid-transmission exactly
           when a client sends PTT off), so every write, an unkey first
           of all, takes the normal path (:meth:`_route_ptt`, the MOR-1904
           backstop, managed TX) and this seat reports its real terminal
@@ -1274,7 +1259,8 @@ class RigctldHandler:
         The transition into each refusing reason is logged once per
         episode; the first healthy answer clears the latch.
         """
-        if cmd.long_cmd in _LINK_LOSS_EXEMPT_COMMANDS:
+        definition = COMMAND_TABLE.get(cmd.long_cmd)
+        if definition is not None and definition.radio_access == "local":
             return None
         reason = self._link_loss_reason()
         if reason is None:
@@ -1282,8 +1268,17 @@ class RigctldHandler:
                 logger.info("rigctld link_lost cleared: radio answers again")
                 self._link_loss_reason_logged = None
             return None
-        if reason == "state_stale" and (cmd.is_set or cmd.long_cmd == "send_raw"):
+        if reason == "state_stale" and cmd.is_set:
             return None
+        if reason == "state_stale" and definition is not None:
+            if definition.radio_access in ("live", "write"):
+                return None
+            if (
+                definition.radio_access == "live_or_cache"
+                and definition.live_read_method is not None
+                and callable(getattr(self._radio, definition.live_read_method, None))
+            ):
+                return None
         if self._link_loss_reason_logged != reason:
             if reason == "link_down":
                 logger.warning(
@@ -3195,6 +3190,7 @@ class RigctldHandler:
                 return RigctldResponse(
                     values=[str(int(observed)), self._split_tx_vfo()]
                 )
+            return _err(HamlibError.ENAVAIL)
         split_path = FieldPath.global_("tx_state", "split")
         projection = self._project_with_freshness(
             (split_path,),

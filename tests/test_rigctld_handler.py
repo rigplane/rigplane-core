@@ -71,6 +71,7 @@ def make_mock_radio() -> AsyncMock:
     """
     radio = AsyncMock()
     del radio.rigctld_routing
+    del radio.read_split
     return radio
 
 
