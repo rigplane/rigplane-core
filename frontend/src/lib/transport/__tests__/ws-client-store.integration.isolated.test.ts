@@ -1,9 +1,8 @@
-import { execFileSync } from 'node:child_process';
-import { resolve } from 'node:path';
 import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll } from 'vitest';
 import type { ReceiverState, ServerState } from '../../types/state';
 import type { Capabilities } from '../../types/capabilities';
 import { MockWebSocket, instances } from './support/fake-ws-backend';
+import livenessWsTrace from './fixtures/liveness-ws-trace.json';
 
 const fetchCapabilities = vi.hoisted(() => vi.fn());
 vi.mock('../http-client', async (importOriginal) => ({
@@ -200,9 +199,14 @@ describe('ws-client → real radio store gate (integration)', () => {
   });
 
   it('ingests aged liveness from real HTTP-prewarmed WS subscription baselines', async () => {
-    const events = JSON.parse(execFileSync('uv', ['run', 'python', 'tests/liveness_ws_trace.py'], {
-      cwd: resolve(import.meta.dirname, '../../../../..'), encoding: 'utf8', timeout: 20_000,
-    })) as { type: string; data: Record<string, unknown> }[];
+    // Producer fixture captured by ``tests/liveness_ws_trace.py`` through the
+    // real web server (regenerate with
+    // ``uv run python scripts/gen_frontend_producer_fixtures.py``; currency
+    // pinned by ``tests/web/test_frontend_producer_fixtures.py``). The suite
+    // must not spawn ``uv run python`` at test time: on a saturated 4-CPU
+    // slot the interpreter start alone outlasts the subprocess wall budget
+    // (MOR-4214, run 44869233407: ``spawnSync uv ETIMEDOUT`` at 20 s).
+    const events = structuredClone(livenessWsTrace) as { type: string; data: Record<string, unknown> }[];
     const first = events[0].data;
     expect((first.data as Record<string, unknown>).publicStateSeq).toBeGreaterThan(first.transportSeq as number);
     const { wsClient, store, capabilities } = await loadModules();
@@ -213,7 +217,7 @@ describe('ws-client → real radio store gate (integration)', () => {
       instances[0].simulateMessage(JSON.stringify(event));
       expect(store.getRadioState()?.connection.liveness?.lastFrameAgeMs).toBe(index * 500);
     }
-  }, 30_000);
+  });
 
   it('applies a full envelope through the real store', async () => {
     const { wsClient, store, capabilities } = await loadModules();
