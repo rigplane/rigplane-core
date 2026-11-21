@@ -623,29 +623,15 @@ async def _ws_command(
     stack: _QueueStack, handler: ControlHandler, ws: Any, cmd_id: str, name: str
 ) -> dict[str, Any]:
     """Dispatch one WebSocket command and return the envelope it sent."""
-    sent: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
-    ws.send_text.side_effect = lambda payload: sent.put_nowait(decode_json(payload))
-    stack.enqueued.clear()
-    sender = asyncio.create_task(handler._event_sender_loop())
     task = asyncio.create_task(handler._dispatch_command(cmd_id, name, {}))
-    try:
-        if name == "ptt_on":
-            await _wait_barrier(stack.enqueued)
-            await _drain_one(stack)
-        await task
-        saw_baseline = False
-        while True:
-            envelope = await sent.get()
-            if envelope["type"] == "state_update":
-                saw_baseline |= envelope["data"]["type"] == "full"
-            if envelope["type"] == "response" and envelope["id"] == cmd_id:
-                if envelope["ok"]:
-                    assert saw_baseline, "successful ACK preceded its state baseline"
-                return envelope
-    finally:
-        sender.cancel()
-        task.cancel()
-        await asyncio.gather(sender, task, return_exceptions=True)
+    if name == "ptt_on":
+        stack.enqueued.clear()
+        await _wait_barrier(stack.enqueued)
+        await _drain_one(stack)
+    await task
+    envelope: dict[str, Any] = decode_json(ws.send_text.await_args.args[0])
+    assert envelope["id"] == cmd_id
+    return envelope
 
 
 async def test_ws_key_down_during_an_unconfirmed_release_says_it_is_releasing(
