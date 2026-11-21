@@ -11,6 +11,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.3.0rc5] — 2026-11-21
+
+Fifth release candidate of 3.3.0: v3.3.0rc4 plus the two fixes below.
+
+### Fixed
+
+- rigctld no longer refuses live split reads (`s`, `i`, `x`) with `RPRT -5` while the stale-state gate is active: the gate now decides by the command table's radio-access metadata, so reads that ask the radio proceed. (#4740)
+- The web UI no longer confirms a same-value command early: a command's acknowledgement and the state baseline now go out through one ordered sender, so a held observation cannot overtake the ACK; a failed outbound send cancels its handler. (#4739)
+
 ## [3.3.0rc4] — 2026-11-21
 
 Fourth release candidate of 3.3.0: v3.3.0rc3 plus the fix below.
@@ -5383,7 +5392,8 @@ These deprecation closures were announced in v0.19 and dropped on schedule.
 - Transport layer, authentication, CI-V commands, meters, PTT, keep-alive.
 - Clean-room Icom LAN UDP protocol implementation.
 
-[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.3.0rc4...HEAD
+[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.3.0rc5...HEAD
+[3.3.0rc5]: https://github.com/rigplane/rigplane-core/compare/v3.3.0rc4...v3.3.0rc5
 [3.3.0rc4]: https://github.com/rigplane/rigplane-core/compare/v3.3.0rc3...v3.3.0rc4
 [3.3.0rc3]: https://github.com/rigplane/rigplane-core/compare/v3.3.0rc1...v3.3.0rc3
 [3.3.0rc2]: https://github.com/rigplane/rigplane-core/compare/v3.3.0rc1...v3.3.0rc3
