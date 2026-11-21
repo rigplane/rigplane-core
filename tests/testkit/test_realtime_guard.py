@@ -832,14 +832,13 @@ def test_a_ci_merge_checkout_compares_with_its_first_parent_the_pr_base(
     assert first_parent == base  # the merge's first parent is the PR base
 
 
-def test_a_diverged_local_tree_compares_at_the_fork_point_not_moved_main(
+def test_a_release_tree_compares_with_the_release_branch_tip_not_main(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # A local tree cut from a branch that diverged from main (a release
-    # branch) must not compare its baseline with main's moved tip: baseline
-    # entries main deleted after the fork would read as entries this tree
-    # "gained". The merge-base with origin/main — the fork point — is the
-    # tree's base (MOR-4214).
+    # A local tree cut from a release branch must not compare its baseline
+    # with main's moved tip: baseline entries main deleted after the fork
+    # would read as entries this tree "gained". The release branch's own tip
+    # is the tree's base (MOR-4214).
     monkeypatch.delenv("RIGPLANE_REALTIME_BASE_REF", raising=False)
     monkeypatch.delenv("CI", raising=False)
     _git(tmp_path, "init", "-q", "-b", "main")
@@ -847,15 +846,11 @@ def test_a_diverged_local_tree_compares_at_the_fork_point_not_moved_main(
     baseline.write_text("# header\na.py::test_a\nb.py::test_b\n", encoding="utf-8")
     _git(tmp_path, "add", "baseline.txt")
     _git(tmp_path, "commit", "-q", "-m", "fork point")
-    fork = subprocess.run(
-        ["git", "rev-parse", "HEAD"],
-        cwd=tmp_path,
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout.strip()
-    _git(tmp_path, "update-ref", "refs/remotes/origin/main", "HEAD")
     _git(tmp_path, "checkout", "-q", "-b", "release/3.3.x")
+    (tmp_path / "release.txt").write_text("r", encoding="utf-8")
+    _git(tmp_path, "add", "release.txt")
+    _git(tmp_path, "commit", "-q", "-m", "release work")
+    _git(tmp_path, "update-ref", "refs/remotes/origin/release/3.3.x", "HEAD")
     _git(tmp_path, "checkout", "-q", "main")
     baseline.write_text("# header\na.py::test_a\n", encoding="utf-8")  # main shrinks
     _git(tmp_path, "add", "baseline.txt")
@@ -865,12 +860,48 @@ def test_a_diverged_local_tree_compares_at_the_fork_point_not_moved_main(
     baseline.write_text("# header\na.py::test_a\nb.py::test_b\n", encoding="utf-8")
 
     # The moved mainline tip would flag the still-listed entry as gained.
-    assert (
-        check_baseline_does_not_grow(baseline, "origin/main", tmp_path).status == "grew"
+    assert check_baseline_does_not_grow(baseline, "origin/main", tmp_path).status == (
+        "grew"
     )
-    assert base_revision(tmp_path) == fork
+    assert base_revision(tmp_path) == "origin/release/3.3.x"
     check = check_baseline_does_not_grow(baseline, base_revision(tmp_path), tmp_path)
     assert check.status == "ok"
+
+
+def test_an_exemption_restored_on_a_release_tree_is_still_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Comparing at the fork point (or with a stale tip) would be too lenient:
+    # an entry the release branch itself already removed must stay removed.
+    # The release branch's own tip carries the removal, so restoring the
+    # entry on top of it is growth (MOR-4214 pre-review P1).
+    monkeypatch.delenv("RIGPLANE_REALTIME_BASE_REF", raising=False)
+    monkeypatch.delenv("CI", raising=False)
+    _git(tmp_path, "init", "-q", "-b", "main")
+    baseline = tmp_path / "baseline.txt"
+    baseline.write_text("# header\na.py::test_a\nb.py::test_b\n", encoding="utf-8")
+    _git(tmp_path, "add", "baseline.txt")
+    _git(tmp_path, "commit", "-q", "-m", "fork point")
+    _git(tmp_path, "checkout", "-q", "-b", "release/3.3.x")
+    baseline.write_text("# header\na.py::test_a\n", encoding="utf-8")  # release shrinks
+    _git(tmp_path, "add", "baseline.txt")
+    _git(tmp_path, "commit", "-q", "-m", "release removes an entry")
+    _git(tmp_path, "update-ref", "refs/remotes/origin/release/3.3.x", "HEAD")
+    _git(tmp_path, "checkout", "-q", "main")
+    baseline.write_text("# header\na.py::test_a\n", encoding="utf-8")  # main shrinks
+    _git(tmp_path, "add", "baseline.txt")
+    _git(tmp_path, "commit", "-q", "-m", "main removes the same entry")
+    _git(tmp_path, "update-ref", "refs/remotes/origin/main", "HEAD")
+    _git(tmp_path, "checkout", "-q", "release/3.3.x")
+    baseline.write_text(
+        "# header\na.py::test_a\nb.py::test_b\n", encoding="utf-8"
+    )  # locally restored
+    _git(tmp_path, "add", "baseline.txt")
+    _git(tmp_path, "commit", "-q", "-m", "restore the exemption")
+
+    assert base_revision(tmp_path) == "origin/release/3.3.x"
+    check = check_baseline_does_not_grow(baseline, base_revision(tmp_path), tmp_path)
+    assert (check.status, check.grown) == ("grew", ("b.py::test_b",))
 
 
 def test_a_mainline_local_tree_keeps_comparing_with_origin_main(

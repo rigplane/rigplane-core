@@ -545,6 +545,43 @@ def check_baseline_does_not_grow(
     return BaselineCheck("grew" if grown else "ok", grown)
 
 
+def _nearest_base_ref(repo: Path) -> str | None:
+    """The nearest base-branch tip (``origin/main`` or ``origin/release/*``)
+    that is an ancestor of HEAD, or ``None`` when no base tip is contained.
+
+    "Nearest" is the fewest commits HEAD has beyond the tip, ties by refname,
+    so a tree cut from ``release/<major>.<minor>.x`` compares with that
+    release branch's own tip — the tree's actual base, where baseline
+    shrinkage that already landed on the branch counts — never with a main
+    that moved on after the fork (MOR-4214).
+    """
+    listed = _git(
+        repo,
+        "for-each-ref",
+        "--format=%(objectname) %(refname)",
+        "refs/remotes/origin/main",
+        "refs/remotes/origin/release/*",
+    )
+    if listed.returncode != 0:
+        return None
+    best: tuple[int, str] | None = None
+    for line in listed.stdout.splitlines():
+        tip, _, refname = line.partition(" ")
+        if not tip or not refname:
+            continue
+        if _git(repo, "merge-base", "--is-ancestor", tip, "HEAD").returncode != 0:
+            continue
+        ahead = _git(repo, "rev-list", "--count", f"{tip}..HEAD")
+        if ahead.returncode != 0:
+            continue
+        candidate = (int(ahead.stdout.strip() or "0"), refname)
+        if best is None or candidate < best:
+            best = candidate
+    if best is None:
+        return None
+    return best[1].removeprefix("refs/remotes/")
+
+
 def base_revision(repo: Path) -> str | None:
     """The revision the current baseline is compared with, or ``None`` when there is none.
 
@@ -552,11 +589,11 @@ def base_revision(repo: Path) -> str | None:
     parent of the checked-out commit: the base branch for a pull-request or merge-queue merge
     commit (a pull request into ``release/<major>.<minor>.x`` checks out the head merged onto
     that release branch, so ``HEAD^1`` is the release base, never main), the previous commit
-    for a push to the base branch. Elsewhere (a local work branch) it is ``origin/main``
-    while the tree still contains main's tip; a tree cut from a branch that diverged from
-    main (a release branch) instead compares at the merge-base with ``origin/main`` — the
-    fork point — so mainline baseline shrinkage after the fork cannot read as entries this
-    tree "gained" (MOR-4214).
+    for a push to the base branch. Elsewhere (a local work branch) it is the nearest
+    base-branch tip the tree still contains — ``origin/main`` for a mainline work branch,
+    ``origin/release/<major>.<minor>.x`` for one cut from a release branch — so a
+    release-based tree neither reads mainline baseline shrinkage after the fork as entries it
+    "gained", nor accepts back an entry the release branch itself already removed (MOR-4214).
     """
     explicit = os.environ.get("RIGPLANE_REALTIME_BASE_REF")
     if explicit:
@@ -567,16 +604,11 @@ def base_revision(repo: Path) -> str | None:
         # CI checks out a merge commit (pull request, merge queue: first parent = base
         # branch) or a single commit of the base branch itself (its previous commit).
         return "HEAD^1" if len(fields) >= 2 else None
+    nearest = _nearest_base_ref(repo)
+    if nearest is not None:
+        return nearest
     main = _git(repo, "rev-parse", "--verify", "--quiet", "origin/main^{commit}")
-    if main.returncode != 0:
-        return None  # no mainline base to compare with
-    contained = _git(repo, "merge-base", "--is-ancestor", main.stdout.strip(), "HEAD")
-    if contained.returncode == 0:
-        return "origin/main"  # a local work branch on mainline
-    fork = _git(repo, "merge-base", "HEAD", "origin/main")
-    if fork.returncode != 0 or not fork.stdout.strip():
-        return None
-    return fork.stdout.strip()  # the fork point is this tree's base
+    return "origin/main" if main.returncode == 0 else None  # a local work branch
 
 
 def main(argv: list[str] | None = None) -> int:
