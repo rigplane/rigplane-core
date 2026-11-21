@@ -29,8 +29,9 @@ SATURDAY, SUNDAY = 5, 6  # datetime.weekday(); the cron "30 1 * * 0,6" of the wo
 VALIDATE_STEP = "Validate"
 DIFF_STEP = "Night-to-night diff"
 OUTCOME_PREFIX = "Outcome: "
+BUSY_STEP = "Outcome: busy"
+BUSY = "busy"
 Run = dict[str, Any]
-Job = dict[str, Any]
 NoVerdict = frozenset[tuple[str, str | None]]  # (YYYY-MM-DD, radio label or None)
 
 
@@ -40,24 +41,63 @@ class Night(NamedTuple):
     outcome: str
 
 
-def classify_job(job: Job | None) -> str:
+class ActionStep(NamedTuple):
+    """One step of a job, as the Actions jobs API reports it."""
+
+    name: str
+    conclusion: str | None
+
+
+class ActionJob(NamedTuple):
+    """One job of a run, as the Actions jobs API reports it."""
+
+    name: str
+    conclusion: str | None
+    steps: tuple[ActionStep, ...]
+
+
+def parse_job(payload: Mapping[str, Any]) -> ActionJob:
+    """The typed job for one object of an Actions jobs API response.
+
+    The boundary of the jobs JSON exchange: the raw payload is read here and
+    nowhere else, and every consumer reads the ActionJob fields.
+    """
+    return ActionJob(
+        name=str(payload["name"]),
+        conclusion=payload.get("conclusion"),
+        steps=tuple(
+            ActionStep(str(step["name"]), step.get("conclusion"))
+            for step in payload.get("steps") or []
+        ),
+    )
+
+
+def classify_job(job: ActionJob | None) -> str:
     """PASS, or the named reason the night is not a pass for the radio."""
     if job is None:
         return "missing"
-    steps = job.get("steps") or []
     validated = any(
-        step["name"] == VALIDATE_STEP and step.get("conclusion") == "success"
-        for step in steps
+        step.name == VALIDATE_STEP and step.conclusion == "success"
+        for step in job.steps
     )
-    if job.get("conclusion") == "success" and validated:
+    if job.conclusion == "success" and validated:
         return PASS
+    # A busy night ends green with a SKIPPED marker and no failed step; its
+    # marker step still names the night so the streak logic sees `busy`. Only
+    # a successful job is busy: the marker also runs under always() beside a
+    # failed step (the configuration missing with the lock held), and then
+    # the failed step keeps naming the night.
+    if job.conclusion == "success" and any(
+        step.name == BUSY_STEP and step.conclusion == "success" for step in job.steps
+    ):
+        return BUSY
     failed = next(
-        (step["name"] for step in steps if step.get("conclusion") == "failure"), None
+        (step.name for step in job.steps if step.conclusion == "failure"), None
     )
     if failed is None:
-        if job.get("conclusion") == "success":
+        if job.conclusion == "success":
             return "validate not run"
-        return "job " + str(job.get("conclusion")).replace("_", " ")
+        return "job " + str(job.conclusion).replace("_", " ")
     if failed.startswith(OUTCOME_PREFIX):
         return failed[len(OUTCOME_PREFIX) :]
     if failed == VALIDATE_STEP:
@@ -148,7 +188,7 @@ def night_slots(runs: Iterable[Run]) -> Iterator[tuple[date, Run | None]]:
 
 def collect(
     runs: Iterable[Run],
-    fetch_jobs: Callable[[int], list[Job]],
+    fetch_jobs: Callable[[int], list[ActionJob]],
     scope: Sequence[str],
     nights: int,
     no_verdict: NoVerdict = frozenset(),
@@ -163,7 +203,7 @@ def collect(
     """
     history: dict[str, list[Night]] = {radio: [] for radio in scope}
     for count, (day, run) in enumerate(night_slots(runs), 1):
-        jobs = {job["name"]: job for job in fetch_jobs(run["id"])} if run else {}
+        jobs = {job.name: job for job in fetch_jobs(run["id"])} if run else {}
         if count == 1:
             for name in jobs:
                 history.setdefault(name, [])
@@ -229,7 +269,7 @@ def render(
 
 def certify(
     runs: Iterable[Run],
-    fetch_jobs: Callable[[int], list[Job]],
+    fetch_jobs: Callable[[int], list[ActionJob]],
     scope: Sequence[str],
     nights: int,
     no_verdict: NoVerdict = frozenset(),
@@ -289,9 +329,9 @@ def list_runs(api: str, repo: str, token: str) -> Iterator[Run]:
         page += 1
 
 
-def list_jobs(api: str, repo: str, token: str, run_id: int) -> list[Job]:
+def list_jobs(api: str, repo: str, token: str, run_id: int) -> list[ActionJob]:
     url = f"{api}/repos/{repo}/actions/runs/{run_id}/jobs?filter=latest&per_page={PER_PAGE}"
-    return _get_json(url, token)["jobs"]
+    return [parse_job(job) for job in _get_json(url, token)["jobs"]]
 
 
 def main(argv: list[str] | None = None) -> int:

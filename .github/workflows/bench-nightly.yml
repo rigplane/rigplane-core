@@ -266,9 +266,11 @@ jobs:
           if-no-files-found: ignore
           retention-days: 3
 
-      # Honest-verdict steps, last in the job. Each turns one silent green
-      # ending red with its own step name; a night passes for a radio only
-      # when its job concludes success.
+      # Honest-verdict steps, last in the job. Not configured and dry run
+      # turn a silent green red with their own step name; busy is the one
+      # deliberate skip — a held lock says nothing about the radio, so it
+      # ends green with a SKIPPED marker in the summary. A night passes for
+      # a radio only when its job concludes success with Validate run.
       - name: "Outcome: not configured"
         if: always() && steps.config.outputs.configured == 'false'
         run: |
@@ -279,11 +281,13 @@ jobs:
 
       - name: "Outcome: busy"
         if: always() && steps.lock.outputs.acquired == 'false'
+        # Shared by every radio row: busy is a skip, not a radio verdict.
+        # Green with a visible SKIPPED marker; a night the radio never
+        # answered still fails red in Validate, pytest or the diff steps.
         run: |
-          line="$LABEL: busy (bench lock held by another run)"
-          echo "::error title=busy::$line"
+          line="$LABEL: SKIPPED (busy) - bench lock held by another run; no radio verdict tonight"
+          echo "::notice title=busy::$line"
           echo "$line" >> "$GITHUB_STEP_SUMMARY"
-          exit 1
 
       - name: "Outcome: dry run"
         if: always() && steps.mode.outputs.dry_run == 'true'
