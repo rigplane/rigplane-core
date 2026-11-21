@@ -597,7 +597,7 @@ class TestWebServerDXBroadcast:
         srv._broadcast_dx_spot(spot)
 
         sent_texts = []
-        ws = MagicMock(spec=WebSocketConnection)
+        ws = MagicMock(outbound_progress=0, spec=WebSocketConnection)
         ws.send_text = AsyncMock(side_effect=lambda x: sent_texts.append(x))
 
         call_count = 0

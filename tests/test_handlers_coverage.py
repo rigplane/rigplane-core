@@ -446,7 +446,9 @@ def _control_handler(
     ptt: bool | None = None,
 ) -> ControlHandler:
     if ws is None:
-        ws = SimpleNamespace(send_text=AsyncMock(), recv=AsyncMock())
+        ws = SimpleNamespace(
+            outbound_progress=0, send_text=AsyncMock(), recv=AsyncMock()
+        )
     if ptt is not None and server is None:
         store = StateStore()
         store.apply(
@@ -1223,7 +1225,7 @@ async def test_websocket_manual_notch_position_off_wire_contract_rejected_before
     queued, matching the behaviour on origin/main.
     """
     queue = _QueueRecorder()
-    ws = SimpleNamespace(send_text=AsyncMock())
+    ws = SimpleNamespace(outbound_progress=0, send_text=AsyncMock())
     handler = _control_handler(
         ws=ws,
         radio=_capable_radio(),
@@ -1269,7 +1271,7 @@ async def test_websocket_manual_notch_position_off_ftx1_domain_rejected_before_e
 ) -> None:
     """Off-domain FTX-1 positions fail on the WebSocket ingress path."""
     queue = _QueueRecorder()
-    ws = SimpleNamespace(send_text=AsyncMock())
+    ws = SimpleNamespace(outbound_progress=0, send_text=AsyncMock())
     radio = _Ftx1NotchDomainRadio()
     handler = _control_handler(
         ws=ws,
@@ -1545,7 +1547,7 @@ async def test_documented_normalized_wire_vectors_reach_native_effects(
     power_vectors = [raw for raw in vectors if '"name":"set_rf_power"' in raw]
 
     for raw, expected in zip(af_vectors, [0, 128, 255], strict=True):
-        ws = SimpleNamespace(send_text=AsyncMock())
+        ws = SimpleNamespace(outbound_progress=0, send_text=AsyncMock())
         queue = _QueueRecorder()
         handler = _control_handler(
             ws=ws,
@@ -1564,7 +1566,7 @@ async def test_documented_normalized_wire_vectors_reach_native_effects(
         assert "level_unit" not in queue.items[-1].params  # type: ignore[union-attr]
 
     for raw, expected in zip(power_vectors, expected_power, strict=True):
-        ws = SimpleNamespace(send_text=AsyncMock())
+        ws = SimpleNamespace(outbound_progress=0, send_text=AsyncMock())
         queue = _QueueRecorder()
         radio = _capable_radio()
         radio.native_power_unit = native_power_unit
@@ -1601,7 +1603,7 @@ async def test_untagged_wire_level_type_dispatch_remains_compatible(
     wire_level: str,
     expected: int,
 ) -> None:
-    ws = SimpleNamespace(send_text=AsyncMock())
+    ws = SimpleNamespace(outbound_progress=0, send_text=AsyncMock())
     queue = _QueueRecorder()
     radio = _capable_radio()
     radio.native_power_unit = native_power_unit
@@ -1633,7 +1635,7 @@ async def test_untagged_wire_level_type_dispatch_remains_compatible(
 @pytest.mark.asyncio
 async def test_normalized_wire_marker_supports_power_alias_and_af_validation() -> None:
     for name, receiver in [("set_power", ""), ("set_af_level", ',"receiver":0')]:
-        ws = SimpleNamespace(send_text=AsyncMock())
+        ws = SimpleNamespace(outbound_progress=0, send_text=AsyncMock())
         queue = _QueueRecorder()
         radio = _capable_radio()
         radio.native_power_unit = "watts"
@@ -1660,7 +1662,7 @@ async def test_normalized_wire_marker_supports_power_alias_and_af_validation() -
                 queue.items[-1], name=name, level=255, receiver=0
             )
 
-    ws = SimpleNamespace(send_text=AsyncMock())
+    ws = SimpleNamespace(outbound_progress=0, send_text=AsyncMock())
     queue = _QueueRecorder()
     handler = _control_handler(
         ws=ws,
@@ -1699,7 +1701,7 @@ async def test_malformed_tagged_level_cannot_displace_valid_pending_command(
     invalid_params: dict[str, object],
     expected: int,
 ) -> None:
-    ws = SimpleNamespace(send_text=AsyncMock())
+    ws = SimpleNamespace(outbound_progress=0, send_text=AsyncMock())
     queue = _QueueRecorder()
     radio = _capable_radio()
     handler = _control_handler(
@@ -1793,7 +1795,7 @@ async def test_malformed_tagged_level_cannot_displace_valid_pending_command(
 async def test_normalized_wire_marker_rejects_malformed_requests(
     name: str, params: str
 ) -> None:
-    ws = SimpleNamespace(send_text=AsyncMock())
+    ws = SimpleNamespace(outbound_progress=0, send_text=AsyncMock())
     queue = _QueueRecorder()
     radio = _capable_radio()
     handler = _control_handler(
@@ -2108,6 +2110,7 @@ async def test_enqueue_command_errors() -> None:
 
 async def test_control_run_registers_unregisters_and_sends_hello() -> None:
     ws = SimpleNamespace(
+        outbound_progress=0,
         send_text=AsyncMock(),
         recv=AsyncMock(side_effect=[(WS_OP_BINARY, b""), EOFError()]),
     )
@@ -2164,6 +2167,7 @@ async def test_control_run_skips_non_utf8_text_frame() -> None:
 
     ping = encode_json({"type": "ping"}).encode("utf-8")
     ws = SimpleNamespace(
+        outbound_progress=0,
         send_text=AsyncMock(),
         recv=AsyncMock(
             side_effect=[
@@ -2189,7 +2193,7 @@ async def test_control_run_skips_non_utf8_text_frame() -> None:
 
 
 async def test_control_event_sender_loop_filters_by_subscription() -> None:
-    ws = SimpleNamespace(send_text=AsyncMock())
+    ws = SimpleNamespace(outbound_progress=0, send_text=AsyncMock())
     handler = _control_handler(ws=ws)
     task = asyncio.create_task(handler._event_sender_loop())
     try:
@@ -2224,7 +2228,7 @@ async def test_handle_text_dispatches_supported_types() -> None:
 
 
 async def test_subscribe_unsubscribe_and_subscribed_streams_property() -> None:
-    ws = SimpleNamespace(send_text=AsyncMock())
+    ws = SimpleNamespace(outbound_progress=0, send_text=AsyncMock())
     handler = _control_handler(ws=ws)
     await handler._handle_subscribe({"streams": ["state", 1, "meters"]})
     assert handler.subscribed_streams == frozenset({"state", "1", "meters"})
@@ -2239,7 +2243,7 @@ async def test_subscribe_unsubscribe_and_subscribed_streams_property() -> None:
 async def test_send_state_snapshot_uses_canonical_envelope() -> None:
     # With a server attached (production), the initial WS full state is the
     # canonical snapshot-based envelope from build_state_update_envelope.
-    ws = SimpleNamespace(send_text=AsyncMock())
+    ws = SimpleNamespace(outbound_progress=0, send_text=AsyncMock())
     envelope = {"type": "full", "data": {"active": "MAIN", "stateRevision": 3}}
     handler = _control_handler(
         ws=ws,
@@ -2257,7 +2261,7 @@ async def test_send_state_snapshot_uses_canonical_envelope() -> None:
 async def test_send_state_snapshot_minimal_fallback_when_server_missing() -> None:
     # Server-less handler path (handler tests only): no StateStore is available,
     # so a minimal empty full-state envelope is emitted.
-    ws = SimpleNamespace(send_text=AsyncMock())
+    ws = SimpleNamespace(outbound_progress=0, send_text=AsyncMock())
     handler = _control_handler(
         ws=ws,
         radio=SimpleNamespace(connected=True, radio_ready=False),
@@ -2318,7 +2322,7 @@ async def test_wait_radio_ready_times_out_gracefully() -> None:
 
 
 async def test_handle_command_response_paths() -> None:
-    ws = SimpleNamespace(send_text=AsyncMock())
+    ws = SimpleNamespace(outbound_progress=0, send_text=AsyncMock())
     handler = _control_handler(
         ws=ws, radio=SimpleNamespace(connected=True), server=None
     )
@@ -2356,7 +2360,7 @@ async def test_handle_command_response_paths() -> None:
 
 
 async def test_websocket_set_freq_enters_command_service_and_preserves_queue() -> None:
-    ws = SimpleNamespace(send_text=AsyncMock())
+    ws = SimpleNamespace(outbound_progress=0, send_text=AsyncMock())
     queue = _QueueRecorder()
     handler = _control_handler(
         ws=ws,
@@ -2389,7 +2393,7 @@ async def test_websocket_set_freq_enters_command_service_and_preserves_queue() -
 
 async def test_ws_radio_connect_messages_are_unknown_types() -> None:
     """MOR-3777: connect/disconnect is REST-only; the WS types are ignored."""
-    ws = SimpleNamespace(send_text=AsyncMock())
+    ws = SimpleNamespace(outbound_progress=0, send_text=AsyncMock())
     radio = SimpleNamespace(
         connected=False,
         connect=AsyncMock(),
@@ -3674,7 +3678,7 @@ async def test_get_dash_ratio_no_radio_raises() -> None:
 @pytest.mark.asyncio
 async def test_event_sender_loop_forwards_notifications_without_subscription() -> None:
     """Notifications are sent even when client has not subscribed to 'state'."""
-    ws = SimpleNamespace(send_text=AsyncMock())
+    ws = SimpleNamespace(outbound_progress=0, send_text=AsyncMock())
     handler = _control_handler(ws=ws)
     # Do NOT add "state" to subscribed_streams
 
@@ -3750,7 +3754,7 @@ def _degraded_server() -> SimpleNamespace:
 
 @pytest.mark.asyncio
 async def test_ptt_on_uses_authority_when_radio_not_ready() -> None:
-    ws = SimpleNamespace(send_text=AsyncMock())
+    ws = SimpleNamespace(outbound_progress=0, send_text=AsyncMock())
     server = _degraded_server()
     radio = _capable_radio()
     radio.connected = True
@@ -3771,7 +3775,7 @@ async def test_ptt_on_uses_authority_when_radio_not_ready() -> None:
 
 @pytest.mark.asyncio
 async def test_ptt_on_alias_uses_authority_when_radio_not_ready() -> None:
-    ws = SimpleNamespace(send_text=AsyncMock())
+    ws = SimpleNamespace(outbound_progress=0, send_text=AsyncMock())
     server = _degraded_server()
     radio = _capable_radio()
     radio.connected = True
@@ -3790,7 +3794,7 @@ async def test_ptt_on_alias_uses_authority_when_radio_not_ready() -> None:
 
 @pytest.mark.asyncio
 async def test_ptt_on_uses_authority_while_backend_reconnecting() -> None:
-    ws = SimpleNamespace(send_text=AsyncMock())
+    ws = SimpleNamespace(outbound_progress=0, send_text=AsyncMock())
     server = _degraded_server()
     radio = _capable_radio()
     radio.conn_state = SimpleNamespace(value="reconnecting")
@@ -3812,7 +3816,7 @@ async def test_ptt_on_uses_authority_while_backend_reconnecting() -> None:
 async def test_ptt_off_allowed_when_radio_not_ready() -> None:
     """Unkeying is the safe direction: PTT OFF must always be attempted, even
     on a degraded session (never strand the radio transmitting)."""
-    ws = SimpleNamespace(send_text=AsyncMock())
+    ws = SimpleNamespace(outbound_progress=0, send_text=AsyncMock())
     server = _degraded_server()
     radio = _capable_radio()
     radio.connected = True
@@ -3840,7 +3844,7 @@ async def test_ptt_off_allowed_when_radio_not_ready() -> None:
 @pytest.mark.asyncio
 async def test_ptt_on_allowed_when_radio_ready() -> None:
     """A healthy session keys normally."""
-    ws = SimpleNamespace(send_text=AsyncMock())
+    ws = SimpleNamespace(outbound_progress=0, send_text=AsyncMock())
     server = _degraded_server()
     radio = _capable_radio()
     radio.connected = True

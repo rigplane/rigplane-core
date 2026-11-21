@@ -283,7 +283,7 @@ class TestHandlerWriteGate:
         from rigplane.web.handlers import ControlHandler
         from rigplane.web.radio_poller import CommandQueue
 
-        ws = MagicMock()
+        ws = MagicMock(outbound_progress=0)
         ws.send_text = AsyncMock()
         radio = _radio(model, MockTransport())
         radio._connected = False  # refused before enqueue; never touched
@@ -377,7 +377,7 @@ class TestHandlerWriteGate:
         from rigplane.web.radio_poller import CommandQueue
 
         radio = YaesuCatRadio("/dev/null", profile="ftx1")
-        ws = MagicMock()
+        ws = MagicMock(outbound_progress=0)
         ws.send_text = AsyncMock()
         server = MagicMock()
         server.command_queue = CommandQueue()

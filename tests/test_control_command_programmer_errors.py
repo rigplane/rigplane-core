@@ -29,6 +29,8 @@ _CONTROL_LOGGER = "rigplane.web.handlers.control"
 class _RecordingWebSocket:
     """Fake websocket that records decoded ``send_text`` payloads."""
 
+    outbound_progress: int = 0
+
     def __init__(self) -> None:
         self.sent: list[dict[str, Any]] = []
 
