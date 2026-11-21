@@ -904,6 +904,73 @@ def test_an_exemption_restored_on_a_release_tree_is_still_rejected(
     assert (check.status, check.grown) == ("grew", ("b.py::test_b",))
 
 
+def test_a_mainline_tree_that_fell_behind_main_still_compares_with_main(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A mainline work branch cut where main had already removed an entry
+    # must keep comparing with main even after main advances past it: the
+    # older release cut point still lists the entry and would accept its
+    # restoration (MOR-4214 pre-review round 2).
+    monkeypatch.delenv("RIGPLANE_REALTIME_BASE_REF", raising=False)
+    monkeypatch.delenv("CI", raising=False)
+    _git(tmp_path, "init", "-q", "-b", "main")
+    baseline = tmp_path / "baseline.txt"
+    baseline.write_text("# header\na.py::test_a\nb.py::test_b\n", encoding="utf-8")
+    _git(tmp_path, "add", "baseline.txt")
+    _git(tmp_path, "commit", "-q", "-m", "fork point")
+    _git(tmp_path, "update-ref", "refs/remotes/origin/release/3.3.x", "HEAD")
+    baseline.write_text("# header\na.py::test_a\n", encoding="utf-8")  # main shrinks
+    _git(tmp_path, "add", "baseline.txt")
+    _git(tmp_path, "commit", "-q", "-m", "main removes an entry")
+    _git(tmp_path, "checkout", "-q", "-b", "work")
+    baseline.write_text(
+        "# header\na.py::test_a\nb.py::test_b\n", encoding="utf-8"
+    )  # locally restored
+    _git(tmp_path, "add", "baseline.txt")
+    _git(tmp_path, "commit", "-q", "-m", "restore the exemption")
+    _git(tmp_path, "checkout", "-q", "main")
+    (tmp_path / "main-only.txt").write_text("m", encoding="utf-8")
+    _git(tmp_path, "add", "main-only.txt")
+    _git(tmp_path, "commit", "-q", "-m", "main advances past the work branch")
+    _git(tmp_path, "update-ref", "refs/remotes/origin/main", "HEAD")
+    _git(tmp_path, "checkout", "-q", "work")
+
+    assert base_revision(tmp_path) == "origin/main"
+    check = check_baseline_does_not_grow(baseline, base_revision(tmp_path), tmp_path)
+    assert (check.status, check.grown) == ("grew", ("b.py::test_b",))
+
+
+def test_the_release_base_advancing_past_the_local_tree_still_counts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The comparison uses the release branch's tip, so a removal that landed
+    # on the release branch after the local tree was cut is still enforced
+    # there (MOR-4214 pre-review round 2).
+    monkeypatch.delenv("RIGPLANE_REALTIME_BASE_REF", raising=False)
+    monkeypatch.delenv("CI", raising=False)
+    _git(tmp_path, "init", "-q", "-b", "main")
+    baseline = tmp_path / "baseline.txt"
+    baseline.write_text("# header\na.py::test_a\nb.py::test_b\n", encoding="utf-8")
+    _git(tmp_path, "add", "baseline.txt")
+    _git(tmp_path, "commit", "-q", "-m", "fork point")
+    _git(tmp_path, "checkout", "-q", "-b", "release/3.3.x")
+    (tmp_path / "r1.txt").write_text("r1", encoding="utf-8")
+    _git(tmp_path, "add", "r1.txt")
+    _git(tmp_path, "commit", "-q", "-m", "release work")
+    _git(tmp_path, "checkout", "-q", "-b", "fix")
+    _git(tmp_path, "checkout", "-q", "release/3.3.x")
+    baseline.write_text("# header\na.py::test_a\n", encoding="utf-8")  # release shrinks
+    _git(tmp_path, "add", "baseline.txt")
+    _git(tmp_path, "commit", "-q", "-m", "release removes an entry")
+    _git(tmp_path, "update-ref", "refs/remotes/origin/release/3.3.x", "HEAD")
+    _git(tmp_path, "update-ref", "refs/remotes/origin/main", "main")
+    _git(tmp_path, "checkout", "-q", "fix")
+
+    assert base_revision(tmp_path) == "origin/release/3.3.x"
+    check = check_baseline_does_not_grow(baseline, base_revision(tmp_path), tmp_path)
+    assert (check.status, check.grown) == ("grew", ("b.py::test_b",))
+
+
 def test_a_mainline_local_tree_keeps_comparing_with_origin_main(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

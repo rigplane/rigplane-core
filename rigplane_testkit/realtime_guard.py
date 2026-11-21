@@ -545,41 +545,49 @@ def check_baseline_does_not_grow(
     return BaselineCheck("grew" if grown else "ok", grown)
 
 
-def _nearest_base_ref(repo: Path) -> str | None:
-    """The nearest base-branch tip (``origin/main`` or ``origin/release/*``)
-    that is an ancestor of HEAD, or ``None`` when no base tip is contained.
-
-    "Nearest" is the fewest commits HEAD has beyond the tip, ties by refname,
-    so a tree cut from ``release/<major>.<minor>.x`` compares with that
-    release branch's own tip — the tree's actual base, where baseline
-    shrinkage that already landed on the branch counts — never with a main
-    that moved on after the fork (MOR-4214).
-    """
+def _release_base_refs(repo: Path) -> list[str]:
+    """The tracked base branches: ``origin/main`` plus every ``origin/release/*``."""
+    refs = ["origin/main"]
     listed = _git(
-        repo,
-        "for-each-ref",
-        "--format=%(objectname) %(refname)",
-        "refs/remotes/origin/main",
-        "refs/remotes/origin/release/*",
+        repo, "for-each-ref", "--format=%(refname)", "refs/remotes/origin/release/"
     )
-    if listed.returncode != 0:
-        return None
-    best: tuple[int, str] | None = None
-    for line in listed.stdout.splitlines():
-        tip, _, refname = line.partition(" ")
-        if not tip or not refname:
+    if listed.returncode == 0:
+        refs.extend(
+            ref.removeprefix("refs/remotes/")
+            for ref in listed.stdout.split()
+            if ref.startswith("refs/remotes/origin/release/")
+        )
+    return refs
+
+
+def _lineage_base_ref(repo: Path) -> str | None:
+    """The base branch whose merge-base with HEAD is topologically latest.
+
+    That is the lineage the tree stayed on longest: a mainline work branch
+    parts from ``origin/main`` at its own tip or fork, a tree cut from
+    ``release/<major>.<minor>.x`` parts from that release branch later than
+    it parted from main. ``origin/main`` is examined first and wins ties and
+    incomparable histories, so a mainline tree keeps its legacy target. The
+    comparison then uses the branch's tip, where baseline shrinkage that
+    already landed on the tree's own lineage counts (MOR-4214).
+    """
+    best: tuple[str, str] | None = None
+    for ref in _release_base_refs(repo):
+        merged = _git(repo, "merge-base", ref, "HEAD")
+        merge_base = merged.stdout.strip()
+        if merged.returncode != 0 or not merge_base:
             continue
-        if _git(repo, "merge-base", "--is-ancestor", tip, "HEAD").returncode != 0:
+        if best is None:
+            best = (merge_base, ref)
             continue
-        ahead = _git(repo, "rev-list", "--count", f"{tip}..HEAD")
-        if ahead.returncode != 0:
+        if merge_base == best[0]:
             continue
-        candidate = (int(ahead.stdout.strip() or "0"), refname)
-        if best is None or candidate < best:
-            best = candidate
-    if best is None:
-        return None
-    return best[1].removeprefix("refs/remotes/")
+        if (
+            _git(repo, "merge-base", "--is-ancestor", best[0], merge_base).returncode
+            == 0
+        ):
+            best = (merge_base, ref)  # this lineage parted from the tree later
+    return best[1] if best is not None else None
 
 
 def base_revision(repo: Path) -> str | None:
@@ -589,11 +597,11 @@ def base_revision(repo: Path) -> str | None:
     parent of the checked-out commit: the base branch for a pull-request or merge-queue merge
     commit (a pull request into ``release/<major>.<minor>.x`` checks out the head merged onto
     that release branch, so ``HEAD^1`` is the release base, never main), the previous commit
-    for a push to the base branch. Elsewhere (a local work branch) it is the nearest
-    base-branch tip the tree still contains — ``origin/main`` for a mainline work branch,
+    for a push to the base branch. Elsewhere (a local work branch) it is the tip of the base
+    branch the tree's lineage belongs to — ``origin/main`` for a mainline work branch,
     ``origin/release/<major>.<minor>.x`` for one cut from a release branch — so a
     release-based tree neither reads mainline baseline shrinkage after the fork as entries it
-    "gained", nor accepts back an entry the release branch itself already removed (MOR-4214).
+    "gained", nor accepts back an entry its own lineage already removed (MOR-4214).
     """
     explicit = os.environ.get("RIGPLANE_REALTIME_BASE_REF")
     if explicit:
@@ -604,9 +612,9 @@ def base_revision(repo: Path) -> str | None:
         # CI checks out a merge commit (pull request, merge queue: first parent = base
         # branch) or a single commit of the base branch itself (its previous commit).
         return "HEAD^1" if len(fields) >= 2 else None
-    nearest = _nearest_base_ref(repo)
-    if nearest is not None:
-        return nearest
+    lineage = _lineage_base_ref(repo)
+    if lineage is not None:
+        return lineage
     main = _git(repo, "rev-parse", "--verify", "--quiet", "origin/main^{commit}")
     return "origin/main" if main.returncode == 0 else None  # a local work branch
 
