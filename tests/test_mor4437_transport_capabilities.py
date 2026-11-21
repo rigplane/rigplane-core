@@ -9,6 +9,11 @@ the transport from the backend in use — never from ``RadioProfile.has_lan``.
 These tests go through the real profile loader (shipped ``rigs/*.toml``
 plus temp-file rigs) and real backend radio objects (constructed but never
 connected) on both transports.
+
+The transport-driven *pacing* consumers (poller budget, startup gap,
+initial-state sweep) and their tests live in the follow-up branch
+``codex/mor4437-transport-pacing`` — the file-count split for this PR;
+only the ``paces_like_serial`` semantics they consume ship here.
 """
 
 from __future__ import annotations
@@ -29,28 +34,15 @@ from rigplane.audio.route import (
 from rigplane.backends.ic705.serial import XieguSerialRadio
 from rigplane.backends.ic7300.serial import Ic7300SerialRadio
 from rigplane.backends.rigctld_client.radio import RigctldClientRadio
-from rigplane.core.radio_state import RadioState
 from rigplane.core.radio_transport import RadioTransport, control_transport_of
-from rigplane.core.state_store import StateStore
 from rigplane.profiles import (
     TransportCapabilityGaps,
     get_radio_profile,
 )
 from rigplane.profiles.rig_loader import RigLoadError, load_rig
 from rigplane.radio import IcomRadio
-from rigplane.runtime import radio_initial_state
-from rigplane.runtime._poller_types import CommandQueue
-from rigplane.runtime.radio_initial_state import fetch_initial_state
-from rigplane.web.radio_poller import (
-    _FAST_INTERVAL,
-    _FAST_INTERVAL_SERIAL,
-    _GAP,
-    _GAP_SERIAL,
-    RadioPoller,
-)
 from rigplane.web.runtime_helpers import runtime_capabilities
 from rigplane.web.server import WebConfig, WebServer
-from rigplane.web.web_startup import _startup_gap_seconds
 from test_web_server import _http_get
 
 G7250 = "xiegu_g7250"
@@ -419,233 +411,3 @@ class TestCapabilitiesEndpointTransportGate:
             data = await self._served_capabilities(radio)
             assert data["scope"] is True
             assert "scope" in data["capabilities"]
-# ── Pacing: poller, startup gate, initial-state sweep ────────────────
-
-
-class TestPollerPacing:
-    def test_serial_backend_gets_serial_budget(self):
-        radio = XieguSerialRadio(device="/dev/null", model="G7250")
-        poller = RadioPoller(radio, CommandQueue())
-        assert poller._is_serial is True
-        assert poller._gap == _GAP_SERIAL
-        assert poller._fast_interval == _FAST_INTERVAL_SERIAL
-
-    def test_lan_backend_gets_lan_budget_even_for_has_lan_false_profile(self):
-        # The transport of the connection beats the profile's has_lan in
-        # both directions: an IC-7300 profile (has_lan = false) driven over
-        # LAN takes the LAN budget.
-        radio = IcomRadio(host="192.0.2.1", model="IC-7300")
-        poller = RadioPoller(radio, CommandQueue())
-        assert poller._is_serial is False
-        assert poller._gap == _GAP
-        assert poller._fast_interval == _FAST_INTERVAL
-
-    def test_usb_connected_lan_capable_radio_gets_serial_budget(self):
-        # The ticket's case: a USB-connected IC-705/7610/7300MK2 has
-        # has_lan = true in its profile but is a serial link and must be
-        # serial-paced.
-        radio = Ic7300SerialRadio(device="/dev/null", model="IC-7610")
-        poller = RadioPoller(radio, CommandQueue())
-        assert radio.profile.has_lan is True
-        assert poller._is_serial is True
-
-    def test_backend_without_transport_keeps_legacy_has_lan_answer(self):
-        class _BareRadio:
-            # No backend_id, no profile attribute routing: poller resolves
-            # the profile from the model.
-            model = "IC-7300"
-            capabilities = set()
-
-        poller = RadioPoller(_BareRadio(), CommandQueue())
-        # IC-7300 profile has_lan = false → serial, exactly as before.
-        assert poller._is_serial is True
-
-
-class _GapProbeRadio:
-    """Minimal stand-in exposing what the pacing consumers read."""
-
-    _INITIAL_STATE_GAP_LAN = 0.222
-    _INITIAL_STATE_GAP_SERIAL = 0.111
-
-    def __init__(self, profile, backend_id):
-        self._profile = profile
-        self.backend_id = backend_id
-        self._state_store = StateStore()
-        self.radio_state = RadioState()
-        self._initial_state_fetched = False
-
-    async def send_civ(self, *args, **kwargs):
-        raise RuntimeError("no radio connected")
-
-
-def _record_sleep(monkeypatch, sleeps: list) -> None:
-    """Patch ``asyncio.sleep`` (as radio_initial_state sees it) to record."""
-
-    async def _fake_sleep(delay: float) -> None:
-        sleeps.append(delay)
-
-    monkeypatch.setattr(radio_initial_state.asyncio, "sleep", _fake_sleep)
-
-
-class TestStartupGap:
-    def test_usb_link_serial_paced_despite_has_lan_profile(self):
-        # The ticket's scenario: profile.has_lan is true (the radio model
-        # offers LAN), but the actual connection is serial.
-        radio = _GapProbeRadio(get_radio_profile(G7250), "icom_serial")
-        assert radio._profile.has_lan is True
-        assert _startup_gap_seconds(radio) == 0.111
-
-    def test_lan_link_lan_paced(self):
-        radio = _GapProbeRadio(get_radio_profile(G7250), "rigplane")
-        assert _startup_gap_seconds(radio) == 0.222
-
-    def test_no_backend_falls_back_to_has_lan(self):
-        radio = _GapProbeRadio(get_radio_profile(G7250), None)
-        assert _startup_gap_seconds(radio) == 0.222
-        radio_no_lan = _GapProbeRadio(get_radio_profile("icom_ic7300"), None)
-        assert radio_no_lan._profile.has_lan is False
-        assert _startup_gap_seconds(radio_no_lan) == 0.111
-
-
-class TestInitialStateGap:
-    @pytest.mark.asyncio
-    async def test_serial_transport_uses_serial_gap(self, monkeypatch):
-        radio = _GapProbeRadio(get_radio_profile(G7250), "icom_serial")
-        sleeps = []
-        _record_sleep(monkeypatch, sleeps)
-        await fetch_initial_state(radio)
-        assert radio._initial_state_fetched is True
-        assert sleeps, "the sweep should sleep between queries"
-        assert set(sleeps) == {0.111}
-
-    @pytest.mark.asyncio
-    async def test_lan_transport_uses_lan_gap(self, monkeypatch):
-        radio = _GapProbeRadio(get_radio_profile(G7250), "rigplane")
-        sleeps = []
-        _record_sleep(monkeypatch, sleeps)
-        await fetch_initial_state(radio)
-        assert set(sleeps) == {0.222}
-
-    @pytest.mark.asyncio
-    async def test_unknown_transport_falls_back_to_has_lan(self, monkeypatch):
-        radio = _GapProbeRadio(get_radio_profile(G7250), None)
-        sleeps = []
-        _record_sleep(monkeypatch, sleeps)
-        await fetch_initial_state(radio)
-        assert set(sleeps) == {0.222}
-
-
-# ── Pacing: poller, startup gate, initial-state sweep ────────────────
-
-
-class TestPollerPacing:
-    def test_serial_backend_gets_serial_budget(self):
-        radio = XieguSerialRadio(device="/dev/null", model="G7250")
-        poller = RadioPoller(radio, CommandQueue())
-        assert poller._is_serial is True
-        assert poller._gap == _GAP_SERIAL
-        assert poller._fast_interval == _FAST_INTERVAL_SERIAL
-
-    def test_lan_backend_gets_lan_budget_even_for_has_lan_false_profile(self):
-        # The transport of the connection beats the profile's has_lan in
-        # both directions: an IC-7300 profile (has_lan = false) driven over
-        # LAN takes the LAN budget.
-        radio = IcomRadio(host="192.0.2.1", model="IC-7300")
-        poller = RadioPoller(radio, CommandQueue())
-        assert poller._is_serial is False
-        assert poller._gap == _GAP
-        assert poller._fast_interval == _FAST_INTERVAL
-
-    def test_usb_connected_lan_capable_radio_gets_serial_budget(self):
-        # The ticket's case: a USB-connected IC-705/7610/7300MK2 has
-        # has_lan = true in its profile but is a serial link and must be
-        # serial-paced.
-        radio = Ic7300SerialRadio(device="/dev/null", model="IC-7610")
-        poller = RadioPoller(radio, CommandQueue())
-        assert radio.profile.has_lan is True
-        assert poller._is_serial is True
-
-    def test_backend_without_transport_keeps_legacy_has_lan_answer(self):
-        class _BareRadio:
-            # No backend_id, no profile attribute routing: poller resolves
-            # the profile from the model.
-            model = "IC-7300"
-            capabilities = set()
-
-        poller = RadioPoller(_BareRadio(), CommandQueue())
-        # IC-7300 profile has_lan = false → serial, exactly as before.
-        assert poller._is_serial is True
-
-
-class _GapProbeRadio:
-    """Minimal stand-in exposing what the pacing consumers read."""
-
-    _INITIAL_STATE_GAP_LAN = 0.222
-    _INITIAL_STATE_GAP_SERIAL = 0.111
-
-    def __init__(self, profile, backend_id):
-        self._profile = profile
-        self.backend_id = backend_id
-        self._state_store = StateStore()
-        self.radio_state = RadioState()
-        self._initial_state_fetched = False
-
-    async def send_civ(self, *args, **kwargs):
-        raise RuntimeError("no radio connected")
-
-
-def _record_sleep(monkeypatch, sleeps: list) -> None:
-    """Patch ``asyncio.sleep`` (as radio_initial_state sees it) to record."""
-
-    async def _fake_sleep(delay: float) -> None:
-        sleeps.append(delay)
-
-    monkeypatch.setattr(radio_initial_state.asyncio, "sleep", _fake_sleep)
-
-
-class TestStartupGap:
-    def test_usb_link_serial_paced_despite_has_lan_profile(self):
-        # The ticket's scenario: profile.has_lan is true (the radio model
-        # offers LAN), but the actual connection is serial.
-        radio = _GapProbeRadio(get_radio_profile(G7250), "icom_serial")
-        assert radio._profile.has_lan is True
-        assert _startup_gap_seconds(radio) == 0.111
-
-    def test_lan_link_lan_paced(self):
-        radio = _GapProbeRadio(get_radio_profile(G7250), "rigplane")
-        assert _startup_gap_seconds(radio) == 0.222
-
-    def test_no_backend_falls_back_to_has_lan(self):
-        radio = _GapProbeRadio(get_radio_profile(G7250), None)
-        assert _startup_gap_seconds(radio) == 0.222
-        radio_no_lan = _GapProbeRadio(get_radio_profile("icom_ic7300"), None)
-        assert radio_no_lan._profile.has_lan is False
-        assert _startup_gap_seconds(radio_no_lan) == 0.111
-
-
-class TestInitialStateGap:
-    @pytest.mark.asyncio
-    async def test_serial_transport_uses_serial_gap(self, monkeypatch):
-        radio = _GapProbeRadio(get_radio_profile(G7250), "icom_serial")
-        sleeps = []
-        _record_sleep(monkeypatch, sleeps)
-        await fetch_initial_state(radio)
-        assert radio._initial_state_fetched is True
-        assert sleeps, "the sweep should sleep between queries"
-        assert set(sleeps) == {0.111}
-
-    @pytest.mark.asyncio
-    async def test_lan_transport_uses_lan_gap(self, monkeypatch):
-        radio = _GapProbeRadio(get_radio_profile(G7250), "rigplane")
-        sleeps = []
-        _record_sleep(monkeypatch, sleeps)
-        await fetch_initial_state(radio)
-        assert set(sleeps) == {0.222}
-
-    @pytest.mark.asyncio
-    async def test_unknown_transport_falls_back_to_has_lan(self, monkeypatch):
-        radio = _GapProbeRadio(get_radio_profile(G7250), None)
-        sleeps = []
-        _record_sleep(monkeypatch, sleeps)
-        await fetch_initial_state(radio)
-        assert set(sleeps) == {0.222}
