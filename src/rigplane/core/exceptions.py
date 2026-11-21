@@ -99,11 +99,12 @@ class ReceiverNotSelectedError(CommandError):
     On a dual-receiver radio a command without a per-receiver address
     (no cmd29 route, no profile-declared direct selector) reaches only the
     receiver the operator has selected. Core never switches the selection
-    behind the operator's back, so a command for the other receiver --
-    or for either receiver while the selection is not yet known -- is
-    refused (MOR-3591). ``reason_code`` is the stable machine-readable
-    refusal reason carried by the WebSocket ``error`` field and the HTTP
-    error envelope.
+    behind the operator's back, so a command for a receiver that is known
+    not to be the selected one is refused (MOR-3591). While the selection
+    is merely not known yet (never established in this CI-V generation),
+    the answer is the retriable :class:`RadioNotReadyError` instead.
+    ``reason_code`` is the stable machine-readable refusal reason carried
+    by the WebSocket ``error`` field and the HTTP error envelope.
     """
 
     reason_code = "receiver_not_selected"
@@ -115,17 +116,23 @@ class TimeoutError(RigplaneError):
 
 class RadioNotReadyError(TimeoutError):
     """A command cannot be answered yet: the radio has not answered CI-V
-    since the link was established (MOR-4382 follow-up).
+    since the link was established, or it answered while its receiver
+    selection is still unknown (MOR-4382 follow-up).
 
     A ``connect()`` whose radio answers nothing keeps the link up; the
     receiver selection stays unknown and ``radio_ready`` stays False until
     the first answer. A receiver-scoped command in that window raises this
-    instead of claiming a receiver is not selected. A subclass of
-    :class:`TimeoutError`, so every existing handler keeps treating it as
-    retriable: rigctld's ``RPRT -5`` (ETIMEOUT), the web
-    ``command_timeout`` envelope, the poller's timeout backoff. Once the
-    radio has answered, a genuinely unselected receiver still raises
-    :class:`ReceiverNotSelectedError` (MOR-3591).
+    instead of claiming a receiver is not selected. The same holds once
+    the radio HAS answered but its 0x07 0xD2 selection read is still
+    unanswered (the connect tail catching up, or the bounded on-demand
+    read timing out behind a busy link): ``radio_ready`` can already be
+    True while no receiver can be addressed, and the answer stays this
+    retriable error. A subclass of :class:`TimeoutError`, so every
+    existing handler keeps treating it as retriable: rigctld's
+    ``RPRT -5`` (ETIMEOUT), the web ``command_timeout`` envelope, the
+    poller's timeout backoff. Once the selection is known and the
+    receiver is not it, the genuine :class:`ReceiverNotSelectedError`
+    (MOR-3591) is raised.
     """
 
 

@@ -928,24 +928,37 @@ async def test_resume_deadline_is_shared_across_repair_and_fresh_frame(
         await run(6.0, 6.0)
 
 
-async def test_successful_rounds_without_frames_cap_and_report_failed() -> None:
+async def test_successful_rounds_without_frames_cap_and_report_failed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Rounds that re-arm the leg but never see an RX frame still cap out
     (MOR-3401 r3): exactly 3 attempts, one FAILED, then no further
-    attempts for ≥ 5 s — no endless teardown/reestablish loop."""
+    attempts — no endless teardown/reestablish loop.
+
+    MOR-4214: one successful-but-frameless round ends its repair task, so
+    rounds 2 and 3 are re-triggered by the session watchdog's next
+    rx_silent — three liveness waits of RX_LIVENESS_TIMEOUT_S plus the
+    watchdog interval each. Those are DECISION thresholds, not real-time
+    waits: they are driven on a ManualClock here (the
+    test_two_rx_silent_start_one_repair_task later-watchdog-edge
+    precedent), and the real watchdog loop is stubbed so wall time cannot
+    add or delay an edge. The repair itself — backoff sleeps, the rebuild,
+    and the final round's frame observation window — runs for real.
+    """
     stack = await soak_driver._start_simulator_stack()
     try:
         radio = stack.radio
         recovery: list[AudioRecoveryState] = []
         radio._on_audio_recovery = recovery.append
+        session = radio.audio_session
 
-        sub = await radio.audio_session.subscribe_rx("web-audio")
+        sub = await session.subscribe_rx("web-audio")
         assert await _next_frame_or_none(sub, _SANITY_FIRST_FRAME_S) is not None
 
         teardown_calls, restore_teardown = _spy_method(
             radio, "_teardown_audio_transport"
         )
         orig_ensure = radio._ensure_audio_transport
-        session = radio.audio_session
         orig_reestablish = session.reestablish
         reestablished: list[int] = []
 
@@ -963,25 +976,68 @@ async def test_successful_rounds_without_frames_cap_and_report_failed() -> None:
 
         radio._ensure_audio_transport = _dead_ensure  # type: ignore[method-assign]
         session.reestablish = _spy_reestablish  # type: ignore[method-assign]
+
+        # Inject the watchdog loop so wall time cannot add an unrequested
+        # edge (the test_two_rx_silent_start_one_repair_task precedent);
+        # every rx_silent below comes from a driven liveness decision.
+        watchdog = session._watchdog_task
+        assert watchdog is not None
+        watchdog.cancel()
+        await asyncio.gather(watchdog, return_exceptions=True)
+        monkeypatch.setattr(session, "_watchdog_loop", asyncio.Event().wait)
+
+        async def _drive_rx_silent() -> None:
+            """One liveness DECISION, driven deterministically (MOR-4214):
+            the same ManualClock advance the spent-budget and two_rx_silent
+            tests use. The repair execution and frame observation stay
+            real; only the decision threshold is driven."""
+            heartbeat = radio.audio_bus.last_rx_frame_monotonic
+            assert heartbeat is not None, "no RX heartbeat to drive silence from"
+            decision = ManualClock(start=max(heartbeat, session._rx_armed_at))
+            decision.advance(RX_LIVENESS_TIMEOUT_S)
+            with monkeypatch.context() as patch:
+                patch.setattr(session, "_monotonic", decision)
+                async with session._lock:
+                    session._check_liveness_locked()
+
         try:
             _kill_client_audio_only(radio)
             _drain(sub)
 
-            assert await await_until(
-                lambda: recovery == [AudioRecoveryState.FAILED], timeout=25.0
-            ), (
-                "MOR-3401 r3: successful-but-frameless rounds never "
-                "reported FAILED "
-                f"(teardowns={len(teardown_calls)} "
-                f"reestablished={len(reestablished)})"
-            )
+            # One driven decision per round. Each successful-but-frameless
+            # round ends its own task; the next edge continues the SAME
+            # episode (no frames since the settled baseline, same CI-V
+            # epoch), so the budget carries over: 1 s backoff before round
+            # 2, 2 s before round 3, and the third round observes frames
+            # for RX_LIVENESS_TIMEOUT_S before reporting FAILED once.
+            for round_no in range(1, 4):
+                await _drive_rx_silent()
+                task = radio._audio_silence_repair_task
+                assert task is not None, (
+                    f"round {round_no}: rx_silent scheduled no repair task"
+                )
+                await asyncio.wait_for(asyncio.shield(task), RESUME_BOUND_S)
+                assert radio._audio_silence_repair_task is None
+                assert radio._audio_silence_repair_attempts == round_no
+                assert len(reestablished) == round_no
+                assert recovery == (
+                    [AudioRecoveryState.FAILED] if round_no == 3 else []
+                )
+
             # Every round genuinely re-armed the leg…
             assert len(reestablished) == 3
-            # …exactly 3 attempts, then silence for ≥ 5 s.
+            # …exactly 3 attempts, then silence: later rx_silent edges —
+            # the ones the old ≥ 5 s wall wait collected from the real
+            # watchdog — schedule nothing with the budget spent.
             assert len(teardown_calls) == 3
-            await asyncio.sleep(5.0)
+            for _ in range(2):
+                await _drive_rx_silent()
+                assert radio._audio_silence_repair_task is None, (
+                    "a spent budget still scheduled a repair"
+                )
             assert len(teardown_calls) == 3
             assert len(reestablished) == 3
+            assert radio._audio_silence_repair_attempts == 3
             assert recovery == [AudioRecoveryState.FAILED]
         finally:
             radio._ensure_audio_transport = orig_ensure  # type: ignore[method-assign]
