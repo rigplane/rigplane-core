@@ -129,6 +129,11 @@ class AudioSubscription:
         return self._active
 
     @property
+    def dropped(self) -> int:
+        """Packets evicted (oldest first) because this subscriber's queue was full."""
+        return self._dropped
+
+    @property
     def stats(self) -> dict[str, Any]:
         return {
             "name": self.name,
