@@ -11,13 +11,17 @@
  * The lookup goes through the REAL `SystemController` and its HTTP request;
  * only the network is faked. Its replies are the producer's own documents:
  * Core's `EiBiStation.to_dict()` wrapped the way the `/api/v1/eibi/identify`
- * route wraps them (`web_routing.py`).
+ * route wraps them (`web_routing.py`), committed as a fixture (regenerate
+ * with `uv run python scripts/gen_frontend_producer_fixtures.py`; currency
+ * pinned by `tests/web/test_frontend_producer_fixtures.py`). The suite must
+ * not spawn `uv run python` at test time: on a saturated 4-CPU slot the
+ * interpreter start alone outlasts the subprocess wall budget (MOR-4214,
+ * run 44869233407: `spawnSync uv ETIMEDOUT`).
  */
-import { execFileSync } from 'node:child_process';
-import { resolve } from 'node:path';
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mount, unmount, flushSync } from 'svelte';
 import type { EibiResult } from '$lib/runtime/system-controller';
+import eibiIdentifyReplies from './fixtures/eibi-identify-replies.json';
 
 vi.mock('$lib/stores/connection.svelte', () => ({
   getRadioLinkState: vi.fn(() => 'connected'),
@@ -73,26 +77,7 @@ const STATION_A_HZ = 14_074_000;
 const STATION_B_HZ = 7_074_000;
 
 /** `{"stations": [...], "freq_hz": f}` per frequency, built by Core itself. */
-let identifyReplies: Record<number, EibiResult>;
-
-beforeAll(() => {
-  const script = [
-    'import json',
-    'from rigplane.web.eibi import EiBiStation',
-    'def station(khz, name):',
-    '    return EiBiStation(freq_khz=khz, time_start=0, time_end=2400, days="", country="USA",',
-    '        station=name, language="E", target="NAm", remarks="", persistence=1,',
-    '        start_date="", end_date="").to_dict()',
-    'replies = {',
-    `    ${STATION_A_HZ}: {"stations": [station(${STATION_A_HZ / 1000}, "Station A")], "freq_hz": ${STATION_A_HZ}},`,
-    `    ${STATION_B_HZ}: {"stations": [station(${STATION_B_HZ / 1000}, "Station B")], "freq_hz": ${STATION_B_HZ}},`,
-    '}',
-    'print(json.dumps(replies, separators=(",", ":")))',
-  ].join('\n');
-  identifyReplies = JSON.parse(execFileSync('uv', ['run', 'python', '-c', script], {
-    cwd: resolve(import.meta.dirname, '../../../../..'), encoding: 'utf8', timeout: 30_000,
-  })) as Record<number, EibiResult>;
-}, 30_000);
+const identifyReplies = eibiIdentifyReplies as unknown as Record<number, EibiResult>;
 
 const fetchMock = vi.fn(async (input: string | URL | Request): Promise<Response> => {
   const url = new URL(String(input), 'http://station.test');
