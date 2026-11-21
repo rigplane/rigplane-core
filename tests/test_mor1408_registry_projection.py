@@ -145,6 +145,12 @@ _MOR1406_CONTROL_ROWS: tuple[tuple[FieldPath, str, Any], ...] = tuple(
             f"{receiver}.repeaterShift",
             2,
         ),
+        # repeater_offset_hz (MOR-3624): duplex offset magnitude in Hz.
+        (
+            FieldPath.receiver(receiver, "operator_controls", "repeater_offset_hz"),
+            f"{receiver}.repeaterOffsetHz",
+            600_000,
+        ),
     )
 ) + (
     (

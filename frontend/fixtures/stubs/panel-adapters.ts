@@ -192,6 +192,10 @@ export function getPendingRepeaterTone(_receiver: 0 | 1): 'off' | 'tone' | 'tsql
 export function getPendingRepeaterShift(_receiver: 0 | 1): number | null {
   return null;
 }
+/** MOR-3624 — duplex offset pending accessor, inert like the accessors above. */
+export function getPendingRepeaterOffset(_receiver: 0 | 1): number | null {
+  return null;
+}
 export function getPendingToneFreq(_receiver: 0 | 1): number | null {
   return null;
 }
@@ -202,6 +206,7 @@ const repeaterHandlers = Object.freeze({
   onToneModeChange: (_from: string, _to: string, _receiver: number): void => {},
   onShiftChange: (_shift: string, _receiver: number): void => {},
   onToneFreqChange: (_freqHz: number, _tsql: boolean, _receiver: number): void => {},
+  onOffsetChange: (_offsetHz: number, _receiver: number): void => {},
 });
 export function getRepeaterHandlers() { return repeaterHandlers; }
 

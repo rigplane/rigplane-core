@@ -17,11 +17,12 @@ adapter builds a ``StreamReader`` over the request body plus a capturing
 writer, runs the shared dispatch, and splits the captured HTTP bytes
 back into status/headers/body. What this transport serves is derived
 from the router's own ``API_ROUTE_TABLE`` — every ``/api/v1/*`` entry is
-reachable — so adding a route to the router is the only place to
-change. The router has no notion of "routes the UI needs", so there is
-no per-route api flag; reachability follows routing. Anything else (an
-unknown path or a routed path under the wrong method) answers 404
-without touching controller state.
+reachable except the WebRTC signalling routes under
+``API_CHANNEL_SIGNALLING_PREFIX`` — so adding a route to the router is
+the only place to change. The router has no notion of "routes the UI
+needs", so there is no per-route api flag; reachability follows routing.
+Anything else (an unknown path, a signalling route, or a routed path
+under the wrong method) answers 404 without touching controller state.
 
 TX-capable REST bodies are refused even where HTTP serves them: they key
 the transmitter, and over a data channel the UI keys PTT through the
@@ -640,6 +641,10 @@ def _encode_frame(msg_type: int, request_id: int, payload: bytes) -> bytes:
     return _FRAME_HEADER.pack(API_CHANNEL_VERSION, msg_type, request_id, 0) + payload
 
 
+API_CHANNEL_SIGNALLING_PREFIX = "/api/v1/transport/webrtc/"
+"""Route prefix the api channel never serves (see :func:`api_path_allowed`)."""
+
+
 class ApiFrameError(ValueError):
     """A frame :meth:`ApiFrame.parse` refuses: ``code`` is the ERROR code
     to answer (``malformed``, ``bad_version`` or ``too_large``) and
@@ -707,9 +712,15 @@ def api_path_allowed(method: str, path: str) -> bool:
     under the wrong method) answers 404 without touching controller state.
     Transmit-capable *bodies* on reachable routes are refused later, before
     dispatch, with 403 (see :func:`_dispatch`).
+
+    The WebRTC signalling routes (:data:`API_CHANNEL_SIGNALLING_PREFIX`) are
+    not reachable: a peer that already holds a session cannot open another
+    peer connection through it, outside the signalling path that admitted it.
     """
     from .web_routing import api_route_for_path  # noqa: TID251
 
+    if path.startswith(API_CHANNEL_SIGNALLING_PREFIX):
+        return False
     route = api_route_for_path(path)
     if route is None:
         return False
