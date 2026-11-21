@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import re
 import sys
 from pathlib import Path
 
@@ -584,6 +585,39 @@ def test_no_real_gui_opener_guard_fails_when_called() -> None:
         _assert_no_gui_opener_calls([Path("/tmp/x")])
 
 
+_BARE_CONFTEST_IMPORT = re.compile(
+    r"^\s*(?:from conftest import|import conftest(?=\s|$))", re.MULTILINE
+)
+
+
+def test_bare_conftest_import_matcher_catches_nonleading_imports() -> None:
+    """Pin the guard below: bare imports past the first line must match.
+
+    The matcher is `^`-anchored, so without `re.MULTILINE` it only sees
+    the start of the file and a bare import after a docstring — or an
+    indented one inside a function — escapes the regression check.
+    """
+    assert _BARE_CONFTEST_IMPORT.search(
+        '"""Docstring first."""\nfrom conftest import helper\n'
+    )
+    assert _BARE_CONFTEST_IMPORT.search(
+        '"""Docstring first."""\nimport conftest\n'
+    )
+    assert _BARE_CONFTEST_IMPORT.search(
+        "def test_something() -> None:\n    from conftest import helper\n"
+    )
+    assert _BARE_CONFTEST_IMPORT.search("x = 1\nimport conftest\n")
+    # Absolute imports and lookalikes must stay clean.
+    assert not _BARE_CONFTEST_IMPORT.search(
+        "from tests.conftest import _assert_no_gui_opener_calls\n"
+    )
+    assert not _BARE_CONFTEST_IMPORT.search(
+        '"""Docstring."""\n    from tests.conftest import helper\n'
+    )
+    assert not _BARE_CONFTEST_IMPORT.search("# from conftest import helper\n")
+    assert not _BARE_CONFTEST_IMPORT.search('x = "from conftest import y"\n')
+
+
 def test_no_test_uses_a_bare_conftest_import() -> None:
     """No test may import the bare `conftest` module (MOR-4214 follow-up).
 
@@ -597,13 +631,10 @@ def test_no_test_uses_a_bare_conftest_import() -> None:
     from `tests.conftest` are immune to that ordering; this pin keeps the
     bare form from coming back.
     """
-    import re
-
-    bare = re.compile(r"^\s*(?:from conftest import|import conftest(?=\s|$))")
     offenders = sorted(
         str(path.relative_to(REPO_ROOT))
         for path in (REPO_ROOT / "tests").rglob("*.py")
-        if bare.search(path.read_text(encoding="utf-8"))
+        if _BARE_CONFTEST_IMPORT.search(path.read_text(encoding="utf-8"))
     )
     assert offenders == [], (
         "bare `conftest` imports resolve to whichever conftest.py directory "
