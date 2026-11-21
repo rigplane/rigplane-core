@@ -475,7 +475,7 @@ class _DcAvPeer:
         self._received: list[Any] = []
         self._audio_received: list[Any] = []
 
-    async def connect(self, web: WebServer) -> None:
+    async def connect(self, web: WebServer, *, via_http: bool = False) -> None:
         from aiortc import RTCPeerConnection, RTCSessionDescription
 
         self._pc = RTCPeerConnection()
@@ -500,12 +500,20 @@ class _DcAvPeer:
 
         offer = await self._pc.createOffer()
         await self._pc.setLocalDescription(offer)
-        manager = web._webrtc_session_manager()  # noqa: SLF001
-        answer = await manager.negotiate(
-            self._pc.localDescription.sdp, self._pc.localDescription.type
+        offer_body = WebRtcOffer(
+            sdp=self._pc.localDescription.sdp, type=self._pc.localDescription.type
         )
+        if via_http:
+            status, response = await _http_post(
+                web.port, "/api/v1/transport/webrtc/offer", offer_body.to_json()
+            )
+            assert status == 200, response
+        else:
+            manager = web._webrtc_session_manager()  # noqa: SLF001
+            response = await manager.negotiate(offer_body.sdp, offer_body.type)
+        answer = WebRtcAnswer.from_json(response)
         await self._pc.setRemoteDescription(
-            RTCSessionDescription(sdp=answer["sdp"], type=answer["type"])
+            RTCSessionDescription(sdp=answer.sdp, type=answer.type)
         )
         await await_until(
             lambda: all(
@@ -946,6 +954,78 @@ async def test_silent_loss_releases_ptt_within_session_ttl(
         assert state.intent.kind is ManagedTxIntentKind.RX
     finally:
         await dc.close()
+        await _tear_down_stack(stack)
+
+
+@_webrtc
+@pytest.mark.realtime(
+    reason="stream microphone PCM in real time during a three-second PTT hold"
+)
+async def test_webrtc_ptt_three_second_hold_delivers_audio_and_link_loss_releases(
+    tmp_path: Path,
+) -> None:
+    stack = await _stand_up_stack(tmp_path, audio=True)
+    peer = _DcAvPeer()
+    clock = asyncio.get_running_loop().time
+    try:
+        await peer.connect(stack.web, via_http=True)
+        key = await _acquire_session(stack.web.port)
+        await peer.attach_control(key)
+        await peer.attach_audio(key)
+        await peer.heartbeat()
+
+        assert stack.sim.ptt_on is False
+        transition_start = len(stack.sim.ptt_transitions)
+        pressed_at = clock()
+        assert (await peer.command("key-1", "ptt_on"))["ok"] is True
+        await await_until(lambda: stack.sim.ptt_on, timeout=5, description="TX")
+        deadline = pressed_at + 3.0
+        frame = _pcm_tx_frame(480)
+        while clock() < deadline:
+            assert stack.sim.ptt_on is True
+            peer.send_audio(frame)
+            await asyncio.sleep(0.020)
+        assert stack.sim.ptt_on is True
+        released_at = clock()
+        assert (await peer.command("release-1", "ptt_off"))["ok"] is True
+        await await_until(lambda: not stack.sim.ptt_on, timeout=5, description="RX")
+        state = (await stack.composition.authority.snapshot()).state
+        assert state.intent.kind is ManagedTxIntentKind.RX
+
+        await peer.heartbeat()
+        assert (await peer.command("key-2", "ptt_on"))["ok"] is True
+        await await_until(lambda: stack.sim.ptt_on, timeout=5, description="second TX")
+        dropped_at = clock()
+        await peer.close()
+        await await_until(
+            lambda: not stack.sim.ptt_on,
+            timeout=_SILENT_LOSS_BUDGET_S,
+            description="RX after link loss",
+        )
+        state = (await stack.composition.authority.snapshot()).state
+        assert state.intent.kind is ManagedTxIntentKind.RX
+
+        transitions = stack.sim.ptt_transitions[transition_start:]
+        assert [keyed for _, keyed in transitions] == [True, False, True, False]
+        keyed_at, rx_at, rekeyed_at, drop_rx_at = (stamp for stamp, _ in transitions)
+        frame_count = sum(
+            1
+            for received in stack.sim.audio_tx_frames
+            if keyed_at <= received.received_at < released_at
+            and received.ptt
+            and any(received.payload)
+        )
+        print(
+            f"WEBRTC_PTT frames={frame_count} hold_s={released_at - pressed_at:.3f}"
+            f" keyed_s={keyed_at - pressed_at:.3f} release_s={released_at - pressed_at:.3f}"
+            f" rx_s={rx_at - pressed_at:.3f} second_keyed_s={rekeyed_at - pressed_at:.3f}"
+            f" drop_s={dropped_at - pressed_at:.3f} drop_rx_s={drop_rx_at - pressed_at:.3f}"
+            f" drop_to_rx_s={drop_rx_at - dropped_at:.3f} budget_s={_SILENT_LOSS_BUDGET_S:.3f}"
+        )
+        assert frame_count > 0
+        assert 0 <= drop_rx_at - dropped_at <= _SILENT_LOSS_BUDGET_S
+    finally:
+        await peer.close()
         await _tear_down_stack(stack)
 
 
