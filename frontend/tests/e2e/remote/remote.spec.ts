@@ -280,7 +280,7 @@ test('L5: a refused microphone never keys, stays on screen and reaches the suppo
 
 // The Python API-channel tests replay both wire documents against Core:
 // test_controller_route_ptt_style and test_api_tx_start_managed_transmit_refused.
-test('L6: a local-mode station advertising momentary PTT uses control-channel key and release', async ({ page }) => {
+test('L6: a local-mode station advertising momentary PTT shows a hold label and uses control-channel key and release', async ({ page }, testInfo) => {
   await page.route('**/api/v1/controller', async (route) => {
     if (route.request().method() !== 'GET') return route.continue();
     await route.fulfill({ json: controllerWire.controllerStatusApiChannel });
@@ -289,8 +289,11 @@ test('L6: a local-mode station advertising momentary PTT uses control-channel ke
   await openRemoteUi(page);
   await expectControlLink();
   const key = page.getByTestId('rx-tx-key');
-  await expect(key).toHaveAttribute('aria-label', 'PTT');
+  await expect(key.getByText('Hold to talk', { exact: true })).toBeVisible();
+  await expect(key).toHaveAccessibleName('Hold to talk');
+  await expect(key).toHaveAttribute('title', 'Hold to talk');
   await expect(key).toBeEnabled();
+  await key.screenshot({ path: testInfo.outputPath('hold-to-talk.png') });
   await key.focus();
   try {
     await page.keyboard.down('Space');
