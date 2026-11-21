@@ -38,6 +38,7 @@ import pytest
 
 from rigplane.audio.backend import AudioDeviceId, AudioDeviceInfo, FakeAudioBackend
 from rigplane.audio.usb_driver import AudioCaptureOpenTimeoutError, UsbAudioDriver
+from rigplane.testing.timing import await_until
 
 from _portaudio_pool_helpers import drain_pool
 
@@ -238,7 +239,12 @@ async def test_normal_tx_open_timing_unaffected() -> None:
     assert elapsed < 0.5
 
 
-@pytest.mark.timeout(10)
+# 60 s, not the file-wide 10 s: the sequential inner bounds (5 s
+# entered-wait + 5 s late-close), drain_pool, and the retry's own driver
+# bound can legitimately sum past 10 s in a slow-but-passing run; the
+# watchdog must not kill those (review round 3). Every inner wait is
+# still bounded, so a genuine hang still fails fast via those.
+@pytest.mark.timeout(60)
 async def test_rx_open_cancelled_mid_open_closes_late_handle_and_recovers() -> None:
     """F1: cancelling start_rx mid-open must not orphan a live stream.
 
@@ -255,31 +261,67 @@ async def test_rx_open_cancelled_mid_open_closes_late_handle_and_recovers() -> N
     RX dead until process restart.
     """
     gate = threading.Event()
-    driver, backend = _make_driver()
-    backend.block_rx_open = gate.wait
+    entered = threading.Event()
+
+    def _block_in_open() -> None:
+        # Set by the worker thread itself once it is INSIDE the blocked
+        # device open: cancelling only after this fires is what makes this
+        # a mid-open cancellation. The old fixed 0.01 s sleep let the
+        # cancel land before open_rx() ran on a loaded runner, leaving
+        # backend.rx_streams empty (MOR-4214 IndexError flake).
+        entered.set()
+        gate.wait()
+
+    # A 10 s driver bound, not the 0.05 s default: it must clear the
+    # entered-wait bound (5 s) plus cancel delivery. If the pool stalled
+    # the worker past the driver timeout, start_rx would time out before
+    # the cancel lands and the test would see AudioCaptureOpenTimeoutError
+    # instead of CancelledError (review round 2). Nothing here asserts the
+    # timeout path -- the sibling tests cover it at 0.05 s.
+    driver, backend = _make_driver(capture_open_timeout=10.0)
+    backend.block_rx_open = _block_in_open
 
     task = asyncio.create_task(driver.start_rx(lambda _frame: None))
-    await asyncio.sleep(0.01)  # let it reach the blocked open
-    task.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await task
+    try:
+        assert await await_until(
+            entered.is_set, timeout=5.0, description="background open to block"
+        )
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
 
-    assert driver.rx_running is False
+        assert driver.rx_running is False
 
-    late_stream = backend.rx_streams[-1]
-    gate.set()  # release the background open so it can finally complete
-    for _ in range(50):
-        await asyncio.sleep(0.01)
-        if late_stream.stopped_count:
-            break
+        late_stream = backend.rx_streams[-1]
+    finally:
+        # Always release the worker, even when an assert above fails: it
+        # blocks on a non-daemon pool thread that would otherwise wedge
+        # process exit (review round 1). Settle the start task too so a
+        # failure here never leaves its exception unretrieved.
+        gate.set()
+        if not task.done():
+            task.cancel()
+        try:
+            await task
+        except (asyncio.CancelledError, AudioCaptureOpenTimeoutError):
+            pass
+    # The released background open now completes; its late handle is closed.
+    assert await await_until(
+        lambda: late_stream.stopped_count,
+        timeout=5.0,
+        description="late handle to be closed",
+    )
 
     assert late_stream.started_count == 1
     assert late_stream.stopped_count == 1, (
         "cancelled-mid-open handle must be closed, not leaked"
     )
 
-    # The bus-level self-heal check: a fresh subscriber must be able to
-    # open RX again, not trip AudioAlreadyStartedError forever.
+    # Let the pool settle the late close before retrying, so the retry
+    # cannot exhaust its own bound waiting on the same stop (review
+    # round 1). The bus-level self-heal check: a fresh subscriber must be
+    # able to open RX again, not trip AudioAlreadyStartedError forever.
+    await drain_pool()
     backend.block_rx_open = None
     await driver.start_rx(lambda _frame: None)
     assert driver.rx_running is True

@@ -328,7 +328,26 @@ def _identity_model_id(probe: ProbeFile) -> bytes:
 #: so they compare as ``refused`` and are absent from the replay's
 #: skips. A future plan change fails here on purpose: extend this set
 #: consciously, never loosen the comparison.
-EXTRA_SINCE_CAPTURE = ("get_tx_band_count", "get_tx_band_edge")
+EXTRA_SINCE_CAPTURE = (
+    "get_tx_band_count",
+    "get_tx_band_edge",
+    # MOR-4436 scope PR: the profile declares the LAN scope after this USB
+    # capture was taken. The real radio is silent for 0x27 on USB (2026-11-09
+    # audit); the fake has no rows for these reads and refuses them.
+    "get_scope_center_type",
+    "get_scope_during_tx",
+    "get_scope_edge",
+    "get_scope_hold",
+    "get_scope_main_sub",
+    "get_scope_mode",
+    "get_scope_rbw",
+    "get_scope_ref",
+    "get_scope_single_dual",
+    "get_scope_span",
+    "get_scope_speed",
+    "get_scope_vbw",
+    "get_scope_wave",
+)
 
 
 def _run_civ_replay(

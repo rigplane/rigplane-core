@@ -618,7 +618,8 @@ describe('TxMic adopts the codec the server can accept', () => {
 
     // Honest refusal through the existing fault path, never silent garble.
     expect(result.switched).toBe(false);
-    expect(result.error).toContain('16000');
+    expect(result.error).toMatchObject({ code: 'sample-rate', category: 'negotiated-rate' });
+    expect(result.error?.reason).toContain('16000');
     expect(mic.active).toBe(true);
     expect(mic.codec).toBe('opus');
     expect(media.encoder.close).not.toHaveBeenCalled();
@@ -638,7 +639,8 @@ describe('TxMic adopts the codec the server can accept', () => {
     const result = mic.applyServerCodec('pcm16');
 
     expect(result.switched).toBe(false);
-    expect(result.error).toContain('sample rate');
+    expect(result.error).toMatchObject({ code: 'sample-rate', category: 'sample-rate' });
+    expect(result.error?.reason).toContain('sample rate');
     expect(mic.active).toBe(true);
     expect(mic.codec).toBe('opus');
     expect(media.encoder.close).not.toHaveBeenCalled();
@@ -745,11 +747,11 @@ describe('AudioManager TX start with a 44.1 kHz stereo microphone (MOR-4594)', (
     const notify = vi.fn();
     audioManager.setOperatorNotifier(notify);
 
-    expect(await audioManager.startTx()).toBe('TX MIC: encoder configure failed: unsupported config');
+    expect(await audioManager.startTx()).toBe('encoder configure failed: unsupported config');
 
     expect(notify).toHaveBeenCalledWith(
-      'error', 'TX audio failed to start: TX MIC: encoder configure failed: unsupported config',
-      'txAudioStartFailed',
+      'error', 'TX audio failed to start: encoder configure failed: unsupported config',
+      'txAudioEncoderFailed', { reason: 'encoder configure failed: unsupported config' },
     );
     expect(audioManager.txEnabled).toBe(false);
     expect(track.stop).toHaveBeenCalled();
