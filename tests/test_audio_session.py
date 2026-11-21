@@ -213,6 +213,19 @@ async def test_subscribe_rx_starts_rx_and_delivers_frames() -> None:
     assert session.bus.subscriber_count == 0
 
 
+async def test_rx_subscription_reports_queue_evictions_as_typed_dropped() -> None:
+    """The session handle exposes the bus subscription's eviction counter as a
+    typed ``dropped`` (MOR-4214): consumers read it, not stats-dict keys."""
+    radio = LanLikeRadio()
+    session = AudioSession(radio)
+    sub = await session.subscribe_rx("overflow")
+    assert sub.dropped == 0
+    for _ in range(70):  # default queue holds 64: six oldest are evicted
+        radio.rx_callback(_PACKET)  # type: ignore[operator]
+    assert sub.dropped == 6
+    await sub.release()
+
+
 # ── Demand permutations converge ─────────────────────────────────────────────
 
 

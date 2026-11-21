@@ -167,6 +167,11 @@ class RxSubscription:
     def name(self) -> str:
         return self._inner.name
 
+    @property
+    def dropped(self) -> int:
+        """Packets the bus evicted from this subscription's full queue."""
+        return self._inner.dropped
+
     async def get(self, timeout: float | None = None) -> AudioPacket | None:
         """Get the next packet (blocks until available or timeout)."""
         return await self._inner.get(timeout=timeout)
