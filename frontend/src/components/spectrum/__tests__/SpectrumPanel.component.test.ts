@@ -6154,7 +6154,13 @@ describe('golden wire through actual WebSocket transport (MOR-4270)', () => {
       expect([...audioState.pixels]).toEqual([1, 127, 254]);
       expect(audioState.bandwidth).toBe(3_000);
       expect(audioState.filterWidth).toBe(2_400);
-      expect(noopCanvas.fillText).toHaveBeenCalledWith('0', 400, 197);
+      // MOR-4604: the audio axis labels the drawn passband mapping — '0' sits
+      // at the trapezoid's left edge (width 800, height 200, 2400/3600 filter
+      // ratio: bl = 400 − (360 − 58.1)·0.5 − 58.1 ≈ 190.95), no longer at the
+      // canvas centre of the old 48 kHz scale.
+      const zeroLabel = (noopCanvas.fillText as Mock).mock.calls.find((call: unknown[]) => call[0] === '0');
+      expect(zeroLabel?.[1]).toBeCloseTo(190.95, 6);
+      expect(zeroLabel?.[2]).toBe(197);
       runtimeHarness.state.currentCaps = { ...runtimeHarness.state.currentCaps as typeof IC7300_CAPABILITIES, scopeSource: 'audio_fft' };
       const centralAudio = mountPanel();
       expect(centralAudio.querySelector('.audio-source-label')).not.toBeNull();

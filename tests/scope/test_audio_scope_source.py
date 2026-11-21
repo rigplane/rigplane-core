@@ -54,8 +54,9 @@ async def test_follow_live_and_release_on_cleanup_failure(monkeypatch):
     facts = AudioPassband(7_100_000, 0, 2400, "upper")
     tap = Tap()
     source = AudioFftSource(tap, lambda: facts)
+    # MOR-4604: the follow window centres on the passband, not the dial.
     assert (await source.set_view(FollowView("vfo", 10000))).view == View(
-        7_095_000, 7_105_000
+        7_096_200, 7_106_200
     )
     await source.start()
 
@@ -503,3 +504,31 @@ async def test_symmetric_mode_wider_than_pcm_nyquist_reports_only_available_rf()
             assert abs(abs(peak_hz - facts.tuned_hz) - 1000) < 50
     finally:
         await sub.close()
+
+
+async def test_long_fft_window_keeps_twenty_frames_a_second(monkeypatch):
+    """MOR-4604: the 4096-point production window overlaps to keep 20 fps."""
+    from types import SimpleNamespace
+
+    from rigplane.audio import fft_scope
+    from rigplane.testing.timing import ManualClock
+
+    clock = ManualClock(1)
+    monkeypatch.setattr(fft_scope, "time", SimpleNamespace(monotonic=clock))
+    tap = Tap()
+    source = AudioFftSource(
+        tap,
+        lambda: AudioPassband(14_100_000, 0, 2400, "upper"),
+        fft_size=4096,
+        sample_rate=48000,
+    )
+    frames = []
+    source.on_frame(frames.append)
+    await source.start()
+    rng = np.random.default_rng(4604)
+    pcm = (rng.uniform(-1, 1, 48000 + 4096) * 3000).astype("<i2").tobytes()
+    for start in range(0, len(pcm), 4800):  # one 50 ms frame interval per delivery
+        tap.callback(pcm[start : start + 4800])
+        clock.advance(0.05)
+    await source.stop()
+    assert len(frames) >= 20
