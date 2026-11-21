@@ -252,7 +252,7 @@ async def test_queue_overflow_drops_oldest(bus, mock_radio):
     bus._on_opus_packet(pkt2)
     bus._on_opus_packet(pkt3)  # should drop pkt1
 
-    assert sub._dropped == 1
+    assert sub.dropped == 1
     assert sub._received == 3
     # Queue should have pkt2 and pkt3
     assert sub.get_nowait() is pkt2
