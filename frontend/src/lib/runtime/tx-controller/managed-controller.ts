@@ -227,7 +227,16 @@ export class ManagedTxController {
       this.#onCycle = null;
       this.#flow = 'idle';
       this.#stopAudio();
-      if (failure !== undefined) this.dependencies.invalidate();
+      if (failure !== undefined) {
+        this.dependencies.invalidate();
+        // An admission refusal that never reached the radio (e.g. the
+        // MOD-input refusal) leaves the server TX state unchanged, so it
+        // emits no authority-change event: re-read the canonical snapshot
+        // at once, or the next latch attempt would stall on the stale
+        // projection the invalidate above just set (MOR-4660). A refresh
+        // that itself fails re-invalidates, preserving the old behavior.
+        void this.refresh();
+      }
       this.dependencies.onLatchRefusal?.(failure);
     }
     this.#publish();

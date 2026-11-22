@@ -524,16 +524,19 @@ export class WsChannel {
    * pattern above) — so the one shipped toast surface (`components/shared/
    * Toast.svelte`) renders it with no changes of its own. `code` is resolved
    * to `core.toast.<code>` by `messageFromReasonCode`; `message` is the
-   * English fallback for a caller that never supplied one.
+   * English fallback for a caller that never supplied one. Omit `code` for
+   * an already-localized `message` (MOR-4660): it renders verbatim instead
+   * of being replaced by an unknown-code translation.
    */
   emitLocalNotification(
     level: 'info' | 'warning' | 'error',
     message: string,
-    code: string,
+    code?: string,
     params?: Record<string, string | number>,
   ): void {
     const note: WsIncoming = {
-      type: 'notification', level, message, code, category: 'command',
+      type: 'notification', level, message, category: 'command',
+      ...(code !== undefined ? { code } : {}),
       ...(params ? { params } : {}),
     };
     this.messageHandlers.forEach((h) => h(note));
@@ -1242,7 +1245,7 @@ export const addMessageHandler = onMessage;
 export function emitLocalNotification(
   level: 'info' | 'warning' | 'error',
   message: string,
-  code: string,
+  code?: string,
   params?: Record<string, string | number>,
 ): void {
   _ctrl.emitLocalNotification(level, message, code, params);

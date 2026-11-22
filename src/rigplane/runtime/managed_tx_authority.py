@@ -412,14 +412,6 @@ class ManagedTxAuthority:
                 # admitted frame's push and this keying transition can never
                 # interleave.
                 async with self._tx_admission_lock:
-                    try:
-                        async with asyncio.timeout(self._attempt_timeout):
-                            if isinstance(self._lane, TxAudioInputCheck):
-                                await self._lane.check_tx_audio_input()
-                    except TimeoutError as exc:
-                        mod_refusal = TxModInputRefusal()
-                        logger.warning("managed TX refused: %s", mod_refusal)
-                        raise mod_refusal from exc
                     async with self._lock:
                         self._require_ingress_open_locked()
                         if controller_ticket is not None:
@@ -444,11 +436,26 @@ class ManagedTxAuthority:
                         if (refusal := self._radio_tx_refusal_locked()) is not None:
                             # MOR-3537: never key over a TX the radio reports.
                             raise ControllerError(refusal, 409)
+                        pre_transition = (
+                            self._state,
+                            self._transmit_owner,
+                            self._latest_on_epoch,
+                        )
                         transition, full_force = self._transition_locked(action, owner)
                         if transition is None:
                             transition = ManagedTxTransition(
                                 self._state, ManagedTxOutcome.REJECTED
                             )
+                    # MOR-4660: the MOD-input read gates only a transition
+                    # that creates a NEW key-on effect. An idempotent
+                    # repeated ON (the owner already holds the key) commits
+                    # no effect, so it performs no radio read and never
+                    # holds this admission lock behind up to
+                    # ``_attempt_timeout`` of MOD getter I/O while
+                    # ``owned_tx_submission`` pushes audio under RF.
+                    transition = await self._check_mod_input_inside_admission(
+                        transition, pre_transition
+                    )
                     hook_ran = False
                     if (
                         before_on is not None
@@ -540,6 +547,74 @@ class ManagedTxAuthority:
         """
         intent = self._state.intent
         return intent.kind is ManagedTxIntentKind.PTT and intent.owner_token == owner
+
+    async def _check_mod_input_inside_admission(
+        self,
+        transition: ManagedTxTransition,
+        pre_transition: tuple[ManagedTxState, str | None, int],
+    ) -> ManagedTxTransition:
+        """Gate a newly committed key-on on the radio's MOD input (MOR-4660).
+
+        Runs holding ``_tx_admission_lock`` but NOT ``_lock``, after the
+        transition committed and before its effect dispatches. A transition
+        carrying no key-on effect — an idempotent repeated ON while the
+        owner already holds the key — performs no radio read at all, so it
+        never stalls ``owned_tx_submission`` behind MOD getter I/O while RF
+        stays keyed. A refusal (or the read's timeout, mapped to the same
+        refusal) rolls the committed intent back to the exact pre-request
+        state — nothing was dispatched, so there is no release debt — and
+        propagates. A state an unkey or force-off moved while the read ran
+        is left to that teardown, and cancellation rolls back the same way
+        before propagating.
+        """
+        on_effect = next(
+            (
+                effect
+                for effect in transition.effects
+                if effect.operation
+                in (ActuationOperation.PTT_ON, ActuationOperation.TRANSMIT_ON)
+            ),
+            None,
+        )
+        if on_effect is None or not isinstance(self._lane, TxAudioInputCheck):
+            return transition
+        try:
+            async with asyncio.timeout(self._attempt_timeout):
+                await self._lane.check_tx_audio_input()
+        except TimeoutError as exc:
+            refusal = TxModInputRefusal()
+            logger.warning("managed TX refused: %s", refusal)
+            await self._rollback_committed_on(transition, pre_transition)
+            raise refusal from exc
+        except BaseException:
+            await self._rollback_committed_on(transition, pre_transition)
+            raise
+        return transition
+
+    async def _rollback_committed_on(
+        self,
+        transition: ManagedTxTransition,
+        pre_transition: tuple[ManagedTxState, str | None, int],
+    ) -> None:
+        """Undo a key-on commit whose MOD-input admission refused (MOR-4660).
+
+        Nothing was dispatched for the committed effect, so restoring the
+        exact pre-request state leaves no release debt, no pending effect
+        and no scheduled work — the refusal is exactly as clean as one
+        raised before the commit. A state that moved since the commit (an
+        unkey or force-off tore the key down while the read ran) already
+        settled through that teardown and is left alone.
+        """
+        pre_state, pre_transmit_owner, pre_latest_on_epoch = pre_transition
+        async with self._lock:
+            if self._state != transition.state:
+                return
+            self._state = pre_state
+            self._transmit_owner = pre_transmit_owner
+            self._latest_on_epoch = pre_latest_on_epoch
+            if self._state_is_clean_locked():
+                self._release_drained.set()
+            self._notify_changed_locked()
 
     async def _prepare_key_inside_admission(
         self,

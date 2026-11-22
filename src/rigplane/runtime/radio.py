@@ -4460,6 +4460,13 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             usb = next(value for value, name in inputs if name == "USB")
             split = await self.get_split(strict=True)
             vfo = await self.read_relative_vfo(selected=not split)
+            if vfo.mode.replace("_", "-") in self._profile.mode_families.get("cw", ()):
+                # Native CW keys its carrier; its TX audio never comes from
+                # the DATA-group MOD input, so that setting cannot refuse an
+                # ordinary CAT PTT in it (MOR-4660). The family is the
+                # profile's own ``[modes] families`` declaration — no
+                # per-model branch.
+                return
             group = vfo.data_mode
             if not 0 <= group <= self._profile.data_mode_count:
                 raise ValueError("unknown DATA group")

@@ -37,6 +37,7 @@ class ModInputSimulator:
         self.split = False
         self.data = [0, 0]
         self.sources = [0, 0, 0, 0]
+        self.mode = 1
         self.reads: list[str] = []
         self.keys: list[bool] = []
         self.failure = False
@@ -50,7 +51,7 @@ class ModInputSimulator:
         elif frame.command == 0x25:
             payload = frame.data + bcd_encode(14_200_000)
         elif frame.command == 0x26:
-            payload = frame.data + bytes([1, self.data[frame.data[0]], 1])
+            payload = frame.data + bytes([self.mode, self.data[frame.data[0]], 1])
         else:
             getters = ["get_data_off_mod_input"] + [
                 f"get_data{index}_mod_input" for index in range(1, 4)
@@ -152,6 +153,56 @@ async def test_six_profile_mappings_refuse_then_retry(
     await receipt.wait_settlement()
     assert receipt.outcome is ManagedTxOutcome.ACCEPTED
     assert sim.keys == [True]
+
+
+@pytest.mark.parametrize(
+    "model,mode",
+    [
+        ("IC-705", 3),  # CW
+        ("IC-7300", 7),  # CW-R
+        ("IC-7610", 3),  # CW
+    ],
+)
+async def test_native_cw_with_mic_input_still_keys(setup_radio, model, mode):
+    # Native CW keys its carrier; its TX audio never comes from the DATA
+    # OFF MOD input, so DATA OFF MOD = MIC must not refuse ordinary CAT PTT
+    # (MOR-4660 round-2: the refusal is for MOD-input transmission only).
+    _, sim, authority = setup_radio(model)
+    sim.mode = mode
+    sim.sources[0] = 0  # DATA OFF MOD = MIC
+    receipt = await authority.submit_ptt(True, "local")
+    await receipt.wait_settlement()
+    assert receipt.outcome is ManagedTxOutcome.ACCEPTED
+    assert sim.keys == [True]
+    # The keyed mode never reads the MOD register at all.
+    assert sim.reads == []
+
+
+async def test_repeated_on_during_transmission_reads_nothing_and_audio_continues(
+    setup_radio,
+):
+    _, sim, authority = setup_radio()
+    sim.sources[0] = 1
+    receipt = await authority.submit_ptt(True, "local")
+    await receipt.wait_settlement()
+    assert receipt.outcome is ManagedTxOutcome.ACCEPTED
+    assert sim.keys == [True]
+    reads = list(sim.reads)
+    sim.entered.clear()
+    # A MOD getter that would block for good: the idempotent repeated ON
+    # creates no new key-on effect, so it performs no read and never holds
+    # the admission lock behind getter I/O while RF stays keyed.
+    sim.release = asyncio.Event()
+    repeated = await authority.submit_ptt(True, "local")
+    await repeated.wait_settlement()
+    assert repeated.outcome is ManagedTxOutcome.ACCEPTED
+    assert sim.reads == reads
+    assert not sim.entered.is_set()
+    assert sim.keys == [True]
+    admitted: list[bool] = []
+    async with authority.owned_tx_submission("local") as push:
+        admitted.append(push)
+    assert admitted == [True]
 
 
 @pytest.mark.parametrize(
@@ -401,3 +452,66 @@ async def test_web_queue_refusal_and_retry(setup_radio, monkeypatch, ingress):
             if not accepted:
                 assert writer.payload == TxModInputRefusal("WLAN").as_wire()
         assert sim.keys == ([True] if accepted else [])
+
+
+async def test_ws_ingress_refusal_reply_matches_http(setup_radio, monkeypatch):
+    """The shared refusal reply through the real WS command ingress.
+
+    Pins the exact ``response`` document the real ``ControlHandler``
+    produces for a MOD-input refusal over the websocket — the same
+    ``TxModInputRefusal.as_wire()`` fields the HTTP handler emits (pinned
+    above in ``test_web_queue_refusal_and_retry``). The browser spec
+    ``frontend/src/lib/runtime/tx-controller/__tests__/integration-mod-input-refusal.isolated.test.ts``
+    replays this exact document through the real client/channel and
+    notification path (the owner's shared-replies rule).
+    """
+    from rigplane.runtime._poller_types import (
+        execute_command_queue_entry,
+        execute_positive_tx_queue_entry,
+    )
+    from rigplane.web.server import WebConfig, WebServer
+
+    radio, sim, authority = setup_radio()
+    server = WebServer(radio, WebConfig(host="127.0.0.1", port=0))
+    monkeypatch.setattr(server, "_managed_tx_authority", lambda: authority)
+    server.command_queue.bind_connection_generation(lambda: "simulator")
+    handler = ControlHandler(
+        None,
+        radio,
+        "test",
+        "IC-705",
+        server=server,
+        managed_tx_authority=authority,
+        tx_owner="local",
+    )
+    enqueued = asyncio.Event()
+    original_put = server.command_queue.put_ordered
+
+    def put(*args, **kwargs):
+        result = original_put(*args, **kwargs)
+        enqueued.set()
+        return result
+
+    monkeypatch.setattr(server.command_queue, "put_ordered", put)
+    sent = []
+
+    async def capture(raw):
+        sent.append(json.loads(raw))
+
+    handler._send_direct = capture
+    sim.sources[0] = 3
+    task = asyncio.create_task(handler._dispatch_command("voice-1", "ptt_on", {}))
+    await enqueued.wait()
+    entry = server.command_queue.take_entry()
+    assert entry is not None
+    with pytest.raises(TxModInputRefusal, match="WLAN"):
+        await execute_command_queue_entry(entry, execute_positive_tx_queue_entry)
+    await task
+    assert sent == [
+        {
+            "type": "response",
+            "id": "voice-1",
+            "ok": False,
+            **TxModInputRefusal("WLAN").as_wire(),
+        }
+    ]

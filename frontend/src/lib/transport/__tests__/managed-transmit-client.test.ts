@@ -92,6 +92,15 @@ describe('ManagedTransmitClient', () => {
   it.each([[{ operation: 'unknown', error: 'x' }], [{ operation: 'stop_cw' }], [{ operation: 'stop_cw', error: 'x', extra: true }]])('rejects malformed abort errors', async (abortErrors) => { vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ...document, managedTransmit: { ...document.managedTransmit, abortErrors } }) })); await expect(new ManagedTransmitClient().snapshot()).rejects.toThrow('abortErrors'); });
 });
 
+// MOR-4660 shared producer replies (the owner's shared-replies rule): this
+// document is the exact HTTP 409 body the real managed-transmit handler
+// emits for a MOD-input refusal — `TxModInputRefusal("WLAN").as_wire()` —
+// pinned by the Python replay test
+// `tests/test_usb_tx_mod_input.py::test_web_queue_refusal_and_retry` (latch
+// ingress; the WS `response` twin is pinned by
+// `tests/test_usb_tx_mod_input.py::test_ws_ingress_refusal_reply_matches_http`
+// and replayed through the real channel in
+// `../../runtime/tx-controller/__tests__/integration-mod-input-refusal.isolated.test.ts`).
 const failure: TxModInputFailure = {
   error: 'tx_mod_input',
   message: "The radio takes its microphone from WLAN. Set the radio's MOD input to USB.",
