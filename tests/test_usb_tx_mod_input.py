@@ -97,6 +97,11 @@ async def setup_radio(monkeypatch, tmp_path, virtual_clock):
     def create(model="IC-705"):
         radio = fake_connected(UsbSimulatorRadio("", model=model))
         sim = ModInputSimulator(radio)
+        # ``_check_connected`` gates every getter the MOD-input read chains
+        # through (get_split, the 0x25/0x26 VFO reads, the 0x1A getter) and
+        # requires a live transport marker; every send is monkeypatched to
+        # the simulator below, so the simulator itself stands in.
+        radio._civ_transport = sim
         monkeypatch.setattr(radio, "_send_civ_expect", sim.read)
         monkeypatch.setattr(radio, "_send_civ_raw", sim.write)
         authority = ManagedTxAuthority(
