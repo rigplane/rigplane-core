@@ -153,6 +153,8 @@ class ControllerAuthority:
 
     def status(self, *, momentary_only: bool = False) -> ControllerStatus:
         self._expire()
+        if self._state == "blocked" and self._is_ready():
+            self._state = "idle"
         return {
             "protocol_version": 1,
             "mode": self.mode,
@@ -205,7 +207,7 @@ class ControllerAuthority:
             return self._open_session(client)
         if self._taking_back or self._state in ("held", "revoking"):
             raise ControllerError("controller_busy", 409)
-        if self._state == "blocked" or not self._is_ready():
+        if not self._is_ready():
             raise ControllerError("controller_not_ready", 503)
         self.generation += 1
         self._key = secrets.token_hex(32)

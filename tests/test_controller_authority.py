@@ -16,6 +16,7 @@ from rigplane.runtime._poller_types import (
 )
 from rigplane.runtime.controller_authority import ControllerAuthority, ControllerError
 from rigplane.runtime.managed_tx_state import ActuationOperation, ManagedTxOutcome
+from rigplane.testing.timing import VirtualClock
 
 
 class Safety:
@@ -202,6 +203,95 @@ async def test_arm_and_acquire_fail_closed_with_unsafe_radio() -> None:
     safety.safe = False
     with pytest.raises(ControllerError, match="controller_not_ready"):
         authority.acquire("browser")
+
+
+@pytest.mark.timeout(5)
+@pytest.mark.parametrize("read_status", [False, True])
+async def test_blocked_grant_recovers_when_readiness_settles(
+    virtual_clock: VirtualClock, read_status: bool
+) -> None:
+    safety = Safety()
+    authority = ControllerAuthority(
+        ready=lambda: safety.safe, cleanup=safety.cleanup, clock=virtual_clock
+    )
+    await authority.set_mode("remote")
+    old = authority.acquire("pro")
+    ticket = authority.attach(old["controller_key"], "primary", "old")
+    try:
+        safety.safe = False
+        authority.detach(ticket)
+        await authority.settle()
+        blocked = authority.status()
+        assert blocked["state"] == "blocked"
+        for _ in range(2):
+            assert authority.status()["state"] == "blocked"
+            with pytest.raises(
+                ControllerError, match="controller_not_ready"
+            ) as refused:
+                authority.acquire("pro")
+            assert refused.value.status == 503
+
+        safety.safe = True
+        if read_status:
+            recovered = authority.status()
+            assert recovered["state"] == "idle"
+            assert recovered["generation"] == blocked["generation"]
+            assert recovered["remaining_ms"] == 0
+        fresh = authority.acquire("pro")
+        assert fresh["generation"] > old["generation"]
+        assert fresh["controller_key"] != old["controller_key"]
+        assert authority.status()["state"] == "held"
+        with pytest.raises(ControllerError, match="controller_invalid"):
+            authority.credential(old["controller_key"])
+        with pytest.raises(ControllerError, match="controller_invalid"):
+            authority.validate(ticket)
+        assert safety.cleanups == 1
+    finally:
+        safety.safe = True
+        authority.revoke()
+        await authority.settle()
+
+
+@pytest.mark.timeout(5)
+@pytest.mark.parametrize("ready_at_settlement", [False, True])
+async def test_readiness_flip_during_revoking_cannot_admit_a_grant(
+    virtual_clock: VirtualClock, ready_at_settlement: bool
+) -> None:
+    safety = Safety()
+    authority = ControllerAuthority(
+        ready=lambda: safety.safe, cleanup=safety.cleanup, clock=virtual_clock
+    )
+    await authority.set_mode("remote")
+    grant = authority.acquire("pro")
+    ticket = authority.attach(grant["controller_key"], "primary", "old")
+    safety.safe = False
+    safety.cleanup_release.clear()
+    authority.revoke()
+    try:
+        await safety.cleanup_started.wait()
+        safety.safe = True
+        assert authority.status()["state"] == "revoking"
+        with pytest.raises(ControllerError, match="controller_busy") as refused:
+            authority.acquire("pro")
+        assert refused.value.status == 409
+        with pytest.raises(ControllerError, match="controller_invalid"):
+            authority.validate(ticket)
+        safety.safe = ready_at_settlement
+        safety.cleanup_release.set()
+        await authority.settle()
+        assert authority.status()["state"] == (
+            "idle" if ready_at_settlement else "blocked"
+        )
+        assert safety.cleanups == 1
+        if not ready_at_settlement:
+            with pytest.raises(
+                ControllerError, match="controller_not_ready"
+            ) as refused:
+                authority.acquire("pro")
+            assert refused.value.status == 503
+    finally:
+        safety.cleanup_release.set()
+        await authority.settle()
 
 
 async def test_queue_captures_currency_even_when_local_and_safe_off_survives() -> None:
