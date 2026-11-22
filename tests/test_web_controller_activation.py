@@ -22,8 +22,11 @@ from rigplane.runtime.managed_tx_composition import (
     install_managed_tx_composition,
 )
 from rigplane.runtime.managed_tx_state import ManagedTxIntentKind, ManagedTxOutcome
+from rigplane.testing.timing import VirtualClock
 from rigplane.web import server as server_module
+from rigplane.web.channel_attach import ClientChannelParams
 from rigplane.web.server import WebConfig, WebServer
+from rigplane.web.transport.connection import Connection
 from rigplane.web.web_startup import (
     _validate_managed_tx,
     attach_managed_tx_composition,
@@ -86,6 +89,84 @@ async def production_station(tmp_path):
         server._controller.revoke()
         await server._controller.settle()
         await composition.shutdown(asyncio.Event())
+
+
+class _ClosingControlConnection(Connection):
+    def __init__(self) -> None:
+        self.sent: list[str] = []
+        self.received = False
+        self.closed = False
+
+    async def recv(self) -> tuple[int, bytes]:
+        self.received = True
+        raise EOFError
+
+    async def send_text(self, text: str) -> None:
+        self.sent.append(text)
+
+    async def send_binary(self, data: bytes) -> None:
+        raise AssertionError("unexpected binary control frame")
+
+    async def close(self, code: int = 1000, reason: str = "") -> None:
+        self.abort()
+
+    def abort(self) -> None:
+        self.closed = True
+
+    def is_alive(self) -> bool:
+        return not self.closed
+
+
+@pytest.mark.timeout(5)
+async def test_remote_attach_can_reconnect_after_late_observed_ptt_off(
+    production_station: tuple[_IcomActuator, ManagedTxComposition, WebServer],
+    virtual_clock: VirtualClock,
+) -> None:
+    radio, composition, server = production_station
+    armed = await request(server, "POST", "/api/v1/controller/mode", {"mode": "remote"})
+    assert armed.status == 200
+    acquired = await request(server, "POST", "/api/v1/controller", {"kind": "pro"})
+    assert acquired.status == 201
+    old_key = acquired.payload["controller_key"]
+    observe_ptt(server, ObservedPtt.ON)
+    closed = _ClosingControlConnection()
+    await server.attach_client_channel(
+        closed,
+        "control",
+        ClientChannelParams(controller_key=old_key),
+        ("remote-peer", 0),
+        transport="datachannel",
+    )
+    assert closed.received
+    assert json.loads(closed.sent[0])["type"] == "hello"
+    await server._controller.settle()
+    assert radio.wire[-1] is False
+    assert composition.authority.controller_quiescent()
+    assert not server._controller_handler_tasks
+    assert server._controller.status()["state"] == "blocked"
+    refused = await request(server, "POST", "/api/v1/controller", {"kind": "pro"})
+    assert refused.status == 503
+    assert refused.payload == {"error": "controller_not_ready"}
+
+    observe_ptt(server, ObservedPtt.OFF)
+    fresh = await request(server, "POST", "/api/v1/controller", {"kind": "pro"})
+    assert fresh.status == 201
+    assert fresh.payload["controller_key"] != old_key
+    assert fresh.payload["generation"] > acquired.payload["generation"]
+    with pytest.raises(ControllerError, match="controller_invalid"):
+        server._controller.credential(old_key)
+    reconnected = _ClosingControlConnection()
+    await server.attach_client_channel(
+        reconnected,
+        "control",
+        ClientChannelParams(controller_key=fresh.payload["controller_key"]),
+        ("remote-peer", 0),
+        transport="datachannel",
+    )
+    assert reconnected.received
+    assert json.loads(reconnected.sent[0])["type"] == "hello"
+    await server._controller.settle()
+    assert server._controller.status()["state"] == "idle"
 
 
 async def test_complete_production_composition_admits_host_remote_and_fences_old_input(
