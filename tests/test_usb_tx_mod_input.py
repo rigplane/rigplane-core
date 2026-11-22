@@ -94,8 +94,9 @@ class ModInputSimulator:
 @pytest.fixture
 async def setup_radio(monkeypatch, tmp_path, virtual_clock):
     authorities = []
+    leases = []
 
-    def create(model="IC-705"):
+    async def create(model="IC-705", *, tx_audio=True):
         radio = fake_connected(UsbSimulatorRadio("", model=model))
         sim = ModInputSimulator(radio)
         # ``_check_connected`` gates every getter the MOD-input read chains
@@ -113,9 +114,19 @@ async def setup_radio(monkeypatch, tmp_path, virtual_clock):
             clock=virtual_clock,
         )
         authorities.append(authority)
+        if tx_audio:
+            # The MOD-input check is scoped to a key-on whose TX audio the
+            # station routes into the radio (MOR-4660 round 2): the web TX
+            # handler and the AudioBridge both hold an AudioSession TX lease
+            # for exactly that, so the fixture holds one through the real
+            # producer. A bare lease arms nothing on the transport (the
+            # lone-TX arm is deferred), so this performs no radio I/O.
+            leases.append(await radio.audio_session.acquire_tx("test-tx-audio"))
         return radio, sim, authority
 
     yield create
+    for lease in leases:
+        await lease.release()
     for authority in authorities:
         await authority.force_off()
         await authority.close()
@@ -135,7 +146,7 @@ async def setup_radio(monkeypatch, tmp_path, virtual_clock):
 async def test_six_profile_mappings_refuse_then_retry(
     setup_radio, model, usb, register
 ):
-    radio, sim, authority = setup_radio(model)
+    radio, sim, authority = await setup_radio(model)
     assert (
         parse_civ_frame(
             radio._commands.get_data_off_mod_input(to_addr=radio._radio_addr)
@@ -167,7 +178,7 @@ async def test_native_cw_with_mic_input_still_keys(setup_radio, model, mode):
     # Native CW keys its carrier; its TX audio never comes from the DATA
     # OFF MOD input, so DATA OFF MOD = MIC must not refuse ordinary CAT PTT
     # (MOR-4660 round-2: the refusal is for MOD-input transmission only).
-    _, sim, authority = setup_radio(model)
+    _, sim, authority = await setup_radio(model)
     sim.mode = mode
     sim.sources[0] = 0  # DATA OFF MOD = MIC
     receipt = await authority.submit_ptt(True, "local")
@@ -178,10 +189,69 @@ async def test_native_cw_with_mic_input_still_keys(setup_radio, model, mode):
     assert sim.reads == []
 
 
+# Every profile that declares a MOD input, with the value that selects USB.
+_SIX_MOD_INPUT_PROFILES = [
+    ("IC-705", 1),
+    ("IC-7300", 3),
+    ("IC-7300MK2", 1),
+    ("IC-7610", 3),
+    ("IC-905", 1),
+    ("IC-9700", 3),
+]
+
+
+@pytest.mark.parametrize("model,_usb", _SIX_MOD_INPUT_PROFILES)
+async def test_cat_only_key_on_never_reads_the_mod_input(setup_radio, model, _usb):
+    # A managed key-on with no station TX audio behind it (a digital
+    # client's CAT PTT — no AudioSession TX lease) carries no USB-routed TX
+    # audio, so the MOD input is irrelevant to it: no read, no refusal, even
+    # with DATA OFF MOD = MIC (MOR-4660 round 2 — the serial managed-TX
+    # regressions).
+    _, sim, authority = await setup_radio(model, tx_audio=False)
+    sim.sources[0] = 0  # DATA OFF MOD = MIC
+    receipt = await authority.submit_ptt(True, "local")
+    await receipt.wait_settlement()
+    assert receipt.outcome is ManagedTxOutcome.ACCEPTED
+    assert sim.keys == [True]
+    assert sim.reads == []
+
+
+@pytest.mark.parametrize("model,usb", _SIX_MOD_INPUT_PROFILES)
+@pytest.mark.parametrize("family", ["ssb", "cw", "data"])
+async def test_mod_input_check_per_mode_family(setup_radio, model, usb, family):
+    # One row per mode family for every MOD-input profile, through the real
+    # managed-TX ingress (adviser, MOR-4660 round 2): SSB voice is refused
+    # when the MOD input is not USB; native CW (keys its carrier) and DATA
+    # (its group's MOD input already USB) key untouched.
+    _, sim, authority = await setup_radio(model)
+    if family == "cw":
+        sim.mode = 3  # CW
+        sim.sources[0] = 0  # DATA OFF MOD = MIC: must stay untouched
+    elif family == "data":
+        sim.data = [1, 0]  # selected VFO in DATA1
+        sim.sources[1] = usb  # DATA1 MOD = USB
+    else:
+        sim.sources[0] = 0  # DATA OFF MOD = MIC
+    if family == "ssb":
+        with pytest.raises(TxModInputRefusal, match="Set the radio's MOD input to USB"):
+            await authority.submit_ptt(True, "local")
+        assert sim.keys == []
+        return
+    receipt = await authority.submit_ptt(True, "local")
+    await receipt.wait_settlement()
+    assert receipt.outcome is ManagedTxOutcome.ACCEPTED
+    assert sim.keys == [True]
+    # CW never reads the MOD register; DATA reads only its own group's.
+    if family == "cw":
+        assert sim.reads == []
+    else:
+        assert sim.reads == ["get_data1_mod_input"]
+
+
 async def test_repeated_on_during_transmission_reads_nothing_and_audio_continues(
     setup_radio,
 ):
-    _, sim, authority = setup_radio()
+    _, sim, authority = await setup_radio()
     sim.sources[0] = 1
     receipt = await authority.submit_ptt(True, "local")
     await receipt.wait_settlement()
@@ -216,7 +286,7 @@ async def test_repeated_on_during_transmission_reads_nothing_and_audio_continues
     ],
 )
 async def test_transmitting_vfo_data_group(setup_radio, split, data, group):
-    _, sim, authority = setup_radio("IC-7610")
+    _, sim, authority = await setup_radio("IC-7610")
     sim.split, sim.data = split, data
     sim.sources[group] = 3
     receipt = await authority.submit_ptt(True, "local")
@@ -232,7 +302,7 @@ async def test_transmitting_vfo_data_group(setup_radio, split, data, group):
     [(3, False, "WLAN"), (9, False, "unknown (9)"), (0, True, None)],
 )
 async def test_refusal_reason_and_wire(setup_radio, source, failure, expected):
-    _, sim, authority = setup_radio()
+    _, sim, authority = await setup_radio()
     sim.sources[0], sim.failure = source, failure
     with pytest.raises(TxModInputRefusal) as caught:
         await authority.submit_ptt(True, "local")
@@ -242,7 +312,7 @@ async def test_refusal_reason_and_wire(setup_radio, source, failure, expected):
 
 
 async def test_cancel_read_and_retry_leaves_no_effect(setup_radio):
-    _, sim, authority = setup_radio()
+    _, sim, authority = await setup_radio()
     sim.release = asyncio.Event()
     task = authority.start_ptt_submission(True, "local")
     await sim.entered.wait()
@@ -262,7 +332,7 @@ async def test_cancel_read_and_retry_leaves_no_effect(setup_radio):
 
 
 async def test_unkey_during_read_prevents_late_key(setup_radio):
-    _, sim, authority = setup_radio()
+    _, sim, authority = await setup_radio()
     sim.sources[0] = 1
     sim.release = asyncio.Event()
     task = authority.start_ptt_submission(True, "local")
@@ -275,7 +345,7 @@ async def test_unkey_during_read_prevents_late_key(setup_radio):
 
 
 async def test_web_failure_preserves_typed_reason(setup_radio):
-    radio, sim, authority = setup_radio()
+    radio, sim, authority = await setup_radio()
     sim.sources[0] = 3
     handler = ControlHandler(None, radio, "test", "IC-705")
     sent = []
@@ -293,7 +363,7 @@ async def test_web_failure_preserves_typed_reason(setup_radio):
 
 
 async def test_support_log_contains_same_reason(setup_radio, caplog, tmp_path):
-    _, sim, authority = setup_radio()
+    _, sim, authority = await setup_radio()
     sim.sources[0] = 3
     with pytest.raises(TxModInputRefusal) as caught:
         await authority.submit_ptt(True, "local")
@@ -319,7 +389,7 @@ async def test_support_log_contains_same_reason(setup_radio, caplog, tmp_path):
 
 
 async def test_remote_controller_refusal_retry(setup_radio, virtual_clock):
-    _, sim, authority = setup_radio()
+    _, sim, authority = await setup_radio()
 
     async def cleanup():
         await authority.force_off()
@@ -347,7 +417,7 @@ async def test_remote_controller_refusal_retry(setup_radio, virtual_clock):
 
 
 async def test_latch_refuses_before_key(setup_radio):
-    _, sim, authority = setup_radio()
+    _, sim, authority = await setup_radio()
     with pytest.raises(TxModInputRefusal):
         await authority.submit_transmit_on()
     assert not sim.keys
@@ -358,7 +428,7 @@ async def test_latch_refuses_before_key(setup_radio):
 
 
 async def test_read_timeout_refuses_and_cleans(setup_radio, virtual_clock):
-    _, sim, authority = setup_radio()
+    _, sim, authority = await setup_radio()
     sim.release = asyncio.Event()
     task = authority.start_ptt_submission(True, "local")
     await sim.entered.wait()
@@ -374,7 +444,7 @@ async def test_read_timeout_refuses_and_cleans(setup_radio, virtual_clock):
 
 @pytest.mark.parametrize("model", ["FTX-1", "FT-991A", "X6200", "G7250"])
 async def test_profile_without_mod_input_skips_read(setup_radio, model):
-    radio, sim, _ = setup_radio()
+    radio, sim, _ = await setup_radio()
     radio._profile = resolve_radio_profile(model=model)
     assert radio._profile.data_mode_inputs is None
     await radio.check_tx_audio_input()
@@ -382,7 +452,7 @@ async def test_profile_without_mod_input_skips_read(setup_radio, model):
 
 
 async def test_lan_route_skips_usb_check(setup_radio, monkeypatch):
-    radio, sim, _ = setup_radio()
+    radio, sim, _ = await setup_radio()
     monkeypatch.setattr(UsbSimulatorRadio, "backend_id", IcomRadio.backend_id)
     await radio.check_tx_audio_input()
     assert sim.reads == []
@@ -397,7 +467,7 @@ async def test_web_queue_refusal_and_retry(setup_radio, monkeypatch, ingress):
     from rigplane.web.server import WebConfig, WebServer
     from test_managed_tx_http_route import _Writer, _reader
 
-    radio, sim, authority = setup_radio()
+    radio, sim, authority = await setup_radio()
     server = WebServer(radio, WebConfig(host="127.0.0.1", port=0))
     monkeypatch.setattr(server, "_managed_tx_authority", lambda: authority)
     server.command_queue.bind_connection_generation(lambda: "simulator")
@@ -471,7 +541,7 @@ async def test_ws_ingress_refusal_reply_matches_http(setup_radio, monkeypatch):
     )
     from rigplane.web.server import WebConfig, WebServer
 
-    radio, sim, authority = setup_radio()
+    radio, sim, authority = await setup_radio()
     server = WebServer(radio, WebConfig(host="127.0.0.1", port=0))
     monkeypatch.setattr(server, "_managed_tx_authority", lambda: authority)
     server.command_queue.bind_connection_generation(lambda: "simulator")

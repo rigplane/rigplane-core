@@ -555,6 +555,11 @@ class ManagedTxAuthority:
     ) -> ManagedTxTransition:
         """Gate a newly committed key-on on the radio's MOD input (MOR-4660).
 
+        The radio-side check self-scopes to a key-on whose TX audio the
+        station routes over the radio's USB audio path (a held AudioSession
+        TX lease); a CAT-only key-on performs no MOD read at all and can
+        never be refused here (MOR-4660 round 2).
+
         Runs holding ``_tx_admission_lock`` but NOT ``_lock``, after the
         transition committed and before its effect dispatches. A transition
         carrying no key-on effect — an idempotent repeated ON while the

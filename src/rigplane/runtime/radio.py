@@ -26,6 +26,7 @@ if TYPE_CHECKING:
     from typing import Any
 
     from rigplane._runtime_protocols import ControlPhaseHost
+    from rigplane.audio.session import AudioSession
     from rigplane.core.acquisition_scheduler import RadioStateModelService
     from rigplane.core.tx_safety import ProviderPttObservation
     from rigplane.runtime.local_tx_work import LocalTxWorkRunner
@@ -1525,6 +1526,23 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             self._audio_session = AudioSession(self)
             self._audio_session.add_listener(self._on_audio_session_event)
         return self._audio_session
+
+    @property
+    def _tx_audio_demand(self) -> int:
+        """TX-audio leases the station currently holds on this radio.
+
+        The MOR-4660 MOD-input refusal is scoped to a key-on whose TX audio
+        the station itself routes into the radio: the web TX handler and the
+        AudioBridge both take an :class:`AudioSession` TX lease for exactly
+        that, so a held lease IS "TX audio routed over this radio's audio
+        path" (MOR-579: a held lease is TX demand). A key-on with no lease
+        behind it — CAT-only PTT from a digital client or a managed key with
+        no browser audio — carries no station TX audio, so the MOD input is
+        irrelevant to it and must not be read (MOR-4660 round 2). Reads the
+        lazy singleton WITHOUT creating it: no session, no demand.
+        """
+        session: AudioSession | None = self._audio_session
+        return 0 if session is None else session.tx_demand
 
     def _on_audio_session_event(self, event: Any) -> None:
         """AudioSession listener: repair a LAN audio-only death (MOR-3401).
@@ -4453,6 +4471,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         if (
             not inputs
             or resolve_audio_route(self).tx_audio_source is not TxAudioSource.USB
+            or self._tx_audio_demand == 0
         ):
             return
         source = None
