@@ -11,6 +11,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.3.0rc6] — 2026-11-21
+
+Sixth release candidate of 3.3.0: v3.3.0rc5 plus the fix below.
+
+### Fixed
+
+- After a remote session ended while transmitting, the station could keep refusing new remote connections (`controller_not_ready`) until it was restarted; the remote controller grant is now re-evaluated when its status is read and when a new grant is requested. (MOR-4653, #4753)
+
 ## [3.3.0rc5] — 2026-11-21
 
 Fifth release candidate of 3.3.0: v3.3.0rc4 plus the changes below. The command-ACK ordering change prepared for this candidate (#4739) was reverted before tagging (#4746).
@@ -5400,7 +5408,8 @@ These deprecation closures were announced in v0.19 and dropped on schedule.
 - Transport layer, authentication, CI-V commands, meters, PTT, keep-alive.
 - Clean-room Icom LAN UDP protocol implementation.
 
-[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.3.0rc5...HEAD
+[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.3.0rc6...HEAD
+[3.3.0rc6]: https://github.com/rigplane/rigplane-core/compare/v3.3.0rc5...v3.3.0rc6
 [3.3.0rc5]: https://github.com/rigplane/rigplane-core/compare/v3.3.0rc4...v3.3.0rc5
 [3.3.0rc4]: https://github.com/rigplane/rigplane-core/compare/v3.3.0rc3...v3.3.0rc4
 [3.3.0rc3]: https://github.com/rigplane/rigplane-core/compare/v3.3.0rc1...v3.3.0rc3
