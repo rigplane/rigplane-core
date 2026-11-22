@@ -96,6 +96,7 @@ from ..core.tx_observation import (
     TxMeterLog,
     project_observed_ptt,
 )
+from rigplane.runtime.managed_tx_effect_lane import TxModInputRefusal
 from ..runtime.controller_authority import (
     ControllerAuthority,
     ControllerError,
@@ -5956,7 +5957,12 @@ class WebServer:
             except ControllerError as exc:
                 # Controller currency failed after routing (MOR-3534): e.g. ended.
                 await self._send_json(
-                    writer, exc.status, "Forbidden", {"error": exc.code}
+                    writer,
+                    exc.status,
+                    "Forbidden",
+                    exc.as_wire()
+                    if isinstance(exc, TxModInputRefusal)
+                    else {"error": exc.code},
                 )
                 return
             except CommandError:

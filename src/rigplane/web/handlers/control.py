@@ -36,6 +36,7 @@ from ...core.exceptions import (
 from ...core.exceptions import TimeoutError as RigplaneTimeoutError
 from ...core.state_pipeline_contracts import CommandIntent, CommandSource, FieldPath
 from ...core.types import MemoryProfile
+from rigplane.runtime.managed_tx_effect_lane import TxModInputRefusal
 from ...runtime.controller_authority import ControllerAuthority, ControllerError
 from ...core.state_store import FreshnessState, StateStore
 from ..monitor_mute import MonitorMuteState, apply_monitor_mute  # noqa: TID251
@@ -1786,6 +1787,18 @@ class ControlHandler:
         else:
             logger.warning("control: command %r failed: %s", name, exc)
         message = str(exc)
+        if isinstance(exc, TxModInputRefusal):
+            await self._send_direct(
+                encode_json(
+                    {
+                        "type": "response",
+                        "id": cmd_id,
+                        "ok": False,
+                        **exc.as_wire(),
+                    }
+                )
+            )
+            return
         if isinstance(exc, CwTextSendCancelledError):
             # MOR-3700: a CW stop or a transmit abort ended the send.
             error = "command_cancelled"

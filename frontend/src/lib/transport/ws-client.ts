@@ -12,6 +12,7 @@ import { controllerClient, ControllerClientError, CONTROLLER_TOAST_CODES } from 
 import { applyStateDelta, stateDeltaOps } from './state-delta';
 import type { MessageTransport } from './message-transport';
 import { createMessageTransport } from './transport-factory';
+import { usbTxModInputMessage } from './managed-transmit-client';
 
 export type ConnectionState = 'disconnected' | 'connecting' | 'connected' | 'reconnecting';
 export interface ControlSessionTransition {
@@ -385,7 +386,7 @@ export class WsChannel {
             console.error(`[ws] error from server (id=${msg.id}): ${msg.message}`);
           } else if (msg.type === 'response') {
             if (msg.ok === false) {
-              const errorMsg = msg.message || msg.error || 'Command failed';
+              const errorMsg = usbTxModInputMessage(raw) || msg.message || msg.error || 'Command failed';
               console.error(`[ws] command ${msg.id} failed (${msg.error ?? "command_failed"}): ${errorMsg}`);
               for (const h of this.messageHandlers) {
                 h({ type: 'notification', level: 'error', message: errorMsg, category: 'command' } as any);

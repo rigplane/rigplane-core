@@ -107,7 +107,9 @@ export function createManagedBrowserDependencies() {
       const code = error instanceof ManagedTransmitError ? error.code
         : error === undefined ? 'tx_request_rejected' : 'tx_request_failed';
       console.warn(`[tx] Latch start refused: ${code}`);
-      if (code === 'controller_tx_unsupported') {
+      if (code === 'tx_mod_input' && error instanceof ManagedTransmitError) {
+        emitLocalNotification('error', error.message);
+      } else if (code === 'controller_tx_unsupported') {
         emitLocalNotification('error', 'Hold PTT to transmit on this connection.', 'txPressToTalkRequired');
       } else if (code === 'read_only') {
         emitLocalNotification('error', 'This station is in read-only mode.', 'txReadOnly');

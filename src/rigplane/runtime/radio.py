@@ -4445,6 +4445,37 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         abort = self._ABORT_COMMANDS.get(operation)
         return abort is not None and self.supports_command(abort[0])
 
+    async def check_tx_audio_input(self) -> None:
+        from rigplane.audio.route import TxAudioSource, resolve_audio_route
+        from rigplane.runtime.managed_tx_effect_lane import TxModInputRefusal
+
+        inputs = self._profile.data_mode_inputs
+        if (
+            not inputs
+            or resolve_audio_route(self).tx_audio_source is not TxAudioSource.USB
+        ):
+            return
+        source = None
+        try:
+            usb = next(value for value, name in inputs if name == "USB")
+            split = await self.get_split(strict=True)
+            vfo = await self.read_relative_vfo(selected=not split)
+            group = vfo.data_mode
+            if not 0 <= group <= self._profile.data_mode_count:
+                raise ValueError("unknown DATA group")
+            getter = (
+                "get_data_off_mod_input" if group == 0 else f"get_data{group}_mod_input"
+            )
+            value = await getattr(self, getter)()
+            if value == usb:
+                return
+            source = dict(inputs).get(value, f"unknown ({value})")
+        except Exception:
+            pass
+        refusal = TxModInputRefusal(source)
+        logger.warning("managed TX refused: %s", refusal)
+        raise refusal
+
     async def actuate(
         self,
         token: EffectToken,

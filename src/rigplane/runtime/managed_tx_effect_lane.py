@@ -6,8 +6,9 @@ import asyncio
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any, Protocol, TypeAlias, runtime_checkable
+from typing import Any, Literal, Protocol, TypedDict, TypeAlias, runtime_checkable
 
+from rigplane.runtime.controller_authority import ControllerError
 from rigplane.runtime.managed_tx_state import (
     AbortFailed,
     AbortOperation,
@@ -39,6 +40,34 @@ class ManagedTxActuator(Protocol):
         *,
         is_current: Callable[[], bool],
     ) -> ActuationResult: ...
+
+
+class TxModInputFailure(TypedDict):
+    error: Literal["tx_mod_input"]
+    message: str
+    source: str | None
+
+
+class TxModInputRefusal(ControllerError):
+    def __init__(self, source: str | None = None) -> None:
+        super().__init__("tx_mod_input", 409)
+        self.source = source
+        self.args = (
+            (
+                f"The radio takes its microphone from {source}. "
+                if source is not None
+                else "The radio's microphone input could not be read. "
+            )
+            + "Set the radio's MOD input to USB.",
+        )
+
+    def as_wire(self) -> TxModInputFailure:
+        return {"error": "tx_mod_input", "message": str(self), "source": self.source}
+
+
+@runtime_checkable
+class TxAudioInputCheck(Protocol):
+    async def check_tx_audio_input(self) -> None: ...
 
 
 @runtime_checkable
@@ -102,6 +131,10 @@ class ManagedTxEffectLane:
         self._release_token: EffectToken | None = None
         self._isolation: tuple[int, asyncio.Task[None], bool] | None = None
         self._displaced: dict[asyncio.Task[None], _Claim] = {}
+
+    async def check_tx_audio_input(self) -> None:
+        if isinstance(self._actuator, TxAudioInputCheck):
+            await self._actuator.check_tx_audio_input()
 
     async def settle(
         self,

@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { ManagedTransmitClient } from '../managed-transmit-client';
+import { ManagedTransmitClient, usbTxModInputMessage, type TxModInputFailure } from '../managed-transmit-client';
+import { setLocale } from '../../i18n';
+import { _resetLocale } from '../../i18n/store.svelte';
 const document = { schemaVersion: 1, sampledAt: '2026-09-04T00:00:00.000Z', managedTransmit: { status: 'available', intent: { kind: 'rx' }, releaseRequired: false, lastError: null, lastActuation: null, abortErrors: [], tot: { configuredSeconds: 180, active: true, remainingMs: 900, expiresAt: 'ignored' } }, txObservation: { observedPtt: 'unknown' } };
 
 describe('ManagedTransmitClient credential-free HTTP', () => {
@@ -76,7 +78,7 @@ describe('ManagedTransmitClient credential-free HTTP', () => {
 
   it('preserves a command rejection without application credentials', async () => {
     localStorage.setItem('rigplane-auth-token', 'synthetic-test-token');
-    const fetchMock = vi.fn().mockResolvedValue({ ok: false, status: 409 });
+    const fetchMock = vi.fn().mockResolvedValue(new Response('{}', { status: 409 }));
     vi.stubGlobal('fetch', fetchMock);
     await expect(new ManagedTransmitClient().command('force_off')).resolves.toBe('rejected');
     expect(new Headers(fetchMock.mock.calls[0][1].headers).get('Authorization')).toBeNull();
@@ -88,4 +90,42 @@ describe('ManagedTransmitClient', () => {
   it('rejects a malformed document rather than deriving legacy truth', async () => { vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ...document, txObservation: { observedPtt: true } }) })); await expect(new ManagedTransmitClient().snapshot()).rejects.toThrow('txObservation.observedPtt'); });
   it.each([{ operation: 'unknown', result: 'accepted', attemptId: 'x' }, { operation: 'ptt_on', result: 'future', attemptId: 'x' }, { operation: 'ptt_on', result: 'accepted' }])('rejects malformed last actuation', async (lastActuation) => { vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ...document, managedTransmit: { ...document.managedTransmit, lastActuation } }) })); await expect(new ManagedTransmitClient().snapshot()).rejects.toThrow('lastActuation'); });
   it.each([[{ operation: 'unknown', error: 'x' }], [{ operation: 'stop_cw' }], [{ operation: 'stop_cw', error: 'x', extra: true }]])('rejects malformed abort errors', async (abortErrors) => { vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ...document, managedTransmit: { ...document.managedTransmit, abortErrors } }) })); await expect(new ManagedTransmitClient().snapshot()).rejects.toThrow('abortErrors'); });
+});
+
+const failure: TxModInputFailure = {
+  error: 'tx_mod_input',
+  message: "The radio takes its microphone from WLAN. Set the radio's MOD input to USB.",
+  source: 'WLAN',
+};
+
+describe('USB TX MOD input refusal', () => {
+  afterEach(() => { vi.unstubAllGlobals(); localStorage.clear(); _resetLocale(); });
+  it.each([
+    ['en-US', "The radio takes its microphone from WLAN. Set the radio's MOD input to USB.", "The radio's microphone input could not be read. Set the radio's MOD input to USB."],
+    ['ru-RU', 'Трансивер получает звук для передачи со входа WLAN. Установите MOD input трансивера в USB.', 'Не удалось прочитать настройку входа микрофона трансивера. Установите MOD input трансивера в USB.'],
+    ['ja-JP', '無線機のマイク入力は WLAN です。無線機の MOD 入力を USB に設定してください。', '無線機のマイク入力設定を読み取れませんでした。無線機の MOD 入力を USB に設定してください。'],
+  ] as const)('renders %s mismatch and read failure', (locale, mismatch, unreadable) => {
+    setLocale(locale);
+    expect(usbTxModInputMessage(failure)).toBe(mismatch);
+    expect(usbTxModInputMessage({ ...failure, source: null })).toBe(unreadable);
+    expect(usbTxModInputMessage({ ...failure, source: 'unknown (9)' })).toContain('unknown (9)');
+  });
+
+  it.each([null, {}, { error: 'other' }, { ...failure, source: 3 }, { error: 'tx_mod_input' }])('preserves generic failure handling for %j', (body) => {
+    expect(usbTxModInputMessage(body)).toBeNull();
+  });
+});
+
+
+describe('ManagedTransmitClient MOD refusal delivery', () => {
+  afterEach(() => { vi.unstubAllGlobals(); localStorage.clear(); _resetLocale(); });
+
+  it('preserves an actionable localized reason on HTTP 409', async () => {
+    setLocale('ru-RU');
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify(failure), { status: 409 })));
+    await expect(new ManagedTransmitClient().command('transmit_on')).rejects.toMatchObject({
+      code: 'tx_mod_input', status: 409,
+      message: 'Трансивер получает звук для передачи со входа WLAN. Установите MOD input трансивера в USB.',
+    });
+  });
 });

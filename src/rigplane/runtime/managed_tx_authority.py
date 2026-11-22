@@ -21,7 +21,11 @@ from rigplane.runtime.managed_tx_config import (
     ManagedTxTotConfig,
     ManagedTxTotConfigStore,
 )
-from rigplane.runtime.managed_tx_effect_lane import ManagedTxEffectLane
+from rigplane.runtime.managed_tx_effect_lane import (
+    ManagedTxEffectLane,
+    TxAudioInputCheck,
+    TxModInputRefusal,
+)
 from rigplane.runtime.managed_tx_fence import TxAbortFence, TxAbortResult
 from rigplane.runtime.managed_tx_state import (
     AbortOperation,
@@ -408,6 +412,14 @@ class ManagedTxAuthority:
                 # admitted frame's push and this keying transition can never
                 # interleave.
                 async with self._tx_admission_lock:
+                    try:
+                        async with asyncio.timeout(self._attempt_timeout):
+                            if isinstance(self._lane, TxAudioInputCheck):
+                                await self._lane.check_tx_audio_input()
+                    except TimeoutError as exc:
+                        mod_refusal = TxModInputRefusal()
+                        logger.warning("managed TX refused: %s", mod_refusal)
+                        raise mod_refusal from exc
                     async with self._lock:
                         self._require_ingress_open_locked()
                         if controller_ticket is not None:
