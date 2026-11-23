@@ -44,14 +44,17 @@ import asyncio
 import contextlib
 import logging
 import uuid
-from typing import TYPE_CHECKING, Any, Final, cast
+from typing import TYPE_CHECKING, Any, Final
 
 from ...runtime.controller_authority import ControllerError  # noqa: TID251
 from ...ws import WS_OP_TEXT  # noqa: TID251
 from ..channel_attach import (  # noqa: TID251
     ATTACH_ACK_KINDS,
+    RIGCTL_VERSIONS,
     ChannelKind,
     ClientChannelParams,
+    RigctlAttachErrorCode,
+    RigctlAttachErrorV1,
     data_channel_spec,
 )
 from .webrtc_contract import IceCandidateInit, WebRtcAnswer  # noqa: TID251
@@ -99,17 +102,19 @@ class _Session:
 
     def __init__(self, pc: RTCPeerConnection) -> None:
         self.pc = pc
-        self.tasks: list[asyncio.Task[None]] = []
+        self.tasks: set[asyncio.Task[None]] = set()
         # Each attachment tracks its own owners, even when siblings share a key.
         self.controller_owners: dict[WebRtcDataChannelConnection, set[str]] = {}
+        self.primary_controls: set[WebRtcDataChannelConnection] = set()
         # The split-kind half (scope/audio) waiting for its partner, at most
         # ONE per (kind, carriage); it already queues its frames.
         self.unpaired: dict[tuple[str, str], WebRtcDataChannelConnection] = {}
 
     async def close(self) -> None:
-        for task in self.tasks:
+        tasks = tuple(self.tasks)
+        for task in tasks:
             task.cancel()
-        for task in self.tasks:
+        for task in tasks:
             try:
                 await task
             except (asyncio.CancelledError, Exception):  # noqa: BLE001
@@ -206,7 +211,7 @@ class WebRtcSessionManager:
 
         @pc.on("connectionstatechange")  # type: ignore[misc, no-untyped-call, untyped-decorator]
         async def _on_state() -> None:
-            if pc.connectionState in ("disconnected", "failed"):
+            if pc.connectionState == "disconnected":
                 self._fence_peer(session_id)
             if pc.connectionState in ("closed", "failed"):
                 await self._drop(session_id)
@@ -279,6 +284,8 @@ class WebRtcSessionManager:
         teardown raised is logged and left out of the returned ids.
         """
         sessions = list(self._sessions.items())
+        for session_id, _ in sessions:
+            self._fence_peer(session_id)
         self._sessions.clear()
         closed: list[str] = []
         for session_id, session in sessions:
@@ -306,6 +313,7 @@ class WebRtcSessionManager:
         return list(self._sessions)
 
     async def _drop(self, session_id: str) -> None:
+        self._fence_peer(session_id)
         session = self._sessions.pop(session_id, None)
         if session is not None:
             await session.close()
@@ -377,6 +385,13 @@ class WebRtcSessionManager:
             with contextlib.suppress(Exception):
                 channel.close()
             return
+        if spec.kind == "rigctl" and (
+            not channel.ordered
+            or channel.maxRetransmits is not None
+            or channel.maxPacketLifeTime is not None
+        ):
+            channel.close()
+            return
         if spec.carries == "all":
             conn = WebRtcDataChannelConnection(channel, session.pc)
         else:
@@ -400,11 +415,22 @@ class WebRtcSessionManager:
                 return
             conn = partner
             conn.add_partner(channel, partner_is_text=spec.carries == "text")
-        session.tasks.append(
-            asyncio.ensure_future(
-                self._attach_and_serve(session_id, session, conn, spec.kind)
-            )
+        task = asyncio.create_task(
+            self._attach_and_serve(session_id, session, conn, spec.kind)
         )
+        session.tasks.add(task)
+        task.add_done_callback(session.tasks.discard)
+
+    @staticmethod
+    async def _refuse_rigctl(
+        conn: WebRtcDataChannelConnection, code: RigctlAttachErrorCode
+    ) -> None:
+        try:
+            await conn.send_text(RigctlAttachErrorV1(code).encode())
+        except (EOFError, OSError):
+            pass
+        finally:
+            await conn.close(1008, code)
 
     @staticmethod
     def _close_unpaired(
@@ -423,7 +449,7 @@ class WebRtcSessionManager:
         session_id: str,
         session: _Session,
         conn: WebRtcDataChannelConnection,
-        kind_label: str,
+        kind: ChannelKind,
     ) -> None:
         """Read the attach frame, then serve the channel through the shared path.
 
@@ -445,8 +471,6 @@ class WebRtcSessionManager:
         channel and re-checked until control attaches; the 5 s attach
         bound covers the whole wait.
         """
-        # Validated against the channel set by _dispatch_channel.
-        kind = cast(ChannelKind, kind_label)
         server = self._server
         if server is None:
             logger.warning("WebRTC: no server for data channel %r; closing", kind)
@@ -457,28 +481,58 @@ class WebRtcSessionManager:
         deadline = loop.time() + _ATTACH_TIMEOUT_S
         try:
             async with asyncio.timeout_at(deadline):
-                opcode, payload = await conn.recv()
+                while True:
+                    opcode, payload = await conn.recv()
+                    if opcode != WS_OP_TEXT:
+                        raise ValueError("attach frame must be text")
+                    if kind == "rigctl":
+                        params = ClientChannelParams.from_rigctl_attach_frame(payload)
+                        if params is None:
+                            continue
+                    else:
+                        params = ClientChannelParams.from_attach_frame(
+                            payload, require_key=kind != "api"
+                        )
+                    break
         except (TimeoutError, EOFError):
             with contextlib.suppress(Exception):
                 await conn.close(1000, "no attach frame")
             return
-        if opcode != WS_OP_TEXT:
-            with contextlib.suppress(Exception):
-                await conn.close(1003, "attach frame must be text")
-            return
-        try:
-            params = ClientChannelParams.from_attach_frame(
-                payload, require_key=kind != "api"
-            )
         except ValueError as exc:
             logger.info("WebRTC: bad attach frame on %r: %s", kind, exc)
-            with contextlib.suppress(Exception):
+            if kind == "rigctl":
+                await self._refuse_rigctl(conn, "invalid_attach")
+            else:
                 await conn.close(1008, "bad attach frame")
             return
+        if kind == "rigctl":
+            try:
+                grant = server._controller.credential(params.controller_key)  # noqa: SLF001
+            except ControllerError:
+                await self._refuse_rigctl(conn, "controller_invalid")
+                return
+            refusal: RigctlAttachErrorCode | None = None
+            if not conn.begin_rigctl_admission():
+                refusal = "invalid_attach"
+            elif params.rigctl_version not in RIGCTL_VERSIONS:
+                refusal = "unsupported_version"
+            elif grant.tx_owner is None:
+                refusal = "controller_invalid"
+            elif not any(
+                primary.is_alive()
+                and grant.tx_owner in session.controller_owners[primary]
+                for primary in session.primary_controls
+            ):
+                refusal = "controller_primary_required"
+            if refusal is not None:
+                await self._refuse_rigctl(conn, refusal)
+                return
         while True:
             conn.serving = True  # past the attach: the handler reads freely
             attachment_owners: set[str] = set()
             session.controller_owners[conn] = attachment_owners
+            if kind == "control" and params.controller_role == "primary":
+                session.primary_controls.add(conn)
             try:
                 await server.attach_client_channel(
                     conn,
@@ -490,7 +544,8 @@ class WebRtcSessionManager:
                 )
             except ControllerError as exc:
                 if (
-                    kind in ATTACH_ACK_KINDS
+                    kind != "rigctl"
+                    and kind in ATTACH_ACK_KINDS
                     and exc.code == "controller_primary_required"
                     and loop.time() + _EARLY_ATTACH_RECHECK_S < deadline
                     and conn.is_alive()
@@ -500,8 +555,17 @@ class WebRtcSessionManager:
                     await asyncio.sleep(_EARLY_ATTACH_RECHECK_S)
                     continue
                 logger.info("WebRTC: data channel %r refused: %s", kind, exc.code)
-                with contextlib.suppress(Exception):
-                    await conn.close(1008, "refused")
+                if kind == "rigctl":
+                    await self._refuse_rigctl(
+                        conn,
+                        "rigctl_unavailable"
+                        if exc.code == "rigctl_unavailable"
+                        else "controller_invalid",
+                    )
+                else:
+                    with contextlib.suppress(Exception):
+                        await conn.close(1008, "refused")
             finally:
+                session.primary_controls.discard(conn)
                 del session.controller_owners[conn]
             return

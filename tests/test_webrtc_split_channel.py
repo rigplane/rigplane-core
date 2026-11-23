@@ -20,6 +20,7 @@ from rigplane.web import channel_attach
 from rigplane.web.channel_attach import DATA_CHANNELS, data_channel_spec
 from rigplane.web.transport import webrtc, webrtc_session
 from rigplane.web.transport.webrtc import WebRtcDataChannelConnection
+from rigplane.web.transport.webrtc_contract import WebRtcTransportStatus
 from rigplane.ws import WS_OP_BINARY, WS_OP_TEXT
 
 
@@ -27,11 +28,17 @@ class _FakeChannel:
     """The ``RTCDataChannel`` surface the adapter uses, in memory."""
 
     def __init__(
-        self, label: str, *, ordered: bool = True, maxRetransmits: int | None = None
+        self,
+        label: str,
+        *,
+        ordered: bool = True,
+        maxRetransmits: int | None = None,
+        maxPacketLifeTime: int | None = None,
     ) -> None:
         self.label = label
         self.ordered = ordered
         self.maxRetransmits = maxRetransmits
+        self.maxPacketLifeTime = maxPacketLifeTime
         self.readyState = "open"
         self.sent: list[str | bytes] = []
         self._listeners: dict[str, list[Callable[..., None]]] = {}
@@ -77,7 +84,7 @@ def _pair() -> tuple[WebRtcDataChannelConnection, _FakeChannel, _FakeChannel]:
 
 
 def test_channel_set_contract() -> None:
-    """The K5 set: control/api one reliable channel each; scope/audio a
+    """Control/api/rigctl one reliable channel each; scope/audio a
     lossy binary channel plus a reliable ordered text companion."""
     assert [
         (s.label, s.kind, s.ordered, s.max_retransmits, s.carries)
@@ -89,8 +96,27 @@ def test_channel_set_contract() -> None:
         ("scope-text", "scope", True, None, "text"),
         ("audio", "audio", False, 0, "binary"),
         ("audio-text", "audio", True, None, "text"),
+        ("rigctl", "rigctl", True, None, "all"),
     ]
-    assert data_channel_spec("rigctl") is None
+    assert data_channel_spec("future") is None
+
+
+@pytest.mark.parametrize("versions", [None, [], [99]])
+def test_old_or_incompatible_station_does_not_open_rigctl(
+    versions: list[int] | None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    payload: dict[str, object] = {"available": True, "enabled": True}
+    if versions is not None:
+        payload["rigctl_versions"] = versions
+    status = WebRtcTransportStatus.from_json(payload)
+    assert status.select_rigctl_version() is None
+    monkeypatch.setattr(webrtc, "webrtc_available", lambda: True)
+    pc = _FakePc()
+    with pytest.raises(
+        webrtc.WebRtcUnavailableError, match="compatible rigctl version"
+    ):
+        webrtc.add_data_channel(pc, "rigctl", transport_status=status)  # type: ignore[arg-type]
+    assert not pc.created
 
 
 def test_text_goes_to_the_reliable_companion_and_bytes_to_the_lossy_channel() -> None:
@@ -250,11 +276,16 @@ def test_frames_before_the_partner_arrives_are_kept() -> None:
     ]
 
 
-@pytest.mark.parametrize("label", ["scope/a/b", "scope/a", "rigctl", "nope"])
-def test_a_label_outside_the_channel_set_is_closed(label: str) -> None:
+@pytest.mark.parametrize(
+    ("label", "max_packet_lifetime"),
+    [("scope/a/b", None), ("scope/a", None), ("rigctl", 100), ("nope", None)],
+)
+def test_a_disallowed_channel_is_closed(
+    label: str, max_packet_lifetime: int | None
+) -> None:
     async def _run() -> None:
         manager, session, served = _answerer()
-        channel = _FakeChannel(label)
+        channel = _FakeChannel(label, maxPacketLifeTime=max_packet_lifetime)
         manager._dispatch_channel("sid", session, channel)
         assert channel.readyState == "closed"
         assert served == [] and session.unpaired == {}

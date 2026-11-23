@@ -26,6 +26,7 @@ import pytest
 from _perf_helpers import fast_connect
 from test_web_server import (
     _close_ws,
+    _http_get,
     _ws_connect,
     _ws_recv_frame,
     _ws_send_text,
@@ -46,7 +47,14 @@ from rigplane.runtime.managed_tx_state import ManagedTxIntentKind
 from rigplane.testing.timing import await_until
 from rigplane.web import server as server_module
 from rigplane.web.api_channel import api_channel_golden_documents_from_json
-from rigplane.web.channel_attach import ClientChannelParams, data_channels_for
+from rigplane.web.channel_attach import (
+    RIGCTL_MAX_FRAME_BYTES,
+    ChannelAttachedAck,
+    ClientChannelParams,
+    RigctlAttachErrorV1,
+    data_channels_for,
+    decode_rigctl_attach_result,
+)
 from rigplane.web.protocol import (
     AUDIO_CODEC_PCM16,
     AUDIO_HEADER_SIZE,
@@ -61,6 +69,7 @@ from rigplane.web.transport.webrtc_contract import (
     WebRtcCloseResult,
     WebRtcOffer,
     WebRtcRequestError,
+    WebRtcTransportStatus,
 )
 from rigplane.web.web_startup import (
     attach_managed_tx_composition,
@@ -224,10 +233,11 @@ class _DcControlClient:
         # The answerer's session id, set by ``connect_via_http``.
         self.session_id: str | None = None
 
-    async def _prepare_pc(self) -> None:
-        from aiortc import RTCPeerConnection
+    async def _prepare_pc(self, *, host_only: bool = False) -> None:
+        from aiortc import RTCConfiguration, RTCPeerConnection
 
-        self._pc = RTCPeerConnection()
+        configuration = RTCConfiguration(iceServers=[]) if host_only else None
+        self._pc = RTCPeerConnection(configuration)
         self._channel = self._pc.createDataChannel("control", ordered=True)
 
         @self._channel.on("message")  # type: ignore[misc, no-untyped-call]
@@ -258,7 +268,7 @@ class _DcControlClient:
             description="data channel open",
         )
 
-    async def connect_via_http(self, port: int) -> None:
+    async def connect_via_http(self, port: int, *, host_only: bool = False) -> None:
         """Signal the offer through the public HTTP endpoint (browser path).
 
         POSTs the SDP offer to ``/api/v1/transport/webrtc/offer`` instead
@@ -266,7 +276,7 @@ class _DcControlClient:
         """
         from aiortc import RTCSessionDescription
 
-        await self._prepare_pc()
+        await self._prepare_pc(host_only=host_only)
         assert self._pc is not None and self._channel is not None
         offer = await self._pc.createOffer()
         await self._pc.setLocalDescription(offer)
@@ -1780,6 +1790,304 @@ async def test_closed_channel_label_can_be_recreated_on_the_same_peer(
 # MOR-4498: closing ONE data channel closes only that channel — never the
 # peer connection, whose single owner is the WebRtcSessionManager.
 # ---------------------------------------------------------------------------
+
+
+@_webrtc
+async def test_rigctl_data_channel_reads_simulator_frequency(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A Tower-style peer should get a CAT reply on its own controller grant."""
+    stack = await _stand_up_stack(tmp_path)
+    peer = _DcControlClient()
+    caplog.set_level("INFO", logger="rigplane.web.transport.webrtc_session")
+    try:
+        await peer.connect_via_http(stack.web.port, host_only=True)
+        key = await _acquire_session(stack.web.port)
+        await peer.attach(key)
+
+        # Spell the label on the wire so this reaches today's answerer even
+        # though the production offerer's channel table has no rigctl entry.
+        channel = peer._pc.createDataChannel("rigctl", ordered=True)  # noqa: SLF001
+        frames: list[str | bytes] = []
+        channel.on("message", frames.append)
+
+        def send_attach() -> None:
+            channel.send(
+                json.dumps(
+                    {
+                        "type": "attach",
+                        "v": 1,
+                        "controller_key": key,
+                        "role": "auxiliary",
+                    }
+                )
+            )
+
+        channel.on("open", send_attach)
+
+        async def next_frame() -> str | bytes | None:
+            await await_until(
+                lambda: bool(frames) or channel.readyState == "closed",
+                timeout=5.0,
+                description="rigctl frame or channel close",
+            )
+            return frames.pop(0) if frames else None
+
+        ack = await next_frame()
+        reply = None
+        if isinstance(ack, str) and json.loads(ack) == {
+            "type": "attached",
+            "v": 1,
+            "channel": "rigctl",
+        }:
+            channel.send("f\n")
+            reply = await next_frame()
+
+        await peer.heartbeat()
+        assert not stack.sim.ptt_on and not stack.sim.ptt_transitions
+        unknown_label = "WebRTC: closing unknown data channel 'rigctl'"
+        reason = next(
+            (message for message in caplog.messages if message == unknown_label),
+            channel.readyState,
+        )
+        # This assertion flips from RED (unknown-label close, no reply) to
+        # GREEN when the carrier attaches and returns the simulator's frequency.
+        assert reply == "14074000\n", (
+            f"rigctl attach={ack!r}, reply={reply!r}: {reason}"
+        )
+    finally:
+        await peer.close()
+        await _tear_down_stack(stack)
+
+
+# MOR-4691 v1 wire fixtures, shared with the Pro offerer. JSON spacing and
+# member order are incidental. The KEY is a fixture, never a live grant.
+RIGCTL_ATTACH_V1 = '{"type":"attach","v":1,"controller_key":"KEY","role":"auxiliary"}'
+RIGCTL_ATTACHED_V1 = '{"type":"attached","v":1,"channel":"rigctl"}'
+RIGCTL_ATTACH_ERROR_V1 = (
+    '{"type":"attach_error","v":1,"channel":"rigctl","code":"rigctl_busy"}'
+)
+
+
+def test_rigctl_attach_wire_v1() -> None:
+    params = ClientChannelParams("KEY", "auxiliary", state_delta=2, rigctl_version=1)
+    ack = ChannelAttachedAck("rigctl")
+    refused = RigctlAttachErrorV1("rigctl_busy")
+    assert (
+        ClientChannelParams.from_rigctl_attach_frame(RIGCTL_ATTACH_V1.encode())
+        == params
+    )
+    assert decode_rigctl_attach_result(RIGCTL_ATTACHED_V1) == ack
+    assert decode_rigctl_attach_result(RIGCTL_ATTACH_ERROR_V1) == refused
+    assert json.loads(params.to_attach_frame()) == json.loads(RIGCTL_ATTACH_V1)
+    assert json.loads(ack.encode()) == json.loads(RIGCTL_ATTACHED_V1)
+    assert json.loads(refused.encode()) == json.loads(RIGCTL_ATTACH_ERROR_V1)
+    with pytest.raises(ValueError, match="int 'v'"):
+        ClientChannelParams.from_rigctl_attach_frame(
+            RIGCTL_ATTACH_V1.replace('"v":1', '"v":true').encode()
+        )
+
+
+def test_rigctl_wire_receivers_skip_unknown_kinds_and_keep_unknown_enum_values() -> (
+    None
+):
+    future = '{"type":"future_notice","checked":false}'
+    assert ClientChannelParams.from_rigctl_attach_frame(future.encode()) is None
+    assert decode_rigctl_attach_result(future) is None
+    params = ClientChannelParams.from_rigctl_attach_frame(
+        RIGCTL_ATTACH_V1.replace("auxiliary", "future_role").encode()
+    )
+    assert params is not None and params.controller_role == "future_role"
+    result = decode_rigctl_attach_result(
+        RIGCTL_ATTACH_ERROR_V1.replace("rigctl_busy", "future_code")
+    )
+    assert isinstance(result, RigctlAttachErrorV1) and result.code == "future_code"
+    with pytest.raises(ValueError, match="invalid outbound"):
+        params.to_attach_frame()
+    with pytest.raises(ValueError, match="unsupported rigctl attach error"):
+        result.encode()
+    status = WebRtcTransportStatus.from_json(
+        {"available": True, "enabled": True, "rigctl_versions": [99, 1]}
+    )
+    assert status.rigctl_versions == (99, 1)
+    assert status.select_rigctl_version() == 1
+
+
+class _DcRigctlClient:
+    def __init__(self, peer: _DcControlClient) -> None:
+        self.channel = peer._pc.createDataChannel("rigctl", ordered=True)  # noqa: SLF001
+        self.frames: asyncio.Queue[str] = asyncio.Queue()
+        self.channel.on("message", self.frames.put_nowait)
+
+    async def attach(self, key: str, *, version: int = 1) -> object:
+        await await_until(
+            lambda: self.channel.readyState == "open", timeout=5, description="CAT open"
+        )
+        self.channel.send('{"type":"future_notice"}')
+        self.channel.send(
+            json.dumps(
+                {**json.loads(RIGCTL_ATTACH_V1), "controller_key": key, "v": version}
+            )
+        )
+        return decode_rigctl_attach_result(await self.reply())
+
+    async def reply(self) -> str:
+        return await asyncio.wait_for(self.frames.get(), 5)
+
+    async def key(self) -> None:
+        self.channel.send("T 1\n")
+        assert await self.reply() == "RPRT 0\n"
+
+
+@_webrtc
+async def test_rigctl_whole_peer_loss_uses_controller_owner_disconnect(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stack = await _stand_up_stack(tmp_path)
+    peer = _DcControlClient()
+    retired: list[str] = []
+
+    async def record_cat_retirement(owner: str) -> None:
+        # Isolate controller-session release from the CAT-only handback.
+        retired.append(owner)
+
+    monkeypatch.setattr(stack.rigctld, "_release_session_tx", record_cat_retirement)
+    try:
+        await peer.connect_via_http(stack.web.port, host_only=True)
+        key = await _acquire_session(stack.web.port)
+        await peer.attach(key)
+        cat = _DcRigctlClient(peer)
+        assert await cat.attach(key) == ChannelAttachedAck("rigctl")
+        await cat.key()
+        await await_until(lambda: stack.sim.ptt_on, timeout=5, description="fake keyed")
+        owner = stack.composition.authority.tx_holder_nowait()
+        assert owner is not None
+        await peer.heartbeat()
+        await peer._pc.close()  # noqa: SLF001 — lose SCTP and all its channels
+        await await_until(
+            lambda: not stack.sim.ptt_on, timeout=3, description="peer-loss RX"
+        )
+        assert not stack.web._controller.is_session_owner(owner)  # noqa: SLF001
+        await await_until(
+            lambda: retired == [owner], timeout=3, description="CAT retired"
+        )
+    finally:
+        await peer.close()
+        await _tear_down_stack(stack)
+
+
+@_webrtc
+@pytest.mark.parametrize("source", ["cat", "control", "pending_unkey"])
+async def test_rigctl_only_close_releases_cat_hold_and_keeps_primary(
+    tmp_path: Path, source: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stack = await _stand_up_stack(tmp_path)
+    peer = _DcControlClient()
+    try:
+        await peer.connect_via_http(stack.web.port, host_only=True)
+        key = await _acquire_session(stack.web.port)
+        await peer.attach(key)
+        cat = _DcRigctlClient(peer)
+        assert await cat.attach(key) == ChannelAttachedAck("rigctl")
+        if source == "control":
+            assert (await peer.command("key", "ptt_on"))["ok"] is True
+            cat.channel.send("f\r\n")
+            assert await cat.reply() == "14074000\n"
+        else:
+            await cat.key()
+        await await_until(lambda: stack.sim.ptt_on, timeout=5, description="fake keyed")
+        if source == "pending_unkey":
+            started = asyncio.Event()
+
+            def hold_submission(
+                on: bool, *_args: Any, **_kwargs: Any
+            ) -> asyncio.Task[bool]:
+                assert on is False
+                started.set()
+                return asyncio.create_task(asyncio.Event().wait())
+
+            monkeypatch.setattr(
+                stack.composition.authority, "start_ptt_submission", hold_submission
+            )
+            cat.channel.send("T 0\n")
+            await asyncio.wait_for(started.wait(), 3)
+        cat.channel.close()
+        await await_until(
+            lambda: _registered(stack, "rigctl") == 0,
+            timeout=3,
+            description="CAT retired",
+        )
+        assert stack.sim.ptt_on is (source == "control")
+        await peer.heartbeat()
+        if source == "control":
+            assert (await peer.command("unkey", "ptt_off"))["ok"] is True
+    finally:
+        await peer.close()
+        await _tear_down_stack(stack)
+
+
+@_webrtc
+@pytest.mark.parametrize(
+    "bad_frame", [b"f\n", "f", "é" * (RIGCTL_MAX_FRAME_BYTES // 2) + "\n"]
+)
+async def test_rigctl_framing_closes_only_cat_and_releases_its_hold(
+    tmp_path: Path, bad_frame: str | bytes
+) -> None:
+    stack = await _stand_up_stack(tmp_path)
+    peer = _DcControlClient()
+    try:
+        await peer.connect_via_http(stack.web.port, host_only=True)
+        key = await _acquire_session(stack.web.port)
+        await peer.attach(key)
+        cat = _DcRigctlClient(peer)
+        assert await cat.attach(key) == ChannelAttachedAck("rigctl")
+        await cat.key()
+        await await_until(lambda: stack.sim.ptt_on, timeout=5, description="fake keyed")
+        cat.channel.send(bad_frame)
+        await _channel_closed(cat.channel, timeout=3)
+        await await_until(
+            lambda: not stack.sim.ptt_on, timeout=3, description="CAT-loss RX"
+        )
+        await peer.heartbeat()
+        replacement = _DcRigctlClient(peer)
+        assert await replacement.attach(key) == ChannelAttachedAck("rigctl")
+    finally:
+        await peer.close()
+        await _tear_down_stack(stack)
+
+
+@_webrtc
+async def test_rigctl_capability_and_attach_refusals(tmp_path: Path) -> None:
+    stack = await _stand_up_stack(tmp_path)
+    peer, other = _DcControlClient(), _DcControlClient()
+    try:
+        status, _, body = await _http_get(
+            "127.0.0.1", stack.web.port, "/api/v1/capabilities"
+        )
+        assert status == 200
+        assert json.loads(body)["webrtc"]["rigctl_versions"] == [1]
+        await peer.connect_via_http(stack.web.port, host_only=True)
+        await other.connect_via_http(stack.web.port, host_only=True)
+        key = await _acquire_session(stack.web.port)
+        await peer.attach(key)
+        assert await _DcRigctlClient(other).attach(key) == RigctlAttachErrorV1(
+            "controller_primary_required"
+        )
+        assert await _DcRigctlClient(peer).attach(
+            key, version=99
+        ) == RigctlAttachErrorV1("unsupported_version")
+        cat = _DcRigctlClient(peer)
+        assert await cat.attach(key) == ChannelAttachedAck("rigctl")
+        assert await _DcRigctlClient(peer).attach(key) == RigctlAttachErrorV1(
+            "rigctl_busy"
+        )
+        cat.channel.send("f\n")
+        assert await cat.reply() == "14074000\n"
+        assert not stack.sim.ptt_transitions
+    finally:
+        await other.close()
+        await peer.close()
+        await _tear_down_stack(stack)
 
 
 @_webrtc

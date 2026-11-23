@@ -57,6 +57,7 @@ from ..runtime._state_queries import (
 )
 from ..runtime._poller_types import CommandQueue
 from ..runtime.managed_tx_authority import ATTEMPT_TIMEOUT_S, RETRY_DELAY_S
+from ..runtime.managed_tx_state import ManagedTxOutcome
 from ..runtime.managed_tx_submission import (
     ManagedPttTracker,
     release_managed_session_tx,
@@ -71,7 +72,7 @@ from .utils import get_mode_reader  # noqa: TID251
 if TYPE_CHECKING:
     from ..core.command_service import CommandService
     from ..radio_protocol import Radio
-    from ..runtime.managed_tx_authority import ManagedTxAuthority
+    from ..runtime.managed_tx_authority import ManagedTxAuthority, ManagedTxSubmission
 
 logger = logging.getLogger(__name__)
 
@@ -1168,6 +1169,7 @@ class RigctldServer:
         # a key. The session's end releases the rest. A TCP client is the
         # owner and always releases.
         release_on_close = owner is None
+        last_unkey: asyncio.Task[ManagedTxSubmission] | None = None
         # MOR-2890: the HTTP guard inspects only the first non-blank line.
         first_command_line = True
 
@@ -1316,7 +1318,12 @@ class RigctldServer:
                     schedule_response(None, immediate_error=HamlibError.EIO)
                     continue
 
-                if owner is not None and cmd.long_cmd == "set_ptt" and cmd.args:
+                if (
+                    owner is not None
+                    and self._managed_tx_authority is None
+                    and cmd.long_cmd == "set_ptt"
+                    and cmd.args
+                ):
                     try:
                         release_on_close = bool(int(cmd.args[0]))
                     except ValueError:
@@ -1348,6 +1355,12 @@ class RigctldServer:
                                 else None
                             ),
                         )
+                        if owner is not None:
+                            if ptt_on:
+                                release_on_close = True
+                                last_unkey = None
+                            else:
+                                last_unkey = ptt_submission
 
                 schedule_response(
                     cmd,
@@ -1364,6 +1377,16 @@ class RigctldServer:
                 "client #%d unexpected error: %s", client_id, exc, exc_info=True
             )
         finally:
+            # A parsed T 0 can still be cancelled before admission on
+            # channel loss. In that case the CAT key still needs handback.
+            if (
+                last_unkey is not None
+                and last_unkey.done()
+                and not last_unkey.cancelled()
+                and last_unkey.exception() is None
+                and last_unkey.result().outcome is ManagedTxOutcome.ACCEPTED
+            ):
+                release_on_close = False
             self._rate_windows.pop(client_id, None)
             if self._command_queue is not None:
                 self._command_queue.unregister_session(session_id)
