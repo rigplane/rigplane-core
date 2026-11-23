@@ -25,7 +25,7 @@ non-authoritative role explicit; no protection-switch command targets them.
 The quick v2 workflow is metadata-only and runs its two jobs on the self-hosted light pool. It never checks out or executes pull-request
 or fork code and never reads a candidate artifact, log, or cache. Its `pull_request_target` path initializes opened,
 reopened, synchronized, ready, draft, and base-edited pull requests; title- and body-only edits are no-ops. Its
-`workflow_run` path consumes completed runs from the canonical legacy `Tests (quick)` workflow and ignores main pushes.
+`workflow_run` path consumes completed runs from the canonical legacy `Tests (quick)` workflow and ignores main pushes. A completed release-target run (base `release/**`, MOR-4647) is out of domain: the leg skips green and publishes nothing, before the main-only binding assessment.
 
 The read-only producer and status publisher independently run `.github/scripts/quick-v2-metadata-policy-v1.js: assess`.
 For a completed legacy run, `.github/scripts/quick-v2-metadata-policy-v1.js: bindRunPullRequest` requires exactly one
