@@ -159,9 +159,7 @@ async function listAttemptJobs(github, owner, repo, runId, runAttempt) { const j
 // halves run on build pools (MOR-4214), not on the 2 GiB gate pool.
 // MOR-4373: each half additionally has a sharded matrix tier —
 // `quick-python-tests (1)`..`(4)` beside quick-python and
-// `quick-frontend-e2e (visual|guards|journey-N)` beside quick-frontend
-// (MOR-4685: the journey leg is itself QUICK_JOURNEY_SHARDS
-// `playwright --shard=i/n` legs). A
+// `quick-frontend-e2e (visual|guards|journey)` beside quick-frontend. A
 // matrix job whose job-level `if` is false collapses to exactly ONE entry
 // named after the job id (verified on Pro's skipped pytest matrix), so each
 // tier's topology is valid either as its full leg set or as that single
@@ -188,7 +186,7 @@ const BUILD_POOL_LABELS = Object.freeze(['self-hosted', 'Linux', 'build']);
 const ARM64_BUILD_LABELS = Object.freeze(['self-hosted', 'Linux', 'ARM64', 'build']);
 const LIGHT_LABELS = Object.freeze(['self-hosted', 'Linux', 'ARM64', 'light']);
 const PYTHON_TEST_LEGS = Object.freeze(['quick-python-tests (1)', 'quick-python-tests (2)', 'quick-python-tests (3)', 'quick-python-tests (4)']);
-const FRONTEND_E2E_LEGS = Object.freeze(['quick-frontend-e2e (visual)', 'quick-frontend-e2e (guards)', 'quick-frontend-e2e (journey-1)', 'quick-frontend-e2e (journey-2)', 'quick-frontend-e2e (journey-3)']);
+const FRONTEND_E2E_LEGS = Object.freeze(['quick-frontend-e2e (visual)', 'quick-frontend-e2e (guards)', 'quick-frontend-e2e (journey)']);
 function hasLabels(job, labels) { return Array.isArray(job?.labels) && labels.every((label) => job.labels.includes(label)); }
 // Neutral or ARM64 build request (the pre-2026-11-20 frontend shape) is
 // valid; an X64 request on a frontend worker is not.

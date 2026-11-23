@@ -10,8 +10,8 @@ import { journeyPort } from './tests/e2e/journey/server-process';
  *   npm run build
  *   npx playwright test -c ./playwright.journey.config.ts
  *
- * CI runs this sharded (`--shard=i/n`): the shard legs shift every port by
- * JOURNEY_PORT_OFFSET so two legs on one CI host cannot collide (MOR-4685).
+ * JOURNEY_PORT_OFFSET shifts both config web servers by the same amount
+ * (MOR-4685). With the variable unset, they use ports 18766 and 18767.
  */
 const PORT = journeyPort(18766);
 const READ_ONLY_PORT = journeyPort(18767);

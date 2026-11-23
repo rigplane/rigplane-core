@@ -1,6 +1,6 @@
 import { writeFile } from 'node:fs/promises';
 import { expect, test, type Locator, type Page } from '@playwright/test';
-import { journeyPort, startJourneyServer } from './server-process';
+import { startJourneyServer } from './server-process';
 import { validateCapabilities } from '../../../src/lib/types/capabilities';
 
 /**
@@ -18,7 +18,7 @@ import { validateCapabilities } from '../../../src/lib/types/capabilities';
  * player both fail the ratios.
  */
 
-const PORT = journeyPort(18771);
+const PORT = 18771;
 const FREQ_HZ = 7_030_000;
 const QUIET_DBFS = -30;
 const LOUD_DBFS = -6;

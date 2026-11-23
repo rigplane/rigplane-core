@@ -610,26 +610,6 @@ new AsyncFunction('github', 'context', 'core', script)(github, context, core)
             [value.strip() for value in group_matrix.group(1).split(",")],
             legs.group(1).split(),
         )
-        # MOR-4685: the journey leg is itself QUICK_JOURNEY_SHARDS
-        # `playwright --shard=i/n` legs, so the single leg the old pin
-        # allowed splits into journey-N entries and nothing else changes.
-        journey_shards = re.search(r'^  QUICK_JOURNEY_SHARDS: "(\d+)"$', quick, re.M)
-        self.assertIsNotNone(
-            journey_shards, "quick.yml must define QUICK_JOURNEY_SHARDS"
-        )
-        assert journey_shards is not None
-        groups = [value.strip() for value in group_matrix.group(1).split(",")]
-        self.assertEqual(
-            [group for group in groups if group.startswith("journey-")],
-            [
-                f"journey-{index}"
-                for index in range(1, int(journey_shards.group(1)) + 1)
-            ],
-        )
-        self.assertEqual(
-            [group for group in groups if not group.startswith("journey-")],
-            [word for word in legs.group(1).split() if not word.startswith("journey-")],
-        )
         for job in ("quick-python-tests", "quick-frontend-e2e"):
             with self.subTest(job=job):
                 self.assertIn("      fail-fast: false\n", jobs[job])
@@ -643,15 +623,6 @@ new AsyncFunction('github', 'context', 'core', script)(github, context, core)
         )
         self.assertIn("SHARD: ${{ matrix.shard }}", tests_job)
         self.assertIn("worker-diagnostics-quick-${{ matrix.shard }}", tests_job)
-        # MOR-4685: the journey legs shard Playwright the same way — the
-        # shard index is stripped from the leg name and every leg shifts all
-        # journey server ports by (shard - 1) * 4000 so legs sharing one CI
-        # host cannot collide (the port range is 18766..22346, below the
-        # stride).
-        e2e_job = jobs["quick-frontend-e2e"]
-        self.assertIn('--shard "$shard/$QUICK_JOURNEY_SHARDS"', e2e_job)
-        self.assertIn('shard="${shard#journey-}"', e2e_job)
-        self.assertIn("export JOURNEY_PORT_OFFSET=$(( (shard - 1) * 4000 ))", e2e_job)
         # upload-artifact v7 rejects duplicate names, so every upload in the
         # sharded jobs carries its leg suffix.
         for job in ("quick-python-tests", "quick-frontend-e2e"):

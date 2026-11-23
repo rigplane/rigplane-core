@@ -2,7 +2,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { expect, test, type Page } from '@playwright/test';
-import { journeyPort, startJourneyServer, type JourneyServerHandle } from './server-process';
+import { startJourneyServer, type JourneyServerHandle } from './server-process';
 
 /**
  * MOR-2241 — what every layout actually shows when the rig link is lost.
@@ -26,7 +26,7 @@ import { journeyPort, startJourneyServer, type JourneyServerHandle } from './ser
  * key; 'phone' is the viewport-driven mobile skin instead.
  */
 
-const DROP_PORT = journeyPort(18769);
+const DROP_PORT = 18769;
 const DROP_URL = `http://127.0.0.1:${DROP_PORT}`;
 // connection.svelte.ts trips staleness at 5 s; give it margin.
 const STALENESS_WAIT_MS = 6_500;
