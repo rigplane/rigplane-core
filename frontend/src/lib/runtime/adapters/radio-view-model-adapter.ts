@@ -23,7 +23,7 @@
  * `__tests__/radio-view-model-adapter.test.ts` additionally runs every
  * emitted model through the real `validateRadioViewModel`.
  */
-import type { Capabilities } from '$lib/types/capabilities';
+import type { Capabilities, FreqRange } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';
 import type {
   RadioViewModel, TxAuxField, TxAuxViewModel, AtuStatus,
@@ -1308,6 +1308,26 @@ function deriveRfFrontEndMutex(rfFrontEnd: RfFrontEndViewModel | undefined): Rea
 }
 
 /**
+ * MOR-4711: the ONE band-reading derivation, shared by the receiver-keyed
+ * `receiverBands` entries and the per-VFO `VfoViewModel.band` field: the
+ * frequency leaf at `base` gated by the same observation evidence every
+ * strict reading uses, named by the shipped `findActiveBand` over the caps
+ * argument's own `freqRanges`. A slotted A/B radio's panel reads its OWN
+ * slot leaf here instead of inheriting the receiver's active-slot band.
+ */
+function bandReadingAt(
+  state: ServerState | null, freqRanges: FreqRange[], structural: boolean,
+  base: string, src: { freqHz?: number | null } | null | undefined,
+): BandField<string> {
+  const observed = topFieldAvailable(state, `${base}freqHz`);
+  const hz = numOrUndef(src?.freqHz);
+  const name = observed && hz !== undefined
+    ? findActiveBand(hz, freqRanges) ?? undefined
+    : undefined;
+  return txAuxField(structural, observed, name);
+}
+
+/**
  * Band facts (MOR-1262 decomposition slice 7A, MOR-1294): current band, the
  * capability-derived band choice set with its per-band TX permits, and the
  * tuning envelope frequency entry validates against. A separate group from
@@ -1396,14 +1416,8 @@ function deriveBand(
   // sits on VHF while MAIN is on HF carries two different honest readings.
   // One derivation function for both receivers; `currentBand` below is the
   // active receiver's entry of this map, never a second computation.
-  const receiverBand = (key: 'main' | 'sub'): BandField<string> => {
-    const observed = topFieldAvailable(state, `${key}.freqHz`);
-    const hz = numOrUndef(state?.[key]?.freqHz);
-    const name = observed && hz !== undefined
-      ? findActiveBand(hz, freqRanges) ?? undefined
-      : undefined;
-    return txAuxField(bandChoices.length > 0, observed, name);
-  };
+  const receiverBand = (key: 'main' | 'sub'): BandField<string> =>
+    bandReadingAt(state, freqRanges, bandChoices.length > 0, `${key}.`, state?.[key]);
   const receiverBands = { main: receiverBand('main'), sub: receiverBand('sub') };
   const currentBand = onSub ? receiverBands.sub : receiverBands.main;
   // MOR-1356: which receiver the raw `state.active` names is an ORDINARY fact
@@ -2171,6 +2185,12 @@ function deriveRadioViewModel(
     : { status: 'unknown' as const, reason: target.reason };
   const txPermit = facts.frequencyPermit;
 
+  // MOR-4711: derived before the VFO records so every position can carry its
+  // own band reading — the inactive slot of a slotted A/B pair must not
+  // inherit the receiver's active-slot band from `receiverBands`.
+  const band = deriveBand(state, caps, activeId);
+  const bandPlan = band !== undefined && band.bandChoices.length > 0 ? band : undefined;
+
   const vfos = topology.structuralReceivers.flatMap((receiver) => {
     const key = RECEIVER_KEY[receiver];
     const rx = state?.[key] ?? null;
@@ -2237,6 +2257,22 @@ function deriveRadioViewModel(
         isActiveSlot,
         isTxTarget: txTarget.status === 'known' && txTarget.receiver === receiver
           && sameSlot(txTarget.slot, slot),
+        // MOR-4711: a position whose frequency source IS the receiver's
+        // top-level leaf (unslotted, unknown-slot, relative-selected) aliases
+        // the receiver's band entry — one object, never a second opinion.
+        // Every other position derives its own from the leaf it DISPLAYS:
+        // a literal slotted position reads `main.vfoA/vfoB.freqHz`, which is
+        // projected independently of `main.freqHz`, so right after a selection
+        // change the receiver leaf can still hold the old slot's frequency
+        // while the new active slot's panel already shows its own — aliasing
+        // by `isActiveSlot` would name the stale band there too.
+        ...(bandPlan !== undefined
+          ? {
+            band: src === rx
+              ? bandPlan.receiverBands[receiver === 'MAIN' ? 'main' : 'sub']
+              : bandReadingAt(state, caps.freqRanges ?? [], true, base, src),
+          }
+          : {}),
       };
     });
   });
@@ -2310,7 +2346,6 @@ function deriveRadioViewModel(
   const filterPassband = deriveFilterPassband(state, caps, activeId);
   const dsp = deriveDsp(state, caps);
   const rfFrontEnd = deriveRfFrontEnd(state, caps);
-  const band = deriveBand(state, caps, activeId);
   const repeater = deriveRepeater(state, caps);
   const ritXit = deriveRitXit(state, caps);
   const antenna = deriveAntenna(state, caps);
