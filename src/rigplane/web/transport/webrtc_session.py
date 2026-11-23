@@ -147,7 +147,23 @@ class _Session:
         # grandchildren, so awaiting them retrieves every late failure
         # instead of leaving "never retrieved" noise. Only then close the
         # pc, so no retry timer fires on a closed transport (MOR-4671).
-        inflight = tuple(self.gather_inflight)
+        # The whole tail runs shielded: a caller cancelled here (an HTTP
+        # close raced by server shutdown, which already removed this session
+        # from the registry) must not leave the peer half torn down — the
+        # teardown runs on in order, then the cancellation is re-raised.
+        settle = asyncio.ensure_future(
+            self._settle_gather_and_close(tuple(self.gather_inflight))
+        )
+        try:
+            await asyncio.shield(settle)
+        except asyncio.CancelledError:
+            await settle
+            raise
+
+    async def _settle_gather_and_close(
+        self, inflight: tuple[asyncio.Task[Any], ...]
+    ) -> None:
+        """Await the live gather calls, then close the peer connection."""
         if inflight:
             await asyncio.gather(*inflight, return_exceptions=True)
         # Shielded: aiortc resolves its internal "closed" future only at the

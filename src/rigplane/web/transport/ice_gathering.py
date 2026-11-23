@@ -1056,7 +1056,11 @@ def install_ice_gathering_policy() -> None:
         try:
             infos = _enumerate_local_addresses()
         except Exception:
-            return await original_component(self, component, addresses, timeout=bound)
+            # Same tracking as the normal path: a close racing this
+            # fallback gather must settle it before pc.close() (MOR-4671).
+            return await _await_component(
+                original_component(self, component, addresses, timeout=bound)
+            )
         default_ips = {info.ip for info in infos if info.is_default_route}
         first = [addr for addr in addresses if addr in default_ips]
         rest = [addr for addr in addresses if addr not in default_ips]
