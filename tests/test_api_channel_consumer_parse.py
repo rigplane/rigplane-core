@@ -87,6 +87,8 @@ def test_encode_then_parse_round_trips() -> None:
         b"not json",
         b"[1, 2]",
         b'{"headers": {}}',
+        b'{"status": 204}',
+        b'{"status": 204, "headers": null}',
         b'{"status": "200", "headers": {}}',
         b'{"status": true, "headers": {}}',
         b'{"status": 200, "headers": []}',
@@ -97,6 +99,19 @@ def test_encode_then_parse_round_trips() -> None:
 def test_malformed_response_head_raises_the_typed_error(payload: bytes) -> None:
     with pytest.raises(ApiPayloadError):
         ApiResponseHead.parse(payload)
+
+
+def test_response_head_headers_is_required_by_the_wire_contract() -> None:
+    """The wire contract marks ``headers`` required — the browser decoder
+    rejects a head without it — so a missing key is the typed contract
+    error, not an empty mapping. A present-but-empty dict stays valid."""
+    with pytest.raises(ApiPayloadError, match="'headers' must be an object"):
+        ApiResponseHead.parse(b'{"status": 204}')
+    with pytest.raises(ApiPayloadError, match="'headers' must be an object"):
+        ApiResponseHead.parse(b'{"status": 204, "headers": null}')
+    assert ApiResponseHead.parse(b'{"status": 204, "headers": {}}') == ApiResponseHead(
+        204, {}
+    )
 
 
 @pytest.mark.parametrize(
@@ -126,8 +141,6 @@ def test_unknown_extra_fields_are_ignored() -> None:
         b'{"status": 200, "headers": {"a": "b"}, "added_later": [1, 2]}'
     )
     assert head == ApiResponseHead(200, {"a": "b"})
-    # A missing headers object reads as empty.
-    assert ApiResponseHead.parse(b'{"status": 204}') == ApiResponseHead(204, {})
     err = ApiErrorFrame.parse(b'{"code": "busy", "message": "m", "retry_ms": 5}')
     assert err == ApiErrorFrame("busy", "m")
 
