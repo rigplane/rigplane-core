@@ -269,6 +269,42 @@ def test_refusal_before_the_send_does_not_complete_the_request() -> None:
     assert scheduler.consecutive_refusals(_TUNER) == 1
 
 
+def test_a_mixed_queued_request_is_dispatched_without_its_refused_path() -> None:
+    """MOR-4063: a refusal arriving while a mixed automatic request sits
+    queued (never sent) withholds the refused path from the dispatch view;
+    the eligible sibling still goes out. The queued request itself keeps
+    every path, so the refused path rejoins once its retry delay expires."""
+    clock = FreshnessClock(start=100.0)
+    scheduler = _refusal_scheduler(clock, _TUNER, _POWER)
+    request = scheduler.due_requests(now=clock.now())[0]
+    assert set(request.paths) == {_TUNER, _POWER}
+
+    scheduler.record_read_refusal((_TUNER,), now=clock.now())
+
+    surviving = tuple(path for path in request.paths if path != _TUNER)
+    assert [view.paths for view in scheduler.dispatchable_requests()] == [surviving]
+    queued = scheduler.pending_requests()
+    assert len(queued) == 1 and queued[0].id == request.id
+    assert set(queued[0].paths) == {_TUNER, _POWER}  # withheld, not deleted
+
+
+def test_a_narrowed_dispatch_view_claims_the_queued_request() -> None:
+    """MOR-4063: ``try_claim`` must find the queued entry by id -- the
+    dispatch view's first path need not be the path the entry is stored
+    under once a refused path is withheld from a mixed request."""
+    clock = FreshnessClock(start=100.0)
+    scheduler = _refusal_scheduler(clock, _TUNER, _POWER)
+    request = scheduler.due_requests(now=clock.now())[0]
+
+    scheduler.record_read_refusal((request.paths[0],), now=clock.now())
+    (view,) = scheduler.dispatchable_requests()
+    assert len(view.paths) == 1 and view.id == request.id
+
+    seat = object()
+    assert scheduler.try_claim(view, claimant=seat, provider_generation=0)
+    assert scheduler.claim_is_current(view, claimant=seat, provider_generation=0)
+
+
 def test_refused_path_leaves_the_startup_set_unless_safety_critical() -> None:
     """MOR-4456: only a refused freq/mode read still blocks the startup set.
 

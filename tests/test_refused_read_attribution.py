@@ -18,6 +18,7 @@ import pytest
 
 from rigplane.core.transport import IcomCivTransport
 from rigplane.commands import CONTROLLER_ADDR, build_civ_frame, parse_civ_frame
+from rigplane.commands.scope import SCOPE_RECEIVER_SELECTOR_SUBS
 from rigplane.core.acquisition_scheduler import AcquisitionScheduler
 from rigplane.core.state_pipeline_contracts import FieldPath
 from rigplane.radio import IcomRadio
@@ -177,6 +178,37 @@ async def test_plain_read_of_the_selected_sub_does_not_refuse_main() -> None:
     await _refuse(radio, command, wire_sub, wire_data)
     assert scheduler.consecutive_refusals(sub) == 1
     assert scheduler.consecutive_refusals(main) == 0
+
+
+def _scope_routed(radio: IcomRadio, scheduler: AcquisitionScheduler) -> tuple:
+    """A declared ``scope_controls`` path read through a 0x27 sub that carries
+    the receiver selector byte, plus its resolved query."""
+    resolve = acquisition_query_resolver_for_profile(radio._profile)
+    for path in sorted(scheduler.declared_paths(), key=str):
+        query = resolve(path)
+        if (
+            query is not None
+            and query.command == 0x27
+            and query.sub in SCOPE_RECEIVER_SELECTOR_SUBS
+        ):
+            return path, query
+    raise AssertionError("no receiver-selector scope read declared")
+
+
+async def test_a_scope_refusal_after_a_receiver_switch_still_refuses_its_path() -> None:
+    """MOR-4063: a 0x27 scope read goes out under the receiver selected at
+    dispatch. The refusal mapping used to rebuild the identity from the
+    CURRENT receiver, so a selection flip between the send and the bare FA
+    left the refusal unmapped -- the declared path was never refused."""
+    radio, scheduler = _radio("IC-7610")  # MAIN selected (receiver 0)
+    path, query = _scope_routed(radio, scheduler)
+
+    # The read went out while SUB was selected; the FA lands after the
+    # operator flipped back to MAIN (the state _radio left: receiver 0).
+    command, wire_sub, wire_data = wire_parts_for_query(query, 1)
+    await _refuse(radio, command, wire_sub, wire_data)
+
+    assert scheduler.consecutive_refusals(path) == 1
 
 
 async def test_a_direct_answer_ends_a_refusal_with_no_request_pending() -> None:

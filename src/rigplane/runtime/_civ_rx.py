@@ -28,6 +28,7 @@ from rigplane.core.civ import (
     request_key_from_frame,
 )
 from rigplane.commands.commander import IcomCommander, Priority
+from rigplane.commands.scope import SCOPE_SELECTOR_MAIN, SCOPE_SELECTOR_SUB
 from rigplane.commands import (
     CONTROLLER_ADDR,
     build_civ_frame,
@@ -2835,6 +2836,9 @@ class CivRuntime:
         A refusal no installed scheduler — or no declared path — can take
         is re-queued on the tracker instead of dropped (MOR-4384), so the
         record of which read the radio refused survives for the owner.
+        MOR-4063: the identity is matched under the DISPATCHED receiver —
+        every selector the read could have gone out with — because the
+        scope receiver can change between the send and the FA.
         """
         tracker = self._host._civ_request_tracker
         refused = tracker.take_refused_reads()
@@ -2850,20 +2854,38 @@ class CivRuntime:
             return
         profile = self._host._profile
         resolve = acquisition_query_resolver_for_profile(profile)
-        scope_receiver = self._host._radio_state.scope_controls.receiver
+        # MOR-4063: a scope read goes out under the receiver selected at
+        # DISPATCH time, and the operator can flip that selection before the
+        # refusal lands. The refusal identity carries the dispatched
+        # receiver byte itself, so each declared read is matched under
+        # every selector it could have been sent with -- the current
+        # receiver plus both selector constants -- instead of only the
+        # receiver selected when the FA arrived.
         refused_set = set(refused)
+        receiver_candidates = {
+            self._host._radio_state.scope_controls.receiver,
+            SCOPE_SELECTOR_MAIN,
+            SCOPE_SELECTOR_SUB,
+        }
         paths = []
         delivered = set()
         for path in scheduler.declared_paths():
             query = resolve(path)
-            identity = (
-                read_identity_for_query(query, scope_receiver, profile.supports_cmd29)
-                if query is not None
-                else None
-            )
-            if identity is not None and identity in refused_set:
+            if query is None:
+                continue
+            matched = {
+                identity
+                for receiver in receiver_candidates
+                if (
+                    identity := read_identity_for_query(
+                        query, receiver, profile.supports_cmd29
+                    )
+                )
+                is not None
+            } & refused_set
+            if matched:
                 paths.append(path)
-                delivered.add(identity)
+                delivered |= matched
         unmapped = [key for key in refused if key not in delivered]
         if unmapped:
             # A refusal naming no declared path is still the only record

@@ -791,14 +791,20 @@ class AcquisitionScheduler:
         """Atomically bind one pending request flight to its dispatch seat."""
 
         # Another seat may complete this envelope while a drain awaits an
-        # earlier entry from the same per-pass snapshot.
-        key = _request_key(
-            request.paths[0],
-            acquisition_method=request.acquisition_method,
-            policy=request.policy,
+        # earlier entry from the same per-pass snapshot. The lookup is by
+        # request id, not by the key recomputed from ``paths[0]``: the
+        # dispatch view may narrow a mixed automatic request to its askable
+        # paths (MOR-4063), so the view's first path need not be the one
+        # the queued entry is stored under.
+        pending = next(
+            (
+                queued
+                for queued in self._requests_by_key.values()
+                if queued.id == request.id
+            ),
+            None,
         )
-        pending = self._requests_by_key.get(key)
-        if pending is None or pending.id != request.id:
+        if pending is None:
             return False
 
         existing = self._claims_by_request_id.get(request.id)
@@ -1168,10 +1174,18 @@ class AcquisitionScheduler:
         Requests a caller asked for by name (``NORMAL``/``COMMAND``/
         ``USER``) are never gated here. Requests re-queued by
         :meth:`resume_external_cat` pass through the same gate.
+
+        MOR-4063: a MIXED automatic request -- one refused or contradicted
+        path queued beside an eligible sibling -- is returned narrowed to
+        the paths that may be asked now, so the refused path is not sent
+        inside its retry delay while the sibling still goes out. The queued
+        request itself keeps every path (withheld, not deleted): once the
+        refusal's retry delay expires the path joins the dispatch again.
         """
 
+        now = self._clock.now()
         eligible = (
-            request
+            self._askable_view(request, now=now)
             for request in self._requests_by_key.values()
             if self.is_dispatchable(request)
         )
@@ -1258,6 +1272,31 @@ class AcquisitionScheduler:
             or self._unavailable_withheld(path, now)
             for path in request.paths
         )
+
+    def _askable_view(
+        self, request: AcquisitionRequest, *, now: float
+    ) -> AcquisitionRequest:
+        """The dispatch view of ``request``: its askable paths only (MOR-4063).
+
+        An automatic request queued with a sibling mix -- one path refused
+        or contradicted, one eligible -- is narrowed to the eligible paths
+        so the drain does not send the refused path inside its retry delay.
+        Requests a caller asked for by name keep every path they asked for;
+        the narrowing never applies to them. The id is kept, so the drain's
+        in-flight ledger, claims and dispatch records stay coherent.
+        """
+
+        if request.priority not in _AUTOMATIC_PRIORITIES:
+            return request
+        askable = tuple(
+            path
+            for path in request.paths
+            if self._availability.get(path, True) is not False
+            and not self._unavailable_withheld(path, now)
+        )
+        if not askable or askable == request.paths:
+            return request
+        return self._replace_request_paths(request, paths=askable)
 
     def due_requests(
         self,
