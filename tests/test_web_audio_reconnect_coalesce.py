@@ -18,13 +18,18 @@ handler unwinds.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 from rigplane.audio_bus import AudioBus
+from rigplane.audio.session import RxSubscription
 from rigplane.radio_protocol import AudioCapable
+from rigplane.testing.timing import await_until
 from rigplane.types import AudioCodec
-from rigplane.web.handlers import AudioBroadcaster
+from rigplane.web.handlers import AudioBroadcaster, AudioHandler
 from rigplane.ws import WebSocketConnection
 
 
@@ -98,3 +103,90 @@ class TestReconnectCoalescing:
         await broadcaster.subscribe(ws=_make_ws(), identity=None)
 
         assert len(broadcaster._clients) == 2
+
+
+class _GatedSession:
+    """Fake AudioSession whose RX release waits on a gate (the session lock).
+
+    Models a peer teardown racing the release: the release is in flight,
+    waiting on the session lock, when the teardown task is cancelled.
+    """
+
+    def __init__(self) -> None:
+        self.entered = asyncio.Event()
+        self.proceed = asyncio.Event()
+        self.released = False
+
+    async def _release_rx(self, sub: object) -> None:
+        self.entered.set()
+        await self.proceed.wait()
+        self.released = True
+
+
+async def _blocked_subscription(broadcaster: Any, session: _GatedSession) -> Any:
+    """Subscribe a client, then park a gated RX demand as the relay handle."""
+    ws = _make_ws()
+    queue = await broadcaster.subscribe(ws=ws)
+    sub = RxSubscription(session, SimpleNamespace(name="cancel-probe"))  # type: ignore[arg-type]
+    broadcaster._subscription = sub  # noqa: SLF001
+    return queue
+
+
+class TestCancelSafeTeardown:
+    async def test_cancelled_unsubscribe_retains_subscription_for_retry(self) -> None:
+        """MOR-4676 P2: a cancel during the release must retain ownership.
+
+        When the teardown is cancelled while the release waits on the
+        session lock, the demand handle must stay registered (not cleared
+        first): the retry then releases it, instead of leaking a stale
+        ``web-audio`` demand with no handle left to release it.
+        """
+        broadcaster = AudioBroadcaster(None)
+        session = _GatedSession()
+        queue = await _blocked_subscription(broadcaster, session)
+        sub = broadcaster._subscription  # noqa: SLF001
+        task = asyncio.create_task(broadcaster.unsubscribe(queue))
+        assert await await_until(
+            lambda: session.entered.is_set() or None,
+            timeout=5.0,
+            description="release waiting on the session lock",
+        )
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        # Ownership retained: the handle is still registered for a retry.
+        assert broadcaster._subscription is sub  # noqa: SLF001
+        assert not session.released
+        session.proceed.set()
+        await broadcaster.unsubscribe(queue)
+        assert broadcaster._subscription is None  # noqa: SLF001
+        assert session.released
+
+    async def test_stop_rx_finishes_unsubscribe_across_cancel(self) -> None:
+        """MOR-4676 P2: handler teardown pins the unsubscribe to completion.
+
+        When a peer teardown cancels the handler while its unsubscribe
+        waits on the session lock, the release still runs to completion —
+        the ``web-audio`` demand is dropped, not stranded.
+        """
+        broadcaster = AudioBroadcaster(None)
+        session = _GatedSession()
+        queue = await _blocked_subscription(broadcaster, session)
+        handler = AudioHandler(ws=_make_ws(), radio=None, broadcaster=broadcaster)
+        handler._rx_active = True  # noqa: SLF001
+        handler._frame_queue = queue  # noqa: SLF001
+        task = asyncio.create_task(handler._stop_rx())  # noqa: SLF001
+        assert await await_until(
+            lambda: session.entered.is_set() or None,
+            timeout=5.0,
+            description="release waiting on the session lock",
+        )
+        task.cancel()
+        # The pinned release outlives the cancel: let it finish, then the
+        # cancelled teardown observes the completed unsubscribe.
+        session.proceed.set()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        assert session.released
+        assert broadcaster._subscription is None  # noqa: SLF001
+        assert handler._rx_active is False  # noqa: SLF001

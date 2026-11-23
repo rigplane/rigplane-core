@@ -553,6 +553,16 @@ class WebRtcSessionManager:
             session.controller_owners[conn] = attachment_owners
             if kind == "audio":
                 session.audio_conns.add(conn)
+                # MOR-4676: one audio pair per peer — a newly served audio
+                # attachment supersedes a silently stale one (its lossy
+                # channels died without a close event while control stayed
+                # up, so no other teardown ends it). Aborting the stale
+                # conn runs its normal exit path (sender cancelled,
+                # unsubscribe, unregister) through the single session
+                # teardown; the live peer sees the close and re-attaches.
+                for old in tuple(session.audio_conns):
+                    if old is not conn:
+                        old.abort()
             if kind == "control" and params.controller_role == "primary":
                 session.primary_controls.add(conn)
             try:
