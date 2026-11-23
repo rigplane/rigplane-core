@@ -2401,9 +2401,18 @@ class AudioHandler:
         preferred_rx_codec: int | None = None,
         identity: str | None = None,
     ) -> None:
-        """Subscribe to audio broadcaster for RX frames."""
+        """Subscribe to audio broadcaster for RX frames (idempotent re-arm).
+
+        A second ``audio_start`` with no ``audio_stop`` replaces this
+        attachment's subscription instead of orphaning the previous
+        queue: an orphaned queue would keep the relay and its
+        ``web-audio`` bus subscription alive past this session's own
+        teardown, which only unsubscribes the latest queue (MOR-4676).
+        """
         if not self._broadcaster:
             return
+        if self._rx_active:
+            await self._stop_rx()
         self._rx_active = True
         self._frame_queue = await self._broadcaster.subscribe(
             ws=self._ws,

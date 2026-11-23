@@ -1732,6 +1732,289 @@ async def _channel_closed(channel: Any, timeout: float = 10.0) -> None:
     )
 
 
+@_webrtc
+async def test_webrtc_rx_sender_cancelled_when_peer_connection_goes_away(
+    tmp_path: Path,
+) -> None:
+    """MOR-4676: a clean peer teardown ends the RX sender and unsubscribes.
+
+    A WebRTC session starts RX audio, then the whole peer connection
+    goes away with no ``audio_stop``. The session's audio sender must be
+    cancelled and its broadcaster subscription removed within a bound —
+    not kept running in parallel with the next session's sender while
+    the audio bus keeps a stale ``web-audio`` subscriber.
+    """
+    stack = await _stand_up_stack(tmp_path, audio=True)
+    peer = _ChannelSetPeer()
+    try:
+        await peer.connect(stack.web, ("control", "audio"))
+        key = await _acquire_session(stack.web.port)
+        peer.send_text("control", _attach_text("control", key))
+        assert (await _frame(peer, "control", "hello"))["type"] == "hello"
+        await _attach_and_serve_audio_rx(peer, key)
+        broadcaster = stack.web._audio_broadcaster  # noqa: SLF001
+        assert await await_until(
+            lambda: len(broadcaster._clients) == 1 or None,  # noqa: SLF001
+            timeout=10.0,
+            description="broadcaster subscribed the RX client",
+        )
+        assert broadcaster._subscription is not None  # noqa: SLF001
+        assert _live_audio_senders(), "no audio sender task while RX is live"
+        # The LAN-client drop: the whole peer session goes away with no
+        # ``audio_stop`` — channels and peer connection together.
+        await peer.close()
+
+        def _no_sessions() -> bool | None:
+            manager = stack.web._webrtc_session_manager()  # noqa: SLF001
+            return True if manager is None or not manager.active_session_ids else None
+
+        assert await await_until(
+            _no_sessions, timeout=10.0, description="webrtc session dropped"
+        ), "server still holds the dead peer session"
+        assert await await_until(
+            lambda: _registered(stack, "audio") == 0 or None,
+            timeout=10.0,
+            description="server audio handler ended and unregistered",
+        ), "dead session's audio handler still registered"
+        assert await await_until(
+            lambda: len(broadcaster._clients) == 0 or None,  # noqa: SLF001
+            timeout=10.0,
+            description="broadcaster dropped the dead RX client",
+        ), "dead session's broadcaster subscription outlives its channels"
+        assert await await_until(
+            lambda: broadcaster._subscription is None or None,  # noqa: SLF001
+            timeout=10.0,
+            description="relay subscription released",
+        ), "audio bus keeps the dead session's web-audio subscriber"
+        assert await await_until(
+            lambda: not _live_audio_senders() or None,
+            timeout=10.0,
+            description="audio sender cancelled",
+        ), "dead session's audio sender still runs"
+    finally:
+        await peer.close()
+        await _tear_down_stack(stack)
+
+
+@_webrtc
+async def test_webrtc_rx_sender_cancelled_when_peer_vanishes_without_close(
+    tmp_path: Path,
+) -> None:
+    """MOR-4676: a peer that vanishes without closing still loses its sender.
+
+    The session goes away with no channel close and no ``audio_stop``
+    (the network path died the way the LAN client's did): the
+    controller-session loss path must still cancel the session's audio
+    sender and remove its subscriber within a bound, not run it in
+    parallel with the next session's sender.
+    """
+    stack = await _stand_up_stack(tmp_path, audio=True)
+    peer = _ChannelSetPeer()
+    try:
+        await peer.connect(stack.web, ("control", "audio"))
+        key = await _acquire_session(stack.web.port)
+        peer.send_text("control", _attach_text("control", key))
+        assert (await _frame(peer, "control", "hello"))["type"] == "hello"
+        await _attach_and_serve_audio_rx(peer, key)
+        broadcaster = stack.web._audio_broadcaster  # noqa: SLF001
+        assert await await_until(
+            lambda: len(broadcaster._clients) == 1 or None,  # noqa: SLF001
+            timeout=10.0,
+            description="broadcaster subscribed the RX client",
+        )
+        assert broadcaster._subscription is not None  # noqa: SLF001
+        assert _live_audio_senders(), "no audio sender task while RX is live"
+        # The peer vanishes: nothing closes, no heartbeat refreshes the
+        # controller session (6 s TTL), so the session-loss path ends it.
+        assert await await_until(
+            lambda: _registered(stack, "audio") == 0 or None,
+            timeout=15.0,
+            description="server audio handler ended and unregistered",
+        ), "dead session's audio handler still registered"
+        assert await await_until(
+            lambda: len(broadcaster._clients) == 0 or None,  # noqa: SLF001
+            timeout=15.0,
+            description="broadcaster dropped the dead RX client",
+        ), "dead session's broadcaster subscription outlives its session"
+        assert await await_until(
+            lambda: broadcaster._subscription is None or None,  # noqa: SLF001
+            timeout=15.0,
+            description="relay subscription released",
+        ), "audio bus keeps the dead session's web-audio subscriber"
+        assert await await_until(
+            lambda: not _live_audio_senders() or None,
+            timeout=15.0,
+            description="audio sender cancelled",
+        ), "dead session's audio sender still runs"
+    finally:
+        await peer.close()
+        await _tear_down_stack(stack)
+
+
+def _live_audio_senders() -> list[str]:
+    """Names of live per-attachment audio sender tasks (``audio-sender``)."""
+    return sorted(
+        task.get_name()
+        for task in asyncio.all_tasks()
+        if task.get_name() == "audio-sender" and not task.done()
+    )
+
+
+async def _keep_peer_alive(peer: _ChannelSetPeer, done: asyncio.Event) -> None:
+    """Heartbeat a peer's control channel until ``done`` (remote TTL guard).
+
+    Remote mode keeps ONE controller grant for every peer on the key: while
+    this beats, the grant (and its TTL revoke) can never fire, so only the
+    peer teardown under test can end the attachments.
+    """
+    while not done.is_set():
+        with contextlib.suppress(Exception):
+            peer.send_text("control", json.dumps({"type": "controller_heartbeat"}))
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(done.wait(), timeout=2.0)
+
+
+@_webrtc
+async def test_webrtc_remote_fence_cancels_audio_sender_and_unsubscribes(
+    tmp_path: Path,
+) -> None:
+    """MOR-4676: the ICE fence owns the peer's audio sender in remote mode.
+
+    Remote mode mints tickets with no ``tx_owner``, so the per-attachment
+    owner sets stay empty and the fence has no controller session to end.
+    The production leak: a remote peer whose lossy audio channels died
+    without a close event kept its audio sender (50 fps) and its
+    ``web-audio`` bus subscription while its own healthy control channel
+    kept the grant refreshed. The peer teardown must cancel that peer's
+    audio sender and unsubscribe it within a bound — one owner, the
+    fence — instead of waiting for a session that never ends.
+    """
+    stack = await _stand_up_stack(tmp_path, audio=True)
+    ghost = _ChannelSetPeer()
+    keepalive_done = asyncio.Event()
+    keepalive: asyncio.Task[None] | None = None
+    try:
+        status, _ = await _http_post(
+            stack.web.port, "/api/v1/controller/mode", {"mode": "remote"}
+        )
+        assert status == 200, status
+        await ghost.connect(stack.web, ("control", "audio"))
+        manager = stack.web._webrtc_session_manager()  # noqa: SLF001
+        assert manager is not None
+        ghost_id = manager.active_session_ids[-1]
+        key = await _acquire_session(stack.web.port)
+        ghost.send_text("control", _attach_text("control", key))
+        assert (await _frame(ghost, "control", "hello"))["type"] == "hello"
+        await _attach_and_serve_audio_rx(ghost, key)
+        broadcaster = stack.web._audio_broadcaster  # noqa: SLF001
+        assert await await_until(
+            lambda: len(broadcaster._clients) == 1 or None,  # noqa: SLF001
+            timeout=10.0,
+            description="broadcaster subscribed the RX client",
+        )
+        assert broadcaster._subscription is not None  # noqa: SLF001
+        assert _live_audio_senders(), "no audio sender task while RX is live"
+        # The peer's own control channel keeps heartbeating, so the shared
+        # grant never expires — only the fenced peer's teardown may end
+        # the ghost's sender.
+        keepalive = asyncio.create_task(_keep_peer_alive(ghost, keepalive_done))
+        # The flap signal the transport delivers for the dead peer: ICE
+        # "disconnected". Its lossy channels never reported a close, and
+        # no audio_stop was sent.
+        manager._fence_peer(ghost_id)  # noqa: SLF001
+        assert await await_until(
+            lambda: _registered(stack, "audio") == 0 or None,
+            timeout=10.0,
+            description="fenced peer audio handler ended and unregistered",
+        ), "fenced peer's audio handler still registered"
+        assert await await_until(
+            lambda: len(broadcaster._clients) == 0 or None,  # noqa: SLF001
+            timeout=10.0,
+            description="broadcaster dropped the fenced RX client",
+        ), "fenced peer's broadcaster subscription outlives its session"
+        assert await await_until(
+            lambda: broadcaster._subscription is None or None,  # noqa: SLF001
+            timeout=10.0,
+            description="relay subscription released",
+        ), "audio bus keeps the fenced peer's web-audio subscriber"
+        assert await await_until(
+            lambda: not _live_audio_senders() or None,
+            timeout=10.0,
+            description="audio sender cancelled",
+        ), "fenced peer's audio sender still runs"
+    finally:
+        keepalive_done.set()
+        if keepalive is not None:
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(keepalive, timeout=5.0)
+        await ghost.close()
+        await _tear_down_stack(stack)
+
+
+@_webrtc
+async def test_webrtc_audio_restart_without_stop_does_not_orphan_subscription(
+    tmp_path: Path,
+) -> None:
+    """MOR-4676: re-arming RX on one channel keeps exactly one subscription.
+
+    A second ``audio_start`` with no ``audio_stop`` replaces the
+    attachment's subscription instead of orphaning the previous queue:
+    otherwise the relay and its ``web-audio`` bus subscription never see
+    an empty client set again, even after the session's own teardown
+    unsubscribes the latest queue.
+    """
+    stack = await _stand_up_stack(tmp_path, audio=True)
+    peer = _ChannelSetPeer()
+    try:
+        await peer.connect(stack.web, ("control", "audio"))
+        key = await _acquire_session(stack.web.port)
+        peer.send_text("control", _attach_text("control", key))
+        assert (await _frame(peer, "control", "hello"))["type"] == "hello"
+        await _attach_and_serve_audio_rx(peer, key)
+        broadcaster = stack.web._audio_broadcaster  # noqa: SLF001
+        assert await await_until(
+            lambda: len(broadcaster._clients) == 1 or None,  # noqa: SLF001
+            timeout=10.0,
+            description="broadcaster subscribed the RX client",
+        )
+        # Re-arm RX on the SAME channel with no audio_stop in between.
+        peer.send_text("audio", json.dumps({"type": "audio_start", "direction": "rx"}))
+        assert (await _frame(peer, "audio", "audio_format"))["type"] == "audio_format"
+        assert len(broadcaster._clients) == 1, (  # noqa: SLF001
+            "re-armed RX orphaned its previous broadcaster queue"
+        )
+        peer.close_kind("audio")
+        peer.close_kind("control")
+        assert await await_until(
+            lambda: _registered(stack, "audio") == 0 or None,
+            timeout=10.0,
+            description="server audio handler ended and unregistered",
+        ), "dead session's audio handler still registered"
+        assert await await_until(
+            lambda: len(broadcaster._clients) == 0 or None,  # noqa: SLF001
+            timeout=10.0,
+            description="broadcaster dropped the RX client",
+        ), "re-armed RX left a stale subscriber behind its session"
+        assert await await_until(
+            lambda: broadcaster._subscription is None or None,  # noqa: SLF001
+            timeout=10.0,
+            description="relay subscription released",
+        ), "audio bus keeps a stale web-audio subscriber"
+    finally:
+        await peer.close()
+        await _tear_down_stack(stack)
+
+
+async def _attach_and_serve_audio_rx(peer: _ChannelSetPeer, key: str) -> None:
+    """Attach the audio kind and arm RX; assert the ``audio_format`` ack."""
+    peer.send_text("audio", _attach_text("audio", key))
+    assert await await_until(
+        lambda: peer.take("audio"), timeout=10.0, description="audio ack"
+    ) == {"type": "attached", "v": 1, "channel": "audio"}
+    peer.send_text("audio", json.dumps({"type": "audio_start", "direction": "rx"}))
+    assert (await _frame(peer, "audio", "audio_format"))["type"] == "audio_format"
+
+
 async def _release_session(port: int, key: str) -> int:
     """End one controller session server-side (``DELETE /api/v1/controller``).
 
