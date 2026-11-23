@@ -194,7 +194,13 @@ class RadioScopeSource:
             self._presets[-1],
         )
         half = self._coverage_half_width(preset)
-        return Coverage(center - half, center + half), preset
+        # MOR-4566: the spectrum ends at 0 Hz. A valid low-frequency window
+        # (a VFO near the bottom, e.g. 65 kHz with a 30–100 kHz pinned
+        # view) selects a preset whose ±coverage reaches underground; the
+        # grant is clamped at the physical floor — the window, whose edges
+        # are all real frequencies, stays covered instead of the grant
+        # raising.
+        return Coverage(max(0, center - half), center + half), preset
 
     def resolve_view(self, view: ViewRequest, receiver: int | None = None) -> View:
         selected = self._receiver(receiver)

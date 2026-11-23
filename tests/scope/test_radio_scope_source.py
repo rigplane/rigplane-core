@@ -71,6 +71,24 @@ async def test_pinned_window_span_covers_it_from_any_vfo_position(model, vfo_hz)
 
 
 @pytest.mark.parametrize("model", ["ic7300", "ic705"])
+async def test_pinned_low_frequency_window_grants_coverage_clamped_at_zero(model):
+    """MOR-4566: a pinned window at the very bottom of the spectrum — every
+    edge a real frequency — selects a preset whose ±coverage reaches below
+    0 Hz. The grant is clamped at the spectrum floor instead of raising, and
+    the window stays covered; the acquisition midpoint moves with the clamp
+    so the preset's usable coverage above zero is the widest it allows."""
+    profile = load_rig(Path("rigs") / f"{model}.toml").to_profile()
+    writer = Writer()
+    writer.frequency = 65_000
+    source = RadioScopeSource(profile, writer)
+    window = View(30_000, 100_000)
+    granted = await source.set_view(window)
+    assert granted.view == window
+    assert granted.coverage == Coverage(0, 165_000)
+    assert writer.writes[-1] == ((0 + 165_000) / 2, 100_000, 0)
+
+
+@pytest.mark.parametrize("model", ["ic7300", "ic705"])
 async def test_profile_center_span_and_partial(model):
     profile = load_rig(Path("rigs") / f"{model}.toml").to_profile()
     writer = Writer()
