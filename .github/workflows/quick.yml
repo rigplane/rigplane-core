@@ -598,13 +598,13 @@ jobs:
         if: needs.classify.outputs.ci == 'true'
         run: python3 .github/scripts/quick-path-filters.test.py
 
-      - name: Real-clock timing ratchet tests
-        if: needs.classify.outputs.ci == 'true'
-        run: python3 .github/scripts/check-realtime-ratchet.test.py
-
       - name: Playwright browser environment contract test
         if: needs.classify.outputs.ci == 'true'
         run: python3 .github/scripts/playwright-browser-env.test.py
+
+      - name: Real-clock timing ratchet tests
+        if: needs.classify.outputs.ci == 'true'
+        run: python3 .github/scripts/check-realtime-ratchet.test.py
 
       - name: Doc link gate contract tests
         if: needs.classify.outputs.ci == 'true'
