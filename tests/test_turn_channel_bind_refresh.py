@@ -7,7 +7,7 @@ and ``TransactionFailed: STUN transaction failed (401)`` escaped
 ``request_with_retry``, failing the whole first connect attempt. A fresh
 grant on the next attempt connected.
 
-These tests drive the REAL aioice 0.10.2 ``TurnClient`` (UDP) against a
+These tests drive the real aioice ``TurnClient`` (UDP) against a
 small in-test STUN/TURN responder on loopback: no real network, no real
 TURN server. The responder speaks just enough STUN framing (via aioice's
 own ``stun`` codec) to Allocate and ChannelBind, with a scripted
@@ -102,6 +102,7 @@ class _TurnDouble(asyncio.DatagramProtocol):
                     message_class=aioice_stun.Class.RESPONSE,
                     transaction_id=request.transaction_id,
                     attributes={
+                        "XOR-MAPPED-ADDRESS": addr,
                         "XOR-RELAYED-ADDRESS": ("127.0.0.1", 19999),
                         "LIFETIME": 600,
                     },
@@ -138,6 +139,11 @@ class _TurnDouble(asyncio.DatagramProtocol):
                 message_class=aioice_stun.Class.RESPONSE,
                 transaction_id=request.transaction_id,
                 attributes={"LIFETIME": 0},
+            )
+        # aioice authenticates responses to authenticated TURN requests.
+        if "MESSAGE-INTEGRITY" in attrs:
+            response.add_message_integrity(
+                aioice_turn.make_integrity_key(attrs["USERNAME"], _REALM, "pw")
             )
         self.transport.sendto(bytes(response), addr)
 
