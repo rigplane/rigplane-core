@@ -5922,9 +5922,11 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
     async def get_data_off_mod_input(self) -> int:
         """Read Data Off modulation input source (0-5)."""
         command, sub, prefix = self._expect_shape(get_data_off_mod_input)
-        return await self._get_bcd_level(
-            self._commands.get_data_off_mod_input(to_addr=self._radio_addr),
-            key="get_data_off_mod_input",
+        reply = await self._civ_runtime.read_civ_after_dispatch(
+            self._commands.get_data_off_mod_input(to_addr=self._radio_addr)
+        )
+        return parse_level_response(
+            reply,
             command=command,
             sub=sub,
             prefix=prefix,

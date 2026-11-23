@@ -116,6 +116,17 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_ReadReceipt = asyncio.Future[tuple[asyncio.Future[CivFrame], asyncio.Future[CivFrame]]]
+
+
+def _response_key(frame: CivFrame) -> CivRequestKey:
+    # Concurrent menu reads must match the echoed control number. The
+    # command/subcommand alone would let a different menu reply settle one.
+    if frame.command == 0x1A and frame.sub == 0x05 and len(frame.data) == 2:
+        return read_identity_from_frame(frame)
+    return request_key_from_frame(frame)
+
+
 CIV_HEADER_SIZE = 0x15
 # Icom CI-V frequency payloads (cmd 0x00 unsolicited / 0x03 GET response) are
 # always exactly 5 BCD bytes. Truncated/partial frames (e.g. from a flaky USB
@@ -1251,7 +1262,7 @@ class CivRuntime:
             raise ValueError("timeout must be positive")
 
         parsed_frame = parse_civ_frame(civ_frame)
-        request_key = request_key_from_frame(parsed_frame)
+        request_key = _response_key(parsed_frame)
         # Bounds the *radio's* answer, so it is spent from the send onward
         # rather than from here: the ``_civ_min_interval`` gap inside
         # ``_send_civ_frame_now`` and the ACK-sink drain below are this
@@ -4774,12 +4785,68 @@ class CivRuntime:
             return len(frame.data) == 0
         return len(frame.data) == 0
 
+    async def read_civ_after_dispatch(self, civ_frame: bytes) -> CivFrame:
+        """Queue a read's send, then collect its tracked answer off the worker."""
+        self._check_connected()
+        if self._host._civ_transport is None or not self._host._connected:
+            await self._wait_for_civ_transport_recovery()
+        self._ensure_civ_runtime()
+        tracker = self._host._civ_request_tracker
+        epoch = self._host._civ_epoch
+        receipt: _ReadReceipt = asyncio.get_running_loop().create_future()
+        active = True
+
+        def current() -> bool:
+            return (
+                active
+                and self._host._civ_request_tracker is tracker
+                and self._host._civ_epoch == epoch
+            )
+
+        async def dispatch() -> CivFrame | None:
+            return await self._execute_civ_raw(
+                civ_frame, is_current=current, deferred_read=receipt
+            )
+
+        try:
+            commander = self._host._commander
+            if commander is None:
+                await dispatch()
+            else:
+                await commander.send(civ_frame, dispatch=dispatch)
+            pending, nak = receipt.result()
+            done, _ = await asyncio.wait(
+                (pending, nak),
+                timeout=self._host._civ_get_timeout,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if not current():
+                raise ConnectionError("CI-V read belongs to a retired session")
+            if pending in done:
+                return pending.result()
+            if nak in done:
+                nak.result()
+                raise CommandRejectedError("CI-V read refused (NAK)")
+            tracker.note_timeout()
+            raise TimeoutError("CI-V response timed out")
+        finally:
+            active = False
+            # Before handoff the dispatch still owns the waiters.
+            if not receipt.cancel():
+                for waiter in receipt.result():
+                    tracker.unregister(waiter)
+                    if not waiter.done():
+                        waiter.cancel()
+                    elif not waiter.cancelled():
+                        waiter.exception()
+
     async def _execute_civ_raw(
         self,
         civ_frame: bytes,
         wait_response: bool = True,
         *,
         is_current: Callable[[], bool] | None = None,
+        deferred_read: _ReadReceipt | None = None,
     ) -> "CivFrame | None":
         """Execute one CI-V command via request tracker (serialized by worker).
 
@@ -4837,8 +4904,10 @@ class CivRuntime:
         guard = {"is_current": write_is_current} if is_current is not None else {}
 
         parsed_frame = parse_civ_frame(civ_frame)
-        request_key = request_key_from_frame(parsed_frame)
+        request_key = _response_key(parsed_frame)
         expects_response = self._civ_expects_response(parsed_frame)
+        if deferred_read is not None and (not wait_response or not expects_response):
+            raise ValueError("deferred CI-V response requires a read")
 
         self._cleanup_stale_civ_waiters()
 
@@ -4992,6 +5061,11 @@ class CivRuntime:
             # of it whenever the pacing sleep overshot the remainder --
             # ``tests/test_radio.py:
             # TestResponseDeadlineOpensAtSend`` fails on that mis-charge.
+            if deferred_read is not None:
+                assert nak_pending is not None
+                deferred_read.set_result((pending, nak_pending))
+                pending = nak_pending = None  # The reader now owns cleanup.
+                return None
             waiters: tuple[asyncio.Future[CivFrame], ...] = (
                 (pending, nak_pending) if nak_pending is not None else (pending,)
             )
