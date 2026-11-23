@@ -295,7 +295,7 @@ async def test_real_websockets_negotiate_independent_views_and_audio_selection()
 
 @pytest.mark.realtime(reason="real simulator UDP and two WebSocket clients")
 @pytest.mark.timeout(30)
-async def test_real_server_two_clients_simulator_pacing_and_last_viewer_output_off(
+async def test_real_server_two_clients_share_native_frames_and_last_viewer_output_off(
     monkeypatch,
 ):
     import aiohttp
@@ -305,13 +305,8 @@ async def test_real_server_two_clients_simulator_pacing_and_last_viewer_output_o
     from rigplane.scope.resample import max_hold
     from rigplane.web.protocol import decode_scope_frame_v2, encode_scope_frame_v2
     from rigplane.web.server import WebConfig
-    from rigplane_testkit.icom import simulator as testkit
-    from test_web_server import _addr
-
-    monkeypatch.setattr(
-        testkit, "_SCOPE_GAP_S", {key: 1 / 30 for key in testkit._SCOPE_GAP_S}
-    )
     from rigplane_testkit.icom.scope_control import ScopeControlSimulator
+    from test_web_server import _addr
 
     sim = ScopeControlSimulator(scope_stream=True)
     assembler = ScopeAssembler()
@@ -390,49 +385,44 @@ async def test_real_server_two_clients_simulator_pacing_and_last_viewer_output_o
                 start_seq = encoded[-1].seq
                 start_count = len(native_count)
                 start_encode = len(encoded)
-                started = asyncio.get_running_loop().time()
+                # Pacing is covered on virtual time. Here CI-V and WebSocket
+                # scheduling may both coalesce frames before a reader runs.
                 await await_until(
-                    lambda: len(native_count) >= start_count + 60, timeout=5
+                    lambda: all(
+                        frames and frames[-1].seq > start_seq for frames in received
+                    ),
+                    timeout=5,
                 )
-                elapsed = asyncio.get_running_loop().time() - started
-                end_seq = encoded[-1].seq
                 # Clients share one encode at the observed native width.
                 assert len(encoded) - start_encode == (len(native_count) - start_count)
                 assert {frame.width for frame in encoded[start_encode:]} == {
                     len(native.pixels)
                 }
-                await await_until(
-                    lambda: all(
-                        frames and frames[-1].seq >= end_seq - 3 for frames in received
-                    ),
-                    timeout=2,
+                expected = max_hold(
+                    native.pixels,
+                    Coverage(native.start_freq_hz, native.end_freq_hz),
+                    View(native.start_freq_hz, native.end_freq_hz),
+                    len(native.pixels),
                 )
-                for frames, fps in zip(received, (10, 20), strict=True):
-                    sample = [
-                        frame for frame in frames if start_seq < frame.seq <= end_seq
-                    ]
-                    assert abs(len(sample) / elapsed - fps) <= 1.5
-                    assert all(
-                        frame.pixels is not None
-                        and len(frame.pixels) == len(native.pixels)
-                        for frame in sample
-                    )
-                    expected = max_hold(
-                        native.pixels,
-                        Coverage(native.start_freq_hz, native.end_freq_hz),
-                        View(native.start_freq_hz, native.end_freq_hz),
-                        len(native.pixels),
-                    )
-                    assert all(frame.pixels == expected for frame in sample)
+                for frames in received:
+                    assert frames[-1].width == len(native.pixels)
+                    assert frames[-1].pixels == expected
+
+                await sockets[0].close()
+                await await_until(lambda: len(server._scope_handlers) == 1, timeout=5)
+                surviving_seq = encoded[-1].seq
+                await await_until(
+                    lambda: received[1][-1].seq > surviving_seq, timeout=5
+                )
                 assert sim._scope_11 == 1
             finally:
                 for ws in sockets:
                     await ws.close()
                 await asyncio.gather(*readers, return_exceptions=True)
             await await_until(
-                lambda: not server._radio_scope_session.enabled, timeout=5
+                lambda: not server._radio_scope_session.enabled and sim._scope_11 == 0,
+                timeout=5,
             )
-            assert sim._scope_11 == 0
     finally:
         if server is not None:
             await server.stop()
