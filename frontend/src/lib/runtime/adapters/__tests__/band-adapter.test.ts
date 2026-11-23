@@ -650,3 +650,69 @@ describe('per-receiver band readings (MOR-2526)', () => {
     expect(view.band!.currentBand.availability.structural).toBe(false);
   });
 });
+
+// ── MOR-4711: the band reading is per VFO, not only per receiver ──────────
+// A slotted A/B radio draws one panel per slot, but `receiverBands` is
+// receiver-keyed and its `main` entry derives from the ACTIVE slot's
+// frequency. The inactive slot's panel needs its own reading; the view
+// model carries it on the VFO record (`VfoViewModel.band`), derived with
+// the SAME `findActiveBand` mechanism over the same `freqRanges`.
+describe('per-VFO band reading (MOR-4711)', () => {
+  const abCaps = caps({
+    freqRanges: HF_RANGES, txBands: HAM_TX_BANDS, vfoScheme: 'ab', receivers: 1,
+  });
+  const abState = (overrides: Partial<ServerState> = {}): ServerState => bareState({
+    main: {
+      ...bareState().main,
+      freqHz: 7074000, activeSlot: 'A',
+      vfoA: { freqHz: 7074000, mode: 'USB', filterNum: 1, dataMode: 0 },
+      vfoB: { freqHz: 14219000, mode: 'USB', filterNum: 1, dataMode: 0 },
+    },
+    fieldStatus: {
+      ...bareState().fieldStatus,
+      'main.activeSlot': fresh,
+      'main.vfoA.freqHz': fresh, 'main.vfoA.mode': fresh, 'main.vfoA.filterNum': fresh,
+      'main.vfoB.freqHz': fresh, 'main.vfoB.mode': fresh, 'main.vfoB.filterNum': fresh,
+    },
+    ...overrides,
+  });
+
+  it('the inactive slot carries its own band; the active slot aliases the receiver entry', () => {
+    // Identity pins run on the RAW projection: `validateRadioViewModel`
+    // rebuilds every field object (same convention as the MOR-2526 pins).
+    const raw = toRadioViewModel(abState(), abCaps)!;
+    const view = validateRadioViewModel(raw);
+    expect(view.band!.receiverBands.main.reading).toEqual({ status: 'known', value: '40m' });
+    expect(raw.vfos[0]!.band).toBe(raw.band!.receiverBands.main);
+    expect(view.vfos[1]!.band!.reading).toEqual({ status: 'known', value: '20m' });
+    expect(view.vfos[1]!.band!.availability).toEqual({ structural: true, operational: true });
+  });
+
+  it('an unobserved slot frequency keeps that slot\'s band unknown, never the receiver\'s', () => {
+    const view = model(abState({
+      fieldStatus: { ...abState().fieldStatus, 'main.vfoB.freqHz': unobserved },
+    }), abCaps);
+    expect(view.vfos[1]!.band!.reading.status).toBe('unknown');
+    expect(view.vfos[0]!.band!.reading).toEqual({ status: 'known', value: '40m' });
+  });
+
+  it('unslotted receivers alias their own receiverBands entry on every record', () => {
+    const raw = toRadioViewModel(bareState({
+      fieldStatus: { ...bareState().fieldStatus, 'sub.freqHz': fresh },
+    }), caps({
+      freqRanges: HF_RANGES, txBands: HAM_TX_BANDS,
+      vfoScheme: 'main_sub', receivers: 2, capabilities: ['scope', 'audio', 'tx', 'dual_rx'],
+    }))!;
+    expect(raw.vfos[0]!.band).toBe(raw.band!.receiverBands.main);
+    expect(raw.vfos[1]!.band).toBe(raw.band!.receiverBands.sub);
+  });
+
+  it('no band plan ⇒ no per-VFO band key at all (same gate as receiverBands)', () => {
+    const view = model(abState(), caps({ vfoScheme: 'ab', receivers: 1 }));
+    for (const vfo of view.vfos) expect(Object.keys(vfo)).not.toContain('band');
+    const unnamed = model(abState(), caps({
+      vfoScheme: 'ab', receivers: 1, freqRanges: [{ start: 30000, end: 60000000, label: 'HF' }],
+    }));
+    for (const vfo of unnamed.vfos) expect(Object.keys(vfo)).not.toContain('band');
+  });
+});

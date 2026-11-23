@@ -23,7 +23,7 @@
  * `__tests__/radio-view-model-adapter.test.ts` additionally runs every
  * emitted model through the real `validateRadioViewModel`.
  */
-import type { Capabilities } from '$lib/types/capabilities';
+import type { Capabilities, FreqRange } from '$lib/types/capabilities';
 import type { ServerState } from '$lib/types/state';
 import type {
   RadioViewModel, TxAuxField, TxAuxViewModel, AtuStatus,
@@ -1363,6 +1363,26 @@ function deriveRfFrontEndMutex(rfFrontEnd: RfFrontEndViewModel | undefined): Rea
  *    not enable a TX-adjacent affordance. `validateRadioViewModel` enforces
  *    the known-band half of that invariant structurally.
  */
+/**
+ * MOR-4711: the ONE band-reading derivation, shared by the receiver-keyed
+ * `receiverBands` entries and the per-VFO `VfoViewModel.band` field: the
+ * frequency leaf at `base` gated by the same observation evidence every
+ * strict reading uses, named by the shipped `findActiveBand` over the caps
+ * argument's own `freqRanges`. A slotted A/B radio's inactive slot reads its
+ * OWN slot leaf here instead of inheriting the receiver's active-slot band.
+ */
+function bandReadingAt(
+  state: ServerState | null, freqRanges: FreqRange[], structural: boolean,
+  base: string, src: { freqHz?: number | null } | null | undefined,
+): BandField<string> {
+  const observed = topFieldAvailable(state, `${base}freqHz`);
+  const hz = numOrUndef(src?.freqHz);
+  const name = observed && hz !== undefined
+    ? findActiveBand(hz, freqRanges) ?? undefined
+    : undefined;
+  return txAuxField(structural, observed, name);
+}
+
 function deriveBand(
   state: ServerState | null, caps: Capabilities | null, activeReceiver: ReceiverId | null,
 ): BandViewModel | undefined {
@@ -1396,14 +1416,8 @@ function deriveBand(
   // sits on VHF while MAIN is on HF carries two different honest readings.
   // One derivation function for both receivers; `currentBand` below is the
   // active receiver's entry of this map, never a second computation.
-  const receiverBand = (key: 'main' | 'sub'): BandField<string> => {
-    const observed = topFieldAvailable(state, `${key}.freqHz`);
-    const hz = numOrUndef(state?.[key]?.freqHz);
-    const name = observed && hz !== undefined
-      ? findActiveBand(hz, freqRanges) ?? undefined
-      : undefined;
-    return txAuxField(bandChoices.length > 0, observed, name);
-  };
+  const receiverBand = (key: 'main' | 'sub'): BandField<string> =>
+    bandReadingAt(state, freqRanges, bandChoices.length > 0, `${key}.`, state?.[key]);
   const receiverBands = { main: receiverBand('main'), sub: receiverBand('sub') };
   const currentBand = onSub ? receiverBands.sub : receiverBands.main;
   // MOR-1356: which receiver the raw `state.active` names is an ORDINARY fact
@@ -2171,6 +2185,12 @@ function deriveRadioViewModel(
     : { status: 'unknown' as const, reason: target.reason };
   const txPermit = facts.frequencyPermit;
 
+  // MOR-4711: derived before the VFO records so every position can carry its
+  // own band reading — the inactive slot of a slotted A/B pair must not
+  // inherit the receiver's active-slot band from `receiverBands`.
+  const band = deriveBand(state, caps, activeId);
+  const bandPlan = band !== undefined && band.bandChoices.length > 0 ? band : undefined;
+
   const vfos = topology.structuralReceivers.flatMap((receiver) => {
     const key = RECEIVER_KEY[receiver];
     const rx = state?.[key] ?? null;
@@ -2237,6 +2257,17 @@ function deriveRadioViewModel(
         isActiveSlot,
         isTxTarget: txTarget.status === 'known' && txTarget.receiver === receiver
           && sameSlot(txTarget.slot, slot),
+        // MOR-4711: a position that reads its receiver's top-level frequency
+        // aliases the receiver's band entry (one object); any other position
+        // (the inactive slot of a slotted pair, the relative unselected VFO)
+        // derives its own from its own leaf through the same mechanism.
+        ...(bandPlan !== undefined
+          ? {
+            band: isActiveSlot
+              ? bandPlan.receiverBands[receiver === 'MAIN' ? 'main' : 'sub']
+              : bandReadingAt(state, caps.freqRanges ?? [], true, base, src),
+          }
+          : {}),
       };
     });
   });
@@ -2310,7 +2341,6 @@ function deriveRadioViewModel(
   const filterPassband = deriveFilterPassband(state, caps, activeId);
   const dsp = deriveDsp(state, caps);
   const rfFrontEnd = deriveRfFrontEnd(state, caps);
-  const band = deriveBand(state, caps, activeId);
   const repeater = deriveRepeater(state, caps);
   const ritXit = deriveRitXit(state, caps);
   const antenna = deriveAntenna(state, caps);

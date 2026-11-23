@@ -18,6 +18,8 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { mount, flushSync } from 'svelte';
 import type { ComponentProps } from 'svelte';
 import type { ReceiverId } from '../radio-view-model';
+import type { Capabilities } from '$lib/types/capabilities';
+import type { ServerState } from '$lib/types/state';
 import {
   validateRadioViewModel, type RadioViewModel,
   type ReceiverIndicatorViewModel,
@@ -328,6 +330,89 @@ describe('standard tray tabs (2/main_sub)', () => {
     expect(unknownMain.querySelector('[data-tray-tab="band"]')?.getAttribute('data-lit')).toBe('false');
     expect(unknownMain.querySelector('[data-tray-tab="ant"]')?.textContent?.trim()).toBe('ANT');
     expect(unknownMain.querySelector('[data-tray-tab="bw"]')?.textContent?.trim()).toBe('BW');
+  });
+});
+
+// ── MOR-4711: a slotted A/B pair draws TWO panels of ONE receiver ─────────
+// The capture (IC-705 over LAN: MAIN A 7.074.000 "40M", MAIN B 14.219.000
+// also "40M" + "BW 3000") showed the inactive panel repeating the ACTIVE
+// slot's facts: both panels read `band.receiverBands.main` and the MAIN
+// receiver indicator's `bandwidthHz`, which on a slotted radio describe the
+// active slot only. Each panel's tray must answer for the VFO it draws.
+describe('standard tray tabs of a slotted A/B pair (MOR-4711)', () => {
+  const fresh = {
+    storePath: 'x', observed: true, freshness: 'fresh', availability: 'available',
+  } as const;
+  const abCaps = {
+    model: 'fixture', scope: true, audio: true, tx: true,
+    capabilities: ['scope', 'audio', 'tx', 'filter_width'],
+    receivers: 1, vfoScheme: 'ab',
+    freqRanges: [{
+      start: 30000, end: 60000000, label: 'HF',
+      bands: [
+        { name: '40m', start: 7000000, end: 7300000, default: 7100000, bsrCode: 2 },
+        { name: '20m', start: 14000000, end: 14350000, default: 14195000, bsrCode: 5 },
+      ],
+    }],
+    modes: [], filters: [],
+    audioConfig: { sampleRate: 48000, channels: 1, codecs: ['pcm16'] },
+    webrtc: { available: false, enabled: false },
+    txBands: [
+      { name: '40m', start: 7000000, end: 7300000 },
+      { name: '20m', start: 14000000, end: 14350000 },
+    ],
+    scopeSource: 'hardware', audioFftAvailable: false,
+    stateContractVersion: 1, providerGeneration: 1,
+  } as unknown as Capabilities;
+  const abState = (): ServerState => {
+    const slotA = { freqHz: 7074000, mode: 'USB', filterNum: 1, dataMode: 0 };
+    const slotB = { freqHz: 14219000, mode: 'USB', filterNum: 1, dataMode: 0 };
+    const paths = [
+      'active', 'split', 'dualWatch', 'txTarget',
+      'main.freqHz', 'main.mode', 'main.filter', 'main.filterWidth', 'main.activeSlot',
+      ...['vfoA', 'vfoB'].flatMap((v) => [`main.${v}.freqHz`, `main.${v}.mode`, `main.${v}.filterNum`]),
+    ];
+    return {
+      active: 'MAIN', split: false, dualWatch: false, ptt: false,
+      txTarget: { status: 'known', receiver: 'MAIN', slot: 'A', frequencyHz: 7074000 },
+      main: {
+        ...slotA, filter: 1, filterWidth: 3000, activeSlot: 'A', vfoA: slotA, vfoB: slotB,
+        att: 0, preamp: 0, nb: false, nr: false, afLevel: 1, rfGain: 1, squelch: 0, sMeter: 0,
+      },
+      fieldStatus: Object.fromEntries(paths.map((p) => [p, fresh])),
+    } as unknown as ServerState;
+  };
+  const mountAb = (): HTMLElement => {
+    const model = toRadioViewModel(abState(), abCaps);
+    expect(model).not.toBeNull();
+    return mountSurface({ viewModel: model!, appearance: 'standard' });
+  };
+  const trayTab = (root: HTMLElement, slotId: 'A' | 'B', tab: string): HTMLElement => {
+    const panel = panels(root).find((p) => p.getAttribute('data-standard-vfo-slot') === slotId);
+    expect(panel, `panel for VFO ${slotId}`).not.toBeUndefined();
+    const found = panel!.querySelector(`[data-tray-tab="${tab}"]`);
+    expect(found, `VFO ${slotId} tray ${tab} tab`).not.toBeNull();
+    return found as HTMLElement;
+  };
+
+  it('each panel\'s BAND tab names the band of ITS OWN VFO frequency', () => {
+    const root = mountAb();
+    expect(trayTab(root, 'A', 'band').textContent?.trim()).toBe('40M');
+    expect(trayTab(root, 'A', 'band').getAttribute('data-lit')).toBe('true');
+    // The capture's defect: B parked on 14.219 MHz read A's '40M'.
+    expect(trayTab(root, 'B', 'band').textContent?.trim()).toBe('20M');
+    expect(trayTab(root, 'B', 'band').getAttribute('data-lit')).toBe('true');
+  });
+
+  it('the inactive panel\'s BW tab never repeats the active VFO\'s filter width', () => {
+    const root = mountAb();
+    expect(trayTab(root, 'A', 'bw').textContent?.trim()).toBe('BW 3000');
+    expect(trayTab(root, 'A', 'bw').getAttribute('data-lit')).toBe('true');
+    // The receiver's `filterWidth` leaf describes the ACTIVE slot only and
+    // the radio reports no per-slot width: B keeps its reserved slot unlit
+    // instead of borrowing A's 3000 Hz.
+    expect(trayTab(root, 'B', 'bw').textContent?.trim()).toBe('BW');
+    expect(trayTab(root, 'B', 'bw').getAttribute('data-lit')).toBe('false');
   });
 });
 
