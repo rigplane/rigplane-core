@@ -16,11 +16,12 @@ import json
 import socket
 import struct
 import time
-from collections.abc import Container
+from collections.abc import Callable, Container
 from typing import Any
 
 import pytest
 
+from rigplane.testing.timing import VirtualClock
 from rigplane.web.transport.ice_gathering import (
     GATHER_TIMEOUT_S,
     IFF_POINTOPOINT,
@@ -376,6 +377,214 @@ async def _offer_sdp() -> tuple[str, str]:
 
 def _answer_candidate_lines(answer_sdp: str) -> list[str]:
     return [ln for ln in answer_sdp.splitlines() if "candidate:" in ln]
+
+
+@_webrtc
+@pytest.mark.timeout(10)
+@pytest.mark.parametrize("side", ["offerer", "answerer"])
+async def test_ready_udp_relay_finishes_sdp_with_stun_pending(
+    monkeypatch: pytest.MonkeyPatch, virtual_clock: VirtualClock, side: str
+) -> None:
+    """An allocated relay is published without waiting for a blackholed STUN."""
+    await _assert_relay_gather(
+        monkeypatch, virtual_clock, side, "turn:localhost:3478", delay=0.1
+    )
+
+
+@_webrtc
+@pytest.mark.timeout(10)
+@pytest.mark.parametrize("side", ["offerer", "answerer"])
+@pytest.mark.parametrize(
+    "turn_url", ["turns:localhost:443", "turn:localhost:443?transport=tcp"]
+)
+async def test_stream_turn_relay_survives_short_gathering_budget(
+    monkeypatch: pytest.MonkeyPatch,
+    virtual_clock: VirtualClock,
+    side: str,
+    turn_url: str,
+) -> None:
+    """With UDP STUN blackholed, keep waiting for the selected stream relay."""
+    await _assert_relay_gather(monkeypatch, virtual_clock, side, turn_url, delay=2.5)
+
+
+@_webrtc
+@pytest.mark.timeout(10)
+@pytest.mark.parametrize(
+    ("turn_url", "budget", "stun_responds"),
+    [("turn:localhost:3478", 1.5, True), ("turns:localhost:443", 4.0, False)],
+)
+async def test_missing_turn_relay_respects_transport_budget(
+    monkeypatch: pytest.MonkeyPatch,
+    virtual_clock: VirtualClock,
+    turn_url: str,
+    budget: float,
+    stun_responds: bool,
+) -> None:
+    """Neither a UDP nor a stream allocation can hold SDP indefinitely."""
+    await _assert_relay_gather(
+        monkeypatch,
+        virtual_clock,
+        "answerer",
+        turn_url,
+        delay=budget + 1,
+        expected_deadline=budget,
+        stun_responds=stun_responds,
+    )
+
+
+async def _assert_relay_gather(
+    monkeypatch: pytest.MonkeyPatch,
+    clock: VirtualClock,
+    side: str,
+    turn_url: str,
+    *,
+    delay: float,
+    expected_deadline: float | None = None,
+    stun_responds: bool = False,
+) -> None:
+    from aioice import Candidate, ice, stun, turn
+    from aiortc import RTCConfiguration, RTCIceServer, RTCPeerConnection
+
+    from rigplane.web.transport import ice_gathering
+    from rigplane.web.transport.webrtc_contract import WebRtcAnswer
+    from rigplane.web.transport.webrtc_session import WebRtcSessionManager
+
+    allocation = asyncio.Event()
+    turn_closed = asyncio.Event()
+    stun_cancelled = asyncio.Event()
+
+    async def fake_stun(
+        protocol: ice.StunProtocol, server: tuple[str, int]
+    ) -> tuple[Candidate, None]:
+        if stun_responds:
+            assert protocol.local_candidate is not None
+            return Candidate(
+                foundation="stun",
+                component=protocol.local_candidate.component,
+                transport="udp",
+                priority=1,
+                host="198.51.100.10",
+                port=50001,
+                type="srflx",
+            ), None
+        try:
+            await asyncio.get_running_loop().create_future()
+        finally:
+            stun_cancelled.set()
+        raise AssertionError("the STUN blackhole cannot return a candidate")
+
+    class TurnSocket(asyncio.BaseTransport):
+        def __init__(self, protocol: turn.TurnClientMixin) -> None:
+            self.protocol = protocol
+
+        def get_extra_info(self, name: str, default: object = None) -> Any:
+            if name == "sockname":
+                return ("127.0.0.1", 51000)
+            return default
+
+        def close(self) -> None:
+            turn_closed.set()
+            self.protocol.connection_lost(None)
+
+    async def fake_turn_response(
+        client: turn.TurnClientMixin, request: stun.Message
+    ) -> tuple[stun.Message, tuple[str, int]]:
+        attrs: dict[str, object] = {"LIFETIME": 0}
+        if request.message_method == stun.Method.ALLOCATE:
+            await asyncio.sleep(delay)
+            allocation.set()
+            attrs = {"LIFETIME": 600, "XOR-RELAYED-ADDRESS": ("203.0.113.10", 50000)}
+        else:
+            assert request.message_method == stun.Method.REFRESH
+        return (
+            stun.Message(
+                message_method=request.message_method,
+                message_class=stun.Class.RESPONSE,
+                transaction_id=request.transaction_id,
+                attributes=attrs,
+            ),
+            client.server,
+        )
+
+    async def fake_turn_endpoint(
+        protocol_factory: Callable[[], ice.StunProtocol],
+        *,
+        server_addr: tuple[str, int],
+        username: str | None,
+        password: str | None,
+        ssl: bool,
+        transport: str,
+    ) -> tuple[turn.TurnTransport, ice.StunProtocol]:
+        assert server_addr[0] == "localhost"
+        assert ssl == turn_url.startswith("turns:")
+        assert transport == ("tcp" if ssl or "transport=tcp" in turn_url else "udp")
+        client_type = (
+            turn.TurnClientTcpProtocol
+            if transport == "tcp"
+            else turn.TurnClientUdpProtocol
+        )
+        client = client_type(
+            server_addr,
+            username,
+            password,
+            turn.DEFAULT_ALLOCATION_LIFETIME,
+            turn.DEFAULT_CHANNEL_REFRESH_TIME,
+        )
+        client.connection_made(TurnSocket(client))
+        protocol = protocol_factory()
+        endpoint = turn.TurnTransport(client)
+        await endpoint._connect(protocol)
+        return endpoint, protocol
+
+    monkeypatch.setattr(ice, "server_reflexive_candidate", fake_stun)
+    monkeypatch.setattr(turn, "create_turn_endpoint", fake_turn_endpoint)
+    monkeypatch.setattr(turn.TurnClientMixin, "request_with_retry", fake_turn_response)
+    monkeypatch.setattr(
+        ice_gathering,
+        "_enumerate_local_addresses",
+        lambda: [AddressInfo("127.0.0.1", "lo", IfKind.PHYSICAL, True)],
+    )
+    manager = WebRtcSessionManager(None, None, "test")
+    monkeypatch.setattr(ice, "get_host_addresses", lambda **_: ["127.0.0.1"])
+    urls = ["stun:localhost:3478", turn_url]
+    server = IceServer(urls=urls, username="test", credential="test")
+    config = RTCConfiguration(iceServers=[])
+    if side == "offerer":
+        config = RTCConfiguration(
+            iceServers=[RTCIceServer(server.urls, server.username, server.credential)]
+        )
+    peer = RTCPeerConnection(config)
+
+    async def gather() -> str:
+        peer.createDataChannel("test")
+        offer = await peer.createOffer()
+        if side == "answerer":
+            result = await manager.negotiate(offer.sdp, offer.type, [server])
+            return WebRtcAnswer.from_json(result).sdp
+        with ice_gathering.apply_ice_gathering_policy():
+            await peer.setLocalDescription(offer)
+        assert peer.localDescription is not None
+        return peer.localDescription.sdp
+
+    task = asyncio.create_task(gather())
+    try:
+        ready_at = delay if expected_deadline is None else expected_deadline
+        await clock.elapse(ready_at - 0.05)
+        assert not task.done(), "SDP gathering ended before the relay or its deadline"
+        await clock.elapse(0.1)
+        assert task.done(), "SDP gathering still waits for blackholed STUN"
+        lines = _answer_candidate_lines(task.result())
+        assert any("typ host" in ln for ln in lines), lines
+        assert any("typ srflx" in ln for ln in lines) == stun_responds
+        assert any("typ relay" in ln for ln in lines) == (expected_deadline is None)
+        assert allocation.is_set() == (expected_deadline is None)
+        assert turn_closed.is_set() == (expected_deadline is not None)
+        assert stun_cancelled.is_set() != stun_responds
+    finally:
+        await clock.elapse(5)
+        await asyncio.gather(task, return_exceptions=True)
+        await manager.close_all()
+        await peer.close()
 
 
 # --------------------------------------------------------------------------

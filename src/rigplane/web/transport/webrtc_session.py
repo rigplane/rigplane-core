@@ -169,9 +169,9 @@ class WebRtcSessionManager:
 
         ``ice_servers`` carries the client's STUN/TURN servers (``None`` or
         ``[]`` means host-only gathering with an explicit empty
-        configuration). Gathering runs under the manager's gathering policy
-        and is bounded at ``GATHER_TIMEOUT_S`` total: candidates found by
-        then are used and the answer is produced from them.
+        configuration). The manager's gathering policy bounds the wait for
+        STUN/TURN. The answer carries the completed candidates when the
+        selected relay is ready or the budget expires.
 
         Raises :class:`WebRtcSessionError` if WebRTC is unavailable or the SDP
         cannot be processed.
