@@ -105,7 +105,13 @@ def test_public_api_surface() -> None:
         "UsbAudioDriver",
         # --- Tier 2 (lazy): WebRTC wire contracts (MOR-272) ---
         "ClientChannelParams",
+        "ATTACH_ACK_VERSION",
         "ChannelAttachedAck",
+        "RIGCTL_MAX_FRAME_BYTES",
+        "RIGCTL_VERSIONS",
+        "RigctlAttachErrorCode",
+        "RigctlAttachErrorV1",
+        "decode_rigctl_attach_result",
         "ChannelKind",
         "DataChannelSpec",
         "DataChannelLabel",
