@@ -900,6 +900,31 @@ async def test_entry_enter_at_set_back_keeps_the_journal_and_no_check_writes(
     assert journal_path().read_bytes() == body
 
 
+async def test_entry_failing_to_remove_a_leftover_journal_is_a_readable_error(
+    monkeypatch, capsys
+) -> None:
+    """MOR-4542: a yes to the set-back prompt whose unlink fails (a
+    directory in the journal's place, a read-only state folder) must end
+    with a one-line error naming the file and exit code 1 -- not a
+    traceback -- and the journal must stay intact."""
+
+    def undeletable(path):
+        raise PermissionError(13, "Permission denied")
+
+    body = write_leftover(journal_path())
+    monkeypatch.setattr(_probe, "remove_journal", undeletable)
+    term = Terminal({render.journal_set_back_prompt(): "y\n"})
+    try:
+        code = await on_terminal(term, monkeypatch, [])
+    finally:
+        term.close()
+    assert code == 1
+    assert journal_path().read_bytes() == body
+    err = capsys.readouterr().err
+    assert "could not remove the check journal" in err
+    assert str(journal_path()) in err
+
+
 @pytest.mark.parametrize("kind", ["garbage", "directory"])
 def test_entry_unreadable_journal_prints_a_plain_line(
     kind, monkeypatch, capsys

@@ -794,6 +794,37 @@ async def test_silence_inside_the_restore_never_stops_the_later_originals(
     assert (0x14, b"\x0a\x01\x28") in after_step  # the third original is on the wire
 
 
+UNANSWERED_READBACK = check_toml(
+    ['kind = "write"\nentry = "rf_power"\nvalue = 64'],
+    ["rf_power"],
+)
+
+
+async def test_a_silent_restore_readback_is_missing_data_not_a_different_value(
+    tmp_path: Path,
+) -> None:
+    """MOR-4542: when the readback after a restore goes silent, the record
+    must say the radio did not answer -- a missing readback is not evidence
+    that the value reads differently."""
+    config = load(tmp_path, "ic705", UNANSWERED_READBACK)
+    fake = civ_fake("IC-705")
+    restoring: list[bool] = []
+
+    def rule(body, count, seen):
+        return bool(restoring and body == b"\x14\x0a"), None
+
+    req = request(
+        tmp_path,
+        events=lambda name: restoring.append(True) if name == "restore_begin" else None,
+    )
+    result = await run(config, req, wrapped(await civ_exchange(fake), rule))
+    (record,) = result.records
+    assert record.restored, record.error  # the restore write itself was accepted
+    assert not record.verified
+    assert "did not answer the RF power readback" in (record.error or "")
+    assert "reads differently" not in (record.error or "")
+
+
 @pytest.mark.skipif(os.name != "posix", reason="POSIX signals (Windows: MOR-4497)")
 async def test_a_dead_link_while_reading_out_a_cancel_is_exit_4_with_the_journal(
     tmp_path: Path,
