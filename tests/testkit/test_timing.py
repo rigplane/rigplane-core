@@ -132,6 +132,52 @@ async def test_the_loop_gets_its_own_clock_back_after_the_fixture() -> None:
     assert abs(loop.time() - time.monotonic()) < 60
 
 
+@pytest.mark.timeout(30)
+async def test_install_swaps_the_loop_timer_resolution_and_uninstall_restores_it() -> (
+    None
+):
+    """MOR-3938: the virtual time comes with a virtual timer resolution.
+
+    ``_run_once`` fires a timer while its deadline is inside ``time() +
+    _clock_resolution``, so the install must not leave the host clock's
+    resolution (Windows: 1/64 s) on the loop, and the uninstall must put the
+    real one back.
+    """
+    loop = asyncio.get_running_loop()
+    real_resolution = loop._clock_resolution  # type: ignore[attr-defined]
+    clock = VirtualClock(start=0.0)
+    clock.install(loop)
+    try:
+        assert 0 < loop._clock_resolution <= 1e-6  # type: ignore[attr-defined]
+    finally:
+        clock.uninstall(loop)
+    assert loop._clock_resolution == real_resolution  # type: ignore[attr-defined]
+
+
+@pytest.mark.timeout(30)
+async def test_a_coarse_host_resolution_does_not_fire_virtual_timers_early() -> None:
+    """MOR-3938 regression: a Windows-scale host resolution must not leak
+    into virtual time. With the real resolution left on the loop, a settle
+    after ``elapse(0.005)`` fires a 10 ms ``wait_for`` inside the coarse
+    window; with the virtual resolution it waits for its own deadline."""
+    loop = asyncio.get_running_loop()
+    real_resolution = loop._clock_resolution  # type: ignore[attr-defined]
+    loop._clock_resolution = 0.01  # type: ignore[attr-defined]
+    clock = VirtualClock(start=0.0)
+    clock.install(loop)
+    try:
+        waiter = asyncio.ensure_future(
+            asyncio.wait_for(asyncio.Event().wait(), timeout=0.01)
+        )
+        await clock.elapse(0.005)
+        assert not waiter.done()
+        await clock.elapse(0.006)
+        assert waiter.done()
+    finally:
+        clock.uninstall(loop)
+        loop._clock_resolution = real_resolution  # type: ignore[attr-defined]
+
+
 def test_scope_to_changes_only_the_named_module(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

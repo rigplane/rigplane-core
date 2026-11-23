@@ -151,6 +151,9 @@ class VirtualClock(ManualClock):
     def __init__(self, start: float = 0.0) -> None:
         super().__init__(start)
         self.sleeps: list[float] = []
+        # The loop resolution `install` replaced; restored by `uninstall`
+        # (MOR-3938). ``None`` while nothing is installed.
+        self._real_clock_resolution: float | None = None
 
     @property
     def now(self) -> float:
@@ -177,12 +180,25 @@ class VirtualClock(ManualClock):
             clock.uninstall(loop)
 
     def install(self, loop: asyncio.AbstractEventLoop) -> None:
-        """Make this clock the ``loop.time`` of ``loop`` (that loop only)."""
+        """Make this clock the ``loop.time`` of ``loop`` (that loop only).
+
+        The loop's timer resolution follows (MOR-3938): without it the host
+        clock's coarse resolution (Windows: 1/64 s) keeps firing virtual
+        timers up to one resolution early during a settle.
+        """
+
         loop.time = self  # type: ignore[method-assign]
+        self._real_clock_resolution = loop._clock_resolution  # type: ignore[attr-defined]
+        loop._clock_resolution = _VIRTUAL_CLOCK_RESOLUTION_S  # type: ignore[attr-defined]
 
     def uninstall(self, loop: asyncio.AbstractEventLoop) -> None:
         """Give ``loop`` its own clock back."""
+
         loop.__dict__.pop("time", None)
+        real_resolution = self._real_clock_resolution
+        self._real_clock_resolution = None
+        if real_resolution is not None:
+            loop._clock_resolution = real_resolution  # type: ignore[attr-defined]
 
     async def elapse(self, delta: float) -> None:
         """Move time forward by ``delta``, firing every timer on the way."""
@@ -289,6 +305,18 @@ class VirtualClock(ManualClock):
 
         monkeypatch.setattr(module, "time", _TimeView())
         monkeypatch.setattr(module, "asyncio", _AsyncioView())
+
+
+#: The timer resolution a virtual install puts on the loop (MOR-3938).
+#:
+#: :meth:`BaseEventLoop._run_once` moves a timer to the ready queue while its
+#: deadline is inside ``time() + _clock_resolution``, so the REAL clock's
+#: resolution carried over a virtual install fires sub-resolution virtual
+#: timers early -- on Windows (1/64 s) a settle after ``elapse(0.005)``
+#: fires a 10 ms timer. A tiny positive value keeps an exactly-due timer
+#: firing (its deadline stays inside the window) while future ones wait for
+#: an ``elapse``, matching the fine-grained hosts the suite otherwise runs on.
+_VIRTUAL_CLOCK_RESOLUTION_S = 1e-9
 
 
 def _next_timer(loop: asyncio.AbstractEventLoop) -> float | None:
