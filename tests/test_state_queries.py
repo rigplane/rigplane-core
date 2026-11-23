@@ -284,7 +284,7 @@ async def _send_through_initial(
     scope_receiver: int = 0,
 ) -> _FrameParts:
     radio = _RecordingCivRadio()
-    radio._profile = SimpleNamespace(has_lan=True)
+    radio._profile = resolve_radio_profile(model="IC-7610")
     radio.capabilities = set()
     radio._INITIAL_STATE_GAP_SERIAL = 0.0
     radio._INITIAL_STATE_GAP_LAN = 0.0
@@ -368,6 +368,18 @@ def _observe_main_mode(store: StateStore, mode: str) -> None:
     )
 
 
+def _ic705_radio(radio: _RecordingCivRadio, store: StateStore) -> _RecordingCivRadio:
+    """Give a CI-V radio double what the IC-705 ``fetch_initial_state`` reads."""
+    radio._profile = resolve_radio_profile(model="IC-705")
+    radio.capabilities = set()
+    radio._INITIAL_STATE_GAP_SERIAL = 0.0
+    radio._INITIAL_STATE_GAP_LAN = 0.0
+    radio._initial_state_fetched = False
+    radio.radio_state = SimpleNamespace(scope_controls=SimpleNamespace(receiver=0))
+    radio._state_store = store
+    return radio
+
+
 async def _ic705_initial_fetch_wire(
     main_mode: str | None, *, radio_mode: str | None = None
 ) -> set[_FrameParts]:
@@ -376,18 +388,10 @@ async def _ic705_initial_fetch_wire(
     The store holds ``main_mode`` when the fetch starts; the radio answers the
     mode read with ``radio_mode`` (it never answers when ``None``).
     """
-    profile = resolve_radio_profile(model="IC-705")
     store = StateStore()
     if main_mode is not None:
         _observe_main_mode(store, main_mode)
-    radio = _AnsweringCivRadio(store, radio_mode=radio_mode)
-    radio._profile = profile
-    radio.capabilities = set()
-    radio._INITIAL_STATE_GAP_SERIAL = 0.0
-    radio._INITIAL_STATE_GAP_LAN = 0.0
-    radio._initial_state_fetched = False
-    radio.radio_state = SimpleNamespace(scope_controls=SimpleNamespace(receiver=0))
-    radio._state_store = store
+    radio = _ic705_radio(_AnsweringCivRadio(store, radio_mode=radio_mode), store)
     await fetch_initial_state(radio)  # type: ignore[arg-type]
     assert radio._initial_state_fetched is True
     return set(radio.sent)
@@ -423,6 +427,150 @@ async def test_initial_fetch_filters_on_the_mode_read_not_the_stale_store() -> N
     assert contradicted.isdisjoint(
         await _ic705_initial_fetch_wire("USB", radio_mode="FM")
     )
+
+
+class _FlippingModeCivRadio(_AnsweringCivRadio):
+    """MAIN changes to ``flips_to`` while the first unawaited read is sent."""
+
+    def __init__(self, store: StateStore, *, radio_mode: str, flips_to: str) -> None:
+        super().__init__(store, radio_mode=radio_mode)
+        self._flips_to = flips_to
+        self.flip_at: int | None = None
+
+    async def send_civ(
+        self,
+        command: int,
+        sub: int | None = None,
+        data: bytes | None = None,
+        *,
+        wait_response: bool = True,
+        priority: object = None,
+        wait_dispatch: bool = True,
+    ) -> None:
+        await super().send_civ(
+            command,
+            sub,
+            data,
+            wait_response=wait_response,
+            priority=priority,
+            wait_dispatch=wait_dispatch,
+        )
+        if not wait_response and self.flip_at is None:
+            _observe_main_mode(self._store, self._flips_to)
+            self.flip_at = len(self.sent)
+
+
+class _SilentModeCivRadio(_AnsweringCivRadio):
+    """The first ``silent_reads`` awaited MAIN mode reads time out unanswered."""
+
+    def __init__(
+        self, store: StateStore, *, radio_mode: str | None, silent_reads: int
+    ) -> None:
+        super().__init__(store, radio_mode=radio_mode)
+        self._silent_reads = silent_reads
+        self.mode_reads = 0
+
+    async def send_civ(
+        self,
+        command: int,
+        sub: int | None = None,
+        data: bytes | None = None,
+        *,
+        wait_response: bool = True,
+        priority: object = None,
+        wait_dispatch: bool = True,
+    ) -> None:
+        mode_read = (command, sub, b"" if data is None else data) == self._mode_wire
+        if wait_response and mode_read:
+            self.mode_reads += 1
+            if self.mode_reads <= self._silent_reads:
+                await _RecordingCivRadio.send_civ(
+                    self,
+                    command,
+                    sub,
+                    data,
+                    wait_response=wait_response,
+                    priority=priority,
+                    wait_dispatch=wait_dispatch,
+                )
+                raise TimeoutError("CI-V response timed out")
+        await super().send_civ(
+            command,
+            sub,
+            data,
+            wait_response=wait_response,
+            priority=priority,
+            wait_dispatch=wait_dispatch,
+        )
+
+
+async def _fetch_with_silent_mode_read(
+    *, radio_mode: str | None, silent_reads: int
+) -> _SilentModeCivRadio:
+    """The IC-705 sweep while the store says FM and the radio does not answer.
+
+    The first ``silent_reads`` awaited mode reads time out; the radio is in
+    ``radio_mode`` once one of them is answered (never when ``None``).
+    """
+    store = StateStore()
+    _observe_main_mode(store, "FM")
+    radio = _ic705_radio(
+        _SilentModeCivRadio(store, radio_mode=radio_mode, silent_reads=silent_reads),
+        store,
+    )
+    await fetch_initial_state(radio)  # type: ignore[arg-type]
+    return radio
+
+
+async def test_initial_fetch_asks_a_reads_availability_again_before_its_send() -> None:
+    """MOR-3924: a read is withheld when its clause turns false mid-sweep.
+
+    The awaited mode read answered USB, so the reads MAIN would NAK in FM are
+    in the list when it is built (the test above). MAIN then changes to FM
+    while an earlier unawaited read is dispatched: none of them goes out
+    after that.
+    """
+
+    contradicted = _IC705_FM_NAKED_READS
+    store = StateStore()
+    radio = _ic705_radio(
+        _FlippingModeCivRadio(store, radio_mode="USB", flips_to="FM"), store
+    )
+
+    await fetch_initial_state(radio)  # type: ignore[arg-type]
+
+    assert radio.flip_at is not None
+    assert contradicted.isdisjoint(radio.sent[radio.flip_at :])
+
+
+async def test_initial_fetch_reads_a_timed_out_source_again_before_filtering() -> None:
+    """MOR-3924: a source read the radio did not answer is not a refresh.
+
+    An external CAT owner left the radio in USB while the store still says
+    FM. The first awaited mode read times out; it is read once more, awaited,
+    before the sweep filters on it, and the reads a stale FM would have
+    dropped for the whole reconciliation go out.
+    """
+
+    radio = await _fetch_with_silent_mode_read(radio_mode="USB", silent_reads=1)
+
+    assert radio.mode_reads == 2
+    assert _IC705_FM_NAKED_READS <= set(radio.sent)
+
+
+async def test_initial_fetch_sends_a_still_silent_source_again_with_the_sweep() -> None:
+    """A source silent a second time keeps its stored value and is not lost.
+
+    The dependent reads stay withheld, as for any unanswered source
+    (MOR-3630), and the source read goes out once more, unawaited, with the
+    sweep, so a later answer can still recover them.
+    """
+
+    radio = await _fetch_with_silent_mode_read(radio_mode=None, silent_reads=2)
+
+    assert radio.mode_reads == 2
+    assert radio.sent.count(radio._mode_wire) == 3
+    assert _IC705_FM_NAKED_READS.isdisjoint(radio.sent)
 
 
 async def _send_through_web(
