@@ -163,14 +163,18 @@ async def _await_level(
     """Apply stream frames to ``held`` until ``main.squelch`` is above 0 (or 0).
 
     Returns the frame that made it so and the reconstructed state after it.
+    MOR-3926: the whole transition wait is bounded, not just each single
+    receive — an unrelated regression that streams frames without ever
+    moving the squelch fails here instead of spinning forever.
     """
-    state = held
-    while True:
-        envelope = await _next_state_envelope(ws)
-        state = apply_delta(state, envelope)
-        level = state["main"].get("squelch")
-        if level is not None and (level > 0) is raised:
-            return envelope, state
+    async with asyncio.timeout(_DEADLINE_S):
+        state = held
+        while True:
+            envelope = await _next_state_envelope(ws)
+            state = apply_delta(state, envelope)
+            level = state["main"].get("squelch")
+            if level is not None and (level > 0) is raised:
+                return envelope, state
 
 
 def _assert_live_delta(
