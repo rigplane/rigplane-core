@@ -39,6 +39,7 @@ from ...core.types import MemoryProfile
 from ...runtime.controller_authority import ControllerAuthority, ControllerError
 from ...core.state_store import FreshnessState, StateStore
 from ..monitor_mute import MonitorMuteState, apply_monitor_mute  # noqa: TID251
+from ..mod_input_warning import warn_when_mod_input_blocks_voice  # noqa: TID251
 from ...profiles import (
     CwTextSendCancelledError,
     MemoryWriteUnverifiedError,
@@ -1072,6 +1073,8 @@ class ControlHandler:
         # releases the rest. A sessionless socket is the owner and always does.
         self._session_attached = tx_owner is not None
         self._last_ptt_on = False
+        # MOR-4660: strong references for fallback-spawned MOD-input checks.
+        self._mod_input_warning_tasks: set[asyncio.Task[Any]] = set()
         self._managed_tx_authority = managed_tx_authority
         self._subscribed_streams: set[str] = set()
         self._event_queue: BoundedQueue[dict[str, Any]] = BoundedQueue(
@@ -2055,7 +2058,39 @@ class ControlHandler:
             if submission_refused_for_release_debt(submission):
                 raise CommandRejectedError(_PTT_RELEASING)
             raise CommandRejectedError("managed PTT admission rejected")
+        if on:
+            # MOR-4660: a detached MOD-input check after an accepted key.
+            # It never awaits here, so the keying this method just admitted
+            # is neither delayed nor refused by it — the parked refusal
+            # design's ordering defects cannot recur by construction.
+            self._spawn_mod_input_warning()
         return {"state": on} if name == "ptt" else {}
+
+    def _spawn_mod_input_warning(self) -> None:
+        """Start the USB voice MOD-input warning task, best effort (MOR-4660).
+
+        Uses the server's task spawner when one is reachable (WebServer's
+        ``_spawn`` keeps a strong reference so the task cannot be
+        garbage-collected mid-flight) and falls back to a handler-held task
+        the way ``_start_managed_ptt_disconnect`` falls back to a bare one.
+        """
+        check = warn_when_mod_input_blocks_voice(
+            self._server, self._radio, self._session_id
+        )
+        server = self._server
+        spawn = None if server is None else getattr(type(server), "_spawn", None)
+        if callable(spawn):
+            spawn(server, check)
+            return
+        explicit_spawn = None if server is None else vars(server).get("_spawn")
+        if callable(explicit_spawn):
+            explicit_spawn(check)
+            return
+        task = asyncio.create_task(check)
+        # Strong reference for the no-spawner fallback: an unreferenced
+        # task can be collected mid-flight (asyncio only holds weak refs).
+        self._mod_input_warning_tasks.add(task)
+        task.add_done_callback(self._mod_input_warning_tasks.discard)
 
     async def _execute_intent(
         self, intent: CommandIntent, *, wait_for_completion: bool = True

@@ -259,6 +259,14 @@ _SUB_PTT = 0x00
 # both default to 0 like ``src/rigplane/core/radio_state.py``
 # (RadioState.nb_depth / nb_width). All defaults are simulator choices, not
 # recorded factory settings. Items outside this table still NAK.
+#
+# MOR-4660 adds every other profile's DATA-OFF/DATA1 MOD-input rows (the
+# per-model sub-addresses in each rig's [commands]): the addresses do not
+# collide, so one table serves every model. Defaults answer MIC (0) — a
+# value every model's enum has, and the state the USB voice warning
+# (``src/rigplane/web/mod_input_warning.py``) fires on; a test SETs the
+# model's own USB value for the clear case. The enums themselves differ
+# per model and live in each profile's [data_mode].inputs.
 _CTL_MEM_MENU_STARTUP_ITEMS: dict[bytes, tuple[int, int]] = {
     b"\x00\x91": (1, 1),  # DATA OFF mod input -> ACC
     b"\x00\x92": (5, 1),  # DATA1 mod input -> LAN
@@ -266,6 +274,16 @@ _CTL_MEM_MENU_STARTUP_ITEMS: dict[bytes, tuple[int, int]] = {
     b"\x00\x94": (5, 1),  # DATA3 mod input -> LAN
     b"\x02\x90": (0, 1),  # NB depth (0-9, one BCD digit)
     b"\x02\x91": (0, 2),  # NB width (0-255, two BCD digits)
+    b"\x00\x66": (0, 1),  # IC-7300 DATA OFF mod input -> MIC
+    b"\x00\x67": (0, 1),  # IC-7300 DATA1 mod input -> MIC
+    b"\x00\x84": (0, 1),  # IC-7300MK2 DATA OFF mod input -> MIC
+    b"\x00\x85": (0, 1),  # IC-7300MK2 DATA1 mod input -> MIC
+    b"\x01\x15": (0, 1),  # IC-9700 DATA OFF mod input -> MIC
+    b"\x01\x16": (0, 1),  # IC-9700 DATA1 mod input -> MIC
+    b"\x01\x18": (0, 1),  # IC-705 DATA OFF mod input -> MIC
+    b"\x01\x19": (0, 1),  # IC-705 DATA1 mod input -> MIC
+    b"\x01\x26": (0, 1),  # IC-905 DATA OFF mod input -> MIC
+    b"\x01\x27": (0, 1),  # IC-905 DATA1 mod input -> MIC
 }
 
 
