@@ -27,7 +27,7 @@ from test_audio_backend_capture_mode_mor4030 import (
     _backend,
 )
 
-from rigplane.audio import _usb_holder
+from rigplane.audio import _windows_audio_sessions
 from rigplane.audio.backend import (
     AudioDeviceBusyError,
     AudioDeviceId,
@@ -372,8 +372,100 @@ async def test_the_lookup_is_not_asked_when_the_open_is_not_a_busy_refusal():
     assert lookup.calls == []
 
 
-def test_the_production_lookup_has_no_mechanism_yet():
-    assert _usb_holder.find_holder_name("Microphone (USB Audio CODEC)") is None
+# --- _windows_audio_sessions._enumerate (MOR-4041) -------------------------
+#
+# The COM walk is faked at its module seams: CoCreateInstance, the interface
+# wrapper, the friendly-name read and the per-endpoint session listing. The
+# selection logic under test — which endpoint's sessions are reported — runs
+# for real.
+
+
+class _FakeEndpoint:
+    def __init__(self, name: str, sessions: list[tuple[int, int, bool]]):
+        self.name = name
+        self.sessions = sessions
+
+    def release(self) -> None:
+        pass
+
+
+class _FakeCollection:
+    def __init__(self, endpoints: list[_FakeEndpoint]):
+        self._endpoints = endpoints
+
+    def call(self, slot: int, argtypes: tuple, out) -> int:
+        out.value = len(self._endpoints)
+        return 0
+
+    def child(self, slot: int, argtypes: tuple, index: int) -> _FakeEndpoint:
+        return self._endpoints[index]
+
+    def release(self) -> None:
+        pass
+
+
+class _FakeEnumerator:
+    def __init__(self, collection: _FakeCollection):
+        self._collection = collection
+
+    def child(self, slot: int, argtypes: tuple, *args) -> _FakeCollection:
+        return self._collection
+
+    def release(self) -> None:
+        pass
+
+
+class _FakeOle32:
+    @staticmethod
+    def CoCreateInstance(*args) -> int:
+        return 0  # S_OK
+
+
+def _fake_com(monkeypatch: pytest.MonkeyPatch, endpoints: list[_FakeEndpoint]) -> None:
+    enumerator = _FakeEnumerator(_FakeCollection(endpoints))
+    monkeypatch.setattr(_windows_audio_sessions, "ctypes", _FakeCtypes())
+    monkeypatch.setattr(_windows_audio_sessions, "_Interface", lambda _p: enumerator)
+    monkeypatch.setattr(_windows_audio_sessions, "_friendly_name", lambda d: d.name)
+    monkeypatch.setattr(
+        _windows_audio_sessions, "_endpoint_sessions", lambda d: list(d.sessions)
+    )
+
+
+class _FakeCtypes:
+    """The only ``ctypes`` attribute ``_enumerate`` touches off Windows."""
+
+    WinDLL = staticmethod(lambda _name: _FakeOle32())
+
+
+_NAME = "Microphone (USB Audio CODEC)"
+
+
+def test_the_only_matching_endpoint_reports_its_sessions(monkeypatch):
+    _fake_com(
+        monkeypatch,
+        [
+            _FakeEndpoint("Headset Microphone", [(7, 1, False)]),
+            _FakeEndpoint(_NAME, [(100, 1, False)]),
+        ],
+    )
+    assert _windows_audio_sessions._enumerate(_NAME) == [(100, 1, False)]
+
+
+def test_two_active_endpoints_with_one_name_report_no_sessions(monkeypatch):
+    """MOR-4041: two ACTIVE capture endpoints with the same friendly name —
+    a session cannot be attributed to the one PortAudio named, and merging
+    them would let ``pick_holder`` name a program holding the OTHER
+    endpoint. The enumeration reports nothing, so the in-use refusal keeps
+    its generic wording instead of a wrong program name."""
+    _fake_com(
+        monkeypatch,
+        [
+            _FakeEndpoint(_NAME, [(100, 1, False)]),
+            _FakeEndpoint("Headset Microphone", [(7, 1, False)]),
+            _FakeEndpoint(" microphone (USB audio codec) ", [(101, 1, False)]),
+        ],
+    )
+    assert _windows_audio_sessions._enumerate(_NAME) is None
 
 
 async def test_the_lookup_is_only_asked_for_the_capture_direction():
