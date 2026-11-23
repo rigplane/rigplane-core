@@ -142,8 +142,18 @@
           initial.centerHz = frame.options.centerHz; initial.spanHz = frame.options.spanHz;
         }
       }
-      renderer = new WaterfallRenderer(canvas, initial);
+      // MOR-4342: the failed oversized resize left the canvas beyond the GPU
+      // limits (a real resize writes the canvas before checking them), and
+      // the constructor sizes itself from the CURRENT canvas -- so the
+      // recovered backing must reach the canvas before construction, or
+      // construction throws again and the waterfall stays failed instead of
+      // recovering.
       const facts = surface.facts;
+      if (facts.backingW > 0 && facts.backingH > 0) {
+        canvas.width = facts.backingW;
+        canvas.height = facts.backingH;
+      }
+      renderer = new WaterfallRenderer(canvas, initial);
       if (facts.backingW > 0 && facts.backingH > 0) renderer.resize(facts.backingW, facts.backingH);
       failure = null; restorationView = null;
       pending = frame.pixels !== null;

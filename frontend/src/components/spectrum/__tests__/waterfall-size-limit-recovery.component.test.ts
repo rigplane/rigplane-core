@@ -11,7 +11,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import { webglFixture } from '$lib/renderers/__tests__/webgl-fixture';
 import {
-  WaterfallRenderError,
   WaterfallRenderer,
   type WaterfallOptions,
 } from '../../../lib/renderers/waterfall-renderer';
@@ -110,17 +109,21 @@ describe('waterfall size-limit failure recovery (MOR-4342)', () => {
     mountHarness({ onRegisterPush: (fn: typeof push) => { push = fn; } });
     expect(target.querySelector('[role="alert"]')).toBeNull();
 
-    // The panel grows past the GPU limits: the resize throws, the renderer
-    // is destroyed and the error veil appears.
-    const resizeSpy = vi.spyOn(WaterfallRenderer.prototype, 'resize')
-      .mockImplementationOnce(() => { throw new WaterfallRenderError(); });
-    resize(300, 1500);
+    // The panel grows past the fixture's GPU limits and the REAL resize
+    // throws: it writes the oversized canvas first and only then fails the
+    // limit check (12 uniform blocks x 341 rows caps the height at 4092;
+    // 5000 exceeds it), destroying the renderer and raising the veil. The
+    // oversized canvas is exactly what recovery must survive, so pin it.
+    const canvas = target.querySelector('canvas') as HTMLCanvasElement;
+    resize(300, 5000);
+    expect(canvas.height).toBe(5000);
     expect(target.querySelector('[role="alert"]')).not.toBeNull();
-    resizeSpy.mockRestore();
 
-    // Shrinking back must recover: the veil clears and the next delivered
-    // frame paints through a live renderer again.
+    // Shrinking back must recover: the smaller backing reaches the canvas
+    // BEFORE the renderer is constructed, the veil clears and the next
+    // delivered frame paints through a live renderer again.
     resize(300, 150);
+    expect(canvas.height).toBe(150);
     expect(target.querySelector('[role="alert"]')).toBeNull();
     const pushSpy = vi.spyOn(WaterfallRenderer.prototype, 'pushRow');
     push!(new Uint8Array(475).fill(64), options(14_000_000, 0));
