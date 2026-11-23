@@ -3129,12 +3129,16 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         sub: int,
         prefix: bytes = b"",
         bcd_bytes: int = 2,
+        read_after_dispatch: bool = False,
     ) -> int:
         """Send a GET command and parse a BCD-encoded integer response."""
-        self._check_connected()
-        resp = await self._send_civ_expect(
-            civ, key=key, dedupe=True, label="get_bcd_level"
-        )
+        if read_after_dispatch:
+            resp = await self._civ_runtime.read_civ_after_dispatch(civ)
+        else:
+            self._check_connected()
+            resp = await self._send_civ_expect(
+                civ, key=key, dedupe=True, label="get_bcd_level"
+            )
         return parse_level_response(
             resp,
             command=command,
@@ -5929,6 +5933,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             sub=sub,
             prefix=prefix,
             bcd_bytes=1,
+            read_after_dispatch=True,
         )
 
     async def set_data_off_mod_input(self, source: int) -> None:
