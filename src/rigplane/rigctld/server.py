@@ -1040,8 +1040,8 @@ class RigctldServer:
         ``get_extra_info``). Its lines run through the same loop as a TCP
         client, with ``owner`` (the controller session the channel joined) as
         the managed-TX owner instead of a minted ``rigctld-client-N``; teardown
-        releases the TX that owner holds only when the channel's last ``T`` was
-        a key (MOR-3562). Counts against ``max_clients``. One connection per
+        uses the channel's key/unkey history to decide whether to release TX
+        (MOR-3562). Counts against ``max_clients``. One connection per
         owner: the owner is also its command-queue session, which a second
         one's teardown would end.
         Call it in the session's controller context, which the task copies.
@@ -1165,11 +1165,10 @@ class RigctldServer:
         ptt_tracker = ManagedPttTracker()
         graceful_quit = False
         # MOR-3562: a channel keys as its controller session, which outlives
-        # it; its close releases the session's TX only when its last ``T`` was
-        # a key. The session's end releases the rest. A TCP client is the
-        # owner and always releases.
+        # it; a managed CAT key needs handback until a subsequent unkey is
+        # accepted. A TCP client is the owner and always releases.
         release_on_close = owner is None
-        last_unkey: asyncio.Task[ManagedTxSubmission] | None = None
+        unkeys: set[asyncio.Task[ManagedTxSubmission]] = set()
         # MOR-2890: the HTTP guard inspects only the first non-blank line.
         first_command_line = True
 
@@ -1181,9 +1180,17 @@ class RigctldServer:
                 writer.close()
 
         def submission_done(task: asyncio.Task[Any]) -> None:
+            nonlocal release_on_close
             ptt_submissions.discard(task)
-            if not task.cancelled():
-                task.exception()
+            error = None if task.cancelled() else task.exception()
+            if task in unkeys:
+                unkeys.discard(task)
+                if (
+                    not task.cancelled()
+                    and error is None
+                    and (task.result().outcome is ManagedTxOutcome.ACCEPTED)
+                ):
+                    release_on_close = False
 
         def schedule_response(
             cmd: Any | None,
@@ -1358,9 +1365,9 @@ class RigctldServer:
                         if owner is not None:
                             if ptt_on:
                                 release_on_close = True
-                                last_unkey = None
-                            else:
-                                last_unkey = ptt_submission
+                                unkeys.clear()
+                            elif release_on_close:
+                                unkeys.add(ptt_submission)
 
                 schedule_response(
                     cmd,
@@ -1377,16 +1384,6 @@ class RigctldServer:
                 "client #%d unexpected error: %s", client_id, exc, exc_info=True
             )
         finally:
-            # A parsed T 0 can still be cancelled before admission on
-            # channel loss. In that case the CAT key still needs handback.
-            if (
-                last_unkey is not None
-                and last_unkey.done()
-                and not last_unkey.cancelled()
-                and last_unkey.exception() is None
-                and last_unkey.result().outcome is ManagedTxOutcome.ACCEPTED
-            ):
-                release_on_close = False
             self._rate_windows.pop(client_id, None)
             if self._command_queue is not None:
                 self._command_queue.unregister_session(session_id)
@@ -1404,7 +1401,7 @@ class RigctldServer:
             retirement = loop.create_task(
                 self._retire_client_connection(
                     session_id=session_id,
-                    release_tx=release_on_close,
+                    release_tx=lambda: release_on_close,
                     client_id=client_id,
                     tasks=tasks,
                     writer=writer,
@@ -1420,7 +1417,7 @@ class RigctldServer:
         self,
         *,
         session_id: str,
-        release_tx: bool,
+        release_tx: Callable[[], bool],
         client_id: int,
         tasks: tuple[asyncio.Task[Any], ...],
         writer: asyncio.StreamWriter,
@@ -1434,7 +1431,8 @@ class RigctldServer:
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
         try:
-            if release_tx:
+            # Submission callbacks can discharge handback during retirement.
+            if release_tx():
                 await self._release_session_tx(session_id)
         finally:
             # Unconditional, and nested so no failure above can skip it:
