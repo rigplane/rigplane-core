@@ -90,6 +90,22 @@ When override is used, the IC-7610 backend logs a warning because timeout risk i
 The IC-705, IC-7300 and IC-9700 backends log a warning the first time they refuse the
 scope, and none when the override is set.
 
+### Radio silent on USB (ports present, CI-V never answers)
+
+**Symptom:** the serial ports are still listed, but the radio answers
+nothing on CI-V — the identity read is never accepted and the station
+stays in the radio-not-answering state (status `radio_not_responding`,
+`lastError` names the port). The radio's USB audio interface may be gone
+too. The running station reconnects by itself once the radio answers
+again; no restart is needed.
+
+**Likely cause:** RF on the USB cable. If the ports are present, the
+identity is never accepted and (on the IC-705) the USB audio interface
+is missing, suspect the cable — not the port or the settings: put a
+ferrite on the cable and route it away from the antenna feedline, or
+restart the radio. Replugging the cable or rebooting the radio recovers.
+(MOR-4654, bench IC-705, 2026-11-21.)
+
 ### Connection drops after ~30 seconds
 
 **Symptom:** Commands work initially, then start timing out.
