@@ -1,4 +1,5 @@
 import { defineConfig } from '@playwright/test';
+import { journeyPort } from './tests/e2e/journey/server-process';
 
 /**
  * Operator-journey scenarios against the real WebServer with the in-memory
@@ -8,9 +9,12 @@ import { defineConfig } from '@playwright/test';
  *
  *   npm run build
  *   npx playwright test -c ./playwright.journey.config.ts
+ *
+ * CI runs this sharded (`--shard=i/n`): the shard legs shift every port by
+ * JOURNEY_PORT_OFFSET so two legs on one CI host cannot collide (MOR-4685).
  */
-const PORT = 18766;
-const READ_ONLY_PORT = 18767;
+const PORT = journeyPort(18766);
+const READ_ONLY_PORT = journeyPort(18767);
 
 // MOR-4450: headless Chromium on macOS hosts has no GPU-backed WebGL2 (the Mac
 // mini returns a null context), while Linux CI falls back to SwiftShader on its

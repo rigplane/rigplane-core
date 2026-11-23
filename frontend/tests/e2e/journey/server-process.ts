@@ -21,6 +21,19 @@ const START_TIMEOUT_MS = 30_000;
 const KILL_TIMEOUT_MS = 10_000;
 const POLL_INTERVAL_MS = 100;
 
+/**
+ * MOR-4685: CI shards the journey project (`playwright --shard=i/n`, the
+ * quick-frontend-e2e journey legs), and two shard legs can share one CI host
+ * (MOR-2830). Every leg therefore shifts ALL journey server ports — the
+ * config webServers and the per-spec fakes alike — by the same
+ * JOURNEY_PORT_OFFSET; unset (local runs) it is 0 and the historical ports
+ * stay. The stride quick.yml derives from the shard index (4000) exceeds the
+ * whole journey port range (18766..22346), so shard ranges stay disjoint.
+ */
+export function journeyPort(base: number): number {
+  return base + Number(process.env.JOURNEY_PORT_OFFSET ?? 0);
+}
+
 export interface JourneyServerHandle {
   kill(): Promise<void>;
 }
