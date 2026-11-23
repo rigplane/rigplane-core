@@ -928,7 +928,20 @@ def run(args: argparse.Namespace, prog: str = DEFAULT_PROBE_PROG) -> int:
         if not sys.stdin.isatty():
             print(render.journal_instruction_line(str(journal)))
         elif _is_strict_yes(_answer(render.journal_set_back_prompt())):
-            remove_journal(journal)  # set back by hand: the checks may run again
+            try:
+                remove_journal(journal)  # set back by hand: run again
+            except OSError as exc:
+                # MOR-4542: an undeletable journal (a directory in its place,
+                # a read-only state folder) must end as a readable error
+                # naming the file, not a traceback; with it still in place
+                # every later check would only refuse anyway.
+                print(
+                    f"Error: could not remove the check journal "
+                    f"{journal}: {exc.strerror or exc}. Remove it by hand "
+                    "and run again.",
+                    file=sys.stderr,
+                )
+                return 1
 
     try:
         rigs = discover_available_rigs(_rigs_dir())
