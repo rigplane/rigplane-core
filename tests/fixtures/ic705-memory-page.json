@@ -22,7 +22,23 @@
       "toneMode": "tone",
       "toneCentiHz": 13650,
       "tsqlCentiHz": 13650,
-      "dtcsCode": 23
+      "dtcsCode": 23,
+      "filter": 1,
+      "dtcsPolarity": 0,
+      "split": false,
+      "txBlock": {
+        "frequencyHz": 146940000,
+        "mode": "FM",
+        "filter": 1,
+        "dataMode": false,
+        "duplex": "plus",
+        "offsetHz": 600000,
+        "toneMode": "tone",
+        "toneCentiHz": 13650,
+        "tsqlCentiHz": 13650,
+        "dtcsCode": 23,
+        "dtcsPolarity": 0
+      }
     },
     { "group": 0, "channel": 5, "empty": true },
     { "group": 0, "channel": 6, "empty": true },

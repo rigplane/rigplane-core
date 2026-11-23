@@ -420,8 +420,10 @@ frequency_ranges = [
 # setting" is the read block's mode + filter pair); the tone fields use
 # the 1B 00 encoding (guide p.19). The select byte's high nibble is fixed
 # 0 (guide: "Fixed"); duplex nibble 3 is RPS, valid in DD mode only
-# (guide p.14). Fields the write API does not expose yet carry their
-# documented OFF value (as on the IC-705 above).
+# (guide p.14). The DTCS field is the caller's polarity byte and code and
+# the duplex offset the caller's value in 100 Hz units (MOR-3648, the same
+# record shape as the IC-705); the remaining fields the write API does not
+# expose carry their documented OFF value (as on the IC-705 above).
 [memory.write_layout]
 clear = "1a00_ff"  # guide p.14: 1A 00 + the address + FF
 record_length = 64  # one copy: select + 47-byte block + 16-byte name
@@ -437,9 +439,9 @@ fields = [
   { field = "digital_squelch", offset = 10, length = 1, encoding = "fixed", value = "00" },         # 14: 00 = off
   { field = "tone", offset = 11, length = 3, encoding = "tone" },                                   # 15-17
   { field = "tsql", offset = 14, length = 3, encoding = "tsql" },                                   # 18-20
-  { field = "dtcs", offset = 17, length = 3, encoding = "fixed", value = "000023" },                # 21-23: polarity NN, code 023 (the same record shape as the IC-705)
+  { field = "dtcs", offset = 17, length = 3, encoding = "dtcs" },                                         # 21-23: polarity byte + caller's code (MOR-3648)
   { field = "dv_code", offset = 20, length = 1, encoding = "fixed", value = "00" },                 # 24
-  { field = "duplex_offset", offset = 21, length = 3, encoding = "fixed", value = "000000" },       # 25-27: 0 Hz (not exposed, MOR-3644 slice)
+  { field = "duplex_offset", offset = 21, length = 3, encoding = "duplex_offset" },                 # 25-27: caller's offset, 100 Hz units (MOR-3648)
   { field = "callsigns", offset = 24, length = 24, encoding = "fixed", value = "202020202020202020202020202020202020202020202020" },  # 28-51: UR/R1/R2 blank
   { field = "name", offset = 48, length = 16, encoding = "name" },                                  # 52-67
 ]
