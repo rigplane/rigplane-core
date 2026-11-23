@@ -839,11 +839,38 @@ describe('coherent RF passband display', () => {
     input.frame = { ...input.frame!, geometry: { ...input.frame!.geometry!, freshness: 'stale', hasPixels: false } };
     expect(project(input).display).toEqual({ state: 'unknown', reason: 'frame-unavailable' });
   });
-  it('frame silence (stale WITH the last pixels) is not a placeholder and still retires', () => {
+  it('restores the held passband on a new frame after silence in the same scope session', () => {
+    const input = banded();
+    const current = project(input);
+    tune(input, 14_075_000, 11);
+    const held = project(input, current);
+    expect(held.display.state).toBe('stale');
+    input.frame = { ...input.frame!, geometry: { ...input.frame!.geometry!, freshness: 'stale' } };
+    const silent = project(input, held);
+    expect(silent.display.state).toBe('unknown');
+    receipt(input, 1);
+    expect(project(input, silent).display.state).toBe('unknown');
+    receipt(input, 2, { startFreq: 14_025_000, endFreq: 14_125_000 });
+    const resumed = project(input, silent);
+    expect(resumed.display).toMatchObject({ state: 'stale', translated: true,
+      tuple: { frequencyHz: 14_075_000, startHz: 14_025_000, endHz: 14_125_000 } });
+    expect(resumed.floors?.geometry).toEqual(held.floors?.geometry);
+    renew(input, 20, 3);
+    expect(project(input, resumed).display.state).toBe('current');
+  });
+
+  it('requires new radio evidence if the scope session changes during silence', () => {
     const input = fixture();
     const current = project(input);
     input.frame = { ...input.frame!, geometry: { ...input.frame!.geometry!, freshness: 'stale' } };
-    expect(project(input, current).display.state).toBe('unknown');
+    const silent = project(input, current);
+    receipt(input, 2);
+    input.frame = { ...input.frame!, transportEpoch: 2 };
+    const retired = project(input, silent);
+    expect(retired.display.state).toBe('unknown');
+    receipt(input, 3);
+    input.frame = { ...input.frame!, transportEpoch: 2 };
+    expect(project(input, retired).display.state).toBe('unknown');
   });
   it.each([
     ['mode', (i: ScopePassbandDisplayInput) => { edit(i, (s) => { s.main!.mode = 'LSB'; }); }],
