@@ -232,6 +232,8 @@
   "core.toast.txAudioSampleRateUnsupported": "The microphone's sample rate is not supported — TX audio cannot start",
   "core.toast.txAudioDropped": "Microphone audio is not reaching the radio: TX audio frames are being dropped",
   "core.toast.txAudioNoFrames": "TX audio stopped — no audio frames were received from the browser",
+  "core.toast.modInputNotUsb": "MOD input is {source}, not USB — your voice will not go out. Set the radio's MOD input to USB.",
+  "core.toast.modInputUnreadable": "MOD input could not be read ({reason}) — your voice may not go out. Check the radio's MOD input.",
   "core.toast.unknown": "Something went wrong. Try again later.",
   "core.memory.open": "Memory",
   "core.mobile.nav.label": "Radio navigation",

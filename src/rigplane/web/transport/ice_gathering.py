@@ -47,8 +47,16 @@ platform offers no source for it — the address is kept (treated like
 working host path. Addresses on the default route are always kept regardless
 of kind, so the answer never loses the interface that reaches the peer.
 
+ChannelBind recovery (MOR-4677) is the third hook in
+:func:`install_ice_gathering_policy`: when aioice's own single retry of a
+TURN ChannelBind still gets 401/438, the nonce (and the realm on 401) is
+refreshed from the LATEST error response and the normal bind cycle runs
+ONE more time inside the same attempt — never a loop. Unlike the gathering
+hooks it is not policy-gated: ChannelBind runs during connectivity checks,
+outside any single negotiation's context.
+
 The policy reaches aioice through :func:`install_ice_gathering_policy`,
-which installs the two hooks ONCE per process (idempotent; a module-level
+which installs the hooks ONCE per process (idempotent; a module-level
 flag guards double install; they are never uninstalled): a patched
 ``aioice.ice.get_host_addresses`` (address allow-list) and a cap on
 ``Connection.get_component_candidates``' STUN/TURN wait at
@@ -88,6 +96,7 @@ import ctypes
 import enum
 import importlib
 import ipaddress
+import logging
 import os
 import socket
 import struct
@@ -897,6 +906,38 @@ _active_policy: contextvars.ContextVar[IceGatheringPolicy | None] = (
 #: hooks are process-wide and stay installed for the process lifetime.
 _installed: bool = False
 
+logger = logging.getLogger(__name__)
+
+
+def _refresh_turn_auth(client: Any, turn: Any, response: Any) -> bool:
+    """Refresh a TURN client's auth state from a 401/438 error response.
+
+    Returns True when the client now carries the response's (possibly
+    newer) nonce and a rebuilt integrity key, so ONE more ChannelBind may
+    be attempted; False when there is nothing fresh to retry with (another
+    error code, no NONCE, missing credentials, no realm on 438) and the
+    error must propagate. Only 401/438 are recoverable, mirroring aioice's
+    own retry rule in ``request_with_retry`` (401 also refreshes the realm,
+    438 keeps the client's).
+    """
+    if response is None:
+        return False
+    error = response.attributes.get("ERROR-CODE", (0, ""))[0]
+    if error not in (401, 438):
+        return False
+    nonce = response.attributes.get("NONCE")
+    username = client.username
+    password = client.password
+    realm = client.realm
+    if error == 401:
+        realm = response.attributes.get("REALM", realm)
+    if nonce is None or username is None or password is None or realm is None:
+        return False
+    client.nonce = nonce
+    client.realm = realm
+    client.integrity_key = turn.make_integrity_key(username, realm, password)
+    return True
+
 
 _GATHER_LOCK_ATTR: Final = "_rigplane_gather_lock"
 
@@ -911,7 +952,7 @@ def _gather_lock(connection: Any) -> asyncio.Lock:
 
 
 def install_ice_gathering_policy() -> None:
-    """Install the two aioice hooks ONCE per process (idempotent).
+    """Install Core's aioice hooks ONCE per process (idempotent).
 
     Patches ``aioice.ice.get_host_addresses`` to drop addresses excluded by
     the current context's policy and caps
@@ -921,7 +962,15 @@ def install_ice_gathering_policy() -> None:
     server-reflexive/relayed candidates from the default-route
     address(es) only (host candidates still from every kept address),
     falling back to all kept addresses when there is no default-route
-    address. A second call changes nothing (it never wraps
+    address. The ``TurnClientMixin.channel_bind`` hook (MOR-4677) refreshes
+    the nonce (and the realm on 401) from the LATEST error response when
+    aioice's own single retry of a ChannelBind still gets 401/438, and runs
+    the normal bind cycle ONE more time inside the same attempt — never a
+    loop. Unlike the
+    gathering hooks it is not policy-gated: ChannelBind runs during
+    connectivity checks, outside any single negotiation's context; anything
+    else (other errors, no fresh nonce, a failed re-bind) behaves exactly
+    like the original. A second call changes nothing (it never wraps
     twice). The hooks are never uninstalled during normal operation:
     uninstalling around an ``await`` is what let two concurrent
     negotiations interleave patch/restore and leak one negotiation's
@@ -933,10 +982,13 @@ def install_ice_gathering_policy() -> None:
         return
     try:
         aioice_ice: Any = importlib.import_module("aioice.ice")
+        aioice_stun: Any = importlib.import_module("aioice.stun")
+        aioice_turn: Any = importlib.import_module("aioice.turn")
     except ImportError:
         return
     original_addresses = aioice_ice.get_host_addresses
     original_component = aioice_ice.Connection.get_component_candidates
+    original_channel_bind = aioice_turn.TurnClientMixin.channel_bind
 
     def _filtered_host_addresses(
         use_ipv4: bool = True, use_ipv6: bool = True
@@ -1012,8 +1064,34 @@ def install_ice_gathering_policy() -> None:
                 self.stun_server, self.turn_server = saved
         return list(first_candidates) + list(rest_candidates)
 
+    async def _channel_bind_with_nonce_refresh(
+        self: Any, channel_number: int, addr: tuple[str, int]
+    ) -> None:
+        try:
+            await original_channel_bind(self, channel_number, addr)
+        except aioice_stun.TransactionFailed as exc:
+            # MOR-4677: aioice already retried this bind once with the nonce
+            # from the first 401/438; when the retry is rejected too, the
+            # latest response may carry a newer nonce (rotation between the
+            # two attempts). Refresh from THAT response and run the normal
+            # bind cycle ONE more time — never a loop: the re-bind calls
+            # the original (which retries at most once, like any bind), and
+            # its failure propagates to the caller. Reported once here, not
+            # once per transaction: Core has no Sentry hook (see MOR-4677
+            # note), so this warning is the single record of the recovery.
+            if not _refresh_turn_auth(self, aioice_turn, exc.response):
+                raise
+            logger.warning(
+                "TURN channel bind to %s rejected (%s) after aioice's retry; "
+                "refreshed the nonce and rebinding once",
+                addr,
+                exc,
+            )
+            await original_channel_bind(self, channel_number, addr)
+
     aioice_ice.get_host_addresses = _filtered_host_addresses
     aioice_ice.Connection.get_component_candidates = _bounded_component_candidates
+    aioice_turn.TurnClientMixin.channel_bind = _channel_bind_with_nonce_refresh
     _installed = True
 
 

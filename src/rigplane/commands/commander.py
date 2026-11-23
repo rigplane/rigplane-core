@@ -64,6 +64,7 @@ class _QueueItem:
     # Task that queued the frame.  Frames whose task differs from an
     # interference scope's owner mark that scope at dispatch (MOR-3743).
     enqueued_by: asyncio.Task[Any] | None = None
+    dispatch: Callable[[], Awaitable[CivFrame | None]] | None = None
 
 
 class InterferenceScope:
@@ -189,10 +190,13 @@ class IcomCommander:
         wait_response: bool = True,
         wait_dispatch: bool = True,
         is_current: Callable[[], bool] | None = None,
+        dispatch: Callable[[], Awaitable[CivFrame | None]] | None = None,
     ) -> CivFrame | None:
         """Enqueue a CI-V command.
 
         Args:
+            dispatch: Optional executor for a request that hands its response
+                wait off to the caller. The worker awaits only this dispatch.
             wait_dispatch: When True (default), await the worker dispatching
                 this item and return its result — the historical blocking
                 contract for user commands.  When False, return ``None``
@@ -244,6 +248,7 @@ class IcomCommander:
             fire_and_forget=not wait_dispatch,
             is_current=is_current,
             enqueued_by=asyncio.current_task(),
+            dispatch=dispatch,
         )
 
         if key is not None:
@@ -354,7 +359,9 @@ class IcomCommander:
                     # in-flight command and the worker can move on, instead
                     # of blocking on a dropped reply while the rest of the
                     # queue piles up with pre-cancelled futures (#1188).
-                    if item.is_current is None:
+                    if item.dispatch is not None:
+                        execution = item.dispatch()
+                    elif item.is_current is None:
                         execution = self._execute(item.payload, item.wait_response)
                     else:
                         execution = self._execute(

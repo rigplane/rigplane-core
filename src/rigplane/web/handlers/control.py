@@ -39,6 +39,10 @@ from ...core.types import MemoryProfile
 from ...runtime.controller_authority import ControllerAuthority, ControllerError
 from ...core.state_store import FreshnessState, StateStore
 from ..monitor_mute import MonitorMuteState, apply_monitor_mute  # noqa: TID251
+from ..mod_input_warning import (  # noqa: TID251
+    ModInputWarningHost,
+    warn_when_mod_input_blocks_voice,
+)
 from ...profiles import (
     CwTextSendCancelledError,
     MemoryWriteUnverifiedError,
@@ -59,8 +63,9 @@ from ...runtime.tx_interlock import (
     resolve_rf_state,
     send_civ_frame,
 )
-from ...runtime.managed_tx_authority import ManagedTxAuthority
+from ...runtime.managed_tx_authority import ManagedTxAuthority, ManagedTxSubmission
 from ...runtime.managed_tx_state import (
+    ActuationOperation,
     ManagedTxIntentKind,
     ManagedTxOutcome,
     submission_refused_for_release_debt,
@@ -2014,7 +2019,8 @@ class ControlHandler:
             on = name == "ptt_on"
         # Before the submission: a close while the key is in flight releases.
         self._last_ptt_on = on
-        pending: asyncio.Task[Any] | None = None
+        pending: asyncio.Task[ManagedTxSubmission] | None = None
+        submission: ManagedTxSubmission
         try:
             if on:
                 if self._server is None:
@@ -2055,6 +2061,19 @@ class ControlHandler:
             if submission_refused_for_release_debt(submission):
                 raise CommandRejectedError(_PTT_RELEASING)
             raise CommandRejectedError("managed PTT admission rejected")
+        server, radio = self._server, self._radio
+        if (
+            on
+            and radio is not None
+            and isinstance(server, ModInputWarningHost)
+            and any(
+                effect.operation is ActuationOperation.PTT_ON
+                for effect in submission.transition.effects
+            )
+        ):
+            server._spawn(
+                warn_when_mod_input_blocks_voice(server, radio, self._session_id)
+            )
         return {"state": on} if name == "ptt" else {}
 
     async def _execute_intent(

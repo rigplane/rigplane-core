@@ -13,6 +13,7 @@ import pytest
 from rigplane.commands import build_memory_entry_read, parse_memory_entry
 from rigplane.commands.memory import _encode_memory_address
 from rigplane.core.types import (
+    MemoryBlock,
     MemoryEntry,
     MemoryProfile,
     RepeaterShiftDirection,
@@ -81,6 +82,7 @@ def test_decodes_the_real_icom_record_shape() -> None:
         channel=4,
         frequency_hz=146_940_000,
         mode="FM",
+        filter=1,
         data_mode=False,
         duplex=RepeaterShiftDirection.PLUS,
         offset_hz=600_000,
@@ -88,8 +90,39 @@ def test_decodes_the_real_icom_record_shape() -> None:
         tone_centihz=13_650,
         tsql_centihz=13_650,
         dtcs_code=23,
+        dtcs_polarity=0,
+        split=False,
+        tx_block=MemoryBlock(
+            frequency_hz=146_940_000,
+            mode="FM",
+            filter=1,
+            data_mode=False,
+            duplex=RepeaterShiftDirection.PLUS,
+            offset_hz=600_000,
+            tone_mode=ToneSquelchType.TONE,
+            tone_centihz=13_650,
+            tsql_centihz=13_650,
+            dtcs_code=23,
+            dtcs_polarity=0,
+        ),
         name="TEST RPT",
     )
+
+
+def test_the_split_flag_and_the_tx_block_are_kept() -> None:
+    """The read model keeps what a read-modify-write must not silently
+    lose: the split flag and the second (TX/split) block's values. The
+    write API fills the TX copy with the RX values, so a stored split
+    channel is one the caller must see, not flatten."""
+    reply = bytearray(_IC705_GOLDEN)
+    reply[4] = 0x10  # select byte: split ON
+    reply[52:57] = bytes.fromhex("0000954601")  # TX block: 146.950 MHz
+    entry = parse_memory_entry(bytes(reply), _IC705)
+    assert entry.split is True
+    assert entry.frequency_hz == 146_940_000
+    assert entry.tx_block is not None
+    assert entry.tx_block.frequency_hz == 146_950_000
+    assert entry.tx_block.dtcs_code == 23
 
 
 def test_leading_spaces_in_a_name_are_kept() -> None:
