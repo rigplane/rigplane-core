@@ -121,6 +121,11 @@ class _Session:
         self.gather_inflight: set[asyncio.Task[Any]] = set()
         # Each attachment tracks its own owners, even when siblings share a key.
         self.controller_owners: dict[WebRtcDataChannelConnection, set[str]] = {}
+        # MOR-4676: the peer's audio attachments, so the fence ends the
+        # peer's audio sender even when it holds no controller owner
+        # (remote mode mints ownerless tickets, leaving the owner sets
+        # empty and the fence with no session to end).
+        self.audio_conns: set[WebRtcDataChannelConnection] = set()
         self.primary_controls: set[WebRtcDataChannelConnection] = set()
         # The split-kind half (scope/audio) waiting for its partner, at most
         # ONE per (kind, carriage); it already queues its frames.
@@ -393,6 +398,16 @@ class WebRtcSessionManager:
         expiry watchdog calls: their channels close and the transmitter
         they hold is released. Unknown or already-ended owners are a
         no-op inside ``_end_session``.
+
+        MOR-4676: the peer's own audio attachments end here too, even
+        when they hold no controller owner (remote mode mints ownerless
+        tickets, so the owner sets above are empty and there is no
+        session to end). A peer whose lossy audio channels died without
+        a close event would otherwise keep its audio sender and its bus
+        subscription while the grant stays refreshed. Aborting the
+        connection runs that attachment's normal exit path (sender
+        cancelled, unsubscribe, unregister); a live peer sees the close
+        and re-attaches.
         """
         session = self._sessions.get(session_id)
         server = self._server
@@ -408,6 +423,11 @@ class WebRtcSessionManager:
                 server._controller._end_session(owner)  # noqa: SLF001
             except Exception:
                 logger.debug("webrtc: fence failed", exc_info=True)
+        for conn in tuple(session.audio_conns):
+            try:
+                conn.abort()
+            except Exception:
+                logger.debug("webrtc: fence audio abort failed", exc_info=True)
 
     def _dispatch_channel(
         self, session_id: str, session: _Session, channel: RTCDataChannel
@@ -590,6 +610,18 @@ class WebRtcSessionManager:
             conn.serving = True  # past the attach: the handler reads freely
             attachment_owners: set[str] = set()
             session.controller_owners[conn] = attachment_owners
+            if kind == "audio":
+                session.audio_conns.add(conn)
+                # MOR-4676: one audio pair per peer — a newly served audio
+                # attachment supersedes a silently stale one (its lossy
+                # channels died without a close event while control stayed
+                # up, so no other teardown ends it). Aborting the stale
+                # conn runs its normal exit path (sender cancelled,
+                # unsubscribe, unregister) through the single session
+                # teardown; the live peer sees the close and re-attaches.
+                for old in tuple(session.audio_conns):
+                    if old is not conn:
+                        old.abort()
             if kind == "control" and params.controller_role == "primary":
                 session.primary_controls.add(conn)
             try:
@@ -626,5 +658,6 @@ class WebRtcSessionManager:
                         await conn.close(1008, "refused")
             finally:
                 session.primary_controls.discard(conn)
+                session.audio_conns.discard(conn)
                 del session.controller_owners[conn]
             return
