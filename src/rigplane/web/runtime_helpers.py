@@ -19,6 +19,7 @@ from ..core.state_store import (
     StateStore,
     is_immutable_value,
 )
+from ..core.radio_protocol import RadioIdentityStatus
 from ..core.tx_target import TxTarget, tx_target_from_dict, validate_tx_target
 from ..profiles import RadioProfile, resolve_radio_profile
 from ..radio_protocol import (
@@ -881,6 +882,43 @@ def _civ_stats(radio: Any) -> dict[str, Any]:
     return stats if isinstance(stats, dict) else {}
 
 
+def _serial_link_episodes(radio: Any) -> int | None:
+    """Link-loss episodes for a serial-family radio, else ``None`` (MOR-4654).
+
+    ``serial_reconnects_total`` is the shared serial-family marker (the
+    Icom serial base and Yaesu CAT both count link-loss episodes; LAN
+    radios have no such attribute) — a transport fact, not a per-radio
+    branch. The strict ``type(...) is int`` read rejects doubles, and
+    the same read feeds ``WebServer._radio_runtime_payload``.
+    """
+    episodes = getattr(radio, "serial_reconnects_total", None)
+    return episodes if type(episodes) is int else None
+
+
+def _serial_link_loss_evidence(radio: Any) -> bool:
+    """Whether a down serial link went quiet after a real session (MOR-4654).
+
+    Covers serial-family radios without ``conn_state`` (Yaesu CAT):
+    link-loss episodes the transport counted, or an answered identity
+    still on record (``verified``/``unverified`` — the radio talked on
+    this link before it went down). A radio nobody reached yet (no
+    episodes, no answered identity) carries no such evidence and stays
+    ``unknown``. Connect-time hold statuses (``checking``/
+    ``no_response``/``identity_mismatch``) are the identity gate's to
+    report, not this branch's.
+    """
+    if _bool_attr(radio, "connected"):
+        return False
+    if (_serial_link_episodes(radio) or 0) > 0:
+        return True
+    identity = getattr(radio, "connection_identity", None)
+    status = getattr(identity, "status", None)
+    return status in (
+        RadioIdentityStatus.VERIFIED,
+        RadioIdentityStatus.UNVERIFIED,
+    )
+
+
 def store_has_radio_observation(store: "StateStore") -> bool:
     """Whether *store* holds any field the radio itself produced.
 
@@ -1040,13 +1078,7 @@ def classify_radio_health(
         # on the radio — so surface a distinct cause.
         # A serial/USB link has no network to lose (MOR-4654): a silent
         # radio there is not answering on its port, so say that instead.
-        # ``serial_reconnects_total`` is the shared serial-family marker
-        # (Icom serial base and Yaesu CAT both count link-loss episodes;
-        # LAN radios have no such attribute) — a transport fact, not a
-        # per-radio branch. The same duck-typed read feeds
-        # ``WebServer._radio_runtime_payload``.
-        serial_reconnects = getattr(radio, "serial_reconnects_total", None)
-        if type(serial_reconnects) is int:
+        if _serial_link_episodes(radio) is not None:
             likely_cause = "radio_not_responding"
         else:
             remote_unreachable = _bool_attr(radio, "remote_control_unreachable")
@@ -1071,6 +1103,19 @@ def classify_radio_health(
     has_civ_evidence = last_civ_value is not None
     had_success = _bool_attr(radio, "_has_connected_once") or has_civ_evidence
     if radio_link == "unknown" and not had_success and not stats:
+        if _serial_link_loss_evidence(radio):
+            # MOR-4654 round 1 (P2): a serial-family radio without
+            # ``conn_state`` (Yaesu CAT) whose transport dropped after a
+            # real session is a silent radio, not an unknown one — the
+            # same shared-family verdict as the reconnecting arm above.
+            return {
+                "serverReachable": True,
+                "radioLink": "unknown",
+                "readiness": "stalled",
+                "likelyCause": "radio_not_responding",
+                "sinceMs": 0,
+                "lastError": last_error_value,
+            }
         return {
             "serverReachable": True,
             "radioLink": "unknown",

@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 
 import pytest
 
@@ -30,12 +31,15 @@ from rigplane import RadioConnectionState
 from rigplane.backends.ic705 import Ic705SerialRadio
 from rigplane.backends.ic7300 import Ic7300SerialRadio
 from rigplane.backends.icom7610.drivers.serial_civ_link import SerialCivLink
+from rigplane.backends.yaesu_cat.radio import YaesuCatRadio
 from rigplane.commands.commander import Priority
 from rigplane.core.radio_protocol import RadioIdentityStatus
 from rigplane.web.runtime_helpers import classify_radio_health
+from rigplane.web.server import WebServer
 
 from rigplane_testkit.serial import CivSerialFake
 from rigplane.testing.timing import await_until
+from rigplane_testkit.yaesu import FakeCatRadio
 
 _DEVICE = "civ-serial-fake"  # synthetic node name; no real path is opened
 
@@ -83,6 +87,28 @@ async def _poll_loop(
         except Exception:
             pass
         await asyncio.sleep(0.02)
+
+
+class _FakeWriter:
+    """Minimal writer for capturing an HTTP response (buffer, drain)."""
+
+    def __init__(self) -> None:
+        self.buffer = bytearray()
+
+    def write(self, data: bytes) -> None:
+        self.buffer.extend(data)
+
+    async def drain(self) -> None:
+        return None
+
+
+async def _served_station_status(server: WebServer) -> dict:
+    """Fetch the real ``/api/v1/station`` handler output, hardware faked only."""
+    writer = _FakeWriter()
+    await server._serve_station_status(writer)  # noqa: SLF001
+    text = writer.buffer.decode("ascii", errors="replace")
+    body_start = text.index("\r\n\r\n") + 4
+    return json.loads(text[body_start:])
 
 
 @pytest.mark.realtime(
@@ -138,6 +164,34 @@ async def test_usb_silence_then_answers_recovers_without_restart(model: str) -> 
             "a USB radio has no network to lose"
         )
 
+        # The same verdict through the REAL status endpoint, hardware
+        # faked only: the identity gate must have recorded the
+        # plain-words no-answer sentence (port + cable/RF guidance) first.
+        assert await await_until(
+            lambda: (
+                isinstance(radio.last_error, str)
+                and _DEVICE in radio.last_error
+                and "ferrite" in radio.last_error
+            ),
+            timeout=5.0,
+            description="identity gate never recorded the no-answer message",
+        ), "silent link never recorded the plain-words no-answer message"
+        served = await _served_station_status(WebServer(radio))
+        assert served["station"]["readiness"] == "no_usb_radio_connected"
+        served_health = served["station"]["health"]
+        assert served_health["radioLink"] == "reconnecting"
+        assert served_health["likelyCause"] == "radio_not_responding", (
+            f"served status says {served_health['likelyCause']!r}: "
+            "reverting the shared classifier must fail this row"
+        )
+        assert _DEVICE in (served_health["lastError"] or ""), (
+            "served lastError names no port — triage cannot tell which link is silent"
+        )
+        assert "ferrite" in (served_health["lastError"] or ""), (
+            "served lastError lost the USB-cable guidance — "
+            "reverting the no-answer sentence must fail this row"
+        )
+
         # The radio answers again with the port still present.
         fake.silence(0.0)
         assert await await_until(
@@ -162,12 +216,62 @@ async def test_usb_silence_then_answers_recovers_without_restart(model: str) -> 
         ), f"recovered without an answered identity: {identity.status!r}"
         assert radio.last_error is None
 
-        # ... and the published health is back to ready, not stuck.
+        # ... and the published health is back to ready, not stuck —
+        # through the real endpoint too.
         assert classify_radio_health(radio)["likelyCause"] == "unknown"
         assert classify_radio_health(radio)["readiness"] == "ready"
+        recovered = await _served_station_status(WebServer(radio))
+        assert recovered["station"]["health"]["likelyCause"] == "unknown"
+        assert recovered["station"]["health"]["readiness"] == "ready"
+        assert recovered["station"]["readiness"] == "ready_with_radio"
     finally:
         stop.set()
         poller.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await poller
         await radio.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_yaesu_transport_down_after_session_is_not_responding() -> None:
+    """MOR-4654 round 1 (P2): the conn_state-less serial sibling.
+
+    A Yaesu CAT backend has no ``conn_state`` — when its transport drops
+    after a real session (the bench shape: the USB device is gone), the
+    link reads ``unknown``. The shared serial-family classifier must
+    still name the silent radio (``radio_not_responding``), never
+    ``unknown``. The loss episode is counted by the real transport
+    recovery primitive (the poller's own ``transport.reconnect()``),
+    not hand-set; the answered identity is the real connect's.
+    """
+    fake = FakeCatRadio()
+    await fake.start()
+    try:
+        radio = YaesuCatRadio(device=fake.device_url, profile="ftx1")
+        await asyncio.wait_for(radio.connect(), 30)
+        assert radio.connected
+        assert radio.serial_reconnects_total == 0
+
+        # The USB device is gone mid-session; the poller's recovery
+        # primitive runs against the gone device and leaves the
+        # transport down with one counted loss episode.
+        await fake.stop()
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(radio._transport.reconnect(), 15)  # noqa: SLF001
+        assert not radio.connected
+        assert radio.serial_reconnects_total >= 1
+
+        health = classify_radio_health(radio)
+        assert health["radioLink"] == "unknown"
+        assert health["likelyCause"] == "radio_not_responding", (
+            f"down Yaesu link surfaced as {health['likelyCause']!r}: "
+            "the shared serial-family verdict must cover conn_state-less backends"
+        )
+        assert health["readiness"] == "stalled"
+        assert WebServer(radio)._build_radio_health()["likelyCause"] == (  # noqa: SLF001
+            "radio_not_responding"
+        )
+    finally:
+        with contextlib.suppress(Exception):
+            await radio.disconnect()
+        await fake.stop()

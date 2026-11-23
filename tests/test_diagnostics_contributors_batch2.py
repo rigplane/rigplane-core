@@ -22,12 +22,15 @@ from typing import Any
 import pytest
 
 from rigplane.audio.route import AudioConfigSource
+from rigplane.core.radio_protocol import RadioIdentity, RadioIdentityStatus
 from rigplane.diagnostics import _discovery
 from rigplane.diagnostics.contributor import BundleContext
 from rigplane.diagnostics.contributors import (
     AudioContributor,
     RadioContributor,
 )
+from rigplane.diagnostics.contributors.radio import RadioConnectionFacts
+from rigplane import RadioConnectionState
 from rigplane.types import AudioCodec
 
 
@@ -176,34 +179,38 @@ def test_radio_connection_facts_name_a_silent_serial_link(
         model = "IC-705"
         backend_id = "serial"
         connected = False
-        conn_state = SimpleNamespace(value="reconnecting")
-        connection_identity = SimpleNamespace(
-            status=SimpleNamespace(value="no_response")
+        conn_state = RadioConnectionState.RECONNECTING
+        connection_identity = RadioIdentity(
+            status=RadioIdentityStatus.NO_RESPONSE,
+            expected_model="IC-705",
         )
         last_error = "No answer from the radio on /dev/cu.usbserial-1420"
         serial_reconnects_total = 3
 
     RadioContributor().contribute(_make_ctx(radio=SilentSerialRadio()), tmp_path)
     payload = json.loads((tmp_path / "radio.json").read_text())
-    connection = payload["connection"]
-    assert connection["connected"] is False
-    assert connection["conn_state"] == "reconnecting"
-    assert connection["identity_status"] == "no_response"
-    assert "No answer from the radio" in (connection["last_error"] or "")
+    expected: RadioConnectionFacts = {
+        "connected": False,
+        "conn_state": RadioConnectionState.RECONNECTING.value,
+        "identity_status": RadioIdentityStatus.NO_RESPONSE.value,
+        "last_error": "No answer from the radio on /dev/cu.usbserial-1420",
+        "link_loss_episodes": 3,
+    }
+    assert payload["connection"] == expected
     # The device node is not a secret (path redaction only masks home
     # directories) and names the silent port for triage.
-    assert "/dev/cu.usbserial-1420" in (connection["last_error"] or "")
-    assert connection["link_loss_episodes"] == 3
+    assert "/dev/cu.usbserial-1420" in (payload["connection"]["last_error"] or "")
 
     RadioContributor().contribute(_make_ctx(radio=_PlainRadio()), tmp_path)
     payload = json.loads((tmp_path / "radio.json").read_text())
-    assert payload["connection"] == {
+    nulls: RadioConnectionFacts = {
         "connected": False,
         "conn_state": None,
         "identity_status": None,
         "last_error": None,
         "link_loss_episodes": None,
     }
+    assert payload["connection"] == nulls
 
 
 def test_radio_backend_id_wins_over_class_name(tmp_path: Path) -> None:

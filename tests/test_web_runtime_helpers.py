@@ -680,6 +680,43 @@ def test_radio_health_reports_not_responding_for_silent_serial_link() -> None:
     assert health["likelyCause"] == "radio_not_responding"
 
 
+def test_radio_health_unknown_link_with_serial_evidence_is_not_responding() -> None:
+    """MOR-4654 round 1 (P2): a conn_state-less serial backend, transport down.
+
+    A Yaesu-shaped radio (no ``conn_state``, down transport) after a real
+    session — episodes counted or an answered identity on record — is a
+    silent radio, not ``unknown``. A radio nobody reached yet (no
+    episodes, no identity) stays ``unknown``.
+    """
+    from rigplane.core.radio_protocol import RadioIdentity, RadioIdentityStatus
+
+    down = _FakeRadio(connected=False, radio_ready_flag=False)
+    down.serial_reconnects_total = 2
+    down.connection_identity = RadioIdentity(
+        status=RadioIdentityStatus.VERIFIED,
+        expected_model="FTX-1",
+        answered_model="FTX-1",
+        answered_id="0840",
+    )
+
+    health = classify_radio_health(down, server_reachable=True, now_monotonic=100.0)
+    assert health["radioLink"] == "unknown"
+    assert health["likelyCause"] == "radio_not_responding"
+    assert health["readiness"] == "stalled"
+
+    # The answered identity alone (no counted episode yet) is evidence too.
+    down.serial_reconnects_total = 0
+    health = classify_radio_health(down, server_reachable=True, now_monotonic=100.0)
+    assert health["likelyCause"] == "radio_not_responding"
+
+    # Never reached: no episodes, no identity — still unknown.
+    fresh = _FakeRadio(connected=False, radio_ready_flag=False)
+    fresh.serial_reconnects_total = 0
+    health = classify_radio_health(fresh, server_reachable=True, now_monotonic=100.0)
+    assert health["radioLink"] == "unknown"
+    assert health["likelyCause"] == "unknown"
+
+
 def test_radio_health_keeps_network_lost_when_host_unreachable() -> None:
     """Without the remote-control-unreachable signal a reconnecting radio is a
     plain network loss (host truly unreachable)."""
