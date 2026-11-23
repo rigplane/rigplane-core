@@ -86,6 +86,23 @@ describe('managed browser TX dependencies', () => {
     expect(h.notify).toHaveBeenCalledExactlyOnceWith('error', expect.any(String), 'controllerLost');
   });
 
+  it('keeps the real refusal reason when the command gate refuses on a live session (MOR-4651)', async () => {
+    const browser = createManagedBrowserDependencies();
+    h.sessionState = 'connected';
+    h.send.mockReturnValue(false); // sendCommand's degraded-radio-health refusal
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await expect(browser.dependencies.sendPtt('ptt_on')).resolves.toBe('rejected');
+    } finally {
+      warn.mockRestore();
+    }
+    // The session is up, so the sticky controllerLost notification and its
+    // control_link_unavailable log line must not fire on top of the health
+    // gate's own warning.
+    expect(h.notify).not.toHaveBeenCalled();
+    expect(warn).not.toHaveBeenCalledWith('[tx] PTT start refused: control_link_unavailable');
+  });
+
   it('routes TOT edits through the canonical managed HTTP store path', async () => {
     const browser = createManagedBrowserDependencies();
     await browser.dependencies.setTot(240);
