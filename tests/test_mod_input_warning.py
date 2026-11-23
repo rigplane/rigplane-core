@@ -46,9 +46,10 @@ from rigplane.web.mod_input_warning import (
     MOD_INPUT_UNREADABLE_CODE,
     warn_when_mod_input_blocks_voice,
 )
-from rigplane.web.radio_poller import RadioPoller
+from rigplane.web.radio_poller import CommandQueue, RadioPoller
 from rigplane.web.server import WebConfig, WebServer
 from rigplane.web.web_startup import attach_managed_tx_composition
+from rigplane.ws import WebSocketConnection
 from rigplane_testkit.serial import CivSerialFake
 from support.command_consumer import run_command_consumer
 
@@ -163,13 +164,13 @@ def _radio(
     backend_id: str = "icom_serial",
 ) -> MagicMock:
     profile = resolve_radio_profile(model=model)
-    radio = MagicMock()
+    radio = MagicMock(spec=_IcomSerialRadioBase)
     radio.profile = profile
     radio.model = profile.model
     radio.capabilities = set(profile.capabilities)
     radio.connected = True
     radio.radio_ready = True
-    radio.set_ptt = AsyncMock()
+    radio.set_ptt = AsyncMock(spec=_IcomSerialRadioBase.set_ptt)
     radio.get_data_off_mod_input = getter
     radio.backend_id = backend_id
     return radio
@@ -188,7 +189,7 @@ class _Ingress:
         self.toasts = _Toasts()
         self.retained: set[asyncio.Task[None]] = set()
         server = SimpleNamespace(
-            command_queue=MagicMock(),
+            command_queue=MagicMock(spec=CommandQueue),
             command_state_store=(store if store is not None else _seeded_store()),
             enqueue_managed_positive_tx=self._enqueue_positive_tx,
             _spawn=self._spawn,
@@ -196,7 +197,7 @@ class _Ingress:
         )
         self.radio = _radio(model, getter=getter, backend_id=backend_id)
         self.handler = ControlHandler(
-            ws=MagicMock(outbound_progress=0),
+            ws=MagicMock(spec=WebSocketConnection, outbound_progress=0),
             radio=self.radio,
             server_version="test",
             radio_model=model,
@@ -227,7 +228,7 @@ class _Ingress:
 
 @pytest.fixture()
 def usb_getter() -> AsyncMock:
-    return AsyncMock(return_value=3)
+    return AsyncMock(spec=_IcomSerialRadioBase.get_data_off_mod_input, return_value=3)
 
 
 async def _ptt_on(ingress: _Ingress) -> dict[str, Any]:
@@ -261,7 +262,12 @@ async def test_per_profile_usb_value_mapping(
     assert ingress.toasts.codes() == [MOD_INPUT_NOT_USB_CODE]
     assert ingress.toasts.sent[0][4] == {"source": source, "expected": "USB"}
 
-    ingress_ok = _Ingress(model, getter=AsyncMock(return_value=usb))
+    ingress_ok = _Ingress(
+        model,
+        getter=AsyncMock(
+            spec=_IcomSerialRadioBase.get_data_off_mod_input, return_value=usb
+        ),
+    )
     await _ptt_on(ingress_ok)
     assert ingress_ok.toasts.sent == []
 
@@ -279,7 +285,10 @@ async def test_profile_without_mod_input_stays_silent(
 async def test_unreadable_mod_input_warns_with_reason(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    getter = AsyncMock(side_effect=TimeoutError("civ timeout"))
+    getter = AsyncMock(
+        spec=_IcomSerialRadioBase.get_data_off_mod_input,
+        side_effect=TimeoutError("civ timeout"),
+    )
     with caplog.at_level(logging.DEBUG, logger=_LOGGER_NAME):
         ingress = _Ingress("IC-705", getter=getter)
         await _ptt_on(ingress)
