@@ -564,6 +564,41 @@ test('stale live pull base on the workflow-run path also skips without posting',
   assert.deepEqual(posted, []);
 });
 
+test('release-target legacy quick completion skips green without posting a status', async () => {
+  // MOR-4647: release branches carry quick.yml with branches [main,
+  // 'release/**'] (MOR-4214), so a completed release-target run fires the
+  // observer. The domain is live main by design: it skips green and publishes
+  // nothing, instead of failing both jobs as invalid_binding.
+  const base = 'b'.repeat(40); const head = 'a'.repeat(40);
+  const run = {...runPull(41, head, base), id: 9001, event: 'pull_request', status: 'completed', conclusion: 'success', workflow_id: observer.LEGACY_WORKFLOW.id, path: observer.LEGACY_WORKFLOW.path, name: observer.LEGACY_WORKFLOW.name, repository: {id: observer.REPOSITORY.id, full_name: observer.REPOSITORY.fullName}, head_repository: {id: observer.REPOSITORY.id, full_name: observer.REPOSITORY.fullName}, check_suite_id: 7};
+  run.pull_requests = [{...run.pull_requests[0], base: {...run.pull_requests[0].base, ref: 'release/3.3.x'}}];
+  assert.notEqual(observer.releaseTargetAssociation(run), null);
+  assert.equal(observer.releaseTargetAssociation(runPull(41, head, base)), null);
+  // The main-only binding itself stays strict: a direct bind of the release
+  // association still fails closed without publication.
+  assert.throws(() => observer.bindRunPullRequest(run, base), (error) => error.code === 'invalid_binding' && error.publish === false);
+  const posted = [];
+  const github = {request: async (route) => {
+    if (route.startsWith('POST ')) { posted.push(route); return {data: {}}; }
+    if (route.includes('/actions/runs/')) return {data: run};
+    throw new Error(`unexpected route ${route}`);
+  }};
+  const context = {eventName: 'workflow_run', repo: {owner: observer.REPOSITORY.owner, repo: observer.REPOSITORY.repo}, payload: {workflow_run: {event: 'pull_request', id: 9001, run_attempt: 1}}};
+  // Same sequence as the quick-v2.yml publish job: assess, rebind, then post
+  // only when the assessment says to publish. The fake answers only the run
+  // fetch: the skip must need no further API reads.
+  let result = await observer.assess({github, context, liveBaseSha: base});
+  assert.deepEqual([result.kind, result.code, result.publish], ['workflow_run', 'out_of_domain', false]);
+  assert.notEqual(result.state, 'failure');
+  result = await observer.rebindForPublication({github, result});
+  assert.deepEqual([result.code, result.publish], ['out_of_domain', false]);
+  assert.notEqual(result.state, 'failure');
+  if (result.publish) {
+    await github.request('POST /repos/{owner}/{repo}/statuses/{sha}', {});
+  }
+  assert.deepEqual(posted, []);
+});
+
 test('quick v2 reports no hard-coded self-hosted minutes', async () => {
   const policySource = fs.readFileSync(path.join(ROOT, '.github/scripts/quick-v2-metadata-policy-v1.js'), 'utf8');
   assert.doesNotMatch(policySource, /v2_self_hosted_minutes/u);
