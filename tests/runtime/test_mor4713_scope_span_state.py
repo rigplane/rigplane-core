@@ -11,31 +11,34 @@ import time
 
 import aiohttp
 import pytest
+from aiohttp import web
+from aiohttp.test_utils import TestServer
+from pydantic import ValidationError
 
+from rigplane.core.radio_state import RadioState
 from rigplane.radio import IcomRadio
+from rigplane.scope import ScopeFrame
 from rigplane.scope.models import FollowView, Subscription
 from rigplane.web.protocol import (
     decode_scope_granted,
     encode_scope_subscription,
 )
+from rigplane.web.runtime_helpers import build_public_state_payload
 from rigplane.web.server import WebConfig, WebServer
-from rigplane_testkit.icom.scope_control import ScopeControlSimulator
+from rigplane.web.state_schema import ServerStatePublic
+from rigplane_testkit.icom.scope_control import ScopeWindowSimulator
 
 pytestmark = [
     pytest.mark.realtime(reason="real local simulator and WebSocket seams"),
     pytest.mark.timeout(60),
 ]
 
-# IC-7610 half-width presets: [2500, 5000, 10000, 25000, 50000, 100000,
-# 250000, 500000]. A follow width of 2x the preset drives that preset.
-WIDTH_TO_INDEX = {200000: 5, 100000: 4, 50000: 3}
-
 
 async def _state_span(client: aiohttp.ClientSession, base: str) -> int | None:
     async with client.get(base + "/api/v1/state") as response:
         assert response.status == 200
         payload = await response.json()
-    return payload.get("scopeControls", {}).get("span")
+    return ServerStatePublic.model_validate(payload, strict=True).scopeControls.span
 
 
 async def _wait_state_span(
@@ -51,8 +54,36 @@ async def _wait_state_span(
     return last
 
 
+async def test_state_span_rejects_float_on_the_wire() -> None:
+    payload = build_public_state_payload(
+        RadioState(), radio=None, revision=1, receiver_count=2
+    )
+    payload["scopeControls"]["span"] = 4.0
+
+    async def state(_request: web.Request) -> web.Response:
+        return web.json_response(payload)
+
+    app = web.Application()
+    app.router.add_get("/api/v1/state", state)
+    async with TestServer(app) as server, aiohttp.ClientSession() as client:
+        with pytest.raises(ValidationError, match=r"scopeControls\.span"):
+            await _state_span(client, str(server.make_url("/").origin()))
+
+
 async def test_state_span_tracks_subscription_span_steps() -> None:
-    sim = ScopeControlSimulator(scope_stream=True, dual_receiver=True)
+    expected_width_hz = 0
+    applied_waveform = asyncio.Event()
+
+    def observe_waveform(frame: ScopeFrame) -> None:
+        if (
+            frame.receiver == 0
+            and frame.mode == 0
+            and not frame.out_of_range
+            and frame.end_freq_hz - frame.start_freq_hz == expected_width_hz
+        ):
+            applied_waveform.set()
+
+    sim = ScopeWindowSimulator(scope_stream=True, dual_receiver=True)
     await sim.start()
     radio = IcomRadio(
         "127.0.0.1",
@@ -62,9 +93,7 @@ async def test_state_span_tracks_subscription_span_steps() -> None:
         model="IC-7610",
     )
     await radio.connect()
-    # The scope_stream sim replays a fixed IC-7610 recording around
-    # 14286000; keep the VFO there so polls keep reporting it (same
-    # recipe as test_control_ws_refuses_legacy_span_preserving_subscription).
+    radio._scope_stream_callbacks.append(observe_waveform)
     sim.set_frequency(14286000)
     radio._radio_state.main.freq = 14286000
     server = WebServer(radio, WebConfig(host="127.0.0.1", port=0))
@@ -85,11 +114,16 @@ async def test_state_span_tracks_subscription_span_steps() -> None:
                 async with client.ws_connect(
                     base + "/api/v1/scope", protocols=protocols
                 ) as ws:
-                    for width_hz in (200000, 100000, 50000):
+                    for expected_width_hz in (200000, 100000, 50000):
+                        applied_waveform.clear()
                         await ws.send_str(
                             encode_scope_subscription(
                                 Subscription(
-                                    "radio", 0, FollowView("vfo", width_hz), 100, 20
+                                    "radio",
+                                    0,
+                                    FollowView("vfo", expected_width_hz),
+                                    100,
+                                    20,
                                 )
                             )
                         )
@@ -105,14 +139,17 @@ async def test_state_span_tracks_subscription_span_steps() -> None:
                                 message = await ws.receive()
                                 if message.type is aiohttp.WSMsgType.BINARY:
                                     break
-                        expected = WIDTH_TO_INDEX[width_hz]
+                            await applied_waveform.wait()
+                        expected = sim.profile.scope_span_view_widths_hz.index(
+                            expected_width_hz
+                        )
                         assert sim.views[0][1] == expected, (
-                            f"sim did not apply width {width_hz}: {sim.views[0]}"
+                            f"sim did not apply width {expected_width_hz}: {sim.views[0]}"
                         )
                         seen = await _wait_state_span(client, base, expected, 15)
                         assert seen == expected, (
                             f"state span stayed {seen}, want {expected} "
-                            f"after subscribing width {width_hz}"
+                            f"after subscribing width {expected_width_hz}"
                         )
     finally:
         await server.stop()

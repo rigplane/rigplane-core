@@ -312,6 +312,13 @@ class ScopeRuntimeMixin(_MixinBase):  # type: ignore[misc]
             provider_generation=self._state_store.provider_generation,
         )
         changeset = self._state_store.apply(observation)
+        if changeset.observed_paths:
+            # Let the next waveform supersede the ACK even if it repeats
+            # the last streamed value.
+            if name == "mode":
+                self._scope_stream_last_mode.clear()
+            elif name == "span":
+                self._scope_stream_last_span.clear()
         self._civ_runtime._notify_state_store_changed(changeset)  # noqa: SLF001
 
     async def enable_scope(
