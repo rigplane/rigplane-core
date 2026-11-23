@@ -87,10 +87,11 @@ def _source(
     stall_s: float = 1.0,
     host: str = "127.0.0.1",
     resolver: Callable[[str], str] = socket.gethostbyname,
+    clock: ManualClock | None = None,
 ) -> Iterator[_Harness]:
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as radio:
         radio.bind(("127.0.0.1", 0))
-        clock = ManualClock()
+        clock = clock if clock is not None else ManualClock()
         source = XieguUdpIqSource(
             _spec(int(radio.getsockname()[1]), host=host),
             clock=clock,
@@ -428,6 +429,61 @@ def test_failed_peer_refresh_blocks_commands_until_retry() -> None:
         assert harness.command() is None
         harness.clock.advance(1.0)
         assert harness.command(timeout=2.0) == encode_tune(7_175_000)
+
+
+def test_a_resolve_slower_than_the_stall_still_sends_the_tune(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """MOR-4411: the resolve-retry deadline is scheduled from when the
+    lookup completes, not from when it started.
+
+    With a lookup slower than the stall, the old pre-computed deadline was
+    already expired by the time the loop resumed, so while wrong-peer
+    datagrams kept arriving (a radio that changed address) the reader
+    re-resolved on every pass and the restart tune stayed suppressed: the
+    stream never came back."""
+    clock = ManualClock()
+    attempts: list[str] = []
+    tunes: list[tuple[str, int]] = []
+    real_sendto = socket.socket.sendto
+
+    def resolve(host: str) -> str:
+        attempts.append(host)
+        clock.advance(5.0)  # each lookup outlasts the 1 s stall
+        return "127.0.0.9"  # never the host the junk below comes from
+
+    def sendto(sock: socket.socket, data: bytes, address: tuple[str, int]) -> int:
+        if data == encode_tune(7_175_000):
+            tunes.append(address)
+        return real_sendto(sock, data, address)
+
+    monkeypatch.setattr(socket.socket, "sendto", sendto)
+    with _source(
+        center_hz=7_183_000,
+        host="radio.invalid",
+        resolver=resolve,
+        clock=clock,
+    ) as harness:
+        # Wrong-peer datagrams keep the receive path busy: every one of
+        # them re-reads the clock after the lookup, the exact shape a live
+        # radio that moved address has.
+        for batch in range(1, 4):
+            harness.send(bytes(768), count=10)
+            wait_until(
+                lambda: harness.source.dropped_datagrams >= 10 * batch,
+                description=f"junk batch {batch} observed as wrong-peer",
+            )
+        # The restart tune went out exactly once, to the freshly resolved
+        # peer, and the peer then settled: no resolve churn and no second
+        # tune while the clock stands still (the next retry is a full
+        # stall away).
+        wait_until(
+            lambda: len(tunes) == 1,
+            description="the restart tune after the slow lookup",
+        )
+        assert tunes == [("127.0.0.9", harness.radio.getsockname()[1])]
+        assert attempts == ["radio.invalid"]
+        assert harness.command() is None
 
 
 def test_connection_refused_does_not_end_reader(

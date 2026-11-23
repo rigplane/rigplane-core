@@ -253,7 +253,6 @@ class XieguUdpIqSource:
                         ):
                             return
                         self._peer_host = None
-                    next_resolve_s = now + self._stall_s
                     try:
                         resolved_host = self._resolver(self._spec.host)
                     except OSError as exc:
@@ -268,6 +267,14 @@ class XieguUdpIqSource:
                                 return
                             peer_host = resolved_host
                             self._peer_host = resolved_host
+                    # MOR-4411: schedule the retry from when the lookup
+                    # ENDED, not from when it started: a lookup slower than
+                    # the stall left an already-expired deadline behind, the
+                    # gate re-opened on every loop, and while datagrams kept
+                    # arriving (a radio that changed address) the peer was
+                    # dropped and re-resolved endlessly — the restart tune
+                    # stayed suppressed and the stream never came back.
+                    next_resolve_s = self._clock() + self._stall_s
                 try:
                     payload, address = sock.recvfrom(65535)
                 except TimeoutError:
