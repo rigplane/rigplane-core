@@ -406,9 +406,118 @@ def test_a_tone_mode_the_record_cannot_store_refuses(
 
 
 @pytest.mark.parametrize("model", ["IC-705", "IC-9700"])
-def test_dtcs_tone_mode_refuses_a_fixed_code(model: str) -> None:
-    with pytest.raises(ValueError, match="DTCS"):
+def test_dtcs_tone_mode_builds_with_a_caller_code(model: str) -> None:
+    """MOR-3648: the DTCS field is caller data now (encoding ``dtcs``), so
+    DTCS mode builds -- with an explicit code, the same rule an active
+    TONE/TSQL mode follows; an inactive mode's field carries the default."""
+    record = _record(model, _mem(model, tonemode=3, dtcs_code=125))
+    assert record[17:20].hex() == "000125"  # polarity byte 00, code 125
+
+
+@pytest.mark.parametrize("model", ["IC-705", "IC-9700"])
+def test_dtcs_tone_mode_requires_an_explicit_code(model: str) -> None:
+    with pytest.raises(ValueError, match="dtcs_code"):
         _build(model, _mem(model, tonemode=3))
+
+
+@pytest.mark.parametrize("model", ["IC-705", "IC-9700"])
+def test_dtcs_tone_mode_still_refuses_a_fixed_dtcs_field(model: str) -> None:
+    """The refusal guard stays for a layout whose DTCS bytes are fixed
+    constants (no shipped profile declares one; an SDK-spliced layout could)."""
+    memory = _memory(model)
+    layout = memory.write_layout
+    assert layout is not None
+    fixed = replace(
+        layout,
+        fields=tuple(
+            replace(f, encoding="fixed", value="000023") if f.field == "dtcs" else f
+            for f in layout.fields
+        ),
+    )
+    profile = get_radio_profile(model)
+    with pytest.raises(ValueError, match="DTCS"):
+        build_memory_contents_set(
+            _mem(model, tonemode=3),
+            replace(memory, write_layout=fixed),
+            to_addr=_CASES[model][0],
+            cmd_map=_cmd_map(model),
+            modes=profile.modes,
+            ctcss_tones_centihz=profile.ctcss_tones_centihz,
+            data_mode_count=profile.data_mode_count,
+        )
+
+
+@pytest.mark.parametrize("model", ["IC-705", "IC-9700"])
+def test_the_encoder_writes_a_caller_offset_and_dtcs(model: str) -> None:
+    """MOR-3648: the duplex offset and the DTCS field are caller data. The
+    offset is 3-byte little-endian BCD in 100 Hz units (the read side's own
+    decode shape, MOR-3650); the DTCS field is the polarity byte plus the
+    code as BCD under a fixed 0 digit. Both repeat in the TX/split copy."""
+    record = _record(
+        model, _mem(model, tonemode=3, dtcs_code=125, duplex_offset_hz=5_000_000)
+    )
+    assert record[17:20].hex() == "000125"  # polarity NN, code 125
+    assert record[21:24].hex() == "000005"  # 5 MHz, LE 100 Hz units
+    assert record[64:67].hex() == "000125"  # the TX/split copy repeats
+    assert record[68:71].hex() == "000005"
+
+
+def test_the_offset_10mhz_digit_only_where_the_profile_declares_it() -> None:
+    """The 10 MHz offset digit exists only in the profile's
+    ``offset_10mhz_groups`` (the read parser's own rule, shared)."""
+    record = _record(
+        "IC-9700",
+        _mem(
+            "IC-9700", group=3, frequency_hz=1_260_000_000, duplex_offset_hz=10_600_000
+        ),
+    )
+    assert record[21:24].hex() == "006010"
+    for model, group in (("IC-705", 2), ("IC-9700", 2)):
+        with pytest.raises(ValueError, match="offset"):
+            _build(model, _mem(model, group=group, duplex_offset_hz=10_600_000))
+
+
+@pytest.mark.parametrize("model", ["IC-705", "IC-9700"])
+@pytest.mark.parametrize(
+    ("overrides", "match"),
+    [
+        ({"dtcs_code": 88}, "DTCS code is not three octal digits"),
+        ({"dtcs_code": 1000}, "DTCS"),
+        ({"dtcs_code": -1}, "DTCS"),
+        ({"dtcs_code": "023"}, "DTCS"),
+        ({"dtcs_polarity": 256}, "polarity"),
+        ({"dtcs_polarity": "NN"}, "polarity"),
+        ({"duplex_offset_hz": -600}, "offset"),
+        ({"duplex_offset_hz": 150}, "offset"),
+        ({"duplex_offset_hz": 100_000_000}, "offset"),
+        ({"duplex_offset_hz": 600.0}, "offset"),
+    ],
+)
+def test_an_unknown_offset_or_dtcs_value_refuses_with_a_reason(
+    model: str, overrides: dict, match: str
+) -> None:
+    """An unknown value is rejected with a reason, never a crash and never
+    a silently truncated byte."""
+    with pytest.raises(ValueError, match=match):
+        _build(model, _mem(model, **overrides))
+
+
+@pytest.mark.parametrize(
+    ("overrides", "match"),
+    [
+        ({"dtcs_code": 23}, "dtcs_code"),
+        ({"dtcs_polarity": 1}, "dtcs_polarity"),
+        ({"duplex_offset_hz": 600_000}, "duplex_offset_hz"),
+    ],
+)
+def test_radios_without_the_fields_refuse_the_values(
+    overrides: dict, match: str
+) -> None:
+    """The IC-7300 record has no DTCS or duplex-offset field at all: a
+    caller value would be silently dropped, so it refuses (the shared
+    ``_check_field_storage`` guard)."""
+    with pytest.raises(ValueError, match=match):
+        _build("IC-7300", _mem("IC-7300", **overrides))
 
 
 @pytest.mark.parametrize("model", ["IC-705", "IC-9700"])
@@ -753,6 +862,19 @@ def _radio(model: str, transport: MockTransport) -> IcomRadio:
     return radio
 
 
+def _sim_radio(model: str, transport: MockTransport) -> IcomRadio:
+    """The ``_radio`` harness without a wall-clock read: new tests are not
+    allowed one (the realtime guard), so a fixed timestamp plus an infinite
+    idle timeout keeps the link "ready" for the simulator double."""
+    radio = IcomRadio("192.168.1.100", timeout=2.0, model=model)
+    radio._civ_transport = radio._ctrl_transport = transport
+    radio._connected = True
+    radio._civ_stream_ready = True
+    radio._last_civ_data_received = 0.0
+    radio._civ_ready_idle_timeout = float("inf")
+    return radio
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("model", ["IC-705", "IC-9700", "IC-7300"])
 @pytest.mark.parametrize(
@@ -884,6 +1006,110 @@ async def test_write_then_read_returns_what_was_written(model: str) -> None:
     assert transport.last_reply_data == (
         address + b"\x00" + block + block + mem.name.encode("ascii").ljust(16, b" ")
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model", ["IC-705", "IC-9700"])
+async def test_write_with_offset_and_dtcs_reads_back_equals(model: str) -> None:
+    """Simulated repeater write (MOR-3648): a caller duplex offset and DTCS
+    code cross the production write path and read back exactly."""
+    from rigplane.core.types import RepeaterShiftDirection, ToneSquelchType
+
+    radio_addr, group, channel = _CASES[model]
+    mem = _mem(model, tonemode=3, dtcs_code=125, duplex_offset_hz=5_000_000)
+    transport = _MemoryStoreTransport(_memory(model), radio_addr)
+    radio = _sim_radio(model, transport)
+    try:
+        await radio.set_memory_contents(mem)
+        entry = (await radio.read_memory_entries(group, [channel]))[0]
+    finally:
+        radio._connected = False
+    assert entry.duplex is RepeaterShiftDirection.PLUS
+    assert entry.offset_hz == 5_000_000
+    assert entry.tone_mode is ToneSquelchType.DTCS
+    assert entry.dtcs_code == 125
+    assert entry.dtcs_polarity == 0
+    assert entry.filter == mem.filter
+    assert entry.split is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model", ["IC-705", "IC-9700"])
+async def test_read_modify_write_round_trip_preserves_the_channel(model: str) -> None:
+    """Read-modify-write is exact (MOR-3648): the read model carries the
+    filter, the DTCS code and polarity, the offset and the split block, so
+    rewriting a saved channel with one changed field loses nothing else."""
+    from rigplane.core.types import Mode, RepeaterShiftDirection, ToneSquelchType
+
+    tone_nibble = {
+        ToneSquelchType.OFF: 0,
+        ToneSquelchType.TONE: 1,
+        ToneSquelchType.TSQL: 2,
+        ToneSquelchType.DTCS: 3,
+    }
+    duplex_nibble = {
+        RepeaterShiftDirection.SIMPLEX: 0,
+        RepeaterShiftDirection.MINUS: 1,
+        RepeaterShiftDirection.PLUS: 2,
+    }
+    radio_addr, group, channel = _CASES[model]
+    original = _mem(
+        model, tonemode=3, dtcs_code=125, duplex_offset_hz=5_000_000, filter=2
+    )
+    transport = _MemoryStoreTransport(_memory(model), radio_addr)
+    radio = _sim_radio(model, transport)
+    try:
+        await radio.set_memory_contents(original)
+        saved = (await radio.read_memory_entries(group, [channel]))[0]
+        # A split channel is not representable by the write API (the record
+        # fills the TX copy with the RX values); the read model shows it.
+        assert saved.split is False
+        assert saved.filter is not None and saved.dtcs_polarity is not None
+        assert saved.tone_mode is not None and saved.duplex is not None
+        new_frequency = {"IC-705": 145_000_000, "IC-9700": 439_000_000}[model]
+        rewritten = MemoryChannel(
+            channel=saved.channel,
+            group=saved.group,
+            frequency_hz=new_frequency,  # the one intended change
+            mode=Mode[saved.mode.replace("-", "_")].value,
+            filter=saved.filter,
+            scan=0,
+            datamode=int(saved.data_mode),
+            tonemode=tone_nibble[saved.tone_mode],
+            duplex=duplex_nibble[saved.duplex],
+            tone_centihz=saved.tone_centihz,
+            tsql_centihz=saved.tsql_centihz,
+            dtcs_code=saved.dtcs_code,
+            dtcs_polarity=saved.dtcs_polarity,
+            duplex_offset_hz=saved.offset_hz,
+            name=saved.name,
+        )
+        await radio.set_memory_contents(rewritten)
+        reread = (await radio.read_memory_entries(group, [channel]))[0]
+    finally:
+        radio._connected = False
+    # Everything but the frequency survived; the TX/split copy tracks the
+    # RX values, frequency included (the record's own NOTE).
+    assert saved.tx_block is not None
+    assert reread.tx_block == replace(saved.tx_block, frequency_hz=new_frequency)
+    assert replace(
+        reread, frequency_hz=saved.frequency_hz, tx_block=saved.tx_block
+    ) == (saved)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model", ["IC-705", "IC-9700"])
+async def test_a_refused_offset_or_dtcs_sends_nothing_on_the_wire(model: str) -> None:
+    transport = MockTransport()
+    radio = _sim_radio(model, transport)
+    try:
+        with pytest.raises(ValueError, match="DTCS"):
+            await radio.set_memory_contents(_mem(model, dtcs_code=88))
+        with pytest.raises(ValueError, match="offset"):
+            await radio.set_memory_contents(_mem(model, duplex_offset_hz=-1))
+    finally:
+        radio._connected = False
+    assert transport.sent_packets == []
 
 
 @pytest.mark.asyncio

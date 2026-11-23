@@ -122,6 +122,19 @@ async def test_memories_endpoint_serves_a_page_with_the_profile_bounds() -> None
     assert body["channels"] == {"first": 0, "last": 99}
     empty, entry = body["entries"][3:5]
     assert empty == {"group": 0, "channel": 3, "empty": True}
+    tx_block = {
+        "frequencyHz": 146_940_000,
+        "mode": "FM",
+        "filter": 1,
+        "dataMode": False,
+        "duplex": "plus",
+        "offsetHz": 600_000,
+        "toneMode": "tone",
+        "toneCentiHz": 13_650,
+        "tsqlCentiHz": 13_650,
+        "dtcsCode": 23,
+        "dtcsPolarity": 0,
+    }
     assert entry == {
         "group": 0,
         "channel": 4,
@@ -136,6 +149,11 @@ async def test_memories_endpoint_serves_a_page_with_the_profile_bounds() -> None
         "toneCentiHz": 13_650,
         "tsqlCentiHz": 13_650,
         "dtcsCode": 23,
+        # MOR-3648: what a read-modify-write must not silently lose.
+        "filter": 1,
+        "dtcsPolarity": 0,
+        "split": False,
+        "txBlock": tx_block,
     }
 
 

@@ -8,7 +8,12 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-from rigplane.core.types import MemoryEntry, MemoryProfile, RepeaterShiftDirection
+from rigplane.core.types import (
+    MemoryBlock,
+    MemoryEntry,
+    MemoryProfile,
+    RepeaterShiftDirection,
+)
 
 DEFAULT_PAGE = 25
 MAX_PAGE = 50
@@ -55,6 +60,23 @@ def parse_memory_query(
     return group, list(range(start, min(start + count, memory.last_channel + 1)))
 
 
+def _block_payload(block: MemoryBlock) -> dict[str, Any]:
+    """The second (TX/split) channel block as JSON (MOR-3648)."""
+    return {
+        "frequencyHz": block.frequency_hz,
+        "mode": block.mode,
+        "filter": block.filter,
+        "dataMode": block.data_mode,
+        "duplex": _DUPLEX.get(block.duplex) if block.duplex is not None else None,
+        "offsetHz": block.offset_hz,
+        "toneMode": block.tone_mode.value if block.tone_mode else None,
+        "toneCentiHz": block.tone_centihz,
+        "tsqlCentiHz": block.tsql_centihz,
+        "dtcsCode": block.dtcs_code,
+        "dtcsPolarity": block.dtcs_polarity,
+    }
+
+
 def entry_payload(entry: MemoryEntry) -> dict[str, Any]:
     """One slot as JSON; an empty slot carries only its address."""
     payload: dict[str, Any] = {
@@ -76,6 +98,13 @@ def entry_payload(entry: MemoryEntry) -> dict[str, Any]:
             "toneCentiHz": entry.tone_centihz,
             "tsqlCentiHz": entry.tsql_centihz,
             "dtcsCode": entry.dtcs_code,
+            # MOR-3648: what a read-modify-write must not silently lose.
+            "filter": entry.filter,
+            "dtcsPolarity": entry.dtcs_polarity,
+            "split": entry.split,
+            "txBlock": (
+                _block_payload(entry.tx_block) if entry.tx_block is not None else None
+            ),
         }
     )
     return payload
