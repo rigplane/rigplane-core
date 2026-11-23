@@ -13,6 +13,7 @@ from rigplane.audio.bus import STAGE_RX_POST_DSP
 from rigplane.audio.scope_source import AudioFftSource
 from rigplane.profiles import resolve_radio_profile
 from rigplane.runtime.radio_scope_source import RadioScopeSource
+from rigplane.runtime.scope_session import ScopeSession
 from rigplane.scope import ScopeFrame
 from rigplane.scope.models import Subscription, View
 from rigplane.sdr.fake import FakeIqSource
@@ -281,22 +282,29 @@ async def test_scope_restore_cannot_restart_state_broadcasts_during_shutdown(
     virtual_clock, monkeypatch
 ):
     server = WebServer(None)
-    server._radio_scope_session = MagicMock(active=True)
+    server._radio_scope_session = MagicMock(spec=ScopeSession, active=True)
     poller = MagicMock(spec=RadioPoller)
     server._radio_poller = poller
 
+    monkeypatch.setattr(web_server, "time", SimpleNamespace(monotonic=virtual_clock))
+    server._last_state_broadcast = virtual_clock()
+
     async def restore():
-        # Radio RX callbacks can still arrive on the open transport while
-        # the final scope restore waits for CI-V, after the task drain.
-        server._last_state_broadcast = virtual_clock()
-        with monkeypatch.context() as patch:
-            patch.setattr(web_server, "time", SimpleNamespace(monotonic=virtual_clock))
-            server._on_radio_state_change("freq_changed", {"freq": 14_100_000})
+        # CI-V replies can still trigger a state update during scope restore.
+        server._on_radio_state_change("freq_changed", {"freq": 14_100_000})
 
     poller.restore_scope_after_shutdown.side_effect = restore
     try:
+        server._on_radio_state_change("freq_changed", {"freq": 14_000_000})
+        pending_broadcast = server._pending_state_broadcast_task
+        assert pending_broadcast is not None
+        await virtual_clock.elapse(0)
+        assert not pending_broadcast.done()
+
         await server.stop()
+
         poller.restore_scope_after_shutdown.assert_awaited_once()
+        assert pending_broadcast.done()
         assert not server._bg_tasks
     finally:
         # Reap the leaked timer when running the regression on the old code.
