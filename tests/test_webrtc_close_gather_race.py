@@ -9,9 +9,9 @@ firing on closed transports raised ``AttributeError: 'NoneType' ...
 'call_exception_handler'`` (PRO-9). An ordinary close after the gather
 finished was always clean.
 
-These tests drive the real answerer (``WebRtcSessionManager``) with the
-real aiortc/aioice gather against loopback blackhole STUN+TURN doubles
-and fail on any ``never retrieved`` / ``Exception in callback`` context
+These tests drive the real answerer (``WebRtcSessionManager``) against
+loopback blackholes during ICE gathering and during connectivity checks.
+They fail on any ``never retrieved`` / ``Exception in callback`` context
 the loop reports.
 """
 
@@ -27,7 +27,7 @@ import pytest
 pytest.importorskip("aioice", reason="needs the [webrtc] extra")
 pytest.importorskip("aiortc", reason="needs the [webrtc] extra")
 
-from rigplane.testing.timing import await_until  # noqa: E402
+from rigplane.testing.timing import VirtualClock, await_until  # noqa: E402
 from rigplane.web.transport.ice_gathering import IceServer  # noqa: E402
 from rigplane.web.transport.webrtc_contract import WebRtcAnswer  # noqa: E402
 from rigplane.web.transport.webrtc_session import (  # noqa: E402
@@ -90,9 +90,9 @@ async def _blackhole_port() -> tuple[_Blackhole, int]:
 
 
 async def _offer() -> tuple[Any, str, str]:
-    from aiortc import RTCPeerConnection
+    from aiortc import RTCConfiguration, RTCPeerConnection
 
-    pc = RTCPeerConnection()
+    pc = RTCPeerConnection(RTCConfiguration(iceServers=[]))
     pc.createDataChannel("control")
     offer = await pc.createOffer()
     await pc.setLocalDescription(offer)
@@ -129,22 +129,44 @@ async def _wait_for_gather(
     assert not negotiate.done()  # the gather is still running, not finished
 
 
-@pytest.mark.realtime(reason="real ICE/STUN wall-clock against loopback doubles")
+@pytest.mark.timeout(15)
 @pytest.mark.asyncio
-async def test_close_after_negotiate_leaves_no_unretrieved_exceptions() -> None:
-    """Ordinary close: negotiate (host-only, fast), then close, then quiet."""
+async def test_close_after_negotiate_leaves_no_unretrieved_exceptions(
+    monkeypatch: pytest.MonkeyPatch, virtual_clock: VirtualClock
+) -> None:
+    """After gathering, close while the answerer's first ICE check is pending."""
+    from aioice import ice
+    from aiortc.sdp import SessionDescription
+
+    manager = WebRtcSessionManager(None, None, "mor4671")
+    monkeypatch.setattr(
+        ice, "get_host_addresses", lambda use_ipv4, use_ipv6: ["127.0.0.1"]
+    )
+    offerer, sdp, typ = await _offer()
+    blackhole, port = await _blackhole_port()
+    assert blackhole.transport is not None
     loop = asyncio.get_running_loop()
     capture = _Capture()
     old = loop.get_exception_handler()
     loop.set_exception_handler(capture)
-    offerer, sdp, typ = await _offer()
-    manager = WebRtcSessionManager(None, None, "mor4671")
     try:
-        answer = WebRtcAnswer.from_json(await manager.negotiate(sdp, typ))
+        offer = SessionDescription.parse(sdp)
+        (candidate,) = offer.media[0].ice_candidates
+        candidate.port = port
+        answer = WebRtcAnswer.from_json(await manager.negotiate(str(offer), typ))
+        await await_until(
+            blackhole.received.is_set, description="answerer's first ICE check"
+        )
         await manager.close_session(answer.session_id)
-        await _settle()
+        # Model a delayed loop tick: the check driver and STUN retry become
+        # runnable in the same turn, after the answerer's socket has closed.
+        virtual_clock.advance(1)
+        await virtual_clock.elapse(0)
+        gc.collect()
+        await virtual_clock.elapse(0)
         assert capture.describe() == []
     finally:
+        blackhole.transport.close()
         with contextlib.suppress(Exception):
             await manager.close_all()
         await offerer.close()
