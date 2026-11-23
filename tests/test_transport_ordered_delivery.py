@@ -428,3 +428,92 @@ async def test_burst_loss_does_not_recount_an_older_gap(
     radio.deliver(122)
     assert drain_seqs(transport) == []
     assert transport.rx_order_stats == RxOrderStats(lost=120, late=1)
+
+
+async def test_a_delayed_copy_of_the_retired_anchor_never_reanchors(
+    transport: IcomTransport,
+) -> None:
+    """MOR-4447: the anchor a re-anchor displaced stays retired.
+
+    A delayed copy of that number still sits far above the live stream, so
+    it reads as a forward jump — it must be counted as the duplicate it is,
+    never a reason to move the delivery anchor back onto the dead epoch and
+    clear the live packets held for ordering.
+    """
+    stale = 20001
+    radio = _radio(transport, REORDER_WINDOW + 4)
+    radio.sent[stale] = wrap_civ_in_udp(_frame(0), seq=stale)
+
+    radio.deliver(stale)
+    assert drain_seqs(transport) == [stale]  # the anchor packet itself
+    radio.deliver(*range(1, REORDER_WINDOW + 2))  # the run re-anchors at 257
+    assert drain_seqs(transport) == [REORDER_WINDOW + 1]
+
+    gap = REORDER_WINDOW + 2  # 258 goes missing…
+    radio.deliver(gap + 1)  # …259 is held behind it
+    assert transport._rx_held
+    assert gap in transport.rx_missing
+
+    radio.deliver(stale)  # the delayed copy of the retired anchor
+
+    assert transport.rx_order_stats.reanchored == 1
+    assert transport.rx_order_stats.duplicate == REORDER_WINDOW + 1
+    assert gap in transport.rx_missing  # the live epoch survived the replay
+
+    radio.deliver(gap)
+    assert drain_seqs(transport) == [gap, gap + 1]
+
+
+async def test_copies_of_one_old_number_do_not_reanchor(
+    transport: IcomTransport,
+) -> None:
+    """MOR-4447: the behind run counts sequence progress, not packets.
+
+    Any number of copies of one old datagram is one behind step: a replay
+    storm of a single number never crosses the reorder window, so the
+    anchor never moves and the next live packet is not counted as phantom
+    burst loss.
+    """
+    radio = _radio(transport, 12)
+    radio.deliver(*range(1, 11))
+    assert drain_seqs(transport) == list(range(1, 11))
+
+    radio.deliver(*([5] * (REORDER_WINDOW + 1)))
+
+    assert drain_seqs(transport) == []
+    assert transport.rx_order_stats == RxOrderStats(duplicate=REORDER_WINDOW + 1)
+    assert transport.rx_missing == {}
+    assert not transport._rx_held
+
+    radio.deliver(11, 12)
+    assert drain_seqs(transport) == [11, 12]
+    assert transport.rx_order_stats == RxOrderStats(duplicate=REORDER_WINDOW + 1)
+
+
+async def test_a_half_range_discontinuity_is_not_a_burst_loss(
+    transport: IcomTransport,
+) -> None:
+    """MOR-4447: a number exactly 0x8000 from the delivery anchor is
+    ambiguous — half a range ahead or half a range behind.
+
+    It takes the same old-number path as any other far-behind duplicate:
+    holding it as ahead would release a ~32k skip as burst loss and later
+    redeliver an ancient packet.
+    """
+    anchor = 1000
+    radio = _radio(transport, 2, first_seq=anchor)
+    radio.deliver(anchor)
+    assert drain_seqs(transport) == [anchor]
+
+    half = (anchor + 1 + 0x8000) & 0xFFFF  # exactly 0x8000 from the anchor
+    radio.sent[half] = wrap_civ_in_udp(_frame(0), seq=half)
+    radio.deliver(half)
+
+    assert drain_seqs(transport) == []
+    assert transport.rx_order_stats == RxOrderStats(duplicate=1)
+    assert transport.rx_missing == {}
+    assert not transport._rx_given_up
+
+    radio.deliver(anchor + 1)
+    assert drain_seqs(transport) == [anchor + 1]
+    assert transport.rx_order_stats == RxOrderStats(duplicate=1)
