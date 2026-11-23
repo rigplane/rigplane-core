@@ -271,6 +271,11 @@ async def test_yaesu_transport_down_after_session_is_not_responding() -> None:
         assert WebServer(radio)._build_radio_health()["likelyCause"] == (  # noqa: SLF001
             "radio_not_responding"
         )
+        served = await _served_station_status(WebServer(radio))
+        served_health = served["station"]["health"]
+        assert served_health["radioLink"] == "unknown"
+        assert served_health["likelyCause"] == "radio_not_responding"
+        assert served_health["readiness"] == "stalled"
     finally:
         with contextlib.suppress(Exception):
             await radio.disconnect()
