@@ -662,6 +662,24 @@ def test_radio_health_classifies_remote_control_unreachable_when_host_reachable(
     assert health["likelyCause"] == "radio_remote_control_unreachable"
 
 
+def test_radio_health_reports_not_responding_for_silent_serial_link() -> None:
+    """MOR-4654: a reconnecting USB/serial radio is not answering on its
+    port — it has no network to lose, so the LAN ``radio_network_lost``
+    cause must not leak onto it. The shared serial-family marker is
+    ``serial_reconnects_total`` (Icom serial base and Yaesu CAT count
+    link-loss episodes; LAN radios have no such attribute)."""
+    radio = _FakeRadio(connected=False, radio_ready_flag=False)
+    radio.conn_state = "reconnecting"
+    radio.serial_reconnects_total = 1
+
+    health = classify_radio_health(radio, server_reachable=True, now_monotonic=100.0)
+
+    assert health["serverReachable"] is True
+    assert health["radioLink"] == "reconnecting"
+    assert health["readiness"] == "recovering"
+    assert health["likelyCause"] == "radio_not_responding"
+
+
 def test_radio_health_keeps_network_lost_when_host_unreachable() -> None:
     """Without the remote-control-unreachable signal a reconnecting radio is a
     plain network loss (host truly unreachable)."""

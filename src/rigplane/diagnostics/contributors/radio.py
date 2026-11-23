@@ -49,6 +49,33 @@ def _redact_host(s: str | None) -> str | None:
     return redact_credentials(redact_hostnames(redact_ips(redact_paths(s))))
 
 
+def _connection_facts(radio: Any) -> dict[str, Any]:
+    """Link facts for triage: state, identity answer, latest error.
+
+    ``connected``/``conn_state`` come from the radio's public surface;
+    the identity status names a silent-but-present port
+    (``no_response``/``checking``/``identity_mismatch``); ``last_error``
+    carries the backend's plain-words no-answer sentence;
+    ``link_loss_episodes`` counts serial link-down edges (LAN watchdogs
+    count their own reconnects elsewhere).
+    """
+    conn_state = _safe_attr(radio, "conn_state")
+    conn_state_value = getattr(conn_state, "value", conn_state)
+    identity = _safe_attr(radio, "connection_identity")
+    identity_status = getattr(getattr(identity, "status", None), "value", None)
+    episodes = _safe_attr(radio, "serial_reconnects_total")
+    last_error = _safe_attr(radio, "last_error")
+    return {
+        "connected": bool(_safe_attr(radio, "connected", False)),
+        "conn_state": (conn_state_value if isinstance(conn_state_value, str) else None),
+        "identity_status": (
+            identity_status if isinstance(identity_status, str) else None
+        ),
+        "last_error": _redact(last_error) if isinstance(last_error, str) else None,
+        "link_loss_episodes": episodes if type(episodes) is int else None,
+    }
+
+
 def _capabilities(radio: Any) -> list[str]:
     caps: list[str] = []
     if isinstance(radio, AudioCapable):
@@ -99,6 +126,11 @@ class RadioContributor:
                     _safe_attr(radio, "host") or _safe_attr(radio, "_host")
                 ),
                 "port": _safe_attr(radio, "port") or _safe_attr(radio, "_port"),
+                # MOR-4654: the link facts that say plainly what is wrong
+                # while the radio is silent — all duck-typed so LAN, serial
+                # and stub radios contribute what they have (``None``
+                # otherwise), never a per-radio branch.
+                "connection": _connection_facts(radio),
             }
         text = json.dumps(payload, indent=2, sort_keys=True)
         (output_dir / "radio.json").write_text(text + "\n", encoding="utf-8")

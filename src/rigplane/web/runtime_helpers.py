@@ -1038,12 +1038,23 @@ def classify_radio_health(
         # UDP socket, no "Are You There" answer) from a full network loss.
         # The former is actionable — the user can enable Network/Remote control
         # on the radio — so surface a distinct cause.
-        remote_unreachable = _bool_attr(radio, "remote_control_unreachable")
-        likely_cause = (
-            "radio_remote_control_unreachable"
-            if remote_unreachable
-            else "radio_network_lost"
-        )
+        # A serial/USB link has no network to lose (MOR-4654): a silent
+        # radio there is not answering on its port, so say that instead.
+        # ``serial_reconnects_total`` is the shared serial-family marker
+        # (Icom serial base and Yaesu CAT both count link-loss episodes;
+        # LAN radios have no such attribute) — a transport fact, not a
+        # per-radio branch. The same duck-typed read feeds
+        # ``WebServer._radio_runtime_payload``.
+        serial_reconnects = getattr(radio, "serial_reconnects_total", None)
+        if type(serial_reconnects) is int:
+            likely_cause = "radio_not_responding"
+        else:
+            remote_unreachable = _bool_attr(radio, "remote_control_unreachable")
+            likely_cause = (
+                "radio_remote_control_unreachable"
+                if remote_unreachable
+                else "radio_network_lost"
+            )
         return {
             "serverReachable": True,
             "radioLink": radio_link,

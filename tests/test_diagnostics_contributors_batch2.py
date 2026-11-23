@@ -161,6 +161,51 @@ def test_radio_includes_model_and_backend(tmp_path: Path) -> None:
     assert payload["backend"] == "rigplane"
 
 
+def test_radio_connection_facts_name_a_silent_serial_link(
+    tmp_path: Path,
+) -> None:
+    """MOR-4654: the support report says plainly what is wrong.
+
+    A silent-but-present serial port contributes its link facts —
+    state, identity answer, the plain-words error, the link-loss
+    episode count — so triage sees the silence without reading logs.
+    A stub radio without that surface contributes nulls, never a crash.
+    """
+
+    class SilentSerialRadio:
+        model = "IC-705"
+        backend_id = "serial"
+        connected = False
+        conn_state = SimpleNamespace(value="reconnecting")
+        connection_identity = SimpleNamespace(
+            status=SimpleNamespace(value="no_response")
+        )
+        last_error = "No answer from the radio on /dev/cu.usbserial-1420"
+        serial_reconnects_total = 3
+
+    RadioContributor().contribute(_make_ctx(radio=SilentSerialRadio()), tmp_path)
+    payload = json.loads((tmp_path / "radio.json").read_text())
+    connection = payload["connection"]
+    assert connection["connected"] is False
+    assert connection["conn_state"] == "reconnecting"
+    assert connection["identity_status"] == "no_response"
+    assert "No answer from the radio" in (connection["last_error"] or "")
+    # The device node is not a secret (path redaction only masks home
+    # directories) and names the silent port for triage.
+    assert "/dev/cu.usbserial-1420" in (connection["last_error"] or "")
+    assert connection["link_loss_episodes"] == 3
+
+    RadioContributor().contribute(_make_ctx(radio=_PlainRadio()), tmp_path)
+    payload = json.loads((tmp_path / "radio.json").read_text())
+    assert payload["connection"] == {
+        "connected": False,
+        "conn_state": None,
+        "identity_status": None,
+        "last_error": None,
+        "link_loss_episodes": None,
+    }
+
+
 def test_radio_backend_id_wins_over_class_name(tmp_path: Path) -> None:
     """``backend_id`` takes precedence over the radio's class name."""
 
