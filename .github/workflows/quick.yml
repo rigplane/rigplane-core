@@ -585,6 +585,17 @@ jobs:
         if: needs.classify.outputs.ci == 'true'
         run: python3 .github/scripts/quick-path-filters.test.py
 
+      - name: Workflow artifact hidden-files contract tests
+        if: needs.classify.outputs.ci == 'true'
+        # MOR-4609: this regression used to run only under the core class
+        # (``uv run pytest tests/``), so a ci-only PR could drop
+        # ``include-hidden-files`` undetected. It needs only pytest + pyyaml,
+        # so it runs from an ephemeral environment like the label check
+        # above -- no project sync for a workflow-only change.
+        run: >-
+          uv run --no-project --with pytest --with 'pyyaml>=6'
+          pytest tests/test_workflow_hidden_artifacts.py
+
       - name: Playwright browser environment contract test
         if: needs.classify.outputs.ci == 'true'
         run: python3 .github/scripts/playwright-browser-env.test.py
