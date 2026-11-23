@@ -87,6 +87,8 @@ def test_payload_contracts_conform_to_real_parsers_and_encoders() -> None:
         "error",
         "attach_frame",
         "attach_ack",
+        "rigctl_attach_frame",
+        "rigctl_attach_error",
         "control_hello",
     }, sorted(payloads)
     assert payloads["error"].codes == (
@@ -133,6 +135,7 @@ def test_payload_contracts_conform_to_real_parsers_and_encoders() -> None:
         row for row in payloads["attach_frame"].fields if row[0] == "controller_key"
     )
     assert (key_row[1], key_row[2]) == ("string | null", False), key_row
+    assert {row[0] for row in payloads["attach_frame"].fields} == set(keyed)
     # control_hello: the control handler's own typed producer conforms to
     # the exported rows — the declaration order is the wire key order and
     # the builder owns the capability sort — and a hello missing a
@@ -185,10 +188,17 @@ def test_committed_golden_documents_validate_against_payload_contracts() -> None
     )
     for name, doc in golden.documents.items():
         match doc:
+            case GoldenTextDocument(decoded={"type": "attach", "v": _}):
+                _conform("rigctl_attach_frame", doc.decoded)
             case GoldenTextDocument(decoded={"type": "attach"}):
                 _conform("attach_frame", doc.decoded)
             case GoldenTextDocument(decoded={"type": "attached"}):
                 _conform("attach_ack", doc.decoded)
+            case GoldenTextDocument(decoded={"type": "attach_error"}):
+                _conform("rigctl_attach_error", doc.decoded)
+                assert doc.decoded["code"] in (
+                    api_channel_wire_definition().payloads["rigctl_attach_error"].codes
+                )
             case GoldenTextDocument(decoded={"type": "audio_tx_format"}):
                 # Not an api-channel payload: the audio channel's TX
                 # format ack, pinned to the audio handler's own typed

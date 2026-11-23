@@ -117,12 +117,18 @@ if TYPE_CHECKING:
         parse_api_server_frame,
     )
     from .web.channel_attach import (  # noqa: F401, TID251
+        ATTACH_ACK_VERSION,
         DATA_CHANNELS,
+        RIGCTL_MAX_FRAME_BYTES,
+        RIGCTL_VERSIONS,
         ChannelAttachedAck,
         ChannelKind,
         ClientChannelParams,
         DataChannelLabel,
         DataChannelSpec,
+        RigctlAttachErrorCode,
+        RigctlAttachErrorV1,
+        decode_rigctl_attach_result,
     )
     from .web.transport.ice_gathering import (  # noqa: F401, TID251
         GATHER_TIMEOUT_S,
@@ -169,6 +175,15 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
     "DataChannelSpec": ("rigplane.web.channel_attach", "DataChannelSpec"),
     "DataChannelLabel": ("rigplane.web.channel_attach", "DataChannelLabel"),
     "DATA_CHANNELS": ("rigplane.web.channel_attach", "DATA_CHANNELS"),
+    "ATTACH_ACK_VERSION": ("rigplane.web.channel_attach", "ATTACH_ACK_VERSION"),
+    "RIGCTL_MAX_FRAME_BYTES": ("rigplane.web.channel_attach", "RIGCTL_MAX_FRAME_BYTES"),
+    "RIGCTL_VERSIONS": ("rigplane.web.channel_attach", "RIGCTL_VERSIONS"),
+    "RigctlAttachErrorCode": ("rigplane.web.channel_attach", "RigctlAttachErrorCode"),
+    "RigctlAttachErrorV1": ("rigplane.web.channel_attach", "RigctlAttachErrorV1"),
+    "decode_rigctl_attach_result": (
+        "rigplane.web.channel_attach",
+        "decode_rigctl_attach_result",
+    ),
     "IceServer": ("rigplane.web.transport.ice_gathering", "IceServer"),
     "IceGatheringPolicy": (
         "rigplane.web.transport.ice_gathering",
@@ -479,6 +494,12 @@ __all__ = [
     "DataChannelSpec",
     "DataChannelLabel",
     "DATA_CHANNELS",
+    "ATTACH_ACK_VERSION",
+    "RIGCTL_MAX_FRAME_BYTES",
+    "RIGCTL_VERSIONS",
+    "RigctlAttachErrorCode",
+    "RigctlAttachErrorV1",
+    "decode_rigctl_attach_result",
     "IceServer",
     "IceGatheringPolicy",
     "GATHER_TIMEOUT_S",

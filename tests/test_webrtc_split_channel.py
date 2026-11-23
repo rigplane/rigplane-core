@@ -10,16 +10,30 @@ the routing rules are pinned deterministically.
 from __future__ import annotations
 
 import asyncio
+import json
+import sys
 from collections.abc import Callable
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
+from rigplane.runtime.managed_tx_authority import ManagedTxAuthority
+from rigplane.runtime.managed_tx_state import ManagedTxOutcome
+from rigplane.testing.timing import VirtualClock
 from rigplane.web import channel_attach
-from rigplane.web.channel_attach import DATA_CHANNELS, data_channel_spec
+from rigplane.web.channel_attach import (
+    DATA_CHANNELS,
+    ChannelAttachedAck,
+    ClientChannelParams,
+    data_channel_spec,
+)
+from rigplane.web.server import WebConfig, WebServer
 from rigplane.web.transport import webrtc, webrtc_session
 from rigplane.web.transport.webrtc import WebRtcDataChannelConnection
+from rigplane.web.transport.webrtc_contract import WebRtcTransportStatus
 from rigplane.ws import WS_OP_BINARY, WS_OP_TEXT
 
 
@@ -27,11 +41,17 @@ class _FakeChannel:
     """The ``RTCDataChannel`` surface the adapter uses, in memory."""
 
     def __init__(
-        self, label: str, *, ordered: bool = True, maxRetransmits: int | None = None
+        self,
+        label: str,
+        *,
+        ordered: bool = True,
+        maxRetransmits: int | None = None,
+        maxPacketLifeTime: int | None = None,
     ) -> None:
         self.label = label
         self.ordered = ordered
         self.maxRetransmits = maxRetransmits
+        self.maxPacketLifeTime = maxPacketLifeTime
         self.readyState = "open"
         self.sent: list[str | bytes] = []
         self._listeners: dict[str, list[Callable[..., None]]] = {}
@@ -77,7 +97,7 @@ def _pair() -> tuple[WebRtcDataChannelConnection, _FakeChannel, _FakeChannel]:
 
 
 def test_channel_set_contract() -> None:
-    """The K5 set: control/api one reliable channel each; scope/audio a
+    """Control/api/rigctl one reliable channel each; scope/audio a
     lossy binary channel plus a reliable ordered text companion."""
     assert [
         (s.label, s.kind, s.ordered, s.max_retransmits, s.carries)
@@ -89,8 +109,27 @@ def test_channel_set_contract() -> None:
         ("scope-text", "scope", True, None, "text"),
         ("audio", "audio", False, 0, "binary"),
         ("audio-text", "audio", True, None, "text"),
+        ("rigctl", "rigctl", True, None, "all"),
     ]
-    assert data_channel_spec("rigctl") is None
+    assert data_channel_spec("future") is None
+
+
+@pytest.mark.parametrize("versions", [None, [], [99]])
+def test_old_or_incompatible_station_does_not_open_rigctl(
+    versions: list[int] | None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    payload: dict[str, object] = {"available": True, "enabled": True}
+    if versions is not None:
+        payload["rigctl_versions"] = versions
+    status = WebRtcTransportStatus.from_json(payload)
+    assert status.select_rigctl_version() is None
+    monkeypatch.setattr(webrtc, "webrtc_available", lambda: True)
+    pc = _FakePc()
+    with pytest.raises(
+        webrtc.WebRtcUnavailableError, match="compatible rigctl version"
+    ):
+        webrtc.add_data_channel(pc, "rigctl", transport_status=status)  # type: ignore[arg-type]
+    assert not pc.created
 
 
 def test_text_goes_to_the_reliable_companion_and_bytes_to_the_lossy_channel() -> None:
@@ -250,11 +289,128 @@ def test_frames_before_the_partner_arrives_are_kept() -> None:
     ]
 
 
-@pytest.mark.parametrize("label", ["scope/a/b", "scope/a", "rigctl", "nope"])
-def test_a_label_outside_the_channel_set_is_closed(label: str) -> None:
+async def test_failed_peer_fences_cat_owner_before_drop(
+    monkeypatch: pytest.MonkeyPatch, virtual_clock: VirtualClock
+) -> None:
+    handlers: dict[str, Callable[..., Any]] = {}
+    pc = Mock(
+        connectionState="connected",
+        localDescription=SimpleNamespace(sdp="answer", type="answer"),
+        setRemoteDescription=AsyncMock(),
+        createAnswer=AsyncMock(),
+        setLocalDescription=AsyncMock(),
+        close=AsyncMock(),
+    )
+    pc.on.side_effect = lambda event: (
+        lambda handler: handlers.setdefault(event, handler)
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "aiortc",
+        SimpleNamespace(
+            RTCConfiguration=SimpleNamespace,
+            RTCIceServer=SimpleNamespace,
+            RTCPeerConnection=lambda _config: pc,
+            RTCSessionDescription=SimpleNamespace,
+        ),
+    )
+    monkeypatch.setattr(webrtc_session, "webrtc_available", lambda: True)
+
+    web = WebServer(config=WebConfig(webrtc_enabled=True, radio_model="IC-7610"))
+    manager = web._webrtc_session_manager()  # noqa: SLF001
+    controller = web._controller  # noqa: SLF001
+    monkeypatch.setattr(controller, "_clock", virtual_clock)
+    tx = Mock(spec=ManagedTxAuthority)
+    tx.tx_holder_nowait.return_value = None
+    monkeypatch.setattr(web, "_managed_tx_authority", lambda: tx)
+
+    async def disconnect(owner: str) -> ManagedTxOutcome:
+        assert tx.tx_holder_nowait() == owner
+        tx.tx_holder_nowait.return_value = None
+        return ManagedTxOutcome.ACCEPTED
+
+    tx.owner_disconnect.side_effect = disconnect
+
+    def open_cat(reader: Any, writer: Any, owner: str) -> asyncio.Task[None]:
+        async def serve() -> None:
+            assert await reader.readline() == b"T 1\n"
+            tx.tx_holder_nowait.return_value = owner
+            writer.write(b"RPRT 0\n")
+            await writer.drain()
+            await reader.readline()
+
+        return asyncio.create_task(serve())
+
+    web.attach_rigctl_channel(open_cat)
+    drop = AsyncMock(wraps=manager._drop)  # noqa: SLF001
+    monkeypatch.setattr(manager, "_drop", drop)
+    end_session = controller._end_session  # noqa: SLF001
+    fenced: list[tuple[str, int, list[str]]] = []
+
+    def record_fence(owner: str) -> None:
+        fenced.append((owner, drop.await_count, manager.active_session_ids))
+        end_session(owner)
+
+    monkeypatch.setattr(controller, "_end_session", record_fence)
+    try:
+        answer = await manager.negotiate("offer", "offer")
+        key = controller.acquire("pro")["controller_key"]
+        assert isinstance(key, str)
+        owner = controller.credential(key).tx_owner
+        assert owner is not None
+
+        control, cat = _FakeChannel("control"), _FakeChannel("rigctl")
+        handlers["datachannel"](control)
+        control.deliver(
+            ClientChannelParams(
+                controller_key=key, controller_role="primary", state_delta=2
+            ).to_attach_frame()
+        )
+        await virtual_clock.elapse(0)
+        assert control.sent and json.loads(control.sent[0])["type"] == "hello"
+        assert controller.is_session_owner(owner)
+        handlers["datachannel"](cat)
+        cat.deliver(
+            ClientChannelParams(
+                controller_key=key, controller_role="auxiliary", rigctl_version=1
+            ).to_attach_frame()
+        )
+        await virtual_clock.elapse(0)
+        assert cat.sent == [ChannelAttachedAck("rigctl").encode()]
+        cat.deliver("T 1\n")
+        await virtual_clock.elapse(0)
+        assert cat.sent[-1] == "RPRT 0\n"
+        assert tx.tx_holder_nowait() == owner
+        tx.owner_disconnect.assert_not_awaited()
+
+        pc.connectionState = "failed"
+        failed = asyncio.create_task(handlers["connectionstatechange"]())
+        await virtual_clock.elapse(0)
+        assert failed.done()
+        await failed
+
+        assert fenced == [(owner, 1, [answer["sessionId"]])]
+        tx.owner_disconnect.assert_awaited_once_with(owner)
+        assert tx.tx_holder_nowait() is None
+        assert (control.readyState, cat.readyState) == ("closed", "closed")
+        assert manager.active_session_ids == []
+        pc.close.assert_awaited_once()
+    finally:
+        await manager.close_all()
+        controller.revoke()
+        await controller.settle()
+
+
+@pytest.mark.parametrize(
+    ("label", "max_packet_lifetime"),
+    [("scope/a/b", None), ("scope/a", None), ("rigctl", 100), ("nope", None)],
+)
+def test_a_disallowed_channel_is_closed(
+    label: str, max_packet_lifetime: int | None
+) -> None:
     async def _run() -> None:
         manager, session, served = _answerer()
-        channel = _FakeChannel(label)
+        channel = _FakeChannel(label, maxPacketLifeTime=max_packet_lifetime)
         manager._dispatch_channel("sid", session, channel)
         assert channel.readyState == "closed"
         assert served == [] and session.unpaired == {}

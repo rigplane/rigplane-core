@@ -17,36 +17,64 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
 from _perf_helpers import fast_connect
 from test_web_server import (
     _close_ws,
+    _http_get,
     _ws_connect,
     _ws_recv_frame,
     _ws_send_text,
     _ws_skip_handshake,
 )
+from test_webrtc_split_channel import _FakeChannel
 from testkit.ic7610_fakes import ic7610_lan_fake
 
 from rigplane.radio import IcomRadio
-from rigplane.rigctld.contract import RigctldConfig
+from rigplane.rigctld import protocol as rigctld_protocol
+from rigplane.rigctld.contract import (
+    HamlibError,
+    RigctldCommand,
+    RigctldConfig,
+    RigctldResponse,
+)
 from rigplane.rigctld.server import RigctldServer
 from rigplane.runtime.controller_authority import ControllerAuthority
+from rigplane.runtime.managed_tx_authority import (
+    ManagedTxAuthority,
+    ManagedTxSubmission,
+)
 from rigplane.runtime.managed_tx_composition import (
     ManagedTxComposition,
     install_managed_tx_composition,
 )
 from rigplane.runtime.managed_tx_config import ManagedTxTotConfigStore
-from rigplane.runtime.managed_tx_state import ManagedTxIntentKind
-from rigplane.testing.timing import await_until
+from rigplane.runtime.managed_tx_state import (
+    ManagedTxIntentKind,
+    ManagedTxOutcome,
+    ManagedTxState,
+    ManagedTxTransition,
+)
+from rigplane.testing.timing import VirtualClock, await_until
 from rigplane.web import server as server_module
 from rigplane.web.api_channel import api_channel_golden_documents_from_json
-from rigplane.web.channel_attach import ClientChannelParams, data_channels_for
+from rigplane.web.channel_attach import (
+    RIGCTL_MAX_FRAME_BYTES,
+    ChannelAttachedAck,
+    ClientChannelParams,
+    RigctlAttachErrorV1,
+    data_channels_for,
+    decode_rigctl_attach_result,
+)
+from rigplane.web.handlers import rigctl
 from rigplane.web.protocol import (
     AUDIO_CODEC_PCM16,
     AUDIO_HEADER_SIZE,
@@ -54,6 +82,7 @@ from rigplane.web.protocol import (
     encode_json,
 )
 from rigplane.web.server import WebConfig, WebServer
+from rigplane.web.transport import webrtc, webrtc_session
 from rigplane.web.transport.webrtc import webrtc_available
 from rigplane.web.transport.webrtc_contract import (
     WebRtcAnswer,
@@ -61,6 +90,7 @@ from rigplane.web.transport.webrtc_contract import (
     WebRtcCloseResult,
     WebRtcOffer,
     WebRtcRequestError,
+    WebRtcTransportStatus,
 )
 from rigplane.web.web_startup import (
     attach_managed_tx_composition,
@@ -224,10 +254,11 @@ class _DcControlClient:
         # The answerer's session id, set by ``connect_via_http``.
         self.session_id: str | None = None
 
-    async def _prepare_pc(self) -> None:
-        from aiortc import RTCPeerConnection
+    async def _prepare_pc(self, *, host_only: bool = False) -> None:
+        from aiortc import RTCConfiguration, RTCPeerConnection
 
-        self._pc = RTCPeerConnection()
+        configuration = RTCConfiguration(iceServers=[]) if host_only else None
+        self._pc = RTCPeerConnection(configuration)
         self._channel = self._pc.createDataChannel("control", ordered=True)
 
         @self._channel.on("message")  # type: ignore[misc, no-untyped-call]
@@ -258,7 +289,7 @@ class _DcControlClient:
             description="data channel open",
         )
 
-    async def connect_via_http(self, port: int) -> None:
+    async def connect_via_http(self, port: int, *, host_only: bool = False) -> None:
         """Signal the offer through the public HTTP endpoint (browser path).
 
         POSTs the SDP offer to ``/api/v1/transport/webrtc/offer`` instead
@@ -266,7 +297,7 @@ class _DcControlClient:
         """
         from aiortc import RTCSessionDescription
 
-        await self._prepare_pc()
+        await self._prepare_pc(host_only=host_only)
         assert self._pc is not None and self._channel is not None
         offer = await self._pc.createOffer()
         await self._pc.setLocalDescription(offer)
@@ -1780,6 +1811,659 @@ async def test_closed_channel_label_can_be_recreated_on_the_same_peer(
 # MOR-4498: closing ONE data channel closes only that channel — never the
 # peer connection, whose single owner is the WebRtcSessionManager.
 # ---------------------------------------------------------------------------
+
+
+@_webrtc
+async def test_rigctl_data_channel_reads_simulator_frequency(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A Tower-style peer should get a CAT reply on its own controller grant."""
+    stack = await _stand_up_stack(tmp_path)
+    peer = _DcControlClient()
+    caplog.set_level("INFO", logger="rigplane.web.transport.webrtc_session")
+    try:
+        await peer.connect_via_http(stack.web.port, host_only=True)
+        key = await _acquire_session(stack.web.port)
+        await peer.attach(key)
+
+        # Spell the label on the wire so this reaches today's answerer even
+        # though the production offerer's channel table has no rigctl entry.
+        channel = peer._pc.createDataChannel("rigctl", ordered=True)  # noqa: SLF001
+        frames: list[str | bytes] = []
+        channel.on("message", frames.append)
+
+        def send_attach() -> None:
+            channel.send(
+                json.dumps(
+                    {
+                        "type": "attach",
+                        "v": 1,
+                        "controller_key": key,
+                        "role": "auxiliary",
+                    }
+                )
+            )
+
+        channel.on("open", send_attach)
+
+        async def next_frame() -> str | bytes | None:
+            await await_until(
+                lambda: bool(frames) or channel.readyState == "closed",
+                timeout=5.0,
+                description="rigctl frame or channel close",
+            )
+            return frames.pop(0) if frames else None
+
+        ack = await next_frame()
+        reply = None
+        if isinstance(ack, str) and json.loads(ack) == {
+            "type": "attached",
+            "v": 1,
+            "channel": "rigctl",
+        }:
+            channel.send("f\n")
+            reply = await next_frame()
+
+        await peer.heartbeat()
+        assert not stack.sim.ptt_on and not stack.sim.ptt_transitions
+        unknown_label = "WebRTC: closing unknown data channel 'rigctl'"
+        reason = next(
+            (message for message in caplog.messages if message == unknown_label),
+            channel.readyState,
+        )
+        # This assertion flips from RED (unknown-label close, no reply) to
+        # GREEN when the carrier attaches and returns the simulator's frequency.
+        assert reply == "14074000\n", (
+            f"rigctl attach={ack!r}, reply={reply!r}: {reason}"
+        )
+    finally:
+        await peer.close()
+        await _tear_down_stack(stack)
+
+
+# MOR-4691 v1 wire fixtures, shared with the Pro offerer. JSON spacing and
+# member order are incidental. The KEY is a fixture, never a live grant.
+RIGCTL_ATTACH_V1 = '{"type":"attach","v":1,"controller_key":"KEY","role":"auxiliary"}'
+RIGCTL_ATTACHED_V1 = '{"type":"attached","v":1,"channel":"rigctl"}'
+RIGCTL_ATTACH_ERROR_V1 = (
+    '{"type":"attach_error","v":1,"channel":"rigctl","code":"rigctl_busy"}'
+)
+
+
+def test_rigctl_attach_wire_v1() -> None:
+    params = ClientChannelParams("KEY", "auxiliary", state_delta=2, rigctl_version=1)
+    ack = ChannelAttachedAck("rigctl")
+    refused = RigctlAttachErrorV1("rigctl_busy")
+    assert (
+        ClientChannelParams.from_rigctl_attach_frame(RIGCTL_ATTACH_V1.encode())
+        == params
+    )
+    assert decode_rigctl_attach_result(RIGCTL_ATTACHED_V1) == ack
+    assert decode_rigctl_attach_result(RIGCTL_ATTACH_ERROR_V1) == refused
+    assert json.loads(params.to_attach_frame()) == json.loads(RIGCTL_ATTACH_V1)
+    assert json.loads(ack.encode()) == json.loads(RIGCTL_ATTACHED_V1)
+    assert json.loads(refused.encode()) == json.loads(RIGCTL_ATTACH_ERROR_V1)
+    with pytest.raises(ValueError, match="int 'v'"):
+        ClientChannelParams.from_rigctl_attach_frame(
+            RIGCTL_ATTACH_V1.replace('"v":1', '"v":true').encode()
+        )
+
+
+def test_rigctl_wire_receivers_skip_unknown_kinds_and_keep_unknown_enum_values() -> (
+    None
+):
+    future = '{"type":"future_notice","checked":false}'
+    assert ClientChannelParams.from_rigctl_attach_frame(future.encode()) is None
+    assert decode_rigctl_attach_result(future) is None
+    params = ClientChannelParams.from_rigctl_attach_frame(
+        RIGCTL_ATTACH_V1.replace("auxiliary", "future_role").encode()
+    )
+    assert params is not None and params.controller_role == "future_role"
+    result = decode_rigctl_attach_result(
+        RIGCTL_ATTACH_ERROR_V1.replace("rigctl_busy", "future_code")
+    )
+    assert isinstance(result, RigctlAttachErrorV1) and result.code == "future_code"
+    with pytest.raises(ValueError, match="invalid outbound"):
+        params.to_attach_frame()
+    with pytest.raises(ValueError, match="unsupported rigctl attach error"):
+        result.encode()
+    status = WebRtcTransportStatus.from_json(
+        {"available": True, "enabled": True, "rigctl_versions": [99, 1]}
+    )
+    assert status.rigctl_versions == (99, 1)
+    assert status.select_rigctl_version() == 1
+
+
+class _DcRigctlClient:
+    def __init__(self, peer: _DcControlClient) -> None:
+        self.channel = peer._pc.createDataChannel("rigctl", ordered=True)  # noqa: SLF001
+        self.frames: asyncio.Queue[str] = asyncio.Queue()
+        self.channel.on("message", self.frames.put_nowait)
+
+    async def attach(self, key: str, *, version: int = 1) -> object:
+        await await_until(
+            lambda: self.channel.readyState == "open", timeout=5, description="CAT open"
+        )
+        self.channel.send('{"type":"future_notice"}')
+        self.channel.send(
+            json.dumps(
+                {**json.loads(RIGCTL_ATTACH_V1), "controller_key": key, "v": version}
+            )
+        )
+        return decode_rigctl_attach_result(await self.reply())
+
+    async def reply(self) -> str:
+        return await asyncio.wait_for(self.frames.get(), 5)
+
+    async def key(self) -> None:
+        self.channel.send("T 1\n")
+        assert await self.reply() == "RPRT 0\n"
+
+
+@_webrtc
+async def test_rigctl_whole_peer_loss_uses_controller_owner_disconnect(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stack = await _stand_up_stack(tmp_path)
+    peer = _DcControlClient()
+    retired: list[str] = []
+
+    async def record_cat_retirement(owner: str) -> None:
+        # Isolate controller-session release from the CAT-only handback.
+        retired.append(owner)
+
+    monkeypatch.setattr(stack.rigctld, "_release_session_tx", record_cat_retirement)
+    try:
+        await peer.connect_via_http(stack.web.port, host_only=True)
+        key = await _acquire_session(stack.web.port)
+        await peer.attach(key)
+        cat = _DcRigctlClient(peer)
+        assert await cat.attach(key) == ChannelAttachedAck("rigctl")
+        await cat.key()
+        await await_until(lambda: stack.sim.ptt_on, timeout=5, description="fake keyed")
+        owner = stack.composition.authority.tx_holder_nowait()
+        assert owner is not None
+        await peer.heartbeat()
+        await peer._pc.close()  # noqa: SLF001 — lose SCTP and all its channels
+        await await_until(
+            lambda: not stack.sim.ptt_on, timeout=3, description="peer-loss RX"
+        )
+        assert not stack.web._controller.is_session_owner(owner)  # noqa: SLF001
+        await await_until(
+            lambda: retired == [owner], timeout=3, description="CAT retired"
+        )
+    finally:
+        await peer.close()
+        await _tear_down_stack(stack)
+
+
+@_webrtc
+@pytest.mark.parametrize("source", ["cat", "control", "pending_unkey"])
+async def test_rigctl_only_close_releases_cat_hold_and_keeps_primary(
+    tmp_path: Path, source: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stack = await _stand_up_stack(tmp_path)
+    peer = _DcControlClient()
+    try:
+        await peer.connect_via_http(stack.web.port, host_only=True)
+        key = await _acquire_session(stack.web.port)
+        await peer.attach(key)
+        cat = _DcRigctlClient(peer)
+        assert await cat.attach(key) == ChannelAttachedAck("rigctl")
+        if source == "control":
+            assert (await peer.command("key", "ptt_on"))["ok"] is True
+            cat.channel.send("f\r\n")
+            assert await cat.reply() == "14074000\n"
+        else:
+            await cat.key()
+        await await_until(lambda: stack.sim.ptt_on, timeout=5, description="fake keyed")
+        if source == "pending_unkey":
+            started = asyncio.Event()
+
+            def hold_submission(
+                on: bool, *_args: Any, **_kwargs: Any
+            ) -> asyncio.Task[bool]:
+                assert on is False
+                started.set()
+                return asyncio.create_task(asyncio.Event().wait())
+
+            monkeypatch.setattr(
+                stack.composition.authority, "start_ptt_submission", hold_submission
+            )
+            cat.channel.send("T 0\n")
+            await asyncio.wait_for(started.wait(), 3)
+        cat.channel.close()
+        await await_until(
+            lambda: _registered(stack, "rigctl") == 0,
+            timeout=3,
+            description="CAT retired",
+        )
+        assert stack.sim.ptt_on is (source == "control")
+        await peer.heartbeat()
+        if source == "control":
+            assert (await peer.command("unkey", "ptt_off"))["ok"] is True
+    finally:
+        await peer.close()
+        await _tear_down_stack(stack)
+
+
+@_webrtc
+@pytest.mark.parametrize("bad_frame", [b"f\n", "f"])
+async def test_rigctl_framing_closes_only_cat_and_releases_its_hold(
+    tmp_path: Path, bad_frame: str | bytes
+) -> None:
+    stack = await _stand_up_stack(tmp_path)
+    peer = _DcControlClient()
+    try:
+        await peer.connect_via_http(stack.web.port, host_only=True)
+        key = await _acquire_session(stack.web.port)
+        await peer.attach(key)
+        cat = _DcRigctlClient(peer)
+        assert await cat.attach(key) == ChannelAttachedAck("rigctl")
+        await cat.key()
+        await await_until(lambda: stack.sim.ptt_on, timeout=5, description="fake keyed")
+        cat.channel.send(bad_frame)
+        await _channel_closed(cat.channel, timeout=3)
+        await await_until(
+            lambda: not stack.sim.ptt_on, timeout=3, description="CAT-loss RX"
+        )
+        await peer.heartbeat()
+        replacement = _DcRigctlClient(peer)
+        assert await replacement.attach(key) == ChannelAttachedAck("rigctl")
+    finally:
+        await peer.close()
+        await _tear_down_stack(stack)
+
+
+class _BufferedCatChannel(_FakeChannel):
+    bufferedAmount = 0
+    bufferedAmountLowThreshold = 0
+    track_buffered_amount = False
+
+    def send(self, data: str | bytes) -> None:
+        super().send(data)
+        if self.track_buffered_amount:
+            self.bufferedAmount += len(data.encode() if isinstance(data, str) else data)
+
+    def drain(self) -> None:
+        self.bufferedAmount = 0
+        for listener in self._listeners.get("bufferedamountlow", []):
+            listener()
+
+
+@dataclass
+class _CatLimitPath:
+    clock: VirtualClock
+    cat: _BufferedCatChannel
+    control: _FakeChannel
+    attach: str
+    tx: Any
+    owner: str
+    server: RigctldServer
+    commands: asyncio.Event
+    admit_unkey: asyncio.Event
+    reply: str = "14074000\n"
+
+    async def key_cat(self) -> None:
+        self.cat.deliver(self.attach)
+        await self.clock.elapse(0)
+        assert len(self.cat.sent) == 1
+        assert json.loads(self.cat.sent[0]) == json.loads(RIGCTL_ATTACHED_V1)
+        self.cat.deliver("T 1\n")
+        await self.clock.elapse(0)
+        assert self.cat.sent[1:] == ["RPRT 0\n"]
+        assert self.tx.tx_holder_nowait() == self.owner
+
+    async def key_control(self) -> None:
+        self.control.deliver('{"type":"cmd","id":"key","name":"ptt_on"}')
+        await self.clock.elapse(0)
+        responses = [json.loads(frame) for frame in self.control.sent]
+        assert any(frame.get("id") == "key" and frame["ok"] for frame in responses)
+        assert self.tx.tx_holder_nowait() == self.owner
+
+    async def assert_control_works(self) -> None:
+        self.control.sent.clear()
+        self.control.deliver('{"type":"ping"}')
+        await self.clock.elapse(0)
+        assert self.control.readyState == "open"
+        assert {"type": "pong"} in [json.loads(frame) for frame in self.control.sent]
+
+    async def assert_cat_retired(self) -> None:
+        await self.clock.elapse(0)
+        assert self.cat.readyState == "closed"
+        assert not self.server._client_tasks  # noqa: SLF001
+
+    async def assert_cat_handed_back(self) -> None:
+        await self.assert_cat_retired()
+        self.tx.owner_disconnect.assert_awaited_once_with(self.owner)
+        assert self.tx.tx_holder_nowait() is None
+        await self.assert_control_works()
+
+
+@pytest.fixture
+async def cat_limit_path(
+    monkeypatch: pytest.MonkeyPatch, virtual_clock: VirtualClock
+) -> AsyncIterator[_CatLimitPath]:
+    web = WebServer(config=WebConfig(webrtc_enabled=True, radio_model="IC-7610"))
+    controller = web._controller  # noqa: SLF001
+    monkeypatch.setattr(controller, "_clock", virtual_clock)
+    radio = SimpleNamespace(
+        connected=True, radio_ready=True, _controller_authority=controller
+    )
+    monkeypatch.setattr(web, "_radio", radio)
+    tx = Mock(spec=ManagedTxAuthority)
+    tx.tx_holder_nowait.return_value = None
+    monkeypatch.setattr(web, "_managed_tx_authority", lambda: tx)
+    monkeypatch.setattr(
+        web, "current_managed_tx_document", AsyncMock(return_value=None)
+    )
+
+    async def disconnect(owner: str) -> ManagedTxOutcome:
+        if tx.tx_holder_nowait() == owner:
+            tx.tx_holder_nowait.return_value = None
+        return ManagedTxOutcome.ACCEPTED
+
+    tx.owner_disconnect.side_effect = disconnect
+
+    admit_unkey = asyncio.Event()
+    admit_unkey.set()
+
+    async def submit(on: bool, owner: str) -> ManagedTxSubmission:
+        if not on:
+            await admit_unkey.wait()
+        if not on and tx.tx_holder_nowait() != owner:
+            outcome = ManagedTxOutcome.REJECTED
+        else:
+            tx.tx_holder_nowait.return_value = owner if on else None
+            outcome = ManagedTxOutcome.ACCEPTED
+        transition = ManagedTxTransition(ManagedTxState(), outcome)
+
+        async def settle() -> tuple[ManagedTxTransition, None]:
+            return transition, None
+
+        return ManagedTxSubmission(transition, asyncio.create_task(settle()))
+
+    def start_submission(
+        on: bool, owner: str, **_kwargs: Any
+    ) -> asyncio.Task[ManagedTxSubmission]:
+        return asyncio.create_task(submit(on, owner))
+
+    async def enqueue_control_key(
+        *, submission: asyncio.Task[ManagedTxSubmission], **_kwargs: Any
+    ) -> ManagedTxSubmission:
+        return await submission
+
+    tx.start_ptt_submission.side_effect = start_submission
+    monkeypatch.setattr(web, "enqueue_managed_positive_tx", enqueue_control_key)
+
+    async def execute(
+        cmd: RigctldCommand,
+        *,
+        ptt_submission: asyncio.Task[ManagedTxSubmission] | None = None,
+        **_kwargs: Any,
+    ) -> RigctldResponse:
+        if cmd.long_cmd == "set_ptt":
+            assert ptt_submission is not None
+            receipt = await ptt_submission
+            if receipt.outcome is ManagedTxOutcome.REJECTED:
+                return RigctldResponse(error=HamlibError.ERJCTED)
+        return RigctldResponse()
+
+    def format_response(
+        cmd: RigctldCommand, response: RigctldResponse, session: Any
+    ) -> bytes:
+        if cmd.long_cmd == "get_freq":
+            return path.reply.encode()
+        return rigctld_protocol.format_response(cmd, response, session)
+
+    server = RigctldServer(
+        Mock(spec=IcomRadio),
+        _protocol=SimpleNamespace(
+            parse_line=rigctld_protocol.parse_line,
+            format_response=format_response,
+            format_error=rigctld_protocol.format_error,
+        ),
+        _handler=SimpleNamespace(
+            execute=execute, release_session_tx=tx.owner_disconnect
+        ),
+        clock=virtual_clock,
+    )
+    queue = web.command_queue
+    generation = object()
+    queue.bind_connection_generation(lambda: generation)
+    monkeypatch.setattr(server, "_managed_tx_authority", tx)
+    monkeypatch.setattr(server, "_command_queue", queue)
+    monkeypatch.setattr(server, "_server", Mock(spec=asyncio.Server))
+    read_line = server._readline  # noqa: SLF001
+
+    async def gated_readline(reader: asyncio.StreamReader) -> bytes | None:
+        await path.commands.wait()
+        return await read_line(reader)
+
+    monkeypatch.setattr(server, "_readline", gated_readline)
+    web.attach_rigctl_channel(server.open_channel)
+    manager = web._webrtc_session_manager()  # noqa: SLF001
+    pc = Mock(connectionState="connected", close=AsyncMock())
+    peer = webrtc_session._Session(pc)  # noqa: SLF001
+    manager._sessions["peer"] = peer  # noqa: SLF001
+    key = controller.acquire("pro")["controller_key"]
+    assert isinstance(key, str)
+    owner = controller.credential(key).tx_owner
+    assert owner is not None
+    cat, control = _BufferedCatChannel("rigctl"), _FakeChannel("control")
+    attach = RIGCTL_ATTACH_V1.replace('"KEY"', json.dumps(key))
+    path = _CatLimitPath(
+        virtual_clock,
+        cat,
+        control,
+        attach,
+        tx,
+        owner,
+        server,
+        asyncio.Event(),
+        admit_unkey,
+    )
+    path.commands.set()
+
+    try:
+        manager._dispatch_channel("peer", peer, control)  # type: ignore[arg-type]  # noqa: SLF001
+        control.deliver(_attach_text("control", key))
+        await path.assert_control_works()
+        manager._dispatch_channel("peer", peer, cat)  # type: ignore[arg-type]  # noqa: SLF001
+        yield path
+    finally:
+        cat.close()
+        control.close()
+        path.commands.set()
+        path.admit_unkey.set()
+        await manager.close_all()
+        controller.revoke()
+        await controller.settle()
+        monkeypatch.setattr(server, "_server", None)
+        assert not server._client_tasks  # noqa: SLF001
+
+
+async def test_rigctl_redundant_unkey_preserves_later_control_key(
+    cat_limit_path: _CatLimitPath,
+) -> None:
+    path = cat_limit_path
+    await path.key_cat()
+    path.cat.deliver("T 0\n")
+    await path.clock.elapse(0)
+    assert path.cat.sent[-1] == "RPRT 0\n"
+    assert path.tx.tx_holder_nowait() is None
+    path.cat.deliver("T 0\n")
+    await path.clock.elapse(0)
+    assert path.cat.sent[-1] == "RPRT -9\n"
+
+    await path.key_control()
+    path.cat.close()
+    await path.assert_cat_retired()
+    path.tx.owner_disconnect.assert_not_awaited()
+    assert path.tx.tx_holder_nowait() == path.owner
+    await path.assert_control_works()
+
+
+async def test_rigctl_quit_waits_for_unkey_admission(
+    cat_limit_path: _CatLimitPath,
+) -> None:
+    path = cat_limit_path
+    await path.key_cat()
+    path.admit_unkey.clear()
+    path.cat.deliver("T 0\nq\n")
+    await path.clock.elapse(0)
+    assert path.cat.readyState == "open"
+    assert path.cat.sent[1:] == ["RPRT 0\n"]
+    assert path.tx.tx_holder_nowait() == path.owner
+
+    path.admit_unkey.set()
+    await path.assert_cat_retired()
+    assert path.cat.sent[1:] == ["RPRT 0\n", "RPRT 0\n"]
+    assert path.tx.tx_holder_nowait() is None
+    path.tx.owner_disconnect.assert_not_awaited()
+    await path.assert_control_works()
+
+
+async def test_rigctl_oversized_valid_batch_closes_cat(
+    cat_limit_path: _CatLimitPath,
+) -> None:
+    path = cat_limit_path
+    await path.key_cat()
+    line = "f" + " " * 510 + "\n"
+    lines_at_limit = RIGCTL_MAX_FRAME_BYTES // len(line)
+    path.cat.deliver(line * lines_at_limit)
+    await path.clock.elapse(0)
+    assert path.cat.sent[2:] == [path.reply] * lines_at_limit
+    path.cat.deliver(line * (lines_at_limit + 1))
+    await path.assert_cat_handed_back()
+
+
+@pytest.mark.parametrize("queued", [True, False], ids=["queued", "ack-blocked"])
+async def test_rigctl_rejects_cat_before_attach_result(
+    cat_limit_path: _CatLimitPath, queued: bool
+) -> None:
+    path = cat_limit_path
+    await path.key_control()
+    if not queued:
+        path.cat.bufferedAmount = RIGCTL_MAX_FRAME_BYTES + 1
+    path.cat.deliver(path.attach)
+    if not queued:
+        await path.clock.elapse(0)
+        assert path.cat.sent == []
+        assert path.cat.bufferedAmountLowThreshold == RIGCTL_MAX_FRAME_BYTES
+    path.cat.deliver("T 0\n")
+    await path.assert_cat_retired()
+    assert [decode_rigctl_attach_result(frame) for frame in path.cat.sent] == (
+        [RigctlAttachErrorV1("invalid_attach")] if queued else []
+    )
+    path.tx.owner_disconnect.assert_not_awaited()
+    assert path.tx.tx_holder_nowait() == path.owner
+    await path.assert_control_works()
+
+
+async def test_rigctl_served_frame_queue_overflow(
+    cat_limit_path: _CatLimitPath,
+) -> None:
+    path = cat_limit_path
+    await path.key_cat()
+    for _ in range(webrtc.MAX_FRAMES_BEFORE_SERVE):
+        path.cat.deliver("f\n")
+    assert path.cat.readyState == "open"
+    path.cat.deliver("f\n")
+    # The receive queue must close synchronously, before the command pump runs.
+    assert path.cat.readyState == "closed"
+    await path.assert_cat_handed_back()
+
+
+async def test_rigctl_command_queue_overflow(cat_limit_path: _CatLimitPath) -> None:
+    path = cat_limit_path
+    await path.key_cat()
+    path.commands.clear()
+    # Wake the already-parked read once, then park it before the test batch.
+    path.cat.deliver("f\n")
+    await path.clock.elapse(0)
+    assert path.cat.sent[-1] == path.reply
+    path.cat.deliver("f\n" * rigctl._MAX_QUEUED_LINES)  # noqa: SLF001
+    await path.clock.elapse(0)
+    assert path.cat.readyState == "open"
+    path.cat.deliver("f\n")
+    await path.assert_cat_handed_back()
+
+
+async def test_rigctl_reply_chunks_preserve_utf8(cat_limit_path: _CatLimitPath) -> None:
+    path = cat_limit_path
+    await path.key_cat()
+    first_chunk = "x" * (RIGCTL_MAX_FRAME_BYTES - 1)
+    path.reply = first_chunk + "é\n"
+    path.cat.track_buffered_amount = True
+    path.cat.bufferedAmount = RIGCTL_MAX_FRAME_BYTES
+    path.cat.deliver("f\n")
+    await path.clock.elapse(0)
+    assert path.cat.readyState == "open"
+    assert path.cat.sent[2:] == [first_chunk]
+    path.cat.drain()
+    await path.clock.elapse(0)
+    assert path.cat.sent[2:] == [first_chunk, "é\n"]
+    path.cat.close()
+    await path.assert_cat_handed_back()
+
+
+async def test_rigctl_reply_buffer_overflow(cat_limit_path: _CatLimitPath) -> None:
+    path = cat_limit_path
+    await path.key_cat()
+    path.reply = "x" * (4 * RIGCTL_MAX_FRAME_BYTES) + "\n"
+    path.cat.deliver("f\n")
+    await path.assert_cat_handed_back()
+    assert path.cat.sent[2:] == []
+
+
+async def test_rigctl_stalled_write_times_out(cat_limit_path: _CatLimitPath) -> None:
+    path = cat_limit_path
+    await path.key_cat()
+    path.cat.bufferedAmount = RIGCTL_MAX_FRAME_BYTES + 1
+    path.cat.deliver("f\n")
+    await path.clock.elapse(0.5)
+    assert path.cat.readyState == "open"
+    assert path.cat.sent[2:] == []
+    assert path.tx.tx_holder_nowait() == path.owner
+    await path.assert_control_works()
+    await path.clock.elapse(0.5)
+    await path.assert_cat_handed_back()
+    assert path.cat.sent[2:] == []
+
+
+@_webrtc
+async def test_rigctl_capability_and_attach_refusals(tmp_path: Path) -> None:
+    stack = await _stand_up_stack(tmp_path)
+    peer, other = _DcControlClient(), _DcControlClient()
+    try:
+        status, _, body = await _http_get(
+            "127.0.0.1", stack.web.port, "/api/v1/capabilities"
+        )
+        assert status == 200
+        assert json.loads(body)["webrtc"]["rigctl_versions"] == [1]
+        await peer.connect_via_http(stack.web.port, host_only=True)
+        await other.connect_via_http(stack.web.port, host_only=True)
+        key = await _acquire_session(stack.web.port)
+        await peer.attach(key)
+        assert await _DcRigctlClient(other).attach(key) == RigctlAttachErrorV1(
+            "controller_primary_required"
+        )
+        assert await _DcRigctlClient(peer).attach(
+            key, version=99
+        ) == RigctlAttachErrorV1("unsupported_version")
+        cat = _DcRigctlClient(peer)
+        assert await cat.attach(key) == ChannelAttachedAck("rigctl")
+        assert await _DcRigctlClient(peer).attach(key) == RigctlAttachErrorV1(
+            "rigctl_busy"
+        )
+        cat.channel.send("f\n")
+        assert await cat.reply() == "14074000\n"
+        assert not stack.sim.ptt_transitions
+    finally:
+        await other.close()
+        await peer.close()
+        await _tear_down_stack(stack)
 
 
 @_webrtc

@@ -527,7 +527,8 @@ async def test_webrtc_control_handler_receives_explicit_exact_authority(
     channel = SimpleNamespace(label="control", on=MagicMock())
 
     manager._dispatch_channel("test-session", session, channel)  # type: ignore[arg-type]  # noqa: SLF001
-    await session.tasks[0]
+    (task,) = session.tasks
+    await task
 
     if with_server:
         assert captured.get("managed_tx_authority") is authority
@@ -562,15 +563,18 @@ async def test_webrtc_peer_loss_releases_holder_after_sibling_channel_closes(
         owner = controller.credential(key).tx_owner
         assert owner is not None
         attach = ClientChannelParams(controller_key=key).to_attach_frame()
-        for channel in (holder_channel, sibling_channel):
-            manager._dispatch_channel(session_id, session, channel)  # type: ignore[arg-type]  # noqa: SLF001
-            channel.deliver(attach)
+        manager._dispatch_channel(session_id, session, holder_channel)  # type: ignore[arg-type]  # noqa: SLF001
+        (holder_task,) = session.tasks
+        holder_channel.deliver(attach)
+        manager._dispatch_channel(session_id, session, sibling_channel)  # type: ignore[arg-type]  # noqa: SLF001
+        (sibling_task,) = session.tasks - {holder_task}
+        sibling_channel.deliver(attach)
         await virtual_clock.elapse(0)
         assert len(controller._sessions[owner].channels) == 2  # noqa: SLF001
         await authority.submit_ptt(True, owner)
 
         sibling_channel.close()
-        await session.tasks[1]
+        await sibling_task
         assert holder_channel.readyState == "open"
         assert authority.intent == f"ptt:{owner}"
         assert authority.disconnect_calls == []
