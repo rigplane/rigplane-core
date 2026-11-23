@@ -25,6 +25,9 @@ Rules:
   report it rather than inventing a local copy or an adapter nobody else will
   call to route around the gap.
 - TDD: write or extend the test first whenever the spec allows it.
+- Drive anything that waits on time with `virtual_clock` and `clock.elapse`.
+- Use `wait_until` / `await_until` to wait for a real event.
+- Keep sleeps and wall-clock measurements out of tests. Required `quick` rejects new offenders.
 - Work only inside the worktree you were given; never touch the shared main
   checkout and never work on `main` directly.
 - Run only assigned focused development checks; report their exact results.

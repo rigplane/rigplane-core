@@ -573,6 +573,11 @@ new AsyncFunction('github', 'context', 'core', script)(github, context, core)
         self.assertIn("    timeout-minutes: 5\n", aggregator)
         self.assertIn("needs.classify.outputs.reuse != 'true'", aggregator)
         self.assertNotIn("actions/checkout", aggregator)
+        self.assertIn("CLASSIFY_RESULT: ${{ needs.classify.result }}", aggregator)
+        classifier = jobs["classify"]
+        ratchet = classifier.index("python3 .github/scripts/check-realtime-ratchet.py")
+        self.assertLess(ratchet, classifier.index("        id: reuse"))
+        self.assertIn('--base "$RATCHET_BASE_SHA" --head "$GITHUB_SHA"', classifier)
         for result in (
             "quick-frontend.result",
             "quick-frontend-e2e.result",

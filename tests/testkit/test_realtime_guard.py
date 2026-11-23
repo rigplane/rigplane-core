@@ -101,6 +101,24 @@ def test_a_keyword_delay_is_read_like_a_positional_one() -> None:
     assert facts["test_positive"].effects == {"asyncio.sleep"}
 
 
+def test_inline_realtime_marker_applies_to_the_call_only() -> None:
+    facts = _facts(
+        """
+        import asyncio
+        import time
+
+        async def test_marked():
+            time.sleep(1)  # real-time: waits for a real socket timeout
+            await asyncio.sleep(1)
+
+        def test_empty_reason():
+            time.sleep(1)  # real-time:
+        """
+    )
+    assert facts["test_marked"].violations() == {"asyncio.sleep"}
+    assert facts["test_empty_reason"].violations() == {"time.sleep"}
+
+
 def test_import_aliases_are_resolved() -> None:
     facts = _facts(
         """
