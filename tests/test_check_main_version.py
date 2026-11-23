@@ -219,6 +219,30 @@ def test_uv_lock_disagreement_fails(
     assert "uv.lock" in err
 
 
+def test_missing_uv_lock_cannot_decide(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repo = _build_repo(tmp_path, version="3.3.1.dev0")
+    (repo / "uv.lock").unlink()
+    code, _, err = _run(repo, capsys)
+    assert code == 2
+    assert "uv.lock" in err
+
+
+@pytest.mark.parametrize("version_line", ["", "version = 42\n"])
+def test_lock_project_version_missing_or_not_string_cannot_decide(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], version_line: str
+) -> None:
+    repo = _build_repo(tmp_path, version="3.3.1.dev0")
+    (repo / "uv.lock").write_text(
+        'version = 1\n\n[[package]]\nname = "rigplane"\n' + version_line,
+        encoding="utf-8",
+    )
+    code, _, err = _run(repo, capsys)
+    assert code == 2
+    assert "uv.lock" in err and "version" in err
+
+
 def test_no_tags_cannot_decide(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

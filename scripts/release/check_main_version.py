@@ -50,7 +50,7 @@ import re  # noqa: E402
 import subprocess  # noqa: E402
 import tomllib  # noqa: E402
 from pathlib import Path  # noqa: E402
-from typing import Iterable  # noqa: E402
+from typing import Iterable, NamedTuple  # noqa: E402
 
 _VERSION_RE = re.compile(
     r"^(\d+)\.(\d+)\.(\d+)(?:[-_.]?(a|alpha|b|beta|rc|dev)(\d+)?)?$"
@@ -98,40 +98,52 @@ def _git_tags(repo: Path) -> list[str]:
     return completed.stdout.split()
 
 
-def _read_versions(repo: Path) -> tuple[str, str | None]:
-    """The tree's pyproject version and the project's own uv.lock version.
+class ProjectMetadata(NamedTuple):
+    name: str
+    version: str
 
-    The lock version is None when there is no uv.lock; a lock without the
-    project's entry raises ValueError (fail closed).
-    """
+
+class LockMetadata(NamedTuple):
+    version: str
+
+
+def _read_versions(repo: Path) -> tuple[ProjectMetadata, LockMetadata]:
+    """Read the required project and lock metadata."""
     pyproject = tomllib.loads((repo / "pyproject.toml").read_text(encoding="utf-8"))
-    project = pyproject["project"]
-    version = project["version"]
-    if not isinstance(version, str):
-        raise ValueError(f"pyproject.toml version is not a string: {version!r}")
-    lock_path = repo / "uv.lock"
-    if not lock_path.exists():
-        return version, None
-    lock = tomllib.loads(lock_path.read_text(encoding="utf-8"))
-    for package in lock.get("package", []):
-        if package.get("name") == project["name"]:
-            return version, package.get("version")
-    raise ValueError(f"uv.lock has no {project['name']!r} entry")
+    raw_project = pyproject.get("project")
+    if not isinstance(raw_project, dict):
+        raise ValueError("pyproject.toml has no project table")
+    name, version = raw_project.get("name"), raw_project.get("version")
+    if not isinstance(name, str) or not isinstance(version, str):
+        raise ValueError("pyproject.toml project name and version must be strings")
+    project = ProjectMetadata(name, version)
+    lock = tomllib.loads((repo / "uv.lock").read_text(encoding="utf-8"))
+    packages = lock.get("package")
+    if not isinstance(packages, list):
+        raise ValueError("uv.lock has no package array")
+    for package in packages:
+        if isinstance(package, dict) and package.get("name") == project.name:
+            lock_version = package.get("version")
+            if not isinstance(lock_version, str):
+                raise ValueError("uv.lock project version must be a string")
+            return project, LockMetadata(lock_version)
+    raise ValueError(f"uv.lock has no {project.name!r} entry")
 
 
 def check(repo: Path) -> tuple[int, list[str]]:
     """Return (exit code, lines): 0 pass, 1 finding(s), 2 cannot decide."""
     try:
         newest = latest_release_tag(_git_tags(repo))
-        version, lock_version = _read_versions(repo)
-        tree_key = version_key(version)
+        project, lock = _read_versions(repo)
+        tree_key = version_key(project.version)
         tag_key = version_key(newest.removeprefix("v"))
     except (OSError, ValueError, KeyError, subprocess.SubprocessError) as exc:
         return 2, [f"cannot decide: {exc}"]
     lines = []
-    if lock_version is not None and lock_version != version:
+    version = project.version
+    if lock.version != version:
         lines.append(
-            f"uv.lock version {lock_version!r} != pyproject.toml version {version!r}"
+            f"uv.lock version {lock.version!r} != pyproject.toml version {version!r}"
         )
     if tree_key <= tag_key:
         lines.append(f"version {version} is not newer than latest release tag {newest}")
