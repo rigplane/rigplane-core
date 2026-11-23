@@ -33,16 +33,23 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from contextlib import suppress
 from typing import TYPE_CHECKING, Final
 
 from ...ws import WS_OP_BINARY, WS_OP_TEXT  # noqa: TID251
-from ..channel_attach import DataChannelSpec, data_channels_for  # noqa: TID251
+from ..channel_attach import (  # noqa: TID251
+    RIGCTL_MAX_FRAME_BYTES,
+    DataChannelSpec,
+    data_channels_for,
+)
 
 if TYPE_CHECKING:
     from aiortc import (  # type: ignore[import-not-found]
         RTCDataChannel,
         RTCPeerConnection,
     )
+
+    from .webrtc_contract import WebRtcTransportStatus  # noqa: TID251
 
 __all__ = [
     "WebRtcDataChannelConnection",
@@ -65,6 +72,7 @@ _CLOSE_SENTINEL: Final = object()
 #: client sends one attach and waits for the ack; more than this many
 #: unread frames ends the connection instead of growing the queue.
 MAX_FRAMES_BEFORE_SERVE: Final = 64
+_RIGCTL_SEND_TIMEOUT_S: Final = 1.0
 
 logger = logging.getLogger(__name__)
 
@@ -114,6 +122,10 @@ class WebRtcDataChannelConnection:
         self._pc = pc
         self._queue: asyncio.Queue[tuple[int, bytes] | object] = asyncio.Queue()
         self._closed = False
+        self._rigctl_attach_pending = False
+        self._rigctl_send_ready = asyncio.Event() if channel.label == "rigctl" else None
+        if self._rigctl_send_ready is not None:
+            channel.on("bufferedamountlow", self._rigctl_send_ready.set)
         # Until served, unread frames are bounded (MAX_FRAMES_BEFORE_SERVE).
         self.serving = False
         for source in self._channels():
@@ -125,16 +137,28 @@ class WebRtcDataChannelConnection:
         def _on_message(message: str | bytes) -> None:
             if self._closed:
                 return
-            if not self.serving and self._queue.qsize() >= MAX_FRAMES_BEFORE_SERVE:
+            rigctl = self._rigctl_send_ready is not None
+            if rigctl and (
+                self._rigctl_attach_pending or len(message) > RIGCTL_MAX_FRAME_BYTES
+            ):
+                self.abort()
+                return
+            if (
+                rigctl or not self.serving
+            ) and self._queue.qsize() >= MAX_FRAMES_BEFORE_SERVE:
                 logger.info(
-                    "WebRTC: %d frames before serve; closing", self._queue.qsize()
+                    "WebRTC: closing %r with a full receive queue", source.label
                 )
                 self.abort()
                 return
-            if isinstance(message, str):
-                self._queue.put_nowait((WS_OP_TEXT, message.encode("utf-8")))
-            else:
-                self._queue.put_nowait((WS_OP_BINARY, bytes(message)))
+            opcode = WS_OP_TEXT if isinstance(message, str) else WS_OP_BINARY
+            payload = (
+                message.encode("utf-8") if isinstance(message, str) else bytes(message)
+            )
+            if rigctl and len(payload) > RIGCTL_MAX_FRAME_BYTES:
+                self.abort()
+                return
+            self._queue.put_nowait((opcode, payload))
 
         def _on_close() -> None:
             self._mark_closed()
@@ -143,6 +167,11 @@ class WebRtcDataChannelConnection:
         # imperatively so mypy keeps the handler signatures typed.
         source.on("message", _on_message)  # type: ignore[no-untyped-call]
         source.on("close", _on_close)  # type: ignore[no-untyped-call]
+
+    def begin_rigctl_admission(self) -> bool:
+        """The offerer must wait for the attach result before sending CAT."""
+        self._rigctl_attach_pending = True
+        return self._queue.empty()
 
     def add_partner(self, partner: RTCDataChannel, *, partner_is_text: bool) -> None:
         """Complete a split pair on the answerer side.
@@ -166,6 +195,10 @@ class WebRtcDataChannelConnection:
     def _mark_closed(self) -> None:
         if not self._closed:
             self._closed = True
+            if self._rigctl_send_ready is not None:
+                self._rigctl_send_ready.set()
+                while not self._queue.empty():
+                    self._queue.get_nowait()
             self._queue.put_nowait(_CLOSE_SENTINEL)
 
     async def recv(self) -> tuple[int, bytes]:
@@ -177,14 +210,38 @@ class WebRtcDataChannelConnection:
         if self._closed and self._queue.empty():
             raise EOFError("data channel closed")
         item = await self._queue.get()
-        if item is _CLOSE_SENTINEL:
+        if item is _CLOSE_SENTINEL or (
+            self._closed and self._rigctl_send_ready is not None
+        ):
             raise EOFError("data channel closed")
         opcode, payload = item  # type: ignore[misc]
         return opcode, payload
 
     async def send_text(self, text: str) -> None:
         """Send a text message (on the reliable companion when split)."""
+        ready = self._rigctl_send_ready
+        if ready is not None:
+            if len(text.encode("utf-8")) > RIGCTL_MAX_FRAME_BYTES:
+                self.abort()
+                raise OSError("oversize rigctl reply")
+            try:
+                await self._drain_rigctl(ready, RIGCTL_MAX_FRAME_BYTES)
+            except TimeoutError as exc:
+                self.abort()
+                raise OSError("rigctl send buffer stalled") from exc
+            if not self.is_alive():
+                raise EOFError("rigctl data channel closed")
         self._text_channel.send(text)
+        self._rigctl_attach_pending = False
+
+    async def _drain_rigctl(
+        self, ready: asyncio.Event, limit: int, timeout: float = _RIGCTL_SEND_TIMEOUT_S
+    ) -> None:
+        self._channel.bufferedAmountLowThreshold = limit
+        async with asyncio.timeout(timeout):
+            while self._channel.readyState == "open" and self.buffered_bytes() > limit:
+                ready.clear()
+                await ready.wait()
 
     async def send_binary(self, data: bytes) -> None:
         """Send a binary message (on the lossy channel when split)."""
@@ -204,20 +261,18 @@ class WebRtcDataChannelConnection:
         WebSocket transport; WebRTC has no equivalent close frame.
         """
         self._mark_closed()
-        for source in self._channels():
-            source.close()
+        try:
+            ready = self._rigctl_send_ready
+            if ready is not None:
+                # Put the final attach refusal on SCTP before stream reset.
+                with suppress(TimeoutError):
+                    await self._drain_rigctl(ready, 0, 0.25)
+        finally:
+            for source in self._channels():
+                source.close()
 
     def abort(self) -> None:
-        """Synchronously mark the channel closed, for ``Connection`` parity.
-
-        WebRTC data channels have no TCP-drain equivalent to wedge on, so
-        there is nothing here to bound the way ``WebSocketConnection.abort``
-        bounds a stuck ``drain()`` (MOR-1429); this exists only so
-        ``WebRtcDataChannelConnection`` keeps satisfying the ``Connection``
-        protocol now that a bounded-close fallback caller may call
-        ``.abort()`` on any ``Connection``. ``close()`` remains the normal
-        awaited teardown of this channel.
-        """
+        """Synchronously close just this connection, without waiting for sends."""
         self._mark_closed()
         for source in self._channels():
             try:
@@ -259,15 +314,25 @@ def _create_channel(pc: RTCPeerConnection, spec: DataChannelSpec) -> RTCDataChan
     )
 
 
-def add_data_channel(pc: RTCPeerConnection, kind: str) -> WebRtcDataChannelConnection:
+def add_data_channel(
+    pc: RTCPeerConnection,
+    kind: str,
+    *,
+    transport_status: WebRtcTransportStatus | None = None,
+) -> WebRtcDataChannelConnection:
     """Create the channel(s) of one kind on ``pc`` (the offerer side).
 
     ``control``/``api`` get their one ordered/reliable channel; a split
     kind (``scope``/``audio``) gets its lossy binary channel plus its
     reliable text companion, merged into one connection. Raises
     :class:`WebRtcUnavailableError` if ``aiortc`` is not installed and
-    :class:`ValueError` for a kind outside the channel set.
+    :class:`ValueError` for a kind outside the channel set. Rigctl requires
+    capabilities from this peer and opens after the primary control attach.
     """
+    if kind == "rigctl" and (
+        transport_status is None or transport_status.select_rigctl_version() is None
+    ):
+        raise WebRtcUnavailableError("peer has no compatible rigctl version")
     if not webrtc_available():
         raise WebRtcUnavailableError(_INSTALL_HINT)
     specs = {spec.carries: spec for spec in data_channels_for(kind)}

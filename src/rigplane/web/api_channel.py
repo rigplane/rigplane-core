@@ -281,6 +281,7 @@ def _payload_contract(
     carried_by: str,
     *,
     constant: tuple[str, str, str] | None = None,
+    exclude: frozenset[str] = frozenset(),
     optional: frozenset[str] = frozenset(),
     required: frozenset[str] = frozenset(),
     rename: Mapping[str, str] | None = None,
@@ -289,7 +290,7 @@ def _payload_contract(
 ) -> ApiWirePayload:
     """Derive one payload contract from the producer that owns it:
     names, order, types and required-ness come from the dataclass and
-    its defaults; notes, a leading constant, renames and the
+    its defaults; notes, a leading constant, exclusions, renames and the
     optional/required escapes (where the JSON shape differs from the
     dataclass) are declared by the caller. The wire-json tests conform
     the result to the real parsers and encoders.
@@ -298,6 +299,8 @@ def _payload_contract(
         [(constant[0], constant[1], True, constant[2])] if constant else []
     )
     for field in fields(producer):
+        if field.name in exclude:
+            continue
         name = (rename or {}).get(field.name, field.name)
         defaulted = field.default is not MISSING or field.default_factory is not MISSING
         rows.append(
@@ -346,6 +349,8 @@ def _api_channel_payload_contracts() -> dict[str, ApiWirePayload]:
         ATTACH_ACK_VERSION,
         ChannelAttachedAck,
         ClientChannelParams,
+        RigctlAttachErrorCode,
+        RigctlAttachErrorV1,
     )
     from .handlers.control import ControlHello  # noqa: TID251
 
@@ -378,6 +383,7 @@ def _api_channel_payload_contracts() -> dict[str, ApiWirePayload]:
             ClientChannelParams,
             "first text frame on control, api, scope-text and audio-text",
             constant=("type", '"attach"', "the attach discriminator"),
+            exclude=frozenset({"rigctl_version"}),
             rename={"controller_role": "role"},
             optional=frozenset({"controller_key"}),
             notes={
@@ -389,14 +395,34 @@ def _api_channel_payload_contracts() -> dict[str, ApiWirePayload]:
         ),
         "attach_ack": _payload_contract(
             ChannelAttachedAck,
-            "first server text frame on a scope-text/audio-text channel",
+            "first server text frame on scope-text, audio-text or rigctl",
             constant=("type", '"attached"', "the ack discriminator"),
             rename={"version": "v"},
             required=frozenset({"channel", "version"}),
             notes={
-                "channel": 'the acked kind: "scope" | "audio"',
-                "version": f"ack version, currently {ATTACH_ACK_VERSION}",
+                "channel": 'the acked kind: "scope" | "audio" | "rigctl"',
+                "v": f"ack version, currently {ATTACH_ACK_VERSION}",
             },
+        ),
+        "rigctl_attach_frame": ApiWirePayload(
+            1,
+            "first client attach frame on rigctl",
+            (
+                ("type", '"attach"', True, "the attach discriminator"),
+                ("controller_key", "string", True, "non-empty session key"),
+                ("role", "string", False, '"auxiliary" when absent'),
+                ("state_delta", "integer", False, "2 when absent"),
+                ("v", "integer", True, "requested rigctl protocol version"),
+            ),
+        ),
+        "rigctl_attach_error": _payload_contract(
+            RigctlAttachErrorV1,
+            "first server text frame on rigctl when attach is refused",
+            constant=("type", '"attach_error"', "the refusal discriminator"),
+            rename={"version": "v"},
+            required=frozenset({"channel", "version"}),
+            notes={"code": "receivers preserve unknown codes"},
+            codes=get_args(RigctlAttachErrorCode),
         ),
         "control_hello": _typed_dict_payload_contract(
             ControlHello,
@@ -468,7 +494,9 @@ def api_channel_wire_definition() -> ApiWireDefinition:
             send_low_water_bytes=SEND_LOW_WATER_BYTES,
         ),
         payloads=_api_channel_payload_contracts(),
-        data_channels=DATA_CHANNELS,
+        # This contract is consumed by the browser transport, whose channel
+        # set excludes CAT. CAT offerers use the public Core attach codecs.
+        data_channels=tuple(spec for spec in DATA_CHANNELS if spec.kind != "rigctl"),
     )
 
 
@@ -1395,16 +1423,25 @@ def _golden_attach_document(label: str) -> GoldenTextDocument:
     """The attach frame for one channel kind (client -> server); a split
     kind's attach rides its reliable ``*-text`` companion."""
     keyless = label == "api"
-    decoded = {
-        "type": "attach",
-        "controller_key": None if keyless else _GOLDEN_KEY_PLACEHOLDER,
-        "state_delta": 2,
-        "role": "primary",
-    }
+    if label == "rigctl":
+        from .channel_attach import ClientChannelParams  # noqa: TID251
+
+        text = ClientChannelParams(
+            _GOLDEN_KEY_PLACEHOLDER, "auxiliary", state_delta=2, rigctl_version=1
+        ).to_attach_frame()
+        decoded = json.loads(text)
+    else:
+        decoded = {
+            "type": "attach",
+            "controller_key": None if keyless else _GOLDEN_KEY_PLACEHOLDER,
+            "state_delta": 2,
+            "role": "primary",
+        }
+        text = json.dumps(decoded)
     return GoldenTextDocument(
         direction="client->server",
         summary=f'the "{label}" attach frame (the first text frame)',
-        text=json.dumps(decoded),
+        text=text,
         decoded=decoded,
         template=None
         if keyless
@@ -1418,7 +1455,7 @@ def _golden_attach_document(label: str) -> GoldenTextDocument:
 
 
 def _golden_ack_document(kind: str) -> GoldenTextDocument:
-    """The attach ack for one split kind (server -> client)."""
+    """The attach ack for one channel kind (server -> client)."""
     from .channel_attach import ChannelAttachedAck  # noqa: TID251
 
     text = ChannelAttachedAck(kind).encode()
@@ -1510,12 +1547,13 @@ def _request_head(
 
 
 async def api_channel_golden_documents() -> GoldenDocuments:
-    """Every concrete frame sequence the browser must handle, from the
-    server's own encoders; committed to ``api-channel-golden.json``,
+    """Concrete frame sequences from the server's own encoders,
+    committed to ``api-channel-golden.json``,
     replayed for real by ``tested_by``. Regenerate (repo root):
 
         uv run python -c "import asyncio, dataclasses, json; from rigplane.web.api_channel import api_channel_golden_documents as d; print(json.dumps(dataclasses.asdict(asyncio.run(d()))))" > frontend/src/lib/transport/api-channel-golden.json
     """
+    from .channel_attach import RigctlAttachErrorV1  # noqa: TID251
     from .server import _send_response  # noqa: TID251
 
     gf = _golden_frame
@@ -1606,13 +1644,22 @@ async def api_channel_golden_documents() -> GoldenDocuments:
     }
     documents: dict[str, GoldenDocument] = {
         f"attach_{label}": _golden_attach_document(label)
-        for label in ("control", "scope", "audio", "api")
+        for label in ("control", "scope", "audio", "api", "rigctl")
     }
     documents.update(
         {
             f"attach_ack_{kind}": _golden_ack_document(kind)
-            for kind in ("scope", "audio")
+            for kind in ("scope", "audio", "rigctl")
         }
+    )
+    rigctl_busy = RigctlAttachErrorV1("rigctl_busy").encode()
+    documents["attach_error_rigctl_busy"] = GoldenTextDocument(
+        direction="server->client",
+        summary="the rigctl attach refusal while a rigctl channel is active",
+        text=rigctl_busy,
+        decoded=json.loads(rigctl_busy),
+        template=None,
+        outcome="the server refuses the new rigctl channel",
     )
     documents["audio_tx_format_opus"] = _golden_audio_tx_format_document(
         opus_decode=True, sample_rate=48000

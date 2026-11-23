@@ -15,6 +15,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, Literal, Self, cast, get_args
 
+from ..channel_attach import RIGCTL_VERSIONS  # noqa: TID251
 from .ice_gathering import IceServer, parse_ice_servers  # noqa: TID251
 
 __all__ = [
@@ -270,9 +271,29 @@ class WebRtcTransportStatus:
 
     available: bool
     enabled: bool
+    rigctl_versions: tuple[int, ...] = ()
 
-    def to_json(self) -> dict[str, bool]:
-        return {"available": self.available, "enabled": self.enabled}
+    def to_json(self) -> dict[str, bool | list[int]]:
+        payload: dict[str, bool | list[int]] = {
+            "available": self.available,
+            "enabled": self.enabled,
+        }
+        if self.rigctl_versions:
+            if any(
+                type(v) is not int or v not in RIGCTL_VERSIONS
+                for v in self.rigctl_versions
+            ):
+                raise ValueError("unsupported outbound rigctl version")
+            payload["rigctl_versions"] = list(self.rigctl_versions)
+        return payload
+
+    def select_rigctl_version(self) -> int | None:
+        """Version an offerer can open on this peer, if any."""
+        if not (self.available and self.enabled):
+            return None
+        return max(
+            set(self.rigctl_versions).intersection(RIGCTL_VERSIONS), default=None
+        )
 
     @classmethod
     def from_json(cls, payload: Mapping[str, object]) -> Self:
@@ -280,4 +301,9 @@ class WebRtcTransportStatus:
         enabled = payload.get("enabled")
         if type(available) is not bool or type(enabled) is not bool:
             raise ValueError(f"not a webrtc capabilities block: {dict(payload)!r}")
-        return cls(available=available, enabled=enabled)
+        versions = payload.get("rigctl_versions", [])
+        if not isinstance(versions, list) or any(type(v) is not int for v in versions):
+            raise ValueError("rigctl_versions must be an array of integers")
+        return cls(
+            available=available, enabled=enabled, rigctl_versions=tuple(versions)
+        )

@@ -155,6 +155,7 @@ from .api_contract import (  # noqa: TID251
 from .api_channel import ApiChannelHandler  # noqa: TID251
 from .channel_attach import (  # noqa: TID251
     ATTACH_ACK_KINDS,
+    RIGCTL_VERSIONS,
     ChannelAttachedAck,
     ChannelKind,
     ClientChannelParams,
@@ -5131,8 +5132,13 @@ class WebServer:
                 payload["controls"] = profile.controls
             payload["txBands"] = _serialize_tx_bands(profile)
             payload.update(_serialize_max_power(profile, self._radio))
+        available = webrtc_available()
         payload["webrtc"] = WebRtcTransportStatus(
-            available=webrtc_available(), enabled=self._config.webrtc_enabled
+            available=available,
+            enabled=self._config.webrtc_enabled,
+            rigctl_versions=RIGCTL_VERSIONS
+            if available and self._rigctl_webrtc_ready()
+            else (),
         ).to_json()
         payload.update(self._get_meter_cal_payload())
         if self.command_state_store.provider_generation != snapshot.provider_generation:
@@ -8106,6 +8112,14 @@ class WebServer:
             raise ControllerError("controller_session_required")
         return ticket
 
+    def _rigctl_webrtc_ready(self) -> bool:
+        return (
+            self._config.webrtc_enabled
+            and not self._config.read_only
+            and self._rigctl_channel is not None
+            and isinstance(self._managed_tx_authority(), ManagedTxAuthority)
+        )
+
     async def attach_client_channel(
         self,
         conn: Connection,
@@ -8136,6 +8150,12 @@ class WebServer:
         resolves to no ticket (``None``): nothing is tracked and the
         channel holds no session.
         """
+        if (
+            kind == "rigctl"
+            and transport == "datachannel"
+            and not self._rigctl_webrtc_ready()
+        ):
+            raise ControllerError("rigctl_unavailable")
         ticket = self._resolve_client_ticket(params, kind)
         if (
             track_owners is not None
@@ -8143,7 +8163,7 @@ class WebServer:
             and ticket.tx_owner is not None
         ):
             track_owners.add(ticket.tx_owner)
-        if transport == "datachannel" and kind in ATTACH_ACK_KINDS:
+        if transport == "datachannel" and kind in ATTACH_ACK_KINDS and kind != "rigctl":
             # The ack, before the first handler byte (a dead send must
             # not kill the attach).
             try:
@@ -8176,9 +8196,8 @@ class WebServer:
         """Serve one attached channel: handlers, caps, keepalive, cleanup.
 
         The one mechanism every transport shares. ``kind`` is
-        ``control`` / ``scope`` / ``audio`` / ``api`` (``rigctl`` and
-        anything else arrive only from the WebSocket lane and keep their
-        historical early close). ``ticket`` is ``None`` only for a
+        ``control`` / ``scope`` / ``audio`` / ``api`` / ``rigctl``.
+        ``ticket`` is ``None`` only for a
         keyless ``api`` attach: that channel holds no session, so it
         skips ticket validation, session abort registration, and the
         ambient bind (every request carries and validates its own key
@@ -8247,6 +8266,7 @@ class WebServer:
                 self._rigctl_channel,
                 owner,
                 peer,
+                datachannel=transport == "datachannel",
             )
         else:
             self._controller.detach(ticket)

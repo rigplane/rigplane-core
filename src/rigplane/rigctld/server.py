@@ -57,6 +57,7 @@ from ..runtime._state_queries import (
 )
 from ..runtime._poller_types import CommandQueue
 from ..runtime.managed_tx_authority import ATTEMPT_TIMEOUT_S, RETRY_DELAY_S
+from ..runtime.managed_tx_state import ManagedTxOutcome
 from ..runtime.managed_tx_submission import (
     ManagedPttTracker,
     release_managed_session_tx,
@@ -71,7 +72,7 @@ from .utils import get_mode_reader  # noqa: TID251
 if TYPE_CHECKING:
     from ..core.command_service import CommandService
     from ..radio_protocol import Radio
-    from ..runtime.managed_tx_authority import ManagedTxAuthority
+    from ..runtime.managed_tx_authority import ManagedTxAuthority, ManagedTxSubmission
 
 logger = logging.getLogger(__name__)
 
@@ -1039,8 +1040,8 @@ class RigctldServer:
         ``get_extra_info``). Its lines run through the same loop as a TCP
         client, with ``owner`` (the controller session the channel joined) as
         the managed-TX owner instead of a minted ``rigctld-client-N``; teardown
-        releases the TX that owner holds only when the channel's last ``T`` was
-        a key (MOR-3562). Counts against ``max_clients``. One connection per
+        uses the channel's key/unkey history to decide whether to release TX
+        (MOR-3562). Counts against ``max_clients``. One connection per
         owner: the owner is also its command-queue session, which a second
         one's teardown would end.
         Call it in the session's controller context, which the task copies.
@@ -1164,10 +1165,10 @@ class RigctldServer:
         ptt_tracker = ManagedPttTracker()
         graceful_quit = False
         # MOR-3562: a channel keys as its controller session, which outlives
-        # it; its close releases the session's TX only when its last ``T`` was
-        # a key. The session's end releases the rest. A TCP client is the
-        # owner and always releases.
+        # it; a managed CAT key needs handback until a subsequent unkey is
+        # accepted. A TCP client is the owner and always releases.
         release_on_close = owner is None
+        unkeys: set[asyncio.Task[ManagedTxSubmission]] = set()
         # MOR-2890: the HTTP guard inspects only the first non-blank line.
         first_command_line = True
 
@@ -1179,9 +1180,17 @@ class RigctldServer:
                 writer.close()
 
         def submission_done(task: asyncio.Task[Any]) -> None:
+            nonlocal release_on_close
             ptt_submissions.discard(task)
-            if not task.cancelled():
-                task.exception()
+            error = None if task.cancelled() else task.exception()
+            if task in unkeys:
+                unkeys.discard(task)
+                if (
+                    not task.cancelled()
+                    and error is None
+                    and (task.result().outcome is ManagedTxOutcome.ACCEPTED)
+                ):
+                    release_on_close = False
 
         def schedule_response(
             cmd: Any | None,
@@ -1316,7 +1325,12 @@ class RigctldServer:
                     schedule_response(None, immediate_error=HamlibError.EIO)
                     continue
 
-                if owner is not None and cmd.long_cmd == "set_ptt" and cmd.args:
+                if (
+                    owner is not None
+                    and self._managed_tx_authority is None
+                    and cmd.long_cmd == "set_ptt"
+                    and cmd.args
+                ):
                     try:
                         release_on_close = bool(int(cmd.args[0]))
                     except ValueError:
@@ -1348,6 +1362,12 @@ class RigctldServer:
                                 else None
                             ),
                         )
+                        if owner is not None:
+                            if ptt_on:
+                                release_on_close = True
+                                unkeys.clear()
+                            elif release_on_close:
+                                unkeys.add(ptt_submission)
 
                 schedule_response(
                     cmd,
@@ -1381,7 +1401,7 @@ class RigctldServer:
             retirement = loop.create_task(
                 self._retire_client_connection(
                     session_id=session_id,
-                    release_tx=release_on_close,
+                    release_tx=lambda: release_on_close,
                     client_id=client_id,
                     tasks=tasks,
                     writer=writer,
@@ -1397,7 +1417,7 @@ class RigctldServer:
         self,
         *,
         session_id: str,
-        release_tx: bool,
+        release_tx: Callable[[], bool],
         client_id: int,
         tasks: tuple[asyncio.Task[Any], ...],
         writer: asyncio.StreamWriter,
@@ -1411,7 +1431,8 @@ class RigctldServer:
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
         try:
-            if release_tx:
+            # Submission callbacks can discharge handback during retirement.
+            if release_tx():
                 await self._release_session_tx(session_id)
         finally:
             # Unconditional, and nested so no failure above can skip it:
