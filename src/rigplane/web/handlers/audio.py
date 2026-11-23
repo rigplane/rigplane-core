@@ -601,6 +601,12 @@ class AudioBroadcaster:
                     for cid, ident in self._client_identity.items()
                     if ident == identity
                 ]:
+                    # Same-socket re-arm (MOR-4676: RX re-arm subscribes the
+                    # new queue BEFORE unsubscribing the old one) is not a
+                    # reconnect: never close our own socket here — the old
+                    # queue is unsubscribed explicitly right after.
+                    if self._client_ws.get(old_id) is ws:
+                        continue
                     old_ws = self._drop_client(old_id)
                     if old_ws is not None:
                         stale_ws.append(old_ws)
@@ -1639,15 +1645,21 @@ class AudioBroadcaster:
         while holding the broadcaster ``_lock`` is safe: the session lock
         and ``_lock`` are distinct and the session never calls back into
         the broadcaster, so there is no inverse acquisition order.
+
+        The handle is cleared only AFTER the release completes (MOR-4676):
+        a cancel landing while the release waits on the session lock
+        leaves the handle registered — ``release()`` is idempotent, so the
+        retry finishes the drop instead of leaking a demand no handle can
+        release.
         """
         subscription = self._subscription
-        self._subscription = None
         if subscription is None:
             return
         if isinstance(subscription, RxSubscription):
             await subscription.release()
         else:
             subscription.stop()
+        self._subscription = None
 
     async def _stop_relay(self) -> None:
         self._rx_start_attempt += 1
@@ -2401,15 +2413,28 @@ class AudioHandler:
         preferred_rx_codec: int | None = None,
         identity: str | None = None,
     ) -> None:
-        """Subscribe to audio broadcaster for RX frames."""
+        """Subscribe to audio broadcaster for RX frames (idempotent re-arm).
+
+        A second ``audio_start`` with no ``audio_stop`` replaces this
+        attachment's queue THROUGH the running relay: the new queue is
+        subscribed before the old one is unsubscribed, so the client set
+        never empties and the shared ``web-audio`` RX demand — and any TX
+        armed on top of it — never drops mid-transmission (MOR-4676). An
+        orphaned queue would instead keep the relay and its ``web-audio``
+        bus subscription alive past this session's own teardown, which
+        only unsubscribes the latest queue.
+        """
         if not self._broadcaster:
             return
+        old_queue = self._frame_queue if self._rx_active else None
         self._rx_active = True
         self._frame_queue = await self._broadcaster.subscribe(
             ws=self._ws,
             preferred_rx_codec=preferred_rx_codec,
             identity=identity,
         )
+        if old_queue is not None:
+            await self._broadcaster.unsubscribe(old_queue)
         # Per-connection negotiation ack (MOR-584): tell the client which
         # wire codec/format it will receive.  Advisory and fire-and-forget
         # — legacy clients ignore text frames on the audio WS and keep
@@ -2423,11 +2448,18 @@ class AudioHandler:
         logger.info("audio: subscribed to RX broadcast")
 
     async def _stop_rx(self) -> None:
-        """Unsubscribe from audio broadcaster."""
+        """Unsubscribe from audio broadcaster.
+
+        The unsubscribe is pinned to completion (MOR-4676): a peer
+        teardown cancelled while the release waits on the audio-session
+        lock must still drop the ``web-audio`` demand instead of
+        stranding it with no handle left to retry.
+        """
         if not self._rx_active or not self._broadcaster:
             return
         self._rx_active = False
-        await self._broadcaster.unsubscribe(self._frame_queue)
+        queue, self._frame_queue = self._frame_queue, asyncio.Queue()
+        await asyncio.shield(self._broadcaster.unsubscribe(queue))
         logger.info("audio: unsubscribed from RX broadcast")
 
     def _warn_tx_throttled(
