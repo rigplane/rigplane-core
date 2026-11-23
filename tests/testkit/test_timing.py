@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import threading
 import time
 import types
@@ -152,6 +153,29 @@ async def test_install_swaps_the_loop_timer_resolution_and_uninstall_restores_it
     finally:
         clock.uninstall(loop)
     assert loop._clock_resolution == real_resolution  # type: ignore[attr-defined]
+
+
+@pytest.mark.timeout(30)
+async def test_an_exactly_due_timer_completes_at_a_large_clock_offset() -> None:
+    """MOR-3938 review follow-up: the resolution must stay representable.
+
+    ``on_running_loop()`` starts at the host monotonic offset, which on a
+    long-running host sits at ``2**24`` seconds and beyond. There the float
+    ulp (~3.7 ns) exceeds ``1e-9``: ``time() + _clock_resolution`` rounded
+    back to ``time()``, so an exactly-due timer stayed scheduled and
+    ``elapse()`` kept advancing by zero until the real-time watchdog
+    tripped."""
+    loop = asyncio.get_running_loop()
+    clock = VirtualClock(start=2**24)
+    clock.install(loop)
+    try:
+        assert loop._clock_resolution >= 2 * math.ulp(2**24)  # type: ignore[attr-defined]
+        done = asyncio.Event()
+        loop.call_later(0.0, done.set)
+        await clock.elapse(0.0)
+        assert done.is_set()
+    finally:
+        clock.uninstall(loop)
 
 
 @pytest.mark.timeout(30)

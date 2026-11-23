@@ -65,6 +65,7 @@ import asyncio
 import contextlib
 import functools
 import inspect
+import math
 import threading
 import time
 from collections.abc import AsyncGenerator, Awaitable, Callable
@@ -189,7 +190,9 @@ class VirtualClock(ManualClock):
 
         loop.time = self  # type: ignore[method-assign]
         self._real_clock_resolution = loop._clock_resolution  # type: ignore[attr-defined]
-        loop._clock_resolution = _VIRTUAL_CLOCK_RESOLUTION_S  # type: ignore[attr-defined]
+        # As fine as possible while still representable at the offset the
+        # clock starts from (see _representable_clock_resolution).
+        loop._clock_resolution = _representable_clock_resolution(self())  # type: ignore[attr-defined]
 
     def uninstall(self, loop: asyncio.AbstractEventLoop) -> None:
         """Give ``loop`` its own clock back."""
@@ -317,6 +320,19 @@ class VirtualClock(ManualClock):
 #: firing (its deadline stays inside the window) while future ones wait for
 #: an ``elapse``, matching the fine-grained hosts the suite otherwise runs on.
 _VIRTUAL_CLOCK_RESOLUTION_S = 1e-9
+
+
+def _representable_clock_resolution(at_seconds: float) -> float:
+    """The floor above, but still representable at the clock's offset.
+
+    MOR-3938 review follow-up: ``on_running_loop()`` inherits the host
+    monotonic offset, and a long-running host can carry ``2**24`` seconds,
+    where the float ulp (~3.7 ns) exceeds ``1e-9``: ``time() + resolution``
+    then rounded back to ``time()`` and an exactly-due timer stayed
+    scheduled forever, ``elapse()`` advancing by zero until the real-time
+    watchdog tripped.
+    """
+    return max(_VIRTUAL_CLOCK_RESOLUTION_S, 2.0 * math.ulp(at_seconds))
 
 
 def _next_timer(loop: asyncio.AbstractEventLoop) -> float | None:
