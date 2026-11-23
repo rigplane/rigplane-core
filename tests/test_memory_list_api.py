@@ -303,3 +303,34 @@ async def test_memories_endpoint_maps_a_serial_io_failure_to_503() -> None:
     radio._send_civ_raw = broken  # type: ignore[method-assign]
     status, body = await _get(radio, "/api/v1/memories?count=1")
     assert (status, body["error"]) == (503, "not_connected")
+
+
+def test_the_golden_page_answers_the_typed_wire_contract() -> None:
+    """The response shape is a typed contract (``memory_api``'s payload
+    TypedDicts), not re-guessed dict keys: the golden document the real
+    endpoint serves is checked field by field against them, and the
+    consumer DTO (``frontend/src/lib/types/memory-list.ts``) declares the
+    same fields."""
+    from typing import get_type_hints
+
+    from rigplane.web.memory_api import (
+        MemoryBlockPayload,
+        MemoryEntryPayload,
+        MemoryPagePayload,
+        MemoryRangePayload,
+    )
+
+    golden = json.loads(
+        (Path(__file__).parent / "fixtures" / "ic705-memory-page.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert set(golden) == set(get_type_hints(MemoryPagePayload))
+    assert set(golden["groups"]) == set(get_type_hints(MemoryRangePayload))
+    assert set(golden["channels"]) == set(get_type_hints(MemoryRangePayload))
+    entry_keys = set(get_type_hints(MemoryEntryPayload))
+    for entry in golden["entries"]:
+        assert {"group", "channel", "empty"} <= set(entry) <= entry_keys
+    stored = next(entry for entry in golden["entries"] if not entry["empty"])
+    assert set(stored) == entry_keys
+    assert set(stored["txBlock"]) == set(get_type_hints(MemoryBlockPayload))

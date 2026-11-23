@@ -1116,3 +1116,143 @@ async def test_memories_listing_stays_unavailable_for_ic7610() -> None:
         await _shutdown(web, radio)
     assert status == 404
     assert transport.sent_packets == []
+
+
+# ---------------------------------------------------------------------------
+# HTTP round trip: the caller offset/DTCS fields cross the command endpoint
+# ---------------------------------------------------------------------------
+
+
+@asynccontextmanager
+async def _memory_store_peer(
+    model: str,
+) -> AsyncIterator[tuple[WebServer, Any, int, int]]:
+    """A web peer whose radio writes to and reads back from a simulated
+    memory store built from the SAME layout declaration the production
+    encoder uses (``_MemoryStoreTransport``); the radio harness is the
+    wall-clock-free ``_sim_radio`` (the realtime guard)."""
+    from rigplane.core.state_pipeline_contracts import (
+        FieldPath,
+        Observation,
+        SourceMetadata,
+    )
+
+    from test_memory_write_layouts import (
+        _CASES,
+        _memory,
+        _MemoryStoreTransport,
+        _sim_radio,
+    )
+
+    radio_addr, group, channel = _CASES[model]
+    transport = _MemoryStoreTransport(_memory(model), radio_addr)
+    radio = _sim_radio(model, transport)
+    web = WebServer(radio, WebConfig(host="127.0.0.1", port=0))
+    poller = RadioPoller(radio, web.command_queue, state_store=web.command_state_store)
+    web.command_state_store.apply_current(
+        Observation(
+            path=FieldPath.global_("tx_state", "ptt"),
+            value=False,
+            source=SourceMetadata(source="test", provider="tests"),
+            timestamp_monotonic=asyncio.get_running_loop().time(),
+            max_age=60,
+        )
+    )
+    web._server = await asyncio.start_server(web._accept_client, "127.0.0.1", 0)
+    consumer = asyncio.create_task(
+        run_command_consumer(
+            web.command_queue,
+            poller._execute_queued_entry,
+            suppress=(CommandError, RigplaneTimeoutError),
+        )
+    )
+    try:
+        yield web, transport, group, channel
+    finally:
+        consumer.cancel()
+        await asyncio.gather(consumer, return_exceptions=True)
+        await _shutdown(web, radio)
+        await radio._stop_civ_rx_pump()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model", ["IC-705", "IC-9700"])
+async def test_http_write_with_offset_dtcs_and_polarity_reads_back(model: str) -> None:
+    """MOR-3648 through the user's entry point: a nonzero duplex offset, an
+    explicit DTCS code and a nondefault polarity posted to
+    ``POST /api/v1/commands`` reach the wire and read back through
+    ``GET /api/v1/memories``. The dispatch arm forwarding is what this pins:
+    dropping any of the three parameters there would leave the SDK-level
+    round trips passing while HTTP repeater writes lost the values."""
+    from test_memory_write_layouts import _mem as layout_mem
+
+    async with _memory_store_peer(model) as (web, transport, group, channel):
+        mem = layout_mem(
+            model,
+            tonemode=3,
+            dtcs_code=125,
+            dtcs_polarity=0x03,
+            duplex_offset_hz=5_000_000,
+        )
+        status, body = await _request(web, "http", "set_memory_contents", mem.__dict__)
+        assert status == 200 and body["ok"] is True
+        assert body["result"] == {"channel": channel}
+        host, port = _addr(web)
+        get_status, _headers, get_body = await _http_get(
+            host, port, f"/api/v1/memories?group={group}&start={channel}&count=1"
+        )
+    assert get_status == 200
+    # The record on the wire: the polarity byte, the code as packed BCD
+    # under a fixed 0 digit, and the offset as 3-byte little-endian BCD in
+    # 100 Hz units -- each repeated in the TX/split copy.
+    frame = transport.sent_packets[0][CIV_HEADER_SIZE:]
+    address_len = 4 if model == "IC-705" else 3
+    record = frame[6 + address_len : -1]
+    assert record[17:20].hex() == "030125"
+    assert record[21:24].hex() == "000005"  # 5 MHz
+    assert record[64:67].hex() == "030125"
+    assert record[68:71].hex() == "000005"
+    entry = json.loads(get_body)["entries"][0]
+    assert entry["duplex"] == "plus"
+    assert entry["offsetHz"] == 5_000_000
+    assert entry["toneMode"] == "dtcs"
+    assert entry["dtcsCode"] == 125
+    assert entry["dtcsPolarity"] == 3
+    assert entry["filter"] == 1
+    assert entry["split"] is False
+    assert entry["txBlock"]["dtcsPolarity"] == 3
+    assert entry["txBlock"]["offsetHz"] == 5_000_000
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model", ["IC-705", "IC-9700"])
+@pytest.mark.parametrize(
+    ("overrides", "match"),
+    [
+        ({"dtcs_code": 0}, "all-zero"),
+        ({"dtcs_polarity": 0xFD}, "terminator"),
+    ],
+    ids=["zero-dtcs", "terminator-polarity"],
+)
+async def test_http_memory_write_refuses_invalid_dtcs_fields(
+    model: str, overrides: dict[str, Any], match: str
+) -> None:
+    """The refused DTCS inputs never leave the ingress: the client gets the
+    reason, no command is queued and no frame is transmitted."""
+    from test_memory_write_layouts import _mem as layout_mem
+    from test_memory_write_layouts import _sim_radio
+
+    transport = MockTransport()
+    radio = _sim_radio(model, transport)
+    web = await _serve(radio)
+    try:
+        status, body = await _request(
+            web, "http", "set_memory_contents", layout_mem(model, **overrides).__dict__
+        )
+    finally:
+        await _shutdown(web, radio)
+    assert status == 400
+    assert body["error"] == "invalid_request"
+    assert match in body["message"]
+    assert web.command_queue.pending_count == 0
+    assert transport.sent_packets == []

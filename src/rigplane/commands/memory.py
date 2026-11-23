@@ -560,12 +560,23 @@ def _encode_record_dtcs(code: int | None, polarity: int) -> bytes:
         raise ValueError(f"DTCS polarity must be an int byte, got {polarity!r}")
     if not 0 <= polarity <= 0xFF:
         raise ValueError(f"DTCS polarity must be a byte 0-255, got {polarity}")
+    if polarity == 0xFD:
+        # 0xFD is the CI-V frame terminator (``commands._frame``, parsed in
+        # ``core.civ``); a record byte with that value would end the frame
+        # early instead of carrying an opaque polarity.
+        raise ValueError("DTCS polarity 0xFD is the CI-V frame terminator")
     if code is None:
         code = _DEFAULT_DTCS_CODE
     if isinstance(code, bool) or not isinstance(code, int):
         raise ValueError(f"DTCS code must be an int, got {code!r}")
-    if code < 0 or code > 777 or any(digit > "7" for digit in f"{code:03d}"):
-        raise ValueError(f"DTCS code is not three octal digits: {code}")
+    if not 1 <= code <= 777 or any(digit > "7" for digit in f"{code:03d}"):
+        # Zero is a real refusal, not a corner case: the captured IC-705
+        # NAKs an all-zero DTCS field and ACKs 023
+        # (tests/fixtures/ic705_memory_calibration.json).
+        raise ValueError(
+            f"DTCS code is not three octal digits 001-777 "
+            f"(the radio rejects an all-zero field): {code}"
+        )
     return bytes([polarity, code // 100, ((code // 10) % 10) << 4 | code % 10])
 
 

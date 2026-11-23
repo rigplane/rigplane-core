@@ -31,6 +31,7 @@ simulated.
 
 from __future__ import annotations
 
+import json
 import time
 from dataclasses import replace
 from pathlib import Path
@@ -482,10 +483,12 @@ def test_the_offset_10mhz_digit_only_where_the_profile_declares_it() -> None:
     ("overrides", "match"),
     [
         ({"dtcs_code": 88}, "DTCS code is not three octal digits"),
+        ({"dtcs_code": 0}, "all-zero"),
         ({"dtcs_code": 1000}, "DTCS"),
         ({"dtcs_code": -1}, "DTCS"),
         ({"dtcs_code": "023"}, "DTCS"),
         ({"dtcs_polarity": 256}, "polarity"),
+        ({"dtcs_polarity": 253}, "polarity"),
         ({"dtcs_polarity": "NN"}, "polarity"),
         ({"duplex_offset_hz": -600}, "offset"),
         ({"duplex_offset_hz": 150}, "offset"),
@@ -500,6 +503,32 @@ def test_an_unknown_offset_or_dtcs_value_refuses_with_a_reason(
     a silently truncated byte."""
     with pytest.raises(ValueError, match=match):
         _build(model, _mem(model, **overrides))
+
+
+def test_a_zero_dtcs_code_is_refused_like_the_radio_does() -> None:
+    """Hardware evidence (MOR-3650 capture): a real IC-705 NAKs a record
+    whose DTCS field is all-zero and ACKs the same record with 023. The
+    shared encoder refuses the zero before a byte is built instead of
+    reintroducing that known-rejected record."""
+    capture = json.loads(
+        (
+            Path(__file__).parent / "fixtures" / "ic705_memory_calibration.json"
+        ).read_text(encoding="utf-8")
+    )
+    frames = capture["encoder_frames"]
+    assert frames["zero_dtcs_rejected"]["rx"].endswith("fafd")  # NAK
+    assert frames["dtcs_023_accepted"]["rx"].endswith("fbfd")  # ACK
+    for model in ("IC-705", "IC-9700"):
+        with pytest.raises(ValueError, match="all-zero"):
+            _build(model, _mem(model, dtcs_code=0))
+
+
+@pytest.mark.parametrize("model", ["IC-705", "IC-9700"])
+def test_a_terminator_polarity_byte_refuses(model: str) -> None:
+    """0xFD is the CI-V frame terminator: as a DTCS polarity byte inside the
+    record it would end the frame early, so the encoder refuses it."""
+    with pytest.raises(ValueError, match="terminator"):
+        _build(model, _mem(model, dtcs_polarity=0xFD))
 
 
 @pytest.mark.parametrize(
@@ -1105,6 +1134,10 @@ async def test_a_refused_offset_or_dtcs_sends_nothing_on_the_wire(model: str) ->
     try:
         with pytest.raises(ValueError, match="DTCS"):
             await radio.set_memory_contents(_mem(model, dtcs_code=88))
+        with pytest.raises(ValueError, match="all-zero"):
+            await radio.set_memory_contents(_mem(model, dtcs_code=0))
+        with pytest.raises(ValueError, match="terminator"):
+            await radio.set_memory_contents(_mem(model, dtcs_polarity=0xFD))
         with pytest.raises(ValueError, match="offset"):
             await radio.set_memory_contents(_mem(model, duplex_offset_hz=-1))
     finally:
