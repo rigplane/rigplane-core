@@ -62,3 +62,9 @@ def test_quick_runs_this_contract_on_ci_only_changes() -> None:
     ].split("- name:", 1)[0]
     assert "needs.classify.outputs.ci == 'true'" in section
     assert "test_workflow_hidden_artifacts.py" in section
+    # The invocation must stay isolated from the project: tests/conftest.py
+    # imports rigplane and its testkit plugins, which the --no-project
+    # ephemeral environment does not provide, so without --noconftest
+    # collection fails before this contract runs on a clean runner.
+    assert "uv run --no-project" in section
+    assert "--noconftest" in section
