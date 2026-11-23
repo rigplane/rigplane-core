@@ -43,7 +43,15 @@
   const surface = new CanvasSurface({
     stageScale: getStageScale(),
     applyBacking: (_target, backing) => {
-      try { renderer?.resize(backing.width, backing.height); } catch (error) { failed(error); }
+      if (!renderer) {
+        // MOR-4342: a size-limit failure destroyed the renderer; a later
+        // resize that fits the GPU limits must bring it back instead of
+        // waiting for a context restore that never comes. Before mount
+        // (failure unset) the mount path still owns initialization.
+        if (failure !== null) initializeRenderer();
+        return;
+      }
+      try { renderer.resize(backing.width, backing.height); } catch (error) { failed(error); }
     },
   });
   const scheduler = new ScopeRenderScheduler(paint, { active: () => surface.visible && surface.sized && renderer !== null });
