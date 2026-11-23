@@ -47,6 +47,7 @@ from typing import TYPE_CHECKING, Any
 from ..core.types import (
     FREQUENCY_BCD_MAX_100MHZ_DIGIT,
     FREQUENCY_BCD_MAX_GHZ_DIGIT,
+    MemoryBlock,
     MemoryEntry,
     MemoryProfile,
     MemoryWriteField,
@@ -478,6 +479,9 @@ def _check_field_storage(mem: MemoryChannel, layout: MemoryWriteLayout) -> None:
         ("tsql_freq_hz", None, {"tsql_hz_bcd"}),
         ("tone_centihz", None, {"tone"}),
         ("tsql_centihz", None, {"tsql"}),
+        ("dtcs_code", None, {"dtcs"}),
+        ("dtcs_polarity", 0, {"dtcs"}),
+        ("duplex_offset_hz", 0, {"duplex_offset"}),
     ):
         if getattr(mem, name) != neutral and not encodings & stored_by:
             raise ValueError(f"memory layout cannot store {name}")
@@ -504,6 +508,10 @@ def _check_tone_representation(
         raise ValueError(
             "DTCS mode requires a caller-supplied code; this field is fixed"
         )
+    if mem.tonemode == 3 and "dtcs" in encodings and mem.dtcs_code is None:
+        # Like an active TONE/TSQL mode, an active DTCS mode requires an
+        # explicit parameter; only an inactive one writes the default.
+        raise ValueError("DTCS mode requires an explicit dtcs_code")
     if encodings & {"tone", "tsql"} and mem.tonemode in (1, 2):
         tone = mem.tone_centihz if mem.tonemode == 1 else mem.tsql_centihz
         if tone is None:
@@ -536,6 +544,60 @@ def _encode_record_tone(
     if centihz is None:
         centihz = default_centihz
     return _encode_tone_freq(_require_profile_tone(centihz, ctcss_tones_centihz))
+
+
+# The DTCS code a ``dtcs`` field carries when the caller leaves it unset
+# (MOR-3648): the radio's own default 023, as seen in its stored records
+# (MOR-3650); the radio refuses an all-zero field.
+_DEFAULT_DTCS_CODE = 23
+
+
+def _encode_record_dtcs(code: int | None, polarity: int) -> bytes:
+    """The 3-byte DTCS field: the polarity byte, then the code as packed
+    BCD under a fixed 0 high digit -- the shape the read parser decodes
+    (``_parse_block``), so a record the write builds always reads back."""
+    if isinstance(polarity, bool) or not isinstance(polarity, int):
+        raise ValueError(f"DTCS polarity must be an int byte, got {polarity!r}")
+    if not 0 <= polarity <= 0xFF:
+        raise ValueError(f"DTCS polarity must be a byte 0-255, got {polarity}")
+    if polarity == 0xFD:
+        # 0xFD is the CI-V frame terminator (``commands._frame``, parsed in
+        # ``core.civ``); a record byte with that value would end the frame
+        # early instead of carrying an opaque polarity.
+        raise ValueError("DTCS polarity 0xFD is the CI-V frame terminator")
+    if code is None:
+        code = _DEFAULT_DTCS_CODE
+    if isinstance(code, bool) or not isinstance(code, int):
+        raise ValueError(f"DTCS code must be an int, got {code!r}")
+    if not 1 <= code <= 777 or any(digit > "7" for digit in f"{code:03d}"):
+        # Zero is a real refusal, not a corner case: the captured IC-705
+        # NAKs an all-zero DTCS field and ACKs 023
+        # (tests/fixtures/ic705_memory_calibration.json).
+        raise ValueError(
+            f"DTCS code is not three octal digits 001-777 "
+            f"(the radio rejects an all-zero field): {code}"
+        )
+    return bytes([polarity, code // 100, ((code // 10) % 10) << 4 | code % 10])
+
+
+def _encode_record_duplex_offset(
+    offset_hz: int, memory: MemoryProfile, group: int
+) -> bytes:
+    """The 3-byte duplex offset: little-endian BCD in 100 Hz units, with
+    the read parser's own rule shared -- the 10 MHz digit exists only in
+    the profile's ``offset_10mhz_groups`` (IC-9700: the 1.2 GHz band)."""
+    if isinstance(offset_hz, bool) or not isinstance(offset_hz, int):
+        raise ValueError(f"duplex offset must be an int in Hz, got {offset_hz!r}")
+    if offset_hz < 0 or offset_hz % 100:
+        raise ValueError(
+            f"duplex offset must be a non-negative multiple of 100 Hz, got {offset_hz}"
+        )
+    units = offset_hz // 100
+    if units > 999_999:
+        raise ValueError(f"duplex offset {offset_hz} exceeds the 3-byte field")
+    if units // 100_000 and group not in memory.offset_10mhz_groups:
+        raise ValueError(f"offset 10 MHz digit is not valid for memory group {group}")
+    return bcd_encode_value(units, byte_count=3)[::-1]
 
 
 def _encode_write_field(
@@ -624,6 +686,12 @@ def _encode_write_field(
                 else mem.tsql_freq_hz
             )
             return b"\x00" * 3 if hz is None else bcd_encode_value(hz, byte_count=3)
+        case "dtcs":
+            return _encode_record_dtcs(mem.dtcs_code, mem.dtcs_polarity)
+        case "duplex_offset":
+            return _encode_record_duplex_offset(
+                mem.duplex_offset_hz, memory, mem.group or 0
+            )
         case "name":
             return _encode_record_name(mem.name, field.length, b"\x20")
         case "name_nul":
@@ -865,9 +933,10 @@ def build_memory_entry_read(
 def _parse_block(block: bytes, memory: MemoryProfile, group: int) -> dict[str, Any]:
     """Validate one 47-byte channel block and return its decoded fields.
 
-    Fields the read model does not expose (filter, DTCS polarity, DV code,
-    call signs) are not validated: a listing must not drop a real channel over
-    a value it never shows.
+    Fields the read model does not expose (DV code, call signs) are not
+    validated: a listing must not drop a real channel over a value it
+    never shows. The filter byte and the DTCS polarity byte are exposed
+    as stored (MOR-3648), likewise without a value rule of their own.
     """
     mode_code = block[5]  # the guide's mode codes are raw bytes (DV = 0x17)
     if block[7] not in (0, 1):
@@ -901,6 +970,7 @@ def _parse_block(block: bytes, memory: MemoryProfile, group: int) -> dict[str, A
     return {
         "frequency_hz": frequency_hz,
         "mode": mode,
+        "filter": block[6],
         "data_mode": block[7] == 1,
         "duplex": _DUPLEX_BY_NIBBLE.get(duplex_nibble),
         # [10 MHz|1 MHz][100 kHz|10 kHz][1 kHz|100 Hz], most significant first
@@ -909,6 +979,7 @@ def _parse_block(block: bytes, memory: MemoryProfile, group: int) -> dict[str, A
         "tone_centihz": _bcd_decode_value(block[10:13]) * 10,
         "tsql_centihz": _bcd_decode_value(block[13:16]) * 10,
         "dtcs_code": int(dtcs_digits),
+        "dtcs_polarity": block[16],
     }
 
 
@@ -941,9 +1012,18 @@ def parse_memory_entry(data: bytes, memory: MemoryProfile) -> MemoryEntry:
         raise ValueError(f"memory reply is {len(data)} bytes, expected {expected}")
     fields = _parse_block(data[start : start + _MEMORY_BLOCK_LEN], memory, group)
     tx_block = data[start + _MEMORY_BLOCK_LEN : expected - _MEMORY_NAME_LEN]
-    _parse_block(tx_block, memory, group)
+    # The second (TX/split) block is kept, decoded like the first
+    # (MOR-3648): a read-modify-write must not silently lose it.
+    tx_fields = _parse_block(tx_block, memory, group)
     name_raw = data[expected - _MEMORY_NAME_LEN : expected]
     if not all(0x20 <= b <= 0x7E or b == 0 for b in name_raw):
         raise ValueError("memory name is not printable ASCII")
     name = name_raw.decode("ascii").replace("\x00", " ").rstrip()
-    return MemoryEntry(group=group, channel=channel, name=name, **fields)
+    return MemoryEntry(
+        group=group,
+        channel=channel,
+        name=name,
+        split=bool(select >> 4),
+        tx_block=MemoryBlock(**tx_fields),
+        **fields,
+    )

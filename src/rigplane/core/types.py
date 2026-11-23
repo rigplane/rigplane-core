@@ -33,6 +33,7 @@ __all__ = [
     "FREQUENCY_BCD_MAX_GHZ_DIGIT",
     "FREQUENCY_BCD_WIDTHS",
     "MemoryChannel",
+    "MemoryBlock",
     "MemoryEntry",
     "MemoryProfile",
     "MemoryWriteField",
@@ -490,6 +491,17 @@ class MemoryChannel:
         duplex: Duplex nibble (0=OFF, 1=DUP-, 2=DUP+, 3=RPS in DD).
         tone_centihz: CTCSS tone in exact centi-Hz (verified layouts).
         tsql_centihz: TSQL frequency in exact centi-Hz (verified layouts).
+        duplex_offset_hz: Duplex offset in Hz (MOR-3648), a non-negative
+            multiple of 100; ``0`` is the no-offset default. Stored only
+            where the layout declares a ``duplex_offset`` field.
+        dtcs_code: DTCS code as three octal digits (23 = ``023``);
+            required when ``tonemode`` is DTCS (3), like an active
+            TONE/TSQL mode's tone; an inactive mode's unset field writes
+            the radio's own default ``023``. Stored only where the layout
+            declares a ``dtcs`` field.
+        dtcs_polarity: the DTCS polarity byte; ``0`` is the radio's own
+            default ("NN" as seen in its stored records, MOR-3650). Stored
+            only where the layout declares a ``dtcs`` field.
     """
 
     channel: int
@@ -506,6 +518,9 @@ class MemoryChannel:
     duplex: int = 0
     tone_centihz: int | None = None
     tsql_centihz: int | None = None
+    duplex_offset_hz: int = 0
+    dtcs_code: int | None = None
+    dtcs_polarity: int = 0
 
 
 MemoryAddressing = Literal["group_channel", "band_channel", "channel"]
@@ -530,6 +545,8 @@ MEMORY_WRITE_ENCODINGS: frozenset[str] = frozenset(
         "tsql",  # the tone-squelch twin of "tone"
         "tone_hz_bcd",  # BCD of tone_freq_hz (legacy record)
         "tsql_hz_bcd",  # BCD of tsql_freq_hz (legacy record)
+        "dtcs",  # polarity byte + the caller's DTCS code as BCD (MOR-3648)
+        "duplex_offset",  # 3-byte LE BCD duplex offset in 100 Hz units (MOR-3648)
         "name",  # ASCII, space padded
         "name_nul",  # ASCII, NUL padded (legacy record)
         "fixed",  # a fixed byte run, given as hex in the field's ``value``
@@ -559,6 +576,8 @@ _WRITE_ENCODING_WIDTHS: dict[str, int | None] = {
     "tsql": 3,
     "tone_hz_bcd": 3,
     "tsql_hz_bcd": 3,
+    "dtcs": 3,
+    "duplex_offset": 3,
     "select": 1,
     "scan": 1,
 }
@@ -784,7 +803,15 @@ class MemoryWriteLayout:
         ):
             if sum(item.encoding in encodings for item in self.fields) != 1:
                 errors.append(f"the table must declare exactly {what} field")
-        for encoding in ("tone", "tsql", "tone_hz_bcd", "tsql_hz_bcd", "select"):
+        for encoding in (
+            "tone",
+            "tsql",
+            "tone_hz_bcd",
+            "tsql_hz_bcd",
+            "select",
+            "dtcs",
+            "duplex_offset",
+        ):
             count = sum(item.encoding == encoding for item in self.fields)
             if count > 1:
                 errors.append(f"the table declares {encoding} more than once")
@@ -850,12 +877,42 @@ class MemoryProfile:
 
 
 @dataclass(frozen=True, slots=True)
+class MemoryBlock:
+    """One decoded 47-byte channel block of a stored entry (MOR-3648).
+
+    The ``1A 00`` record carries the channel block twice; this is the
+    second (TX/split) copy. A non-split entry fills it with the RX values;
+    the write path does the same, so a stored channel whose split block
+    differs from the entry's own values is one a read-modify-write through
+    ``set_memory_contents`` cannot reproduce exactly -- the caller sees it
+    here instead of losing it.
+    """
+
+    frequency_hz: int
+    mode: str
+    filter: int
+    data_mode: bool
+    duplex: RepeaterShiftDirection | None
+    offset_hz: int
+    tone_mode: ToneSquelchType
+    tone_centihz: int
+    tsql_centihz: int
+    dtcs_code: int
+    dtcs_polarity: int
+
+
+@dataclass(frozen=True, slots=True)
 class MemoryEntry:
     """One stored memory channel as read from the radio (MOR-3627).
 
     A read model, not what the write path (:class:`MemoryChannel`) sends.
     ``group`` is the memory group (IC-705) or band code (IC-9700); an empty
     slot carries only its address; tone values are centi-Hz (8850 = 88.5 Hz).
+    ``filter``, ``dtcs_polarity``, ``split`` and ``tx_block`` (MOR-3648) keep
+    what a read-modify-write must not silently lose: the filter byte, the
+    DTCS polarity byte, the split flag and the second (TX/split) block.
+    ``tx_block`` is ``None`` where the radio's record has no second block
+    (an empty slot, or a backend without one, e.g. the FTX-1).
     """
 
     group: int
@@ -871,6 +928,10 @@ class MemoryEntry:
     tsql_centihz: int | None = None
     dtcs_code: int | None = None
     name: str = ""
+    filter: int | None = None
+    dtcs_polarity: int | None = None
+    split: bool = False
+    tx_block: MemoryBlock | None = None
 
 
 @dataclass
