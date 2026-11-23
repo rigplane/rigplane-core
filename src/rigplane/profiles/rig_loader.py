@@ -3400,13 +3400,14 @@ def load_rig(path: Path) -> RigConfig:
             # MOR-4442: coerce nothing silently. A float, bool or string in
             # ``narrow_table`` used to pass through ``int()`` (so ``1800.9``
             # became ``1800`` and ``true`` became ``1``) and a scalar raised
-            # a raw TypeError; both are load errors naming the table.
-            if narrow_table_raw and (
-                not isinstance(narrow_table_raw, list)
-                or any(
-                    isinstance(value, bool) or not isinstance(value, int)
-                    for value in narrow_table_raw
-                )
+            # a raw TypeError; both are load errors naming the table. Falsy
+            # scalars are values too (``0``, ``false``, ``0.0`` and ``''``
+            # used to skip this check: the numbers died on iteration and the
+            # empty string loaded as an empty table), so the type check is
+            # unconditional; an empty list stays a valid empty narrow table.
+            if not isinstance(narrow_table_raw, list) or any(
+                isinstance(value, bool) or not isinstance(value, int)
+                for value in narrow_table_raw
             ):
                 raise RigLoadError(
                     f"{filename}: [filters.width.{mode_key}].narrow_table "
