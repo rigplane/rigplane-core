@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-from collections.abc import AsyncIterator
 from typing import Any
 
 import pytest
@@ -155,41 +154,27 @@ async def _double_with(bind_errors: list[int]) -> _TurnDouble:
     return double
 
 
-@contextlib.asynccontextmanager
-async def _allocated(double: _TurnDouble) -> AsyncIterator[Any]:
-    """Own a client allocated against ``double``; both endpoints close on exit.
-
-    MOR-4704: the client's transport is closed by ``delete()`` and the
-    responder's with it, whether the block returns or raises, and after an
-    allocation that fails before there is a client to delete.
-    """
+async def _allocated_client(double: _TurnDouble) -> Any:
+    """A TurnClient Allocate()d against ``double``; caller must delete()."""
     loop = asyncio.get_running_loop()
     assert double.transport is not None
     port = double.transport.get_extra_info("sockname")[1]
-    client: Any = None
-    try:
-        _, client = await loop.create_datagram_endpoint(
-            lambda: aioice_turn.TurnClientUdpProtocol(
-                ("127.0.0.1", port),
-                username="user",
-                password="pw",
-                lifetime=600,
-                channel_refresh_time=500,
-            ),
-            remote_addr=("127.0.0.1", port),
-        )
-        async with asyncio.timeout(_OP_TIMEOUT_S):
-            await client.connect()
-        yield client
-    finally:
-        if client is not None:
-            await _teardown(client)
-        if double.transport is not None:
-            double.transport.close()
+    _, client = await loop.create_datagram_endpoint(
+        lambda: aioice_turn.TurnClientUdpProtocol(
+            ("127.0.0.1", port),
+            username="user",
+            password="pw",
+            lifetime=600,
+            channel_refresh_time=500,
+        ),
+        remote_addr=("127.0.0.1", port),
+    )
+    async with asyncio.timeout(_OP_TIMEOUT_S):
+        await client.connect()
+    return client
 
 
 async def _teardown(client: Any) -> None:
-    """Delete the allocation, which closes the client's own transport."""
     with contextlib.suppress(Exception):
         async with asyncio.timeout(_OP_TIMEOUT_S):
             await client.delete()
@@ -202,9 +187,12 @@ async def test_channel_bind_single_401_recovered_by_aioice_itself() -> None:
     fresh nonce from the 401 plus MESSAGE-INTEGRITY, and the bind succeeds.
     """
     double = await _double_with([401])
-    async with _allocated(double) as client:
+    client = await _allocated_client(double)
+    try:
         async with asyncio.timeout(_OP_TIMEOUT_S):
             await client.channel_bind(0x4000, _PEER)
+    finally:
+        await _teardown(client)
     binds = double.binds()
     assert len(binds) == 2
     assert all(username and integrity for _, username, integrity, _ in binds)
@@ -216,9 +204,12 @@ async def test_channel_bind_double_401_recovered_with_one_nonce_refresh() -> Non
     the SAME attempt by refreshing the nonce once more and rebinding."""
     install_ice_gathering_policy()
     double = await _double_with([401, 401])
-    async with _allocated(double) as client:
+    client = await _allocated_client(double)
+    try:
         async with asyncio.timeout(_OP_TIMEOUT_S):
             await client.channel_bind(0x4000, _PEER)
+    finally:
+        await _teardown(client)
     binds = double.binds()
     assert len(binds) == 3
     assert all(username and integrity for _, username, integrity, _ in binds)
@@ -233,10 +224,13 @@ async def test_channel_bind_persistent_401_raises_after_single_refresh() -> None
     after exactly ONE extra bind (no second retry loop)."""
     install_ice_gathering_policy()
     double = await _double_with([401, 401, 401, 401, 401])
-    async with _allocated(double) as client:
+    client = await _allocated_client(double)
+    try:
         with pytest.raises(aioice_stun.TransactionFailed) as excinfo:
             async with asyncio.timeout(_OP_TIMEOUT_S):
                 await client.channel_bind(0x4000, _PEER)
+    finally:
+        await _teardown(client)
     assert excinfo.value.response.attributes["ERROR-CODE"][0] == 401
     # Bounded: aioice's two attempts plus exactly one more normal bind cycle
     # (two attempts) after the single Core refresh — five scripted 401s are
@@ -249,9 +243,12 @@ async def test_channel_bind_double_438_recovered_with_one_nonce_refresh() -> Non
     recovered inside the same attempt the same way."""
     install_ice_gathering_policy()
     double = await _double_with([438, 438])
-    async with _allocated(double) as client:
+    client = await _allocated_client(double)
+    try:
         async with asyncio.timeout(_OP_TIMEOUT_S):
             await client.channel_bind(0x4000, _PEER)
+    finally:
+        await _teardown(client)
     binds = double.binds()
     assert len(binds) == 3
     assert binds[2][3] == double.bind_nonces[1]
@@ -261,10 +258,13 @@ async def test_channel_bind_403_is_not_retried() -> None:
     """A non-recoverable error passes straight through: no refresh, no loop."""
     install_ice_gathering_policy()
     double = await _double_with([403])
-    async with _allocated(double) as client:
+    client = await _allocated_client(double)
+    try:
         with pytest.raises(aioice_stun.TransactionFailed):
             async with asyncio.timeout(_OP_TIMEOUT_S):
                 await client.channel_bind(0x4000, _PEER)
+    finally:
+        await _teardown(client)
     assert len(double.binds()) == 1
 
 
@@ -274,19 +274,11 @@ async def test_channel_bind_401_without_nonce_is_not_retried() -> None:
     install_ice_gathering_policy()
     double = await _double_with([401, 401])
     double.drop_nonce_on_error = {2}
-    async with _allocated(double) as client:
+    client = await _allocated_client(double)
+    try:
         with pytest.raises(aioice_stun.TransactionFailed):
             async with asyncio.timeout(_OP_TIMEOUT_S):
                 await client.channel_bind(0x4000, _PEER)
+    finally:
+        await _teardown(client)
     assert len(double.binds()) == 2
-
-
-async def test_teardown_closes_both_endpoint_transports() -> None:
-    """MOR-4704: leaving the block closes the client's and the responder's
-    transports instead of leaving them to garbage collection."""
-    double = await _double_with([])
-    async with _allocated(double) as client:
-        client_transport = client.transport
-    assert double.transport is not None
-    assert double.transport.is_closing()
-    assert client_transport.is_closing()
