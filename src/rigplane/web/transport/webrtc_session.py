@@ -100,9 +100,8 @@ class _Session:
     def __init__(self, pc: RTCPeerConnection) -> None:
         self.pc = pc
         self.tasks: list[asyncio.Task[None]] = []
-        # Controller session owners attached through this peer's channels.
-        # A ``disconnected``/``failed`` peer fences these immediately.
-        self.controller_owners: set[str] = set()
+        # Each attachment tracks its own owners, even when siblings share a key.
+        self.controller_owners: dict[WebRtcDataChannelConnection, set[str]] = {}
         # The split-kind half (scope/audio) waiting for its partner, at most
         # ONE per (kind, carriage); it already queues its frames.
         self.unpaired: dict[tuple[str, str], WebRtcDataChannelConnection] = {}
@@ -332,7 +331,12 @@ class WebRtcSessionManager:
         server = self._server
         if session is None or server is None:
             return
-        for owner in tuple(session.controller_owners):
+        owners = {
+            owner
+            for attachment_owners in session.controller_owners.values()
+            for owner in attachment_owners
+        }
+        for owner in owners:
             try:
                 server._controller._end_session(owner)  # noqa: SLF001
             except Exception:
@@ -473,6 +477,8 @@ class WebRtcSessionManager:
             return
         while True:
             conn.serving = True  # past the attach: the handler reads freely
+            attachment_owners: set[str] = set()
+            session.controller_owners[conn] = attachment_owners
             try:
                 await server.attach_client_channel(
                     conn,
@@ -480,7 +486,7 @@ class WebRtcSessionManager:
                     params,
                     (session_id, 0),
                     transport="datachannel",
-                    track_owners=session.controller_owners,
+                    track_owners=attachment_owners,
                 )
             except ControllerError as exc:
                 if (
@@ -496,4 +502,6 @@ class WebRtcSessionManager:
                 logger.info("WebRTC: data channel %r refused: %s", kind, exc.code)
                 with contextlib.suppress(Exception):
                     await conn.close(1008, "refused")
+            finally:
+                del session.controller_owners[conn]
             return
