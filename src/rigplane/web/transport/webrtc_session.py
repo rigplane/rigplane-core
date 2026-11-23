@@ -98,11 +98,27 @@ class WebRtcSessionError(RuntimeError):
 
 
 class _Session:
-    """One live peer: its ``RTCPeerConnection`` plus spawned handler tasks."""
+    """One live peer: its ``RTCPeerConnection`` plus spawned handler tasks.
+
+    The session also owns the in-flight ``negotiate()`` task and the
+    shielded ICE-gather calls it started (MOR-4671): closing while the
+    gather is still running cancels the negotiate first and settles the
+    gather before ``pc.close()``, so no orphaned aiortc/aioice task or
+    retry timer ever fails unretrieved after the close.
+    """
 
     def __init__(self, pc: RTCPeerConnection) -> None:
         self.pc = pc
         self.tasks: set[asyncio.Task[None]] = set()
+        # The task currently running ``negotiate()`` for this peer, if any:
+        # it drives ``setLocalDescription`` (and its ICE gather) and must be
+        # cancelled before the pc closes, or aiortc schedules its
+        # fire-and-forget ``__connect`` on a closed pc.
+        self.negotiate_task: asyncio.Task[Any] | None = None
+        # Shielded inner gather calls started under this peer's negotiate
+        # (registered by the gathering hook): the close awaits them before
+        # ``pc.close()`` so no STUN retry timer fires on a closed transport.
+        self.gather_inflight: set[asyncio.Task[Any]] = set()
         # Each attachment tracks its own owners, even when siblings share a key.
         self.controller_owners: dict[WebRtcDataChannelConnection, set[str]] = {}
         self.primary_controls: set[WebRtcDataChannelConnection] = set()
@@ -111,14 +127,29 @@ class _Session:
         self.unpaired: dict[tuple[str, str], WebRtcDataChannelConnection] = {}
 
     async def close(self) -> None:
-        tasks = tuple(self.tasks)
-        for task in tasks:
+        current = asyncio.current_task()
+        negotiate = self.negotiate_task
+        self.negotiate_task = None
+        pending: list[asyncio.Task[Any]] = [
+            task for task in self.tasks if task is not current
+        ]
+        if negotiate is not None and negotiate is not current:
+            pending.append(negotiate)
+        for task in pending:
             task.cancel()
-        for task in tasks:
+        for task in pending:
             try:
                 await task
             except (asyncio.CancelledError, Exception):  # noqa: BLE001
                 pass
+        # Settle the shielded gather calls the cancelled negotiate left
+        # behind (bounded by the gather cap): their wait owns the STUN/TURN
+        # grandchildren, so awaiting them retrieves every late failure
+        # instead of leaving "never retrieved" noise. Only then close the
+        # pc, so no retry timer fires on a closed transport (MOR-4671).
+        inflight = tuple(self.gather_inflight)
+        if inflight:
+            await asyncio.gather(*inflight, return_exceptions=True)
         # Shielded: aiortc resolves its internal "closed" future only at the
         # end of pc teardown, so a cancel landing here would poison every
         # later ``pc.close()`` await (MOR-1431). The shielded teardown still
@@ -186,6 +217,7 @@ class WebRtcSessionManager:
 
         from .ice_gathering import (  # noqa: TID251
             IceGatheringPolicy,
+            apply_ice_gather_scope,
             apply_ice_gathering_policy,
         )
 
@@ -203,6 +235,9 @@ class WebRtcSessionManager:
         pc = RTCPeerConnection(RTCConfiguration(iceServers=rtc_servers))
         session_id = uuid.uuid4().hex
         session = _Session(pc)
+        # Owned by the session from here on: a close racing the gather
+        # below cancels this task first (MOR-4671).
+        session.negotiate_task = asyncio.current_task()
         self._sessions[session_id] = session
 
         @pc.on("datachannel")  # type: ignore[misc, no-untyped-call, untyped-decorator]
@@ -222,15 +257,23 @@ class WebRtcSessionManager:
                 if self._gather_policy is not None
                 else IceGatheringPolicy()
             )
-            with apply_ice_gathering_policy(policy):
+            with (
+                apply_ice_gathering_policy(policy),
+                apply_ice_gather_scope(session.gather_inflight),
+            ):
                 offer = RTCSessionDescription(sdp=offer_sdp, type=offer_type)
                 await pc.setRemoteDescription(offer)
                 answer = await pc.createAnswer()
                 await pc.setLocalDescription(answer)
         except Exception as exc:
             logger.warning("WebRTC session negotiation failed: %s", exc)
+            # A CancelledError (a close racing this gather) is not an
+            # Exception: it propagates without dropping here — the closer
+            # already popped and closed this session (MOR-4671).
             await self._drop(session_id)
             raise WebRtcSessionError(f"Failed to process SDP offer: {exc}") from exc
+        finally:
+            session.negotiate_task = None
 
         local_desc = pc.localDescription
         if local_desc is None:  # pragma: no cover - defensive
