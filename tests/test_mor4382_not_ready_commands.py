@@ -395,10 +395,26 @@ class TestWebCommandOverLanSimulator:
                     timeout=30.0,
                     description="the radio answers and becomes ready",
                 )
-                status, result = await _http_command(
-                    web, "set_freq", {"freq": 14_174_000}, cmd_id="mor4382-awake"
-                )
-                assert status == 200 and result["ok"] is True, (status, result)
+                # Readiness is CI-V liveness; the receiver selection can lag
+                # the first answer under load (the rehearsal run 44869231087
+                # window), and until it lands the same command keeps
+                # answering the retriable 504 command_timeout -- never the
+                # terminal receiver_not_selected. Retry, bounded, until the
+                # write completes (MOR-4382).
+                deadline = time.monotonic() + 30.0
+                while True:
+                    status, result = await _http_command(
+                        web, "set_freq", {"freq": 14_174_000}, cmd_id="mor4382-awake"
+                    )
+                    if status == 200:
+                        break
+                    assert status == 504 and result["error"] == "command_timeout", (
+                        status,
+                        result,
+                    )
+                    assert time.monotonic() < deadline, (status, result)
+                    await asyncio.sleep(0.05)
+                assert result["ok"] is True, (status, result)
                 # The HTTP response awaits the poller-settled future. Check
                 # the radio readback as well, rather than an enqueue ack.
                 assert await radio.get_freq() == 14_174_000
@@ -514,11 +530,22 @@ class TestRigctldMirrorReadiness:
                     )
                     if receiver == 1:
                         await radio.select_receiver(1)
-                    recovered_freq = await radio.get_freq(receiver=receiver)
-                    assert (
-                        await _exchange(writer, reader, command)
-                        == f"{recovered_freq}\n".encode()
+                    # Readiness is CI-V liveness; the receiver selection can
+                    # lag the first answer under load (the rehearsal run
+                    # 44869231087 window), and until it lands the core read
+                    # answers the retriable not-ready and ``f`` keeps
+                    # answering RPRT -5. Retry both, bounded (MOR-4382).
+                    recovered_freq = await _retry_while_not_ready(
+                        lambda: asyncio.wait_for(radio.get_freq(receiver=receiver), 15),
+                        timeout=30.0,
                     )
+                    deadline = time.monotonic() + 30.0
+                    while (
+                        reply := await _exchange(writer, reader, command)
+                    ) == b"RPRT -5\n":
+                        assert time.monotonic() < deadline, reply
+                        await asyncio.sleep(0.05)
+                    assert reply == f"{recovered_freq}\n".encode(), reply
                 finally:
                     writer.close()
                     await writer.wait_closed()

@@ -88,19 +88,27 @@ class AudioRecoveryRuntime:
     def capture_snapshot(self) -> _AudioSnapshot | None:
         """Capture current audio state for recovery after reconnect.
 
-        Returns None if no audio stream is active.
+        Returns None when nothing is recoverable: no live session demand,
+        no active legacy stream, and no legacy demand still registered.
         """
         if self._session_with_demand() is not None:
             # Session-managed audio (MOR-586): the session's LIVE demand —
             # not the legacy stream state — decides recoverability.
             return _SESSION_MANAGED_SNAPSHOT
 
-        if self._host._audio_stream is None:
-            return None
+        stream = self._host._audio_stream
+        if stream is None or stream.state == AudioState.IDLE:
+            # Torn down — or freshly rebuilt and still idle.  The CI-V
+            # watchdog's tail-preemption handoff (``CivRuntime.
+            # _watchdog_recover`` re-running ``soft_reconnect`` with
+            # ``preempt=``) captures its snapshot only after the preempted
+            # run's ``_teardown_audio_transport`` already cleared the stream,
+            # so the registered callbacks / PCM format are then the only
+            # record of the demand (MOR-3930).  Keep producing a snapshot
+            # from them — the same rule live session demand follows above.
+            return self._legacy_demand_snapshot()
 
-        state = self._host._audio_stream.state
-        if state == AudioState.IDLE:
-            return None
+        state = stream.state
 
         rx_active = state in (AudioState.RECEIVING, AudioState.TRANSMITTING) and (
             self._host._pcm_rx_user_callback is not None
@@ -130,6 +138,37 @@ class AudioRecoveryRuntime:
             opus_rx_callback=self._host._opus_rx_user_callback,
             pcm_params=pcm_params,
             jitter_depth=jitter_depth,
+        )
+
+    def _legacy_demand_snapshot(self) -> _AudioSnapshot | None:
+        """Snapshot built from still-registered legacy demand with the
+        stream torn down or freshly rebuilt (IDLE).
+
+        ``_teardown_audio_transport`` clears ``_audio_stream`` without
+        touching the user callbacks or the PCM TX format, so after a
+        recovery preemption these markers are the only record of what was
+        streaming.  Returns None when no legacy demand is registered.
+        """
+        h = self._host
+        rx_active = (
+            h._pcm_rx_user_callback is not None
+            or h._opus_rx_user_callback is not None
+        )
+        tx_active = h._pcm_tx_fmt is not None
+        if not rx_active and not tx_active:
+            return None
+        return _AudioSnapshot(
+            rx_active=rx_active,
+            tx_active=tx_active,
+            pcm_mode=h._pcm_rx_user_callback is not None or h._pcm_tx_fmt is not None,
+            pcm_rx_callback=h._pcm_rx_user_callback,
+            opus_rx_callback=h._opus_rx_user_callback,
+            pcm_params=h._pcm_tx_fmt or h._pcm_transcoder_fmt,
+            jitter_depth=(
+                h._pcm_rx_jitter_depth
+                if h._pcm_rx_user_callback is not None
+                else h._opus_rx_jitter_depth
+            ),
         )
 
     async def recover(self, snapshot: _AudioSnapshot) -> None:

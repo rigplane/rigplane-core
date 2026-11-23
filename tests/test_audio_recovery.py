@@ -198,6 +198,59 @@ class TestAudioSnapshotCapture:
         assert snap.pcm_mode is True
         assert snap.pcm_rx_callback is rx_cb
 
+    def test_snapshot_preserves_legacy_opus_rx_demand_when_stream_torn_down(
+        self,
+    ) -> None:
+        """MOR-3930: the CI-V watchdog's tail-preemption handoff
+        (``CivRuntime._watchdog_recover`` re-running ``soft_reconnect`` with
+        ``preempt=``) captures its snapshot only after the preempted run's
+        ``_teardown_audio_transport`` already cleared ``_audio_stream`` —
+        without touching the registered user callback.  The callback is then
+        the only record of the demand, so the snapshot must preserve it.
+        """
+        radio = _make_radio()
+        cb = MagicMock()
+        radio._opus_rx_user_callback = cb
+        radio._opus_rx_jitter_depth = 3
+        # Exactly what the preempted run's teardown leaves behind.
+        radio._audio_stream = None
+
+        snap = radio._audio_runtime.capture_snapshot()
+
+        assert snap is not None
+        assert snap.rx_active is True
+        assert snap.tx_active is False
+        assert snap.pcm_mode is False
+        assert snap.opus_rx_callback is cb
+        assert snap.jitter_depth == 3
+
+    def test_snapshot_preserves_legacy_demand_when_stream_rebuilt_idle(
+        self,
+    ) -> None:
+        """MOR-3930: the preempted run may instead have left a freshly
+        rebuilt IDLE stream (its ``_ensure_audio_transport`` ran before the
+        cancel).  The registered demand must be preserved there too."""
+        radio = _make_radio()
+        _install_audio_stream(radio)  # FakeAudioStream starts IDLE
+        cb = MagicMock()
+        radio._opus_rx_user_callback = cb
+        radio._opus_rx_jitter_depth = 3
+
+        snap = radio._audio_runtime.capture_snapshot()
+
+        assert snap is not None
+        assert snap.rx_active is True
+        assert snap.pcm_mode is False
+        assert snap.opus_rx_callback is cb
+        assert snap.jitter_depth == 3
+
+    def test_snapshot_torn_down_without_legacy_demand_returns_none(self) -> None:
+        """No stream and no registered demand stays unrecoverable."""
+        radio = _make_radio()
+        radio._audio_stream = None
+
+        assert radio._audio_runtime.capture_snapshot() is None
+
 
 # ---------------------------------------------------------------------------
 # Recovery after reconnect

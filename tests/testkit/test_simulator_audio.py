@@ -228,7 +228,13 @@ async def _server_with_guarded_dummy(
     for _ in range(10):
         server = MockIcomRadio()
         await server.start()
-        advertised = await advertise(server)
+        try:
+            advertised = await advertise(server)
+        except BaseException:
+            # A failed advertisement (e.g. a ctrl.recv timeout on a loaded
+            # host) must not leak the started server.
+            await server.stop()
+            raise
         if advertised in (server.control_port, server.civ_port):
             await server.stop()
             raise AssertionError(f"advertised {advertised} is a live endpoint")
