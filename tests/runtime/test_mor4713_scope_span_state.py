@@ -7,7 +7,6 @@ update -- not stay one step behind until the next change.
 """
 
 import asyncio
-import time
 
 import aiohttp
 import pytest
@@ -41,17 +40,25 @@ async def _state_span(client: aiohttp.ClientSession, base: str) -> int | None:
     return ServerStatePublic.model_validate(payload, strict=True).scopeControls.span
 
 
-async def _wait_state_span(
-    client: aiohttp.ClientSession, base: str, expected: int, timeout: float
-) -> int | None:
-    deadline = time.monotonic() + timeout
-    last: int | None = None
-    while time.monotonic() < deadline:
-        last = await _state_span(client, base)
-        if last == expected:
-            return last
-        await asyncio.sleep(0.05)
-    return last
+class _SpanAckSimulator(ScopeWindowSimulator):
+    def __init__(self) -> None:
+        super().__init__(scope_stream=True, dual_receiver=True)
+        self.waveforms_held = False
+
+    def _dispatch_scope(self, payload: bytes, from_addr: int) -> bytes | None:
+        main_span = b"\x15\x00"
+        if self.waveforms_held and payload == main_span:
+            # Keep background span readback from satisfying the ACK assertion.
+            return None
+        response = super()._dispatch_scope(payload, from_addr)
+        if payload.startswith(main_span) and len(payload) > len(main_span):
+            self.waveforms_held = True
+        return response
+
+    def _scope_streaming_receivers(self) -> list[int]:
+        if self.waveforms_held:
+            return []
+        return super()._scope_streaming_receivers()
 
 
 async def test_state_span_rejects_float_on_the_wire() -> None:
@@ -83,7 +90,7 @@ async def test_state_span_tracks_subscription_span_steps() -> None:
         ):
             applied_waveform.set()
 
-    sim = ScopeWindowSimulator(scope_stream=True, dual_receiver=True)
+    sim = _SpanAckSimulator()
     await sim.start()
     radio = IcomRadio(
         "127.0.0.1",
@@ -134,23 +141,27 @@ async def test_state_span_tracks_subscription_span_steps() -> None:
                                 if message.type is aiohttp.WSMsgType.TEXT:
                                     decode_scope_granted(message.data)
                                     break
+                        expected = sim.profile.scope_span_view_widths_hz.index(
+                            expected_width_hz
+                        )
+                        assert sim.waveforms_held, (
+                            "sim did not acknowledge a span write"
+                        )
+                        assert sim.views[0][1] == expected, (
+                            f"sim did not apply width {expected_width_hz}: {sim.views[0]}"
+                        )
+                        seen = await _state_span(client, base)
+                        assert seen == expected, (
+                            f"state span stayed {seen}, want {expected} "
+                            f"after ACK for width {expected_width_hz}, before waveform"
+                        )
+                        sim.waveforms_held = False
                         async with asyncio.timeout(10):
                             while True:
                                 message = await ws.receive()
                                 if message.type is aiohttp.WSMsgType.BINARY:
                                     break
                             await applied_waveform.wait()
-                        expected = sim.profile.scope_span_view_widths_hz.index(
-                            expected_width_hz
-                        )
-                        assert sim.views[0][1] == expected, (
-                            f"sim did not apply width {expected_width_hz}: {sim.views[0]}"
-                        )
-                        seen = await _wait_state_span(client, base, expected, 15)
-                        assert seen == expected, (
-                            f"state span stayed {seen}, want {expected} "
-                            f"after subscribing width {expected_width_hz}"
-                        )
     finally:
         await server.stop()
         await radio.disconnect()
