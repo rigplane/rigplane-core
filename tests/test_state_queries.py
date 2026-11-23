@@ -1770,6 +1770,6 @@ class TestFetchInitialState:
         message = debug_records[0].getMessage()
         assert f"command=0x{failing.command:02X}" in message
         assert "RuntimeError" in message
-        # the sweep continues past the failure: every query is still attempted
-        assert call_count == len(queries)
+        # MOR-3924 retries the failed availability source before the sweep.
+        assert call_count == len(queries) + 1
         assert radio._initial_state_fetched is True
