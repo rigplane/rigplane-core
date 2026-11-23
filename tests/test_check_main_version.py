@@ -321,5 +321,5 @@ def test_all_repo_tags_parse() -> None:
     ).stdout.split()
     if not tags:
         pytest.skip("checkout has no tags (shallow clone or file mirror)")
-    for tag in tags:
-        checker.version_key(tag.removeprefix("v"))
+    keys = [checker.version_key(t.removeprefix("v")) for t in tags]
+    assert len(keys) == len(tags)
