@@ -677,15 +677,33 @@ describe('per-VFO band reading (MOR-4711)', () => {
     ...overrides,
   });
 
-  it('the inactive slot carries its own band; the active slot aliases the receiver entry', () => {
+  it('each slotted position carries the band of its own slot leaf', () => {
     // Identity pins run on the RAW projection: `validateRadioViewModel`
     // rebuilds every field object (same convention as the MOR-2526 pins).
     const raw = toRadioViewModel(abState(), abCaps)!;
     const view = validateRadioViewModel(raw);
     expect(view.band!.receiverBands.main.reading).toEqual({ status: 'known', value: '40m' });
-    expect(raw.vfos[0]!.band).toBe(raw.band!.receiverBands.main);
+    expect(view.vfos[0]!.band!.reading).toEqual({ status: 'known', value: '40m' });
     expect(view.vfos[1]!.band!.reading).toEqual({ status: 'known', value: '20m' });
     expect(view.vfos[1]!.band!.availability).toEqual({ structural: true, operational: true });
+    // A literal slotted position derives from the slot leaf it displays —
+    // it does NOT alias the receiver entry, even while active: the two
+    // leaves are projected independently (see the transition pin below).
+    expect(raw.vfos[0]!.band).not.toBe(raw.band!.receiverBands.main);
+  });
+
+  it('after a selection change the new active slot names its own band, not the stale receiver leaf', () => {
+    // Selection moved to B, but the receiver's top-level frequency has not
+    // refreshed yet and still holds A's 7.074 MHz. B's panel displays its
+    // own observed 14.219 MHz, so its band must read 20m — aliasing the
+    // receiver entry by `isActiveSlot` would name the stale 40m here.
+    const view = model(abState({
+      main: { ...abState().main, activeSlot: 'B' },
+    }), abCaps);
+    expect(view.vfos[1]!.isActiveSlot).toBe(true);
+    expect(view.band!.receiverBands.main.reading).toEqual({ status: 'known', value: '40m' });
+    expect(view.vfos[1]!.band!.reading).toEqual({ status: 'known', value: '20m' });
+    expect(view.vfos[0]!.band!.reading).toEqual({ status: 'known', value: '40m' });
   });
 
   it('an unobserved slot frequency keeps that slot\'s band unknown, never the receiver\'s', () => {

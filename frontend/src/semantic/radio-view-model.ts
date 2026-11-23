@@ -127,11 +127,15 @@ export interface VfoViewModel {
    * entry derives from the receiver's top-level (active-slot) frequency, so
    * on a slotted A/B radio the inactive slot's panel would repeat the active
    * slot's band; this field gives every position its own answer from the ONE
-   * `findActiveBand` derivation. A position that reads its receiver's
-   * top-level frequency (unslotted, unknown-slot, relative-selected, and the
-   * active slot itself) ALIASES the matching `receiverBands` entry — one
-   * object, never a second opinion. Absent exactly when the band group has
-   * no choice set, the same structural gate `receiverBands` carries.
+   * `findActiveBand` derivation. A position whose frequency source IS the
+   * receiver's top-level leaf (unslotted, unknown-slot, relative-selected)
+   * ALIASES the matching `receiverBands` entry — one object, never a second
+   * opinion. A literal slotted position (the active slot included) derives
+   * from its own slot leaf, the same leaf its display reads: right after a
+   * selection change the receiver leaf can still hold the old slot's
+   * frequency, and the panel must not name that stale band. Absent exactly
+   * when the band group has no choice set, the same structural gate
+   * `receiverBands` carries.
    */
   readonly band?: BandField<string>;
 }
