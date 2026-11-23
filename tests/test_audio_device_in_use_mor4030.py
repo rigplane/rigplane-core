@@ -15,6 +15,7 @@ A fake ``sounddevice`` stands in for PortAudio: no audio device, no Windows.
 
 from __future__ import annotations
 
+import ctypes
 import logging
 import threading
 
@@ -394,7 +395,11 @@ class _FakeCollection:
         self._endpoints = endpoints
 
     def call(self, slot: int, argtypes: tuple, out) -> int:
-        out.value = len(self._endpoints)
+        # The production count call passes ``byref(count)``: a byref object
+        # takes no attribute writes, so write through the pointer, as the
+        # real vtable function would (the cast pattern of
+        # tests/test_usb_audio_close_ownership.py).
+        ctypes.cast(out, ctypes.POINTER(ctypes.c_uint))[0] = len(self._endpoints)
         return 0
 
     def child(self, slot: int, argtypes: tuple, index: int) -> _FakeEndpoint:
