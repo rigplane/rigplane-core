@@ -122,6 +122,22 @@ function bindRunPullRequest(run, liveBaseSha) { const liveMain = assertSha(liveB
   if (associatedBase !== liveMain) { throw new ObservationError('stale_base', 'workflow run recorded base is not live main', {publish: false, targetSha: headSha}); }
   return {pullNumber, headSha, baseSha: associatedBase};
 }
+// MOR-4647: release branches carry quick.yml with `branches: [main,
+// 'release/**']` (MOR-4214), so every completed release-target legacy run
+// also fires this observer. The observation domain is live main by design,
+// so a release-target completion skips green without publication, before the
+// main-only binding assessment (which would fail it as invalid_binding and
+// red both jobs while posting nothing). Anything not shaped exactly like a
+// canonical release-target association falls through and still fails closed.
+function releaseTargetAssociation(run) {
+  if (!Array.isArray(run?.pull_requests) || run.pull_requests.length !== 1) { return null; }
+  const associated = run.pull_requests[0];
+  if (!Number.isSafeInteger(associated?.number) || associated.number <= 0) { return null; }
+  if (!canonicalRunRepository(associated?.head?.repo) || !canonicalRunRepository(associated?.base?.repo)) { return null; }
+  const ref = associated?.base?.ref;
+  if (typeof ref !== 'string' || !ref.startsWith('release/') || ref.length <= 'release/'.length) { return null; }
+  return associated;
+}
 function bindPull(pull, liveBaseSha, expectedHeadSha = null) { const headSha = assertSha(pull.head?.sha, 'pull request head');
   const baseSha = assertSha(pull.base?.sha, 'pull request base');
   if (expectedHeadSha !== null && headSha !== expectedHeadSha) { throw new ObservationError('stale_head', 'run head is no longer current', { publish: false, targetSha: headSha, }); }
@@ -293,6 +309,7 @@ function assertJobTopologyUnchanged(jobs, expectedTopology, headSha) { if (jobTo
 async function assessWorkflowRun({github, context, liveBaseSha}) { const payloadRun = context.payload.workflow_run;
   if (payloadRun?.event !== 'pull_request') { return assessment({kind: 'workflow_run', code: 'ignored_non_pr'}); }
   const response = await github.request( 'GET /repos/{owner}/{repo}/actions/runs/{run_id}', {owner: REPOSITORY.owner, repo: REPOSITORY.repo, run_id: payloadRun.id}, ); const run = response.data;
+  if (releaseTargetAssociation(run) !== null) { return assessment({kind: 'workflow_run', code: 'out_of_domain'}); }
   let headSha = assertSha(run.head_sha, 'workflow run head'); let runBinding = null;
   try { runBinding = await assertCanonicalRun(github, context, run, payloadRun, liveBaseSha);
     headSha = runBinding.headSha;
@@ -335,4 +352,4 @@ async function assess({github, context, liveBaseSha}) { assertSha(liveBaseSha, '
   if (context.eventName === 'workflow_run') { return assessWorkflowRun({github, context, liveBaseSha}); }
   return assessment({kind: 'unknown', code: 'ignored_event'});
 }
-module.exports = { CONTROL_PATHS, LEGACY_WORKFLOW, OBSERVATION_CONTEXT, OBSERVER_PATH, REPOSITORY, assess, assertControlsUnchanged, assertJobTopologyUnchanged, assertRunPublicationSnapshot, assertUniqueCurrentPullMatchesRun, bindPull, bindRunPullRequest, evaluateJobTopology, getTreeEntry, jobTopologySnapshot, listAttemptJobs, rebindForPublication, relevantLifecycle, stableAssessment, };
+module.exports = { CONTROL_PATHS, LEGACY_WORKFLOW, OBSERVATION_CONTEXT, OBSERVER_PATH, REPOSITORY, assess, assertControlsUnchanged, assertJobTopologyUnchanged, assertRunPublicationSnapshot, assertUniqueCurrentPullMatchesRun, bindPull, bindRunPullRequest, evaluateJobTopology, getTreeEntry, jobTopologySnapshot, listAttemptJobs, rebindForPublication, releaseTargetAssociation, relevantLifecycle, stableAssessment, };
