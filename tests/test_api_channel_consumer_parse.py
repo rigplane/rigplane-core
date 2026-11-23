@@ -9,6 +9,7 @@ reading what the producer writes fails here.
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -101,17 +102,28 @@ def test_malformed_response_head_raises_the_typed_error(payload: bytes) -> None:
         ApiResponseHead.parse(payload)
 
 
-def test_response_head_headers_is_required_by_the_wire_contract() -> None:
+def _server_frame(payload: bytes) -> ApiResponseHead | None:
+    """A head read the way an out-of-process consumer reads it: frame, then payload."""
+    return parse_api_server_frame(ApiFrame(int(ApiMessageType.RES_HEAD), 1, payload))
+
+
+@pytest.mark.parametrize(
+    "parse",
+    [ApiResponseHead.parse, _server_frame],
+    ids=["response_head", "server_frame"],
+)
+def test_response_head_headers_is_required_by_the_wire_contract(
+    parse: Callable[[bytes], ApiResponseHead | None],
+) -> None:
     """The wire contract marks ``headers`` required — the browser decoder
-    rejects a head without it — so a missing key is the typed contract
-    error, not an empty mapping. A present-but-empty dict stays valid."""
+    rejects a head without it — so through either consumer parser a missing
+    key is the typed contract error, not an empty mapping. A present-but-empty
+    dict stays valid."""
     with pytest.raises(ApiPayloadError, match="'headers' must be an object"):
-        ApiResponseHead.parse(b'{"status": 204}')
+        parse(b'{"status": 204}')
     with pytest.raises(ApiPayloadError, match="'headers' must be an object"):
-        ApiResponseHead.parse(b'{"status": 204, "headers": null}')
-    assert ApiResponseHead.parse(b'{"status": 204, "headers": {}}') == ApiResponseHead(
-        204, {}
-    )
+        parse(b'{"status": 204, "headers": null}')
+    assert parse(b'{"status": 204, "headers": {}}') == ApiResponseHead(204, {})
 
 
 @pytest.mark.parametrize(
