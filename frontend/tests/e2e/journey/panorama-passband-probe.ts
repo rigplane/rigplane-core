@@ -69,12 +69,28 @@ interface Gap {
 }
 
 /** The last sample before the window describes its initial state until the next sample. */
-export function missingLivePassband(samples: PassbandSample[], fromT: number, toT: number): PassbandSample | undefined {
+function samplesInWindow(samples: PassbandSample[], fromT: number, toT: number): PassbandSample[] {
   const first = samples.findIndex(sample => sample.t >= fromT);
   const start = first === -1 ? samples.length - 1
     : samples[first]?.t === fromT ? first : Math.max(0, first - 1);
-  return samples.find((sample, index) => index >= start && sample.t <= toT
-    && !sample.overlay && sample.gates?.spanPositive !== false);
+  return samples.slice(start).filter(sample => sample.t <= toT);
+}
+
+export function missingLivePassband(samples: PassbandSample[], fromT: number, toT: number): PassbandSample | undefined {
+  return samplesInWindow(samples, fromT, toT)
+    .find(sample => !sample.overlay && sample.gates?.spanPositive === true);
+}
+
+/** Count each continuous loss of the sample plane, including DOM-only and carried outages. */
+export function scopeOutages(samples: PassbandSample[], fromT: number, toT: number): PassbandSample[] {
+  const outages: PassbandSample[] = [];
+  let inOutage = false;
+  for (const sample of samplesInWindow(samples, fromT, toT)) {
+    const offline = sample.gates?.spanPositive !== true;
+    if (offline && !inOutage) outages.push(sample);
+    inOutage = offline;
+  }
+  return outages;
 }
 
 /**

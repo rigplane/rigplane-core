@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { missingLivePassband, paintedOutages, passbandGaps, requireProbeStimulus } from '../../../../tests/e2e/journey/panorama-passband-probe';
+import { missingLivePassband, paintedOutages, passbandGaps, requireProbeStimulus, scopeOutages } from '../../../../tests/e2e/journey/panorama-passband-probe';
 
 describe('passband probe evidence', () => {
   it('rejects no-op tuning and no-op zoom witnesses', () => {
@@ -10,7 +10,7 @@ describe('passband probe evidence', () => {
   });
   const sample = (t: number, overlay: boolean, kind: 'frame' | 'dom' = 'frame') =>
     ({ t, kind, overlay, gates: null, state: null });
-  it('detects a live absence carried into the interval when recovery is the next sample', () => {
+  it('uses the sampled state at the window boundary for overlay gaps and scope outages', () => {
     const absent = {
       ...sample(-5, false),
       gates: {
@@ -24,6 +24,15 @@ describe('passband probe evidence', () => {
     const offline = { ...absent, gates: { ...absent.gates, spanPositive: false } };
     expect(missingLivePassband([absent, offline, sample(200, true)], 0, 200)).toBeUndefined();
     expect(missingLivePassband([absent, sample(0, true)], 0, 200)).toBeUndefined();
+    const live = { ...absent, overlay: true };
+    const carried = { ...offline, t: -1 };
+    const domOnly = { ...offline, t: 30, kind: 'dom' as const };
+    expect(scopeOutages([
+      live, carried, { ...offline, t: 10 }, { ...live, t: 20 }, domOnly,
+      { ...live, t: 40 }, { ...offline, t: 60 },
+    ], 0, 50)).toEqual([carried, domOnly]);
+    expect(scopeOutages([carried, { ...live, t: 0 }], 0, 50)).toEqual([]);
+    expect(scopeOutages([live, sample(10, false)], 0, 50)).toHaveLength(1);
   });
   it('rejects an empty interval or one with no state before it instead of passing', () => {
     expect(() => passbandGaps([], 0, 1000)).toThrow('recorded nothing');

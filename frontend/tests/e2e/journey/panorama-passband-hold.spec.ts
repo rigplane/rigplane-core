@@ -7,7 +7,7 @@ import { journeyPort, startJourneyServer } from './server-process';
 import { openPanorama } from './panorama-ready';
 import { expectPanoramaSettled, watchPanoramaErrors } from './panorama-guards';
 import {
-  expectFollowWindowOnVfo, gateDiff, installSampler, missingLivePassband, passbandGaps, settlePassband, watchScopeFrames,
+  expectFollowWindowOnVfo, gateDiff, installSampler, missingLivePassband, passbandGaps, scopeOutages, settlePassband, watchScopeFrames,
 } from './panorama-passband-probe';
 
 // ── MOR-4387 owner build-4, item 1: the passband overlay must not blink ──
@@ -36,9 +36,11 @@ async function expectPassbandHeld(
   expect(toT).toBeGreaterThan(fromT);
   const samples = await page.evaluate(() => window.passbandSamples);
   const gaps = passbandGaps(samples, fromT, toT).map(gap => ({ ...gap, gateDiff: gateDiff(gap) }));
-  await writeFile(info.outputPath(file), JSON.stringify({ fromT, toT, gaps, samples }, null, 2));
-  // A scope outage clears the sample plane. Once it is live, the overlay
-  // must be present throughout the transition, including the first live view.
+  const outages = scopeOutages(samples, fromT, toT);
+  await writeFile(info.outputPath(file), JSON.stringify({ fromT, toT, outages, gaps, samples }, null, 2));
+  // Retuning keeps the follow subscription. A zoom replaces the grant while
+  // the same source stays active and its previous pixels remain available.
+  expect(outages, 'scope sample plane lost during the transition').toHaveLength(0);
   const missing = missingLivePassband(samples, fromT, toT);
   expect(missing, 'passband overlay missing from a live scope view').toBeUndefined();
 }
@@ -61,8 +63,7 @@ for (const [index, model] of ['IC-705', 'IC-7300'].entries()) {
       const fromT = await page.evaluate(() => performance.now());
       // Human-speed burst: 12 ArrowRight presses ~100 ms apart.
       for (let i = 0; i < 12; i++) {
-        await page.keyboard.press('ArrowRight');
-        await page.waitForTimeout(100);
+        await page.keyboard.press('ArrowRight', { delay: 100 });
       }
       const finalHz = beforeHz + 12_000;
       await expect.poll(() => radioFrequency(page, port)).toBe(finalHz);
@@ -128,8 +129,7 @@ for (const [index, model] of ['IC-705', 'IC-7300'].entries()) {
       const beforeHz = await radioFrequency(page, port);
       const fromT = await page.evaluate(() => performance.now());
       for (let i = 0; i < 3; i++) {
-        await page.keyboard.press('ArrowRight');
-        await page.waitForTimeout(700);
+        await page.keyboard.press('ArrowRight', { delay: 700 });
       }
       const finalHz = beforeHz + 3_000;
       await expect.poll(() => radioFrequency(page, port)).toBe(finalHz);
