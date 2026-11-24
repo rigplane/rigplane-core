@@ -3,7 +3,7 @@ import type { ScopePassbandDiagnostics } from '../../../src/lib/runtime/adapters
 import type { ServerState } from '../../../src/lib/types/state';
 import { writeFile } from 'node:fs/promises';
 import { expect, test } from '@playwright/test';
-import { startJourneyServer } from './server-process';
+import { journeyPort, startJourneyServer } from './server-process';
 import { openPanorama } from './panorama-ready';
 import { expectPanoramaSettled, watchPanoramaErrors } from './panorama-guards';
 import {
@@ -45,7 +45,7 @@ async function expectPassbandHeld(
 
 for (const [index, model] of ['IC-705', 'IC-7300'].entries()) {
   test(`${model}: passband overlay holds through a 12-step arrow burst (MOR-4387 owner b4)`, async ({ page }, info) => {
-    const port = 18920 + index;
+    const port = journeyPort(18920 + index);
     const server = await startJourneyServer(port, 14_250_000,
       ['--model', model, '--evidence', info.outputPath('radio.jsonl')], 'tests/e2e/panorama_web_server.py');
     const watch = watchPanoramaErrors(page);
@@ -75,7 +75,7 @@ for (const [index, model] of ['IC-705', 'IC-7300'].entries()) {
   });
 
   test(`${model}: passband overlay holds through a ZOOM preset switch in CENTER (MOR-4387 owner b4)`, async ({ page }, info) => {
-    const port = 18930 + index;
+    const port = journeyPort(18930 + index);
     const server = await startJourneyServer(port, 14_250_000,
       ['--model', model, '--evidence', info.outputPath('radio.jsonl')], 'tests/e2e/panorama_web_server.py');
     const watch = watchPanoramaErrors(page);
@@ -109,7 +109,7 @@ for (const [index, model] of ['IC-705', 'IC-7300'].entries()) {
   });
 
   test(`${model}: passband overlay holds through arrow retunes inside a pinned band preset (explicit view)`, async ({ page }, info) => {
-    const port = 18940 + index;
+    const port = journeyPort(18940 + index);
     const server = await startJourneyServer(port, 14_250_000,
       ['--model', model, '--evidence', info.outputPath('radio.jsonl')], 'tests/e2e/panorama_web_server.py');
     const watch = watchPanoramaErrors(page);

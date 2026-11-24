@@ -60,7 +60,8 @@ the earlier rules only; it does not implement these two additions.
 
 The trusted base classifier predicts whether substantive `quick` must run. Workflow-level success with that job skipped
 is unknown/failure. The legacy run has six job groups: `classify`, the build-tier halves `quick-frontend` and `quick-python`,
-each half's sharded matrix tier (`quick-frontend-e2e (visual|guards|journey)` and `quick-python-tests (1)`–`(4)`, MOR-4373),
+each half's sharded matrix tier (`quick-frontend-e2e (visual|guards|journey-1..3)` and `quick-python-tests (1)`–`(4)`, MOR-4373; the journey
+legs are the MOR-4685 `--shard=i/n` split),
 and the `quick` aggregator on the light pool. Each tier appears either as its full leg set (each leg once, on its half's
 build pool) or as the single skipped entry a job-level-skipped matrix collapses to. A base `frontend` route requires
 `quick-frontend` and its e2e legs to have run, and a base `ci` route requires `quick-python`; a base `core` route pins
