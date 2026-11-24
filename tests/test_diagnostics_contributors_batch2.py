@@ -22,12 +22,15 @@ from typing import Any
 import pytest
 
 from rigplane.audio.route import AudioConfigSource
+from rigplane.core.radio_protocol import RadioIdentity, RadioIdentityStatus
 from rigplane.diagnostics import _discovery
 from rigplane.diagnostics.contributor import BundleContext
 from rigplane.diagnostics.contributors import (
     AudioContributor,
     RadioContributor,
 )
+from rigplane.diagnostics.contributors.radio import RadioConnectionFacts
+from rigplane import RadioConnectionState
 from rigplane.types import AudioCodec
 
 
@@ -159,6 +162,55 @@ def test_radio_includes_model_and_backend(tmp_path: Path) -> None:
     payload = json.loads((tmp_path / "radio.json").read_text())
     assert payload["model"] == "IC-7610"
     assert payload["backend"] == "rigplane"
+
+
+def test_radio_connection_facts_name_a_silent_serial_link(
+    tmp_path: Path,
+) -> None:
+    """MOR-4654: the support report says plainly what is wrong.
+
+    A silent-but-present serial port contributes its link facts —
+    state, identity answer, the plain-words error, the link-loss
+    episode count — so triage sees the silence without reading logs.
+    A stub radio without that surface contributes nulls, never a crash.
+    """
+
+    class SilentSerialRadio:
+        model = "IC-705"
+        backend_id = "serial"
+        connected = False
+        conn_state = RadioConnectionState.RECONNECTING
+        connection_identity = RadioIdentity(
+            status=RadioIdentityStatus.NO_RESPONSE,
+            expected_model="IC-705",
+        )
+        last_error = "No answer from the radio on /dev/cu.usbserial-1420"
+        serial_reconnects_total = 3
+
+    RadioContributor().contribute(_make_ctx(radio=SilentSerialRadio()), tmp_path)
+    payload = json.loads((tmp_path / "radio.json").read_text())
+    expected: RadioConnectionFacts = {
+        "connected": False,
+        "conn_state": RadioConnectionState.RECONNECTING.value,
+        "identity_status": RadioIdentityStatus.NO_RESPONSE.value,
+        "last_error": "No answer from the radio on /dev/cu.usbserial-1420",
+        "link_loss_episodes": 3,
+    }
+    assert payload["connection"] == expected
+    # The device node is not a secret (path redaction only masks home
+    # directories) and names the silent port for triage.
+    assert "/dev/cu.usbserial-1420" in (payload["connection"]["last_error"] or "")
+
+    RadioContributor().contribute(_make_ctx(radio=_PlainRadio()), tmp_path)
+    payload = json.loads((tmp_path / "radio.json").read_text())
+    nulls: RadioConnectionFacts = {
+        "connected": False,
+        "conn_state": None,
+        "identity_status": None,
+        "last_error": None,
+        "link_loss_episodes": None,
+    }
+    assert payload["connection"] == nulls
 
 
 def test_radio_backend_id_wins_over_class_name(tmp_path: Path) -> None:
