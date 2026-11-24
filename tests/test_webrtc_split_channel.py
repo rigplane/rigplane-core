@@ -49,6 +49,8 @@ class _FakeChannel:
         maxPacketLifeTime: int | None = None,
     ) -> None:
         self.label = label
+        self.id = 0
+        self.bufferedAmount = 0
         self.ordered = ordered
         self.maxRetransmits = maxRetransmits
         self.maxPacketLifeTime = maxPacketLifeTime

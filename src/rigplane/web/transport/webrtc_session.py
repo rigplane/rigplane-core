@@ -102,6 +102,7 @@ class _Session:
 
     def __init__(self, pc: RTCPeerConnection) -> None:
         self.pc = pc
+        self.channels: set[RTCDataChannel] = set()
         self.tasks: set[asyncio.Task[None]] = set()
         # Each attachment tracks its own owners, even when siblings share a key.
         self.controller_owners: dict[WebRtcDataChannelConnection, set[str]] = {}
@@ -114,6 +115,22 @@ class _Session:
         # The split-kind half (scope/audio) waiting for its partner, at most
         # ONE per (kind, carriage); it already queues its frames.
         self.unpaired: dict[tuple[str, str], WebRtcDataChannelConnection] = {}
+
+    async def log_channel_buffers(self, session_id: str) -> None:
+        while True:
+            await asyncio.sleep(1)
+            if self.pc.connectionState != "connected":
+                continue
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(
+                    "WebRTC session %s channel buffered bytes (label, stream id, bytes): %s",
+                    session_id,
+                    sorted(
+                        (channel.label, channel.id, channel.bufferedAmount)
+                        for channel in self.channels
+                        if channel.id is not None
+                    ),
+                )
 
     async def close(self) -> None:
         tasks = tuple(self.tasks)
@@ -241,6 +258,11 @@ class WebRtcSessionManager:
         if local_desc is None:  # pragma: no cover - defensive
             await self._drop(session_id)
             raise WebRtcSessionError("Failed to generate SDP answer.")
+
+        if self._sessions.get(session_id) is session:
+            sample_task = asyncio.create_task(session.log_channel_buffers(session_id))
+            session.tasks.add(sample_task)
+            sample_task.add_done_callback(session.tasks.discard)
 
         logger.info("WebRTC session %s negotiated (answer generated)", session_id)
         return WebRtcAnswer(
@@ -412,6 +434,8 @@ class WebRtcSessionManager:
         ):
             channel.close()
             return
+        session.channels.add(channel)
+        channel.on("close", lambda: session.channels.discard(channel))  # type: ignore[no-untyped-call]
         if spec.carries == "all":
             conn = WebRtcDataChannelConnection(channel, session.pc)
         else:

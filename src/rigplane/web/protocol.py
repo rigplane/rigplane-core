@@ -23,6 +23,7 @@ __all__ = [
     "MSG_TYPE_AUDIO_RX",
     "MSG_TYPE_AUDIO_TX",
     "encode_audio_frame",
+    "audio_frame_duration_us",
     "AUDIO_HEADER_SIZE",
     "AUDIO_CODEC_OPUS",
     "AUDIO_CODEC_PCM16",
@@ -83,8 +84,7 @@ def encode_audio_frame(
     Returns:
         8-byte header + payload bytes.
     """
-    header = struct.pack(
-        "<BBHHBB",
+    header = _AUDIO_HEADER.pack(
         msg_type,
         codec,
         sequence & 0xFFFF,
@@ -95,9 +95,42 @@ def encode_audio_frame(
     return header + payload
 
 
-AUDIO_HEADER_SIZE: int = 8
+_AUDIO_HEADER = struct.Struct("<BBHHBB")
+AUDIO_HEADER_SIZE: int = _AUDIO_HEADER.size
 AUDIO_CODEC_OPUS: int = 0x01
 AUDIO_CODEC_PCM16: int = 0x02
+
+
+def audio_frame_duration_us(data: bytes) -> int | None:
+    """Return the wire packet duration from PCM samples or the Opus TOC."""
+    if len(data) <= AUDIO_HEADER_SIZE:
+        return None
+    _, codec, _, sample_rate_div100, channels, _ = _AUDIO_HEADER.unpack_from(data)
+    if codec == AUDIO_CODEC_PCM16 and sample_rate_div100 and channels in (1, 2):
+        byte_rate = sample_rate_div100 * 100 * channels * 2
+        payload_size = len(data) - AUDIO_HEADER_SIZE
+        return (payload_size * 1_000_000 + byte_rate - 1) // byte_rate
+    if codec != AUDIO_CODEC_OPUS:
+        return None
+
+    # RFC 6716 sections 3.1 and 3.2.5. The wire duration byte is advisory
+    # and can describe the compressed payload size as if it were PCM.
+    toc = data[AUDIO_HEADER_SIZE]
+    config, count_code = toc >> 3, toc & 3
+    if config < 12:
+        frame_us = (10_000, 20_000, 40_000, 60_000)[config & 3]
+    elif config < 16:
+        frame_us = (10_000, 20_000)[config & 1]
+    else:
+        frame_us = (2_500, 5_000, 10_000, 20_000)[config & 3]
+    if count_code == 3:
+        if len(data) <= AUDIO_HEADER_SIZE + 1:
+            return None
+        count = data[AUDIO_HEADER_SIZE + 1] & 0x3F
+    else:
+        count = 1 if count_code == 0 else 2
+    duration = frame_us * count
+    return duration if 0 < duration <= 120_000 else None
 
 
 def encode_json(msg: Mapping[str, Any]) -> str:

@@ -18,11 +18,20 @@ import math
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+
 from rigplane.audio_bus import AudioBus
 from rigplane.radio_protocol import AudioCapable
+from rigplane.testing.timing import VirtualClock, virtual_clock
 from rigplane.types import AudioCodec
 from rigplane.web.handlers import AudioBroadcaster, AudioHandler
-from rigplane.web.protocol import AUDIO_CODEC_PCM16, AUDIO_HEADER_SIZE
+from rigplane.web.protocol import (
+    AUDIO_CODEC_PCM16,
+    AUDIO_HEADER_SIZE,
+    MSG_TYPE_AUDIO_RX,
+    encode_audio_frame,
+)
+from rigplane.web.transport.webrtc import WebRtcDataChannelConnection
 from rigplane.ws import WebSocketConnection
 
 # 20 ms @ 48 kHz mono s16le.
@@ -328,3 +337,77 @@ def test_playback_diagnostics_missing_legacy_invalid_and_disconnected() -> None:
     broadcaster.record_client_stats(queue, {"playback": PLAYBACK})
     broadcaster._client_link_quality[id(queue)] = {"playback": PLAYBACK}
     assert broadcaster.playback_diagnostics()["state"] == "no_clients"
+
+
+@pytest.mark.parametrize("congested", [False, True])
+@virtual_clock
+async def test_webrtc_rx_audio_bounds_heartbeat_delay_and_counts_drops(
+    clock: VirtualClock, *, congested: bool
+) -> None:
+    """Drive the station AudioHandler and control writer against one FIFO."""
+    fifo: asyncio.Queue[tuple[MagicMock, str | bytes]] = asyncio.Queue()
+    rtts: list[float] = []
+    audio_sent: list[bytes] = []
+    heartbeat_started = 0.0
+    heartbeat_reply = '{"type":"controller_heartbeat","generation":1}'
+
+    def channel(label: str) -> MagicMock:
+        port = MagicMock(label=label, readyState="open", bufferedAmount=0)
+        port.label = label
+
+        def send(data: bytes | str) -> None:
+            port.bufferedAmount += len(data)
+            fifo.put_nowait((port, data))
+
+        port.send.side_effect = send
+        return port
+
+    audio = channel("audio")
+    audio_text = channel("audio-text")
+    control = channel("control")
+    pc = MagicMock(connectionState="connected")
+    radio, _ = _make_radio()
+    broadcaster = AudioBroadcaster(radio)
+    handler = AudioHandler(
+        WebRtcDataChannelConnection(audio, pc, text_channel=audio_text),
+        radio,
+        broadcaster,
+    )
+    await handler._start_rx()
+    control_conn = WebRtcDataChannelConnection(control, pc)
+
+    async def drain() -> None:
+        while True:
+            port, data = await fifo.get()
+            await asyncio.sleep(0.05 if congested and port is audio else 0.001)
+            port.bufferedAmount -= len(data)
+            if data == heartbeat_reply:
+                rtts.append(clock.now - heartbeat_started)
+            if port is audio:
+                assert isinstance(data, bytes)
+                audio_sent.append(data)
+
+    sender = asyncio.create_task(handler._sender_loop())
+    drain_task = asyncio.create_task(drain())
+    frames = [
+        encode_audio_frame(
+            MSG_TYPE_AUDIO_RX, AUDIO_CODEC_PCM16, i, 480, 1, 20, PCM_PAYLOAD
+        )
+        for i in range(100)
+    ]
+    try:
+        for frame in frames:
+            handler._frame_queue.put_nowait(frame)
+            await clock.elapse(0.02)
+        heartbeat_started = clock.now
+        await control_conn.send_text(heartbeat_reply)
+        await clock.elapse(6)
+        drops = broadcaster.client_link_quality(handler._frame_queue)["ws_queue_drops"]
+        assert len(rtts) == 1 and rtts[0] < 1
+        assert drops == len(frames) - len(audio_sent)
+        assert (drops > 0) is congested
+    finally:
+        for task in (sender, drain_task):
+            task.cancel()
+        await asyncio.gather(sender, drain_task, return_exceptions=True)
+        await handler._stop_rx()

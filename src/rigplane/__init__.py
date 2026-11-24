@@ -137,6 +137,7 @@ if TYPE_CHECKING:
         apply_ice_gathering_policy,
         install_ice_gathering_policy,
     )
+    from .web.transport.webrtc import WebRtcAudioSender  # noqa: F401, TID251
     from .web.transport.webrtc_contract import (  # noqa: F401, TID251
         IceCandidateInit,
         WebRtcAnswer,
@@ -198,6 +199,7 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
         "rigplane.web.transport.ice_gathering",
         "apply_ice_gathering_policy",
     ),
+    "WebRtcAudioSender": ("rigplane.web.transport.webrtc", "WebRtcAudioSender"),
     "WebRtcOffer": ("rigplane.web.transport.webrtc_contract", "WebRtcOffer"),
     "WebRtcAnswer": ("rigplane.web.transport.webrtc_contract", "WebRtcAnswer"),
     "WebRtcClose": ("rigplane.web.transport.webrtc_contract", "WebRtcClose"),
@@ -505,6 +507,7 @@ __all__ = [
     "GATHER_TIMEOUT_S",
     "install_ice_gathering_policy",
     "apply_ice_gathering_policy",
+    "WebRtcAudioSender",
     "WebRtcOffer",
     "WebRtcAnswer",
     "WebRtcClose",

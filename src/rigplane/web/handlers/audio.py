@@ -52,6 +52,7 @@ from ..protocol import (  # noqa: TID251
 )
 from ..runtime_helpers import runtime_capabilities  # noqa: TID251
 from ..transport import Connection  # noqa: TID251
+from ..transport.webrtc import WebRtcDataChannelConnection  # noqa: TID251
 from ...ws import WS_OP_BINARY, WS_OP_TEXT  # noqa: TID251
 
 if TYPE_CHECKING:
@@ -1101,14 +1102,21 @@ class AudioBroadcaster:
             self._last_capture_failure_category = category
         self._adaptive_evaluate(client_id)
 
+    def record_client_queue_drop(self, queue: asyncio.Queue[bytes]) -> None:
+        """Count one egress drop while this client is subscribed."""
+        client_id = id(queue)
+        if client_id in self._clients:
+            self._client_queue_drops[client_id] = (
+                self._client_queue_drops.get(client_id, 0) + 1
+            )
+
     def client_link_quality(self, queue: asyncio.Queue[bytes]) -> dict[str, Any]:
         """One client's link-quality snapshot (MOR-585, ADR §3.6).
 
         The latest client-reported ``audio_stats`` fields merged with the
-        server-side ``ws_queue_drops`` counter (drop-oldest evictions of
-        the bounded per-client WS queue).  This is the signal surface the
-        step-19 adaptive egress codec controller and the ``rx.egress``
-        taps read; nothing in this step consumes it.
+        server-side ``ws_queue_drops`` counter (evictions from the per-client
+        queue and drops at the WebRTC audio send buffer). The adaptive egress
+        codec controller and ``rx.egress`` taps consume this signal.
         """
         client_id = id(queue)
         snapshot: dict[str, Any] = dict(self._client_link_quality.get(client_id, {}))
@@ -1614,9 +1622,7 @@ class AudioBroadcaster:
                             # this is the server-side WS congestion signal
                             # for the adaptive egress codec controller
                             # (MOR-585, ADR §3.6 detection-signals table).
-                            self._client_queue_drops[client_id] = (
-                                self._client_queue_drops.get(client_id, 0) + 1
-                            )
+                            self.record_client_queue_drop(q)
                             try:
                                 q.get_nowait()
                             except asyncio.QueueEmpty:
@@ -2761,17 +2767,23 @@ class AudioHandler:
         try:
             while not self._done.is_set():
                 try:
+                    queue = self._frame_queue
                     frame = await asyncio.wait_for(
-                        self._frame_queue.get(),
+                        queue.get(),
                         timeout=0.5,
                     )
                     # Wrap send in timeout to detect dead WebSocket connections
                     # If send blocks >5s, connection is likely dead (half-open TCP)
                     try:
-                        await asyncio.wait_for(
-                            self._ws.send_binary(frame),
-                            timeout=5.0,
-                        )
+                        if isinstance(self._ws, WebRtcDataChannelConnection):
+                            if not self._ws.try_send_audio(frame):
+                                if self._broadcaster is not None:
+                                    self._broadcaster.record_client_queue_drop(queue)
+                                continue
+                        else:
+                            await asyncio.wait_for(
+                                self._ws.send_binary(frame), timeout=5.0
+                            )
                     except TimeoutError:
                         logger.warning(
                             "audio: send timeout after %d frames (dead connection), exiting",
