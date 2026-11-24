@@ -681,6 +681,41 @@ new AsyncFunction('github', 'context', 'core', script)(github, context, core)
         self.assertIn("PYTHONPATH: ${{ github.workspace }}/.github/scripts", tests_job)
         self.assertIn("--maxprocesses 4", tests_job)
 
+    def test_big_artifacts_are_stored_for_a_failed_leg_for_one_day(self) -> None:
+        # MOR-4718 (owner rule: do not store big artifacts in GitHub): the
+        # live copies of these two uploads summed to 499 MB (worker
+        # diagnostics) and 204 MB (journey reports) on 2026-11-24. Each
+        # stores its files for a failed leg only and for one day; the whole
+        # `if` line is pinned, so `always()` cannot return through an `||`.
+        # The finalize step that produces the diagnostics still runs on every
+        # core run.
+        quick = QUICK_YML.read_text(encoding="utf-8")
+        body = quick.split("\njobs:\n", 1)[1]
+        jobs = dict(re.findall(r"(?ms)^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)", body))
+        pinned = {
+            "quick-python-tests": (
+                "worker-diagnostics-quick-${{ matrix.shard }}",
+                "failure() && needs.classify.outputs.core == 'true'",
+            ),
+            "quick-frontend-e2e": (
+                "journey-e2e-report-${{ matrix.group }}",
+                "failure() && startsWith(matrix.group, 'journey')",
+            ),
+        }
+        for job, (artifact, condition) in pinned.items():
+            with self.subTest(job=job):
+                steps = jobs[job].split("\n      - name: ")[1:]
+                step = next(s for s in steps if f"name: {artifact}\n" in s)
+                self.assertIn(f"        if: {condition}\n", step)
+                self.assertIn("          retention-days: 1\n", step)
+                self.assertNotIn("always()", step)
+        finalize = (
+            jobs["quick-python-tests"]
+            .split("- name: Bound worker diagnostics", 1)[1]
+            .split("- name:", 1)[0]
+        )
+        self.assertIn("if: always() && needs.classify.outputs.core == 'true'", finalize)
+
     def test_workflows_pin_docs_skip_ready_guard_and_visual_exclusions(self) -> None:
         quick = QUICK_YML.read_text(encoding="utf-8")
         visual = VISUAL_YML.read_text(encoding="utf-8")

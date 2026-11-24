@@ -181,7 +181,7 @@ jobs:
         run: uv run --no-sync python .github/scripts/pytest_worker_diagnostics.py --finalize "${{ runner.temp }}/pytest-worker-diagnostics" || true
 
       - name: Upload worker diagnostics
-        if: always()
+        if: failure()
         continue-on-error: true
         uses: actions/upload-artifact@v7
         with:
@@ -195,13 +195,18 @@ jobs:
             ${{ runner.temp }}/pytest-worker-diagnostics/timeout-*.log
             ${{ runner.temp }}/pytest-worker-diagnostics/bounds.json
           if-no-files-found: ignore
-          retention-days: 3
+          # MOR-4718 (owner rule: no big artifacts in GitHub): the bounded
+          # diagnostics are stored only when the job fails, for one day. The
+          # finalize step above still bounds the files on every run; only
+          # the upload is conditional.
+          retention-days: 1
 
       # The web UI truncates a long step log, so a red matrix leg could hide
       # which test failed unless someone had a runner-host login. The Run
       # tests step already tees the full pytest output (the short test
       # summary info section included) into pytest-output.txt; upload it
-      # unconditionally like the worker diagnostics above.
+      # unconditionally: it is a small text log (a 0.5 MB artifact), unlike
+      # the worker diagnostics above (MOR-4718).
       - name: Upload pytest output
         if: always()
         continue-on-error: true

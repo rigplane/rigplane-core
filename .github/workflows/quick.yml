@@ -506,7 +506,11 @@ jobs:
           # dot-directory was never uploaded ("No files were found", run 44754002530).
           include-hidden-files: true
           if-no-files-found: ignore
-          retention-days: 3
+          # MOR-4718 (owner rule: do not store big artifacts in GitHub): 24
+          # live copies of this report summed to 204 MB on 2026-11-24, so a
+          # failed leg keeps it for one day. The upload was already
+          # failure-only.
+          retention-days: 1
 
   quick-python:
     needs: classify
@@ -774,7 +778,7 @@ jobs:
         run: uv run --no-sync python .github/scripts/pytest_worker_diagnostics.py --finalize "${{ runner.temp }}/pytest-worker-diagnostics" || true
 
       - name: Upload worker diagnostics
-        if: always() && needs.classify.outputs.core == 'true'
+        if: failure() && needs.classify.outputs.core == 'true'
         continue-on-error: true
         uses: actions/upload-artifact@v7
         with:
@@ -788,7 +792,12 @@ jobs:
             ${{ runner.temp }}/pytest-worker-diagnostics/timeout-*.log
             ${{ runner.temp }}/pytest-worker-diagnostics/bounds.json
           if-no-files-found: ignore
-          retention-days: 7
+          # MOR-4718 (owner rule: do not store big artifacts in GitHub): 1492
+          # live copies of this artifact summed to 499 MB on 2026-11-24, so
+          # a shard's diagnostics are stored only when the job fails, for
+          # one day. The finalize step above still bounds the files on every
+          # core run; only the upload is conditional.
+          retention-days: 1
 
   quick:
     # The required `quick` context. It runs no checks itself: it fails unless
