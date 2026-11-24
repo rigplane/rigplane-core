@@ -29,6 +29,17 @@ For every profile in ``rigs/*.toml``, a ``WebServer`` built with no radio and
 ``_EXCLUDED_MODELS`` profiles contribute a ``capabilities`` entry only: their
 state payloads are left out to keep the committed file small.
 
+- ``slottedAbBands`` / ``slottedAbBandsCapabilities`` (MOR-4711, IC-705): the
+  capabilities body and the ``full`` envelope a radio-backed server builds
+  after the compatibility poller projection
+  (``sync_state_store_from_radio_state``) observes a slotted A/B pair on two
+  different bands (A 7.074 MHz / 40m, B 14.219 MHz / 20m, active A) with a
+  3000 Hz receiver filter width. The no-radio ``allObserved`` case cannot
+  carry this: the profile declares no slot leaves, and the no-radio
+  capabilities body lacks the ``filter_width`` tag. The frontend companion
+  ``VfoSurface.slotted-band-wire.isolated.test.ts`` replays the envelope
+  through the real ws-client/store/adapter into the panel tray.
+
 Observed values are fixed per field type, not calibrated readings. A declared
 str or object field this script has no value for raises instead of getting a
 placeholder. ``updatedAt``, every ``lastObservedMonotonic``,
@@ -68,6 +79,7 @@ from rigplane.commands._frame import (  # noqa: E402
     parse_civ_frame,
 )
 from rigplane.core._bounded_queue import BoundedQueue  # noqa: E402
+from rigplane.core.radio_state import RadioState, VfoSlotState  # noqa: E402
 from rigplane.core.state_pipeline_contracts import (  # noqa: E402
     DEFAULT_FIELD_REGISTRY,
     FieldFamily,
@@ -409,6 +421,41 @@ def _build_polled_squelch_goldens(model: str) -> dict[str, Any]:
     return golden
 
 
+# MOR-4711: the capture scenario — a slotted A/B pair whose two slots sit on
+# different bands, with an observed receiver filter width. The no-radio
+# ``allObserved`` case cannot carry it: the profile declares no slot leaves,
+# so only the compatibility poller projection
+# (``WebServer.sync_state_store_from_radio_state``) observes them, and the
+# radio-backed server publishes the ``filter_width`` capability tag the
+# no-radio capabilities body lacks. The projection skips a field whose value
+# equals the RadioState default, and ``active_slot`` defaults to "A": the
+# scenario selects B first and then A, so the final observed "A" is the same
+# observation a live select-back produces.
+_SLOTTED_AB_MODEL = "IC-705"
+_SLOTTED_AB_A_HZ = 7_074_000  # 40m
+_SLOTTED_AB_B_HZ = 14_219_000  # 20m
+_SLOTTED_AB_WIDTH_HZ = 3000
+
+
+def _build_slotted_ab_bands_goldens(model: str) -> dict[str, Any]:
+    radio = IcomRadio(_UNCONNECTED_RADIO_HOST, model=model)
+    server = WebServer(radio, WebConfig(radio_model=model))
+    state = RadioState()
+    state.active = "MAIN"
+    receiver = state.main
+    receiver.vfo_a = VfoSlotState(freq_hz=_SLOTTED_AB_A_HZ, mode="USB")
+    receiver.vfo_b = VfoSlotState(freq_hz=_SLOTTED_AB_B_HZ, mode="USB")
+    receiver.filter_width = _SLOTTED_AB_WIDTH_HZ
+    receiver.active_slot = "B"
+    server.sync_state_store_from_radio_state(state)
+    receiver.active_slot = "A"
+    server.sync_state_store_from_radio_state(state)
+    return {
+        "slottedAbBands": _full_envelope(server),
+        "slottedAbBandsCapabilities": _capabilities(server),
+    }
+
+
 def _build_profile_goldens(model: str) -> dict[str, Any]:
     profile = get_radio_profile(model)
     config = WebConfig(radio_model=model)
@@ -425,6 +472,8 @@ def _build_profile_goldens(model: str) -> dict[str, Any]:
         golden["allObserved"] = _full_envelope(observed)
     if model in polled_squelch_models():
         golden.update(_build_polled_squelch_goldens(model))
+    if model == _SLOTTED_AB_MODEL:
+        golden.update(_build_slotted_ab_bands_goldens(model))
     return golden
 
 
