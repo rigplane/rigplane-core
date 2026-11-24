@@ -2,6 +2,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { expect, test } from '@playwright/test';
+import type { ServerStatePublic } from '../../../src/lib/types/state';
 import { journeyPort, startJourneyServer, type JourneyServerHandle } from './server-process';
 
 const PTT_DROP_PORT = journeyPort(18770);
@@ -13,7 +14,18 @@ test('degraded radio health refuses PTT without claiming a lost control link', a
   test.setTimeout(90_000);
   const dir = await mkdtemp(path.join(tmpdir(), 'rig-drop-ptt-'));
   const dropFile = path.join(dir, 'drop');
-  const readState = async () => (await page.request.get(`${PTT_DROP_URL}/api/v1/state`)).json();
+  /** The server's public state, typed with the generated ServerStatePublic contract. */
+  const readState = async (): Promise<ServerStatePublic> =>
+    (await (await page.request.get(`${PTT_DROP_URL}/api/v1/state`)).json()) as ServerStatePublic;
+  /** The two leaves the assertions below pin. Each is a read through the contract,
+   *  so a contract change that renames or drops one of them breaks compilation. */
+  const readLinkState = async () => {
+    const { connection, wsClients } = await readState();
+    return {
+      connection: { rigConnected: connection.rigConnected },
+      wsClients: { control: wsClients?.control },
+    };
+  };
 
   let server: JourneyServerHandle | undefined;
   try {
@@ -33,7 +45,7 @@ test('degraded radio health refuses PTT without claiming a lost control link', a
     const ptt = page.getByRole('button', { name: 'Push to talk' });
     const radioLink = page.getByTestId('radio-link-line');
     await expect(ptt).toBeVisible();
-    await expect.poll(readState).toMatchObject({
+    await expect.poll(readLinkState).toMatchObject({
       connection: { rigConnected: true }, wsClients: { control: 1 },
     });
     await expect(radioLink).toHaveCount(0);
@@ -41,7 +53,7 @@ test('degraded radio health refuses PTT without claiming a lost control link', a
     await writeFile(dropFile, 'drop');
     // The phone's health line shows that the browser has applied the link loss.
     await expect(radioLink).toBeVisible();
-    await expect.poll(readState).toMatchObject({
+    await expect.poll(readLinkState).toMatchObject({
       connection: { rigConnected: false }, wsClients: { control: 1 },
     });
     expect(control.isClosed()).toBe(false);
