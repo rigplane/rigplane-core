@@ -13,9 +13,12 @@
  * handler test tests/test_web_audio_rx_wire_fixture.py (it drives the REAL
  * /api/v1/audio handler with the same request and verifies the emitted frame
  * against the same fixture), the same pairing as
- * audio-manager-hidden-burst.isolated.test.ts. The real AudioManager and the
- * real RxPlayer run over a fake AudioContext; only the microphone, the stores
- * and the socket are doubled, so the assertions observe what would be played.
+ * audio-manager-hidden-burst.isolated.test.ts. The server's `audio_tx_format`
+ * ack is not built here at all: it is sent verbatim from the committed
+ * api-channel golden, as in audio-manager-attach-ack.isolated.test.ts. The
+ * real AudioManager and the real RxPlayer run over a fake AudioContext; only
+ * the microphone, the stores and the socket are doubled, so the assertions
+ * observe what would be played.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SAMPLE_RATE } from '../constants';
@@ -24,11 +27,14 @@ import type * as audioStore from '../../stores/audio.svelte';
 import type * as connectionStore from '../../stores/connection.svelte';
 import type * as capabilitiesStore from '$lib/stores/capabilities.svelte';
 import type { PttOperation } from '$lib/runtime/tx-controller/managed-controller';
+import apiChannelGolden from '../../transport/api-channel-golden.json';
 import wire from '../../../../../tests/fixtures/audio_rx_session_wire.json';
 
 type Runtime = typeof import('$lib/runtime/frontend-runtime').runtime;
 const rxWire = wire.rx_frame_pcm16_mono_20ms;
 const rxRequestWire = wire.audio_start_rx;
+/** The producer-built golden document for the audio TX-format ack. */
+const txFormatAudio = apiChannelGolden.documents.audio_tx_format_opus;
 
 const txFailure = (code: TxCaptureFailure['code'], category: string, reason: string): TxCaptureFailure => ({
   code, category, reason, at: Date.now(),
@@ -330,7 +336,16 @@ describe('receive playback is held while transmitting (MOR-4591)', () => {
       controller.pttOn();
       await advance(0);
       expect(socket.sent).toContain(JSON.stringify({ type: 'audio_start', direction: 'tx' }));
-      socket.onmessage?.({ data: JSON.stringify({ type: 'audio_tx_format', codec: 'opus', sample_rate: SAMPLE_RATE }) });
+      // The TX-format ack is the producer's own bytes, never a hand-typed
+      // stand-in: the golden document the server's audio_tx_format_message()
+      // builds is replayed through the real stack by
+      // tests/test_api_channel_golden.py::test_golden_documents_replay_through_real_handlers.
+      // A golden that stops describing a server-to-client text frame of this
+      // type fails loudly here.
+      expect(txFormatAudio.variant).toBe('text');
+      expect(txFormatAudio.direction).toBe('server->client');
+      expect(JSON.parse(txFormatAudio.text).type).toBe('audio_tx_format');
+      socket.onmessage?.({ data: txFormatAudio.text });
       await advance(0);
       expect(sendPtt.mock.calls).toEqual([['ptt_on']]);
       expect(audioManager.txEnabled).toBe(true);
