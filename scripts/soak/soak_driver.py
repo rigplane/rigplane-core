@@ -643,7 +643,11 @@ class _RuntimeTaskAdapter:
         # Ending a managed session does not join its WebSocket handler, which
         # owns its keepalive and sender. Join the handler and the authority's
         # release fences before draining the state publications they trigger.
-        sessions = {task for task in web._session_ws_tasks if not task.done()}
+        sessions = {
+            task
+            for task, tx_owner in web._client_tasks.items()
+            if tx_owner is not None and not task.done()
+        }
         if sessions:
             await asyncio.wait(sessions)
         await web._controller.settle()
