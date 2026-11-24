@@ -23,8 +23,10 @@ import type { TxCaptureFailure, TxCodec, TxCodecSwitch, TxMic } from '../tx-mic'
 import type * as audioStore from '../../stores/audio.svelte';
 import type * as connectionStore from '../../stores/connection.svelte';
 import type * as capabilitiesStore from '$lib/stores/capabilities.svelte';
+import type { PttOperation } from '$lib/runtime/tx-controller/managed-controller';
 import wire from '../../../../../tests/fixtures/audio_rx_session_wire.json';
 
+type Runtime = typeof import('$lib/runtime/frontend-runtime').runtime;
 const rxWire = wire.rx_frame_pcm16_mono_20ms;
 const rxRequestWire = wire.audio_start_rx;
 
@@ -77,6 +79,20 @@ const capabilitiesStoreDouble = {
 vi.mock('../../stores/connection.svelte', () => connectionStoreDouble);
 vi.mock('../../stores/audio.svelte', () => audioStoreDouble);
 vi.mock('$lib/stores/capabilities.svelte', () => capabilitiesStoreDouble);
+type TxAudioRuntime = Pick<Runtime, 'startTx' | 'stopTx' | 'onTxAudioDied'>;
+let audioManagerForRuntime: TxAudioRuntime;
+vi.mock('$lib/runtime/frontend-runtime', () => {
+  const runtime = {
+    startTx: () => audioManagerForRuntime.startTx(),
+    stopTx: (options) => audioManagerForRuntime.stopTx(options),
+    onTxAudioDied: (callback) => audioManagerForRuntime.onTxAudioDied(callback),
+  } satisfies TxAudioRuntime;
+  return { runtime };
+});
+vi.mock('$lib/runtime/adapters/mod-input-tx-guard.svelte', () => ({ armModInputTxGuard: vi.fn() }));
+vi.mock('$lib/runtime/adapters/mod-input-auto.svelte', () => ({
+  autoSetLanModInputForTx: vi.fn(), restoreModInputAfterTx: vi.fn(),
+}));
 
 class FakeWebSocket {
   static OPEN = 1;
@@ -119,10 +135,18 @@ class FakeWebSocket {
 
 let ctx: any;
 
+function fakeBufferSource() {
+  return {
+    buffer: null as Pick<AudioBuffer, 'getChannelData' | 'duration'> | null,
+    connect: vi.fn((_node: unknown) => {}), start: vi.fn((_time: number) => {}), stop: vi.fn(),
+    addEventListener: vi.fn(), removeEventListener: vi.fn(),
+  };
+}
+
 // Fake AudioContext from rx-player.test.ts: controllable currentTime,
 // tracked sources with start/stop/addEventListener.
 function installFakeAudioContext(): void {
-  const srcs: any[] = [];
+  const srcs: ReturnType<typeof fakeBufferSource>[] = [];
   ctx = {
     state: 'running', sampleRate: SAMPLE_RATE, currentTime: 0, destination: {},
     resume: vi.fn().mockResolvedValue(undefined),
@@ -140,10 +164,7 @@ function installFakeAudioContext(): void {
     }),
     _srcs: srcs,
     createBufferSource: vi.fn(() => {
-      const src = {
-        buffer: null, connect: vi.fn(), start: vi.fn(), stop: vi.fn(),
-        addEventListener: vi.fn(), removeEventListener: vi.fn(),
-      };
+      const src = fakeBufferSource();
       srcs.push(src);
       return src;
     }),
@@ -190,10 +211,30 @@ function expectRxSubscription(sent: unknown[]): void {
 }
 
 
-function sources(): any[] { return ctx._srcs; }
+function sources(): ReturnType<typeof fakeBufferSource>[] { return ctx._srcs; }
 /** Sources still scheduled to play: started by the player and not stopped. */
 function audible(): number {
   return sources().filter((src) => src.stop.mock.calls.length === 0).length;
+}
+
+/** Count nonzero samples whose connected source finished during this clock window. */
+function renderedSignalSince(since: number): number {
+  const [preGain, mainGain, , limiterInput] = ctx.createGain.mock.results.map(
+    (result: { value: { gain: { value: number } } }) => result.value,
+  );
+  if (ctx.state !== 'running' || preGain.gain.value <= 0
+    || mainGain.gain.value <= 0 || limiterInput.gain.value <= 0) return 0;
+  let rendered = 0;
+  for (const src of sources()) {
+    const start = src.start.mock.calls[0]?.[0];
+    if (start === undefined || src.buffer === null || src.stop.mock.calls.length > 0
+      || src.connect.mock.calls[0]?.[0] !== preGain) continue;
+    const end = start + src.buffer.duration;
+    if (start >= since && end <= ctx.currentTime) {
+      rendered += src.buffer.getChannelData(0).filter((sample) => sample !== 0).length;
+    }
+  }
+  return rendered;
 }
 
 describe('receive playback is held while transmitting (MOR-4591)', () => {
@@ -208,13 +249,19 @@ describe('receive playback is held while transmitting (MOR-4591)', () => {
   afterEach(async () => {
     const { audioManager } = await import('../audio-manager');
     audioManager.destroy();
-    vi.unstubAllGlobals(); vi.useRealTimers();
+    vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.useRealTimers();
     txStart.mockImplementation(() => Promise.resolve(null));
   });
 
   /** RX already playing on an open socket, as on a phone listening to the band. */
-  async function listening() {
+  async function listening(remote?: boolean) {
     const { audioManager } = await import('../audio-manager');
+    if (remote !== undefined) {
+      audioManager.setControllerBinding({
+        remote: () => remote, ready: () => true, epoch: () => 7, current: (epoch) => epoch === 7,
+        protocols: () => [`rigplane-controller-v1.${'a'.repeat(64)}`], role: () => 'primary',
+      });
+    }
     audioManager.startRx();
     const socket = FakeWebSocket.instances[0];
     socket.open();
@@ -232,6 +279,99 @@ describe('receive playback is held while transmitting (MOR-4591)', () => {
     for (let i = 0; i < frames; i++) socket.onmessage?.({ data: rxFrame() });
     return sources().length - before;
   }
+
+  // The production Tower desktop bridge exposes a loopback WebSocket to
+  // the WebView. Exercise that boundary, with the station and the bridge
+  // represented by the fake socket. Both local backends use local binding.
+  it.each([
+    { route: 'Tower', remote: true, protocol: 'http:', host: '127.0.0.1:8080', skipped: 239 },
+    { route: 'LAN-direct', remote: false, protocol: 'https:', host: 'station.test', skipped: 250 },
+    { route: 'USB-local', remote: false, protocol: 'http:', host: '127.0.0.1:8080', skipped: 250 },
+  ])('$route plays fresh RX within one second of a five-second PTT hold (MOR-4740)', async (route) => {
+    vi.spyOn(document, 'hidden', 'get').mockReturnValue(false);
+    vi.stubGlobal('location', { protocol: route.protocol, host: route.host });
+    const { audioManager, socket } = await listening(route.remote);
+    audioManagerForRuntime = audioManager;
+    audioManager.setRxVolume(0.6);
+    const origin = Date.now();
+    const advance = async (ms: number) => {
+      await vi.advanceTimersByTimeAsync(ms);
+      ctx.currentTime = (Date.now() - origin) / 1000;
+    };
+    await advance(90);
+    expect(renderedSignalSince(0)).toBeGreaterThan(0);
+
+    const { getTxAudioControl } = await import('$lib/runtime/adapters/tx-adapter');
+    const { ManagedTxController } = await import('$lib/runtime/tx-controller/managed-controller');
+    const { projectManagedTx } = await import('$lib/runtime/tx-controller/managed-state');
+    const audio = getTxAudioControl();
+    let acceptOff!: (outcome: 'accepted') => void;
+    const offAck = new Promise<'accepted'>((resolve) => { acceptOff = resolve; });
+    const idle = { ...projectManagedTx(null, true), fresh: true, radioTx: 'off' as const };
+    let state: ReturnType<typeof projectManagedTx> = idle;
+    const sendPtt = vi.fn(async (operation: PttOperation): Promise<'accepted'> => {
+      if (operation === 'ptt_on') {
+        state = { ...idle, phase: 'active', intent: 'momentary', radioTx: 'on', txRisk: 'confirmed-on' };
+      } else {
+        await offAck;
+        state = idle;
+      }
+      return 'accepted';
+    });
+    const controller = new ManagedTxController({
+      snapshot: () => state,
+      refresh: async () => {}, invalidate: () => {}, sendPtt,
+      submit: async () => 'accepted', setTot: async () => {},
+      startAudio: audio.startManagedTx, stopLocalAudio: audio.stopLocalAudio,
+      onAudioDied: audio.onTxAudioDied,
+    });
+
+    try {
+      controller.pttOn();
+      await advance(0);
+      expect(socket.sent).toContain(JSON.stringify({ type: 'audio_start', direction: 'tx' }));
+      socket.onmessage?.({ data: JSON.stringify({ type: 'audio_tx_format', codec: 'opus', sample_rate: SAMPLE_RATE }) });
+      await advance(0);
+      expect(sendPtt.mock.calls).toEqual([['ptt_on']]);
+      expect(audioManager.txEnabled).toBe(true);
+      expect(controller.snapshot().radioTx).toBe('on');
+
+      const pressedAt = ctx.currentTime;
+      for (let i = route.skipped; i < 250; i++) {
+        await advance(20);
+        socket.onmessage?.({ data: rxFrame() });
+      }
+      await advance(route.skipped * 20);
+      expect(renderedSignalSince(pressedAt)).toBe(0);
+      expect(audible()).toBe(0);
+
+      const releasedAt = ctx.currentTime;
+      const releasing = controller.pttOff();
+      expect(sendPtt.mock.calls).toEqual([['ptt_on'], ['ptt_off']]);
+      expect(audioManager.txEnabled).toBe(false);
+      expect(txStop).toHaveBeenCalledOnce();
+      expect(socket.sent).toContain(JSON.stringify({ type: 'audio_stop', direction: 'tx' }));
+      // RX can arrive before the terminal OFF response on the control socket.
+      // Never send a separate PTT update on the audio channel.
+      for (let i = 0; i < 10; i++) {
+        await advance(20);
+        socket.onmessage?.({ data: rxFrame() });
+      }
+      expect(renderedSignalSince(releasedAt)).toBeGreaterThan(0);
+      acceptOff('accepted');
+      await releasing;
+      expect(controller.snapshot().radioTx).toBe('off');
+      // The release window consumes fresh frames on the original socket and graph.
+      expect(FakeWebSocket.instances).toEqual([socket]);
+      expect(socket.readyState).toBe(FakeWebSocket.OPEN);
+      expect(socket.sent).not.toContain(JSON.stringify({ type: 'audio_stop', direction: 'rx' }));
+      expect(ctx.close).not.toHaveBeenCalled();
+      expect(ctx.createGain.mock.results[0].value.gain.value).toBe(0.6);
+    } finally {
+      acceptOff('accepted');
+      controller.dispose();
+    }
+  });
 
   it('flushes queued receive audio at the press and drops frames until TX ends', async () => {
     const { audioManager, socket } = await listening();
