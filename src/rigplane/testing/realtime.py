@@ -5,7 +5,7 @@ from __future__ import annotations
 import ast
 import io
 import tokenize
-from collections.abc import Iterable
+from collections.abc import Iterable, Set
 
 _CLOCK_READS = frozenset(
     f"time.{name}"
@@ -75,17 +75,22 @@ def clock_primitive(call: ast.Call, name: str | None) -> str | None:
     return "clock-read" if name in _CLOCK_READS else None
 
 
-def realtime_lines(source: str) -> set[int]:
-    """Return lines with a Python comment giving a reason for using real time."""
+def realtime_markers(source: str) -> dict[int, str]:
+    """Return the line and reason of each real-time exemption comment."""
     if "# real-time:" not in source:
-        return set()
+        return {}
     return {
-        token.start[0]
+        token.start[0]: reason
         for token in tokenize.generate_tokens(io.StringIO(source).readline)
         if token.type == tokenize.COMMENT
         and token.string.startswith("# real-time:")
-        and token.string.removeprefix("# real-time:").strip()
+        and (reason := token.string.removeprefix("# real-time:").strip())
     }
+
+
+def realtime_lines(source: str) -> set[int]:
+    """Return lines with a Python comment giving a reason for using real time."""
+    return set(realtime_markers(source))
 
 
 _SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)
@@ -161,7 +166,7 @@ def _clock_wait(call: ast.Call, imports: dict[str, str]) -> bool:
 
 
 def _scope_findings(
-    root: ast.AST, inherited: dict[str, str], marked: set[int]
+    root: ast.AST, inherited: dict[str, str], marked: Set[int]
 ) -> Iterable[tuple[int, str]]:
     nodes = list(_scope_nodes(root))
     imports = {**inherited, **import_names(nodes)}
@@ -189,6 +194,13 @@ def _scope_findings(
             yield node.lineno, "asyncio.wait_for with literal timeout"
 
 
+def analyze_python(source: str) -> tuple[list[tuple[int, str]], dict[int, str]]:
+    """Return per-call violations and exemption comments from a Python test file."""
+    tree = ast.parse(source)
+    markers = realtime_markers(source)
+    return sorted(_scope_findings(tree, {}, markers.keys())), markers
+
+
 def scan_python(source: str) -> list[tuple[int, str]]:
     """Return per-call violations in a Python test file, including its helpers."""
-    return sorted(_scope_findings(ast.parse(source), {}, realtime_lines(source)))
+    return analyze_python(source)[0]
