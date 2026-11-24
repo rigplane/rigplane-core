@@ -531,12 +531,27 @@ new AsyncFunction('github', 'context', 'core', script)(github, context, core)
             "quick-python": worker_runs_on,
             "quick-python-tests": worker_runs_on,
         }
+        # quick-frontend-e2e carries the journey legs, so it alone runs with
+        # a 40-minute timeout, pinned together with the workflow's exact
+        # stopgap comment: lower back to 25 when the journey shards
+        # (#4768, #4773) are merged (MOR-4685).
+        e2e_stopgap_timeout = (
+            "    # stopgap (MOR-4685): lower back to 25 when the journey "
+            "shards (#4768, #4773) are merged\n"
+            "    timeout-minutes: 40\n"
+        )
+        half_timeout = {
+            "quick-frontend": "    timeout-minutes: 25\n",
+            "quick-frontend-e2e": e2e_stopgap_timeout,
+            "quick-python": "    timeout-minutes: 25\n",
+            "quick-python-tests": "    timeout-minutes: 25\n",
+        }
         for half in pools:
             with self.subTest(job=half):
                 block = jobs[half]
                 self.assertIn("    needs: classify\n", block)
                 self.assertIn(pools[half], block)
-                self.assertIn("    timeout-minutes: 25\n", block)
+                self.assertIn(half_timeout[half], block)
                 self.assertIn("needs.classify.outputs.docs != 'true'", block)
                 self.assertIn("needs.classify.outputs.reuse != 'true'", block)
         self.assertIn("npm ci", jobs["quick-frontend"])
@@ -655,7 +670,11 @@ new AsyncFunction('github', 'context', 'core', script)(github, context, core)
         self.assertIn("needs.classify.outputs.ci == 'true'", quick)
         self.assertIn("needs.classify.outputs.core == 'true'", quick)
         self.assertIn("needs.classify.outputs.frontend == 'true'", quick)
-        self.assertNotIn("timeout-minutes: 40", quick)
+        # Exactly one 40-minute timeout may remain: the journey legs'
+        # quick-frontend-e2e half, as a stopgap (MOR-4685) — lower back to
+        # 25 when the journey shards (#4768, #4773) are merged. No other
+        # quick job may carry 40.
+        self.assertEqual(quick.count("timeout-minutes: 40"), 1)
         self.assertIn('      - "frontend/**"', visual)
         self.assertIn('      - "!frontend/**/*.md"', visual)
         self.assertIn('      - "!frontend/**/*.rst"', visual)
