@@ -316,7 +316,8 @@ jobs:
     # [self-hosted, Linux, ARM64, build] (arm64 pixel baselines), guards/journey
     # [self-hosted, Linux, build].
     runs-on: ${{ github.event_name == 'merge_group' && (matrix.group == 'visual' && fromJSON('["self-hosted", "Linux", "ARM64", "queue-arm64"]') || fromJSON('["self-hosted", "Linux", "queue"]')) || (matrix.group == 'visual' && fromJSON('["self-hosted", "Linux", "ARM64", "build"]') || fromJSON('["self-hosted", "Linux", "build"]')) }}
-    timeout-minutes: 25
+    # stopgap (MOR-4685): lower back to 25 when the journey shards (#4768, #4773) are merged
+    timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:

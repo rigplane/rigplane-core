@@ -639,9 +639,14 @@
     // MOR-2526 (owner ruling 2026-09-22): the tray band is THIS panel's
     // receiver's own reading — `receiverBands` derives each entry from its
     // own receiver's frequency, so the inactive panel shows its band too.
+    // MOR-4711: on a slotted A/B pair both panels are ONE receiver, and the
+    // receiver entry describes its ACTIVE slot — so the panel prefers its
+    // own VFO's band reading (`VfoViewModel.band`, same derivation) and
+    // falls back to the receiver entry only without a dominant VFO.
     // An unread frequency keeps the unlit BAND label in place; the inactive
     // panel's dim treatment is the one `.panel:not(.active)` already applies.
-    const bandField = viewModel.band?.receiverBands[receiver === 'MAIN' ? 'main' : 'sub'];
+    const bandField = vfo?.band
+      ?? viewModel.band?.receiverBands[receiver === 'MAIN' ? 'main' : 'sub'];
     if (bandField?.availability.structural) {
       const reading = bandField.reading;
       const known = bandField.availability.operational && reading.status === 'known';
@@ -667,13 +672,20 @@
       };
     }
     if (indicator?.bandwidthHz.availability.structural) {
+      // MOR-4711: the receiver's `filterWidth` leaf describes its ACTIVE
+      // slot. A panel drawing another slot of the same receiver must not
+      // repeat that width as its own; no per-slot width is observable, so
+      // the tab keeps its reserved slot unlit (MOR-988: unknown, never a
+      // borrowed value). Unslotted receivers and the active slot itself
+      // read the leaf as before.
+      const ownWidth = vfo === undefined || vfo.isActiveSlot;
       const reading = indicator.bandwidthHz.reading;
-      const known = reading.status === 'known' && Number.isFinite(reading.value);
+      const known = ownWidth && reading.status === 'known' && Number.isFinite(reading.value);
       sections.tray.bw = {
         key: 'bw',
         text: known && reading.status === 'known' ? `BW ${reading.value}` : 'BW',
         lit: known,
-        state: reading.status,
+        state: ownWidth ? reading.status : 'unknown',
       };
     }
 
