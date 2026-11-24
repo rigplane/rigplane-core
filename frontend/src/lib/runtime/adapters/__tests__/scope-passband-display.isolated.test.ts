@@ -102,6 +102,7 @@ function renew(input: ScopePassbandDisplayInput, marker = 11, sequence = 2): voi
 }
 const project = (input: ScopePassbandDisplayInput, previous = EMPTY_SCOPE_PASSBAND_DISPLAY) =>
   projectScopePassbandDisplay(previous, input);
+const qualification = (result: ScopePassbandDisplayState) => result.qualification ?? result.display;
 function tuple(result: ScopePassbandDisplayState) {
   if (result.display.state !== 'current' && result.display.state !== 'stale') throw new Error('no tuple');
   return result.display.tuple;
@@ -401,9 +402,9 @@ describe('confirmed tuning display continuity (MOR-2437)', () => {
     const input = banded(); let result = project(input); tune(input, 14_075_000, 11); result = project(input, result);
     expect(result.display.state).toBe('stale');
     const saved = structuredClone(input); change(input); result = project(input, result);
-    expect(result.display.state).toBe('unknown');
-    result = project(saved, result); expect(result.display.state).toBe('unknown');
-    result = project(saved, result); expect(result.display.state).toBe('unknown');
+    expect(qualification(result).state).toBe('unknown');
+    result = project(saved, result); expect(qualification(result).state).toBe('unknown');
+    result = project(saved, result); expect(qualification(result).state).toBe('unknown');
     renew(saved, 20, 4);
     if (_name === 'slot') {
       status(saved, 'main.activeSlot', { lastObservedMonotonic: 19 });
@@ -421,8 +422,8 @@ describe('confirmed tuning display continuity (MOR-2437)', () => {
     // 'refuses a PBT reading at a width off the 50 Hz lattice' below.
     edit(input, (s) => { s.main![leaf]! += leaf === 'filterWidth' ? 50 : 10; });
     status(input, `main.${leaf}`, { lastObservedMonotonic: 15 });
-    result = project(input, result); expect(result.display.state).toBe('unknown');
-    receipt(input, 3); result = project(input, result); expect(result.display.state).toBe('unknown');
+    result = project(input, result); expect(qualification(result).state).toBe('unknown');
+    receipt(input, 3); result = project(input, result); expect(qualification(result).state).toBe('unknown');
     renew(input, 16, 4); expect(project(input, result).display.state).toBe('current');
   });
   it.each([0, 1, 2, 3])('waits for matching CENTER axis but allows observed frequency within radio-owned window mode %s', (mode) => {
@@ -542,14 +543,14 @@ describe('band-edge tuning continuity (MOR-2367)', () => {
     status(input, 'main.mode', { lastObservedMonotonic: 11 });
     status(input, 'main.vfoA.mode', { lastObservedMonotonic: 11 });
     result = project(input, result);
-    expect(result.display).toEqual({ state: 'unknown', reason: 'retired' });
+    expect(qualification(result)).toEqual({ state: 'unknown', reason: 'retired' });
 
     edit(input, (s) => { s.main!.mode = s.main!.vfoA!.mode = 'USB'; });
     status(input, 'main.mode', { lastObservedMonotonic: 12 });
     status(input, 'main.vfoA.mode', { lastObservedMonotonic: 12 });
     receipt(input, 2, { startFreq: 14_024_000, endFreq: 14_124_000 });
     result = project(input, result);
-    expect(result.display.state).toBe('unknown');
+    expect(qualification(result).state).toBe('unknown');
 
     const retiredFloors = result.floors;
     expect(retiredFloors).not.toBeNull();
@@ -563,7 +564,7 @@ describe('band-edge tuning continuity (MOR-2367)', () => {
       receipt(input, ++sequence, { startFreq: frequency - 50_000, endFreq: frequency + 50_000 });
       result = project(input, result);
       if (step < 6) {
-        expect(result.display.state).toBe('unknown');
+        expect(qualification(result).state).toBe('unknown');
         expect(result.floors).toEqual(retiredFloors);
       } else if (step === 6) {
         expect(result.display).toMatchObject({ state: 'current', tuple: {
@@ -595,7 +596,7 @@ describe('band-edge tuning continuity (MOR-2367)', () => {
     }
     receipt(input, 2, { startFreq: 14_317_000, endFreq: 14_417_000 });
     result = project(input, result);
-    expect(result.display.state).toBe('unknown');
+    expect(qualification(result).state).toBe('unknown');
   });
 });
 
@@ -652,7 +653,7 @@ describe('coherent RF passband display', () => {
   ];
   it.each(invalid)('rejects %s and retires existing tuple', (_name, change) => {
     const input = fixture(); const current = project(input); change(input);
-    expect(project(input).display.state).toBe('unknown'); expect(project(input, current).display.state).toBe('unknown');
+    expect(qualification(project(input)).state).toBe('unknown'); expect(qualification(project(input, current)).state).toBe('unknown');
   });
   it.each(['filter_width', 'if_shift'])('reports absent %s as unsupported', (tag) => {
     const input = fixture(); const current = project(input);
@@ -672,7 +673,7 @@ describe('coherent RF passband display', () => {
     const current = project(input); expect(tuple(current).shiftHz).toBe(expected);
     stale(input, 'main.pbtOuter'); expect(tuple(project(input, current))).toEqual(tuple(current));
     edit(input, (s) => { s.main!.pbtInner = raw + 1; }); status(input, 'main.pbtInner', { lastObservedMonotonic: 11 });
-    const retired = project(input, current); expect(retired.display.state).toBe('unknown');
+    const retired = project(input, current); expect(qualification(retired).state).toBe('unknown');
     renew(input, 12, 2); expect(project(input, retired).display.state).toBe('current');
   });
   // MOR-2497 step 2: a width off the 50 Hz lattice has no PBT reading at all --
@@ -752,15 +753,15 @@ describe('coherent RF passband display', () => {
     const input = fixture(); if (name === 'slot') slotted(input);
     if (name === 'receiver') dual(input);
     const current = project(input); expect(current.display.state).toBe('current'); change(input);
-    const retired = project(input, current); expect(retired.display.state).toBe('unknown');
-    expect(project(input, retired).display.state).toBe('unknown');
+    const retired = project(input, current); expect(qualification(retired).state).toBe('unknown');
+    expect(qualification(project(input, retired)).state).toBe('unknown');
     const oldFrame = input.frame; renew(input, 11, 3);
     if (name === 'slot') {
       status(input, 'main.activeSlot', { lastObservedMonotonic: 10.5 });
       receipt(input, 3, { startFreq: 14_024_000, endFreq: 14_124_000 });
     }
     const nextFrame = input.frame; input.frame = oldFrame;
-    expect(project(input, retired).display.state).toBe('unknown');
+    expect(qualification(project(input, retired)).state).toBe('unknown');
     input.frame = nextFrame; expect(project(input, retired).display.state).toBe('current');
   });
   // MOR-4387 (owner build-4): a ZOOM preset switch re-grants the frame
@@ -811,7 +812,7 @@ describe('coherent RF passband display', () => {
       geometry: { ...input.frame!.geometry!, freshness: 'stale', hasPixels: false } };
     expect(project(input, current).display).toEqual(current.display);
   });
-  it.each(['mode', 'width', 'provider'] as const)('does not hold an obsolete tuple across a %s change during a grant', kind => {
+  it.each(['mode', 'width', 'provider'] as const)('waits for confirmed %s evidence during a grant', kind => {
     const input = fixture(); const current = project(input);
     input.frame = { ...input.frame!, geometry: { ...input.frame!.geometry!, freshness: 'stale', hasPixels: false } };
     if (kind === 'mode') edit(input, state => { state.main!.mode = 'LSB'; });
@@ -820,7 +821,9 @@ describe('coherent RF passband display', () => {
       edit(input, state => { state.providerGeneration = 2; });
       editCapabilities(input, caps => { caps.providerGeneration = 2; });
     }
-    expect(project(input, current).display.state).toBe('unknown');
+    const held = project(input, current);
+    if (kind === 'provider') expect(held.display.state).toBe('unknown');
+    else expect(held.display).toEqual(current.display);
   });
   it('holds through the full ZOOM preset-switch sequence: placeholder, then the new window', () => {
     const input = fixture();
@@ -838,7 +841,7 @@ describe('coherent RF passband display', () => {
     input.frame = { ...input.frame!, geometry: { ...input.frame!.geometry!, freshness: 'stale', hasPixels: false } };
     expect(project(input).display).toEqual({ state: 'unknown', reason: 'frame-unavailable' });
   });
-  it('restores the held passband on a new frame after silence in the same scope session', () => {
+  it('keeps the held passband visible during silence in the same scope session', () => {
     const input = banded();
     const current = project(input);
     tune(input, 14_075_000, 11);
@@ -846,10 +849,8 @@ describe('coherent RF passband display', () => {
     expect(held.display.state).toBe('stale');
     input.frame = { ...input.frame!, geometry: { ...input.frame!.geometry!, freshness: 'stale' } };
     const silent = project(input, held);
-    expect(silent.display.state).toBe('unknown');
+    expect(silent.display).toEqual(held.display);
     const laggingWindow = { startFreq: 14_024_000, endFreq: 14_124_000 };
-    receipt(input, 1, laggingWindow);
-    expect(project(input, silent).display.state).toBe('unknown');
     receipt(input, 2, laggingWindow);
     const resumed = project(input, silent);
     expect(resumed.display).toMatchObject({ state: 'stale', translated: true,
@@ -875,7 +876,7 @@ describe('coherent RF passband display', () => {
     expect(confirmed.display.state).toBe('current');
     input.frame = { ...input.frame!, geometry: { ...input.frame!.geometry!, freshness: 'stale' } };
     const silent = project(input, confirmed);
-    expect(silent.display.state).toBe('unknown');
+    expect(silent.display).toEqual(confirmed.display);
     receipt(input, 3, centeredWindow);
     expect(project(input, silent).display).toEqual(confirmed.display);
   });
@@ -909,7 +910,7 @@ describe('coherent RF passband display', () => {
     receipt(input, 2, _name === 'frame mode'
       ? { startFreq: 14_049_000, endFreq: 14_099_000, mode: 1 }
       : { startFreq: 14_049_000, endFreq: 14_099_000 });
-    expect(project(input, current).display.state).toBe('unknown');
+    expect(qualification(project(input, current)).state).toBe('unknown');
   });
   it('rejects A→B→A replay even with renewed receipt and old geometry markers', () => {
     const input = fixture(); slotted(input); const a = project(input);
@@ -949,11 +950,11 @@ describe('coherent RF passband display', () => {
   it('rejects partial width updates and regressing leaf/ancestor markers', () => {
     for (const path of ['main.ifShift', 'main']) {
       const input = fixture(); const current = project(input); status(input, path, { lastObservedMonotonic: 9 });
-      expect(project(input, current).display.state).toBe('unknown');
+      expect(qualification(project(input, current)).state).toBe('unknown');
     }
     const input = fixture(); const current = project(input); stale(input, 'main.ifShift');
     edit(input, (s) => { s.main!.filterWidth = 1800; }); status(input, 'main.filterWidth', { lastObservedMonotonic: 11 });
-    const retired = project(input, current); expect(retired.display.state).toBe('unknown');
+    const retired = project(input, current); expect(qualification(retired).state).toBe('unknown');
     renew(input, 12, 2); expect(tuple(project(input, retired)).widthHz).toBe(1800);
   });
   it('distinguishes unsupported DATA from observed zero and ignores unrelated metadata', () => {
@@ -965,12 +966,12 @@ describe('coherent RF passband display', () => {
     expect(project(input, current).display.state).toBe('current');
     editCapabilities(input, (c) => { c.capabilities.push('data_mode'); });
     edit(input, (s) => { s.fieldStatus!['main.dataMode'] = { ...s.fieldStatus!['main.mode'] }; });
-    expect(project(input, current).display.state).toBe('unknown');
+    expect(qualification(project(input, current)).state).toBe('unknown');
   });
-  it.each([499, 500, -1, NaN])('honors frame age %s without another timer', (age) => {
+  it.each(['fresh', 'stale'] as const)('keeps a confirmed tuple with %s frame geometry', freshness => {
     const input = fixture(); const current = project(input);
-    input.frame = { ...input.frame!, geometry: { ...input.frame!.geometry!, freshness: age === 499 ? 'fresh' : 'stale' } };
-    expect(project(input, current).display.state).toBe(age === 499 ? 'current' : 'unknown');
+    input.frame = { ...input.frame!, geometry: { ...input.frame!.geometry!, freshness } };
+    expect(project(input, current).display).toEqual(current.display);
   });
   it.each(['ghost', 'receiver', 'source', 'transport', 'demand', 'scope epoch', 'disconnect'])(
     'invalidates %s evidence without changing command authority', (kind) => {
@@ -1010,12 +1011,12 @@ describe('coherent RF passband display', () => {
     receipt(input, 2, { pixels: new Uint8Array(), outOfRange });
     result = project(input, result);
     receipt(input, 3); result = project(input, result);
-    expect(result.display.state).toBe('unknown');
+    expect(qualification(result).state).toBe('unknown');
     status(input, 'main.filterWidth', { lastObservedMonotonic: 11 });
-    result = project(input, result); expect(result.display.state).toBe('unknown');
+    result = project(input, result); expect(qualification(result).state).toBe('unknown');
     status(input, 'main.ifShift', { lastObservedMonotonic: 11 });
     receipt(input, 2); result = project(input, result);
-    expect(result.display.state).toBe('unknown');
+    expect(qualification(result).state).toBe('unknown');
     receipt(input, 4);
     expect(project(input, result).display.state).toBe('current');
   });
@@ -1034,9 +1035,9 @@ describe('coherent RF passband display', () => {
     status(input, 'main.mode', { lastObservedMonotonic: 11 });
     const retired = project(input, current);
     receipt(input, 2);
-    expect(project(input, retired).display.state).toBe('unknown');
+    expect(qualification(project(input, retired)).state).toBe('unknown');
     status(input, 'main.filterWidth', { lastObservedMonotonic: 11 });
-    expect(project(input, retired).display.state).toBe('unknown');
+    expect(qualification(project(input, retired)).state).toBe('unknown');
     status(input, 'main.ifShift', { lastObservedMonotonic: 11 });
     status(input, 'main.mode', { lastObservedMonotonic: 11 });
     expect(project(input, retired).display.state).toBe('current');
@@ -1071,7 +1072,7 @@ describe('coherent RF passband display', () => {
     epoch(); const retired = project(input, current); expect(retired.display.state).toBe('unknown');
     renew(input, 11, 3); epoch(); const renewed = project(input, retired);
     expect(renewed.display.state).toBe('current');
-    receipt(input, 2); epoch(); expect(project(input, renewed).display.state).toBe('unknown');
+    receipt(input, 2); epoch(); expect(qualification(project(input, renewed)).state).toBe('unknown');
   });
 
   it.each(['MAIN', 'SUB'] as const)('requires observed active receiver in two-receiver %s context', (receiver) => {
@@ -1107,7 +1108,7 @@ describe('coherent RF passband display', () => {
   it('updates complete current width, but rejects changed values under equal observation markers', () => {
     const input = fixture(); const current = project(input);
     edit(input, (s) => { s.main!.filterWidth = 1800; });
-    expect(project(input, current).display.state).toBe('unknown');
+    expect(qualification(project(input, current)).state).toBe('unknown');
     status(input, 'main.filterWidth', { lastObservedMonotonic: 11 });
     expect(tuple(project(input, current)).widthHz).toBe(1800);
   });
@@ -1167,11 +1168,11 @@ describe('coherent RF passband display', () => {
       if (gap === 'malformed') status(input, path, { lastObservedMonotonic: NaN });
       const missing = project(input, current);
       const optionalAncestor = gap === 'leaf' && (path === 'main' || path === 'main.vfoA');
-      expect(missing.display.state).toBe(optionalAncestor ? 'current' : 'unknown');
+      expect(qualification(missing).state).toBe(optionalAncestor ? 'current' : 'unknown');
       Object.assign(input, savedInput); edit(input, (s) => { s.fieldStatus![path] = savedStatus; });
       renew(input, 11, 2); status(input, path, { lastObservedMonotonic: 9 });
       const regressed = project(input, missing);
-      expect(regressed.display.state).toBe('unknown');
+      expect(qualification(regressed).state).toBe('unknown');
       expect(regressed.observations[path]).toEqual({ value: current.observations[path].value, marker: 10 });
       renew(input, 12, 3); status(input, path, { lastObservedMonotonic: 10 });
       expect(project(input, regressed).display.state).toBe('current');
@@ -1202,10 +1203,10 @@ describe('coherent RF passband display', () => {
     if (field === 'slot') input.selection = { receiver: 'MAIN', slot: 'B' };
     renew(input, 11, 2); status(input, path, { lastObservedMonotonic: 10 });
     let previous = project(input, missing);
-    expect(previous.display.state).toBe('unknown');
+    expect(qualification(previous).state).toBe('unknown');
     renew(input, 12, 3); status(input, path, { lastObservedMonotonic: 10 });
     previous = project(input, previous);
-    expect(previous.display.state).toBe('unknown');
+    expect(qualification(previous).state).toBe('unknown');
     expect(previous.observations[path]).toEqual(current.observations[path]);
     renew(input, 13, 4); status(input, path, { lastObservedMonotonic: 11 });
     if (field === 'slot') receipt(input, 4, { startFreq: 14_024_000, endFreq: 14_124_000 });
@@ -1225,7 +1226,7 @@ describe('coherent RF passband display', () => {
     expect(previous.observations['main.freqHz'].marker).toBe(10);
     edit(input, (s) => { s.fieldStatus!['main.ifShift'] = shift; });
     renew(input, 21, 3); previous = project(input, previous);
-    expect(previous.display.state).toBe('unknown');
+    expect(qualification(previous).state).toBe('unknown');
     renew(input, 31, 4); expect(project(input, previous).display.state).toBe('current');
   });
 

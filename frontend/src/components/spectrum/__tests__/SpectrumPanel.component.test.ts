@@ -1619,7 +1619,8 @@ describe('SpectrumPanel component', () => {
       tuneVisible: true, confirmed: true, freqHz: true, viewStartHz: true, viewEndHz: true,
       inView: true, proportional: true, mode: true, widthHz: true, shiftHz: true,
       tuple: true, tupleState: true, tupleReason: true, tupleStale: true, passbandHz: true,
-      spanPositive: true, overlay: true,
+      spanPositive: true, overlay: true, scopeFrameLive: true, scopeFreshness: true,
+      scopeBindingEnded: true, controlLinkLost: true, scopeConnectionEpoch: true,
     };
     expect(Object.keys(doc).sort()).toEqual(Object.keys(fields).sort());
     expect(doc.viewEndHz - doc.viewStartHz).toBe(100_000);
@@ -3982,7 +3983,7 @@ describe('managed scope projection (MOR-2367)', () => {
     } else expect(target.querySelector('.passband-overlay')).not.toBeNull();
     expect(handlerHarness.vfo.onFreqChange).not.toHaveBeenCalled();
   });
-  it('preserves waterfall history across a transient frame silence', () => {
+  it('hides waterfall history across a scope transport disconnect', () => {
     const destroy = vi.spyOn(WaterfallRenderer.prototype, 'destroy');
     const { target } = managed(projection());
     const before = destroy.mock.calls.length;
@@ -4780,7 +4781,7 @@ describe('hardware scope drop clears the trace (R53)', () => {
 });
 
 describe('silent raw scope refuses click-to-tune', () => {
-  it('clears the stale span on frame silence and tunes again after a fresh frame', () => {
+  it('keeps the stale span on frame silence and tunes again after a fresh frame', () => {
     const target = mountPanel();
     emitFrame({ mode: 1, startFreq: 14_000_000, endFreq: 14_100_000 });
     prepareGeometry(target);

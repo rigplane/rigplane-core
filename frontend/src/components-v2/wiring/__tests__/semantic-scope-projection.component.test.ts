@@ -401,7 +401,9 @@ describe('one managed scope owner through the real region and panel', () => {
     toggle(); clear(); wire.frame(); expect(push).toHaveBeenCalledTimes(2);
     toggle(); flushPaint(); expect(push).toHaveBeenCalledTimes(3);
     renew(11); expect(push).toHaveBeenCalledTimes(3);
-    vi.advanceTimersByTime(500); flushSync(); clear();
+    vi.advanceTimersByTime(500); flushSync();
+    expect(h.scope.hardwareScopeFrameLive).toBe(false);
+    expect(target.querySelector<HTMLElement>('.waterfall-history')!.style.visibility).toBe('visible');
     wire.frame(); flushPaint(); expect(push).toHaveBeenCalledTimes(4);
     h.resources.release(shared);
   });
@@ -435,15 +437,72 @@ describe('one managed scope owner through the real region and panel', () => {
     renew(11); expect(overlay()).not.toBeNull();
     h.resources.release(shared);
   });
-  it('hides the passband at 500ms and restores it on the next same-session frame', async () => {
-    await render(); expect(overlay()).not.toBeNull();
+  it.each(['current', 'stale'] as const)('holds a %s tuple, spectrum and waterfall over 1.2 s of silence', async state => {
+    await render();
+    if (state === 'stale') renew(10, true);
+    flushPaint();
+    const panel = target.querySelector('.spectrum-panel')!;
+    expect(panel.getAttribute('data-passband-state')).toBe(state);
     const edges = overlay()!.getAttribute('style');
-    vi.advanceTimersByTime(499); flushSync(); expect(overlay()).not.toBeNull();
-    vi.advanceTimersByTime(1); flushSync(); clear(); expect(h.scope.hardwareScopeConnected).toBe(true);
-    wire.frame(); expect(overlay()?.getAttribute('style')).toBe(edges);
     const canvas = target.querySelector('.spectrum-area canvas');
-    wire.frame(1); expect(target.querySelector('.spectrum-area canvas')).toBe(canvas);
+    const waterfall = target.querySelector<HTMLElement>('.waterfall-history')!;
+    const waterfallCanvas = waterfall.querySelector('canvas');
+    expect(canvas).not.toBeNull();
+    expect(waterfallCanvas).not.toBeNull();
+
+    vi.advanceTimersByTime(1200); flushSync(); flushPaint();
+    expect(h.scope.hardwareScopeConnected).toBe(true);
+    expect(h.scope.hardwareScopeFrameLive).toBe(false);
+    expect(panel.getAttribute('data-passband-state')).toBe(state);
+    expect(overlay()?.getAttribute('style')).toBe(edges);
+    expect(target.querySelector('.spectrum-area canvas')).toBe(canvas);
+    expect(waterfall.querySelector('canvas')).toBe(waterfallCanvas);
+    expect(waterfall.style.visibility).toBe('visible');
+
+    wire.frame();
+    expect(overlay()?.getAttribute('style')).toBe(edges);
+    expect(target.querySelector('.spectrum-area canvas')).toBe(canvas);
   });
+
+  it('retains the canvases across a pixel-less regrant and replaces the tuple on confirmed readback', async () => {
+    await render(); flushPaint();
+    const original = overlay()!.getAttribute('style');
+    const canvas = target.querySelector('.spectrum-area canvas');
+    const waterfall = target.querySelector<HTMLElement>('.waterfall-history')!;
+    h.scope.stream('hardware').handleMessage({ type: 'granted', sourceId: 'radio', receiver: 0,
+      view: { startHz: 14_025_000, endHz: 14_075_000 },
+      coverage: { startHz: 14_025_000, endHz: 14_075_000 }, width: 3, fps: 20 });
+    flushSync();
+    expect(h.scope.stream('hardware').lastFrameHasPixels).toBe(true);
+    expect(target.querySelector('.spectrum-area canvas')).toBe(canvas);
+    expect(waterfall.style.visibility).toBe('visible');
+    expect(overlay()).not.toBeNull();
+
+    vi.advanceTimersByTime(1200); flushSync();
+    deliver(state => { state.main.filterWidth = 1800; });
+    renew(11);
+    expect(target.querySelector('.spectrum-panel')?.getAttribute('data-passband-state')).toBe('current');
+    expect(overlay()).not.toBeNull();
+    expect(overlay()!.getAttribute('style')).not.toBe(original);
+    expect(target.querySelector('.spectrum-area canvas')).toBe(canvas);
+    expect(waterfall.style.visibility).toBe('visible');
+  });
+
+  it.each(['binding end', 'control link loss'])('clears the held display on %s', async boundary => {
+    await render();
+    vi.advanceTimersByTime(1200); flushSync();
+    expect(overlay()).not.toBeNull();
+    if (boundary === 'binding end') wire.disconnect();
+    else {
+      h.session = { state: 'disconnected', epoch: 1 };
+      for (const fn of h.listeners) fn(h.session);
+      publishAuthority();
+      expect(h.scope.hardwareScopeConnected).toBe(true);
+    }
+    flushSync();
+    clear();
+  });
+
   it('retains whole stale geometry and sends frequency-only pan while resize remains denied', async () => {
     await render(); const edges = overlay()!.getAttribute('style'); renew(10, true); wire.frame();
     expect(overlay()!.getAttribute('style')).toBe(edges); expect(target.querySelector('.passband-freshness')).toBeNull();
@@ -489,12 +548,15 @@ describe('one managed scope owner through the real region and panel', () => {
     const sub = structuredClone(radio.current!.main);
     deliver(state => { state.sub = sub; }); publishAuthority();
     await render(); expect(overlay()).not.toBeNull();
+    const edges = overlay()!.getAttribute('style');
     deliver(state => { state.fieldStatus!['main.filterWidth'].observed = false; }); publishAuthority(); flushSync();
-    expect(overlay()).toBeNull();
+    expect(target.querySelector('.spectrum-panel')?.getAttribute('data-passband-state')).toBe('stale');
+    expect(overlay()?.getAttribute('style')).toBe(edges);
     wire.frame(1);
     deliver(state => { state.fieldStatus!['main.filterWidth'].observed = true; }); renew(11);
-    expect(overlay()).toBeNull();
-    wire.frame(0); expect(overlay()).not.toBeNull();
+    expect(target.querySelector('.spectrum-panel')?.getAttribute('data-passband-state')).toBe('stale');
+    wire.frame(0);
+    expect(target.querySelector('.spectrum-panel')?.getAttribute('data-passband-state')).toBe('current');
   });
   it.each(['single', 'ab'] as const)('uses the exact canonical %s VFO selection', async scheme => {
     fixture(scheme); const project = vi.spyOn(passband, 'projectScopePassbandDisplay'); await render(false);
@@ -502,7 +564,7 @@ describe('one managed scope owner through the real region and panel', () => {
     if (scheme === 'ab') {
       deliver((s) => { s.fieldStatus!['main.activeSlot'].observed = false; }); publishAuthority(); flushSync(); wire.frame();
       expect(project.mock.lastCall?.[1].selection).toBeNull();
-      expect(region!()!.passband.state).toBe('unknown');
+      expect(region!()!.passband.state).toBe('stale');
     }
   });
   it('preserves explicit relative-slot unknown instead of selecting MAIN/A', async () => {

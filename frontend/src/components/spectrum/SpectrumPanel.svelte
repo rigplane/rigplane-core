@@ -37,7 +37,7 @@
     type SpectrumAuthority,
   } from '../../lib/runtime/adapters/scope-adapter';
   import type { ScopePassbandDiagnostics } from '../../lib/runtime/adapters/scope-passband-display';
-  import type { ManagedScopeRegion } from '../../lib/runtime/adapters/scope-display-projection';
+  import { scopeDisplayDisposition, type ManagedScopeRegion } from '../../lib/runtime/adapters/scope-display-projection';
   import type { ScopeFrame, ScopeGeometry } from '../../lib/runtime/scope-frame';
   import { projectScopeCoverage, type ScopeCoverageProjection } from '../../lib/runtime/scope-frame';
   import { scopeSlotKey } from '../../lib/runtime/adapters/scope-adapter';
@@ -179,30 +179,38 @@
   // pixels reach the renderers through the stream sinks, never `$state`.
   let frameGeometry = $state.raw<ScopeGeometry | null>(null);
   let frameGrant = $state.raw<ScopeGranted | null>(null);
-  // One availability fact for overlays, gestures and the trace: frames for
-  // THIS display are flowing (transport + liveness + qualified geometry).
-  let scopeConnected = $derived((audioFft
-    ? runtime.defaultScopeStatus.transport === 'connected'
-    : runtime.scope.hardwareScopeConnected && runtime.scope.hardwareScopeFrameLive
-      && frameGeometry !== null) && (!managed || (scopeDemandOn
-      && scopeRegion?.geometryAdmitted !== false)));
-  let managedUnavailable = $derived(managed && (!scopeDemandOn || !scopeConnected));
-  // R53: when the scope drops the trace goes dark instead of freezing under
-  // the disconnect overlay. The unmanaged audio-FFT source keeps its canvas:
-  // there `scopeConnected` reads `runtime.defaultScopeStatus`, a different
-  // observation than the frames this panel paints.
-  let scopeTraceLive = $derived(scopeConnected || (!managed && audioFft));
-  // Q3 (MOR-4241): out-of-range keeps its typed state end to end — an OOR
-  // frame with retained pixels stays live content (SDR TX freeze).
-  let scopeContentState = $derived(frameGeometry?.outOfRange === true && frameGeometry.hasPixels === false
-    ? 'out-of-range' as const : undefined);
-  // R53: the sample plane (window, mode, coverage) clears when the trace is
-  // not live; the geometry store itself keeps the last facts for the store's
-  // own consumers.
-  let displayGeometry = $derived(scopeTraceLive ? frameGeometry : null);
-  // MOR-2859: the managed TX snapshot is the only TX truth (invariant R9,
-  // the same source as the global TX lamp) — never `state.ptt`. The lookup
-  // is optional: mounts without the provider read as "TX not known".
+  let lastPixelGeometry = $state.raw<ScopeGeometry | null>(null);
+  let controlSession = $state.raw(runtime.controlSession);
+  let needsControlFrame = $state(false);
+  onDestroy(runtime.subscribeControlSession?.(next => {
+    if (next.state !== 'connected' || next.epoch !== controlSession?.epoch) needsControlFrame = true;
+    controlSession = next;
+  }) ?? (() => {}));
+  let scopeLinkLost = $derived(controlSession !== undefined && controlSession.state !== 'connected');
+  let scopeTransportConnected = $derived(audioFft
+    ? runtime.defaultScopeStatus.transport === 'connected' : runtime.scope.hardwareScopeConnected);
+  let scopeBindingEnded = $derived(!scopeDemandOn || !scopeTransportConnected
+    || (managed && scopeRegion?.geometryAdmitted === false)
+    || (frameGeometry === null && (managed || !audioFft)));
+  let scopeCleared = $derived(scopeDisplayDisposition({
+    bindingEnded: scopeBindingEnded, linkLost: scopeLinkLost || needsControlFrame, contradicted: false,
+  }) === 'cleared');
+  // Liveness still gates interactions and tracing. The display can use the
+  // last pixel geometry when the stream publishes a pixel-less regrant.
+  let scopeConnected = $derived(!scopeCleared && (audioFft
+    || (runtime.scope.hardwareScopeFrameLive && frameGeometry !== null)));
+  let managedUnavailable = $derived(managed && !scopeConnected);
+  let sampleGeometry = $derived(frameGeometry?.hasPixels === false && !frameGeometry.outOfRange
+    && lastPixelGeometry?.sourceId === frameGeometry.sourceId
+    && lastPixelGeometry.receiver === frameGeometry.receiver ? lastPixelGeometry : frameGeometry);
+  let scopeTraceVisible = $derived(!scopeLinkLost && !needsControlFrame
+    && ((!scopeCleared && sampleGeometry !== null) || (!managed && audioFft)));
+  // Explicit out-of-range frames with retained pixels can still be rendered.
+  let scopeContentState = $derived(sampleGeometry?.outOfRange === true && !sampleGeometry.hasPixels
+    ? 'out-of-range' : 'normal');
+  let displayGeometry = $derived(scopeTraceVisible ? sampleGeometry : null);
+  let waterfallVisible = $derived(scopeTraceVisible && (displayGeometry?.hasPixels === true || (!managed && audioFft)));
+
   let txSnapshot = $state.raw<ManagedTxState | null>(null);
   try {
     const txCtl = getManagedAppTxController();
@@ -543,7 +551,7 @@
   // geometry (before the first scope frame endFreq <= startFreq, so
   // handleDragStart bails — the cursor must not claim otherwise).
   let canPan = $derived(
-    spectrumAuthority !== null && spectrumAuthority.frequencyHz !== null && spanHz > 0,
+    scopeConnected && spectrumAuthority !== null && spectrumAuthority.frequencyHz !== null && spanHz > 0,
   );
   // MOR-4214: the radio-owned window is an OBSERVED radio fact. The
   // frame-stream context mode reads 0 through a reconnect's clearMode()
@@ -555,7 +563,7 @@
   // fallback while the readback is unobserved.
   let scopeMode = $derived(scopeControlsMode ?? frameScopeMode);
   let isRadioOwnedWindow = $derived(isRadioOwnedWindowScopeFn(scopeMode));
-  let displayTuple = $derived(!managedUnavailable && scopeRegion
+  let displayTuple = $derived(scopeTraceVisible && scopeRegion
     && scopeContentState !== 'out-of-range'
     && (scopeRegion.passband.state === 'current' || scopeRegion.passband.state === 'stale')
     ? scopeRegion.passband.tuple : null);
@@ -666,7 +674,7 @@
       : undefined,
   );
   let canResizePassband = $derived(
-    confirmedPassband && !displayStale
+    scopeConnected && confirmedPassband && !displayStale
       && spectrumAuthority !== null
       && spectrumAuthority.rule !== null
       && canResizeFromRightEdge(spectrumAuthority.mode!),
@@ -968,7 +976,7 @@
       ? Math.min(100, Math.max(0, ((tuneHz - viewportStartFreq) / viewportSpanHz) * 100))
       : 50
   );
-  let spectrumGeometryKey = $derived(`${spectrumAuthority?.providerGeneration ?? 'x'}|${displayGeometry?.receiver ?? 'legacy'}|${startFreq}|${endFreq}|${frameGeometry?.width ?? 0}|${audioProjection?.zero ?? 'legacy'}|${audioProjection?.perHz ?? 0}`);
+  let spectrumGeometryKey = $derived(`${spectrumAuthority?.providerGeneration ?? 'x'}|${displayGeometry?.receiver ?? 'legacy'}|${startFreq}|${endFreq}|${displayGeometry?.width ?? 0}|${audioProjection?.zero ?? 'legacy'}|${audioProjection?.perHz ?? 0}`);
   // MOR-4270: the coverage projection hatches the requested view's
   // uncovered columns with the typed reason — never stretched pixels.
   // MOR-4451: the hatch reads the native width above (the reviewer's P2:
@@ -1217,7 +1225,7 @@
     ...spectrumColorRolesToOptions(resolvedColorRoles),
     spanHz: viewportSpanHz,
     sampleSpanHz: spanHz,
-    coverage: audioFft ? undefined : frameGeometry?.coverage,
+    coverage: audioFft ? undefined : displayGeometry?.coverage,
     // MOR-4451: the ONE hatch decision — the same projectScopeCoverage
     // ranges the DOM overlay renders (empty when the native is as wide as
     // the view, whatever the offset). The renderer paints only these; its
@@ -1226,7 +1234,7 @@
     hatchRanges: coverageHatched.length > 0
       ? coverageHatched.map(({ start, end }) => ({ start, end }))
       : null,
-    sampleOffset: audioFft && !audioProjection ? Math.floor((frameGeometry?.width ?? 0) / 2) : 0,
+    sampleOffset: audioFft && !audioProjection ? Math.floor((displayGeometry?.width ?? 0) / 2) : 0,
     sampleWindow: audioSampleWindow,
     sampleAmplitudeMax: audioFft ? 160 : 80,
     showRfOverlays: !audioFft,
@@ -1248,8 +1256,8 @@
     autoFloor,
     spanHz: viewportSpanHz,
     sampleSpanHz: spanHz,
-    coverage: audioFft ? undefined : frameGeometry?.coverage,
-    sampleOffset: audioFft && !audioProjection ? Math.floor((frameGeometry?.width ?? 0) / 2) : 0,
+    coverage: audioFft ? undefined : displayGeometry?.coverage,
+    sampleOffset: audioFft && !audioProjection ? Math.floor((displayGeometry?.width ?? 0) / 2) : 0,
     sampleWindow: audioSampleWindow,
     sampleAmplitudeMax: audioFft ? 160 : 80,
     centerHz: panoramaViewportHz,
@@ -1314,6 +1322,11 @@
       return passband?.state === 'unknown' ? passband.reason : null;
     })(),
     tupleStale: displayStale,
+    scopeFrameLive: runtime.scope.hardwareScopeFrameLive,
+    scopeFreshness: frameGeometry?.freshness ?? null,
+    scopeBindingEnded,
+    controlLinkLost: scopeLinkLost,
+    scopeConnectionEpoch: runtime.scope.connectionEpoch,
     passbandHz,
     spanPositive: spanHz > 0,
     overlay: tuneVisible && spanHz > 0 && pbWidthPct > 0,
@@ -1325,7 +1338,7 @@
 
   function completeGestureAuthority(requireRule: boolean): SpectrumAuthority | null {
     const current = readAuthority();
-    if (managed && (managedUnavailable || scopeRegion?.passband.state !== 'current')) return null;
+    if (!scopeConnected || (managed && scopeRegion?.passband.state !== 'current')) return null;
     if (!current || current.frequencyHz === null || current.mode === null
       || current.filterWidthHz === null || current.ifShiftHz === null
       || (requireRule && current.rule === null)) return null;
@@ -1345,7 +1358,7 @@
   }
 
   function readSampleGeometry(element: HTMLElement): SampleGeometry | null {
-    if (managedUnavailable) return null;
+    if (!scopeConnected) return null;
     const { width } = element.getBoundingClientRect();
     if (!Number.isFinite(width) || width <= 0 || !Number.isFinite(startFreq)
       || !Number.isFinite(endFreq) || endFreq <= startFreq
@@ -1521,7 +1534,7 @@
   }
 
   function handleTune(hz: number): void {
-    if (managedUnavailable) return;
+    if (!scopeConnected) return;
     const current = readAuthority();
     const frequency = snapFrequency(Math.round(hz));
     if (current?.frequencyHz === null || current?.frequencyHz === undefined || frequency === null) return;
@@ -1681,8 +1694,6 @@
     handleDragCancel(event);
   }
 
-  // R53: the panel keeps no pixels across a drop — replay may only paint a
-  // frame the sink actually delivered to THIS display since the last drop.
   let samplePlaneLive = false;
   let scopeError = $state<string | null>(null);
   let cachedWhileOff = false;
@@ -1691,6 +1702,12 @@
   function clearSample(): void {
     const hadSample = samplePlaneLive;
     samplePlaneLive = false;
+    lastPixelGeometry = null;
+    clearScopeGesture();
+    if (hadSample) spectrumPush = null;
+  }
+
+  function clearScopeGesture(): void {
     resizeCapture = null;
     resizeCandidate = null;
     dragCapture = null;
@@ -1699,17 +1716,13 @@
     clearDragPreview();
     dragging = false;
     dxSpots = [];
-    // A cleared LIVE sample plane keeps no spectrum registration (that
-    // canvas unmounts with the trace); the waterfall registration survives
-    // — its canvas only hides, and real frame silence stops the deliveries.
-    if (hadSample) {
-      spectrumPush = null;
-    }
   }
 
   $effect(() => {
-    if (scopeTraceLive) return;
-    untrack(() => clearSample());
+    if (scopeCleared) untrack(clearSample);
+  });
+  $effect(() => {
+    if (!scopeConnected) untrack(clearScopeGesture);
   });
 
   $effect(() => { if (managed) scopeDemandOn = scopeDemanded; });
@@ -1750,11 +1763,14 @@
           settledGrant = { ...settledGrant, [`${grant.sourceId}:${grant.receiver}`]: { epoch, seq: grant.requestSeq } };
         }
       });
-      const stopGeometry = scopeStream.geometry.subscribe((geometry) => { frameGeometry = geometry; });
+      const stopGeometry = scopeStream.geometry.subscribe((geometry) => {
+        frameGeometry = geometry;
+        if (geometry === null || (geometry.outOfRange && !geometry.hasPixels)) lastPixelGeometry = null;
+      });
       cachedWhileOff = false;
       const acceptFrame = (frame: ScopeFrame, slotKey: string) => {
         const geometry = frameGeometry;
-        if (geometry === null) return;
+        if (geometry === null || scopeLinkLost) return;
         // Follow the qualified display slot (the geometry's own slot).
         if (slotKey !== scopeSlotKey(geometry.sourceId, geometry.receiver)) return;
         // MOR-4532: a frame after a settled grant is the settled geometry
@@ -1771,6 +1787,8 @@
         const token = trace?.tokenForFrame(frame) ?? null;
         const pixels = frame.pixels;
         if (pixels === null) { clearSample(); return; }
+        needsControlFrame = false;
+        lastPixelGeometry = geometry;
         samplePlaneLive = true;
         spectrumPush?.(pixels, token);
         // MOR-3158: a TX-frozen SDR source adds no waterfall row — the
@@ -1931,7 +1949,7 @@
         <div class="scope-tx-overlay" data-testid="scope-tx-overlay">{t('core.overlay.scopeTransmitting')}</div>
       {:else if scopeHiddenOnRadio && !scopeConnected}
         <div class="scope-disconnected-overlay" data-testid="scope-hidden-overlay">{t('core.overlay.scopeHiddenOnRadio')}</div>
-      {:else if !scopeConnected}
+      {:else if !scopeTraceVisible}
         <div class="scope-disconnected-overlay">{t('core.overlay.scopeDisconnected')}</div>
       {:else if scopeContentState === 'out-of-range'}
         <div class="scope-disconnected-overlay scope-out-of-range" data-testid="scope-out-of-range">
@@ -1943,7 +1961,7 @@
         </div>
       {/if}
       {#if !audioFft}<BandPlanOverlay startFreq={viewportStartFreq} endFreq={viewportEndFreq} visible={showBandPlan} {hiddenLayers} region={bandPlanRegion} />{/if}
-      {#if scopeTraceLive && scopeContentState !== 'out-of-range' && frameGeometry?.hasPixels !== false}
+      {#if scopeTraceVisible && scopeContentState !== 'out-of-range' && displayGeometry?.hasPixels !== false}
       <SpectrumCanvas data={null} options={spectrumOptions} spanHz={viewportSpanHz} absoluteLabels={explicitView !== null || isRadioOwnedWindow} {enableAvg} {enablePeakHold} trace={traceStatus === 'recording' ? trace : null} surface={spectrumSurface} onRegisterPush={(fn) => {
         spectrumPush = fn;
         const geometry = frameGeometry;
@@ -1953,7 +1971,7 @@
         if (frame?.pixels) fn(frame.pixels);
       }} {colorScheme} />
       {/if}
-      {#if scopeTraceLive && scopeContentState !== 'out-of-range'}
+      {#if scopeTraceVisible && scopeContentState !== 'out-of-range'}
       {#each coverageHatched as hatched (hatched.reason + hatched.start)}
         <div
           class="scope-hatch"
@@ -2015,7 +2033,7 @@
     <div class="waterfall-scale"></div>
     <div class="waterfall-content" class:panning={dragging} class:draggable={canPan} bind:this={waterfallContent} onpointerdown={handleDragStart} onlostpointercapture={handleDragLostCapture} role="presentation">
       {#key runtime.state?.providerGeneration}
-      <div class="waterfall-history" style:visibility={managedUnavailable || scopeContentState === 'out-of-range' ? 'hidden' : 'visible'} aria-hidden={managedUnavailable || scopeContentState === 'out-of-range'}>
+      <div class="waterfall-history" style:visibility={waterfallVisible ? 'visible' : 'hidden'} aria-hidden={!waterfallVisible}>
         <WaterfallCanvas
           options={waterfallOptions}
           trace={traceStatus === 'recording' ? trace : null}

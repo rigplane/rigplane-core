@@ -1478,7 +1478,7 @@
       stopScopeReceipt = undefined;
       const floor = scopePassband.floors?.receipt;
       if (!stream || !managedScope || !scopeDemanded || !authority
-        || scopePassband.display.state !== 'unknown' || floor === undefined || stream.geometryReceipt > floor) return;
+        || (scopePassband.qualification ?? scopePassband.display).state !== 'unknown' || floor === undefined || stream.geometryReceipt > floor) return;
       stopScopeReceipt = stream.subscribeNextGeometry(floor, geometry => {
         stopScopeReceipt = undefined;
         scopeGeometry = geometry;
