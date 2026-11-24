@@ -7,7 +7,7 @@ import { startJourneyServer } from './server-process';
 import { openPanorama } from './panorama-ready';
 import { expectPanoramaSettled, watchPanoramaErrors } from './panorama-guards';
 import {
-  expectFollowWindowOnVfo, gateDiff, installSampler, passbandGaps, settlePassband, watchScopeFrames,
+  expectFollowWindowOnVfo, gateDiff, installSampler, missingLivePassband, passbandGaps, settlePassband, watchScopeFrames,
 } from './panorama-passband-probe';
 
 // ── MOR-4387 owner build-4, item 1: the passband overlay must not blink ──
@@ -39,8 +39,7 @@ async function expectPassbandHeld(
   await writeFile(info.outputPath(file), JSON.stringify({ fromT, toT, gaps, samples }, null, 2));
   // A scope outage clears the sample plane. Once it is live, the overlay
   // must be present throughout the transition, including the first live view.
-  const missing = samples.find(sample => sample.t >= fromT && sample.t <= toT
-    && !sample.overlay && sample.gates?.spanPositive !== false);
+  const missing = missingLivePassband(samples, fromT, toT);
   expect(missing, 'passband overlay missing from a live scope view').toBeUndefined();
 }
 
