@@ -435,11 +435,12 @@ describe('one managed scope owner through the real region and panel', () => {
     renew(11); expect(overlay()).not.toBeNull();
     h.resources.release(shared);
   });
-  it('propagates the real host frame expiry at exactly 500ms and requires renewed evidence', async () => {
+  it('hides the passband at 500ms and restores it on the next same-session frame', async () => {
     await render(); expect(overlay()).not.toBeNull();
+    const edges = overlay()!.getAttribute('style');
     vi.advanceTimersByTime(499); flushSync(); expect(overlay()).not.toBeNull();
     vi.advanceTimersByTime(1); flushSync(); clear(); expect(h.scope.hardwareScopeConnected).toBe(true);
-    wire.frame(); expect(overlay()).toBeNull(); renew(11); wire.frame(); expect(overlay()).not.toBeNull();
+    wire.frame(); expect(overlay()?.getAttribute('style')).toBe(edges);
     const canvas = target.querySelector('.spectrum-area canvas');
     wire.frame(1); expect(target.querySelector('.spectrum-area canvas')).toBe(canvas);
   });
