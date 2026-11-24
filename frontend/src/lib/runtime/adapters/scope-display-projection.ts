@@ -10,6 +10,7 @@ export type ManagedScopeRegion = Readonly<{
   passband: ScopePassbandDisplay;
   demanded: boolean;
   geometryAdmitted?: boolean;
+  controlSession?: Readonly<{ connected: boolean; revision: number }>;
   setDemand(enabled: boolean): void;
 }>;
 

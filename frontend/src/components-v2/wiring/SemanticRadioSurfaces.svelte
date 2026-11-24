@@ -1493,7 +1493,8 @@
   let managedScopeRegionValue: ManagedScopeRegion | undefined = $derived.by(() => {
     if (!managedScope) return undefined;
     return { passband: scopePassband.display, demanded: scopeDemanded, setDemand: setManagedScopeDemand,
-      geometryAdmitted: scopeAuthority !== null || runtime.caps?.vfoReadback === 'none' };
+      geometryAdmitted: scopeAuthority !== null || runtime.caps?.vfoReadback === 'none',
+      controlSession: { connected: controlSession.state === 'connected', revision: scopeControlRevision } };
   });
 
   let scopeAuthority = $derived.by(() => {
@@ -1576,6 +1577,7 @@
   const readControlSession = 'controlSession' in runtime ? () => runtime.controlSession : undefined;
   const subscribeControlSession = 'subscribeControlSession' in runtime ? runtime.subscribeControlSession : undefined;
   let controlSession = $state(readControlSession?.() ?? { state: 'disconnected' as const, epoch: -1 });
+  let scopeControlRevision = $state(0);
   let meterContinuitySession: MeterContinuitySession | null = $derived(
     controlSession.state === 'connected'
       && Number.isSafeInteger(controlSession.epoch) && controlSession.epoch >= 0
@@ -1585,6 +1587,7 @@
     `${generation}:${receiver}:${field}`;
   const unsubscribePbtSession = subscribeControlSession?.((next) => {
     if (next.state !== 'connected' || next.epoch !== controlSession.epoch) {
+      scopeControlRevision += 1;
       pbtPresentation = EMPTY_PBT_PRESENTATION;
       const generation = runtime.state?.providerGeneration;
       if (Number.isSafeInteger(generation)) for (const receiver of ['MAIN', 'SUB'] as const) {

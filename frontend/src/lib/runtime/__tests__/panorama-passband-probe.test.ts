@@ -17,6 +17,8 @@ describe('passband probe evidence', () => {
         tuneVisible: true, confirmed: true, freqHz: 14_050_000, viewStartHz: 14_000_000, viewEndHz: 14_100_000,
         inView: true, proportional: false, mode: 'USB', widthHz: 2400, shiftHz: 0, tuple: false,
         tupleState: 'unknown' as const, tupleReason: 'frame-unavailable', tupleStale: false,
+        scopeFrameLive: true, scopeFreshness: 'fresh' as const, scopeBindingEnded: false,
+        controlLinkLost: false, scopeConnectionEpoch: 1,
         passbandHz: 0, spanPositive: true, overlay: false,
       },
     };

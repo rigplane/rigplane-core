@@ -180,13 +180,20 @@
   let frameGeometry = $state.raw<ScopeGeometry | null>(null);
   let frameGrant = $state.raw<ScopeGranted | null>(null);
   let lastPixelGeometry = $state.raw<ScopeGeometry | null>(null);
-  let controlSession = $state.raw(runtime.controlSession);
-  let needsControlFrame = $state(false);
-  onDestroy(runtime.subscribeControlSession?.(next => {
-    if (next.state !== 'connected' || next.epoch !== controlSession?.epoch) needsControlFrame = true;
-    controlSession = next;
-  }) ?? (() => {}));
-  let scopeLinkLost = $derived(controlSession !== undefined && controlSession.state !== 'connected');
+  let standaloneControlSession = $state.raw(runtime.controlSession);
+  let standaloneControlRevision = $state(0);
+  $effect(() => {
+    if (managed) return;
+    return untrack(() => runtime.subscribeControlSession?.(next => {
+      if (next.state !== 'connected' || next.epoch !== standaloneControlSession?.epoch) standaloneControlRevision += 1;
+      standaloneControlSession = next;
+    }));
+  });
+  let scopeControlRevision = $derived(scopeRegion?.controlSession?.revision ?? standaloneControlRevision);
+  let sampleControlRevision = $state(0);
+  let needsControlFrame = $derived(sampleControlRevision !== scopeControlRevision);
+  let scopeLinkLost = $derived(scopeRegion?.controlSession ? !scopeRegion.controlSession.connected
+    : standaloneControlSession !== undefined && standaloneControlSession.state !== 'connected');
   let scopeTransportConnected = $derived(audioFft
     ? runtime.defaultScopeStatus.transport === 'connected' : runtime.scope.hardwareScopeConnected);
   let scopeBindingEnded = $derived(!scopeDemandOn || !scopeTransportConnected
@@ -1787,7 +1794,7 @@
         const token = trace?.tokenForFrame(frame) ?? null;
         const pixels = frame.pixels;
         if (pixels === null) { clearSample(); return; }
-        needsControlFrame = false;
+        sampleControlRevision = scopeControlRevision;
         lastPixelGeometry = geometry;
         samplePlaneLive = true;
         spectrumPush?.(pixels, token);

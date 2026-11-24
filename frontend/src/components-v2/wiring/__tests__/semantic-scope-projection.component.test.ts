@@ -58,6 +58,7 @@ vi.mock('$lib/runtime', async () => {
   const { getCapabilities } = await import('$lib/stores/capabilities.svelte');
   return { get presentationResources() { return h.resources; }, runtime: {
     get state() { return radio.current; }, get caps() { return getCapabilities(); },
+    system: { identifyFrequency: async () => null },
     get scope() { return h.scope; }, get controlSession() { return h.session; },
     subscribeControlSession: (fn: (next: typeof h.session) => void) => { h.listeners.add(fn); return () => h.listeners.delete(fn); },
     subscribeControlAuthority(handler: (typeof h.authoritySubscribers extends Set<infer T> ? T : never)) {

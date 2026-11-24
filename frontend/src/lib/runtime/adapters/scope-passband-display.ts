@@ -168,7 +168,10 @@ function inspect(input: ScopePassbandDisplayInput): Inspection {
   const geometry = facts?.geometry ?? null;
   const result: Inspection = { candidate: null, domain: null, observations: {}, geometryPaths: [],
     receipt: integer(facts?.receipt) ? facts.receipt : 0,
-    reason: 'identity-unresolved', unsupported: false, placeholder: false, silent: false,
+    reason: 'identity-unresolved', unsupported: false,
+    // A regrant has no pixels of its own, even when the health tick marks it fresh.
+    placeholder: geometry?.hasPixels === false && facts?.lastFrameHasPixels === true,
+    silent: geometry?.hasPixels === true && geometry.freshness !== 'fresh',
     selection: null, explicitSelectionBind: false };
   if (!state || !caps || !selection || state.stateContractVersion !== 1 || caps.stateContractVersion !== 1
     || !integer(state.providerGeneration) || state.providerGeneration !== caps.providerGeneration
@@ -318,10 +321,6 @@ function inspect(input: ScopePassbandDisplayInput): Inspection {
     || !Number.isFinite(geometry.view.startHz) || !Number.isFinite(geometry.view.endHz)
     || geometry.view.endHz <= geometry.view.startHz
     || !nonnegative(facts.receipt) || facts.receipt === 0) return result;
-  // A health tick can mark a grant fresh using the last frame's receipt.
-  // Pixel presence distinguishes the grant from actual frame evidence.
-  result.placeholder = !geometry.hasPixels && facts.lastFrameHasPixels;
-  result.silent = geometry.hasPixels && geometry.freshness !== 'fresh';
   const tuple = Object.freeze({ frequencyHz: frequency, mode, widthHz: width, shiftHz,
     frameMode: geometry.mode, startHz: geometry.view.startHz, endHz: geometry.view.endHz });  // A held-stale value carrying provider-confirmed readback is still an
   // authoritative radio fact.  IC-7610 polling intervals intentionally exceed
@@ -405,7 +404,7 @@ export function projectScopePassbandDisplay(
   const hasTuple = active(priorDisplay);
   const previousTuple = hasTuple ? tupleOf(priorDisplay) : null;
   const wasTranslated = hasTuple && priorDisplay.translated === true;
-  const { frame, session, state, caps } = input;
+  const { frame, session, state, caps, selection } = input;
   const binding = state && caps && frame?.demanded && frame.transport === 'connected' && frame.geometry
     && frame.source === 'hardware' && frame.geometry.source === 'radio'
     && frame.receiver === frame.geometry.receiver && frame.providerGeneration === state.providerGeneration
@@ -416,8 +415,9 @@ export function projectScopePassbandDisplay(
     ? JSON.stringify([frame.receiver, frame.providerGeneration, frame.transportEpoch, capabilityIdentity(caps)]) : null;
   const controlEpoch = session?.state === 'connected' && integer(session.epoch) && session.epoch > 0
     ? session.epoch : null;
+  const slotChanged = selection !== null && previous.selection !== null && selection.slot !== previous.selection.slot;
   const bindingEnded = binding === null || binding !== previous.binding || selectionBoundary
-    || (next.domain !== null && previous.domain !== null && !sameDomain);
+    || slotChanged || (next.domain !== null && previous.domain !== null && !sameDomain);
   const linkLost = controlEpoch === null || controlEpoch !== previous.controlEpoch;
   const visibleTuple = active(previous.display) ? previous.display.tuple : null;
   const waitingForFrame = next.silent || next.placeholder;
@@ -429,7 +429,7 @@ export function projectScopePassbandDisplay(
     && (candidate.context === previous.context || next.geometryPaths.every(path =>
       (next.observations[path]?.marker ?? -1) > (previous.observations[path]?.marker ?? -1)));
   const disposition = scopeDisplayDisposition({ bindingEnded, linkLost, contradicted });
-  if (waitingForFrame && visibleTuple && disposition === 'held' && !regression && !receiptRegression) {
+  if (waitingForFrame && visibleTuple && disposition === 'held') {
     return previous;
   }
   const continuous = candidate !== null && candidate.bandlessIdentity !== null
@@ -538,11 +538,11 @@ export function projectScopePassbandDisplay(
     domain: next.domain ?? previous.domain,
     observations: Object.freeze(observations),
     geometryPaths: Object.freeze([...next.geometryPaths]), receipt: Math.max(previous.receipt, next.receipt),
-    floors: active(display) && !display.translated ? null : floors,
+    floors: active(qualified) && !qualified.translated ? null : floors,
     frequencyHoldRecovery: (holdingFrequency || previous.frequencyHoldRecovery)
-      && active(display) && display.translated === true,
+      && active(qualified) && qualified.translated === true,
     selection: regression ? previous.selection : next.selection ?? previous.selection,
-    selectionRecovery: active(display) && !display.translated ? null
+    selectionRecovery: active(qualified) && !qualified.translated ? null
       : selectionRecovery && Object.freeze(selectionRecovery),
   });
 }
