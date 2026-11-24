@@ -1575,6 +1575,110 @@ async def test_stability_baseline_settle_never_hides_a_persistent_surplus(
     assert _stability_status(entry, "tasks")["status"] == "FAIL"
 
 
+@pytest.mark.parametrize("late_leak", [False, True], ids=["transient", "late-leak"])
+async def test_stability_probe_drains_session_work_and_counts_late_leaks(
+    monkeypatch: pytest.MonkeyPatch, virtual_clock: VirtualClock, late_leak: bool
+) -> None:
+    """A closing channel owns a handler, keepalive and event sender."""
+
+    async def cleanup() -> None:
+        pass
+
+    monkeypatch.setattr(soak_driver, "time", SimpleNamespace(monotonic=virtual_clock))
+    web = SimpleNamespace(
+        _session_ws_tasks=set(),
+        _controller=ControllerAuthority(ready=lambda: True, cleanup=cleanup),
+        _bg_tasks=set(),
+    )
+    adapter = soak_driver._RuntimeTaskAdapter(SimpleNamespace(web=web), None)
+    driver = soak_driver.SoakDriver(
+        _smoke_config(), "http://127.0.0.1:1", "127.0.0.1:1", SimpleNamespace()
+    )
+    driver._runtime_task_adapter = adapter
+    sampler = soak_driver.ProcessMetricsSampler(object(), driver._base_url)
+    driver._sampler = sampler
+    release_channel = asyncio.Event()
+    release_spike = asyncio.Event()
+    release_leak = asyncio.Event()
+    tasks: list[asyncio.Task[Any]] = []
+    spike: list[asyncio.Task[Any]] = []
+
+    async def channel() -> None:
+        await asyncio.gather(release_channel.wait(), release_channel.wait())
+
+    async def runtime() -> dict[str, Any]:
+        return {
+            "process": {
+                "openFds": 20,
+                "asyncioTasks": 35 + len(adapter.owned_task_population()),
+                "rssBytes": 1024,
+            }
+        }
+
+    async def connect(deadline: float) -> bool:
+        if late_leak:
+            # An initial surplus requests the existing post-settle window.
+            spike.extend(asyncio.create_task(release_spike.wait()) for _ in range(3))
+            tasks.extend(spike)
+        return True
+
+    settle = driver._settle_stability_counts
+
+    async def settle_before_leak(pre: soak_driver.ProcessSample) -> Any:
+        release_spike.set()
+        await asyncio.gather(*spike)
+        result = await settle(pre)
+        # The leak arrives after the settle's final reading, before the re-probe.
+        assert len(adapter.owned_task_population()) == 0
+        tasks.extend(asyncio.create_task(release_leak.wait()) for _ in range(3))
+        return result
+
+    async def control(action: str) -> None:
+        pass
+
+    async def status() -> str:
+        return "connected"
+
+    async def disconnected(*args: Any, **kwargs: Any) -> bool:
+        return True
+
+    monkeypatch.setattr(sampler, "fetch_runtime", runtime)
+    monkeypatch.setattr(sampler, "fetch_connection_status", status)
+    monkeypatch.setattr(driver, "_post_radio_control", control)
+    monkeypatch.setattr(driver, "_wait_connection", disconnected)
+    monkeypatch.setattr(driver, "_do_connect_until_recovered", connect)
+    if late_leak:
+        monkeypatch.setattr(driver, "_settle_stability_counts", settle_before_leak)
+    else:
+        closing = asyncio.create_task(channel())
+        web._session_ws_tasks.add(closing)
+        closing.add_done_callback(web._session_ws_tasks.discard)
+        tasks.append(closing)
+
+    cycle = asyncio.create_task(driver._reconnect_cycle(), name="soak-test-cycle")
+    try:
+        # The old baseline's calm streak and all three pre readings finish
+        # at 0.75 s while the channel's three tasks are still pending.
+        await virtual_clock.elapse(1.0)
+        release_channel.set()
+        await virtual_clock.elapse(10.0)
+        assert cycle.done()
+        await cycle
+        (entry,) = driver._reconnects
+        criterion = _stability_status(entry, "tasks")
+        (check,) = criterion["checks"]
+        assert (check["pre"], check["post"], check["delta"]) == (
+            35,
+            38 if late_leak else 35,
+            3 if late_leak else 0,
+        )
+        assert criterion["status"] == ("FAIL" if late_leak else "PASS")
+    finally:
+        for task in (cycle, *tasks):
+            task.cancel()
+        await asyncio.gather(cycle, *tasks, return_exceptions=True)
+
+
 # ---------------------------------------------------------------------------
 # MOR-3575 step 3: the in-process provider counts the owned population —
 # the pending tasks created after the run's baseline, and sockets on the

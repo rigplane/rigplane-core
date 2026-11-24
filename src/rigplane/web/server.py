@@ -1401,6 +1401,9 @@ class WebServer:
         self._rigctl_channel: OpenRigctlChannel | None = None
         self._runtime_last_error: str | None = None
         self._client_tasks: set[asyncio.Task[None]] = set()
+        # Managed-session WebSockets can outlive their authority session.
+        # Keep their connection tasks through handler and socket teardown.
+        self._session_ws_tasks: set[asyncio.Task[Any]] = set()
         self._scope_handlers: set["ScopeHandler"] = set()
         self._scope_hub: ScopeHub | None = None
         self._radio_scope_source: RadioScopeSource | None = None
@@ -8461,6 +8464,11 @@ class WebServer:
             )
             return
 
+        if ticket is not None and ticket.tx_owner is not None:
+            task = asyncio.current_task()
+            assert task is not None
+            self._session_ws_tasks.add(task)
+            task.add_done_callback(self._session_ws_tasks.discard)
         try:
             writer.write(upgrade.response)
             await writer.drain()
