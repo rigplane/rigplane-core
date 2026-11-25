@@ -216,13 +216,16 @@ test('terminal topology refuses skipped success and injected or incomplete jobs'
   ];
   const ok = {ok: true, code: 'terminal_match', routeConcordance: true};
   assert.deepEqual(observer.evaluateJobTopology(run, valid, routes, false), ok);
-  // A frontend run selects quick-frontend AND its e2e matrix in full.
+  // A frontend run selects quick-frontend AND its e2e matrix in full
+  // (MOR-4685: the journey leg is itself three --shard legs).
   const both = structuredClone(valid);
   both[1] = ran('quick-frontend', frontendPool, 'mini-server-build-core-1');
   both[2] = ran('quick-frontend-e2e (visual)', frontendPool, 'mini-server-build-core-1');
   both.splice(3, 0,
     ran('quick-frontend-e2e (guards)', frontendPool, 'mini-server-build-core-2'),
-    ran('quick-frontend-e2e (journey)', frontendPool, 'mini-server-build-core-3'));
+    ran('quick-frontend-e2e (journey-1)', frontendPool, 'mini-server-build-core-3'),
+    ran('quick-frontend-e2e (journey-2)', frontendPool, 'mini-server-build-core-4'),
+    ran('quick-frontend-e2e (journey-3)', frontendPool, 'mini-server-build-core-5'));
   assert.deepEqual(observer.evaluateJobTopology(run, both, {...routes, frontend: true}, false), ok);
   const lightClassify = structuredClone(valid); lightClassify[0].labels = light; lightClassify[0].runner_name = 'mm-light-core-2';
   assert.deepEqual(observer.evaluateJobTopology(run, lightClassify, routes, false), ok);
@@ -280,6 +283,11 @@ test('terminal topology refuses skipped success and injected or incomplete jobs'
   // (a shape GitHub never produces) are all topology failures.
   const missingLeg = valid.filter((job) => job.name !== 'quick-python-tests (3)');
   assert.equal(observer.evaluateJobTopology(run, missingLeg, routes, false).code, 'route_mismatch');
+  // MOR-4685: the journey tier is three shard legs, so a frontend run
+  // missing ONE journey shard is exactly as incomplete as a missing python
+  // shard leg.
+  const missingJourneyShard = both.filter((job) => job.name !== 'quick-frontend-e2e (journey-2)');
+  assert.equal(observer.evaluateJobTopology(run, missingJourneyShard, {...routes, frontend: true}, false).code, 'route_mismatch');
   const duplicateLeg = [...valid, valid.find((job) => job.name === 'quick-python-tests (2)')];
   assert.equal(observer.evaluateJobTopology(run, duplicateLeg, routes, false).code, 'route_mismatch');
   const wrongPoolLeg = structuredClone(valid); wrongPoolLeg[4].labels = frontendPool; wrongPoolLeg[4].runner_name = 'mini-server-build-core-1';

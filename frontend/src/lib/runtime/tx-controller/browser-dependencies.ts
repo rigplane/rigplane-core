@@ -88,8 +88,13 @@ export function createManagedBrowserDependencies() {
         remove();
         finish('rejected');
         if (operation === 'ptt_on') {
-          console.warn('[tx] PTT start refused: control_link_unavailable');
-          emitLocalNotification('error', 'The control connection is unavailable. Reconnect to transmit.', 'controllerLost');
+          // MOR-4651: sendCommand also refuses on a LIVE session while the
+          // radio link is degraded (its own warning already ran there);
+          // claim a lost control connection only when that is what happened.
+          if (getControlSession().state !== 'connected') {
+            console.warn('[tx] PTT start refused: control_link_unavailable');
+            emitLocalNotification('error', 'The control connection is unavailable. Reconnect to transmit.', 'controllerLost');
+          }
         }
       }
     });

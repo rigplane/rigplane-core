@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { startJourneyServer } from './server-process';
+import { journeyPort, startJourneyServer } from './server-process';
 import { expectFollowWindowOnVfo, settlePassband, watchScopeFrames } from './panorama-passband-probe';
 import { expectPanoramaClean, watchPanoramaErrors } from './panorama-guards';
 import { readScopeWriteReceipts } from './panorama-receipt';
@@ -11,7 +11,7 @@ import { readScopeWriteReceipts } from './panorama-receipt';
  * the keys halve/double the width. Every wait is on the frames the radio
  * simulator streams.
  */
-const PORT = Number(process.env.PANORAMA_ZOOM_OVERLAY_PORT ?? 22340);
+const PORT = journeyPort(Number(process.env.PANORAMA_ZOOM_OVERLAY_PORT ?? 22340));
 const PHONE_40M = [7_125_000, 7_300_000];
 const BAND_40M = [7_000_000, 7_300_000];
 
@@ -79,7 +79,7 @@ test('IC-705 at 7.200 LSB: S, B and the zoom keys drive the view; the cluster ne
 });
 
 test('IC-7610: the lit B key returns a pinned band to follow and writes CTR, and the window follows a retune (MOR-4386 review P1)', async ({ page }, info) => {
-  const port = 22341;
+  const port = journeyPort(22341);
   const evidence = info.outputPath('radio.jsonl');
   const server = await startJourneyServer(port, 14_250_000,
     ['--model', 'IC-7610', '--evidence', evidence], 'tests/e2e/panorama_web_server.py');

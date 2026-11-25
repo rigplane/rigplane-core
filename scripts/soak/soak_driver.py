@@ -637,6 +637,23 @@ class _RuntimeTaskAdapter:
                     return population - {task}
         return population
 
+    async def wait_for_transient_work(self) -> None:
+        """Drain stack work that can outlive the driver's periodic actions."""
+        web = self._stack.web
+        # Ending a managed session does not join its WebSocket handler, which
+        # owns its keepalive and sender. Join the handler and the authority's
+        # release fences before draining the state publications they trigger.
+        sessions = {
+            task
+            for task, tx_owner in web._client_tasks.items()
+            if tx_owner is not None and not task.done()
+        }
+        if sessions:
+            await asyncio.wait(sessions)
+        await web._controller.settle()
+        while pending := {task for task in web._bg_tasks if not task.done()}:
+            await asyncio.wait(pending)
+
     def owned_fd_count(self, skip_ports: frozenset[int] | None = None) -> int | None:
         """The owned-socket FD count; None when it cannot be measured."""
         return (
@@ -2189,13 +2206,13 @@ class SoakDriver:
     ) -> ProcessSample:
         async with self._quiesce_transient_actions():
             if settle_baseline:
-                # The pre-reconnect baseline must be a steady state like the
-                # post sample, which is settled below. Transient server
-                # tasks (a debounced state broadcast, a CI-V command still in
-                # flight) outlive the paused periodic actions that created
-                # them; probing at once reads them as part of the baseline
-                # and the settled post count then sits below it.
+                # Preserve the count settle for transport work without a
+                # completion handle. A flat streak alone cannot confirm that
+                # a managed channel has finished closing.
                 await self._settle_quiesced_counts(None)
+            if self._runtime_task_adapter is not None:
+                async with asyncio.timeout(_TRANSIENT_DRAIN_TIMEOUT_S):
+                    await self._runtime_task_adapter.wait_for_transient_work()
             return await self._stability_probe_samples(phase)
 
     async def _stability_probe_samples(self, phase: str) -> ProcessSample:
