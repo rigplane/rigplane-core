@@ -14,6 +14,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field, replace
 from typing import Any
 
+from .state_diagnostics import StateDiagnosticsRecorder
 from .types import ScopeFixedEdge
 
 __all__ = [
@@ -256,6 +257,9 @@ class RadioState:
 
     main: ReceiverState = field(default_factory=ReceiverState)
     sub: ReceiverState = field(default_factory=ReceiverState)
+    diagnostics: StateDiagnosticsRecorder = field(
+        default_factory=StateDiagnosticsRecorder, init=False, repr=False, compare=False
+    )
     active: str = "MAIN"  # "MAIN" | "SUB"
     power_on: bool = True  # Radio power status (on/off)
     ptt: bool = False
