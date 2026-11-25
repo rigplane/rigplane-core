@@ -362,7 +362,7 @@ class ClientChannelParams:
             role_value = ws_query.controller_role
             state_delta = ws_query.state_delta
         else:
-            role_value = cast(ControllerRole, "auxiliary")
+            role_value = "auxiliary"
             state_delta = ControlWsQuery.state_delta_version(query)
         return cls(
             controller_key=protocols[0].split(".", 1)[1] if protocols else None,
