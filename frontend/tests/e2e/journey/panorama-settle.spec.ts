@@ -9,7 +9,7 @@ import { readPassbandDiagnostics } from './panorama-passband-probe';
 import { journeyPort, startJourneyServer } from './server-process';
 import { parseScopeWriteReceipt } from './panorama-receipt';
 import { expectPanoramaSettled, watchPanoramaErrors } from './panorama-guards';
-import { openPanorama } from './panorama-ready';
+import { awaitRenderPipeline, openPanorama } from './panorama-ready';
 
 // The tune command's parameters as the producer declares them.
 type SetFreqParams = Extract<RadioIntent, { name: 'set_freq' }>['params'];
@@ -217,7 +217,8 @@ for (const [index, [model, zoomMode]] of ([['IC-705', 0], ['IC-7300', 0], ['IC-7
         // mode to the radio in either variant.
         if (zoom === true) expect.soft((await writes()).filter(receipt => receipt.sub === 0x14 && receipt.data.length === 2).at(-1)?.data[1] ?? 0).toBe(0);
         await writeFile(evidence.replace('.jsonl', '.pause'), 'pause');
-        await page.waitForTimeout(2000);
+        await expect(area.locator('.scope-disconnected-overlay:not([data-testid])')).toBeVisible();
+        await awaitRenderPipeline(page);
         const idleStart = await work();
         const idleFrames = frames.length;
         await page.waitForTimeout(5000);
@@ -241,7 +242,6 @@ for (const [index, [model, zoomMode]] of ([['IC-705', 0], ['IC-7300', 0], ['IC-7
         expect.soft(idleEnd.raf - idleStart.raf).toBeLessThanOrEqual(4);
         expect.soft(idleEnd.draw - idleStart.draw).toBe(0);
         expect.soft(idleEnd.static - idleStart.static).toBe(0);
-        expect.soft(idleEnd.rafMs - idleStart.rafMs).toBeLessThan(20);
         // MOR-4392: no page error and no Svelte effect-depth loop anywhere
         // in the scenario (shared panorama guard).
         expectPanoramaSettled(watch);

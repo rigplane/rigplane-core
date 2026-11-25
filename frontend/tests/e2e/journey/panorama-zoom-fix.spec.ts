@@ -387,13 +387,17 @@ for (const [index, model] of ['IC-705', 'IC-7300'].entries()) {
       await check();
       const framesAfterDrag = frames.length;
       await expect.poll(() => frames.length - framesAfterDrag).toBeGreaterThan(10);
-      await expect.poll(() => page.evaluate(start => window.passbandSamples.filter(sample => sample.t >= start).length, fromT))
+      await expect.poll(() => page.evaluate(start => window.passbandSamples.filter(
+        sample => sample.kind === 'frame' && sample.t >= start).length, fromT))
         .toBeGreaterThan(20);
       const { toT, samples } = await page.evaluate(() => ({ toT: performance.now(), samples: window.passbandSamples }));
       const gaps = passbandGaps(samples, fromT, toT);
       await writeFile(info.outputPath('fix-follow-passband.json'), JSON.stringify({ model, fromT, toT, gaps, samples }, null, 2));
       for (const gap of gaps) expect(gap.frames, JSON.stringify(gap)).toBeLessThanOrEqual(1);
       for (const sample of samples.filter(sample => sample.t >= fromT && sample.t <= toT)) {
+        // A cleared sample plane has no crop. Its painted absence is checked above.
+        if (!sample.overlay && sample.gates?.spanPositive === false
+          && sample.gates.viewStartHz === 0 && sample.gates.viewEndHz === 0) continue;
         expect(sample.gates?.viewStartHz, JSON.stringify(sample)).toBeGreaterThanOrEqual(14_200_000);
         expect(sample.gates?.viewEndHz, JSON.stringify(sample)).toBeLessThanOrEqual(14_300_000);
       }
