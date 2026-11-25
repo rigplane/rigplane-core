@@ -9,10 +9,9 @@ firing on closed transports raised ``AttributeError: 'NoneType' ...
 'call_exception_handler'`` (PRO-9). An ordinary close after the gather
 can also race a pending connectivity check.
 
-These tests drive the real answerer (``WebRtcSessionManager``) against
-loopback blackholes during ICE gathering and during connectivity checks.
-They fail on any ``never retrieved`` / ``Exception in callback`` context
-the loop reports.
+These tests drive the real answerer (``WebRtcSessionManager``) while ICE
+gathering or connectivity checks are in flight. They fail on unretrieved
+exceptions and callback errors reported by the loop.
 """
 
 from __future__ import annotations
@@ -22,6 +21,7 @@ import contextlib
 import gc
 from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any, Final
+from unittest.mock import Mock
 
 import pytest
 
@@ -63,20 +63,20 @@ class _Capture:
     """Loop exception handler recording unretrieved-exception noise."""
 
     def __init__(self) -> None:
-        self.contexts: list[dict[str, Any]] = []
+        self.errors: list[str] = []
 
     def __call__(
         self, loop: asyncio.AbstractEventLoop, context: dict[str, Any]
     ) -> None:
         message = context.get("message", "")
         if "never retrieved" in message or "Exception in callback" in message:
-            self.contexts.append(context)
+            self.errors.append(f"{message!r} exc={context.get('exception')!r}")
 
-    def describe(self) -> list[str]:
-        out = []
-        for context in self.contexts:
-            out.append(f"{context.get('message')!r} exc={context.get('exception')!r}")
-        return out
+    async def assert_quiet(self, clock: VirtualClock) -> None:
+        await clock.elapse(0)
+        gc.collect()
+        await clock.elapse(0)
+        assert self.errors == []
 
 
 @pytest.fixture
@@ -134,55 +134,125 @@ def _ice_servers(stun_port: int, turn_port: int) -> list[IceServer]:
 async def test_close_after_negotiate_leaves_no_unretrieved_exceptions(
     monkeypatch: pytest.MonkeyPatch,
     virtual_clock: VirtualClock,
-    blackhole: Callable[[], Awaitable[tuple[_Blackhole, int]]],
     capture: _Capture,
 ) -> None:
     """After gathering, close while the answerer's first ICE check is pending."""
+    from aioice import ice, stun
+
+    loop = asyncio.get_running_loop()
+    manager = WebRtcSessionManager(None, None, "mor4671")
+    monkeypatch.setattr(
+        ice, "get_host_addresses", lambda use_ipv4, use_ipv6: ["127.0.0.1"]
+    )
+    check_sent = asyncio.Event()
+    pending_at_close: list[bool] = []
+    ports = iter((40001, 40002))
+
+    async def open_endpoint(
+        protocol_factory: Callable[[], ice.StunProtocol], *, local_addr: tuple[str, int]
+    ) -> tuple[asyncio.DatagramTransport, ice.StunProtocol]:
+        # Keep the real ICE/STUN task and retry timer and replace only UDP I/O.
+        protocol = protocol_factory()
+        transport = Mock(spec=asyncio.DatagramTransport)
+        address = (local_addr[0], next(ports))
+        transport.get_extra_info.side_effect = {"sockname": address}.get
+        sent = False
+        closed = False
+
+        def sendto(_data: bytes, _addr: tuple[str, int]) -> None:
+            nonlocal sent
+            assert not closed, "STUN retry sent on a closed transport"
+            sent = True
+            check_sent.set()
+
+        def close() -> None:
+            nonlocal closed
+            closed = True
+            if sent:
+                pending_at_close.append(bool(protocol.transactions))
+            loop.call_soon(protocol.connection_lost, None)
+
+        transport.sendto.side_effect = sendto
+        transport.close.side_effect = close
+        protocol.connection_made(transport)
+        return transport, protocol
+
+    monkeypatch.setattr(loop, "create_datagram_endpoint", open_endpoint)
+    offerer, sdp, typ = await _offer()
+    try:
+        answer = WebRtcAnswer.from_json(await manager.negotiate(sdp, typ))
+        # The real transaction has sent once and cannot finish on frozen time.
+        await check_sent.wait()
+        await manager.close_session(answer.session_id)
+    finally:
+        await manager.close_all()
+        await offerer.close()
+    del offerer
+    assert pending_at_close == [False]
+    # Make the ICE driver's next tick and the first STUN retry due together.
+    virtual_clock.advance(stun.RETRY_RTO)
+    await capture.assert_quiet(virtual_clock)
+
+
+@pytest.mark.timeout(15)
+async def test_close_retrieves_gather_failure_before_snapshot(
+    monkeypatch: pytest.MonkeyPatch, virtual_clock: VirtualClock, capture: _Capture
+) -> None:
+    """A failed gather can leave the live set while close awaits a handler."""
     from aioice import ice
-    from aiortc.sdp import SessionDescription
+    from aiortc import RTCConfiguration, RTCPeerConnection
+
+    loop = asyncio.get_running_loop()
+    gathering = asyncio.Event()
+    fail_gather = asyncio.Event()
+    finish_handler = asyncio.Event()
+
+    async def fail_endpoint(*args: Any, **kwargs: Any) -> Any:
+        gathering.set()
+        await fail_gather.wait()
+        raise RuntimeError("injected ICE gather failure")
+
+    async def handler() -> None:
+        try:
+            await asyncio.Future()
+        finally:
+            await finish_handler.wait()
 
     manager = WebRtcSessionManager(None, None, "mor4671")
     monkeypatch.setattr(
         ice, "get_host_addresses", lambda use_ipv4, use_ipv6: ["127.0.0.1"]
     )
-    request = ice.StunProtocol.request
-    close = ice.StunProtocol.close
-    checks: dict[Any, asyncio.Task[Any]] = {}
-    settled_at_close: list[bool] = []
-
-    async def observe_request(protocol: Any, *args: Any, **kwargs: Any) -> Any:
-        task = asyncio.current_task()
-        assert task is not None
-        checks[protocol] = task
-        return await request(protocol, *args, **kwargs)
-
-    async def observe_close(protocol: Any) -> None:
-        if protocol in checks:
-            settled_at_close.append(checks[protocol].done())
-        await close(protocol)
-
-    monkeypatch.setattr(ice.StunProtocol, "request", observe_request)
-    monkeypatch.setattr(ice.StunProtocol, "close", observe_close)
-    receiver, port = await blackhole()
-    offerer, sdp, typ = await _offer()
+    monkeypatch.setattr(loop, "create_datagram_endpoint", fail_endpoint)
+    offerer = RTCPeerConnection(RTCConfiguration(iceServers=[]))
+    offerer.createDataChannel("control")
+    offer = await offerer.createOffer()
+    negotiate = asyncio.create_task(manager.negotiate(offer.sdp, offer.type))
+    close: asyncio.Task[list[str]] | None = None
     try:
-        offer = SessionDescription.parse(sdp)
-        (candidate,) = offer.media[0].ice_candidates
-        candidate.port = port
-        answer = WebRtcAnswer.from_json(await manager.negotiate(str(offer), typ))
-        await receiver.received.wait()
-        await manager.close_session(answer.session_id)
-        # A delayed event-loop turn can make both the check driver and its
-        # retry due together after the socket has closed.
-        virtual_clock.advance(1)
+        await gathering.wait()
+        (session_id,) = manager.active_session_ids
+        session = manager._sessions[session_id]  # noqa: SLF001 - observe gather ownership
+        assert len(session.gather_inflight) == 1
+        session.tasks.add(asyncio.create_task(handler()))
         await virtual_clock.elapse(0)
-        gc.collect()
+        close = asyncio.create_task(manager.close_all())
+        with pytest.raises(asyncio.CancelledError):
+            await negotiate
+        # Drain the shield cancellation before letting the inner task fail.
         await virtual_clock.elapse(0)
-        assert settled_at_close == [True]
-        assert capture.describe() == []
+        fail_gather.set()
+        await virtual_clock.elapse(0)
+        assert not session.gather_inflight
+        assert not close.done()
     finally:
+        fail_gather.set()
+        finish_handler.set()
+        if close is not None:
+            await close
         await manager.close_all()
         await offerer.close()
+    assert close.result() == [session_id]
+    await capture.assert_quiet(virtual_clock)
 
 
 @pytest.mark.timeout(15)
@@ -240,9 +310,6 @@ async def test_close_during_gather_leaves_no_unretrieved_exceptions(
             await negotiate
         assert pc.connectionState == "closed"
         assert manager.active_session_ids == []
-        gc.collect()
-        await virtual_clock.elapse(0)
-        assert capture.describe() == []
     finally:
         negotiate.cancel()
         await asyncio.gather(negotiate, return_exceptions=True)
@@ -250,3 +317,4 @@ async def test_close_during_gather_leaves_no_unretrieved_exceptions(
         await virtual_clock.elapse(GATHER_TIMEOUT_S)
         await cleanup
         await offerer.close()
+    await capture.assert_quiet(virtual_clock)

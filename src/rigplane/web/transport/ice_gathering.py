@@ -1041,9 +1041,17 @@ def install_ice_gathering_policy() -> None:
         scope = _active_gather_scope.get()
         if scope is None:
             return await call
+
+        def release_component(done: asyncio.Task[Any]) -> None:
+            # The shield waiter may already be cancelled and close may still be
+            # draining handler tasks. Retrieve the result before releasing ownership.
+            if not done.cancelled():
+                done.exception()
+            scope.discard(done)
+
         inner: asyncio.Task[Any] = asyncio.ensure_future(call)
         scope.add(inner)
-        inner.add_done_callback(scope.discard)
+        inner.add_done_callback(release_component)
         return await asyncio.shield(inner)
 
     async def _bounded_component_candidates(
