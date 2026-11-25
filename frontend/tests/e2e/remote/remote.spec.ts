@@ -53,13 +53,9 @@ async function tuneFromUi(page: Page, hz: number): Promise<void> {
 // of truth (src/lib/transport), never re-typed here.
 
 /**
- * Validate a payload against a wire-contract payload's `fields` rows, the
- * same semantics as the production `payloadMatchesContract`
- * (src/lib/transport/datachannel-transport.ts), which Playwright's Node
- * runtime cannot import and which is not re-exported without a src/ change (its JSON import needs an ESM import attribute
- * that would mean changing src/). Restricted on purpose to the kinds the
- * control_hello contract uses; any other kind row is an error, so a future
- * contract change cannot pass silently.
+ * Validate control_hello directly against its wire-contract `fields` rows.
+ * The harness supports the field kinds control_hello uses and throws on
+ * any other kind so a future contract change cannot pass silently.
  */
 function payloadMatchesWireContract(
   contract: { fields: unknown[][] },

@@ -16,7 +16,7 @@
  * contract-validated `control_hello`; api: on send — reliable), so no client
  * frame can precede the attach on the wire; `attachedProtocol` is the token.
  */
-import wire from './api-channel-wire.json';
+import wire from './api-channel-wire.json' with { type: 'json' };
 import type {
   MessageTransport, MessageTransportState, TransportAttach, TransportBinaryHandler,
   TransportCloseHandler, TransportCloseInfo, TransportErrorHandler, TransportOpenHandler, TransportTextHandler,
