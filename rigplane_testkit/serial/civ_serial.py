@@ -78,7 +78,9 @@ Faults are scriptable and deterministic: ``delay_identity_answer``,
 ``usb_reappear`` (reads, writes and new opens raise ``ENODEV``, the class
 ``core/serial_open.py: serial_open_diagnostic`` maps to
 ``serial_not_found``), ``refuse_next`` (one request heard and NAKed instead
-of handled).
+of handled), ``refuse_data_mode_read`` (every ``1A 06`` READ is NAKed — a
+radio that does not answer the data-mode read — while the data-mode write
+still ACKs).
 
 Memory (MOR-4219), for a profile with a ``[memory]`` section: ``08`` + a
 2-byte BCD channel selects the memory channel and ``08 A0`` + a 2-byte BCD
@@ -360,6 +362,7 @@ class CivSerialFake:
         )
         self._memories: dict[tuple[int, int], tuple[int, int, int]] = {}
         self._refused: list[int] = []
+        self._data_mode_read_refused = False
         # The ``time()``/``call_at()`` object delayed replies and the PTT
         # switch schedule on; tests mount a manual clock here, and the
         # running asyncio loop is resolved at use time by default.
@@ -603,6 +606,12 @@ class CivSerialFake:
     def refuse_next(self, command: int) -> None:
         """The next request with this command byte is NAKed, not handled."""
         self._refused.append(command)
+
+    def refuse_data_mode_read(self) -> None:
+        """Every ``1A 06`` READ is NAKed from now on: a radio that does not
+        answer the data-mode read. The data-mode WRITE still ACKs and the
+        ``26 00`` round trip still reports the flag."""
+        self._data_mode_read_refused = True
 
     def lose_next_answer(self, command: int) -> None:
         """MOR-3888: the radio hears the next *command* request but its answer
@@ -864,6 +873,8 @@ class CivSerialFake:
                     self._mode, self._data_mode, self._filter_width = mode, data, filt
                     return self._ack()
         if cmd == _CMD_CTL_MEM and parsed.sub == _SUB_DATA_MODE:
+            if not parsed.data and self._data_mode_read_refused:
+                return self._nak()
             if not parsed.data and self._can_read_data_mode:
                 return build_civ_frame(
                     CONTROLLER_ADDR,
