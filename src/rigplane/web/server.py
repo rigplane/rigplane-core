@@ -2259,6 +2259,10 @@ class WebServer:
         Uses delta encoding to reduce payload size for subsequent updates.
         Sends full state on initial connection, then only changed fields.
         """
+        # Final scope restoration can still receive CI-V callbacks after
+        # shutdown has cancelled and joined the background tasks.
+        if self._stopping:
+            return
         self._update_iq_radio_state()
         now = time.monotonic()
         if not force and now - self._last_state_broadcast < 0.05:
