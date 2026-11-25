@@ -220,13 +220,18 @@ test('terminal topology refuses skipped success and injected or incomplete jobs'
   // (MOR-4685: the journey leg is itself three --shard legs).
   const both = structuredClone(valid);
   both[1] = ran('quick-frontend', frontendPool, 'mini-server-build-core-1');
-  both[2] = ran('quick-frontend-e2e (visual)', frontendPool, 'mini-server-build-core-1');
+  // The visual leg runs on the ARM64 queue-arm64 lane (2026-11-25).
+  const visualPool = ['self-hosted', 'Linux', 'ARM64', 'queue-arm64'];
+  both[2] = ran('quick-frontend-e2e (visual)', visualPool, 'mini-server-queue-core-1');
   both.splice(3, 0,
     ran('quick-frontend-e2e (guards)', frontendPool, 'mini-server-build-core-2'),
     ran('quick-frontend-e2e (journey-1)', frontendPool, 'mini-server-build-core-3'),
     ran('quick-frontend-e2e (journey-2)', frontendPool, 'mini-server-build-core-4'),
     ran('quick-frontend-e2e (journey-3)', frontendPool, 'mini-server-build-core-5'));
   assert.deepEqual(observer.evaluateJobTopology(run, both, {...routes, frontend: true}, false), ok);
+  // The old ARM64 build request on the visual leg is now a route mismatch.
+  const visualOnBuild = structuredClone(both); visualOnBuild[2].labels = frontendPool;
+  assert.equal(observer.evaluateJobTopology(run, visualOnBuild, {...routes, frontend: true}, false).code, 'route_mismatch');
   const lightClassify = structuredClone(valid); lightClassify[0].labels = light; lightClassify[0].runner_name = 'mm-light-core-2';
   assert.deepEqual(observer.evaluateJobTopology(run, lightClassify, routes, false), ok);
   const skippedAggregator = structuredClone(valid); skippedAggregator[skippedAggregator.length - 1].conclusion = 'skipped'; skippedAggregator[skippedAggregator.length - 1].runner_name = null;

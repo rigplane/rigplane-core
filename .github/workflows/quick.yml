@@ -311,20 +311,22 @@ jobs:
     # self-hosted,Linux,build). The visual leg alone keeps an architecture
     # pin: its pixel comparisons (i18n visual smoke, fixture-harness capture)
     # run against arm64 Linux Chromium renders, the same baseline
-    # architecture as the visual.yml pixel-diff job, so it stays on
-    # [self-hosted, Linux, ARM64, build] and must not regenerate baselines
-    # from an X64 render.
-    # Merge groups request the reserved queue lane (MOR-4097) with the same
-    # per-leg split: visual -> [self-hosted, Linux, ARM64, queue-arm64] (the
-    # single ARM64 queue runner carries queue-arm64, not queue, so arch-free
-    # queue jobs cannot take its slot), guards and journey ->
-    # [self-hosted, Linux, queue]. Pull-request runs keep the build pool.
-    # runs-on-allowlist: event- and matrix-conditional pool — merge_group:
-    # visual [self-hosted, Linux, ARM64, queue-arm64], guards/journey
-    # [self-hosted, Linux, queue]; other events: visual
-    # [self-hosted, Linux, ARM64, build] (arm64 pixel baselines), guards/journey
+    # architecture as the visual.yml pixel-diff job, so it must run on ARM64
+    # and must not regenerate baselines from an X64 render.
+    # The visual leg requests the ARM64 queue-arm64 lane for every event
+    # (MOR-4097 lane, 4 slots: mm-queue-core-1, mini-server-queue-core-1..3).
+    # On the build pool it starved: arch-neutral build jobs take the five
+    # ARM64 build slots first-come, so with four pull-request runs in flight
+    # the visual leg waited 19 minutes while the queue-arm64 slots sat idle
+    # (CiJobQueuedTooLong, 2026-11-25). No arch-neutral job carries
+    # queue-arm64, so the leg always finds an ARM64 slot there.
+    # Guards and journey legs: merge groups request the reserved queue lane
+    # [self-hosted, Linux, queue]; pull-request runs keep the build pool.
+    # runs-on-allowlist: matrix- and event-conditional pool — visual
+    # [self-hosted, Linux, ARM64, queue-arm64] (arm64 pixel baselines);
+    # guards/journey: merge_group [self-hosted, Linux, queue], other events
     # [self-hosted, Linux, build].
-    runs-on: ${{ github.event_name == 'merge_group' && (matrix.group == 'visual' && fromJSON('["self-hosted", "Linux", "ARM64", "queue-arm64"]') || fromJSON('["self-hosted", "Linux", "queue"]')) || (matrix.group == 'visual' && fromJSON('["self-hosted", "Linux", "ARM64", "build"]') || fromJSON('["self-hosted", "Linux", "build"]')) }}
+    runs-on: ${{ matrix.group == 'visual' && fromJSON('["self-hosted", "Linux", "ARM64", "queue-arm64"]') || (github.event_name == 'merge_group' && fromJSON('["self-hosted", "Linux", "queue"]') || fromJSON('["self-hosted", "Linux", "build"]')) }}
     # stopgap (MOR-4685): lower back to 25 when the journey shards (#4768, #4773) are merged
     timeout-minutes: 40
     strategy:
