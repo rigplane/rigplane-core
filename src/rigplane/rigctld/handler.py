@@ -1896,7 +1896,11 @@ class RigctldHandler:
         if (
             mode_str is not None
             and projected_filter_num is not None
-            and projected_data_mode is not None
+            # DATA is required only when it can change the Hamlib mode name.
+            and (
+                projected_data_mode is not None
+                or mode_str not in self._packet_mode_names
+            )
         ):
             filter_num_value = projected_filter_num.value
             passband = _filter_to_passband(
@@ -1906,7 +1910,8 @@ class RigctldHandler:
             # truthiness drives the packet-mode label below.
             data_mode: int = (
                 int(projected_data_mode.value)
-                if projected_data_mode.value is not None
+                if projected_data_mode is not None
+                and projected_data_mode.value is not None
                 else 0
             )
             return RigctldResponse(

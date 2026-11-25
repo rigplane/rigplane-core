@@ -826,6 +826,35 @@ async def test_get_mode_projects_numeric_active_main_alias(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("model", ["G7250", "X6200"])
+async def test_get_mode_uses_pending_mode_without_packet_label(
+    mock_radio: AsyncMock, model: str
+) -> None:
+    profile = resolve_radio_profile(model=model)
+    mock_radio.profile = profile
+    mock_radio.supports_command = profile.supports_command
+    store = StateStore()
+    mock_radio.state_store = store
+    _apply_store_value(store, "receiver.main.active.freq_mode.mode", "CW")
+    _apply_store_value(store, "receiver.main.active.freq_mode.filter_num", 1)
+    _seed_known_rx(store)
+    state = RadioState()
+    state.main.freq = 14_250_000
+    state.main.mode = "CW"
+    state.main.filter = 1
+    mock_radio.radio_state = state
+    handler = RigctldHandler(mock_radio, RigctldConfig(cache_ttl=0))
+
+    written = await handler.execute(set_cmd("set_mode", "USB", "0"))
+    reply = await handler.execute(get_cmd("get_mode"))
+
+    assert written.ok
+    mock_radio.set_mode.assert_awaited_once_with("USB", filter_width=None)
+    assert reply.values == ["USB", "3000"]
+    assert state.main.mode == "CW"
+
+
+@pytest.mark.asyncio
 async def test_get_mode_projection_passband_uses_filter_num_not_filter_width(
     mock_radio: AsyncMock,
 ) -> None:
