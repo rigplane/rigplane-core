@@ -1618,7 +1618,7 @@ describe('SpectrumPanel component', () => {
     const fields: { [K in keyof ScopePassbandDiagnostics]: true } = {
       tuneVisible: true, confirmed: true, freqHz: true, viewStartHz: true, viewEndHz: true,
       inView: true, proportional: true, mode: true, widthHz: true, shiftHz: true,
-      tuple: true, tupleState: true, tupleReason: true, tupleStale: true, passbandHz: true,
+      tuple: true, tupleState: true, tupleFrameMode: true, tupleReason: true, tupleStale: true, passbandHz: true,
       spanPositive: true, overlay: true,
     };
     expect(Object.keys(doc).sort()).toEqual(Object.keys(fields).sort());
@@ -3940,6 +3940,17 @@ describe('managed scope projection (MOR-2367)', () => {
       expect(target.querySelector(selector), selector).toBeNull();
     }
   }
+
+  it('reports the displayed tuple frame mode and clears it when the tuple retires', () => {
+    const { target, props } = managed(projection('current', 1));
+    flushSync();
+    const read = () => JSON.parse(target.querySelector('.spectrum-panel')!
+      .getAttribute('data-passband-gates')!) as ScopePassbandDiagnostics;
+    expect(read().tupleFrameMode).toBe(1);
+    props.set('projection', projection('unknown'));
+    flushSync();
+    expect(read().tupleFrameMode).toBeNull();
+  });
 
   it.each(['managed', 'raw'] as const)('shows captured OOR edges and CTR action on the %s path, then recovers', (path) => {
     radio.current = structuredClone(IC7300_STATE);

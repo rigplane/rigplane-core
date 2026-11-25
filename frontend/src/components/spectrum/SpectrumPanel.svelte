@@ -1309,6 +1309,7 @@
     shiftHz: spectrumAuthority?.ifShiftHz ?? null,
     tuple: displayTuple !== null,
     tupleState: managed ? scopeRegion?.passband.state ?? 'unavailable' : 'legacy',
+    tupleFrameMode: displayTuple?.frameMode ?? null,
     tupleReason: (() => {
       const passband = managed ? scopeRegion?.passband : undefined;
       return passband?.state === 'unknown' ? passband.reason : null;

@@ -68,6 +68,24 @@ interface Gap {
   stateAtDrop: string | null;
 }
 
+/** A DOM recovery does not close a painted setup outage; require the target mode on both. */
+export function passbandProbeReady(samples: PassbandSample[], frameMode: number): boolean {
+  const ready = (sample: PassbandSample | undefined) => sample?.overlay === true
+    && sample.gates?.proportional === true && sample.gates.tupleState === 'current'
+    && sample.gates.tupleFrameMode === frameMode;
+  return ready(samples.at(-1)) && ready(samples.filter(sample => sample.kind === 'frame').at(-1));
+}
+
+export async function expectPassbandProbeReady(
+  page: import('@playwright/test').Page, frameMode: number,
+): Promise<void> {
+  await expect.poll(async () => passbandProbeReady(await page.evaluate(() => {
+    const painted = window.passbandSamples.filter(sample => sample.kind === 'frame').at(-1);
+    const latest = window.passbandSamples.at(-1);
+    return [painted, latest].filter(sample => sample !== undefined);
+  }), frameMode), { timeout: 30_000 }).toBe(true);
+}
+
 /** The last sample before the window describes its initial state until the next sample. */
 export function missingLivePassband(samples: PassbandSample[], fromT: number, toT: number): PassbandSample | undefined {
   const first = samples.findIndex(sample => sample.t >= fromT);
