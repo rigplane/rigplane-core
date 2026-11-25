@@ -78,3 +78,49 @@ class ScopeControlSimulator(MockIcomRadio):
             self.fixed[key] = parse_scope_fixed_edge_response(frame)
             return self._civ_ack(from_addr, self._radio_addr)
         return super()._dispatch_scope(payload, from_addr)
+
+
+class ScopeWindowSimulator(ScopeControlSimulator):
+    """Replay scope waves with the mode and window from applied CI-V settings."""
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.windows: dict[int, tuple[int, int]] = {}
+        # SCROLL-C keeps its window until the VFO leaves it or the span changes.
+        self._scroll: dict[int, tuple[int, int]] = {}
+        self._scroll_span: dict[int, int] = {}
+
+    def pump_scope_stream(self) -> int:
+        for receiver, templates in self._scope_templates.items():
+            mode, span, _edge = self.views[receiver]
+            if mode == 0:
+                # Center mode carries (center, span); the assembler expands.
+                first = self._frequency
+                last = self.profile.scope_span_presets_hz[span]
+            elif mode == 2:
+                preset = self.profile.scope_span_presets_hz[span]
+                tuned = self._frequency if receiver == 0 else self._unselected_frequency
+                window = self._scroll.get(receiver)
+                if (
+                    window is None
+                    or self._scroll_span.get(receiver) != span
+                    or not window[0] <= tuned < window[1]
+                ):
+                    window = (tuned - preset, tuned + preset)
+                    self._scroll[receiver] = window
+                    self._scroll_span[receiver] = span
+                first, last = window
+            else:
+                # FIX/SCROLL-F carry configured edges.
+                first, last = self.windows.get(receiver, (14_000_000, 14_350_000))
+            self._scope_templates[receiver] = [
+                template[:9]
+                + bytes([mode])
+                + bcd_encode(first)
+                + bcd_encode(last)
+                + b"\x00"
+                + bytes(15 + index % 30 for index in range(len(template) - 22))
+                + template[-1:]
+                for template in templates
+            ]
+        return super().pump_scope_stream()

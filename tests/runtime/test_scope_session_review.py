@@ -22,7 +22,10 @@ from rigplane.web.protocol import (
     encode_scope_subscription,
 )
 from rigplane.web.server import WebConfig, WebServer
-from rigplane_testkit.icom.scope_control import ScopeControlSimulator
+from rigplane_testkit.icom.scope_control import (
+    ScopeControlSimulator,
+    ScopeWindowSimulator,
+)
 
 pytestmark = [
     pytest.mark.realtime(reason="real local simulator and WebSocket seams"),
@@ -458,26 +461,12 @@ async def test_successive_fixed_sessions_capture_fresh_panel_slot(sdk):
 # direct session.observe()/hub.subscribe() calls.
 
 
-class _ScopeWindowSimulator(ScopeControlSimulator):
-    """Scope simulator whose streamed window follows its CI-V scope state.
-
-    The base class replays a fixed recording; here every pump reshapes the
-    templates the way the panorama journey simulator does: the mode byte
-    tracks ``views[receiver][0]``, and the window is ``windows[receiver]``
-    in FIX/SCROLL-F, a radio-owned scroll window (VFO ± span preset,
-    rebuilt on VFO exit or span change) in SCROLL-C, or center ± span
-    preset in CENTER. A receiver in ``muted`` does not stream (e.g. a
-    radio streaming only SUB at startup).
-    """
+class _ScopeWindowSimulator(ScopeWindowSimulator):
+    """Windowed scope simulator with stream controls for review scenarios."""
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self.windows: dict[int, tuple[int, int]] = {}
         self.muted: set[int] = set()
-        # SCROLL-C windows the "radio" owns, keyed by receiver, plus the
-        # span preset each window was built at (#4565 pre-review item 5).
-        self._scroll: dict[int, tuple[int, int]] = {}
-        self._scroll_span: dict[int, int] = {}
         # 27 15 GET reads the "radio" does not answer: the waveform edges
         # are then the only evidence of an external span change.
         self.withhold_span_reads = False
@@ -500,50 +489,6 @@ class _ScopeWindowSimulator(ScopeControlSimulator):
             for receiver in super()._scope_streaming_receivers()
             if receiver not in self.muted
         ]
-
-    def pump_scope_stream(self) -> int:
-        for receiver, templates in self._scope_templates.items():
-            mode, span, _edge = self.views[receiver]
-            if mode == 0:
-                # Center mode carries (center, span); the assembler expands.
-                first = self._frequency
-                last = self.profile.scope_span_presets_hz[span]
-            elif mode == 2:
-                # SCROLL-C: the radio owns the window, keeps the VFO
-                # inside it and sizes it to the SPAN preset — so an
-                # acknowledged span change must show in the following
-                # waveform edges (#4565 pre-review item 5). The window
-                # rebuilds when it is absent, when the VFO leaves it, or
-                # when the span preset changed; the same model the
-                # panorama journey simulator uses.
-                preset = self.profile.scope_span_presets_hz[span]
-                tuned = self._frequency if receiver == 0 else self._unselected_frequency
-                window = self._scroll.get(receiver)
-                if (
-                    window is None
-                    or self._scroll_span.get(receiver) != span
-                    or not window[0] <= tuned < window[1]
-                ):
-                    window = (tuned - preset, tuned + preset)
-                    self._scroll[receiver] = window
-                    self._scroll_span[receiver] = span
-                first, last = window
-            else:
-                # FIX/SCROLL-F carry configured edges; the radio never
-                # moves them on its own (ScopeAssembler expands only
-                # mode 0).
-                first, last = self.windows.get(receiver, (14_000_000, 14_350_000))
-            self._scope_templates[receiver] = [
-                template[:9]
-                + bytes([mode])
-                + bcd_encode(first)
-                + bcd_encode(last)
-                + b"\x00"
-                + bytes(15 + index % 30 for index in range(len(template) - 22))
-                + template[-1:]
-                for template in templates
-            ]
-        return super().pump_scope_stream()
 
     def push_scope_setting(self, data: bytes) -> None:
         """An unsolicited 0x27 report, like a front-panel scope change."""
