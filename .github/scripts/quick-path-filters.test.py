@@ -271,6 +271,27 @@ new AsyncFunction('github', 'context', 'core', script)(github, context, core)
                 found = re.findall(r"(?m)^    runs-on: (\[.*\])$", text)
                 self.assertEqual([pool for pool in found if "light" not in pool], pools)
 
+    def test_development_and_trend_jobs_use_the_public_heavy_pool(self) -> None:
+        workflows = ROOT / ".github" / "workflows"
+        for name, job_count in (
+            ("focused.yml", 1),
+            ("mutmut-weekly.yml", 1),
+            ("soak-nightly.yml", 2),
+            ("stryker-nightly.yml", 1),
+        ):
+            with self.subTest(workflow=name):
+                text = (workflows / name).read_text(encoding="utf-8")
+                self.assertNotIn("ARM64, gate", text)
+                self.assertEqual(
+                    text.count(
+                        "    runs-on:\n"
+                        "      group: rigplane-ci\n"
+                        "      labels: [self-hosted, linux, arm64, heavy]\n"
+                    ),
+                    job_count,
+                )
+                self.assertIn("  workflow_dispatch:", text)
+
     def test_frontend_check_step_sets_the_node_heap_svelte_check_needs(self) -> None:
         quick = QUICK_YML.read_text(encoding="utf-8")
         step = quick.split(

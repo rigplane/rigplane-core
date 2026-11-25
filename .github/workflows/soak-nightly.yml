@@ -26,9 +26,7 @@ on:
         type: boolean
 
 concurrency:
-  # One queued run per ref: a queued duplicate displaces a waiting run
-  # in the group outright (the single self-hosted runner serializes
-  # anyway); a run already in progress is left alone.
+  # One queued run per ref; a run already in progress is left alone.
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
 
@@ -38,7 +36,9 @@ permissions:
 jobs:
   soak:
     if: ${{ !inputs.certification }}
-    runs-on: [self-hosted, Linux, ARM64, gate]
+    runs-on:
+      group: rigplane-ci
+      labels: [self-hosted, linux, arm64, heavy]
     timeout-minutes: 75
     env:
       # Same pin as quick.yml: keep the soak on the project's minimum
@@ -84,7 +84,9 @@ jobs:
 
   soak-24h:
     if: ${{ inputs.certification }}
-    runs-on: [self-hosted, Linux, ARM64, gate]
+    runs-on:
+      group: rigplane-ci
+      labels: [self-hosted, linux, arm64, heavy]
     timeout-minutes: 1500
     env:
       UV_PYTHON: "3.11"
