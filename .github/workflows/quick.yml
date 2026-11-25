@@ -611,6 +611,10 @@ jobs:
         if: needs.classify.outputs.ci == 'true'
         run: python3 .github/scripts/quick-path-filters.test.py
 
+      - name: Playwright browser environment contract test
+        if: needs.classify.outputs.ci == 'true'
+        run: python3 .github/scripts/playwright-browser-env.test.py
+
       - name: Workflow artifact hidden-files contract tests
         if: needs.classify.outputs.ci == 'true'
         # MOR-4609: this regression used to run only under the core class
@@ -624,10 +628,6 @@ jobs:
         run: >-
           uv run --no-project --with pytest --with 'pyyaml>=6'
           pytest --noconftest tests/test_workflow_hidden_artifacts.py
-
-      - name: Playwright browser environment contract test
-        if: needs.classify.outputs.ci == 'true'
-        run: python3 .github/scripts/playwright-browser-env.test.py
 
       - name: Doc link gate contract tests
         if: needs.classify.outputs.ci == 'true'
