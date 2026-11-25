@@ -180,7 +180,6 @@ class ManagedTxAuthority:
         attempt_timeout_seconds: float = ATTEMPT_TIMEOUT_S,
         retry_delay_seconds: float = RETRY_DELAY_S,
         radio_tx: RadioTxProbe | None = None,
-        tx_mode_is_unknown: Callable[[], bool] | None = None,
     ) -> None:
         if not 0 < attempt_timeout_seconds < float("inf") or not 0 < (
             retry_delay_seconds
@@ -233,7 +232,6 @@ class ManagedTxAuthority:
         # Core's own TX last ended. A TX the radio reports after that refuses
         # every TX start; it never blocks force_off.
         self._radio_tx = radio_tx
-        self._tx_mode_is_unknown = tx_mode_is_unknown
         self._idle_since = float("-inf")
         self._scheduler_task = asyncio.create_task(self._scheduler())
 
@@ -434,10 +432,6 @@ class ManagedTxAuthority:
                         if (refusal := self._radio_tx_refusal_locked()) is not None:
                             # MOR-3537: never key over a TX the radio reports.
                             raise ControllerError(refusal, 409)
-                        if self._tx_mode_is_unknown and self._tx_mode_is_unknown():
-                            return ManagedTxTransition(
-                                self._state, ManagedTxOutcome.REJECTED
-                            ), None
                         transition, full_force = self._transition_locked(action, owner)
                         if transition is None:
                             transition = ManagedTxTransition(
@@ -836,8 +830,6 @@ class ManagedTxAuthority:
             operation = ActuationOperation.FORCE_RECEIVE
         if operation is not ActuationOperation.FORCE_RECEIVE:
             if self._shutdown_requested:
-                return False
-            if self._tx_mode_is_unknown and self._tx_mode_is_unknown():
                 return False
             ticket = self._controller_effects.get(token)
             if ticket is None and self._controller is not None:

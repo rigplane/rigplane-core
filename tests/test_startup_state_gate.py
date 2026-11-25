@@ -4601,12 +4601,11 @@ async def test_rigctld_reports_unavailable_for_an_unassigned_radio_mode() -> Non
 
 
 @pytest.mark.asyncio
-async def test_unassigned_mode_refuses_mode_dependent_writes_and_tx() -> None:
+async def test_unassigned_mode_refuses_mode_dependent_writes() -> None:
     from rigplane.audio.route import TxAudioSource, resolve_audio_route
     from rigplane.backends.yaesu_cat.observations import _MAIN_MODE
     from rigplane.backends.yaesu_cat.radio import FilterWidthReading
     from rigplane.core.exceptions import CommandError
-    from rigplane.runtime.managed_tx_state import ManagedTxOutcome
     from rigplane.tci_adapter.notifier import tx_role_tci
 
     fake = FakeCatRadio(recorded_answers=_ftx1_table_silent_on_ft())
@@ -4626,11 +4625,6 @@ async def test_unassigned_mode_refuses_mode_dependent_writes_and_tx() -> None:
             assert resolve_audio_route(radio).tx_audio_source is TxAudioSource.USB
             assert tx_role_tci(server.command_state_store, split=False) == (None, None)
 
-            authority = radio._managed_tx_composition.authority
-            assert authority.snapshot_nowait().provider_generation is not None
-            assert await authority.transmit_on() is ManagedTxOutcome.REJECTED
-            assert "TX1;" not in fake.commands
-            assert not fake.ptt
             assert fake.mode_code == "0"
     finally:
         await fake.stop()

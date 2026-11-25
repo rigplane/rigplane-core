@@ -10,14 +10,8 @@ from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 from rigplane.core.radio_protocol import ManagedTxSupervisor, TransmitStateReadable
-from rigplane.core.state_diagnostics import UNKNOWN_STATUS
-from rigplane.core.state_pipeline_contracts import (
-    RECEIVER_ID_ALIASES,
-    FieldFamily,
-    FieldPath,
-    VfoSlot,
-)
-from rigplane.core.state_store import FreshnessState, StateStore
+from rigplane.core.state_pipeline_contracts import FieldPath
+from rigplane.core.state_store import StateStore
 from rigplane.core.tx_safety import (
     RadioTx,
     TxOutcome,
@@ -27,7 +21,6 @@ from rigplane.core.tx_safety import (
     TxSafetySnapshot,
     TxTransition,
 )
-from rigplane.core.tx_target import KnownTxTarget
 from rigplane.runtime.local_tx_work import LocalTxWorkRunner
 from rigplane.runtime.managed_tx_authority import (
     ManagedTxAuthority,
@@ -45,7 +38,6 @@ from rigplane.runtime.tx_interlock import RfState, resolve_rf_state
 logger = logging.getLogger(__name__)
 
 _PTT_PATH = FieldPath.global_("tx_state", "ptt")
-_TX_TARGET_PATH = FieldPath.global_("tx_state", "tx_target")
 
 
 @dataclass(frozen=True, slots=True)
@@ -156,7 +148,6 @@ class ManagedTxComposition:
             self._abort_fence,
             provider_generation=None,
             radio_tx=self,
-            tx_mode_is_unknown=self._tx_mode_is_unknown,
         )
         self._legacy_supervisor = _LegacyManagedTxCutoverGate(self._authority)
         self._state_store: StateStore | None = None
@@ -217,58 +208,6 @@ class ManagedTxComposition:
         if snapshot.field(_PTT_PATH).last_observed_monotonic <= since:
             return False
         return True
-
-    def _tx_mode_is_unknown(self) -> bool:
-        """Refuse keying on an explicitly unassigned mode for a possible TX VFO."""
-        store = self._state_store
-        if store is None:
-            return False
-        snapshot = store.snapshot()
-        modes = [
-            field
-            for field in snapshot.fields
-            if field.path.family is FieldFamily.FREQ_MODE and field.path.name == "mode"
-        ]
-        if not any(field.value == UNKNOWN_STATUS for field in modes):
-            return False
-        try:
-            target_field = snapshot.field(_TX_TARGET_PATH)
-            target = (
-                target_field.value
-                if target_field.freshness is FreshnessState.FRESH
-                else None
-            )
-        except KeyError:
-            target = None
-        if isinstance(target, KnownTxTarget):
-            receiver = target.receiver.lower()
-            aliases = (receiver, RECEIVER_ID_ALIASES[receiver])
-            modes = [field for field in modes if field.path.receiver_id in aliases]
-            if target.slot is None:
-                modes = [
-                    field
-                    for field in modes
-                    if field.path.slot in (None, VfoSlot.ACTIVE)
-                ]
-            else:
-                # Prefer the physical slot. The active/unselected alias can
-                # identify it when the selected slot is also observed.
-                slots = {VfoSlot(target.slot)}
-                active_slot_paths = tuple(FieldPath.active_slot(rx) for rx in aliases)
-                for field in snapshot.fields:
-                    if (
-                        field.path in active_slot_paths
-                        and field.freshness is FreshnessState.FRESH
-                        and field.value in ("A", "B")
-                    ):
-                        slots.add(
-                            VfoSlot.ACTIVE
-                            if field.value == target.slot
-                            else VfoSlot.UNSELECTED
-                        )
-                        break
-                modes = [field for field in modes if field.path.slot in slots] or modes
-        return any(field.value == UNKNOWN_STATUS for field in modes)
 
     def _provider_generation_changed(self, generation: int) -> None:
         self._observation_generation = int(generation)
