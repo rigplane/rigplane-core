@@ -2,7 +2,8 @@
 
 A test that sleeps for real, reads the real clock, or passes only if something finishes
 inside a short real timeout fails under CI load. This pytest plugin refuses such tests at
-collection time unless they carry ``@pytest.mark.realtime(reason="...")`` or are listed in
+collection time unless they use ``# real-time: reason`` on the call, carry
+``@pytest.mark.realtime(reason="...")`` or are listed in
 the shrink-only baseline of tests that still have to be converted.
 
 Load it from the top-level ``conftest.py`` of a suite::
@@ -66,11 +67,21 @@ import ast
 import os
 import subprocess
 import warnings
-from collections.abc import Callable, Iterable
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import pytest
+
+from rigplane.testing.realtime import (
+    clock_primitive,
+    dotted as _dotted,
+    import_names as _import_names,
+    is_virtual,
+    number as _number,
+    realtime_lines,
+    timeout_value as _timeout_value,
+)
 
 __all__ = [
     "BaselineCheck",
@@ -93,17 +104,6 @@ _ASYNC_KINDS = frozenset(
 )  # what the virtual clock covers
 _TIGHT_TIMEOUT_S = 1.0
 
-_CLOCK_READS = frozenset(
-    f"time.{name}"
-    for name in (
-        "monotonic",
-        "perf_counter",
-        "time",
-        "monotonic_ns",
-        "perf_counter_ns",
-        "time_ns",
-    )
-)
 _ASYNC_TIMEOUT_APIS = {
     "asyncio.wait_for": 1,
     "asyncio.timeout": 0,
@@ -150,51 +150,12 @@ class TestFacts:
 # -- the static scan -----------------------------------------------------------------------
 
 
-def _number(node: ast.AST | None) -> float | None:
-    if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
-        return float(node.value)
-    return None
-
-
-def _import_names(nodes: Iterable[ast.AST]) -> dict[str, str]:
-    """Local name -> dotted origin for the import statements among ``nodes``."""
-    names: dict[str, str] = {}
-    for node in nodes:
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                local = alias.asname or alias.name.split(".")[0]
-                names[local] = alias.name if alias.asname else alias.name.split(".")[0]
-        elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
-            for alias in node.names:
-                names[alias.asname or alias.name] = f"{node.module}.{alias.name}"
-    return names
-
-
 def _definition_imports(
     module_imports: dict[str, str], fn: ast.FunctionDef | ast.AsyncFunctionDef
 ) -> dict[str, str]:
     """The module's imports, overridden by the imports local to ``fn``: a sibling
     function's local import never changes how this function's names resolve."""
     return {**module_imports, **_import_names(ast.walk(fn))}
-
-
-def _dotted(func: ast.AST, imports: dict[str, str]) -> str | None:
-    """The imported dotted name a call target resolves to (``time.sleep``), if any."""
-    if isinstance(func, ast.Name):
-        return imports.get(func.id)
-    if isinstance(func, ast.Attribute):
-        base = _dotted(func.value, imports)
-        return f"{base}.{func.attr}" if base else None
-    return None
-
-
-def _timeout_value(call: ast.Call, positional: int | None) -> float | None:
-    for keyword in call.keywords:
-        if keyword.arg == "timeout":
-            return _number(keyword.value)
-    if positional is not None and len(call.args) > positional:
-        return _number(call.args[positional])
-    return None
 
 
 def _thread_timeout(call: ast.Call, name: str) -> float | None:
@@ -227,7 +188,7 @@ class _Body:
     self_calls: set[str] = field(default_factory=set)
 
 
-def _scan_body(fn: ast.AST, imports: dict[str, str]) -> _Body:
+def _scan_body(fn: ast.AST, imports: dict[str, str], marked_lines: set[int]) -> _Body:
     body = _Body()
     for node in ast.walk(fn):
         if not isinstance(node, ast.Call):
@@ -235,18 +196,11 @@ def _scan_body(fn: ast.AST, imports: dict[str, str]) -> _Body:
         func = node.func
         dotted = _dotted(func, imports)
         method = func.attr if isinstance(func, ast.Attribute) else None
-        if dotted == "time.sleep":
-            body.effects.add("time.sleep")
-        elif dotted == "asyncio.sleep":
-            delay = node.args[0] if node.args else None
-            for keyword in node.keywords:
-                if keyword.arg == "delay":
-                    delay = keyword.value
-            value = _number(delay)
-            if value is None or value > 0:
-                body.effects.add("asyncio.sleep")
-        elif dotted in _CLOCK_READS:
-            body.effects.add("clock-read")
+        primitive = clock_primitive(node, dotted)
+        if node.lineno in marked_lines:
+            pass
+        elif primitive is not None:
+            body.effects.add(primitive)
         elif dotted in _ASYNC_TIMEOUT_APIS:
             if _tight(_timeout_value(node, _ASYNC_TIMEOUT_APIS[dotted])):
                 body.effects.add("asyncio-timeout")
@@ -263,33 +217,6 @@ def _scan_body(fn: ast.AST, imports: dict[str, str]) -> _Body:
         ):
             body.self_calls.add(func.attr)
     return body
-
-
-def _is_virtual(
-    fn: ast.FunctionDef | ast.AsyncFunctionDef, imports: dict[str, str]
-) -> bool:
-    """Evidence that the test's own loop runs on the virtual clock.
-
-    Only the real entry points count: the ``@virtual_clock`` decorator (also under an import
-    alias), a ``virtual_clock`` fixture parameter, ``VirtualClock.on_running_loop()`` or an
-    explicit ``.install(loop)``. Constructing a ``VirtualClock`` or taking some other
-    parameter named ``clock`` does not put the loop on it.
-    """
-    for decorator in fn.decorator_list:
-        target = decorator.func if isinstance(decorator, ast.Call) else decorator
-        name = _dotted(target, imports) or ast.unparse(target)
-        if name.endswith("virtual_clock"):
-            return True
-    if "virtual_clock" in {a.arg for a in fn.args.args + fn.args.kwonlyargs}:
-        return True
-    for node in ast.walk(fn):
-        if (
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Attribute)
-            and node.func.attr in {"on_running_loop", "install"}
-        ):
-            return True
-    return False
 
 
 def _marked_realtime(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
@@ -331,6 +258,7 @@ def analyze_source(source: str) -> dict[str, TestFacts]:
     file.
     """
     tree = ast.parse(source)
+    marked_lines = realtime_lines(source)
     module_imports = _import_names(
         node
         for node in ast.iter_child_nodes(tree)
@@ -347,7 +275,7 @@ def analyze_source(source: str) -> dict[str, TestFacts]:
 
     visit(tree, "")
     bodies = {
-        qual: _scan_body(fn, _definition_imports(module_imports, fn))
+        qual: _scan_body(fn, _definition_imports(module_imports, fn), marked_lines)
         for qual, fn in defs.items()
     }
     fixture_quals = {qual for qual, fn in defs.items() if _fixture_info(fn)[0]}
@@ -407,7 +335,7 @@ def analyze_source(source: str) -> dict[str, TestFacts]:
         if fn.name.startswith("test") and qual not in fixture_quals:
             facts[qual] = TestFacts(
                 frozenset(closure(qual)),
-                _is_virtual(fn, _definition_imports(module_imports, fn)),
+                is_virtual(fn, _definition_imports(module_imports, fn)),
                 _marked_realtime(fn),
             )
     return facts

@@ -4614,24 +4614,23 @@ def test_update_state_cache_applies_command_response_observation_once(
 
 
 @pytest.mark.parametrize(  # type: ignore[untyped-decorator]
-    ("frame", "expected_observation_seq"),
+    ("frame", "expected_observation_seq", "expected_mode"),
     [
-        # Short 0x03 freq payload: the decoder skips it quietly (no
-        # exception, zero observations), so the frame still counts as a
-        # decoded answer and only the MOR-2544 power_on liveness inference
-        # lands (seq 1). The payloads below raise during decode, which
-        # aborts the whole frame before any observation — inference
-        # included (seq 0).
-        (_make_frame(cmd=0x03, data=b"\x12\x34"), 1),
-        (_make_frame(cmd=0x04, data=b""), 0),
-        (_make_frame(cmd=0x04, data=bytes([0xFF, 0x01])), 0),
-        (_make_frame(cmd=0x26, data=bytes([0x00, 0xFF])), 0),
+        # Short 0x03 still counts as a decoded answer and infers power_on.
+        (_make_frame(cmd=0x03, data=b"\x12\x34"), 1, None),
+        # Missing mode byte fails decode before any observation or inference.
+        (_make_frame(cmd=0x04, data=b""), 0, None),
+        # Unassigned mode byte publishes UNKNOWN, filter_num and power_on.
+        (_make_frame(cmd=0x04, data=bytes([0xFF, 0x01])), 3, "UNKNOWN"),
+        # This 0x26 reply carries only the main selector and mode byte.
+        (_make_frame(cmd=0x26, data=bytes([0x00, 0xFF])), 2, "UNKNOWN"),
     ],
 )
 async def test_route_civ_frame_contains_observation_decode_failures(
     radio: IcomRadio,
     frame: CivFrame,
     expected_observation_seq: int,
+    expected_mode: str | None,
 ) -> None:
     radio._civ_request_tracker.resolve = MagicMock()
     await radio._civ_runtime._route_civ_frame(
@@ -4647,7 +4646,10 @@ async def test_route_civ_frame_contains_observation_decode_failures(
         generation=radio._civ_epoch,
         ordered_ingress=IcomCivTransport.ordered_ingress,
     )
-    assert radio._state_store.snapshot().observation_seq == expected_observation_seq
+    snapshot = radio._state_store.snapshot()
+    assert snapshot.observation_seq == expected_observation_seq
+    if expected_mode is not None:
+        assert snapshot.field("receiver.0.active.freq_mode.mode").value == expected_mode
 
 
 def test_update_state_cache_cmd07_d2_projects_active_receiver_and_legacy_mirror(

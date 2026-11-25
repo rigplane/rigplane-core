@@ -345,12 +345,9 @@ async def test_get_mode_data_fm_n(connected_radio):
 
 
 @pytest.mark.asyncio
-async def test_read_mode_rejects_unused_code(connected_radio):
-    """MOR-2518: the manual's unused code G is rejected with a parse error,
-    not mapped to a neighbour mode name."""
+async def test_read_mode_marks_unused_code_unknown(connected_radio):
     connected_radio._transport.query = AsyncMock(return_value="MD0G")
-    with pytest.raises(CatParseError):
-        await connected_radio.read_mode()
+    assert await connected_radio.read_mode() == ("UNKNOWN", None)
 
 
 @pytest.mark.asyncio
@@ -3662,15 +3659,14 @@ class TestIFBulkQuery:
         assert "split" not in result
 
     @pytest.mark.asyncio
-    async def test_get_if_status_rejects_unassigned_mode_code(self, connected_radio):
-        """MOR-2518: an IF; frame carrying the manual's unused mode code G
-        raises CatParseError instead of producing a placeholder mode name."""
-        # MEASURED_FRAME with the P6 mode character ("2" → USB) changed to
-        # the unused "G".
-        response = "IF00000014228000+000000G00003"
+    async def test_get_if_status_marks_unassigned_mode_code_unknown(
+        self, connected_radio
+    ):
+        response = "IF00000014228000+000000000003"
         connected_radio._transport.query = AsyncMock(return_value=response)
-        with pytest.raises(CatParseError):
-            await connected_radio.get_if_status()
+        status = await connected_radio.get_if_status()
+        assert status["mode"] == connected_radio.radio_state.main.mode == "UNKNOWN"
+        assert status["freq"] == 14_228_000
 
     @pytest.mark.asyncio
     async def test_get_if_status_populates_state(self, connected_radio):
