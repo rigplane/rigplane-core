@@ -2,7 +2,8 @@
 
 import asyncio
 import json
-from unittest.mock import AsyncMock
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 
 import aiohttp
 import numpy as np
@@ -12,11 +13,13 @@ from rigplane.audio.bus import STAGE_RX_POST_DSP
 from rigplane.audio.scope_source import AudioFftSource
 from rigplane.profiles import resolve_radio_profile
 from rigplane.runtime.radio_scope_source import RadioScopeSource
+from rigplane.runtime.scope_session import ScopeSession
 from rigplane.scope import ScopeFrame
 from rigplane.scope.models import Subscription, View
 from rigplane.sdr.fake import FakeIqSource
 from rigplane.sdr.types import SdrConfig
 from rigplane.testing.timing import await_until
+from rigplane.web import server as web_server
 from rigplane.web.handlers.audio import AudioBroadcaster
 from rigplane.web.handlers.scope import ScopeHandler
 from rigplane.web.protocol import decode_scope_frame_v2, encode_scope_subscription
@@ -36,8 +39,6 @@ async def test_streamed_scope_mode_change_requests_the_passband_geometry_readbac
     """MOR-4451: the hub's radio source reports a frame-mode switch to the
     poller, which re-reads the receiver's passband geometry (the client
     re-proves its tuple from it) instead of leaving it to the 5 s PBT poll."""
-    from unittest.mock import MagicMock
-
     server = WebServer(
         _scope_radio(), WebConfig(host="127.0.0.1", port=0, radio_model="IC-7300")
     )
@@ -276,13 +277,48 @@ async def test_server_shutdown_retires_real_radio_subscription_after_poller_stop
         await sim.stop()
 
 
+@pytest.mark.timeout(10)
+async def test_scope_restore_cannot_restart_state_broadcasts_during_shutdown(
+    virtual_clock, monkeypatch
+):
+    server = WebServer(None)
+    server._radio_scope_session = MagicMock(spec=ScopeSession, active=True)
+    poller = MagicMock(spec=RadioPoller)
+    server._radio_poller = poller
+
+    monkeypatch.setattr(web_server, "time", SimpleNamespace(monotonic=virtual_clock))
+    server._last_state_broadcast = virtual_clock()
+
+    async def restore():
+        # CI-V replies can still trigger a state update during scope restore.
+        server._on_radio_state_change("freq_changed", {"freq": 14_100_000})
+
+    poller.restore_scope_after_shutdown.side_effect = restore
+    try:
+        server._on_radio_state_change("freq_changed", {"freq": 14_000_000})
+        pending_broadcast = server._pending_state_broadcast_task
+        assert pending_broadcast is not None
+        await virtual_clock.elapse(0)
+        assert not pending_broadcast.done()
+
+        await server.stop()
+
+        poller.restore_scope_after_shutdown.assert_awaited_once()
+        assert pending_broadcast.done()
+        assert not server._bg_tasks
+    finally:
+        # Reap the leaked timer when running the regression on the old code.
+        pending = tuple(server._bg_tasks)
+        for task in pending:
+            task.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
+
+
 @pytest.mark.parametrize("pending_stage", [0, 1, 2])
 @pytest.mark.timeout(10)
 async def test_shutdown_cancels_pending_replacement_view_at_each_command_stage(
     pending_stage, virtual_clock, monkeypatch
 ):
-    from unittest.mock import MagicMock
-
     from rigplane.web.radio_poller import PttOff
     from rigplane.runtime.scope_session import ScopeState
     from rigplane.scope.models import FollowView
