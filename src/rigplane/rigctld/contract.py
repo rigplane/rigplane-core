@@ -9,7 +9,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import IntEnum
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
+
+from ..core.hamlib_modes import HAMLIB_MODE_MASKS
+
+if TYPE_CHECKING:
+    from ..profiles import RadioProfile
 
 
 # ---------------------------------------------------------------------------
@@ -46,26 +51,11 @@ class HamlibError(IntEnum):
 
 
 # ---------------------------------------------------------------------------
-# Hamlib mode strings ↔ CI-V mode IDs
+# Hamlib mode strings ↔ backend modes
 # ---------------------------------------------------------------------------
 
-# rigctld uses these mode strings; map to rigplane Mode enum values.
-HAMLIB_MODE_MAP: dict[str, int] = {
-    "USB": 0x01,
-    "LSB": 0x00,
-    "CW": 0x03,
-    "CWR": 0x07,
-    "RTTY": 0x04,
-    "RTTYR": 0x08,
-    "AM": 0x02,
-    "FM": 0x05,
-    "WFM": 0x06,
-    "PKTUSB": 0x01,  # mapped to USB (DATA mode handled separately)
-    "PKTLSB": 0x00,  # mapped to LSB
-    "PKTRTTY": 0x04,  # mapped to RTTY
-}
 
-# Reverse: CI-V mode int → hamlib string
+# The relative-VFO protocol still exchanges CI-V Mode values.
 CIV_TO_HAMLIB_MODE: dict[int, str] = {
     0x00: "LSB",
     0x01: "USB",
@@ -77,6 +67,70 @@ CIV_TO_HAMLIB_MODE: dict[int, str] = {
     0x07: "CWR",
     0x08: "RTTYR",
 }
+HAMLIB_PACKET_MODES = {"USB": "PKTUSB", "LSB": "PKTLSB", "RTTY": "PKTRTTY"}
+HAMLIB_MODE_MAP = {name: code for code, name in CIV_TO_HAMLIB_MODE.items()}
+HAMLIB_MODE_MAP.update(
+    {packet: HAMLIB_MODE_MAP[plain] for plain, packet in HAMLIB_PACKET_MODES.items()}
+)
+
+
+@dataclass(frozen=True, slots=True)
+class RigctldMode:
+    native: str
+    mask: int
+    packet: bool = False
+
+
+def profile_mode_table(profile: RadioProfile | None) -> dict[str, RigctldMode]:
+    """Resolve the names that rigctld can advertise and set."""
+    if profile is None:
+        table = {
+            name: RigctldMode(name, HAMLIB_MODE_MASKS[name])
+            for name in CIV_TO_HAMLIB_MODE.values()
+        }
+        # Keep the legacy maskless PKTRTTY request for unprofiled radios.
+        table.update(
+            {
+                packet: RigctldMode(
+                    plain, HAMLIB_MODE_MASKS.get(packet, 0), packet=True
+                )
+                for plain, packet in HAMLIB_PACKET_MODES.items()
+            }
+        )
+        return table
+
+    table = {}
+    for native in profile.modes:
+        entry = profile.mode_entries.get(native)
+        name = (entry.hamlib if entry else None) or native
+        mask = HAMLIB_MODE_MASKS.get(name)
+        if mask is None:
+            continue
+        partner = entry.data_partner if entry else None
+        table[name] = RigctldMode(partner or native, mask, packet=partner is not None)
+
+    if (
+        profile.data_mode_count
+        and profile.supports_command("set_data_mode")
+        and profile.supports_command("get_data_mode")
+    ):
+        paired = {mode.native for mode in table.values() if mode.packet}
+        for plain, packet in HAMLIB_PACKET_MODES.items():
+            base = table.get(plain)
+            if (
+                base is not None
+                and base.native not in paired
+                and packet in HAMLIB_MODE_MASKS
+                and (
+                    profile.data_mode_modes is None
+                    or base.native in profile.data_mode_modes
+                )
+            ):
+                table.setdefault(
+                    packet,
+                    RigctldMode(base.native, HAMLIB_MODE_MASKS[packet], packet=True),
+                )
+    return table
 
 
 # ---------------------------------------------------------------------------

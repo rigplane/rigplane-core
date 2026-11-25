@@ -610,6 +610,7 @@ table = "standard_50"
 list = ["USB", "LSB", "CW", "CW-R", "AM", "FM", "RTTY", "RTTY-R"]
 # MOR-3679: the CW modes, named once here for every client.
 families = { cw = ["CW", "CW-R"] }
+entries = { "CW-R" = { hamlib = "CWR" }, "RTTY-R" = { hamlib = "RTTYR" } }
 
 [data_mode]
 # CI-V 0x1A 0x06: DATA mode + filter (00=OFF/00 fixed, 01=ON/01-03 filter)

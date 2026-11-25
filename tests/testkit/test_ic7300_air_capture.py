@@ -299,7 +299,8 @@ def _args(tmp_path, **over):
 
 
 async def test_unreadable_data_mode_refuses_before_changing_anything(tmp_path) -> None:
-    fake = CivSerialFake(echo=False, frequency_hz=7_100_000, mode=0x00)  # no 1A 06
+    fake = CivSerialFake(echo=False, frequency_hz=7_100_000, mode=0x00)
+    fake.refuse_data_mode_read()  # a radio that NAKs the 1A 06 read
     with pytest.raises(RuntimeError, match="data mode"):
         await air.run_clip(_args(tmp_path), opener=fake.opener)
     assert fake.frequency_hz == 7_100_000 and fake.mode == 0x00  # untouched

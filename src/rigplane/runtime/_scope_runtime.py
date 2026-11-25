@@ -11,6 +11,7 @@ from rigplane.scope.models import ScopeDemand
 import asyncio
 import logging
 import warnings
+from dataclasses import replace as _replace_dataclass
 from typing import TYPE_CHECKING, AsyncGenerator, Literal
 
 if TYPE_CHECKING:
@@ -56,8 +57,9 @@ from rigplane.commands import (
 from rigplane.core.exceptions import CommandError, CommandRejectedError, TimeoutError
 from rigplane.core._bounded_queue import BoundedQueue
 from rigplane.core.radio_state import ScopeControlsState
+from rigplane.core.state_pipeline_contracts import FieldPath
 from rigplane.scope import ScopeFrame
-from rigplane.core.types import ScopeCompletionPolicy, ScopeFixedEdge
+from rigplane.core.types import CivFrame, ScopeCompletionPolicy, ScopeFixedEdge
 from rigplane.runtime.scope_session import (
     ScopeSession,
     ScopeState,
@@ -271,6 +273,53 @@ class ScopeRuntimeMixin(_MixinBase):  # type: ignore[misc]
             controls.fixed_edge = value
         elif name not in ("scope_on", "output_on") and receiver == controls.receiver:
             setattr(controls, name, value)
+        self._publish_scope_display_write(name, value, receiver, response)
+
+    def _publish_scope_display_write(
+        self,
+        name: ScopeSetting,
+        value: ScopeValue,
+        receiver: int,
+        ack: CivFrame,
+    ) -> None:
+        """Mirror an acknowledged scope display write into the StateStore.
+
+        MOR-4713: the UI drives span (and mode/edge) through the scope
+        subscription view — the shared session — never through the
+        command queue, so no post-write readback re-observes the new
+        value and ``GET /api/v1/state`` kept the previous preset until
+        the next slow acquisition poll. The ACK is the radio's own
+        confirmation, so publish it like a report (the same observation
+        shape the 0x27 answer path builds, receiver-guarded the same
+        way): the served span is the radio's real span within one
+        update. Refused/unanswered writes raise in the caller and never
+        reach here; ``scope_on``/``output_on`` have no display leaf, so
+        they publish nothing — same as their answer path.
+        """
+        if name in ("scope_on", "output_on"):
+            return
+        if (
+            name in ("mode", "span", "edge")
+            and receiver != self._scope_controls().receiver
+        ):
+            return
+        observation = _replace_dataclass(
+            self._civ_runtime._observation(  # noqa: SLF001
+                FieldPath.scope_control("display", name),
+                value if name != "dual" else bool(value),
+                frame=ack,
+            ),
+            provider_generation=self._state_store.provider_generation,
+        )
+        changeset = self._state_store.apply(observation)
+        if changeset.observed_paths:
+            # Let the next waveform supersede the ACK even if it repeats
+            # the last streamed value.
+            if name == "mode":
+                self._scope_stream_last_mode.clear()
+            elif name == "span":
+                self._scope_stream_last_span.clear()
+        self._civ_runtime._notify_state_store_changed(changeset)  # noqa: SLF001
 
     async def enable_scope(
         self,
