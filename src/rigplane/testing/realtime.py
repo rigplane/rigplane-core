@@ -53,6 +53,28 @@ def dotted(func: ast.AST, imports: dict[str, str]) -> str | None:
     return None
 
 
+def is_virtual(
+    fn: ast.FunctionDef | ast.AsyncFunctionDef,
+    imports: dict[str, str],
+    *,
+    allow_explicit_install: bool = True,
+) -> bool:
+    """Recognize the fixture, decorator and explicit installation of the loop clock."""
+    for decorator in fn.decorator_list:
+        target = decorator.func if isinstance(decorator, ast.Call) else decorator
+        name = dotted(target, imports) or ast.unparse(target)
+        if name.endswith("virtual_clock"):
+            return True
+    if "virtual_clock" in {a.arg for a in fn.args.args + fn.args.kwonlyargs}:
+        return True
+    return allow_explicit_install and any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr in {"on_running_loop", "install"}
+        for node in ast.walk(fn)
+    )
+
+
 def timeout_value(call: ast.Call, positional: int | None) -> float | None:
     for keyword in call.keywords:
         if keyword.arg == "timeout":
@@ -94,6 +116,7 @@ def realtime_lines(source: str) -> set[int]:
 
 
 _SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)
+_CURRENT_LOOP = {"asyncio.get_event_loop", "asyncio.get_running_loop"}
 
 
 def _scope_nodes(root: ast.AST) -> Iterable[ast.AST]:
@@ -140,16 +163,32 @@ def _timing_calls(nodes: list[ast.AST]) -> set[ast.Call]:
     }
 
 
-def _loop_read(func: ast.AST, imports: dict[str, str]) -> bool:
+def _current_loop_aliases(nodes: list[ast.AST], imports: dict[str, str]) -> set[str]:
+    aliases: dict[str, bool] = {}
+    for node in nodes:
+        if isinstance(node, (ast.Assign, ast.AnnAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            current = (
+                isinstance(node.value, ast.Call)
+                and dotted(node.value.func, imports) in _CURRENT_LOOP
+            )
+            for target in targets:
+                if isinstance(target, ast.Name):
+                    aliases[target.id] = aliases.get(target.id, True) and current
+    return {name for name, current in aliases.items() if current}
+
+
+def _loop_read(
+    func: ast.AST, imports: dict[str, str], *, virtual: bool, loop_aliases: set[str]
+) -> bool:
     if not isinstance(func, ast.Attribute) or func.attr != "time":
         return False
     receiver = func.value
     if isinstance(receiver, ast.Call):
-        return dotted(receiver.func, imports) in {
-            "asyncio.get_event_loop",
-            "asyncio.get_running_loop",
-            "asyncio.new_event_loop",
-        }
+        name = dotted(receiver.func, imports)
+        return name == "asyncio.new_event_loop" or (not virtual and name in _CURRENT_LOOP)
+    if virtual and isinstance(receiver, ast.Name) and receiver.id in loop_aliases:
+        return False
     name = ast.unparse(receiver).rsplit(".", 1)[-1]
     return name == "loop" or name.endswith("_loop")
 
@@ -166,28 +205,64 @@ def _clock_wait(call: ast.Call, imports: dict[str, str]) -> bool:
 
 
 def _scope_findings(
-    root: ast.AST, inherited: dict[str, str], marked: Set[int]
+    root: ast.AST, inherited: dict[str, str], marked: Set[int], *, virtual: bool = False
 ) -> Iterable[tuple[int, str]]:
     nodes = list(_scope_nodes(root))
     imports = {**inherited, **import_names(nodes)}
+    if isinstance(root, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        virtual = virtual or is_virtual(root, imports, allow_explicit_install=False)
+    # A context manager patches only its body. A bare install may target another
+    # loop, or be undone before the call being scanned.
+    virtual_body = {
+        child
+        for node in nodes
+        if isinstance(node, ast.AsyncWith)
+        and any(
+            isinstance(item.context_expr, ast.Call)
+            and dotted(item.context_expr.func, imports)
+            == "rigplane.testing.timing.VirtualClock.on_running_loop"
+            for item in node.items
+        )
+        for statement in node.body
+        for child in ast.walk(statement)
+    }
     timing_calls = _timing_calls(nodes)
+    loop_aliases = (
+        _current_loop_aliases(nodes, imports) if virtual or virtual_body else set()
+    )
     for node in nodes:
+        on_virtual_loop = virtual or node in virtual_body
         if isinstance(node, _SCOPES):
-            yield from _scope_findings(node, imports, marked)
+            yield from _scope_findings(
+                node,
+                imports,
+                marked,
+                virtual=on_virtual_loop and isinstance(node, ast.AsyncFunctionDef),
+            )
         if not isinstance(node, ast.Call) or node.lineno in marked:
             continue
         name = dotted(node.func, imports)
         primitive = clock_primitive(node, name)
-        if primitive in {"time.sleep", "asyncio.sleep"}:
+        if primitive == "time.sleep" or (
+            primitive == "asyncio.sleep" and not on_virtual_loop
+        ):
             yield node.lineno, primitive
         elif node in timing_calls and (
-            primitive == "clock-read" or _loop_read(node.func, imports)
+            primitive == "clock-read"
+            or _loop_read(
+                node.func, imports, virtual=on_virtual_loop, loop_aliases=loop_aliases
+            )
         ):
             yield node.lineno, "wall-clock measurement"
-        elif name == "asyncio.wait" and timeout_value(node, None) is not None:
+        elif (
+            not on_virtual_loop
+            and name == "asyncio.wait"
+            and timeout_value(node, None) is not None
+        ):
             yield node.lineno, "asyncio.wait with literal timeout"
         elif (
-            name == "asyncio.wait_for"
+            not on_virtual_loop
+            and name == "asyncio.wait_for"
             and timeout_value(node, 1) is not None
             and _clock_wait(node, imports)
         ):

@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from rigplane.testing.realtime import scan_python
 from rigplane_testkit.realtime_guard import (
     TestFacts,
     analyze_source,
@@ -262,6 +263,61 @@ def test_the_virtual_clock_exempts_only_what_it_virtualizes() -> None:
     assert facts["test_thread_wait_on_a_virtual_loop"].violations() == {
         "thread-timeout"
     }
+
+
+def test_per_call_scan_preserves_virtual_clock_and_reports_real_calls() -> None:
+    source = """import asyncio as aio
+import time
+from rigplane.testing.timing import virtual_clock as clocked
+
+@clocked
+async def test_decorated(clock):
+    task = aio.create_task(aio.sleep(5))
+    await clock.elapse(5)
+    await task
+
+async def test_fixture(virtual_clock, event):
+    await aio.wait_for(event.wait(), timeout=5)
+    await aio.wait({aio.create_task(aio.sleep(5))}, timeout=5)
+    loop = aio.get_running_loop()
+    assert loop.time() - 10 > 0
+    time.sleep(1)
+    assert time.monotonic() - 10 > 0
+    assert aio.new_event_loop().time() - 10 > 0
+
+async def test_real_loop():
+    await aio.sleep(5)
+"""
+    assert scan_python(source) == [
+        (16, "time.sleep"),
+        (17, "wall-clock measurement"),
+        (18, "wall-clock measurement"),
+        (21, "asyncio.sleep"),
+    ]
+
+
+def test_per_call_scan_keeps_real_time_outside_the_virtual_loop_scope() -> None:
+    source = """import asyncio
+from rigplane.testing.timing import VirtualClock as Clock
+
+async def test_explicit(gate, monkeypatch):
+    gate.install(monkeypatch)
+    await asyncio.sleep(1)
+    async with Clock.on_running_loop():
+        await asyncio.sleep(2)
+    await asyncio.sleep(3)
+
+async def test_other_loop(virtual_clock):
+    def other_thread():
+        async def worker():
+            await asyncio.sleep(4)
+        asyncio.run(worker())
+"""
+    assert scan_python(source) == [
+        (6, "asyncio.sleep"),
+        (9, "asyncio.sleep"),
+        (14, "asyncio.sleep"),
+    ]
 
 
 def test_a_constructed_or_unrelated_clock_does_not_virtualize_the_loop() -> None:

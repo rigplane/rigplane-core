@@ -77,6 +77,7 @@ from rigplane.testing.realtime import (
     clock_primitive,
     dotted as _dotted,
     import_names as _import_names,
+    is_virtual,
     number as _number,
     realtime_lines,
     timeout_value as _timeout_value,
@@ -218,33 +219,6 @@ def _scan_body(fn: ast.AST, imports: dict[str, str], marked_lines: set[int]) -> 
     return body
 
 
-def _is_virtual(
-    fn: ast.FunctionDef | ast.AsyncFunctionDef, imports: dict[str, str]
-) -> bool:
-    """Evidence that the test's own loop runs on the virtual clock.
-
-    Only the real entry points count: the ``@virtual_clock`` decorator (also under an import
-    alias), a ``virtual_clock`` fixture parameter, ``VirtualClock.on_running_loop()`` or an
-    explicit ``.install(loop)``. Constructing a ``VirtualClock`` or taking some other
-    parameter named ``clock`` does not put the loop on it.
-    """
-    for decorator in fn.decorator_list:
-        target = decorator.func if isinstance(decorator, ast.Call) else decorator
-        name = _dotted(target, imports) or ast.unparse(target)
-        if name.endswith("virtual_clock"):
-            return True
-    if "virtual_clock" in {a.arg for a in fn.args.args + fn.args.kwonlyargs}:
-        return True
-    for node in ast.walk(fn):
-        if (
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Attribute)
-            and node.func.attr in {"on_running_loop", "install"}
-        ):
-            return True
-    return False
-
-
 def _marked_realtime(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
     """A decorator that IS ``@pytest.mark.realtime(reason="...")`` (not a mark nested in
     ``parametrize``: those exempt single cases and are judged per collected case)."""
@@ -361,7 +335,7 @@ def analyze_source(source: str) -> dict[str, TestFacts]:
         if fn.name.startswith("test") and qual not in fixture_quals:
             facts[qual] = TestFacts(
                 frozenset(closure(qual)),
-                _is_virtual(fn, _definition_imports(module_imports, fn)),
+                is_virtual(fn, _definition_imports(module_imports, fn)),
                 _marked_realtime(fn),
             )
     return facts

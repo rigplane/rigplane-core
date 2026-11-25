@@ -122,19 +122,6 @@ jobs:
           --base "$QUICK_BASE_SHA"
           --head "$QUICK_HEAD_SHA"
 
-      - name: Ratchet real-clock waits in tests
-        # A classify failure fails required quick on every substantive route,
-        # including frontend-only changes and merge groups that reuse PR tests.
-        if: >-
-          steps.paths.outputs.docs != 'true' &&
-          (github.event_name == 'merge_group' || github.event.pull_request.draft == false)
-        env:
-          RATCHET_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
-        run: >-
-          python3 .github/scripts/check-realtime-ratchet.py
-          --sdk-source src/rigplane/testing/realtime.py
-          --base "$RATCHET_BASE_SHA" --head "$GITHUB_SHA"
-
       # MOR-3878: the first entry of a merge group is its pull request on the
       # current main. When that tree is byte-identical to the tree of the PR
       # head, `quick` already passed on exactly this code, so the queue run
@@ -629,10 +616,6 @@ jobs:
       - name: Playwright browser environment contract test
         if: needs.classify.outputs.ci == 'true'
         run: python3 .github/scripts/playwright-browser-env.test.py
-
-      - name: Real-clock timing ratchet tests
-        if: needs.classify.outputs.ci == 'true'
-        run: python3 .github/scripts/check-realtime-ratchet.test.py
 
       - name: Doc link gate contract tests
         if: needs.classify.outputs.ci == 'true'

@@ -154,11 +154,6 @@ valid answer; skipping the question is not.
 
 It applies to the local pre-review and to any Codex bot thread on GitHub alike.
 
-A new real-clock wait in a test is P1. Use `virtual_clock` for clock-driven behavior
-and `wait_until` / `await_until` for real events. A test that must use real time
-with a real process or socket needs a reason on the call line (`# real-time: reason`
-in Python, `// real-time: reason` in frontend specs).
-
 - Always fix before merge: P0, P1, and a P2 that changes behaviour (a wrong
   result or verdict, data loss, state left dirty, a hang, a security or
   radio-transmit safety defect, a false claim about safety or support in
