@@ -236,8 +236,8 @@ async def test_usb_silence_then_answers_recovers_without_restart(model: str) -> 
 async def test_yaesu_transport_down_after_session_is_not_responding() -> None:
     """MOR-4654 round 1 (P2): the conn_state-less serial sibling.
 
-    A Yaesu CAT backend has no ``conn_state`` — when its transport drops
-    after a real session (the bench shape: the USB device is gone), the
+    Yaesu CAT has no explicit connection state after an established
+    session drops (the bench shape: the USB device is gone), so the
     link reads ``unknown``. The shared serial-family classifier must
     still name the silent radio (``radio_not_responding``), never
     ``unknown``. The loss episode is counted by the real transport
