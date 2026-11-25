@@ -29,6 +29,7 @@ export type ScopePassbandDisplay =
   | Readonly<{ state: 'current' | 'stale'; tuple: ScopePassbandTuple; translated?: true }>
   | Readonly<{ state: 'unknown'; reason: string }>
   | Readonly<{ state: 'unsupported' }>;
+type ActivePassband = Extract<ScopePassbandDisplay, { tuple: ScopePassbandTuple }>;
 /** Diagnostic document emitted by SpectrumPanel and consumed by panorama probes. */
 export interface ScopePassbandDiagnostics {
   tuneVisible: boolean;
@@ -52,6 +53,7 @@ export interface ScopePassbandDiagnostics {
 
 export interface ScopePassbandDisplayState {
   readonly display: ScopePassbandDisplay;
+  readonly suspendedDisplay: ActivePassband | null;
   readonly identity: string | null;
   readonly bandlessIdentity: string | null;
   /** The candidate's windowless evidence context (MOR-4387): every identity
@@ -96,6 +98,7 @@ const EMPTY_OBSERVATIONS: Observations = Object.freeze({});
 const EMPTY_PATHS: readonly string[] = Object.freeze([]);
 export const EMPTY_SCOPE_PASSBAND_DISPLAY: ScopePassbandDisplayState = Object.freeze({
   display: Object.freeze({ state: 'unknown', reason: 'not-observed' }),
+  suspendedDisplay: null,
   identity: null, bandlessIdentity: null, context: null, domain: null, observations: EMPTY_OBSERVATIONS,
   geometryPaths: EMPTY_PATHS, receipt: 0, floors: null, frequencyHoldRecovery: false,
   selection: null, selectionRecovery: null,
@@ -147,6 +150,7 @@ interface Inspection {
   unsupported: boolean;
   /** True when the frame leg is a grant placeholder (see inspect). */
   placeholder: boolean;
+  silent: boolean;
   selection: SelectionObservation | null;
   explicitSelectionBind: boolean;
 }
@@ -155,7 +159,7 @@ function inspect(input: ScopePassbandDisplayInput): Inspection {
   const geometry = facts?.geometry ?? null;
   const result: Inspection = { candidate: null, domain: null, observations: {}, geometryPaths: [],
     receipt: integer(facts?.receipt) ? facts.receipt : 0,
-    reason: 'identity-unresolved', unsupported: false, placeholder: false,
+    reason: 'identity-unresolved', unsupported: false, placeholder: false, silent: false,
     selection: null, explicitSelectionBind: false };
   if (!state || !caps || !selection || state.stateContractVersion !== 1 || caps.stateContractVersion !== 1
     || !integer(state.providerGeneration) || state.providerGeneration !== caps.providerGeneration
@@ -300,7 +304,6 @@ function inspect(input: ScopePassbandDisplayInput): Inspection {
     || facts.transport !== 'connected' || !facts.demanded
     || !integer(facts.transportEpoch) || facts.transportEpoch === 0
     || geometry.source !== 'radio' || geometry.receiver !== receiver
-    || (geometry.hasPixels && geometry.freshness !== 'fresh')
     || (!geometry.hasPixels && (geometry.outOfRange || !facts.lastFrameHasPixels))
     || !integer(geometry.mode) || geometry.mode > 255
     || !Number.isFinite(geometry.view.startHz) || !Number.isFinite(geometry.view.endHz)
@@ -309,6 +312,7 @@ function inspect(input: ScopePassbandDisplayInput): Inspection {
   // A health tick can mark a grant fresh using the last frame's receipt.
   // Pixel presence distinguishes the grant from actual frame evidence.
   result.placeholder = !geometry.hasPixels && facts.lastFrameHasPixels;
+  result.silent = geometry.hasPixels && geometry.freshness !== 'fresh';
   const tuple = Object.freeze({ frequencyHz: frequency, mode, widthHz: width, shiftHz,
     frameMode: geometry.mode, startHz: geometry.view.startHz, endHz: geometry.view.endHz });  // A held-stale value carrying provider-confirmed readback is still an
   // authoritative radio fact.  IC-7610 polling intervals intentionally exceed
@@ -352,7 +356,7 @@ function mergeMarkers(...vectors: Markers[]): Markers {
   }
   return Object.freeze(merged);
 }
-function active(display: ScopePassbandDisplay): display is Extract<ScopePassbandDisplay, { tuple: ScopePassbandTuple }> {
+function active(display: ScopePassbandDisplay): display is ActivePassband {
   return display.state === 'current' || display.state === 'stale';
 }
 export function projectScopePassbandDisplay(
@@ -388,9 +392,23 @@ export function projectScopePassbandDisplay(
     selectionRecovery = { context: recoveryContext };
   }
   const recoveryCancelled = previous.selectionRecovery !== null && selectionRecovery === null;
-  const hasTuple = active(previous.display);
-  const previousTuple = hasTuple ? tupleOf(previous.display) : null;
-  const wasTranslated = hasTuple && previous.display.translated === true;
+  const priorDisplay = previous.suspendedDisplay ?? previous.display;
+  const hasTuple = active(priorDisplay);
+  const previousTuple = hasTuple ? tupleOf(priorDisplay) : null;
+  const wasTranslated = hasTuple && priorDisplay.translated === true;
+  const sameRadioShape = candidate !== null && sameDomain && candidate.context === previous.context
+    && (candidate.stale || candidate.strict || !candidate.frequencyAligned)
+    && !regression && !receiptRegression && !changedGeometry && !selectionRecovery;
+  const waitingForFrame = next.silent || (previous.suspendedDisplay !== null
+    && (next.placeholder || next.receipt <= previous.receipt));
+  // Scope silence hides the tuple. A new frame in the same scope and radio
+  // context can resume it using the evidence already held before the gap.
+  if (waitingForFrame && hasTuple && sameRadioShape) {
+    return Object.freeze({ ...previous, receipt: Math.max(previous.receipt, next.receipt),
+      observations: Object.freeze({ ...previous.observations, ...next.observations }),
+      display: Object.freeze({ state: 'unknown', reason: 'frame-unavailable' }), suspendedDisplay: priorDisplay });
+  }
+  const interrupted = waitingForFrame || (previous.suspendedDisplay !== null && !sameRadioShape);
   const continuous = candidate !== null && candidate.bandlessIdentity !== null
     && candidate.bandlessIdentity === previous.bandlessIdentity;
   // MOR-4387 (owner build-4): a window-only change — the ZOOM preset
@@ -408,25 +426,25 @@ export function projectScopePassbandDisplay(
   // re-proven against the current plane — and a mode, DATA, filter-width,
   // provider or frame-mode change keeps the context unequal and still
   // retires: an unknown width is never drawn.
-  const holdingGrant = next.placeholder && candidate !== null && previousTuple !== null
+  const holdingGrant = !interrupted && next.placeholder && candidate !== null && previousTuple !== null
     && sameDomain && candidate.context === previous.context
     && candidate.tuple.frequencyHz === previousTuple.frequencyHz
     && !wasTranslated && !regression && !receiptRegression && !changedGeometry
     && !candidate.stale && candidate.strict && !selectionRecovery;
   if (holdingGrant) return previous;
-  const reseating = !next.placeholder && !continuous && candidate !== null && previousTuple !== null
+  const reseating = !interrupted && !next.placeholder && !continuous && candidate !== null && previousTuple !== null
     && sameDomain && previous.context !== null && candidate.context === previous.context
     && (candidate.tuple.startHz !== previousTuple.startHz || candidate.tuple.endHz !== previousTuple.endHz)
     && candidate.tuple.frequencyHz === previousTuple.frequencyHz
     && !wasTranslated && !regression && !receiptRegression && !changedGeometry
     && !candidate.stale && candidate.strict && !selectionRecovery;
-  const holdingFrequency = hasTuple && continuous && candidate !== null
+  const holdingFrequency = !interrupted && hasTuple && continuous && candidate !== null
     && !candidate.frequencyCurrent && candidate.frequencyAligned
     && !regression && !receiptRegression && !changedGeometry;
-  const invalid = next.placeholder || !candidate || regression || receiptRegression || (!candidate.stale && !candidate.strict)
+  const invalid = interrupted || next.placeholder || !candidate || regression || receiptRegression || (!candidate.stale && !candidate.strict)
     || ((candidate.stale || wasTranslated) && changedGeometry)
     || (wasTranslated && !candidate.frequencyCurrent && !holdingFrequency);
-  const canTranslate = !next.placeholder && hasTuple && continuous && candidate !== null
+  const canTranslate = !interrupted && !next.placeholder && hasTuple && continuous && candidate !== null
     && candidate.frequencyCurrent && !regression && !receiptRegression && !changedGeometry
     && (candidate.stale || candidate.strict || !candidate.frequencyAligned);
   const translating = canTranslate && (changedIdentity || wasTranslated);
@@ -445,7 +463,7 @@ export function projectScopePassbandDisplay(
     });
   } else if (retire || (holdingFrequency && !previous.frequencyHoldRecovery)
     || (translating && !previous.frequencyHoldRecovery
-      && (!wasTranslated || candidate.tuple.frequencyHz !== tupleOf(previous.display).frequencyHz))) {
+      && (!wasTranslated || candidate.tuple.frequencyHz !== tupleOf(priorDisplay).frequencyHz))) {
     const domain = next.domain ?? previous.domain;
     floors = Object.freeze({ domain, receipt: Math.max(previous.receipt, next.receipt),
       geometry: mergeMarkers(
@@ -460,11 +478,11 @@ export function projectScopePassbandDisplay(
   const axisAligned = candidate && (isRadioOwnedWindowScope(candidate.tuple.frameMode)
     || candidate.tuple.frequencyHz === (candidate.tuple.startHz + candidate.tuple.endHz) / 2);
   const canRetain = hasTuple && !selectionRecovery && !retire && !invalid && !translating;
-  const canCapture = !next.placeholder && candidate && !candidate.stale && candidate.strict && !regression
+  const canCapture = !interrupted && !next.placeholder && candidate && !candidate.stale && candidate.strict && !regression
     && !receiptRegression && !retire && crossedFloors && (!selectionRecovery || axisAligned);
   const display: ScopePassbandDisplay = holdingFrequency
     ? { state: 'stale', translated: true, tuple: {
-      ...tupleOf(previous.display), frameMode: candidate!.tuple.frameMode,
+      ...tupleOf(priorDisplay), frameMode: candidate!.tuple.frameMode,
       startHz: candidate!.tuple.startHz, endHz: candidate!.tuple.endHz,
     } }
     : translating
@@ -478,9 +496,9 @@ export function projectScopePassbandDisplay(
     ? { state: 'current', tuple: candidate!.tuple }
     : canRetain || canCapture
     ? { state: candidate!.stale ? 'stale' : 'current',
-      tuple: canRetain && !changedGeometry ? tupleOf(previous.display) : candidate!.tuple }
+      tuple: canRetain && !changedGeometry ? tupleOf(priorDisplay) : candidate!.tuple }
     : next.unsupported ? { state: 'unsupported' }
-      : { state: 'unknown', reason: retire ? 'retired' : next.placeholder ? 'frame-unavailable' : candidate?.stale ? 'first-stale'
+      : { state: 'unknown', reason: retire ? 'retired' : waitingForFrame || next.placeholder ? 'frame-unavailable' : candidate?.stale ? 'first-stale'
         : candidate ? 'awaiting-evidence' : next.reason };
   const observations: Record<string, Observation> = next.domain === null || sameDomain
     ? { ...previous.observations } : {};
@@ -489,7 +507,7 @@ export function projectScopePassbandDisplay(
     if (!highWater || observation.marker > highWater.marker) observations[path] = observation;
   }
   return Object.freeze({
-    display: Object.freeze(display), identity: candidate?.identity ?? previous.identity,
+    display: Object.freeze(display), suspendedDisplay: null, identity: candidate?.identity ?? previous.identity,
     bandlessIdentity: candidate?.bandlessIdentity ?? null,
     context: candidate?.context ?? previous.context,
     domain: next.domain ?? previous.domain,

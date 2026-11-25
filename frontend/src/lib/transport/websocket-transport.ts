@@ -92,12 +92,12 @@ export class WebSocketTransport implements MessageTransport {
     this.socket = null;
     if (!socket) return;
     if (socket.readyState === WebSocket.CONNECTING) {
-      // Still handshaking: don't tear down now — turn a late open into a
-      // silent close and swallow handshake noise. The onclose mapping stays
-      // live so the eventual close still reports.
-      socket.onopen = () => this.closeSocket(socket);
+      // MOR-4469: cancel the handshake itself instead of letting it finish
+      // (an audio stop must not keep the connection attempt alive until it
+      // opens). A deliberate cancel is not a transport error, so onerror is
+      // silenced; onclose stays mapped so the eventual close still reports.
+      socket.onopen = () => {};
       socket.onerror = () => {};
-      return;
     }
     this.closeSocket(socket);
   }
