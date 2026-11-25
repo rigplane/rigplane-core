@@ -1,5 +1,5 @@
 import { expect, test, type Locator, type Page } from '@playwright/test';
-import { startJourneyServer, type JourneyServerHandle } from './server-process';
+import { journeyPort, startJourneyServer, type JourneyServerHandle } from './server-process';
 
 /**
  * MOR-3644: the panel memory Store/Clear path end-to-end through the real
@@ -270,7 +270,7 @@ function startMemoryServer(port: number, model: string): Promise<JourneyServerHa
   return startJourneyServer(port, 14_074_000, ['--model', model], MEMORY_SCRIPT);
 }
 
-const IC7610_PORT = 18771;
+const IC7610_PORT = journeyPort(18771);
 
 test.describe('memory seam, IC-7610 simulator (channel-addressed, verified write layout)', () => {
   test.use({ baseURL: `http://127.0.0.1:${IC7610_PORT}` });
@@ -392,7 +392,7 @@ test.describe('memory seam, IC-7610 simulator (channel-addressed, verified write
   });
 });
 
-const IC705_PORT = 18772;
+const IC705_PORT = journeyPort(18772);
 
 test.describe('memory seam, IC-705 simulator (group-addressed, verified write layout)', () => {
   test.use({ baseURL: `http://127.0.0.1:${IC705_PORT}` });
@@ -461,7 +461,7 @@ test.describe('memory seam, IC-705 simulator (group-addressed, verified write la
   });
 });
 
-const IC705_RECALL_PORT = 18774;
+const IC705_RECALL_PORT = journeyPort(18774);
 
 test.describe('memory seam, IC-705 simulator: recall from the memory dialog', () => {
   const port = IC705_RECALL_PORT;
@@ -543,7 +543,7 @@ test.describe('memory dialog at a narrow width', () => {
   });
 });
 
-const FTX1_PORT = 18773;
+const FTX1_PORT = journeyPort(18773);
 
 test.describe('memory seam, FTX-1 simulator (no verified write layout)', () => {
   test.use({ baseURL: `http://127.0.0.1:${FTX1_PORT}` });

@@ -121,6 +121,23 @@ export interface VfoViewModel {
    */
   isActiveSlot: boolean;
   isTxTarget: boolean;
+  /**
+   * MOR-4711: the band of THIS VFO's own observed frequency — the reading a
+   * per-VFO panel tray draws. `band.receiverBands` is receiver-keyed and its
+   * entry derives from the receiver's top-level (active-slot) frequency, so
+   * on a slotted A/B radio the inactive slot's panel would repeat the active
+   * slot's band; this field gives every position its own answer from the ONE
+   * `findActiveBand` derivation. A position whose frequency source IS the
+   * receiver's top-level leaf (unslotted, unknown-slot, relative-selected)
+   * ALIASES the matching `receiverBands` entry — one object, never a second
+   * opinion. A literal slotted position (the active slot included) derives
+   * from its own slot leaf, the same leaf its display reads: right after a
+   * selection change the receiver leaf can still hold the old slot's
+   * frequency, and the panel must not name that stale band. Absent exactly
+   * when the band group has no choice set, the same structural gate
+   * `receiverBands` carries.
+   */
+  readonly band?: BandField<string>;
 }
 
 /**
@@ -1549,7 +1566,7 @@ function validateVfo(value: unknown, path: string): VfoViewModel {
   const v = record(value, path);
   exactKeys(
     v,
-    ['receiver', 'slot', 'label', 'frequencyHz', 'mode', 'filter', 'isActive', 'isActiveSlot', 'isTxTarget', 'display'],
+    ['receiver', 'slot', 'label', 'frequencyHz', 'mode', 'filter', 'isActive', 'isActiveSlot', 'isTxTarget', 'display', 'band'],
     path,
   );
   return {
@@ -1563,6 +1580,7 @@ function validateVfo(value: unknown, path: string): VfoViewModel {
     isActiveSlot: bool(v.isActiveSlot, `${path}.isActiveSlot`),
     isTxTarget: bool(v.isTxTarget, `${path}.isTxTarget`),
     ...(v.display !== undefined ? { display: validateVfoDisplay(v.display, `${path}.display`) } : {}),
+    ...(v.band !== undefined ? { band: validateTxAuxField(v.band, `${path}.band`, str) } : {}),
   };
 }
 

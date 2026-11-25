@@ -290,7 +290,9 @@ def test_frames_before_the_partner_arrives_are_kept() -> None:
 
 
 async def test_failed_peer_fences_cat_owner_before_drop(
-    monkeypatch: pytest.MonkeyPatch, virtual_clock: VirtualClock
+    monkeypatch: pytest.MonkeyPatch,
+    virtual_clock: VirtualClock,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     handlers: dict[str, Callable[..., Any]] = {}
     pc = Mock(
@@ -384,11 +386,16 @@ async def test_failed_peer_fences_cat_owner_before_drop(
         tx.owner_disconnect.assert_not_awaited()
 
         pc.connectionState = "failed"
-        failed = asyncio.create_task(handlers["connectionstatechange"]())
-        await virtual_clock.elapse(0)
-        assert failed.done()
-        await failed
+        with caplog.at_level("INFO", logger=webrtc_session.__name__):
+            failed = asyncio.create_task(handlers["connectionstatechange"]())
+            await virtual_clock.elapse(0)
+            assert failed.done()
+            await failed
 
+        assert (
+            f"WebRTC session {answer['sessionId']} closing on answerer: peer_failed"
+            in (caplog.messages)
+        )
         assert fenced == [(owner, 1, [answer["sessionId"]])]
         tx.owner_disconnect.assert_awaited_once_with(owner)
         assert tx.tx_holder_nowait() is None

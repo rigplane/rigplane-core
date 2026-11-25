@@ -44,6 +44,7 @@ import asyncio
 import contextlib
 import logging
 import uuid
+from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Final
 
 from ...runtime.controller_authority import ControllerError  # noqa: TID251
@@ -95,6 +96,14 @@ _EARLY_ATTACH_RECHECK_S: Final = 0.05
 
 class WebRtcSessionError(RuntimeError):
     """Raised when a session operation fails (bad SDP, unknown session)."""
+
+
+class _AnswererCloseReason(StrEnum):
+    PEER_FAILED = "peer_failed"
+    PEER_CLOSED = "peer_closed"
+    NEGOTIATION_FAILED = "negotiation_failed"
+    CLOSE_REQUESTED = "close_requested"
+    CLOSE_ALL = "close_all"
 
 
 class _Session:
@@ -267,10 +276,13 @@ class WebRtcSessionManager:
 
         @pc.on("connectionstatechange")  # type: ignore[misc, no-untyped-call, untyped-decorator]
         async def _on_state() -> None:
-            if pc.connectionState == "disconnected":
+            state = pc.connectionState
+            if state == "disconnected":
                 self._fence_peer(session_id)
-            if pc.connectionState in ("closed", "failed"):
-                await self._drop(session_id)
+            elif state == "failed":
+                await self._drop(session_id, _AnswererCloseReason.PEER_FAILED)
+            elif state == "closed":
+                await self._drop(session_id, _AnswererCloseReason.PEER_CLOSED)
 
         try:
             policy = (
@@ -291,14 +303,14 @@ class WebRtcSessionManager:
             # A CancelledError (a close racing this gather) is not an
             # Exception: it propagates without dropping here — the closer
             # already popped and closed this session (MOR-4671).
-            await self._drop(session_id)
+            await self._drop(session_id, _AnswererCloseReason.NEGOTIATION_FAILED)
             raise WebRtcSessionError(f"Failed to process SDP offer: {exc}") from exc
         finally:
             session.negotiate_task = None
 
         local_desc = pc.localDescription
         if local_desc is None:  # pragma: no cover - defensive
-            await self._drop(session_id)
+            await self._drop(session_id, _AnswererCloseReason.NEGOTIATION_FAILED)
             raise WebRtcSessionError("Failed to generate SDP answer.")
 
         logger.info("WebRTC session %s negotiated (answer generated)", session_id)
@@ -349,6 +361,7 @@ class WebRtcSessionManager:
         """
         sessions = list(self._sessions.items())
         for session_id, _ in sessions:
+            self._log_close(session_id, _AnswererCloseReason.CLOSE_ALL)
             self._fence_peer(session_id)
         self._sessions.clear()
         closed: list[str] = []
@@ -369,14 +382,22 @@ class WebRtcSessionManager:
         """
         if session_id not in self._sessions:
             raise WebRtcSessionError(f"Unknown session: {session_id}")
-        await self._drop(session_id)
+        await self._drop(session_id, _AnswererCloseReason.CLOSE_REQUESTED)
 
     @property
     def active_session_ids(self) -> list[str]:
         """Session ids currently held (test/diagnostic visibility)."""
         return list(self._sessions)
 
-    async def _drop(self, session_id: str) -> None:
+    @staticmethod
+    def _log_close(session_id: str, reason: _AnswererCloseReason) -> None:
+        logger.info(
+            "WebRTC session %s closing on answerer: %s", session_id, reason.value
+        )
+
+    async def _drop(self, session_id: str, reason: _AnswererCloseReason) -> None:
+        if session_id in self._sessions:
+            self._log_close(session_id, reason)
         self._fence_peer(session_id)
         session = self._sessions.pop(session_id, None)
         if session is not None:

@@ -68,6 +68,15 @@ interface Gap {
   stateAtDrop: string | null;
 }
 
+/** The last sample before the window describes its initial state until the next sample. */
+export function missingLivePassband(samples: PassbandSample[], fromT: number, toT: number): PassbandSample | undefined {
+  const first = samples.findIndex(sample => sample.t >= fromT);
+  const start = first === -1 ? samples.length - 1
+    : samples[first]?.t === fromT ? first : Math.max(0, first - 1);
+  return samples.find((sample, index) => index >= start && sample.t <= toT
+    && !sample.overlay && sample.gates?.spanPositive !== false);
+}
+
 /**
  * Runs of absent overlay inside [fromT, toT], plus the gate diff at each
  * drop. The page is in the state of the last sample before the window until
