@@ -63,6 +63,7 @@ from ..core.tx_safety import (
     TxReleaseReason,
 )
 from ..exceptions import ConnectionError, TimeoutError as RigplaneTimeoutError
+from ..profiles import RadioProfile
 from ..radio_protocol import StateModelCapable, StateModelService, StateStoreCapable
 from ..radio_state import RadioState, ReceiverState
 from ..runtime import _poller_types as tx_commands  # noqa: TID251
@@ -82,10 +83,13 @@ from .contract import (  # noqa: TID251
     CIV_TO_HAMLIB_MODE,
     COMMAND_TABLE,
     HAMLIB_MODE_MAP,
+    HAMLIB_PACKET_MODES,
+    NATIVE_TO_HAMLIB_MODE,
     HamlibError,
     RigctldCommand,
     RigctldConfig,
     RigctldResponse,
+    profile_mode_table,
 )
 from .utils import get_mode_reader  # noqa: TID251
 
@@ -95,6 +99,7 @@ if TYPE_CHECKING:
 
 from ..capabilities import CAP_METERS, CAP_RIT
 from .routing import (  # noqa: TID251
+    YaesuRouting,
     _format_normalized_or_raw_float,
     _format_raw_scaled_float,
     _format_strength,
@@ -303,12 +308,7 @@ def _split_mode_values(
     filt = None if filter_num is None else int(filter_num)
     data = 0 if data_mode is None else int(data_mode)
     if data:
-        if mode_str == "USB":
-            mode_str = "PKTUSB"
-        elif mode_str == "LSB":
-            mode_str = "PKTLSB"
-        elif mode_str == "RTTY":
-            mode_str = "PKTRTTY"
+        mode_str = HAMLIB_PACKET_MODES.get(mode_str, mode_str)
     return mode_str, str(_filter_to_passband(filt))
 
 
@@ -452,10 +452,9 @@ def _mode_to_hamlib_str(mode: object) -> str:
         name = mode.upper()
         if name == UNKNOWN_STATUS:
             raise _RigctldCommandFailure(HamlibError.ENAVAIL)
-        native_packet_modes = {"DATA-U": "PKTUSB", "DATA-L": "PKTLSB"}
-        if name in native_packet_modes:
-            return native_packet_modes[name]
-        core_mode = Mode.__members__.get(name)
+        if name in NATIVE_TO_HAMLIB_MODE:
+            return NATIVE_TO_HAMLIB_MODE[name]
+        core_mode = Mode.__members__.get(name.replace("-", "_"))
         return (
             name if core_mode is None else CIV_TO_HAMLIB_MODE.get(core_mode.value, name)
         )
@@ -954,6 +953,9 @@ class RigctldHandler:
         self._key_down_backstop_token: int = 0
         self._key_down_backstop_session: str | None = None
         self._routing = create_routing(radio, getattr(config, "max_power_w", 100.0))
+        profile = getattr(radio, "profile", None)
+        self._mode_profiled = isinstance(profile, RadioProfile)
+        self._mode_table = profile_mode_table(profile if self._mode_profiled else None)
         # MOR-4157: the link-loss reason currently latched for the one-episode
         # transition log (None = link considered up; see _link_loss_refusal).
         self._link_loss_reason_logged: str | None = None
@@ -1859,6 +1861,13 @@ class RigctldHandler:
     # Mode commands
     # ------------------------------------------------------------------
 
+    def _mode_response_name(self, mode: str, data_mode: int) -> str:
+        if data_mode:
+            packet = HAMLIB_PACKET_MODES.get(mode)
+            if packet is not None and packet in self._mode_table:
+                return packet
+        return mode
+
     async def _cmd_get_mode(self, cmd: RigctldCommand) -> RigctldResponse:
         try:
             target = self._resolve_target_vfo(cmd.vfo_arg)
@@ -1901,14 +1910,9 @@ class RigctldHandler:
                 if projected_data_mode.value is not None
                 else 0
             )
-            if data_mode:
-                if mode_str == "USB":
-                    mode_str = "PKTUSB"
-                elif mode_str == "LSB":
-                    mode_str = "PKTLSB"
-                elif mode_str == "RTTY":
-                    mode_str = "PKTRTTY"
-            return RigctldResponse(values=[mode_str, str(passband)])
+            return RigctldResponse(
+                values=[self._mode_response_name(mode_str, data_mode), str(passband)]
+            )
 
         # Per-VFO routing for VFOB on dual-RX: read SUB receiver state directly.
         if receiver == 1:
@@ -1925,14 +1929,12 @@ class RigctldHandler:
                 # the CI-V-owned ``filter_width`` (Hz) with a filter NUMBER
                 # and ``data_mode`` (int 0-3) with a bool, corrupting
                 # /api/v1/state on every WSJT-X poll. (MOR-895, pro#1200.)
-                if data_mode:
-                    if mode_str == "USB":
-                        mode_str = "PKTUSB"
-                    elif mode_str == "LSB":
-                        mode_str = "PKTLSB"
-                    elif mode_str == "RTTY":
-                        mode_str = "PKTRTTY"
-                return RigctldResponse(values=[mode_str, str(passband)])
+                return RigctldResponse(
+                    values=[
+                        self._mode_response_name(mode_str, data_mode),
+                        str(passband),
+                    ]
+                )
             # State unavailable. For an EXPLICIT VFOB request under chk_vfo=1
             # surface ENIMPL rather than silently returning MAIN data labelled
             # as VFOB (issue #1355). For implicit/legacy requests (vfo_arg
@@ -1970,29 +1972,19 @@ class RigctldHandler:
                 )
                 data_mode = False
 
-        # Map DATA overlays to packet modes where hamlib expects them.
-        if data_mode:
-            if mode_str == "USB":
-                mode_str = "PKTUSB"
-            elif mode_str == "LSB":
-                mode_str = "PKTLSB"
-            elif mode_str == "RTTY":
-                mode_str = "PKTRTTY"
-
-        return RigctldResponse(values=[mode_str, str(passband)])
+        return RigctldResponse(
+            values=[self._mode_response_name(mode_str, data_mode), str(passband)]
+        )
 
     async def _cmd_set_mode(self, cmd: RigctldCommand) -> RigctldResponse:
         if not cmd.args:
             return _err(HamlibError.EINVAL)
         requested_mode = cmd.args[0].upper()
-        if requested_mode not in HAMLIB_MODE_MAP:
+        mode = self._mode_table.get(requested_mode)
+        if mode is None:
             return _err(HamlibError.EINVAL)
-        civ_val = HAMLIB_MODE_MAP[requested_mode]
-        try:
-            mode = Mode(civ_val)
-        except ValueError:
-            return _err(HamlibError.EINVAL)
-        base_mode_str = CIV_TO_HAMLIB_MODE.get(mode.value, "USB")
+        base_mode_str = mode.native
+        packet = mode.packet
         passband_hz = 0
         if len(cmd.args) >= 2:
             try:
@@ -2000,7 +1992,6 @@ class RigctldHandler:
             except ValueError:
                 return _err(HamlibError.EINVAL)
         filter_width = _passband_to_filter(passband_hz)
-        packet_modes = {"PKTUSB", "PKTLSB", "PKTRTTY"}
 
         try:
             target = self._resolve_target_vfo(cmd.vfo_arg)
@@ -2018,7 +2009,7 @@ class RigctldHandler:
                     "mode": base_mode_str,
                     "filter_width": filter_width,
                     "receiver": 1,
-                    "packet_mode": requested_mode in packet_modes,
+                    "packet_mode": packet,
                 },
                 source="rigctld",
                 command_id=f"rigctld-set-mode-{time.monotonic_ns()}",
@@ -2038,7 +2029,7 @@ class RigctldHandler:
                     filter_width,
                     command_id=intent.id,
                 )
-            if requested_mode in packet_modes:
+            if packet:
                 self._record_pending_overlay(
                     self._data_mode_path(1),
                     True,
@@ -2058,7 +2049,7 @@ class RigctldHandler:
                 "mode": base_mode_str,
                 "filter_width": filter_width,
                 "receiver": 0,
-                "packet_mode": requested_mode in packet_modes,
+                "packet_mode": packet,
             },
             source="rigctld",
             command_id=f"rigctld-set-mode-{time.monotonic_ns()}",
@@ -2078,7 +2069,7 @@ class RigctldHandler:
                 filter_width,
                 command_id=intent.id,
             )
-        if requested_mode in packet_modes:
+        if packet:
             self._record_pending_overlay(
                 self._data_mode_path(0),
                 True,
@@ -2094,7 +2085,7 @@ class RigctldHandler:
         # DATA is set explicitly for packet modes (True) and cleared for
         # plain SSB (False); all other non-packet modes keep prior behavior
         # with no DATA operation (MOR-3750).
-        if requested_mode in packet_modes:
+        if packet:
             # Read-back sync: keep next get_mode deterministic for CAT clients.
             # Some radios acknowledge set-data quickly but reflect packet mode
             # with a short delay. We wait briefly to reduce client-side stalls.
@@ -3577,6 +3568,18 @@ class RigctldHandler:
             if self._routing is not None
             else _IC7610_DUMP_STATE
         )
+        if self._mode_profiled and (
+            self._routing is None or isinstance(self._routing, YaesuRouting)
+        ):
+            mask = 0
+            for mode in self._mode_table.values():
+                mask |= mode.mask
+            # The CI-V and Yaesu templates have one RX range, one TX range,
+            # one tuning step and three filter rows, each with a mode mask.
+            for row, column in ((3, 2), (5, 2), (7, 0), (9, 0), (10, 0), (11, 0)):
+                fields = values[row].split()
+                fields[column] = f"{mask:#x}"
+                values[row] = " ".join(fields)
         # Hamlib's protocol-0 default omits targetable_vfo, causing its split
         # API to fall back to ordinary F/M instead of our native I/X handlers.
         # Advertise only the server's frequency/mode routing bits. The native

@@ -9,7 +9,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import IntEnum
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
+
+from ..core.types import Mode
+
+if TYPE_CHECKING:
+    from ..profiles import RadioProfile
 
 
 # ---------------------------------------------------------------------------
@@ -46,37 +51,90 @@ class HamlibError(IntEnum):
 
 
 # ---------------------------------------------------------------------------
-# Hamlib mode strings ↔ CI-V mode IDs
+# Hamlib mode strings ↔ backend modes
 # ---------------------------------------------------------------------------
 
-# rigctld uses these mode strings; map to rigplane Mode enum values.
-HAMLIB_MODE_MAP: dict[str, int] = {
-    "USB": 0x01,
-    "LSB": 0x00,
-    "CW": 0x03,
-    "CWR": 0x07,
-    "RTTY": 0x04,
-    "RTTYR": 0x08,
-    "AM": 0x02,
-    "FM": 0x05,
-    "WFM": 0x06,
-    "PKTUSB": 0x01,  # mapped to USB (DATA mode handled separately)
-    "PKTLSB": 0x00,  # mapped to LSB
-    "PKTRTTY": 0x04,  # mapped to RTTY
+
+@dataclass(frozen=True, slots=True)
+class _ModeAlias:
+    civ: Mode
+    mask: int
+    yaesu: str | None = None
+    packet: bool = False
+    yaesu_data: str | None = None
+
+
+# Masks are RIG_MODE_* bits from Hamlib's rig.h.
+_MODE_ALIASES: dict[str, _ModeAlias] = {
+    "AM": _ModeAlias(Mode.AM, 0x001),
+    "CW": _ModeAlias(Mode.CW, 0x002, yaesu="CW-U"),
+    "USB": _ModeAlias(Mode.USB, 0x004),
+    "LSB": _ModeAlias(Mode.LSB, 0x008),
+    "RTTY": _ModeAlias(Mode.RTTY, 0x010, yaesu="RTTY-L"),
+    "FM": _ModeAlias(Mode.FM, 0x020),
+    "WFM": _ModeAlias(Mode.WFM, 0x040),
+    "CWR": _ModeAlias(Mode.CW_R, 0x080, yaesu="CW-L"),
+    "RTTYR": _ModeAlias(Mode.RTTY_R, 0x100, yaesu="RTTY-U"),
+    "PKTLSB": _ModeAlias(Mode.LSB, 0x400, packet=True, yaesu_data="DATA-L"),
+    "PKTUSB": _ModeAlias(Mode.USB, 0x800, packet=True, yaesu_data="DATA-U"),
+    # Legacy RigPlane spelling used by the relative-mode path. Hamlib has no bit.
+    "PKTRTTY": _ModeAlias(Mode.RTTY, 0, packet=True),
 }
 
-# Reverse: CI-V mode int → hamlib string
-CIV_TO_HAMLIB_MODE: dict[int, str] = {
-    0x00: "LSB",
-    0x01: "USB",
-    0x02: "AM",
-    0x03: "CW",
-    0x04: "RTTY",
-    0x05: "FM",
-    0x06: "WFM",
-    0x07: "CWR",
-    0x08: "RTTYR",
+HAMLIB_MODE_MAP: dict[str, int] = {
+    name: alias.civ.value for name, alias in _MODE_ALIASES.items()
 }
+CIV_TO_HAMLIB_MODE: dict[int, str] = {
+    alias.civ.value: name for name, alias in _MODE_ALIASES.items() if not alias.packet
+}
+HAMLIB_PACKET_MODES: dict[str, str] = {
+    CIV_TO_HAMLIB_MODE[alias.civ.value]: name
+    for name, alias in _MODE_ALIASES.items()
+    if alias.packet
+}
+NATIVE_TO_HAMLIB_MODE: dict[str, str] = {
+    native: name
+    for name, alias in _MODE_ALIASES.items()
+    for native in (alias.yaesu, alias.yaesu_data)
+    if native is not None
+}
+
+
+@dataclass(frozen=True, slots=True)
+class RigctldMode:
+    native: str
+    mask: int
+    packet: bool
+
+
+def profile_mode_table(profile: RadioProfile | None) -> dict[str, RigctldMode]:
+    """Resolve Hamlib mode aliases against a profile's native modes."""
+    table: dict[str, RigctldMode] = {}
+    for name, alias in _MODE_ALIASES.items():
+        if profile is None:
+            native = CIV_TO_HAMLIB_MODE[alias.civ.value]
+        else:
+            if not alias.mask:
+                continue
+            native = alias.civ.name.replace("_", "-")
+            if profile.protocol_type == "yaesu_cat":
+                native = alias.yaesu or native
+                if alias.packet and alias.yaesu_data not in profile.modes:
+                    continue
+            elif alias.packet and (
+                not profile.data_mode_count
+                or not profile.supports_command("set_data_mode")
+                or not profile.supports_command("get_data_mode")
+                or (
+                    profile.data_mode_modes is not None
+                    and native not in profile.data_mode_modes
+                )
+            ):
+                continue
+            if native not in profile.modes:
+                continue
+        table[name] = RigctldMode(native, alias.mask, alias.packet)
+    return table
 
 
 # ---------------------------------------------------------------------------
