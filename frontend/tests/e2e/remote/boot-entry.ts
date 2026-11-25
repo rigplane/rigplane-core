@@ -1,12 +1,25 @@
 import { apiFetch } from '../../../src/lib/api/api-fetch';
 import { parseCurrentScopeFrame } from '../../../src/lib/runtime/scope-frame';
-import type { LinkLostReason, RemoteHandle, RemoteLink } from '../../../src/boot';
+import type { LinkLostReason, RemoteLink } from '../../../src/lib/transport/transport-bundle';
 import wire from '../../../src/lib/transport/api-channel-wire.json';
 import type { RelayedAnswer } from './station';
 
+// Structural twin of boot.ts's RemoteHandle/bootRemote. The harness tsconfig
+// type-checks with plain tsc, which resolves every module a type query
+// touches: naming '../../../src/boot' here would pull boot.ts's dynamic
+// component-kit/skin imports (plain tsc cannot read named type exports from
+// .svelte modules) into this program. The runtime contract is still checked
+// below: the glob finds the entry and loadBoot() verifies the export.
+interface RemoteHandle {
+  shutdown(): void;
+}
+interface BootModule {
+  bootRemote(link: RemoteLink, options: { onLinkLost(reason: LinkLostReason): void }): RemoteHandle;
+}
+
 // Keep the shell buildable on the 3.3.0 control tree so the row reaches
 // the browser and fails at the missing boot entry.
-const bootModules = import.meta.glob<typeof import('../../../src/boot')>('../../../src/boot.ts');
+const bootModules = import.meta.glob<BootModule>('../../../src/boot.ts');
 
 const links: OfferedLink[] = [];
 let handle: RemoteHandle | undefined;

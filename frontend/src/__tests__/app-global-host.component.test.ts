@@ -154,7 +154,9 @@ function emitTx(next: ManagedAppTxServerSnapshot): void {
 function mountAt(component: typeof App | typeof AppGlobalHost) {
   const target = document.createElement('div');
   document.body.appendChild(target);
-  const instance = mount(component, { target });
+  // App carries an optional remote-teardown prop (MOR-4712 C1); both
+  // components mount prop-less here, so the empty props object is explicit.
+  const instance = mount(component, { target, props: {} });
   flushSync();
   return instance;
 }

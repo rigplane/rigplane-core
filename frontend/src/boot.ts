@@ -51,7 +51,7 @@ export async function startApp(
     if (!target) throw new Error('Application root #app was not found.')
     installBundle(bundle)
     target.querySelector('[data-component-kit-startup-error]')?.remove()
-    return mount(App, onRemoteTeardown ? { target, props: { onRemoteTeardown } } : { target })
+    return mount(App, { target, props: onRemoteTeardown ? { onRemoteTeardown } : {} })
   } catch (error) {
     if (!stillWanted()) return null
     console.error('[rigplane] startup failed:', error)
