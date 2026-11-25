@@ -194,14 +194,15 @@ async function listAttemptJobs(github, owner, repo, runId, runAttempt) { const j
 // request on an arch-neutral worker is still a routing mismatch (the
 // immutable gate test pins both directions). The visual e2e leg is the one
 // architecture pin left — its pixel baselines are arm64 Linux Chromium
-// renders — so it must request the ARM64 build set.
+// renders — so it must request the ARM64 queue-arm64 lane (2026-11-25: on
+// the build pool arch-neutral jobs took every ARM64 slot and starved it).
 // MOR-4097: merge_group runs of the worker jobs request the reserved queue
 // lane (self-hosted,Linux,queue; ARM64,queue-arm64 for the visual leg) instead of
 // the build set. This observer only binds pull_request runs (see
-// assertCanonicalRun), which always request the build set, so the rules
-// below stay build-only: a queue request on an observed run is a mismatch.
+// assertCanonicalRun), which request the build set for every worker except
+// the visual leg, so a queue request on any other observed worker is a mismatch.
 const BUILD_POOL_LABELS = Object.freeze(['self-hosted', 'Linux', 'build']);
-const ARM64_BUILD_LABELS = Object.freeze(['self-hosted', 'Linux', 'ARM64', 'build']);
+const ARM64_VISUAL_LABELS = Object.freeze(['self-hosted', 'Linux', 'ARM64', 'queue-arm64']);
 const LIGHT_LABELS = Object.freeze(['self-hosted', 'Linux', 'ARM64', 'light']);
 const PYTHON_TEST_LEGS = Object.freeze(['quick-python-tests (1)', 'quick-python-tests (2)', 'quick-python-tests (3)', 'quick-python-tests (4)']);
 const FRONTEND_E2E_LEGS = Object.freeze(['quick-frontend-e2e (visual)', 'quick-frontend-e2e (guards)', 'quick-frontend-e2e (journey-1)', 'quick-frontend-e2e (journey-2)', 'quick-frontend-e2e (journey-3)']);
@@ -212,9 +213,9 @@ const frontendWorkerPool = (job) => hasLabels(job, BUILD_POOL_LABELS) && !(Array
 // Neutral or X64 build request (the pre-2026-11-20 python shape) is valid;
 // an ARM64 request on a python worker is not.
 const pythonWorkerPool = (job) => hasLabels(job, BUILD_POOL_LABELS) && !(Array.isArray(job?.labels) && job.labels.includes('ARM64'));
-// The visual leg keeps the ARM64 pin (arm64 pixel baselines), so its request
-// must include the ARM64 label.
-const visualLegPool = (job) => hasLabels(job, ARM64_BUILD_LABELS);
+// The visual leg keeps the ARM64 pin (arm64 pixel baselines) on the
+// queue-arm64 lane, so its request must carry exactly that lane's labels.
+const visualLegPool = (job) => hasLabels(job, ARM64_VISUAL_LABELS);
 function ranOnRunner(job) { return job !== undefined && job.conclusion !== 'skipped' && typeof job.runner_name === 'string' && job.runner_name.length > 0; }
 function tierShape(jobs, legs, bareName) {
   const bare = jobs.filter((job) => job.name === bareName);
