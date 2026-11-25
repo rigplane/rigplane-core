@@ -21,6 +21,8 @@ from ...command_spec import CatCommandSpec
 from ...commands import hz_to_table_index, table_index_to_hz
 from ...core.priority_exchange import ExchangeTier
 from ...core.radio_protocol import RadioIdentity, RadioIdentityStatus, RelativeVfoState
+from ...core.serial_open import serial_open_diagnostic
+from ...core.state_diagnostics import UNKNOWN_STATUS
 from ...core.tx_observation import TxStateReading
 from ...core.types import MemoryEntry, ToneSquelchType
 from ...exceptions import (
@@ -39,6 +41,7 @@ from ...profiles.control_domain import (
 )
 from ...radio_state import RadioState
 from ...runtime.callable_support import supports_callable
+from ...runtime._connection_state import RadioConnectionState
 from ...runtime.local_tx_work import LocalTxWorkRunner
 from ...runtime.memory_slot_lock import memory_slot_operation
 from ...runtime.managed_tx_fence import TxAbortFence
@@ -273,6 +276,9 @@ class YaesuCatRadio:
         self._cw_text_generation = 0
         self._tuner_provider_generation: Callable[[], int] | None = None
         self._device = device
+        self._serial_open_lock = asyncio.Lock()
+        self._waiting_for_serial_port = False
+        self.last_error: str | None = None
         # MOR-4207: the baud the caller passed (``--serial-baud``, a saved
         # route) is a hint, tried right after the profile baud the connect
         # opens at (``discovery.serial_connect_baud_rates``).
@@ -432,7 +438,28 @@ class YaesuCatRadio:
         # connect order (the profile baud); the rest is asked on silence.
         connect_bauds = self._serial_connect_bauds()
         self._transport.set_baudrate(connect_bauds[0])
-        await self._transport.connect()
+        async with self._serial_open_lock:
+            if generation != self._identity_generation:
+                return
+            try:
+                await self._transport.connect()
+            except (CatTransportError, OSError) as exc:
+                cause = exc if isinstance(exc, OSError) else exc.__cause__
+                if not isinstance(cause, OSError) or not serial_open_diagnostic(
+                    cause
+                ).startswith("serial_not_found"):
+                    raise
+                message = (
+                    f"Radio not connected, waiting for the port {self._device}: {exc}"
+                )
+                if generation == self._identity_generation:
+                    self.last_error = message
+                raise RadioConnectionError(message) from cause
+            if generation != self._identity_generation:
+                await self._transport.close()
+                return
+            self._waiting_for_serial_port = False
+            self.last_error = None
         self._connection_identity = RadioIdentity(
             status=RadioIdentityStatus.CHECKING,
             expected_model=self.model,
@@ -489,6 +516,8 @@ class YaesuCatRadio:
 
     async def disconnect(self) -> None:
         """Close the serial port."""
+        self._waiting_for_serial_port = False
+        self.last_error = None
         self._transport.last_valid_frame_monotonic = None
         self._cancel_identity_reread()
         self._identity_generation += 1
@@ -496,7 +525,8 @@ class YaesuCatRadio:
         self._audio_reestablish_generation = None
         await self._audio_driver.stop_rx()
         await self._audio_driver.stop_tx()
-        await self._transport.close()
+        async with self._serial_open_lock:
+            await self._transport.close()
 
     async def __aenter__(self) -> "YaesuCatRadio":
         await self.connect()
@@ -523,6 +553,21 @@ class YaesuCatRadio:
     def radio_ready(self) -> bool:
         """Whether the backend is ready for commands."""
         return self.connected
+
+    @property
+    def conn_state(self) -> RadioConnectionState | None:
+        # Outside startup recovery, health derives the link from the transport.
+        return (
+            RadioConnectionState.RECONNECTING if self._waiting_for_serial_port else None
+        )
+
+    @property
+    def serial_open_error(self) -> str | None:
+        return self.last_error if self._waiting_for_serial_port else None
+
+    def start_reconnect_recovery(self) -> None:
+        """Let the existing CAT poller retry a failed startup port open."""
+        self._waiting_for_serial_port = self.last_error is not None
 
     @property
     def serial_reconnects_total(self) -> int:
@@ -1458,12 +1503,7 @@ class YaesuCatRadio:
 
         # Transport strips trailing ';'; add it back for the parser.
         result = parser.parse(raw + ";")
-        if cmd_name in {
-            "get_mode",
-            "get_mode_sub",
-            "get_if_status",
-            "get_memory_channel",
-        }:
+        if cmd_name == "get_memory_channel":
             self._mode_name(result["mode"])
         elif cmd_name in {"get_agc", "get_agc_sub"}:
             int(result["mode"])
@@ -1572,7 +1612,7 @@ class YaesuCatRadio:
         rit_on = result["rx"] == "1"
         xit_on = result["tx"] == "1"
         mode_code = result["mode"]
-        mode_name = self._mode_name(mode_code)
+        mode_name = self._status_mode_name(mode_code)
         vfo = int(result["vfo"])
 
         # Populate state atomically.
@@ -1634,12 +1674,7 @@ class YaesuCatRadio:
     # -- Mode ---------------------------------------------------------------
 
     def _mode_name(self, code: str) -> str:
-        """Map a one-character MD P2 code to its profile mode name.
-
-        Codes the profile does not assign (the manual's unused letters)
-        raise :class:`CatParseError` rather than decoding to a neighbour
-        mode or a placeholder name (MOR-2518).
-        """
+        """Require a profile mode name for a memory record or command readback."""
         name = self._code_to_mode.get(code)
         if name is None:
             raise CatParseError(
@@ -1649,26 +1684,43 @@ class YaesuCatRadio:
             )
         return name
 
-    async def read_mode(self, receiver: int = 0) -> tuple[str, int | None]:
+    def _status_mode_name(self, code: str) -> str:
+        return self._state.diagnostics.status_name(
+            field="mode", raw=code, name=self._code_to_mode.get(code), source=self.model
+        )
+
+    async def read_mode(
+        self, receiver: int = 0, *, require_assigned: bool = False
+    ) -> tuple[str, int | None]:
         """Read the current operating mode without mutating legacy state.
 
         Returns:
             Tuple of (mode_name, None).  Mode names are from the rig
-            profile (e.g. ``"USB"``, ``"LSB"``, ``"CW-U"``).  A mode code
-            the profile does not assign raises ``CatParseError``.
+            profile (e.g. ``"USB"``, ``"LSB"``, ``"CW-U"``), or
+            ``"UNKNOWN"`` for an unassigned status code. Command readbacks
+            pass ``require_assigned`` and raise ``CatParseError`` in that case.
         """
         cmd = "get_mode" if receiver == 0 else "get_mode_sub"
         result = await self._query(cmd)
-        return self._mode_name(result["mode"]), None
+        code = result["mode"]
+        name = (
+            self._mode_name(code) if require_assigned else self._status_mode_name(code)
+        )
+        return name, None
 
-    async def get_mode(self, receiver: int = 0) -> tuple[str, int | None]:
+    async def get_mode(
+        self, receiver: int = 0, *, require_assigned: bool = False
+    ) -> tuple[str, int | None]:
         """Get the current operating mode.
 
         Returns:
             Tuple of (mode_name, None).  Mode names are from the rig
-            profile (e.g. ``"USB"``, ``"LSB"``, ``"CW-U"``).
+            profile (e.g. ``"USB"``, ``"LSB"``, ``"CW-U"``). See
+            :meth:`read_mode` for unassigned status and command readbacks.
         """
-        mode_name, filter_width = await self.read_mode(receiver)
+        mode_name, filter_width = await self.read_mode(
+            receiver, require_assigned=require_assigned
+        )
         if receiver == 0:
             self._state.main.mode = mode_name
         else:
@@ -1703,7 +1755,7 @@ class YaesuCatRadio:
         cmd = "set_mode" if receiver == 0 else "set_mode_sub"
         await self._write(cmd, mode=self._mode_to_code[mode], is_current=is_current)
         for attempt in range(5):
-            observed, _ = await self.get_mode(receiver)
+            observed, _ = await self.get_mode(receiver, require_assigned=True)
             if observed == mode:
                 return
             if attempt < 4:
@@ -1775,7 +1827,7 @@ class YaesuCatRadio:
             "frequency", lambda: self.read_freq(receiver)
         )
         native, _ = await self._relative_readback(
-            "mode", lambda: self.read_mode(receiver)
+            "mode", lambda: self.read_mode(receiver, require_assigned=True)
         )
         await self._require_main_relative_role()
         mode, data = self._relative_mode_value(native)
@@ -1828,7 +1880,7 @@ class YaesuCatRadio:
             receiver = await self._relative_receiver(selected)
             if data is None:
                 current, _ = await self._relative_readback(
-                    "mode", lambda: self.read_mode(receiver)
+                    "mode", lambda: self.read_mode(receiver, require_assigned=True)
                 )
                 data = is_data_mode(current)
             if data:
@@ -1958,6 +2010,8 @@ class YaesuCatRadio:
                 return
 
             mode, _ = await self.read_mode(receiver)
+            if mode == UNKNOWN_STATUS:
+                raise CommandError("cannot select a DATA partner for an unknown mode")
             pairs = {
                 "USB": "DATA-U",
                 "LSB": "DATA-L",

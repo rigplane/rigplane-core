@@ -45,7 +45,7 @@ from ..core.radio_protocol import (
     RelativeVfoReadbackCapable,
 )
 from ..audio.route import apply_wsjtx_data_mod_input, profile_data_mode_count
-from ..core.state_diagnostics import StateDiagnosticsRecorder
+from ..core.state_diagnostics import StateDiagnosticsRecorder, UNKNOWN_STATUS
 from ..core.state_pipeline_contracts import (
     CommandIntent,
     FieldPath,
@@ -450,6 +450,8 @@ def _mode_to_hamlib_str(mode: object) -> str:
         return str(CIV_TO_HAMLIB_MODE.get(mode.value, mode.name))
     if isinstance(mode, str):
         name = mode.upper()
+        if name == UNKNOWN_STATUS:
+            raise _RigctldCommandFailure(HamlibError.ENAVAIL)
         native_packet_modes = {"DATA-U": "PKTUSB", "DATA-L": "PKTLSB"}
         if name in native_packet_modes:
             return native_packet_modes[name]
@@ -1878,12 +1880,16 @@ class RigctldHandler:
         projected_mode = projection.value(mode_path)
         projected_filter_num = projection.value(filter_num_path)
         projected_data_mode = projection.value(data_mode_path)
+        mode_str = (
+            _mode_to_hamlib_str(projected_mode.value)
+            if projected_mode is not None
+            else None
+        )
         if (
-            projected_mode is not None
+            mode_str is not None
             and projected_filter_num is not None
             and projected_data_mode is not None
         ):
-            mode_str = _mode_to_hamlib_str(projected_mode.value)
             filter_num_value = projected_filter_num.value
             passband = _filter_to_passband(
                 None if filter_num_value is None else int(filter_num_value)
