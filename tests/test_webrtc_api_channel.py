@@ -31,6 +31,12 @@ from typing import Any
 import pytest
 
 from rigplane.testing.timing import await_until
+from rigplane.web.api_channel import (
+    ApiFrame,
+    ApiMessageType,
+    ApiRequestHead,
+    ApiResponseHead,
+)
 from rigplane.web.server import WebConfig, WebServer
 from rigplane.web.transport.webrtc import webrtc_available
 from rigplane.web.transport.webrtc_contract import (
@@ -759,6 +765,30 @@ async def test_api_bad_version_errors_and_closes() -> None:
             timeout=10.0,
             description="api channel closed after bad version",
         )
+    finally:
+        await _tear_down(server, client)
+
+
+@_webrtc
+async def test_api_unknown_type_preserves_in_flight_request() -> None:
+    server = await _stand_up_light()
+    client = _ApiClient()
+    try:
+        await client.connect(server.port)
+        await client.attach(None)
+        head = ApiRequestHead("GET", "/api/v1/info", {}, {})
+        client.send_raw(ApiFrame(ApiMessageType.REQ_HEAD, 1, head.encode()).encode())
+        client.send_raw(ApiFrame(255, 1, b"future payload").encode())
+        client.send_raw(ApiFrame(ApiMessageType.END, 1).encode())
+
+        msg_type, payload = await client._next_for(1)
+        assert msg_type == ApiMessageType.RES_HEAD
+        assert ApiResponseHead.parse(payload).status == 200
+        msg_type, payload = await client._next_for(1)
+        assert msg_type == ApiMessageType.RES_BODY
+        assert json.loads(payload)["connection"]
+        assert await client._next_for(1) == (ApiMessageType.END, b"")
+        assert (await client.request(2, "GET", "/api/v1/info")).status == 200
     finally:
         await _tear_down(server, client)
 

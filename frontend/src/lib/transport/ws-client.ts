@@ -11,7 +11,7 @@ import { authenticatedWsUrl, withoutWsAuthToken, withWsSearchParam } from './ws-
 import { controllerClient, ControllerClientError, CONTROLLER_TOAST_CODES } from './controller-client';
 import { applyStateDelta, stateDeltaOps } from './state-delta';
 import type { MessageTransport } from './message-transport';
-import { createMessageTransport } from './transport-factory';
+import { canReconnectChannel, currentBundle } from './transport-bundle';
 
 export type ConnectionState = 'disconnected' | 'connecting' | 'connected' | 'reconnecting';
 export interface ControlSessionTransition {
@@ -205,7 +205,7 @@ export class WsChannel {
       // MOR-3535: a lost local session recovers silently — reconnect through
       // prepare() so this channel re-attaches with the fresh session key.
       // A channel closed on purpose stays closed.
-      const resume = !this.intentionalClose && !!this.url;
+      const resume = canReconnectChannel() && !this.intentionalClose && !!this.url;
       this.disconnect();
       if (resume) this.connect(this.url);
     });
@@ -300,7 +300,7 @@ export class WsChannel {
       .catch(() => {
         if (opening !== this.opening) return;
         this.setState('disconnected');
-        if (controllerClient.remote || this.intentionalClose) return;
+        if (controllerClient.remote || this.intentionalClose || !canReconnectChannel()) return;
         // MOR-3535: retry the local session acquisition with backoff.
         this.reconnectTimer = setTimeout(() => {
           this.reconnectTimer = null;
@@ -312,7 +312,7 @@ export class WsChannel {
   private _openSocket() {
     this.setState(this.attempt === 0 ? 'connecting' : 'reconnecting');
     const protocols = controllerClient.protocols();
-    if (controllerClient.remote) {
+    if (controllerClient.remote || !canReconnectChannel()) {
       this.sendQueue = [];
       this.pendingPttRelease = null;
     }
@@ -322,7 +322,7 @@ export class WsChannel {
     if (this.control && controllerClient.session) {
       target = withWsSearchParam(target, 'controller_role', controllerClient.role);
     }
-    const ws = createMessageTransport();
+    const ws = currentBundle().openChannel(this.control ? 'control' : 'scope');
     let socketEpoch = 0;
     this.ws = ws;
     ws.open(target, protocols.length > 0 ? { protocols, role: controllerClient.role } : undefined);
@@ -423,7 +423,7 @@ export class WsChannel {
         return;
       }
       this.setState('disconnected');
-      if (!this.intentionalClose) {
+      if (!this.intentionalClose && canReconnectChannel()) {
         if (isTabHidden()) {
           // Don't burn attempts against a throttled handshake — resume from
           // the visibilitychange listener once the tab is visible again.
@@ -462,6 +462,7 @@ export class WsChannel {
   }
 
   send(cmd: WsCommand): boolean {
+    if (!canReconnectChannel() && (!controllerClient.session || this.ws?.state !== 'open')) return false;
     if (controllerClient.remote || controllerClient.session) {
       if (!controllerClient.current(this.controllerEpoch)) return false;
       if (controllerClient.remote && this.ws?.state !== 'open') return false;
