@@ -583,7 +583,21 @@ async function buildRemoteShell(): Promise<void> {
   writeFileSync(built, '');
 }
 
-test('R1: the station UI and K5 boot operate the same simulator', async ({ page }) => {
+async function showRadioScope(page: Page): Promise<void> {
+  // The scope canvas sends maxFps: 0 when it is outside the viewport or its tab is hidden.
+  await page.bringToFront();
+  const panel = page.locator('[data-waterfall]:not(.audio-fft)');
+  const viewer = panel.getByTitle('Request scope viewer data');
+  if (await viewer.getAttribute('aria-pressed') === 'false') await viewer.click();
+  await panel.locator('.spectrum-area').scrollIntoViewIfNeeded();
+  await expect.poll(async () => {
+    const encoded = await panel.getAttribute('data-scope-subscription');
+    const request = encoded === null ? null : JSON.parse(encoded);
+    return request?.sourceId === 'radio' ? request.maxFps : 0;
+  }, { message: 'the visible radio scope asks for frames' }).toBeGreaterThan(0);
+}
+
+test('R1: the station UI and K5 boot operate the same simulator', async ({ page }, testInfo) => {
   test.setTimeout(120_000);
   await buildRemoteShell();
   const wsPage = await page.context().newPage();
@@ -591,12 +605,33 @@ test('R1: the station UI and K5 boot operate the same simulator', async ({ page 
   await setStationFrequency(BASELINE_HZ);
 
   let wsScopeFrames = 0;
+  const wsScopeTraffic = {
+    sockets: 0,
+    lastSubscribe: null as string | null,
+    lastReply: null as string | null,
+    lastBinary: null as string | null,
+  };
   wsPage.on('websocket', (socket) => {
     if (new URL(socket.url()).pathname !== '/api/v1/scope') return;
+    wsScopeTraffic.sockets += 1;
+    socket.on('framesent', ({ payload }) => {
+      if (typeof payload === 'string' && /"type"\s*:\s*"subscribe"/.test(payload)) {
+        wsScopeTraffic.lastSubscribe = payload;
+      }
+    });
     socket.on('framereceived', ({ payload }) => {
-      if (typeof payload === 'string') return;
+      if (typeof payload === 'string') {
+        if (/"type"\s*:\s*"(?:granted|error)"/.test(payload)) wsScopeTraffic.lastReply = payload;
+        return;
+      }
       const frame = parseCurrentScopeFrame(Uint8Array.from(payload).buffer, { source: 'radio', sourceId: 'radio', epoch: 0 });
-      if (frame.ok && frame.frame.source === 'radio' && frame.frame.pixels !== null) wsScopeFrames += 1;
+      if (!frame.ok) {
+        wsScopeTraffic.lastBinary = frame.reason;
+        return;
+      }
+      const { source, pixels } = frame.frame;
+      wsScopeTraffic.lastBinary = `${source}, ${pixels?.length ?? 0} pixels`;
+      if (source === 'radio' && pixels !== null) wsScopeFrames += 1;
     });
   });
   await Promise.all([
@@ -608,7 +643,17 @@ test('R1: the station UI and K5 boot operate the same simulator', async ({ page 
   ]);
   await expectControlLink();
   await expectReadoutHz(wsPage, BASELINE_HZ);
-  await expect.poll(() => wsScopeFrames, { timeout: 15_000 }).toBeGreaterThan(0);
+  try {
+    await showRadioScope(wsPage);
+    await expect.poll(() => wsScopeFrames, {
+      message: 'the station WebSocket delivers a radio scope frame with pixels', timeout: 15_000,
+    }).toBeGreaterThan(0);
+  } catch (error) {
+    await testInfo.attach('station scope WebSocket traffic', {
+      body: JSON.stringify(wsScopeTraffic, null, 2), contentType: 'application/json',
+    });
+    throw error;
+  }
   const wsInfo = await wsPage.evaluate(async () => {
     const response = await fetch('/api/v1/info');
     const { server, model, proto, version } = await response.json();
@@ -649,7 +694,10 @@ test('R1: the station UI and K5 boot operate the same simulator', async ({ page 
   await expect.poll(async () => (await snapshotLink(0)).heartbeats).toBeGreaterThan(0);
   const k5Info = await page.evaluate(() => window.__remoteBoot.info());
   expect(k5Info).toEqual(wsInfo);
-  await expect.poll(async () => (await snapshotLink(0)).scopeFrames, { timeout: 15_000 }).toBeGreaterThan(0);
+  await showRadioScope(page);
+  await expect.poll(async () => (await snapshotLink(0)).scopeFrames, {
+    message: 'the K5 scope data channel delivers a radio scope frame with pixels', timeout: 15_000,
+  }).toBeGreaterThan(0);
   await page.getByTestId('rx-audio-monitor-live').click();
   await expect.poll(() => playbackBuffers(page), { timeout: 15_000 }).toBeGreaterThan(5);
   await expect.poll(async () => {
