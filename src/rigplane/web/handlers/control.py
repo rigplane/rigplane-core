@@ -34,6 +34,7 @@ from ...core.exceptions import (
     ReceiverNotSelectedError,
 )
 from ...core.exceptions import TimeoutError as RigplaneTimeoutError
+from ...core.build_info import load_build_info
 from ...core.state_pipeline_contracts import CommandIntent, CommandSource, FieldPath
 from ...core.types import MemoryProfile
 from ...runtime.controller_authority import ControllerAuthority, ControllerError
@@ -250,6 +251,7 @@ class ControlHello(TypedDict):
     proto: int
     server: str
     version: str
+    core_sha: str | None
     radio: str
     connected: bool
     radio_ready: bool
@@ -259,6 +261,7 @@ class ControlHello(TypedDict):
 def control_hello_message(
     *,
     version: str,
+    core_sha: str | None,
     radio: str,
     connected: bool,
     radio_ready: bool,
@@ -276,6 +279,7 @@ def control_hello_message(
         proto=1,
         server="rigplane",
         version=version,
+        core_sha=core_sha,
         radio=radio,
         connected=connected,
         radio_ready=radio_ready,
@@ -1255,6 +1259,10 @@ class ControlHandler:
         )
         msg = control_hello_message(
             version=self._version,
+            # Build provenance from the stamped core/_build_info.json; null
+            # when nothing was stamped (a source checkout, or a wheel built
+            # before MOR-4408 — the publication build stamps its wheels).
+            core_sha=load_build_info().git_sha,
             radio=self._radio_model,
             connected=raw_connected if isinstance(raw_connected, bool) else False,
             radio_ready=self._radio_ready(),

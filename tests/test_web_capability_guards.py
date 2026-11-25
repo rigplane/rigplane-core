@@ -102,6 +102,8 @@ async def _endpoint_vfo_tags(
     info = _parse_json_body(info_writer)
     capabilities = _parse_json_body(capabilities_writer)
     hello = json.loads(ws_payloads.pop())
+    # Unstamped source checkout: hello carries core_sha null (MOR-4408).
+    assert hello["core_sha"] is None
     return (
         set(info["capabilities"]["tags"]) & reserved,
         set(capabilities["capabilities"]) & reserved,

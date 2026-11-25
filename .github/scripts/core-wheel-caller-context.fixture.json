@@ -1,0 +1,21 @@
+{
+  "comment": "Caller-context fixture for the reusable core-wheel workflow (MOR-4408): a private caller whose repository and sha are NOT rigplane/rigplane-core's, invoking the workflow twice in one run with different refs and artifact prefixes. The pins built on this fixture prove the workflow's checkouts, CORE_REMOTE and controls never derive from the caller (in a called workflow github.repository and github.sha belong to the CALLER), and that two invocations cannot collide on artifact names. The quote in the first core_ref is a legal git ref name character and doubles as the JSON-escaping fixture for core-wheel.json.",
+  "caller": {
+    "repository": "rigplane/rigplane-pro",
+    "sha": "1111111111111111111111111111111111111111",
+    "server_url": "https://github.com"
+  },
+  "core_repository": "rigplane/rigplane-core",
+  "invocations": [
+    {
+      "core_ref": "feature/\"probe\"",
+      "resolved_sha": "0123456789abcdef0123456789abcdef01234567",
+      "artifact_name_prefix": "pro-mainline"
+    },
+    {
+      "core_ref": "release/3.2",
+      "resolved_sha": "fedcba9876543210fedcba9876543210fedcba98",
+      "artifact_name_prefix": "pro-release"
+    }
+  ]
+}

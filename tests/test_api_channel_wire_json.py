@@ -142,6 +142,7 @@ def test_payload_contracts_conform_to_real_parsers_and_encoders() -> None:
     # required field fails them (MOR-4489).
     hello = control_hello_message(
         version="3.1.2",
+        core_sha=None,
         radio="IC-7610",
         connected=True,
         radio_ready=True,
@@ -153,6 +154,7 @@ def test_payload_contracts_conform_to_real_parsers_and_encoders() -> None:
         "proto",
         "server",
         "version",
+        "core_sha",
         "radio",
         "connected",
         "radio_ready",
