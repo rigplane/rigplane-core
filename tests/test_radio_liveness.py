@@ -202,7 +202,7 @@ async def test_civ_receiver_startup_does_not_stamp(civ_radio: IcomRadio) -> None
     assert civ_radio.last_valid_frame_monotonic is None  # noqa: SLF001
 
 
-@pytest.mark.parametrize("command,data", [(0x04, b"\xff"), (0x03, b"\xff" * 5)])
+@pytest.mark.parametrize("command,data", [(0x03, b"\xff" * 5), (0x04, b"")])
 async def test_civ_invalid_payload_preserves_stamp(
     civ_radio: IcomRadio, command: int, data: bytes
 ) -> None:
@@ -215,6 +215,23 @@ async def test_civ_invalid_payload_preserves_stamp(
         generation=civ_radio._civ_epoch,  # noqa: SLF001
     )
     assert civ_radio.last_valid_frame_monotonic == 1.0
+
+
+async def test_civ_unassigned_mode_is_liveness_evidence(civ_radio: IcomRadio) -> None:
+    # A complete mode reply proves the radio answered even if the value is unassigned.
+    civ_radio.last_valid_frame_monotonic = 1.0
+    frame = parse_civ_frame(
+        build_civ_frame(CONTROLLER_ADDR, IC_7610_ADDR, 0x04, data=b"\xff")
+    )
+    before = time.monotonic()
+    await civ_radio._civ_runtime._route_civ_frame(  # noqa: SLF001
+        frame,
+        generation=civ_radio._civ_epoch,  # noqa: SLF001
+    )
+    stamp = civ_radio.last_valid_frame_monotonic
+    assert stamp is not None
+    assert before <= stamp <= time.monotonic()
+    assert stamp > 1.0
 
 
 @pytest.mark.parametrize(
@@ -326,7 +343,7 @@ async def test_cat_invalid_agc_preserves_stamp(
 
 
 @pytest.mark.parametrize(
-    "response,method", [(b"FAgarbage;", "get_freq"), (b"MD0Z;", "get_mode")]
+    "response,method", [(b"FAgarbage;", "get_freq"), (b"MD0ZZ;", "get_mode")]
 )
 async def test_cat_invalid_payload_preserves_stamp(
     cat_transport: YaesuCatTransport, response: bytes, method: str
@@ -339,6 +356,23 @@ async def test_cat_invalid_payload_preserves_stamp(
     with pytest.raises(ValueError):
         await getattr(radio, method)()
     assert cat_transport.last_valid_frame_monotonic == 1.0
+
+
+async def test_cat_unassigned_mode_is_liveness_evidence(
+    cat_transport: YaesuCatTransport,
+) -> None:
+    # A complete mode reply proves the radio answered even if the value is unassigned.
+    cat_transport._reader = FakeStreamReader([b"MD0Z;"])  # type: ignore[assignment]  # noqa: SLF001
+    cat_transport._writer = FakeStreamWriter()  # type: ignore[assignment]  # noqa: SLF001
+    cat_transport.last_valid_frame_monotonic = 1.0
+    radio = YaesuCatRadio("/dev/test")
+    radio._transport = cat_transport  # noqa: SLF001
+    before = time.monotonic()
+    assert await radio.get_mode() == ("UNKNOWN", None)
+    stamp = cat_transport.last_valid_frame_monotonic
+    assert stamp is not None
+    assert before <= stamp <= time.monotonic()
+    assert stamp > 1.0
 
 
 async def test_cat_raw_prefix_match_does_not_stamp(

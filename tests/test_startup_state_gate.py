@@ -4537,8 +4537,13 @@ async def test_station_survives_ftx1_mode_zero(
             snapshot = server.command_state_store.snapshot()
             assert snapshot.field(_MAIN_FREQ).value == 14_074_000
             assert snapshot.field(_MAIN_MODE).value == "UNKNOWN"
-            state = ServerStatePublic.model_validate(
-                server.build_public_state(), strict=True
+            with patch(
+                "rigplane.web.server._send_json", new_callable=AsyncMock
+            ) as send:
+                await server._serve_state(MagicMock())
+            send.assert_awaited_once()
+            state = ServerStatePublic.model_validate_json(
+                send.await_args.args[1], strict=True
             )
             assert state.main.mode == "UNKNOWN"
             assert radio.radio_state.main.mode == "UNKNOWN"  # IF at connect
@@ -4567,6 +4572,98 @@ async def test_station_survives_ftx1_mode_zero(
             )
     finally:
         await fake.stop()
+
+
+@pytest.mark.asyncio
+async def test_rigctld_reports_unavailable_for_an_unassigned_radio_mode() -> None:
+    from rigplane.rigctld.contract import ClientSession, HamlibError, RigctldConfig
+    from rigplane.rigctld.handler import RigctldHandler
+    from rigplane.rigctld.protocol import format_response, parse_line
+
+    fake = FakeCatRadio(recorded_answers=_ftx1_table_silent_on_ft())
+    fake._mode_code = "0"
+    await fake.start()
+    try:
+        radio = YaesuCatRadio(device=fake.device_url, profile="ftx1")
+        async with _served_through_cli(radio, command="station") as server:
+            handler = RigctldHandler(
+                radio, RigctldConfig(), state_store=server.command_state_store
+            )
+            command = parse_line(b"m")
+            response = await handler.execute(command)
+            assert response.error == HamlibError.ENAVAIL
+            assert response.values == []
+            assert format_response(command, response, ClientSession()) == (
+                f"RPRT {int(HamlibError.ENAVAIL)}\n".encode()
+            )
+    finally:
+        await fake.stop()
+
+
+@pytest.mark.asyncio
+async def test_unassigned_mode_refuses_mode_dependent_writes_and_tx() -> None:
+    from rigplane.audio.route import TxAudioSource, resolve_audio_route
+    from rigplane.backends.yaesu_cat.observations import _MAIN_MODE
+    from rigplane.backends.yaesu_cat.radio import FilterWidthReading
+    from rigplane.core.exceptions import CommandError
+    from rigplane.runtime.managed_tx_state import ManagedTxOutcome
+    from rigplane.tci_adapter.notifier import tx_role_tci
+
+    fake = FakeCatRadio(recorded_answers=_ftx1_table_silent_on_ft())
+    fake._mode_code = "0"
+    await fake.start()
+    try:
+        radio = YaesuCatRadio(device=fake.device_url, profile="ftx1")
+        async with _served_through_cli(radio, command="station") as server:
+            assert server.command_state_store.field(_MAIN_MODE).value == "UNKNOWN"
+            assert await radio.read_filter_width_reading() == FilterWidthReading(
+                hz=None, radio_default=False
+            )
+            with pytest.raises(CommandError, match="without a width table"):
+                await radio.set_filter_width(2400)
+            with pytest.raises(CommandError, match="DATA partner"):
+                await radio.set_data_mode(True)
+            assert resolve_audio_route(radio).tx_audio_source is TxAudioSource.USB
+            assert tx_role_tci(server.command_state_store, split=False) == (None, None)
+
+            authority = radio._managed_tx_composition.authority
+            assert authority.snapshot_nowait().provider_generation is not None
+            assert await authority.transmit_on() is ManagedTxOutcome.REJECTED
+            assert "TX1;" not in fake.commands
+            assert not fake.ptt
+            assert fake.mode_code == "0"
+    finally:
+        await fake.stop()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("error_number", "reason"),
+    [(errno.EACCES, "Permission denied"), (errno.EBUSY, "Device or resource busy")],
+)
+async def test_station_reports_nonmissing_yaesu_port_open_error(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    error_number: int,
+    reason: str,
+) -> None:
+    from rigplane.backends.yaesu_cat import transport
+
+    device = "/dev/test-yaesu"
+    attempts: list[str] = []
+
+    async def open_port(port: str, **_kwargs: Any) -> Any:
+        attempts.append(port)
+        raise OSError(error_number, reason, port)
+
+    monkeypatch.setattr(transport, "open_serial_port", open_port)
+    radio = YaesuCatRadio(device=device, profile="ftx1")
+    async with _served_through_cli(radio, command="station", expect_rc=1):
+        assert radio.serial_open_error is None
+    assert attempts == [device]
+    stderr = capsys.readouterr().err
+    assert f"Error: Failed to open serial port {device}:" in stderr
+    assert reason in stderr
 
 
 @pytest.mark.asyncio

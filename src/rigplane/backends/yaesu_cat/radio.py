@@ -555,12 +555,11 @@ class YaesuCatRadio:
         return self.connected
 
     @property
-    def conn_state(self) -> RadioConnectionState:
-        if self._waiting_for_serial_port:
-            return RadioConnectionState.RECONNECTING
-        if self.connected:
-            return RadioConnectionState.CONNECTED
-        return RadioConnectionState.DISCONNECTED
+    def conn_state(self) -> RadioConnectionState | None:
+        # Outside startup recovery, health derives the link from the transport.
+        return (
+            RadioConnectionState.RECONNECTING if self._waiting_for_serial_port else None
+        )
 
     @property
     def serial_open_error(self) -> str | None:
@@ -1675,7 +1674,7 @@ class YaesuCatRadio:
     # -- Mode ---------------------------------------------------------------
 
     def _mode_name(self, code: str) -> str:
-        """Require a profile mode name for a memory record."""
+        """Require a profile mode name for a memory record or command readback."""
         name = self._code_to_mode.get(code)
         if name is None:
             raise CatParseError(
@@ -1690,26 +1689,38 @@ class YaesuCatRadio:
             field="mode", raw=code, name=self._code_to_mode.get(code), source=self.model
         )
 
-    async def read_mode(self, receiver: int = 0) -> tuple[str, int | None]:
+    async def read_mode(
+        self, receiver: int = 0, *, require_assigned: bool = False
+    ) -> tuple[str, int | None]:
         """Read the current operating mode without mutating legacy state.
 
         Returns:
             Tuple of (mode_name, None).  Mode names are from the rig
             profile (e.g. ``"USB"``, ``"LSB"``, ``"CW-U"``), or
-            ``"UNKNOWN"`` for an unassigned status code.
+            ``"UNKNOWN"`` for an unassigned status code. Command readbacks
+            pass ``require_assigned`` and raise ``CatParseError`` in that case.
         """
         cmd = "get_mode" if receiver == 0 else "get_mode_sub"
         result = await self._query(cmd)
-        return self._status_mode_name(result["mode"]), None
+        code = result["mode"]
+        name = (
+            self._mode_name(code) if require_assigned else self._status_mode_name(code)
+        )
+        return name, None
 
-    async def get_mode(self, receiver: int = 0) -> tuple[str, int | None]:
+    async def get_mode(
+        self, receiver: int = 0, *, require_assigned: bool = False
+    ) -> tuple[str, int | None]:
         """Get the current operating mode.
 
         Returns:
             Tuple of (mode_name, None).  Mode names are from the rig
-            profile (e.g. ``"USB"``, ``"LSB"``, ``"CW-U"``).
+            profile (e.g. ``"USB"``, ``"LSB"``, ``"CW-U"``). See
+            :meth:`read_mode` for unassigned status and command readbacks.
         """
-        mode_name, filter_width = await self.read_mode(receiver)
+        mode_name, filter_width = await self.read_mode(
+            receiver, require_assigned=require_assigned
+        )
         if receiver == 0:
             self._state.main.mode = mode_name
         else:
@@ -1744,7 +1755,7 @@ class YaesuCatRadio:
         cmd = "set_mode" if receiver == 0 else "set_mode_sub"
         await self._write(cmd, mode=self._mode_to_code[mode], is_current=is_current)
         for attempt in range(5):
-            observed, _ = await self.get_mode(receiver)
+            observed, _ = await self.get_mode(receiver, require_assigned=True)
             if observed == mode:
                 return
             if attempt < 4:
@@ -1816,7 +1827,7 @@ class YaesuCatRadio:
             "frequency", lambda: self.read_freq(receiver)
         )
         native, _ = await self._relative_readback(
-            "mode", lambda: self.read_mode(receiver)
+            "mode", lambda: self.read_mode(receiver, require_assigned=True)
         )
         await self._require_main_relative_role()
         mode, data = self._relative_mode_value(native)
@@ -1869,10 +1880,8 @@ class YaesuCatRadio:
             receiver = await self._relative_receiver(selected)
             if data is None:
                 current, _ = await self._relative_readback(
-                    "mode", lambda: self.read_mode(receiver)
+                    "mode", lambda: self.read_mode(receiver, require_assigned=True)
                 )
-                if current == UNKNOWN_STATUS:
-                    raise CommandError("cannot preserve DATA with an unknown mode")
                 data = is_data_mode(current)
             if data:
                 native = {"USB": "DATA-U", "LSB": "DATA-L", "FM": "DATA-FM"}.get(
