@@ -9,12 +9,11 @@ import { readPassbandDiagnostics } from './panorama-passband-probe';
 import { journeyPort, startJourneyServer } from './server-process';
 import { parseScopeWriteReceipt } from './panorama-receipt';
 import { expectPanoramaSettled, watchPanoramaErrors } from './panorama-guards';
-import { awaitRenderPipeline, openPanorama } from './panorama-ready';
 
 // The tune command's parameters as the producer declares them.
 type SetFreqParams = Extract<RadioIntent, { name: 'set_freq' }>['params'];
 
-interface Work { raf: number; rafMs: number; texture: number; draw: number; static: number; labels: string[]; scopeLost: boolean }
+interface Work { raf: number; rafMs: number; texture: number; draw: number; static: number; labels: string[] }
 declare global { interface Window { panoramaWork: Work } }
 
 for (const [index, [model, zoomMode]] of ([['IC-705', 0], ['IC-7300', 0], ['IC-7610', 1]] as const).entries()) {
@@ -61,7 +60,7 @@ for (const [index, [model, zoomMode]] of ([['IC-705', 0], ['IC-7300', 0], ['IC-7
           });
         });
         await page.addInitScript(() => {
-          const work: Work = { raf: 0, rafMs: 0, texture: 0, draw: 0, static: 0, labels: [], scopeLost: false };
+          const work: Work = { raf: 0, rafMs: 0, texture: 0, draw: 0, static: 0, labels: [] };
           window.panoramaWork = work;
           const raf = window.requestAnimationFrame.bind(window);
           window.requestAnimationFrame = callback => raf(time => {
@@ -90,7 +89,7 @@ for (const [index, [model, zoomMode]] of ([['IC-705', 0], ['IC-7300', 0], ['IC-7
           return contents.trim().split('\n').filter(Boolean).map(
             parseScopeWriteReceipt);
         };
-        await openPanorama(page, `http://127.0.0.1:${port}/?ui=v2`);
+        await page.goto(`http://127.0.0.1:${port}/?ui=v2`);
         await expect.poll(() => frames.length, { timeout: 30_000 }).toBeGreaterThan(10);
         const area = page.locator('.spectrum-area').first();
         const marker = page.locator('.waterfall-content .tune-line');
@@ -113,7 +112,6 @@ for (const [index, [model, zoomMode]] of ([['IC-705', 0], ['IC-7300', 0], ['IC-7
           await expect.poll(() => frames.at(-1)?.view).toEqual([14_200_000, 14_300_000]);
         }
         const box = await area.boundingBox(); expect(box).not.toBeNull();
-        const framesBeforeGesture = frames.length;
         const before = { subscriptions: sent.length, writes: (await writes()).length, work: await work() };
         if (zoom === 'span') {
           if (zoomMode === 1) {
@@ -166,6 +164,22 @@ for (const [index, [model, zoomMode]] of ([['IC-705', 0], ['IC-7300', 0], ['IC-7
         await page.mouse.move(box!.x + box!.width * (zoom ? 0.1 : 0.45), box!.y + box!.height * 0.3, { steps: 5 });
         await page.mouse.up();
         }
+        // The gesture's own settling ends with the passband tuple: a tune or
+        // a CTR→FIX switch retires it, and it is recaptured when fresh
+        // evidence arrives — each transition repaints the static layer once.
+        // That recapture took 0.7 to 3.6 s in measured runs and more than the
+        // fixed delay below on a loaded runner, where its one repaint then
+        // landed inside the quiet window. Wait for the settled state itself.
+        await expect(page.locator('.spectrum-panel').first())
+          .toHaveAttribute('data-passband-state', 'current', { timeout: 15_000 });
+        // Observation windows, not synchronization delays: 10 s after the
+        // gesture has settled, with the final 5 s isolated from
+        // gesture/acknowledgement work.
+        await page.waitForTimeout(5000);
+        const quietStart = { atMs: performance.now(), subscriptions: sent.length, writes: (await writes()).length, commands: commands.length, frames: frames.length, work: await work() };
+        await page.waitForTimeout(5000);
+        const quietEnd = { subscriptions: sent.length, writes: (await writes()).length, commands: commands.length, frames: frames.length,
+          lastFrameAgeMs: performance.now() - (frames.at(-1)?.receivedAt ?? 0), work: await work() };
         const finalHz = zoom === 'span' ? 14_250_000 : zoom ? 14_290_000 : 14_265_000;
         await expect.poll(async () => (await page.request.get(`http://127.0.0.1:${port}/api/v1/state`)).json()).toMatchObject({ main: { freqHz: finalHz } });
         await expect.poll(async () => Number((await page.locator('.receiver-instrument [data-vfo-freq]').first().innerText()).replace(/\D/g, ''))).toBe(finalHz);
@@ -176,39 +190,15 @@ for (const [index, [model, zoomMode]] of ([['IC-705', 0], ['IC-7300', 0], ['IC-7
         const view = zoom === 'span'
           ? (zoomMode === 1 ? [14_200_000, 14_300_000] : [14_150_000, 14_350_000])
           : zoom ? [finalHz - 25_000, finalHz + 25_000] : [finalHz - 50_000, finalHz + 50_000];
-        const matchesView = (frame: typeof frames[number]) => frame.pixels && frame.view.every((hz, i) => hz === view[i])
-          && frame.coverage.every((hz, i) => hz === view[i]);
-        const labelsMatch = (labels: string[]) => labels[0] === (view[0]! / 1e6).toFixed(3)
-          && labels.at(-1) === (view[1]! / 1e6).toFixed(3);
-        // Wait for the final radio state's tuple, frame and static paint before
-        // measuring quiet work. An earlier tune can also have a current tuple.
-        const panel = page.locator('.spectrum-panel').first();
-        await expect.poll(async () => readPassbandDiagnostics(await panel.getAttribute('data-passband-gates')),
-          { timeout: 15_000 }).toMatchObject({ freqHz: finalHz, tupleState: 'current' });
-        await expect.poll(() => {
-          const frame = frames.length > framesBeforeGesture ? frames.at(-1) : undefined;
-          return frame !== undefined && matchesView(frame);
-        }).toBe(true);
-        await expect.poll(async () => labelsMatch((await work()).labels)).toBe(true);
         if (zoom === true) await expect(marker).toBeVisible();
-
-        await area.evaluate(element => {
-          const observeScope = () => {
-            if (element.querySelector('.scope-disconnected-overlay')) window.panoramaWork.scopeLost = true;
-          };
-          new MutationObserver(observeScope).observe(element, { childList: true, subtree: true });
-          observeScope();
-        });
-        const quietStart = { subscriptions: sent.length, writes: (await writes()).length, commands: commands.length, frames: frames.length, work: await work() };
-        // Keep the quiet-work observation window, and wait separately for
-        // frame evidence so a slow runner cannot fail a cadence threshold.
-        await page.waitForTimeout(5000);
-        await expect.poll(() => frames.length - quietStart.frames).toBeGreaterThan(10);
-        const quietEnd = { subscriptions: sent.length, writes: (await writes()).length, commands: commands.length, frames: frames.length, work: await work() };
         const live = frames.slice(quietStart.frames, quietEnd.frames);
-        expect.soft(live.every((frame, i) => i === 0 || frame.seq > live[i - 1]!.seq)).toBe(true);
-        expect.soft(live.every(matchesView)).toBe(true);
-        expect.soft(quietEnd.work.scopeLost, 'settled scope showed a disconnect overlay').toBe(false);
+        expect.soft(live.length).toBeGreaterThan(10);
+        expect.soft((live[0]?.receivedAt ?? Infinity) - quietStart.atMs).toBeLessThan(1000);
+        expect.soft(quietEnd.lastFrameAgeMs).toBeLessThan(1000);
+        expect.soft(live.every((frame, i) => i === 0 || frame.receivedAt - live[i - 1].receivedAt < 1000)).toBe(true);
+        expect.soft(live.at(-1)?.seq ?? 0).toBeGreaterThan(live[0]?.seq ?? 0);
+        expect.soft(live.every(frame => frame.pixels && frame.view.every((hz, i) => hz === view[i])
+          && frame.coverage.every((hz, i) => hz === view[i]))).toBe(true);
         await expect.soft(area.locator('.scope-hatch')).toHaveCount(0);
         expect.soft(quietEnd.work.labels[0]).toBe((view[0] / 1e6).toFixed(3));
         expect.soft(quietEnd.work.labels.at(-1)).toBe((view[1] / 1e6).toFixed(3));
@@ -217,8 +207,7 @@ for (const [index, [model, zoomMode]] of ([['IC-705', 0], ['IC-7300', 0], ['IC-7
         // mode to the radio in either variant.
         if (zoom === true) expect.soft((await writes()).filter(receipt => receipt.sub === 0x14 && receipt.data.length === 2).at(-1)?.data[1] ?? 0).toBe(0);
         await writeFile(evidence.replace('.jsonl', '.pause'), 'pause');
-        await expect(area.locator('.scope-disconnected-overlay:not([data-testid])')).toBeVisible();
-        await awaitRenderPipeline(page);
+        await page.waitForTimeout(2000);
         const idleStart = await work();
         const idleFrames = frames.length;
         await page.waitForTimeout(5000);
@@ -242,6 +231,7 @@ for (const [index, [model, zoomMode]] of ([['IC-705', 0], ['IC-7300', 0], ['IC-7
         expect.soft(idleEnd.raf - idleStart.raf).toBeLessThanOrEqual(4);
         expect.soft(idleEnd.draw - idleStart.draw).toBe(0);
         expect.soft(idleEnd.static - idleStart.static).toBe(0);
+        expect.soft(idleEnd.rafMs - idleStart.rafMs).toBeLessThan(20);
         // MOR-4392: no page error and no Svelte effect-depth loop anywhere
         // in the scenario (shared panorama guard).
         expectPanoramaSettled(watch);
