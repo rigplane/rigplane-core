@@ -215,6 +215,7 @@ async def run() -> None:
         single_owner=True,
         stateful_ptt=True,
         ptt_on_session_loss="hold",
+        scope_stream=True,
         # The browser voice-TX path arms the radio's audio route before it
         # keys; without enable_audio the UI's ptt_on is accepted (ok) but
         # keying never completes on the fake.

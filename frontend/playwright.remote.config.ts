@@ -14,7 +14,7 @@ import { REQUIRED_MATRIX } from './tests/e2e/remote/no-skips-reporter';
  * (on the Mac mini, never the laptop):
  *
  *   npm ci && npm run build
- *   npx playwright test -c ./playwright.remote.config.ts
+ *   npm run test:e2e:remote
  */
 const PORT = 18780;
 // One directory per run: workers re-evaluate this config and inherit the

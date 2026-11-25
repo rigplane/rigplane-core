@@ -14,7 +14,7 @@ import type { Reporter, TestCase, TestResult } from '@playwright/test/reporter';
  * `repeatEach` times. playwright.remote.config.ts is built from it. */
 export const REQUIRED_MATRIX = {
   projects: ['chromium', 'webkit'],
-  rows: ['L1', 'L2', 'L3', 'L4', 'L5', 'L6', 'L7', 'L8', 'P0'],
+  rows: ['L1', 'L2', 'L3', 'L4', 'L5', 'L6', 'L7', 'L8', 'P0', 'R1'],
   repeatEach: 2,
 } as const;
 
