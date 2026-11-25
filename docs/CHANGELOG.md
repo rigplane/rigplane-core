@@ -11,6 +11,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.3.1rc1] — 2026-11-25
+
+First release candidate of 3.3.1: v3.3.0 plus two customer fixes cherry-picked from main (nothing else).
+
+### Fixed
+
+- A radio that reports a value the station does not know (for example the FTX-1's mode code 0), or a serial port that is missing at start (radio off or unplugged), no longer makes the station exit and restart in a loop: the unknown value is shown as unknown and reported once; a missing port keeps the station running with a visible "radio not connected" message and it connects when the port appears. (MOR-4752)
+- The band badge shows the band of each VFO, and a slotted A/B pair no longer borrows the other VFO's bandwidth. (MOR-4711)
+
 ## [3.3.0] — 2026-11-21
 
 Sixth release candidate of 3.3.0: v3.3.0rc5 plus the fix below.

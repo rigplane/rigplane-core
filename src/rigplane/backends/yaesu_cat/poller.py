@@ -629,7 +629,7 @@ class YaesuCatPoller:
     # ------------------------------------------------------------------
 
     async def _try_reconnect(self) -> None:
-        """Attempt serial reconnect if transport reports too many errors.
+        """Retry a missing startup port or a transport with repeated errors.
 
         Only one reconnect runs at a time.  Other loops sleep while
         reconnect is in progress.
@@ -637,7 +637,13 @@ class YaesuCatPoller:
         transport = getattr(self._radio, "_transport", None)
         if transport is None:
             return
-        if not getattr(transport, "_maybe_reconnect_needed", lambda: False)():
+        waiting_for_port = isinstance(
+            getattr(self._radio, "serial_open_error", None), str
+        )
+        if (
+            not waiting_for_port
+            and not getattr(transport, "_maybe_reconnect_needed", lambda: False)()
+        ):
             return
         if self._reconnecting:
             return  # Another loop is already reconnecting
@@ -650,11 +656,17 @@ class YaesuCatPoller:
         reconnect_generation = self._captured_provider_generation()
         previous_writer = getattr(transport, "_writer", None)
         try:
-            logger.warning("YaesuCatPoller: triggering auto-reconnect")
+            if not waiting_for_port:
+                logger.warning("YaesuCatPoller: triggering auto-reconnect")
             self._invalidate_ptt_observation()
             self._invalidate_tx_target(provider_generation=provider_generation)
             self._publish_unknown_ptt(provider_generation)
-            await transport.reconnect()
+            if waiting_for_port:
+                # This is the first successful open. Run the radio's normal
+                # identity gate and state seed before handing it to the poller.
+                await self._radio.connect()
+            else:
+                await transport.reconnect()
             composition = getattr(self._radio, "_managed_tx_composition", None)
             writer = getattr(transport, "_writer", None)
             if (
@@ -666,7 +678,14 @@ class YaesuCatPoller:
                 and self._provider_generation_is_current(reconnect_generation)
             ):
                 await composition.transport_ready(writer)
-            logger.info("YaesuCatPoller: reconnected successfully")
+            if getattr(transport, "connected", False) is True:
+                logger.info("YaesuCatPoller: reconnected successfully")
+        except RadioConnectionError:
+            if (
+                not waiting_for_port
+                or getattr(self._radio, "serial_open_error", None) is None
+            ):
+                logger.error("YaesuCatPoller: reconnect failed", exc_info=True)
         except Exception:
             logger.error("YaesuCatPoller: reconnect failed", exc_info=True)
         finally:
@@ -693,9 +712,14 @@ class YaesuCatPoller:
                 continue
             try:
                 async with self._lock:
-                    self._sync_tx_target_generation()
-                    await coro_fn()
-                _conn_backoff = 0.0  # reset on success
+                    if isinstance(getattr(self._radio, "serial_open_error", None), str):
+                        # One lane owns the existing reconnect backoff.
+                        if name == "fast":
+                            raise RadioConnectionError("Waiting for the serial port")
+                    elif not self._reconnecting:
+                        self._sync_tx_target_generation()
+                        await coro_fn()
+                        _conn_backoff = 0.0  # reset on success
             except asyncio.CancelledError:
                 raise
             except (RadioConnectionError, ConnectionError, OSError):

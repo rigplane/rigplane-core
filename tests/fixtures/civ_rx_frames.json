@@ -1,10 +1,10 @@
 [
   {
-    "name": "cmd04_invalid_mode_byte_swallowed",
-    "comment": "0x04 with invalid Mode byte raises ValueError inside dispatch — caught by inner except (line 1143)",
+    "name": "cmd04_unassigned_mode_byte_publishes_unknown",
+    "comment": "0x04 with an unassigned mode byte publishes UNKNOWN",
     "frame": {"command": 4, "sub": null, "data": "ff"},
     "expected_state": {
-      "main.mode": "USB"
+      "main.mode": "UNKNOWN"
     }
   },
   {
