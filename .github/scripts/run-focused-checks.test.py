@@ -142,8 +142,16 @@ class FocusedChecksContractTest(unittest.TestCase):
         upload = text.split("- name: Upload worker diagnostics", 1)[1].split(
             "- name:", 1
         )[0]
-        self.assertIn("steps.bound_diagnostics.outcome == 'success'", upload)
-        self.assertIn("retention-days: 7", upload)
+        # MOR-4718: the artifact is stored for a failed run only and for one
+        # day. The whole `if` line is pinned, so `always()` cannot return
+        # through an `||`.
+        self.assertIn(
+            "if: failure() && inputs.diagnostics "
+            "&& steps.bound_diagnostics.outcome == 'success'\n",
+            upload,
+        )
+        self.assertNotIn("always()", upload)
+        self.assertIn("retention-days: 1\n", upload)
         for leaf in (
             "events-*.jsonl",
             "phases-*.jsonl",

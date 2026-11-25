@@ -2,9 +2,9 @@ import { writeFile } from 'node:fs/promises';
 import { expect, test, type Page } from '@playwright/test';
 import { validateCapabilities } from '../../../src/lib/types/capabilities';
 import type { WsCommand, WsIncoming } from '../../../src/lib/types/protocol';
-import { startJourneyServer } from './server-process';
+import { journeyPort, startJourneyServer } from './server-process';
 
-const PORT = 18775;
+const PORT = journeyPort(18775);
 const FREQ_HZ = 7_030_000;
 
 interface RoutingWitness {

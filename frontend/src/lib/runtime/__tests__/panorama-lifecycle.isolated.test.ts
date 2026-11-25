@@ -10,7 +10,8 @@ const harness = vi.hoisted(() => ({
 vi.mock('@playwright/test', () => ({ expect,
   test: (name: string, run: (context: unknown, info: unknown) => Promise<void>) => { harness.runs.set(name, run); },
 }));
-vi.mock('../../../../tests/e2e/journey/server-process', () => ({
+vi.mock('../../../../tests/e2e/journey/server-process', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../../../tests/e2e/journey/server-process')>(),
   startJourneyServer: async () => ({ kill: harness.kill }),
 }));
 

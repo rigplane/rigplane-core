@@ -1326,6 +1326,16 @@ def _macos_rss_bytes(pidinfo: _PidInfoFn | None) -> int | None:
     return int(info.pti_resident_size)
 
 
+class _ClientTasks(dict[asyncio.Task[None], str | None]):
+    """Map accepted client tasks to their managed WebSocket TX owner, if any."""
+
+    def add(self, task: asyncio.Task[None]) -> None:
+        self.setdefault(task, None)
+
+    def __sub__(self, other: set[asyncio.Task[None]]) -> set[asyncio.Task[None]]:
+        return self.keys() - other
+
+
 class WebServer:
     """Asyncio HTTP + WebSocket server for the rigplane Web UI.
 
@@ -1400,7 +1410,7 @@ class WebServer:
         # MOR-3536: RigctldServer.open_channel, attached by the composition root.
         self._rigctl_channel: OpenRigctlChannel | None = None
         self._runtime_last_error: str | None = None
-        self._client_tasks: set[asyncio.Task[None]] = set()
+        self._client_tasks = _ClientTasks()
         self._scope_handlers: set["ScopeHandler"] = set()
         self._scope_hub: ScopeHub | None = None
         self._radio_scope_source: RadioScopeSource | None = None
@@ -4094,7 +4104,7 @@ class WebServer:
         loop = asyncio.get_running_loop()
         task = loop.create_task(self._handle_connection(reader, writer))
         self._client_tasks.add(task)
-        task.add_done_callback(self._client_tasks.discard)
+        task.add_done_callback(self._client_tasks.pop)
 
     # ------------------------------------------------------------------
     # HTTP request parsing
@@ -8461,6 +8471,11 @@ class WebServer:
             )
             return
 
+        if ticket is not None and ticket.tx_owner is not None:
+            task = asyncio.current_task()
+            assert task is not None
+            if task in self._client_tasks:
+                self._client_tasks[task] = ticket.tx_owner
         try:
             writer.write(upgrade.response)
             await writer.drain()

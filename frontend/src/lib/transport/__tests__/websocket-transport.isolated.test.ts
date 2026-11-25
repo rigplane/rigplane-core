@@ -111,19 +111,22 @@ describe('WebSocketTransport', () => {
     expect(t.state).toBe('closed');
   });
 
-  it('close() while connecting silences the handshake instead of closing now', () => {
+  it('close() while connecting cancels the handshake at once (MOR-4469)', () => {
     const t = new WebSocketTransport();
     const closes: unknown[] = [];
+    const errors: unknown[] = [];
     t.onClose((info) => closes.push(info));
+    t.onError(() => errors.push(true));
     t.open('wss://station.test/api/v1/ws');
     t.close();
-    // Deferred, like the old disconnect-CONNECTING branch: nothing closed
-    // yet, and a late open is turned into a silent close.
-    expect(instances[0].readyState).toBe(MockWebSocket.CONNECTING);
-    expect(closes).toHaveLength(0);
-    instances[0].simulateOpen();
+    // An audio stop must not wait out the handshake: the connection attempt
+    // is aborted immediately, the close still reports, and the swallowed
+    // onerror keeps a deliberate cancel from surfacing as a transport error.
     expect(instances[0].readyState).toBe(MockWebSocket.CLOSED);
     expect(closes).toHaveLength(1);
+    expect(t.state).toBe('closed');
+    instances[0].simulateError();
+    expect(errors).toHaveLength(0);
   });
 
   it('unsubscribed handlers stop firing', () => {

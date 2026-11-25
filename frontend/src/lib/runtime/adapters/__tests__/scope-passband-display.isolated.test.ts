@@ -395,7 +395,6 @@ describe('confirmed tuning display continuity (MOR-2437)', () => {
     ['span', (i) => receipt(i, 3, { endFreq: 14_200_000 })],
     ['band definitions', (i) => { editCapabilities(i, (c) => { c.freqRanges[0].bands![5].end += 100; }); }],
     ['null frame', (i) => { i.frame = null; }],
-    ['500ms frame silence', (i) => { i.frame = { ...i.frame!, geometry: { ...i.frame!.geometry!, freshness: 'stale' } }; }],
     ['off', (i) => { i.frame = { ...i.frame!, demanded: false }; }],
   ];
   it.each(hard)('retires a translated tuple on %s without replay after return', (_name, change) => {
@@ -839,11 +838,60 @@ describe('coherent RF passband display', () => {
     input.frame = { ...input.frame!, geometry: { ...input.frame!.geometry!, freshness: 'stale', hasPixels: false } };
     expect(project(input).display).toEqual({ state: 'unknown', reason: 'frame-unavailable' });
   });
-  it('frame silence (stale WITH the last pixels) is not a placeholder and still retires', () => {
+  it('restores the held passband on a new frame after silence in the same scope session', () => {
+    const input = banded();
+    const current = project(input);
+    tune(input, 14_075_000, 11);
+    const held = project(input, current);
+    expect(held.display.state).toBe('stale');
+    input.frame = { ...input.frame!, geometry: { ...input.frame!.geometry!, freshness: 'stale' } };
+    const silent = project(input, held);
+    expect(silent.display.state).toBe('unknown');
+    const laggingWindow = { startFreq: 14_024_000, endFreq: 14_124_000 };
+    receipt(input, 1, laggingWindow);
+    expect(project(input, silent).display.state).toBe('unknown');
+    receipt(input, 2, laggingWindow);
+    const resumed = project(input, silent);
+    expect(resumed.display).toMatchObject({ state: 'stale', translated: true,
+      tuple: { frequencyHz: 14_075_000, startHz: 14_024_000, endHz: 14_124_000 } });
+    expect(resumed.floors).toEqual(held.floors);
+    renew(input, 20, 3);
+    const awaitingCenter = project(input, resumed);
+    expect(awaitingCenter.display).toMatchObject({ state: 'stale', translated: true });
+    receipt(input, 4, { startFreq: 14_025_000, endFreq: 14_125_000 });
+    expect(project(input, awaitingCenter).display).toMatchObject({ state: 'current',
+      tuple: { frequencyHz: 14_075_000, startHz: 14_025_000, endHz: 14_125_000 } });
+  });
+
+  it('resumes a confirmed tune on a new centered frame without another control readback', () => {
+    const input = banded();
+    const current = project(input);
+    tune(input, 14_075_000, 11);
+    const tuning = project(input, current);
+    const centeredWindow = { startFreq: 14_025_000, endFreq: 14_125_000 };
+    renew(input, 20, 2);
+    receipt(input, 2, centeredWindow);
+    const confirmed = project(input, tuning);
+    expect(confirmed.display.state).toBe('current');
+    input.frame = { ...input.frame!, geometry: { ...input.frame!.geometry!, freshness: 'stale' } };
+    const silent = project(input, confirmed);
+    expect(silent.display.state).toBe('unknown');
+    receipt(input, 3, centeredWindow);
+    expect(project(input, silent).display).toEqual(confirmed.display);
+  });
+
+  it('requires new radio evidence if the scope session changes during silence', () => {
     const input = fixture();
     const current = project(input);
     input.frame = { ...input.frame!, geometry: { ...input.frame!.geometry!, freshness: 'stale' } };
-    expect(project(input, current).display.state).toBe('unknown');
+    const silent = project(input, current);
+    receipt(input, 2);
+    input.frame = { ...input.frame!, transportEpoch: 2 };
+    const retired = project(input, silent);
+    expect(retired.display.state).toBe('unknown');
+    receipt(input, 3);
+    input.frame = { ...input.frame!, transportEpoch: 2 };
+    expect(project(input, retired).display.state).toBe('unknown');
   });
   it.each([
     ['mode', (i: ScopePassbandDisplayInput) => { edit(i, (s) => { s.main!.mode = 'LSB'; }); }],
