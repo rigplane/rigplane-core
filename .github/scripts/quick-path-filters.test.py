@@ -516,13 +516,14 @@ new AsyncFunction('github', 'context', 'core', script)(github, context, core)
             'fromJSON(\'["self-hosted", "Linux", "queue"]\') || '
             'fromJSON(\'["self-hosted", "Linux", "build"]\') }}\n'
         )
+        # The visual leg requests the ARM64 queue-arm64 lane for every event:
+        # on the build pool arch-neutral jobs took every ARM64 slot first and
+        # the leg starved (CiJobQueuedTooLong, 2026-11-25).
         e2e_runs_on = (
-            "    runs-on: ${{ github.event_name == 'merge_group' && "
-            "(matrix.group == 'visual' && "
+            "    runs-on: ${{ matrix.group == 'visual' && "
             'fromJSON(\'["self-hosted", "Linux", "ARM64", "queue-arm64"]\') || '
-            'fromJSON(\'["self-hosted", "Linux", "queue"]\')) || '
-            "(matrix.group == 'visual' && "
-            'fromJSON(\'["self-hosted", "Linux", "ARM64", "build"]\') || '
+            "(github.event_name == 'merge_group' && "
+            'fromJSON(\'["self-hosted", "Linux", "queue"]\') || '
             'fromJSON(\'["self-hosted", "Linux", "build"]\')) }}\n'
         )
         pools = {
