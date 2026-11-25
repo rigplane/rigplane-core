@@ -18,6 +18,8 @@ from unittest.mock import patch
 
 import pytest
 
+from test_webrtc_attach_path import RIGCTL_ATTACH_ERROR_V1
+
 import rigplane
 from rigplane.web.server import WebConfig, WebServer
 
@@ -62,6 +64,12 @@ _PUBLIC = (
     ("DataChannelSpec", "rigplane.web.channel_attach"),
     ("DataChannelLabel", "rigplane.web.channel_attach"),
     ("DATA_CHANNELS", "rigplane.web.channel_attach"),
+    ("ATTACH_ACK_VERSION", "rigplane.web.channel_attach"),
+    ("RIGCTL_MAX_FRAME_BYTES", "rigplane.web.channel_attach"),
+    ("RIGCTL_VERSIONS", "rigplane.web.channel_attach"),
+    ("RigctlAttachErrorCode", "rigplane.web.channel_attach"),
+    ("RigctlAttachErrorV1", "rigplane.web.channel_attach"),
+    ("decode_rigctl_attach_result", "rigplane.web.channel_attach"),
     ("IceServer", "rigplane.web.transport.ice_gathering"),
     ("IceGatheringPolicy", "rigplane.web.transport.ice_gathering"),
     ("GATHER_TIMEOUT_S", "rigplane.web.transport.ice_gathering"),
@@ -119,6 +127,24 @@ def test_attach_ack_round_trips() -> None:
     ack = rigplane.ChannelAttachedAck("scope")
     assert rigplane.ChannelAttachedAck.from_frame(ack.encode()) == ack
     assert rigplane.ChannelAttachedAck.from_frame(ack.encode().encode()) == ack
+
+
+def test_rigctl_refusal_decodes_through_the_public_package() -> None:
+    from rigplane import (
+        ATTACH_ACK_VERSION,
+        RIGCTL_MAX_FRAME_BYTES,
+        RIGCTL_VERSIONS,
+        RigctlAttachErrorCode,
+        RigctlAttachErrorV1,
+        decode_rigctl_attach_result,
+    )
+
+    code: RigctlAttachErrorCode = "rigctl_busy"
+    result = decode_rigctl_attach_result(RIGCTL_ATTACH_ERROR_V1)
+    assert result == RigctlAttachErrorV1(code, ATTACH_ACK_VERSION, "rigctl")
+    assert ATTACH_ACK_VERSION == 1
+    assert RIGCTL_VERSIONS == (1,)
+    assert RIGCTL_MAX_FRAME_BYTES == 16 * 1024
 
 
 @pytest.mark.parametrize(

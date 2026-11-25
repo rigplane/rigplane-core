@@ -11,6 +11,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.3.1rc2] — 2026-11-25
+
+Second release candidate of 3.3.1: 3.3.1rc1 plus the rigctl channel over the Tower peer, cherry-picked from main (nothing else).
+
+### Added
+
+- A rigctl (Hamlib) client on a remote device can reach the station through the Tower peer: typed attach, acknowledgement and error messages, with per-attachment ownership so a sibling channel cannot release another holder. (MOR-4691)
+
 ## [3.3.1rc1] — 2026-11-25
 
 First release candidate of 3.3.1: v3.3.0 plus two customer fixes cherry-picked from main (nothing else).

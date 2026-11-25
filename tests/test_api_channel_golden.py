@@ -77,7 +77,7 @@ def test_committed_golden_json_is_one_typed_contract() -> None:
 
     golden = _golden()
     assert golden.tested_by == _REPLAYER
-    assert len(golden.documents) == 15, sorted(golden.documents)
+    assert len(golden.documents) == 18, sorted(golden.documents)
     built = asyncio.run(api_channel_golden_documents())
     assert _GOLDEN_JSON.read_text(encoding="utf-8").rstrip("\n") == json.dumps(
         dataclasses.asdict(built)
@@ -143,6 +143,17 @@ async def test_golden_documents_replay_through_real_handlers(
         # to what the server really sends (MOR-4478).
         tx_format_doc = docs["audio_tx_format_opus"]
         assert fmt is not None and fmt == tx_format_doc.decoded, fmt
+
+        for reply_name in ("attach_ack_rigctl", "attach_error_rigctl_busy"):
+            cat = peer.open_kind("rigctl")["rigctl"]
+            await await_until(
+                lambda: cat.readyState == "open", timeout=5.0, description="CAT open"
+            )
+            cat.send(_attach_text("rigctl"))
+            reply = await await_until(
+                lambda: peer.take("rigctl"), timeout=5.0, description=reply_name
+            )
+            assert reply == docs[reply_name].decoded, reply
 
         # -- api documents on a real api channel, exact committed bytes --
         await api.connect(stack.web.port)

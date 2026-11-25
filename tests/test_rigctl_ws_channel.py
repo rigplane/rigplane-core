@@ -16,8 +16,25 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from rigplane.radio import IcomRadio
-from rigplane.rigctld.contract import RigctldCommand, RigctldConfig, RigctldResponse
+from rigplane.rigctld.contract import (
+    HamlibError,
+    RigctldCommand,
+    RigctldConfig,
+    RigctldResponse,
+)
+from rigplane.rigctld.protocol import format_response
 from rigplane.rigctld.server import RigctldServer
+from rigplane.runtime._poller_types import CommandQueue
+from rigplane.runtime.managed_tx_authority import (
+    ManagedTxAuthority,
+    ManagedTxSubmission,
+)
+from rigplane.runtime.managed_tx_state import (
+    ManagedTxOutcome,
+    ManagedTxState,
+    ManagedTxTransition,
+)
+from rigplane.testing.timing import VirtualClock
 from rigplane.web.handlers.rigctl import RigctlChannelHandler, _LineReader
 from rigplane.web.transport import Connection
 from rigplane.ws import WS_OP_BINARY, WS_OP_TEXT
@@ -135,6 +152,92 @@ async def test_close_releases_the_session_tx_only_after_the_channels_own_key(
         handler.release_session_tx.assert_awaited_once_with(_OWNER)
     else:
         handler.release_session_tx.assert_not_awaited()
+
+
+@pytest.mark.parametrize("cancel_unkey", [False, True], ids=["accepted", "cancelled"])
+async def test_managed_unkey_controls_websocket_close_release(
+    rigctld: tuple[RigctldServer, MagicMock],
+    monkeypatch: pytest.MonkeyPatch,
+    virtual_clock: VirtualClock,
+    cancel_unkey: bool,
+) -> None:
+    server, handler = rigctld
+    proto = cast(MagicMock, server._protocol)  # noqa: SLF001
+    proto.parse_line.side_effect = _parse_ptt
+    proto.format_response.side_effect = format_response
+    authority = MagicMock(spec=ManagedTxAuthority)
+    queue = CommandQueue()
+    generation = object()
+    queue.bind_connection_generation(lambda: generation)
+    monkeypatch.setattr(server, "_managed_tx_authority", authority)
+    monkeypatch.setattr(server, "_command_queue", queue)
+    monkeypatch.setattr(server, "_clock", virtual_clock)
+    submissions: dict[bool, asyncio.Task[ManagedTxSubmission]] = {}
+    accepted = ManagedTxTransition(ManagedTxState(), ManagedTxOutcome.ACCEPTED)
+
+    async def settle() -> tuple[ManagedTxTransition, None]:
+        return accepted, None
+
+    def start_submission(
+        on: bool, owner: str, **_kwargs: Any
+    ) -> asyncio.Task[ManagedTxSubmission]:
+        assert owner == _OWNER
+
+        async def submit() -> ManagedTxSubmission:
+            if not on and cancel_unkey:
+                raise asyncio.CancelledError
+            return ManagedTxSubmission(accepted, asyncio.create_task(settle()))
+
+        task = asyncio.create_task(submit())
+        submissions[on] = task
+        return task
+
+    async def execute(
+        _cmd: RigctldCommand,
+        *,
+        ptt_submission: asyncio.Task[ManagedTxSubmission],
+        **_kwargs: Any,
+    ) -> RigctldResponse:
+        try:
+            receipt = await ptt_submission
+        except asyncio.CancelledError:
+            return RigctldResponse(error=HamlibError.ERJCTED)
+        assert receipt.outcome is ManagedTxOutcome.ACCEPTED
+        return RigctldResponse()
+
+    authority.start_ptt_submission.side_effect = start_submission
+    handler.execute.side_effect = execute
+
+    ws = _FakeWs()
+    run = _channel(server, ws)
+    try:
+        ws.inbox.put_nowait((WS_OP_TEXT, b"T 1"))
+        await virtual_clock.elapse(0)
+        assert ws.sent == ["RPRT 0\n"]
+
+        ws.inbox.put_nowait((WS_OP_TEXT, b"T 0"))
+        await virtual_clock.elapse(0)
+        unkey = submissions[False]
+        if cancel_unkey:
+            assert unkey.cancelled()
+            assert ws.sent == ["RPRT 0\n", "RPRT -9\n"]
+        else:
+            assert unkey.result().outcome is ManagedTxOutcome.ACCEPTED
+            assert ws.sent == ["RPRT 0\n", "RPRT 0\n"]
+        handler.release_session_tx.assert_not_awaited()
+
+        ws.inbox.put_nowait(None)
+        await virtual_clock.elapse(0)
+        assert run.done()
+        await run
+        if cancel_unkey:
+            handler.release_session_tx.assert_awaited_once_with(_OWNER)
+        else:
+            handler.release_session_tx.assert_not_awaited()
+    finally:
+        if not run.done():
+            run.cancel()
+            await asyncio.gather(run, return_exceptions=True)
 
 
 async def test_binary_message_closes_the_channel(
