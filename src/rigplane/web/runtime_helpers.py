@@ -9,6 +9,7 @@ from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Final, cast
 
 from ..core.acquisition_scheduler import resolve_available_when
+from ..core.radio_transport import control_transport_of
 from ..core.state_acquisition_policy import RadioAcquisitionProfile
 from ..core.state_pipeline_contracts import FieldFamily, FieldScope, FieldPath, VfoSlot
 from ..core.state_store import (
@@ -18,11 +19,13 @@ from ..core.state_store import (
     StateStore,
     is_immutable_value,
 )
+from ..core.radio_protocol import RadioIdentityStatus
 from ..core.tx_target import TxTarget, tx_target_from_dict, validate_tx_target
 from ..profiles import RadioProfile, resolve_radio_profile
 from ..radio_protocol import (
     AudioCapable,
     DualReceiverCapable,
+    RepeaterOffsetCapable,
     RepeaterShiftCapable,
     ScopeCapable,
     UsbAudioCapable,
@@ -104,6 +107,7 @@ _RECEIVER_OPERATOR_CONTROL_FIELDS = {
     "tone_freq",
     "tsql_freq",
     "repeater_shift",
+    "repeater_offset_hz",
     "tone_squelch_type",
     "key_speed",
     "cw_pitch",
@@ -640,6 +644,16 @@ def runtime_capabilities(radio: "Radio | None") -> set[str]:
     raw_caps = getattr(radio, "capabilities", None)
     if isinstance(raw_caps, set):
         caps = set(raw_caps)
+        # MOR-4437: a profile describes the radio; the transport describes
+        # the connection actually in use.  Drop the capability tags the
+        # profile declares unavailable on the live transport (e.g. the
+        # G7250's CI-V scope answers over LAN only).  The transport comes
+        # from the backend in use, never from ``profile.has_lan``; profiles
+        # without per-transport gaps keep the set unchanged on every
+        # transport.
+        profile = getattr(radio, "profile", None)
+        if isinstance(profile, RadioProfile):
+            caps = profile.capabilities_for_transport(control_transport_of(radio), caps)
         if "scope" in caps and not isinstance(radio, ScopeCapable):
             caps.discard("scope")
         if "audio" in caps and not isinstance(radio, AudioCapable | UsbAudioCapable):
@@ -655,6 +669,8 @@ def runtime_capabilities(radio: "Radio | None") -> set[str]:
         # are gated separately, by ``projected_vfo_capability_tags``.
         if "repeater_shift" in caps and not isinstance(radio, RepeaterShiftCapable):
             caps.discard("repeater_shift")
+        if "repeater_offset" in caps and not isinstance(radio, RepeaterOffsetCapable):
+            caps.discard("repeater_offset")
         return caps
 
     result: set[str] = set()
@@ -666,6 +682,11 @@ def runtime_capabilities(radio: "Radio | None") -> set[str]:
         result.add("dual_rx")
     if isinstance(radio, RepeaterShiftCapable):
         result.add("repeater_shift")
+    if isinstance(radio, RepeaterOffsetCapable):
+        result.add("repeater_offset")
+    profile = getattr(radio, "profile", None)
+    if isinstance(profile, RadioProfile):
+        result = profile.capabilities_for_transport(control_transport_of(radio), result)
     return result
 
 
@@ -861,6 +882,43 @@ def _civ_stats(radio: Any) -> dict[str, Any]:
     return stats if isinstance(stats, dict) else {}
 
 
+def _serial_link_episodes(radio: Any) -> int | None:
+    """Link-loss episodes for a serial-family radio, else ``None`` (MOR-4654).
+
+    ``serial_reconnects_total`` is the shared serial-family marker (the
+    Icom serial base and Yaesu CAT both count link-loss episodes; LAN
+    radios have no such attribute) — a transport fact, not a per-radio
+    branch. The strict ``type(...) is int`` read rejects doubles, and
+    the same read feeds ``WebServer._radio_runtime_payload``.
+    """
+    episodes = getattr(radio, "serial_reconnects_total", None)
+    return episodes if type(episodes) is int else None
+
+
+def _serial_link_loss_evidence(radio: Any) -> bool:
+    """Whether a down serial link went quiet after a real session (MOR-4654).
+
+    Covers serial-family radios without ``conn_state`` (Yaesu CAT):
+    link-loss episodes the transport counted, or an answered identity
+    still on record (``verified``/``unverified`` — the radio talked on
+    this link before it went down). A radio nobody reached yet (no
+    episodes, no answered identity) carries no such evidence and stays
+    ``unknown``. Connect-time hold statuses (``checking``/
+    ``no_response``/``identity_mismatch``) are the identity gate's to
+    report, not this branch's.
+    """
+    if _bool_attr(radio, "connected"):
+        return False
+    if (_serial_link_episodes(radio) or 0) > 0:
+        return True
+    identity = getattr(radio, "connection_identity", None)
+    status = getattr(identity, "status", None)
+    return status in (
+        RadioIdentityStatus.VERIFIED,
+        RadioIdentityStatus.UNVERIFIED,
+    )
+
+
 def store_has_radio_observation(store: "StateStore") -> bool:
     """Whether *store* holds any field the radio itself produced.
 
@@ -1018,12 +1076,17 @@ def classify_radio_health(
         # UDP socket, no "Are You There" answer) from a full network loss.
         # The former is actionable — the user can enable Network/Remote control
         # on the radio — so surface a distinct cause.
-        remote_unreachable = _bool_attr(radio, "remote_control_unreachable")
-        likely_cause = (
-            "radio_remote_control_unreachable"
-            if remote_unreachable
-            else "radio_network_lost"
-        )
+        # A serial/USB link has no network to lose (MOR-4654): a silent
+        # radio there is not answering on its port, so say that instead.
+        if _serial_link_episodes(radio) is not None:
+            likely_cause = "radio_not_responding"
+        else:
+            remote_unreachable = _bool_attr(radio, "remote_control_unreachable")
+            likely_cause = (
+                "radio_remote_control_unreachable"
+                if remote_unreachable
+                else "radio_network_lost"
+            )
         return {
             "serverReachable": True,
             "radioLink": radio_link,
@@ -1040,6 +1103,19 @@ def classify_radio_health(
     has_civ_evidence = last_civ_value is not None
     had_success = _bool_attr(radio, "_has_connected_once") or has_civ_evidence
     if radio_link == "unknown" and not had_success and not stats:
+        if _serial_link_loss_evidence(radio):
+            # MOR-4654 round 1 (P2): a serial-family radio without
+            # ``conn_state`` (Yaesu CAT) whose transport dropped after a
+            # real session is a silent radio, not an unknown one — the
+            # same shared-family verdict as the reconnecting arm above.
+            return {
+                "serverReachable": True,
+                "radioLink": "unknown",
+                "readiness": "stalled",
+                "likelyCause": "radio_not_responding",
+                "sinceMs": 0,
+                "lastError": last_error_value,
+            }
         return {
             "serverReachable": True,
             "radioLink": "unknown",

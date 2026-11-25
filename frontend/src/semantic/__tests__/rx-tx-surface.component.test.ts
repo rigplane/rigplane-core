@@ -272,6 +272,28 @@ describe('fault display without a second authority', () => {
 // ── 2. TX action intents ────────────────────────────────────────────────────
 
 describe('key intent gating', () => {
+  it.each([
+    ['en-US', 'Hold to talk'],
+    ['ru-RU', 'Удерживайте для передачи'],
+    ['ja-JP', '押している間送信'],
+  ] as const)('labels momentary PTT in %s and keeps the latch button unchanged', (locale, label) => {
+    const previous = getLocale();
+    setLocale(locale);
+    try {
+      const momentary = { ...inertHandlers(), momentary: true };
+      withSurface(topologyFixtures['1/single'], IDLE_RX, (s) => {
+        expect(s.key().textContent?.trim()).toBe(label);
+        expect(s.key().title).toBe(label);
+        expect(s.key().getAttribute('aria-label')).toBe(label);
+      }, momentary);
+      withSurface(topologyFixtures['1/single'], IDLE_RX, (s) => {
+        expect(s.key().textContent?.trim()).toBe('Key transmitter');
+        expect(s.key().hasAttribute('title')).toBe(false);
+        expect(s.key().getAttribute('aria-label')).toBe('Key transmitter');
+      });
+    } finally { setLocale(previous); }
+  });
+
   it('keeps a remote momentary pointer hold through focus loss, pointer leave and lost capture (MOR-3817)', () => {
     const handlers = { ...inertHandlers(), momentary: true, onPttDown: vi.fn(), onPttUp: vi.fn() };
     const s = render(topologyFixtures['1/single'], snap({ fresh: true }), handlers);

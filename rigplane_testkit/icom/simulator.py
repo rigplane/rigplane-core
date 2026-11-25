@@ -259,6 +259,13 @@ _SUB_PTT = 0x00
 # both default to 0 like ``src/rigplane/core/radio_state.py``
 # (RadioState.nb_depth / nb_width). All defaults are simulator choices, not
 # recorded factory settings. Items outside this table still NAK.
+#
+# MOR-4660 adds every other profile's DATA-OFF/DATA1 MOD-input rows (the
+# per-model sub-addresses in each rig's [commands]). They default to MIC (0) — a
+# value every model's enum has, and the state the USB voice warning
+# (``src/rigplane/web/mod_input_warning.py``) fires on; a test SETs the
+# model's own USB value for the clear case. The enums themselves differ
+# per model and live in each profile's [data_mode].inputs.
 _CTL_MEM_MENU_STARTUP_ITEMS: dict[bytes, tuple[int, int]] = {
     b"\x00\x91": (1, 1),  # DATA OFF mod input -> ACC
     b"\x00\x92": (5, 1),  # DATA1 mod input -> LAN
@@ -266,6 +273,16 @@ _CTL_MEM_MENU_STARTUP_ITEMS: dict[bytes, tuple[int, int]] = {
     b"\x00\x94": (5, 1),  # DATA3 mod input -> LAN
     b"\x02\x90": (0, 1),  # NB depth (0-9, one BCD digit)
     b"\x02\x91": (0, 2),  # NB width (0-255, two BCD digits)
+    b"\x00\x66": (0, 1),  # IC-7300 DATA OFF mod input -> MIC
+    b"\x00\x67": (0, 1),  # IC-7300 DATA1 mod input -> MIC
+    b"\x00\x84": (0, 1),  # IC-7300MK2 DATA OFF mod input -> MIC
+    b"\x00\x85": (0, 1),  # IC-7300MK2 DATA1 mod input -> MIC
+    b"\x01\x15": (0, 1),  # IC-9700 DATA OFF mod input -> MIC
+    b"\x01\x16": (0, 1),  # IC-9700 DATA1 mod input -> MIC
+    b"\x01\x18": (0, 1),  # IC-705 DATA OFF mod input -> MIC
+    b"\x01\x19": (0, 1),  # IC-705 DATA1 mod input -> MIC
+    b"\x01\x26": (0, 1),  # IC-905 DATA OFF mod input -> MIC
+    b"\x01\x27": (0, 1),  # IC-905 DATA1 mod input -> MIC
 }
 
 
@@ -749,11 +766,14 @@ class MockIcomRadio(AudioPortMixin):
         # See the ctor docstring: the open marker's sequence number carries
         # this offset; the counter itself advances by one regardless.
         self.civ_tx_seq_jump: int = civ_tx_seq_jump
-        # Modelling of the 0x1A 05 menu items the startup reader reads;
-        # current values (defaults and byte widths live in the table above).
+        self._ctl_mem_menu_items = _CTL_MEM_MENU_STARTUP_ITEMS.copy()
+        if radio_addr == 0xA4:
+            # IC-705 lan_probe: 01 16 01 28 is USB MOD Level (two BCD bytes).
+            # On the IC-9700, 01 16 is the one-byte DATA MOD source selector.
+            self._ctl_mem_menu_items[b"\x01\x16"] = (128, 2)
         self._ctl_mem_menu: dict[bytes, int] = {
             item: default
-            for item, (default, _width) in _CTL_MEM_MENU_STARTUP_ITEMS.items()
+            for item, (default, _width) in self._ctl_mem_menu_items.items()
         }
 
         # Scope control state (recorded subcommands 10, 11, 12, 13 from scope_control window).
@@ -1004,6 +1024,11 @@ class MockIcomRadio(AudioPortMixin):
         self.busy_rejects: int = 0  # number of 0xFFFFFFFF rejects sent
         self.released_count: int = 0  # number of sessions freed (any path)
         self.last_release_reason: str | None = None
+        # Fresh sessions claimed (unheld -> held). Unlike the owner
+        # identity — which a reconnecting client may legitimately reuse
+        # (same UDP source port and my_id) — this distinguishes a new
+        # session from a refresh of the held one (MOR-4214).
+        self.session_claims: int = 0
         # Callers of ``wait_session_released``, woken by ``_release_session``.
         self._release_waiters: list[asyncio.Future[str]] = []
         self._login_count: int = 0  # accepted logins
@@ -1144,7 +1169,13 @@ class MockIcomRadio(AudioPortMixin):
 
     @property
     def owner(self) -> tuple[tuple[str, int], int] | None:
-        """Current owner identity ``((host, port), my_id)`` or ``None``."""
+        """Current owner identity ``((host, port), my_id)`` or ``None``.
+
+        The identity is not unique across sessions: a reconnecting client
+        may reuse both its UDP source port and its ``my_id``. To tell a
+        fresh session from a refreshed one, compare :attr:`session_claims`
+        across the event instead of this tuple.
+        """
         return self._owner
 
     @property
@@ -1566,6 +1597,9 @@ class MockIcomRadio(AudioPortMixin):
 
     def _claim_session(self, owner: tuple[tuple[str, int], int]) -> None:
         """Mark ``owner`` as the holder and arm the keepalive timer."""
+        if self._owner is None:
+            # An unheld radio accepting a conninfo opens a fresh session.
+            self.session_claims += 1
         if self._owner != owner:
             # A newly claimed session starts sequence tracking over: the
             # previous session's CI-V numbering no longer applies
@@ -2932,12 +2966,12 @@ class MockIcomRadio(AudioPortMixin):
                 data=bytes((0xD2, self._selected_receiver)),
             )
 
-        # --- 0x1A 05 menu items (the startup MOD-input and NB reads) ---
+        # --- 0x1A 05 menu items ---
         if cmd == _CMD_CTL_MEM_MENU and payload[:1] == b"\x05":
             rest = payload[1:]
             if len(rest) >= 2 and rest[:2] in self._ctl_mem_menu:
                 item = rest[:2]
-                width = _CTL_MEM_MENU_STARTUP_ITEMS[item][1]
+                width = self._ctl_mem_menu_items[item][1]
                 if len(rest) == 2:  # GET: item echo + BCD value, item width
                     value = self._ctl_mem_menu[item]
                     encoded = (

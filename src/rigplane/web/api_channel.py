@@ -17,11 +17,12 @@ adapter builds a ``StreamReader`` over the request body plus a capturing
 writer, runs the shared dispatch, and splits the captured HTTP bytes
 back into status/headers/body. What this transport serves is derived
 from the router's own ``API_ROUTE_TABLE`` — every ``/api/v1/*`` entry is
-reachable — so adding a route to the router is the only place to
-change. The router has no notion of "routes the UI needs", so there is
-no per-route api flag; reachability follows routing. Anything else (an
-unknown path or a routed path under the wrong method) answers 404
-without touching controller state.
+reachable except the WebRTC signalling routes under
+``API_CHANNEL_SIGNALLING_PREFIX`` — so adding a route to the router is
+the only place to change. The router has no notion of "routes the UI
+needs", so there is no per-route api flag; reachability follows routing.
+Anything else (an unknown path, a signalling route, or a routed path
+under the wrong method) answers 404 without touching controller state.
 
 TX-capable REST bodies are refused even where HTTP serves them: they key
 the transmitter, and over a data channel the UI keys PTT through the
@@ -124,8 +125,11 @@ __all__ = [
     "ApiChannelHandler",
     "ApiFrame",
     "ApiFrameError",
+    "ApiErrorFrame",
     "ApiMessageType",
+    "ApiPayloadError",
     "ApiRequestHead",
+    "ApiResponseHead",
     "ApiWireDefinition",
     "ApiWireHeader",
     "ApiWireHeaderField",
@@ -139,6 +143,7 @@ __all__ = [
     "api_channel_wire_definition",
     "api_path_allowed",
     "api_request_messages",
+    "parse_api_server_frame",
     "api_response_messages",
 ]
 
@@ -276,6 +281,7 @@ def _payload_contract(
     carried_by: str,
     *,
     constant: tuple[str, str, str] | None = None,
+    exclude: frozenset[str] = frozenset(),
     optional: frozenset[str] = frozenset(),
     required: frozenset[str] = frozenset(),
     rename: Mapping[str, str] | None = None,
@@ -284,7 +290,7 @@ def _payload_contract(
 ) -> ApiWirePayload:
     """Derive one payload contract from the producer that owns it:
     names, order, types and required-ness come from the dataclass and
-    its defaults; notes, a leading constant, renames and the
+    its defaults; notes, a leading constant, exclusions, renames and the
     optional/required escapes (where the JSON shape differs from the
     dataclass) are declared by the caller. The wire-json tests conform
     the result to the real parsers and encoders.
@@ -293,6 +299,8 @@ def _payload_contract(
         [(constant[0], constant[1], True, constant[2])] if constant else []
     )
     for field in fields(producer):
+        if field.name in exclude:
+            continue
         name = (rename or {}).get(field.name, field.name)
         defaulted = field.default is not MISSING or field.default_factory is not MISSING
         rows.append(
@@ -341,6 +349,8 @@ def _api_channel_payload_contracts() -> dict[str, ApiWirePayload]:
         ATTACH_ACK_VERSION,
         ChannelAttachedAck,
         ClientChannelParams,
+        RigctlAttachErrorCode,
+        RigctlAttachErrorV1,
     )
     from .handlers.control import ControlHello  # noqa: TID251
 
@@ -373,6 +383,7 @@ def _api_channel_payload_contracts() -> dict[str, ApiWirePayload]:
             ClientChannelParams,
             "first text frame on control, api, scope-text and audio-text",
             constant=("type", '"attach"', "the attach discriminator"),
+            exclude=frozenset({"rigctl_version"}),
             rename={"controller_role": "role"},
             optional=frozenset({"controller_key"}),
             notes={
@@ -384,14 +395,34 @@ def _api_channel_payload_contracts() -> dict[str, ApiWirePayload]:
         ),
         "attach_ack": _payload_contract(
             ChannelAttachedAck,
-            "first server text frame on a scope-text/audio-text channel",
+            "first server text frame on scope-text, audio-text or rigctl",
             constant=("type", '"attached"', "the ack discriminator"),
             rename={"version": "v"},
             required=frozenset({"channel", "version"}),
             notes={
-                "channel": 'the acked kind: "scope" | "audio"',
-                "version": f"ack version, currently {ATTACH_ACK_VERSION}",
+                "channel": 'the acked kind: "scope" | "audio" | "rigctl"',
+                "v": f"ack version, currently {ATTACH_ACK_VERSION}",
             },
+        ),
+        "rigctl_attach_frame": ApiWirePayload(
+            1,
+            "first client attach frame on rigctl",
+            (
+                ("type", '"attach"', True, "the attach discriminator"),
+                ("controller_key", "string", True, "non-empty session key"),
+                ("role", "string", False, '"auxiliary" when absent'),
+                ("state_delta", "integer", False, "2 when absent"),
+                ("v", "integer", True, "requested rigctl protocol version"),
+            ),
+        ),
+        "rigctl_attach_error": _payload_contract(
+            RigctlAttachErrorV1,
+            "first server text frame on rigctl when attach is refused",
+            constant=("type", '"attach_error"', "the refusal discriminator"),
+            rename={"version": "v"},
+            required=frozenset({"channel", "version"}),
+            notes={"code": "receivers preserve unknown codes"},
+            codes=get_args(RigctlAttachErrorCode),
         ),
         "control_hello": _typed_dict_payload_contract(
             ControlHello,
@@ -467,7 +498,9 @@ def api_channel_wire_definition() -> ApiWireDefinition:
             send_low_water_bytes=SEND_LOW_WATER_BYTES,
         ),
         payloads=_api_channel_payload_contracts(),
-        data_channels=DATA_CHANNELS,
+        # This contract is consumed by the browser transport, whose channel
+        # set excludes CAT. CAT offerers use the public Core attach codecs.
+        data_channels=tuple(spec for spec in DATA_CHANNELS if spec.kind != "rigctl"),
     )
 
 
@@ -552,12 +585,53 @@ class ApiRequestHead:
         ).encode("utf-8")
 
 
+class ApiPayloadError(ValueError):
+    """A RES_HEAD or ERROR payload a consumer's parser refuses (not JSON,
+    not an object, or a required field missing or mistyped)."""
+
+
+def _json_object(payload: bytes, what: str) -> dict[str, Any]:
+    """Decode a payload to a JSON object, or raise :class:`ApiPayloadError`."""
+    try:
+        obj = json.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError, RecursionError) as exc:
+        raise ApiPayloadError(f"api {what} is not JSON: {exc}") from exc
+    if not isinstance(obj, dict):
+        raise ApiPayloadError(f"api {what} must be a JSON object")
+    return obj
+
+
 @dataclass(frozen=True, slots=True)
 class ApiResponseHead:
     """A RES_HEAD: the HTTP status line the channel answers with."""
 
     status: int
     headers: dict[str, str]
+
+    @classmethod
+    def parse(cls, payload: bytes) -> ApiResponseHead:
+        """Parse a RES_HEAD payload (the consumer side of :meth:`encode`).
+
+        Raises :class:`ApiPayloadError` on undecodable or non-object JSON,
+        a missing or non-integer ``status``, or ``headers`` that are not an
+        object of strings. Unknown fields are ignored (forward
+        compatibility); a missing ``headers`` reads as empty.
+        """
+        obj = _json_object(payload, "response head")
+        status = obj.get("status")
+        if type(status) is not int:
+            raise ApiPayloadError("api response head 'status' must be an integer")
+        headers_raw = obj.get("headers", {})
+        if not isinstance(headers_raw, dict):
+            raise ApiPayloadError("api response head 'headers' must be an object")
+        headers: dict[str, str] = {}
+        for key, value in headers_raw.items():
+            if type(key) is not str or type(value) is not str:
+                raise ApiPayloadError(
+                    "api response head 'headers' maps strings to strings"
+                )
+            headers[key] = value
+        return cls(status=status, headers=headers)
 
     def encode(self) -> bytes:
         """Encode as the JSON payload of a RES_HEAD frame."""
@@ -573,6 +647,22 @@ class ApiErrorFrame:
     code: str
     message: str
 
+    @classmethod
+    def parse(cls, payload: bytes) -> ApiErrorFrame:
+        """Parse an ERROR payload (the consumer side of :meth:`encode`).
+
+        Raises :class:`ApiPayloadError` on undecodable or non-object JSON
+        or a missing or non-string ``code``/``message``. ``code`` is kept
+        as the sender wrote it, so a code added later still parses.
+        Unknown fields are ignored.
+        """
+        obj = _json_object(payload, "error frame")
+        code = obj.get("code")
+        message = obj.get("message")
+        if type(code) is not str or type(message) is not str:
+            raise ApiPayloadError("api error frame 'code'/'message' must be strings")
+        return cls(code=code, message=message)
+
     def encode(self) -> bytes:
         """Encode as the JSON payload of an ERROR frame."""
         return json.dumps({"code": self.code, "message": self.message}).encode("utf-8")
@@ -581,6 +671,10 @@ class ApiErrorFrame:
 def _encode_frame(msg_type: int, request_id: int, payload: bytes) -> bytes:
     """Encode one wire message (always version 1, reserved flags 0)."""
     return _FRAME_HEADER.pack(API_CHANNEL_VERSION, msg_type, request_id, 0) + payload
+
+
+API_CHANNEL_SIGNALLING_PREFIX = "/api/v1/transport/webrtc/"
+"""Route prefix the api channel never serves (see :func:`api_path_allowed`)."""
 
 
 class ApiFrameError(ValueError):
@@ -627,6 +721,21 @@ class ApiFrame:
         return cls(msg_type, request_id, payload)
 
 
+def parse_api_server_frame(frame: ApiFrame) -> ApiResponseHead | ApiErrorFrame | None:
+    """The typed meaning of a server frame's payload, with the producer's parsers.
+
+    RES_HEAD gives an :class:`ApiResponseHead` and ERROR an
+    :class:`ApiErrorFrame`. Every other type (RES_BODY, END, a type added
+    later) gives ``None``: a receiver skips what it does not know. Raises
+    :class:`ApiPayloadError` when a RES_HEAD or ERROR payload is malformed.
+    """
+    if frame.type == ApiMessageType.RES_HEAD:
+        return ApiResponseHead.parse(frame.payload)
+    if frame.type == ApiMessageType.ERROR:
+        return ApiErrorFrame.parse(frame.payload)
+    return None
+
+
 def api_path_allowed(method: str, path: str) -> bool:
     """True when the api channel routes ``(method, path)``.
 
@@ -635,9 +744,15 @@ def api_path_allowed(method: str, path: str) -> bool:
     under the wrong method) answers 404 without touching controller state.
     Transmit-capable *bodies* on reachable routes are refused later, before
     dispatch, with 403 (see :func:`_dispatch`).
+
+    The WebRTC signalling routes (:data:`API_CHANNEL_SIGNALLING_PREFIX`) are
+    not reachable: a peer that already holds a session cannot open another
+    peer connection through it, outside the signalling path that admitted it.
     """
     from .web_routing import api_route_for_path  # noqa: TID251
 
+    if path.startswith(API_CHANNEL_SIGNALLING_PREFIX):
+        return False
     route = api_route_for_path(path)
     if route is None:
         return False
@@ -647,8 +762,8 @@ def api_path_allowed(method: str, path: str) -> bool:
 class _ChannelHttpWriter:
     """An ``asyncio.StreamWriter`` stand-in capturing one HTTP response.
 
-    Handlers only ``write`` response bytes, ``drain`` them, read
-    ``peername`` (controller acquisition records the client), and
+    Handlers ``write`` response bytes, ``drain`` them, read
+    trusted ingress metadata, and
     ``close`` on oversize bodies — exactly the surface captured here.
     """
 
@@ -665,9 +780,11 @@ class _ChannelHttpWriter:
         """Capture needs no drain; present for the writer surface."""
 
     def get_extra_info(self, name: str, default: Any = None) -> Any:
-        """Answer ``peername`` with the data-channel peer, else the default."""
+        """Expose the peer address and ingress to the shared handlers."""
         if name == "peername":
             return self._peer
+        if name == "rigplane_api_channel":
+            return True
         return default
 
     def close(self) -> None:
@@ -1310,16 +1427,25 @@ def _golden_attach_document(label: str) -> GoldenTextDocument:
     """The attach frame for one channel kind (client -> server); a split
     kind's attach rides its reliable ``*-text`` companion."""
     keyless = label == "api"
-    decoded = {
-        "type": "attach",
-        "controller_key": None if keyless else _GOLDEN_KEY_PLACEHOLDER,
-        "state_delta": 2,
-        "role": "primary",
-    }
+    if label == "rigctl":
+        from .channel_attach import ClientChannelParams  # noqa: TID251
+
+        text = ClientChannelParams(
+            _GOLDEN_KEY_PLACEHOLDER, "auxiliary", state_delta=2, rigctl_version=1
+        ).to_attach_frame()
+        decoded = json.loads(text)
+    else:
+        decoded = {
+            "type": "attach",
+            "controller_key": None if keyless else _GOLDEN_KEY_PLACEHOLDER,
+            "state_delta": 2,
+            "role": "primary",
+        }
+        text = json.dumps(decoded)
     return GoldenTextDocument(
         direction="client->server",
         summary=f'the "{label}" attach frame (the first text frame)',
-        text=json.dumps(decoded),
+        text=text,
         decoded=decoded,
         template=None
         if keyless
@@ -1333,7 +1459,7 @@ def _golden_attach_document(label: str) -> GoldenTextDocument:
 
 
 def _golden_ack_document(kind: str) -> GoldenTextDocument:
-    """The attach ack for one split kind (server -> client)."""
+    """The attach ack for one channel kind (server -> client)."""
     from .channel_attach import ChannelAttachedAck  # noqa: TID251
 
     text = ChannelAttachedAck(kind).encode()
@@ -1426,12 +1552,13 @@ def _request_head(
 
 
 async def api_channel_golden_documents() -> GoldenDocuments:
-    """Every concrete frame sequence the browser must handle, from the
-    server's own encoders; committed to ``api-channel-golden.json``,
+    """Concrete frame sequences from the server's own encoders,
+    committed to ``api-channel-golden.json``,
     replayed for real by ``tested_by``. Regenerate (repo root):
 
         uv run python -c "import asyncio, dataclasses, json; from rigplane.web.api_channel import api_channel_golden_documents as d; print(json.dumps(dataclasses.asdict(asyncio.run(d()))))" > frontend/src/lib/transport/api-channel-golden.json
     """
+    from .channel_attach import RigctlAttachErrorV1  # noqa: TID251
     from .server import _send_response  # noqa: TID251
 
     gf = _golden_frame
@@ -1522,13 +1649,22 @@ async def api_channel_golden_documents() -> GoldenDocuments:
     }
     documents: dict[str, GoldenDocument] = {
         f"attach_{label}": _golden_attach_document(label)
-        for label in ("control", "scope", "audio", "api")
+        for label in ("control", "scope", "audio", "api", "rigctl")
     }
     documents.update(
         {
             f"attach_ack_{kind}": _golden_ack_document(kind)
-            for kind in ("scope", "audio")
+            for kind in ("scope", "audio", "rigctl")
         }
+    )
+    rigctl_busy = RigctlAttachErrorV1("rigctl_busy").encode()
+    documents["attach_error_rigctl_busy"] = GoldenTextDocument(
+        direction="server->client",
+        summary="the rigctl attach refusal while a rigctl channel is active",
+        text=rigctl_busy,
+        decoded=json.loads(rigctl_busy),
+        template=None,
+        outcome="the server refuses the new rigctl channel",
     )
     documents["audio_tx_format_opus"] = _golden_audio_tx_format_document(
         opus_decode=True, sample_rate=48000

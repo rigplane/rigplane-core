@@ -272,6 +272,24 @@ features = [
 Feature tags are the **single source of truth** for UI rendering.
 If `"digisel"` is not in features → UI doesn't show DIGI-SEL control.
 
+### Per-transport gaps (MOR-4437)
+
+A capability can depend on the transport of the connection actually in
+use (the Xiegu G7250 fw 1.0.1 answers CI-V scope over LAN only and stays
+silent over USB serial). Declare the difference as data:
+
+```toml
+[capabilities.transport_gaps]
+serial = ["scope"]
+```
+
+Each key is a control transport (`lan` / `serial` / `remote`), each value
+a list of declared `features` entries that transport does NOT answer. The
+runtime derives the transport from the backend in use — never from
+`has_lan`, which only says the model offers a LAN interface. Profiles
+without this table keep the declared set on every transport. A gap entry
+that is not a declared `features` entry is a load-time error.
+
 ### Standard Feature Tags
 
 **Receiver:** audio, dual_rx, dual_watch, af_level, rf_gain, squelch

@@ -17,36 +17,64 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
 from _perf_helpers import fast_connect
 from test_web_server import (
     _close_ws,
+    _http_get,
     _ws_connect,
     _ws_recv_frame,
     _ws_send_text,
     _ws_skip_handshake,
 )
+from test_webrtc_split_channel import _FakeChannel
 from testkit.ic7610_fakes import ic7610_lan_fake
 
 from rigplane.radio import IcomRadio
-from rigplane.rigctld.contract import RigctldConfig
+from rigplane.rigctld import protocol as rigctld_protocol
+from rigplane.rigctld.contract import (
+    HamlibError,
+    RigctldCommand,
+    RigctldConfig,
+    RigctldResponse,
+)
 from rigplane.rigctld.server import RigctldServer
 from rigplane.runtime.controller_authority import ControllerAuthority
+from rigplane.runtime.managed_tx_authority import (
+    ManagedTxAuthority,
+    ManagedTxSubmission,
+)
 from rigplane.runtime.managed_tx_composition import (
     ManagedTxComposition,
     install_managed_tx_composition,
 )
 from rigplane.runtime.managed_tx_config import ManagedTxTotConfigStore
-from rigplane.runtime.managed_tx_state import ManagedTxIntentKind
-from rigplane.testing.timing import await_until
+from rigplane.runtime.managed_tx_state import (
+    ManagedTxIntentKind,
+    ManagedTxOutcome,
+    ManagedTxState,
+    ManagedTxTransition,
+)
+from rigplane.testing.timing import VirtualClock, await_until
 from rigplane.web import server as server_module
 from rigplane.web.api_channel import api_channel_golden_documents_from_json
-from rigplane.web.channel_attach import data_channels_for
+from rigplane.web.channel_attach import (
+    RIGCTL_MAX_FRAME_BYTES,
+    ChannelAttachedAck,
+    ClientChannelParams,
+    RigctlAttachErrorV1,
+    data_channels_for,
+    decode_rigctl_attach_result,
+)
+from rigplane.web.handlers import rigctl
 from rigplane.web.protocol import (
     AUDIO_CODEC_PCM16,
     AUDIO_HEADER_SIZE,
@@ -54,7 +82,16 @@ from rigplane.web.protocol import (
     encode_json,
 )
 from rigplane.web.server import WebConfig, WebServer
+from rigplane.web.transport import webrtc, webrtc_session
 from rigplane.web.transport.webrtc import webrtc_available
+from rigplane.web.transport.webrtc_contract import (
+    WebRtcAnswer,
+    WebRtcClose,
+    WebRtcCloseResult,
+    WebRtcOffer,
+    WebRtcRequestError,
+    WebRtcTransportStatus,
+)
 from rigplane.web.web_startup import (
     attach_managed_tx_composition,
     prepare_managed_tx_observation_generation,
@@ -214,11 +251,14 @@ class _DcControlClient:
         self._channel: Any = None
         self._received: list[Any] = []
         self._closed = asyncio.Event()
+        # The answerer's session id, set by ``connect_via_http``.
+        self.session_id: str | None = None
 
-    async def _prepare_pc(self) -> None:
-        from aiortc import RTCPeerConnection
+    async def _prepare_pc(self, *, host_only: bool = False) -> None:
+        from aiortc import RTCConfiguration, RTCPeerConnection
 
-        self._pc = RTCPeerConnection()
+        configuration = RTCConfiguration(iceServers=[]) if host_only else None
+        self._pc = RTCPeerConnection(configuration)
         self._channel = self._pc.createDataChannel("control", ordered=True)
 
         @self._channel.on("message")  # type: ignore[misc, no-untyped-call]
@@ -249,7 +289,7 @@ class _DcControlClient:
             description="data channel open",
         )
 
-    async def connect_via_http(self, port: int) -> None:
+    async def connect_via_http(self, port: int, *, host_only: bool = False) -> None:
         """Signal the offer through the public HTTP endpoint (browser path).
 
         POSTs the SDP offer to ``/api/v1/transport/webrtc/offer`` instead
@@ -257,21 +297,21 @@ class _DcControlClient:
         """
         from aiortc import RTCSessionDescription
 
-        await self._prepare_pc()
+        await self._prepare_pc(host_only=host_only)
         assert self._pc is not None and self._channel is not None
         offer = await self._pc.createOffer()
         await self._pc.setLocalDescription(offer)
-        status, answer = await _http_post(
-            port,
-            "/api/v1/transport/webrtc/offer",
-            {
-                "sdp": self._pc.localDescription.sdp,
-                "type": self._pc.localDescription.type,
-            },
+        offer_body = WebRtcOffer(
+            sdp=self._pc.localDescription.sdp, type=self._pc.localDescription.type
         )
-        assert status == 200, answer
+        status, body = await _http_post(
+            port, "/api/v1/transport/webrtc/offer", offer_body.to_json()
+        )
+        assert status == 200, body
+        answer = WebRtcAnswer.from_json(body)
+        self.session_id = answer.session_id
         await self._pc.setRemoteDescription(
-            RTCSessionDescription(sdp=answer["sdp"], type=answer["type"])
+            RTCSessionDescription(sdp=answer.sdp, type=answer.type)
         )
         await await_until(
             lambda: self._channel.readyState == "open",
@@ -466,7 +506,7 @@ class _DcAvPeer:
         self._received: list[Any] = []
         self._audio_received: list[Any] = []
 
-    async def connect(self, web: WebServer) -> None:
+    async def connect(self, web: WebServer, *, via_http: bool = False) -> None:
         from aiortc import RTCPeerConnection, RTCSessionDescription
 
         self._pc = RTCPeerConnection()
@@ -491,12 +531,20 @@ class _DcAvPeer:
 
         offer = await self._pc.createOffer()
         await self._pc.setLocalDescription(offer)
-        manager = web._webrtc_session_manager()  # noqa: SLF001
-        answer = await manager.negotiate(
-            self._pc.localDescription.sdp, self._pc.localDescription.type
+        offer_body = WebRtcOffer(
+            sdp=self._pc.localDescription.sdp, type=self._pc.localDescription.type
         )
+        if via_http:
+            status, response = await _http_post(
+                web.port, "/api/v1/transport/webrtc/offer", offer_body.to_json()
+            )
+            assert status == 200, response
+        else:
+            manager = web._webrtc_session_manager()  # noqa: SLF001
+            response = await manager.negotiate(offer_body.sdp, offer_body.type)
+        answer = WebRtcAnswer.from_json(response)
         await self._pc.setRemoteDescription(
-            RTCSessionDescription(sdp=answer["sdp"], type=answer["type"])
+            RTCSessionDescription(sdp=answer.sdp, type=answer.type)
         )
         await await_until(
             lambda: all(
@@ -862,10 +910,10 @@ async def test_missing_attach_closes_channel_within_timeout(
 
 
 @_webrtc
-async def test_clean_close_while_keyed_releases_ptt_fast(
+async def test_control_ptt_release_and_link_drop_unkey_simulator(
     tmp_path: Path,
 ) -> None:
-    """Clean close of a keyed data channel unkeys within 0.5 s."""
+    """Momentary PTT keys and releases; a live hold ends on link drop."""
     stack = await _stand_up_stack(tmp_path)
     dc = _DcControlClient()
     try:
@@ -878,6 +926,16 @@ async def test_clean_close_while_keyed_releases_ptt_fast(
         assert keyed.get("ok") is True, keyed
         await await_until(
             lambda: stack.sim.ptt_on is True, timeout=10.0, description="sim keyed"
+        )
+        released = await dc.command("release-1", "ptt_off")
+        assert released.get("ok") is True, released
+        await await_until(
+            lambda: stack.sim.ptt_on is False, timeout=5.0, description="sim unkeyed"
+        )
+        keyed = await dc.command("key-2", "ptt_on")
+        assert keyed.get("ok") is True, keyed
+        await await_until(
+            lambda: stack.sim.ptt_on is True, timeout=10.0, description="sim rekeyed"
         )
         started = asyncio.get_running_loop().time()
         await dc.close()
@@ -927,6 +985,78 @@ async def test_silent_loss_releases_ptt_within_session_ttl(
         assert state.intent.kind is ManagedTxIntentKind.RX
     finally:
         await dc.close()
+        await _tear_down_stack(stack)
+
+
+@_webrtc
+@pytest.mark.realtime(
+    reason="stream microphone PCM in real time during a three-second PTT hold"
+)
+async def test_webrtc_ptt_three_second_hold_delivers_audio_and_link_loss_releases(
+    tmp_path: Path,
+) -> None:
+    stack = await _stand_up_stack(tmp_path, audio=True)
+    peer = _DcAvPeer()
+    clock = asyncio.get_running_loop().time
+    try:
+        await peer.connect(stack.web, via_http=True)
+        key = await _acquire_session(stack.web.port)
+        await peer.attach_control(key)
+        await peer.attach_audio(key)
+        await peer.heartbeat()
+
+        assert stack.sim.ptt_on is False
+        transition_start = len(stack.sim.ptt_transitions)
+        pressed_at = clock()
+        assert (await peer.command("key-1", "ptt_on"))["ok"] is True
+        await await_until(lambda: stack.sim.ptt_on, timeout=5, description="TX")
+        deadline = pressed_at + 3.0
+        frame = _pcm_tx_frame(480)
+        while clock() < deadline:
+            assert stack.sim.ptt_on is True
+            peer.send_audio(frame)
+            await asyncio.sleep(0.020)
+        assert stack.sim.ptt_on is True
+        released_at = clock()
+        assert (await peer.command("release-1", "ptt_off"))["ok"] is True
+        await await_until(lambda: not stack.sim.ptt_on, timeout=5, description="RX")
+        state = (await stack.composition.authority.snapshot()).state
+        assert state.intent.kind is ManagedTxIntentKind.RX
+
+        await peer.heartbeat()
+        assert (await peer.command("key-2", "ptt_on"))["ok"] is True
+        await await_until(lambda: stack.sim.ptt_on, timeout=5, description="second TX")
+        dropped_at = clock()
+        await peer.close()
+        await await_until(
+            lambda: not stack.sim.ptt_on,
+            timeout=_SILENT_LOSS_BUDGET_S,
+            description="RX after link loss",
+        )
+        state = (await stack.composition.authority.snapshot()).state
+        assert state.intent.kind is ManagedTxIntentKind.RX
+
+        transitions = stack.sim.ptt_transitions[transition_start:]
+        assert [keyed for _, keyed in transitions] == [True, False, True, False]
+        keyed_at, rx_at, rekeyed_at, drop_rx_at = (stamp for stamp, _ in transitions)
+        frame_count = sum(
+            1
+            for received in stack.sim.audio_tx_frames
+            if keyed_at <= received.received_at < released_at
+            and received.ptt
+            and any(received.payload)
+        )
+        print(
+            f"WEBRTC_PTT frames={frame_count} hold_s={released_at - pressed_at:.3f}"
+            f" keyed_s={keyed_at - pressed_at:.3f} release_s={released_at - pressed_at:.3f}"
+            f" rx_s={rx_at - pressed_at:.3f} second_keyed_s={rekeyed_at - pressed_at:.3f}"
+            f" drop_s={dropped_at - pressed_at:.3f} drop_rx_s={drop_rx_at - pressed_at:.3f}"
+            f" drop_to_rx_s={drop_rx_at - dropped_at:.3f} budget_s={_SILENT_LOSS_BUDGET_S:.3f}"
+        )
+        assert frame_count > 0
+        assert 0 <= drop_rx_at - dropped_at <= _SILENT_LOSS_BUDGET_S
+    finally:
+        await peer.close()
         await _tear_down_stack(stack)
 
 
@@ -1110,6 +1240,212 @@ async def test_remote_mode_admissible_after_webrtc_offer(tmp_path: Path) -> None
             description="sim unkeyed",
         )
     finally:
+        await dc.close()
+        await _tear_down_stack(stack)
+
+
+async def _post_close(port: int, close: WebRtcClose) -> tuple[int, dict[str, Any]]:
+    """POST a typed close body through the real HTTP listener and router."""
+    return await _http_post(port, "/api/v1/transport/webrtc/close", close.to_json())
+
+
+@_webrtc
+async def test_close_route_ends_one_peer_and_next_offer_is_answered(
+    tmp_path: Path,
+) -> None:
+    """``POST .../webrtc/close`` with a session id ends that peer only.
+
+    The peer sees its channel close, the other peer keeps being served, a
+    second close of the same id is a typed ``close_error`` 404, and a later
+    offer is still answered (the manager stays usable).
+    """
+    stack = await _stand_up_stack(tmp_path)
+    first = _DcControlClient()
+    second = _DcControlClient()
+    later = _DcControlClient()
+    try:
+        # Attach right after each negotiate: an unattached channel is
+        # closed after 5 s, which would look like the close under test.
+        await first.connect_via_http(stack.web.port)
+        await first.attach(await _acquire_session(stack.web.port))
+        await second.connect_via_http(stack.web.port)
+        await second.attach(await _acquire_session(stack.web.port))
+        assert first.session_id is not None and second.session_id is not None
+        manager = stack.web._webrtc_sessions  # noqa: SLF001
+        assert manager is not None
+
+        status, body = await _post_close(stack.web.port, WebRtcClose(first.session_id))
+        assert status == 200, body
+        assert WebRtcCloseResult.from_json(body).closed == (first.session_id,)
+        assert manager.active_session_ids == [second.session_id]
+        await first.wait_closed()
+        await second.heartbeat()
+
+        status, body = await _post_close(stack.web.port, WebRtcClose(first.session_id))
+        assert status == 404, body
+        assert WebRtcRequestError.from_json(body).code == "close_error"
+
+        await later.connect_via_http(stack.web.port)
+        assert later.session_id not in (first.session_id, second.session_id)
+    finally:
+        await first.close()
+        await second.close()
+        await later.close()
+        await _tear_down_stack(stack)
+
+
+@_webrtc
+async def test_close_route_without_session_id_ends_every_peer(tmp_path: Path) -> None:
+    """A close with no session id ends every live peer through the route."""
+    stack = await _stand_up_stack(tmp_path)
+    peers = [_DcControlClient(), _DcControlClient()]
+    try:
+        for peer in peers:
+            await peer.connect_via_http(stack.web.port)
+            await peer.attach(await _acquire_session(stack.web.port))
+        manager = stack.web._webrtc_sessions  # noqa: SLF001
+        assert manager is not None
+        ids = {peer.session_id for peer in peers}
+
+        status, body = await _post_close(stack.web.port, WebRtcClose())
+        assert status == 200, body
+        assert set(WebRtcCloseResult.from_json(body).closed) == ids
+        assert manager.active_session_ids == []
+        for peer in peers:
+            await peer.wait_closed()
+    finally:
+        for peer in peers:
+            await peer.close()
+        await _tear_down_stack(stack)
+
+
+@_webrtc
+async def test_close_route_under_remote_control_ends_peer_and_releases_ptt(
+    tmp_path: Path,
+) -> None:
+    """The remote-access switch-off while a remote peer holds control and TX.
+
+    Remote mode, the peer keyed the radio over its data channel; a local
+    close through the HTTP route is admitted, the peer sees its channel
+    close, and the session-end path the channel teardown already runs
+    releases the grant and unkeys the radio — well inside the controller
+    TTL, so expiry is not what releases it.
+    """
+    stack = await _stand_up_stack(tmp_path)
+    dc = _DcControlClient()
+    try:
+        await dc.connect_via_http(stack.web.port)
+        status, _ = await _http_post(
+            stack.web.port, "/api/v1/controller/mode", {"mode": "remote"}
+        )
+        assert status == 200, status
+        key = await _acquire_session(stack.web.port)
+        hello = await dc.attach(key)
+        assert hello["type"] == "hello"
+        keyed = await dc.command("key-1", "ptt_on")
+        assert keyed.get("ok") is True, keyed
+        await await_until(
+            lambda: stack.sim.ptt_on is True, timeout=10.0, description="sim keyed"
+        )
+        assert dc.session_id is not None
+
+        status, body = await _post_close(stack.web.port, WebRtcClose(dc.session_id))
+        assert status == 200, body
+        assert WebRtcCloseResult.from_json(body).closed == (dc.session_id,)
+        await dc.wait_closed(timeout=3.0)
+        await await_until(
+            lambda: stack.sim.ptt_on is False,
+            timeout=3.0,
+            description="PTT released by the session end",
+        )
+        await await_until(
+            lambda: stack.web._controller.status()["state"] == "idle",  # noqa: SLF001
+            timeout=3.0,
+            description="remote grant released",
+        )
+    finally:
+        await dc.close()
+        await _tear_down_stack(stack)
+
+
+@_webrtc
+async def test_close_dispatches_no_channel_arriving_during_teardown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A channel that arrives while its session tears down gets no handler.
+
+    The attached handler's cleanup is held open after the close cancels
+    it; meanwhile the peer opens a new channel and sends its attach frame.
+    That channel must be closed without being dispatched (nothing reaches
+    a handler on a peer being closed), and the close completes once the
+    held cleanup finishes.
+    """
+    stack = await _stand_up_stack(tmp_path)
+    dc = _DcControlClient()
+    attached: list[str] = []
+    cleanup_started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def held_attach(
+        conn: Any,
+        kind: str,
+        params: ClientChannelParams,
+        peer: tuple[str, int],
+        *,
+        transport: str,
+        track_owners: set[str] | None = None,
+    ) -> None:
+        attached.append(kind)
+        try:
+            await release.wait()
+        except asyncio.CancelledError:
+            cleanup_started.set()
+            await release.wait()
+            raise
+
+    monkeypatch.setattr(stack.web, "attach_client_channel", held_attach)
+    close_task: asyncio.Task[tuple[int, dict[str, Any]]] | None = None
+    try:
+        await dc.connect_via_http(stack.web.port)
+        assert dc.session_id is not None
+        key = await _acquire_session(stack.web.port)
+        attach_frame = ClientChannelParams(controller_key=key).to_attach_frame()
+        dc._channel.send(attach_frame)  # noqa: SLF001
+        await await_until(
+            lambda: attached == ["control"], timeout=10.0, description="attached"
+        )
+
+        close_task = asyncio.ensure_future(
+            _post_close(stack.web.port, WebRtcClose(dc.session_id))
+        )
+        await await_until(
+            cleanup_started.is_set, timeout=10.0, description="teardown in progress"
+        )
+        late = dc._pc.createDataChannel("api", ordered=True)  # noqa: SLF001
+
+        @late.on("open")  # type: ignore[misc, no-untyped-call]
+        def _on_open() -> None:
+            late.send(attach_frame)
+
+        await await_until(
+            lambda: late.readyState == "closed",
+            timeout=10.0,
+            description="late channel closed undispatched",
+        )
+        assert attached == ["control"]
+        assert not close_task.done()
+
+        release.set()
+        status, body = await asyncio.wait_for(close_task, timeout=10.0)
+        assert status == 200, body
+        assert WebRtcCloseResult.from_json(body).closed == (dc.session_id,)
+    finally:
+        release.set()
+        if close_task is not None:
+            if not close_task.done():
+                close_task.cancel()
+            with contextlib.suppress(BaseException):
+                await close_task
         await dc.close()
         await _tear_down_stack(stack)
 
@@ -1396,6 +1732,367 @@ async def _channel_closed(channel: Any, timeout: float = 10.0) -> None:
     )
 
 
+@_webrtc
+async def test_webrtc_rx_sender_cancelled_when_peer_connection_goes_away(
+    tmp_path: Path,
+) -> None:
+    """MOR-4676: a clean peer teardown ends the RX sender and unsubscribes.
+
+    A WebRTC session starts RX audio, then the whole peer connection
+    goes away with no ``audio_stop``. The session's audio sender must be
+    cancelled and its broadcaster subscription removed within a bound —
+    not kept running in parallel with the next session's sender while
+    the audio bus keeps a stale ``web-audio`` subscriber.
+    """
+    stack = await _stand_up_stack(tmp_path, audio=True)
+    peer = _ChannelSetPeer()
+    try:
+        await peer.connect(stack.web, ("control", "audio"))
+        key = await _acquire_session(stack.web.port)
+        peer.send_text("control", _attach_text("control", key))
+        assert (await _frame(peer, "control", "hello"))["type"] == "hello"
+        await _attach_and_serve_audio_rx(peer, key)
+        broadcaster = stack.web._audio_broadcaster  # noqa: SLF001
+        assert await await_until(
+            lambda: len(broadcaster._clients) == 1 or None,  # noqa: SLF001
+            timeout=10.0,
+            description="broadcaster subscribed the RX client",
+        )
+        assert broadcaster._subscription is not None  # noqa: SLF001
+        assert _live_audio_senders(), "no audio sender task while RX is live"
+        # The LAN-client drop: the whole peer session goes away with no
+        # ``audio_stop`` — channels and peer connection together.
+        await peer.close()
+
+        def _no_sessions() -> bool | None:
+            manager = stack.web._webrtc_session_manager()  # noqa: SLF001
+            return True if manager is None or not manager.active_session_ids else None
+
+        assert await await_until(
+            _no_sessions, timeout=10.0, description="webrtc session dropped"
+        ), "server still holds the dead peer session"
+        assert await await_until(
+            lambda: _registered(stack, "audio") == 0 or None,
+            timeout=10.0,
+            description="server audio handler ended and unregistered",
+        ), "dead session's audio handler still registered"
+        assert await await_until(
+            lambda: len(broadcaster._clients) == 0 or None,  # noqa: SLF001
+            timeout=10.0,
+            description="broadcaster dropped the dead RX client",
+        ), "dead session's broadcaster subscription outlives its channels"
+        assert await await_until(
+            lambda: broadcaster._subscription is None or None,  # noqa: SLF001
+            timeout=10.0,
+            description="relay subscription released",
+        ), "audio bus keeps the dead session's web-audio subscriber"
+        assert await await_until(
+            lambda: not _live_audio_senders() or None,
+            timeout=10.0,
+            description="audio sender cancelled",
+        ), "dead session's audio sender still runs"
+    finally:
+        await peer.close()
+        await _tear_down_stack(stack)
+
+
+@_webrtc
+async def test_webrtc_rx_sender_cancelled_when_peer_vanishes_without_close(
+    tmp_path: Path,
+) -> None:
+    """MOR-4676: a peer that vanishes without closing still loses its sender.
+
+    The session goes away with no channel close and no ``audio_stop``
+    (the network path died the way the LAN client's did): the
+    controller-session loss path must still cancel the session's audio
+    sender and remove its subscriber within a bound, not run it in
+    parallel with the next session's sender.
+    """
+    stack = await _stand_up_stack(tmp_path, audio=True)
+    peer = _ChannelSetPeer()
+    try:
+        await peer.connect(stack.web, ("control", "audio"))
+        key = await _acquire_session(stack.web.port)
+        peer.send_text("control", _attach_text("control", key))
+        assert (await _frame(peer, "control", "hello"))["type"] == "hello"
+        await _attach_and_serve_audio_rx(peer, key)
+        broadcaster = stack.web._audio_broadcaster  # noqa: SLF001
+        assert await await_until(
+            lambda: len(broadcaster._clients) == 1 or None,  # noqa: SLF001
+            timeout=10.0,
+            description="broadcaster subscribed the RX client",
+        )
+        assert broadcaster._subscription is not None  # noqa: SLF001
+        assert _live_audio_senders(), "no audio sender task while RX is live"
+        # The peer vanishes: nothing closes, no heartbeat refreshes the
+        # controller session (6 s TTL), so the session-loss path ends it.
+        assert await await_until(
+            lambda: _registered(stack, "audio") == 0 or None,
+            timeout=15.0,
+            description="server audio handler ended and unregistered",
+        ), "dead session's audio handler still registered"
+        assert await await_until(
+            lambda: len(broadcaster._clients) == 0 or None,  # noqa: SLF001
+            timeout=15.0,
+            description="broadcaster dropped the dead RX client",
+        ), "dead session's broadcaster subscription outlives its session"
+        assert await await_until(
+            lambda: broadcaster._subscription is None or None,  # noqa: SLF001
+            timeout=15.0,
+            description="relay subscription released",
+        ), "audio bus keeps the dead session's web-audio subscriber"
+        assert await await_until(
+            lambda: not _live_audio_senders() or None,
+            timeout=15.0,
+            description="audio sender cancelled",
+        ), "dead session's audio sender still runs"
+    finally:
+        await peer.close()
+        await _tear_down_stack(stack)
+
+
+def _live_audio_senders() -> list[str]:
+    """Names of live per-attachment audio sender tasks (``audio-sender``)."""
+    return sorted(
+        task.get_name()
+        for task in asyncio.all_tasks()
+        if task.get_name() == "audio-sender" and not task.done()
+    )
+
+
+async def _keep_peer_alive(peer: _ChannelSetPeer, done: asyncio.Event) -> None:
+    """Heartbeat a peer's control channel until ``done`` (remote TTL guard).
+
+    Remote mode keeps ONE controller grant for every peer on the key: while
+    this beats, the grant (and its TTL revoke) can never fire, so only the
+    peer teardown under test can end the attachments.
+    """
+    while not done.is_set():
+        with contextlib.suppress(Exception):
+            peer.send_text("control", json.dumps({"type": "controller_heartbeat"}))
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(done.wait(), timeout=2.0)
+
+
+@_webrtc
+async def test_webrtc_audio_supersession_ends_stale_sender(
+    tmp_path: Path,
+) -> None:
+    """MOR-4676: a re-attached audio pair supersedes the silently stale one.
+
+    Remote mode mints tickets with no ``tx_owner``, so the per-attachment
+    owner sets stay empty and a vanished session has nothing to end. The
+    production leak: a remote peer whose lossy audio channels died without
+    a close event kept its audio sender (50 fps) and its subscriber while
+    its own healthy control channel kept the grant refreshed — the stale
+    sender runs in parallel with the live session's sender.
+
+    The server-observable event in that story is the client's re-attach:
+    the peer opens a fresh audio pair and attaches it while control keeps
+    heartbeating (no close and no ``audio_stop`` ever arrive on the stale
+    pair). One peer holds one audio pair at a time, so serving the new
+    attachment aborts the stale one through its normal exit path: the
+    stale sender is cancelled and unsubscribed within a bound, while the
+    shared relay keeps running for the live attachment.
+    """
+    stack = await _stand_up_stack(tmp_path, audio=True)
+    ghost = _ChannelSetPeer()
+    keepalive_done = asyncio.Event()
+    keepalive: asyncio.Task[None] | None = None
+    try:
+        status, _ = await _http_post(
+            stack.web.port, "/api/v1/controller/mode", {"mode": "remote"}
+        )
+        assert status == 200, status
+        await ghost.connect(stack.web, ("control", "audio"))
+        key = await _acquire_session(stack.web.port)
+        ghost.send_text("control", _attach_text("control", key))
+        assert (await _frame(ghost, "control", "hello"))["type"] == "hello"
+        await _attach_and_serve_audio_rx(ghost, key)
+        broadcaster = stack.web._audio_broadcaster  # noqa: SLF001
+        assert await await_until(
+            lambda: len(broadcaster._clients) == 1 or None,  # noqa: SLF001
+            timeout=10.0,
+            description="broadcaster subscribed the RX client",
+        )
+        assert broadcaster._subscription is not None  # noqa: SLF001
+        assert len(_live_audio_senders()) == 1, "no audio sender task while RX is live"
+        # The control channel keeps heartbeating, so the shared grant never
+        # expires — only the supersession may end the stale sender.
+        keepalive = asyncio.create_task(_keep_peer_alive(ghost, keepalive_done))
+        # The stale pair never reported a close and sent no audio_stop; the
+        # client re-opens its audio pair and attaches anew on it.
+        pair = ghost.open_kind("audio")
+        await await_until(
+            lambda: all(c.readyState == "open" for c in pair.values()) or None,
+            timeout=15.0,
+            description="re-opened audio pair open",
+        )
+        ghost.send_text("audio", _attach_text("audio", key))
+        assert await await_until(
+            lambda: ghost.take("audio"), timeout=10.0, description="audio ack"
+        ) == {"type": "attached", "v": 1, "channel": "audio"}
+        ghost.send_text("audio", json.dumps({"type": "audio_start", "direction": "rx"}))
+        assert (await _frame(ghost, "audio", "audio_format"))["type"] == "audio_format"
+        # The stale sender is gone: exactly the live attachment's sender
+        # remains, one subscriber, and the relay still runs for it.
+        assert await await_until(
+            lambda: len(_live_audio_senders()) == 1 or None,
+            timeout=10.0,
+            description="stale audio sender cancelled",
+        ), "stale audio sender still runs in parallel with the live one"
+        assert await await_until(
+            lambda: len(broadcaster._clients) == 1 or None,  # noqa: SLF001
+            timeout=10.0,
+            description="broadcaster converged back to one RX client",
+        ), "stale subscriber outlives its superseded attachment"
+        assert broadcaster._subscription is not None  # noqa: SLF001
+        await _control_alive(ghost)
+    finally:
+        keepalive_done.set()
+        if keepalive is not None:
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(keepalive, timeout=5.0)
+        await ghost.close()
+        await _tear_down_stack(stack)
+
+
+@_webrtc
+async def test_webrtc_audio_restart_without_stop_does_not_orphan_subscription(
+    tmp_path: Path,
+) -> None:
+    """MOR-4676: re-arming RX on one channel keeps exactly one subscription.
+
+    A second ``audio_start`` with no ``audio_stop`` replaces the
+    attachment's subscription instead of orphaning the previous queue:
+    otherwise the relay and its ``web-audio`` bus subscription never see
+    an empty client set again, even after the session's own teardown
+    unsubscribes the latest queue.
+    """
+    stack = await _stand_up_stack(tmp_path, audio=True)
+    peer = _ChannelSetPeer()
+    try:
+        await peer.connect(stack.web, ("control", "audio"))
+        key = await _acquire_session(stack.web.port)
+        peer.send_text("control", _attach_text("control", key))
+        assert (await _frame(peer, "control", "hello"))["type"] == "hello"
+        await _attach_and_serve_audio_rx(peer, key)
+        broadcaster = stack.web._audio_broadcaster  # noqa: SLF001
+        assert await await_until(
+            lambda: len(broadcaster._clients) == 1 or None,  # noqa: SLF001
+            timeout=10.0,
+            description="broadcaster subscribed the RX client",
+        )
+        # Re-arm RX on the SAME channel with no audio_stop in between.
+        peer.send_text("audio", json.dumps({"type": "audio_start", "direction": "rx"}))
+        assert (await _frame(peer, "audio", "audio_format"))["type"] == "audio_format"
+        assert len(broadcaster._clients) == 1, (  # noqa: SLF001
+            "re-armed RX orphaned its previous broadcaster queue"
+        )
+        peer.close_kind("audio")
+        peer.close_kind("control")
+        assert await await_until(
+            lambda: _registered(stack, "audio") == 0 or None,
+            timeout=10.0,
+            description="server audio handler ended and unregistered",
+        ), "dead session's audio handler still registered"
+        assert await await_until(
+            lambda: len(broadcaster._clients) == 0 or None,  # noqa: SLF001
+            timeout=10.0,
+            description="broadcaster dropped the RX client",
+        ), "re-armed RX left a stale subscriber behind its session"
+        assert await await_until(
+            lambda: broadcaster._subscription is None or None,  # noqa: SLF001
+            timeout=10.0,
+            description="relay subscription released",
+        ), "audio bus keeps a stale web-audio subscriber"
+    finally:
+        await peer.close()
+        await _tear_down_stack(stack)
+
+
+@_webrtc
+async def test_webrtc_rx_rearm_with_tx_active_preserves_relay(
+    tmp_path: Path,
+) -> None:
+    """MOR-4676: re-arming RX with TX active never drops relay demand.
+
+    With one RX client and an active TX lease the re-arm must replace the
+    attachment's queue through the running relay — subscribe the new queue
+    before unsubscribing the old one — so the client set never empties,
+    the shared ``web-audio`` demand never drops, and the session never
+    disarms and re-arms TX underneath an ongoing transmission.
+    """
+    stack = await _stand_up_stack(tmp_path, audio=True)
+    peer = _DcAvPeer()
+    try:
+        await peer.connect(stack.web)
+        key = await _acquire_session(stack.web.port)
+        await peer.attach_control(key)
+        await peer.attach_audio(key)
+        keyed = await peer.command("key-1", "ptt_on")
+        assert keyed.get("ok") is True, keyed
+        await await_until(
+            lambda: stack.sim.ptt_on is True, timeout=10.0, description="sim keyed"
+        )
+        await _stream_audio(peer, 480)
+        await _wait_air(stack)
+        assert peer._audio_text is not None  # noqa: SLF001
+        # A stable client_id rides every (re)subscribe (MOR-924): the re-arm
+        # below must not coalesce the attachment with itself.
+        rx_start = json.dumps(
+            {"type": "audio_start", "direction": "rx", "client_id": "tab-rearm"}
+        )
+        peer._audio_text.send(rx_start)  # noqa: SLF001
+        await peer._until(  # noqa: SLF001
+            peer._audio_received,  # noqa: SLF001
+            lambda m: m.get("type") == "audio_format",
+            timeout=10.0,
+        )
+        broadcaster = stack.web._audio_broadcaster  # noqa: SLF001
+        assert await await_until(
+            lambda: len(broadcaster._clients) == 1 or None,  # noqa: SLF001
+            timeout=10.0,
+            description="broadcaster subscribed the RX client",
+        )
+        relay_before = broadcaster._relay_task  # noqa: SLF001
+        subscription_before = broadcaster._subscription  # noqa: SLF001
+        assert relay_before is not None and subscription_before is not None
+        aired_before = len(stack.sim.audio_tx_frames)
+        # Re-arm RX on the SAME channel with no audio_stop in between.
+        peer._audio_text.send(rx_start)  # noqa: SLF001
+        await peer._until(  # noqa: SLF001
+            peer._audio_received,  # noqa: SLF001
+            lambda m: m.get("type") == "audio_format",
+            timeout=10.0,
+        )
+        # The relay never dropped: same task, same RX demand, one client.
+        assert len(broadcaster._clients) == 1  # noqa: SLF001
+        assert broadcaster._relay_task is relay_before  # noqa: SLF001
+        assert broadcaster._subscription is subscription_before  # noqa: SLF001
+        # TX sailed through the re-arm: still keyed, still flowing.
+        assert stack.sim.ptt_on is True
+        await _stream_audio(peer, 480)
+        await await_until(
+            lambda: len(stack.sim.audio_tx_frames) > aired_before or None,
+            timeout=_GATE_TIMEOUT_S,
+            description="TX audio still reaches the air after RX re-arm",
+        )
+    finally:
+        await peer.close()
+        await _tear_down_stack(stack)
+
+
+async def _attach_and_serve_audio_rx(peer: _ChannelSetPeer, key: str) -> None:
+    """Attach the audio kind and arm RX; assert the ``audio_format`` ack."""
+    peer.send_text("audio", _attach_text("audio", key))
+    assert await await_until(
+        lambda: peer.take("audio"), timeout=10.0, description="audio ack"
+    ) == {"type": "attached", "v": 1, "channel": "audio"}
+    peer.send_text("audio", json.dumps({"type": "audio_start", "direction": "rx"}))
+    assert (await _frame(peer, "audio", "audio_format"))["type"] == "audio_format"
+
+
 async def _release_session(port: int, key: str) -> int:
     """End one controller session server-side (``DELETE /api/v1/controller``).
 
@@ -1475,6 +2172,659 @@ async def test_closed_channel_label_can_be_recreated_on_the_same_peer(
 # MOR-4498: closing ONE data channel closes only that channel — never the
 # peer connection, whose single owner is the WebRtcSessionManager.
 # ---------------------------------------------------------------------------
+
+
+@_webrtc
+async def test_rigctl_data_channel_reads_simulator_frequency(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A Tower-style peer should get a CAT reply on its own controller grant."""
+    stack = await _stand_up_stack(tmp_path)
+    peer = _DcControlClient()
+    caplog.set_level("INFO", logger="rigplane.web.transport.webrtc_session")
+    try:
+        await peer.connect_via_http(stack.web.port, host_only=True)
+        key = await _acquire_session(stack.web.port)
+        await peer.attach(key)
+
+        # Spell the label on the wire so this reaches today's answerer even
+        # though the production offerer's channel table has no rigctl entry.
+        channel = peer._pc.createDataChannel("rigctl", ordered=True)  # noqa: SLF001
+        frames: list[str | bytes] = []
+        channel.on("message", frames.append)
+
+        def send_attach() -> None:
+            channel.send(
+                json.dumps(
+                    {
+                        "type": "attach",
+                        "v": 1,
+                        "controller_key": key,
+                        "role": "auxiliary",
+                    }
+                )
+            )
+
+        channel.on("open", send_attach)
+
+        async def next_frame() -> str | bytes | None:
+            await await_until(
+                lambda: bool(frames) or channel.readyState == "closed",
+                timeout=5.0,
+                description="rigctl frame or channel close",
+            )
+            return frames.pop(0) if frames else None
+
+        ack = await next_frame()
+        reply = None
+        if isinstance(ack, str) and json.loads(ack) == {
+            "type": "attached",
+            "v": 1,
+            "channel": "rigctl",
+        }:
+            channel.send("f\n")
+            reply = await next_frame()
+
+        await peer.heartbeat()
+        assert not stack.sim.ptt_on and not stack.sim.ptt_transitions
+        unknown_label = "WebRTC: closing unknown data channel 'rigctl'"
+        reason = next(
+            (message for message in caplog.messages if message == unknown_label),
+            channel.readyState,
+        )
+        # This assertion flips from RED (unknown-label close, no reply) to
+        # GREEN when the carrier attaches and returns the simulator's frequency.
+        assert reply == "14074000\n", (
+            f"rigctl attach={ack!r}, reply={reply!r}: {reason}"
+        )
+    finally:
+        await peer.close()
+        await _tear_down_stack(stack)
+
+
+# MOR-4691 v1 wire fixtures, shared with the Pro offerer. JSON spacing and
+# member order are incidental. The KEY is a fixture, never a live grant.
+RIGCTL_ATTACH_V1 = '{"type":"attach","v":1,"controller_key":"KEY","role":"auxiliary"}'
+RIGCTL_ATTACHED_V1 = '{"type":"attached","v":1,"channel":"rigctl"}'
+RIGCTL_ATTACH_ERROR_V1 = (
+    '{"type":"attach_error","v":1,"channel":"rigctl","code":"rigctl_busy"}'
+)
+
+
+def test_rigctl_attach_wire_v1() -> None:
+    params = ClientChannelParams("KEY", "auxiliary", state_delta=2, rigctl_version=1)
+    ack = ChannelAttachedAck("rigctl")
+    refused = RigctlAttachErrorV1("rigctl_busy")
+    assert (
+        ClientChannelParams.from_rigctl_attach_frame(RIGCTL_ATTACH_V1.encode())
+        == params
+    )
+    assert decode_rigctl_attach_result(RIGCTL_ATTACHED_V1) == ack
+    assert decode_rigctl_attach_result(RIGCTL_ATTACH_ERROR_V1) == refused
+    assert json.loads(params.to_attach_frame()) == json.loads(RIGCTL_ATTACH_V1)
+    assert json.loads(ack.encode()) == json.loads(RIGCTL_ATTACHED_V1)
+    assert json.loads(refused.encode()) == json.loads(RIGCTL_ATTACH_ERROR_V1)
+    with pytest.raises(ValueError, match="int 'v'"):
+        ClientChannelParams.from_rigctl_attach_frame(
+            RIGCTL_ATTACH_V1.replace('"v":1', '"v":true').encode()
+        )
+
+
+def test_rigctl_wire_receivers_skip_unknown_kinds_and_keep_unknown_enum_values() -> (
+    None
+):
+    future = '{"type":"future_notice","checked":false}'
+    assert ClientChannelParams.from_rigctl_attach_frame(future.encode()) is None
+    assert decode_rigctl_attach_result(future) is None
+    params = ClientChannelParams.from_rigctl_attach_frame(
+        RIGCTL_ATTACH_V1.replace("auxiliary", "future_role").encode()
+    )
+    assert params is not None and params.controller_role == "future_role"
+    result = decode_rigctl_attach_result(
+        RIGCTL_ATTACH_ERROR_V1.replace("rigctl_busy", "future_code")
+    )
+    assert isinstance(result, RigctlAttachErrorV1) and result.code == "future_code"
+    with pytest.raises(ValueError, match="invalid outbound"):
+        params.to_attach_frame()
+    with pytest.raises(ValueError, match="unsupported rigctl attach error"):
+        result.encode()
+    status = WebRtcTransportStatus.from_json(
+        {"available": True, "enabled": True, "rigctl_versions": [99, 1]}
+    )
+    assert status.rigctl_versions == (99, 1)
+    assert status.select_rigctl_version() == 1
+
+
+class _DcRigctlClient:
+    def __init__(self, peer: _DcControlClient) -> None:
+        self.channel = peer._pc.createDataChannel("rigctl", ordered=True)  # noqa: SLF001
+        self.frames: asyncio.Queue[str] = asyncio.Queue()
+        self.channel.on("message", self.frames.put_nowait)
+
+    async def attach(self, key: str, *, version: int = 1) -> object:
+        await await_until(
+            lambda: self.channel.readyState == "open", timeout=5, description="CAT open"
+        )
+        self.channel.send('{"type":"future_notice"}')
+        self.channel.send(
+            json.dumps(
+                {**json.loads(RIGCTL_ATTACH_V1), "controller_key": key, "v": version}
+            )
+        )
+        return decode_rigctl_attach_result(await self.reply())
+
+    async def reply(self) -> str:
+        return await asyncio.wait_for(self.frames.get(), 5)
+
+    async def key(self) -> None:
+        self.channel.send("T 1\n")
+        assert await self.reply() == "RPRT 0\n"
+
+
+@_webrtc
+async def test_rigctl_whole_peer_loss_uses_controller_owner_disconnect(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stack = await _stand_up_stack(tmp_path)
+    peer = _DcControlClient()
+    retired: list[str] = []
+
+    async def record_cat_retirement(owner: str) -> None:
+        # Isolate controller-session release from the CAT-only handback.
+        retired.append(owner)
+
+    monkeypatch.setattr(stack.rigctld, "_release_session_tx", record_cat_retirement)
+    try:
+        await peer.connect_via_http(stack.web.port, host_only=True)
+        key = await _acquire_session(stack.web.port)
+        await peer.attach(key)
+        cat = _DcRigctlClient(peer)
+        assert await cat.attach(key) == ChannelAttachedAck("rigctl")
+        await cat.key()
+        await await_until(lambda: stack.sim.ptt_on, timeout=5, description="fake keyed")
+        owner = stack.composition.authority.tx_holder_nowait()
+        assert owner is not None
+        await peer.heartbeat()
+        await peer._pc.close()  # noqa: SLF001 — lose SCTP and all its channels
+        await await_until(
+            lambda: not stack.sim.ptt_on, timeout=3, description="peer-loss RX"
+        )
+        assert not stack.web._controller.is_session_owner(owner)  # noqa: SLF001
+        await await_until(
+            lambda: retired == [owner], timeout=3, description="CAT retired"
+        )
+    finally:
+        await peer.close()
+        await _tear_down_stack(stack)
+
+
+@_webrtc
+@pytest.mark.parametrize("source", ["cat", "control", "pending_unkey"])
+async def test_rigctl_only_close_releases_cat_hold_and_keeps_primary(
+    tmp_path: Path, source: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stack = await _stand_up_stack(tmp_path)
+    peer = _DcControlClient()
+    try:
+        await peer.connect_via_http(stack.web.port, host_only=True)
+        key = await _acquire_session(stack.web.port)
+        await peer.attach(key)
+        cat = _DcRigctlClient(peer)
+        assert await cat.attach(key) == ChannelAttachedAck("rigctl")
+        if source == "control":
+            assert (await peer.command("key", "ptt_on"))["ok"] is True
+            cat.channel.send("f\r\n")
+            assert await cat.reply() == "14074000\n"
+        else:
+            await cat.key()
+        await await_until(lambda: stack.sim.ptt_on, timeout=5, description="fake keyed")
+        if source == "pending_unkey":
+            started = asyncio.Event()
+
+            def hold_submission(
+                on: bool, *_args: Any, **_kwargs: Any
+            ) -> asyncio.Task[bool]:
+                assert on is False
+                started.set()
+                return asyncio.create_task(asyncio.Event().wait())
+
+            monkeypatch.setattr(
+                stack.composition.authority, "start_ptt_submission", hold_submission
+            )
+            cat.channel.send("T 0\n")
+            await asyncio.wait_for(started.wait(), 3)
+        cat.channel.close()
+        await await_until(
+            lambda: _registered(stack, "rigctl") == 0,
+            timeout=3,
+            description="CAT retired",
+        )
+        assert stack.sim.ptt_on is (source == "control")
+        await peer.heartbeat()
+        if source == "control":
+            assert (await peer.command("unkey", "ptt_off"))["ok"] is True
+    finally:
+        await peer.close()
+        await _tear_down_stack(stack)
+
+
+@_webrtc
+@pytest.mark.parametrize("bad_frame", [b"f\n", "f"])
+async def test_rigctl_framing_closes_only_cat_and_releases_its_hold(
+    tmp_path: Path, bad_frame: str | bytes
+) -> None:
+    stack = await _stand_up_stack(tmp_path)
+    peer = _DcControlClient()
+    try:
+        await peer.connect_via_http(stack.web.port, host_only=True)
+        key = await _acquire_session(stack.web.port)
+        await peer.attach(key)
+        cat = _DcRigctlClient(peer)
+        assert await cat.attach(key) == ChannelAttachedAck("rigctl")
+        await cat.key()
+        await await_until(lambda: stack.sim.ptt_on, timeout=5, description="fake keyed")
+        cat.channel.send(bad_frame)
+        await _channel_closed(cat.channel, timeout=3)
+        await await_until(
+            lambda: not stack.sim.ptt_on, timeout=3, description="CAT-loss RX"
+        )
+        await peer.heartbeat()
+        replacement = _DcRigctlClient(peer)
+        assert await replacement.attach(key) == ChannelAttachedAck("rigctl")
+    finally:
+        await peer.close()
+        await _tear_down_stack(stack)
+
+
+class _BufferedCatChannel(_FakeChannel):
+    bufferedAmount = 0
+    bufferedAmountLowThreshold = 0
+    track_buffered_amount = False
+
+    def send(self, data: str | bytes) -> None:
+        super().send(data)
+        if self.track_buffered_amount:
+            self.bufferedAmount += len(data.encode() if isinstance(data, str) else data)
+
+    def drain(self) -> None:
+        self.bufferedAmount = 0
+        for listener in self._listeners.get("bufferedamountlow", []):
+            listener()
+
+
+@dataclass
+class _CatLimitPath:
+    clock: VirtualClock
+    cat: _BufferedCatChannel
+    control: _FakeChannel
+    attach: str
+    tx: Any
+    owner: str
+    server: RigctldServer
+    commands: asyncio.Event
+    admit_unkey: asyncio.Event
+    reply: str = "14074000\n"
+
+    async def key_cat(self) -> None:
+        self.cat.deliver(self.attach)
+        await self.clock.elapse(0)
+        assert len(self.cat.sent) == 1
+        assert json.loads(self.cat.sent[0]) == json.loads(RIGCTL_ATTACHED_V1)
+        self.cat.deliver("T 1\n")
+        await self.clock.elapse(0)
+        assert self.cat.sent[1:] == ["RPRT 0\n"]
+        assert self.tx.tx_holder_nowait() == self.owner
+
+    async def key_control(self) -> None:
+        self.control.deliver('{"type":"cmd","id":"key","name":"ptt_on"}')
+        await self.clock.elapse(0)
+        responses = [json.loads(frame) for frame in self.control.sent]
+        assert any(frame.get("id") == "key" and frame["ok"] for frame in responses)
+        assert self.tx.tx_holder_nowait() == self.owner
+
+    async def assert_control_works(self) -> None:
+        self.control.sent.clear()
+        self.control.deliver('{"type":"ping"}')
+        await self.clock.elapse(0)
+        assert self.control.readyState == "open"
+        assert {"type": "pong"} in [json.loads(frame) for frame in self.control.sent]
+
+    async def assert_cat_retired(self) -> None:
+        await self.clock.elapse(0)
+        assert self.cat.readyState == "closed"
+        assert not self.server._client_tasks  # noqa: SLF001
+
+    async def assert_cat_handed_back(self) -> None:
+        await self.assert_cat_retired()
+        self.tx.owner_disconnect.assert_awaited_once_with(self.owner)
+        assert self.tx.tx_holder_nowait() is None
+        await self.assert_control_works()
+
+
+@pytest.fixture
+async def cat_limit_path(
+    monkeypatch: pytest.MonkeyPatch, virtual_clock: VirtualClock
+) -> AsyncIterator[_CatLimitPath]:
+    web = WebServer(config=WebConfig(webrtc_enabled=True, radio_model="IC-7610"))
+    controller = web._controller  # noqa: SLF001
+    monkeypatch.setattr(controller, "_clock", virtual_clock)
+    radio = SimpleNamespace(
+        connected=True, radio_ready=True, _controller_authority=controller
+    )
+    monkeypatch.setattr(web, "_radio", radio)
+    tx = Mock(spec=ManagedTxAuthority)
+    tx.tx_holder_nowait.return_value = None
+    monkeypatch.setattr(web, "_managed_tx_authority", lambda: tx)
+    monkeypatch.setattr(
+        web, "current_managed_tx_document", AsyncMock(return_value=None)
+    )
+
+    async def disconnect(owner: str) -> ManagedTxOutcome:
+        if tx.tx_holder_nowait() == owner:
+            tx.tx_holder_nowait.return_value = None
+        return ManagedTxOutcome.ACCEPTED
+
+    tx.owner_disconnect.side_effect = disconnect
+
+    admit_unkey = asyncio.Event()
+    admit_unkey.set()
+
+    async def submit(on: bool, owner: str) -> ManagedTxSubmission:
+        if not on:
+            await admit_unkey.wait()
+        if not on and tx.tx_holder_nowait() != owner:
+            outcome = ManagedTxOutcome.REJECTED
+        else:
+            tx.tx_holder_nowait.return_value = owner if on else None
+            outcome = ManagedTxOutcome.ACCEPTED
+        transition = ManagedTxTransition(ManagedTxState(), outcome)
+
+        async def settle() -> tuple[ManagedTxTransition, None]:
+            return transition, None
+
+        return ManagedTxSubmission(transition, asyncio.create_task(settle()))
+
+    def start_submission(
+        on: bool, owner: str, **_kwargs: Any
+    ) -> asyncio.Task[ManagedTxSubmission]:
+        return asyncio.create_task(submit(on, owner))
+
+    async def enqueue_control_key(
+        *, submission: asyncio.Task[ManagedTxSubmission], **_kwargs: Any
+    ) -> ManagedTxSubmission:
+        return await submission
+
+    tx.start_ptt_submission.side_effect = start_submission
+    monkeypatch.setattr(web, "enqueue_managed_positive_tx", enqueue_control_key)
+
+    async def execute(
+        cmd: RigctldCommand,
+        *,
+        ptt_submission: asyncio.Task[ManagedTxSubmission] | None = None,
+        **_kwargs: Any,
+    ) -> RigctldResponse:
+        if cmd.long_cmd == "set_ptt":
+            assert ptt_submission is not None
+            receipt = await ptt_submission
+            if receipt.outcome is ManagedTxOutcome.REJECTED:
+                return RigctldResponse(error=HamlibError.ERJCTED)
+        return RigctldResponse()
+
+    def format_response(
+        cmd: RigctldCommand, response: RigctldResponse, session: Any
+    ) -> bytes:
+        if cmd.long_cmd == "get_freq":
+            return path.reply.encode()
+        return rigctld_protocol.format_response(cmd, response, session)
+
+    server = RigctldServer(
+        Mock(spec=IcomRadio),
+        _protocol=SimpleNamespace(
+            parse_line=rigctld_protocol.parse_line,
+            format_response=format_response,
+            format_error=rigctld_protocol.format_error,
+        ),
+        _handler=SimpleNamespace(
+            execute=execute, release_session_tx=tx.owner_disconnect
+        ),
+        clock=virtual_clock,
+    )
+    queue = web.command_queue
+    generation = object()
+    queue.bind_connection_generation(lambda: generation)
+    monkeypatch.setattr(server, "_managed_tx_authority", tx)
+    monkeypatch.setattr(server, "_command_queue", queue)
+    monkeypatch.setattr(server, "_server", Mock(spec=asyncio.Server))
+    read_line = server._readline  # noqa: SLF001
+
+    async def gated_readline(reader: asyncio.StreamReader) -> bytes | None:
+        await path.commands.wait()
+        return await read_line(reader)
+
+    monkeypatch.setattr(server, "_readline", gated_readline)
+    web.attach_rigctl_channel(server.open_channel)
+    manager = web._webrtc_session_manager()  # noqa: SLF001
+    pc = Mock(connectionState="connected", close=AsyncMock())
+    peer = webrtc_session._Session(pc)  # noqa: SLF001
+    manager._sessions["peer"] = peer  # noqa: SLF001
+    key = controller.acquire("pro")["controller_key"]
+    assert isinstance(key, str)
+    owner = controller.credential(key).tx_owner
+    assert owner is not None
+    cat, control = _BufferedCatChannel("rigctl"), _FakeChannel("control")
+    attach = RIGCTL_ATTACH_V1.replace('"KEY"', json.dumps(key))
+    path = _CatLimitPath(
+        virtual_clock,
+        cat,
+        control,
+        attach,
+        tx,
+        owner,
+        server,
+        asyncio.Event(),
+        admit_unkey,
+    )
+    path.commands.set()
+
+    try:
+        manager._dispatch_channel("peer", peer, control)  # type: ignore[arg-type]  # noqa: SLF001
+        control.deliver(_attach_text("control", key))
+        await path.assert_control_works()
+        manager._dispatch_channel("peer", peer, cat)  # type: ignore[arg-type]  # noqa: SLF001
+        yield path
+    finally:
+        cat.close()
+        control.close()
+        path.commands.set()
+        path.admit_unkey.set()
+        await manager.close_all()
+        controller.revoke()
+        await controller.settle()
+        monkeypatch.setattr(server, "_server", None)
+        assert not server._client_tasks  # noqa: SLF001
+
+
+async def test_rigctl_redundant_unkey_preserves_later_control_key(
+    cat_limit_path: _CatLimitPath,
+) -> None:
+    path = cat_limit_path
+    await path.key_cat()
+    path.cat.deliver("T 0\n")
+    await path.clock.elapse(0)
+    assert path.cat.sent[-1] == "RPRT 0\n"
+    assert path.tx.tx_holder_nowait() is None
+    path.cat.deliver("T 0\n")
+    await path.clock.elapse(0)
+    assert path.cat.sent[-1] == "RPRT -9\n"
+
+    await path.key_control()
+    path.cat.close()
+    await path.assert_cat_retired()
+    path.tx.owner_disconnect.assert_not_awaited()
+    assert path.tx.tx_holder_nowait() == path.owner
+    await path.assert_control_works()
+
+
+async def test_rigctl_quit_waits_for_unkey_admission(
+    cat_limit_path: _CatLimitPath,
+) -> None:
+    path = cat_limit_path
+    await path.key_cat()
+    path.admit_unkey.clear()
+    path.cat.deliver("T 0\nq\n")
+    await path.clock.elapse(0)
+    assert path.cat.readyState == "open"
+    assert path.cat.sent[1:] == ["RPRT 0\n"]
+    assert path.tx.tx_holder_nowait() == path.owner
+
+    path.admit_unkey.set()
+    await path.assert_cat_retired()
+    assert path.cat.sent[1:] == ["RPRT 0\n", "RPRT 0\n"]
+    assert path.tx.tx_holder_nowait() is None
+    path.tx.owner_disconnect.assert_not_awaited()
+    await path.assert_control_works()
+
+
+async def test_rigctl_oversized_valid_batch_closes_cat(
+    cat_limit_path: _CatLimitPath,
+) -> None:
+    path = cat_limit_path
+    await path.key_cat()
+    line = "f" + " " * 510 + "\n"
+    lines_at_limit = RIGCTL_MAX_FRAME_BYTES // len(line)
+    path.cat.deliver(line * lines_at_limit)
+    await path.clock.elapse(0)
+    assert path.cat.sent[2:] == [path.reply] * lines_at_limit
+    path.cat.deliver(line * (lines_at_limit + 1))
+    await path.assert_cat_handed_back()
+
+
+@pytest.mark.parametrize("queued", [True, False], ids=["queued", "ack-blocked"])
+async def test_rigctl_rejects_cat_before_attach_result(
+    cat_limit_path: _CatLimitPath, queued: bool
+) -> None:
+    path = cat_limit_path
+    await path.key_control()
+    if not queued:
+        path.cat.bufferedAmount = RIGCTL_MAX_FRAME_BYTES + 1
+    path.cat.deliver(path.attach)
+    if not queued:
+        await path.clock.elapse(0)
+        assert path.cat.sent == []
+        assert path.cat.bufferedAmountLowThreshold == RIGCTL_MAX_FRAME_BYTES
+    path.cat.deliver("T 0\n")
+    await path.assert_cat_retired()
+    assert [decode_rigctl_attach_result(frame) for frame in path.cat.sent] == (
+        [RigctlAttachErrorV1("invalid_attach")] if queued else []
+    )
+    path.tx.owner_disconnect.assert_not_awaited()
+    assert path.tx.tx_holder_nowait() == path.owner
+    await path.assert_control_works()
+
+
+async def test_rigctl_served_frame_queue_overflow(
+    cat_limit_path: _CatLimitPath,
+) -> None:
+    path = cat_limit_path
+    await path.key_cat()
+    for _ in range(webrtc.MAX_FRAMES_BEFORE_SERVE):
+        path.cat.deliver("f\n")
+    assert path.cat.readyState == "open"
+    path.cat.deliver("f\n")
+    # The receive queue must close synchronously, before the command pump runs.
+    assert path.cat.readyState == "closed"
+    await path.assert_cat_handed_back()
+
+
+async def test_rigctl_command_queue_overflow(cat_limit_path: _CatLimitPath) -> None:
+    path = cat_limit_path
+    await path.key_cat()
+    path.commands.clear()
+    # Wake the already-parked read once, then park it before the test batch.
+    path.cat.deliver("f\n")
+    await path.clock.elapse(0)
+    assert path.cat.sent[-1] == path.reply
+    path.cat.deliver("f\n" * rigctl._MAX_QUEUED_LINES)  # noqa: SLF001
+    await path.clock.elapse(0)
+    assert path.cat.readyState == "open"
+    path.cat.deliver("f\n")
+    await path.assert_cat_handed_back()
+
+
+async def test_rigctl_reply_chunks_preserve_utf8(cat_limit_path: _CatLimitPath) -> None:
+    path = cat_limit_path
+    await path.key_cat()
+    first_chunk = "x" * (RIGCTL_MAX_FRAME_BYTES - 1)
+    path.reply = first_chunk + "é\n"
+    path.cat.track_buffered_amount = True
+    path.cat.bufferedAmount = RIGCTL_MAX_FRAME_BYTES
+    path.cat.deliver("f\n")
+    await path.clock.elapse(0)
+    assert path.cat.readyState == "open"
+    assert path.cat.sent[2:] == [first_chunk]
+    path.cat.drain()
+    await path.clock.elapse(0)
+    assert path.cat.sent[2:] == [first_chunk, "é\n"]
+    path.cat.close()
+    await path.assert_cat_handed_back()
+
+
+async def test_rigctl_reply_buffer_overflow(cat_limit_path: _CatLimitPath) -> None:
+    path = cat_limit_path
+    await path.key_cat()
+    path.reply = "x" * (4 * RIGCTL_MAX_FRAME_BYTES) + "\n"
+    path.cat.deliver("f\n")
+    await path.assert_cat_handed_back()
+    assert path.cat.sent[2:] == []
+
+
+async def test_rigctl_stalled_write_times_out(cat_limit_path: _CatLimitPath) -> None:
+    path = cat_limit_path
+    await path.key_cat()
+    path.cat.bufferedAmount = RIGCTL_MAX_FRAME_BYTES + 1
+    path.cat.deliver("f\n")
+    await path.clock.elapse(0.5)
+    assert path.cat.readyState == "open"
+    assert path.cat.sent[2:] == []
+    assert path.tx.tx_holder_nowait() == path.owner
+    await path.assert_control_works()
+    await path.clock.elapse(0.5)
+    await path.assert_cat_handed_back()
+    assert path.cat.sent[2:] == []
+
+
+@_webrtc
+async def test_rigctl_capability_and_attach_refusals(tmp_path: Path) -> None:
+    stack = await _stand_up_stack(tmp_path)
+    peer, other = _DcControlClient(), _DcControlClient()
+    try:
+        status, _, body = await _http_get(
+            "127.0.0.1", stack.web.port, "/api/v1/capabilities"
+        )
+        assert status == 200
+        assert json.loads(body)["webrtc"]["rigctl_versions"] == [1]
+        await peer.connect_via_http(stack.web.port, host_only=True)
+        await other.connect_via_http(stack.web.port, host_only=True)
+        key = await _acquire_session(stack.web.port)
+        await peer.attach(key)
+        assert await _DcRigctlClient(other).attach(key) == RigctlAttachErrorV1(
+            "controller_primary_required"
+        )
+        assert await _DcRigctlClient(peer).attach(
+            key, version=99
+        ) == RigctlAttachErrorV1("unsupported_version")
+        cat = _DcRigctlClient(peer)
+        assert await cat.attach(key) == ChannelAttachedAck("rigctl")
+        assert await _DcRigctlClient(peer).attach(key) == RigctlAttachErrorV1(
+            "rigctl_busy"
+        )
+        cat.channel.send("f\n")
+        assert await cat.reply() == "14074000\n"
+        assert not stack.sim.ptt_transitions
+    finally:
+        await other.close()
+        await peer.close()
+        await _tear_down_stack(stack)
 
 
 @_webrtc

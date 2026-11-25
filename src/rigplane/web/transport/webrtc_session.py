@@ -44,14 +44,18 @@ import asyncio
 import contextlib
 import logging
 import uuid
-from typing import TYPE_CHECKING, Any, Final, cast
+from enum import StrEnum
+from typing import TYPE_CHECKING, Any, Final
 
 from ...runtime.controller_authority import ControllerError  # noqa: TID251
 from ...ws import WS_OP_TEXT  # noqa: TID251
 from ..channel_attach import (  # noqa: TID251
     ATTACH_ACK_KINDS,
+    RIGCTL_VERSIONS,
     ChannelKind,
     ClientChannelParams,
+    RigctlAttachErrorCode,
+    RigctlAttachErrorV1,
     data_channel_spec,
 )
 from .webrtc_contract import IceCandidateInit, WebRtcAnswer  # noqa: TID251
@@ -94,23 +98,37 @@ class WebRtcSessionError(RuntimeError):
     """Raised when a session operation fails (bad SDP, unknown session)."""
 
 
+class _AnswererCloseReason(StrEnum):
+    PEER_FAILED = "peer_failed"
+    PEER_CLOSED = "peer_closed"
+    NEGOTIATION_FAILED = "negotiation_failed"
+    CLOSE_REQUESTED = "close_requested"
+    CLOSE_ALL = "close_all"
+
+
 class _Session:
     """One live peer: its ``RTCPeerConnection`` plus spawned handler tasks."""
 
     def __init__(self, pc: RTCPeerConnection) -> None:
         self.pc = pc
-        self.tasks: list[asyncio.Task[None]] = []
-        # Controller session owners attached through this peer's channels.
-        # A ``disconnected``/``failed`` peer fences these immediately.
-        self.controller_owners: set[str] = set()
+        self.tasks: set[asyncio.Task[None]] = set()
+        # Each attachment tracks its own owners, even when siblings share a key.
+        self.controller_owners: dict[WebRtcDataChannelConnection, set[str]] = {}
+        # MOR-4676: the peer's audio attachments, so the fence ends the
+        # peer's audio sender even when it holds no controller owner
+        # (remote mode mints ownerless tickets, leaving the owner sets
+        # empty and the fence with no session to end).
+        self.audio_conns: set[WebRtcDataChannelConnection] = set()
+        self.primary_controls: set[WebRtcDataChannelConnection] = set()
         # The split-kind half (scope/audio) waiting for its partner, at most
         # ONE per (kind, carriage); it already queues its frames.
         self.unpaired: dict[tuple[str, str], WebRtcDataChannelConnection] = {}
 
     async def close(self) -> None:
-        for task in self.tasks:
+        tasks = tuple(self.tasks)
+        for task in tasks:
             task.cancel()
-        for task in self.tasks:
+        for task in tasks:
             try:
                 await task
             except (asyncio.CancelledError, Exception):  # noqa: BLE001
@@ -207,10 +225,13 @@ class WebRtcSessionManager:
 
         @pc.on("connectionstatechange")  # type: ignore[misc, no-untyped-call, untyped-decorator]
         async def _on_state() -> None:
-            if pc.connectionState in ("disconnected", "failed"):
+            state = pc.connectionState
+            if state == "disconnected":
                 self._fence_peer(session_id)
-            if pc.connectionState in ("closed", "failed"):
-                await self._drop(session_id)
+            elif state == "failed":
+                await self._drop(session_id, _AnswererCloseReason.PEER_FAILED)
+            elif state == "closed":
+                await self._drop(session_id, _AnswererCloseReason.PEER_CLOSED)
 
         try:
             policy = (
@@ -225,12 +246,12 @@ class WebRtcSessionManager:
                 await pc.setLocalDescription(answer)
         except Exception as exc:
             logger.warning("WebRTC session negotiation failed: %s", exc)
-            await self._drop(session_id)
+            await self._drop(session_id, _AnswererCloseReason.NEGOTIATION_FAILED)
             raise WebRtcSessionError(f"Failed to process SDP offer: {exc}") from exc
 
         local_desc = pc.localDescription
         if local_desc is None:  # pragma: no cover - defensive
-            await self._drop(session_id)
+            await self._drop(session_id, _AnswererCloseReason.NEGOTIATION_FAILED)
             raise WebRtcSessionError("Failed to generate SDP answer.")
 
         logger.info("WebRTC session %s negotiated (answer generated)", session_id)
@@ -272,22 +293,53 @@ class WebRtcSessionManager:
         except Exception as exc:
             raise WebRtcSessionError(f"Failed to add ICE candidate: {exc}") from exc
 
-    async def close_all(self) -> None:
-        """Tear down every live session (server shutdown)."""
-        sessions = list(self._sessions.values())
+    async def close_all(self) -> list[str]:
+        """Tear down every live session; return the ids whose teardown completed.
+
+        The one teardown path for the whole peer set: Core shutdown and
+        the ``close`` route's close-all form both end here. A session whose
+        teardown raised is logged and left out of the returned ids.
+        """
+        sessions = list(self._sessions.items())
+        for session_id, _ in sessions:
+            self._log_close(session_id, _AnswererCloseReason.CLOSE_ALL)
+            self._fence_peer(session_id)
         self._sessions.clear()
-        for session in sessions:
+        closed: list[str] = []
+        for session_id, session in sessions:
             try:
                 await session.close()
             except Exception:  # noqa: BLE001 - best-effort shutdown
                 logger.debug("session close failed", exc_info=True)
+                continue
+            closed.append(session_id)
+        return closed
+
+    async def close_session(self, session_id: str) -> None:
+        """Tear down one live session through the existing drop path.
+
+        Raises :class:`WebRtcSessionError` for an unknown session, like
+        :meth:`add_ice_candidate`.
+        """
+        if session_id not in self._sessions:
+            raise WebRtcSessionError(f"Unknown session: {session_id}")
+        await self._drop(session_id, _AnswererCloseReason.CLOSE_REQUESTED)
 
     @property
     def active_session_ids(self) -> list[str]:
         """Session ids currently held (test/diagnostic visibility)."""
         return list(self._sessions)
 
-    async def _drop(self, session_id: str) -> None:
+    @staticmethod
+    def _log_close(session_id: str, reason: _AnswererCloseReason) -> None:
+        logger.info(
+            "WebRTC session %s closing on answerer: %s", session_id, reason.value
+        )
+
+    async def _drop(self, session_id: str, reason: _AnswererCloseReason) -> None:
+        if session_id in self._sessions:
+            self._log_close(session_id, reason)
+        self._fence_peer(session_id)
         session = self._sessions.pop(session_id, None)
         if session is not None:
             await session.close()
@@ -308,16 +360,36 @@ class WebRtcSessionManager:
         expiry watchdog calls: their channels close and the transmitter
         they hold is released. Unknown or already-ended owners are a
         no-op inside ``_end_session``.
+
+        MOR-4676: the peer's own audio attachments end here too, even
+        when they hold no controller owner (remote mode mints ownerless
+        tickets, so the owner sets above are empty and there is no
+        session to end). A peer whose lossy audio channels died without
+        a close event would otherwise keep its audio sender and its bus
+        subscription while the grant stays refreshed. Aborting the
+        connection runs that attachment's normal exit path (sender
+        cancelled, unsubscribe, unregister); a live peer sees the close
+        and re-attaches.
         """
         session = self._sessions.get(session_id)
         server = self._server
         if session is None or server is None:
             return
-        for owner in tuple(session.controller_owners):
+        owners = {
+            owner
+            for attachment_owners in session.controller_owners.values()
+            for owner in attachment_owners
+        }
+        for owner in owners:
             try:
                 server._controller._end_session(owner)  # noqa: SLF001
             except Exception:
                 logger.debug("webrtc: fence failed", exc_info=True)
+        for conn in tuple(session.audio_conns):
+            try:
+                conn.abort()
+            except Exception:
+                logger.debug("webrtc: fence audio abort failed", exc_info=True)
 
     def _dispatch_channel(
         self, session_id: str, session: _Session, channel: RTCDataChannel
@@ -334,12 +406,32 @@ class WebRtcSessionManager:
         before its partner (the attach frame included) is kept. A half
         whose partner does not arrive within the attach bound is closed,
         and so is a channel whose label is outside the channel set.
+
+        A channel that arrives for a session already removed from the
+        registry (its teardown is in progress: :meth:`_drop` and
+        :meth:`close_all` remove a session before awaiting its handlers)
+        is closed without a handler, so nothing is dispatched on a peer
+        being closed and its teardown never waits on a late handler.
         """
+        if self._sessions.get(session_id) is not session:
+            logger.info(
+                "WebRTC: closing %r channel of a session being closed", channel.label
+            )
+            with contextlib.suppress(Exception):
+                channel.close()
+            return
         spec = data_channel_spec(channel.label)
         if spec is None:
             logger.info("WebRTC: closing unknown data channel %r", channel.label)
             with contextlib.suppress(Exception):
                 channel.close()
+            return
+        if spec.kind == "rigctl" and (
+            not channel.ordered
+            or channel.maxRetransmits is not None
+            or channel.maxPacketLifeTime is not None
+        ):
+            channel.close()
             return
         if spec.carries == "all":
             conn = WebRtcDataChannelConnection(channel, session.pc)
@@ -364,11 +456,22 @@ class WebRtcSessionManager:
                 return
             conn = partner
             conn.add_partner(channel, partner_is_text=spec.carries == "text")
-        session.tasks.append(
-            asyncio.ensure_future(
-                self._attach_and_serve(session_id, session, conn, spec.kind)
-            )
+        task = asyncio.create_task(
+            self._attach_and_serve(session_id, session, conn, spec.kind)
         )
+        session.tasks.add(task)
+        task.add_done_callback(session.tasks.discard)
+
+    @staticmethod
+    async def _refuse_rigctl(
+        conn: WebRtcDataChannelConnection, code: RigctlAttachErrorCode
+    ) -> None:
+        try:
+            await conn.send_text(RigctlAttachErrorV1(code).encode())
+        except (EOFError, OSError):
+            pass
+        finally:
+            await conn.close(1008, code)
 
     @staticmethod
     def _close_unpaired(
@@ -387,7 +490,7 @@ class WebRtcSessionManager:
         session_id: str,
         session: _Session,
         conn: WebRtcDataChannelConnection,
-        kind_label: str,
+        kind: ChannelKind,
     ) -> None:
         """Read the attach frame, then serve the channel through the shared path.
 
@@ -409,8 +512,6 @@ class WebRtcSessionManager:
         channel and re-checked until control attaches; the 5 s attach
         bound covers the whole wait.
         """
-        # Validated against the channel set by _dispatch_channel.
-        kind = cast(ChannelKind, kind_label)
         server = self._server
         if server is None:
             logger.warning("WebRTC: no server for data channel %r; closing", kind)
@@ -421,26 +522,70 @@ class WebRtcSessionManager:
         deadline = loop.time() + _ATTACH_TIMEOUT_S
         try:
             async with asyncio.timeout_at(deadline):
-                opcode, payload = await conn.recv()
+                while True:
+                    opcode, payload = await conn.recv()
+                    if opcode != WS_OP_TEXT:
+                        raise ValueError("attach frame must be text")
+                    if kind == "rigctl":
+                        params = ClientChannelParams.from_rigctl_attach_frame(payload)
+                        if params is None:
+                            continue
+                    else:
+                        params = ClientChannelParams.from_attach_frame(
+                            payload, require_key=kind != "api"
+                        )
+                    break
         except (TimeoutError, EOFError):
             with contextlib.suppress(Exception):
                 await conn.close(1000, "no attach frame")
             return
-        if opcode != WS_OP_TEXT:
-            with contextlib.suppress(Exception):
-                await conn.close(1003, "attach frame must be text")
-            return
-        try:
-            params = ClientChannelParams.from_attach_frame(
-                payload, require_key=kind != "api"
-            )
         except ValueError as exc:
             logger.info("WebRTC: bad attach frame on %r: %s", kind, exc)
-            with contextlib.suppress(Exception):
+            if kind == "rigctl":
+                await self._refuse_rigctl(conn, "invalid_attach")
+            else:
                 await conn.close(1008, "bad attach frame")
             return
+        if kind == "rigctl":
+            try:
+                grant = server._controller.credential(params.controller_key)  # noqa: SLF001
+            except ControllerError:
+                await self._refuse_rigctl(conn, "controller_invalid")
+                return
+            refusal: RigctlAttachErrorCode | None = None
+            if not conn.begin_rigctl_admission():
+                refusal = "invalid_attach"
+            elif params.rigctl_version not in RIGCTL_VERSIONS:
+                refusal = "unsupported_version"
+            elif grant.tx_owner is None:
+                refusal = "controller_invalid"
+            elif not any(
+                primary.is_alive()
+                and grant.tx_owner in session.controller_owners[primary]
+                for primary in session.primary_controls
+            ):
+                refusal = "controller_primary_required"
+            if refusal is not None:
+                await self._refuse_rigctl(conn, refusal)
+                return
         while True:
             conn.serving = True  # past the attach: the handler reads freely
+            attachment_owners: set[str] = set()
+            session.controller_owners[conn] = attachment_owners
+            if kind == "audio":
+                session.audio_conns.add(conn)
+                # MOR-4676: one audio pair per peer — a newly served audio
+                # attachment supersedes a silently stale one (its lossy
+                # channels died without a close event while control stayed
+                # up, so no other teardown ends it). Aborting the stale
+                # conn runs its normal exit path (sender cancelled,
+                # unsubscribe, unregister) through the single session
+                # teardown; the live peer sees the close and re-attaches.
+                for old in tuple(session.audio_conns):
+                    if old is not conn:
+                        old.abort()
+            if kind == "control" and params.controller_role == "primary":
+                session.primary_controls.add(conn)
             try:
                 await server.attach_client_channel(
                     conn,
@@ -448,11 +593,12 @@ class WebRtcSessionManager:
                     params,
                     (session_id, 0),
                     transport="datachannel",
-                    track_owners=session.controller_owners,
+                    track_owners=attachment_owners,
                 )
             except ControllerError as exc:
                 if (
-                    kind in ATTACH_ACK_KINDS
+                    kind != "rigctl"
+                    and kind in ATTACH_ACK_KINDS
                     and exc.code == "controller_primary_required"
                     and loop.time() + _EARLY_ATTACH_RECHECK_S < deadline
                     and conn.is_alive()
@@ -462,6 +608,18 @@ class WebRtcSessionManager:
                     await asyncio.sleep(_EARLY_ATTACH_RECHECK_S)
                     continue
                 logger.info("WebRTC: data channel %r refused: %s", kind, exc.code)
-                with contextlib.suppress(Exception):
-                    await conn.close(1008, "refused")
+                if kind == "rigctl":
+                    await self._refuse_rigctl(
+                        conn,
+                        "rigctl_unavailable"
+                        if exc.code == "rigctl_unavailable"
+                        else "controller_invalid",
+                    )
+                else:
+                    with contextlib.suppress(Exception):
+                        await conn.close(1008, "refused")
+            finally:
+                session.primary_controls.discard(conn)
+                session.audio_conns.discard(conn)
+                del session.controller_owners[conn]
             return

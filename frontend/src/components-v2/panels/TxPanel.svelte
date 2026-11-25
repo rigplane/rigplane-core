@@ -30,6 +30,7 @@
   import { t } from '$lib/i18n';
   import ModInputTxWarning from './ModInputTxWarning.svelte';
   import ManagedTotControl from '../controls/ManagedTotControl.svelte';
+  import TxMicProcessingControl from '../controls/TxMicProcessingControl.svelte';
 
   let {
     showManagedTotControl = false,
@@ -187,7 +188,7 @@
     {
       latched: () => tx.snapshot().intent === 'latched',
       transmitAvailable: () => tx.snapshot().fresh,
-      latchAllowed: () => !runtime.remoteController,
+      latchAllowed: () => runtime.pttStyle !== 'momentary',
     },
     { pttOn: tx.pttOn, pttOff: tx.pttOff, transmitOn: tx.transmitOn, forceOff: tx.forceOff },
     {
@@ -227,6 +228,9 @@
   );
 
   // Settings modal
+  // The dialog must stay usable on short and bottom-anchored layouts (the
+  // phone TX settings sheet): never collapse below its header plus a row.
+  const MIN_TX_MODAL_HEIGHT = 160;
   let settingsOpen = $state(false);
   let modalStyle = $state('');
   let modalAnchor: HTMLElement | undefined = $state();
@@ -251,7 +255,22 @@
       let left = rect.left;
       if (left + w > window.innerWidth - 8) left = window.innerWidth - 8 - w;
       if (left < 8) left = 8;
-      modalStyle = `top: ${rect.bottom + 6}px; left: ${left}px; width: ${w}px;`;
+      // MOR-3845: fixed surfaces clear the shell chrome (`--rp-chrome-top`
+      // on <html>). The dialog follows its anchor, but stays inside the
+      // viewport: never above the chrome edge, never so low that less than
+      // MIN_TX_MODAL_HEIGHT remains reachable, and height-capped at what is
+      // left so the level rows and the microphone processing rows scroll
+      // (MOR-4596) instead of running past the bottom edge.
+      const chromeTop = Number.parseFloat(
+        getComputedStyle(document.documentElement).getPropertyValue('--rp-chrome-top'),
+      ) || 0;
+      const top = Math.max(
+        chromeTop + 8,
+        Math.min(rect.bottom + 6, window.innerHeight - 8 - MIN_TX_MODAL_HEIGHT),
+      );
+      modalStyle =
+        `top: ${top}px; left: ${left}px; width: ${w}px; ` +
+        `max-height: calc(100dvh - ${top + 8}px); overflow-y: auto;`;
     }
     settingsOpen = true;
   }
@@ -417,6 +436,7 @@
           renderer="hbar" displayFn={rawTxLevelDisplay} accentColor="var(--v2-accent-orange)"
           issuedStatusPresentation={driveGainStatus} variant="hardware-illuminated" />
       </div>
+      <TxMicProcessingControl />
       {#if autoLan.available}
         <!-- MOR-618: opt-in auto LAN MOD-input for web TX (default OFF) -->
         <div class="auto-lan-section">

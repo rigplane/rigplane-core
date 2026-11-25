@@ -84,3 +84,37 @@ export function loadAudioScopeGolden(name: string): { buffer: ArrayBuffer; expec
   return { buffer: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer,
     expected: JSON.parse(readFileSync(resolve(root, `${name}.json`), 'utf8')) };
 }
+
+/**
+ * MOR-4604: the socket messages the real server path sends for the audio
+ * passband subscription (tests/test_audio_scope_passband_replay.py asserts
+ * these exact documents and frame bytes).
+ */
+export type AudioPassbandReplay = {
+  case: {
+    tunedHz: number; mode: string; filterWidthHz: number; toneHz: number; sampleRateHz: number;
+    subscribe: Record<string, unknown>;
+  };
+  messages: Record<string, unknown>[];
+};
+export function loadAudioPassbandReplay(name: string): { replay: AudioPassbandReplay; frame: ArrayBuffer } {
+  const root = resolve(process.cwd(), '../tests/fixtures/audio-scope-passband');
+  const bytes = readFileSync(resolve(root, `${name}.bin`));
+  return { replay: JSON.parse(readFileSync(resolve(root, `${name}.json`), 'utf8')) as AudioPassbandReplay,
+    frame: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer };
+}
+
+/**
+ * MOR-4452: the exact /api/v1/scope wire documents the real journey produced
+ * from a trimmed SCROLL-C hardware wave (the radio's ±49.25 kHz sweep extent
+ * at the ±50 kHz preset expanded to the preset's 100 kHz window), one per
+ * Icom profile — tests/test_scroll_c_span_preset_wire_mor4452.py::
+ * test_trimmed_scroll_c_wave_streams_the_span_preset_window asserts the
+ * server sends exactly these documents.
+ */
+export function loadScrollCScopeGolden(name: 'ic705' | 'ic7300'): { buffer: ArrayBuffer; expected: ScopeWireGolden } {
+  const root = resolve(process.cwd(), '../tests/fixtures/scope-scroll-c');
+  const bytes = readFileSync(resolve(root, `${name}.bin`));
+  return { buffer: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer,
+    expected: JSON.parse(readFileSync(resolve(root, `${name}.json`), 'utf8')) };
+}

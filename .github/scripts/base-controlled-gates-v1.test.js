@@ -216,13 +216,16 @@ test('terminal topology refuses skipped success and injected or incomplete jobs'
   ];
   const ok = {ok: true, code: 'terminal_match', routeConcordance: true};
   assert.deepEqual(observer.evaluateJobTopology(run, valid, routes, false), ok);
-  // A frontend run selects quick-frontend AND its e2e matrix in full.
+  // A frontend run selects quick-frontend AND its e2e matrix in full
+  // (MOR-4685: the journey leg is itself three --shard legs).
   const both = structuredClone(valid);
   both[1] = ran('quick-frontend', frontendPool, 'mini-server-build-core-1');
   both[2] = ran('quick-frontend-e2e (visual)', frontendPool, 'mini-server-build-core-1');
   both.splice(3, 0,
     ran('quick-frontend-e2e (guards)', frontendPool, 'mini-server-build-core-2'),
-    ran('quick-frontend-e2e (journey)', frontendPool, 'mini-server-build-core-3'));
+    ran('quick-frontend-e2e (journey-1)', frontendPool, 'mini-server-build-core-3'),
+    ran('quick-frontend-e2e (journey-2)', frontendPool, 'mini-server-build-core-4'),
+    ran('quick-frontend-e2e (journey-3)', frontendPool, 'mini-server-build-core-5'));
   assert.deepEqual(observer.evaluateJobTopology(run, both, {...routes, frontend: true}, false), ok);
   const lightClassify = structuredClone(valid); lightClassify[0].labels = light; lightClassify[0].runner_name = 'mm-light-core-2';
   assert.deepEqual(observer.evaluateJobTopology(run, lightClassify, routes, false), ok);
@@ -280,6 +283,11 @@ test('terminal topology refuses skipped success and injected or incomplete jobs'
   // (a shape GitHub never produces) are all topology failures.
   const missingLeg = valid.filter((job) => job.name !== 'quick-python-tests (3)');
   assert.equal(observer.evaluateJobTopology(run, missingLeg, routes, false).code, 'route_mismatch');
+  // MOR-4685: the journey tier is three shard legs, so a frontend run
+  // missing ONE journey shard is exactly as incomplete as a missing python
+  // shard leg.
+  const missingJourneyShard = both.filter((job) => job.name !== 'quick-frontend-e2e (journey-2)');
+  assert.equal(observer.evaluateJobTopology(run, missingJourneyShard, {...routes, frontend: true}, false).code, 'route_mismatch');
   const duplicateLeg = [...valid, valid.find((job) => job.name === 'quick-python-tests (2)')];
   assert.equal(observer.evaluateJobTopology(run, duplicateLeg, routes, false).code, 'route_mismatch');
   const wrongPoolLeg = structuredClone(valid); wrongPoolLeg[4].labels = frontendPool; wrongPoolLeg[4].runner_name = 'mini-server-build-core-1';
@@ -558,6 +566,41 @@ test('stale live pull base on the workflow-run path also skips without posting',
   assert.deepEqual([result.kind, result.code, result.state, result.publish, result.targetSha], ['workflow_run', 'stale_base', 'success', false, head]);
   result = await observer.rebindForPublication({github, result});
   assert.deepEqual([result.code, result.state, result.publish], ['stale_base', 'success', false]);
+  if (result.publish) {
+    await github.request('POST /repos/{owner}/{repo}/statuses/{sha}', {});
+  }
+  assert.deepEqual(posted, []);
+});
+
+test('release-target legacy quick completion skips green without posting a status', async () => {
+  // MOR-4647: release branches carry quick.yml with branches [main,
+  // 'release/**'] (MOR-4214), so a completed release-target run fires the
+  // observer. The domain is live main by design: it skips green and publishes
+  // nothing, instead of failing both jobs as invalid_binding.
+  const base = 'b'.repeat(40); const head = 'a'.repeat(40);
+  const run = {...runPull(41, head, base), id: 9001, event: 'pull_request', status: 'completed', conclusion: 'success', workflow_id: observer.LEGACY_WORKFLOW.id, path: observer.LEGACY_WORKFLOW.path, name: observer.LEGACY_WORKFLOW.name, repository: {id: observer.REPOSITORY.id, full_name: observer.REPOSITORY.fullName}, head_repository: {id: observer.REPOSITORY.id, full_name: observer.REPOSITORY.fullName}, check_suite_id: 7};
+  run.pull_requests = [{...run.pull_requests[0], base: {...run.pull_requests[0].base, ref: 'release/3.3.x'}}];
+  assert.notEqual(observer.releaseTargetAssociation(run), null);
+  assert.equal(observer.releaseTargetAssociation(runPull(41, head, base)), null);
+  // The main-only binding itself stays strict: a direct bind of the release
+  // association still fails closed without publication.
+  assert.throws(() => observer.bindRunPullRequest(run, base), (error) => error.code === 'invalid_binding' && error.publish === false);
+  const posted = [];
+  const github = {request: async (route) => {
+    if (route.startsWith('POST ')) { posted.push(route); return {data: {}}; }
+    if (route.includes('/actions/runs/')) return {data: run};
+    throw new Error(`unexpected route ${route}`);
+  }};
+  const context = {eventName: 'workflow_run', repo: {owner: observer.REPOSITORY.owner, repo: observer.REPOSITORY.repo}, payload: {workflow_run: {event: 'pull_request', id: 9001, run_attempt: 1}}};
+  // Same sequence as the quick-v2.yml publish job: assess, rebind, then post
+  // only when the assessment says to publish. The fake answers only the run
+  // fetch: the skip must need no further API reads.
+  let result = await observer.assess({github, context, liveBaseSha: base});
+  assert.deepEqual([result.kind, result.code, result.publish], ['workflow_run', 'out_of_domain', false]);
+  assert.notEqual(result.state, 'failure');
+  result = await observer.rebindForPublication({github, result});
+  assert.deepEqual([result.code, result.publish], ['out_of_domain', false]);
+  assert.notEqual(result.state, 'failure');
   if (result.publish) {
     await github.request('POST /repos/{owner}/{repo}/statuses/{sha}', {});
   }

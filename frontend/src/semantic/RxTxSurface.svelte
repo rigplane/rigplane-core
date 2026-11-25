@@ -186,14 +186,15 @@
          button; they add no gate and change no handler. `data-active` restates
          `pressed`, the same value `aria-pressed` already carries. -->
     {#if momentary}
+    {@const holdLabel = t('core.rxTx.holdToTalk')}
     <button
       type="button" class="rx-tx-key v2-control-button v2-control-button--pill" data-testid="rx-tx-key"
       data-surface="hardware" data-indicator-style="dot" data-indicator-color="red" data-active={pressed}
       disabled={keyUnavailable && !held} aria-pressed={pressed}
       aria-describedby={blockedDescription ? blockedId : undefined}
-      aria-label="PTT"
+      aria-label={holdLabel} title={holdLabel}
       use:pttButton
-    >PTT</button>
+    ><span class="rx-tx-hold-label">{holdLabel}</span></button>
     {:else}
     <button
       type="button" class="rx-tx-key v2-control-button v2-control-button--pill" data-testid="rx-tx-key"
@@ -231,6 +232,13 @@
   .rx-tx-label { min-inline-size: 3ch; font-weight: 700; letter-spacing: 0.08em; }
   .rx-tx-fault { margin: 0; font-weight: 700; }
   .rx-tx-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+  .rx-tx-hold-label {
+    font-size: 0.875rem;
+    line-height: 1.2;
+    letter-spacing: normal;
+    text-transform: none;
+    white-space: normal;
+  }
   .rx-tx-surface.standard { gap: 8px; }
   .rx-tx-surface.standard .rx-tx-state {
     justify-content: center; padding: 6px; border: 1px solid var(--v2-border);

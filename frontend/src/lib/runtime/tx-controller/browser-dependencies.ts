@@ -4,9 +4,10 @@ import {
   managedTransmitRemainingMs, managedTransmitSnapshot, refreshManagedTransmit,
   setManagedTransmitTot, submitManagedTransmit,
 } from '$lib/stores/managed-transmit.svelte';
+import { ManagedTransmitError } from '$lib/transport/managed-transmit-client';
 import { makeCommandId } from '$lib/types/protocol';
 import {
-  getControlSession, onCommandDelivery, onControlSessionTransition, onMessage, sendCommand,
+  emitLocalNotification, getControlSession, onCommandDelivery, onControlSessionTransition, onMessage, sendCommand,
   type CommandDeliveryEvent, type ControlSessionTransition,
 } from '$lib/transport/ws-client';
 import type { ManagedTxDependencies, PttOperation } from './managed-controller';
@@ -86,6 +87,15 @@ export function createManagedBrowserDependencies() {
       if (!sendCommand(operation, {}, commandId)) {
         remove();
         finish('rejected');
+        if (operation === 'ptt_on') {
+          // MOR-4651: sendCommand also refuses on a LIVE session while the
+          // radio link is degraded (its own warning already ran there);
+          // claim a lost control connection only when that is what happened.
+          if (getControlSession().state !== 'connected') {
+            console.warn('[tx] PTT start refused: control_link_unavailable');
+            emitLocalNotification('error', 'The control connection is unavailable. Reconnect to transmit.', 'controllerLost');
+          }
+        }
       }
     });
   };
@@ -98,6 +108,18 @@ export function createManagedBrowserDependencies() {
     snapshotRevision: managedTransmitAppliedRevision,
     sendPtt,
     submit: submitManagedTransmit,
+    onLatchRefusal: (error) => {
+      const code = error instanceof ManagedTransmitError ? error.code
+        : error === undefined ? 'tx_request_rejected' : 'tx_request_failed';
+      console.warn(`[tx] Latch start refused: ${code}`);
+      if (code === 'controller_tx_unsupported') {
+        emitLocalNotification('error', 'Hold PTT to transmit on this connection.', 'txPressToTalkRequired');
+      } else if (code === 'read_only') {
+        emitLocalNotification('error', 'This station is in read-only mode.', 'txReadOnly');
+      } else {
+        emitLocalNotification('error', 'The station could not start transmission.', 'txStartRefused');
+      }
+    },
     setTot: setManagedTransmitTot,
     onPresentationTick,
     onAuthorityChanged: (handler) => disposed

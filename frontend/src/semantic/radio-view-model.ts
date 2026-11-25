@@ -121,6 +121,23 @@ export interface VfoViewModel {
    */
   isActiveSlot: boolean;
   isTxTarget: boolean;
+  /**
+   * MOR-4711: the band of THIS VFO's own observed frequency — the reading a
+   * per-VFO panel tray draws. `band.receiverBands` is receiver-keyed and its
+   * entry derives from the receiver's top-level (active-slot) frequency, so
+   * on a slotted A/B radio the inactive slot's panel would repeat the active
+   * slot's band; this field gives every position its own answer from the ONE
+   * `findActiveBand` derivation. A position whose frequency source IS the
+   * receiver's top-level leaf (unslotted, unknown-slot, relative-selected)
+   * ALIASES the matching `receiverBands` entry — one object, never a second
+   * opinion. A literal slotted position (the active slot included) derives
+   * from its own slot leaf, the same leaf its display reads: right after a
+   * selection change the receiver leaf can still hold the old slot's
+   * frequency, and the panel must not name that stale band. Absent exactly
+   * when the band group has no choice set, the same structural gate
+   * `receiverBands` carries.
+   */
+  readonly band?: BandField<string>;
 }
 
 /**
@@ -834,6 +851,9 @@ export interface RepeaterReceiverViewModel {
   toneMode: RepeaterField<RepeaterToneMode>;
   toneFreq: RepeaterField<number>;
   shift: RepeaterField<RepeaterShift>;
+  /** Duplex offset magnitude in Hz (MOR-3624), read from the wire
+   *  `repeaterOffsetHz`; structural only with the `repeater_offset` tag. */
+  offsetHz: RepeaterField<number>;
 }
 
 /** Both map keys are always present; a radio without a SUB receiver simply
@@ -1546,7 +1566,7 @@ function validateVfo(value: unknown, path: string): VfoViewModel {
   const v = record(value, path);
   exactKeys(
     v,
-    ['receiver', 'slot', 'label', 'frequencyHz', 'mode', 'filter', 'isActive', 'isActiveSlot', 'isTxTarget', 'display'],
+    ['receiver', 'slot', 'label', 'frequencyHz', 'mode', 'filter', 'isActive', 'isActiveSlot', 'isTxTarget', 'display', 'band'],
     path,
   );
   return {
@@ -1560,6 +1580,7 @@ function validateVfo(value: unknown, path: string): VfoViewModel {
     isActiveSlot: bool(v.isActiveSlot, `${path}.isActiveSlot`),
     isTxTarget: bool(v.isTxTarget, `${path}.isTxTarget`),
     ...(v.display !== undefined ? { display: validateVfoDisplay(v.display, `${path}.display`) } : {}),
+    ...(v.band !== undefined ? { band: validateTxAuxField(v.band, `${path}.band`, str) } : {}),
   };
 }
 
@@ -2324,12 +2345,13 @@ const REPEATER_SHIFTS: readonly RepeaterShift[] = ['simplex', 'plus', 'minus', '
 
 function validateRepeaterReceiver(value: unknown, path: string): RepeaterReceiverViewModel {
   const v = record(value, path);
-  exactKeys(v, ['inRepeaterBand', 'toneMode', 'toneFreq', 'shift'], path);
+  exactKeys(v, ['inRepeaterBand', 'toneMode', 'toneFreq', 'shift', 'offsetHz'], path);
   return {
     inRepeaterBand: validateTxAuxField(v.inRepeaterBand, `${path}.inRepeaterBand`, bool),
     toneMode: validateTxAuxField(v.toneMode, `${path}.toneMode`, (val, p) => oneOf(val, REPEATER_TONE_MODES, p)),
     toneFreq: validateTxAuxField(v.toneFreq, `${path}.toneFreq`, num),
     shift: validateTxAuxField(v.shift, `${path}.shift`, (val, p) => oneOf(val, REPEATER_SHIFTS, p)),
+    offsetHz: validateTxAuxField(v.offsetHz, `${path}.offsetHz`, num),
   };
 }
 

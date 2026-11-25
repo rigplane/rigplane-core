@@ -86,6 +86,7 @@ from rigplane.profiles import (
     RadioProfile,
     RuleSpec,
     SpanPresetSemantics,
+    TransportCapabilityGaps,
     TxPolicy,
 )
 
@@ -953,6 +954,13 @@ class RigConfig:
     # optional top-level ``[probe]`` section. Empty when not declared.
     # Keyword-only so no positional argument shifts.
     probe_checks: tuple[ProbeCheck, ...] = field(default=(), kw_only=True)
+    # MOR-4437: per-transport capability gaps
+    # (``[capabilities.transport_gaps]``). All-empty (the default) keeps
+    # the declared capability set on every transport. Keyword-only so no
+    # positional argument shifts.
+    transport_capability_gaps: TransportCapabilityGaps = field(
+        default_factory=TransportCapabilityGaps, kw_only=True
+    )
 
     def to_profile(self) -> RadioProfile:
         """Build a ``RadioProfile`` from this config."""
@@ -969,6 +977,7 @@ class RigConfig:
                 end=r["end_hz"],
                 label=r["label"],
                 repeater=r.get("repeater", False),
+                max_repeater_offset_hz=r.get("max_repeater_offset_hz"),
                 bands=tuple(
                     BandInfo(
                         name=b["name"],
@@ -1198,6 +1207,7 @@ class RigConfig:
             usb_identity=self.usb_identity,
             xiegu_model_id=self.xiegu_model_id,
             iq_lan=self.iq_lan,
+            transport_capability_gaps=self.transport_capability_gaps,
         )
 
     def to_command_map(self) -> CommandMap:
@@ -3061,6 +3071,59 @@ def _validate_filter_narrow_variant(
             )
 
 
+#: Valid keys of ``[capabilities.transport_gaps]`` — one per declared
+#: control transport (``rigplane.core.radio_transport.RadioTransport``
+#: minus ``UNKNOWN``, which no profile can name meaningfully).
+_TRANSPORT_GAP_KEYS = frozenset({"lan", "serial", "remote"})
+
+
+def _parse_transport_capability_gaps(
+    filename: str, capabilities_table: dict[str, Any], features: list[str]
+) -> TransportCapabilityGaps:
+    """Parse ``[capabilities.transport_gaps]`` (MOR-4437).
+
+    Each key names a control transport (``lan``/``serial``/``remote``);
+    each value lists capability tags the profile declares NOT available
+    on that transport — e.g. the G7250's CI-V scope answers over LAN only,
+    so its profile declares ``serial = ["scope"]``.  A gap entry must be a
+    declared ``[capabilities].features`` entry: a gap on a capability the
+    profile does not declare is a data mistake, caught loudly here at load
+    time rather than kept as silently dead data.  Absent table → no gaps
+    (every existing profile keeps its behaviour on every transport).
+    """
+    raw = capabilities_table.get("transport_gaps")
+    if raw is None:
+        return TransportCapabilityGaps()
+    if not isinstance(raw, dict):
+        raise RigLoadError(f"{filename}: [capabilities.transport_gaps] must be a table")
+    feature_set = set(features)
+    parsed: dict[str, frozenset[str]] = {}
+    for transport_key, caps in raw.items():
+        if transport_key not in _TRANSPORT_GAP_KEYS:
+            raise RigLoadError(
+                f"{filename}: [capabilities.transport_gaps] key "
+                f"{transport_key!r} must be one of {sorted(_TRANSPORT_GAP_KEYS)}"
+            )
+        if not isinstance(caps, list) or not all(isinstance(c, str) for c in caps):
+            raise RigLoadError(
+                f"{filename}: [capabilities.transport_gaps].{transport_key} "
+                "must be a list of capability names"
+            )
+        unknown = sorted(set(caps) - feature_set)
+        if unknown:
+            raise RigLoadError(
+                f"{filename}: [capabilities.transport_gaps].{transport_key} "
+                f"entries {unknown} are not declared [capabilities].features "
+                "entries"
+            )
+        parsed[transport_key] = frozenset(caps)
+    return TransportCapabilityGaps(
+        lan=parsed.get("lan", frozenset()),
+        serial=parsed.get("serial", frozenset()),
+        remote=parsed.get("remote", frozenset()),
+    )
+
+
 def load_rig(path: Path) -> RigConfig:
     """Load and validate a rig TOML file.
 
@@ -3158,6 +3221,9 @@ def load_rig(path: Path) -> RigConfig:
             f"{filename}: [capabilities].rf_sql_control_model must be one of "
             f"{sorted(VALID_RF_SQL_CONTROL_MODELS)}, got {rf_sql_control_model!r}"
         )
+    transport_capability_gaps = _parse_transport_capability_gaps(
+        filename, data["capabilities"], features
+    )
     ctcss_tones_centihz = _resolve_ctcss_table(path, data, features)
 
     # Validate [validation].write_only_controls — each entry must be a declared
@@ -3406,6 +3472,30 @@ def load_rig(path: Path) -> RigConfig:
             raise RigLoadError(
                 f"{filename}: freq_ranges.ranges[{index}].repeater must be a boolean"
             )
+        # MOR-3624: the optional per-range ``max_repeater_offset_hz`` is the
+        # band's duplex-offset ceiling as profile data (the 10 MHz BCD digit
+        # is valid on a 1.2 GHz band only). A declared value must be a
+        # positive multiple of 100 within the 3-byte BCD wire maximum, and
+        # only a repeater range may declare one.
+        if "max_repeater_offset_hz" in rng:
+            value = rng["max_repeater_offset_hz"]
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, int)
+                or value <= 0
+                or value % 100
+                or value > 99_999_900
+            ):
+                raise RigLoadError(
+                    f"{filename}: freq_ranges.ranges[{index}]"
+                    ".max_repeater_offset_hz must be a positive multiple of 100"
+                    " no greater than 99999900 (Hz)"
+                )
+            if not rng.get("repeater", False):
+                raise RigLoadError(
+                    f"{filename}: freq_ranges.ranges[{index}]"
+                    ".max_repeater_offset_hz requires repeater = true"
+                )
         for band_index, band in enumerate(rng.get("bands", ())):
             if (
                 isinstance(band, dict)
@@ -4297,6 +4387,7 @@ def load_rig(path: Path) -> RigConfig:
                 ),
             ),
         ),
+        transport_capability_gaps=transport_capability_gaps,
     )
 
 

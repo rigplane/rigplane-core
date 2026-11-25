@@ -688,6 +688,19 @@ async def _handle_route_webrtc_ice(
     await server._handle_webrtc_ice(writer, headers, reader)
 
 
+async def _handle_route_webrtc_close(
+    server: WebServer,
+    writer: asyncio.StreamWriter,
+    method: str,
+    path: str,
+    headers: dict[str, str] | None,
+    reader: asyncio.StreamReader | None,
+    query: dict[str, list[str]] | None,
+) -> None:
+    """Run the gated WebRTC session close."""
+    await server._handle_webrtc_close(writer, headers, reader)
+
+
 async def _handle_route_diagnose_preview(
     server: WebServer,
     writer: asyncio.StreamWriter,
@@ -815,6 +828,7 @@ API_ROUTE_TABLE: Final[tuple[ApiRoute, ...]] = (
     ApiRoute(
         ("POST",), "/api/v1/transport/webrtc/ice-candidate", _handle_route_webrtc_ice
     ),
+    ApiRoute(("POST",), "/api/v1/transport/webrtc/close", _handle_route_webrtc_close),
     ApiRoute(("POST",), "/api/v1/diagnose/preview", _handle_route_diagnose_preview),
     ApiRoute(("POST",), "/api/v1/diagnose/send", _handle_route_diagnose_send),
     ApiRoute(("POST",), "/api/v1/diagnose/save", _handle_route_diagnose_save),
@@ -1002,7 +1016,15 @@ async def dispatch_http_with_controller_gate(
         )
         return
     if controller.mode == "remote" and method in ("POST", "PUT", "PATCH", "DELETE"):
-        if path == "/api/v1/managed-transmit/command":
+        # The WebRTC close is the stop button for already-connected peers
+        # (Pro's remote-access switch-off), used while a remote peer holds
+        # control, so remote mode admits it like the managed-TX command.
+        # The api data channel never reaches it: its signalling-prefix
+        # refusal runs before this gate.
+        if path in (
+            "/api/v1/managed-transmit/command",
+            "/api/v1/transport/webrtc/close",
+        ):
             await _dispatch_http_routes(
                 server, writer, method, path, headers, reader, query
             )

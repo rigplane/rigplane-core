@@ -166,6 +166,7 @@ from rigplane.commands import (
     parse_memory_entry,
     parse_data_mode_response,
     parse_frequency_response,
+    parse_freq_offset_response,
     parse_level_response,
     parse_meter_response,
     parse_mode_response,
@@ -196,6 +197,7 @@ from rigplane.runtime._dual_rx_runtime import (
     RECEIVER_ADMISSION,
     radio_not_ready,
     receiver_not_selected,
+    selection_unknown_not_ready,
 )
 from rigplane.core.radio_protocol import (
     ManagedTxSupervisor,
@@ -2703,10 +2705,12 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         A read never switches the selection (MOR-3591). SUB is read through
         selector 01 where profile data make that the physical SUB. Otherwise
         the plain command is used only while ``receiver`` is the selected
-        receiver; for a receiver that is not selected (or while the
-        selection is unknown) the value last observed while it was selected
-        is returned, and with none :class:`ReceiverNotSelectedError` is
-        raised.
+        receiver; for a receiver that is not selected the value last
+        observed while it was selected is returned, and with none
+        :class:`ReceiverNotSelectedError` is raised. While the selection is
+        not known yet (never established in this CI-V generation) the answer
+        is the retriable :class:`RadioNotReadyError`: no receiver can be
+        addressed, which is not a receiver being not selected.
         """
         self._check_connected()
         self._require_receiver(receiver, operation="get_freq")
@@ -2733,14 +2737,19 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         first known in this CI-V generation are owned by a known receiver;
         earlier ones (e.g. right after a reconnect, filed under a stale
         selection) are not trusted. Nothing trusted:
-        :class:`ReceiverNotSelectedError` -- unless the radio has not
-        answered CI-V since the link was established at all, when the
-        answer is the retriable :class:`RadioNotReadyError` instead
-        (MOR-4382 follow-up): the selection is unknown because the radio is
-        silent, not because a receiver is not selected.
+        :class:`ReceiverNotSelectedError` -- unless the selection was never
+        established in this CI-V generation at all, when the answer is the
+        retriable :class:`RadioNotReadyError` instead (MOR-4382 follow-up):
+        a selection that is still unknown (the radio is silent since the
+        link came up, or it answered while its 0x07 0xD2 selection read is
+        still unanswered and ``radio_ready`` can already be True -- the
+        v3.3.0rc1 rehearsal run 44869231087 window) means no receiver can
+        be addressed yet, which is not a receiver being not selected.
         """
-        if self._never_answered_since_connect():
-            raise radio_not_ready(operation, self._profile.model)
+        if self._selection_known_since is None:
+            if self._never_answered_since_connect():
+                raise radio_not_ready(operation, self._profile.model)
+            raise selection_unknown_not_ready(operation, self._profile.model)
         known_since = self._selection_known_since
         try:
             field = self._state_store.snapshot().field(
@@ -2770,9 +2779,12 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
 
         A receiver is reached by its cmd29 route, by the selector-01 SET
         where profile data make that the physical SUB, or by the plain
-        command while it is the selected receiver; otherwise
-        :class:`ReceiverNotSelectedError` is raised and nothing is sent.
-        The selection is never switched to reach it (MOR-3591).
+        command while it is the selected receiver; while the selection is
+        not known yet (never established in this CI-V generation) the
+        answer is the retriable :class:`RadioNotReadyError`, and once it is
+        known and the receiver is not it, :class:`ReceiverNotSelectedError`
+        is raised and nothing is sent. The selection is never switched to
+        reach it (MOR-3591).
         """
         self._check_connected()
         self._require_receiver(receiver, operation="set_freq")
@@ -3117,12 +3129,16 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         sub: int,
         prefix: bytes = b"",
         bcd_bytes: int = 2,
+        read_after_dispatch: bool = False,
     ) -> int:
         """Send a GET command and parse a BCD-encoded integer response."""
-        self._check_connected()
-        resp = await self._send_civ_expect(
-            civ, key=key, dedupe=True, label="get_bcd_level"
-        )
+        if read_after_dispatch:
+            resp = await self._civ_runtime.read_civ_after_dispatch(civ)
+        else:
+            self._check_connected()
+            resp = await self._send_civ_expect(
+                civ, key=key, dedupe=True, label="get_bcd_level"
+            )
         return parse_level_response(
             resp,
             command=command,
@@ -4948,6 +4964,57 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         if parse_ack_nak(resp) is False:
             raise CommandError(f"Radio rejected repeater shift {direction!r}")
 
+    async def get_repeater_offset(self, receiver: int = 0) -> int:
+        """Read the duplex offset magnitude in Hz (CI-V ``0x0C``, MOR-3624).
+
+        MOR-3591: the plain command reaches only the selected receiver --
+        any other receiver, or either receiver while the selection is
+        unknown, raises ``ReceiverNotSelectedError`` and sends nothing.
+        """
+        self._check_connected()
+        self._require_receiver(receiver, operation="get_repeater_offset")
+        self._require_cmd29_route(
+            0x0C, None, receiver=receiver, operation="get_repeater_offset"
+        )
+        civ = self._commands.get_freq_offset(to_addr=self._radio_addr)
+        resp = await self._send_civ_expect(civ, label="get_repeater_offset")
+        offset_hz = parse_freq_offset_response(resp.data)
+        if offset_hz is None:
+            raise CommandError(
+                f"invalid repeater offset readback: {resp.data.hex() or 'empty'}"
+            )
+        return offset_hz
+
+    async def set_repeater_offset(self, offset_hz: int, receiver: int = 0) -> None:
+        """Set the duplex offset magnitude in Hz (CI-V ``0x0D``, MOR-3624).
+
+        Input validation only (owner guard rule 2026-10-30): refuse a
+        value above the profile's declared offset maximum
+        (``profiles/__init__.py: RadioProfile.repeater_offset_max_hz``);
+        the wire builder refuses a negative, bool or sub-100 Hz value.
+        Which band the tuned frequency sits in and where TX lands are the
+        radio's own refusal, not a Core guard.
+
+        MOR-3591: the plain command reaches only the selected receiver --
+        any other receiver, or either receiver while the selection is
+        unknown, raises ``ReceiverNotSelectedError`` and sends nothing.
+        """
+        self._check_connected()
+        maximum = self._profile.repeater_offset_max_hz
+        if maximum is not None and offset_hz > maximum:
+            raise ValueError(
+                "repeater offset refused: above the profile's declared "
+                f"maximum ({maximum} Hz), got {offset_hz} Hz"
+            )
+        self._require_receiver(receiver, operation="set_repeater_offset")
+        self._require_cmd29_route(
+            0x0D, None, receiver=receiver, operation="set_repeater_offset"
+        )
+        civ = self._commands.set_freq_offset(offset_hz, to_addr=self._radio_addr)
+        resp = await self._send_civ_expect(civ, label="set_repeater_offset")
+        if parse_ack_nak(resp) is False:
+            raise CommandError(f"Radio rejected repeater offset {offset_hz} Hz")
+
     async def get_tone_squelch_type(self, receiver: int = 0) -> ToneSquelchType:
         """Read the exclusive tone squelch selector (CI-V ``0x16 0x5D``).
 
@@ -5866,6 +5933,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
             sub=sub,
             prefix=prefix,
             bcd_bytes=1,
+            read_after_dispatch=True,
         )
 
     async def set_data_off_mod_input(self, source: int) -> None:

@@ -595,7 +595,7 @@ class TestHandlerMemoryDispatch:
     def _make_handler(self, *, memory_capable: bool = True) -> Any:
         from rigplane.web.handlers import ControlHandler
 
-        ws = MagicMock()
+        ws = MagicMock(outbound_progress=0)
         ws.send_text = AsyncMock()
 
         radio = MagicMock()
@@ -773,7 +773,7 @@ class TestHandlerMemoryDispatch:
         from rigplane.web.handlers import ControlHandler
         from rigplane.web.radio_poller import CommandQueue
 
-        ws = MagicMock()
+        ws = MagicMock(outbound_progress=0)
         ws.send_text = AsyncMock()
 
         # Use a minimal class that does NOT have memory methods

@@ -13,6 +13,71 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- New TX setting **Microphone processing**: Raw (default, as before) sends the microphone without the browser's echo cancellation, noise suppression and automatic gain control; Browser processing turns all three on for a noisy room or a weak microphone. It is in the TX levels dialog on the phone and the standard sidebars, and under TX AUDIO in the desktop Settings dialog; the choice is kept per browser (and per desktop app) and applies from the next transmission. New strings `core.txMic.processing.*` in en-US, ru-RU and ja-JP. (MOR-4596)
+
+## [3.3.0] — 2026-11-21
+
+Sixth release candidate of 3.3.0: v3.3.0rc5 plus the fix below.
+
+### Fixed
+
+- After a remote session ended while transmitting, the station could keep refusing new remote connections (`controller_not_ready`) until it was restarted; the remote controller grant is now re-evaluated when its status is read and when a new grant is requested. (MOR-4653, #4753)
+
+### Known issues
+
+- The web UI may show a command that sets a value equal to the current one as confirmed slightly before the radio executed it. (#4679)
+- If the radio's USB connection resets (for example after interference on the cable), the station may not reconnect until it is restarted. (MOR-4654)
+- If the radio's modulation input is not USB, voice sent from RigPlane does not go out: set the radio's MOD input (DATA OFF MOD) to USB. (MOR-4660)
+
+## [3.3.0rc5] — 2026-11-21
+
+Fifth release candidate of 3.3.0: v3.3.0rc4 plus the changes below. The command-ACK ordering change prepared for this candidate (#4739) was reverted before tagging (#4746).
+
+### Changed
+
+- Remote sessions through RigPlane Tower use press-to-talk: the controller document advertises `ptt_style` (`latch` locally and on paired LAN, `momentary` on the remote data channel), the TX button reads "Hold to talk" before use on a remote connection, and a refused latched start explains why instead of failing silently; a missing microphone gets its own message. (MOR-4587, #4744, #4750)
+
+### Fixed
+
+- rigctld no longer refuses live split reads (`s`, `i`, `x`) with `RPRT -5` while the stale-state gate is active: the gate now decides by the command table's radio-access metadata, so reads that ask the radio proceed. (#4740)
+- A client whose connection stops taking data can no longer delay a PTT key-up behind its own acknowledgement: direct control writes are bounded, and a client that makes no outbound progress for 3 s is disconnected through the normal cleanup. (MOR-4648, #4749)
+
+### Known issues
+
+- The web UI may show a command that sets a value equal to the current one as confirmed slightly early; the radio state is correct. A fix is planned for 3.3.1. (#4679)
+
+## [3.3.0rc4] — 2026-11-21
+
+Fourth release candidate of 3.3.0: v3.3.0rc3 plus the fix below.
+
+### Fixed
+
+- Hardcoded Russian UI strings (controller error toasts and related messages) now go through the i18n catalogs (en-US, ja-JP, ru-RU), so non-Russian locales no longer show Russian text (MOR-4250).
+
+## [3.3.0rc3] — 2026-11-21
+
+Third release candidate of 3.3.0. 3.3.0rc2 was prepared but never tagged; this candidate is v3.3.0rc1 plus the fixes listed under 3.3.0rc2 and the addition below (found by review of the candidate's remote-access consumer).
+
+### Added
+
+- `POST /api/v1/transport/webrtc/close` ends live WebRTC sessions over the existing HTTP API: `{"sessionId": id}` ends that peer, an absent or `null` `sessionId` ends every connected peer, both through the session manager's own shutdown teardown; closing with nothing connected is a no-op success and the manager still answers a later offer. The typed bodies `WebRtcClose` / `WebRtcCloseResult` (and the new `invalid_session` / `close_error` codes) are public tier 2 next to the offer contract, so Pro's remote-access switch ("let my other computers use this radio") can, when turned off, end the peers that are already connected. Like its siblings the route is refused (404) over the `api` data channel. (MOR-4587, MOR-272)
+
+## [3.3.0rc2] — 2026-11-21
+
+Second release candidate of 3.3.0: v3.3.0rc1 plus the fix below (found on the rc1 commit's rehearsal).
+
+### Fixed
+
+- A dual-receiver radio that answered CI-V while its receiver selection was still unknown answered receiver-scoped commands with the terminal "receiver not selected" refusal (rigctld `RPRT -9`, web `reason_code="receiver_not_selected"`), telling a WSJT-X polling `f` or a web write that a receiver was not selected when Core in fact did not know the selection yet. `radio_ready` reflects CI-V liveness (the first answer), while the selection is established separately by the 0x07 0xD2 answer (the connect tail's sweep, or the command's own bounded read), so under load the two latches can be seconds apart — the window the v3.3.0rc1 rehearsal run 44869231087 failed in. While the selection has never been established in the current CI-V generation, receiver-scoped commands now answer the retriable not-ready timeout (rigctld `RPRT -5`, web `command_timeout`) regardless of liveness; the genuine unselected-receiver refusal survives unchanged once the selection is known (MOR-3591). (MOR-4382)
+
+## [3.3.0rc1] — 2026-11-21
+
+This is the first release candidate of 3.3.0. It contains everything merged to main after 3.2.0 (up to #4677, the commit this candidate was tested on).
+
+### Added
+
+- `rigplane station` accepts `--webrtc` and `--webrtc-include-vpn`, with the same meaning as on `web` (one shared flag definition), so a supervisor can start a managed station that answers WebRTC offers on its loopback listener. (MOR-4584)
+- `api` channel consumers parse with the producer's own code (MOR-4586): `ApiResponseHead.parse`, `ApiErrorFrame.parse` and `parse_api_server_frame` (RES_HEAD and ERROR; other and unknown frame types give `None`), with `ApiPayloadError` for malformed payloads; unknown fields are ignored. `ApiResponseHead`, `ApiErrorFrame` and `ApiPayloadError` are public (tier 2, `from rigplane import ...`).
 - WebRTC wire contracts are now public (tier 2, `from rigplane import ...`) for a WebRTC offerer or station agent that runs in another process: the data-channel attach frame with an encoder (`ClientChannelParams.to_attach_frame`) and the attach-ack parser (`ChannelAttachedAck.from_frame`), the answerer's ICE gathering policy (`IceServer`, `IceGatheringPolicy`, `GATHER_TIMEOUT_S`, `install_ice_gathering_policy`, `apply_ice_gathering_policy`), typed bodies of `POST /api/v1/transport/webrtc/offer` and `/ice-candidate` (`WebRtcOffer`, `WebRtcAnswer`, `WebRtcIceCandidate` with a typed `IceCandidateInit`, `WebRtcRequestError`) and the capabilities `webrtc` block (`WebRtcTransportStatus`). They are provisional until Pro ships remote access. The server reads and writes those routes through the same types; wire bytes of valid requests are unchanged, and a mistyped trickled candidate field (a non-string `candidate` or `sdpMid`, a string or negative `sdpMLineIndex`) is now refused with 400 `invalid_candidate` instead of being coerced or failing later. (MOR-272)
 - WebRTC remote access, three wire rules before any peer ships (provisional, MOR-272): (1) TURN selection by transport, `select_turn_url` and `UdpReachabilityCache` (public): aiortc uses only the first TURN url of a grant, so a grant listing UDP first never relayed on a network that blocks UDP; the helper keeps exactly one TURN url, UDP when a cached STUN-over-UDP probe was answered on this network, TLS on 443 (then TCP) when it was not. (2) The `api` data channel: every frame payload is at most 16 KB in both directions (an oversize frame answers ERROR `too_large`), and a sender waits while more than 32 KB is buffered (was 256 KB), so the control channel's controller heartbeat is never held back by a large REST body on a lossy link; `ApiFrame` and `api_request_messages` are the public frame encoder/parser and request chunker. (3) Scope and audio data channels are split: their text frames (the attach frame, `audio_start`, scope subscriptions, server replies) ride a reliable ordered companion channel (`scope-text`, `audio-text`) and only binary frames stay on the unordered `maxRetransmits=0` channel; both ends merge each pair into one connection (one pair per kind at a time, halves in either order, frames that arrive before the partner opens are kept), so handlers are unchanged and a text command is never lost at 1 % loss. The channel set is the public typed contract `DATA_CHANNELS` (`DataChannelSpec`, `DataChannelLabel`), also published in the browser wire contract. Attach frames are never resent; a scope/audio attach that arrives before the session's control attach is held (no close) until control attaches, within the 5 s attach bound.
 - **Xiegu G7250: radio panorama over the network.** In wfview network mode (firmware V1.0.1) the G7250 now feeds the spectrum and waterfall from its own scope (`27 00` wave data, 475 points per sweep, about 17 sweeps a second) instead of the audio-derived panorama. Span presets 48, 96, 192 and 384 kHz (the radio's span number is the full display width), REF -20 to +20 dB. Over USB the radio does not answer scope commands, so a USB connection shows no radio panorama. The span value width on the wire is profile data (`[scope].span_value_bytes`, 6 on the G7250, 5 elsewhere), a six-byte span reply decodes, and a `full_width` span preset is matched by the full waveform width. (MOR-4436)
@@ -23,6 +88,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The `api` WebRTC data channel no longer serves the WebRTC signalling routes (`/api/v1/transport/webrtc/offer`, `/api/v1/transport/webrtc/ice-candidate`); they answer 404 over the channel, so a peer cannot open another peer connection through its own session. HTTP is unchanged. (MOR-4584)
 - A single-receiver A/B radio that reports no VFO readback (Xiegu G7250, X6100, X6200, TX-500) showed a blank frequency, mode and filter readout although the values were fresh: the surface now shows the selected VFO instead of an unresolved slot. (MOR-4562)
 
 ## [3.2.0rc11] — 2026-11-17
@@ -5352,7 +5418,13 @@ These deprecation closures were announced in v0.19 and dropped on schedule.
 - Transport layer, authentication, CI-V commands, meters, PTT, keep-alive.
 - Clean-room Icom LAN UDP protocol implementation.
 
-[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.2.0rc11...HEAD
+[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.3.0...HEAD
+[3.3.0]: https://github.com/rigplane/rigplane-core/compare/v3.2.3...v3.3.0
+[3.3.0rc5]: https://github.com/rigplane/rigplane-core/compare/v3.3.0rc4...v3.3.0rc5
+[3.3.0rc4]: https://github.com/rigplane/rigplane-core/compare/v3.3.0rc3...v3.3.0rc4
+[3.3.0rc3]: https://github.com/rigplane/rigplane-core/compare/v3.3.0rc1...v3.3.0rc3
+[3.3.0rc2]: https://github.com/rigplane/rigplane-core/compare/v3.3.0rc1...v3.3.0rc3
+[3.3.0rc1]: https://github.com/rigplane/rigplane-core/compare/v3.2.3...v3.3.0rc1
 [3.2.0rc11]: https://github.com/rigplane/rigplane-core/compare/v3.2.0rc10...v3.2.0rc11
 [3.2.0rc10]: https://github.com/rigplane/rigplane-core/compare/v3.2.0rc9...v3.2.0rc10
 [3.2.0rc9]: https://github.com/rigplane/rigplane-core/compare/v3.2.0rc8...v3.2.0rc9

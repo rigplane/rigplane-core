@@ -1,17 +1,27 @@
 import { apiFetch } from '../api/api-fetch';
+import { CONTROLLER_TOAST_CODES } from '../controller-toast-codes';
+
+export { CONTROLLER_TOAST_CODES };
+
 type Role = 'primary' | 'auxiliary';
+export type PttStyle = 'latch' | 'momentary';
 type Grant = { controller_key: string; generation: number; controller_role?: Role };
 type Sender = (message: { type: 'controller_heartbeat' }) => void;
 
+// English-stable fallback text for logs and no-code surfaces. The rendered
+// UI text is localized: `ControllerClientError.code` is a wire-protocol
+// reason code (the Python server emits the same snake_case codes in HTTP
+// error bodies), and CONTROLLER_TOAST_CODES maps it to the camelCase toast
+// code resolved via `core.toast.<code>` in the i18n catalogs (MOR-4250).
 const messages = {
-  controller_busy: 'Управление занято другим клиентом. Подключитесь после освобождения.',
-  controller_invalid: 'Станция отказала в доступе к удалённому управлению.',
-  controller_lost: 'Удалённое управление потеряно. Подключитесь заново.',
-  controller_not_ready: 'Станция пока не готова к удалённому управлению.',
-  controller_unsupported: 'Станция не поддерживает этот протокол управления.',
-  controller_local_required: 'Это действие доступно только на локальном хосте.',
-  remote_disabled: 'Удалённое управление на хосте выключено.',
-};
+  controller_busy: 'Remote control is held by another client. Connect once it is released.',
+  controller_invalid: 'The station denied access to remote control.',
+  controller_lost: 'Remote control was lost. Reconnect.',
+  controller_not_ready: 'The station is not ready for remote control yet.',
+  controller_unsupported: 'The station does not support this control protocol.',
+  controller_local_required: 'This action is only available on the local host.',
+  remote_disabled: 'Remote control is disabled on this host.',
+} as const;
 type Code = keyof typeof messages;
 
 export class ControllerClientError extends Error {
@@ -25,6 +35,7 @@ function record(value: unknown): value is Record<string, unknown> {
 export class ControllerClient {
   #grant: Grant | null = null;
   private _remote = false;
+  private _pttStyle: PttStyle | null = null;
   private _localSessions = false;
   private prepared = false;
   private primaryReady = false;
@@ -41,6 +52,10 @@ export class ControllerClient {
   constructor(private readonly clock = () => performance.now()) {}
 
   get remote(): boolean { return this._remote; }
+  get pttStyle(): PttStyle {
+    // Legacy Core versions advertised only the controller mode.
+    return this._pttStyle ?? (this._remote ? 'momentary' : 'latch');
+  }
   get role(): Role { return this.#grant?.controller_role ?? 'primary'; }
   get epoch(): number { return this._epoch; }
   get session(): boolean { return this.#grant !== null; }
@@ -118,6 +133,10 @@ export class ControllerClient {
       throw new ControllerClientError('controller_unsupported');
     }
     this.check(epoch, signal);
+    const pttStyle = status.ptt_style;
+    // Older stations may omit the field. An unknown advertised style must
+    // never grant a latch that a newer producer might intend to forbid.
+    this._pttStyle = pttStyle === undefined ? null : pttStyle === 'latch' ? 'latch' : 'momentary';
     if (status.mode === 'local') {
       this._remote = false;
       this.changed();

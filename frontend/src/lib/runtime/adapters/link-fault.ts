@@ -14,6 +14,8 @@
  * `hasEverConnected()`, and the staleness `isStale()` exposes as
  * `frontend-runtime.ts: get connectionStale()`.
  */
+import { getWsConnected, hasEverConnected, isStale } from '$lib/stores/connection.svelte';
+
 export type LinkFault = 'none' | 'ws-down' | 'radio-silent';
 
 export interface LinkFaultInput {
@@ -39,4 +41,22 @@ export function deriveLinkFault(
   if (!everConnected) return 'none';
   if (!wsConnected) return 'ws-down';
   return connectionStale ? 'radio-silent' : 'none';
+}
+
+/**
+ * Reactive read of the live veil state for the composition layer (skins).
+ *
+ * Skins must not import `$lib/stores/*` directly (MOR-2039 skins lockdown,
+ * enforced by eslint and
+ * `tests/architecture/test_ui_radio_control_contract.py`), so the three
+ * store reads live here, inside the adapter. Call it inside `$derived` —
+ * the store reads happen during the derived's evaluation, so the veil
+ * stays reactive exactly as the inline form in layouts does.
+ */
+export function getLinkFault(): LinkFault {
+  return deriveLinkFault({
+    everConnected: hasEverConnected(),
+    wsConnected: getWsConnected(),
+    connectionStale: isStale(),
+  });
 }

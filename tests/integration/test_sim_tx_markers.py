@@ -30,9 +30,11 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 pytestmark = pytest.mark.mock_integration
 
+from rigplane.audio.lan_stream import AudioStream  # noqa: E402
 from rigplane.radio import IcomRadio  # noqa: E402
 from rigplane.runtime import radio_reconnect  # noqa: E402
 from rigplane.runtime.tx_interlock import RfState  # noqa: E402
+from rigplane.testing.timing import VirtualClock  # noqa: E402
 from rigplane.web.protocol import (  # noqa: E402
     AUDIO_CODEC_PCM16,
     MSG_TYPE_AUDIO_RX,
@@ -70,8 +72,100 @@ _FRAME_MS = 20  # one WS TX frame per 20 ms of PCM, paced in real time
 # values, with a 250 ms floor for loaded runners (observed: WS frame sent -> sink 0.004 s; simulator PTT-on ->
 # first sink frame 0.372 s — the latter is mostly the test's own
 # observe-then-send path; both numbers are in the MOR-3256 PR text).
+#
+# The WS -> sink bound reads in wall seconds but is load-independent anyway
+# (MOR-4214): the keyed stream below is paced by a virtual clock, so no wall
+# time passes between the paced sends — the measured interval is pure
+# pipeline callback depth (a few loop turns), which a loaded host cannot
+# stretch the way it stretched the old wall-paced sleeps (0.348 s).
 _WS_TO_SINK_BOUND_S = 0.25
 _PTT_ON_TO_SINK_BOUND_S = 1.5
+# Virtual seconds a first frame that has not arrived by the end of the stream
+# is still waited for; far above the bound, so a late arrival is measured.
+_FIRST_FRAME_GRACE_S = 2.0
+
+
+async def _send_pcm_virtual(
+    mic: _WsKeyClient,
+    pcm: bytes,
+    sample_rate: int,
+    clock: VirtualClock,
+    sim: MockIcomRadio,
+) -> tuple[float, float]:
+    """Stream ``pcm`` as 20 ms TX frames paced by virtual time (MOR-4214).
+
+    Identical to :func:`_send_pcm` except the pacing: wall-clock sleeps would
+    let a loaded host deschedule the loop between the send and the sink
+    delivery (the 0.348 s flake); ``clock.elapse`` advances frame-times with
+    no wall exposure while still settling the real socket callbacks each
+    step.
+
+    Returns ``(sent_first, arrived_first)``: when the first frame left the
+    client and when it was first seen in the sink, BOTH read on the virtual
+    clock. A forwarding delay in the pipeline (a timer the stack sleeps on)
+    moves the virtual clock and is therefore measured; a descheduled host
+    does not move it and is not. The simulator's own ``received_at`` is a
+    real ``time.monotonic()`` stamp and must not be mixed with these.
+    """
+    frame_bytes = sample_rate * 2 * _FRAME_MS // 1000
+    step_s = _FRAME_MS / 1000
+    sent_first: float | None = None
+    arrived_first: float | None = None
+    seq = 0
+
+    def note_arrival() -> None:
+        nonlocal arrived_first
+        if arrived_first is None and sim.audio_tx_frames:
+            arrived_first = clock()
+
+    for offset in range(0, len(pcm), frame_bytes):
+        chunk = pcm[offset : offset + frame_bytes]
+        if sent_first is None:
+            sent_first = clock()
+        await mic.send_binary(
+            encode_audio_frame(
+                MSG_TYPE_AUDIO_TX,
+                AUDIO_CODEC_PCM16,
+                seq,
+                sample_rate // 100,
+                1,
+                _FRAME_MS,
+                chunk,
+            )
+        )
+        seq = (seq + 1) & 0xFFFF
+        await clock.elapse(step_s)
+        note_arrival()
+    # A first frame still in flight when the stream ends: keep stepping
+    # virtual time (bounded) so a late arrival is stamped late, not lost.
+    for _ in range(int(_FIRST_FRAME_GRACE_S / step_s)):
+        if arrived_first is not None:
+            break
+        await clock.elapse(step_s)
+        note_arrival()
+    assert sent_first is not None
+    return sent_first, arrived_first if arrived_first is not None else float("inf")
+
+
+def _assert_forwarding_latency(sent_first: float, arrived_first: float) -> None:
+    """The WS -> sink bound, on one clock (MOR-4214)."""
+    assert arrived_first - sent_first <= _WS_TO_SINK_BOUND_S, (
+        f"first TX frame took {arrived_first - sent_first:.3f} s (virtual) "
+        f"from the WS to the sink, bound {_WS_TO_SINK_BOUND_S} s"
+    )
+
+
+async def _cancel_session_watchdog(arena: _Arena) -> None:
+    """Stop the audio-session watchdog after a virtual-clock stream (MOR-4214).
+
+    The virtual clock ran ahead of real time, so once it is uninstalled every
+    pending loop timer is that late in real seconds and the watchdog would
+    trip mid-teardown. The audio evidence is already secured by then.
+    """
+    watchdog = arena.stack.radio.audio_session._watchdog_task  # noqa: SLF001
+    if watchdog is not None and not watchdog.done():
+        watchdog.cancel()
+        await asyncio.gather(watchdog, return_exceptions=True)
 
 
 async def _open_tx_mic(
@@ -225,7 +319,23 @@ async def test_marker_streamed_while_keyed_lands_clean_in_the_sink(
         t_ptt_on = next(t for t, on in reversed(sim.ptt_transitions) if on)
 
         rx_before = len(rx_frames)
-        sent_first = await _send_pcm(mic, pcm, rate)
+        # The keyed stream is paced by the virtual clock (MOR-4214):
+        # installed here — after everything the stack handshake needs,
+        # removed right after the stream — it advances frame-times with
+        # no wall exposure while settling the real socket callbacks each
+        # step, so the WS -> sink latency below measures only pipeline
+        # depth. The stack's session machinery (login handshakes, ping
+        # keepalive, control watchdog) stays on real time throughout:
+        # full virtualization races those handshakes and skews the hold.
+        loop = asyncio.get_running_loop()
+        clock = VirtualClock(start=loop.time())
+        clock.install(loop)
+        try:
+            sent_first, arrived_first = await _send_pcm_virtual(
+                mic, pcm, rate, clock, sim
+            )
+        finally:
+            clock.uninstall(loop)
         await _wait_sink_bytes(sim, len(pcm))
         # RX audio must keep flowing at THIS client for the whole TX
         # stream: the captured marker is exactly the tone (asserted
@@ -248,8 +358,17 @@ async def test_marker_streamed_while_keyed_lands_clean_in_the_sink(
         assert all((b - a) & 0xFFFF == 1 for a, b in zip(seqs, seqs[1:]))
 
         first = frames[0]
-        assert first.received_at - sent_first <= _WS_TO_SINK_BOUND_S
+        _assert_forwarding_latency(sent_first, arrived_first)
+        # Real-clock stamps against real-clock stamps only (both are the
+        # simulator's and the test's own ``time.monotonic()``).
         assert first.received_at - t_ptt_on <= _PTT_ON_TO_SINK_BOUND_S
+        # Defuse the uninstall shift (MOR-4214): the clock advanced ~3 s
+        # past real time, so every pending loop timer fires that late in
+        # real seconds — including the RX burst loop, which would stall
+        # the stream for ~3 s and trip the session watchdog mid-teardown.
+        # All audio evidence is secured, so cancel the watchdog now; the
+        # teardown below releases the demand anyway.
+        await _cancel_session_watchdog(arena)
         await _assert_session_held(sim)
 
         # PTT off -> frames stop. The audio gate follows the OBSERVED RF
@@ -297,6 +416,69 @@ async def test_marker_check_catches_a_wrong_tone(
     # Analysis after the arena (MOR-4331): it blocks the shared event loop.
     problems = check_marker(analyze_marker_pcm16(captured, spec), spec)
     assert any("frequency" in problem for problem in problems)
+
+
+async def test_forwarding_latency_check_rejects_a_delayed_first_frame(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Negative control (MOR-4214): the WS -> sink bound is not vacuous on the
+    virtual clock. Only the FIRST forwarded frame is held 0.3 s (> the 0.25 s
+    bound) by a timer inside the stack; every later frame is prompt. The
+    latency assertion must reject it. A real-clock measurement would not: the
+    virtual sleep completes in microseconds of real time.
+
+    The clock starts at 0, not at ``loop.time()``: this control measures the
+    delay EXACTLY at the bound, and at a wall-derived base (~44.9k s, double
+    spacing ~7e-12 s) the paced 20 ms steps are not multiples of that spacing,
+    so the accumulated arrival stamp can land a hair below ``delay_s``
+    (observed on quick: 0.3 - 1.3e-11) and the check flakes on the wall-clock
+    base — wall time through the back door. From 0 the arithmetic is exact:
+    ``sent_first`` is exactly 0.0, the injected sleep timer is due at
+    ``delay_s`` itself, and the first elapse that crosses it stamps the
+    arrival at a step target >= ``delay_s``. Timers the stack scheduled
+    before the install sit ~44.9k s in this clock's future and do not fire
+    during the ~0.3 s window; nothing in the window waits on one.
+    """
+    delay_s = _WS_TO_SINK_BOUND_S + 0.05
+    real_push_tx = AudioStream.push_tx
+    delayed = False
+
+    async def delay_first_push(self: AudioStream, audio_data: bytes) -> None:
+        nonlocal delayed
+        if not delayed:
+            delayed = True
+            await asyncio.sleep(delay_s)
+        await real_push_tx(self, audio_data)
+
+    async with _Arena(
+        tmp_path, enable_audio=True, sim_options={"capture_tx_audio": True}
+    ) as arena:
+        session = await arena.session()
+        mic, tx_format = await _open_tx_mic(arena, session.key)
+        rate = tx_format["sample_rate"]
+        assert isinstance(rate, int) and rate > 0, tx_format
+        pcm = render_marker_pcm16(MarkerSpec(sample_rate=rate))
+        prefix = pcm[: 25 * rate * 2 * _FRAME_MS // 1000]
+        assert await session.primary.key("late-first-frame")
+        await _wait_ptt(arena.sim, True, _KEY_DEADLINE_S)
+        await _wait_rf(arena.web, RfState.TX, _GATE_TIMEOUT_S)
+
+        monkeypatch.setattr(AudioStream, "push_tx", delay_first_push)
+        loop = asyncio.get_running_loop()
+        clock = VirtualClock(start=0.0)  # exact at the bound; see the docstring
+        clock.install(loop)
+        try:
+            sent_first, arrived_first = await _send_pcm_virtual(
+                mic, prefix, rate, clock, arena.sim
+            )
+        finally:
+            clock.uninstall(loop)
+        assert delayed, "the delay hook never saw a forwarded frame"
+        assert arrived_first - sent_first >= delay_s
+        with pytest.raises(AssertionError, match="virtual"):
+            _assert_forwarding_latency(sent_first, arrived_first)
+        await _cancel_session_watchdog(arena)
+        await arena.unkey(session)
 
 
 class _StallRightAfterCheck:

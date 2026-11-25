@@ -1,7 +1,8 @@
 """Wire contract of the WebRTC answerer HTTP API (K6, MOR-272).
 
-``POST /api/v1/transport/webrtc/offer`` and
-``POST /api/v1/transport/webrtc/ice-candidate`` bodies, their answers and
+``POST /api/v1/transport/webrtc/offer``,
+``POST /api/v1/transport/webrtc/ice-candidate`` and
+``POST /api/v1/transport/webrtc/close`` bodies, their answers and
 error envelopes, plus the ``webrtc`` block of ``GET /api/v1/capabilities``.
 The server parses requests and builds responses through these types, so
 an out-of-process offerer or station agent that uses them (re-exported
@@ -14,11 +15,14 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, Literal, Self, cast, get_args
 
+from ..channel_attach import RIGCTL_VERSIONS  # noqa: TID251
 from .ice_gathering import IceServer, parse_ice_servers  # noqa: TID251
 
 __all__ = [
     "IceCandidateInit",
     "WebRtcAnswer",
+    "WebRtcClose",
+    "WebRtcCloseResult",
     "WebRtcErrorCode",
     "WebRtcIceCandidate",
     "WebRtcOffer",
@@ -26,7 +30,7 @@ __all__ = [
     "WebRtcTransportStatus",
 ]
 
-#: Every ``code`` the two answerer routes answer an error with.
+#: Every ``code`` the answerer routes answer an error with.
 WebRtcErrorCode = Literal[
     "webrtc_unavailable",
     "missing_sdp",
@@ -35,6 +39,8 @@ WebRtcErrorCode = Literal[
     "missing_session",
     "invalid_candidate",
     "ice_error",
+    "invalid_session",
+    "close_error",
 ]
 
 
@@ -212,6 +218,49 @@ class WebRtcIceCandidate:
 
 
 @dataclass(frozen=True, slots=True)
+class WebRtcClose:
+    """``POST /api/v1/transport/webrtc/close`` request body.
+
+    ``session_id`` ``None`` (absent or ``null``) closes every live
+    session; an id closes just that peer. Closing when nothing is open
+    is a success that closed nothing.
+    """
+
+    session_id: str | None = None
+
+    @classmethod
+    def from_json(cls, payload: Mapping[str, object]) -> Self:
+        session_id = payload.get("sessionId")
+        if session_id is not None and not (isinstance(session_id, str) and session_id):
+            raise WebRtcRequestError(
+                "invalid_session", "Field 'sessionId' must be a non-empty string."
+            )
+        return cls(session_id=session_id)
+
+    def to_json(self) -> dict[str, str | None]:
+        return {"sessionId": self.session_id}
+
+
+@dataclass(frozen=True, slots=True)
+class WebRtcCloseResult:
+    """Successful close response: the ids of the sessions torn down."""
+
+    closed: tuple[str, ...] = ()
+
+    def to_json(self) -> dict[str, Any]:
+        return {"status": "ok", "closed": list(self.closed)}
+
+    @classmethod
+    def from_json(cls, payload: Mapping[str, object]) -> Self:
+        closed = payload.get("closed")
+        if payload.get("status") != "ok" or not (
+            isinstance(closed, list) and all(isinstance(item, str) for item in closed)
+        ):
+            raise ValueError(f"not a WebRTC close result: {dict(payload)!r}")
+        return cls(closed=tuple(closed))
+
+
+@dataclass(frozen=True, slots=True)
 class WebRtcTransportStatus:
     """The ``webrtc`` block of ``GET /api/v1/capabilities``.
 
@@ -222,9 +271,29 @@ class WebRtcTransportStatus:
 
     available: bool
     enabled: bool
+    rigctl_versions: tuple[int, ...] = ()
 
-    def to_json(self) -> dict[str, bool]:
-        return {"available": self.available, "enabled": self.enabled}
+    def to_json(self) -> dict[str, bool | list[int]]:
+        payload: dict[str, bool | list[int]] = {
+            "available": self.available,
+            "enabled": self.enabled,
+        }
+        if self.rigctl_versions:
+            if any(
+                type(v) is not int or v not in RIGCTL_VERSIONS
+                for v in self.rigctl_versions
+            ):
+                raise ValueError("unsupported outbound rigctl version")
+            payload["rigctl_versions"] = list(self.rigctl_versions)
+        return payload
+
+    def select_rigctl_version(self) -> int | None:
+        """Version an offerer can open on this peer, if any."""
+        if not (self.available and self.enabled):
+            return None
+        return max(
+            set(self.rigctl_versions).intersection(RIGCTL_VERSIONS), default=None
+        )
 
     @classmethod
     def from_json(cls, payload: Mapping[str, object]) -> Self:
@@ -232,4 +301,9 @@ class WebRtcTransportStatus:
         enabled = payload.get("enabled")
         if type(available) is not bool or type(enabled) is not bool:
             raise ValueError(f"not a webrtc capabilities block: {dict(payload)!r}")
-        return cls(available=available, enabled=enabled)
+        versions = payload.get("rigctl_versions", [])
+        if not isinstance(versions, list) or any(type(v) is not int for v in versions):
+            raise ValueError("rigctl_versions must be an array of integers")
+        return cls(
+            available=available, enabled=enabled, rigctl_versions=tuple(versions)
+        )

@@ -903,7 +903,7 @@ async def test_coalesced_slider_burst_produces_one_dispatch_and_one_readback(
     so that every frame of the burst, the first included, lands inside one
     pacing window -- the mid-drag case.
     """
-    ws = SimpleNamespace(send_text=AsyncMock(), recv=AsyncMock())
+    ws = SimpleNamespace(outbound_progress=0, send_text=AsyncMock(), recv=AsyncMock())
     queue = _QueueRecorder()
     handler = ControlHandler(
         ws,

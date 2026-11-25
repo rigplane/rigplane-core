@@ -8,7 +8,7 @@ import { isStateAdvance, type StateAdvanceBaseline } from '../stores/live-metada
 import { capabilitiesMatchGeneration, clearCapabilities, setCapabilities } from '../stores/capabilities.svelte';
 import { fetchCapabilities } from './http-client';
 import { authenticatedWsUrl, withoutWsAuthToken, withWsSearchParam } from './ws-url';
-import { controllerClient, ControllerClientError } from './controller-client';
+import { controllerClient, ControllerClientError, CONTROLLER_TOAST_CODES } from './controller-client';
 import { applyStateDelta, stateDeltaOps } from './state-delta';
 import type { MessageTransport } from './message-transport';
 import { createMessageTransport } from './transport-factory';
@@ -199,7 +199,7 @@ export class WsChannel {
       this.cancelNonPtt('controller_lost');
       if (controllerClient.remote) {
         this.disconnect();
-        if (this.control) this.emitLocalNotification('error', new ControllerClientError('controller_lost').message, 'controller_lost');
+        if (this.control) this.emitLocalNotification('error', new ControllerClientError('controller_lost').message, CONTROLLER_TOAST_CODES.controller_lost);
         return;
       }
       // MOR-3535: a lost local session recovers silently — reconnect through
@@ -386,7 +386,7 @@ export class WsChannel {
           } else if (msg.type === 'response') {
             if (msg.ok === false) {
               const errorMsg = msg.message || msg.error || 'Command failed';
-              console.error(`[ws] command ${msg.id} failed: ${errorMsg}`);
+              console.error(`[ws] command ${msg.id} failed (${msg.error ?? "command_failed"}): ${errorMsg}`);
               for (const h of this.messageHandlers) {
                 h({ type: 'notification', level: 'error', message: errorMsg, category: 'command' } as any);
               }

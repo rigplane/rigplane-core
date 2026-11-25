@@ -6,7 +6,7 @@ import type { ScopeGranted, ScopeSubscription } from '../../../src/lib/runtime/s
 import type { RadioIntent } from '../../../src/lib/runtime/commands/radio-intents';
 import type { WsCommand } from '../../../src/lib/types/protocol';
 import { readPassbandDiagnostics } from './panorama-passband-probe';
-import { startJourneyServer } from './server-process';
+import { journeyPort, startJourneyServer } from './server-process';
 import { parseScopeWriteReceipt } from './panorama-receipt';
 import { expectPanoramaSettled, watchPanoramaErrors } from './panorama-guards';
 
@@ -20,7 +20,7 @@ for (const [index, [model, zoomMode]] of ([['IC-705', 0], ['IC-7300', 0], ['IC-7
   for (const zoom of [false, true, 'span'] as const) {
     test(`${model}: ${zoom === 'span' ? 'span arrows and keyboard' : zoom ? 'zoom then drag' : 'one drag'} settles subscriptions and WebKit renderer work`, async ({ page }, info) => {
       const evidence = info.outputPath('radio.jsonl');
-      const port = Number(process.env.PANORAMA_PORT ?? 18845) + index;
+      const port = journeyPort(Number(process.env.PANORAMA_PORT ?? 18845) + index);
       const server = await startJourneyServer(port, 14_250_000,
         ['--model', model, '--evidence', evidence], 'tests/e2e/panorama_web_server.py');
       try {
@@ -250,7 +250,7 @@ for (const [index, [model, zoomMode]] of ([['IC-705', 0], ['IC-7300', 0], ['IC-7
 //     follow once the confirmed VFO leaves the pinned window.
 for (const [index, model] of ['IC-705', 'IC-7300'].entries()) {
   test(`${model}: MOR-4387 click-tune burst then arrow tuning keeps the VFO marker in view`, async ({ page }, info) => {
-    const port = 18860 + index;
+    const port = journeyPort(18860 + index);
     const server = await startJourneyServer(port, 14_250_000,
       ['--model', model, '--evidence', info.outputPath('radio.jsonl')], 'tests/e2e/panorama_web_server.py');
     const wsCommands: WsCommand[] = [];
@@ -330,7 +330,7 @@ for (const [index, model] of ['IC-705', 'IC-7300'].entries()) {
   // so readback latency no longer loses steps. Green only on a stack with
   // that fix; on this branch alone the +12 kHz assertion still fails.)
   test(`${model}: MOR-4393 click-tune burst then 12 arrows lands +12 kHz from the clicked frequency`, async ({ page }, info) => {
-    const port = 18890 + index;
+    const port = journeyPort(18890 + index);
     const server = await startJourneyServer(port, 14_250_000,
       ['--model', model, '--evidence', info.outputPath('radio.jsonl')], 'tests/e2e/panorama_web_server.py');
     try {
@@ -377,7 +377,7 @@ for (const [index, model] of ['IC-705', 'IC-7300'].entries()) {
   });
 
   test(`${model}: MOR-4387 zoom keeps follow and survives arrow tuning`, async ({ page }, info) => {
-    const port = 18870 + index;
+    const port = journeyPort(18870 + index);
     const server = await startJourneyServer(port, 14_250_000,
       ['--model', model, '--evidence', info.outputPath('radio.jsonl')], 'tests/e2e/panorama_web_server.py');
     const watch = watchPanoramaErrors(page);
@@ -417,7 +417,7 @@ for (const [index, model] of ['IC-705', 'IC-7300'].entries()) {
   });
 
   test(`${model}: MOR-4387 band preset stays pinned inside and returns to follow beyond`, async ({ page }, info) => {
-    const port = 18880 + index;
+    const port = journeyPort(18880 + index);
     const server = await startJourneyServer(port, 14_250_000,
       ['--model', model, '--evidence', info.outputPath('radio.jsonl')], 'tests/e2e/panorama_web_server.py');
     const watch = watchPanoramaErrors(page);
@@ -437,10 +437,7 @@ for (const [index, model] of ['IC-705', 'IC-7300'].entries()) {
       const marker = page.locator('.waterfall-content .tune-line');
       await expect(marker).toBeVisible({ timeout: 30_000 });
       await expect.poll(() => frames.count, { timeout: 30_000 }).toBeGreaterThan(10);
-      await page.getByRole('button', { name: 'More scope controls' }).first().click();
-      const select = page.locator('[data-testid="scope-more-panel"] [data-testid="scope-preset-select"]');
-      await select.selectOption({ index: 1 });
-      await page.keyboard.press('Escape');
+      await page.getByTestId('scope-zoom-band').first().click();
       await expect.poll(() => sent.at(-1)?.view).toEqual({ startHz: 14_000_000, endHz: 14_350_000 });
       for (let i = 0; i < 4; i++) await page.getByRole('button', { name: 'Increase tuning step' }).first().click();
       await expect.poll(() => sent.at(-1)?.view).toEqual({ startHz: 14_000_000, endHz: 14_350_000 });

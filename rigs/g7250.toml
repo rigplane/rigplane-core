@@ -70,9 +70,12 @@ span_preset_semantics = "full_width"
 # six-byte SET was ever sent and applied (LIVE G7250 LAN 2026-11-13).
 span_value_bytes = 6
 # Over USB serial the radio answers no 0x27 read (LIVE pre-1.0.1, see
-# [capabilities]): a USB link gets no radio panorama, as for any radio
-# whose scope does not answer (owner decision 2026-11-18: no per-link
-# profile key; a later firmware may answer on USB).
+# [capabilities] and [capabilities.transport_gaps]): a USB link gets no
+# radio panorama, as for any radio whose scope does not answer. MOR-4437
+# made the per-transport difference profile data
+# ([capabilities.transport_gaps] below, replacing the 2026-11-18 "no
+# per-link profile key" decision); a later firmware that answers 0x27 on
+# USB is a data edit there.
 # 27 19: the vendor wfview file (G7250.rig, firmware V1.0.1, "Scope Ref"
 # Min -200 / Max 200 in tenths) gives -20.0 .. +20.0 dB; 27 19 00 answered
 # 0.0 dB live. The 0.5 dB step is the IC-7300 family's (the G7250 follows
@@ -153,9 +156,23 @@ features = [
     "meters",
     "agc",
     "power_control",
-    # Answers over LAN only — see [scope].
+    # Answers over LAN only — see [scope] and
+    # [capabilities.transport_gaps] below (MOR-4437: the gap is profile
+    # data, enforced by the runtime against the connection's actual
+    # transport).
     "scope",
 ]
+
+# MOR-4437: per-transport capability gaps. LIVE evidence: the 0x27 scope
+# family answers over LAN in wfview mode (LIVE G7250 LAN 2026-11-13,
+# MOR-4436, firmware V1.0.1) and stays silent over USB serial (LIVE
+# 2026-11-09, MOR-4352; 0x27 0x10/0x11/0x14/0x15 got no reply, and the
+# Xiegu G7250 CI-V Reference Rev 1.2 lists 27 as unimplemented on serial).
+# A USB-connected G7250 therefore reports no ``scope`` capability; over
+# LAN the declared set above applies unchanged. A later firmware that
+# answers 0x27 on USB is a data edit here.
+[capabilities.transport_gaps]
+serial = ["scope"]
 
 [state_acquisition]
 # inherited from X6200, not probed on G7250 (provider shape); every polled

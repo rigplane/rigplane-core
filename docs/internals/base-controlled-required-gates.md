@@ -25,7 +25,7 @@ non-authoritative role explicit; no protection-switch command targets them.
 The quick v2 workflow is metadata-only and runs its two jobs on the self-hosted light pool. It never checks out or executes pull-request
 or fork code and never reads a candidate artifact, log, or cache. Its `pull_request_target` path initializes opened,
 reopened, synchronized, ready, draft, and base-edited pull requests; title- and body-only edits are no-ops. Its
-`workflow_run` path consumes completed runs from the canonical legacy `Tests (quick)` workflow and ignores main pushes.
+`workflow_run` path consumes completed runs from the canonical legacy `Tests (quick)` workflow and ignores main pushes. A completed release-target run (base `release/**`, MOR-4647) is out of domain: the leg skips green and publishes nothing, before the main-only binding assessment.
 
 The read-only producer and status publisher independently run `.github/scripts/quick-v2-metadata-policy-v1.js: assess`.
 For a completed legacy run, `.github/scripts/quick-v2-metadata-policy-v1.js: bindRunPullRequest` requires exactly one
@@ -60,7 +60,8 @@ the earlier rules only; it does not implement these two additions.
 
 The trusted base classifier predicts whether substantive `quick` must run. Workflow-level success with that job skipped
 is unknown/failure. The legacy run has six job groups: `classify`, the build-tier halves `quick-frontend` and `quick-python`,
-each half's sharded matrix tier (`quick-frontend-e2e (visual|guards|journey)` and `quick-python-tests (1)`–`(4)`, MOR-4373),
+each half's sharded matrix tier (`quick-frontend-e2e (visual|guards|journey-1..3)` and `quick-python-tests (1)`–`(4)`, MOR-4373; the journey
+legs are the MOR-4685 `--shard=i/n` split),
 and the `quick` aggregator on the light pool. Each tier appears either as its full leg set (each leg once, on its half's
 build pool) or as the single skipped entry a job-level-skipped matrix collapses to. A base `frontend` route requires
 `quick-frontend` and its e2e legs to have run, and a base `ci` route requires `quick-python`; a base `core` route pins

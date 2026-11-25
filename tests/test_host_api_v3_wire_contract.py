@@ -15,7 +15,7 @@ from rigplane.core.state_pipeline_contracts import (
     Observation,
     SourceMetadata,
 )
-from rigplane.runtime.controller_authority import ControllerAuthority
+from rigplane.runtime.controller_authority import ControllerAuthority, ControllerError
 from rigplane.web.radio_poller import RadioPoller
 from rigplane.web.server import WebConfig, WebServer
 from test_handlers_coverage import _capable_radio, _control_handler
@@ -42,6 +42,76 @@ async def test_controller_documents(monkeypatch: pytest.MonkeyPatch) -> None:
         ticket = authority.attach(grant["controller_key"], "primary", "host-wire")
         authority.register_control(ticket)
         assert authority.heartbeat(ticket) == WIRE["controllerHeartbeat"]
+    finally:
+        authority.revoke()
+        await authority.settle()
+
+
+@pytest.mark.asyncio
+async def test_controller_remote_loss_documents(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Producer half of Toast.controller-errors.component.test.ts's loss replay.
+
+    The browser suite replays these fixture goldens (remote mode; the
+    all-``1f`` key is the monkeypatched token, generation 2 because arming
+    remote mode and the grant each bump it once) through its mocked HTTP
+    exchanges and drives loss by closing the control socket. This half
+    proves the real authority plus the real HTTP handler emit the exact
+    documents, and that a superseded holder's only wire event is the
+    registered channel close: ``heartbeat()`` re-validates the generation
+    before answering, so the server can never reply to a stale holder with
+    a newer-generation ack — revocation aborts the channel instead.
+    """
+    authority = ControllerAuthority(
+        ready=lambda: True, cleanup=AsyncMock(), clock=lambda: 1.0
+    )
+    monkeypatch.setattr(
+        "rigplane.runtime.controller_authority.secrets.token_hex",
+        lambda size: "1f" * size,
+    )
+    server = WebServer(_capable_radio(), WebConfig(radio_model="IC-7610"))
+    monkeypatch.setattr(server, "_controller", authority)
+    await authority.set_mode("remote")
+
+    async def http(method: str, body: bytes | None = None) -> tuple[int, dict]:
+        writer = _FakeWriter()
+        await server._handle_http(
+            writer,
+            method,
+            "/api/v1/controller",
+            headers={"content-length": str(len(body))} if body else {},
+            reader=_reader_with(body) if body else None,
+        )
+        return _response_json(writer)
+
+    try:
+        assert await http("GET") == (200, WIRE["controllerStatusRemoteIdle"])
+        assert await http("POST", b'{"kind": "browser"}') == (
+            201,
+            WIRE["controllerGrantRemote"],
+        )
+        assert await http("GET") == (200, WIRE["controllerStatusRemoteHeld"])
+        # A second client while the grant is held: the golden 409 refusal.
+        assert await http("POST", b'{"kind": "browser"}') == (
+            409,
+            WIRE["controllerBusyRefusal"],
+        )
+        ticket = authority.attach(
+            WIRE["controllerGrantRemote"]["controller_key"], "primary", "toast-spec"
+        )
+        closed: list[bool] = []
+        authority.add_channel(ticket, lambda: closed.append(True))
+        # The ack always carries the holder's own generation.
+        assert authority.heartbeat(ticket) == WIRE["controllerHeartbeatRemote"]
+        # The real loss sequence: revoke() fences the generation, aborts the
+        # registered channel, and a stale heartbeat is refused — never
+        # answered with a superseded-generation frame.
+        authority.revoke()
+        await authority.settle()
+        assert closed == [True]
+        with pytest.raises(ControllerError, match="controller_invalid"):
+            authority.heartbeat(ticket)
     finally:
         authority.revoke()
         await authority.settle()

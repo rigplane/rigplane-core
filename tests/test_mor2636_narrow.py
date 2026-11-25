@@ -16,7 +16,7 @@ from rigplane.web.handlers import ControlHandler
 
 
 def _handler(radio: object, server: object) -> ControlHandler:
-    ws = SimpleNamespace(send_text=AsyncMock(), recv=AsyncMock())
+    ws = SimpleNamespace(outbound_progress=0, send_text=AsyncMock(), recv=AsyncMock())
     return ControlHandler(ws, radio, "9.9.9", "FTX-1", server=server)
 
 

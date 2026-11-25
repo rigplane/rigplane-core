@@ -25,6 +25,7 @@ from rigplane.runtime.managed_tx_state import (
     EffectToken,
 )
 from rigplane.runtime.radio import CoreRadio, IcomRadio
+from rigplane.testing.timing import await_until
 from test_icom7610_serial_radio import _FakeSerialCivLink
 from test_serial_civ_link import _FakeWriter, _cleanup_writes, _make_link
 from rigplane_testkit.leaked_radio_guard import fake_connected
@@ -712,9 +713,10 @@ async def test_two_read_release_matrix(
         await radio.actuate(
             _token(), ActuationOperation.PTT_ON, is_current=lambda: True
         )
-        async with asyncio.timeout(1):
-            while radio._civ_request_tracker.ack_sink_count:
-                await asyncio.sleep(0)
+        await await_until(
+            lambda: not radio._civ_request_tracker.ack_sink_count,
+            description="the keyed radio's stale ACK sinks to drain",
+        )
         script["off"] = "lost"
     if case in ("clean-fb", "clean-fa", "ambiguous-fa"):
         script["off"] = "ack" if case == "clean-fb" else "nak"
@@ -848,18 +850,31 @@ async def test_normal_polling_confirms_on_first_eligible_retry(
             await runtime.execute_civ_raw(raw, wait_response=False)
             await asyncio.sleep(0.02)
 
+    async def confirmed_release() -> None:
+        while True:
+            result = await _force_receive(radio)
+            if confirmations:
+                assert result is ActuationResult.ACCEPTED
+                assert confirmations[0].answered_by.data == b"\x00"
+                return
+            assert result is ActuationResult.UNCERTAIN
+
     poller = asyncio.create_task(polling())
-    await asyncio.sleep(0)
+    release = asyncio.create_task(confirmed_release())
     try:
-        async with asyncio.timeout(1):
-            while True:
-                result = await _force_receive(radio)
-                if confirmations:
-                    assert result is ActuationResult.ACCEPTED
-                    assert confirmations[0].answered_by.data == b"\x00"
-                    break
-                assert result is ActuationResult.UNCERTAIN
+        # The loop ends on a real event (a poller answer confirming a retry's
+        # readback), so wait on that event with one generous stuck-run bound
+        # instead of a 1 s wall-clock deadline: every retry costs a real
+        # CI-V timeout, and on a loaded runner the deadline cancelled a
+        # healthy run (MOR-4214, full-matrix run 44853706307, job test (3.12)).
+        await await_until(
+            release.done,
+            timeout=30.0,
+            description="the first eligible normal-polling retry to confirm the release",
+        )
+        await release
         assert script["reads"] >= 3
     finally:
         poller.cancel()
-        await asyncio.gather(poller, return_exceptions=True)
+        release.cancel()
+        await asyncio.gather(poller, release, return_exceptions=True)

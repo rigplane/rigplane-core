@@ -20,6 +20,7 @@
   import FilterPanel from '../panels/FilterPanel.svelte';
   import RxAudioPanel from '../panels/RxAudioPanel.svelte';
   import TxPanel from '../panels/TxPanel.svelte';
+  import TxMicProcessingControl from '../controls/TxMicProcessingControl.svelte';
   import DspPanel from '../panels/DspPanel.svelte';
   import AgcPanel from '../panels/AgcPanel.svelte';
   import RfFrontEnd from '../panels/RfFrontEnd.svelte';
@@ -70,7 +71,9 @@
   import { getKeyboardConfig } from '$lib/stores/capabilities.svelte';
   import {
     getRadioHealth, getRadioLinkState, getRadioPowerOn, getRadioReady, getRigConnected,
+    getWsConnected, hasEverConnected,
   } from '$lib/stores/connection.svelte';
+  import { deriveLinkFault } from '$lib/runtime/adapters/link-fault';
   import { deriveRadioHealthLabel } from '$lib/runtime/adapters/radio-health-label';
   import { toRadioViewModel } from '$lib/runtime/adapters/radio-view-model-adapter';
   import { projectHeaderFrequency } from '$lib/runtime/adapters/tx-capabilities';
@@ -98,6 +101,16 @@
     radioReady: getRadioReady(),
     radioState: getRadioPowerOn() === false ? 'disconnected' : getRadioLinkState(),
   }) : '');
+
+  // MOR-2241 — the same link-fault veil RadioLayout carries (app.css keys the
+  // shared rule on `[data-link-fault]`); this layout has no status bar, its
+  // `.m-radio-link-line` states the fault and is exempt from the filter there.
+  let linkFault = $derived(deriveLinkFault({
+    everConnected: hasEverConnected(),
+    wsConnected: getWsConnected(),
+    connectionStale: runtime.connectionStale,
+  }));
+  let linkFaultAttribute = $derived(linkFault === 'none' ? undefined : linkFault);
 
   // MOR-2442 — the PORTRAIT mount's managed scope region: the bare
   // `scopeManaged` SRS instance below binds it out here, and the portrait
@@ -465,7 +478,7 @@
     {
       latched: () => txCtl.snapshot().intent === 'latched',
       transmitAvailable: () => txCtl.snapshot().fresh,
-      latchAllowed: () => !runtime.remoteController,
+      latchAllowed: () => runtime.pttStyle !== 'momentary',
     },
     {
       pttOn: txCtl.pttOn, pttOff: txCtl.pttOff,
@@ -554,7 +567,7 @@
 
 {#if isLandscape}
 <!-- ═══ LANDSCAPE: fullscreen spectrum + VFO overlay ═══ -->
-<div class="m-landscape">
+<div class="m-landscape" data-link-fault={linkFaultAttribute}>
   <KeyboardHandler config={keyboardConfig} onAction={keyboardHandlers.dispatch} />
   <!-- Radio-link reason line: in the layout flow, so .m-ls-body (spectrum and
        overlay bar) starts below it. -->
@@ -661,7 +674,7 @@
 </div>
 {:else}
 <!-- ═══ PORTRAIT: normal mobile layout ═══ -->
-<div class="m-layout">
+<div class="m-layout" data-link-fault={linkFaultAttribute}>
   <KeyboardHandler config={keyboardConfig} onAction={keyboardHandlers.dispatch} />
 
   <!-- ═══ STICKY VFO HEADER ═══ -->
@@ -1160,6 +1173,10 @@
           <!-- MOR-1245 — while this sheet is open, the fixed overlay below
                stays the one banner: TxPanel's inline copy is suppressed. -->
           <TxPanel showManagedTotControl={true} suppressModInputTxWarning />
+          <!-- MOR-4596: TxPanel's own copy sits in its nested levels dialog, which
+               is positioned from the panel's viewport box and opens below this
+               bottom-anchored sheet; the phone gets the switch here instead. -->
+          <TxMicProcessingControl />
   </BottomSheet>
 </div>
 {/if}

@@ -140,6 +140,10 @@ SCOPE_RECEIVER_SELECTOR_SUBS: frozenset[int] = frozenset(
 # know which scope the radio has selected.
 SCOPE_SELECTOR_MAIN: int = 0x00
 
+# The selector value naming the SUB scope: the other byte a receiver-selector
+# read (0x27 over ``SCOPE_RECEIVER_SELECTOR_SUBS``) can carry.
+SCOPE_SELECTOR_SUB: int = 0x01
+
 
 def _validate_scope_range(name: str, value: int, minimum: int, maximum: int) -> int:
     if not minimum <= value <= maximum:

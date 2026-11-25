@@ -53,7 +53,9 @@ def _control_handler(
     managed_tx_authority: object | None = None,
 ) -> ControlHandler:
     if ws is None:
-        ws = SimpleNamespace(send_text=AsyncMock(), recv=AsyncMock())
+        ws = SimpleNamespace(
+            outbound_progress=0, send_text=AsyncMock(), recv=AsyncMock()
+        )
     return ControlHandler(
         ws,
         radio,
@@ -104,7 +106,7 @@ async def _await_flush(handler: ControlHandler, name: str) -> None:
 
 
 async def test_burst_coalesces_to_last_value_not_dropped() -> None:
-    ws = SimpleNamespace(send_text=AsyncMock(), recv=AsyncMock())
+    ws = SimpleNamespace(outbound_progress=0, send_text=AsyncMock(), recv=AsyncMock())
     queue = _QueueRecorder()
     handler = _control_handler(
         ws=ws,
@@ -147,7 +149,7 @@ async def test_burst_coalesces_to_last_value_not_dropped() -> None:
 
 
 async def test_superseded_frames_get_honest_reply_flushed_frame_gets_real_ack() -> None:
-    ws = SimpleNamespace(send_text=AsyncMock(), recv=AsyncMock())
+    ws = SimpleNamespace(outbound_progress=0, send_text=AsyncMock(), recv=AsyncMock())
     queue = _QueueRecorder()
     handler = _control_handler(
         ws=ws,
@@ -190,7 +192,7 @@ async def test_superseded_frames_get_honest_reply_flushed_frame_gets_real_ack() 
 
 
 async def test_slower_than_window_commands_are_unaffected() -> None:
-    ws = SimpleNamespace(send_text=AsyncMock(), recv=AsyncMock())
+    ws = SimpleNamespace(outbound_progress=0, send_text=AsyncMock(), recv=AsyncMock())
     queue = _QueueRecorder()
     handler = _control_handler(
         ws=ws,
@@ -222,7 +224,7 @@ async def test_slower_than_window_commands_are_unaffected() -> None:
 
 
 async def test_ptt_off_bursts_are_never_rate_limited_or_coalesced() -> None:
-    ws = SimpleNamespace(send_text=AsyncMock(), recv=AsyncMock())
+    ws = SimpleNamespace(outbound_progress=0, send_text=AsyncMock(), recv=AsyncMock())
     queue = _QueueRecorder()
     authority = SimpleNamespace(
         submit_ptt=AsyncMock(
@@ -266,7 +268,7 @@ async def test_ptt_off_bursts_are_never_rate_limited_or_coalesced() -> None:
 async def test_coalesce_counter_is_accurate_and_logged(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    ws = SimpleNamespace(send_text=AsyncMock(), recv=AsyncMock())
+    ws = SimpleNamespace(outbound_progress=0, send_text=AsyncMock(), recv=AsyncMock())
     queue = _QueueRecorder()
     handler = _control_handler(
         ws=ws,
@@ -305,7 +307,7 @@ async def test_coalesce_counter_is_accurate_and_logged(
 
 
 async def test_late_flush_gate_diverts_to_coalescing_when_frame_pending() -> None:
-    ws = SimpleNamespace(send_text=AsyncMock(), recv=AsyncMock())
+    ws = SimpleNamespace(outbound_progress=0, send_text=AsyncMock(), recv=AsyncMock())
     queue = _QueueRecorder()
     handler = _control_handler(
         ws=ws,
@@ -417,7 +419,7 @@ def _reply_id_counts(ws: SimpleNamespace) -> dict[str, int]:
 
 
 async def _run_one_battery_iteration(rng: random.Random) -> None:
-    ws = SimpleNamespace(send_text=AsyncMock(), recv=AsyncMock())
+    ws = SimpleNamespace(outbound_progress=0, send_text=AsyncMock(), recv=AsyncMock())
     queue = _QueueRecorder()
     handler = _control_handler(
         ws=ws,

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { paintedOutages, passbandGaps, requireProbeStimulus } from '../../../../tests/e2e/journey/panorama-passband-probe';
+import { missingLivePassband, paintedOutages, passbandGaps, requireProbeStimulus } from '../../../../tests/e2e/journey/panorama-passband-probe';
 
 describe('passband probe evidence', () => {
   it('rejects no-op tuning and no-op zoom witnesses', () => {
@@ -10,6 +10,21 @@ describe('passband probe evidence', () => {
   });
   const sample = (t: number, overlay: boolean, kind: 'frame' | 'dom' = 'frame') =>
     ({ t, kind, overlay, gates: null, state: null });
+  it('detects a live absence carried into the interval when recovery is the next sample', () => {
+    const absent = {
+      ...sample(-5, false),
+      gates: {
+        tuneVisible: true, confirmed: true, freqHz: 14_050_000, viewStartHz: 14_000_000, viewEndHz: 14_100_000,
+        inView: true, proportional: false, mode: 'USB', widthHz: 2400, shiftHz: 0, tuple: false,
+        tupleState: 'unknown' as const, tupleReason: 'frame-unavailable', tupleStale: false,
+        passbandHz: 0, spanPositive: true, overlay: false,
+      },
+    };
+    expect(missingLivePassband([sample(-10, false), absent, sample(200, true)], 0, 200)).toBe(absent);
+    const offline = { ...absent, gates: { ...absent.gates, spanPositive: false } };
+    expect(missingLivePassband([absent, offline, sample(200, true)], 0, 200)).toBeUndefined();
+    expect(missingLivePassband([absent, sample(0, true)], 0, 200)).toBeUndefined();
+  });
   it('rejects an empty interval or one with no state before it instead of passing', () => {
     expect(() => passbandGaps([], 0, 1000)).toThrow('recorded nothing');
     // The sampler only started inside the window: nothing says what the page showed entering it.

@@ -122,6 +122,22 @@ function bindRunPullRequest(run, liveBaseSha) { const liveMain = assertSha(liveB
   if (associatedBase !== liveMain) { throw new ObservationError('stale_base', 'workflow run recorded base is not live main', {publish: false, targetSha: headSha}); }
   return {pullNumber, headSha, baseSha: associatedBase};
 }
+// MOR-4647: release branches carry quick.yml with `branches: [main,
+// 'release/**']` (MOR-4214), so every completed release-target legacy run
+// also fires this observer. The observation domain is live main by design,
+// so a release-target completion skips green without publication, before the
+// main-only binding assessment (which would fail it as invalid_binding and
+// red both jobs while posting nothing). Anything not shaped exactly like a
+// canonical release-target association falls through and still fails closed.
+function releaseTargetAssociation(run) {
+  if (!Array.isArray(run?.pull_requests) || run.pull_requests.length !== 1) { return null; }
+  const associated = run.pull_requests[0];
+  if (!Number.isSafeInteger(associated?.number) || associated.number <= 0) { return null; }
+  if (!canonicalRunRepository(associated?.head?.repo) || !canonicalRunRepository(associated?.base?.repo)) { return null; }
+  const ref = associated?.base?.ref;
+  if (typeof ref !== 'string' || !ref.startsWith('release/') || ref.length <= 'release/'.length) { return null; }
+  return associated;
+}
 function bindPull(pull, liveBaseSha, expectedHeadSha = null) { const headSha = assertSha(pull.head?.sha, 'pull request head');
   const baseSha = assertSha(pull.base?.sha, 'pull request base');
   if (expectedHeadSha !== null && headSha !== expectedHeadSha) { throw new ObservationError('stale_head', 'run head is no longer current', { publish: false, targetSha: headSha, }); }
@@ -159,7 +175,9 @@ async function listAttemptJobs(github, owner, repo, runId, runAttempt) { const j
 // halves run on build pools (MOR-4214), not on the 2 GiB gate pool.
 // MOR-4373: each half additionally has a sharded matrix tier —
 // `quick-python-tests (1)`..`(4)` beside quick-python and
-// `quick-frontend-e2e (visual|guards|journey)` beside quick-frontend. A
+// `quick-frontend-e2e (visual|guards|journey-N)` beside quick-frontend
+// (MOR-4685: the journey leg is itself QUICK_JOURNEY_SHARDS
+// `playwright --shard=i/n` legs). A
 // matrix job whose job-level `if` is false collapses to exactly ONE entry
 // named after the job id (verified on Pro's skipped pytest matrix), so each
 // tier's topology is valid either as its full leg set or as that single
@@ -177,11 +195,16 @@ async function listAttemptJobs(github, owner, repo, runId, runAttempt) { const j
 // immutable gate test pins both directions). The visual e2e leg is the one
 // architecture pin left — its pixel baselines are arm64 Linux Chromium
 // renders — so it must request the ARM64 build set.
+// MOR-4097: merge_group runs of the worker jobs request the reserved queue
+// lane (self-hosted,Linux,queue; ARM64,queue-arm64 for the visual leg) instead of
+// the build set. This observer only binds pull_request runs (see
+// assertCanonicalRun), which always request the build set, so the rules
+// below stay build-only: a queue request on an observed run is a mismatch.
 const BUILD_POOL_LABELS = Object.freeze(['self-hosted', 'Linux', 'build']);
 const ARM64_BUILD_LABELS = Object.freeze(['self-hosted', 'Linux', 'ARM64', 'build']);
 const LIGHT_LABELS = Object.freeze(['self-hosted', 'Linux', 'ARM64', 'light']);
 const PYTHON_TEST_LEGS = Object.freeze(['quick-python-tests (1)', 'quick-python-tests (2)', 'quick-python-tests (3)', 'quick-python-tests (4)']);
-const FRONTEND_E2E_LEGS = Object.freeze(['quick-frontend-e2e (visual)', 'quick-frontend-e2e (guards)', 'quick-frontend-e2e (journey)']);
+const FRONTEND_E2E_LEGS = Object.freeze(['quick-frontend-e2e (visual)', 'quick-frontend-e2e (guards)', 'quick-frontend-e2e (journey-1)', 'quick-frontend-e2e (journey-2)', 'quick-frontend-e2e (journey-3)']);
 function hasLabels(job, labels) { return Array.isArray(job?.labels) && labels.every((label) => job.labels.includes(label)); }
 // Neutral or ARM64 build request (the pre-2026-11-20 frontend shape) is
 // valid; an X64 request on a frontend worker is not.
@@ -288,6 +311,7 @@ function assertJobTopologyUnchanged(jobs, expectedTopology, headSha) { if (jobTo
 async function assessWorkflowRun({github, context, liveBaseSha}) { const payloadRun = context.payload.workflow_run;
   if (payloadRun?.event !== 'pull_request') { return assessment({kind: 'workflow_run', code: 'ignored_non_pr'}); }
   const response = await github.request( 'GET /repos/{owner}/{repo}/actions/runs/{run_id}', {owner: REPOSITORY.owner, repo: REPOSITORY.repo, run_id: payloadRun.id}, ); const run = response.data;
+  if (releaseTargetAssociation(run) !== null) { return assessment({kind: 'workflow_run', code: 'out_of_domain'}); }
   let headSha = assertSha(run.head_sha, 'workflow run head'); let runBinding = null;
   try { runBinding = await assertCanonicalRun(github, context, run, payloadRun, liveBaseSha);
     headSha = runBinding.headSha;
@@ -330,4 +354,4 @@ async function assess({github, context, liveBaseSha}) { assertSha(liveBaseSha, '
   if (context.eventName === 'workflow_run') { return assessWorkflowRun({github, context, liveBaseSha}); }
   return assessment({kind: 'unknown', code: 'ignored_event'});
 }
-module.exports = { CONTROL_PATHS, LEGACY_WORKFLOW, OBSERVATION_CONTEXT, OBSERVER_PATH, REPOSITORY, assess, assertControlsUnchanged, assertJobTopologyUnchanged, assertRunPublicationSnapshot, assertUniqueCurrentPullMatchesRun, bindPull, bindRunPullRequest, evaluateJobTopology, getTreeEntry, jobTopologySnapshot, listAttemptJobs, rebindForPublication, relevantLifecycle, stableAssessment, };
+module.exports = { CONTROL_PATHS, LEGACY_WORKFLOW, OBSERVATION_CONTEXT, OBSERVER_PATH, REPOSITORY, assess, assertControlsUnchanged, assertJobTopologyUnchanged, assertRunPublicationSnapshot, assertUniqueCurrentPullMatchesRun, bindPull, bindRunPullRequest, evaluateJobTopology, getTreeEntry, jobTopologySnapshot, listAttemptJobs, rebindForPublication, releaseTargetAssociation, relevantLifecycle, stableAssessment, };

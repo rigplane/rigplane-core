@@ -65,7 +65,7 @@
     getPendingFrequencyHz, getTuningBurstFrequencyHz,
     getPendingFilterSelection, getPendingManualNotchWidth, getPendingNarrow, getPendingNbOn, getPendingNotchMode,
     getPendingNrOn, getPendingPreampLevel,
-    getPendingRepeaterShift, getPendingRepeaterTone, getPendingToneFreq,
+    getPendingRepeaterShift, getPendingRepeaterTone, getPendingToneFreq, getPendingRepeaterOffset,
     getRepeaterHandlers,
     getSystemHandlers, getDataModeArmed, getModInputArmed, getFilterShapeArmed,
     getModeArmed, getAgcArmed, getAttenuatorArmed,
@@ -111,7 +111,7 @@
   } from '../../primitives/control-instruments/control-instrument-renderer.svelte';
   import type { ReceiverId, RadioViewModel, VfoSlot } from '../../semantic/radio-view-model';
   import {
-    shiftFromDirection, stepToneFreq, type RepeaterPending, type RepeaterShift,
+    shiftFromDirection, stepOffsetHz, stepToneFreq, type RepeaterPending, type RepeaterShift,
   } from '$lib/radio/repeater-transitions';
   import RfFrontEndSurface, {
     type RfFrontEndLevelField,
@@ -1784,7 +1784,7 @@
   let pendingNotchWidth = $derived(activeReceiverIndex === null ? null : getPendingManualNotchWidth(activeReceiverIndex));
 
   function requestKey(): void {
-    if (runtime.remoteController) return;
+    if (runtime.pttStyle === 'momentary') return;
     tx.transmitOn();
   }
   /** Unconditional HTTP ForceOFF remains reachable in stale/faulted states. */
@@ -1960,12 +1960,27 @@
     repeaterHandlers.onToneFreqChange(next, mode.value === 'tsql', repeaterWireReceiver(receiver));
   }
 
+  function stepOffsetFor(receiver: ReceiverId, direction: 1 | -1): void {
+    const group = view?.repeater?.[receiver === 'SUB' ? 'sub' : 'main'];
+    const offset = group?.offsetHz.reading;
+    if (offset?.status !== 'known') return;
+    // MOR-3624 gate round 1: accumulate presses from the pending target
+    // while its readback is still in flight, so two presses before the
+    // radio answers step twice instead of dispatching the same value twice.
+    const wire = repeaterWireReceiver(receiver);
+    const base = getPendingRepeaterOffset(wire) ?? offset.value;
+    const next = stepOffsetHz(base, direction);
+    if (next === base) return;
+    repeaterHandlers.onOffsetChange(next, wire);
+  }
+
   function repeaterPendingFor(wire: 0 | 1): RepeaterPending {
     const shift = getPendingRepeaterShift(wire);
     return {
       toneMode: getPendingRepeaterTone(wire),
       shift: shift === null ? null : shiftFromDirection(shift),
       toneFreq: getPendingToneFreq(wire) !== null,
+      offsetHz: getPendingRepeaterOffset(wire) !== null,
     };
   }
   let repeaterPending: Partial<Record<ReceiverId, RepeaterPending>> = $derived({
@@ -2294,7 +2309,7 @@
   {#snippet rxTxSurface(standard = false)}
     {#if view}
       <RxTxSurface {view} tx={txState} {standard}
-        momentary={runtime.remoteController} onPttDown={tx.pttOn} onPttUp={tx.pttOff}
+        momentary={runtime.pttStyle === 'momentary'} onPttDown={tx.pttOn} onPttUp={tx.pttOff}
         onRequestKey={requestKey} onRequestUnkey={requestUnkey} />
     {/if}
   {/snippet}
@@ -2769,6 +2784,7 @@
       onToneModeChange={selectToneMode}
       onShiftChange={selectShift}
       onToneFreqStep={stepToneFreqFor}
+      onOffsetStep={stepOffsetFor}
     />
   {/snippet}
 

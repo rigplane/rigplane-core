@@ -441,6 +441,7 @@ async def test_control_run_admits_next_off_while_level_write_is_unsettled(path):
 
     path.write.side_effect = held_write
     ws = SimpleNamespace(
+        outbound_progress=0,
         recv=AsyncMock(side_effect=incoming.get),
         send_text=AsyncMock(side_effect=send_text),
     )

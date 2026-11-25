@@ -47,13 +47,37 @@ def test_full_worker_diagnostics_wiring() -> None:
     upload = text.split("- name: Upload worker diagnostics", 1)[1].split("- name:", 1)[
         0
     ]
-    assert "if: always()" in upload and "retention-days: 3" in upload
+    # MOR-4718: the artifact is stored for a failed leg only and for one
+    # day. The whole `if` line is pinned, so `always()` cannot return through
+    # an `||`; the finalize step above still runs on every run.
+    assert "if: failure()\n" in upload and "retention-days: 1\n" in upload
+    assert "always()" not in upload
     assert "${{ matrix.python-version }}" in upload
+    finalize = text.split("- name: Bound worker diagnostics", 1)[1].split("- name:", 1)[
+        0
+    ]
+    assert "if: always()" in finalize
     assert (
         "uv run --no-sync python .github/scripts/pytest_worker_diagnostics.py --finalize"
         in text
     )
     assert "rc=${PIPESTATUS[0]}" in text and 'exit "$rc"' in text
+
+
+def test_full_pytest_output_upload_wiring() -> None:
+    """The full-matrix test job always uploads its pytest output (MOR-4214).
+
+    GitHub truncates a long step log in the web UI, so without the artifact a
+    red matrix leg could hide the failed test ids from anyone without a
+    runner-host login.
+    """
+    text = (ROOT / ".github/workflows/full.yml").read_text()
+    upload = text.split("- name: Upload pytest output", 1)[1].split("- name:", 1)[0]
+    assert "if: always()" in upload and "retention-days: 3" in upload
+    assert "actions/upload-artifact" in upload
+    assert "pytest-output-${{ matrix.python-version }}" in upload
+    assert "pytest-output.txt" in upload
+    assert "if-no-files-found: ignore" in upload
 
 
 def test_quick_worker_diagnostics_wiring() -> None:
@@ -74,10 +98,23 @@ def test_quick_worker_diagnostics_wiring() -> None:
         "pytest_worker_diagnostics.py --finalize" in finalize
         and "${{ runner.temp }}/pytest-worker-diagnostics" in finalize
     )
+    # MOR-4718: the finalize step still runs on every core run so the files
+    # exist when a failed shard uploads them.
+    assert "if: always() && needs.classify.outputs.core == 'true'" in finalize
     upload = text.split("- name: Upload worker diagnostics", 1)[1].split("- name:", 1)[
         0
     ]
-    assert "actions/upload-artifact" in upload and "always()" in upload
+    # The upload is the job's last step, so that slice runs on into the
+    # `quick` job and its own `if: always()`; cut it at that job.
+    upload = upload.split("\n\n  quick:", 1)[0]
+    # MOR-4718: the artifact is stored for a failed shard only and for one
+    # day. The whole `if` line is pinned, so `always()` cannot return through
+    # an `||`.
+    lines = upload.splitlines()
+    assert "actions/upload-artifact" in upload
+    assert "        if: failure() && needs.classify.outputs.core == 'true'" in lines
+    assert "          retention-days: 1" in lines
+    assert "always()" not in upload
     for leaf in (
         "events-*.jsonl",
         "phases-*.jsonl",

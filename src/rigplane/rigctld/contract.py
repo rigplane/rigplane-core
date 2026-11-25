@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import IntEnum
+from typing import Literal
 
 
 # ---------------------------------------------------------------------------
@@ -152,6 +153,10 @@ class CommandDef:
             ``V`` (set_vfo) are NOT prefixed — VFO is the data, not a
             prefix.
         description: Free-form documentation.
+        radio_access: Whether the handler can answer from cache, reads live,
+            infers radio status, writes, or only handles local protocol state.
+        live_read_method: For ``live_or_cache``, the callable whose presence
+            selects the live path instead of the cached fallback.
     """
 
     short: str
@@ -161,6 +166,10 @@ class CommandDef:
     max_args: int = 0
     accepts_vfo_arg: bool = False
     description: str = ""
+    radio_access: Literal[
+        "cache", "live", "live_or_cache", "status", "write", "local"
+    ] = field(kw_only=True)
+    live_read_method: str | None = None
 
 
 # MVP command set — sufficient for WSJT-X, JS8Call, fldigi
@@ -178,6 +187,7 @@ _register(
     CommandDef(
         "f",
         "get_freq",
+        radio_access="cache",
         is_set=False,
         accepts_vfo_arg=True,
         description="Get frequency in Hz",
@@ -185,6 +195,7 @@ _register(
     CommandDef(
         "m",
         "get_mode",
+        radio_access="cache",
         is_set=False,
         accepts_vfo_arg=True,
         description="Get mode and passband",
@@ -192,14 +203,22 @@ _register(
     CommandDef(
         "t",
         "get_ptt",
+        radio_access="cache",
         is_set=False,
         accepts_vfo_arg=True,
         description="Get PTT status",
     ),
-    CommandDef("v", "get_vfo", is_set=False, description="Get current VFO"),
+    CommandDef(
+        "v",
+        "get_vfo",
+        is_set=False,
+        radio_access="cache",
+        description="Get current VFO",
+    ),
     CommandDef(
         "j",
         "get_rit",
+        radio_access="cache",
         is_set=False,
         accepts_vfo_arg=True,
         description="Get RIT offset",
@@ -207,6 +226,7 @@ _register(
     CommandDef(
         "l",
         "get_level",
+        radio_access="cache",
         is_set=False,
         min_args=1,
         max_args=1,
@@ -216,6 +236,7 @@ _register(
     CommandDef(
         "u",
         "get_func",
+        radio_access="cache",
         is_set=False,
         min_args=1,
         max_args=1,
@@ -225,6 +246,8 @@ _register(
     CommandDef(
         "s",
         "get_split_vfo",
+        radio_access="live_or_cache",
+        live_read_method="read_split",
         is_set=False,
         accepts_vfo_arg=True,
         description="Get split VFO status",
@@ -232,6 +255,7 @@ _register(
     CommandDef(
         "i",
         "get_split_freq",
+        radio_access="live",
         is_set=False,
         accepts_vfo_arg=True,
         description="Get split TX frequency in Hz",
@@ -239,6 +263,7 @@ _register(
     CommandDef(
         "x",
         "get_split_mode",
+        radio_access="live",
         is_set=False,
         accepts_vfo_arg=True,
         description="Get split TX mode and passband",
@@ -247,6 +272,7 @@ _register(
     CommandDef(
         "F",
         "set_freq",
+        radio_access="write",
         is_set=True,
         min_args=1,
         max_args=1,
@@ -256,6 +282,7 @@ _register(
     CommandDef(
         "M",
         "set_mode",
+        radio_access="write",
         is_set=True,
         min_args=1,
         max_args=2,
@@ -265,6 +292,7 @@ _register(
     CommandDef(
         "T",
         "set_ptt",
+        radio_access="write",
         is_set=True,
         min_args=1,
         max_args=1,
@@ -272,11 +300,18 @@ _register(
         description="Set PTT on/off",
     ),
     CommandDef(
-        "V", "set_vfo", is_set=True, min_args=1, max_args=1, description="Set VFO"
+        "V",
+        "set_vfo",
+        is_set=True,
+        radio_access="write",
+        min_args=1,
+        max_args=1,
+        description="Set VFO",
     ),
     CommandDef(
         "L",
         "set_level",
+        radio_access="write",
         is_set=True,
         min_args=2,
         max_args=2,
@@ -286,6 +321,7 @@ _register(
     CommandDef(
         "U",
         "set_func",
+        radio_access="write",
         is_set=True,
         min_args=2,
         max_args=2,
@@ -295,6 +331,7 @@ _register(
     CommandDef(
         "S",
         "set_split_vfo",
+        radio_access="write",
         is_set=True,
         min_args=2,
         max_args=2,
@@ -304,6 +341,7 @@ _register(
     CommandDef(
         "I",
         "set_split_freq",
+        radio_access="write",
         is_set=True,
         min_args=1,
         max_args=1,
@@ -313,6 +351,7 @@ _register(
     CommandDef(
         "X",
         "set_split_mode",
+        radio_access="write",
         is_set=True,
         min_args=1,
         max_args=2,
@@ -320,27 +359,49 @@ _register(
         description="Set split TX mode and optional passband",
     ),
     # Control / info commands (not set, not get — special)
-    CommandDef("q", "quit", is_set=False, description="Close connection"),
     CommandDef(
-        "\\dump_state", "dump_state", is_set=False, description="Dump rig capabilities"
+        "q", "quit", is_set=False, radio_access="local", description="Close connection"
     ),
     CommandDef(
-        "\\get_info", "get_info", is_set=False, description="Get rig info string"
+        "\\dump_state",
+        "dump_state",
+        is_set=False,
+        radio_access="local",
+        description="Dump rig capabilities",
+    ),
+    CommandDef(
+        "\\get_info",
+        "get_info",
+        is_set=False,
+        radio_access="local",
+        description="Get rig info string",
     ),
     CommandDef(
         "\\chk_vfo",
         "chk_vfo",
+        radio_access="local",
         is_set=False,
         description="Check if VFO mode is enabled (always 0)",
     ),
     CommandDef(
-        "\\get_powerstat", "get_powerstat", is_set=False, description="Get power status"
+        "\\get_powerstat",
+        "get_powerstat",
+        is_set=False,
+        radio_access="status",
+        description="Get power status",
     ),
-    CommandDef("1", "dump_caps", is_set=False, description="Dump capabilities (alias)"),
+    CommandDef(
+        "1",
+        "dump_caps",
+        is_set=False,
+        radio_access="local",
+        description="Dump capabilities (alias)",
+    ),
     # Power conversion (WSJT-X uses these)
     CommandDef(
         "\\power2mW",
         "power2mW",
+        radio_access="local",
         is_set=False,
         min_args=1,
         max_args=3,
@@ -349,6 +410,7 @@ _register(
     CommandDef(
         "\\mW2power",
         "mW2power",
+        radio_access="local",
         is_set=False,
         min_args=1,
         max_args=3,
@@ -357,12 +419,14 @@ _register(
     CommandDef(
         "\\get_lock_mode",
         "get_lock_mode",
+        radio_access="local",
         is_set=False,
         description="Get lock mode (always 0)",
     ),
     CommandDef(
         "w",
         "send_raw",
+        radio_access="write",
         is_set=False,
         min_args=1,
         max_args=128,

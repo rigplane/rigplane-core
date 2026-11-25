@@ -662,6 +662,61 @@ def test_radio_health_classifies_remote_control_unreachable_when_host_reachable(
     assert health["likelyCause"] == "radio_remote_control_unreachable"
 
 
+def test_radio_health_reports_not_responding_for_silent_serial_link() -> None:
+    """MOR-4654: a reconnecting USB/serial radio is not answering on its
+    port — it has no network to lose, so the LAN ``radio_network_lost``
+    cause must not leak onto it. The shared serial-family marker is
+    ``serial_reconnects_total`` (Icom serial base and Yaesu CAT count
+    link-loss episodes; LAN radios have no such attribute)."""
+    radio = _FakeRadio(connected=False, radio_ready_flag=False)
+    radio.conn_state = "reconnecting"
+    radio.serial_reconnects_total = 1
+
+    health = classify_radio_health(radio, server_reachable=True, now_monotonic=100.0)
+
+    assert health["serverReachable"] is True
+    assert health["radioLink"] == "reconnecting"
+    assert health["readiness"] == "recovering"
+    assert health["likelyCause"] == "radio_not_responding"
+
+
+def test_radio_health_unknown_link_with_serial_evidence_is_not_responding() -> None:
+    """MOR-4654 round 1 (P2): a conn_state-less serial backend, transport down.
+
+    A Yaesu-shaped radio (no ``conn_state``, down transport) after a real
+    session — episodes counted or an answered identity on record — is a
+    silent radio, not ``unknown``. A radio nobody reached yet (no
+    episodes, no identity) stays ``unknown``.
+    """
+    from rigplane.core.radio_protocol import RadioIdentity, RadioIdentityStatus
+
+    down = _FakeRadio(connected=False, radio_ready_flag=False)
+    down.serial_reconnects_total = 2
+    down.connection_identity = RadioIdentity(
+        status=RadioIdentityStatus.VERIFIED,
+        expected_model="FTX-1",
+        answered_model="FTX-1",
+        answered_id="0840",
+    )
+
+    health = classify_radio_health(down, server_reachable=True, now_monotonic=100.0)
+    assert health["radioLink"] == "unknown"
+    assert health["likelyCause"] == "radio_not_responding"
+    assert health["readiness"] == "stalled"
+
+    # The answered identity alone (no counted episode yet) is evidence too.
+    down.serial_reconnects_total = 0
+    health = classify_radio_health(down, server_reachable=True, now_monotonic=100.0)
+    assert health["likelyCause"] == "radio_not_responding"
+
+    # Never reached: no episodes, no identity — still unknown.
+    fresh = _FakeRadio(connected=False, radio_ready_flag=False)
+    fresh.serial_reconnects_total = 0
+    health = classify_radio_health(fresh, server_reachable=True, now_monotonic=100.0)
+    assert health["radioLink"] == "unknown"
+    assert health["likelyCause"] == "unknown"
+
+
 def test_radio_health_keeps_network_lost_when_host_unreachable() -> None:
     """Without the remote-control-unreachable signal a reconnecting radio is a
     plain network loss (host truly unreachable)."""
@@ -746,7 +801,7 @@ async def test_webserver_and_control_handler_use_same_capabilities_and_ready() -
     info = json.loads(text[body_start:])
 
     # WS: capture hello message emitted by ControlHandler
-    ws = MagicMock(spec=WebSocketConnection)
+    ws = MagicMock(outbound_progress=0, spec=WebSocketConnection)
 
     async def _send_text(payload: str) -> None:
         setattr(ws, "_last_payload", payload)
@@ -809,7 +864,7 @@ async def test_websocket_hello_projects_only_trusted_vfo_primitives() -> None:
     ]
 
     for radio, radio_model, expected in cases:
-        ws = MagicMock(spec=WebSocketConnection)
+        ws = MagicMock(outbound_progress=0, spec=WebSocketConnection)
         sent: list[str] = []
 
         async def _send_text(payload: str) -> None:

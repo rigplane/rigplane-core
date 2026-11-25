@@ -416,6 +416,8 @@ async def test_control_handler_sends_current_managed_tx_document_on_connect() ->
     sent: list[str] = []
 
     class _CaptureWs:
+        outbound_progress: int = 0
+
         async def send_text(self, text: str) -> None:
             sent.append(text)
 
@@ -519,6 +521,8 @@ async def test_cancellation_during_connect_snapshot_unregisters_the_queue() -> N
     server.current_managed_tx_document = blocking_document  # type: ignore[method-assign]
 
     class _CaptureWs:
+        outbound_progress: int = 0
+
         async def send_text(self, _text: str) -> None:
             return None
 

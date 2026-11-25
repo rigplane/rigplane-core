@@ -2,11 +2,25 @@
   "controllerStatus": {
     "protocol_version": 1,
     "mode": "local",
+    "ptt_style": "latch",
     "state": "idle",
     "generation": 0,
     "ttl_ms": 6000,
     "heartbeat_ms": 2000,
     "remaining_ms": 0
+  },
+  "controllerStatusApiChannel": {
+    "protocol_version": 1,
+    "mode": "local",
+    "ptt_style": "momentary",
+    "state": "idle",
+    "generation": 0,
+    "ttl_ms": 6000,
+    "heartbeat_ms": 2000,
+    "remaining_ms": 0
+  },
+  "controllerTxRefusal": {
+    "error": "controller_tx_unsupported"
   },
   "controllerGrant": {
     "controller_key": "0000000000000000000000000000000000000000000000000000000000000000",
@@ -17,6 +31,39 @@
   "controllerHeartbeat": {
     "type": "controller_heartbeat",
     "generation": 0
+  },
+  "controllerStatusRemoteIdle": {
+    "protocol_version": 1,
+    "mode": "remote",
+    "ptt_style": "momentary",
+    "state": "idle",
+    "generation": 1,
+    "ttl_ms": 6000,
+    "heartbeat_ms": 2000,
+    "remaining_ms": 0
+  },
+  "controllerGrantRemote": {
+    "controller_key": "1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f",
+    "generation": 2,
+    "ttl_ms": 6000,
+    "heartbeat_ms": 2000
+  },
+  "controllerStatusRemoteHeld": {
+    "protocol_version": 1,
+    "mode": "remote",
+    "ptt_style": "momentary",
+    "state": "held",
+    "generation": 2,
+    "ttl_ms": 6000,
+    "heartbeat_ms": 2000,
+    "remaining_ms": 6000
+  },
+  "controllerHeartbeatRemote": {
+    "type": "controller_heartbeat",
+    "generation": 2
+  },
+  "controllerBusyRefusal": {
+    "error": "controller_busy"
   },
   "power": {
     "request": {

@@ -65,10 +65,16 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable
+from unittest.mock import Mock
 
 import pytest
 import aiohttp
+from serial_stub import SerialMockRadio
 
+from rigplane.runtime.controller_authority import ControllerAuthority
+from rigplane.testing.timing import VirtualClock
+from rigplane.web.handlers.control import ControlHandler
+from rigplane.web.server import WebServer
 from scripts.soak import soak_driver
 
 # asyncio_mode=auto (pyproject.toml) drives the async tests; no marker.
@@ -760,6 +766,182 @@ async def test_soak_multi_session_tx_catches_a_leak_whatever_the_age_of_the_leas
     assert any("left after the cycle" in v for v in tx["violations"]), tx
 
 
+class _TxReplySocket:
+    closed = False
+
+    def __init__(self) -> None:
+        self.incoming: asyncio.Queue[tuple[str, asyncio.Event]] = asyncio.Queue()
+        self.sent: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+        self.transmissions: list[dict[str, Any]] = []
+        self._consumed: asyncio.Event | None = None
+
+    def __aiter__(self) -> _TxReplySocket:
+        return self
+
+    async def __anext__(self) -> aiohttp.WSMessage:
+        if self._consumed is not None:
+            self._consumed.set()
+        text, self._consumed = await self.incoming.get()
+        return aiohttp.WSMessage(aiohttp.WSMsgType.TEXT, text, "")
+
+    async def send_json(self, data: dict[str, Any]) -> None:
+        self.transmissions.append(data)
+        self.sent.put_nowait(data)
+
+    async def send_text(self, text: str) -> None:
+        consumed = asyncio.Event()
+        self.incoming.put_nowait((text, consumed))
+        await consumed.wait()
+
+    async def deliver(self, data: dict[str, object]) -> None:
+        await self.send_text(json.dumps(data))
+
+
+async def test_tx_session_client_drains_and_dispatches_without_a_command(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = soak_driver._TxSessionClient("http://unused")
+    ws = _TxReplySocket()
+    client._ws = ws  # type: ignore[assignment]
+    client._reader = asyncio.create_task(client._read(), name="soak-tx-reader")
+    handler = ControlHandler(ws, SerialMockRadio(), "test", "IC-7610")  # type: ignore[arg-type]
+
+    async def enqueue(*args: object, **kwargs: object) -> dict[str, object]:
+        return {}
+
+    monkeypatch.setattr(handler, "_enqueue_command", enqueue)
+
+    async def cleanup() -> None:
+        pass
+
+    controller = ControllerAuthority(ready=lambda: True, cleanup=cleanup)
+    grant = controller.acquire("pro")
+    primary = controller.attach(grant["controller_key"], "primary", "soak-test")
+    tasks: list[asyncio.Task[Any]] = []
+    try:
+        # No command is waiting; an event still reaches the single reader.
+        await ws.deliver({"type": "state_update", "data": {}})
+        first = asyncio.create_task(client.command("ptt_on"))
+        tasks.append(first)
+        key = await ws.sent.get()
+        second = asyncio.create_task(client.command("ptt_off"))
+        tasks.append(second)
+        unkey = await ws.sent.get()
+        await handler._dispatch_command(unkey["id"], "ptt_off", {})
+        assert await second is True
+        assert not first.done()
+        await handler._send_command_failure(
+            key["id"], "ptt_on", RuntimeError("refused")
+        )
+        assert await first is False
+
+        # renew() cancels an in-flight background beat. Its late reply must
+        # not acknowledge the new renewal used by the session-leak check.
+        old_beat = asyncio.create_task(client._renew_once())
+        tasks.append(old_beat)
+        client._heartbeat = old_beat
+        assert (await ws.sent.get())["type"] == "controller_heartbeat"
+        renewal = asyncio.create_task(client.renew())
+        tasks.append(renewal)
+        assert (await ws.sent.get())["type"] == "controller_heartbeat"
+        assert old_beat.cancelled()
+        await ws.deliver(controller.heartbeat(primary))
+        assert not renewal.done()
+        await ws.deliver(controller.heartbeat(primary))
+        await renewal
+        assert not client._responses
+        assert not client._heartbeat_replies
+
+        pending = asyncio.create_task(client.command("ptt_on"))
+        tasks.append(pending)
+        await ws.sent.get()
+        reader = client._reader
+        assert reader is not None
+        await client.stop_reader()
+        assert reader.cancelled()
+        assert client._reader is None
+        assert await pending is False
+        assert not client._responses
+        await client.renew()
+        assert ws.sent.empty(), "a half_open holder must not renew or restart reading"
+    finally:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        await client.close()
+        controller.revoke()
+        await controller.settle()
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        [],
+        {"type": "response", "id": [], "ok": True, "result": {}},
+        {"type": "response", "id": "soak-1", "ok": 1, "result": {}},
+        {"type": "response", "id": "soak-1", "ok": True},
+        {"type": "response", "id": "soak-1", "ok": False},
+        {"type": "controller_heartbeat"},
+        {"type": "controller_heartbeat", "generation": True},
+    ],
+)
+def test_tx_reply_rejects_invalid_producer_fields(payload: object) -> None:
+    with pytest.raises(ValueError):
+        soak_driver._parse_tx_reply(json.dumps(payload))
+
+
+async def test_periodic_heartbeat_survives_delayed_reply(
+    virtual_clock: VirtualClock,
+) -> None:
+    async def cleanup() -> None:
+        pass
+
+    controller = ControllerAuthority(
+        ready=lambda: True, cleanup=cleanup, clock=virtual_clock
+    )
+    grant = controller.acquire("pro")
+    primary = controller.attach(grant["controller_key"], "primary", "successor")
+    client = soak_driver._TxSessionClient("http://unused")
+    ws = _TxReplySocket()
+    client._ws = ws  # type: ignore[assignment]
+    client._reader = asyncio.create_task(client._read(), name="soak-tx-reader")
+    processed = 0
+
+    async def serve() -> None:
+        nonlocal processed
+        while True:
+            request = await ws.sent.get()
+            assert request["type"] == "controller_heartbeat"
+            reply = controller.heartbeat(primary)
+            processed += 1
+            if processed == 1:
+                await asyncio.sleep(soak_driver._TX_RENEW_TIMEOUT_S + 0.5)
+            await ws.deliver(reply)
+
+    server = asyncio.create_task(serve())
+    client.start_heartbeat()
+    try:
+        interval = ControllerAuthority.HEARTBEAT_MS / 1000
+        await virtual_clock.elapse(interval + soak_driver._TX_RENEW_TIMEOUT_S + 0.1)
+        assert processed == 1, "the first reply is still delayed"
+        assert len(ws.transmissions) >= 2, "renewal must continue without an ACK"
+        heartbeat = client._heartbeat
+        assert heartbeat is not None and not heartbeat.done()
+        await virtual_clock.elapse(2 * ControllerAuthority.TTL_MS / 1000)
+        assert processed >= 5
+        assert not heartbeat.done()
+        controller.validate(primary)
+        assert controller.is_session_owner(primary.tx_owner)
+        await client.renew()
+        assert not client._heartbeat_replies
+    finally:
+        server.cancel()
+        await asyncio.gather(server, return_exceptions=True)
+        await client.close()
+        controller.revoke()
+        await controller.settle()
+
+
 async def test_renew_gives_a_session_its_full_lease_whatever_its_age() -> None:
     """The leak check after a TX cycle must not depend on the leases' phase.
 
@@ -1393,6 +1575,189 @@ async def test_stability_baseline_settle_never_hides_a_persistent_surplus(
     assert entry["tasksPre"] == 30
     assert entry["tasksPost"] == 40
     assert _stability_status(entry, "tasks")["status"] == "FAIL"
+
+
+@pytest.mark.parametrize("late_leak", [False, True], ids=["transient", "late-leak"])
+async def test_stability_probe_drains_session_work_and_counts_late_leaks(
+    monkeypatch: pytest.MonkeyPatch, virtual_clock: VirtualClock, late_leak: bool
+) -> None:
+    """A closing channel owns a handler, keepalive and event sender."""
+
+    async def cleanup() -> None:
+        pass
+
+    monkeypatch.setattr(soak_driver, "time", SimpleNamespace(monotonic=virtual_clock))
+    web = SimpleNamespace(
+        _client_tasks={},
+        _controller=ControllerAuthority(ready=lambda: True, cleanup=cleanup),
+        _bg_tasks=set(),
+    )
+    adapter = soak_driver._RuntimeTaskAdapter(SimpleNamespace(web=web), None)
+    driver = soak_driver.SoakDriver(
+        _smoke_config(), "http://127.0.0.1:1", "127.0.0.1:1", SimpleNamespace()
+    )
+    driver._runtime_task_adapter = adapter
+    sampler = soak_driver.ProcessMetricsSampler(object(), driver._base_url)
+    driver._sampler = sampler
+    release_channel = asyncio.Event()
+    release_spike = asyncio.Event()
+    release_leak = asyncio.Event()
+    tasks: list[asyncio.Task[Any]] = []
+    spike: list[asyncio.Task[Any]] = []
+
+    async def channel() -> None:
+        await asyncio.gather(release_channel.wait(), release_channel.wait())
+
+    async def runtime() -> dict[str, Any]:
+        return {
+            "process": {
+                "openFds": 20,
+                "asyncioTasks": 35 + len(adapter.owned_task_population()),
+                "rssBytes": 1024,
+            }
+        }
+
+    async def connect(deadline: float) -> bool:
+        if late_leak:
+            # An initial surplus requests the existing post-settle window.
+            spike.extend(asyncio.create_task(release_spike.wait()) for _ in range(3))
+            tasks.extend(spike)
+        return True
+
+    settle = driver._settle_stability_counts
+
+    async def settle_before_leak(pre: soak_driver.ProcessSample) -> Any:
+        release_spike.set()
+        await asyncio.gather(*spike)
+        result = await settle(pre)
+        # The leak arrives after the settle's final reading, before the re-probe.
+        assert len(adapter.owned_task_population()) == 0
+        tasks.extend(asyncio.create_task(release_leak.wait()) for _ in range(3))
+        return result
+
+    async def control(action: str) -> None:
+        pass
+
+    async def status() -> str:
+        return "connected"
+
+    async def disconnected(*args: Any, **kwargs: Any) -> bool:
+        return True
+
+    monkeypatch.setattr(sampler, "fetch_runtime", runtime)
+    monkeypatch.setattr(sampler, "fetch_connection_status", status)
+    monkeypatch.setattr(driver, "_post_radio_control", control)
+    monkeypatch.setattr(driver, "_wait_connection", disconnected)
+    monkeypatch.setattr(driver, "_do_connect_until_recovered", connect)
+    if late_leak:
+        monkeypatch.setattr(driver, "_settle_stability_counts", settle_before_leak)
+    else:
+        closing = asyncio.create_task(channel())
+        web._client_tasks[closing] = "controller-session-test"
+        closing.add_done_callback(web._client_tasks.pop)
+        tasks.append(closing)
+
+    cycle = asyncio.create_task(driver._reconnect_cycle(), name="soak-test-cycle")
+    try:
+        # The old baseline's calm streak and all three pre readings finish
+        # at 0.75 s while the channel's three tasks are still pending.
+        await virtual_clock.elapse(1.0)
+        release_channel.set()
+        await virtual_clock.elapse(10.0)
+        assert cycle.done()
+        await cycle
+        (entry,) = driver._reconnects
+        criterion = _stability_status(entry, "tasks")
+        (check,) = criterion["checks"]
+        assert (check["pre"], check["post"], check["delta"]) == (
+            35,
+            38 if late_leak else 35,
+            3 if late_leak else 0,
+        )
+        assert criterion["status"] == ("FAIL" if late_leak else "PASS")
+    finally:
+        for task in (cycle, *tasks):
+            task.cancel()
+        await asyncio.gather(cycle, *tasks, return_exceptions=True)
+
+
+async def test_stability_probe_waits_for_managed_websocket_socket_teardown(
+    virtual_clock: VirtualClock,
+) -> None:
+    web = WebServer()
+    key = web._controller.acquire("pro")["controller_key"]
+    tx_owner = web._controller.credential(key).tx_owner
+    assert tx_owner is not None
+    reader = asyncio.StreamReader()
+    reader.feed_data(
+        (
+            "GET /api/v1/ws?controller_role=primary HTTP/1.1\r\n"
+            "Host: localhost\r\n"
+            "Upgrade: websocket\r\n"
+            "Connection: Upgrade\r\n"
+            "Sec-WebSocket-Version: 13\r\n"
+            "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+            f"Sec-WebSocket-Protocol: rigplane-controller-v1.{key}\r\n\r\n"
+        ).encode()
+    )
+    teardown_started = asyncio.Event()
+    release_socket = asyncio.Event()
+
+    async def wait_closed() -> None:
+        teardown_started.set()
+        await release_socket.wait()
+
+    writer = Mock(spec=asyncio.StreamWriter)
+    writer.get_extra_info.side_effect = lambda _name, default=None: default
+    writer.wait_closed.side_effect = wait_closed
+    driver = soak_driver.SoakDriver(
+        _smoke_config(), "http://127.0.0.1:1", "127.0.0.1:1", SimpleNamespace()
+    )
+    driver._runtime_task_adapter = soak_driver._RuntimeTaskAdapter(
+        SimpleNamespace(web=web), None
+    )
+    readings: list[float] = []
+
+    async def sample(elapsed: float) -> soak_driver.ProcessSample:
+        readings.append(elapsed)
+        assert managed.done()
+        assert managed not in web._client_tasks
+        assert not ordinary.done()
+        return soak_driver.ProcessSample(elapsed, 1024, 20, 35, "connected")
+
+    driver._sampler = SimpleNamespace(sample=sample)
+    web._accept_client(asyncio.StreamReader(), Mock(spec=asyncio.StreamWriter))
+    (ordinary,) = web._client_tasks
+    web._accept_client(reader, writer)
+    (managed,) = web._client_tasks - {ordinary}
+    probe = None
+    try:
+        await virtual_clock.elapse(0)
+        assert writer.write.call_args_list[0].args[0].startswith(b"HTTP/1.1 101 ")
+        reader.feed_eof()
+        await virtual_clock.elapse(0)
+        assert teardown_started.is_set()
+        assert not managed.done()
+        assert web._client_tasks[managed] == tx_owner
+        assert web._client_tasks[ordinary] is None
+
+        probe = asyncio.create_task(driver._stability_probe())
+        await virtual_clock.elapse(1.0)
+        assert not probe.done()
+        assert not readings
+        release_socket.set()
+        await virtual_clock.elapse(0)
+        assert probe.done()
+        assert (await probe).asyncio_tasks == 35
+        assert len(readings) == 3
+    finally:
+        release_socket.set()
+        tasks = (ordinary, managed) if probe is None else (ordinary, managed, probe)
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        web._controller.revoke()
+        await web._controller.settle()
 
 
 # ---------------------------------------------------------------------------

@@ -10,7 +10,7 @@ from collections.abc import Awaitable, Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Any, Literal, TypedDict
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +47,17 @@ class _Session:
 
 
 _current: ContextVar[ControllerTicket | None] = ContextVar("controller", default=None)
+
+
+class ControllerStatus(TypedDict):
+    protocol_version: Literal[1]
+    mode: Literal["local", "remote"]
+    ptt_style: Literal["latch", "momentary"]
+    state: str
+    generation: int
+    ttl_ms: int
+    heartbeat_ms: int
+    remaining_ms: int
 
 
 class ControllerAuthority:
@@ -140,11 +151,16 @@ class ControllerAuthority:
         except Exception:
             return False
 
-    def status(self) -> dict[str, object]:
+    def status(self, *, momentary_only: bool = False) -> ControllerStatus:
         self._expire()
+        if self._state == "blocked" and self._is_ready():
+            self._state = "idle"
         return {
             "protocol_version": 1,
             "mode": self.mode,
+            "ptt_style": "momentary"
+            if momentary_only or self.mode == "remote"
+            else "latch",
             "state": self._state,
             "generation": self.generation,
             "ttl_ms": self.TTL_MS,
@@ -191,7 +207,7 @@ class ControllerAuthority:
             return self._open_session(client)
         if self._taking_back or self._state in ("held", "revoking"):
             raise ControllerError("controller_busy", 409)
-        if self._state == "blocked" or not self._is_ready():
+        if not self._is_ready():
             raise ControllerError("controller_not_ready", 503)
         self.generation += 1
         self._key = secrets.token_hex(32)

@@ -21,13 +21,16 @@ from rigplane.core.state_store import FreshnessClock, StateStore
 from rigplane.profiles import resolve_radio_profile
 from rigplane.runtime.managed_tx_state import ManagedTxOutcome
 from rigplane.runtime.tx_interlock import TxInterlockRefusal
+from rigplane.testing.timing import VirtualClock
 from rigplane.web import handlers as web_handlers
+from rigplane.web.channel_attach import ClientChannelParams
 from rigplane.web.handlers.control import ControlHandler
 from rigplane.web.protocol import decode_json
 from rigplane.web.radio_poller import CommandQueue, RadioPoller
 from rigplane.web.server import WebConfig, WebServer
-from rigplane.web.transport.webrtc_session import WebRtcSessionManager
+from rigplane.web.transport.webrtc_session import WebRtcSessionManager, _Session
 from test_managed_tx_http_route import _Writer, _reader
+from test_webrtc_split_channel import _FakeChannel
 
 
 @dataclass
@@ -168,7 +171,7 @@ def _handler(
     )
     radio = _radio()
     handler = ControlHandler(
-        ws=ws or MagicMock(),
+        ws=ws or MagicMock(outbound_progress=0),
         radio=radio,
         server_version="test",
         radio_model="IC-9700",
@@ -222,7 +225,7 @@ async def test_ws_ptt_rejects_non_boolean_state_before_authority(state: object) 
 async def test_rejected_admission_is_a_terminal_ws_error() -> None:
     authority = _Authority()
     authority.next_outcome = ManagedTxOutcome.REJECTED
-    ws = SimpleNamespace(send_text=AsyncMock())
+    ws = SimpleNamespace(outbound_progress=0, send_text=AsyncMock())
     handler, _, _ = _handler(authority, ws=ws)
     await handler._dispatch_command("command-1", "ptt_on", {})
     response = decode_json(ws.send_text.await_args.args[0])
@@ -336,7 +339,8 @@ async def test_cancelled_handler_finishes_cleanup_and_retains_disconnect_release
             raise
 
     handler, server, _ = _handler(
-        authority, ws=SimpleNamespace(send_text=AsyncMock(), recv=recv)
+        authority,
+        ws=SimpleNamespace(outbound_progress=0, send_text=AsyncMock(), recv=recv),
     )
     queue = CommandQueue()
     server.command_queue = queue
@@ -487,6 +491,8 @@ async def test_webrtc_control_handler_receives_explicit_exact_authority(
     _closed: dict[str, Any] = {}
 
     class _FakeDataChannelConn:
+        outbound_progress: int = 0
+
         def __init__(self, *_args: Any, **_kwargs: Any) -> None:
             pass
 
@@ -515,11 +521,14 @@ async def test_webrtc_control_handler_receives_explicit_exact_authority(
         _FakeDataChannelConn,
     )
     manager = WebRtcSessionManager(_radio(), server, "IC-9700")
-    session = SimpleNamespace(pc=MagicMock(), tasks=[], controller_owners=set())
+    session = _Session(MagicMock())
+    # Registered like negotiate() does: dispatch serves only a live session.
+    manager._sessions["test-session"] = session  # noqa: SLF001
     channel = SimpleNamespace(label="control", on=MagicMock())
 
-    manager._dispatch_channel("test-session", session, channel)  # noqa: SLF001
-    await session.tasks[0]
+    manager._dispatch_channel("test-session", session, channel)  # type: ignore[arg-type]  # noqa: SLF001
+    (task,) = session.tasks
+    await task
 
     if with_server:
         assert captured.get("managed_tx_authority") is authority
@@ -528,6 +537,58 @@ async def test_webrtc_control_handler_receives_explicit_exact_authority(
         # "no server" before any handler exists (see _attach_and_serve).
         assert _closed == {"code": 1008, "reason": "no server"}
         assert captured == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(5)
+async def test_webrtc_peer_loss_releases_holder_after_sibling_channel_closes(
+    monkeypatch: pytest.MonkeyPatch, virtual_clock: VirtualClock
+) -> None:
+    radio = _radio()
+    authority = _Authority()
+    server = WebServer(radio, WebConfig(host="127.0.0.1", port=0))
+    server._production_managed_tx_port = SimpleNamespace(authority=authority)  # noqa: SLF001
+    controller = server._controller  # noqa: SLF001
+    monkeypatch.setattr(controller, "_clock", virtual_clock)
+
+    manager = WebRtcSessionManager(radio, server, radio.model)
+    session_id = "test-peer"
+    session = _Session(MagicMock(connectionState="connected", close=AsyncMock()))
+    manager._sessions[session_id] = session  # noqa: SLF001
+    holder_channel = _FakeChannel("api")
+    sibling_channel = _FakeChannel("api")
+    try:
+        key = controller.acquire("pro")["controller_key"]
+        assert isinstance(key, str)
+        owner = controller.credential(key).tx_owner
+        assert owner is not None
+        attach = ClientChannelParams(controller_key=key).to_attach_frame()
+        manager._dispatch_channel(session_id, session, holder_channel)  # type: ignore[arg-type]  # noqa: SLF001
+        (holder_task,) = session.tasks
+        holder_channel.deliver(attach)
+        manager._dispatch_channel(session_id, session, sibling_channel)  # type: ignore[arg-type]  # noqa: SLF001
+        (sibling_task,) = session.tasks - {holder_task}
+        sibling_channel.deliver(attach)
+        await virtual_clock.elapse(0)
+        assert len(controller._sessions[owner].channels) == 2  # noqa: SLF001
+        await authority.submit_ptt(True, owner)
+
+        sibling_channel.close()
+        await sibling_task
+        assert holder_channel.readyState == "open"
+        assert authority.intent == f"ptt:{owner}"
+        assert authority.disconnect_calls == []
+
+        manager._fence_peer(session_id)  # noqa: SLF001
+        await controller.settle()
+        assert authority.intent == "rx"
+        assert authority.disconnect_calls == [owner]
+        assert holder_channel.readyState == "closed"
+        radio.set_ptt.assert_not_awaited()
+    finally:
+        controller.revoke()
+        await manager.close_all()
+        await controller.settle()
 
 
 def test_managed_web_ptt_cannot_reach_legacy_control_producers() -> None:
@@ -594,7 +655,7 @@ async def test_managed_ws_send_civ_tx_family_refused_by_payload(
     """
     authority = _Authority()
     queue = CommandQueue()
-    ws = SimpleNamespace(send_text=AsyncMock())
+    ws = SimpleNamespace(outbound_progress=0, send_text=AsyncMock())
     handler, _, radio = _handler(authority, ws=ws, queue=queue)
     radio.send_civ = AsyncMock()
     await handler._dispatch_command("cmd-1", "send_civ", params)

@@ -14,7 +14,9 @@ from __future__ import annotations
 import pytest
 
 from rigplane.rigctld.contract import (
+    COMMAND_TABLE,
     ClientSession,
+    CommandDef,
     HamlibError,
     RigctldCommand,
     RigctldResponse,
@@ -25,6 +27,58 @@ from rigplane.rigctld.protocol import (
     format_response,
     parse_line,
 )
+
+
+def test_every_command_declares_radio_access() -> None:
+    groups = {
+        "cache": {
+            "get_freq",
+            "get_mode",
+            "get_ptt",
+            "get_vfo",
+            "get_rit",
+            "get_level",
+            "get_func",
+        },
+        "status": {"get_powerstat"},
+        "live": {"get_split_freq", "get_split_mode"},
+        "live_or_cache": {"get_split_vfo"},
+        "write": {
+            "set_freq",
+            "set_mode",
+            "set_ptt",
+            "set_vfo",
+            "set_level",
+            "set_func",
+            "set_split_vfo",
+            "set_split_freq",
+            "set_split_mode",
+            "send_raw",
+        },
+        "local": {
+            "quit",
+            "dump_state",
+            "dump_caps",
+            "chk_vfo",
+            "get_info",
+            "power2mW",
+            "mW2power",
+            "get_lock_mode",
+        },
+    }
+    expected = {name: access for access, names in groups.items() for name in names}
+    definitions = {definition.long: definition for definition in COMMAND_TABLE.values()}
+    assert {
+        name: definition.radio_access for name, definition in definitions.items()
+    } == expected
+    for definition in definitions.values():
+        assert COMMAND_TABLE[definition.short] is definition
+        if definition.radio_access == "live_or_cache":
+            assert definition.live_read_method == "read_split"
+        else:
+            assert definition.live_read_method is None
+    with pytest.raises(TypeError, match="radio_access"):
+        CommandDef("?", "unclassified", is_set=False)  # type: ignore[call-arg]
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────

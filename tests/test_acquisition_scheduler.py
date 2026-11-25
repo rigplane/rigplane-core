@@ -430,6 +430,117 @@ def test_queued_unsent_automatic_request_is_withheld_after_a_refusal() -> None:
     assert scheduler.dispatchable_requests()[0].id == queued.id
 
 
+# MOR-3856: an optional read that gets no answer within its declared
+# window is unavailable, like a refused read (MOR-4058).
+
+
+def test_unanswered_optional_read_leaves_the_startup_set() -> None:
+    """Only a freq/mode read still blocks after its window lapses.
+
+    A read that got no answer within its declared window marks its
+    non-critical paths unavailable: they leave the unobserved startup set
+    exactly like a refused read (MOR-4058), while a critical one (the
+    live tuning pair) keeps blocking — the gate counts its failed
+    attempts separately.
+    """
+    freq = FieldPath.active("main", "freq_mode", "freq_hz")
+    ptt = FieldPath.global_("tx_state", "ptt")
+    scheduler = _refusal_scheduler(FreshnessClock(start=0.0), _TUNER, freq, ptt)
+    assert set(scheduler.unobserved_startup_paths(())) == {_TUNER, freq, ptt}
+
+    scheduler.record_read_timeout((_TUNER, freq, ptt), now=1.0)
+
+    assert scheduler.unobserved_startup_paths(()) == (freq,)
+    assert scheduler.unanswered_paths() == frozenset({_TUNER, freq, ptt})
+
+
+def test_terminal_timeout_on_a_drain_seat_keeps_the_gate_deadline() -> None:
+    """A drain seat's terminal timeout is NOT the MOR-3856 window.
+
+    The web gate's MOR-2749/MOR-4456 non-critical deadline owns that
+    case for CI-V seats: the path stays in the startup set and is served
+    unknown after the gate's own deadline, so the terminal failure
+    records no unanswered mark. Only a backend that owns its read window
+    (the Yaesu CAT adapter) records one.
+    """
+    clock = FreshnessClock(start=100.0)
+    scheduler = _refusal_scheduler(clock, _TUNER)
+    request = _dispatch(scheduler, clock.now())
+
+    scheduler.record_acquisition_failure(
+        request,
+        reason="acquisition_request_timeout",
+        now=clock.now() + 0.5,
+        link_healthy=False,
+    )
+
+    assert scheduler.unanswered_paths() == frozenset()
+    assert scheduler.unobserved_startup_paths(()) == (_TUNER,)
+
+
+def test_unanswered_read_is_marked_on_the_scheduler_and_logged(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    clock = FreshnessClock(start=100.0)
+    scheduler = _refusal_scheduler(clock, _TUNER)
+    with caplog.at_level(logging.INFO, logger="rigplane.core.acquisition_scheduler"):
+        scheduler.record_read_timeout((_TUNER,), now=clock.now())
+        scheduler.record_read_timeout((_TUNER,), now=clock.now())
+
+    messages = [r.getMessage() for r in caplog.records]
+    unanswered = [m for m in messages if "did not answer the read of" in m]
+    assert unanswered == [
+        "acquisition: the radio did not answer the read of "
+        "global.operator_controls.tuner_status within its window; "
+        "treating it as unavailable until it answers"
+    ]
+
+
+def test_an_answer_ends_the_unanswered_marking() -> None:
+    clock = FreshnessClock(start=100.0)
+    scheduler = _refusal_scheduler(clock, _TUNER)
+    scheduler.record_read_timeout((_TUNER,), now=clock.now())
+    assert scheduler.unanswered_paths() == frozenset({_TUNER})
+
+    scheduler.end_refusals((_TUNER,))
+
+    assert scheduler.unanswered_paths() == frozenset()
+    assert scheduler.unobserved_startup_paths(()) == (_TUNER,)
+
+
+def test_unanswered_marking_does_not_count_as_a_refusal() -> None:
+    """The two ledgers stay separate: a timeout is not a NAK (MOR-4058)."""
+    clock = FreshnessClock(start=100.0)
+    scheduler = _refusal_scheduler(clock, _TUNER)
+    scheduler.record_read_timeout((_TUNER,), now=clock.now())
+
+    assert scheduler.consecutive_refusals(_TUNER) == 0
+    assert scheduler.refused_paths() == frozenset()
+
+
+def test_unanswered_prime_is_not_requeued_before_its_retry() -> None:
+    """The gate sweep stops re-priming a never-answering optional read.
+
+    Mirrors the refusal behaviour: an automatic (BACKGROUND) ask of a
+    marked path waits out the retry delay; a read asked for by name
+    still goes out.
+    """
+    clock = FreshnessClock(start=100.0)
+    scheduler = _non_polling_scheduler(clock)
+    primed = scheduler.prime_unobserved(observed_paths=())[0]
+    scheduler.record_dispatch(primed.id, paths=primed.paths, now=clock.now())
+    scheduler.record_read_timeout((_VOX,), now=clock.now())
+    retry = adaptive_cadence_limit(_VOX_POLICY)
+    assert retry is not None and retry > 5.0
+
+    clock.advance(5.0)  # the freshness service's adaptive re-prime interval
+    assert scheduler.prime_unobserved(observed_paths=()) == ()
+    assert scheduler.pending_requests() == ()
+
+    clock.advance(retry - 5.0)
+    assert scheduler.prime_unobserved(observed_paths=())[0].paths == (_VOX,)
+
+
 def _profile(
     paths: Iterable[FieldPath],
     *,

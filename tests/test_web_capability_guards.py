@@ -91,7 +91,7 @@ async def _endpoint_vfo_tags(
     async def _send_text(payload: str) -> None:
         ws_payloads.append(payload)
 
-    ws = SimpleNamespace(send_text=_send_text)
+    ws = SimpleNamespace(outbound_progress=0, send_text=_send_text)
     radio_model = getattr(radio, "model", srv._config.radio_model)  # noqa: SLF001
     handler = ControlHandler(ws, radio, "0.0.0-test", radio_model, server=srv)
 
@@ -200,7 +200,7 @@ class TestInfoEndpoint:
         await server._serve_capabilities(capabilities_writer)  # noqa: SLF001
         capabilities = _parse_json_body(capabilities_writer)
 
-        ws = MagicMock(spec=WebSocketConnection)
+        ws = MagicMock(outbound_progress=0, spec=WebSocketConnection)
         sent: list[str] = []
 
         async def send_text(payload: str) -> None:
@@ -256,7 +256,7 @@ class TestInfoEndpoint:
             sent.append(payload)
 
         handler = server._control_handler_for()  # noqa: SLF001
-        handler._ws = SimpleNamespace(send_text=send_text)  # noqa: SLF001
+        handler._ws = SimpleNamespace(outbound_progress=0, send_text=send_text)  # noqa: SLF001
         await handler._send_hello()  # noqa: SLF001
         hello = json.loads(sent.pop())
 
@@ -304,7 +304,7 @@ class TestInfoEndpoint:
             sent.append(payload)
 
         handler = server._control_handler_for()  # noqa: SLF001
-        handler._ws = SimpleNamespace(send_text=send_text)  # noqa: SLF001
+        handler._ws = SimpleNamespace(outbound_progress=0, send_text=send_text)  # noqa: SLF001
         await handler._send_hello()  # noqa: SLF001
         hello = json.loads(sent.pop())
 

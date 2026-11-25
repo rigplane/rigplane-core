@@ -4,7 +4,7 @@ import { createReadStream } from 'node:fs';
 import { expect, test } from '@playwright/test';
 import type { WsCommand } from '../../../src/lib/types/protocol';
 import type { ScopeSubscription } from '../../../src/lib/runtime/scope-view';
-import { startJourneyServer } from './server-process';
+import { journeyPort, startJourneyServer } from './server-process';
 import { parseScopeWriteReceipt } from './panorama-receipt';
 import { awaitRenderPipeline, openPanorama } from './panorama-ready';
 import { expectPanoramaClean, expectPanoramaSettled, watchPanoramaErrors } from './panorama-guards';
@@ -26,7 +26,7 @@ async function scopeWriteReceipts(evidence: string) {
 
 for (const [index, [model, withFix]] of ([['IC-705', false], ['IC-7610', true]] as const).entries()) {
   test(`${model}: ZOOM/FIX churn keeps the MORE button alive with zero page errors (MOR-4392)`, async ({ page }, info) => {
-    const port = 18910 + index * 2;
+    const port = journeyPort(18910 + index * 2);
     const evidence = info.outputPath('radio.jsonl');
     const server = await startJourneyServer(port, 14_250_000,
       ['--model', model, '--evidence', evidence], 'tests/e2e/panorama_web_server.py');
@@ -71,7 +71,7 @@ for (const [index, [model, withFix]] of ([['IC-705', false], ['IC-7610', true]] 
 }
 
 test('IC-7610: FIX marker, axis and passband use the displayed window after a CENTER zoom (MOR-4392)', async ({ page }, info) => {
-  const port = 18914;
+  const port = journeyPort(18914);
   const evidence = info.outputPath('radio.jsonl');
   const server = await startJourneyServer(port, 14_250_000,
     ['--model', 'IC-7610', '--evidence', evidence], 'tests/e2e/panorama_web_server.py');
@@ -181,7 +181,7 @@ test('IC-7610: FIX marker, axis and passband use the displayed window after a CE
 });
 
 test('IC-7610: FIX names the disabled SPAN reason and returns to CTR in one tap (MOR-4387 owner b4)', async ({ page }, info) => {
-  const port = 18918;
+  const port = journeyPort(18918);
   const evidence = info.outputPath('radio.jsonl');
   const server = await startJourneyServer(port, 14_250_000,
     ['--model', 'IC-7610', '--evidence', evidence], 'tests/e2e/panorama_web_server.py');
@@ -216,7 +216,7 @@ test('IC-7610: FIX names the disabled SPAN reason and returns to CTR in one tap 
 });
 
 test('IC-7610: the real SPAN key in SCROLL-C writes the span only, no mode write (MOR-4451)', async ({ page }, info) => {
-  const port = 18950;
+  const port = journeyPort(18950);
   const evidence = info.outputPath('radio.jsonl');
   const server = await startJourneyServer(port, 14_250_000,
     ['--model', 'IC-7610', '--evidence', evidence], 'tests/e2e/panorama_web_server.py');
@@ -249,7 +249,7 @@ test('IC-7610: the real SPAN key in SCROLL-C writes the span only, no mode write
 });
 
 test('IC-7610: passband overlay survives CTR↔FIX at ±250k, LSB 3 kHz, after a reload (MOR-4392)', async ({ page }, info) => {
-  const port = 18916;
+  const port = journeyPort(18916);
   const evidence = info.outputPath('radio.jsonl');
   const server = await startJourneyServer(port, 14_250_000,
     ['--model', 'IC-7610', '--evidence', evidence], 'tests/e2e/panorama_web_server.py');
@@ -318,7 +318,7 @@ test('IC-7610: passband overlay survives CTR↔FIX at ±250k, LSB 3 kHz, after a
 
 for (const [index, model] of ['IC-705', 'IC-7300'].entries()) {
   test(`${model}: FIX crop follows arrows, wheel, click-tune and drag-to-tune (MOR-4387)`, async ({ page }, info) => {
-    const port = 18940 + index;
+    const port = journeyPort(18940 + index);
     const evidence = info.outputPath('radio.jsonl');
     const server = await startJourneyServer(port, 14_250_000,
       ['--model', model, '--evidence', evidence], 'tests/e2e/panorama_web_server.py');
@@ -399,7 +399,7 @@ for (const [index, model] of ['IC-705', 'IC-7300'].entries()) {
 }
 
 test('IC-7610: preset FIX zoom keeps the negotiated subscription and radio window', async ({ page }, info) => {
-  const port = 18944;
+  const port = journeyPort(18944);
   const evidence = info.outputPath('radio.jsonl');
   const server = await startJourneyServer(port, 14_250_000,
     ['--model', 'IC-7610', '--evidence', evidence], 'tests/e2e/panorama_web_server.py');
@@ -421,7 +421,7 @@ test('IC-7610: preset FIX zoom keeps the negotiated subscription and radio windo
     await page.getByTestId('scope-more').first().click();
     await page.getByTestId('scope-zoom-in').first().click();
     await expect.poll(() => frames.at(-1)?.view[1]! - frames.at(-1)?.view[0]!).toBe(50_000);
-    await page.getByTestId('scope-preset-select').first().selectOption('0');
+    await page.getByTestId('scope-zoom-band').first().click();
     const preset = subscriptions.at(-1)!.view;
     expect('startHz' in preset).toBe(true);
     if (!('startHz' in preset)) throw new Error('Preset did not request absolute bounds');

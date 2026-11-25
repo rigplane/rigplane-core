@@ -18,6 +18,8 @@ from unittest.mock import patch
 
 import pytest
 
+from test_webrtc_attach_path import RIGCTL_ATTACH_ERROR_V1
+
 import rigplane
 from rigplane.web.server import WebConfig, WebServer
 
@@ -62,6 +64,12 @@ _PUBLIC = (
     ("DataChannelSpec", "rigplane.web.channel_attach"),
     ("DataChannelLabel", "rigplane.web.channel_attach"),
     ("DATA_CHANNELS", "rigplane.web.channel_attach"),
+    ("ATTACH_ACK_VERSION", "rigplane.web.channel_attach"),
+    ("RIGCTL_MAX_FRAME_BYTES", "rigplane.web.channel_attach"),
+    ("RIGCTL_VERSIONS", "rigplane.web.channel_attach"),
+    ("RigctlAttachErrorCode", "rigplane.web.channel_attach"),
+    ("RigctlAttachErrorV1", "rigplane.web.channel_attach"),
+    ("decode_rigctl_attach_result", "rigplane.web.channel_attach"),
     ("IceServer", "rigplane.web.transport.ice_gathering"),
     ("IceGatheringPolicy", "rigplane.web.transport.ice_gathering"),
     ("GATHER_TIMEOUT_S", "rigplane.web.transport.ice_gathering"),
@@ -69,6 +77,8 @@ _PUBLIC = (
     ("apply_ice_gathering_policy", "rigplane.web.transport.ice_gathering"),
     ("WebRtcOffer", "rigplane.web.transport.webrtc_contract"),
     ("WebRtcAnswer", "rigplane.web.transport.webrtc_contract"),
+    ("WebRtcClose", "rigplane.web.transport.webrtc_contract"),
+    ("WebRtcCloseResult", "rigplane.web.transport.webrtc_contract"),
     ("WebRtcIceCandidate", "rigplane.web.transport.webrtc_contract"),
     ("WebRtcRequestError", "rigplane.web.transport.webrtc_contract"),
     ("WebRtcTransportStatus", "rigplane.web.transport.webrtc_contract"),
@@ -117,6 +127,24 @@ def test_attach_ack_round_trips() -> None:
     ack = rigplane.ChannelAttachedAck("scope")
     assert rigplane.ChannelAttachedAck.from_frame(ack.encode()) == ack
     assert rigplane.ChannelAttachedAck.from_frame(ack.encode().encode()) == ack
+
+
+def test_rigctl_refusal_decodes_through_the_public_package() -> None:
+    from rigplane import (
+        ATTACH_ACK_VERSION,
+        RIGCTL_MAX_FRAME_BYTES,
+        RIGCTL_VERSIONS,
+        RigctlAttachErrorCode,
+        RigctlAttachErrorV1,
+        decode_rigctl_attach_result,
+    )
+
+    code: RigctlAttachErrorCode = "rigctl_busy"
+    result = decode_rigctl_attach_result(RIGCTL_ATTACH_ERROR_V1)
+    assert result == RigctlAttachErrorV1(code, ATTACH_ACK_VERSION, "rigctl")
+    assert ATTACH_ACK_VERSION == 1
+    assert RIGCTL_VERSIONS == (1,)
+    assert RIGCTL_MAX_FRAME_BYTES == 16 * 1024
 
 
 @pytest.mark.parametrize(
@@ -245,6 +273,37 @@ def test_ice_candidate_init_rejects_mistyped_fields(raw: dict[str, Any]) -> None
     assert info.value.code == "invalid_candidate"
 
 
+def test_close_round_trips() -> None:
+    close_all = rigplane.WebRtcClose()
+    assert rigplane.WebRtcClose.from_json(close_all.to_json()) == close_all
+    assert rigplane.WebRtcClose.from_json({}) == close_all
+    assert rigplane.WebRtcClose.from_json({"sessionId": None}) == close_all
+    by_id = rigplane.WebRtcClose(session_id="abc")
+    assert rigplane.WebRtcClose.from_json(by_id.to_json()) == by_id
+    for body in ({"sessionId": 5}, {"sessionId": ""}):
+        with pytest.raises(rigplane.WebRtcRequestError) as info:
+            rigplane.WebRtcClose.from_json(body)
+        assert info.value.code == "invalid_session"
+
+
+def test_close_result_round_trips() -> None:
+    result = rigplane.WebRtcCloseResult(closed=("a", "b"))
+    wire = result.to_json()
+    assert wire["status"] == "ok"
+    assert rigplane.WebRtcCloseResult.from_json(wire) == result
+    assert (
+        rigplane.WebRtcCloseResult.from_json({"status": "ok", "closed": []})
+        == rigplane.WebRtcCloseResult()
+    )
+    for bad in (
+        {"status": "ok", "closed": "a"},
+        {"status": "ok", "closed": [1]},
+        {"status": "error", "closed": []},
+    ):
+        with pytest.raises(ValueError):
+            rigplane.WebRtcCloseResult.from_json(bad)
+
+
 def test_request_error_round_trips() -> None:
     err = rigplane.WebRtcRequestError("missing_sdp", "Field 'sdp' required.")
     back = rigplane.WebRtcRequestError.from_json(err.to_json())
@@ -303,6 +362,41 @@ async def test_server_ice_errors_parse_as_request_error(
     got_status, payload = _parse_response(writer)
     assert got_status == status
     assert rigplane.WebRtcRequestError.from_json(payload).code == code
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("body", "status", "code"),
+    [
+        ({"sessionId": 5}, 400, "invalid_session"),
+        ({"sessionId": ""}, 400, "invalid_session"),
+        ({"sessionId": "nope"}, 404, "close_error"),
+    ],
+)
+async def test_server_close_errors_parse_as_request_error(
+    body: dict[str, Any], status: int, code: str
+) -> None:
+    server = WebServer(None, WebConfig(webrtc_enabled=True))
+    headers, reader = _reader(body)
+    writer = _FakeWriter()
+    with patch("rigplane.web.server.webrtc_available", return_value=True):
+        await server._handle_webrtc_close(writer, headers, reader)  # noqa: SLF001
+    got_status, payload = _parse_response(writer)
+    assert got_status == status
+    assert rigplane.WebRtcRequestError.from_json(payload).code == code
+
+
+@pytest.mark.asyncio
+async def test_server_close_with_nothing_open_succeeds() -> None:
+    """Closing when nothing is open is a no-op success (the K6 contract)."""
+    server = WebServer(None, WebConfig(webrtc_enabled=True))
+    headers, reader = _reader({})
+    writer = _FakeWriter()
+    with patch("rigplane.web.server.webrtc_available", return_value=True):
+        await server._handle_webrtc_close(writer, headers, reader)  # noqa: SLF001
+    status, payload = _parse_response(writer)
+    assert status == 200
+    assert rigplane.WebRtcCloseResult.from_json(payload) == rigplane.WebRtcCloseResult()
 
 
 @pytest.mark.asyncio

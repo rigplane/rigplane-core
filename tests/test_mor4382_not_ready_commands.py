@@ -8,7 +8,10 @@ unknown. This file pins that window: every consumer-visible command answers
 a clear, retriable not-ready outcome — never a "receiver not selected"
 refusal (rigctld maps that to the terminal ``RPRT -9``), never a crash,
 never a made-up value — while MOR-3591's genuine unselected-receiver
-refusal survives once the radio has answered.
+refusal survives once the selection is known. The same holds for the
+narrower window the v3.3.0rc1 rehearsal run 44869231087 hit: the radio HAS
+answered (``radio_ready`` can be True) while its 0x07 0xD2 selection read
+is still unanswered, so the selection remains unknown.
 """
 
 from __future__ import annotations
@@ -16,10 +19,12 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
-from collections.abc import AsyncIterator
+import time
+from collections.abc import AsyncIterator, Awaitable, Callable
 
 import pytest
 
+from rigplane.commands import CONTROLLER_ADDR, build_civ_frame, parse_civ_frame
 from rigplane.core.exceptions import (
     RadioNotReadyError,
     ReceiverNotSelectedError,
@@ -46,6 +51,10 @@ _REALTIME = pytest.mark.realtime(reason="real UDP simulator, real CI-V timing")
 _SILENT_AFTER_OPEN_S = 7.0
 
 _NOT_READY_MATCH = "has not answered CI-V since"
+#: The selection-pending flavour of the same retriable answer: the radio
+#: HAS answered CI-V, but its 0x07 0xD2 selection read has not been
+#: answered yet, so no receiver can be addressed.
+_SELECTION_PENDING_MATCH = "has not reported its receiver selection"
 
 
 def _unit_radio(model: str) -> IcomRadio:
@@ -67,6 +76,27 @@ async def _exchange(
     writer.write(payload)
     await writer.drain()
     return await asyncio.wait_for(reader.readline(), 15)
+
+
+async def _retry_while_not_ready(
+    call: Callable[[], Awaitable[int]], *, timeout: float
+) -> int:
+    """Await ``call`` until it answers, retrying the retriable not-ready.
+
+    ``radio_ready`` (CI-V liveness) and the receiver selection are separate
+    latches: after the radio's first answer the selection read can still be
+    pending under load, and until it lands a receiver-scoped call answers
+    ``RadioNotReadyError`` (rigctld ``RPRT -5``). That answer means "retry
+    shortly", so retry it, bounded; anything else propagates.
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            return await call()
+        except RadioNotReadyError:
+            if time.monotonic() >= deadline:
+                raise
+            await asyncio.sleep(0.05)
 
 
 class TestSilentDualReceiverCommands:
@@ -115,6 +145,91 @@ class TestSelectionRefusalSurvives:
             with pytest.raises(ReceiverNotSelectedError):
                 await asyncio.wait_for(radio.get_mode_info(receiver=0), 10)
         finally:
+            await radio._civ_runtime.stop_worker()
+            radio._connected = False
+
+
+def _radio_answered_without_selection(radio: IcomRadio) -> None:
+    """One benign radio-originated frame: the radio HAS answered CI-V.
+
+    The dual-watch (``0x07 0xC2``) answer decodes to an observation, so it
+    stamps CI-V liveness (``last_valid_frame_monotonic``), while touching
+    no selection, frequency or mode path: a ``0x07 0xD2`` frame would
+    record a selection and a freq/mode frame would seed observed values.
+    After this, ``radio_ready`` can be True while the selected receiver is
+    still unknown -- the window the CI rehearsal run 44869231087 failed in.
+    """
+    radio._update_state_cache_from_frame(
+        parse_civ_frame(
+            build_civ_frame(
+                CONTROLLER_ADDR, radio._radio_addr, 0x07, data=bytes([0xC2, 0x00])
+            )
+        )
+    )
+
+
+class TestAnsweredButSelectionUnknown:
+    """The radio answered CI-V (so ``radio_ready`` can be True) while the
+    0x07 0xD2 selection read is still unanswered and the selected receiver
+    is not known yet. A receiver-scoped command is not answerable for ANY
+    receiver in that window: the answer is the retriable not-ready
+    timeout, never the terminal ``receiver not selected`` refusal that
+    rigctld maps to ``RPRT -9`` (the CI failure: ``int(b'RPRT -9')``)."""
+
+    @pytest.mark.asyncio
+    async def test_get_freq_is_retriable_not_ready(self) -> None:
+        radio = _unit_radio("IC-7610")
+        radio._civ_runtime.start_worker()
+        try:
+            _radio_answered_without_selection(radio)
+            assert radio.last_valid_frame_monotonic is not None
+            assert radio._selection_known_since is None
+            with pytest.raises(TimeoutError, match=_SELECTION_PENDING_MATCH) as excinfo:
+                await asyncio.wait_for(radio.get_freq(), 10)
+            assert isinstance(excinfo.value, RadioNotReadyError)
+            assert not isinstance(excinfo.value, ReceiverNotSelectedError)
+        finally:
+            await radio._civ_runtime.stop_worker()
+            radio._connected = False
+
+    @pytest.mark.asyncio
+    async def test_set_freq_is_retriable_not_ready(self) -> None:
+        radio = _unit_radio("IC-7610")
+        radio._civ_runtime.start_worker()
+        try:
+            _radio_answered_without_selection(radio)
+            with pytest.raises(TimeoutError, match=_SELECTION_PENDING_MATCH) as excinfo:
+                await asyncio.wait_for(radio.set_freq(14_074_000), 10)
+            assert isinstance(excinfo.value, RadioNotReadyError)
+            assert not isinstance(excinfo.value, ReceiverNotSelectedError)
+        finally:
+            await radio._civ_runtime.stop_worker()
+            radio._connected = False
+
+    @pytest.mark.asyncio
+    async def test_rigctld_get_freq_answers_retriable_timeout(self) -> None:
+        """The wire symptom from the rehearsal: ``f`` must answer the
+        retriable ``RPRT -5``, not the terminal ``RPRT -9``."""
+        radio = _unit_radio("IC-7610")
+        radio._civ_runtime.start_worker()
+        server = RigctldServer(
+            radio,
+            RigctldConfig(host="127.0.0.1", port=0, cache_ttl=0, command_timeout=2),
+            allow_not_ready=True,
+        )
+        try:
+            await server.start()
+            host, port = server._server.sockets[0].getsockname()[:2]
+            reader, writer = await asyncio.open_connection(host, port)
+            try:
+                _radio_answered_without_selection(radio)
+                reply = await _exchange(writer, reader, b"f\n")
+                assert reply == b"RPRT -5\n", reply
+            finally:
+                writer.close()
+                await writer.wait_closed()
+        finally:
+            await server.stop()
             await radio._civ_runtime.stop_worker()
             radio._connected = False
 
@@ -191,7 +306,14 @@ class TestCoreOverLanSimulator:
                 timeout=30.0,
                 description="the radio answers and becomes ready",
             )
-            freq = await radio.get_freq()
+            # Readiness is CI-V liveness; the receiver selection is
+            # established by the connect tail's sweep or this call's own
+            # bounded selection read, which can lag the first answer under
+            # load -- until it lands the call stays the retriable
+            # not-ready, so retry it (MOR-4382).
+            freq = await _retry_while_not_ready(
+                lambda: asyncio.wait_for(radio.get_freq(), 15), timeout=30.0
+            )
             assert freq > 0
 
 
@@ -314,7 +436,18 @@ class TestRigctldOverLanSimulator:
                         timeout=30.0,
                         description="the radio answers and becomes ready",
                     )
-                    reply = await _exchange(writer, reader, b"f\n")
+                    # Readiness is CI-V liveness; the receiver selection
+                    # can lag the first answer under load (the rehearsal
+                    # run 44869231087 window), and until it lands ``f``
+                    # keeps answering the retriable ``RPRT -5`` -- never
+                    # the terminal ``RPRT -9``. Retry until the real
+                    # frequency arrives.
+                    deadline = time.monotonic() + 30.0
+                    while (reply := await _exchange(writer, reader, b"f\n")) == (
+                        b"RPRT -5\n"
+                    ):
+                        assert time.monotonic() < deadline, reply
+                        await asyncio.sleep(0.05)
                     assert int(reply) > 0, reply
                 finally:
                     writer.close()

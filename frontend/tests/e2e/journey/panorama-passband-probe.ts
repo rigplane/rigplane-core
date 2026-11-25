@@ -68,6 +68,15 @@ interface Gap {
   stateAtDrop: string | null;
 }
 
+/** The last sample before the window describes its initial state until the next sample. */
+export function missingLivePassband(samples: PassbandSample[], fromT: number, toT: number): PassbandSample | undefined {
+  const first = samples.findIndex(sample => sample.t >= fromT);
+  const start = first === -1 ? samples.length - 1
+    : samples[first]?.t === fromT ? first : Math.max(0, first - 1);
+  return samples.find((sample, index) => index >= start && sample.t <= toT
+    && !sample.overlay && sample.gates?.spanPositive !== false);
+}
+
 /**
  * Runs of absent overlay inside [fromT, toT], plus the gate diff at each
  * drop. The page is in the state of the last sample before the window until
@@ -184,6 +193,30 @@ export function requireProbeStimulus(before: number, after: number, direction: '
 
 export function readPassbandDiagnostics(raw: string | null): ScopePassbandDiagnostics | null {
   return raw === null ? null : JSON.parse(raw) as ScopePassbandDiagnostics;
+}
+
+/**
+ * Follow mode after a retune (MOR-4214): poll until the displayed window
+ * centres on the radio's CURRENT frequency. Both legs are live producers —
+ * the HTTP state moves with every in-flight drag write while the frame
+ * stream re-centres a beat after the last one — so the comparison samples
+ * both inside the one poll. A frequency captured once pins an intermediate
+ * drag step the radio has already moved past: quick-frontend-e2e run
+ * 44878602539 captured 14.273 MHz mid-gesture while the settled retune was
+ * 14.280 MHz, and the frames correctly centred on 14.280 MHz, so the poll
+ * against the stale capture timed out.
+ */
+export async function expectFollowWindowOnVfo(
+  frames: Array<{ view: number[] }>,
+  readRadioFreqHz: () => Promise<number>,
+  movedFromHz: number,
+): Promise<void> {
+  await expect.poll(async () => {
+    const freqHz = await readRadioFreqHz();
+    const view = frames.at(-1)?.view;
+    return freqHz !== movedFromHz && view !== undefined
+      && (view[0]! + view[1]!) / 2 === freqHz;
+  }).toBe(true);
 }
 
 export function watchScopeFrames(page: import('@playwright/test').Page) {

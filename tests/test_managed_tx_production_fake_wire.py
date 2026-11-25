@@ -174,6 +174,8 @@ class _HttpWriter:
 
 
 class _EofWebSocket:
+    outbound_progress: int = 0
+
     async def send_text(self, _text: str) -> None:
         return None
 

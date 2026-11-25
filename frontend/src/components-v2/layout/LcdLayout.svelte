@@ -16,6 +16,8 @@
   import { runtime } from '$lib/runtime';
   import { getKeyboardConfig } from '$lib/stores/capabilities.svelte';
   import { applyModeDefault } from '$lib/stores/tuning.svelte';
+  import { getWsConnected, hasEverConnected } from '$lib/stores/connection.svelte';
+  import { deriveLinkFault } from '$lib/runtime/adapters/link-fault';
   import AmberCockpit from '../panels/lcd/AmberCockpit.svelte';
   import AmberScope from '../panels/lcd/AmberScope.svelte';
   import type { LcdDisplayVariantId } from '../../skins/segmentline/LcdDisplayVariant.svelte';
@@ -85,6 +87,18 @@
 
   let radioState = $derived(runtime.state);
   let keyboardConfig = $derived(getKeyboardConfig());
+
+  // MOR-2241 — the same link-fault veil RadioLayout carries (app.css keys the
+  // shared rule on `[data-link-fault]`); the StatusBar above carries the words
+  // for both fault arms and is exempt from the filter there.
+  let linkFault = $derived(
+    deriveLinkFault({
+      everConnected: hasEverConnected(),
+      wsConnected: getWsConnected(),
+      connectionStale: runtime.connectionStale,
+    }),
+  );
+  let linkFaultAttribute = $derived(linkFault === 'none' ? undefined : linkFault);
   // Reactive Display Mode (#838) — the class is applied to .lcd-frame
   // so CSS effects in lcd-vintage.css can layer on top of the base render.
   let displayMode = $derived(getLcdDisplayMode());
@@ -120,7 +134,7 @@
   });
 </script>
 
-<div class="lcd-layout">
+<div class="lcd-layout" data-link-fault={linkFaultAttribute}>
   <StatusBar {showManagedTotControl} />
   <KeyboardHandler config={keyboardConfig} onAction={keyboardHandlers.dispatch} />
 

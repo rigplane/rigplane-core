@@ -2831,6 +2831,147 @@ async def test_freq_timeout_still_raises_for_reconnect() -> None:
 
 
 @pytest.mark.asyncio
+async def test_unanswered_narrow_read_is_contained_and_marked_unanswered() -> None:
+    """MOR-3856: a silent optional NA read serves absent for the cycle.
+
+    The narrow prime inside the medium lane must not abort the cycle —
+    the reads before it (freq/mode) still publish — and after the same
+    three unanswered windows a critical read needs (MOR-2757's attempt
+    threshold), the path is marked unanswered on the acquisition
+    scheduler, so an optional read stops holding the initial-state gate.
+    The lane keeps asking on its own cadence, and the moment NA answers
+    again the tally and the mark end and the observation publishes.
+    """
+    from rigplane.backends.yaesu_cat.observations import (
+        _CRITICAL_READ_TIMEOUT_ATTEMPTS,
+        _MAIN_FREQ,
+        _MAIN_NARROW,
+        _SUB_NARROW,
+    )
+
+    profile = _profile_state_acquisition()
+    scheduler = AcquisitionScheduler(profile=profile)
+    radio = _split_containment_radio(scheduler, AsyncMock(return_value=False))
+    radio._state_store = StateStore()
+    radio.read_narrow = AsyncMock(
+        side_effect=CatTimeoutError("NA timeout", command="NA0;")
+    )
+    assert _MAIN_NARROW in scheduler.unobserved_startup_paths(())
+
+    for _ in range(_CRITICAL_READ_TIMEOUT_ATTEMPTS):
+        observations = await YaesuObservationAdapter(
+            radio, profile=profile, clock=_clock
+        ).poll_medium()
+        paths = {item.path for item in observations}
+        assert _MAIN_FREQ in paths, "the reads before narrow must still reach the store"
+        assert _MAIN_NARROW not in paths
+
+    # The sub prime shares the silent read, so both narrow paths lapse.
+    assert scheduler.unanswered_paths() == frozenset({_MAIN_NARROW, _SUB_NARROW})
+    assert _MAIN_NARROW not in scheduler.unobserved_startup_paths(())
+    assert _SUB_NARROW not in scheduler.unobserved_startup_paths(())
+
+    # The lane retries on its own cadence; an answer ends the mark.
+    radio.read_narrow = AsyncMock(return_value=False)
+    observations = await YaesuObservationAdapter(
+        radio, profile=profile, clock=_clock
+    ).poll_medium()
+    assert _MAIN_NARROW in {item.path for item in observations}
+    assert scheduler.unanswered_paths() == frozenset()
+    assert radio._critical_read_timeouts == {}
+
+
+@pytest.mark.asyncio
+async def test_one_noise_timeout_alone_marks_nothing() -> None:
+    """MOR-3856: a single unanswered window is link noise, not absence.
+
+    One silent narrow read leaves the path in the startup set — the
+    marking needs the same consecutive attempts a critical defect does —
+    and the contained cycle still publishes the reads around it.
+    """
+    from rigplane.backends.yaesu_cat.observations import _MAIN_FREQ, _MAIN_NARROW
+
+    profile = _profile_state_acquisition()
+    scheduler = AcquisitionScheduler(profile=profile)
+    radio = _split_containment_radio(scheduler, AsyncMock(return_value=False))
+    radio._state_store = StateStore()
+    radio.read_narrow = AsyncMock(
+        side_effect=CatTimeoutError("NA timeout", command="NA0;")
+    )
+
+    observations = await YaesuObservationAdapter(
+        radio, profile=profile, clock=_clock
+    ).poll_medium()
+
+    assert _MAIN_FREQ in {item.path for item in observations}
+    assert scheduler.unanswered_paths() == frozenset()
+    assert _MAIN_NARROW in scheduler.unobserved_startup_paths(())
+
+
+@pytest.mark.asyncio
+async def test_unanswered_slow_lane_read_is_contained_and_marked() -> None:
+    """MOR-3856: the slow lane gets the same containment as the medium.
+
+    A silent narrow read in ``poll_slow_controls`` serves absent for the
+    cycle — the reads after it (NB level) still publish — and after the
+    attempt threshold the path is marked unanswered on the scheduler.
+    """
+    from rigplane.backends.yaesu_cat.observations import (
+        _CRITICAL_READ_TIMEOUT_ATTEMPTS,
+        _MAIN_NARROW,
+        _MAIN_NB_LEVEL,
+        _SUB_NARROW,
+    )
+
+    profile = _profile_state_acquisition()
+    scheduler = AcquisitionScheduler(profile=profile)
+    radio = _split_containment_radio(scheduler, AsyncMock(return_value=False))
+    radio._state_store = StateStore()
+    radio.read_narrow = AsyncMock(
+        side_effect=CatTimeoutError("NA timeout", command="NA0;")
+    )
+
+    for _ in range(_CRITICAL_READ_TIMEOUT_ATTEMPTS):
+        observations = await YaesuObservationAdapter(
+            radio, profile=profile, clock=_clock
+        ).poll_slow_controls()
+
+    assert _MAIN_NB_LEVEL in {item.path for item in observations}, (
+        "the reads after narrow must still reach the store"
+    )
+    assert _MAIN_NARROW not in {item.path for item in observations}
+    assert scheduler.unanswered_paths() == frozenset({_MAIN_NARROW, _SUB_NARROW})
+    assert _MAIN_NARROW not in scheduler.unobserved_startup_paths(())
+
+
+@pytest.mark.asyncio
+async def test_unanswered_critical_read_still_counts_and_raises() -> None:
+    """MOR-3856 marking is criticality-driven: a freq timeout raises.
+
+    The critical path keeps its own rule: a silent freq read counts
+    toward the unanswered-critical tally and still raises for the
+    reconnect path; it never takes the optional unavailability route.
+    """
+    profile = _profile_state_acquisition()
+    scheduler = AcquisitionScheduler(profile=profile)
+    radio = _split_containment_radio(scheduler, AsyncMock(return_value=False))
+    radio._state_store = StateStore()
+    freq = FieldPath.active("main", "freq_mode", "freq_hz")
+    radio.read_freq = AsyncMock(
+        side_effect=CatTimeoutError("FA timeout", command="FA;")
+    )
+
+    with pytest.raises(CatTimeoutError):
+        await YaesuObservationAdapter(
+            radio, profile=profile, clock=_clock
+        ).poll_medium()
+
+    assert radio._critical_read_timeouts == {freq: 1}
+    assert scheduler.unanswered_paths() == frozenset()
+    assert freq in scheduler.unobserved_startup_paths(())
+
+
+@pytest.mark.asyncio
 async def test_sub_s_meter_reads_through_the_profile_despite_the_echoed_side(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -4207,6 +4348,303 @@ def test_synthetic_sourceless_profile_declares_no_tx_source() -> None:
     assert FieldPath.global_("tx_state", "tx_target") not in (
         profile.state_acquisition.pollable_paths()
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("rig_path", "sim_path"),
+    [(_FTX1_RIG, _FTX1_SIM), (FT991A_RIG, FT991A_SIM)],
+    ids=["ftx1", "ft991a"],
+)
+async def test_silent_na_read_does_not_abort_the_medium_cycle(
+    monkeypatch: pytest.MonkeyPatch,
+    rig_path: Path,
+    sim_path: Path,
+) -> None:
+    """MOR-3856: production path on two radios' profiles via the simulator.
+
+    A real ``YaesuCatRadio`` on the committed FTX-1 and FT-991A profiles
+    over the CAT simulator, with the ``NA`` line silent — the C4FM shape:
+    no usable answer within the read window. The medium cycle must still
+    publish the freq/mode reads that answered before it, and the narrow
+    path is marked unanswered on the acquisition scheduler, so the
+    optional read stops holding the initial-state gate. The transport's
+    per-attempt timeout is shrunk for the test only; no product margin
+    moves.
+    """
+    loaded = load_rig(rig_path)
+    assert loaded.state_acquisition is not None
+    scheduler = AcquisitionScheduler(profile=loaded.state_acquisition)
+    radio = YaesuCatRadio("/dev/fixture", profile=loaded)
+    radio._acquisition_scheduler = scheduler
+    radio._critical_read_timeouts = {}
+    fake = YaesuCatSerialFake.from_profile(_ROOT, sim_path, rig_path=rig_path)
+    wire: list[str] = []
+    handle = fake.model.handle_with_outcome
+
+    def logged(line: str) -> Any:
+        wire.append(line)
+        if line.startswith("NA"):
+            # Recorded silence: the radio gives no answer at all.
+            return None, Ok()
+        return handle(line)
+
+    monkeypatch.setattr(fake.model, "handle_with_outcome", logged)
+
+    async def open_port(*args: Any, **kwargs: Any) -> Any:
+        return await fake.open_serial_connection()
+
+    monkeypatch.setattr(
+        "rigplane.backends.yaesu_cat.transport.open_serial_port", open_port
+    )
+    await radio._transport.connect()
+    # Shrink the transport's per-attempt read timeout for the test only;
+    # no product margin moves.
+    radio._transport._timeout = 0.05
+    try:
+        # The ticket's mode: C4FM/FM, whose filter rule declares no narrow
+        # variant — the width read never resolves narrow internally there,
+        # so the silent ``NA`` the radio gives is read by the clause prime
+        # and the slow lane only.
+        await radio.set_mode("FM")
+        from rigplane.backends.yaesu_cat.observations import (
+            _CRITICAL_READ_TIMEOUT_ATTEMPTS,
+        )
+
+        for _ in range(_CRITICAL_READ_TIMEOUT_ATTEMPTS):
+            medium = await YaesuObservationAdapter.from_radio(radio).poll_medium()
+            assert "receiver.main.active.freq_mode.freq_hz" in {
+                str(item.path) for item in medium
+            }, "the answered reads must still reach the store"
+            observations = (
+                medium
+                + await YaesuObservationAdapter.from_radio(radio).poll_slow_controls()
+            )
+    finally:
+        await radio._transport.close()
+
+    assert "NA0;" in wire, "the narrow read never reached the wire"
+    by_path = {str(item.path) for item in observations}
+    assert "receiver.main.operator_toggles.narrow" not in by_path
+    narrow = FieldPath.receiver("main", "operator_toggles", "narrow")
+    assert narrow in scheduler.unanswered_paths()
+    assert narrow not in scheduler.unobserved_startup_paths(())
+
+
+@pytest.mark.asyncio
+async def test_silent_narrow_inside_width_read_does_not_abort_the_medium_cycle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """MOR-3856 (gate P2): the composite width read contains a silent narrow.
+
+    FT-991A in USB: the filter rule declares a narrow table, so
+    ``read_filter_width_reading`` resolves the narrow state through an
+    inner ``read_narrow``. With ``SH`` answered and ``NA`` silent, that
+    inner timeout must contain inside the width read — the width is
+    served absent for the cycle, with no invented narrow value or width
+    — while the answered frequency/mode still publish. Without the
+    containment the medium cycle raises and the earlier reads never
+    reach the store. The composite read takes the unanswered route for
+    its own width paths, so the width stops holding the gate while the
+    lane keeps asking; narrow itself is marked by its own slow-lane
+    reads in production.
+    """
+    from rigplane.backends.yaesu_cat.observations import (
+        _CRITICAL_READ_TIMEOUT_ATTEMPTS,
+    )
+
+    loaded = load_rig(FT991A_RIG)
+    assert loaded.state_acquisition is not None
+    scheduler = AcquisitionScheduler(profile=loaded.state_acquisition)
+    radio = YaesuCatRadio("/dev/fixture", profile=loaded)
+    radio._acquisition_scheduler = scheduler
+    radio._critical_read_timeouts = {}
+    fake = YaesuCatSerialFake.from_profile(_ROOT, FT991A_SIM, rig_path=FT991A_RIG)
+    wire: list[str] = []
+    handle = fake.model.handle_with_outcome
+
+    def logged(line: str) -> Any:
+        wire.append(line)
+        if line.startswith("NA"):
+            # Recorded silence: the radio gives no answer at all.
+            return None, Ok()
+        return handle(line)
+
+    monkeypatch.setattr(fake.model, "handle_with_outcome", logged)
+
+    async def open_port(*args: Any, **kwargs: Any) -> Any:
+        return await fake.open_serial_connection()
+
+    monkeypatch.setattr(
+        "rigplane.backends.yaesu_cat.transport.open_serial_port", open_port
+    )
+    await radio._transport.connect()
+    # Shrink the transport's per-attempt read timeout for the test only;
+    # no product margin moves.
+    radio._transport._timeout = 0.05
+    try:
+        for _ in range(_CRITICAL_READ_TIMEOUT_ATTEMPTS):
+            medium = await YaesuObservationAdapter.from_radio(radio).poll_medium()
+            by_value = {str(item.path): item.value for item in medium}
+            assert by_value.get("receiver.main.active.freq_mode.freq_hz") == (
+                14_074_000
+            ), "the answered reads must still reach the store"
+            assert by_value.get("receiver.main.active.freq_mode.mode") == "USB"
+            assert "receiver.main.active.freq_mode.filter_width" not in by_value, (
+                "a silent narrow invents no width"
+            )
+    finally:
+        await radio._transport.close()
+
+    assert "NA0;" in wire, "the inner narrow lookup never reached the wire"
+    width = FieldPath.active("main", "freq_mode", "filter_width")
+    assert width in scheduler.unanswered_paths()
+    assert width not in scheduler.unobserved_startup_paths(())
+
+
+@asynccontextmanager
+async def _serve_yaesu_with_silent_narrow(
+    monkeypatch: pytest.MonkeyPatch,
+    rig_path: Path,
+    sim_path: Path,
+    mode: str,
+) -> AsyncIterator[tuple[WebServer, YaesuCatRadio, list[str]]]:
+    """Serve a real Yaesu radio on the CAT simulator with a silent ``NA``.
+
+    The real ``YaesuCatRadio`` on a committed profile, the real
+    ``WebServer`` with its production acquisition started — only the wire
+    is faked, and the fake gives no answer at all to the narrow read
+    (the C4FM shape from the ticket). ``server.start()`` returns only
+    after the listener binds, i.e. after the startup gate opens
+    (``await_initial_state=True``, as the production CLI builds it).
+
+    Two recorded-sim gaps are repaired to bench answers so the gate pins
+    the silent narrow and nothing else — the same surgery as
+    ``test_startup_state_gate._ftx1_table_silent_on_ft``: the FM-recorded
+    manual-notch replies (``BP01F35;``/``BP11F35;``, no decimal form) are
+    answered in the USB decimal form, and the probe-window ``RA0;``
+    refusal is answered OFF (``RA00;``). The live radio answers both;
+    without the repair the gate would abort on a sim artifact.
+    """
+    loaded = load_rig(rig_path)
+    radio = YaesuCatRadio("/dev/fixture", profile=loaded)
+    fake = YaesuCatSerialFake.from_profile(_ROOT, sim_path, rig_path=rig_path)
+    wire: list[str] = []
+    handle = fake.model.handle_with_outcome
+
+    def logged(line: str) -> Any:
+        wire.append(line)
+        if line.startswith("NA"):
+            # Recorded silence: the radio gives no answer at all.
+            return None, Ok()
+        reply, outcome = handle(line)
+        if reply in ("BP01F35;", "BP11F35;"):
+            # FM-recorded notch reply, no decimal form: answer the USB
+            # decimal form the live radio gives (see the helper docstring).
+            return reply[:4] + "150;", outcome
+        if line == "RA0;" and reply == "?;":
+            # Probe-window attenuator refusal: answer OFF like the bench
+            # radio does (see the helper docstring).
+            return "RA00;", outcome
+        return reply, outcome
+
+    monkeypatch.setattr(fake.model, "handle_with_outcome", logged)
+
+    async def open_port(*args: Any, **kwargs: Any) -> Any:
+        return await fake.open_serial_connection()
+
+    monkeypatch.setattr(
+        "rigplane.backends.yaesu_cat.transport.open_serial_port", open_port
+    )
+    await radio._transport.connect()
+    # Shrink the transport's per-attempt read timeout for the test only;
+    # no product margin moves.
+    radio._transport._timeout = 0.05
+    await radio.set_mode(mode)
+    # MOR-3856 gate P1(2): production CLI sets await_initial_state=True
+    # (cli/__init__.py); the default False would skip the startup gate this
+    # test pins, so the test would pass even without the fix.
+    server = WebServer(
+        radio, WebConfig(host="127.0.0.1", port=0, await_initial_state=True)
+    )
+    try:
+        await asyncio.wait_for(server.start(), timeout=60)
+    except BaseException:
+        await radio._transport.close()
+        raise
+    try:
+        yield server, radio, wire
+    finally:
+        await server.stop()
+        await radio._transport.close()
+
+
+@pytest.mark.realtime(reason="real HTTP socket and the production Yaesu acquisition")
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("rig_path", "sim_path", "mode", "freq_hz"),
+    [(_FTX1_RIG, _FTX1_SIM, "C4FM-DN", 147_225_000)],
+    ids=["ftx1-c4fm"],
+)
+async def test_silent_narrow_serves_answered_state_over_http(
+    monkeypatch: pytest.MonkeyPatch,
+    rig_path: Path,
+    sim_path: Path,
+    mode: str,
+    freq_hz: int,
+) -> None:
+    """MOR-3856 (gate P1(2)): the startup gate opens and HTTP serves the
+    answered reads while ``NA`` stays silent — through the real server,
+    the production observation poller and the real ``/api/v1/state``,
+    parsed through the producer's ``ServerStatePublic`` model.
+
+    FTX-1 only (the ticket's radio): the fidelity-C FT-991A sim leaves
+    other declared reads (``IS0;``, ...) unmodeled with no bench answer
+    to repair them to, so a gate-on serve would abort on sim gaps rather
+    than pin the ticket behavior. The FT-991A shape stays covered by the
+    two direct-adapter tests above, which need no gate.
+
+    The direct-adapter test above would stay green if publication dropped
+    the returned observations or the listener never bound: this one fails
+    then — the bind never happens (``server.start()`` times out) or the
+    served frequency never arrives (the HTTP wait times out). Narrow
+    stays unknown throughout.
+    """
+    from rigplane.testing.timing import await_until
+
+    narrow = FieldPath.receiver("main", "operator_toggles", "narrow")
+    async with _serve_yaesu_with_silent_narrow(
+        monkeypatch, rig_path, sim_path, mode
+    ) as (web, radio, wire):
+        host, port = _addr(web)
+
+        def freq_ready(state: ServerStatePublic) -> bool:
+            return state.main.freqHz == freq_hz
+
+        await _wait_served_state(
+            host, port, freq_ready, f"freq {freq_hz} with silent NA"
+        )
+        assert "NA0;" in wire, "the silent narrow read never reached the wire"
+        scheduler = radio._acquisition_scheduler
+        await await_until(
+            lambda: narrow in scheduler.unanswered_paths(),
+            timeout=30.0,
+            description="the silent narrow marked unanswered",
+        )
+        # No defect assertion here: the fidelity-C simulator refuses
+        # reads the bench radio answers (att, notch, ...), and the first
+        # such refusal lands on the scheduler after the bind. The bind
+        # itself proves the gate: ``server.start()`` returns only after
+        # the startup wait, and any recorded defect aborts it before the
+        # listener is created.
+        assert narrow not in scheduler.unobserved_startup_paths(())
+
+        status, _, raw = await _http_get(host, port, "/api/v1/state")
+        assert status == 200, f"GET /api/v1/state: HTTP {status}"
+        state = ServerStatePublic.model_validate_json(raw)
+        assert state.main.freqHz == freq_hz
+        assert state.main.mode == mode
+        assert state.main.narrow is None, "a silent narrow stays unknown"
 
 
 @pytest.mark.parametrize(

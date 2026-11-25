@@ -7,7 +7,7 @@
  */
 
 import { disconnectAll as wsDisconnectAll, reconnectAll as wsReconnectAll, emitLocalNotification } from '$lib/transport/ws-client';
-import { controllerClient, ControllerClientError } from '$lib/transport/controller-client';
+import { controllerClient, ControllerClientError, CONTROLLER_TOAST_CODES } from '$lib/transport/controller-client';
 import { audioManager } from '$lib/audio/audio-manager';
 import { destroyMediaSession, initMediaSession } from '$lib/media/media-session';
 import { setRadioStatus } from '$lib/stores/connection.svelte';
@@ -182,7 +182,7 @@ export class SystemController {
         if (this._connectInFlight !== pending) return;
         this._clientConnected = false;
         const failure = error instanceof ControllerClientError ? error : new ControllerClientError('controller_not_ready');
-        emitLocalNotification('error', failure.message, failure.code);
+        emitLocalNotification('error', failure.message, CONTROLLER_TOAST_CODES[failure.code]);
       }).finally(() => {
         if (this._connectInFlight === pending) this._connectInFlight = null;
       });

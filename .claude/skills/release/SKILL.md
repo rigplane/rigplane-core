@@ -308,9 +308,21 @@ smoke counts for the final with no re-smoke, while `publish.yml`'s
 
 ## Step 10 — Post-release housekeeping
 
-1. Update `.claude/metrics.json`: `releases_count` += 1, `last_release_version = "NEW"`.
-2. Append to `.claude/workflow/release-notes.md`: version, date, commit count, headline.
-3. Print monitor link: `https://github.com/rigplane/rigplane-core/actions`.
+1. **Next development version on main (MOR-4714).** After the release branch
+   is merged back into `main` (`AGENTS.md`, "Release branches"), main's
+   version must move past the release: for a released `X.Y.Z`, set
+   `X.Y.(Z+1).dev0` in the `version` line of `pyproject.toml` AND the
+   project's own `version` line in `uv.lock`, through a normal PR to `main`.
+   The bump never goes on the release branch itself — a dev-version commit
+   there is not release bookkeeping and fails the `git cherry` check. Verify
+   with `python scripts/release/check_main_version.py`: exit 0 only when the
+   tree's version is strictly newer than the newest `v*` tag and the two
+   version files agree. Without this step a build from main reports a version
+   older than the last release in `/api/v1/info`, support reports and Sentry
+   release names.
+2. Update `.claude/metrics.json`: `releases_count` += 1, `last_release_version = "NEW"`.
+3. Append to `.claude/workflow/release-notes.md`: version, date, commit count, headline.
+4. Print monitor link: `https://github.com/rigplane/rigplane-core/actions`.
 
 ## Step 11 — Summary
 

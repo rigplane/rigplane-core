@@ -380,6 +380,9 @@ without a major version.
   TURN url aiortc uses is chosen from a cached UDP reachability probe), and
   the `api` channel frame contract (`ApiFrame`, `ApiFrameError`,
   `ApiMessageType`, `ApiRequestHead`, `api_request_messages`,
+  `ApiResponseHead`, `ApiErrorFrame`, `ApiPayloadError` and
+  `parse_api_server_frame`, the consumer-side parsers of RES_HEAD and ERROR
+  payloads that skip unknown fields and unknown frame types,
   `API_SEND_HIGH_WATER_BYTES`: frames of at most 16 KB in both directions,
   at most 32 KB buffered before a sender waits).
 

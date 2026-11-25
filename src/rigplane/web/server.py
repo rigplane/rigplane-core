@@ -93,6 +93,7 @@ from ..core.state_store import StateSnapshot, StateStore
 from ..core.transport import IcomTransport
 from ..core.tx_observation import (
     ObservedPtt,
+    TxMeterLog,
     project_observed_ptt,
 )
 from ..runtime.controller_authority import (
@@ -154,6 +155,7 @@ from .api_contract import (  # noqa: TID251
 from .api_channel import ApiChannelHandler  # noqa: TID251
 from .channel_attach import (  # noqa: TID251
     ATTACH_ACK_KINDS,
+    RIGCTL_VERSIONS,
     ChannelAttachedAck,
     ChannelKind,
     ClientChannelParams,
@@ -181,6 +183,8 @@ from ..core.host_guard import (  # noqa: TID251
 from .managed_tx_view import build_managed_tx_view  # noqa: TID251
 from .transport.webrtc import webrtc_available  # noqa: TID251
 from .transport.webrtc_contract import (  # noqa: TID251
+    WebRtcClose,
+    WebRtcCloseResult,
     WebRtcIceCandidate,
     WebRtcOffer,
     WebRtcRequestError,
@@ -1322,6 +1326,16 @@ def _macos_rss_bytes(pidinfo: _PidInfoFn | None) -> int | None:
     return int(info.pti_resident_size)
 
 
+class _ClientTasks(dict[asyncio.Task[None], str | None]):
+    """Map accepted client tasks to their managed WebSocket TX owner, if any."""
+
+    def add(self, task: asyncio.Task[None]) -> None:
+        self.setdefault(task, None)
+
+    def __sub__(self, other: set[asyncio.Task[None]]) -> set[asyncio.Task[None]]:
+        return self.keys() - other
+
+
 class WebServer:
     """Asyncio HTTP + WebSocket server for the rigplane Web UI.
 
@@ -1361,6 +1375,9 @@ class WebServer:
             executor=_SharedControlCommandExecutor(self),
             state_store=self.command_state_store,
         )
+        self._unsubscribe_tx_meter_log = (
+            self.command_state_store.subscribe_observations(TxMeterLog().on_observation)
+        )
         self._unsubscribe_provider_generation = (
             self.command_state_store.subscribe_provider_generation(
                 self._on_provider_generation
@@ -1393,7 +1410,7 @@ class WebServer:
         # MOR-3536: RigctldServer.open_channel, attached by the composition root.
         self._rigctl_channel: OpenRigctlChannel | None = None
         self._runtime_last_error: str | None = None
-        self._client_tasks: set[asyncio.Task[None]] = set()
+        self._client_tasks = _ClientTasks()
         self._scope_handlers: set["ScopeHandler"] = set()
         self._scope_hub: ScopeHub | None = None
         self._radio_scope_source: RadioScopeSource | None = None
@@ -1427,8 +1444,11 @@ class WebServer:
         pcm_tap_source = self._audio_broadcaster.rx_pcm_tap_source
         if pcm_tap_source is not None:
             tap = WebScopePcmTap(self, sample_rate=pcm_tap_source.sample_rate)
+            # MOR-4604: 4096 points (11.7 Hz bins at 48 kHz) give a 2.4 kHz
+            # SSB passband about 205 native bins, enough for the Audio Scope
+            # trapezoid to read a distinct bin in at least every other column.
             self._audio_scope_source = AudioFftSource(
-                tap, tap.facts, fft_size=2048, sample_rate=pcm_tap_source.sample_rate
+                tap, tap.facts, fft_size=4096, sample_rate=pcm_tap_source.sample_rate
             )
         self._iq_scope_source: IqFftSource | None = None
         self._iq_scope_construction_error: str | None = None
@@ -3969,6 +3989,7 @@ class WebServer:
         if unsubscribe is not None:
             unsubscribe()
         self._unsubscribe_provider_generation()
+        self._unsubscribe_tx_meter_log()
         self._detach_audio_session_listener()
         self._detach_reconnect_status_listener()
         await stop_web_server(self)
@@ -4083,7 +4104,7 @@ class WebServer:
         loop = asyncio.get_running_loop()
         task = loop.create_task(self._handle_connection(reader, writer))
         self._client_tasks.add(task)
-        task.add_done_callback(self._client_tasks.discard)
+        task.add_done_callback(self._client_tasks.pop)
 
     # ------------------------------------------------------------------
     # HTTP request parsing
@@ -5124,8 +5145,13 @@ class WebServer:
                 payload["controls"] = profile.controls
             payload["txBands"] = _serialize_tx_bands(profile)
             payload.update(_serialize_max_power(profile, self._radio))
+        available = webrtc_available()
         payload["webrtc"] = WebRtcTransportStatus(
-            available=webrtc_available(), enabled=self._config.webrtc_enabled
+            available=available,
+            enabled=self._config.webrtc_enabled,
+            rigctl_versions=RIGCTL_VERSIONS
+            if available and self._rigctl_webrtc_ready()
+            else (),
         ).to_json()
         payload.update(self._get_meter_cal_payload())
         if self.command_state_store.provider_generation != snapshot.provider_generation:
@@ -5775,18 +5801,23 @@ class WebServer:
                 writer, 405, "Method Not Allowed", {"error": "method_not_allowed"}
             )
             return
+        # The synthetic WebRTC writer supplies server-owned ingress metadata.
+        momentary_only = writer.get_extra_info("rigplane_api_channel") is True
+        result: Mapping[str, object]
         try:
             if path.endswith("/mode"):
                 peer = writer.get_extra_info("peername")
                 if not peer or not ipaddress.ip_address(peer[0]).is_loopback:
                     raise ControllerError("controller_local_required")
             if method == "GET":
-                result, status = self._controller.status(), 200
+                result = self._controller.status(momentary_only=momentary_only)
+                status = 200
             elif method == "DELETE":
                 await self._controller.release(
                     (headers or {}).get("x-rigplane-controller")
                 )
-                result, status = self._controller.status(), 200
+                result = self._controller.status(momentary_only=momentary_only)
+                status = 200
             else:
                 payload = await self._read_json_object(writer, headers, reader)
                 if payload is None:
@@ -5798,7 +5829,8 @@ class WebServer:
                     if self._audio_bridge is not None:
                         self._audio_bridge._drop_queued_tx()
                     await self._controller.set_mode(payload[field])
-                    result, status = self._controller.status(), 200
+                    result = self._controller.status(momentary_only=momentary_only)
+                    status = 200
                 else:
                     peer = writer.get_extra_info("peername")
                     result = self._controller.acquire(
@@ -7563,6 +7595,67 @@ class WebServer:
             writer, 200, "OK", resp_body, {"Content-Type": "application/json"}
         )
 
+    async def _handle_webrtc_close(
+        self,
+        writer: asyncio.StreamWriter,
+        headers: dict[str, str] | None,
+        reader: asyncio.StreamReader | None,
+    ) -> None:
+        """Handle POST /api/v1/transport/webrtc/close — end live sessions.
+
+        The stop button for already-connected peers (Pro's remote-access
+        switch-off): ``{"sessionId": id}`` ends that peer, an absent or
+        ``null`` ``sessionId`` ends every live session — both through the
+        manager's existing teardown path. Closing when nothing is live is
+        a success that closed nothing, and the manager stays usable, so a
+        later offer is still answered.
+        """
+        if not self._config.webrtc_enabled:
+            await self._webrtc_unavailable(
+                writer, "WebRTC transport disabled (set webrtc_enabled)."
+            )
+            return
+        if not webrtc_available():
+            await self._webrtc_unavailable(
+                writer, "WebRTC backend unavailable; install rigplane[webrtc]."
+            )
+            return
+
+        payload = await self._read_json_body(writer, headers, reader)
+        if payload is None:
+            return
+        try:
+            close = WebRtcClose.from_json(payload)
+        except WebRtcRequestError as exc:
+            await self._webrtc_error(writer, 400, "Bad Request", exc)
+            return
+
+        from .transport.webrtc_session import WebRtcSessionError  # noqa: TID251
+
+        manager = self._webrtc_session_manager()
+        if close.session_id is None:
+            closed = await manager.close_all()
+        else:
+            try:
+                await manager.close_session(close.session_id)
+            except WebRtcSessionError as exc:
+                await self._webrtc_error(
+                    writer,
+                    404,
+                    "Not Found",
+                    WebRtcRequestError("close_error", str(exc)),
+                )
+                return
+            closed = [close.session_id]
+
+        resp_body = json.dumps(
+            WebRtcCloseResult(closed=tuple(closed)).to_json(),
+            separators=(",", ":"),
+        ).encode()
+        await _send_response(
+            writer, 200, "OK", resp_body, {"Content-Type": "application/json"}
+        )
+
     # ------------------------------------------------------------------
     # Diagnostic upload endpoints (issue #1396)
     # ------------------------------------------------------------------
@@ -8032,6 +8125,14 @@ class WebServer:
             raise ControllerError("controller_session_required")
         return ticket
 
+    def _rigctl_webrtc_ready(self) -> bool:
+        return (
+            self._config.webrtc_enabled
+            and not self._config.read_only
+            and self._rigctl_channel is not None
+            and isinstance(self._managed_tx_authority(), ManagedTxAuthority)
+        )
+
     async def attach_client_channel(
         self,
         conn: Connection,
@@ -8062,6 +8163,12 @@ class WebServer:
         resolves to no ticket (``None``): nothing is tracked and the
         channel holds no session.
         """
+        if (
+            kind == "rigctl"
+            and transport == "datachannel"
+            and not self._rigctl_webrtc_ready()
+        ):
+            raise ControllerError("rigctl_unavailable")
         ticket = self._resolve_client_ticket(params, kind)
         if (
             track_owners is not None
@@ -8069,7 +8176,7 @@ class WebServer:
             and ticket.tx_owner is not None
         ):
             track_owners.add(ticket.tx_owner)
-        if transport == "datachannel" and kind in ATTACH_ACK_KINDS:
+        if transport == "datachannel" and kind in ATTACH_ACK_KINDS and kind != "rigctl":
             # The ack, before the first handler byte (a dead send must
             # not kill the attach).
             try:
@@ -8102,9 +8209,8 @@ class WebServer:
         """Serve one attached channel: handlers, caps, keepalive, cleanup.
 
         The one mechanism every transport shares. ``kind`` is
-        ``control`` / ``scope`` / ``audio`` / ``api`` (``rigctl`` and
-        anything else arrive only from the WebSocket lane and keep their
-        historical early close). ``ticket`` is ``None`` only for a
+        ``control`` / ``scope`` / ``audio`` / ``api`` / ``rigctl``.
+        ``ticket`` is ``None`` only for a
         keyless ``api`` attach: that channel holds no session, so it
         skips ticket validation, session abort registration, and the
         ambient bind (every request carries and validates its own key
@@ -8173,6 +8279,7 @@ class WebServer:
                 self._rigctl_channel,
                 owner,
                 peer,
+                datachannel=transport == "datachannel",
             )
         else:
             self._controller.detach(ticket)
@@ -8364,6 +8471,11 @@ class WebServer:
             )
             return
 
+        if ticket is not None and ticket.tx_owner is not None:
+            task = asyncio.current_task()
+            assert task is not None
+            if task in self._client_tasks:
+                self._client_tasks[task] = ticket.tx_owner
         try:
             writer.write(upgrade.response)
             await writer.drain()

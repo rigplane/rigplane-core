@@ -27,6 +27,12 @@ WORKFLOW_DIR = Path(".github/workflows")
 # API: every build runner (mini-server-build-core-1..3, mm-build-core-1 on
 # ARM64; nsu-build-core-1..3, gtr7-build-core-1 on X64) carries
 # self-hosted,Linux,build in addition to its architecture label.
+# The reserved merge-queue lane (MOR-4097, infra-control): the four X64 queue
+# runners carry self-hosted,Linux,X64,queue; the single ARM64 queue runner
+# carries self-hosted,Linux,ARM64,queue-arm64 and NOT queue, so the arch-free
+# queue requests cannot take the slot the visual leg needs. Neither carries
+# build. quick.yml workers request the arch-neutral queue set, and the visual
+# e2e leg the ARM64 queue set, for merge_group runs only.
 APPROVED_LABEL_SETS: frozenset[frozenset[str]] = frozenset(
     {
         frozenset({"self-hosted", "Linux", "ARM64", "light"}),
@@ -34,6 +40,8 @@ APPROVED_LABEL_SETS: frozenset[frozenset[str]] = frozenset(
         frozenset({"self-hosted", "Linux", "ARM64", "build"}),
         frozenset({"self-hosted", "Linux", "X64", "build"}),
         frozenset({"self-hosted", "Linux", "build"}),
+        frozenset({"self-hosted", "Linux", "ARM64", "queue-arm64"}),
+        frozenset({"self-hosted", "Linux", "queue"}),
         frozenset({"self-hosted", "macOS", "ARM64", "bench"}),
         frozenset({"self-hosted", "macOS", "ARM64", "platform"}),
     }

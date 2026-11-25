@@ -194,6 +194,7 @@ default source or separate audio FFT endpoint.
 
 Every client may read state, scope and audio, and any client may command the radio. Between clients the server enforces one rule: one transmitter holder at a time. Whoever keys holds TX until it is released; keying from anyone else is refused. The server authenticates no client: a controller session key correlates one client's channels and is not a credential.
 
+- `GET /api/v1/controller` reports the controller `mode` and the route's `ptt_style`. `latch` allows a managed `transmit_on` request. `momentary` uses press and release on the control channel. The WebRTC `api` channel always reports `momentary`. HTTP (including paired LAN) reports `latch` in local mode and `momentary` in exclusive remote mode. `force_off` is available on both routes.
 - `POST /api/v1/controller` with `{"kind": "browser"}` or `{"kind": "pro"}` opens a session (`201` with `controller_key`, `generation`, `ttl_ms` 6000 and `heartbeat_ms` 2000). Any number of sessions may exist.
 - WebSocket channels join a session with the subprotocol `rigplane-controller-v1.<controller_key>`. The session's first `/api/v1/ws` channel is its primary (`controller_role=primary`, the default) and sends `{"type": "controller_heartbeat"}` every 2 s; further channels are auxiliaries (`controller_role=auxiliary` on `/api/v1/ws`; `/api/v1/audio` and `/api/v1/scope` always). An HTTP request acts for the session when it carries `X-RigPlane-Controller: <controller_key>`. An unknown or ended key is refused with `403 {"error": "controller_invalid"}`; `DELETE /api/v1/controller` with the header ends the session.
 - The session owns the TX it keys: `ptt_on` from any of its control channels, and `transmit_on` on `POST /api/v1/managed-transmit/command` sent with its header. While one owner holds TX, `ptt_on` and `transmit_on` from any other owner are rejected (`transmit_on` answers `409`), and `send_cw_text`, `set_vox` with `on` not `false`, and `set_tuner_status` with `value` 2 and `set_break_in` with `mode` not 0 are refused with `controller_tx_unsupported`, and refused again if another owner keys before they run. `force_off` is accepted from anyone.
@@ -252,7 +253,26 @@ attach frame is the first text frame on `control`, `api`, `scope-text` or
 The gated transport routes are default-off. If `WebConfig.webrtc_enabled` is
 false, or `aiortc` is missing, they return HTTP `503` with
 `code: "webrtc_unavailable"`. The CLI enables the gate with `rigplane --model <MODEL>
-web --webrtc`; programmatic callers set `WebConfig(webrtc_enabled=True)`.
+web --webrtc` or `rigplane --model <MODEL> station --webrtc` (one shared flag
+definition, `src/rigplane/cli/__init__.py: _build_parser._add_webrtc_flags`);
+programmatic callers set `WebConfig(webrtc_enabled=True)`.
+
+The offer and ICE routes carry no application credential, the same as every
+other route on the listener. Who can reach them is decided by the listener's
+bind address: `station` binds `127.0.0.1` unless `--listen` names another
+address (`--listen 0.0.0.0` is also rewritten to `127.0.0.1`,
+`src/rigplane/cli/__init__.py: _apply_managed_runtime_defaults`), so on a
+managed station only processes on the same machine can post an offer. The
+Host and Origin checks that apply to every HTTP route also apply here, so a
+web page in a local browser cannot post one cross-origin. `web` binds
+`0.0.0.0` by default, which makes the routes reachable from the LAN. A
+supervisor that relays remote offers to a local station (RigPlane Pro's home
+role) is the authenticator for those peers; Core does not authenticate them.
+
+The `api` data channel does not serve the WebRTC signalling routes
+(`src/rigplane/web/api_channel.py: API_CHANNEL_SIGNALLING_PREFIX`): a request
+for them over the channel answers 404, so a peer cannot open another peer
+connection through the session it already has.
 
 `/api/v1/info` exposes `capabilities.hasWebrtc` (aiortc importable and the
 radio has audio); it does not show whether the routes are enabled.

@@ -34,7 +34,7 @@ import sys
 import tempfile
 import time
 import weakref
-from collections import Counter
+from collections import Counter, deque
 from collections.abc import Iterable
 from contextvars import Context, ContextVar
 from dataclasses import dataclass
@@ -53,6 +53,7 @@ from rigplane.runtime.managed_tx_composition import (
     install_managed_tx_composition,
 )
 from rigplane.runtime.radio import IcomRadio
+from rigplane.web.protocol import decode_json
 from rigplane.web.server import WebConfig, WebServer
 from rigplane.web.web_startup import (
     attach_managed_tx_composition,
@@ -635,6 +636,23 @@ class _RuntimeTaskAdapter:
                 if _probe_connection_ports(writer) == skip_ports:
                     return population - {task}
         return population
+
+    async def wait_for_transient_work(self) -> None:
+        """Drain stack work that can outlive the driver's periodic actions."""
+        web = self._stack.web
+        # Ending a managed session does not join its WebSocket handler, which
+        # owns its keepalive and sender. Join the handler and the authority's
+        # release fences before draining the state publications they trigger.
+        sessions = {
+            task
+            for task, tx_owner in web._client_tasks.items()
+            if tx_owner is not None and not task.done()
+        }
+        if sessions:
+            await asyncio.wait(sessions)
+        await web._controller.settle()
+        while pending := {task for task in web._bg_tasks if not task.done()}:
+            await asyncio.wait(pending)
 
     def owned_fd_count(self, skip_ports: frozenset[int] | None = None) -> int | None:
         """The owned-socket FD count; None when it cannot be measured."""
@@ -1520,6 +1538,46 @@ def summary_line(report: dict[str, Any]) -> str:
 # ---------------------------------------------------------------------------
 
 
+@dataclass(frozen=True)
+class _CommandReply:
+    id: str
+    ok: bool
+    result: object = None
+    error: str | None = None
+    message: str | None = None
+
+
+@dataclass(frozen=True)
+class _HeartbeatReply:
+    generation: int
+
+
+def _parse_tx_reply(text: str) -> _CommandReply | _HeartbeatReply | None:
+    """Parse ControlHandler response paths and ControllerAuthority.heartbeat.
+
+    Both producers return dictionaries, validated here into typed records.
+    """
+    data = decode_json(text)
+    if data.get("type") == "response":
+        command_id, ok = data.get("id"), data.get("ok")
+        if not isinstance(command_id, str) or not isinstance(ok, bool):
+            raise ValueError("invalid command response id/ok")
+        if ok:
+            if "result" not in data:
+                raise ValueError("command response missing result")
+            return _CommandReply(command_id, ok, result=data["result"])
+        error, message = data.get("error"), data.get("message")
+        if not isinstance(error, str) or not isinstance(message, str):
+            raise ValueError("invalid command response error/message")
+        return _CommandReply(command_id, ok, error=error, message=message)
+    if data.get("type") == "controller_heartbeat":
+        generation = data.get("generation")
+        if type(generation) is not int:
+            raise ValueError("invalid controller heartbeat generation")
+        return _HeartbeatReply(generation)
+    return None
+
+
 class _TxSessionClient:
     """One controller session as a client drives it (MOR-3534).
 
@@ -1532,6 +1590,9 @@ class _TxSessionClient:
         self._http: aiohttp.ClientSession | None = None
         self._ws: aiohttp.ClientWebSocketResponse | None = None
         self._heartbeat: asyncio.Task[None] | None = None
+        self._reader: asyncio.Task[None] | None = None
+        self._responses: dict[str, asyncio.Future[_CommandReply | None]] = {}
+        self._heartbeat_replies: deque[asyncio.Future[_HeartbeatReply | None]] = deque()
         self.key = ""
         self._next_id = 0
 
@@ -1549,6 +1610,53 @@ class _TxSessionClient:
             f"{self._base_url}/api/v1/ws",
             protocols=(f"rigplane-controller-v1.{self.key}",),
         )
+        self._reader = asyncio.create_task(self._read(), name="soak-tx-reader")
+
+    async def _read(self) -> None:
+        assert self._ws is not None
+        try:
+            async for msg in self._ws:
+                if msg.type is not aiohttp.WSMsgType.TEXT:
+                    continue
+                data = _parse_tx_reply(msg.data)
+                if isinstance(data, _CommandReply):
+                    reply = self._responses.get(data.id)
+                    if reply is not None and not reply.done():
+                        reply.set_result(data)
+                elif isinstance(data, _HeartbeatReply):
+                    if self._heartbeat_replies:
+                        heartbeat_reply = self._heartbeat_replies.popleft()
+                        if not heartbeat_reply.done():
+                            heartbeat_reply.set_result(data)
+        finally:
+            for reply in (*self._responses.values(), *self._heartbeat_replies):
+                if not reply.done():
+                    reply.set_result(None)
+            self._heartbeat_replies.clear()
+
+    async def stop_reader(self) -> None:
+        """Leave a half_open holder silent, including WebSocket ping replies."""
+        if self._reader is not None:
+            self._reader.cancel()
+            await asyncio.gather(self._reader, return_exceptions=True)
+            self._reader = None
+
+    async def _renew_once(self, *, wait_for_reply: bool = True) -> None:
+        assert self._ws is not None
+        if self._reader is None or self._reader.done():
+            return
+        reply: asyncio.Future[_HeartbeatReply | None] = (
+            asyncio.get_running_loop().create_future()
+        )
+        self._heartbeat_replies.append(reply)
+        try:
+            await self._ws.send_json({"type": "controller_heartbeat"})
+            if wait_for_reply:
+                await asyncio.wait_for(reply, timeout=_TX_RENEW_TIMEOUT_S)
+        finally:
+            # Keep cancelled slots until their replies arrive: renew() must
+            # wait for its own beat, not an outstanding background beat.
+            reply.cancel()
 
     def start_heartbeat(self) -> None:
         """Renew the session every HEARTBEAT_MS; one that does not expires after TTL_MS."""
@@ -1557,7 +1665,7 @@ class _TxSessionClient:
             assert self._ws is not None
             while True:
                 await asyncio.sleep(ControllerAuthority.HEARTBEAT_MS / 1000)
-                await self._ws.send_json({"type": "controller_heartbeat"})
+                await self._renew_once(wait_for_reply=False)
 
         self._heartbeat = asyncio.create_task(beat(), name="soak-tx-heartbeat")
 
@@ -1572,25 +1680,21 @@ class _TxSessionClient:
         assert self._ws is not None
         self._next_id += 1
         command_id = f"soak-{self._next_id}"
-        await self._ws.send_json(
-            {"type": "cmd", "id": command_id, "name": name, "params": params or {}}
+        if self._reader is None or self._reader.done():
+            return False
+        reply: asyncio.Future[_CommandReply | None] = (
+            asyncio.get_running_loop().create_future()
         )
-        deadline = time.monotonic() + timeout_s
-        while True:
-            msg = await asyncio.wait_for(
-                self._ws.receive(), timeout=max(0.1, deadline - time.monotonic())
+        self._responses[command_id] = reply
+        try:
+            await self._ws.send_json(
+                {"type": "cmd", "id": command_id, "name": name, "params": params or {}}
             )
-            if msg.type is aiohttp.WSMsgType.TEXT:
-                data = msg.json()
-                if data.get("type") == "response" and data.get("id") == command_id:
-                    return data.get("ok") is True
-            elif msg.type in (
-                aiohttp.WSMsgType.CLOSE,
-                aiohttp.WSMsgType.CLOSING,
-                aiohttp.WSMsgType.CLOSED,
-                aiohttp.WSMsgType.ERROR,
-            ):
-                return False
+            data = await asyncio.wait_for(reply, timeout=timeout_s)
+            return data is not None and data.ok
+        finally:
+            self._responses.pop(command_id, None)
+            reply.cancel()
 
     async def delete(self) -> None:
         """End the session over HTTP, as a client leaving does."""
@@ -1615,22 +1719,7 @@ class _TxSessionClient:
         if self._ws is None or self._ws.closed:
             return
         with contextlib.suppress(Exception):
-            await self._ws.send_json({"type": "controller_heartbeat"})
-            deadline = time.monotonic() + _TX_RENEW_TIMEOUT_S
-            while True:
-                msg = await asyncio.wait_for(
-                    self._ws.receive(), timeout=max(0.1, deadline - time.monotonic())
-                )
-                if msg.type is aiohttp.WSMsgType.TEXT:
-                    if msg.json().get("type") == "controller_heartbeat":
-                        return
-                elif msg.type in (
-                    aiohttp.WSMsgType.CLOSE,
-                    aiohttp.WSMsgType.CLOSING,
-                    aiohttp.WSMsgType.CLOSED,
-                    aiohttp.WSMsgType.ERROR,
-                ):
-                    return
+            await self._renew_once()
 
     async def close(self) -> None:
         """Drop the link; closing the HTTP session sends no WebSocket close."""
@@ -1638,6 +1727,7 @@ class _TxSessionClient:
             self._heartbeat.cancel()
             await asyncio.gather(self._heartbeat, return_exceptions=True)
             self._heartbeat = None
+        await self.stop_reader()
         if self._http is not None:
             with contextlib.suppress(Exception):
                 await self._http.close()
@@ -1946,6 +2036,9 @@ class SoakDriver:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
+                logger.warning(
+                    "soak: multi-session TX (%s) raised", mode, exc_info=True
+                )
                 problems = [f"raised {exc!r}"]
             finally:
                 self._tx_keyed = False
@@ -2007,6 +2100,8 @@ class SoakDriver:
             return
         holder = clients[outcomes.index(True)]
         other = clients[outcomes.index(True) ^ 1]
+        if mode == "half_open":
+            await holder.stop_reader()
         self._tx_keyed = True
         # The other session renews its lease while the holder's story unfolds;
         # the holder's lease runs out on its own where the mode leaves it silent.
@@ -2111,13 +2206,13 @@ class SoakDriver:
     ) -> ProcessSample:
         async with self._quiesce_transient_actions():
             if settle_baseline:
-                # The pre-reconnect baseline must be a steady state like the
-                # post sample, which is settled below. Transient server
-                # tasks (a debounced state broadcast, a CI-V command still in
-                # flight) outlive the paused periodic actions that created
-                # them; probing at once reads them as part of the baseline
-                # and the settled post count then sits below it.
+                # Preserve the count settle for transport work without a
+                # completion handle. A flat streak alone cannot confirm that
+                # a managed channel has finished closing.
                 await self._settle_quiesced_counts(None)
+            if self._runtime_task_adapter is not None:
+                async with asyncio.timeout(_TRANSIENT_DRAIN_TIMEOUT_S):
+                    await self._runtime_task_adapter.wait_for_transient_work()
             return await self._stability_probe_samples(phase)
 
     async def _stability_probe_samples(self, phase: str) -> ProcessSample:
