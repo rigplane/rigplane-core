@@ -23,9 +23,10 @@
   "frontend/tests/e2e/journey/link-loss-veil.spec.ts": {"markers": 0, "offenders": 8},
   "frontend/tests/e2e/journey/memory-store-clear.spec.ts": {"markers": 0, "offenders": 2},
   "frontend/tests/e2e/journey/operator-journey.spec.ts": {"markers": 0, "offenders": 3},
-  "frontend/tests/e2e/journey/panorama-passband-hold.spec.ts": {"markers": 0, "offenders": 10},
+  "frontend/tests/e2e/journey/panorama-passband-hold.spec.ts": {"markers": 0, "offenders": 2},
   "frontend/tests/e2e/journey/panorama-settle.spec.ts": {"markers": 0, "offenders": 7},
   "frontend/tests/e2e/journey/panorama-zoom-fix.spec.ts": {"markers": 0, "offenders": 3},
+  "frontend/tests/e2e/journey/ptt-refusal-audio-abort.spec.ts": {"markers": 0, "offenders": 2},
   "frontend/tests/e2e/journey/rx-makeup-gain.spec.ts": {"markers": 0, "offenders": 2},
   "frontend/tests/e2e/journey/server-process.ts": {"markers": 0, "offenders": 2},
   "frontend/tests/e2e/remote/remote.spec.ts": {"markers": 0, "offenders": 2},
@@ -323,6 +324,5 @@
   "tests/testkit/test_timing.py": {"markers": 0, "offenders": 13},
   "tests/validation/test_hardware.py": {"markers": 0, "offenders": 2},
   "tests/validation/test_hardware_ftx1.py": {"markers": 0, "offenders": 1},
-  "tests/web/test_scope_hub_channel.py": {"markers": 0, "offenders": 2},
   "tests/web/test_scope_server_lifecycle.py": {"markers": 0, "offenders": 1}
 }
