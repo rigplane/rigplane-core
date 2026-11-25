@@ -500,6 +500,14 @@ name used by default. A DATA partner must be another mode in `list`, with at
 most one DATA entry per plain mode. For radios that use a separate DATA flag,
 `[data_mode]` continues to describe the overlay and its eligible modes.
 
+A Yaesu CAT profile whose `list` carries DATA-named modes (e.g. `DATA-U`)
+needs a `data_partner` entry pairing each of them with its plain mode. The
+Yaesu backend has no separate DATA flag: `set_data_mode(on)` resolves the
+DATA partner of the live mode, and a plain mode without a partner raises
+`CommandError` "No DATA mode partner"
+(`backends/yaesu_cat/radio.py: YaesuCatRadio.set_data_mode`). This is a
+runtime requirement on the profile data, not a loader check.
+
 ```toml
 [modes.entries]
 "CW-U" = { hamlib = "CW" }
