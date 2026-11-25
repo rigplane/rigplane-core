@@ -1077,9 +1077,13 @@ class _IcomSerialRadioBase(CoreRadio):
             "another program connected to the radio first at a different "
             "speed (CI-V USB Baud Rate = Auto keeps the first speed until "
             "the radio is restarted), or the radio's CI-V USB Baud Rate is "
-            "fixed at a speed this profile does not use. Restart the radio "
-            "and connect rigplane to it first, or set CI-V USB Baud Rate to "
-            "Auto or 115200 in its CI-V menu."
+            "fixed at a speed this profile does not use. If the port is "
+            "listed but the radio never answers — especially after it "
+            "worked before — suspect the USB cable: RF on the cable can "
+            "silence the radio's USB (a ferrite on the cable and routing it "
+            "away from the antenna feedline help), or restart the radio. "
+            "Restart the radio and connect rigplane to it first, or set "
+            "CI-V USB Baud Rate to Auto or 115200 in its CI-V menu."
         )
 
     def _serial_baud_found_notice(self, found: int) -> str:

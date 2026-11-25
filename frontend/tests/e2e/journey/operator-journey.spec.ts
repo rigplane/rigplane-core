@@ -3,7 +3,7 @@ import { expect, test, type Locator, type Page } from '@playwright/test';
 import { parseCurrentScopeFrame, parseScopeGranted, type ScopeFrame } from '../../../src/lib/runtime/scope-frame';
 import type { ScopeGranted, ScopeSubscription } from '../../../src/lib/runtime/scope-view';
 import { loadScopeWireGolden, scopeWire } from '../../../src/lib/runtime/__tests__/scope-wire-fixture';
-import { startJourneyServer, type JourneyServerHandle } from './server-process';
+import { journeyPort, startJourneyServer, type JourneyServerHandle } from './server-process';
 
 /**
  * Operator journey against the real WebServer with the in-memory IC-7610
@@ -260,7 +260,7 @@ test('operator journey: connect, tune, change mode, narrow the filter', async ({
 });
 
 // The second webServer entry in playwright.journey.config.ts, started with --read-only.
-const READ_ONLY_URL = 'http://127.0.0.1:18767';
+const READ_ONLY_URL = `http://127.0.0.1:${journeyPort(18767)}`;
 
 // Phone layout: its "Push to talk" button sends ptt_on although /api/v1/managed-transmit
 // reports unavailable on this fake; the desktop layout's PTT button is disabled in that state.
@@ -307,7 +307,7 @@ test.describe('read-only server, phone layout', () => {
 // The third fake is not a config webServer entry: the spec starts it (and its
 // replacement) itself via server-process.ts, so it can SIGKILL the process
 // group mid-session and restart on the same port.
-const RESTART_PORT = 18768;
+const RESTART_PORT = journeyPort(18768);
 const RESTART_URL = `http://127.0.0.1:${RESTART_PORT}`;
 const FREQ_A = 7_030_000;
 const FREQ_B = 14_100_000;
@@ -374,7 +374,7 @@ test.describe('server killed and restarted on the same port', () => {
 // choice. The DOM alone cannot prove the re-arm (data-live-link turns true at
 // socket open, before audio_start is sent or accepted), so the pins also read
 // the wire frames and the server's wsClients.audio count.
-const AUDIO_PORT = 18769;
+const AUDIO_PORT = journeyPort(18769);
 const AUDIO_URL = `http://127.0.0.1:${AUDIO_PORT}`;
 const AUDIO_FREQ = 7_030_000;
 
@@ -712,14 +712,14 @@ const panoramaTest = test.extend({
 });
 
 panoramaTest.describe('simulated mixed receiver panorama with real PCM', () => {
-  const url = 'http://127.0.0.1:18770';
+  const url = `http://127.0.0.1:${journeyPort(18770)}`;
   panoramaTest.use({
     baseURL: url,
   });
 
   panoramaTest('MOR-3513 mixed scope preserves MAIN while PCM and controls advance', async ({ page }, testInfo) => {
     test.setTimeout(90_000);
-    const server = await startJourneyServer(18770, 14_286_000, ['--panorama-audio']);
+    const server = await startJourneyServer(journeyPort(18770), 14_286_000, ['--panorama-audio']);
     try {
       await installWebSocketInterceptor(page);
       await installPanoramaWitness(page);

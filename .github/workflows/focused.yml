@@ -8,7 +8,7 @@ on:
         required: true
         type: string
       diagnostics:
-        description: Enable bounded Python 3.11.17 pytest worker diagnostics
+        description: Enable bounded Python 3.11.17 pytest worker diagnostics (the artifact is uploaded only when the run fails)
         required: false
         default: false
         type: boolean
@@ -129,7 +129,7 @@ jobs:
           --finalize-strict "${{ runner.temp }}/focused-worker-diagnostics"
 
       - name: Upload worker diagnostics
-        if: always() && inputs.diagnostics && steps.bound_diagnostics.outcome == 'success'
+        if: failure() && inputs.diagnostics && steps.bound_diagnostics.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
           name: focused-worker-diagnostics-${{ inputs.revision }}-${{ github.run_attempt }}
@@ -142,7 +142,11 @@ jobs:
             ${{ runner.temp }}/focused-worker-diagnostics/timeout-*.log
             ${{ runner.temp }}/focused-worker-diagnostics/bounds.json
           if-no-files-found: ignore
-          retention-days: 7
+          # MOR-4718 (owner rule: no big artifacts in GitHub): the bounded
+          # diagnostics are stored only when the job fails, for one day. The
+          # finalize step above still bounds the files on every diagnostics
+          # run; only the upload is conditional.
+          retention-days: 1
 
       - name: Upload focused result
         if: always()
