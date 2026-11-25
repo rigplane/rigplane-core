@@ -338,10 +338,15 @@ for (const [index, model] of ['IC-705', 'IC-7300'].entries()) {
       await settlePassband(page, port);
       await page.getByRole('radio', { name: 'FIX', exact: true }).first().click();
       await expect.poll(async () => (await scopeWriteReceipts(evidence)).filter(r => r.sub === 0x14).at(-1)?.data[1]).toBe(1);
-      await expect(page.locator('.waterfall-content .passband-overlay')).toBeVisible();
-      await expect.poll(() => frames.at(-1)?.view).toEqual([14_200_000, 14_300_000]);
+      // At the starting VFO, an old CENTER frame has these same edges.
+      const framesAtFixWrite = frames.length;
+      await expect.poll(() => frames.slice(framesAtFixWrite).at(-1)).toMatchObject({
+        view: [14_200_000, 14_300_000], pixels: true,
+      });
       await expect.poll(() => page.evaluate(() => window.passbandSamples.at(-1)), { timeout: 30_000 })
-        .toMatchObject({ overlay: true, gates: { proportional: true, tupleState: 'current' } });
+        .toMatchObject({ kind: 'frame', overlay: true, gates: {
+          proportional: true, tupleState: 'current', viewStartHz: 14_200_000, viewEndHz: 14_300_000,
+        } });
       const writesBefore = (await scopeWriteReceipts(evidence)).length;
       const commandsBefore = commands.length;
       const subscriptionsBefore = subscriptions.length;
@@ -354,8 +359,9 @@ for (const [index, model] of ['IC-705', 'IC-7300'].entries()) {
         await expect(surface.locator('.tune-line')).toBeVisible();
         await expect(surface.locator('.passband-overlay')).toBeVisible();
         const ticks = page.locator('.freq-axis .tick');
-        const start = Number(await ticks.first().textContent()) * 1e6;
-        const end = Number(await ticks.last().textContent()) * 1e6;
+        const [start, end] = await ticks.evaluateAll(elements => [
+          Number(elements[0]?.textContent) * 1e6, Number(elements.at(-1)?.textContent) * 1e6,
+        ]);
         expect(start).toBeGreaterThanOrEqual(14_200_000);
         expect(end).toBeLessThanOrEqual(14_300_000);
         expect(end - start).toBeLessThan(20_000);
@@ -379,16 +385,17 @@ for (const [index, model] of ['IC-705', 'IC-7300'].entries()) {
       await page.mouse.up();
       await expect.poll(() => commands.filter(name => name === 'set_freq').length).toBeGreaterThan(beforeDrag);
       await check();
-      await page.waitForTimeout(1000);
-      const toT = await page.evaluate(() => performance.now());
-      const samples = await page.evaluate(() => window.passbandSamples);
+      const framesAfterDrag = frames.length;
+      await expect.poll(() => frames.length - framesAfterDrag).toBeGreaterThan(10);
+      await expect.poll(() => page.evaluate(start => window.passbandSamples.filter(sample => sample.t >= start).length, fromT))
+        .toBeGreaterThan(20);
+      const { toT, samples } = await page.evaluate(() => ({ toT: performance.now(), samples: window.passbandSamples }));
       const gaps = passbandGaps(samples, fromT, toT);
-      await writeFile(info.outputPath('fix-follow-passband.json'), JSON.stringify({ model, gaps, samples }, null, 2));
-      expect(samples.filter(sample => sample.t >= fromT && sample.t <= toT).length).toBeGreaterThan(20);
+      await writeFile(info.outputPath('fix-follow-passband.json'), JSON.stringify({ model, fromT, toT, gaps, samples }, null, 2));
       for (const gap of gaps) expect(gap.frames, JSON.stringify(gap)).toBeLessThanOrEqual(1);
       for (const sample of samples.filter(sample => sample.t >= fromT && sample.t <= toT)) {
-        expect(sample.gates?.viewStartHz).toBeGreaterThanOrEqual(14_200_000);
-        expect(sample.gates?.viewEndHz).toBeLessThanOrEqual(14_300_000);
+        expect(sample.gates?.viewStartHz, JSON.stringify(sample)).toBeGreaterThanOrEqual(14_200_000);
+        expect(sample.gates?.viewEndHz, JSON.stringify(sample)).toBeLessThanOrEqual(14_300_000);
       }
       expect(commands.slice(commandsBefore).filter(name => name.startsWith('set_scope_'))).toEqual([]);
       expect((await scopeWriteReceipts(evidence)).length).toBe(writesBefore);
@@ -421,27 +428,36 @@ test('IC-7610: preset FIX zoom keeps the negotiated subscription and radio windo
     await page.getByTestId('scope-more').first().click();
     await page.getByTestId('scope-zoom-in').first().click();
     await expect.poll(() => frames.at(-1)?.view[1]! - frames.at(-1)?.view[0]!).toBe(50_000);
+    const requestsBeforePreset = subscriptions.length;
     await page.getByTestId('scope-zoom-band').first().click();
-    const preset = subscriptions.at(-1)!.view;
-    expect('startHz' in preset).toBe(true);
-    if (!('startHz' in preset)) throw new Error('Preset did not request absolute bounds');
+    const presetRequest = () => subscriptions.slice(requestsBeforePreset).find(request => 'startHz' in request.view);
+    await expect.poll(presetRequest).toBeDefined();
+    const preset = presetRequest()?.view;
+    if (!preset || !('startHz' in preset)) throw new Error('Preset did not request absolute bounds');
     await expect.poll(() => frames.at(-1)?.view).toEqual([preset.startHz, preset.endHz]);
     await expect(page.getByRole('radio', { name: 'FIX', exact: true }).first()).toBeChecked();
-    await expect(page.locator('.waterfall-content .passband-overlay')).toBeVisible({ timeout: 30_000 });
+    await expect.poll(() => page.evaluate(() => window.passbandSamples.at(-1)), { timeout: 30_000 })
+      .toMatchObject({ kind: 'frame', overlay: true, gates: {
+        tupleState: 'current', viewStartHz: preset.startHz, viewEndHz: preset.endHz,
+      } });
     const writesBefore = (await scopeWriteReceipts(evidence)).length;
     const requestsBefore = subscriptions.length;
     const fromT = await page.evaluate(() => performance.now());
     await page.getByTestId('scope-zoom-in').first().click();
-    await expect.poll(() => page.evaluate(() => window.passbandSamples.at(-1)?.gates)).toMatchObject({
-      viewStartHz: 14_162_500, viewEndHz: 14_337_500,
+    await expect.poll(() => page.evaluate(() => window.passbandSamples.at(-1))).toMatchObject({
+      kind: 'frame', gates: { viewStartHz: 14_162_500, viewEndHz: 14_337_500 },
     });
-    await page.waitForTimeout(1500);
+    const framesAfterCrop = frames.length;
+    await expect.poll(() => frames.length - framesAfterCrop).toBeGreaterThan(10);
+    const { toT, samples } = await page.evaluate(() => ({ toT: performance.now(), samples: window.passbandSamples }));
+    const gaps = passbandGaps(samples, fromT, toT);
+    await writeFile(info.outputPath('fix-preset-passband.json'), JSON.stringify({ fromT, toT, gaps, samples }, null, 2));
     expect(subscriptions.length).toBe(requestsBefore);
     expect((await scopeWriteReceipts(evidence)).length).toBe(writesBefore);
     await expect(page.getByRole('radio', { name: 'FIX', exact: true }).first()).toBeChecked();
     expect(frames.at(-1)?.view).toEqual([preset.startHz, preset.endHz]);
-    expect(passbandGaps(await page.evaluate(() => window.passbandSamples), fromT,
-      await page.evaluate(() => performance.now())).every(gap => gap.frames <= 1)).toBe(true);
+    for (const frame of frames.slice(framesAfterCrop)) expect(frame.view).toEqual([preset.startHz, preset.endHz]);
+    for (const gap of gaps) expect(gap.frames, JSON.stringify(gap)).toBeLessThanOrEqual(1);
     expectPanoramaSettled(watch);
   } finally { await server.kill(); }
 });
