@@ -128,7 +128,9 @@ _CMD_XIEGU_MODEL_ID = 0x1D  # Xiegu model ID (sub 0x19 carries the id bytes)
 _SUB_XIEGU_MODEL_ID = 0x19
 _SUB_TRANSCEIVER_ID = 0x00
 _CMD_SEL_FREQ_GET = 0x25  # read the selected VFO's frequency (data 00)
-_CMD_SEL_MODE_GET = 0x26  # read the selected VFO's mode, data mode and filter (data 00)
+_CMD_SEL_MODE = 0x26  # selected VFO mode, DATA and filter (selector 00)
+_CMD_CTL_MEM = 0x1A
+_SUB_DATA_MODE = 0x06
 _CMD_PTT = 0x1C  # transceiver status
 _SUB_PTT = 0x00
 _CMD_SCOPE = 0x27  # scope: 00 wave packet, 10 panel on/off, 11 wave output on/off
@@ -289,6 +291,10 @@ class CivSerialFake:
             and command_map is not None
             and command_map.has("get_main_sub_band")
         )
+        self._accepts_selected_mode = profile.set_mode_via_selected
+        self._data_mode_count = profile.data_mode_count
+        self._can_read_data_mode = profile.supports_command("get_data_mode")
+        self._can_write_data_mode = profile.supports_command("set_data_mode")
         if model_id is None:
             if not profile.expected_identity_ids:
                 raise ValueError(
@@ -315,6 +321,7 @@ class CivSerialFake:
             self.echo = True
         self._frequency_hz = frequency_hz
         self._mode = mode
+        self._data_mode = 0
         self._filter_width = filter_width
         self._ptt = False
         self._s_meter = s_meter
@@ -843,14 +850,40 @@ class CivSerialFake:
                 _CMD_SEL_FREQ_GET,
                 data=b"\x00" + bcd_encode(self._frequency_hz),
             )
-        if cmd == _CMD_SEL_MODE_GET and parsed.data == b"\x00":
-            # Data mode is not modelled: the recorded radio had it off (00).
+        if cmd == _CMD_SEL_MODE and parsed.data == b"\x00":
             return build_civ_frame(
                 CONTROLLER_ADDR,
                 self._civ_addr,
-                _CMD_SEL_MODE_GET,
-                data=bytes([0x00, self._mode, 0x00, self._filter_width]),
+                _CMD_SEL_MODE,
+                data=bytes([0x00, self._mode, self._data_mode, self._filter_width]),
             )
+        if cmd == _CMD_SEL_MODE and self._accepts_selected_mode:
+            if len(parsed.data) == 4 and parsed.data[0] == 0:
+                _, mode, data, filt = parsed.data
+                if data <= self._data_mode_count and filt in (1, 2, 3):
+                    self._mode, self._data_mode, self._filter_width = mode, data, filt
+                    return self._ack()
+        if cmd == _CMD_CTL_MEM and parsed.sub == _SUB_DATA_MODE:
+            if not parsed.data and self._can_read_data_mode:
+                return build_civ_frame(
+                    CONTROLLER_ADDR,
+                    self._civ_addr,
+                    cmd,
+                    sub=_SUB_DATA_MODE,
+                    data=bytes(
+                        [self._data_mode, self._filter_width if self._data_mode else 0]
+                    ),
+                )
+            if self._can_write_data_mode and len(parsed.data) in (1, 2):
+                data = parsed.data[0]
+                filt = parsed.data[1] if len(parsed.data) == 2 else None
+                if data <= self._data_mode_count and (
+                    filt is None or (filt in (1, 2, 3) if data else filt == 0)
+                ):
+                    self._data_mode = data
+                    if filt:
+                        self._filter_width = filt
+                    return self._ack()
         if cmd == _CMD_FREQ_SET:
             if len(parsed.data) == 5:
                 self._frequency_hz = bcd_decode(parsed.data)

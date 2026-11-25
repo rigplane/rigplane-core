@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from enum import IntEnum
 from typing import TYPE_CHECKING, Literal
 
-from ..core.types import Mode
+from ..core.hamlib_modes import HAMLIB_MODE_MASKS
 
 if TYPE_CHECKING:
     from ..profiles import RadioProfile
@@ -55,85 +55,81 @@ class HamlibError(IntEnum):
 # ---------------------------------------------------------------------------
 
 
-@dataclass(frozen=True, slots=True)
-class _ModeAlias:
-    civ: Mode
-    mask: int
-    yaesu: str | None = None
-    packet: bool = False
-    yaesu_data: str | None = None
-
-
-# Masks are RIG_MODE_* bits from Hamlib's rig.h.
-_MODE_ALIASES: dict[str, _ModeAlias] = {
-    "AM": _ModeAlias(Mode.AM, 0x001),
-    "CW": _ModeAlias(Mode.CW, 0x002, yaesu="CW-U"),
-    "USB": _ModeAlias(Mode.USB, 0x004),
-    "LSB": _ModeAlias(Mode.LSB, 0x008),
-    "RTTY": _ModeAlias(Mode.RTTY, 0x010, yaesu="RTTY-L"),
-    "FM": _ModeAlias(Mode.FM, 0x020),
-    "WFM": _ModeAlias(Mode.WFM, 0x040),
-    "CWR": _ModeAlias(Mode.CW_R, 0x080, yaesu="CW-L"),
-    "RTTYR": _ModeAlias(Mode.RTTY_R, 0x100, yaesu="RTTY-U"),
-    "PKTLSB": _ModeAlias(Mode.LSB, 0x400, packet=True, yaesu_data="DATA-L"),
-    "PKTUSB": _ModeAlias(Mode.USB, 0x800, packet=True, yaesu_data="DATA-U"),
-    # Legacy RigPlane spelling used by the relative-mode path. Hamlib has no bit.
-    "PKTRTTY": _ModeAlias(Mode.RTTY, 0, packet=True),
-}
-
-HAMLIB_MODE_MAP: dict[str, int] = {
-    name: alias.civ.value for name, alias in _MODE_ALIASES.items()
-}
+# The relative-VFO protocol still exchanges CI-V Mode values.
 CIV_TO_HAMLIB_MODE: dict[int, str] = {
-    alias.civ.value: name for name, alias in _MODE_ALIASES.items() if not alias.packet
+    0x00: "LSB",
+    0x01: "USB",
+    0x02: "AM",
+    0x03: "CW",
+    0x04: "RTTY",
+    0x05: "FM",
+    0x06: "WFM",
+    0x07: "CWR",
+    0x08: "RTTYR",
 }
-HAMLIB_PACKET_MODES: dict[str, str] = {
-    CIV_TO_HAMLIB_MODE[alias.civ.value]: name
-    for name, alias in _MODE_ALIASES.items()
-    if alias.packet
-}
-NATIVE_TO_HAMLIB_MODE: dict[str, str] = {
-    native: name
-    for name, alias in _MODE_ALIASES.items()
-    for native in (alias.yaesu, alias.yaesu_data)
-    if native is not None
-}
+HAMLIB_PACKET_MODES = {"USB": "PKTUSB", "LSB": "PKTLSB", "RTTY": "PKTRTTY"}
+HAMLIB_MODE_MAP = {name: code for code, name in CIV_TO_HAMLIB_MODE.items()}
+HAMLIB_MODE_MAP.update(
+    {packet: HAMLIB_MODE_MAP[plain] for plain, packet in HAMLIB_PACKET_MODES.items()}
+)
 
 
 @dataclass(frozen=True, slots=True)
 class RigctldMode:
     native: str
     mask: int
-    packet: bool
+    packet: bool = False
 
 
 def profile_mode_table(profile: RadioProfile | None) -> dict[str, RigctldMode]:
-    """Resolve Hamlib mode aliases against a profile's native modes."""
-    table: dict[str, RigctldMode] = {}
-    for name, alias in _MODE_ALIASES.items():
-        if profile is None:
-            native = CIV_TO_HAMLIB_MODE[alias.civ.value]
-        else:
-            if not alias.mask:
-                continue
-            native = alias.civ.name.replace("_", "-")
-            if profile.protocol_type == "yaesu_cat":
-                native = alias.yaesu or native
-                if alias.packet and alias.yaesu_data not in profile.modes:
-                    continue
-            elif alias.packet and (
-                not profile.data_mode_count
-                or not profile.supports_command("set_data_mode")
-                or not profile.supports_command("get_data_mode")
-                or (
-                    profile.data_mode_modes is not None
-                    and native not in profile.data_mode_modes
+    """Resolve the names that rigctld can advertise and set."""
+    if profile is None:
+        table = {
+            name: RigctldMode(name, HAMLIB_MODE_MASKS[name])
+            for name in CIV_TO_HAMLIB_MODE.values()
+        }
+        # Keep the legacy maskless PKTRTTY request for unprofiled radios.
+        table.update(
+            {
+                packet: RigctldMode(
+                    plain, HAMLIB_MODE_MASKS.get(packet, 0), packet=True
+                )
+                for plain, packet in HAMLIB_PACKET_MODES.items()
+            }
+        )
+        return table
+
+    table = {}
+    for native in profile.modes:
+        entry = profile.mode_entries.get(native)
+        name = (entry.hamlib if entry else None) or native
+        mask = HAMLIB_MODE_MASKS.get(name)
+        if mask is None:
+            continue
+        partner = entry.data_partner if entry else None
+        table[name] = RigctldMode(partner or native, mask, packet=partner is not None)
+
+    if (
+        profile.data_mode_count
+        and profile.supports_command("set_data_mode")
+        and profile.supports_command("get_data_mode")
+    ):
+        paired = {mode.native for mode in table.values() if mode.packet}
+        for plain, packet in HAMLIB_PACKET_MODES.items():
+            base = table.get(plain)
+            if (
+                base is not None
+                and base.native not in paired
+                and packet in HAMLIB_MODE_MASKS
+                and (
+                    profile.data_mode_modes is None
+                    or base.native in profile.data_mode_modes
                 )
             ):
-                continue
-            if native not in profile.modes:
-                continue
-        table[name] = RigctldMode(native, alias.mask, alias.packet)
+                table.setdefault(
+                    packet,
+                    RigctldMode(base.native, HAMLIB_MODE_MASKS[packet], packet=True),
+                )
     return table
 
 

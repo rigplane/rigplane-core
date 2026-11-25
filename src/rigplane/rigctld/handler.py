@@ -84,7 +84,6 @@ from .contract import (  # noqa: TID251
     COMMAND_TABLE,
     HAMLIB_MODE_MAP,
     HAMLIB_PACKET_MODES,
-    NATIVE_TO_HAMLIB_MODE,
     HamlibError,
     RigctldCommand,
     RigctldConfig,
@@ -99,7 +98,6 @@ if TYPE_CHECKING:
 
 from ..capabilities import CAP_METERS, CAP_RIT
 from .routing import (  # noqa: TID251
-    YaesuRouting,
     _format_normalized_or_raw_float,
     _format_raw_scaled_float,
     _format_strength,
@@ -296,22 +294,6 @@ def _passband_to_filter(passband_hz: int) -> int | None:
     return 3
 
 
-def _split_mode_values(
-    mode: object, filter_num: object, data_mode: object
-) -> tuple[str, str]:
-    """Format an unselected-VFO mode tuple as ``(mode, passband)`` lines.
-
-    Same display mapping as ``get_mode``: the DATA sub-mode (an int on
-    the way in, never narrowed to bool) selects the packet-mode label.
-    """
-    mode_str = _mode_to_hamlib_str(mode)
-    filt = None if filter_num is None else int(filter_num)
-    data = 0 if data_mode is None else int(data_mode)
-    if data:
-        mode_str = HAMLIB_PACKET_MODES.get(mode_str, mode_str)
-    return mode_str, str(_filter_to_passband(filt))
-
-
 # The supervisor took the request: a lease is ours (key), or a durable OFF is
 # owed and will be retried until the rig confirms it (unkey). Anything else and
 # nothing reached the wire.
@@ -452,8 +434,6 @@ def _mode_to_hamlib_str(mode: object) -> str:
         name = mode.upper()
         if name == UNKNOWN_STATUS:
             raise _RigctldCommandFailure(HamlibError.ENAVAIL)
-        if name in NATIVE_TO_HAMLIB_MODE:
-            return NATIVE_TO_HAMLIB_MODE[name]
         core_mode = Mode.__members__.get(name.replace("-", "_"))
         return (
             name if core_mode is None else CIV_TO_HAMLIB_MODE.get(core_mode.value, name)
@@ -707,7 +687,7 @@ class _RigctldCommandExecutor:
                 await self.handler._apply_packet_data_mode(
                     receiver=receiver, filter_width=filter_width
                 )
-            elif str(params.get("mode", "")).upper() in ("USB", "LSB"):
+            elif self.handler._profile_mode_name(mode) in ("USB", "LSB"):
                 await self.handler._apply_plain_ssb_data_off(receiver=receiver)
         elif intent.name == "set_ptt":
             # The owner identity rides on the intent, not on the handler's
@@ -954,8 +934,21 @@ class RigctldHandler:
         self._key_down_backstop_session: str | None = None
         self._routing = create_routing(radio, getattr(config, "max_power_w", 100.0))
         profile = getattr(radio, "profile", None)
-        self._mode_profiled = isinstance(profile, RadioProfile)
-        self._mode_table = profile_mode_table(profile if self._mode_profiled else None)
+        mode_profile = profile if isinstance(profile, RadioProfile) else None
+        self._mode_profiled = mode_profile is not None
+        self._mode_table = profile_mode_table(mode_profile)
+        self._native_mode_names = {
+            native: entry.hamlib
+            for native, entry in (
+                mode_profile.mode_entries.items() if mode_profile else ()
+            )
+            if entry.hamlib is not None
+        }
+        self._packet_mode_names = {
+            self._profile_mode_name(mode.native): name
+            for name, mode in self._mode_table.items()
+            if mode.packet
+        }
         # MOR-4157: the link-loss reason currently latched for the one-episode
         # transition log (None = link considered up; see _link_loss_refusal).
         self._link_loss_reason_logged: str | None = None
@@ -1861,12 +1854,18 @@ class RigctldHandler:
     # Mode commands
     # ------------------------------------------------------------------
 
+    def _profile_mode_name(self, mode: object) -> str:
+        native = mode.name if isinstance(mode, Mode) else mode
+        if isinstance(native, str):
+            alias = self._native_mode_names.get(native) or self._native_mode_names.get(
+                native.replace("_", "-")
+            )
+            if alias is not None:
+                return alias
+        return _mode_to_hamlib_str(mode)
+
     def _mode_response_name(self, mode: str, data_mode: int) -> str:
-        if data_mode:
-            packet = HAMLIB_PACKET_MODES.get(mode)
-            if packet is not None and packet in self._mode_table:
-                return packet
-        return mode
+        return self._packet_mode_names.get(mode, mode) if data_mode else mode
 
     async def _cmd_get_mode(self, cmd: RigctldCommand) -> RigctldResponse:
         try:
@@ -1890,7 +1889,7 @@ class RigctldHandler:
         projected_filter_num = projection.value(filter_num_path)
         projected_data_mode = projection.value(data_mode_path)
         mode_str = (
-            _mode_to_hamlib_str(projected_mode.value)
+            self._profile_mode_name(projected_mode.value)
             if projected_mode is not None
             else None
         )
@@ -1921,7 +1920,7 @@ class RigctldHandler:
                 sub = state.sub
                 if sub.freq <= 0:
                     return _err(HamlibError.ETIMEOUT)
-                mode_str = _mode_to_hamlib_str(sub.mode)
+                mode_str = self._profile_mode_name(sub.mode)
                 passband = _filter_to_passband(sub.filter)
                 data_mode = sub.data_mode
                 # get_mode is a READ: it must NOT mutate the canonical
@@ -1953,11 +1952,11 @@ class RigctldHandler:
         # the IF width to ~1. (MOR-895, pro#1200.)
         main_state = self._main_receiver_state()
         if main_state is not None:
-            mode_str = _mode_to_hamlib_str(main_state.mode)
+            mode_str = self._profile_mode_name(main_state.mode)
             passband = _filter_to_passband(main_state.filter)
             data_mode = main_state.data_mode
         else:
-            get_mode = get_mode_reader(self._radio, _mode_to_hamlib_str)
+            get_mode = get_mode_reader(self._radio, self._profile_mode_name)
             if get_mode is None:
                 return _err(HamlibError.ENIMPL)
             mode_str, filt = await get_mode()
@@ -2091,13 +2090,17 @@ class RigctldHandler:
             # with a short delay. We wait briefly to reduce client-side stalls.
             synced = False
             data_mode = self._packet_data_mode_value()
-            get_mode = get_mode_reader(self._radio, _mode_to_hamlib_str)
+            get_mode = get_mode_reader(self._radio, self._profile_mode_name)
             if get_mode is not None:
                 for _ in range(5):
                     try:
                         read_mode, _ = await get_mode()
                         read_data = await self._radio.get_data_mode()
-                        if read_mode in (base_mode_str, requested_mode) and read_data:
+                        if (
+                            read_mode
+                            in (self._profile_mode_name(base_mode_str), requested_mode)
+                            and read_data
+                        ):
                             # Read-back confirmed on the radio. Do NOT promote
                             # the rigctld filter NUMBER / data-mode bool into the
                             # canonical StateStore: ``filter_width`` there is Hz
@@ -3370,10 +3373,12 @@ class RigctldHandler:
             unselected = await read_relative_vfo(selected=False)
         except CommandError:
             return _err(HamlibError.ENAVAIL)
-        mode_str, passband = _split_mode_values(
-            unselected.mode, unselected.filter_num, unselected.data_mode
+        mode_str = self._profile_mode_name(unselected.mode)
+        if unselected.data_mode:
+            mode_str = HAMLIB_PACKET_MODES.get(mode_str, mode_str)
+        return RigctldResponse(
+            values=[mode_str, str(_filter_to_passband(unselected.filter_num))]
         )
-        return RigctldResponse(values=[mode_str, passband])
 
     async def _cmd_set_split_mode(self, cmd: RigctldCommand) -> RigctldResponse:
         if not cmd.args:
@@ -3568,18 +3573,23 @@ class RigctldHandler:
             if self._routing is not None
             else _IC7610_DUMP_STATE
         )
-        if self._mode_profiled and (
-            self._routing is None or isinstance(self._routing, YaesuRouting)
-        ):
+        if self._mode_profiled:
             mask = 0
             for mode in self._mode_table.values():
                 mask |= mode.mask
-            # The CI-V and Yaesu templates have one RX range, one TX range,
-            # one tuning step and three filter rows, each with a mode mask.
-            for row, column in ((3, 2), (5, 2), (7, 0), (9, 0), (10, 0), (11, 0)):
-                fields = values[row].split()
-                fields[column] = f"{mask:#x}"
-                values[row] = " ".join(fields)
+            # After the three header lines, the RX ranges, TX ranges, tuning
+            # steps and filters are each terminated by an all-zero row.
+            row = 3
+            for width, mode_column in ((7, 2), (7, 2), (2, 0), (2, 0)):
+                for index in range(row, len(values)):
+                    fields = values[index].split()
+                    if len(fields) != width:
+                        break
+                    if fields == ["0"] * width:
+                        row = index + 1
+                        break
+                    fields[mode_column] = f"{mask:#x}"
+                    values[index] = " ".join(fields)
         # Hamlib's protocol-0 default omits targetable_vfo, causing its split
         # API to fall back to ordinary F/M instead of our native I/X handlers.
         # Advertise only the server's frequency/mode routing bits. The native

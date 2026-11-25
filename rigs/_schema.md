@@ -491,6 +491,20 @@ Optional section for radios that support the spectrum scope.
 | `list` | string[] | yes      | Supported operating modes (e.g. `"USB"`, `"CW"`)  |
 | `codes` | string[] | no | One single-character code per mode, parallel to `list` (validated: same length, one character each, unique). Yaesu CAT `MD` P2 codes. |
 | `families` | table | no | Family name -> non-empty list of mode names from `list`, e.g. `families = { cw = ["CW-U", "CW-L"] }`. The only family name is `cw` (MOR-3679); the loader rejects any other name, a mode that is not in `list` (names compare exactly as written in `list`), and a mode listed twice. Published as `modeFamilies` by `/api/v1/info` and `/api/v1/capabilities`; `{}` when absent. |
+| `entries` | table | no | Optional attributes keyed by native name from `list`. `hamlib` overrides the rigctld name. `data_partner` names the plain native mode paired with a native DATA mode. Unknown attributes are ignored. |
+
+If `hamlib` is omitted, rigctld uses the native name as written when that name
+has a supported Hamlib mask bit. The loader rejects explicit Hamlib names
+without a supported mask bit and duplicate claims, including a claim on a
+name used by default. A DATA partner must be another mode in `list`, with at
+most one DATA entry per plain mode. For radios that use a separate DATA flag,
+`[data_mode]` continues to describe the overlay and its eligible modes.
+
+```toml
+[modes.entries]
+"CW-U" = { hamlib = "CW" }
+"DATA-U" = { hamlib = "PKTUSB", data_partner = "USB" }
+```
 
 ## `[filters]` — IF Filters
 
