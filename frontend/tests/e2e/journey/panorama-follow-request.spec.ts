@@ -2,7 +2,7 @@ import { createReadStream } from 'node:fs';
 import { rename, writeFile } from 'node:fs/promises';
 import { expect, test, type Page, type TestInfo } from '@playwright/test';
 import { parseCurrentScopeFrame } from '../../../src/lib/runtime/scope-frame';
-import { startJourneyServer, type JourneyServerHandle } from './server-process';
+import { journeyPort, startJourneyServer, type JourneyServerHandle } from './server-process';
 import { parseScopeWriteReceipt, type ScopeWriteReceipt } from './panorama-receipt';
 import { expectPanoramaSettled, watchPanoramaErrors } from './panorama-guards';
 
@@ -31,7 +31,10 @@ interface Harness {
   choices: number[];
 }
 
-async function boot(page: Page, info: TestInfo, port: number): Promise<Harness> {
+async function boot(page: Page, info: TestInfo, basePort: number): Promise<Harness> {
+  // The per-leg JOURNEY_PORT_OFFSET (MOR-4685) applies here once: both the
+  // server spawn and the URLs below must use the same shifted port.
+  const port = journeyPort(basePort);
   const evidence = info.outputPath('radio.jsonl');
   const server = await startJourneyServer(port, 14_250_000,
     ['--model', 'IC-705', '--evidence', evidence], 'tests/e2e/panorama_web_server.py');

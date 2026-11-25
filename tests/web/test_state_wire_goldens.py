@@ -340,3 +340,59 @@ def test_polled_squelch_leaf_stream_rebuilds_what_the_top_level_delta_rebuilds(
     assert apply_delta(baseline["data"], leaf) == apply_delta(
         baseline["data"], top_level
     )
+
+
+# ── MOR-4711: the slotted A/B capture scenario ─────────────────────────────
+# The frontend companion
+# `frontend/src/semantic/__tests__/VfoSurface.slotted-band-wire.isolated.test.ts`
+# replays this envelope through the real ws-client/store/adapter into the
+# panel tray: each panel's band badge must name its OWN slot's band, and the
+# inactive panel must not borrow the active slot's filter width.
+
+
+def test_slotted_ab_bands_case_exists_only_for_ic705() -> None:
+    with_case = {
+        model for model, entry in _GOLDENS.items() if "slottedAbBands" in entry
+    }
+    assert with_case == {"IC-705"}
+    assert "slottedAbBandsCapabilities" in _GOLDENS["IC-705"]
+
+
+def test_slotted_ab_bands_envelope_matches_wire_schema() -> None:
+    validated = StateUpdateEnvelope.model_validate(_GOLDENS["IC-705"]["slottedAbBands"])
+    assert validated.type == "full"
+
+
+def test_slotted_ab_bands_envelope_and_capabilities_share_one_epoch() -> None:
+    entry = _GOLDENS["IC-705"]
+    envelope = entry["slottedAbBands"]
+    capabilities = entry["slottedAbBandsCapabilities"]
+    assert envelope["stateContractVersion"] == envelope["data"]["stateContractVersion"]
+    assert envelope["providerGeneration"] == envelope["data"]["providerGeneration"]
+    assert envelope["providerGeneration"] == capabilities["providerGeneration"]
+    assert capabilities["model"] == "IC-705"
+
+
+def test_slotted_ab_bands_observes_the_capture_scenario() -> None:
+    """Two slots on different bands, active A, an observed receiver width."""
+    entry = _GOLDENS["IC-705"]
+    data = entry["slottedAbBands"]["data"]
+    main = data["main"]
+    field_status = data["fieldStatus"]
+    assert main["activeSlot"] == "A"
+    assert main["vfoA"]["freqHz"] == 7_074_000
+    assert main["vfoB"]["freqHz"] == 14_219_000
+    assert main["freqHz"] == 7_074_000
+    assert main["filterWidth"] == 3000
+    for path in (
+        "main.activeSlot",
+        "main.vfoA.freqHz",
+        "main.vfoB.freqHz",
+        "main.filterWidth",
+    ):
+        assert field_status[path]["observed"] is True
+        assert field_status[path]["availability"] == "available"
+    # The radio-backed capabilities publish the width tag the no-radio body
+    # lacks — the BW tray tab's structural gate.
+    assert "filter_width" in entry["slottedAbBandsCapabilities"]["capabilities"]
+    assert "filter_width" not in entry["capabilities"]["capabilities"]

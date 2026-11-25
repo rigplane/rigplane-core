@@ -132,7 +132,9 @@ class _TeardownPC:
 
 
 @pytest.mark.asyncio
-async def test_close_all_reports_only_completed_teardowns() -> None:
+async def test_close_all_reports_only_completed_teardowns(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     """A failing teardown is still attempted, then left out of the result.
 
     The close result names the peers actually torn down: one failing
@@ -148,8 +150,35 @@ async def test_close_all_reports_only_completed_teardowns() -> None:
         _TeardownPC(attempts, "clean", fails=False)  # type: ignore[arg-type]
     )
 
-    closed = await manager.close_all()
+    with caplog.at_level("INFO", logger="rigplane.web.transport.webrtc_session"):
+        closed = await manager.close_all()
 
     assert attempts == ["broken", "clean"]
     assert closed == ["clean"]
     assert manager.active_session_ids == []
+    assert caplog.messages == [
+        "WebRTC session broken closing on answerer: close_all",
+        "WebRTC session clean closing on answerer: close_all",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_close_session_records_the_request_before_teardown(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    attempts: list[str] = []
+    manager = WebRtcSessionManager(None, None, "IC-7610")
+    manager._sessions["broken"] = _Session(  # noqa: SLF001
+        _TeardownPC(attempts, "broken", fails=True)  # type: ignore[arg-type]
+    )
+
+    with caplog.at_level("INFO", logger="rigplane.web.transport.webrtc_session"):
+        with pytest.raises(RuntimeError, match="teardown failed"):
+            await manager.close_session("broken")
+        with pytest.raises(RuntimeError, match="Unknown session"):
+            await manager.close_session("broken")
+
+    assert attempts == ["broken"]
+    assert caplog.messages == [
+        "WebRTC session broken closing on answerer: close_requested"
+    ]

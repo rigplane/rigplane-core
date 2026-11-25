@@ -531,12 +531,27 @@ new AsyncFunction('github', 'context', 'core', script)(github, context, core)
             "quick-python": worker_runs_on,
             "quick-python-tests": worker_runs_on,
         }
+        # quick-frontend-e2e carries the journey legs, so it alone runs with
+        # a 40-minute timeout, pinned together with the workflow's exact
+        # stopgap comment: lower back to 25 when the journey shards
+        # (#4768, #4773) are merged (MOR-4685).
+        e2e_stopgap_timeout = (
+            "    # stopgap (MOR-4685): lower back to 25 when the journey "
+            "shards (#4768, #4773) are merged\n"
+            "    timeout-minutes: 40\n"
+        )
+        half_timeout = {
+            "quick-frontend": "    timeout-minutes: 25\n",
+            "quick-frontend-e2e": e2e_stopgap_timeout,
+            "quick-python": "    timeout-minutes: 25\n",
+            "quick-python-tests": "    timeout-minutes: 25\n",
+        }
         for half in pools:
             with self.subTest(job=half):
                 block = jobs[half]
                 self.assertIn("    needs: classify\n", block)
                 self.assertIn(pools[half], block)
-                self.assertIn("    timeout-minutes: 25\n", block)
+                self.assertIn(half_timeout[half], block)
                 self.assertIn("needs.classify.outputs.docs != 'true'", block)
                 self.assertIn("needs.classify.outputs.reuse != 'true'", block)
         self.assertIn("npm ci", jobs["quick-frontend"])
@@ -610,6 +625,26 @@ new AsyncFunction('github', 'context', 'core', script)(github, context, core)
             [value.strip() for value in group_matrix.group(1).split(",")],
             legs.group(1).split(),
         )
+        # MOR-4685: the journey leg is itself QUICK_JOURNEY_SHARDS
+        # `playwright --shard=i/n` legs, so the single leg the old pin
+        # allowed splits into journey-N entries and nothing else changes.
+        journey_shards = re.search(r'^  QUICK_JOURNEY_SHARDS: "(\d+)"$', quick, re.M)
+        self.assertIsNotNone(
+            journey_shards, "quick.yml must define QUICK_JOURNEY_SHARDS"
+        )
+        assert journey_shards is not None
+        groups = [value.strip() for value in group_matrix.group(1).split(",")]
+        self.assertEqual(
+            [group for group in groups if group.startswith("journey-")],
+            [
+                f"journey-{index}"
+                for index in range(1, int(journey_shards.group(1)) + 1)
+            ],
+        )
+        self.assertEqual(
+            [group for group in groups if not group.startswith("journey-")],
+            [word for word in legs.group(1).split() if not word.startswith("journey-")],
+        )
         for job in ("quick-python-tests", "quick-frontend-e2e"):
             with self.subTest(job=job):
                 self.assertIn("      fail-fast: false\n", jobs[job])
@@ -623,6 +658,15 @@ new AsyncFunction('github', 'context', 'core', script)(github, context, core)
         )
         self.assertIn("SHARD: ${{ matrix.shard }}", tests_job)
         self.assertIn("worker-diagnostics-quick-${{ matrix.shard }}", tests_job)
+        # MOR-4685: the journey legs shard Playwright the same way — the
+        # shard index is stripped from the leg name and every leg shifts all
+        # journey server ports by (shard - 1) * 4000 so legs sharing one CI
+        # host cannot collide (the port range is 18766..22346, below the
+        # stride).
+        e2e_job = jobs["quick-frontend-e2e"]
+        self.assertIn('--shard "$shard/$QUICK_JOURNEY_SHARDS"', e2e_job)
+        self.assertIn('shard="${shard#journey-}"', e2e_job)
+        self.assertIn("export JOURNEY_PORT_OFFSET=$(( (shard - 1) * 4000 ))", e2e_job)
         # upload-artifact v7 rejects duplicate names, so every upload in the
         # sharded jobs carries its leg suffix.
         for job in ("quick-python-tests", "quick-frontend-e2e"):
@@ -637,6 +681,41 @@ new AsyncFunction('github', 'context', 'core', script)(github, context, core)
         self.assertIn("PYTHONPATH: ${{ github.workspace }}/.github/scripts", tests_job)
         self.assertIn("--maxprocesses 4", tests_job)
 
+    def test_big_artifacts_are_stored_for_a_failed_leg_for_one_day(self) -> None:
+        # MOR-4718 (owner rule: do not store big artifacts in GitHub): the
+        # live copies of these two uploads summed to 499 MB (worker
+        # diagnostics) and 204 MB (journey reports) on 2026-11-24. Each
+        # stores its files for a failed leg only and for one day; the whole
+        # `if` line is pinned, so `always()` cannot return through an `||`.
+        # The finalize step that produces the diagnostics still runs on every
+        # core run.
+        quick = QUICK_YML.read_text(encoding="utf-8")
+        body = quick.split("\njobs:\n", 1)[1]
+        jobs = dict(re.findall(r"(?ms)^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)", body))
+        pinned = {
+            "quick-python-tests": (
+                "worker-diagnostics-quick-${{ matrix.shard }}",
+                "failure() && needs.classify.outputs.core == 'true'",
+            ),
+            "quick-frontend-e2e": (
+                "journey-e2e-report-${{ matrix.group }}",
+                "failure() && startsWith(matrix.group, 'journey')",
+            ),
+        }
+        for job, (artifact, condition) in pinned.items():
+            with self.subTest(job=job):
+                steps = jobs[job].split("\n      - name: ")[1:]
+                step = next(s for s in steps if f"name: {artifact}\n" in s)
+                self.assertIn(f"        if: {condition}\n", step)
+                self.assertIn("          retention-days: 1\n", step)
+                self.assertNotIn("always()", step)
+        finalize = (
+            jobs["quick-python-tests"]
+            .split("- name: Bound worker diagnostics", 1)[1]
+            .split("- name:", 1)[0]
+        )
+        self.assertIn("if: always() && needs.classify.outputs.core == 'true'", finalize)
+
     def test_workflows_pin_docs_skip_ready_guard_and_visual_exclusions(self) -> None:
         quick = QUICK_YML.read_text(encoding="utf-8")
         visual = VISUAL_YML.read_text(encoding="utf-8")
@@ -650,7 +729,11 @@ new AsyncFunction('github', 'context', 'core', script)(github, context, core)
         self.assertIn("needs.classify.outputs.ci == 'true'", quick)
         self.assertIn("needs.classify.outputs.core == 'true'", quick)
         self.assertIn("needs.classify.outputs.frontend == 'true'", quick)
-        self.assertNotIn("timeout-minutes: 40", quick)
+        # Exactly one 40-minute timeout may remain: the journey legs'
+        # quick-frontend-e2e half, as a stopgap (MOR-4685) — lower back to
+        # 25 when the journey shards (#4768, #4773) are merged. No other
+        # quick job may carry 40.
+        self.assertEqual(quick.count("timeout-minutes: 40"), 1)
         self.assertIn('      - "frontend/**"', visual)
         self.assertIn('      - "!frontend/**/*.md"', visual)
         self.assertIn('      - "!frontend/**/*.rst"', visual)

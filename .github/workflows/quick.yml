@@ -80,7 +80,14 @@ env:
   # tie each list to its constant, and the quick-v2 observer pins the leg
   # names they produce.
   QUICK_PYTHON_SHARDS: "4"
-  QUICK_FRONTEND_E2E_LEGS: "visual guards journey"
+  QUICK_FRONTEND_E2E_LEGS: "visual guards journey-1 journey-2 journey-3"
+  # MOR-4685: the journey leg is itself sharded `playwright --shard=i/n`
+  # (the timeout evidence: Core #4765 run 45210645465 cut the leg at 53 of 77
+  # tests after 22m32s). Every journey-N leg shifts all journey server ports
+  # by (N - 1) * 4000 via JOURNEY_PORT_OFFSET so shard legs sharing one CI
+  # host (MOR-2830) cannot collide; the stride exceeds the whole journey
+  # port range (18766..22346).
+  QUICK_JOURNEY_SHARDS: "3"
 
 jobs:
   classify:
@@ -282,7 +289,9 @@ jobs:
   # to ONE entry named `quick-frontend-e2e` (verified for Pro's skipped
   # pytest matrix); the quick-v2 observer accepts both shapes. The leg ports
   # are pairwise distinct so parallel legs on one CI host (MOR-2830) cannot
-  # collide: visual 4173/5199, guards 5599/5601/18765, journey 18766/18767.
+  # collide: visual 4173/5199, guards 5599/5601/18765, journey (MOR-4685)
+  # every port shifted by (shard - 1) * 4000 from the 18766..22346 base
+  # range (webServers 18766/18767 and the per-spec fakes alike).
   quick-frontend-e2e:
     needs: classify
     # Draft pushes are development checkpoints, not immutable review heads.
@@ -316,13 +325,15 @@ jobs:
     # [self-hosted, Linux, ARM64, build] (arm64 pixel baselines), guards/journey
     # [self-hosted, Linux, build].
     runs-on: ${{ github.event_name == 'merge_group' && (matrix.group == 'visual' && fromJSON('["self-hosted", "Linux", "ARM64", "queue-arm64"]') || fromJSON('["self-hosted", "Linux", "queue"]')) || (matrix.group == 'visual' && fromJSON('["self-hosted", "Linux", "ARM64", "build"]') || fromJSON('["self-hosted", "Linux", "build"]')) }}
-    timeout-minutes: 25
+    # stopgap (MOR-4685): lower back to 25 when the journey shards (#4768, #4773) are merged
+    timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
         # Pinned equal to env.QUICK_FRONTEND_E2E_LEGS by
-        # quick-path-filters.test.py.
-        group: [visual, guards, journey]
+        # quick-path-filters.test.py; the journey-N suffixes are pinned to
+        # env.QUICK_JOURNEY_SHARDS by the same test.
+        group: [visual, guards, journey-1, journey-2, journey-3]
     # MOR-3778: presetting the variables Chromium's browser process adds at
     # startup removed a headless_shell SIGSEGV in getenv in a minimal-environment
     # loop test. Nothing in this repo reads them.
@@ -340,7 +351,7 @@ jobs:
           fetch-depth: 2
 
       - name: Install uv
-        if: matrix.group == 'guards' || matrix.group == 'journey'
+        if: matrix.group == 'guards' || startsWith(matrix.group, 'journey')
         uses: astral-sh/setup-uv@v8.1.0
         with:
           enable-cache: true
@@ -349,11 +360,11 @@ jobs:
             uv.lock
 
       - name: Set up Python 3.11
-        if: matrix.group == 'guards' || matrix.group == 'journey'
+        if: matrix.group == 'guards' || startsWith(matrix.group, 'journey')
         run: uv python install 3.11
 
       - name: Install dependencies
-        if: matrix.group == 'guards' || matrix.group == 'journey'
+        if: matrix.group == 'guards' || startsWith(matrix.group, 'journey')
         # --all-extras, same rationale as quick-python-tests: the fake web
         # servers import the full rigplane package set.
         run: uv sync --all-extras
@@ -463,18 +474,29 @@ jobs:
 
       # Operator journey against tests/e2e/journey_web_server.py, which the
       # Playwright config starts through `uv run`. Serves the frontend/dist
-      # built above. Blocking. One leg, not --shard: the journey config is
-      # deliberately serial (workers: 1, fullyParallel: false) over two
-      # stateful servers on hardcoded ports (18766/18767), so two shard legs
-      # on one CI host would fight over the ports and the shared state.
+      # built above. Blocking. MOR-4685: sharded `--shard=i/n` over the
+      # QUICK_JOURNEY_SHARDS journey legs (the single leg outgrew the
+      # 25-minute job timeout: Core #4765 run 45210645465 cut it at 53 of 77
+      # tests after 22m32s). The config itself stays serial (workers: 1,
+      # fullyParallel: false) because the scenarios are stateful; only the
+      # test list is partitioned. Shard legs can share one CI host
+      # (MOR-2830), so every leg shifts ALL journey server ports (the two
+      # config webServers and the per-spec fakes) by (shard - 1) * 4000 via
+      # JOURNEY_PORT_OFFSET — the stride exceeds the whole journey port
+      # range 18766..22346, so shard ranges stay disjoint and the serial
+      # config's port discipline survives parallel legs.
       - name: Frontend operator-journey fake-server E2E
-        if: matrix.group == 'journey'
+        if: startsWith(matrix.group, 'journey')
         working-directory: frontend
         continue-on-error: false
-        run: npx playwright test -c ./playwright.journey.config.ts
+        run: |
+          shard="${{ matrix.group }}"
+          shard="${shard#journey-}"
+          export JOURNEY_PORT_OFFSET=$(( (shard - 1) * 4000 ))
+          npx playwright test -c ./playwright.journey.config.ts --shard "$shard/$QUICK_JOURNEY_SHARDS"
 
       - name: Upload operator-journey E2E report on failure
-        if: failure() && matrix.group == 'journey'
+        if: failure() && startsWith(matrix.group, 'journey')
         continue-on-error: true
         uses: actions/upload-artifact@v7
         with:
@@ -484,7 +506,11 @@ jobs:
           # dot-directory was never uploaded ("No files were found", run 44754002530).
           include-hidden-files: true
           if-no-files-found: ignore
-          retention-days: 3
+          # MOR-4718 (owner rule: do not store big artifacts in GitHub): 24
+          # live copies of this report summed to 204 MB on 2026-11-24, so a
+          # failed leg keeps it for one day. The upload was already
+          # failure-only.
+          retention-days: 1
 
   quick-python:
     needs: classify
@@ -766,7 +792,7 @@ jobs:
         run: uv run --no-sync python .github/scripts/pytest_worker_diagnostics.py --finalize "${{ runner.temp }}/pytest-worker-diagnostics" || true
 
       - name: Upload worker diagnostics
-        if: always() && needs.classify.outputs.core == 'true'
+        if: failure() && needs.classify.outputs.core == 'true'
         continue-on-error: true
         uses: actions/upload-artifact@v7
         with:
@@ -780,7 +806,12 @@ jobs:
             ${{ runner.temp }}/pytest-worker-diagnostics/timeout-*.log
             ${{ runner.temp }}/pytest-worker-diagnostics/bounds.json
           if-no-files-found: ignore
-          retention-days: 7
+          # MOR-4718 (owner rule: do not store big artifacts in GitHub): 1492
+          # live copies of this artifact summed to 499 MB on 2026-11-24, so
+          # a shard's diagnostics are stored only when the job fails, for
+          # one day. The finalize step above still bounds the files on every
+          # core run; only the upload is conditional.
+          retention-days: 1
 
   quick:
     # The required `quick` context. It runs no checks itself: it fails unless
@@ -820,6 +851,7 @@ jobs:
           echo "Frontend checks selected: ${{ needs.classify.outputs.frontend }}"
           echo "Frontend e2e legs: $QUICK_FRONTEND_E2E_LEGS"
           echo "Python shards: $QUICK_PYTHON_SHARDS"
+          echo "Journey shards: $QUICK_JOURNEY_SHARDS"
           echo "CI contract checks selected: ${{ needs.classify.outputs.ci }}"
           echo "Web Python subset selected: ${{ needs.classify.outputs.web }}"
           echo "Docs-only quick skipped: ${{ needs.classify.outputs.docs }}"
