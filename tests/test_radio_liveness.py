@@ -28,6 +28,7 @@ from rigplane.backends.yaesu_cat import (
     CatTimeoutError,
     YaesuCatRadio,
     YaesuCatTransport,
+    radio as yaesu_cat_radio,
 )
 from rigplane.backends.yaesu_cat.transport import CatCommandRejected
 from rigplane.backends.yaesu_cat.poller import YaesuCatPoller
@@ -35,7 +36,9 @@ from rigplane.commands import CONTROLLER_ADDR, build_civ_frame, parse_civ_frame
 from rigplane.core.state_store import StateStore
 from rigplane.radio import IcomRadio
 from rigplane.exceptions import CommandError
+from rigplane.runtime import _civ_rx
 from rigplane.runtime._civ_rx import CIV_HEADER_SIZE
+from rigplane.testing.timing import VirtualClock
 from rigplane.types import bcd_encode
 from rigplane.web.runtime_helpers import (
     build_public_state_payload_from_snapshot,
@@ -217,21 +220,21 @@ async def test_civ_invalid_payload_preserves_stamp(
     assert civ_radio.last_valid_frame_monotonic == 1.0
 
 
-async def test_civ_unassigned_mode_is_liveness_evidence(civ_radio: IcomRadio) -> None:
+async def test_civ_unassigned_mode_is_liveness_evidence(
+    civ_radio: IcomRadio, monkeypatch: pytest.MonkeyPatch
+) -> None:
     # A complete mode reply proves the radio answered even if the value is unassigned.
     civ_radio.last_valid_frame_monotonic = 1.0
     frame = parse_civ_frame(
         build_civ_frame(CONTROLLER_ADDR, IC_7610_ADDR, 0x04, data=b"\xff")
     )
-    before = time.monotonic()
+    clock = VirtualClock(start=2.0)
+    clock.scope_to(monkeypatch, _civ_rx)
     await civ_radio._civ_runtime._route_civ_frame(  # noqa: SLF001
         frame,
         generation=civ_radio._civ_epoch,  # noqa: SLF001
     )
-    stamp = civ_radio.last_valid_frame_monotonic
-    assert stamp is not None
-    assert before <= stamp <= time.monotonic()
-    assert stamp > 1.0
+    assert civ_radio.last_valid_frame_monotonic == clock.now
 
 
 @pytest.mark.parametrize(
@@ -359,7 +362,7 @@ async def test_cat_invalid_payload_preserves_stamp(
 
 
 async def test_cat_unassigned_mode_is_liveness_evidence(
-    cat_transport: YaesuCatTransport,
+    cat_transport: YaesuCatTransport, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # A complete mode reply proves the radio answered even if the value is unassigned.
     cat_transport._reader = FakeStreamReader([b"MD0Z;"])  # type: ignore[assignment]  # noqa: SLF001
@@ -367,12 +370,10 @@ async def test_cat_unassigned_mode_is_liveness_evidence(
     cat_transport.last_valid_frame_monotonic = 1.0
     radio = YaesuCatRadio("/dev/test")
     radio._transport = cat_transport  # noqa: SLF001
-    before = time.monotonic()
+    clock = VirtualClock(start=2.0)
+    clock.scope_to(monkeypatch, yaesu_cat_radio)
     assert await radio.get_mode() == ("UNKNOWN", None)
-    stamp = cat_transport.last_valid_frame_monotonic
-    assert stamp is not None
-    assert before <= stamp <= time.monotonic()
-    assert stamp > 1.0
+    assert cat_transport.last_valid_frame_monotonic == clock.now
 
 
 async def test_cat_raw_prefix_match_does_not_stamp(
