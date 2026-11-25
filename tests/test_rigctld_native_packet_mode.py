@@ -3,12 +3,9 @@
 import pytest
 
 from rigplane.core.state_store import StateStore
+from rigplane.profiles import get_radio_profile
 from rigplane.rigctld.contract import RigctldConfig
-from rigplane.rigctld.handler import (
-    RigctldHandler,
-    _mode_to_hamlib_str,
-    _split_mode_values,
-)
+from rigplane.rigctld.handler import RigctldHandler
 from test_rigctld_handler import _apply_store_value, get_cmd, make_mock_radio
 
 
@@ -16,6 +13,7 @@ from test_rigctld_handler import _apply_store_value, get_cmd, make_mock_radio
 @pytest.mark.parametrize("native,packet", [("DATA-U", "PKTUSB"), ("DATA-L", "PKTLSB")])
 async def test_native_packet_name_projection_preserves_canonical_truth(native, packet):
     radio = make_mock_radio()
+    radio.profile = get_radio_profile("FTX-1")
     store = StateStore()
     radio.state_store = store
     handler = RigctldHandler(radio, RigctldConfig())
@@ -27,8 +25,6 @@ async def test_native_packet_name_projection_preserves_canonical_truth(native, p
     assert response.values == [packet, "2400"]
     assert store.snapshot().fields == before.fields
     assert store.snapshot().observation_seq == before.observation_seq
-    assert _mode_to_hamlib_str(native) == packet
-    assert _split_mode_values(native, 2, 0) == (packet, "2400")
 
 
 @pytest.mark.asyncio

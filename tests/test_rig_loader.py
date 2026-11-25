@@ -258,6 +258,39 @@ class TestLoadRig:
         rig = load_rig(p)
         assert rig.mode_codes is None
 
+    def test_mode_entries_reach_the_runtime_profile(self, tmp_path):
+        path = _write_toml(
+            tmp_path,
+            _MINIMAL_TOML.replace(
+                'list = ["USB", "LSB", "CW"]',
+                'list = ["USB", "LSB", "CW", "DATA-U"]\n'
+                'entries = { "DATA-U" = { hamlib = "PKTUSB", data_partner = "USB", '
+                "future_attribute = true } }",
+            ),
+        )
+        rig = load_rig(path)
+        entry = rig.to_profile().mode_entries["DATA-U"]
+        assert (entry.hamlib, entry.data_partner) == ("PKTUSB", "USB")
+
+    @pytest.mark.parametrize(
+        ("entry", "error"),
+        [
+            ('hamlib = "CW"', "CW.*claimed by both.*USB.*CW"),
+            ('hamlib = "PKTRTTY"', "PKTRTTY.*mask bit"),
+            ('data_partner = "missing"', "data_partner.*missing.*modes"),
+        ],
+    )
+    def test_invalid_mode_entries_fail_profile_load(self, tmp_path, entry, error):
+        path = _write_toml(
+            tmp_path,
+            _MINIMAL_TOML.replace(
+                'list = ["USB", "LSB", "CW"]',
+                f'list = ["USB", "LSB", "CW"]\nentries = {{ USB = {{ {entry} }} }}',
+            ),
+        )
+        with pytest.raises(RigLoadError, match=error):
+            load_rig(path)
+
     def test_modes_codes_length_mismatch_rejected(self, tmp_path):
         p = _write_toml(
             tmp_path,
