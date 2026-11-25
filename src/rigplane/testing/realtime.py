@@ -186,7 +186,9 @@ def _loop_read(
     receiver = func.value
     if isinstance(receiver, ast.Call):
         name = dotted(receiver.func, imports)
-        return name == "asyncio.new_event_loop" or (not virtual and name in _CURRENT_LOOP)
+        return name == "asyncio.new_event_loop" or (
+            not virtual and name in _CURRENT_LOOP
+        )
     if virtual and isinstance(receiver, ast.Name) and receiver.id in loop_aliases:
         return False
     name = ast.unparse(receiver).rsplit(".", 1)[-1]
