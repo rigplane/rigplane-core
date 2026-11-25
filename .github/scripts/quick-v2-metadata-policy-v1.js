@@ -214,7 +214,7 @@ const frontendWorkerPool = (job) => hasLabels(job, BUILD_POOL_LABELS) && !(Array
 // an ARM64 request on a python worker is not.
 const pythonWorkerPool = (job) => hasLabels(job, BUILD_POOL_LABELS) && !(Array.isArray(job?.labels) && job.labels.includes('ARM64'));
 // The visual leg keeps the ARM64 pin (arm64 pixel baselines) on the
-// queue-arm64 lane, so its request must carry exactly that lane's labels.
+// queue-arm64 lane, so its request must include that lane's labels.
 const visualLegPool = (job) => hasLabels(job, ARM64_VISUAL_LABELS);
 function ranOnRunner(job) { return job !== undefined && job.conclusion !== 'skipped' && typeof job.runner_name === 'string' && job.runner_name.length > 0; }
 function tierShape(jobs, legs, bareName) {
