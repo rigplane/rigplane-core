@@ -1,5 +1,5 @@
 import { writeFile } from 'node:fs/promises';
-import { installSampler, settlePassband, passbandGaps, watchScopeFrames } from './panorama-passband-probe';
+import { installSampler, settlePassband, passbandGaps, expectPassbandProbeReady, watchScopeFrames } from './panorama-passband-probe';
 import { createReadStream } from 'node:fs';
 import { expect, test } from '@playwright/test';
 import type { WsCommand } from '../../../src/lib/types/protocol';
@@ -340,8 +340,7 @@ for (const [index, model] of ['IC-705', 'IC-7300'].entries()) {
       await expect.poll(async () => (await scopeWriteReceipts(evidence)).filter(r => r.sub === 0x14).at(-1)?.data[1]).toBe(1);
       await expect(page.locator('.waterfall-content .passband-overlay')).toBeVisible();
       await expect.poll(() => frames.at(-1)?.view).toEqual([14_200_000, 14_300_000]);
-      await expect.poll(() => page.evaluate(() => window.passbandSamples.at(-1)), { timeout: 30_000 })
-        .toMatchObject({ overlay: true, gates: { proportional: true, tupleState: 'current' } });
+      await expectPassbandProbeReady(page, 1);
       const writesBefore = (await scopeWriteReceipts(evidence)).length;
       const commandsBefore = commands.length;
       const subscriptionsBefore = subscriptions.length;
@@ -427,7 +426,7 @@ test('IC-7610: preset FIX zoom keeps the negotiated subscription and radio windo
     if (!('startHz' in preset)) throw new Error('Preset did not request absolute bounds');
     await expect.poll(() => frames.at(-1)?.view).toEqual([preset.startHz, preset.endHz]);
     await expect(page.getByRole('radio', { name: 'FIX', exact: true }).first()).toBeChecked();
-    await expect(page.locator('.waterfall-content .passband-overlay')).toBeVisible({ timeout: 30_000 });
+    await expectPassbandProbeReady(page, 1);
     const writesBefore = (await scopeWriteReceipts(evidence)).length;
     const requestsBefore = subscriptions.length;
     const fromT = await page.evaluate(() => performance.now());
