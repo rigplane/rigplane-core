@@ -16,6 +16,7 @@ Covers the four pieces of that gate:
 from __future__ import annotations
 
 import asyncio
+import errno
 import json
 import logging
 import time
@@ -4437,8 +4438,9 @@ async def _served_through_cli(
     *,
     bridge: str | None = None,
     expect_rc: int = 0,
+    command: str = "web",
 ) -> AsyncIterator[WebServer]:
-    """Run ``rigplane web`` through the real ``cli/__init__.py: _run``.
+    """Run the resident command through the real ``cli/__init__.py: _run``.
 
     Yields the ``WebServer`` once its ``start()`` has returned, then stops
     it and requires exit code 0. ``serve_forever`` is replaced by start /
@@ -4470,16 +4472,14 @@ async def _served_through_cli(
     async def _bind(*_args: object, **_kwargs: object) -> _FakeAsyncServer:
         return _FakeAsyncServer()
 
+    radio_args = ["--host", "1.2.3.4", "--model", "IC-7300"]
+    listener_args = ["--no-rigctld"]
+    if command == "station":
+        assert isinstance(radio, YaesuCatRadio)
+        radio_args = ["--model", radio.model, "--serial-port", radio._device]
+        listener_args = ["--rigctld-port", "0"]
     args = _build_parser().parse_args(
-        [
-            "--host",
-            "1.2.3.4",
-            "--model",
-            "IC-7300",
-            "web",
-            "--no-rigctld",
-            "--no-discovery",
-        ]
+        [*radio_args, command, *listener_args, "--no-discovery"]
     )
     args.web_bridge = bridge
     with (
@@ -4490,7 +4490,10 @@ async def _served_through_cli(
     ):
         run = asyncio.create_task(_run(args))
         try:
-            await await_until(lambda: bool(served) or run.done(), timeout=10.0)
+            await await_until(
+                lambda: bool(served) or run.done(),
+                timeout=30.0 if command == "station" else 10.0,
+            )
             if expect_rc == 0:
                 assert served, (
                     f"rigplane web exited with {run.result()} instead of serving"
@@ -4516,6 +4519,142 @@ def _startup_warnings(caplog: pytest.LogCaptureFixture) -> list[str]:
         if record.name == "rigplane.web.web_startup"
         and record.levelno >= logging.WARNING
     ]
+
+
+@pytest.mark.asyncio
+async def test_station_survives_ftx1_mode_zero(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from rigplane.backends.yaesu_cat.observations import _MAIN_FREQ, _MAIN_MODE
+
+    fake = FakeCatRadio(recorded_answers=_ftx1_table_silent_on_ft())
+    # Fault injection bypasses the simulator's write-side mode validation.
+    fake._mode_code = "0"
+    await fake.start()
+    try:
+        radio = YaesuCatRadio(device=fake.device_url, profile="ftx1")
+        async with _served_through_cli(radio, command="station") as server:
+            snapshot = server.command_state_store.snapshot()
+            assert snapshot.field(_MAIN_FREQ).value == 14_074_000
+            assert snapshot.field(_MAIN_MODE).value == "UNKNOWN"
+            state = ServerStatePublic.model_validate(
+                server.build_public_state(), strict=True
+            )
+            assert state.main.mode == "UNKNOWN"
+            assert radio.radio_state.main.mode == "UNKNOWN"  # IF at connect
+            assert radio._acquisition_scheduler.startup_defect is None
+
+            assert await radio.read_mode() == ("UNKNOWN", None)
+            fake._mode_code = "G"
+            assert await radio.read_mode() == ("UNKNOWN", None)
+            fake._mode_code = "2"
+            assert await radio.read_mode() == ("USB", None)
+            fake._mode_code = "0"
+            assert await radio.read_mode() == ("UNKNOWN", None)
+            diagnostics = server._state_acquisition_diagnostics_payload()
+            events = [
+                event
+                for event in diagnostics["events"]["events"]
+                if event["kind"] == "unknown_status"
+            ]
+            assert [event["details"]["raw"] for event in events] == ["0", "G"]
+            assert (
+                sum(
+                    "Unrecognized radio status" in message
+                    for message in caplog.messages
+                )
+                == 2
+            )
+    finally:
+        await fake.stop()
+
+
+@pytest.mark.asyncio
+async def test_station_waits_for_missing_yaesu_port(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from rigplane.backends.yaesu_cat import transport
+    from rigplane.runtime.managed_tx_state import ManagedTxOutcome
+
+    fake = FakeCatRadio(recorded_answers=_ftx1_table_silent_on_ft())
+    await fake.start()
+    try:
+        original_open = transport.open_serial_port
+        port_present = False
+        attempts = 0
+
+        async def open_port(device: str, **kwargs: Any) -> Any:
+            nonlocal attempts
+            attempts += 1
+            if not port_present:
+                raise FileNotFoundError(
+                    errno.ENOENT, "No such file or directory", device
+                )
+            return await original_open(device, **kwargs)
+
+        monkeypatch.setattr(transport, "open_serial_port", open_port)
+        radio = YaesuCatRadio(device=fake.device_url, profile="ftx1")
+        async with _served_through_cli(radio, command="station") as server:
+            assert await await_until(lambda: attempts >= 2, timeout=5.0)
+            health = server.build_public_state()["radioHealth"]
+            assert health["likelyCause"] == "radio_not_connected"
+            assert health["radioLink"] == "reconnecting"
+            assert "waiting for the port" in health["lastError"]
+            authority = radio._managed_tx_composition.authority
+            assert await authority.transmit_on() is ManagedTxOutcome.REJECTED
+
+            port_present = True
+            assert await await_until(lambda: radio.connected, timeout=10.0)
+            assert await await_until(
+                lambda: server._build_radio_health()["readiness"] == "ready",
+                timeout=10.0,
+            )
+            assert "ID;" in fake.commands
+            assert server.build_public_state()["radioHealth"]["lastError"] is None
+    finally:
+        await fake.stop()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("model", "address"), [("ic705", 0xA4), ("ic7610", 0x98)])
+async def test_civ_serial_publishes_unknown_mode_and_recovers(
+    model: str, address: int, caplog: pytest.LogCaptureFixture
+) -> None:
+    from rigplane.backends.ic705.serial import Ic705SerialRadio
+    from rigplane.backends.icom7610.serial import Icom7610SerialRadio
+
+    link = _FakeSerialCivLink(model_id=address)
+    backend = Ic705SerialRadio if model == "ic705" else Icom7610SerialRadio
+    radio = backend(
+        device="/dev/test-civ",
+        civ_link=link,
+        _enumerate_serial_ports_fn=lambda: [],
+    )
+    async with radio:
+        server = WebServer(radio)
+        path = FieldPath.active("0", "freq_mode", "mode")
+
+        def mode_is(expected: str) -> bool:
+            return radio.state_store.snapshot().field(path).value == expected
+
+        reads = ((0xFF, "UNKNOWN"), (0x01, "USB")) * 2
+        for raw, expected in reads:
+            link.queue_response(
+                build_civ_frame(CONTROLLER_ADDR, address, 0x04, data=bytes((raw, 1)))
+            )
+            assert await await_until(lambda: mode_is(expected), timeout=2.0)
+            assert radio.radio_state.main.mode == expected
+        events = [
+            event
+            for event in server.state_diagnostics.events()
+            if event.kind == "unknown_status"
+        ]
+        assert [event.details["raw"] for event in events] == [0xFF]
+        assert (
+            sum("Unrecognized radio status" in message for message in caplog.messages)
+            == 1
+        )
+        assert radio.connected
 
 
 @pytest.mark.asyncio

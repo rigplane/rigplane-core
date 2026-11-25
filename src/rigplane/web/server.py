@@ -1351,9 +1351,12 @@ class WebServer:
     ) -> None:
         self._radio = radio
         self._config = config or WebConfig()
-        self._state_diagnostics = StateDiagnosticsRecorder(
-            enabled=self._config.state_diagnostics
+        raw_radio_state = getattr(radio, "radio_state", None)
+        self._radio_state: RadioState = (
+            raw_radio_state if isinstance(raw_radio_state, RadioState) else RadioState()
         )
+        self._state_diagnostics = self._radio_state.diagnostics
+        self._state_diagnostics.enabled = self._config.state_diagnostics
         raw_state_store = (
             radio.state_store
             if radio is not None and isinstance(radio, StateStoreCapable)
@@ -1416,12 +1419,6 @@ class WebServer:
         self._radio_scope_source: RadioScopeSource | None = None
         # Confirmed hardware-session state only.  A queued command is not proof.
         self._radio_scope_session: ScopeSession | None = None
-        raw_radio_state = (
-            getattr(radio, "radio_state", None) if radio is not None else None
-        )
-        self._radio_state: RadioState = (
-            raw_radio_state if isinstance(raw_radio_state, RadioState) else RadioState()
-        )
         if radio is not None:
             try:
                 setattr(radio, "_state_diagnostics", self._state_diagnostics)
