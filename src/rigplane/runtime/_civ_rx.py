@@ -38,7 +38,6 @@ from rigplane.commands import (
     parse_frequency_response,
     parse_freq_offset_response,
     parse_level_response,
-    parse_mode_response,
     parse_repeater_shift_response,
     parse_rit_frequency_response,
     parse_tone_freq_response,
@@ -89,7 +88,7 @@ from rigplane.core.state_pipeline_contracts import (
     ObservationSource,
     SourceMetadata,
 )
-from rigplane.core.state_diagnostics import StateDiagnosticsRecorder
+from rigplane.core.state_diagnostics import StateDiagnosticsRecorder, UNKNOWN_STATUS
 from rigplane.core.state_store import FreshnessState
 from rigplane.profiles.control_domain import decode_legacy_control
 from rigplane.scope import ScopeFrame
@@ -2371,8 +2370,11 @@ class CivRuntime:
                         freq = parse_frequency_response(frame)
                         host._state_cache.update_freq(freq)
             elif frame.command in (0x04, 0x01):
-                mode_val, filt = parse_mode_response(frame)
-                host._state_cache.update_mode(mode_val.name, filt)
+                mode_name, filt = self._mode_status(frame)
+                host._state_cache.update_mode(mode_name, filt)
+                if mode_name == UNKNOWN_STATUS:
+                    # The legacy typed Mode getter can only replay known modes.
+                    host._state_cache.invalidate_mode()
                 if filt is not None:
                     host._filter_width = filt
             elif frame.command == 0x1C and frame.sub == 0x00 and frame.data:
@@ -2967,14 +2969,14 @@ class CivRuntime:
                     )
                 )
         elif frame.command in (0x01, 0x04):
-            mode_val, filt = parse_mode_response(frame)
+            mode_name, filt = self._mode_status(frame)
             observations.append(
                 self._observation(
                     self._freq_mode_path(
                         receiver_id=receiver_id,
                         name="mode",
                     ),
-                    mode_val.name,
+                    mode_name,
                     frame=frame,
                 )
             )
@@ -2997,7 +2999,7 @@ class CivRuntime:
                 # declare none.
                 profile = getattr(self._host, "_profile", None)
                 declared = (
-                    profile.declared_filter_width(mode_val.name, int(filt))
+                    profile.declared_filter_width(mode_name, int(filt))
                     if profile is not None
                     else None
                 )
@@ -3054,7 +3056,7 @@ class CivRuntime:
             observations.append(
                 self._observation(
                     path_for("mode"),
-                    Mode(frame.data[1]).name,
+                    self._observed_mode(frame.data[1]),
                     frame=frame,
                 )
             )
@@ -3880,6 +3882,20 @@ class CivRuntime:
         ):
             rx.freq = freq
 
+    def _observed_mode(self, raw: int) -> str:
+        try:
+            return Mode(raw).name
+        except ValueError:
+            return self._host._radio_state.diagnostics.status_name(
+                field="mode", raw=raw, name=None, source="civ_rx"
+            )
+
+    def _mode_status(self, frame: CivFrame) -> tuple[str, int | None]:
+        if not frame.data:
+            raise ValueError("Mode response payload too short")
+        filt = frame.data[1] if len(frame.data) > 1 else None
+        return self._observed_mode(frame.data[0]), filt
+
     def _handle_mode(
         self,
         frame: CivFrame,
@@ -3887,8 +3903,7 @@ class CivRuntime:
         rs: "RadioState",
     ) -> None:
         # cmd 0x04 (GET mode response) and 0x01 (unsolicited mode).
-        mode_val, filt = parse_mode_response(frame)
-        rx.mode = mode_val.name
+        rx.mode, filt = self._mode_status(frame)
         if filt is not None:
             rx.filter = filt
 
@@ -4201,8 +4216,6 @@ class CivRuntime:
         # cmd 0x26: dual-RX mode by receiver ID + optional data_mode + filter
         # (selector 00/01 only).
         if len(frame.data) >= 2 and frame.data[0] in (0, 1):
-            from rigplane.types import Mode
-
             rcvr_byte = frame.data[0]
             if (
                 getattr(self._host._profile, "split_tx_target", "none")
@@ -4213,7 +4226,7 @@ class CivRuntime:
                 if rcvr_byte == 0x01:
                     slot = "B" if slot == "A" else "A"
                 attr = "vfo_b" if slot == "B" else "vfo_a"
-                fields: dict[str, Any] = {"mode": Mode(frame.data[1]).name}
+                fields: dict[str, Any] = {"mode": self._observed_mode(frame.data[1])}
                 if len(frame.data) >= 3:
                     fields["data_mode"] = frame.data[2]
                 if len(frame.data) >= 4:
@@ -4222,7 +4235,7 @@ class CivRuntime:
                 return
             which = "MAIN" if rcvr_byte == 0x00 else "SUB"
             tgt = rs.receiver(which)
-            tgt.mode = Mode(frame.data[1]).name
+            tgt.mode = self._observed_mode(frame.data[1])
             if len(frame.data) >= 3:
                 tgt.data_mode = frame.data[2]
             if len(frame.data) >= 4:
