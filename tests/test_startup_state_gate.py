@@ -4635,7 +4635,10 @@ async def test_civ_serial_publishes_unknown_mode_and_recovers(
         path = FieldPath.active("0", "freq_mode", "mode")
 
         def mode_is(expected: str) -> bool:
-            return radio.state_store.snapshot().field(path).value == expected
+            return any(
+                field.path == path and field.value == expected
+                for field in server.command_state_store.snapshot().fields
+            )
 
         reads = ((0xFF, "UNKNOWN"), (0x01, "USB")) * 2
         for raw, expected in reads:
