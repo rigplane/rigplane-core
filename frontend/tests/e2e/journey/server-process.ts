@@ -21,6 +21,14 @@ const START_TIMEOUT_MS = 30_000;
 const KILL_TIMEOUT_MS = 10_000;
 const POLL_INTERVAL_MS = 100;
 
+/**
+ * Apply the same JOURNEY_PORT_OFFSET to a journey server and the URLs that
+ * target it (MOR-4685). An unset offset preserves the historical port.
+ */
+export function journeyPort(base: number): number {
+  return base + Number(process.env.JOURNEY_PORT_OFFSET ?? 0);
+}
+
 export interface JourneyServerHandle {
   kill(): Promise<void>;
 }

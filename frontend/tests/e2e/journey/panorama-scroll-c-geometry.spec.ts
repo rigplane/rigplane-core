@@ -2,7 +2,7 @@ import { createReadStream } from 'node:fs';
 import { expect, test } from '@playwright/test';
 import { parseCurrentScopeFrame } from '../../../src/lib/runtime/scope-frame';
 import type { WsCommand } from '../../../src/lib/types/protocol';
-import { startJourneyServer } from './server-process';
+import { journeyPort, startJourneyServer } from './server-process';
 import { parseScopeWriteReceipt } from './panorama-receipt';
 
 /**
@@ -17,7 +17,7 @@ import { parseScopeWriteReceipt } from './panorama-receipt';
  */
 test('IC-705: SCROLL-C keeps the reported window across a span gesture and an in-window tune', async ({ page }, info) => {
   const evidence = info.outputPath('radio.jsonl');
-  const port = Number(process.env.PANORAMA_SCROLL_PORT ?? 22210);
+  const port = journeyPort(Number(process.env.PANORAMA_SCROLL_PORT ?? 22210));
   const server = await startJourneyServer(port, 14_250_000,
     ['--model', 'IC-705', '--evidence', evidence], 'tests/e2e/panorama_web_server.py');
   try {
@@ -139,7 +139,7 @@ test('IC-705: SCROLL-C keeps the reported window across a span gesture and an in
  */
 test('IC-705: SCROLL-C SPAN+ after a ZOOM+ crop steps from the radio window and writes one span', async ({ page }, info) => {
   const evidence = info.outputPath('radio.jsonl');
-  const port = Number(process.env.PANORAMA_SCROLL_SPAN_PORT ?? 22262);
+  const port = journeyPort(Number(process.env.PANORAMA_SCROLL_SPAN_PORT ?? 22262));
   const server = await startJourneyServer(port, 14_250_000,
     ['--model', 'IC-705', '--evidence', evidence], 'tests/e2e/panorama_web_server.py');
   try {
