@@ -28,11 +28,12 @@ WORKFLOW_DIR = Path(".github/workflows")
 # ARM64; nsu-build-core-1..3, gtr7-build-core-1 on X64) carries
 # self-hosted,Linux,build in addition to its architecture label.
 # The reserved merge-queue lane (MOR-4097, infra-control): the four X64 queue
-# runners carry self-hosted,Linux,X64,queue; the single ARM64 queue runner
-# carries self-hosted,Linux,ARM64,queue-arm64 and NOT queue, so the arch-free
-# queue requests cannot take the slot the visual leg needs. Neither carries
-# build. quick.yml workers request the arch-neutral queue set, and the visual
-# e2e leg the ARM64 queue set, for merge_group runs only.
+# runners carry self-hosted,Linux,X64,queue; the ARM64 queue runners carry
+# self-hosted,Linux,ARM64,queue-arm64 (mm-queue-core-1 without queue,
+# mini-server-queue-core-1..3 with it). None carries build. quick.yml workers
+# request the arch-neutral queue set for merge_group runs; the visual e2e leg
+# requests the ARM64 queue-arm64 set for every event, so arch-neutral build
+# jobs cannot starve it.
 APPROVED_LABEL_SETS: frozenset[frozenset[str]] = frozenset(
     {
         frozenset({"self-hosted", "Linux", "ARM64", "light"}),
