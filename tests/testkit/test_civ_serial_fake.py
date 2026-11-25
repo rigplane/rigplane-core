@@ -149,6 +149,34 @@ async def test_s_meter_read() -> None:
     assert parse_civ_frame(reply).data == b"\x01\x20"  # 2-byte BCD for 120
 
 
+@pytest.mark.realtime(reason="serial reads are bounded by the real clock")
+async def test_data_mode_read_can_be_refused_while_the_write_still_works() -> None:
+    """``refuse_data_mode_read`` NAKs the ``1A 06`` READ only: the fake can
+    still model a radio that does not answer the data-mode read while the
+    data-mode write (and the ``26 00`` round trip) keeps working."""
+    fake = CivSerialFake(mode=0x01, filter_width=1)
+    _, reply = await _roundtrip(
+        fake, build_civ_frame(fake.civ_addr, CONTROLLER_ADDR, 0x1A, sub=0x06)
+    )
+    assert parse_civ_frame(reply).data == b"\x00\x00"  # data off, filter byte 0
+
+    fake.refuse_data_mode_read()
+    _, nak = await _roundtrip(
+        fake, build_civ_frame(fake.civ_addr, CONTROLLER_ADDR, 0x1A, sub=0x06)
+    )
+    assert parse_civ_frame(nak).command == 0xFA  # the read is refused...
+
+    _, ack = await _roundtrip(
+        fake,
+        build_civ_frame(fake.civ_addr, CONTROLLER_ADDR, 0x1A, sub=0x06, data=b"\x01"),
+    )
+    assert parse_civ_frame(ack).command == 0xFB  # ...while the write still works
+    _, sel = await _roundtrip(
+        fake, build_civ_frame(fake.civ_addr, CONTROLLER_ADDR, 0x26, data=b"\x00")
+    )
+    assert parse_civ_frame(sel).data == bytes([0x00, 0x01, 0x01, 0x01])
+
+
 async def test_unknown_opcode_naks_but_broadcast_stays_silent() -> None:
     fake = CivSerialFake()
     _, reply = await _roundtrip(

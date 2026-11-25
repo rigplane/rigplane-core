@@ -277,7 +277,7 @@ the handler in the dispatch table, and translates exceptions:
 | `x` | `get_split_mode` | GET | Split TX mode + passband Hz (profile-declared split target) |
 | `X` | `set_split_mode` | SET | Split TX mode + optional passband (profile-declared split target) |
 | `q` | `quit` | CTL | Close connection |
-| `\dump_state` | `dump_state` | CTL | IC-7610 capability block |
+| `\dump_state` | `dump_state` | CTL | Capability block; the mode masks are the profile's advertised mode list |
 | `1` | `dump_caps` | CTL | Alias for `dump_state` |
 | `\get_info` | `get_info` | CTL | Rig info string |
 | `\chk_vfo` | `chk_vfo` | CTL | VFO mode check (always 0) |
@@ -350,9 +350,18 @@ See `handler.py: RigctldHandler._cmd_get_split_freq`,
 `handler.py: RigctldHandler._cmd_get_split_mode`, and
 `_dual_rx_runtime.py: DualRxRuntimeMixin.write_relative_vfo_mode`.
 
-**Mode strings** accepted/returned by `get_mode`/`set_mode`:
-`USB`, `LSB`, `CW`, `CWR`, `RTTY`, `RTTYR`, `AM`, `FM`, `WFM`,
-`PKTUSB`, `PKTLSB`, `PKTRTTY` (DATA overlay modes mapped to/from CI-V DATA mode).
+**Mode strings** accepted/returned by `get_mode`/`set_mode` are profile-driven:
+the accepted set is the profile's advertised mode list — the same names the
+`\dump_state` mode masks advertise. Each native mode from the profile's
+`[modes].list` is served under its Hamlib name (its `[modes.entries]` `hamlib`
+override where declared, else the native name itself when that name has a
+Hamlib mask bit). `USB`, `LSB`, `CW`, `CWR`, `RTTY`, `RTTYR`, `AM`, `FM` are
+typical; `WFM` only where the profile lists it (e.g. IC-705; the FTX-1 and
+FT-991A profiles omit it, so `M WFM 0` answers `RPRT -1` there). On radios
+with DATA-mode commands, `PKTUSB`/`PKTLSB` are accepted as DATA overlay
+aliases for USB/LSB (mapped to/from CI-V DATA mode). A mode outside the
+advertised set is refused with `RPRT -1`; `PKTRTTY` is not a Hamlib mode, so
+`M PKTRTTY 0` answers `RPRT -1` on every profiled radio.
 
 **Level names** for `get_level`:
 
