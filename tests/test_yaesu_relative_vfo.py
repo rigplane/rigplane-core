@@ -475,10 +475,13 @@ async def test_relative_mode_write_maps_malformed_verification_readback():
     radio, peer = relative_radio()
     peer.garble["MD1;"] = "MD1Z"
     main = (peer.freqs[0], peer.modes[0], peer.filters[0])
-    with pytest.raises(CommandError) as excinfo:
+    with pytest.raises(
+        CommandError, match="unreadable relative mode readback"
+    ) as excinfo:
         await radio.write_relative_vfo_mode(Mode.USB, selected=False, data=True)
     assert not isinstance(excinfo.value, CommandRejectedError)
     assert peer.writes == ["MD1C;"]
+    assert peer.queries.count("MD1;") == 1
     assert (peer.freqs[0], peer.modes[0], peer.filters[0]) == main
 
 
