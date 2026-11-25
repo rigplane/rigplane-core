@@ -216,7 +216,16 @@ def test_narrow_variant_rejected(
         "narrow_table = 0.0",
         "narrow_table = ''",
     ],
-    ids=["float", "bool", "string", "scalar", "zero", "false", "zero_float", "empty_string"],
+    ids=[
+        "float",
+        "bool",
+        "string",
+        "scalar",
+        "zero",
+        "false",
+        "zero_float",
+        "empty_string",
+    ],
 )
 def test_narrow_table_values_are_validated_before_coercion(
     tmp_path: Path, new: str
