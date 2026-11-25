@@ -118,17 +118,24 @@ if TYPE_CHECKING:
     )
     from .web.channel_attach import (  # noqa: F401, TID251
         ATTACH_ACK_VERSION,
+        CONTROL_WS_QUERY_KEYS,
         DATA_CHANNELS,
         RIGCTL_MAX_FRAME_BYTES,
         RIGCTL_VERSIONS,
         ChannelAttachedAck,
         ChannelKind,
         ClientChannelParams,
+        ControlWsQuery,
+        ControllerRole,
         DataChannelLabel,
         DataChannelSpec,
         RigctlAttachErrorCode,
         RigctlAttachErrorV1,
         decode_rigctl_attach_result,
+    )
+    from .web.memory_api import (  # noqa: F401, TID251
+        MEMORIES_QUERY_KEYS,
+        MemoriesQuery,
     )
     from .web.transport.ice_gathering import (  # noqa: F401, TID251
         GATHER_TIMEOUT_S,
@@ -184,6 +191,15 @@ _LAZY_MAP: dict[str, tuple[str, str]] = {
         "rigplane.web.channel_attach",
         "decode_rigctl_attach_result",
     ),
+    # --- HTTP/WS query contracts (MOR-4252) ---
+    "ControlWsQuery": ("rigplane.web.channel_attach", "ControlWsQuery"),
+    "ControllerRole": ("rigplane.web.channel_attach", "ControllerRole"),
+    "CONTROL_WS_QUERY_KEYS": (
+        "rigplane.web.channel_attach",
+        "CONTROL_WS_QUERY_KEYS",
+    ),
+    "MemoriesQuery": ("rigplane.web.memory_api", "MemoriesQuery"),
+    "MEMORIES_QUERY_KEYS": ("rigplane.web.memory_api", "MEMORIES_QUERY_KEYS"),
     "IceServer": ("rigplane.web.transport.ice_gathering", "IceServer"),
     "IceGatheringPolicy": (
         "rigplane.web.transport.ice_gathering",
@@ -525,4 +541,10 @@ __all__ = [
     "api_request_messages",
     "parse_api_server_frame",
     "API_SEND_HIGH_WATER_BYTES",
+    # --- Tier 2 (lazy): HTTP/WS query contracts (MOR-4252) ---
+    "ControlWsQuery",
+    "ControllerRole",
+    "CONTROL_WS_QUERY_KEYS",
+    "MemoriesQuery",
+    "MEMORIES_QUERY_KEYS",
 ]

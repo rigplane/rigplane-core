@@ -141,6 +141,12 @@ def test_public_api_surface() -> None:
         "api_request_messages",
         "parse_api_server_frame",
         "API_SEND_HIGH_WATER_BYTES",
+        # --- Tier 2 (lazy): HTTP/WS query contracts (MOR-4252) ---
+        "ControlWsQuery",
+        "ControllerRole",
+        "CONTROL_WS_QUERY_KEYS",
+        "MemoriesQuery",
+        "MEMORIES_QUERY_KEYS",
     }
     assert set(rigplane.__all__) == expected_public
 

@@ -90,12 +90,8 @@ def test_memory_parser_reads_exactly_the_contract_keys() -> None:
 
 def test_frontend_ws_client_emits_only_contract_keys() -> None:
     """The shipped ws-client URL builder never emits an unlisted key."""
-    source = (_FRONTEND_LIB / "transport" / "ws-client.ts").read_text(
-        encoding="utf-8"
-    )
-    keys = set(
-        re.findall(r"withWsSearchParam\([^)]*?['\"]([a-z0-9_]+)['\"]", source)
-    )
+    source = (_FRONTEND_LIB / "transport" / "ws-client.ts").read_text(encoding="utf-8")
+    keys = set(re.findall(r"withWsSearchParam\([^)]*?['\"]([a-z0-9_]+)['\"]", source))
     assert keys, "ws-client.ts no longer appends query keys via withWsSearchParam"
     assert keys <= set(CONTROL_WS_QUERY_KEYS), (
         f"ws-client.ts appends {sorted(keys - set(CONTROL_WS_QUERY_KEYS))}, "
@@ -178,10 +174,7 @@ class TestControlWsQueryParse:
         assert ControlWsQuery.parse({"bogus": ["x"]}) is None
 
     def test_repeated_key_is_refused(self) -> None:
-        assert (
-            ControlWsQuery.parse({"controller_role": ["primary", "primary"]})
-            is None
-        )
+        assert ControlWsQuery.parse({"controller_role": ["primary", "primary"]}) is None
         assert ControlWsQuery.parse({"state_delta": ["2", "2"]}) is None
 
     def test_role_outside_the_literal_is_refused(self) -> None:
