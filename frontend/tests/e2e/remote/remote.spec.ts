@@ -588,6 +588,13 @@ async function showRadioScope(page: Page): Promise<void> {
   await page.bringToFront();
   const panel = page.locator('[data-waterfall]:not(.audio-fft)');
   const viewer = panel.getByTitle('Request scope viewer data');
+  // The desktop-v2 skin hosts the demand toggle inside the toolbar's
+  // [MORE ▾] panel (MOR-2545); the unhosted faces render it in the row.
+  const more = panel.getByTestId('scope-more');
+  await expect.poll(async () => (await viewer.count()) + (await more.count()), {
+    message: 'a scope demand toggle renders',
+  }).toBeGreaterThan(0);
+  if ((await viewer.count()) === 0) await more.click();
   if (await viewer.getAttribute('aria-pressed') === 'false') await viewer.click();
   await panel.locator('.spectrum-area').scrollIntoViewIfNeeded();
   await expect.poll(async () => {
