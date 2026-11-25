@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { missingLivePassband, paintedOutages, passbandGaps, requireProbeStimulus } from '../../../../tests/e2e/journey/panorama-passband-probe';
+import { missingLivePassband, paintedOutages, passbandGaps, passbandProbeReady, requireProbeStimulus } from '../../../../tests/e2e/journey/panorama-passband-probe';
+import type { ScopePassbandDiagnostics } from '../adapters/scope-passband-display';
 
 describe('passband probe evidence', () => {
   it('rejects no-op tuning and no-op zoom witnesses', () => {
@@ -10,13 +11,43 @@ describe('passband probe evidence', () => {
   });
   const sample = (t: number, overlay: boolean, kind: 'frame' | 'dom' = 'frame') =>
     ({ t, kind, overlay, gates: null, state: null });
+  const current = (t: number, tupleFrameMode: number, kind: 'frame' | 'dom' = 'frame') => ({
+    ...sample(t, true, kind), state: 'current',
+    gates: {
+      tuneVisible: true, confirmed: true, freqHz: 14_250_000,
+      viewStartHz: 14_200_000, viewEndHz: 14_300_000, inView: true, proportional: true,
+      mode: 'LSB', widthHz: 3000, shiftHz: 0, tuple: true, tupleState: 'current',
+      tupleFrameMode, tupleReason: null, tupleStale: false, passbandHz: 3000,
+      spanPositive: true, overlay: true,
+    } satisfies ScopePassbandDiagnostics,
+  });
+  it('starts FIX continuity only after its current tuple has painted', () => {
+    const samples = [current(-50, 0), sample(-30, false), sample(-20, false), sample(-10, false),
+      current(-5, 1, 'dom')];
+    expect(samples.at(-1)).toMatchObject({ overlay: true, gates: { proportional: true, tupleState: 'current' } });
+    // DOM recovery has not closed the painted setup outage.
+    expect(passbandGaps(samples, 0, 10)).toMatchObject([{ frames: 3 }]);
+    expect(passbandProbeReady(samples, 1)).toBe(false);
+    samples.push(current(5, 1));
+    expect(passbandProbeReady(samples, 1)).toBe(true);
+    expect(passbandGaps(samples, 6, 10)).toEqual([]);
+    samples.push(sample(7, false), sample(8, false), sample(9, false));
+    expect(passbandGaps(samples, 6, 10)).toMatchObject([{ frames: 3 }]);
+  });
+  it('rejects a painted CENTER tuple and a newer loss after a good FIX frame', () => {
+    expect(passbandProbeReady([], 1)).toBe(false);
+    expect(passbandProbeReady([current(0, 0)], 1)).toBe(false);
+    expect(passbandProbeReady([current(0, 1), sample(1, false, 'dom')], 1)).toBe(false);
+    expect(passbandProbeReady([current(0, 1), current(1, 0, 'dom')], 1)).toBe(false);
+    expect(passbandProbeReady([current(0, 1), current(1, 1, 'dom')], 1)).toBe(true);
+  });
   it('detects a live absence carried into the interval when recovery is the next sample', () => {
     const absent = {
       ...sample(-5, false),
       gates: {
         tuneVisible: true, confirmed: true, freqHz: 14_050_000, viewStartHz: 14_000_000, viewEndHz: 14_100_000,
         inView: true, proportional: false, mode: 'USB', widthHz: 2400, shiftHz: 0, tuple: false,
-        tupleState: 'unknown' as const, tupleReason: 'frame-unavailable', tupleStale: false,
+        tupleState: 'unknown' as const, tupleFrameMode: null, tupleReason: 'frame-unavailable', tupleStale: false,
         passbandHz: 0, spanPositive: true, overlay: false,
       },
     };

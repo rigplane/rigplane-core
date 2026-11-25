@@ -44,6 +44,7 @@ export interface ScopePassbandDiagnostics {
   shiftHz: number | null;
   tuple: boolean;
   tupleState: ScopePassbandDisplay['state'] | 'legacy' | 'unavailable';
+  tupleFrameMode: number | null;
   tupleReason: string | null;
   tupleStale: boolean;
   passbandHz: number;
