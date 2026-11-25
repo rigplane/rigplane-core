@@ -1,11 +1,11 @@
 import asyncio
-import time
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import numpy as np
 import pytest
 
-from rigplane.sdr import FakeIqSource
+from rigplane.sdr import FakeIqSource, scope_source
 from rigplane.sdr.controller import SdrScopeController, TX_HOLD_S
 from rigplane.sdr.scope_source import IqFftSource
 from rigplane.sdr.types import SdrConfig
@@ -98,10 +98,7 @@ async def test_controller_initial_tx_freeze_releases_after_hold(virtual_clock):
 # inside time() + _clock_resolution). Production clamps the retry to at
 # least the monotonic resolution so a retry scheduled from an early
 # callback clears that window instead of spinning. Both sides are pinned
-# to a fixed 10 ms here, so the early fire is deterministic and
-# millisecond-scale, independent of host ulps. Starts stay within the
-# magnitudes where a 0.3 s hold is representable (at 2**24 its ulp is
-# 2 s and the controller deadline itself collapses).
+# to a fixed 10 ms here so the early fire is independent of host resolution.
 EARLY_FIRE_RESOLUTION_S = 0.01
 
 
@@ -111,43 +108,33 @@ async def test_early_tx_deadline_callback_waits_without_spinning(
     monkeypatch, clock_offset, start
 ):
     loop = asyncio.get_running_loop()
-    monkeypatch.setattr(loop, "_clock_resolution", EARLY_FIRE_RESOLUTION_S)
-    real_get_clock_info = time.get_clock_info
-
-    def _fixed_monotonic_resolution(name):
-        info = real_get_clock_info(name)
-        if name == "monotonic":
-            return SimpleNamespace(
-                implementation=info.implementation,
-                monotonic=info.monotonic,
-                adjustable=info.adjustable,
-                resolution=EARLY_FIRE_RESOLUTION_S,
-            )
-        return info
-
-    monkeypatch.setattr(time, "get_clock_info", _fixed_monotonic_resolution)
+    clock_info = SimpleNamespace(resolution=EARLY_FIRE_RESOLUTION_S)
+    monkeypatch.setattr(
+        scope_source, "time", SimpleNamespace(get_clock_info=lambda _name: clock_info)
+    )
     clock = VirtualClock(start=start)
     clock.install(loop)
     try:
+        # install() sets its own resolution; uninstall() restores the host's.
+        loop._clock_resolution = EARLY_FIRE_RESOLUTION_S  # type: ignore[attr-defined]
         provider = FakeIqSource(center_freq_hz=0, sample_rate_hz=48000)
         source = controlled_source(
             provider, clock, tx_active=True, clock_offset=clock_offset
         )
+        tick = Mock(wraps=source._tick_controller)
+        monkeypatch.setattr(source, "_tick_controller", tick)
         await source.start()
         try:
             source.on_radio_state(None, False)
-            # Park the hold ~4 ms out, inside the 10 ms early-fire window.
-            clock.advance(TX_HOLD_S - 0.004)
-            # The deadline timer fires before the hold is over; the early
-            # callback must not release the freeze.
-            await clock.elapse(0)
+            # Settle inside the early-fire window with the hold still 4 ms out.
+            # The callback must run once and leave a retry pending.
+            await clock.elapse(TX_HOLD_S - 0.004)
+            tick.assert_called_once_with()
             assert source.tx_frozen
-            # It must leave a retry pending that clears the window, or the
-            # callback spins on the frozen clock.
             assert source._timer is not None
-            assert source._timer.when() >= loop.time() + EARLY_FIRE_RESOLUTION_S
             # The retry itself releases the freeze once the hold is over.
             await clock.elapse(0.02)
+            assert tick.call_count == 2
             assert not source.tx_frozen
             assert source._timer is None
         finally:
