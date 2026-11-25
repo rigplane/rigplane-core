@@ -262,6 +262,7 @@ meter_coalescing_window_seconds = 0.25
 list = ["USB", "LSB", "CW", "CW-R", "AM", "FM", "RTTY", "DIGI"]
 # MOR-3679: the CW modes, named once here for every client.
 families = { cw = ["CW", "CW-R"] }
+entries = { "CW-R" = { hamlib = "CWR" } }
 
 # count/labels match the loader's feature-only default (count = 1,
 # OFF/DATA) — the table exists so the DATA-capable modes can be declared.
