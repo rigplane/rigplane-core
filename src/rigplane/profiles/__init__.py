@@ -34,6 +34,7 @@ from rigplane.commands._codec import (
 from rigplane.commands.command_map import CommandMap, ReverseCommandIndex
 from rigplane.core.exceptions import CommandError
 from rigplane.core.radio_transport import RadioTransport
+from rigplane.core.radio_owned_modes import RadioOwnedModeDefinition
 from rigplane.core.state_acquisition_policy import RadioAcquisitionProfile
 from rigplane.core.state_pipeline_contracts import PowerWriteQuantum
 from rigplane.core.types import (
@@ -480,6 +481,9 @@ class RadioProfile:
     receiver_count: int
     capabilities: frozenset[str]
     cmd29_routes: frozenset[tuple[int, int | None]]
+    radio_owned_modes: tuple[RadioOwnedModeDefinition, ...] = field(
+        default=(), kw_only=True
+    )
     vfo_main_code: int | None = None
     vfo_sub_code: int | None = None
     # Explicit split (issue #710):

@@ -15,6 +15,7 @@ from dataclasses import asdict, dataclass, field, replace
 from typing import Any
 
 from .state_diagnostics import StateDiagnosticsRecorder
+from .radio_owned_modes import RadioOwnedModeState
 from .types import ScopeFixedEdge
 
 __all__ = [
@@ -324,10 +325,14 @@ class RadioState:
     data3_mod_input: int | None = None
     tx_band_edges: list[TxBandEdge] = field(default_factory=list)
     scope_controls: ScopeControlsState = field(default_factory=ScopeControlsState)
+    radio_owned_modes: tuple[RadioOwnedModeState, ...] = field(default=(), kw_only=True)
 
     def to_dict(self) -> dict[str, object]:
         """Return a JSON-serialisable dict of the current radio state."""
         return {
+            "radio_owned_modes": [
+                context.to_dict() for context in self.radio_owned_modes
+            ],
             "active": self.active,
             "power_on": self.power_on,
             "ptt": self.ptt,
