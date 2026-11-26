@@ -2102,8 +2102,8 @@ async def test_repeater_shift_receiver_failures_name_only_their_own_side(
 
     await adapter.poll_slow_controls()
 
-    assert scheduler.startup_defect is not None
-    assert [str(path) for path in scheduler.startup_defect.paths] == [defective_path]
+    assert scheduler.startup_defect is None
+    assert {str(path) for path in scheduler.refused_paths()} == {defective_path}
     assert radio.read_repeater_shift.await_args_list == awaited
 
 
@@ -2197,12 +2197,12 @@ async def test_sql_type_receiver_failure_names_only_its_own_side() -> None:
     observations = await adapter.poll_slow_controls()
     by_path = {str(item.path): item.value for item in observations}
 
-    assert scheduler.startup_defect is not None
-    assert [str(path) for path in scheduler.startup_defect.paths] == [
+    assert scheduler.startup_defect is None
+    assert {str(path) for path in scheduler.refused_paths()} == {
         "receiver.sub.operator_toggles.repeater_tone",
         "receiver.sub.operator_toggles.repeater_tsql",
         "receiver.sub.operator_controls.tone_squelch_type",
-    ]
+    }
     assert radio.read_sql_type.await_args_list == [call(0), call(1)]
     assert by_path["receiver.main.operator_toggles.repeater_tone"] is True
     assert by_path["receiver.main.operator_toggles.repeater_tsql"] is False
@@ -2259,11 +2259,11 @@ async def test_ctcss_freq_receiver_failure_names_only_its_own_side() -> None:
     observations = await adapter.poll_slow_controls()
     by_path = {str(item.path): item.value for item in observations}
 
-    assert scheduler.startup_defect is not None
-    assert [str(path) for path in scheduler.startup_defect.paths] == [
+    assert scheduler.startup_defect is None
+    assert {str(path) for path in scheduler.refused_paths()} == {
         "receiver.sub.operator_controls.tone_freq",
         "receiver.sub.operator_controls.tsql_freq",
-    ]
+    }
     assert radio.read_ctcss_tone_index.await_args_list == [call(0), call(1)]
     assert by_path["receiver.main.operator_controls.tone_freq"] == 8850
     assert by_path["receiver.main.operator_controls.tsql_freq"] == 8850
@@ -2669,15 +2669,8 @@ def _raise(exc: Exception) -> object:
 
 
 @pytest.mark.asyncio
-async def test_unparseable_sub_s_meter_is_a_startup_defect() -> None:
-    """A declared read answered in another shape records the defect, then skips.
-
-    The sub ``SM1;`` answer fails to parse, so no
-    ``receiver.sub.meters.s_meter`` observation can ever arrive. The defect
-    is recorded on the scheduler — what the startup gate reads — and only
-    that field is skipped: the MAIN meter still publishes and the path
-    stays outstanding, because nothing releases it (MOR-2578).
-    """
+async def test_unparseable_sub_s_meter_is_unavailable() -> None:
+    """A malformed SUB meter reply is visible and releases its startup path."""
     profile = _profile_state_acquisition()
     scheduler = AcquisitionScheduler(profile=profile)
     sub_path = FieldPath.receiver("sub", "meters", "s_meter")
@@ -2706,16 +2699,12 @@ async def test_unparseable_sub_s_meter_is_a_startup_defect() -> None:
         clock=_clock,
     ).poll_rx_meters()
 
-    defect = scheduler.startup_defect
-    assert defect is not None
-    assert defect.paths == (sub_path,)
-    assert defect.command == "SM{receiver}{raw:03d};"
-    assert defect.frame == "SM0048;"
-    message = str(defect)
-    assert str(sub_path) in message
-    assert "SM{receiver}{raw:03d};" in message
-    assert "SM0048;" in message
-    assert sub_path in scheduler.unobserved_startup_paths(())
+    assert scheduler.startup_defect is None
+    refusal = scheduler.diagnostics()["readRefusals"][str(sub_path)]
+    assert refusal["command"] == "SM{receiver}{raw:03d};"
+    assert refusal["frame"] == "SM0048;"
+    assert "invalid reply" in refusal["message"]
+    assert sub_path not in scheduler.unobserved_startup_paths(())
     # The failed read skipped only itself: MAIN's meter still emitted.
     assert {str(item.path) for item in observations} == {"receiver.main.meters.s_meter"}
 
@@ -3410,14 +3399,7 @@ async def test_defective_read_names_every_declared_path_it_feeds(
     expected: tuple[str, ...],
     failure: str,
 ) -> None:
-    """One refused or wrong-shape read records a defect naming the paths it feeds.
-
-    A path the backend can never observe must not be released from the
-    startup gate, and the defect must not name a path some other read still
-    supplies. The read skips only its own field (MOR-2578): the poll
-    returns instead of aborting, but the record — what the gate reads —
-    still names exactly the broken read's declared paths.
-    """
+    """Only the fields fed by the failed read enter the scheduler's verdict."""
     profile = _profile_state_acquisition()
     scheduler = AcquisitionScheduler(profile=profile)
     radio = _gate_radio()
@@ -3429,16 +3411,22 @@ async def test_defective_read_names_every_declared_path_it_feeds(
     observations = await getattr(adapter, poll)()
 
     assert isinstance(observations, tuple)
-    defect = scheduler.startup_defect
-    assert defect is not None
-    assert sorted(str(path) for path in defect.paths) == sorted(expected)
+    if method in ("read_freq", "read_mode"):
+        defect = scheduler.startup_defect
+        assert defect is not None
+        assert {str(path) for path in defect.paths} == set(expected)
+        assert scheduler.unobserved_startup_paths(()) == before
+    else:
+        assert scheduler.startup_defect is None
+        assert {str(path) for path in scheduler.refused_paths()} == set(expected)
+        assert {str(path) for path in scheduler.unobserved_startup_paths(())} == {
+            str(path) for path in before
+        } - set(expected)
     # The broken read is skipped, not synthesized: none of the paths it
     # feeds appears in the cycle's observations, so no invented value
     # (None, False, ...) leaks into the store (MOR-2578 review round 2).
     emitted = {str(item.path) for item in observations}
     assert emitted.isdisjoint(expected)
-    # Nothing is released: the gate's outstanding set is exactly what it was.
-    assert scheduler.unobserved_startup_paths(()) == before
 
 
 #: MOR-4456: PTT and split left the startup-critical set, so a refused or
@@ -3497,7 +3485,7 @@ async def test_refused_read_mid_cycle_still_emits_later_slow_fields() -> None:
     MAIN attenuator read) with ``?;`` roughly once a second; the raise
     aborted the whole slow cycle, so every later field — SUB repeater
     tone/TSQL, tone frequency, repeater shift — stayed stale forever. The
-    refusal now records the defect (what the startup gate reads) and skips
+    refusal now marks the field unavailable and skips
     only ``main.att``; the later slow fields keep publishing.
     """
     radio = _make_radio()
@@ -3514,10 +3502,10 @@ async def test_refused_read_mid_cycle_still_emits_later_slow_fields() -> None:
     observations = await adapter.poll_slow_controls()
     by_path = {str(item.path): item.value for item in observations}
 
-    assert scheduler.startup_defect is not None
-    assert [str(path) for path in scheduler.startup_defect.paths] == [
+    assert scheduler.startup_defect is None
+    assert {str(path) for path in scheduler.refused_paths()} == {
         "receiver.main.operator_controls.att"
-    ]
+    }
     # main.att itself is skipped ...
     assert "receiver.main.operator_controls.att" not in by_path
     # ... and every later slow field still publishes — including the
@@ -3700,13 +3688,8 @@ async def test_single_refusal_then_answer_records_nothing_and_publishes() -> Non
 
 
 @pytest.mark.asyncio
-async def test_repeated_refusal_records_the_defect_and_skips_the_field() -> None:
-    """MOR-2584: a refusal the radio repeats is still a startup defect.
-
-    The same ``SUB_S_METER`` read refuses both attempts, so the defect is
-    recorded — what the startup gate reads, which refuses the bind — and
-    only that field is skipped.
-    """
+async def test_repeated_refusal_marks_the_field_unavailable() -> None:
+    """A second refusal backs off the SUB meter until its later lane read."""
     profile = _profile_state_acquisition()
     scheduler = AcquisitionScheduler(profile=profile)
     radio = _make_radio()
@@ -3724,30 +3707,33 @@ async def test_repeated_refusal_records_the_defect_and_skips_the_field() -> None
         )
     )
 
-    observations = await YaesuObservationAdapter(
-        radio, profile=profile, clock=_clock
-    ).poll_rx_meters()
+    now = _clock()
+    adapter = YaesuObservationAdapter(radio, profile=profile, clock=lambda: now)
+    observations = await adapter.poll_rx_meters()
 
-    defect = scheduler.startup_defect
-    assert defect is not None
-    assert [str(path) for path in defect.paths] == ["receiver.sub.meters.s_meter"]
-    assert defect.command == "SM1;"
-    assert defect.frame == "?;"
+    assert scheduler.startup_defect is None
+    refusal = scheduler.diagnostics()["readRefusals"]["receiver.sub.meters.s_meter"]
+    assert refusal["command"] == "SM1;"
+    assert refusal["frame"] == "?;"
     emitted = {str(item.path) for item in observations}
     assert "receiver.sub.meters.s_meter" not in emitted
     assert "receiver.main.meters.s_meter" in emitted
     assert radio.read_s_meter.await_args_list == [call(0), call(1), call(1)]
 
+    path = FieldPath.receiver("sub", "meters", "s_meter")
+    radio.read_s_meter = AsyncMock(return_value=120)
+    await adapter.poll_rx_meters()
+    assert radio.read_s_meter.await_args_list == [call(0)]
+
+    now += scheduler._refusal_retry_seconds(path)
+    recovered = await adapter.poll_rx_meters()
+    assert path in {item.path for item in recovered}
+    assert path not in scheduler.refused_paths()
+
 
 @pytest.mark.asyncio
-async def test_refusal_then_malformed_reread_records_the_field_defect() -> None:
-    """MOR-2584 review: a malformed answer on the re-read is a field defect.
-
-    The SUB meter refuses once, then answers in another shape. The defect
-    is recorded from the re-read's own exception — like a malformed first
-    read — and only that field is skipped; it never escapes to the
-    cycle-level handler.
-    """
+async def test_refusal_then_malformed_reread_records_the_bad_reply() -> None:
+    """A malformed retry supplies the diagnostic frame for the unavailable meter."""
     profile = _profile_state_acquisition()
     scheduler = AcquisitionScheduler(profile=profile)
     radio = _make_radio()
@@ -3773,11 +3759,10 @@ async def test_refusal_then_malformed_reread_records_the_field_defect() -> None:
         radio, profile=profile, clock=_clock
     ).poll_rx_meters()
 
-    defect = scheduler.startup_defect
-    assert defect is not None
-    assert [str(path) for path in defect.paths] == ["receiver.sub.meters.s_meter"]
-    assert defect.command == "SM{receiver}{raw:03d};"
-    assert defect.frame == "SM0048;"
+    assert scheduler.startup_defect is None
+    refusal = scheduler.diagnostics()["readRefusals"]["receiver.sub.meters.s_meter"]
+    assert refusal["command"] == "SM{receiver}{raw:03d};"
+    assert refusal["frame"] == "SM0048;"
     emitted = {str(item.path) for item in observations}
     assert "receiver.sub.meters.s_meter" not in emitted
     assert "receiver.main.meters.s_meter" in emitted
@@ -3833,11 +3818,10 @@ async def test_retry_is_generic_a_non_listed_label_rereads_too() -> None:
     ).poll_slow_controls()
     emitted = {str(item.path) for item in observations}
 
-    defect = scheduler2.startup_defect
-    assert defect is not None
-    assert [str(path) for path in defect.paths] == [
+    assert scheduler2.startup_defect is None
+    assert {str(path) for path in scheduler2.refused_paths()} == {
         "receiver.main.operator_controls.preamp"
-    ]
+    }
     assert "receiver.main.operator_controls.preamp" not in emitted
     assert radio.read_preamp.await_args_list == [call(0), call(0)]
 

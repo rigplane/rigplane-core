@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Protocol, TypeVar, cast
 from rigplane.core.acquisition_scheduler import (
     AcquisitionScheduler,
     DeclaredCommandDefect,
+    DeclaredReadFailure,
     resolve_available_when,
 )
 from rigplane.core.exceptions import CommandError
@@ -39,7 +40,7 @@ from rigplane.core.types import ctcss_booleans_for_tone_squelch_type
 from rigplane.runtime.meter_cal import interpolate_meter
 
 from .parser import CatFormatError, CatParseError
-from .radio import FilterWidthReading, _ctcss_index_to_centihz
+from .radio import CatReadParseError, FilterWidthReading, _ctcss_index_to_centihz
 from .transport import CatCommandRejected, CatTimeoutError, CatTransportError
 
 if TYPE_CHECKING:
@@ -406,7 +407,6 @@ class YaesuObservationAdapter:
         if self._can_poll(_MAIN_FREQ):
             ok, value = await self._safe_read(
                 "main.freq",
-                self.radio.read_freq(0),
                 lambda: self.radio.read_freq(0),
                 paths=(_MAIN_FREQ,),
             )
@@ -421,7 +421,6 @@ class YaesuObservationAdapter:
         if self._can_poll(_MAIN_MODE):
             ok, result = await self._safe_read(
                 "main.mode",
-                self.radio.read_mode(0),
                 lambda: self.radio.read_mode(0),
                 paths=(_MAIN_MODE,),
             )
@@ -437,7 +436,6 @@ class YaesuObservationAdapter:
         ):
             ok, value = await self._safe_read(
                 "sub.freq",
-                self.radio.read_freq(1),
                 lambda: self.radio.read_freq(1),
                 paths=(_SUB_FREQ,),
             )
@@ -453,7 +451,6 @@ class YaesuObservationAdapter:
         ):
             ok, result = await self._safe_read(
                 "sub.mode",
-                self.radio.read_mode(1),
                 lambda: self.radio.read_mode(1),
                 paths=(_SUB_MODE,),
             )
@@ -596,7 +593,6 @@ class YaesuObservationAdapter:
                     # a timeout serves the width absent for the cycle.
                     ok, reading = await self._safe_read(
                         "main.filter_width",
-                        self.radio.read_filter_width_reading(0, mode=main_mode),
                         lambda: self.radio.read_filter_width_reading(0, mode=main_mode),
                         paths=(
                             _MAIN_FILTER_WIDTH,
@@ -628,7 +624,6 @@ class YaesuObservationAdapter:
                     # narrow lookup.
                     ok, value = await self._safe_read(
                         "main.filter_width",
-                        self.radio.read_filter_width(0, mode=main_mode),
                         lambda: self.radio.read_filter_width(0, mode=main_mode),
                         paths=(_MAIN_FILTER_WIDTH,),
                         contain_timeout=True,
@@ -662,7 +657,6 @@ class YaesuObservationAdapter:
                     # MOR-3856: the SUB twin of the MAIN containment above.
                     ok, reading = await self._safe_read(
                         "sub.filter_width",
-                        self.radio.read_filter_width_reading(1, mode=sub_mode),
                         lambda: self.radio.read_filter_width_reading(1, mode=sub_mode),
                         paths=(
                             _SUB_FILTER_WIDTH,
@@ -694,7 +688,6 @@ class YaesuObservationAdapter:
                     # narrow lookup.
                     ok, value = await self._safe_read(
                         "sub.filter_width",
-                        self.radio.read_filter_width(1, mode=sub_mode),
                         lambda: self.radio.read_filter_width(1, mode=sub_mode),
                         paths=(_SUB_FILTER_WIDTH,),
                         contain_timeout=True,
@@ -784,7 +777,6 @@ class YaesuObservationAdapter:
                 return before
             ok, raw_frequency = await self._safe_read(
                 "tx_target.freq",
-                self.radio.read_freq(before),
                 lambda: self.radio.read_freq(before),
             )
             after = await self._read_tx_func()
@@ -831,7 +823,6 @@ class YaesuObservationAdapter:
         if self._has_runtime_capability("meters") and self._can_poll(_MAIN_S_METER):
             ok, raw = await self._safe_read(
                 "main.s_meter",
-                self.radio.read_s_meter(0),
                 lambda: self.radio.read_s_meter(0),
                 paths=(_MAIN_S_METER,),
             )
@@ -854,7 +845,6 @@ class YaesuObservationAdapter:
         ):
             ok, raw = await self._safe_read(
                 "sub.s_meter",
-                self.radio.read_s_meter(1),
                 lambda: self.radio.read_s_meter(1),
                 paths=(_SUB_S_METER,),
             )
@@ -937,7 +927,6 @@ class YaesuObservationAdapter:
         if self._has_runtime_capability("meters") and self._can_poll(_ALC_METER):
             ok, raw = await self._safe_read(
                 "alc",
-                self.radio.read_alc_meter(),
                 lambda: self.radio.read_alc_meter(),
                 paths=(_ALC_METER,),
             )
@@ -954,7 +943,6 @@ class YaesuObservationAdapter:
         if self._has_runtime_capability("meters") and self._can_poll(_POWER_METER):
             ok, raw = await self._safe_read(
                 "power",
-                self.radio.read_power_meter(),
                 lambda: self.radio.read_power_meter(),
                 paths=(_POWER_METER,),
             )
@@ -971,7 +959,6 @@ class YaesuObservationAdapter:
         if self._has_runtime_capability("meters") and self._can_poll(_SWR_METER):
             ok, raw = await self._safe_read(
                 "swr",
-                self.radio.read_swr_meter(),
                 lambda: self.radio.read_swr_meter(),
                 paths=(_SWR_METER,),
             )
@@ -990,7 +977,6 @@ class YaesuObservationAdapter:
         if self._has_runtime_capability("meters") and self._can_poll(_COMP_METER):
             ok, raw = await self._safe_read(
                 "comp",
-                self.radio.read_comp_meter(),
                 lambda: self.radio.read_comp_meter(),
                 paths=(_COMP_METER,),
             )
@@ -1012,7 +998,6 @@ class YaesuObservationAdapter:
         if self._can_poll(_DUAL_WATCH):
             ok, mode = await self._safe_read(
                 "main.rx_func",
-                self.radio.get_rx_func(),
                 lambda: self.radio.get_rx_func(),
                 paths=(_DUAL_WATCH,),
             )
@@ -1023,7 +1008,6 @@ class YaesuObservationAdapter:
         if self._has_runtime_capability("af_level") and self._can_poll(_MAIN_AF):
             ok, value = await self._safe_read(
                 "main.af_level",
-                self.radio.read_af_level(0),
                 lambda: self.radio.read_af_level(0),
                 paths=(_MAIN_AF,),
             )
@@ -1038,7 +1022,6 @@ class YaesuObservationAdapter:
         if self._has_runtime_capability("rf_gain") and self._can_poll(_MAIN_RF):
             ok, value = await self._safe_read(
                 "main.rf_gain",
-                self.radio.read_rf_gain(0),
                 lambda: self.radio.read_rf_gain(0),
                 paths=(_MAIN_RF,),
             )
@@ -1053,7 +1036,6 @@ class YaesuObservationAdapter:
         if self._has_runtime_capability("squelch") and self._can_poll(_MAIN_SQL):
             ok, value = await self._safe_read(
                 "main.squelch",
-                self.radio.read_squelch(0),
                 lambda: self.radio.read_squelch(0),
                 paths=(_MAIN_SQL,),
             )
@@ -1073,7 +1055,6 @@ class YaesuObservationAdapter:
         ):
             ok, value = await self._safe_read(
                 "sub.af_level",
-                self.radio.read_af_level(1),
                 lambda: self.radio.read_af_level(1),
                 paths=(_SUB_AF,),
             )
@@ -1093,7 +1074,6 @@ class YaesuObservationAdapter:
         ):
             ok, value = await self._safe_read(
                 "sub.rf_gain",
-                self.radio.read_rf_gain(1),
                 lambda: self.radio.read_rf_gain(1),
                 paths=(_SUB_RF,),
             )
@@ -1113,7 +1093,6 @@ class YaesuObservationAdapter:
         ):
             ok, value = await self._safe_read(
                 "sub.squelch",
-                self.radio.read_squelch(1),
                 lambda: self.radio.read_squelch(1),
                 paths=(_SUB_SQL,),
             )
@@ -1143,7 +1122,6 @@ class YaesuObservationAdapter:
         ):
             ok, value = await self._safe_read(
                 "main.att",
-                self.radio.read_attenuator(0),
                 lambda: self.radio.read_attenuator(0),
                 paths=(_MAIN_ATT,),
             )
@@ -1156,7 +1134,6 @@ class YaesuObservationAdapter:
         if self._has_runtime_capability("preamp") and self._can_poll(_MAIN_PREAMP):
             ok, value = await self._safe_read(
                 "main.preamp",
-                self.radio.read_preamp(0),
                 lambda: self.radio.read_preamp(0),
                 paths=(_MAIN_PREAMP,),
             )
@@ -1167,7 +1144,6 @@ class YaesuObservationAdapter:
         if self._can_poll(_MAIN_AGC):
             ok, value = await self._safe_read(
                 "main.agc",
-                self.radio.read_agc(0),
                 lambda: self.radio.read_agc(0),
                 paths=(_MAIN_AGC,),
             )
@@ -1182,7 +1158,6 @@ class YaesuObservationAdapter:
         ):
             ok, value = await self._safe_read(
                 "sub.agc",
-                self.radio.read_agc(1),
                 lambda: self.radio.read_agc(1),
                 paths=(_SUB_AGC,),
             )
@@ -1202,7 +1177,6 @@ class YaesuObservationAdapter:
         if self._has_runtime_capability("if_shift") and self._can_poll(_MAIN_IF_SHIFT):
             ok, value = await self._safe_read(
                 "main.if_shift",
-                self.radio.read_if_shift(0),
                 lambda: self.radio.read_if_shift(0),
                 paths=(_MAIN_IF_SHIFT,),
             )
@@ -1220,7 +1194,6 @@ class YaesuObservationAdapter:
         ):
             ok, value = await self._safe_read(
                 "sub.if_shift",
-                self.radio.read_if_shift(1),
                 lambda: self.radio.read_if_shift(1),
                 paths=(_SUB_IF_SHIFT,),
             )
@@ -1235,7 +1208,6 @@ class YaesuObservationAdapter:
         if self._can_poll(_MAIN_NARROW):
             ok, value = await self._safe_read(
                 "main.narrow",
-                self.radio.read_narrow(0),
                 lambda: self.radio.read_narrow(0),
                 paths=(_MAIN_NARROW,),
                 contain_timeout=True,
@@ -1251,7 +1223,6 @@ class YaesuObservationAdapter:
         ):
             ok, value = await self._safe_read(
                 "sub.narrow",
-                self.radio.read_narrow(1),
                 lambda: self.radio.read_narrow(1),
                 paths=(_SUB_NARROW,),
                 contain_timeout=True,
@@ -1271,7 +1242,6 @@ class YaesuObservationAdapter:
         if self._has_runtime_capability("nb"):
             ok, nb_level = await self._safe_read(
                 "main.nb_level",
-                self.radio.read_nb_level(0),
                 lambda: self.radio.read_nb_level(0),
                 paths=(_MAIN_NB_LEVEL, _MAIN_NB),
             )
@@ -1300,7 +1270,6 @@ class YaesuObservationAdapter:
         ):
             ok, nb_level = await self._safe_read(
                 "sub.nb_level",
-                self.radio.read_nb_level(1),
                 lambda: self.radio.read_nb_level(1),
                 paths=(_SUB_NB_LEVEL, _SUB_NB),
             )
@@ -1324,7 +1293,6 @@ class YaesuObservationAdapter:
         if self._has_runtime_capability("nr"):
             ok, nr_level = await self._safe_read(
                 "main.nr_level",
-                self.radio.read_nr_level(0),
                 lambda: self.radio.read_nr_level(0),
                 paths=(_MAIN_NR_LEVEL, _MAIN_NR),
             )
@@ -1353,7 +1321,6 @@ class YaesuObservationAdapter:
         ):
             ok, nr_level = await self._safe_read(
                 "sub.nr_level",
-                self.radio.read_nr_level(1),
                 lambda: self.radio.read_nr_level(1),
                 paths=(_SUB_NR_LEVEL, _SUB_NR),
             )
@@ -1377,7 +1344,6 @@ class YaesuObservationAdapter:
         if self._has_runtime_capability("notch") and self._can_poll(_MAIN_AUTO_NOTCH):
             ok, value = await self._safe_read(
                 "main.auto_notch",
-                self.radio.read_auto_notch(0),
                 lambda: self.radio.read_auto_notch(0),
                 paths=(_MAIN_AUTO_NOTCH,),
             )
@@ -1395,7 +1361,6 @@ class YaesuObservationAdapter:
         ):
             ok, value = await self._safe_read(
                 "sub.auto_notch",
-                self.radio.read_auto_notch(1),
                 lambda: self.radio.read_auto_notch(1),
                 paths=(_SUB_AUTO_NOTCH,),
             )
@@ -1408,7 +1373,6 @@ class YaesuObservationAdapter:
         if self._has_runtime_capability("notch") and self._can_poll(_MAIN_MANUAL_NOTCH):
             ok, value = await self._safe_read(
                 "main.manual_notch",
-                self.radio.read_manual_notch(0),
                 lambda: self.radio.read_manual_notch(0),
                 paths=(_MAIN_MANUAL_NOTCH,),
             )
@@ -1426,7 +1390,6 @@ class YaesuObservationAdapter:
         ):
             ok, value = await self._safe_read(
                 "sub.manual_notch",
-                self.radio.read_manual_notch(1),
                 lambda: self.radio.read_manual_notch(1),
                 paths=(_SUB_MANUAL_NOTCH,),
             )
@@ -1443,7 +1406,6 @@ class YaesuObservationAdapter:
         ):
             ok, value = await self._safe_read(
                 "main.manual_notch_freq",
-                self.radio.read_manual_notch_freq(0),
                 lambda: self.radio.read_manual_notch_freq(0),
                 paths=(_MAIN_MANUAL_NOTCH_FREQ,),
             )
@@ -1463,7 +1425,6 @@ class YaesuObservationAdapter:
         ):
             ok, value = await self._safe_read(
                 "sub.manual_notch_freq",
-                self.radio.read_manual_notch_freq(1),
                 lambda: self.radio.read_manual_notch_freq(1),
                 paths=(_SUB_MANUAL_NOTCH_FREQ,),
             )
@@ -1524,7 +1485,6 @@ class YaesuObservationAdapter:
 
                 ok, sql_type = await self._safe_read(
                     f"{label}.sql_type",
-                    self.radio.read_sql_type(receiver),
                     _remake_sql_type,
                     paths=(tone_path, tsql_path, type_path),
                 )
@@ -1588,7 +1548,6 @@ class YaesuObservationAdapter:
 
                 ok, tone_index = await self._safe_read(
                     f"{label}.ctcss_tone_index",
-                    self.radio.read_ctcss_tone_index(receiver),
                     _remake_tone_index,
                     paths=(tone_path, tsql_path),
                 )
@@ -1636,7 +1595,6 @@ class YaesuObservationAdapter:
 
                     ok, shift_code = await self._safe_read(
                         f"{label}.repeater_shift",
-                        self.radio.read_repeater_shift(receiver),
                         _remake_shift,
                         paths=(path,),
                     )
@@ -1656,7 +1614,6 @@ class YaesuObservationAdapter:
         if self._can_poll(_ACTIVE):
             ok, index = await self._safe_read(
                 "active",
-                self.radio.read_vfo_select(),
                 lambda: self.radio.read_vfo_select(),
                 paths=(_ACTIVE,),
             )
@@ -1675,7 +1632,6 @@ class YaesuObservationAdapter:
         if self._has_runtime_capability("cw") and self._can_poll(_CW_SPOT):
             ok, value = await self._safe_read(
                 "cw_spot",
-                self.radio.read_cw_spot(),
                 lambda: self.radio.read_cw_spot(),
                 paths=(_CW_SPOT,),
             )
@@ -1697,7 +1653,6 @@ class YaesuObservationAdapter:
         if self._has_runtime_capability("meters") and self._can_poll(_VD_METER):
             ok, raw = await self._safe_read(
                 "vd",
-                self.radio.get_vd_meter(),
                 lambda: self.radio.get_vd_meter(),
                 paths=(_VD_METER,),
             )
@@ -1714,7 +1669,6 @@ class YaesuObservationAdapter:
         if self._has_runtime_capability("meters") and self._can_poll(_ID_METER):
             ok, raw = await self._safe_read(
                 "id",
-                self.radio.get_id_meter(),
                 lambda: self.radio.get_id_meter(),
                 paths=(_ID_METER,),
             )
@@ -1748,7 +1702,6 @@ class YaesuObservationAdapter:
         if self._has_runtime_capability("tx") and self._can_poll(_POWER_LEVEL):
             ok, result = await self._safe_read(
                 "power_level",
-                self.radio.read_power(),
                 lambda: self.radio.read_power(),
                 paths=(_POWER_LEVEL,),
             )
@@ -1765,7 +1718,6 @@ class YaesuObservationAdapter:
         if self._can_poll(_MIC_GAIN):
             ok, value = await self._safe_read(
                 "mic_gain",
-                self.radio.read_mic_gain(),
                 lambda: self.radio.read_mic_gain(),
                 paths=(_MIC_GAIN,),
             )
@@ -1778,7 +1730,6 @@ class YaesuObservationAdapter:
         ):
             ok, value = await self._safe_read(
                 "compressor_on",
-                self.radio.read_processor(),
                 lambda: self.radio.read_processor(),
                 paths=(_COMPRESSOR_ON,),
             )
@@ -1793,7 +1744,6 @@ class YaesuObservationAdapter:
         ):
             ok, value = await self._safe_read(
                 "compressor_level",
-                self.radio.read_processor_level(),
                 lambda: self.radio.read_processor_level(),
                 paths=(_COMPRESSOR_LEVEL,),
             )
@@ -1806,7 +1756,6 @@ class YaesuObservationAdapter:
         if self._has_runtime_capability("vox") and self._can_poll(_VOX_ON):
             ok, value = await self._safe_read(
                 "vox",
-                self.radio.read_vox(),
                 lambda: self.radio.read_vox(),
                 paths=(_VOX_ON,),
             )
@@ -1827,7 +1776,6 @@ class YaesuObservationAdapter:
         if self._has_runtime_capability("split") and self._can_poll(_SPLIT):
             ok, value = await self._safe_read(
                 "split",
-                self.radio.read_split(),
                 lambda: self.radio.read_split(),
                 paths=(_SPLIT,),
                 contain_timeout=True,
@@ -1846,7 +1794,6 @@ class YaesuObservationAdapter:
         if has_rit or has_xit:
             ok, clar = await self._safe_read(
                 "clarifier",
-                self.radio.read_clarifier(0),
                 lambda: self.radio.read_clarifier(0),
                 paths=(_RIT_ON, _RIT_TX),
             )
@@ -1871,7 +1818,6 @@ class YaesuObservationAdapter:
             if self._can_poll(_RIT_FREQ):
                 ok, freq = await self._safe_read(
                     "clarifier_freq",
-                    self.radio.read_clarifier_freq(0),
                     lambda: self.radio.read_clarifier_freq(0),
                     paths=(_RIT_FREQ,),
                 )
@@ -1889,7 +1835,6 @@ class YaesuObservationAdapter:
         if self._has_runtime_capability("tuner") and self._can_poll(_TUNER):
             ok, value = await self._safe_read(
                 "tuner",
-                self.radio.get_tuner_status(),
                 lambda: self.radio.get_tuner_status(),
                 paths=(_TUNER,),
             )
@@ -1907,7 +1852,6 @@ class YaesuObservationAdapter:
         if self._has_runtime_capability("dial_lock") and self._can_poll(_DIAL_LOCK):
             ok, value = await self._safe_read(
                 "dial_lock",
-                self.radio.read_lock(),
                 lambda: self.radio.read_lock(),
                 paths=(_DIAL_LOCK,),
             )
@@ -1934,7 +1878,6 @@ class YaesuObservationAdapter:
             if self._can_poll(_KEY_SPEED):
                 ok, value = await self._safe_read(
                     "key_speed",
-                    self.radio.read_keyer_speed(),
                     lambda: self.radio.read_keyer_speed(),
                     paths=(_KEY_SPEED,),
                 )
@@ -1949,7 +1892,6 @@ class YaesuObservationAdapter:
             if self._can_poll(_CW_PITCH):
                 ok, value = await self._safe_read(
                     "cw_pitch",
-                    self.radio.read_cw_pitch(),
                     lambda: self.radio.read_cw_pitch(),
                     paths=(_CW_PITCH,),
                 )
@@ -1964,7 +1906,6 @@ class YaesuObservationAdapter:
             if self._can_poll(_BREAK_IN):
                 ok, value = await self._safe_read(
                     "break_in",
-                    self.radio.read_break_in(),
                     lambda: self.radio.read_break_in(),
                     paths=(_BREAK_IN,),
                 )
@@ -1979,7 +1920,6 @@ class YaesuObservationAdapter:
             if self._can_poll(_BREAK_IN_DELAY):
                 ok, value = await self._safe_read(
                     "break_in_delay",
-                    self.radio.read_break_in_delay(),
                     lambda: self.radio.read_break_in_delay(),
                     paths=(_BREAK_IN_DELAY,),
                 )
@@ -1996,8 +1936,7 @@ class YaesuObservationAdapter:
     async def _safe_read(
         self,
         label: str,
-        read: Awaitable[_T],
-        remake: Callable[[], Awaitable[_T]],
+        read: Callable[[], Awaitable[_T]],
         *,
         paths: tuple[FieldPath, ...] = (),
         contain_timeout: bool = False,
@@ -2005,28 +1944,11 @@ class YaesuObservationAdapter:
     ) -> tuple[bool, _T | None]:
         """Await one field read, classifying a FIELD-level CAT failure.
 
-        Returns ``(ok, value)``. A read naming declared ``paths`` that the
-        radio answers in another shape RECORDS the defect on the acquisition
-        scheduler — the recording is what the startup gate reads — and then
-        skips that one field exactly like an undeclared read. A read the
-        radio refuses (``?;``) is re-issued ONCE through ``remake`` before
-        it is recorded: a refusal the radio repeats still records the
-        defect, while a refusal followed by a normal answer publishes the
-        answer and records nothing, so a one-off radio state (MOR-2584)
-        does not refuse the bind. A twice-refused field is still skipped on
-        that cycle, so a refused read cannot abort the whole poll cycle and
-        starve every later field (MOR-2578).
-
-        ``read`` is the first attempt (already created — coroutine arguments
-        evaluate before the call — because a site whose read needs the
-        freshest locals must build it inline); ``remake`` rebuilds the same
-        read for the single retry, so the retry costs one extra command
-        only after a refusal. Every declared-read site passes its own call —
-        there is no label table, so a new declared read retries without a
-        mapping change (MOR-2584's ``NA1;`` display-mode case included). A
-        malformed answer on the re-read records the field defect exactly
-        like a malformed first read; it never escapes to the cycle-level
-        handler.
+        A ``?;`` gets one immediate retry (MOR-2584). A repeated refusal or
+        a malformed reply skips the field for this cycle and goes to the
+        scheduler. Critical failures keep their startup verdict, while an
+        optional field is unavailable until a later lane cycle gets an answer.
+        The read factory creates a coroutine only when a wire read is due.
 
         TRANSPORT errors are NOT caught — they RE-RAISE so the poller's
         ``_run_poll_cycle`` reconnect/backoff still fires. ``CatTimeoutError``
@@ -2059,8 +1981,13 @@ class YaesuObservationAdapter:
         read naming a critical path (freq/mode) still raises for the
         reconnect path and keeps the MOR-2757 rule above.
         """
+        scheduler = getattr(self.radio, "_acquisition_scheduler", None)
+        if isinstance(
+            scheduler, AcquisitionScheduler
+        ) and scheduler.declared_read_deferred(paths, now=self.clock()):
+            return False, None
         try:
-            value = await read
+            value = await read()
         except CatTimeoutError as exc:
             if count_timeout:
                 self._count_critical_read_timeouts(label, exc, paths)
@@ -2070,17 +1997,14 @@ class YaesuObservationAdapter:
         except (CatParseError, CatFormatError, ValueError, KeyError) as exc:
             # ValueError covers _read_meter / int() malformed-frame failures;
             # CatParse/FormatError subclass ValueError but are listed for clarity.
-            if paths:
-                self._record_declared_defect(label, exc, paths)
-            self._log_field_skip(
-                label,
-                "Skipping field %s — malformed CAT response: %s",
-                exc,
-            )
+            if not self._record_declared_failure(label, exc, paths):
+                self._log_field_skip(
+                    label, "Skipping field %s — malformed CAT response: %s", exc
+                )
             return False, None
         except CatCommandRejected:
             try:
-                value = await remake()
+                value = await read()
             except CatTimeoutError as retry_exc:
                 if count_timeout:
                     self._count_critical_read_timeouts(label, retry_exc, paths)
@@ -2088,22 +2012,20 @@ class YaesuObservationAdapter:
                     return False, None
                 raise
             except CatCommandRejected as retry_exc:
-                if paths:
-                    self._record_declared_defect(label, retry_exc, paths)
-                self._log_field_skip(
-                    label,
-                    "Skipping field %s — command refused twice (?;): %s",
-                    retry_exc,
-                )
+                if not self._record_declared_failure(label, retry_exc, paths):
+                    self._log_field_skip(
+                        label,
+                        "Skipping field %s — command refused twice (?;): %s",
+                        retry_exc,
+                    )
                 return False, None
             except (CatParseError, CatFormatError, ValueError, KeyError) as retry_exc:
-                if paths:
-                    self._record_declared_defect(label, retry_exc, paths)
-                self._log_field_skip(
-                    label,
-                    "Skipping field %s — malformed CAT response on re-read: %s",
-                    retry_exc,
-                )
+                if not self._record_declared_failure(label, retry_exc, paths):
+                    self._log_field_skip(
+                        label,
+                        "Skipping field %s — malformed CAT response on re-read: %s",
+                        retry_exc,
+                    )
                 return False, None
         self._note_critical_read_answers(paths)
         return True, value
@@ -2175,7 +2097,7 @@ class YaesuObservationAdapter:
         reaches ``_CRITICAL_READ_TIMEOUT_ATTEMPTS`` the path's criticality
         chooses the recording: a safety-critical path (freq/mode) records
         the same :class:`DeclaredCommandDefect` a refused read records
-        (:meth:`_record_declared_defect`), naming the field and the
+        (:meth:`_record_declared_failure`), naming the field and the
         command the radio never answered — the startup gate aborts on it,
         and later records keep only the first
         (``AcquisitionScheduler.record_startup_defect``). Any other path
@@ -2196,48 +2118,37 @@ class YaesuObservationAdapter:
             counts[path] = count
             if count >= _CRITICAL_READ_TIMEOUT_ATTEMPTS:
                 if startup_critical_path(path):
-                    self._record_declared_defect(label, exc, (path,))
+                    self._record_declared_failure(label, exc, (path,))
                 else:
                     self._record_unanswered_reads((path,))
 
-    def _record_declared_defect(
+    def _record_declared_failure(
         self,
         label: str,
         exc: Exception,
         paths: tuple[FieldPath, ...],
-    ) -> None:
-        """Record the defect for a declared read that cannot answer.
-
-        The recording is what the startup gate reads: it checks the
-        scheduler's record before and during its wait, so a declared read
-        that fails twice before the gate completes refuses the bind — a
-        refusal the re-read answers (MOR-2584) records nothing. A refusal
-        that begins only after the gate has completed is recorded but
-        cannot undo a bind that already happened. The
-        read itself is skipped — only that field is dropped and the poll
-        cycle continues, so the field's own refusal cannot stall every
-        later field (MOR-2578).
-
-        MOR-4456: PTT and split record nothing — they left the
-        startup-critical set and are served unknown after the non-critical
-        deadline, so they must never occupy the startup-defect slot (the
-        first record wins). Name-scoped, not a criticality filter: every
-        other path keeps its existing record, and counted timeouts never
-        reach it from the PTT/split lanes (``count_timeout=False``).
-        """
-        paths = tuple(path for path in paths if path.name not in ("ptt", "split"))
-        if not paths:
-            return
+    ) -> bool:
+        """Hand wire evidence to the scheduler for declared-read failures."""
+        # MOR-4456: these lanes keep serving unknown after the startup deadline.
+        paths = tuple(path for path in paths if path not in (_PTT, _SPLIT))
+        scheduler = getattr(self.radio, "_acquisition_scheduler", None)
+        if not paths or not isinstance(scheduler, AcquisitionScheduler):
+            return False
         command = ""
         frame = ""
-        if isinstance(exc, CatParseError):
+        reason: DeclaredReadFailure = "malformed"
+        if isinstance(exc, CatReadParseError):
+            command, frame = exc.command, exc.response
+        elif isinstance(exc, CatParseError):
             command, frame = exc.template, exc.response
         elif isinstance(exc, CatFormatError):
             command = exc.template
         elif isinstance(exc, CatCommandRejected):
             command, frame = exc.command, "?;"
+            reason = "refused"
         elif isinstance(exc, CatTimeoutError):
             command = exc.command
+            reason = "timeout"
         defect = DeclaredCommandDefect(
             label=label,
             paths=paths,
@@ -2245,9 +2156,8 @@ class YaesuObservationAdapter:
             frame=frame,
             detail=str(exc),
         )
-        scheduler = getattr(self.radio, "_acquisition_scheduler", None)
-        if isinstance(scheduler, AcquisitionScheduler):
-            scheduler.record_startup_defect(defect)
+        scheduler.record_declared_read_failure(defect, reason=reason, now=self.clock())
+        return True
 
     def _log_field_skip(
         self,
@@ -2329,7 +2239,6 @@ class YaesuObservationAdapter:
             return
         ok, value = await self._safe_read(
             label,
-            self.radio.read_narrow(receiver),
             lambda: self.radio.read_narrow(receiver),
             paths=(narrow,),
             contain_timeout=True,

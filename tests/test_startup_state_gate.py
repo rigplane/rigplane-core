@@ -869,13 +869,8 @@ class _MalformedSubMeterRadio:
 
 
 @pytest.mark.asyncio
-async def test_gate_refuses_to_bind_when_a_declared_read_never_parses() -> None:
-    """No listener exists when a declared field is answered in another shape.
-
-    ``SUB_S_METER`` is polled every cycle and every answer is unparseable, so
-    no observation for it can ever reach the store. The message names the
-    field, the parse template and the frame the radio sent.
-    """
+async def test_gate_binds_when_a_noncritical_declared_read_never_parses() -> None:
+    """Open with the SUB meter unavailable and its bad reply in diagnostics."""
     radio = _MalformedSubMeterRadio()
     server = WebServer(radio, _gated_config())
     scheduler = radio._acquisition_scheduler
@@ -887,20 +882,17 @@ async def test_gate_refuses_to_bind_when_a_declared_read_never_parses() -> None:
         return _FakeAsyncServer()
 
     with patch("rigplane.web.web_startup.asyncio.start_server", new=_bind):
-        with pytest.raises(RuntimeError) as caught:
+        try:
             await asyncio.wait_for(server.start(), timeout=10.0)
-        await server.stop()
-
-    assert binds == []
-    message = str(caught.value)
-    assert message.startswith("web startup aborted: ")
-    assert message.endswith("Refusing to start a half-working server.")
-    assert str(SUB_S_METER) in message
-    assert "SM1{raw:03d};" in message
-    assert "SM0000;" in message
-    assert SUB_S_METER in scheduler.unobserved_startup_paths(
-        _observed_paths(server, scheduler)
-    )
+            assert binds == ["bind"]
+            assert scheduler.startup_defect is None
+            assert SUB_S_METER not in _observed_paths(server, scheduler)
+            refusal = scheduler.diagnostics()["readRefusals"][str(SUB_S_METER)]
+            assert refusal["command"] == "SM1{raw:03d};"
+            assert refusal["frame"] == "SM0000;"
+            assert "invalid reply" in refusal["message"]
+        finally:
+            await server.stop()
 
 
 @pytest.mark.asyncio
@@ -945,12 +937,8 @@ def _refuse_sm1() -> int:
 
 
 @pytest.mark.asyncio
-async def test_gate_still_refuses_a_refusal_the_radio_repeats() -> None:
-    """MOR-2584: a command refused on every attempt still aborts startup.
-
-    The SUB meter refuses both the first read and the single re-read, so the
-    existing defect record — and its message — is what refuses the bind.
-    """
+async def test_gate_binds_when_a_noncritical_read_is_refused_twice() -> None:
+    """The SUB meter still refuses on retry, so startup serves it unavailable."""
     radio = _MalformedSubMeterRadio()
     radio.read_s_meter = AsyncMock(
         side_effect=lambda receiver=0: 120 if receiver == 0 else _refuse_sm1()
@@ -964,20 +952,14 @@ async def test_gate_still_refuses_a_refusal_the_radio_repeats() -> None:
         return _FakeAsyncServer()
 
     with patch("rigplane.web.web_startup.asyncio.start_server", new=_bind):
-        with pytest.raises(RuntimeError) as caught:
+        try:
             await asyncio.wait_for(server.start(), timeout=10.0)
-        await server.stop()
-
-    assert binds == []
-    message = str(caught.value)
-    assert message.startswith("web startup aborted: ")
-    assert message.endswith("Refusing to start a half-working server.")
-    assert str(SUB_S_METER) in message
-    assert "SM1;" in message
-    assert "?;" in message
-    assert SUB_S_METER in scheduler.unobserved_startup_paths(
-        _observed_paths(server, scheduler)
-    )
+            assert binds == ["bind"]
+            assert scheduler.startup_defect is None
+            assert SUB_S_METER in scheduler.refused_paths()
+            assert SUB_S_METER not in _observed_paths(server, scheduler)
+        finally:
+            await server.stop()
 
 
 # ---------------------------------------------------------------------------
@@ -1454,6 +1436,46 @@ async def test_rigctld_gate_is_unchanged_when_the_server_answers_everything() ->
             assert fake.t_commands >= 1
             await server.stop()
     finally:
+        await radio.disconnect()
+        await fake.stop()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reply", ["RPRT 1", "not-a-number"])
+async def test_rigctld_unavailable_rf_gain_does_not_abort_startup(reply: str) -> None:
+    from rigplane.backends.rigctld_client.radio import RigctldClientRadio
+
+    path = FieldPath.receiver("main", "operator_controls", "rf_gain")
+    fake = _TcpRigctldServer()
+    fake._ANSWERS = {**fake._ANSWERS, "l RF": (reply,)}
+    await fake.start()
+    radio = RigctldClientRadio(host=fake.host, port=fake.port, timeout=0.5)
+    server = WebServer(radio, _gated_config())
+    bind = AsyncMock(return_value=_FakeAsyncServer())
+    try:
+        await radio.connect()
+        with patch("rigplane.web.web_startup.asyncio.start_server", new=bind):
+            await asyncio.wait_for(server.start(), timeout=30)
+        bind.assert_awaited_once()
+        scheduler = radio._acquisition_scheduler
+        assert scheduler is not None
+        assert scheduler.startup_defect is None
+        assert FREQ in _observed_paths(server, scheduler)
+        assert path not in _observed_paths(server, scheduler)
+        refusal = scheduler.diagnostics()["readRefusals"][str(path)]
+        assert refusal["command"] == "l RF"
+        assert refusal["frame"] == reply
+        fake._ANSWERS = _TcpRigctldServer._ANSWERS
+        # Simulate the retry delay elapsing while leaving the live poller running.
+        scheduler._refused_paths[path].retry_at = time.monotonic()
+        await await_until(
+            lambda: path in _observed_paths(server, scheduler),
+            timeout=30,
+            description="RF gain observed on a later rigctld poll",
+        )
+        assert path not in scheduler.refused_paths()
+    finally:
+        await server.stop()
         await radio.disconnect()
         await fake.stop()
 
@@ -2997,6 +3019,36 @@ async def test_ftx1_refused_mic_gain_does_not_abort_startup(
         await fake.stop()
 
 
+@pytest.mark.asyncio
+async def test_ftx1_refused_operating_mode_still_aborts_startup() -> None:
+    fake = FakeCatRadio(recorded_answers=_ftx1_table_refused_tx())
+    fake.hold("TX", "0")
+    await fake.start()
+    radio = YaesuCatRadio(device=fake.device_url, profile="ftx1")
+    try:
+        await asyncio.wait_for(radio.connect(), 30)
+        fake.reject("MD")
+        config = _gated_config()
+        config.radio_model = "FTX-1"
+        server = WebServer(radio, config)
+        bind = AsyncMock(return_value=_FakeAsyncServer())
+        try:
+            with patch("rigplane.web.web_startup.asyncio.start_server", new=bind):
+                with pytest.raises(RuntimeError) as caught:
+                    await asyncio.wait_for(server.start(), timeout=30)
+            bind.assert_not_awaited()
+            assert str(caught.value) == (
+                "web startup aborted: declared read 'main.mode' "
+                "(receiver.main.active.freq_mode.mode); command 'MD0;'; frame '?;': "
+                "Radio rejected command 'MD0;' (returned '?;'). "
+                "Refusing to start a half-working server."
+            )
+        finally:
+            await server.stop()
+    finally:
+        await radio.disconnect()
+        await fake.stop()
+
 
 @pytest.mark.asyncio
 async def test_yaesu_refused_ptt_read_opens_after_the_non_critical_deadline(
@@ -3155,36 +3207,39 @@ async def test_yaesu_fully_silent_link_still_serves_not_answering() -> None:
 async def test_cli_web_exits_one_and_prints_the_defect(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """``rigplane web`` reports the defect on stderr and exits 1.
-
-    Same radio as the gate test above, driven through the real
-    ``cli/__init__.py: _run`` so the exit code and the ``Error:`` line come
-    from the CLI's own handling, not from a re-raise the test composed.
-    """
+    """``rigplane web`` prints the critical read refusal and exits 1."""
     from rigplane.cli import _build_parser, _run
 
-    radio = _MalformedSubMeterRadio()
+    fake = FakeCatRadio(recorded_answers=_ftx1_table_refused_tx())
+    fake.hold("TX", "0")
+    await fake.start()
+    radio = YaesuCatRadio(device=fake.device_url, profile="ftx1")
 
     async def _bind(*_args: object, **_kwargs: object) -> _FakeAsyncServer:
         raise AssertionError("the listener must never bind")
 
     args = _build_parser().parse_args(
-        ["--host", "1.2.3.4", "--model", "IC-7610", "web", "--no-rigctld"]
+        ["--host", "1.2.3.4", "--model", "FTX-1", "web", "--no-rigctld"]
     )
     args.web_bridge = None  # no audio bridge; the gate is what is under test
-    with (
-        patch("rigplane.cli.create_radio", return_value=radio),
-        patch("rigplane.cli.check_ports_available"),
-        patch("rigplane.web.web_startup.asyncio.start_server", new=_bind),
-    ):
-        rc = await asyncio.wait_for(_run(args), timeout=10.0)
+    try:
+        await asyncio.wait_for(radio.connect(), timeout=30)
+        fake.reject("MD")
+        with (
+            patch("rigplane.cli.create_radio", return_value=radio),
+            patch("rigplane.cli.check_ports_available"),
+            patch("rigplane.web.web_startup.asyncio.start_server", new=_bind),
+        ):
+            rc = await asyncio.wait_for(_run(args), timeout=30)
+    finally:
+        await fake.stop()
 
     assert rc == 1
     err = capsys.readouterr().err
     assert err.startswith("Error: web startup aborted: ")
-    assert str(SUB_S_METER) in err
-    assert "SM1{raw:03d};" in err
-    assert "SM0000;" in err
+    assert "receiver.main.active.freq_mode.mode" in err
+    assert "command 'MD0;'" in err
+    assert "frame '?;'" in err
     assert "Refusing to start a half-working server." in err
 
 
