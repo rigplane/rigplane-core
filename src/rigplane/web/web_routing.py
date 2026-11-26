@@ -1078,7 +1078,7 @@ async def dispatch_http_with_controller_gate(
                     return
                 if buffered is not None:
                     reader = buffered
-            else:
+            elif path != "/api/v1/eibi/fetch" or method != "POST":
                 raise ControllerError("controller_local_required")
             ticket = controller.credential((headers or {}).get("x-rigplane-controller"))
             with controller.bind(ticket):

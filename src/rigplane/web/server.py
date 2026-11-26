@@ -5497,10 +5497,10 @@ class WebServer:
                 body,
                 {"Content-Type": "application/json"},
             )
-        except Exception as exc:
+        except Exception:
             logger.exception("eibi fetch failed")
             err = json.dumps(
-                {"error": str(exc)},
+                {"error": "eibi_fetch_failed"},
                 separators=(",", ":"),
             ).encode()
             await _send_response(

@@ -196,6 +196,7 @@ class FakeCatRadio:
 
         # Fault surface (all off by default).
         self._rejected_verbs: set[str] = set()
+        self._rejected_sets: set[str] = set()
         self._garble_verb: str | None = None
         self._silent_until = 0.0
         self._echo = False
@@ -288,6 +289,15 @@ class FakeCatRadio:
     def reject(self, verb: str) -> None:
         """Answer ``?;`` to every command with this two-letter verb."""
         self._rejected_verbs.add(verb)
+
+    def reject_set(self, command: str) -> None:
+        """Refuse only SETs matching one profile command's write template."""
+        if command not in self._write_parsers:
+            raise ValueError(f"no modeled SET command: {command!r}")
+        self._rejected_sets.add(command)
+
+    def accept_set(self, command: str) -> None:
+        self._rejected_sets.discard(command)
 
     def silence(self, for_seconds: float) -> None:
         """Answer nothing — and apply nothing — for a window.
@@ -419,6 +429,10 @@ class FakeCatRadio:
         With ``capture_replay`` a request the mounted recording knows is
         answered from it before any native handler.
         """
+        if any(
+            self._match_write(name, body) is not None for name in self._rejected_sets
+        ):
+            return _REJECT
         if self._capture_replay and self._recorded is not None:
             recorded = self._recorded.lookup(body + ";")
             if recorded is not None:
