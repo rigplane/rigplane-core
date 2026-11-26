@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [3.3.1rc3] — 2026-11-26
+## [3.3.1] — 2026-11-26
 
 Third release candidate of 3.3.1: 3.3.1rc2 plus three FTX-1 fixes cherry-picked from main (nothing else).
 
@@ -5435,7 +5435,8 @@ These deprecation closures were announced in v0.19 and dropped on schedule.
 - Transport layer, authentication, CI-V commands, meters, PTT, keep-alive.
 - Clean-room Icom LAN UDP protocol implementation.
 
-[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.3.0...HEAD
+[Unreleased]: https://github.com/rigplane/rigplane-core/compare/v3.3.1...HEAD
+[3.3.1]: https://github.com/rigplane/rigplane-core/compare/v3.3.0...v3.3.1
 [3.3.0]: https://github.com/rigplane/rigplane-core/compare/v3.2.3...v3.3.0
 [3.3.0rc5]: https://github.com/rigplane/rigplane-core/compare/v3.3.0rc4...v3.3.0rc5
 [3.3.0rc4]: https://github.com/rigplane/rigplane-core/compare/v3.3.0rc3...v3.3.0rc4
