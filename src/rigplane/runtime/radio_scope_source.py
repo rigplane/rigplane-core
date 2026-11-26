@@ -194,13 +194,22 @@ class RadioScopeSource:
             self._presets[-1],
         )
         half = self._coverage_half_width(preset)
-        return Coverage(center - half, center + half), preset
+        # MOR-4566: the spectrum ends at 0 Hz. A valid low-frequency window
+        # (a VFO near the bottom, e.g. 65 kHz with a 30–100 kHz pinned
+        # view) selects a preset whose ±coverage reaches underground; the
+        # grant is clamped at the physical floor — the window, whose edges
+        # are all real frequencies, stays covered instead of the grant
+        # raising.
+        return Coverage(max(0, center - half), center + half), preset
 
     def resolve_view(self, view: ViewRequest, receiver: int | None = None) -> View:
         selected = self._receiver(receiver)
         if isinstance(view, FollowView):
             center = self._writer.tuned_frequency(selected)
-            return View(center - view.span_hz / 2, center + view.span_hz / 2)
+            # MOR-4566: the spectrum ends at 0 Hz — a follow gesture whose
+            # half span exceeds a low VFO resolves to a view clamped at the
+            # floor instead of raising in View.
+            return View(max(0.0, center - view.span_hz / 2), center + view.span_hz / 2)
         return view
 
     def resolve_follow(
@@ -409,7 +418,9 @@ class RadioScopeSource:
         preset = min(self._caps.span_choices_hz, key=lambda choice: abs(choice - width))
         if width < preset and (preset - width) / preset <= self._SWEEP_EXTENT_TOLERANCE:
             center = (start + end) / 2
-            return center - preset / 2, center + preset / 2
+            # MOR-4566: clamp the expansion at the spectrum floor — a window
+            # sitting on 0 Hz would otherwise expand to a negative start.
+            return max(0.0, center - preset / 2), center + preset / 2
         return start, end
 
     def feed_frame(self, frame: ScopeFrame) -> None:
@@ -425,13 +436,28 @@ class RadioScopeSource:
             start, end = start - end, start + end
         if not frame.out_of_range and frame.mode in SPAN_APPLICABLE_SCOPE_MODES:
             start, end = self._preset_window(start, end)
+        out_of_range = frame.out_of_range
+        pixels = frame.pixels or None
+        if start < 0:
+            # MOR-4566: the spectrum ends at 0 Hz. A sweep whose edges reach
+            # below the floor (a low VFO with a wide CENTER preset, or a
+            # floor-level sweep extent expanded to its preset) must not
+            # raise in Coverage: a window fully below 0 Hz has no physical
+            # content and is dropped; one crossing the floor is published
+            # clamped at 0 and marked out of range — the bins below 0 Hz do
+            # not exist, so no pixels are published.
+            if end <= 0:
+                return
+            start = 0.0
+            out_of_range = True
+            pixels = None
         previous = self._native_coverages.get(receiver)
         self._native_coverages[receiver] = (frame.mode, Coverage(start, end))
         native = NativeFrame(
             frame.receiver,
             Coverage(start, end),
-            frame.pixels or None,
-            frame.out_of_range,
+            pixels,
+            out_of_range,
             native_width=native_width,
         )
         for callback in tuple(self._callbacks):

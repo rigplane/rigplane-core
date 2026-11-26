@@ -13,6 +13,7 @@ the stale anchor and before the 60 s CI-V data watchdog fires.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 
 import pytest
 
@@ -39,6 +40,9 @@ _STREAM_INTERVAL_S = 0.002
 # Generous outer bound: re-anchor (~1 s of stream) plus the identity re-read
 # backoff must finish long before the 60 s CI-V data watchdog could fire.
 _READY_DEADLINE_S = 20.0
+# Marker frequency for the directed-reply proof: nothing on the wire has
+# carried it before the read, so only the requested reply can return it.
+_MARKER_HZ = 7_123_456
 
 
 def _sim(factory, **kw) -> MockIcomRadio:
@@ -87,15 +91,26 @@ async def test_stale_high_first_packet_reanchors_and_civ_answers(
         with fast_connect():
             await asyncio.wait_for(radio.connect(), 10.0)
             await _wait_connected(radio)
-            freq = await asyncio.wait_for(radio.get_freq(), 5.0)
-        assert freq > 0
+            # MOR-4447: prove the DIRECTED reply is what answers, not a
+            # cached or unsolicited value: stall the unsolicited stream
+            # (and its drift), move the radio to a marker frequency
+            # nothing has reported yet, and disable the cache fallback —
+            # only the requested read can return the marker. The 10 s
+            # stall is far below the 60 s CI-V data watchdog.
+            sim.stall_for(10.0)
+            sim.set_frequency(_MARKER_HZ)
+            freq = await asyncio.wait_for(radio.get_freq(bypass_cache=True), 5.0)
+        assert freq == _MARKER_HZ
         stats = radio._civ_transport.rx_order_stats  # noqa: SLF001
         assert stats.reanchored == 1
         # The run up to the window still counts as duplicates — bounded, not
         # the thousands the field log showed.
         assert stats.duplicate <= REORDER_WINDOW
     finally:
-        await radio.disconnect()
+        # MOR-4447: every teardown step runs even when an earlier one
+        # raises — a failing disconnect must not strand the simulator.
+        with contextlib.suppress(Exception):
+            await radio.disconnect()
         await sim.stop()
 
 
@@ -145,8 +160,12 @@ async def test_reconnect_within_15s_after_clean_disconnect_answers_promptly(
         assert stats.reanchored == 1
         assert stats.duplicate <= REORDER_WINDOW
     finally:
-        await second.disconnect()
-        await first.disconnect()  # idempotent; covers a failed first leg
+        # MOR-4447: every teardown step runs even when an earlier one
+        # raises — a failing disconnect must not strand the simulator.
+        with contextlib.suppress(Exception):
+            await second.disconnect()
+        with contextlib.suppress(Exception):
+            await first.disconnect()  # idempotent; covers a failed first leg
         await sim.stop()
 
 
@@ -189,7 +208,10 @@ async def test_forward_wrapping_open_marker_reanchors_without_phantom_loss(
         assert stats.reanchored == 1
         assert stats.lost == 0
     finally:
-        await radio.disconnect()
+        # MOR-4447: every teardown step runs even when an earlier one
+        # raises — a failing disconnect must not strand the simulator.
+        with contextlib.suppress(Exception):
+            await radio.disconnect()
         await sim.stop()
 
 
@@ -256,5 +278,8 @@ async def test_contiguous_burst_loss_stays_visible_and_civ_answers(
         assert not transport.rx_missing
         assert not transport._rx_held
     finally:
-        await radio.disconnect()
+        # MOR-4447: every teardown step runs even when an earlier one
+        # raises — a failing disconnect must not strand the simulator.
+        with contextlib.suppress(Exception):
+            await radio.disconnect()
         await sim.stop()

@@ -181,6 +181,7 @@ def _enumerate(device_name: str) -> list[tuple[int, int, bool]] | None:
         raise OSError(f"CoCreateInstance failed: 0x{result & 0xFFFFFFFF:08x}")
     enumerator = _Interface(out.value)
     found = False
+    ambiguous = False
     sessions: list[tuple[int, int, bool]] = []
     try:
         collection = enumerator.child(
@@ -194,20 +195,36 @@ def _enumerate(device_name: str) -> list[tuple[int, int, bool]] | None:
                 try:
                     name = _friendly_name(device)
                     if name is not None and _same_name(name, device_name):
-                        found = True
-                        sessions.extend(_endpoint_sessions(device))
+                        if found:
+                            # MOR-4041: a second ACTIVE capture endpoint
+                            # with the same friendly name. PortAudio named
+                            # ONE endpoint; its sessions can no longer be
+                            # told from the other endpoint's, so
+                            # attributing a holder would name a program
+                            # that may hold the OTHER device. Report
+                            # nothing: the caller keeps the generic
+                            # refusal wording instead of a wrong name.
+                            ambiguous = True
+                        else:
+                            found = True
+                            sessions.extend(_endpoint_sessions(device))
                 finally:
                     device.release()
         finally:
             collection.release()
     finally:
         enumerator.release()
+    if ambiguous:
+        return None
     return sessions if found else None
 
 
 def capture_sessions(device_name: str) -> list[tuple[int, int, bool]] | None:
     """``(process id, state, is system sounds)`` per session of the capture endpoint
-    named *device_name*, or ``None`` when no active capture endpoint has that name.
+    named *device_name*, or ``None`` when no active capture endpoint has that name
+    — or when more than one active endpoint carries it: sessions cannot then be
+    attributed to the endpoint PortAudio named, and a wrong holder name is worse
+    than none (MOR-4041).
 
     State is the AudioSessionState value: 0 inactive, 1 active, 2 expired.
     """
