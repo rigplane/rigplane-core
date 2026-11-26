@@ -260,13 +260,14 @@ async def test_real_ac_observation_normalizes_or_faults_on_unknown(
     answer: str,
     expected: int | None,
 ) -> None:
-    """An AC answer outside the mapped domain is a defect, not an omission.
+    """An AC answer outside the mapped domain is a visible omission, not a startup defect.
 
     ``_read_atu_route`` raises ``ValueError`` for a src/type/state triple its
     table does not map; that reaches ``_safe_read`` on a read naming a
-    declared path, so the defect is recorded on the scheduler (what the
-    startup gate reads) and the field is skipped — the cycle is not
-    aborted (MOR-2578).
+    declared path. ``tuner_status`` is not startup-critical, so the scheduler
+    marks the path unavailable with its refusal diagnostic (the field is
+    skipped, the cycle is not aborted: MOR-2578) and records NO startup defect:
+    only startup-critical paths (frequency and mode) stop a start (MOR-4819).
     """
     radio = radio_with_answer(answer)
     path = FieldPath.global_("operator_controls", "tuner_status")
@@ -289,8 +290,8 @@ async def test_real_ac_observation_normalizes_or_faults_on_unknown(
     observations = await adapter.poll_tx_controls()
     if expected is None:
         assert observations == ()
-        assert scheduler.startup_defect is not None
-        assert scheduler.startup_defect.paths == (path,)
+        assert scheduler.startup_defect is None
+        assert path in scheduler.declared_read_refusals()
     else:
         assert len(observations) == 1
         assert observations[0].path == path

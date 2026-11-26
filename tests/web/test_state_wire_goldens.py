@@ -114,6 +114,36 @@ def test_committed_golden_is_current() -> None:
     )
 
 
+def test_ftx1_mic_gain_replay_publishes_refusal_and_recovery() -> None:
+    entry = _GOLDENS["FTX-1"]
+    refused = entry["micGainRefused"]
+    recovered = entry["micGainRecovered"]
+    generation = entry["micGainCapabilities"]["providerGeneration"]
+    for envelope in (refused, recovered):
+        assert StateUpdateEnvelope.model_validate(envelope).type == "full"
+        assert envelope["providerGeneration"] == generation
+        assert envelope["data"]["connection"]["rigConnected"] is True
+
+    before, after = refused["data"], recovered["data"]
+    assert before["main"]["mode"] == "CW-U"
+    assert before["micGain"] is None
+    assert before["fieldStatus"]["micGain"] == {
+        "availability": "unavailable",
+        "freshness": "unknown",
+        "message": (
+            "The radio refused to report mic gain. The control is unavailable "
+            "until the radio answers. The app is still connected."
+        ),
+        "observed": False,
+        "storePath": "global.operator_controls.mic_gain",
+    }
+    assert recovered["stateRevision"] > refused["stateRevision"]
+    assert after["main"]["mode"] == "USB"
+    assert after["micGain"] == 50
+    assert after["fieldStatus"]["micGain"]["availability"] == "available"
+    assert "message" not in after["fieldStatus"]["micGain"]
+
+
 def test_generator_check_reports_no_drift() -> None:
     """``--check`` agrees the committed file is byte-for-byte canonical."""
     result = subprocess.run(

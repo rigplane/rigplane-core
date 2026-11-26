@@ -10,6 +10,10 @@ For every profile in ``rigs/*.toml``, a ``WebServer`` built with no radio and
 - ``allObserved``: the same call after every field path the profile's
   ``[state_acquisition]`` declares has been observed once. A profile with no
   ``[state_acquisition]`` block declares nothing, so it has no ``allObserved``.
+- ``micGainRefused``, ``micGainRecovered`` and ``micGainCapabilities``
+  (FTX-1): capabilities and full envelopes from one CW-to-USB CAT session
+  that refuses ``MG;`` in CW and answers in USB. ``refusedMicGainFieldStatus``
+  is the refusal envelope's public field-status row.
 - ``polledSquelch*`` (MOR-3630): for every Icom CI-V profile that polls the
   receiver ``squelch`` level, the capabilities body and the ``full`` envelope
   the web server builds around a real ``IcomRadio`` after one polled CI-V
@@ -72,6 +76,13 @@ import pytest
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_REPO_ROOT / "src"))
 
+from rigplane.backends.yaesu_cat import radio as _yaesu_radio_module  # noqa: E402
+from rigplane.backends.yaesu_cat.observations import YaesuObservationAdapter  # noqa: E402
+from rigplane.backends.yaesu_cat.radio import YaesuCatRadio  # noqa: E402
+from rigplane.backends.yaesu_cat.transport import (  # noqa: E402
+    CatCommandRejected,
+    CatTimeoutError,
+)
 from rigplane.commands._codec import bcd_encode_value  # noqa: E402
 from rigplane.commands._frame import (  # noqa: E402
     CONTROLLER_ADDR,
@@ -292,8 +303,12 @@ def _pin_leaf_volatile(envelope: dict[str, Any]) -> None:
 
 
 def _capabilities(server: WebServer) -> dict[str, Any]:
+    return asyncio.run(_capture_capabilities(server))
+
+
+async def _capture_capabilities(server: WebServer) -> dict[str, Any]:
     writer = _CaptureWriter()
-    asyncio.run(server._serve_capabilities(cast("asyncio.StreamWriter", writer)))
+    await server._serve_capabilities(cast("asyncio.StreamWriter", writer))
     head, _, body = bytes(writer.buffer).partition(b"\r\n\r\n")
     status_line = head.split(b"\r\n", 1)[0]
     if status_line != b"HTTP/1.1 200 OK":
@@ -456,6 +471,57 @@ def _build_slotted_ab_bands_goldens(model: str) -> dict[str, Any]:
     }
 
 
+async def _build_mic_gain_goldens(config: WebConfig) -> dict[str, Any]:
+    # Reuse the startup test's radio replies at the CAT transport boundary.
+    test_paths = [str(_REPO_ROOT / "tests"), str(_REPO_ROOT)]
+    with mock.patch.object(sys, "path", [*test_paths, *sys.path]):
+        from test_startup_state_gate import (
+            _Ftx1ModeDependentMicGain,
+            _ftx1_table_refused_tx,
+        )
+
+    fake = _Ftx1ModeDependentMicGain(
+        mode_code="3", recorded_answers=_ftx1_table_refused_tx()
+    )
+    fake.hold("TX", "0")
+
+    async def query(command: str, **_kwargs: Any) -> str:
+        reply = fake._reply_for(command.removesuffix(";"))
+        if reply == "?;":
+            raise CatCommandRejected(f"Radio rejected {command!r}", command=command)
+        if reply is None:
+            raise CatTimeoutError(f"No answer to {command!r}", command=command)
+        return reply.removesuffix(";")
+
+    radio = YaesuCatRadio(device="/dev/null", profile="ftx1")
+    server = WebServer(radio, config)
+    clock = VirtualClock(start=_PINNED_MONOTONIC)
+    adapter = YaesuObservationAdapter.from_radio(radio, clock=clock)
+    with pytest.MonkeyPatch.context() as patch:
+        clock.scope_to(patch, _yaesu_radio_module)
+        patch.setattr(radio._transport, "_connected", True)
+        patch.setattr(radio._transport, "query", query)
+        observations = await adapter.poll_medium() + await adapter.poll_tx_controls()
+        for observation in observations:
+            server.command_state_store.apply_current(observation)
+        refused = _full_envelope(server)
+        capabilities = await _capture_capabilities(server)
+
+        fake.change_mode_from_front_panel("2")
+        clock.advance(1.0)
+        observations = await adapter.poll_medium() + await adapter.poll_tx_controls()
+        for observation in observations:
+            server.command_state_store.apply_current(observation)
+        recovered = _full_envelope(server)
+
+    return {
+        "micGainCapabilities": capabilities,
+        "micGainRefused": refused,
+        "micGainRecovered": recovered,
+        "refusedMicGainFieldStatus": refused["data"]["fieldStatus"]["micGain"],
+    }
+
+
 def _build_profile_goldens(model: str) -> dict[str, Any]:
     profile = get_radio_profile(model)
     config = WebConfig(radio_model=model)
@@ -474,6 +540,8 @@ def _build_profile_goldens(model: str) -> dict[str, Any]:
         golden.update(_build_polled_squelch_goldens(model))
     if model == _SLOTTED_AB_MODEL:
         golden.update(_build_slotted_ab_bands_goldens(model))
+    if model == "FTX-1":
+        golden.update(asyncio.run(_build_mic_gain_goldens(config)))
     return golden
 
 
