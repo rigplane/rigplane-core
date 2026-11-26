@@ -229,6 +229,18 @@ test('terminal topology refuses skipped success and injected or incomplete jobs'
     ran('quick-frontend-e2e (journey-2)', frontendPool, 'mini-server-build-core-4'),
     ran('quick-frontend-e2e (journey-3)', frontendPool, 'mini-server-build-core-5'));
   assert.deepEqual(observer.evaluateJobTopology(run, both, {...routes, frontend: true}, false), ok);
+  const lowercase = structuredClone(both);
+  for (const job of lowercase) job.labels = job.labels.map((label) => label.toLowerCase());
+  assert.deepEqual(observer.evaluateJobTopology(run, lowercase, {...routes, frontend: true}, false), ok);
+  const lowercaseSwapped = structuredClone(lowercase);
+  lowercaseSwapped[1].labels = pythonPool.map((label) => label.toLowerCase());
+  assert.equal(observer.evaluateJobTopology(run, lowercaseSwapped, {...routes, frontend: true}, false).code, 'route_mismatch');
+  const lowercaseGate = structuredClone(valid);
+  lowercaseGate[3].labels = gate.map((label) => label.toLowerCase());
+  assert.equal(observer.evaluateJobTopology(run, lowercaseGate, routes, false).code, 'route_mismatch');
+  const lowercasePythonSwapped = structuredClone(valid);
+  lowercasePythonSwapped[3].labels = frontendPool.map((label) => label.toLowerCase());
+  assert.equal(observer.evaluateJobTopology(run, lowercasePythonSwapped, routes, false).code, 'route_mismatch');
   // The old ARM64 build request on the visual leg is now a route mismatch.
   const visualOnBuild = structuredClone(both); visualOnBuild[2].labels = frontendPool;
   assert.equal(observer.evaluateJobTopology(run, visualOnBuild, {...routes, frontend: true}, false).code, 'route_mismatch');
