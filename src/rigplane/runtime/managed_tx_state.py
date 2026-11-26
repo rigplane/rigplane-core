@@ -185,6 +185,18 @@ class ActuationSettled:
     operation: ActuationOperation
     result: ActuationResult
     error: str | None = None
+    refusal_reason: ManagedTxRefusalReason | None = None
+
+    @property
+    def rejection_reason(self) -> ManagedTxRefusalReason:
+        if self.refusal_reason is not None:
+            return self.refusal_reason
+        return (
+            ManagedTxRefusalReason.RADIO_REFUSED
+            if self.result is ActuationResult.REJECTED
+            and self.error in (None, ActuationResult.REJECTED.value)
+            else ManagedTxRefusalReason.OTHER
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -328,9 +340,12 @@ def _settle(state: ManagedTxState, event: ActuationSettled) -> ManagedTxTransiti
             tx_started_at_monotonic=None,
             tot_deadline_monotonic=None,
             last_error=(
-                ManagedTxRefusalReason.RADIO_REFUSED.value
+                event.rejection_reason.value
                 if event.result is ActuationResult.REJECTED
-                and event.error in (None, ActuationResult.REJECTED.value)
+                and (
+                    event.refusal_reason is not None
+                    or event.error in (None, ActuationResult.REJECTED.value)
+                )
                 else event.error or event.result.value
             ),
         )

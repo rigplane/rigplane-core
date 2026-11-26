@@ -22,6 +22,8 @@ from rigplane.runtime.managed_tx_state import (
     AbortOperation,
     ActuationOperation,
     ActuationResult,
+    ManagedTxActuationRefused,
+    ManagedTxRefusalReason,
     EffectToken,
 )
 from rigplane.runtime.radio import CoreRadio, IcomRadio
@@ -102,7 +104,7 @@ async def test_ptt_and_transmit_on_share_one_profile_command_and_immediate_lane(
         assert call.kwargs == {
             "priority": Priority.IMMEDIATE,
             "wait_response": True,
-            "timeout": 0.15,
+            "reply_timeout": 0.15,
             "is_current": current,
         }
 
@@ -118,19 +120,13 @@ async def test_ptt_and_transmit_on_share_one_profile_command_and_immediate_lane(
         (0xFA, ActuationResult.REJECTED),
         (0x03, ActuationResult.ACCEPTED),
         (None, ActuationResult.ACCEPTED),
-        ("timeout", ActuationResult.ACCEPTED),
     ],
 )
 async def test_positive_tx_settles_on_the_radio_answer(operation, answer, expected):
-    from rigplane.core.exceptions import TimeoutError
-
     radio = _profile_bound_radio()
     radio._send_civ_raw = AsyncMock(
-        side_effect=TimeoutError("CI-V response timed out")
-        if answer == "timeout"
-        else None,
         return_value=None
-        if answer in (None, "timeout")
+        if answer is None
         else CivFrame(
             to_addr=CONTROLLER_ADDR, from_addr=radio._radio_addr, command=answer
         ),
@@ -138,6 +134,18 @@ async def test_positive_tx_settles_on_the_radio_answer(operation, answer, expect
 
     assert await radio.actuate(_token(), operation, is_current=lambda: True) is expected
     assert radio._send_civ_raw.await_args.kwargs["wait_response"] is True
+
+
+@pytest.mark.asyncio
+async def test_timeout_outside_the_sent_key_reply_wait_is_not_accepted():
+    from rigplane.core.exceptions import TimeoutError
+
+    radio = _profile_bound_radio()
+    radio._send_civ_raw = AsyncMock(side_effect=TimeoutError("not a reply wait"))
+    with pytest.raises(TimeoutError, match="not a reply wait"):
+        await radio.actuate(
+            _token(), ActuationOperation.PTT_ON, is_current=lambda: True
+        )
 
 
 @pytest.mark.asyncio
@@ -410,11 +418,12 @@ async def test_unsupported_profile_refuses_before_any_io() -> None:
     )
     radio._send_civ_raw = AsyncMock(side_effect=AssertionError("I/O attempted"))
 
-    result = await radio.actuate(
-        _token(), ActuationOperation.PTT_ON, is_current=lambda: True
-    )
+    with pytest.raises(ManagedTxActuationRefused) as refused:
+        await radio.actuate(
+            _token(), ActuationOperation.PTT_ON, is_current=lambda: True
+        )
 
-    assert result is ActuationResult.REJECTED
+    assert refused.value.reason is ManagedTxRefusalReason.OTHER
     radio._send_civ_raw.assert_not_awaited()
 
 
@@ -482,8 +491,9 @@ async def test_provider_replacement_cannot_retarget_queued_on(
         old_transport.release.set()
         with pytest.raises(ConnectionError):
             await asyncio.wait_for(blocker, 1)
-        with pytest.raises(ConnectionError, match="managed TX attempt is stale"):
+        with pytest.raises(ManagedTxActuationRefused) as refused:
             await asyncio.wait_for(on, 1)
+        assert refused.value.reason is ManagedTxRefusalReason.OTHER
         assert len(old_transport.sent) == 1
         assert replacement.sent == []
     finally:

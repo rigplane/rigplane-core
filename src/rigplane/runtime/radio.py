@@ -79,6 +79,8 @@ from rigplane.runtime.managed_tx_state import (
     ActuationOperation,
     ActuationResult,
     EffectToken,
+    ManagedTxActuationRefused,
+    ManagedTxRefusalReason,
 )
 
 # Import split modules
@@ -2374,6 +2376,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
         dedupe: bool = False,
         wait_response: bool = True,
         timeout: float | None = None,
+        reply_timeout: float | None = None,
         wait_dispatch: bool = True,
         is_current: "Callable[[], bool] | None" = None,
     ) -> CivFrame | None:
@@ -2402,6 +2405,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
                 dedupe=dedupe,
                 wait_response=wait_response,
                 timeout=timeout,
+                reply_timeout=reply_timeout,
                 wait_dispatch=wait_dispatch,
                 is_current=is_current,
             )
@@ -2421,6 +2425,7 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
                 dedupe=dedupe,
                 wait_response=wait_response,
                 timeout=timeout,
+                reply_timeout=reply_timeout,
                 wait_dispatch=wait_dispatch,
                 is_current=admitted_is_current,
             )
@@ -4481,22 +4486,22 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
                 civ = getattr(self._commands, name)(*args, to_addr=self._radio_addr)
                 priority = Priority.ABORT
             else:
-                return ActuationResult.REJECTED
-        except CommandError:
-            return ActuationResult.REJECTED
+                raise CommandError("unsupported managed TX operation")
+        except CommandError as exc:
+            raise ManagedTxActuationRefused(ManagedTxRefusalReason.OTHER) from exc
         if operation in (ActuationOperation.PTT_ON, ActuationOperation.TRANSMIT_ON):
             try:
                 reply = await self._send_civ_raw(
                     civ,
                     priority=priority,
                     wait_response=True,
-                    timeout=self.ICOM_PTT_ON_ACK_TIMEOUT_S,
+                    reply_timeout=self.ICOM_PTT_ON_ACK_TIMEOUT_S,
                     is_current=is_current,
                 )
             except CommandRejectedError:
                 return ActuationResult.REJECTED
-            except (TimeoutError, asyncio.TimeoutError):
-                return ActuationResult.ACCEPTED
+            except (StaleBeforeWireError, CommandError) as exc:
+                raise ManagedTxActuationRefused(ManagedTxRefusalReason.OTHER) from exc
             acknowledged = None if reply is None else parse_ack_nak(reply)
             if acknowledged is None:
                 return ActuationResult.ACCEPTED

@@ -14,6 +14,8 @@ from _perf_helpers import fast_connect
 from rigplane.cli import _ManagedTxRadioSession
 from rigplane.commands import CONTROLLER_ADDR, build_civ_frame, parse_civ_frame
 from rigplane.commands.commander import IcomCommander
+from rigplane.command_map import CommandMap
+from rigplane.commands.bound import BoundCommands
 from rigplane.core import civ as civ_module
 from rigplane.core.civ import PttReplyLedger
 from rigplane.core.exceptions import CommandError
@@ -29,6 +31,7 @@ from rigplane.runtime.managed_tx_composition import (
     ManagedTxComposition,
     install_managed_tx_composition,
 )
+from rigplane.runtime.managed_tx_authority import ManagedTxSubmission
 from rigplane.runtime.managed_tx_state import (
     ActuationOperation,
     ActuationResult,
@@ -37,6 +40,9 @@ from rigplane.runtime.managed_tx_state import (
     ManagedTxIntentKind,
     ManagedTxOutcome,
     ManagedTxRefusalReason,
+    ReleasePlan,
+    ManagedTxState,
+    ManagedTxTransition,
 )
 from rigplane.runtime.managed_tx_submission import ManagedPttTracker
 from rigplane.runtime import (
@@ -135,10 +141,13 @@ async def test_shared_positive_queue_maps_typed_refusal_for_every_backend(result
     settlement = ActuationSettled(
         EffectToken(1, 1, "shared-key"), ActuationOperation.PTT_ON, result
     )
-    receipt = SimpleNamespace(
-        outcome=ManagedTxOutcome.ACCEPTED,
-        wait_settlement=AsyncMock(return_value=settlement),
-    )
+    transition = ManagedTxTransition(ManagedTxState(), ManagedTxOutcome.ACCEPTED)
+
+    async def complete():
+        return transition, settlement
+
+    completion = asyncio.create_task(complete())
+    receipt = ManagedTxSubmission(transition, completion)
     ready = asyncio.get_running_loop().create_future()
 
     async def admitted():
@@ -156,11 +165,12 @@ async def test_shared_positive_queue_maps_typed_refusal_for_every_backend(result
             assert refused.value.reason is ManagedTxRefusalReason.RADIO_REFUSED
         else:
             await execute_positive_tx_queue_entry(entry)
-        receipt.wait_settlement.assert_awaited_once()
+        assert receipt.settlement_done
+        assert await receipt.wait_settlement() is settlement
     finally:
         if not submission.done():
             submission.cancel()
-        await asyncio.gather(submission, return_exceptions=True)
+        await asyncio.gather(submission, completion, return_exceptions=True)
 
 
 async def _drain_queue(server):
@@ -185,26 +195,31 @@ async def _drain_queue(server):
 
 
 @pytest.mark.parametrize(
-    "error,expected",
+    "error,reason,expected",
     [
-        (None, ManagedTxRefusalReason.RADIO_REFUSED),
-        ("rejected", ManagedTxRefusalReason.RADIO_REFUSED),
-        ("stale before dispatch", ManagedTxRefusalReason.OTHER),
+        (None, None, ManagedTxRefusalReason.RADIO_REFUSED),
+        ("rejected", None, ManagedTxRefusalReason.RADIO_REFUSED),
+        ("stale before dispatch", None, ManagedTxRefusalReason.OTHER),
+        (None, ManagedTxRefusalReason.OTHER, ManagedTxRefusalReason.OTHER),
+        ("rejected", ManagedTxRefusalReason.OTHER, ManagedTxRefusalReason.OTHER),
     ],
 )
 async def test_shared_queue_does_not_name_pre_dispatch_failure_as_radio_refusal(
-    error, expected
+    error, reason, expected
 ):
     settlement = ActuationSettled(
         EffectToken(1, 1, "refused-key"),
         ActuationOperation.PTT_ON,
         ActuationResult.REJECTED,
         error,
+        reason,
     )
-    receipt = SimpleNamespace(
-        outcome=ManagedTxOutcome.ACCEPTED,
-        wait_settlement=AsyncMock(return_value=settlement),
-    )
+    transition = ManagedTxTransition(ManagedTxState(), ManagedTxOutcome.ACCEPTED)
+
+    async def complete():
+        return transition, settlement
+
+    receipt = ManagedTxSubmission(transition, asyncio.create_task(complete()))
     ready = asyncio.get_running_loop().create_future()
     submission = asyncio.get_running_loop().create_future()
     submission.set_result(receipt)
@@ -217,11 +232,13 @@ async def test_shared_queue_does_not_name_pre_dispatch_failure_as_radio_refusal(
             )
         )
     assert refused.value.reason is expected
+    assert receipt.settlement_done
+    assert await receipt.wait_settlement() is settlement
 
 
 @pytest.mark.parametrize("ingress", ["http", "ws", "rigctld"])
 @pytest.mark.parametrize("answer", ["nak", "ack", "silence", "lost-ack"])
-async def test_simulator_reply_reaches_ingress_and_managed_document(
+async def test_ingress_radio_refused_only_for_nak_after_key_written(
     simulated_key, ingress, answer
 ):
     radio, sim, script, composition = simulated_key
@@ -332,11 +349,22 @@ class _LostKeyAckTransport(MockTransport):
         self.clock = clock
         self.ptt_on = False
         self.emitted = []
+        self.silent_commands = set()
+
+    def answer(self, command):
+        self.queue_response(
+            wrap_civ_in_udp(
+                build_civ_frame(CONTROLLER_ADDR, self.emitted[-1][1].to_addr, command),
+                seq=self.send_seq,
+            )
+        )
 
     async def send_tracked(self, data, **kwargs):
         await super().send_tracked(data, **kwargs)
         frame = parse_civ_frame(data[0x15:])
         self.emitted.append((self.clock(), frame))
+        if frame.command in self.silent_commands:
+            return
         if frame.command == 0x1C and frame.sub == 0:
             if frame.data == b"\x01":
                 self.ptt_on = True
@@ -395,6 +423,187 @@ async def _lost_key_ack_radio(clock, monkeypatch):
             await radio._civ_runtime.stop_pump()
             await transport.disconnect()
             radio._connected = False
+
+
+@asynccontextmanager
+async def _managed_virtual_server(radio, clock, tmp_path):
+    composition = ManagedTxComposition(radio, config_path=tmp_path / "tx.json")
+    install_managed_tx_composition(radio, composition)
+    fake_connected(radio)
+    server = WebServer(radio, WebConfig(host="127.0.0.1", port=0))
+    server.command_queue.bind_connection_generation(lambda: radio)
+    await composition.transport_ready(radio)
+    binding = asyncio.create_task(
+        composition.bind_state_store(server.command_state_store)
+    )
+    await clock.elapse(radio._PTT_READBACK_SETTLE_S)
+    assert binding.done()
+    await binding
+    attach_managed_tx_composition(server, composition)
+    await composition.authority._stop_scheduler(composition.authority._scheduler_task)
+    drain = asyncio.create_task(_drain_queue(server))
+    try:
+        yield server, composition
+    finally:
+        drain.cancel()
+        await asyncio.gather(drain, return_exceptions=True)
+        termination = asyncio.Event()
+        shutdown = asyncio.create_task(composition.shutdown(termination))
+        await clock.elapse(10)
+        if not shutdown.done():
+            termination.set()
+            await clock.elapse(0)
+        assert shutdown.done()
+        await shutdown
+
+
+async def _http_key(server, writer):
+    reader, headers = _reader({"operation": "transmit_on"})
+    await server._handle_http(
+        writer,
+        "POST",
+        "/api/v1/managed-transmit/command",
+        headers=headers,
+        reader=reader,
+    )
+
+
+@pytest.mark.parametrize("dispatch", [True, False])
+@virtual_clock
+async def test_http_key_is_accepted_only_after_written_despite_commander_queue_delay(
+    clock, monkeypatch, tmp_path, dispatch
+):
+    bound = CoreRadio.ICOM_PTT_ON_ACK_TIMEOUT_S
+    async with _lost_key_ack_radio(clock, monkeypatch) as (radio, transport):
+        async with _managed_virtual_server(radio, clock, tmp_path) as (server, _):
+            transport.emitted.clear()
+            transport.silent_commands.add(0x0F)
+            busy = asyncio.create_task(
+                radio._send_civ_raw(
+                    build_civ_frame(
+                        radio._radio_addr, CONTROLLER_ADDR, 0x0F, data=b"\x01"
+                    )
+                )
+            )
+            writer = _Writer()
+            key = None
+            try:
+                await clock.elapse(0)
+                assert transport.emitted[-1][1].command == 0x0F
+                key = asyncio.create_task(_http_key(server, writer))
+                await clock.elapse(2 * bound)
+                assert not transport.ptt_on
+                assert not key.done(), "a key never written must not be accepted"
+                if not dispatch:
+                    await radio._commander.stop()
+                    await clock.elapse(0)
+                    assert key.done()
+                    await key
+                    assert not transport.ptt_on
+                    assert writer.status == 409
+                    assert writer.payload["code"] == ManagedTxRefusalReason.OTHER
+                    assert [frame.command for _, frame in transport.emitted] == [0x0F]
+                    return
+                transport.answer(0xFB)
+                await clock.elapse(0)
+                assert busy.done()
+                await busy
+                assert transport.ptt_on
+                written_at = transport.emitted[-1][0]
+                assert not key.done()
+                await clock.elapse(bound - 0.000001)
+                assert not key.done()
+                await clock.elapse(0.000001)
+                assert key.done()
+                await key
+                assert writer.status == 202
+                assert writer.payload["result"] == "accepted"
+                assert clock() - written_at == pytest.approx(bound)
+            finally:
+                for task in (busy, key):
+                    if task is not None:
+                        task.cancel()
+                await asyncio.gather(
+                    *(task for task in (busy, key) if task is not None),
+                    return_exceptions=True,
+                )
+
+
+@virtual_clock
+async def test_unsupported_profile_is_other_before_any_io_through_queue_and_document(
+    clock, monkeypatch, tmp_path
+):
+    async with _lost_key_ack_radio(clock, monkeypatch) as (radio, transport):
+        async with _managed_virtual_server(radio, clock, tmp_path) as (
+            server,
+            composition,
+        ):
+            transport.emitted.clear()
+            radio._commands = BoundCommands(
+                CommandMap({}), {"ptt_on": "test manufacturer command table"}
+            )
+            writer = _Writer()
+            request = asyncio.create_task(_http_key(server, writer))
+            try:
+                await clock.elapse(0)
+                assert request.done()
+                await request
+                assert transport.emitted == []
+                assert writer.status == 409
+                assert writer.payload["code"] == ManagedTxRefusalReason.OTHER
+                state = (await composition.authority.snapshot()).state
+                assert state.release_plan is ReleasePlan.FORCE_RELEASE
+                assert state.last_error == ManagedTxRefusalReason.OTHER
+                document = _Writer()
+                await server._handle_http(document, "GET", "/api/v1/managed-transmit")
+                assert document.payload["managedTransmit"]["lastError"] == "other"
+            finally:
+                request.cancel()
+                await asyncio.gather(request, return_exceptions=True)
+
+
+@virtual_clock
+async def test_written_key_cancelled_by_release_stays_uncertain_and_force_release_is_written(
+    clock, monkeypatch, tmp_path
+):
+    async with _lost_key_ack_radio(clock, monkeypatch) as (radio, transport):
+        async with _managed_virtual_server(radio, clock, tmp_path) as (_, composition):
+            transport.emitted.clear()
+            admitted = asyncio.create_task(composition.authority.submit_transmit_on())
+            off = None
+            try:
+                await clock.elapse(0)
+                assert admitted.done()
+                receipt = await admitted
+                assert transport.ptt_on
+                assert not receipt.settlement_done
+                await clock.elapse(0.05)
+                off = asyncio.create_task(composition.authority.submit_force_off())
+                await clock.elapse(0)
+                assert receipt.settlement_done
+                settlement = await receipt.wait_settlement()
+                assert settlement.result is ActuationResult.UNCERTAIN
+                assert any(
+                    (frame.command, frame.sub, frame.data) == (0x1C, 0, b"\x00")
+                    for _, frame in transport.emitted
+                )
+                assert not transport.ptt_on
+                state = (await composition.authority.snapshot()).state
+                assert state.intent.kind is ManagedTxIntentKind.RX
+                assert state.release_plan is ReleasePlan.FORCE_RELEASE
+                await clock.elapse(3)
+                assert off.done()
+                off_receipt = await off
+                assert off_receipt.settlement_done
+                await off_receipt.wait_settlement()
+            finally:
+                for task in (admitted, off):
+                    if task is not None:
+                        task.cancel()
+                await asyncio.gather(
+                    *(task for task in (admitted, off) if task is not None),
+                    return_exceptions=True,
+                )
 
 
 @pytest.mark.parametrize(

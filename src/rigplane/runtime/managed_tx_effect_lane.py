@@ -16,6 +16,8 @@ from rigplane.runtime.managed_tx_state import (
     ActuationSettled,
     EffectToken,
     ManagedTxEffect,
+    ManagedTxActuationRefused,
+    ManagedTxRefusalReason,
 )
 
 _Operation: TypeAlias = ActuationOperation | AbortOperation
@@ -64,6 +66,7 @@ class _Outcome:
     result: ActuationResult
     error: str | None
     timed_out: bool = False
+    refusal_reason: ManagedTxRefusalReason | None = None
 
 
 @dataclass(slots=True)
@@ -116,7 +119,11 @@ class ManagedTxEffectLane:
         if outcome is None:
             return None
         return ActuationSettled(
-            effect.token, effect.operation, outcome.result, outcome.error
+            effect.token,
+            effect.operation,
+            outcome.result,
+            outcome.error,
+            outcome.refusal_reason,
         )
 
     async def settle_abort(
@@ -313,6 +320,12 @@ class ManagedTxEffectLane:
             result = provider.result()
             if not isinstance(result, ActuationResult):
                 raise TypeError("actuator returned a non-normalized result")
+        except ManagedTxActuationRefused as error:
+            return _Outcome(
+                ActuationResult.REJECTED,
+                _error_text(error),
+                refusal_reason=error.reason,
+            )
         except BaseException as error:
             return _Outcome(ActuationResult.UNCERTAIN, _error_text(error))
         return _Outcome(

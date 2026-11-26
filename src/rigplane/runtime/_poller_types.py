@@ -24,7 +24,6 @@ from rigplane.runtime.controller_authority import ControllerAuthority, Controlle
 from rigplane.runtime.managed_tx_state import (
     ActuationResult,
     ManagedTxActuationRefused,
-    ManagedTxRefusalReason,
 )
 
 __all__ = [
@@ -1205,11 +1204,7 @@ async def execute_positive_tx_queue_entry(entry: CommandQueueEntry) -> None:
         raise CommandError(POSITIVE_TX_ADMISSION_REJECTED)
     settlement = await receipt.wait_settlement()
     if settlement is not None and settlement.result is ActuationResult.REJECTED:
-        raise ManagedTxActuationRefused(
-            ManagedTxRefusalReason.RADIO_REFUSED
-            if settlement.error in (None, ActuationResult.REJECTED.value)
-            else ManagedTxRefusalReason.OTHER
-        )
+        raise ManagedTxActuationRefused(settlement.rejection_reason)
 
 
 async def execute_command_queue_entry(
