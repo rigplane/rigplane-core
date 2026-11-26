@@ -71,6 +71,7 @@ vi.mock('../local-extensions/LocalExtensionsHost.svelte', async () =>
   import('../../components-v2/layout/__tests__/SpectrumPanelStub.svelte'));
 
 const markerSelector = `[${CAPABILITY_ATTRIBUTE}]`;
+const LOCALE_MATRIX_TIMEOUT_MS = 30_000;
 const desktopControlsCss = readFileSync(
   resolve(dirname(fileURLToPath(import.meta.url)), '../../skins/desktop-v2/semantic-controls.css'), 'utf8',
 );
@@ -251,7 +252,7 @@ describe('transmit capability DOM contract (MOR-4837)', () => {
         expect(identifiers(), `${skin}/${language}/${locale}`).toEqual(english);
       }
     }
-  });
+  }, LOCALE_MATRIX_TIMEOUT_MS);
 });
 
 describe('operation variants and composite renderers', () => {

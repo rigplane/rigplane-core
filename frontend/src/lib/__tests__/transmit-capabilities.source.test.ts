@@ -1,15 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { dirname, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parse } from 'svelte/compiler';
 import { CAPABILITY_ATTRIBUTE, CAPABILITY_DATA_KEY, TRANSMIT_CAPABILITIES, MARKED_CONTROL_HANDLERS, NON_DOM_TX_PATHS } from '../transmit-capabilities';
 
-const defaultKeymap = readFileSync(
-  resolve(dirname(fileURLToPath(import.meta.url)), '../../../../rigs/_keyboard-default.toml'), 'utf8',
-);
+const testDirectory = dirname(fileURLToPath(import.meta.url));
+const sourceDirectory = resolve(testDirectory, '../..');
+const defaultKeymap = readFileSync(resolve(testDirectory, '../../../../rigs/_keyboard-default.toml'), 'utf8');
 
-const sources = import.meta.glob('../../**/*.{svelte,ts}', { query: '?raw', import: 'default', eager: true }) as Record<string, string>;
+const sources = Object.fromEntries(Object.entries(import.meta.glob<string>(
+  '../../**/*.{svelte,ts}', { query: '?raw', import: 'default', eager: true },
+)).map(([path, source]) => [`../../${relative(sourceDirectory, resolve(testDirectory, path))}`, source]));
 const product = Object.entries(sources).filter(([path]) =>
   !/\/__tests__\/|\.(test|spec)\./u.test(path) && !path.endsWith('/transmit-capabilities.ts'));
 
@@ -372,7 +374,8 @@ describe('transmit capability source ownership', () => {
     // second action allow-list in this test. The contract owns the shared
     // handlers used by marked controls and their capability mapping.
     const commands = sources['../../lib/runtime/commands/panel-commands.ts'];
-    expect(commands).toBeDefined();
+    expect(commands).toBe(readFileSync(resolve(testDirectory,
+      '../../lib/runtime/commands/panel-commands.ts'), 'utf8'));
     const keyboard = commands.slice(commands.indexOf('export function dispatchKeyboardRadioAction'));
     const cases = [...keyboard.matchAll(/case '([^']+)':([\s\S]*?)(?=\n\s*case '|\n\s*default:|$)/gu)];
     const bound = [...defaultKeymap.matchAll(/^action\s*=\s*"([^"]+)"/gmu)].map((match) => match[1]);
@@ -422,7 +425,8 @@ describe('transmit capability source ownership', () => {
   it('requires a marker or a documented NOT_TX entry for every operation host control', () => {
     for (const path of knownHosts) expect(sources[path], path).toBeDefined();
     for (const [path, entry] of Object.entries(NON_OPERATION_HOSTS)) {
-      expect(sources[path], path).toBeDefined();
+      expect(sources[path], path).toBe(readFileSync(
+        resolve(testDirectory, path), 'utf8'));
       expect(entry.reason.trim(), path).not.toBe('');
     }
     const actual = unmarkedControlsBySource(product);
