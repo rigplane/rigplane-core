@@ -278,7 +278,12 @@ def _settle(state: ManagedTxState, event: ActuationSettled) -> ManagedTxTransiti
             release_plan=ReleasePlan.FORCE_RELEASE,
             tx_started_at_monotonic=None,
             tot_deadline_monotonic=None,
-            last_error=event.error or event.result.value,
+            last_error=(
+                "The radio refused to transmit."
+                if event.result is ActuationResult.REJECTED
+                and event.error in (None, ActuationResult.REJECTED.value)
+                else event.error or event.result.value
+            ),
         )
     return ManagedTxTransition(settled, ManagedTxOutcome.APPLIED)
 

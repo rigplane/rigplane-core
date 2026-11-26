@@ -4476,6 +4476,24 @@ class CoreRadio(ScopeRuntimeMixin, AudioRuntimeMixin, DualRxRuntimeMixin):
                 return ActuationResult.REJECTED
         except CommandError:
             return ActuationResult.REJECTED
+        if operation in (ActuationOperation.PTT_ON, ActuationOperation.TRANSMIT_ON):
+            try:
+                reply = await self._send_civ_raw(
+                    civ,
+                    priority=priority,
+                    wait_response=True,
+                    is_current=is_current,
+                )
+            except CommandRejectedError:
+                return ActuationResult.REJECTED
+            except (TimeoutError, asyncio.TimeoutError):
+                return ActuationResult.UNCERTAIN
+            acknowledged = None if reply is None else parse_ack_nak(reply)
+            if acknowledged is None:
+                return ActuationResult.UNCERTAIN
+            return (
+                ActuationResult.ACCEPTED if acknowledged else ActuationResult.REJECTED
+            )
         if operation is not ActuationOperation.FORCE_RECEIVE:
             await self._send_civ_raw(
                 civ,

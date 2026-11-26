@@ -373,6 +373,7 @@
   "core.rxTx.target.reason.stale": "последние данные устарели и не заслуживают доверия",
   "core.rxTx.target.reason.unsupported": "это радио её не сообщает",
   "core.rxTx.target.reason.contradiction": "радио сообщило противоречивые данные",
+  "core.rxTx.fault.radioRefused": "Радиостанция отказалась включить передачу.",
   "core.rxTx.fault.code": "Ошибка TX: {code}",
   "core.rxTx.fault.causes": "TX не готов: {reasons}",
   "core.rxTx.fault.reason.catPttUnavailable": "это радио не умеет управлять PTT по CAT",

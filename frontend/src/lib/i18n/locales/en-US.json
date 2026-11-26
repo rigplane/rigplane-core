@@ -373,6 +373,7 @@
   "core.rxTx.target.reason.stale": "the last reading is too old to trust",
   "core.rxTx.target.reason.unsupported": "this radio model never reports it",
   "core.rxTx.target.reason.contradiction": "the radio reported inconsistent state",
+  "core.rxTx.fault.radioRefused": "The radio refused to transmit.",
   "core.rxTx.fault.code": "TX fault: {code}",
   "core.rxTx.fault.causes": "TX not ready: {reasons}",
   "core.rxTx.fault.reason.catPttUnavailable": "this radio cannot key PTT over CAT",

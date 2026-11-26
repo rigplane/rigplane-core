@@ -183,6 +183,23 @@ describe('RX/TX status mirrors the server TX projection', () => {
 // ── 4. No duplicate authority: this surface displays, it does not indicate ──
 
 describe('fault display without a second authority', () => {
+  it.each([
+    ['en-US', 'The radio refused to transmit.'],
+    ['ru-RU', 'Радиостанция отказалась включить передачу.'],
+    ['ja-JP', '無線機が送信を拒否しました。'],
+  ] as const)('renders a radio refusal in %s', (locale, message) => {
+    const previous = getLocale();
+    setLocale(locale);
+    try {
+      withSurface(topologyFixtures['1/single'], snap({
+        phase: 'failed', fault: 'The radio refused to transmit.',
+      }), () => {
+        const fault = target.querySelector('[data-testid="rx-tx-fault"]') as HTMLElement;
+        expect(fault.textContent).toBe(message);
+      });
+    } finally { setLocale(previous); }
+  });
+
   it('displays the authority fault verbatim', () => {
     withSurface(topologyFixtures['1/single'], snap({ phase: 'failed', fault: 'release-not-confirmed' }), (s) => {
       const fault = target.querySelector('[data-testid="rx-tx-fault"]') as HTMLElement;

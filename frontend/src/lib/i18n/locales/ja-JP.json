@@ -29,6 +29,7 @@
   "core.rxTx.target.reason.stale": "最後の読み取り値が古すぎて信頼できません",
   "core.rxTx.target.reason.unsupported": "この機種はこれを報告することがありません",
   "core.rxTx.target.reason.contradiction": "無線機が矛盾した状態を報告しました",
+  "core.rxTx.fault.radioRefused": "無線機が送信を拒否しました。",
   "core.rxTx.fault.code": "TX フォルト: {code}",
   "core.rxTx.fault.causes": "TX の準備ができていません: {reasons}",
   "core.rxTx.fault.reason.catPttUnavailable": "この無線機は CAT 経由で PTT を制御できません",

@@ -185,6 +185,9 @@ export const faultReasons = (tx: TxAuthoritySnapshot): readonly TxIneligibilityR
  * than being swallowed by a friendly generic sentence.
  */
 export function faultMessage(tx: TxAuthoritySnapshot): string {
+  if (tx.fault === 'The radio refused to transmit.') {
+    return t('core.rxTx.fault.radioRefused');
+  }
   const reasons = faultReasons(tx);
   return reasons.length > 0
     ? t('core.rxTx.fault.causes', { reasons: reasons.map(faultReasonLabel).join('; ') })

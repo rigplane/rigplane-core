@@ -76,7 +76,11 @@ async def test_ptt_and_transmit_on_share_one_profile_command_and_immediate_lane(
     None
 ):
     radio = _profile_bound_radio()
-    radio._send_civ_raw = AsyncMock(return_value=None)
+    radio._send_civ_raw = AsyncMock(
+        return_value=CivFrame(
+            to_addr=CONTROLLER_ADDR, from_addr=radio._radio_addr, command=0xFB
+        )
+    )
 
     def current() -> bool:
         return True
@@ -97,9 +101,41 @@ async def test_ptt_and_transmit_on_share_one_profile_command_and_immediate_lane(
     for call in radio._send_civ_raw.await_args_list:
         assert call.kwargs == {
             "priority": Priority.IMMEDIATE,
-            "wait_response": False,
+            "wait_response": True,
             "is_current": current,
         }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "operation", [ActuationOperation.PTT_ON, ActuationOperation.TRANSMIT_ON]
+)
+@pytest.mark.parametrize(
+    "answer,expected",
+    [
+        (0xFB, ActuationResult.ACCEPTED),
+        (0xFA, ActuationResult.REJECTED),
+        (None, ActuationResult.UNCERTAIN),
+        ("timeout", ActuationResult.UNCERTAIN),
+    ],
+)
+async def test_positive_tx_settles_on_the_radio_answer(operation, answer, expected):
+    from rigplane.core.exceptions import TimeoutError
+
+    radio = _profile_bound_radio()
+    radio._send_civ_raw = AsyncMock(
+        side_effect=TimeoutError("CI-V response timed out")
+        if answer == "timeout"
+        else None,
+        return_value=None
+        if answer in (None, "timeout")
+        else CivFrame(
+            to_addr=CONTROLLER_ADDR, from_addr=radio._radio_addr, command=answer
+        ),
+    )
+
+    assert await radio.actuate(_token(), operation, is_current=lambda: True) is expected
+    assert radio._send_civ_raw.await_args.kwargs["wait_response"] is True
 
 
 @pytest.mark.asyncio
