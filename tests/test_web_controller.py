@@ -4,7 +4,7 @@ import asyncio
 import json
 import time
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from test_managed_tx_authority import authority
@@ -25,6 +25,7 @@ from rigplane.rigctld.handler import RigctldHandler
 from rigplane.runtime.controller_authority import ControllerError
 from rigplane.runtime.managed_tx_state import ManagedTxIntentKind, ManagedTxOutcome
 from rigplane.web import server as server_module
+from rigplane.web.eibi import EibiClient
 from rigplane.web.handlers.audio import AudioHandler
 from rigplane.web.handlers.control import ControlHandler
 from rigplane.web.server import WebConfig, WebServer, _HttpCommandExecutor
@@ -210,6 +211,92 @@ async def test_mutable_http_admin_and_raw_transactions_cannot_bypass_lease(stati
             CommandIntent("raw-test", "raw_civ_transaction", {}, "http")
         )
     radio.send_civ_transaction.assert_not_awaited()
+
+
+@pytest.fixture
+def eibi_catalogue(station, tmp_path, monkeypatch):
+    server, _ = station
+    raw = b"6070;0000-2400;;D;Test Station;E;Eu;;0\n"
+    download = Mock(return_value=raw)
+    monkeypatch.setattr("rigplane.web.eibi._download_url", download)
+    cache = tmp_path / "catalogue"
+    server._eibi = EibiClient(cache_dir=cache)
+    return cache, raw, download
+
+
+@pytest.mark.parametrize("mode", ["remote", "local"])
+async def test_eibi_refresh_writes_catalogue_cache_for_current_controller(
+    station, eibi_catalogue, mode
+):
+    server, _ = station
+    cache, raw, download = eibi_catalogue
+    key = (await remote(server))[0] if mode == "remote" else None
+    response = await request(
+        server, "POST", "/api/v1/eibi/fetch", {"force": False}, key=key
+    )
+    assert response.status == 200
+    assert response.payload["status"] == "ok"
+    assert response.payload["station_count"] == 1
+    download.assert_called_once()
+    assert (cache / "eibi.csv").read_bytes() == raw
+    assert json.loads((cache / "eibi-meta.json").read_text())["size_bytes"] == len(raw)
+    stations = await request(server, "GET", "/api/v1/eibi/stations")
+    assert stations.status == 200
+    assert stations.payload["stations"][0]["station"] == "Test Station"
+    assert server.command_queue.drain() == []
+
+
+@pytest.mark.parametrize("credential", ["missing", "wrong", "revoked"])
+async def test_remote_eibi_refresh_requires_current_controller_credential(
+    station, eibi_catalogue, credential
+):
+    server, _ = station
+    cache, _, download = eibi_catalogue
+    key, _ = await remote(server)
+    if credential == "missing":
+        key = None
+    elif credential == "wrong":
+        key = "0" * 64
+    else:
+        server._controller.revoke()
+        await server._controller.settle()
+    response = await request(
+        server, "POST", "/api/v1/eibi/fetch", {"force": True}, key=key
+    )
+    assert response.status == 403
+    assert response.payload == {"error": "controller_invalid"}
+    download.assert_not_called()
+    assert not (cache / "eibi.csv").exists()
+    assert not (cache / "eibi-meta.json").exists()
+
+
+@pytest.mark.parametrize("credential", ["missing", "current"])
+async def test_remote_band_plan_config_remains_local_only(station, credential):
+    server, _ = station
+    key, _ = await remote(server)
+    before = await request(server, "GET", "/api/v1/band-plan/config")
+    assert before.status == 200
+    response = await request(
+        server,
+        "POST",
+        "/api/v1/band-plan/config",
+        {"region": "IARU-R1"},
+        key=key if credential == "current" else None,
+    )
+    assert response.status == 403
+    assert response.payload == {"error": "controller_local_required"}
+    after = await request(server, "GET", "/api/v1/band-plan/config")
+    assert after.status == 200
+    assert after.payload == before.payload
+
+
+@pytest.mark.parametrize("method", ["PUT", "PATCH", "DELETE"])
+async def test_remote_eibi_refresh_admission_is_post_only(station, method):
+    server, _ = station
+    key, _ = await remote(server)
+    response = await request(server, method, "/api/v1/eibi/fetch", {}, key=key)
+    assert response.status == 403
+    assert response.payload == {"error": "controller_local_required"}
 
 
 @pytest.mark.parametrize(
