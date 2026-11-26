@@ -477,7 +477,11 @@ describe('L1 hosted desktop TX auxiliary composition', () => {
     expect(slider.getAttribute('aria-disabled')).toBe('true');
     expect(slider.getAttribute('data-command-phase')).toBe('unavailable');
     expect(row.querySelector('[data-canonical-value]')?.textContent).toBe('');
-    expect(row.title).toBe('Not yet observed');
+    expect(row.title).toBe(stateGoldens['FTX-1'].refusedMicGainFieldStatus.message);
+    const description = slider.getAttribute('aria-describedby')!;
+    expect(description).toBeTruthy();
+    expect(description.split(/\s+/).map(id => document.getElementById(id)?.textContent).join(' '))
+      .toContain(stateGoldens['FTX-1'].refusedMicGainFieldStatus.message);
   });
 
   it('places finite controls separately and groups scalar handles under their disclosures', async () => {

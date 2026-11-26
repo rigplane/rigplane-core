@@ -1014,6 +1014,17 @@
       </section>
     {/if}
   </main>
+  <!-- ═══ TX SETTINGS MODAL ═══ -->
+  <BottomSheet bind:open={txSettingsOpen} title={t('core.mobile.sheet.txSettings')}>
+          <!-- MOR-1245 — while this sheet is open, the fixed overlay below
+               stays the one banner: TxPanel's inline copy is suppressed. -->
+          <TxPanel showManagedTotControl={true} suppressModInputTxWarning
+            scalarHandles={instruments.txAuxScalars} finiteHandles={instruments.txAuxInstruments} />
+          <!-- MOR-4596: TxPanel's own copy sits in its nested levels dialog, which
+               is positioned from the panel's viewport box and opens below this
+               bottom-anchored sheet; the phone gets the switch here instead. -->
+          <TxMicProcessingControl />
+  </BottomSheet>
     {/snippet}
   </SemanticRadioSurfaces>
 
@@ -1168,16 +1179,6 @@
           />
   </BottomSheet>
 
-  <!-- ═══ TX SETTINGS MODAL ═══ -->
-  <BottomSheet bind:open={txSettingsOpen} title={t('core.mobile.sheet.txSettings')}>
-          <!-- MOR-1245 — while this sheet is open, the fixed overlay below
-               stays the one banner: TxPanel's inline copy is suppressed. -->
-          <TxPanel showManagedTotControl={true} suppressModInputTxWarning />
-          <!-- MOR-4596: TxPanel's own copy sits in its nested levels dialog, which
-               is positioned from the panel's viewport box and opens below this
-               bottom-anchored sheet; the phone gets the switch here instead. -->
-          <TxMicProcessingControl />
-  </BottomSheet>
 </div>
 {/if}
 

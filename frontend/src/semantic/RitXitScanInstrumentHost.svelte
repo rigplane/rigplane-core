@@ -15,6 +15,7 @@
 
 <script lang="ts">
   import { onDestroy } from 'svelte';
+  import { disabledFieldReasonText } from './disabled-reason';
   import { bindActionInstrument, bindToggleInstrument } from '../primitives/control-instruments/control-instrument-behavior';
   import { getShortcutHint } from '../components-v2/layout/shortcut-hints';
   import ControlInstrumentRendererHost from '../primitives/control-instruments/ControlInstrumentRendererHost.svelte';
@@ -61,11 +62,11 @@
   const clearShortcut = (): string | null => getShortcutHint('clear_rit_xit');
 
   const ritSeat = createToggleRendererSeat(() => ({
-    context: rendererContext ?? null, field: ritXit?.ritActive, blocked: !activeKnown,
+    context: rendererContext ?? null, title: activeKnown ? disabledFieldReasonText(ritXit?.ritActive) : undefined, field: ritXit?.ritActive, blocked: !activeKnown,
     label: 'RIT', invoke: () => onRitToggle?.(),
   }));
   const xitSeat = createToggleRendererSeat(() => ({
-    context: rendererContext ?? null, field: ritXit?.xitActive, blocked: !activeKnown,
+    context: rendererContext ?? null, title: activeKnown ? disabledFieldReasonText(ritXit?.xitActive) : undefined, field: ritXit?.xitActive, blocked: !activeKnown,
     label: 'XIT', invoke: () => onXitToggle?.(),
   }));
   const clearSeat = createActionRendererSeat<boolean>(() => ({
@@ -90,7 +91,8 @@
       <button type="button" data-testid={`ritxit-${kind}-toggle`}
         aria-pressed={behavior.confirmed} disabled={!behavior.available}
         data-shortcut-hint={(kind === 'rit' ? ritShortcut() : xitShortcut()) ?? undefined}
-        title={(kind === 'rit' ? ritShortcut() : xitShortcut()) ?? undefined}
+        title={(activeKnown ? disabledFieldReasonText(field) : undefined)
+          ?? (kind === 'rit' ? ritShortcut() : xitShortcut()) ?? undefined}
         onclick={() => behavior.invoke()}>{label}</button>
     {/if}
   {/if}

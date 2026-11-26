@@ -117,7 +117,7 @@
   import type { PoliteControlAnnouncement } from '../primitives/control-feedback/control-feedback-presentation';
   import type { FilterFiniteLayout, FilterInstrumentHandles } from './filter-instruments';
   import type { RadioViewModel } from './radio-view-model';
-  import { disabledReasonText } from './disabled-reason';
+  import { disabledFieldReasonText } from './disabled-reason';
 
   interface Props {
     view: RadioViewModel;
@@ -385,7 +385,7 @@
     if (row === 'radio-default') return t('core.filter.width.reason.radioDefault');
     if (row === 'narrow') return t('core.filter.width.reason.narrow');
     if (row === 'not-reported') return t('core.filter.width.reason.notReported');
-    if (row === 'not-observed') return disabledReasonText({ structural: true, operational: false });
+    if (row === 'not-observed') return disabledFieldReasonText(modeFilter?.filterWidth);
     return undefined;
   }
 
@@ -659,6 +659,7 @@
               {...feedbackIntegratedRange}
               min={numberOf(modeFilter.filterWidthMin, 50)} max={numberOf(modeFilter.filterWidthMax, 9999)} step={50}
               value={filterWidthView.displayed ?? numberOf(modeFilter.filterWidth, 0)}
+              title={widthReason}
               disabled={!filterWidthView.editable}
               data-command-phase={filterWidthView.phase ?? undefined}
               aria-busy={filterWidthView.evidence === 'command-feedback'
@@ -703,6 +704,7 @@
             id={`${pendingFilterId}-${field}-input`} type="range" {min} {max} {step}
             {...feedbackIntegratedRange}
             value={row.view.draft ?? pendingTarget ?? numberOf(filterPassband[field], min)}
+            title={disabledFieldReasonText(filterPassband?.[field])}
             disabled={!row.view.editable}
             data-command-phase={row.view.phase ?? undefined}
             aria-busy={row.view.busy}
@@ -736,6 +738,7 @@
           aria-pressed={narrowBehavior.confirmed}
           data-pending-status={pendingNarrow !== null ? 'pending' : 'confirmed'}
           aria-describedby={pendingNarrow !== null ? narrowPendingId : undefined}
+          title={disabledFieldReasonText(filterPassband.narrow)}
           disabled={!narrowBehavior.available}
           onclick={() => narrowBehavior.invoke()}
         >NARROW</button>

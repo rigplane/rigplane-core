@@ -103,6 +103,7 @@
   import { t } from '$lib/i18n';
   import { HardwareButton } from '$lib/Button';
   import BottomSheet from '../components-v2/controls/BottomSheet.svelte';
+  import { disabledFieldReasonText } from './disabled-reason';
   import ScopeFlatKey from '../components/spectrum/ScopeFlatKey.svelte';
   import ScopeMorePanel from '../components/spectrum/ScopeMorePanel.svelte';
   import {
@@ -263,7 +264,7 @@
     let seat = toggleSeats.get(field);
     if (!seat) {
       seat = createToggleRendererSeat(() => ({
-        context: rendererContext ?? null, field: sc?.[field], label,
+        context: rendererContext ?? null, field: sc?.[field], title: disabledFieldReasonText(sc?.[field]), label,
         invoke: (next) => onToggleChange?.(field, next),
       }));
       toggleSeats.set(field, seat);
@@ -274,8 +275,8 @@
     let seat = choiceSeats.get(field);
     if (!seat) {
       seat = createChoiceRendererSeat(() => ({
-        context: rendererContext ?? null, field: sc?.[field], label,
-        options: options.map(([value, optionLabel]) => ({ value, label: optionLabel })),
+        context: rendererContext ?? null, field: sc?.[field], title: disabledFieldReasonText(sc?.[field]), label,
+        options: options.map(([value, optionLabel]) => ({ value, label: optionLabel, disabledReason: disabledFieldReasonText(sc?.[field]) })),
         invoke: (value) => onChoiceChange?.(field, value),
       }));
       choiceSeats.set(field, seat);
@@ -291,7 +292,8 @@
         accessibleLabel: `${delta < 0 ? 'Decrease' : 'Increase'} ${label}`,
         invoke: () => refOffset.step(delta as -5 | 5),
       } : ({
-        context: rendererContext ?? null, field: field === 'span' ? spanField : sc?.[field], label: delta < 0 ? '−' : '+',
+        context: rendererContext ?? null, field: field === 'span' ? spanField : sc?.[field],
+        title: field === 'span' && spanFixedBlocked ? t('core.scope.spanWorksInCtr') : disabledFieldReasonText(sc?.[field]), label: delta < 0 ? '−' : '+',
         accessibleLabel: `${delta < 0 ? 'Decrease' : 'Increase'} ${label}`,
         // MOR-2565: the span keys stay inert while the mode is unread.
         // MOR-3694: the REF keys stay inert without a declared range.
@@ -403,7 +405,7 @@
               <ScopeFlatKey kind="choice" {label} testid="scope-mode-row-{v}"
                 width={hosted ? undefined : '42px'}
                 lit={modeKnown === undefined ? null : modeKnown === v}
-                disabled={!modeQuick.available} onclick={() => modeQuick.invoke(v)} />
+                title={disabledFieldReasonText(sc.mode)} disabled={!modeQuick.available} onclick={() => modeQuick.invoke(v)} />
             {/each}
           </span>
         {/if}
@@ -415,10 +417,10 @@
             title={spanFixedBlocked ? t('core.scope.spanWorksInCtr') : undefined}>
             <span class="scope-name">SPAN</span>
             <button type="button" class="scope-step-key" aria-label="Decrease scope span"
-              disabled={!spanDown.available} onclick={() => spanDown.invoke()}>&#8249;</button>
+              title={spanFixedBlocked ? t('core.scope.spanWorksInCtr') : disabledFieldReasonText(sc.span)} disabled={!spanDown.available} onclick={() => spanDown.invoke()}>&#8249;</button>
             <output class="scope-step-value" data-testid="scope-span-value">{spanText}</output>
             <button type="button" class="scope-step-key" aria-label="Increase scope span"
-              disabled={!spanUp.available} onclick={() => spanUp.invoke()}>&#8250;</button>
+              title={spanFixedBlocked ? t('core.scope.spanWorksInCtr') : disabledFieldReasonText(sc.span)} disabled={!spanUp.available} onclick={() => spanUp.invoke()}>&#8250;</button>
           </span>
           {#if spanFixedBlocked}
             <button type="button" class="scope-step-key" data-testid="scope-span-ctr"
@@ -434,10 +436,10 @@
           <span class="scope-stepper" class:scope-capsule={hosted} data-overflow="ref" data-testid="scope-ref">
             <span class="scope-name">REF</span>
             <button type="button" class="scope-step-key" aria-label="Decrease scope reference"
-              disabled={!refDown.available} onclick={() => refDown.invoke()}>&#8249;</button>
+              title={refOffset ? undefined : disabledFieldReasonText(sc.refDb)} disabled={!refDown.available} onclick={() => refDown.invoke()}>&#8249;</button>
             <output class="scope-step-value" data-testid="scope-ref-value">{refText}</output>
             <button type="button" class="scope-step-key" aria-label="Increase scope reference"
-              disabled={!refUp.available} onclick={() => refUp.invoke()}>&#8250;</button>
+              title={refOffset ? undefined : disabledFieldReasonText(sc.refDb)} disabled={!refUp.available} onclick={() => refUp.invoke()}>&#8250;</button>
           </span>
         {/if}
 
@@ -445,7 +447,7 @@
           {@const hold = toggleInstrument('hold')}
           <span class="scope-key-group" data-overflow="hold">
             <ScopeFlatKey label="HOLD" testid="scope-hold" width={hosted ? undefined : '52px'}
-              lit={hold.confirmed ?? null} disabled={!hold.available} onclick={() => hold.invoke()} />
+              lit={hold.confirmed ?? null} title={disabledFieldReasonText(sc.hold)} disabled={!hold.available} onclick={() => hold.invoke()} />
           </span>
         {/if}
 
@@ -457,7 +459,7 @@
               <ScopeFlatKey kind="choice" {label} testid="scope-receiver-{v}"
                 width={hosted ? undefined : '48px'}
                 lit={receiverValue === undefined ? null : receiverValue === v}
-                disabled={!receiverChoice.available} onclick={() => receiverChoice.invoke(v)} />
+                title={disabledFieldReasonText(sc.receiver)} disabled={!receiverChoice.available} onclick={() => receiverChoice.invoke(v)} />
             {/each}
           </span>
         {/if}
@@ -485,7 +487,7 @@
                       {#each MODE_BUTTONS as [v, label] (v)}
                         <HardwareButton
                           active={modeKnown !== undefined && modeKnown === v}
-                          disabled={!sheetMode.available}
+                          title={disabledFieldReasonText(sc.mode)} disabled={!sheetMode.available}
                           indicator="edge-left" color="cyan"
                           role="radio" ariaChecked={modeKnown === undefined ? undefined : modeKnown === v}
                           data={{ testid: `scope-mode-${v}` }}
@@ -506,7 +508,7 @@
                         {#each options as [v, optLabel] (v)}
                           <HardwareButton
                             active={sheetCurrent !== undefined && sheetCurrent === v}
-                            disabled={!sheetChoice.available}
+                            title={disabledFieldReasonText(sc[field])} disabled={!sheetChoice.available}
                             indicator="edge-left" color="cyan"
                             role="radio" ariaChecked={sheetCurrent === undefined ? undefined : sheetCurrent === v}
                             data={{ testid: `scope-${field}-${v}` }}
@@ -525,14 +527,14 @@
                     <span class="scope-sheet-label">SPEED</span>
                     <div class="scope-sheet-options">
                       <HardwareButton
-                        disabled={!sheetSpeedDown.available}
+                        title={disabledFieldReasonText(sc.speed)} disabled={!sheetSpeedDown.available}
                         indicator="edge-left" color="cyan"
                         ariaLabel="Decrease scope speed"
                         onclick={() => sheetSpeedDown.invoke()}
                       >&#8249;</HardwareButton>
                       <output class="scope-sheet-value" data-testid="scope-speed-value">{readingText(sc.speed, (speed) => SPEED_LABELS[speed] ?? '')}</output>
                       <HardwareButton
-                        disabled={!sheetSpeedUp.available}
+                        title={disabledFieldReasonText(sc.speed)} disabled={!sheetSpeedUp.available}
                         indicator="edge-left" color="cyan"
                         ariaLabel="Increase scope speed"
                         onclick={() => sheetSpeedUp.invoke()}
@@ -557,7 +559,7 @@
                       <div class="scope-sheet-options" role="radiogroup" aria-label={label}>
                         <HardwareButton
                           active={sheetToggle.confirmed === false}
-                          disabled={!sheetToggle.available}
+                          title={disabledFieldReasonText(sc[field])} disabled={!sheetToggle.available}
                           indicator="edge-left" color="cyan" role="radio"
                           ariaChecked={sheetToggle.confirmed === undefined ? undefined : sheetToggle.confirmed === false}
                           data={{ testid: `scope-${field}-off` }}
@@ -565,7 +567,7 @@
                         >{t('core.spectrum.toggleOff')}</HardwareButton>
                         <HardwareButton
                           active={sheetToggle.confirmed === true}
-                          disabled={!sheetToggle.available}
+                          title={disabledFieldReasonText(sc[field])} disabled={!sheetToggle.available}
                           indicator="edge-left" color="cyan" role="radio"
                           ariaChecked={sheetToggle.confirmed === undefined ? undefined : sheetToggle.confirmed === true}
                           data={{ testid: `scope-${field}-on` }}
@@ -597,7 +599,7 @@
                         {#each [[0, 'MAIN'], [1, 'SUB']] as const as [v, label] (v)}
                           <ScopeFlatKey kind="choice" {label} testid={`scope-overflow-receiver-${v}`} width="48px"
                             lit={overflowReceiverValue === undefined ? null : overflowReceiverValue === v}
-                            disabled={!overflowReceiver.available} onclick={() => overflowReceiver.invoke(v)} />
+                            title={disabledFieldReasonText(sc.receiver)} disabled={!overflowReceiver.available} onclick={() => overflowReceiver.invoke(v)} />
                         {/each}
                       </span>
                     </div>
@@ -606,16 +608,16 @@
                     {@const overflowHold = toggleInstrument('hold')}
                     <div class="scope-more-row" data-overflow="hold" data-testid="scope-overflow-hold">
                       <ScopeFlatKey label="HOLD" testid="scope-overflow-hold-key" width="52px"
-                        lit={overflowHold.confirmed ?? null} disabled={!overflowHold.available} onclick={() => overflowHold.invoke()} />
+                        lit={overflowHold.confirmed ?? null} title={disabledFieldReasonText(sc.hold)} disabled={!overflowHold.available} onclick={() => overflowHold.invoke()} />
                     </div>
                   {/if}
                   {#if sc.refDb.availability.structural}
                     {@const overflowRefDown = refInstrument(-5)}{@const overflowRefUp = refInstrument(5)}
                     <div class="scope-more-row scope-stepper" class:scope-capsule={hosted} data-overflow="ref" data-testid="scope-overflow-ref">
                       <span class="scope-name">REF</span>
-                      <button type="button" class="scope-step-key" aria-label="Decrease scope reference" disabled={!overflowRefDown.available} onclick={() => overflowRefDown.invoke()}>&#8249;</button>
+                      <button type="button" class="scope-step-key" aria-label="Decrease scope reference" title={refOffset ? undefined : disabledFieldReasonText(sc.refDb)} disabled={!overflowRefDown.available} onclick={() => overflowRefDown.invoke()}>&#8249;</button>
                       <output class="scope-step-value" data-testid="scope-overflow-ref-value">{refText}</output>
-                      <button type="button" class="scope-step-key" aria-label="Increase scope reference" disabled={!overflowRefUp.available} onclick={() => overflowRefUp.invoke()}>&#8250;</button>
+                      <button type="button" class="scope-step-key" aria-label="Increase scope reference" title={refOffset ? undefined : disabledFieldReasonText(sc.refDb)} disabled={!overflowRefUp.available} onclick={() => overflowRefUp.invoke()}>&#8250;</button>
                     </div>
                   {/if}
                   {#if spanApplicable && sc.span.availability.structural}
@@ -623,9 +625,9 @@
                     <div class="scope-more-row scope-stepper" class:scope-capsule={hosted} data-overflow="span" data-testid="scope-overflow-span"
                       title={spanFixedBlocked ? t('core.scope.spanWorksInCtr') : undefined}>
                       <span class="scope-name">SPAN</span>
-                      <button type="button" class="scope-step-key" aria-label="Decrease scope span" disabled={!overflowSpanDown.available} onclick={() => overflowSpanDown.invoke()}>&#8249;</button>
+                      <button type="button" class="scope-step-key" aria-label="Decrease scope span" title={spanFixedBlocked ? t('core.scope.spanWorksInCtr') : disabledFieldReasonText(sc.span)} disabled={!overflowSpanDown.available} onclick={() => overflowSpanDown.invoke()}>&#8249;</button>
                       <output class="scope-step-value" data-testid="scope-overflow-span-value">{spanText}</output>
-                      <button type="button" class="scope-step-key" aria-label="Increase scope span" disabled={!overflowSpanUp.available} onclick={() => overflowSpanUp.invoke()}>&#8250;</button>
+                      <button type="button" class="scope-step-key" aria-label="Increase scope span" title={spanFixedBlocked ? t('core.scope.spanWorksInCtr') : disabledFieldReasonText(sc.span)} disabled={!overflowSpanUp.available} onclick={() => overflowSpanUp.invoke()}>&#8250;</button>
                       {#if spanFixedBlocked}
                         <button type="button" class="scope-step-key" data-testid="scope-overflow-span-ctr"
                           title={t('core.scope.spanWorksInCtr')}
@@ -644,7 +646,7 @@
                       {#each MODE_BUTTONS as [v, label] (v)}
                         <ScopeFlatKey kind="choice" {label} testid="scope-mode-{v}" width={hosted ? undefined : '44px'}
                           lit={modeKnown === undefined ? null : modeKnown === v}
-                          disabled={!modeChoice.available} onclick={() => modeChoice.invoke(v)} />
+                          title={disabledFieldReasonText(sc.mode)} disabled={!modeChoice.available} onclick={() => modeChoice.invoke(v)} />
                       {/each}
                     </span>
                   </div>
@@ -660,7 +662,7 @@
                         {#each options as [v, optLabel] (v)}
                           <ScopeFlatKey kind="choice" label={optLabel} testid={`scope-${field}-${v}`} width="52px"
                             lit={current === undefined ? null : current === v}
-                            disabled={!choice.available} onclick={() => choice.invoke(v)} />
+                            title={disabledFieldReasonText(sc[field])} disabled={!choice.available} onclick={() => choice.invoke(v)} />
                         {/each}
                       </span>
                     </div>
@@ -673,10 +675,10 @@
                   <div class="scope-more-row scope-stepper" class:scope-capsule={hosted} data-testid="scope-speed">
                     <span class="scope-name">SPEED</span>
                     <button type="button" class="scope-step-key" aria-label="Decrease scope speed"
-                      disabled={!speedDown.available} onclick={() => speedDown.invoke()}>&#8249;</button>
+                      title={disabledFieldReasonText(sc.speed)} disabled={!speedDown.available} onclick={() => speedDown.invoke()}>&#8249;</button>
                     <output class="scope-step-value" data-testid="scope-speed-value">{readingText(sc.speed, (speed) => SPEED_LABELS[speed] ?? '')}</output>
                     <button type="button" class="scope-step-key" aria-label="Increase scope speed"
-                      disabled={!speedUp.available} onclick={() => speedUp.invoke()}>&#8250;</button>
+                      title={disabledFieldReasonText(sc.speed)} disabled={!speedUp.available} onclick={() => speedUp.invoke()}>&#8250;</button>
                   </div>
                 {/if}
 
@@ -685,7 +687,7 @@
                     {@const toggle = toggleInstrument(field)}
                     <div class="scope-more-row" data-testid={`scope-${field}-row`}>
                       <ScopeFlatKey {label} testid={`scope-${field}`} {width}
-                        lit={toggle.confirmed ?? null} disabled={!toggle.available} onclick={() => toggle.invoke()} />
+                        lit={toggle.confirmed ?? null} title={disabledFieldReasonText(sc[field])} disabled={!toggle.available} onclick={() => toggle.invoke()} />
                     </div>
                   {/if}
                 {/each}

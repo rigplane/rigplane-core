@@ -24,6 +24,7 @@
     type ContinuousScalarPolicy,
     type ScalarDomain,
   } from '../primitives/scalar/continuous-scalar.svelte';
+  import { disabledFieldReasonText } from './disabled-reason';
   import { readingText } from '../primitives/reading-text';
   import type { AudioFocus, MonitorMode, RxAudioField } from './radio-view-model';
   import {
@@ -209,13 +210,13 @@
     };
   });
   const splitToggleSeat = createToggleRendererSeat(() => ({
-    context: rendererContext ?? null, field: rx?.routingSplit, label: 'Stereo split',
+    context: rendererContext ?? null, title: disabledFieldReasonText(rx?.routingSplit), field: rx?.routingSplit, label: 'Stereo split',
     invoke: (next) => onSplitStereoChange?.(next),
   }));
   const modInputSeat = createChoiceRendererSeat<RxAudioFiniteChoiceValue>(() => ({
-    context: rendererContext ?? null, label: 'MOD input',
+    context: rendererContext ?? null, label: 'MOD input', title: disabledFieldReasonText(rx?.modInputSource),
     field: rx?.modInputSource, blocked: !modInputRecognized,
-    options: modInputChoices.map((option) => ({ value: option.value, label: option.label })),
+    options: modInputChoices.map((option) => ({ value: option.value, label: option.label, disabledReason: disabledFieldReasonText(rx?.modInputSource) })),
     invoke: (source) => onModInputChange?.(source as number),
   }));
   function setLanInput(): AvailabilityActionRendererInput {
@@ -462,6 +463,8 @@
 {#snippet afLevelControl(hardware: boolean, receiver?: AfReceiverKey)}
   <!-- Same AF hint host RxAudioPanel exposes (MOR-2793). -->
   {@const afShortcut = getShortcutHint('adjust_af_level')}
+  {@const field = receiver === undefined ? rx?.afLevel : rx?.receiverAfLevels?.[receiver]}
+  {@const reason = disabledFieldReasonText(field)}
   <ValueControl
     {...feedbackIntegratedControl}
     binding={receiver === undefined ? afLevelBinding : receiverAfBindings[receiver]}
@@ -470,7 +473,8 @@
     variant={hardware ? 'hardware-illuminated' : 'modern'}
     accentColor={hardware ? 'var(--v2-accent-cyan-alt)' : 'var(--v2-accent-cyan)'}
     shortcutHint={afShortcut}
-    title={afShortcut ?? undefined}
+    title={reason ?? afShortcut ?? undefined}
+    accessibility={{ description: reason ?? null }}
   />
 {/snippet}
 {#snippet afLevel()}{@render afLevelControl(false)}{/snippet}
@@ -485,7 +489,7 @@
           seat={splitToggleSeat} renderer={finiteAppearance.toggle}
         />{/key}{/key}
       {:else}
-        <button type="button" class="rx-audio-choice" data-testid="rx-audio-split-toggle"
+        <button type="button" class="rx-audio-choice" data-testid="rx-audio-split-toggle" title={disabledFieldReasonText(rx.routingSplit)}
           aria-pressed={splitBehavior.selected}
           disabled={!splitBehavior.available || splitBehavior.selected === undefined}
           onclick={() => splitBehavior.selected !== undefined
@@ -657,7 +661,7 @@
         <label class="rx-audio-mod-selector">
           <span>{t('core.modePanel.modInputLabel')}</span>
           <select
-            data-testid="rx-audio-mod-select"
+            data-testid="rx-audio-mod-select" title={disabledFieldReasonText(rx.modInputSource)}
             aria-label={t('core.modePanel.modInputAria')}
             value={modInputValue}
             disabled={!modInputBehavior.available}

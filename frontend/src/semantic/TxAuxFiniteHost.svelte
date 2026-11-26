@@ -1,15 +1,12 @@
 <script module lang="ts">
   import type { TxAuxField } from './radio-view-model';
-  import { disabledReasonText } from './disabled-reason';
+  import { disabledFieldReasonText } from './disabled-reason';
   import { usable } from '../primitives/control-instruments/control-instrument-behavior';
 
   const reasonOf = (field: TxAuxField<unknown>): 'field-not-observed' | undefined =>
     usable(field) ? undefined : 'field-not-observed';
 
-  const reasonTextOf = (field: TxAuxField<unknown>): string | undefined =>
-    !field.availability.structural
-      ? disabledReasonText(field.availability)
-      : usable(field) ? undefined : disabledReasonText({ structural: true, operational: false });
+  const reasonTextOf = disabledFieldReasonText;
 
   // MOR-2647: a key carries no value text. The only reading that still
   // needs words is ATU `tuning`, and that lives in the title, not the label.

@@ -133,6 +133,7 @@
   import { decodeControlDomain, encodeControlDomain } from '$lib/radio/control-domain';
   import { exactDecimalNumber } from '$lib/types/exact-decimal';
   import type { ControlDomain } from '$lib/types/capabilities';
+  import { disabledFieldReasonText } from './disabled-reason';
   import { ValueControl } from '../components-v2/controls/value-control';
   import { bindToggleInstrument } from '../primitives/control-instruments/control-instrument-behavior';
   import {
@@ -275,6 +276,8 @@
     <span>Offset</span>
     <ValueControl
       binding={offsetBinding} label="Offset" renderer="bipolar"
+      title={disabledFieldReasonText(offset)}
+      accessibility={{ description: disabledFieldReasonText(offset) ?? null }}
       showLabel={false} showValue={false} compact={true}
       variant={fader ? 'hardware-illuminated' : 'modern'}
       accentColor={fader ? 'var(--v2-accent-cyan-alt)' : 'var(--v2-accent-cyan)'}
@@ -309,7 +312,7 @@
           <span class="row-label">SCAN</span>
           {#if part === 'all'}<span class="scan-readout" data-testid="scan-status" data-observed={usable(sc.scanning)}>{readingText(sc.scanning)}</span>{/if}
           <button
-            type="button" data-testid="scan-toggle" aria-pressed={pressedOf(sc.scanning)}
+            type="button" data-testid="scan-toggle" title={disabledFieldReasonText(sc.scanning)} aria-pressed={pressedOf(sc.scanning)}
             disabled={!scanToggle.available || (!scanningOn && availableScanTypes.length === 0)}
             onclick={() => scanToggle.invoke()}
           >{readingValue(sc.scanning) === true ? 'STOP' : 'START'}</button>

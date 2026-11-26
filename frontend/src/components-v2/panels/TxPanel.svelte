@@ -1,5 +1,7 @@
 <script lang="ts">
   import { onDestroy, untrack } from 'svelte';
+  import type { TxAuxScalarHandles } from '../../semantic/tx-aux-scalar';
+  import type { TxAuxFiniteHandles } from '../../semantic/tx-aux-finite';
   import { HardwareButton } from '$lib/Button';
   import { ValueControl } from '../controls/value-control';
   import { rawToPercentDisplay, rfPowerDisplay, validRfPowerScale } from '../../primitives/scalar/value-control-core';
@@ -35,7 +37,9 @@
   let {
     showManagedTotControl = false,
     suppressModInputTxWarning = false,
-  }: { showManagedTotControl?: boolean; suppressModInputTxWarning?: boolean } = $props();
+    scalarHandles, finiteHandles,
+  }: { showManagedTotControl?: boolean; suppressModInputTxWarning?: boolean;
+    scalarHandles?: TxAuxScalarHandles; finiteHandles?: TxAuxFiniteHandles } = $props();
 
   const handlers = getTxHandlers();
   let p = $derived(deriveTxProps());
@@ -323,6 +327,13 @@
     {/if}
 
     <div class="tx-button-grid">
+      {#if finiteHandles}
+        {@render finiteHandles.atu()}
+        {@render finiteHandles.atuTune()}
+        {@render finiteHandles.vox()}
+        {@render finiteHandles.compressor()}
+        {@render finiteHandles.monitor()}
+      {:else}
       {#if showTuner}
         <HardwareButton
           active={atuActive}
@@ -382,6 +393,7 @@
           MON{monActive && monLevel > 0 ? ` ${Math.round(monLevel / 2.55)}%` : ''}
         </HardwareButton>
       {/if}
+      {/if}
       <HardwareButton
         indicator="edge-left"
         color="gray"
@@ -406,35 +418,55 @@
     </div>
     <div class="modal-body">
       <div class="tx-level-slot">
-        <ValueControl {...feedbackIntegratedControl} label="RF Power" binding={rfPowerBinding}
-          renderer="hbar" displayFn={rfPowerLabel} accentColor="var(--v2-accent-red)"
-          issuedStatusPresentation={rfPowerStatus} variant="hardware-illuminated" />
+        {#if scalarHandles}
+          {@render scalarHandles.rfPower({ form: 'hbar', showLabel: true, showValue: true, variant: 'hardware-illuminated' })}
+        {:else}
+          <ValueControl {...feedbackIntegratedControl} label="RF Power" binding={rfPowerBinding}
+            renderer="hbar" displayFn={rfPowerLabel} accentColor="var(--v2-accent-red)"
+            issuedStatusPresentation={rfPowerStatus} variant="hardware-illuminated" />
+        {/if}
       </div>
       <!-- MOR-2658: each level value keeps its own reserved slot (`4ch`
            covers `100%`) so a first reading cannot shift the row. -->
       <div class="tx-level-slot">
-        <ValueControl {...feedbackIntegratedControl} label="Mic Gain" binding={micGainBinding}
-          renderer="hbar" displayFn={rawTxLevelDisplay} accentColor="var(--v2-accent-orange)"
-          issuedStatusPresentation={micGainStatus} variant="hardware-illuminated" />
+        {#if scalarHandles}
+          {@render scalarHandles.micGain({ form: 'hbar', showLabel: true, showValue: true, variant: 'hardware-illuminated' })}
+        {:else}
+          <ValueControl {...feedbackIntegratedControl} label="Mic Gain" binding={micGainBinding}
+            renderer="hbar" displayFn={rawTxLevelDisplay} accentColor="var(--v2-accent-orange)"
+            issuedStatusPresentation={micGainStatus} variant="hardware-illuminated" />
+        {/if}
       </div>
       {#if compActive}
         <div class="tx-level-slot">
-          <ValueControl {...feedbackIntegratedControl} label="Comp Level" binding={compLevelBinding}
-            renderer="hbar" displayFn={rawTxLevelDisplay} accentColor="var(--v2-accent-orange)"
-            issuedStatusPresentation={compLevelStatus} variant="hardware-illuminated" />
+          {#if scalarHandles}
+            {@render scalarHandles.compressorLevel({ form: 'hbar', showLabel: true, showValue: true, variant: 'hardware-illuminated' })}
+          {:else}
+            <ValueControl {...feedbackIntegratedControl} label="Comp Level" binding={compLevelBinding}
+              renderer="hbar" displayFn={rawTxLevelDisplay} accentColor="var(--v2-accent-orange)"
+              issuedStatusPresentation={compLevelStatus} variant="hardware-illuminated" />
+          {/if}
         </div>
       {/if}
       {#if showMon && monActive}
         <div class="tx-level-slot">
-          <ValueControl {...feedbackIntegratedControl} label="Mon Level" binding={monLevelBinding}
-            renderer="hbar" displayFn={rawTxLevelDisplay} accentColor="var(--v2-accent-orange)"
-            issuedStatusPresentation={monLevelStatus} variant="hardware-illuminated" />
+          {#if scalarHandles}
+            {@render scalarHandles.monitorLevel({ form: 'hbar', showLabel: true, showValue: true, variant: 'hardware-illuminated' })}
+          {:else}
+            <ValueControl {...feedbackIntegratedControl} label="Mon Level" binding={monLevelBinding}
+              renderer="hbar" displayFn={rawTxLevelDisplay} accentColor="var(--v2-accent-orange)"
+              issuedStatusPresentation={monLevelStatus} variant="hardware-illuminated" />
+          {/if}
         </div>
       {/if}
       <div class="tx-level-slot">
-        <ValueControl {...feedbackIntegratedControl} label="Drive Gain" binding={driveGainBinding}
-          renderer="hbar" displayFn={rawTxLevelDisplay} accentColor="var(--v2-accent-orange)"
-          issuedStatusPresentation={driveGainStatus} variant="hardware-illuminated" />
+        {#if scalarHandles}
+          {@render scalarHandles.driveGain({ form: 'hbar', showLabel: true, showValue: true, variant: 'hardware-illuminated' })}
+        {:else}
+          <ValueControl {...feedbackIntegratedControl} label="Drive Gain" binding={driveGainBinding}
+            renderer="hbar" displayFn={rawTxLevelDisplay} accentColor="var(--v2-accent-orange)"
+            issuedStatusPresentation={driveGainStatus} variant="hardware-illuminated" />
+        {/if}
       </div>
       <TxMicProcessingControl />
       {#if autoLan.available}
