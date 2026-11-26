@@ -196,7 +196,7 @@ All scope commands require the `scope` capability.
 | `set_scope_rbw` | `rbw?: int=0` | `scope` | Yes | Resolution bandwidth preset. |
 | `set_scope_dual` | `dual: bool` | `scope` | Yes | `dual` is required. |
 | `set_scope_mode` | `mode: int` | `scope` | Yes | |
-| `set_scope_span` | `span: int` | `scope` | No | Refused with `unsupported_command`; use the scope subscription view (`follow: "vfo", spanHz`: full width in Hz). Direct SDK `Radio.set_scope_span` is unchanged. |
+| `set_scope_span` | `span: int` | `scope` | No | Refused with `unsupported_command` by design (span is a per-client subscription view): set it with a radio scope follow subscription (`follow: "vfo", spanHz`: full width in Hz), not with a command. `scopeControls.span` in `GET /api/v1/state` is the radio-wide last acknowledged preset index and follows within one update (MOR-4713). Direct SDK `Radio.set_scope_span` is unchanged. |
 | `set_scope_speed` | `speed: int` | `scope` | Yes | |
 | `set_scope_ref` | `ref: int` | `scope` | Yes | Reference level. |
 | `set_scope_hold` | `on: bool` | `scope` | Yes | `on` is required. |

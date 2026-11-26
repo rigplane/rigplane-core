@@ -61,6 +61,7 @@ __all__ = [
     "FilterWidthRule",
     "IqLanSpec",
     "MeterCalibrationPoint",
+    "ModeEntry",
     "PowerWriteQuantum",
     "RadioProfile",
     "RuleSpec",
@@ -75,6 +76,14 @@ __all__ = [
 ]
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class ModeEntry:
+    """Optional attributes of a native name in ``[modes].list``."""
+
+    hamlib: str | None = None
+    data_partner: str | None = None
 
 
 class ControlLookupPoint(TypedDict):
@@ -498,6 +507,7 @@ class RadioProfile:
     has_lan: bool = False
     freq_ranges: tuple[FreqRangeInfo, ...] = ()
     modes: tuple[str, ...] = ()
+    mode_entries: dict[str, ModeEntry] = field(default_factory=dict, kw_only=True)
     filters: tuple[str, ...] = ()
     command_names: frozenset[str] = frozenset()
     # Command names this radio is confirmed NOT to have, per a named source

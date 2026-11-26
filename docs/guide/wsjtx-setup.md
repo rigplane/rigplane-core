@@ -126,7 +126,7 @@ When `--wsjtx-compat` is used with a direct Icom LAN radio connection on a
 radio profile with multiple DATA sub-modes such as the IC-7610, rigplane treats
 WSJT-X packet-mode requests as LAN audio operation:
 
-- `PKTUSB`, `PKTLSB`, and `PKTRTTY` are mapped to DATA2 instead of DATA1.
+- `PKTUSB` and `PKTLSB` are mapped to DATA2 instead of DATA1.
 - DATA2 modulation input is set to LAN.
 - DATA1 modulation input is not changed.
 

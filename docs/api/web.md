@@ -177,6 +177,31 @@ Stable supervisor routes:
 | `/api/v1/scope` | Explicit radio, audio FFT or IQ FFT subscription | when the requested source is available |
 | `/api/v1/audio` | Audio control and media frames | when radio/audio backend supports audio |
 
+### Query contracts (MOR-4252)
+
+The query strings of `GET /api/v1/ws` and `GET /api/v1/memories` are
+published, typed contracts in the public SDK — the same definitions
+Core's own parsers consume, so a gateway or client generator can track
+one source instead of mirroring Core by hand:
+
+- `rigplane.CONTROL_WS_QUERY_KEYS` (`{"controller_role", "state_delta"}`),
+  `rigplane.ControllerRole` (`Literal["primary", "auxiliary"]`) and
+  `rigplane.ControlWsQuery` for the control WebSocket;
+- `rigplane.MEMORIES_QUERY_KEYS` (`{"count", "group", "start"}`) and
+  `rigplane.MemoriesQuery` for the memory list.
+
+Each contract type has two acceptance levels. `accept(query)` is Core's
+own parse, lenient for released clients: keys outside the allowlist are
+ignored, and on `/api/v1/ws` a `state_delta` value other than exactly
+`"2"` selects delta version 1 (it degrades, it is not refused) while a
+repeated `controller_role` is a 400. `parse(query)` is the strict
+contract a gateway may enforce — only the listed keys, each at most
+once, `controller_role` in `{"primary", "auxiliary"}`, `state_delta`
+exactly `"2"` when present, and for memories integer values with `count`
+within `1..50` — returning `None` for anything outside it. The strict
+parse still defaults absent keys the way Core accepts them; a gateway
+that requires a key applies a deliberately stricter policy on top.
+
 ### Keepalive
 
 The `/api/v1/ws` and `/api/v1/scope` routes answer a JSON
