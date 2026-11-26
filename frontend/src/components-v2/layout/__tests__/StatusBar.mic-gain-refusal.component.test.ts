@@ -1,5 +1,6 @@
 import { flushSync, mount, tick, unmount } from 'svelte';
 import { expect, it, vi } from 'vitest';
+import { webglFixture } from '$lib/renderers/__tests__/webgl-fixture';
 import { ManagedAppTxHarness } from '$lib/runtime/tx-controller/__tests__/support/managed-app-tx-harness';
 import { setCapabilities } from '$lib/stores/capabilities.svelte';
 import { getRadioState } from '$lib/stores/radio.svelte';
@@ -11,6 +12,7 @@ import { desktopV2Layout } from '../../../presentation/layouts/declarations';
 import { readWorkspace } from '../../../presentation/workspace/contract';
 import { resolveSurfacePlan, SURFACE_PLAN_CONTEXT_KEY } from '../../../presentation/workspace/resolution';
 import HostedRadioLayoutFixture from './fixtures/HostedRadioLayoutFixture.svelte';
+import { stubResizeObserver } from './support/stub-resize-observer';
 
 const fetchCapabilities = vi.hoisted(() => vi.fn());
 vi.mock('$lib/transport/http-client', async (importOriginal) => ({
@@ -30,6 +32,12 @@ it('replays the FTX-1 mic-gain refusal and recovery into the desktop controls', 
   const target = document.body.appendChild(document.createElement('div'));
   let component: ReturnType<typeof mount> | undefined;
   try {
+    stubResizeObserver();
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockImplementation(function (
+      this: HTMLCanvasElement, kind: string,
+    ) {
+      return kind === 'webgl2' ? webglFixture(this.width, this.height).gl : null;
+    });
     expect(setCapabilities(caps)).toBe(true);
     connect('ws://test/api/v1/ws');
     const socket = instances[0];
@@ -75,6 +83,7 @@ it('replays the FTX-1 mic-gain refusal and recovery into the desktop controls', 
     if (component) await unmount(component);
     disconnect();
     target.remove();
+    vi.restoreAllMocks();
     vi.unstubAllGlobals();
   }
 });
