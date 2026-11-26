@@ -35,6 +35,17 @@ function field(view: RadioViewModel, name: keyof DspViewModel, reading: unknown)
 }
 
 describe('DspInstrumentHost finite ownership', () => {
+  it.each(['The provider refused this receiver NR state.', undefined])('explains disabled receiver toggle %j', (message) => {
+    const view = base();
+    view.dsp!.nrActive = { reading: { status: 'unknown' },
+      availability: { structural: true, operational: false, message } };
+    const component = mount(DspInstrumentHostFixture, { target, props: { view, presentation: 'independent' } });
+    flushSync();
+    const button = target.querySelector<HTMLButtonElement>('[data-testid="dsp-nrActive"]')!;
+    expect(button.disabled).toBe(true);
+    expect(button.title).toBe(message ?? 'Not yet observed');
+    unmount(component);
+  });
   it('keeps all four native handles honest across grouped and independent arrangements', () => {
     const onToggle = vi.fn();
     const props = proxy({

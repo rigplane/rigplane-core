@@ -16,6 +16,7 @@
   import {
     FILTER_SHAPES, type FilterFiniteChoiceValue, type FilterInstrumentHandles,
   } from './filter-instruments';
+  import { disabledFieldReasonText } from './disabled-reason';
   import { readingText } from '../primitives/reading-text';
   import type { RadioViewModel } from './radio-view-model';
 
@@ -111,25 +112,26 @@
   }));
 
   const modeSeat = createChoiceRendererSeat<FilterFiniteChoiceValue>(() => ({
-    context: rendererContext ?? null, field: modeFilter?.currentMode, label: 'Mode',
-    options: (modeFilter?.modeChoices ?? []).map(value => ({ value, label: value })),
+    context: rendererContext ?? null, title: disabledFieldReasonText(modeFilter?.currentMode), field: modeFilter?.currentMode, label: 'Mode',
+    options: (modeFilter?.modeChoices ?? []).map(value => ({ value, label: value, disabledReason: disabledFieldReasonText(modeFilter?.currentMode) })),
     requested: requested(pendingMode),
     invoke: value => onModeChange?.(value as string),
   }), { selectionRequiresAvailability: true });
   const filterSeat = createChoiceRendererSeat<FilterFiniteChoiceValue>(() => ({
-    context: rendererContext ?? null, field: modeFilter?.currentFilter, label: 'Filter',
-    options: (modeFilter?.filterChoices ?? []).map((label, index) => ({ value: index + 1, label })),
+    context: rendererContext ?? null, title: disabledFieldReasonText(modeFilter?.currentFilter), field: modeFilter?.currentFilter, label: 'Filter',
+    options: (modeFilter?.filterChoices ?? []).map((label, index) => ({ value: index + 1, label, disabledReason: disabledFieldReasonText(modeFilter?.currentFilter) })),
     requested: requested(pendingFilter), invoke: value => onFilterChange?.(value as number),
   }), { selectionRequiresAvailability: true });
   const shapeSeat = createChoiceRendererSeat<FilterFiniteChoiceValue>(() => ({
-    context: rendererContext ?? null,     field: filterPassband?.filterShape, label: 'Filter shape',
-    options: FILTER_SHAPES.map(([value, label]) => ({ value, label })),
+    context: rendererContext ?? null, title: disabledFieldReasonText(filterPassband?.filterShape), field: filterPassband?.filterShape, label: 'Filter shape',
+    options: FILTER_SHAPES.map(([value, label]) => ({ value, label, disabledReason: disabledFieldReasonText(filterPassband?.filterShape) })),
     requested: requested(pendingFilterShape), invoke: value => onFilterShapeChange?.(value as number),
   }), { selectionRequiresAvailability: true });
   const dataSeat = createChoiceRendererSeat<FilterFiniteChoiceValue>(() => ({
-    context: rendererContext ?? null, field: filterPassband?.dataMode, label: 'DATA mode',
+    context: rendererContext ?? null, title: disabledFieldReasonText(filterPassband?.dataMode), field: filterPassband?.dataMode, label: 'DATA mode',
     options: (filterPassband?.dataModeChoices ?? []).map(choice => ({
       value: choice.value, label: choice.label ?? (choice.value === 0 ? 'OFF' : `D${choice.value}`),
+      disabledReason: disabledFieldReasonText(filterPassband?.dataMode),
     })),
     blocked: (filterPassband?.dataModeChoices.length ?? 0) < 2,
     requested: requested(pendingDataMode), invoke: value => onDataModeChange?.(value as number),
@@ -194,7 +196,7 @@
       <div class="filter-choice-group" data-testid="filter-mode" data-disabled-reason={reason(modeFilter.currentMode)}>
         {#each modeFilter.modeChoices as choice (choice)}<button type="button" class="filter-choice"
           data-testid={`filter-mode-${choice}`} aria-pressed={modeBehavior.available && modeBehavior.isSelected(choice)}
-          data-shortcut-hint={modeShortcut(choice) ?? undefined} title={modeShortcut(choice) ?? undefined}
+          data-shortcut-hint={modeShortcut(choice) ?? undefined} title={disabledFieldReasonText(modeFilter.currentMode) ?? modeShortcut(choice) ?? undefined}
           disabled={!modeBehavior.available} onclick={() => modeBehavior.invoke(choice)}>{choice}</button>{/each}
       </div>
     {/if}
@@ -207,7 +209,7 @@
         data-filter-status={pendingFilter !== null ? 'pending' : 'confirmed'} aria-describedby={pendingFilter !== null ? pendingId : undefined}>
         {#each modeFilter.filterChoices as choice, index (choice)}<button type="button" class="filter-choice"
           data-testid={`filter-select-${index + 1}`} aria-pressed={filterBehavior.available && filterBehavior.isSelected(index + 1)}
-          data-shortcut-hint={cycleFilterShortcut() ?? undefined} title={cycleFilterShortcut() ?? undefined}
+          data-shortcut-hint={cycleFilterShortcut() ?? undefined} title={disabledFieldReasonText(modeFilter.currentFilter) ?? cycleFilterShortcut() ?? undefined}
           data-pending={pendingFilter === index + 1} disabled={!filterBehavior.available}
           onclick={() => filterBehavior.invoke(index + 1)}>{choice}</button>{/each}
         {#if pendingFilter !== null}<span id={pendingId} class="sr-only">{t('core.filter.select.pendingAnnouncement')}</span>{/if}
@@ -232,7 +234,7 @@
         aria-busy={shapeBusy}
         aria-describedby={pendingFilterShape !== null ? pendingFilterShapeId : undefined}>
         {#each FILTER_SHAPES as [value, label] (value)}<button type="button" class="filter-choice"
-          data-testid={`filter-shape-${value}`} aria-pressed={shapeBehavior.available && shapeBehavior.isSelected(value)}
+          data-testid={`filter-shape-${value}`} title={disabledFieldReasonText(filterPassband.filterShape)} aria-pressed={shapeBehavior.available && shapeBehavior.isSelected(value)}
           data-pending={pendingFilterShape === value} disabled={!shapeBehavior.available}
           data-command-phase={shapePhase}
           aria-busy={shapeBusy}
@@ -257,7 +259,7 @@
         {#if filterPassband.dataModeChoices.length > 1}
           {#each filterPassband.dataModeChoices as choice (choice.value)}<button type="button" class="filter-choice"
             data-testid={`filter-data-mode-${choice.value}`} aria-pressed={dataBehavior.available && dataBehavior.isSelected(choice.value)}
-            data-shortcut-hint={dataShortcut() ?? undefined} title={dataShortcut() ?? undefined}
+            data-shortcut-hint={dataShortcut() ?? undefined} title={disabledFieldReasonText(filterPassband.dataMode) ?? dataShortcut() ?? undefined}
             data-pending={pendingDataMode === choice.value} disabled={!dataBehavior.available}
             onclick={() => dataBehavior.invoke(choice.value)}>{choice.label ?? (choice.value === 0 ? 'OFF' : `D${choice.value}`)}</button>{/each}
         {/if}
@@ -289,7 +291,7 @@
               disabled={!modeBehavior.available} indicator="edge-left" color="cyan"
               role="radio" ariaChecked={modeBehavior.isSelected(choice)}
               armed={isPending} describedBy={isPending ? modeArmedId : undefined}
-              title={modeShortcut(choice)}
+              title={disabledFieldReasonText(modeFilter.currentMode) ?? modeShortcut(choice)}
               shortcutHint={modeShortcut(choice)}
               onclick={() => modeBehavior.invoke(choice)}
             >{choice}</HardwareButton>
@@ -318,7 +320,7 @@
               <HardwareButton
                 active={dataBehavior.available && dataBehavior.isSelected(choice.value)}
                 disabled={!dataBehavior.available} indicator="edge-left" color="cyan"
-                title={dataShortcut()}
+                title={disabledFieldReasonText(filterPassband.dataMode) ?? dataShortcut()}
                 shortcutHint={dataShortcut()}
                 armed={isPending} describedBy={isPending ? pendingDataModeId : undefined}
                 onclick={() => dataBehavior.invoke(choice.value)}
@@ -333,7 +335,7 @@
             data-mod-input-status={pendingModInput !== null ? 'pending' : usable(filterPassband.modInputSource) ? 'confirmed' : filterPassband.modInputSource.reading.status === 'known' ? 'retained' : 'unknown'}>
             <span class="standard-section-label">{t('core.modePanel.modInputLabel')}</span>
             {#key `${filterPassband.modInputSource.reading.status}:${filterPassband.modInputSource.reading.status === 'known' ? filterPassband.modInputSource.reading.value : ''}:${pendingModInput ?? ''}`}
-            <select data-testid="mod-input-select" aria-label={t('core.modePanel.modInputAria')}
+            <select data-testid="mod-input-select" title={disabledFieldReasonText(filterPassband.modInputSource)} aria-label={t('core.modePanel.modInputAria')}
               aria-describedby={pendingModInput !== null ? pendingModInputId : undefined}
               data-pending-value={pendingModInput === null ? undefined : pendingModInput}
               disabled={!usable(filterPassband.modInputSource)}

@@ -84,6 +84,21 @@ const bypassClick = (element: HTMLElement) =>
   element.dispatchEvent(new MouseEvent('click', { bubbles: true }));
 
 describe('TxAuxFiniteHost native composition', () => {
+  it.each(['The radio refused to report VOX.', undefined])('renders toggle tooltip and accessible explanation %j', (message) => {
+    const r = render({ view: withField('vox', { unknown: true,
+      availability: { structural: true, operational: false, message } }) });
+    const vox = target.querySelector<HTMLButtonElement>('[data-testid="tx-aux-vox"]')!;
+    expect(vox.disabled).toBe(true);
+    expect(vox.title).toBe(message ?? 'Not yet observed');
+    const description = vox.getAttribute('aria-describedby')!;
+    expect(description).toBeTruthy();
+    expect(description.split(/\s+/).map(id => document.getElementById(id)?.textContent).join(' ')).toContain(vox.title);
+    r.props.view = base();
+    flushSync();
+    expect(vox.disabled).toBe(false);
+    expect(vox.title).not.toContain(message ?? 'Not yet observed');
+    r.dispose();
+  });
   it('provides exactly five finite handles beside the persistent eight scalars', () => {
     const r = render();
     expect(target.querySelectorAll('.tx-aux-toggle')).toHaveLength(4);

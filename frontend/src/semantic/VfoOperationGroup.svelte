@@ -126,11 +126,9 @@
     return value === null ? undefined : value === 'off' ? 'false' : 'true';
   }
 
-  /** Present but unoperational is unobserved — the same wording family the
-   *  TX aux toggles draw from (`TxAuxFiniteHost`'s `reasonTextOf`). */
   function functionReason(operation: VfoRadioFunctionOperation): string | undefined {
     if (operation.availability.operational || !operation.availability.structural) return undefined;
-    return disabledReasonText({ structural: true, operational: false });
+    return disabledReasonText(operation.availability);
   }
 
   function reasonId(name: string, reason: string | undefined): string | undefined {

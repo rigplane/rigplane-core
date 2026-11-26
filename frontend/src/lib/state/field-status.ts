@@ -24,7 +24,7 @@ export function getFieldStatus(
 function parentAvailability(
   state: ServerState | null,
   publicPath: string,
-): FieldAvailability | undefined {
+): { availability: FieldAvailability; status: FieldStatus } | undefined {
   const fieldStatus = state?.fieldStatus;
   if (!fieldStatus) return undefined;
   let prefix = publicPath;
@@ -33,39 +33,53 @@ function parentAvailability(
     prefix = prefix.slice(0, dot);
     const status = fieldStatus[prefix];
     if (status) {
-      if (status.freshness === 'stale') return status.observed ? 'available' : status.availability;
-      return status.availability;
+      return { availability: status.freshness === 'stale' && status.observed ? 'available' : status.availability, status };
     }
     dot = prefix.lastIndexOf('.');
   }
   return undefined;
 }
 
-export function getFieldAvailability(
+function resolveFieldAvailability(
   state: ServerState | null,
   publicPath: string,
-): FieldAvailability {
-  if (!state) return 'missing';
+): { availability: FieldAvailability; status?: FieldStatus } {
+  if (!state) return { availability: 'missing' };
   const status = getFieldStatus(state, publicPath);
   if (!status) {
     // No own entry: inherit from the nearest ancestor that has one. A
     // `missing` parent makes the child unavailable; only when no ancestor
     // carries a status do we treat the leaf as available.
-    return parentAvailability(state, publicPath) ?? 'available';
+    return parentAvailability(state, publicPath) ?? { availability: 'available' };
   }
   if (status.freshness === 'stale') {
     // A stale-but-observed entry still carries its last value (R29), so it
     // resolves to `available` rather than being blocked.
-    if (status.observed) return 'available';
-    return status.availability;
+    if (status.observed) return { availability: 'available', status };
+    return { availability: status.availability, status };
   }
   if (status.availability === 'available') {
     // Own entry says available, but a `missing` parent still wins — an
     // unobserved group must not be confirmed via one leaf.
     const parent = parentAvailability(state, publicPath);
-    if (parent && parent !== 'available') return parent;
+    if (parent && parent.availability !== 'available') return parent;
   }
-  return status.availability;
+  return { availability: status.availability, status };
+}
+
+export function getFieldAvailability(
+  state: ServerState | null,
+  publicPath: string,
+): FieldAvailability {
+  return resolveFieldAvailability(state, publicPath).availability;
+}
+
+export function getFieldAvailabilityMessage(
+  state: ServerState | null,
+  publicPath: string,
+): FieldStatus['message'] {
+  const { availability, status } = resolveFieldAvailability(state, publicPath);
+  return availability === 'available' ? undefined : status?.message;
 }
 
 export function isFieldAvailable(

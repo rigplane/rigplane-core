@@ -14,21 +14,24 @@
  *
  * `structural: false` — the radio model does not declare this capability at
  * all ("not supported by this radio"). `operational: false` — the control
- * exists but its reading has not arrived yet, whether because it was simply
- * never read or because the same connection trouble
- * `sendCommand`'s refusal notice (`$lib/transport/ws-client`) reports has
- * degraded it — this module's `core.disabledReason.*` keys are the shared
- * wording family both surfaces draw from, so the operator reads one
- * vocabulary for "this is fail-closed," not two.
+ * exists but is unusable. Its producer message explains a refusal; an
+ * absent message retains the translated unobserved fallback.
  *
  * `undefined` for a usable field: a usable control gets no reason text at
  * all, matching every surface's existing `usable()` gate.
  */
 import { t } from '$lib/i18n';
-import type { Availability } from './radio-view-model';
+import type { Availability, TxAuxField } from './radio-view-model';
 
 export function disabledReasonText(availability: Availability): string | undefined {
   if (!availability.structural) return t('core.disabledReason.missing');
-  if (!availability.operational) return t('core.disabledReason.unobserved');
+  if (!availability.operational) return availability.message?.trim()
+    ? availability.message : t('core.disabledReason.unobserved');
   return undefined;
+}
+
+export function disabledFieldReasonText(field: TxAuxField<unknown> | undefined): string | undefined {
+  if (!field) return t('core.disabledReason.unobserved');
+  return disabledReasonText({ ...field.availability,
+    operational: field.availability.operational && field.reading.status === 'known' });
 }

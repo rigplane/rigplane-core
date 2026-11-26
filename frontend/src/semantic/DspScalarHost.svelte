@@ -14,7 +14,7 @@
   } from '../primitives/scalar/continuous-scalar.svelte';
   import { rawToPercentDisplay } from '../primitives/scalar/value-control-core';
   import { NOTCH_WIDTH_LABELS, formatAgcTime } from '../components-v2/panels/dsp-panel-logic';
-  import { disabledReasonText } from './disabled-reason';
+  import { disabledFieldReasonText } from './disabled-reason';
   import { finiteValue, valueText } from '../primitives/reading-text';
   import type { NotchWidthChoice } from '../lib/types/capabilities';
   import type { RadioViewModel } from './radio-view-model';
@@ -188,7 +188,9 @@
     return `${LABELS[field]}: ${current.phase.replaceAll('-', ' ')}${requested}${confirmed}${error}`;
   }
   function disabledReason(field: DspScalarField): string | undefined {
-    return enabled(field) ? undefined : disabledReasonText({ structural: true, operational: false });
+    const current = dsp?.[field];
+    return enabled(field) ? undefined : disabledFieldReasonText(current === undefined ? undefined
+      : { ...current, availability: { ...current.availability, operational: false } });
   }
 
   /**
