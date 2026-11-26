@@ -445,16 +445,15 @@ class YaesuCatRadio:
                 await self._transport.connect()
             except (CatTransportError, OSError) as exc:
                 cause = exc if isinstance(exc, OSError) else exc.__cause__
-                if not isinstance(cause, OSError) or not serial_open_diagnostic(
-                    cause
-                ).startswith("serial_not_found"):
+                if not isinstance(cause, OSError):
                     raise
-                message = (
-                    f"Radio not connected, waiting for the port {self._device}: {exc}"
-                )
+                diagnostic = serial_open_diagnostic(cause)
+                if not diagnostic.startswith("serial_not_found"):
+                    raise
+                logger.debug("Waiting for CAT serial port %s: %s", self._device, exc)
                 if generation == self._identity_generation:
-                    self.last_error = message
-                raise RadioConnectionError(message) from cause
+                    self.last_error = diagnostic
+                raise RadioConnectionError(diagnostic) from cause
             if generation != self._identity_generation:
                 await self._transport.close()
                 return
