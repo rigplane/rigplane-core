@@ -1466,11 +1466,9 @@ async def test_rigctld_unavailable_rf_gain_does_not_abort_startup(reply: str) ->
         assert refusal["command"] == "l RF"
         assert refusal["frame"] == reply
         fake._ANSWERS = _TcpRigctldServer._ANSWERS
-        # Simulate the retry delay elapsing while leaving the live poller running.
-        scheduler._refused_paths[path].retry_at = time.monotonic()
         await await_until(
             lambda: path in _observed_paths(server, scheduler),
-            timeout=30,
+            timeout=75,
             description="RF gain observed on a later rigctld poll",
         )
         assert path not in scheduler.refused_paths()
@@ -2957,15 +2955,29 @@ async def test_yaesu_unanswered_tx_state_opens_after_the_non_critical_deadline(
     assert "after 10s" in warnings[0]
 
 
+class _Ftx1ModeDependentMicGain(FakeCatRadio):
+    def change_mode_from_front_panel(self, code: str) -> None:
+        self._mode_code = code
+
+    def _reply_for(self, body: str) -> str | None:
+        if body == "MG":
+            return "?;" if self.mode_code in {"3", "6", "7", "9"} else "MG050;"
+        return super()._reply_for(body)
+
+
 @pytest.mark.asyncio
+@pytest.mark.parametrize("mode_code, mode", [("3", "CW-U"), ("9", "RTTY-U")])
 async def test_ftx1_refused_mic_gain_does_not_abort_startup(
     caplog: pytest.LogCaptureFixture,
+    mode_code: str,
+    mode: str,
 ) -> None:
-    """MOR-4819: replay the reported startup failure, with MG; refused."""
+    """MOR-4819: MG; refuses in CW/RTTY and answers in USB on one CAT session."""
     path = FieldPath.global_("operator_controls", "mic_gain")
-    fake = FakeCatRadio(recorded_answers=_ftx1_table_refused_tx())
+    fake = _Ftx1ModeDependentMicGain(
+        mode_code=mode_code, recorded_answers=_ftx1_table_refused_tx()
+    )
     fake.hold("TX", "0")
-    fake.reject("MG")
     await fake.start()
     radio = YaesuCatRadio(device=fake.device_url, profile="ftx1")
     try:
@@ -2984,16 +2996,14 @@ async def test_ftx1_refused_mic_gain_does_not_abort_startup(
             assert path in scheduler.refused_paths()
             observed = _observed_paths(server, scheduler)
             assert FREQ in observed
-            assert FieldPath.active("main", "freq_mode", "mode") in observed
             assert path not in observed
-            reports = [
-                record.getMessage()
-                for record in caplog.records
-                if record.levelno >= logging.INFO and "'MG;'" in record.getMessage()
-            ]
-            assert len(reports) == 1
-            assert str(path) in reports[0]
-            assert "'?;'" in reports[0]
+            status, state = await _http_get_json(port, "/api/v1/state")
+            assert status == 200
+            assert state["main"]["mode"] == mode
+            assert state["main"]["freqHz"] == 14_074_000
+            mic_gain_status = state["fieldStatus"]["micGain"]
+            assert mic_gain_status["availability"] == "unavailable"
+            assert state["micGain"] is None
             status, runtime = await _http_get_json(port, "/api/v1/runtime")
             assert status == 200
             refusal = runtime["stateAcquisition"]["scheduler"]["readRefusals"][
@@ -3002,16 +3012,55 @@ async def test_ftx1_refused_mic_gain_does_not_abort_startup(
             assert refusal["status"] == "unavailable"
             assert refusal["command"] == "MG;"
             assert refusal["frame"] == "?;"
-            assert "the radio refused to report mic gain" in refusal["message"]
+            assert refusal["message"] == (
+                "The radio refused to report mic gain. The control is unavailable "
+                "until the radio answers. The app is still connected."
+            )
+            assert mic_gain_status["message"] == refusal["message"]
 
-            fake._rejected_verbs.remove("MG")
+            fake.change_mode_from_front_panel("2")  # MD02; on the wire
+
+            def usb_with_mic_gain() -> bool:
+                state = server.build_public_state()
+                return state["main"]["mode"] == "USB" and state["micGain"] == 50
+
             await await_until(
-                lambda: path in _observed_paths(server, scheduler),
+                usb_with_mic_gain,
                 timeout=30,
                 description="mic gain observed on a later CAT poll",
             )
             assert path not in scheduler.refused_paths()
-            assert server.command_state_store.snapshot().field(path).value == 50
+            status, state = await _http_get_json(port, "/api/v1/state")
+            assert status == 200
+            assert state["main"]["mode"] == "USB"
+            assert state["fieldStatus"]["micGain"]["availability"] == "available"
+
+            mic_reads = fake.commands.count("MG;")
+            fake.change_mode_from_front_panel("3")  # MD03; on the wire
+            await await_until(
+                lambda: (
+                    path in scheduler.refused_paths()
+                    and server.build_public_state()["main"]["mode"] == "CW-U"
+                ),
+                timeout=30,
+                description="mic gain refused again after returning to CW",
+            )
+            assert fake.commands.count("MG;") >= mic_reads + 2
+            status, state = await _http_get_json(port, "/api/v1/state")
+            assert status == 200
+            assert state["main"]["mode"] == "CW-U"
+            assert state["fieldStatus"]["micGain"]["availability"] == "unavailable"
+            assert state["fieldStatus"]["micGain"]["message"] == refusal["message"]
+            assert state["micGain"] is None
+            assert scheduler.startup_defect is None
+            reports = [
+                record.getMessage()
+                for record in caplog.records
+                if record.levelno >= logging.INFO and "'MG;'" in record.getMessage()
+            ]
+            assert len(reports) == 1
+            assert str(path) in reports[0]
+            assert "'?;'" in reports[0]
         finally:
             await server.stop()
     finally:

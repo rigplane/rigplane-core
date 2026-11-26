@@ -139,7 +139,7 @@ async def test_ic705_refused_tuner_read_does_not_hold_the_startup_gate(
         assert scheduler.startup_defect is None
         assert scheduler.consecutive_refusals(TUNER_STATUS) > 0
         refusal = scheduler.diagnostics()["readRefusals"][str(TUNER_STATUS)]
-        assert "the radio refused to report tuner status" in refusal["message"]
+        assert "The radio refused to report tuner status." in refusal["message"]
     finally:
         await web.stop()
         await radio.disconnect()

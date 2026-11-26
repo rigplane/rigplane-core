@@ -570,8 +570,13 @@ class _ReadRefusal:
     def message(self, path: FieldPath) -> str:
         name = path.name.replace("_", " ")
         if self.malformed:
-            return f"the radio returned an invalid reply for {name}"
-        return f"the radio refused to report {name}"
+            cause = f"The radio returned an invalid reply for {name}."
+        else:
+            cause = f"The radio refused to report {name}."
+        return (
+            f"{cause} The control is unavailable until the radio answers. "
+            "The app is still connected."
+        )
 
     def diagnostic(self, path: FieldPath) -> ReadRefusalDiagnostic:
         failure = self.failure
@@ -1920,6 +1925,14 @@ class AcquisitionScheduler:
 
         return frozenset(self._refused_paths)
 
+    def declared_read_refusals(self) -> dict[FieldPath, str]:
+        """Return the active declared-read failures for the public field status."""
+        return {
+            path: refusal.message(path)
+            for path, refusal in self._refused_paths.items()
+            if refusal.failure is not None
+        }
+
     def unanswered_paths(self) -> frozenset[FieldPath]:
         """Return the paths whose last read got no answer (MOR-3856)."""
 
@@ -1995,7 +2008,7 @@ class AcquisitionScheduler:
             if failure is not None and path not in self._reported_read_failures:
                 self._reported_read_failures.add(path)
                 logger.warning(
-                    "acquisition: %s; %s unavailable (command %r; frame %r)",
+                    "acquisition: %s (%s, command %r, frame %r)",
                     self._refused_paths[path].message(path),
                     path,
                     failure.command,
