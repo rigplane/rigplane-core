@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import io
 import json
-import time
+from pathlib import Path
 from types import SimpleNamespace
 from urllib.error import URLError
 from unittest.mock import AsyncMock, Mock
@@ -21,17 +21,38 @@ from rigplane.core.state_pipeline_contracts import (
     Observation,
     SourceMetadata,
 )
+from rigplane.core.state_store import FreshnessClock
 from rigplane.core.tx_observation import OBSERVED_PTT_PATH, ObservedPtt
 from rigplane.rigctld.contract import HamlibError, RigctldConfig
 from rigplane.rigctld.handler import RigctldHandler
 from rigplane.runtime.controller_authority import ControllerError
 from rigplane.runtime.managed_tx_state import ManagedTxIntentKind, ManagedTxOutcome
-from rigplane.web import server as server_module
 from rigplane.web import eibi as eibi_module
+from rigplane.web import server as server_module
 from rigplane.web.eibi import EiBiProvider
 from rigplane.web.handlers.audio import AudioHandler
 from rigplane.web.handlers.control import ControlHandler
 from rigplane.web.server import WebConfig, WebServer, _HttpCommandExecutor
+from rigplane_testkit.realtime_guard import analyze_source, read_baseline
+
+
+def test_controller_tests_do_not_add_realtime_baseline_debt() -> None:
+    path = Path(__file__).resolve()
+    module = f"tests/{path.name}"
+    baseline = {
+        entry
+        for entry in read_baseline(path.with_name("realtime_baseline.txt"))
+        if entry.partition("::")[0] == module
+    }
+    clock_dependent = {
+        f"{module}::{name}"
+        for name, facts in analyze_source(path.read_text()).items()
+        if facts.needs_conversion()
+    }
+    assert clock_dependent == baseline, {
+        "new": sorted(clock_dependent - baseline),
+        "stale": sorted(baseline - clock_dependent),
+    }
 
 
 class Writer(_MemoryWriter):
@@ -50,18 +71,20 @@ class Writer(_MemoryWriter):
 
 
 @pytest.fixture
-async def station():
+async def station(monkeypatch):
     managed, *_ = authority()
     server = WebServer(None, WebConfig(radio_model="IC-7610"))
     server._production_managed_tx_port = _GatePort(managed)
     server._controller_installed = True
     server._controller_enforcement_ready = True
+    clock = FreshnessClock(start=100.0)
+    monkeypatch.setattr(server.command_state_store, "_freshness_clock", clock)
     server.command_state_store.apply_current(
         Observation(
             path=OBSERVED_PTT_PATH,
             value=ObservedPtt.OFF,
             source=SourceMetadata(source="poll_response", provider="test"),
-            timestamp_monotonic=time.monotonic(),
+            timestamp_monotonic=clock.now(),
             max_age=60,
         )
     )
