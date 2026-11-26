@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { CAPABILITY_ATTRIBUTE, TRANSMIT_CAPABILITIES } from '$lib/transmit-capabilities';
   import { onDestroy } from 'svelte';
   import { runtime } from '$lib/runtime';
   import { getManagedAppTxController } from '$lib/runtime/tx-controller/managed-app-host';
@@ -81,7 +82,7 @@
     />
     <button
       type="button"
-      data-testid="managed-tot-save"
+      data-testid="managed-tot-save" {...{ [CAPABILITY_ATTRIBUTE]: TRANSMIT_CAPABILITIES.txTimeoutSave.id }}
       disabled={!txState.fresh || saving || !dirty}
       onclick={() => { void save(); }}
     >

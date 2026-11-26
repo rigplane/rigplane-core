@@ -33,7 +33,7 @@ live request path.
 
 from __future__ import annotations
 
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -66,6 +66,10 @@ __all__ = [
     "SdrStatusPublic",
     "WsClientsPublic",
     "ServerStatePublic",
+    "RadioOwnedModePublic",
+    "OperatingModeRestrictionPublic",
+    "OperatingModeEvidencePublic",
+    "OperatingModeObservationPublic",
     "StateUpdateEnvelope",
 ]
 
@@ -533,6 +537,54 @@ class WsClientsPublic(_Strict):
     audio: int = 0
 
 
+class OperatingModeRestrictionPublic(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    operation: str
+    receiver: str
+    certainty: str
+
+
+class OperatingModeEvidencePublic(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    kind: str
+    commandId: str
+    target: str
+    commandSource: str | None = None
+    sessionId: str | None = None
+    observedAtMonotonic: float | None = None
+    providerGeneration: int | None = None
+
+
+class OperatingModeObservationPublic(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    source: dict[str, Any]
+    observedAtMonotonic: float
+    maxAge: float | None = None
+    quality: list[str]
+    providerGeneration: int
+
+
+class RadioOwnedModePublic(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    id: str
+    label: str
+    scope: str
+    activity: str = "unknown"
+    certainty: str | None = None
+    restrictions: list[OperatingModeRestrictionPublic] = Field(default_factory=list)
+    enterCapability: str = "unavailable"
+    leaveCapability: str = "unavailable"
+    enterInstruction: str = ""
+    enterProvenance: str = ""
+    leaveInstruction: str = ""
+    leaveProvenance: str = ""
+    evidenceRefs: list[str] = Field(default_factory=list)
+    evidence: list[OperatingModeEvidencePublic] = Field(default_factory=list)
+    message: str | None = None
+    translationKey: str = ""
+    observation: OperatingModeObservationPublic | None = None
+
+
 class ServerStatePublic(_Strict):
     """The full public radio-state payload (server-sent portion).
 
@@ -556,6 +608,7 @@ class ServerStatePublic(_Strict):
     # defaults preserve generated compile-time compatibility for old consumers.
     stateContractVersion: Literal[1] = 1
     providerGeneration: int = 0
+    radioOwnedModes: list[RadioOwnedModePublic] = Field(default_factory=list)
 
     # Global slow-state / TX flags.
     # ``active`` is set to "MAIN"/"SUB" in exactly three places:

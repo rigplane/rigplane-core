@@ -24,6 +24,7 @@ export interface ServerStatePublic {
   updatedAt: string;
   stateContractVersion?: 1;
   providerGeneration?: number;
+  radioOwnedModes?: RadioOwnedModePublic[];
   active: ("MAIN" | "SUB") | null;
   powerOn?: boolean | null;
   ptt: boolean | null;
@@ -98,6 +99,52 @@ export interface ServerStatePublic {
     [k: string]: FieldStatusPublic;
   };
   publicStateSeq?: number;
+}
+export interface RadioOwnedModePublic {
+  id: string;
+  label: string;
+  scope: string;
+  activity: string;
+  certainty: string | null;
+  restrictions: OperatingModeRestrictionPublic[];
+  enterCapability: string;
+  leaveCapability: string;
+  enterInstruction: string;
+  enterProvenance: string;
+  leaveInstruction: string;
+  leaveProvenance: string;
+  evidenceRefs: string[];
+  evidence: OperatingModeEvidencePublic[];
+  message: string | null;
+  translationKey: string;
+  observation: OperatingModeObservationPublic | null;
+  [k: string]: unknown;
+}
+export interface OperatingModeRestrictionPublic {
+  operation: string;
+  receiver: string;
+  certainty: string;
+  [k: string]: unknown;
+}
+export interface OperatingModeEvidencePublic {
+  kind: string;
+  commandId: string;
+  target: string;
+  commandSource: string | null;
+  sessionId: string | null;
+  observedAtMonotonic: number | null;
+  providerGeneration: number | null;
+  [k: string]: unknown;
+}
+export interface OperatingModeObservationPublic {
+  source: {
+    [k: string]: unknown;
+  };
+  observedAtMonotonic: number;
+  maxAge: number | null;
+  quality: string[];
+  providerGeneration: number;
+  [k: string]: unknown;
 }
 /**
  * Spectrum-scope control state.

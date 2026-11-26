@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import json
-import time
+from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from urllib.error import URLError
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from test_managed_tx_authority import authority
@@ -19,15 +21,38 @@ from rigplane.core.state_pipeline_contracts import (
     Observation,
     SourceMetadata,
 )
+from rigplane.core.state_store import FreshnessClock
 from rigplane.core.tx_observation import OBSERVED_PTT_PATH, ObservedPtt
 from rigplane.rigctld.contract import HamlibError, RigctldConfig
 from rigplane.rigctld.handler import RigctldHandler
 from rigplane.runtime.controller_authority import ControllerError
 from rigplane.runtime.managed_tx_state import ManagedTxIntentKind, ManagedTxOutcome
+from rigplane.web import eibi as eibi_module
 from rigplane.web import server as server_module
+from rigplane.web.eibi import EiBiProvider
 from rigplane.web.handlers.audio import AudioHandler
 from rigplane.web.handlers.control import ControlHandler
 from rigplane.web.server import WebConfig, WebServer, _HttpCommandExecutor
+from rigplane_testkit.realtime_guard import analyze_source, read_baseline
+
+
+def test_controller_tests_do_not_add_realtime_baseline_debt() -> None:
+    path = Path(__file__).resolve()
+    module = f"tests/{path.name}"
+    baseline = {
+        entry
+        for entry in read_baseline(path.with_name("realtime_baseline.txt"))
+        if entry.partition("::")[0] == module
+    }
+    clock_dependent = {
+        f"{module}::{name}"
+        for name, facts in analyze_source(path.read_text()).items()
+        if facts.needs_conversion()
+    }
+    assert clock_dependent == baseline, {
+        "new": sorted(clock_dependent - baseline),
+        "stale": sorted(baseline - clock_dependent),
+    }
 
 
 class Writer(_MemoryWriter):
@@ -46,18 +71,20 @@ class Writer(_MemoryWriter):
 
 
 @pytest.fixture
-async def station():
+async def station(monkeypatch):
     managed, *_ = authority()
     server = WebServer(None, WebConfig(radio_model="IC-7610"))
     server._production_managed_tx_port = _GatePort(managed)
     server._controller_installed = True
     server._controller_enforcement_ready = True
+    clock = FreshnessClock(start=100.0)
+    monkeypatch.setattr(server.command_state_store, "_freshness_clock", clock)
     server.command_state_store.apply_current(
         Observation(
             path=OBSERVED_PTT_PATH,
             value=ObservedPtt.OFF,
             source=SourceMetadata(source="poll_response", provider="test"),
-            timestamp_monotonic=time.monotonic(),
+            timestamp_monotonic=clock.now(),
             max_age=60,
         )
     )
@@ -210,6 +237,166 @@ async def test_mutable_http_admin_and_raw_transactions_cannot_bypass_lease(stati
             CommandIntent("raw-test", "raw_civ_transaction", {}, "http")
         )
     radio.send_civ_transaction.assert_not_awaited()
+
+
+@pytest.fixture
+def eibi_catalogue(station, tmp_path, monkeypatch):
+    server, _ = station
+    raw = b"6070;0000-2400;;D;Test Station;E;Eu;;0\n"
+    download = Mock(return_value=raw)
+    monkeypatch.setattr("rigplane.web.eibi._download_url", download)
+    cache = tmp_path / "catalogue"
+    server._eibi = EiBiProvider(cache_dir=cache)
+    return cache, raw, download
+
+
+@pytest.mark.parametrize("mode", ["remote", "local"])
+async def test_eibi_refresh_writes_catalogue_cache_for_current_controller(
+    station, eibi_catalogue, mode
+):
+    server, _ = station
+    cache, raw, download = eibi_catalogue
+    key = (await remote(server))[0] if mode == "remote" else None
+    response = await request(
+        server, "POST", "/api/v1/eibi/fetch", {"force": False}, key=key
+    )
+    assert response.status == 200
+    assert response.payload["status"] == "ok"
+    assert response.payload["station_count"] == 1
+    download.assert_called_once()
+    assert (cache / "eibi.csv").read_bytes() == raw
+    assert json.loads((cache / "eibi-meta.json").read_text())["size_bytes"] == len(raw)
+    stations = await request(server, "GET", "/api/v1/eibi/stations")
+    assert stations.status == 200
+    assert stations.payload["stations"][0]["station"] == "Test Station"
+    assert server.command_queue.drain() == []
+
+
+async def test_eibi_refresh_exception_is_typed_and_logged(
+    station, eibi_catalogue, monkeypatch, caplog
+):
+    server, _ = station
+    key, _ = await remote(server)
+    detail = "private cache path /internal/catalogue"
+    fetch = AsyncMock(side_effect=OSError(detail))
+    monkeypatch.setattr(server._eibi, "fetch", fetch)
+    response = await request(server, "POST", "/api/v1/eibi/fetch", {}, key=key)
+    assert response.status == 500
+    assert response.payload == {"error": "eibi_fetch_failed"}
+    assert detail in caplog.text
+    fetch.assert_awaited_once_with(force=False)
+
+
+async def test_eibi_refresh_upstream_failure_is_typed_and_logged(
+    station, eibi_catalogue, caplog
+):
+    server, _ = station
+    cache, _, download = eibi_catalogue
+    key, _ = await remote(server)
+    detail = "private upstream failure detail"
+    download.side_effect = URLError(detail)
+    response = await request(server, "POST", "/api/v1/eibi/fetch", {}, key=key)
+    assert response.status == 502
+    assert response.payload == {
+        "error": "eibi_fetch_failed",
+        "status": "fetch_failed",
+    }
+    assert detail in caplog.text
+    assert download.call_count == 2
+    assert not (cache / "eibi.csv").exists()
+
+
+@pytest.mark.parametrize("size", [31, 32, 33])
+def test_eibi_download_is_bounded_and_closes_response(monkeypatch, size):
+    monkeypatch.setattr(eibi_module, "_MAX_DOWNLOAD_BYTES", 32)
+    response = io.BytesIO(b"x" * size)
+    read = Mock(wraps=response.read)
+    monkeypatch.setattr(response, "read", read)
+    open_url = Mock(return_value=response)
+    monkeypatch.setattr(eibi_module, "urlopen", open_url)
+    if size <= 32:
+        assert eibi_module._download_url("http://www.eibispace.de/dx/test.csv") == (
+            b"x" * size
+        )
+    else:
+        with pytest.raises(ValueError, match="EiBi download exceeds size limit"):
+            eibi_module._download_url("http://www.eibispace.de/dx/test.csv")
+    read.assert_called_once_with(33)
+    assert response.closed
+    assert open_url.call_args.kwargs == {"timeout": eibi_module._FETCH_TIMEOUT}
+
+
+async def test_eibi_oversized_download_leaves_cache_and_catalogue_unchanged(
+    station, tmp_path, monkeypatch
+):
+    server, _ = station
+    cache = tmp_path / "catalogue"
+    server._eibi = EiBiProvider(cache_dir=cache)
+    monkeypatch.setattr(eibi_module, "_MAX_DOWNLOAD_BYTES", 32)
+    response = io.BytesIO(b"x" * 33)
+    monkeypatch.setattr(eibi_module, "urlopen", Mock(return_value=response))
+    key, _ = await remote(server)
+    result = await request(server, "POST", "/api/v1/eibi/fetch", {}, key=key)
+    assert result.status == 500
+    assert result.payload == {"error": "eibi_fetch_failed"}
+    assert response.closed
+    assert not (cache / "eibi.csv").exists()
+    assert not (cache / "eibi-meta.json").exists()
+    assert not server._eibi.loaded
+    assert server._eibi.station_count == 0
+
+
+@pytest.mark.parametrize("credential", ["missing", "wrong", "revoked"])
+async def test_remote_eibi_refresh_requires_current_controller_credential(
+    station, eibi_catalogue, credential
+):
+    server, _ = station
+    cache, _, download = eibi_catalogue
+    key, _ = await remote(server)
+    if credential == "missing":
+        key = None
+    elif credential == "wrong":
+        key = "0" * 64
+    else:
+        server._controller.revoke()
+        await server._controller.settle()
+    response = await request(
+        server, "POST", "/api/v1/eibi/fetch", {"force": True}, key=key
+    )
+    assert response.status == 403
+    assert response.payload == {"error": "controller_invalid"}
+    download.assert_not_called()
+    assert not (cache / "eibi.csv").exists()
+    assert not (cache / "eibi-meta.json").exists()
+
+
+@pytest.mark.parametrize("credential", ["missing", "current"])
+async def test_remote_band_plan_config_remains_local_only(station, credential):
+    server, _ = station
+    key, _ = await remote(server)
+    before = await request(server, "GET", "/api/v1/band-plan/config")
+    assert before.status == 200
+    response = await request(
+        server,
+        "POST",
+        "/api/v1/band-plan/config",
+        {"region": "IARU-R1"},
+        key=key if credential == "current" else None,
+    )
+    assert response.status == 403
+    assert response.payload == {"error": "controller_local_required"}
+    after = await request(server, "GET", "/api/v1/band-plan/config")
+    assert after.status == 200
+    assert after.payload == before.payload
+
+
+@pytest.mark.parametrize("method", ["PUT", "PATCH", "DELETE"])
+async def test_remote_eibi_refresh_admission_is_post_only(station, method):
+    server, _ = station
+    key, _ = await remote(server)
+    response = await request(server, method, "/api/v1/eibi/fetch", {}, key=key)
+    assert response.status == 403
+    assert response.payload == {"error": "controller_local_required"}
 
 
 @pytest.mark.parametrize(

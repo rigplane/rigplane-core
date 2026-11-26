@@ -76,7 +76,7 @@ describe('ManagedTransmitClient credential-free HTTP', () => {
 
   it('preserves a command rejection without application credentials', async () => {
     localStorage.setItem('rigplane-auth-token', 'synthetic-test-token');
-    const fetchMock = vi.fn().mockResolvedValue({ ok: false, status: 409 });
+    const fetchMock = vi.fn().mockResolvedValue({ ok: false, status: 409, json: async () => ({ result: 'rejected' }) });
     vi.stubGlobal('fetch', fetchMock);
     await expect(new ManagedTransmitClient().command('force_off')).resolves.toBe('rejected');
     expect(new Headers(fetchMock.mock.calls[0][1].headers).get('Authorization')).toBeNull();
@@ -84,6 +84,14 @@ describe('ManagedTransmitClient credential-free HTTP', () => {
 });
 describe('ManagedTransmitClient', () => {
   afterEach(() => vi.unstubAllGlobals());
+  it.each(['tx_held_by_other', 'release_in_progress', 'future_refusal'])('keeps the typed 409 refusal %s for presentation and support', async (code) => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 409, json: async () => ({ ok: false, operation: 'transmit_on', result: 'rejected', code }) }));
+    await expect(new ManagedTransmitClient().command('transmit_on')).rejects.toMatchObject({ code, status: 409 });
+  });
+  it.each([[403, 'read_only'], [503, 'authority_unavailable']])('prefers the additive reason over legacy error at %i', async (status, code) => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status, json: async () => ({ error: 'legacy_error', code }) }));
+    await expect(new ManagedTransmitClient().command('transmit_on')).rejects.toMatchObject({ code, status });
+  });
   it('uses only managed authority routes and exact command body', async () => { vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, status: 202, json: async () => document })); const client = new ManagedTransmitClient(); await client.command('force_off'); expect(fetch).toHaveBeenCalledWith('/api/v1/managed-transmit/command', expect.objectContaining({ body: JSON.stringify({ operation: 'force_off' }) })); });
   it('rejects a malformed document rather than deriving legacy truth', async () => { vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ...document, txObservation: { observedPtt: true } }) })); await expect(new ManagedTransmitClient().snapshot()).rejects.toThrow('txObservation.observedPtt'); });
   it.each([{ operation: 'unknown', result: 'accepted', attemptId: 'x' }, { operation: 'ptt_on', result: 'future', attemptId: 'x' }, { operation: 'ptt_on', result: 'accepted' }])('rejects malformed last actuation', async (lastActuation) => { vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ...document, managedTransmit: { ...document.managedTransmit, lastActuation } }) })); await expect(new ManagedTransmitClient().snapshot()).rejects.toThrow('lastActuation'); });

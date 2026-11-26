@@ -37,8 +37,8 @@ export type WsIncoming =
       params?: Record<string, string | number>;
     }
   | { type: 'ack'; id: string }
-  | { type: 'error'; id?: string; sourceId?: string; receiver?: number | null; message: string }
-  | { type: 'response'; id: string; ok: boolean; result?: Record<string, unknown>; error?: string; message?: string }
+  | { type: 'error'; id?: string; sourceId?: string; receiver?: number | null; message: string; code?: string }
+  | { type: 'response'; id: string; ok: boolean; result?: Record<string, unknown>; error?: string; message?: string; code?: string }
   | { type: 'hello'; proto: number; server: string; version: string; radio: string; connected: boolean; capabilities: string[] }
   | { type: 'state'; data: Record<string, unknown> }
   | { type: 'state_update'; data: Record<string, unknown> }

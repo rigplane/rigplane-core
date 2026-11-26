@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { CAPABILITY_ATTRIBUTE, TRANSMIT_CAPABILITIES } from '$lib/transmit-capabilities';
   import { onDestroy, type Snippet } from 'svelte';
   import { HardwareButton } from '$lib/Button';
   import { t } from '$lib/i18n';
@@ -185,6 +186,7 @@
   {#if finiteAppearance}
     {#key rendererContext}{#key finiteAppearance.choice}<ControlInstrumentRendererHost
       {seat} renderer={finiteAppearance.choice}
+      capability={seat === dataSeat ? TRANSMIT_CAPABILITIES.txSettings.id : undefined}
     />{/key}{/key}
   {/if}
 {/snippet}
@@ -248,6 +250,7 @@
   {#if filterPassband?.dataMode.availability.structural}
     {#if finiteAppearance}{@render external(dataSeat)}{:else}
       <div class={filterPassband.dataModeChoices.length > 1 ? 'filter-choice-group' : 'filter-readout'} data-testid="filter-data-mode"
+        {...{ [CAPABILITY_ATTRIBUTE]: TRANSMIT_CAPABILITIES.txSettings.id }}
         role="group" aria-label={t('core.mobile.sheet.dataMode')} data-disabled-reason={reason(filterPassband.dataMode)}
         data-data-mode-status={pendingDataMode !== null ? 'pending' : usable(filterPassband.dataMode) ? 'confirmed' : filterPassband.dataMode.reading.status === 'known' ? 'retained' : 'unknown'}
         aria-describedby={pendingDataMode !== null ? pendingDataModeId : undefined}>
@@ -306,6 +309,7 @@
       {@render external(dataSeat)}
     {:else}
       <div class="standard-data-block" data-testid="standard-data-mode"
+        {...{ [CAPABILITY_ATTRIBUTE]: TRANSMIT_CAPABILITIES.txSettings.id }}
         data-disabled-reason={reason(filterPassband.dataMode)}
         data-data-mode-status={pendingDataMode !== null ? 'pending' : usable(filterPassband.dataMode) ? 'confirmed' : filterPassband.dataMode.reading.status === 'known' ? 'retained' : 'unknown'}>
         <div class="standard-section-label">DATA</div>

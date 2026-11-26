@@ -1,16 +1,23 @@
 <script lang="ts" generics="Lease extends { dispose(): void }, Seat extends FiniteRendererSeat<Lease>">
+  import { CAPABILITY_ATTRIBUTE } from '$lib/transmit-capabilities';
   import { onDestroy, untrack, type Component } from 'svelte';
+  import type { TransmitCapability } from '$lib/transmit-capabilities';
   import type { FiniteRendererSeat } from './control-instrument-renderer.svelte';
 
   interface Props {
     seat: Seat;
     renderer: Component<{ lease: Lease }>;
+    capability?: TransmitCapability;
   }
 
-  let { seat, renderer: Renderer }: Props = $props();
+  let { seat, renderer: Renderer, capability }: Props = $props();
   // The keyed parent makes renderer/context replacement an instance boundary.
   const lease = untrack(() => seat.attachRenderer());
   onDestroy(() => lease.dispose());
 </script>
 
-<Renderer {lease} />
+{#if capability}
+  <div class="rp-capability-renderer" style="display: contents" {...{ [CAPABILITY_ATTRIBUTE]: capability }}><Renderer {lease} /></div>
+{:else}
+  <Renderer {lease} />
+{/if}

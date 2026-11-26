@@ -10,10 +10,11 @@ const h = vi.hoisted(() => ({
   send: vi.fn((_name: string, _params: Record<string, unknown>, _id?: string) => true),
   start: vi.fn(async () => null), stop: vi.fn(), submit: vi.fn(async () => 'accepted' as const),
   setTot: vi.fn(async () => {}), ids: 0, stale: true, remainingMs: null as number | null,
+  refresh: vi.fn(async () => {}),
 }));
 vi.mock('$lib/stores/managed-transmit.svelte', () => ({
   managedTransmitSnapshot: () => ({ available: false }), managedTransmitIsStale: () => h.stale,
-  managedTransmitRemainingMs: () => h.remainingMs, refreshManagedTransmit: vi.fn(async () => {}),
+  managedTransmitRemainingMs: () => h.remainingMs, refreshManagedTransmit: h.refresh,
   invalidateManagedTransmit: vi.fn(), submitManagedTransmit: h.submit,
   setManagedTransmitTot: h.setTot, managedTransmitAppliedRevision: () => h.appliedRevision,
 }));
@@ -37,6 +38,7 @@ vi.mock('$lib/transport/ws-client', () => ({
   getControlSession: () => ({ state: h.sessionState, epoch: 4 }),
 }));
 import { createManagedBrowserDependencies } from '../browser-dependencies';
+import { ManagedTransmitClient, ManagedTransmitError } from '$lib/transport/managed-transmit-client';
 const emit = (event: CommandDeliveryEvent) => [...h.deliveries].forEach((fn) => fn(event));
 const emitMessage = (message: { type?: string; name?: string; data?: unknown }) => {
   [...h.messages].forEach((fn) => fn(message));
@@ -47,8 +49,62 @@ beforeEach(() => {
   h.send.mockReset().mockReturnValue(true);
   h.start.mockClear(); h.stop.mockClear(); h.submit.mockClear(); h.ids = 0;
   h.notify.mockClear(); h.setTot.mockClear(); h.stale = true; h.remainingMs = null;
+  h.refresh.mockClear();
 });
 describe('managed browser TX dependencies', () => {
+  it.each([
+    [403, 'controller_tx_unsupported', 'controller_refused', 'controller_tx_unsupported', 'txPressToTalkRequired'],
+    [403, 'read_only', 'read_only', 'read_only', 'txReadOnly'],
+    [503, 'managed_tx_unavailable', 'authority_unavailable', 'authority_unavailable', 'txAuthorityUnavailable'],
+    [409, 'legacy_error', 'future_refusal', 'future_refusal', 'txStartRefused'],
+  ] as const)('presents the real HTTP %i refusal %s with its specific guidance', async (status, legacyError, reason, code, toast) => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: false, status, json: async () => ({ error: legacyError, code: reason }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const client = new ManagedTransmitClient();
+    const browser = createManagedBrowserDependencies();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const refusal: unknown = await client.command('transmit_on').catch((error: unknown) => error);
+      expect(refusal).toBeInstanceOf(ManagedTransmitError);
+      expect(refusal).toMatchObject({ code, status, reason });
+      browser.dependencies.onLatchRefusal?.(refusal);
+      expect(fetchMock).toHaveBeenCalledExactlyOnceWith('/api/v1/managed-transmit/command', expect.any(Object));
+      expect(h.notify).toHaveBeenCalledExactlyOnceWith('error', expect.any(String), toast);
+      expect(warn).toHaveBeenCalledWith(`[tx] Latch start refused: ${code}`);
+    } finally { browser.dispose(); warn.mockRestore(); vi.unstubAllGlobals(); }
+  });
+
+  it.each(['transmit_on', 'force_off'] as const)('keeps a typed 409 for %s as an admission rejection and refreshes', async (operation) => {
+    h.submit.mockRejectedValueOnce(new ManagedTransmitError('tx_held_by_other', 409));
+    const browser = createManagedBrowserDependencies();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await expect(browser.dependencies.submit(operation)).resolves.toBe('rejected');
+      expect(h.refresh).toHaveBeenCalledExactlyOnceWith();
+      if (operation === 'transmit_on') {
+        browser.dependencies.onLatchRefusal?.();
+        expect(h.notify).toHaveBeenCalledExactlyOnceWith('error', expect.any(String), 'txHeldByOther');
+      } else {
+        expect(h.notify).not.toHaveBeenCalled();
+      }
+    } finally { browser.dispose(); warn.mockRestore(); }
+  });
+  it.each([
+    ['tx_held_by_other', 'txHeldByOther'], ['release_in_progress', 'txReleaseInProgress'],
+    ['authority_unavailable', 'txAuthorityUnavailable'], ['read_only', 'txReadOnly'],
+    ['controller_refused', 'txControllerRefused'], ['radio_refused', 'txRadioRefused'],
+    ['future_refusal', 'txStartRefused'],
+  ])('presents HTTP refusal %s through the locale mechanism and retains its code', (code, toast) => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const browser = createManagedBrowserDependencies();
+    try {
+      browser.dependencies.onLatchRefusal?.(new ManagedTransmitError(code, 409));
+      expect(h.notify).toHaveBeenCalledExactlyOnceWith('error', expect.any(String), toast);
+      expect(warn).toHaveBeenCalledWith(`[tx] Latch start refused: ${code}`);
+    } finally { browser.dispose(); warn.mockRestore(); }
+  });
   it('is dormant, delegates media, forwards sessions, and disposes idempotently', async () => {
     const browser = createManagedBrowserDependencies();
     expect([h.deliveries.size, h.sessions.size, h.start.mock.calls.length, vi.getTimerCount()]).toEqual([0, 0, 0, 0]);

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { CAPABILITY_ATTRIBUTE, TRANSMIT_CAPABILITIES } from '$lib/transmit-capabilities';
   import { onDestroy, onMount, type Snippet } from 'svelte';
   import { t } from '$lib/i18n';
   import { RX_AF_LEVEL_MAX } from '$lib/audio/rx-player';
@@ -650,6 +651,7 @@
   {#if rx?.modInputSource.availability.structural}
     <p
       class="rx-audio-row" data-testid="rx-audio-mod-input"
+      {...{ [CAPABILITY_ATTRIBUTE]: TRANSMIT_CAPABILITIES.txSettings.id }}
       data-readiness={rx.modInputReadiness.status}
       data-observed={usable(rx.modInputSource)}
     >
@@ -696,12 +698,14 @@
     {#if finiteAppearance}
       {#key rendererContext}{#key finiteAppearance.action}<ControlInstrumentRendererHost
         seat={setLanSeat} renderer={finiteAppearance.action}
+        capability={TRANSMIT_CAPABILITIES.txSettings.id}
       />{/key}{/key}
     {:else}
       <!-- The one-click remedy, same command path as ModInputTxWarning's
            "Set LAN" (rule: a mismatch must never be a dead end). -->
       <button
         type="button" data-testid="rx-audio-mod-set-lan"
+        {...{ [CAPABILITY_ATTRIBUTE]: TRANSMIT_CAPABILITIES.txSettings.id }}
         disabled={!setLanBehavior.available} onclick={() => setLanBehavior.invoke()}
       >Set LAN</button>
     {/if}

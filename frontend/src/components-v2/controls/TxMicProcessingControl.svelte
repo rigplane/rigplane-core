@@ -4,6 +4,7 @@
   // sidebars) and in the desktop Settings dialog where TxPanel is replaced by
   // the semantic deck. The mode is a per-browser preference read at the next
   // capture start.
+  import { CAPABILITY_ATTRIBUTE, TRANSMIT_CAPABILITIES } from '$lib/transmit-capabilities';
   import { t } from '$lib/i18n';
   import {
     getTxMicProcessing,
@@ -20,7 +21,7 @@
   const groupName = `tx-mic-processing-${groupId}`;
 </script>
 
-<fieldset class="tx-mic-processing" data-testid="tx-mic-processing">
+<fieldset class="tx-mic-processing" data-testid="tx-mic-processing" {...{ [CAPABILITY_ATTRIBUTE]: TRANSMIT_CAPABILITIES.txMicPath.id }}>
   <legend>{t('core.txMic.processing.label')}</legend>
   {#each modes as option (option)}
     <label class="tx-mic-processing-row">

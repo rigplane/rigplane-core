@@ -250,6 +250,7 @@ async def test_rejected_transmit_admission_maps_to_conflict() -> None:
         "ok": False,
         "operation": "transmit_on",
         "result": "rejected",
+        "code": "other",
     }
     assert authority.submissions[0].settlement_waits == 0
 

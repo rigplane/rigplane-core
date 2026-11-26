@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { CAPABILITY_ATTRIBUTE, CAPABILITY_DATA_KEY, TRANSMIT_CAPABILITIES } from '$lib/transmit-capabilities';
   import { onDestroy, untrack } from 'svelte';
   import type { TxAuxScalarHandles } from '../../semantic/tx-aux-scalar';
   import type { TxAuxFiniteHandles } from '../../semantic/tx-aux-finite';
@@ -304,8 +305,10 @@
       {rf === 'on' ? '● TX' : ''}
     </div>
 
+    <!-- Unkey is never gated: the latched gesture releases the TX lock. -->
     <button
       class="ptt-button"
+      {...{ [CAPABILITY_ATTRIBUTE]: latched ? undefined : TRANSMIT_CAPABILITIES.txHold.id }}
       class:ptt-held={owned && !latched}
       class:ptt-latched={latched}
       aria-disabled={starting || busy}
@@ -342,6 +345,7 @@
           indicator="edge-left"
           color={atuActive ? 'green' : 'gray'}
           onclick={onAtuToggle}
+          data={{ [CAPABILITY_DATA_KEY]: TRANSMIT_CAPABILITIES.atu.id }}
         >
           ATU
         </HardwareButton>
@@ -352,6 +356,7 @@
           indicator="edge-left"
           color={atuTuning ? 'red' : 'gray'}
           onclick={onAtuTune}
+          data={{ [CAPABILITY_DATA_KEY]: TRANSMIT_CAPABILITIES.tune.id }}
         >
           {atuTuning ? 'TUNING…' : 'TUNE'}
         </HardwareButton>
@@ -365,6 +370,7 @@
           indicator="edge-left"
           color="amber"
           onclick={onVoxToggle}
+          data={{ [CAPABILITY_DATA_KEY]: TRANSMIT_CAPABILITIES.vox.id }}
         >
           VOX
         </HardwareButton>
@@ -377,6 +383,7 @@
           indicator="edge-left"
           color="amber"
           onclick={onCompToggle}
+          data={{ [CAPABILITY_DATA_KEY]: TRANSMIT_CAPABILITIES.txSettings.id }}
         >
           COMP{compActive && compLevel > 0 ? ` ${Math.round(compLevel / 2.55)}%` : ''}
         </HardwareButton>
@@ -389,6 +396,7 @@
           indicator="edge-left"
           color="amber"
           onclick={onMonToggle}
+          data={{ [CAPABILITY_DATA_KEY]: TRANSMIT_CAPABILITIES.txSettings.id }}
         >
           MON{monActive && monLevel > 0 ? ` ${Math.round(monLevel / 2.55)}%` : ''}
         </HardwareButton>
@@ -416,8 +424,8 @@
       <span class="modal-title">TX LEVELS</span>
       <button class="modal-close" onclick={() => (settingsOpen = false)}>✕</button>
     </div>
-    <div class="modal-body">
-      <div class="tx-level-slot">
+    <div class="modal-body" {...{ [CAPABILITY_ATTRIBUTE]: TRANSMIT_CAPABILITIES.txSettings.id }}>
+      <div class="tx-level-slot" {...{ [CAPABILITY_ATTRIBUTE]: TRANSMIT_CAPABILITIES.rfPower.id }}>
         {#if scalarHandles}
           {@render scalarHandles.rfPower({ form: 'hbar', showLabel: true, showValue: true, variant: 'hardware-illuminated' })}
         {:else}

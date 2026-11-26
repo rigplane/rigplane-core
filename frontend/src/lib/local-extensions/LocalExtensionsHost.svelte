@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { TRANSMIT_CAPABILITIES, type TransmitCapability } from '$lib/transmit-capabilities';
   import { onMount, tick } from 'svelte';
   import { hasCapability } from '$lib/stores/capabilities.svelte';
   import { getConnectionStatus, getRadioPowerOn } from '$lib/stores/connection.svelte';
@@ -15,11 +16,13 @@
   import AntennaPanel from '../../components-v2/panels/AntennaPanel.svelte';
   import CwPanel from '../../components-v2/panels/CwPanel.svelte';
 
-  type PendingConfirm = { message: string; action: () => void | Promise<void>; formatError?: (err: unknown) => string };
+  type PendingConfirm = { message: string; action: () => void | Promise<void>; formatError?: (err: unknown) => string; capability?: TransmitCapability };
   let confirmOpen = $state(false), confirmMessage = $state(''), confirmError = $state<string | null>(null);
   let confirmBusy = $state(false), controlsOpen = $state(false);
   let pendingConfirm: PendingConfirm | null = null;
+  let confirmCapability = $state<TransmitCapability | undefined>();
   function requestConfirm(request: PendingConfirm) {
+    confirmCapability = request.capability;
     pendingConfirm = request; confirmMessage = request.message; confirmError = null; confirmOpen = true;
   }
   function handleConfirmCancel() { confirmOpen = false; confirmError = null; pendingConfirm = null; }
@@ -42,7 +45,8 @@
   }
   function requestPower(on: boolean, origin?: 'powered-off-overlay'): boolean {
     if (confirmOpen || !powerRequestAllowed(on, origin)) return false;
-    requestConfirm({ message: t(on ? 'core.statusbar.power.confirmTurnOn' : 'core.statusbar.power.confirmTurnOff'),
+    requestConfirm({ capability: on ? TRANSMIT_CAPABILITIES.powerOn.id : undefined,
+      message: t(on ? 'core.statusbar.power.confirmTurnOn' : 'core.statusbar.power.confirmTurnOff'),
       action: () => !powerRequestAllowed(on, origin) ? undefined : on ? runtime.system.powerOn() : runtime.system.powerOff(),
       formatError: err => t(on ? 'core.statusbar.power.failedTurnOn' : 'core.statusbar.power.failedTurnOff', { detail: String(err) }) });
     return true;
@@ -247,6 +251,7 @@
 </script>
 
 <ConfirmDialog open={confirmOpen} message={confirmMessage} error={confirmError} busy={confirmBusy}
+  capability={confirmCapability}
   confirmLabel={t('common.action.ok')} cancelLabel={t('common.action.cancel')}
   onConfirm={handleConfirmOk} onCancel={handleConfirmCancel} />
 <BottomSheet bind:open={controlsOpen} title={t('core.settings.dialogLabel')}>

@@ -14,6 +14,7 @@
 </script>
 
 <script lang="ts">
+  import { CAPABILITY_ATTRIBUTE, TRANSMIT_CAPABILITIES } from '$lib/transmit-capabilities';
   import { onDestroy } from 'svelte';
   import { disabledFieldReasonText } from './disabled-reason';
   import { bindActionInstrument, bindToggleInstrument } from '../primitives/control-instruments/control-instrument-behavior';
@@ -86,9 +87,11 @@
     {#if finiteAppearance}
       {#key rendererContext}{#key finiteAppearance.toggle}<ControlInstrumentRendererHost
         {seat} renderer={finiteAppearance.toggle}
+        capability={TRANSMIT_CAPABILITIES.ritXit.id}
       />{/key}{/key}
     {:else}
       <button type="button" data-testid={`ritxit-${kind}-toggle`}
+        {...{ [CAPABILITY_ATTRIBUTE]: TRANSMIT_CAPABILITIES.ritXit.id }}
         aria-pressed={behavior.confirmed} disabled={!behavior.available}
         data-shortcut-hint={(kind === 'rit' ? ritShortcut() : xitShortcut()) ?? undefined}
         title={(activeKnown ? disabledFieldReasonText(field) : undefined)
@@ -104,9 +107,11 @@
     {#if finiteAppearance}
       {#key rendererContext}{#key finiteAppearance.action}<ControlInstrumentRendererHost
         seat={clearSeat} renderer={finiteAppearance.action}
+        capability={TRANSMIT_CAPABILITIES.ritXit.id}
       />{/key}{/key}
     {:else}
       <button type="button" data-testid="ritxit-clear" disabled={!clearAction.available}
+        {...{ [CAPABILITY_ATTRIBUTE]: TRANSMIT_CAPABILITIES.ritXit.id }}
         data-shortcut-hint={clearShortcut() ?? undefined} title={clearShortcut() ?? undefined}
         onclick={() => clearAction.invoke()}>CLEAR</button>
     {/if}

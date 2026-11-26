@@ -23,6 +23,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Final
 from rigplane.runtime.controller_authority import ControllerAuthority, ControllerError
+from rigplane.runtime.managed_tx_state import ManagedTxRefusalReason
 from rigplane.runtime.tx_interlock import (
     is_exact_raw_transmission_end_frame,
     send_civ_frame,
@@ -1077,7 +1078,7 @@ async def dispatch_http_with_controller_gate(
                     return
                 if buffered is not None:
                     reader = buffered
-            else:
+            elif path != "/api/v1/eibi/fetch" or method != "POST":
                 raise ControllerError("controller_local_required")
             ticket = controller.credential((headers or {}).get("x-rigplane-controller"))
             with controller.bind(ticket):
@@ -1100,7 +1101,19 @@ async def dispatch_http_with_controller_gate(
     try:
         ticket = controller.capture() if key is None else controller.credential(key)
     except ControllerError as exc:
-        await server._send_json(writer, exc.status, "Forbidden", {"error": exc.code})
+        await server._send_json(
+            writer,
+            exc.status,
+            "Forbidden",
+            {
+                "error": exc.code,
+                **(
+                    {"code": ManagedTxRefusalReason.CONTROLLER_REFUSED}
+                    if path == "/api/v1/managed-transmit/command"
+                    else {}
+                ),
+            },
+        )
         return
     with controller.bind(ticket):
         await _dispatch_http_routes(
