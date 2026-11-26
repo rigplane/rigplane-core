@@ -1614,10 +1614,11 @@ def _project_snapshot_state_dict(
             receiver.pop("unselected_vfo", None)
     profile = getattr(radio, "profile", None)
     definitions = getattr(profile, "radio_owned_modes", ())
-    state["radio_owned_modes"] = [
-        context.to_dict()
-        for context in project_radio_owned_modes(definitions, snapshot)
-    ]
+    contexts = project_radio_owned_modes(definitions, snapshot)
+    radio_state = getattr(radio, "radio_state", None)
+    if isinstance(radio_state, RadioState) and radio_state.radio_owned_modes:
+        contexts = radio_state.radio_owned_modes
+    state["radio_owned_modes"] = [context.to_dict() for context in contexts]
     return cast(dict[str, Any], state)
 
 

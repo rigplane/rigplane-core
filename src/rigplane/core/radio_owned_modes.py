@@ -418,3 +418,22 @@ class ModeWriteAttempt:
             command_source=self.command_source,
             session_id=self.session_id,
         )
+
+
+class ModeWriteEvidence:
+    """Refusal evidence isolated from the radio's canonical acquisition state."""
+
+    def __init__(self, definitions: tuple[RadioOwnedModeDefinition, ...]) -> None:
+        self._definitions = definitions
+        self._observations = StateStore()
+
+    def begin(self, receiver: int) -> ModeWriteAttempt:
+        return ModeWriteAttempt.begin(self._definitions, self._observations, receiver)
+
+    def project(self) -> tuple[RadioOwnedModeState, ...]:
+        return project_radio_owned_modes(
+            self._definitions, self._observations.snapshot()
+        )
+
+    def reset(self) -> None:
+        self._observations.begin_provider_generation()

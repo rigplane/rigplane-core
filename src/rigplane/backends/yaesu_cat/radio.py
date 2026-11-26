@@ -11,6 +11,7 @@ import asyncio
 import logging
 import time
 from collections.abc import Awaitable, Mapping
+from copy import copy
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Literal, Sequence, cast
@@ -40,8 +41,7 @@ from ...profiles.control_domain import (
     validate_control_raw_value,
 )
 from ...radio_state import RadioState
-from ...core.radio_owned_modes import ModeWriteAttempt, project_radio_owned_modes
-from ...core.state_store import StateStore
+from ...core.radio_owned_modes import ModeWriteEvidence
 from ...runtime.callable_support import supports_callable
 from ...runtime._connection_state import RadioConnectionState
 from ...runtime.local_tx_work import LocalTxWorkRunner
@@ -312,7 +312,7 @@ class YaesuCatRadio:
             device=device, baudrate=baudrate, reply_heads=frozenset(reply_heads)
         )
         self._state = RadioState()
-        self._state_store = StateStore()
+        self._mode_write_evidence = ModeWriteEvidence(self.profile.radio_owned_modes)
         self._audio_bus: AudioBus | None = None
         self._audio_session: AudioSession | None = None
         self._audio_seq = 0
@@ -453,7 +453,7 @@ class YaesuCatRadio:
         self._cancel_identity_reread()
         self._identity_generation += 1
         generation = self._identity_generation
-        self._state_store.discard(d.path for d in self.profile.radio_owned_modes)
+        self._mode_write_evidence.reset()
         # MOR-4207: the first open and the first byte at the head of the
         # connect order (the profile baud); the rest is asked on silence.
         connect_bauds = self._serial_connect_bauds()
@@ -541,7 +541,7 @@ class YaesuCatRadio:
         self._cancel_identity_reread()
         self._identity_generation += 1
         self._connection_identity = None
-        self._state_store.discard(d.path for d in self.profile.radio_owned_modes)
+        self._mode_write_evidence.reset()
         self._audio_reestablish_generation = None
         await self._audio_driver.stop_rx()
         await self._audio_driver.stop_tx()
@@ -949,17 +949,11 @@ class YaesuCatRadio:
         return self._transport.baudrate
 
     @property
-    def state_store(self) -> StateStore:
-        return self._state_store
-
-    @property
     def radio_state(self) -> RadioState:
         """Live radio state snapshot (updated by get_* calls)."""
-        self._state.radio_owned_modes = project_radio_owned_modes(
-            self.profile.radio_owned_modes,
-            self._state_store.snapshot(),
-        )
-        return self._state
+        state = copy(self._state)
+        state.radio_owned_modes = self._mode_write_evidence.project()
+        return state
 
     @property
     def audio_codec(self) -> AudioCodec:
@@ -1789,27 +1783,26 @@ class YaesuCatRadio:
     ) -> None:
         cmd = "set_mode" if receiver == 0 else "set_mode_sub"
         generation = self._identity_generation
-        write_attempt = ModeWriteAttempt.begin(
-            self.profile.radio_owned_modes,
-            self._state_store,
-            receiver,
-        )
+        write_attempt = self._mode_write_evidence.begin(receiver)
         try:
             await self._write(cmd, mode=self._mode_to_code[mode], is_current=is_current)
-        except CommandRejectedError as exc:
-            exc.args = (
+        except CommandRejectedError:
+            try:
                 write_attempt.finish(
                     refused=True, current=generation == self._identity_generation
-                ),
-            )
+                )
+            except Exception:
+                logger.exception("Could not record mode-write refusal evidence")
             raise
+        try:
+            write_attempt.finish(
+                refused=False, current=generation == self._identity_generation
+            )
+        except Exception:
+            logger.exception("Could not clear mode-write refusal evidence")
         for attempt in range(5):
             observed, _ = await self.get_mode(receiver, require_assigned=True)
             if observed == mode:
-                # Clear only after the requested modulation is read back.
-                write_attempt.finish(
-                    refused=False, current=generation == self._identity_generation
-                )
                 return
             if attempt < 4:
                 await asyncio.sleep(0.05)
