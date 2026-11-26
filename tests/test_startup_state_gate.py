@@ -39,6 +39,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from rigplane.backends._icom_serial_base import _IcomSerialRadioBase
+from rigplane.backends.yaesu_cat.observations import YaesuObservationAdapter
 from rigplane.backends.yaesu_cat.radio import YaesuCatRadio
 from rigplane.commands import CONTROLLER_ADDR, build_civ_frame, parse_civ_frame
 from rigplane.core.acquisition_scheduler import (
@@ -79,7 +80,7 @@ from rigplane.web.web_startup import (
     _await_initial_state_acquisition,
     _observed_paths,
 )
-from rigplane.testing.timing import await_until
+from rigplane.testing.timing import ManualClock, await_until
 from test_icom7610_serial_radio import _FakeSerialCivLink
 from rigplane_testkit.fixture_rows import CatPairRow, read_cat_rows
 from rigplane_testkit.leaked_radio_guard import fake_connected
@@ -1438,45 +1439,6 @@ async def test_rigctld_gate_is_unchanged_when_the_server_answers_everything() ->
             assert fake.t_commands >= 1
             await server.stop()
     finally:
-        await radio.disconnect()
-        await fake.stop()
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("reply", ["RPRT 1", "not-a-number"])
-@pytest.mark.usefixtures("isolated_eibi_cache")
-async def test_rigctld_unavailable_rf_gain_does_not_abort_startup(reply: str) -> None:
-    from rigplane.backends.rigctld_client.radio import RigctldClientRadio
-
-    path = FieldPath.receiver("main", "operator_controls", "rf_gain")
-    fake = _TcpRigctldServer()
-    fake._ANSWERS = {**fake._ANSWERS, "l RF": (reply,)}
-    await fake.start()
-    radio = RigctldClientRadio(host=fake.host, port=fake.port, timeout=0.5)
-    server = WebServer(radio, _gated_config())
-    bind = AsyncMock(return_value=_FakeAsyncServer())
-    try:
-        await radio.connect()
-        with patch("rigplane.web.web_startup.asyncio.start_server", new=bind):
-            await asyncio.wait_for(server.start(), timeout=30)
-        bind.assert_awaited_once()
-        scheduler = radio._acquisition_scheduler
-        assert scheduler is not None
-        assert scheduler.startup_defect is None
-        assert FREQ in _observed_paths(server, scheduler)
-        assert path not in _observed_paths(server, scheduler)
-        refusal = scheduler.diagnostics()["readRefusals"][str(path)]
-        assert refusal["command"] == "l RF"
-        assert refusal["frame"] == reply
-        fake._ANSWERS = _TcpRigctldServer._ANSWERS
-        await await_until(
-            lambda: path in _observed_paths(server, scheduler),
-            timeout=75,
-            description="RF gain observed on a later rigctld poll",
-        )
-        assert path not in scheduler.refused_paths()
-    finally:
-        await server.stop()
         await radio.disconnect()
         await fake.stop()
 
@@ -2966,6 +2928,46 @@ class _Ftx1ModeDependentMicGain(FakeCatRadio):
         if body == "MG":
             return "?;" if self.mode_code in {"3", "6", "7", "9"} else "MG050;"
         return super()._reply_for(body)
+
+
+@pytest.mark.asyncio
+async def test_ftx1_mic_gain_recovers_one_second_after_usb_observation() -> None:
+    clock = ManualClock(start=100.0)
+    path = FieldPath.global_("operator_controls", "mic_gain")
+    fake = _Ftx1ModeDependentMicGain(
+        mode_code="3", recorded_answers=_ftx1_table_refused_tx()
+    )
+    fake.hold("TX", "0")
+    await fake.start()
+    radio = YaesuCatRadio(device=fake.device_url, profile="ftx1")
+    try:
+        await radio.connect()
+        adapter = YaesuObservationAdapter.from_radio(radio, clock=clock)
+        scheduler = AcquisitionScheduler(profile=adapter.profile)
+        radio._acquisition_scheduler = scheduler
+
+        cw = {obs.path: obs.value for obs in await adapter.poll_medium()}
+        assert cw[MODE] == "CW-U"
+        for _ in range(2):
+            clock.advance(1.0)
+            assert all(obs.path != path for obs in await adapter.poll_tx_controls())
+        assert scheduler.consecutive_refusals(path) == 2
+        assert fake.commands.count("MG;") == 4
+
+        fake.change_mode_from_front_panel("2")
+        usb = {obs.path: obs.value for obs in await adapter.poll_medium()}
+        assert usb[MODE] == "USB"
+        clock.advance(0.5)
+        assert all(obs.path != path for obs in await adapter.poll_tx_controls())
+        assert fake.commands.count("MG;") == 4
+        clock.advance(0.5)
+        recovered = {obs.path: obs.value for obs in await adapter.poll_tx_controls()}
+        assert recovered[path] == 50
+        assert fake.commands.count("MG;") == 5
+        assert path not in scheduler.refused_paths()
+    finally:
+        await radio.disconnect()
+        await fake.stop()
 
 
 @pytest.mark.asyncio

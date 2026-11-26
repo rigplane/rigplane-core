@@ -10,6 +10,8 @@ For every profile in ``rigs/*.toml``, a ``WebServer`` built with no radio and
 - ``allObserved``: the same call after every field path the profile's
   ``[state_acquisition]`` declares has been observed once. A profile with no
   ``[state_acquisition]`` block declares nothing, so it has no ``allObserved``.
+- ``refusedMicGainFieldStatus`` (FTX-1): the public field-status row after
+  the scheduler records a refusal of ``MG;``.
 - ``polledSquelch*`` (MOR-3630): for every Icom CI-V profile that polls the
   receiver ``squelch`` level, the capabilities body and the ``full`` envelope
   the web server builds around a real ``IcomRadio`` after one polled CI-V
@@ -72,12 +74,14 @@ import pytest
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_REPO_ROOT / "src"))
 
+from rigplane.backends.yaesu_cat.radio import YaesuCatRadio  # noqa: E402
 from rigplane.commands._codec import bcd_encode_value  # noqa: E402
 from rigplane.commands._frame import (  # noqa: E402
     CONTROLLER_ADDR,
     build_civ_frame,
     parse_civ_frame,
 )
+from rigplane.core.acquisition_scheduler import DeclaredCommandDefect  # noqa: E402
 from rigplane.core._bounded_queue import BoundedQueue  # noqa: E402
 from rigplane.core.radio_state import RadioState, VfoSlotState  # noqa: E402
 from rigplane.core.state_pipeline_contracts import (  # noqa: E402
@@ -456,6 +460,25 @@ def _build_slotted_ab_bands_goldens(model: str) -> dict[str, Any]:
     }
 
 
+def _build_refused_mic_gain_field_status(config: WebConfig) -> dict[str, Any]:
+    radio = YaesuCatRadio(device="/dev/null", profile="ftx1")
+    server = WebServer(radio, config)
+    scheduler = radio._acquisition_scheduler
+    assert scheduler is not None
+    scheduler.record_declared_read_failure(
+        DeclaredCommandDefect(
+            label="mic_gain",
+            paths=(FieldPath.global_("operator_controls", "mic_gain"),),
+            command="MG;",
+            frame="?;",
+            detail="Radio rejected command 'MG;' (returned '?;').",
+        ),
+        reason="refused",
+        now=_PINNED_MONOTONIC,
+    )
+    return cast("dict[str, Any]", server.build_public_state()["fieldStatus"]["micGain"])
+
+
 def _build_profile_goldens(model: str) -> dict[str, Any]:
     profile = get_radio_profile(model)
     config = WebConfig(radio_model=model)
@@ -474,6 +497,10 @@ def _build_profile_goldens(model: str) -> dict[str, Any]:
         golden.update(_build_polled_squelch_goldens(model))
     if model == _SLOTTED_AB_MODEL:
         golden.update(_build_slotted_ab_bands_goldens(model))
+    if model == "FTX-1":
+        golden["refusedMicGainFieldStatus"] = _build_refused_mic_gain_field_status(
+            config
+        )
     return golden
 
 

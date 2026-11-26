@@ -1708,12 +1708,6 @@ class WebServer:
         radio = self._radio
         if radio is None:
             return
-        if (
-            isinstance(radio, ProviderOwnedStateCapable)
-            and radio.has_provider_owned_state is True
-        ):
-            # The provider's poller attaches its own acquisition profile.
-            return
         try:
             profile = self._get_profile()
         except Exception:

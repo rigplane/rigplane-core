@@ -2130,7 +2130,7 @@ class YaesuObservationAdapter:
     ) -> bool:
         """Hand wire evidence to the scheduler for declared-read failures."""
         # MOR-4456: these lanes keep serving unknown after the startup deadline.
-        paths = tuple(path for path in paths if path not in (_PTT, _SPLIT))
+        paths = tuple(path for path in paths if path.name not in ("ptt", "split"))
         scheduler = getattr(self.radio, "_acquisition_scheduler", None)
         if not paths or not isinstance(scheduler, AcquisitionScheduler):
             return False
