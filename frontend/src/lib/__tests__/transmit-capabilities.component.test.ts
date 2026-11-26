@@ -51,6 +51,8 @@ vi.mock('../runtime/frontend-runtime', async () => {
       get state() { return harness.state; },
       get caps() { return harness.caps; },
       pttStyle: 'latch',
+      // StatusBar arms an 800 ms identify timer; the long locale matrix outlives it.
+      system: { identifyFrequency: async () => null },
       onTxAudioDied: () => () => {},
       acquireHardwareScope: () => ({}),
       releaseHardwareScope: () => {},
