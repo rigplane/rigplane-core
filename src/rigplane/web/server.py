@@ -96,6 +96,7 @@ from ..core.tx_observation import (
     TxMeterLog,
     project_observed_ptt,
 )
+from ..runtime._poller_types import POSITIVE_TX_ADMISSION_REJECTED
 from ..runtime.controller_authority import (
     ControllerAuthority,
     ControllerError,
@@ -6021,7 +6022,7 @@ class WebServer:
                 submission = None
                 if (
                     type(exc) is CommandError
-                    and str(exc) == "positive TX admission was rejected"
+                    and str(exc) == POSITIVE_TX_ADMISSION_REJECTED
                     and pending_submission is not None
                     and pending_submission.done()
                     and not pending_submission.cancelled()

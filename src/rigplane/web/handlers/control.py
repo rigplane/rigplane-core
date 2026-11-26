@@ -52,7 +52,7 @@ from ...profiles import (
     resolve_radio_profile,
 )
 from ...profiles.control_domain import encode_legacy_control, validate_control_raw_value
-from ...runtime._poller_types import SetNarrow
+from ...runtime._poller_types import POSITIVE_TX_ADMISSION_REJECTED, SetNarrow
 from ...runtime._dual_rx_runtime import require_receiver_for_profile
 from ...runtime.tx_interlock import (
     RfState,
@@ -234,9 +234,6 @@ logger = logging.getLogger(__name__)
 _TX_OWNER_PARAM = "_tx_owner"
 # Refusal wording when a rejected PTT receipt proves another owner held (MOR-3684).
 _PTT_HOLDER_CONFLICT = "another client is transmitting"
-# The only queue exception a rejected receipt may translate (MOR-3684):
-# `execute_positive_tx_queue_entry` collapsing a refused admission.
-_QUEUE_ADMISSION_REJECTED = "positive TX admission was rejected"
 # Refusal wording when a rejected PTT receipt proves a release is owed (MOR-3810).
 _PTT_RELEASING = "the previous transmission is still being released"
 
@@ -317,7 +314,7 @@ def _queue_refused_for_ptt_holder(
     if (
         not isinstance(exc, CommandError)
         or isinstance(exc, CommandRejectedError)
-        or str(exc) != _QUEUE_ADMISSION_REJECTED
+        or str(exc) != POSITIVE_TX_ADMISSION_REJECTED
     ):
         return False
     return (
@@ -336,7 +333,7 @@ def _queue_refused_for_release_debt(
     if (
         not isinstance(exc, CommandError)
         or isinstance(exc, CommandRejectedError)
-        or str(exc) != _QUEUE_ADMISSION_REJECTED
+        or str(exc) != POSITIVE_TX_ADMISSION_REJECTED
     ):
         return False
     return (
@@ -2091,7 +2088,7 @@ class ControlHandler:
             )
             if (
                 type(exc) is CommandError
-                and str(exc) == _QUEUE_ADMISSION_REJECTED
+                and str(exc) == POSITIVE_TX_ADMISSION_REJECTED
                 and pending is not None
                 and pending.done()
                 and not pending.cancelled()

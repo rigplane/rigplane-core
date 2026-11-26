@@ -38,7 +38,7 @@ vi.mock('$lib/transport/ws-client', () => ({
   getControlSession: () => ({ state: h.sessionState, epoch: 4 }),
 }));
 import { createManagedBrowserDependencies } from '../browser-dependencies';
-import { ManagedTransmitError } from '$lib/transport/managed-transmit-client';
+import { ManagedTransmitClient, ManagedTransmitError } from '$lib/transport/managed-transmit-client';
 const emit = (event: CommandDeliveryEvent) => [...h.deliveries].forEach((fn) => fn(event));
 const emitMessage = (message: { type?: string; name?: string; data?: unknown }) => {
   [...h.messages].forEach((fn) => fn(message));
@@ -52,6 +52,30 @@ beforeEach(() => {
   h.refresh.mockClear();
 });
 describe('managed browser TX dependencies', () => {
+  it.each([
+    [403, 'controller_tx_unsupported', 'controller_refused', 'controller_tx_unsupported', 'txPressToTalkRequired'],
+    [403, 'read_only', 'read_only', 'read_only', 'txReadOnly'],
+    [503, 'managed_tx_unavailable', 'authority_unavailable', 'authority_unavailable', 'txAuthorityUnavailable'],
+    [409, 'legacy_error', 'future_refusal', 'future_refusal', 'txStartRefused'],
+  ] as const)('presents the real HTTP %i refusal %s with its specific guidance', async (status, legacyError, reason, code, toast) => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: false, status, json: async () => ({ error: legacyError, code: reason }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const client = new ManagedTransmitClient();
+    const browser = createManagedBrowserDependencies();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const refusal: unknown = await client.command('transmit_on').catch((error: unknown) => error);
+      expect(refusal).toBeInstanceOf(ManagedTransmitError);
+      expect(refusal).toMatchObject({ code, status, reason });
+      browser.dependencies.onLatchRefusal?.(refusal);
+      expect(fetchMock).toHaveBeenCalledExactlyOnceWith('/api/v1/managed-transmit/command', expect.any(Object));
+      expect(h.notify).toHaveBeenCalledExactlyOnceWith('error', expect.any(String), toast);
+      expect(warn).toHaveBeenCalledWith(`[tx] Latch start refused: ${code}`);
+    } finally { browser.dispose(); warn.mockRestore(); vi.unstubAllGlobals(); }
+  });
+
   it.each(['transmit_on', 'force_off'] as const)('keeps a typed 409 for %s as an admission rejection and refreshes', async (operation) => {
     h.submit.mockRejectedValueOnce(new ManagedTransmitError('tx_held_by_other', 409));
     const browser = createManagedBrowserDependencies();
