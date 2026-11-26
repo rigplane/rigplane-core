@@ -86,6 +86,20 @@ export async function expectPassbandProbeReady(
   }), frameMode), { timeout: 30_000 }).toBe(true);
 }
 
+/** R53 clears the sample plane during scope silence; absent planes have no RF bounds. */
+export function expectPassbandViewWithin(
+  samples: PassbandSample[], fromT: number, toT: number, startHz: number, endHz: number,
+): void {
+  let views = 0;
+  for (const sample of samples.filter(sample => sample.t >= fromT && sample.t <= toT)) {
+    if (sample.gates?.spanPositive === false && !sample.overlay) continue;
+    expect(sample.gates?.viewStartHz, JSON.stringify(sample)).toBeGreaterThanOrEqual(startHz);
+    expect(sample.gates?.viewEndHz, JSON.stringify(sample)).toBeLessThanOrEqual(endHz);
+    views += 1;
+  }
+  expect(views, 'No live sample plane inside the measured interval').toBeGreaterThan(0);
+}
+
 /** The last sample before the window describes its initial state until the next sample. */
 export function missingLivePassband(samples: PassbandSample[], fromT: number, toT: number): PassbandSample | undefined {
   const first = samples.findIndex(sample => sample.t >= fromT);

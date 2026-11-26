@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { missingLivePassband, paintedOutages, passbandGaps, passbandProbeReady, requireProbeStimulus } from '../../../../tests/e2e/journey/panorama-passband-probe';
+import { expectPassbandViewWithin, missingLivePassband, paintedOutages, passbandGaps, passbandProbeReady, requireProbeStimulus } from '../../../../tests/e2e/journey/panorama-passband-probe';
 import type { ScopePassbandDiagnostics } from '../adapters/scope-passband-display';
 
 describe('passband probe evidence', () => {
@@ -20,6 +20,44 @@ describe('passband probe evidence', () => {
       tupleFrameMode, tupleReason: null, tupleStale: false, passbandHz: 3000,
       spanPositive: true, overlay: true,
     } satisfies ScopePassbandDiagnostics,
+  });
+  const emptyPlane = (t: number, kind: 'frame' | 'dom' = 'frame') => ({
+    ...sample(t, false, kind), state: 'unknown',
+    gates: {
+      ...current(t, 1).gates, tuneVisible: false, confirmed: false, freqHz: null,
+      viewStartHz: 0, viewEndHz: 0, inView: false, tuple: false, tupleState: 'unknown',
+      tupleFrameMode: null, tupleReason: 'frame-unavailable', passbandHz: 0,
+      spanPositive: false, overlay: false,
+    } satisfies ScopePassbandDiagnostics,
+  });
+  it('checks FIX bounds on live planes while a cleared plane still counts toward the gap budget', () => {
+    const samples = [current(-10, 1), current(10, 1), emptyPlane(20, 'dom'),
+      emptyPlane(30), current(40, 1, 'dom'), current(50, 1)];
+    expect(() => expectPassbandViewWithin(samples, 0, 60, 14_200_000, 14_300_000)).not.toThrow();
+    expect(passbandGaps(samples, 0, 60)).toMatchObject([{ frames: 1 }]);
+    samples.splice(4, 0, emptyPlane(35));
+    expect(passbandGaps(samples, 0, 60)).toMatchObject([{ frames: 2 }]);
+  });
+  it.each(['below', 'above', 'retired', 'missing', 'visible-empty'])(
+    'rejects invalid FIX viewport evidence: %s', (kind) => {
+      const valid = current(10, 1);
+      const invalid = kind === 'missing' ? sample(20, false)
+        : kind === 'visible-empty' ? { ...emptyPlane(20), overlay: true }
+        : { ...current(20, 1), state: kind === 'retired' ? 'unknown' : 'current', overlay: kind !== 'retired', gates: {
+          ...valid.gates,
+          viewStartHz: kind === 'below' ? 14_199_999 : kind === 'retired' ? 0 : 14_200_000,
+          viewEndHz: kind === 'above' ? 14_300_001 : 14_300_000,
+          tupleState: kind === 'retired' ? 'unknown' as const : 'current' as const,
+          tuple: kind !== 'retired', tupleFrameMode: kind === 'retired' ? null : 1,
+          tupleReason: kind === 'retired' ? 'retired' : null,
+          overlay: kind !== 'retired',
+        } };
+      expect(() => expectPassbandViewWithin([valid, invalid], 0, 30, 14_200_000, 14_300_000)).toThrow();
+    });
+  it('requires live viewport evidence inside the measured interval', () => {
+    expect(() => expectPassbandViewWithin([], 0, 30, 14_200_000, 14_300_000)).toThrow();
+    expect(() => expectPassbandViewWithin([current(-10, 1), emptyPlane(10), current(40, 1)],
+      0, 30, 14_200_000, 14_300_000)).toThrow();
   });
   it('starts FIX continuity only after its current tuple has painted', () => {
     const samples = [current(-50, 0), sample(-30, false), sample(-20, false), sample(-10, false),

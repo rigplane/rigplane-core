@@ -1,5 +1,5 @@
 import { writeFile } from 'node:fs/promises';
-import { installSampler, settlePassband, passbandGaps, expectPassbandProbeReady, watchScopeFrames } from './panorama-passband-probe';
+import { installSampler, settlePassband, passbandGaps, expectPassbandProbeReady, expectPassbandViewWithin, watchScopeFrames } from './panorama-passband-probe';
 import { createReadStream } from 'node:fs';
 import { expect, test } from '@playwright/test';
 import type { WsCommand } from '../../../src/lib/types/protocol';
@@ -385,10 +385,7 @@ for (const [index, model] of ['IC-705', 'IC-7300'].entries()) {
       await writeFile(info.outputPath('fix-follow-passband.json'), JSON.stringify({ model, gaps, samples }, null, 2));
       expect(samples.filter(sample => sample.t >= fromT && sample.t <= toT).length).toBeGreaterThan(20);
       for (const gap of gaps) expect(gap.frames, JSON.stringify(gap)).toBeLessThanOrEqual(1);
-      for (const sample of samples.filter(sample => sample.t >= fromT && sample.t <= toT)) {
-        expect(sample.gates?.viewStartHz).toBeGreaterThanOrEqual(14_200_000);
-        expect(sample.gates?.viewEndHz).toBeLessThanOrEqual(14_300_000);
-      }
+      expectPassbandViewWithin(samples, fromT, toT, 14_200_000, 14_300_000);
       expect(commands.slice(commandsBefore).filter(name => name.startsWith('set_scope_'))).toEqual([]);
       expect((await scopeWriteReceipts(evidence)).length).toBe(writesBefore);
       expect(subscriptions.slice(subscriptionsBefore)).toEqual([]);
