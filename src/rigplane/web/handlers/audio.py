@@ -1463,13 +1463,16 @@ class AudioBroadcaster:
                 reason, candidates = audio_start_failure_details(exc)
                 holder = audio_start_failure_holder(exc)
                 if reason == "other" and serial_identity_hold(radio) is not None:
-                    # MOR-4858: Core already knows the control link is not
-                    # connected/answering (the connect-time identity hold
-                    # owns the radio: a powered-off rig whose serial port
-                    # is open but whose identity read never answered).
-                    # The unclassified failure is that radio, not an
-                    # unknown audio problem. Classified reasons keep
-                    # their own (more specific) category.
+                    # MOR-4858: connection-state precedence. The
+                    # connect-time identity hold owns the radio (a
+                    # powered-off rig whose serial port is open but whose
+                    # identity read never answered), so an unclassified
+                    # failure is reported as the known not-connected
+                    # state rather than an unknown audio problem. That
+                    # also covers an unrelated unclassified failure that
+                    # lands during the hold: the hold is the only
+                    # connection evidence Core has. Classified reasons
+                    # keep their own (more specific) category.
                     reason = "radio_not_connected"
                 self._rx_start_failure = (
                     radio,
