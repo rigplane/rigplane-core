@@ -299,15 +299,20 @@ describe('the CW-keyer surface is NOT a key path (decomposition R9)', () => {
     // like the `pressed-of` purity argument above), so it cannot reach the TX
     // controller, the transport or the permit utility any more than the fact
     // contract can.
+    // MOR-4829: disabled-reason resolves availability metadata to tooltip text.
+    // Its only runtime dependency is i18n; it introduces no command path.
     expect([...new Set(specifiers)]).toEqual([
       '$lib/i18n', './CwKeyerInstrumentHost.svelte', '$lib/types/capabilities',
       './radio-view-model', '$lib/utils/tx-permit',
-      './pressed-of', '../primitives/reading-text', 'svelte',
+      './pressed-of', '../primitives/reading-text', './disabled-reason', 'svelte',
       '../primitives/control-feedback/control-feedback-presentation',
       '../primitives/scalar/committed-scalar.svelte',
       '../primitives/scalar/value-control-core',
       '../primitives/control-instruments/control-instrument-behavior',
     ]);
+    const reasonSource = readFileSync(new URL('../disabled-reason.ts', import.meta.url), 'utf8');
+    const reasonImports = [...reasonSource.matchAll(/from\s+'([^']+)'/g)].map((m) => m[1]);
+    expect([...new Set(reasonImports)]).toEqual(['$lib/i18n', './radio-view-model']);
   });
 
   // MOR-2688 S3 literal pin, with literal strings: `textOf`'s own formatter

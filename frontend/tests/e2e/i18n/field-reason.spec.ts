@@ -1,6 +1,6 @@
 import { expect, test, type Page, type WebSocketRoute } from '@playwright/test';
 import { CANONICAL_LAYOUT_MODES } from '../../../src/presentation/layout-mode';
-import goldens from '../../../src/lib/transport/__tests__/fixtures/state-wire-goldens.json';
+import goldens from '../../../src/lib/transport/__tests__/fixtures/state-wire-goldens.json' with { type: 'json' };
 import type { StateUpdateEnvelope } from '../../../src/lib/types/state';
 import {
   fulfillControllerRoute, mockControllerHeartbeatAck, mockInfo, mockLocalControllerStatus,

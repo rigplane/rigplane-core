@@ -704,7 +704,8 @@
             id={`${pendingFilterId}-${field}-input`} type="range" {min} {max} {step}
             {...feedbackIntegratedRange}
             value={row.view.draft ?? pendingTarget ?? numberOf(filterPassband[field], min)}
-            title={disabledFieldReasonText(filterPassband?.[field])}
+            title={display?.state === 'stale' && !filterPassband[field].availability.message?.trim()
+              ? undefined : disabledFieldReasonText(filterPassband[field])}
             disabled={!row.view.editable}
             data-command-phase={row.view.phase ?? undefined}
             aria-busy={row.view.busy}

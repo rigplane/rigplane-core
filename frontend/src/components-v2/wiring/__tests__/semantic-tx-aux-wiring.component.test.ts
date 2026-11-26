@@ -1030,7 +1030,8 @@ describe('the txAux surface mounts only when the view model carries the group', 
     // MOR-1347: zone-less direct mount keeps rx-tx last, after rx-audio.
     // MOR-2438: the idle READY session span is absent; the hidden status row
     // retains only its RF mark/label contract and occupies no layout space.
-    + 'section div button button button label span div div div div div div output div button button button output div button button output section p span span p div button button ul';
+    // MOR-4829: AF's unavailable explanation adds one sr-only span after its slider.
+    + 'section div button button button label span div div div div div div span output div button button button output div button button output section p span span p div button button ul';
 
   it.each(['single', 'dual'] as const)('renders no txAux surface at all without the group (%s)', (strips) => {
     h.state = liveState(false);
@@ -1051,6 +1052,13 @@ describe('the txAux surface mounts only when the view model carries the group', 
     const receiverGroup = target.querySelector('[role="radiogroup"][aria-label="Active receiver"]');
     expect(receiverGroup).not.toBeNull();
     expect(receiverGroup?.querySelectorAll('[role="radio"]')).toHaveLength(2);
+    const afSlider = q('[data-testid="rx-audio-af"] [role="slider"]')!;
+    expect(afSlider).not.toBeNull();
+    const descriptionId = afSlider.getAttribute('aria-describedby');
+    expect(descriptionId).not.toBeNull();
+    const description = document.getElementById(descriptionId!);
+    expect(description?.classList.contains('sr-only')).toBe(true);
+    expect(description?.textContent).toBe('Not yet observed');
     expect(outline()).toBe(DEFAULT_PATH_OUTLINE);
   });
 
