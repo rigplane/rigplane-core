@@ -51,6 +51,8 @@
   import { controllerToastCodeOf } from '$lib/controller-toast-codes';
   import './app.css';
 
+  let { onRemoteTeardown }: { onRemoteTeardown?: (finished: Promise<void>) => void } = $props();
+
   // MOR-1081: the workspace store owns layout, design-language and theme
   // selection. Initialised here — the composition root, and the first thing
   // in it — so it is loaded before the first selection read below
@@ -297,7 +299,7 @@
 
     initMediaSession();
 
-    let cleanupBootstrap: (() => void) | null = null;
+    let cleanupBootstrap: (() => Promise<void>) | null = null;
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
     let mounted = true;
     const bootstrapAbort = new AbortController();
@@ -309,7 +311,7 @@
     // MOR-2680: a failed asset preload before any layout has mounted reloads
     // the page when the guard allows it.
     const handlePreloadError = (event: Event) => {
-      if (!claimPreloadErrorReload(Date.now(), presentation !== null)) return;
+      if (onRemoteTeardown || !claimPreloadErrorReload(Date.now(), presentation !== null)) return;
       event.preventDefault();
       // While the page reloads, no load may mount or clear the guard's record.
       presentationActive = false;
@@ -317,7 +319,7 @@
     };
     window.addEventListener('vite:preloadError', handlePreloadError);
 
-    (async () => {
+    const bootstrap = (async () => {
       try {
         cleanupBootstrap = await runtime.bootstrap(bootstrapAbort.signal);
         if (!mounted) return cleanupBootstrap();
@@ -335,6 +337,7 @@
         backendError = controllerToast !== null
           ? messageFromReasonCode(controllerToast)
           : t('core.app.backendError', { detail: String(err) });
+        if (onRemoteTeardown) return;
         if (retryCount < MAX_RETRIES) {
           const delay = RETRY_DELAYS[Math.min(retryCount, RETRY_DELAYS.length - 1)];
           retrying = true;
@@ -356,10 +359,17 @@
       txAuthorityReady = false;
       txHost.dispose();
       destroyMediaSession();
-      cleanupBootstrap?.();
+      const cleanup = cleanupBootstrap?.();
       if (retryTimer) clearTimeout(retryTimer);
       window.removeEventListener('resize', handleResize);
       window.removeEventListener('vite:preloadError', handlePreloadError);
+      if (onRemoteTeardown) {
+        onRemoteTeardown(Promise.allSettled([bootstrap, cleanup]).then(async (outcomes) => {
+          // A station in local controller mode still needs a fresh K5 link.
+          await systemController.disconnect({ automatic: true });
+          for (const outcome of outcomes) if (outcome.status === 'rejected') throw outcome.reason;
+        }));
+      }
     };
   });
 </script>

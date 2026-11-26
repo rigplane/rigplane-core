@@ -16,7 +16,7 @@ import { setRxEnabled, setTxEnabled, setTxCodecFallback, setRxError, setTxError 
 import { authenticatedWsUrl } from '../transport/ws-url';
 import type { ControllerRole } from '../transport/message-transport';
 import type { MessageTransport } from '../transport/message-transport';
-import { createMessageTransport } from '../transport/transport-factory';
+import { canReconnectChannel, currentBundle } from '../transport/transport-bundle';
 import { getCapabilities, subscribeCapabilities } from '$lib/stores/capabilities.svelte';
 
 export type AudioFocus = RxAudioFocus;
@@ -515,7 +515,7 @@ class AudioManager {
       // while the re-acquire is in flight so it never races the fresh key
       // sessionless; if the re-acquire itself fails, the client falls back
       // to sessionless like an old Core.
-      if (this.reconnectTimer === null) {
+      if (canReconnectChannel() && this.reconnectTimer === null) {
         const delay = this.backoff;
         this.backoff = Math.min(Math.floor(this.backoff * 1.7), BACKOFF_MAX);
         this.reconnectTimer = setTimeout(() => {
@@ -535,7 +535,7 @@ class AudioManager {
     const controller = this.controller;
     const protocols = controller?.protocols() ?? [];
     const epoch = controller?.epoch() ?? 0;
-    const ws = createMessageTransport();
+    const ws = currentBundle().openChannel('audio');
     this.ws = ws;
     ws.open(authenticatedWsUrl(url), controller !== null && protocols.length > 0
       ? { protocols, role: controller.role() }
@@ -622,7 +622,7 @@ class AudioManager {
       // TX start (MOR-1791).
       this._setTxCodecFallback(false);
       this.notify();
-      if (!this._rxEnabled && !this._txEnabled) return;
+      if ((!this._rxEnabled && !this._txEnabled) || !canReconnectChannel()) return;
       // Reconnect with backoff
       const delay = this.backoff;
       this.backoff = Math.min(Math.floor(this.backoff * 1.7), BACKOFF_MAX);

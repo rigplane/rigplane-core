@@ -42,6 +42,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
 from testkit.ic7610_fakes import ic7610_lan_fake  # noqa: E402
+from rigplane_testkit.sim.serve import DEFAULT_KEEPALIVE_HOLD_S  # noqa: E402
 
 from rigplane.radio import IcomRadio  # noqa: E402
 from rigplane.runtime.managed_tx_composition import (  # noqa: E402
@@ -215,6 +216,14 @@ async def run() -> None:
         single_owner=True,
         stateful_ptt=True,
         ptt_on_session_loss="hold",
+        scope_stream=True,
+        # The serve hold (rigplane_testkit.sim.serve.DEFAULT_KEEPALIVE_HOLD_S):
+        # the production client renews its session token only every 60 s, so
+        # the simulator default (0.5 s) would free the session — and with it
+        # the scope owner (`_release_session` → `_scope_end_session`) — long
+        # before the first renewal, and every 0x27 scope write would NAK as a
+        # pre-open client.
+        keepalive_hold_s=DEFAULT_KEEPALIVE_HOLD_S,
         # The browser voice-TX path arms the radio's audio route before it
         # keys; without enable_audio the UI's ptt_on is accepted (ok) but
         # keying never completes on the fake.

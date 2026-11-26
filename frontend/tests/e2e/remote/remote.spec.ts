@@ -1,7 +1,12 @@
-import { expect, test } from '@playwright/test';
+import { existsSync, writeFileSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { expect, test, type Page } from '@playwright/test';
 import controllerWire from '../../../../tests/fixtures/host-api-v3-wire.json' with { type: 'json' };
 import wire from '../../../src/lib/transport/api-channel-wire.json' with { type: 'json' };
 import golden from '../../../src/lib/transport/api-channel-golden.json' with { type: 'json' };
+import { parseCurrentScopeFrame } from '../../../src/lib/runtime/scope-frame';
+import type { RemoteBootHarness } from './boot-entry';
 import {
   expectControlLink,
   collectFirstTexts,
@@ -36,17 +41,21 @@ const BASELINE_HZ = 14_074_000;
 const TUNED_HZ = 7_100_000;
 const STATION_HZ = 14_100_000;
 
+async function tuneFromUi(page: Page, hz: number): Promise<void> {
+  await page.locator('.receiver-instrument [data-vfo-freq]').first().click();
+  await page.getByTestId('band-entry-input').fill((hz / 1_000_000).toFixed(3));
+  await page.getByTestId('band-entry-set').click();
+  await expect.poll(async () => (await simState()).freq_hz).toBe(hz);
+  await expectReadoutHz(page, hz);
+}
+
 // The committed wire/golden contract documents are imported from the source
 // of truth (src/lib/transport), never re-typed here.
 
 /**
- * Validate a payload against a wire-contract payload's `fields` rows, the
- * same semantics as the production `payloadMatchesContract`
- * (src/lib/transport/datachannel-transport.ts), which Playwright's Node
- * runtime cannot import and which is not re-exported without a src/ change (its JSON import needs an ESM import attribute
- * that would mean changing src/). Restricted on purpose to the kinds the
- * control_hello contract uses; any other kind row is an error, so a future
- * contract change cannot pass silently.
+ * Validate control_hello directly against its wire-contract `fields` rows.
+ * The harness supports the field kinds control_hello uses and throws on
+ * any other kind so a future contract change cannot pass silently.
  */
 function payloadMatchesWireContract(
   contract: { fields: unknown[][] },
@@ -98,12 +107,7 @@ test('L2: tuning follows both ways between the UI and the simulator', async ({ p
   await expectReadoutHz(page, BASELINE_HZ);
 
   // UI → station: tune 7.100 MHz through the frequency entry dialog.
-  const readout = page.locator('.receiver-instrument [data-vfo-freq]').first();
-  await readout.click();
-  await page.getByTestId('band-entry-input').fill('7.100');
-  await page.getByTestId('band-entry-set').click();
-  await expect.poll(async () => (await simState()).freq_hz).toBe(TUNED_HZ);
-  await expectReadoutHz(page, TUNED_HZ);
+  await tuneFromUi(page, TUNED_HZ);
 
   // Station → UI: change the frequency on the station side; the simulator
   // holds it and the UI follows over the state poll.
@@ -400,6 +404,17 @@ function attachTexts(): Record<string, string> {
   return texts;
 }
 
+async function exposeOfferRelay(page: Page): Promise<void> {
+  await page.exposeFunction('__relayOffer', async (sdp: string, type: string) => {
+    const response = await fetch(`${STATION_ORIGIN}/api/v1/transport/webrtc/offer`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ sdp, type }),
+    });
+    return parseRelayedAnswer(await response.json());
+  });
+}
+
 test('P0: a bare page connects the K5 data channels and reaches control_hello', async ({ page }) => {
   // A bare page on the station's origin (a secure context; about:blank is
   // not one in WebKit, where WebRTC then gathers nothing). Every page
@@ -417,14 +432,7 @@ test('P0: a bare page connects the K5 data channels and reaches control_hello', 
   // interception fails the row here.
   expect(navigation?.status()).toBe(200);
   expect(await page.title()).toBe('bare-page');
-  await page.exposeFunction('__relayOffer', async (sdp: string, type: string) => {
-    const response = await fetch(`${STATION_ORIGIN}/api/v1/transport/webrtc/offer`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ sdp, type }),
-    });
-    return parseRelayedAnswer(await response.json());
-  });
+  await exposeOfferRelay(page);
   await page.exposeFunction('__controllerKey', acquireControllerKey);
 
   const outcome = await page.evaluate(
@@ -541,4 +549,204 @@ test('P0: a bare page connects the K5 data channels and reaches control_hello', 
   // exactly the golden documents.
   expect(JSON.parse(outcome.scopeAck)).toEqual(ATTACH_DOCUMENTS.attach_ack_scope.decoded);
   expect(JSON.parse(outcome.audioAck)).toEqual(ATTACH_DOCUMENTS.attach_ack_audio.decoded);
+});
+
+declare global {
+  interface Window {
+    __remoteBoot: RemoteBootHarness;
+  }
+}
+
+async function buildRemoteShell(): Promise<void> {
+  // The matrix runs serially. Its run directory is shared by both browsers
+  // and repetitions, so build the shell once after the ordinary UI build.
+  const logDir = process.env.RIGPLANE_REMOTE_E2E_LOG_DIR;
+  if (!logDir) throw new Error('The remote matrix did not allocate a run directory');
+  const built = path.join(logDir, 'remote-shell-built');
+  if (existsSync(built)) return;
+  const { build } = await import('vite');
+  const frontend = fileURLToPath(new URL('../../../', import.meta.url));
+  await build({
+    root: frontend,
+    configFile: path.join(frontend, 'vite.config.ts'),
+    base: '/remote-entry/',
+    publicDir: false,
+    build: {
+      outDir: 'dist/remote-entry',
+      emptyOutDir: true,
+      rollupOptions: {
+        input: path.join(frontend, 'tests/e2e/remote/boot-entry.ts'),
+        output: { entryFileNames: 'boot-entry.js' },
+      },
+    },
+  });
+  writeFileSync(built, '');
+}
+
+async function showRadioScope(page: Page): Promise<void> {
+  // The scope canvas sends maxFps: 0 when it is outside the viewport or its tab is hidden.
+  await page.bringToFront();
+  const panel = page.locator('[data-waterfall]:not(.audio-fft)');
+  const viewer = panel.getByTitle('Request scope viewer data');
+  // The desktop-v2 skin hosts the demand toggle inside the toolbar's
+  // [MORE ▾] panel (MOR-2545); the unhosted faces render it in the row.
+  const more = panel.getByTestId('scope-more');
+  await expect.poll(async () => (await viewer.count()) + (await more.count()), {
+    message: 'a scope demand toggle renders',
+  }).toBeGreaterThan(0);
+  if ((await viewer.count()) === 0) await more.click();
+  if (await viewer.getAttribute('aria-pressed') === 'false') await viewer.click();
+  await panel.locator('.spectrum-area').scrollIntoViewIfNeeded();
+  await expect.poll(async () => {
+    const encoded = await panel.getAttribute('data-scope-subscription');
+    const request = encoded === null ? null : JSON.parse(encoded);
+    return request?.sourceId === 'radio' ? request.maxFps : 0;
+  }, { message: 'the visible radio scope asks for frames' }).toBeGreaterThan(0);
+}
+
+test('R1: the station UI and K5 boot operate the same simulator', async ({ page }, testInfo) => {
+  test.setTimeout(120_000);
+  await buildRemoteShell();
+  const wsPage = await page.context().newPage();
+  await installPlaybackWitness(wsPage);
+  await setStationFrequency(BASELINE_HZ);
+
+  let wsScopeFrames = 0;
+  const wsScopeTraffic = {
+    sockets: 0,
+    lastSubscribe: null as string | null,
+    lastReply: null as string | null,
+    lastBinary: null as string | null,
+  };
+  wsPage.on('websocket', (socket) => {
+    if (new URL(socket.url()).pathname !== '/api/v1/scope') return;
+    wsScopeTraffic.sockets += 1;
+    socket.on('framesent', ({ payload }) => {
+      if (typeof payload === 'string' && /"type"\s*:\s*"subscribe"/.test(payload)) {
+        wsScopeTraffic.lastSubscribe = payload;
+      }
+    });
+    socket.on('framereceived', ({ payload }) => {
+      if (typeof payload === 'string') {
+        if (/"type"\s*:\s*"(?:granted|error)"/.test(payload)) wsScopeTraffic.lastReply = payload;
+        return;
+      }
+      const frame = parseCurrentScopeFrame(Uint8Array.from(payload).buffer, { source: 'radio', sourceId: 'radio', epoch: 0 });
+      if (!frame.ok) {
+        wsScopeTraffic.lastBinary = frame.reason;
+        return;
+      }
+      const { source, pixels } = frame.frame;
+      wsScopeTraffic.lastBinary = `${source}, ${pixels?.length ?? 0} pixels`;
+      if (source === 'radio' && pixels !== null) wsScopeFrames += 1;
+    });
+  });
+  await Promise.all([
+    wsPage.waitForResponse((response) =>
+      new URL(response.url()).pathname === '/api/v1/controller' &&
+      response.request().method() === 'POST' && response.status() === 201,
+    ),
+    openRemoteUi(wsPage),
+  ]);
+  await expectControlLink();
+  await expectReadoutHz(wsPage, BASELINE_HZ);
+  try {
+    await showRadioScope(wsPage);
+    await expect.poll(() => wsScopeFrames, {
+      message: 'the station WebSocket delivers a radio scope frame with pixels', timeout: 15_000,
+    }).toBeGreaterThan(0);
+  } catch (error) {
+    await testInfo.attach('station scope WebSocket traffic', {
+      body: JSON.stringify(wsScopeTraffic, null, 2), contentType: 'application/json',
+    });
+    throw error;
+  }
+  const wsInfo = await wsPage.evaluate(async () => {
+    const response = await fetch('/api/v1/info');
+    const { server, model, proto, version } = await response.json();
+    return { status: response.status, server, model, proto, version };
+  });
+  expect(wsInfo).toMatchObject({
+    status: 200, server: 'rigplane', model: expect.any(String), proto: expect.any(Number), version: expect.any(String),
+  });
+  await wsPage.getByTestId('rx-audio-monitor-live').click();
+  await expect.poll(() => playbackBuffers(wsPage), { timeout: 15_000 }).toBeGreaterThan(5);
+  await wsPage.getByTestId('rx-audio-monitor-mute').click();
+  await tuneFromUi(wsPage, TUNED_HZ);
+  await wsPage.close();
+
+  await installPlaybackWitness(page);
+  await exposeOfferRelay(page);
+  const shell = `${STATION_ORIGIN}/remote-entry/index.html?ui=v2`;
+  await page.route(shell, (route) => route.fulfill({
+    contentType: 'text/html',
+    body: '<!doctype html><html lang="en"><div id="app"></div><script type="module" src="/remote-entry/boot-entry.js"></script></html>',
+  }));
+  await page.route('**/api/v1/**', (route) => route.abort());
+  const destinations = trackDestinations(page);
+  expect((await page.goto(shell, { waitUntil: 'domcontentloaded' }))?.status()).toBe(200);
+  await expect.poll(async () => (await stationState()).wsClients?.control).toBe(0);
+  await setStationFrequency(BASELINE_HZ);
+
+  const snapshot = () => page.evaluate(() => window.__remoteBoot.snapshot());
+  const snapshotLink = async (link: number) => (await snapshot()).links[link]!;
+  const expectRetired = async (link: number) => {
+    await expect.poll(async () => (await snapshotLink(link)).channels
+      .filter(({ state, coreHandlers }) => state !== 'closed' || coreHandlers)
+      .map(({ label, state, coreHandlers }) => ({ label, state, coreHandlers }))).toEqual([]);
+  };
+  await page.evaluate(() => window.__remoteBoot.start());
+  await expectReadoutHz(page, BASELINE_HZ);
+  // A real station ACK proves that Core acquired a grant via the API and attached with it.
+  await expect.poll(async () => (await snapshotLink(0)).heartbeats).toBeGreaterThan(0);
+  const k5Info = await page.evaluate(() => window.__remoteBoot.info());
+  expect(k5Info).toEqual(wsInfo);
+  await showRadioScope(page);
+  await expect.poll(async () => (await snapshotLink(0)).scopeFrames, {
+    message: 'the K5 scope data channel delivers a radio scope frame with pixels', timeout: 15_000,
+  }).toBeGreaterThan(0);
+  await page.getByTestId('rx-audio-monitor-live').click();
+  await expect.poll(() => playbackBuffers(page), { timeout: 15_000 }).toBeGreaterThan(5);
+  await expect.poll(async () => {
+    const { channels } = await snapshotLink(0);
+    return channels.filter(({ state, frames }) => state === 'open' && frames > 0)
+      .map(({ label, ordered, maxRetransmits }) => ({ label, ordered, maxRetransmits }))
+      .sort((a, b) => a.label.localeCompare(b.label));
+  }).toEqual([...CHANNELS].sort((a, b) => a.label.localeCompare(b.label)));
+  await tuneFromUi(page, TUNED_HZ);
+
+  // Close a different half of each pair. Core must retire both halves and keep control live.
+  await page.evaluate(() => window.__remoteBoot.halfClose());
+  await expect.poll(async () => {
+    const media = (await snapshotLink(0)).channels.filter(({ label }) => label !== 'api' && label !== 'control');
+    return {
+      labels: [...new Set(media.map(({ label }) => label))].sort(),
+      remaining: media.filter(({ state, coreHandlers }) => state !== 'closed' || coreHandlers),
+    };
+  }).toEqual({ labels: ['audio', 'audio-text', 'scope', 'scope-text'], remaining: [] });
+  await tuneFromUi(page, STATION_HZ);
+  expect((await snapshotLink(0)).losses).toEqual([]);
+
+  // Core still sends heartbeats. The harness withholds only their ACKs at the receiver.
+  await page.evaluate(() => window.__remoteBoot.withholdHeartbeatAcks());
+  await expect.poll(async () => (await snapshotLink(0)).losses, { timeout: 12_000 })
+    .toEqual(['session_lost']);
+  expect((await snapshotLink(0)).withheldHeartbeats).toBeGreaterThan(0);
+  await expectRetired(0);
+  const root = page.locator('#app');
+  await expect(root).toBeEmpty();
+
+  await setStationFrequency(BASELINE_HZ);
+  // The host supplies two fresh offers and invokes boot twice in one browser task.
+  await page.evaluate(() => window.__remoteBoot.replaceImmediately());
+  await expectRetired(1);
+  expect((await snapshotLink(1)).channels.map(({ label }) => label)).toEqual(['api']);
+  await expectReadoutHz(page, BASELINE_HZ);
+  await expect.poll(async () => (await snapshotLink(2)).heartbeats).toBeGreaterThan(0);
+  await expect.poll(async () => (await stationState()).wsClients?.control).toBe(1);
+  await expect(root.locator('.radio-layout')).toHaveCount(1);
+  await tuneFromUi(page, TUNED_HZ);
+  expect((await snapshot()).links.map(({ losses }) => losses)).toEqual([['session_lost'], [], []]);
+  expect(destinations().sockets).toEqual([]);
+  expect(destinations().requests.filter((url) => new URL(url).pathname.startsWith('/api/v1/'))).toEqual([]);
 });

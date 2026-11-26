@@ -693,8 +693,8 @@ class ApiFrameError(ValueError):
 class ApiFrame:
     """One binary api-channel frame: type, request id, payload.
 
-    ``type`` is the raw byte so an unknown type still parses (the server
-    answers it ``malformed``); compare with :class:`ApiMessageType`.
+    ``type`` is the raw byte so a receiver can skip a future message type
+    inside a supported envelope. Compare with :class:`ApiMessageType`.
     """
 
     type: int
@@ -1001,7 +1001,11 @@ class ApiChannelHandler:
                     await self._conn.close(1000, "bad version")
                 return True
             return False
-        msg_type, request_id, body = frame.type, frame.request_id, frame.payload
+        try:
+            msg_type = ApiMessageType(frame.type)
+        except ValueError:
+            return False
+        request_id, body = frame.request_id, frame.payload
         if msg_type == ApiMessageType.REQ_HEAD:
             await self._on_head(request_id, body)
         elif msg_type == ApiMessageType.REQ_BODY:
@@ -1011,7 +1015,7 @@ class ApiChannelHandler:
         elif msg_type == ApiMessageType.CANCEL:
             self._on_cancel(request_id)
         else:
-            await self._send_error(request_id, _MALFORMED, "unknown message type")
+            await self._send_error(request_id, _MALFORMED, "unexpected message type")
         return False
 
     async def _on_head(self, request_id: int, payload: bytes) -> None:

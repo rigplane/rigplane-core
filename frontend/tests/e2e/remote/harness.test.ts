@@ -64,9 +64,13 @@ const everyCase = (filter: (c: Executed) => boolean = () => true): Executed[] =>
     .filter(filter);
 
 describe('NoSkipsReporter: the required matrix, not the filtered suite', () => {
-  it('passes the full matrix (36 cases)', async () => {
-    expect(everyCase()).toHaveLength(36);
+  it('passes the full matrix (40 cases)', async () => {
+    expect(everyCase()).toHaveLength(40);
     expect(await verdict(everyCase())).toBeUndefined();
+  });
+
+  it('fails when the K5 boot row did not run', async () => {
+    expect(await verdict(everyCase((c) => c.row !== 'R1'))).toEqual({ status: 'failed' });
   });
 
   it('fails when --project filtered one browser away', async () => {

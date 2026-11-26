@@ -10,7 +10,7 @@
  * before any deadline can; a frame whose version byte is not the committed
  * one is a protocol error, never a routed response.
  */
-import wire from './api-channel-wire.json';
+import wire from './api-channel-wire.json' with { type: 'json' };
 import { buildContractPayload, decodeContractPayload, isArrayBuffer, type DataChannelTransport, type PayloadContract } from './datachannel-transport';
 
 const HEADER_SIZE = wire.header.size_bytes;
