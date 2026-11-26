@@ -310,7 +310,7 @@ describe('the CW-keyer surface is NOT a key path (decomposition R9)', () => {
       '../primitives/scalar/value-control-core',
       '../primitives/control-instruments/control-instrument-behavior',
     ]);
-    const reasonSource = readFileSync(new URL('../disabled-reason.ts', import.meta.url), 'utf8');
+    const reasonSource = readFileSync('src/semantic/disabled-reason.ts', 'utf8');
     const reasonImports = [...reasonSource.matchAll(/from\s+'([^']+)'/g)].map((m) => m[1]);
     expect([...new Set(reasonImports)]).toEqual(['$lib/i18n', './radio-view-model']);
   });
