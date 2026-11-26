@@ -11,6 +11,20 @@ const refusal = golden.refusedMicGainFieldStatus.message;
 const refusedDocument = golden.micGainRefused as StateUpdateEnvelope;
 const recoveredDocument = golden.micGainRecovered as StateUpdateEnvelope;
 const layouts = [...CANONICAL_LAYOUT_MODES].filter(layout => layout !== 'auto' && layout !== 'sdr-test');
+// MOR-4829: only decks that mount the semantic TX composition render the
+// `tx-aux-micGain` row. The segmentline glass skins (peer-split,
+// unified-instrument, panadapter-first) and dual-sdr-face mount
+// `SemanticRadioSurfaces` with `readonlyDisplay` only — the whole interactive
+// composition lives in that component's `{:else}` branch — and `LcdLayout`
+// suppresses its own semantic slot while the glass mounts. Those skins have
+// no TX deck by design; their equivalent refusal surface is the shell-wide
+// StatusBar radio indicator, whose title aggregates every fieldStatus
+// message (`StatusBar.svelte`: the `radioTooltip` derivation).
+const rowLayouts = layouts.filter(layout =>
+  layout === 'lcd-cockpit' || layout === 'lcd-scope' || layout === 'standard');
+const glassLayouts = layouts.filter(layout =>
+  layout === 'peer-split' || layout === 'unified-instrument'
+  || layout === 'panadapter-first' || layout === 'dual-sdr-face');
 
 async function prepare(page: Page, layout: string) {
   let document = structuredClone(refusedDocument);
@@ -69,7 +83,11 @@ async function openMicGain(page: Page, phone: boolean) {
   return { row, slider: row.getByRole('slider') };
 }
 
-for (const layout of [...layouts, 'phone']) {
+test('every canonical layout is classified as row or glass', () => {
+  expect([...rowLayouts, ...glassLayouts].sort()).toEqual([...layouts].sort());
+});
+
+for (const layout of [...rowLayouts, 'phone']) {
   test(`${layout}: own MIC GAIN control explains refusal, recovery and a genuinely unobserved field`, async ({ page }) => {
     const phone = layout === 'phone';
     await page.setViewportSize(phone ? { width: 390, height: 844 } : { width: 1728, height: 1200 });
@@ -94,5 +112,36 @@ for (const layout of [...layouts, 'phone']) {
     await expect(slider).toHaveAttribute('aria-disabled', 'true');
     await expect(row).toHaveAttribute('title', 'Not yet observed');
     await expect(slider).toHaveAccessibleDescription('Not yet observed');
+  });
+}
+
+for (const layout of glassLayouts) {
+  test(`${layout}: StatusBar explains the MIC GAIN refusal and its recovery`, async ({ page }) => {
+    await page.setViewportSize({ width: 1728, height: 1200 });
+    const replay = await prepare(page, layout);
+    await page.goto('/');
+    await expect(page.locator('.skin-select')).toHaveValue(layout);
+    // The admitted glass/face carries no TX deck, so no `tx-aux-micGain` row
+    // exists here; the refusal surfaces on the shell-wide radio indicator.
+    // (Before capabilities admit the glass, the lcd-cockpit fallback may
+    // briefly mount the row — the absence assertion below polls until the
+    // admitted skin has replaced it.)
+    const radio = page.locator('.status-indicators .indicator').first();
+    await expect(radio).toBeVisible();
+    await expect(radio).toHaveAttribute('title', /refused to report mic gain/);
+    await expect(radio).toHaveAttribute('aria-label', /refused to report mic gain/);
+    await expect(page.getByTestId('tx-aux-micGain')).toHaveCount(0);
+
+    replay(recoveredDocument);
+    await expect(radio).not.toHaveAttribute('title', /refused to report mic gain/);
+    await expect(radio).not.toHaveAttribute('aria-label', /refused to report mic gain/);
+
+    const unobserved = structuredClone(recoveredDocument);
+    unobserved.data!.micGain = null;
+    unobserved.data!.fieldStatus!.micGain = { ...refusedDocument.data!.fieldStatus!.micGain,
+      availability: 'missing', message: undefined };
+    replay(unobserved);
+    await expect(radio).not.toHaveAttribute('title', /refused to report mic gain/);
+    await expect(radio).not.toHaveAttribute('aria-label', /refused to report mic gain/);
   });
 }
