@@ -24,12 +24,14 @@ const cases = [
 afterEach(() => { setLocale('en-US'); vi.unstubAllGlobals(); vi.useRealTimers(); });
 
 describe('managed TX refusal presentation', () => {
-  it('covers every Python refusal enum value with a locale mapping or the generic fallback', () => {
-    // The producer pins this closed list in the shared wire fixture; its Python
-    // contract test asserts it equals ManagedTxRefusalReason.
-    const codes: string[] = wire.codes;
-    expect(codes.length).toBeGreaterThan(0);
-    expect(codes.filter((code) => !cases.some(([covered]) => covered === code))).toEqual([]);
+  // The producer pins this closed list in the shared wire fixture; its Python
+  // contract test asserts it equals ManagedTxRefusalReason.
+  it.each(wire.codes as string[])('has a localized presentation for refusal code %s', (code) => {
+    expect(cases.some(([covered]) => covered === code)).toBe(true);
+    expect(managedTxRefusalToastCode(code)).not.toBe('');
+  });
+
+  it('presents an unknown refusal code with the generic text', () => {
     expect(managedTxRefusalToastCode('other')).toBe('txStartRefused');
   });
 
