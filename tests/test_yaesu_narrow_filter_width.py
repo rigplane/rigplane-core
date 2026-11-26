@@ -204,6 +204,46 @@ def test_narrow_variant_rejected(
         load_rig(path)
 
 
+@pytest.mark.parametrize(
+    "new",
+    [
+        "narrow_table = [1500, 1800.9, 2000]",
+        "narrow_table = [1500, true, 2000]",
+        "narrow_table = [1500, '1800', 2000]",
+        "narrow_table = 1800",
+        "narrow_table = 0",
+        "narrow_table = false",
+        "narrow_table = 0.0",
+        "narrow_table = ''",
+    ],
+    ids=[
+        "float",
+        "bool",
+        "string",
+        "scalar",
+        "zero",
+        "false",
+        "zero_float",
+        "empty_string",
+    ],
+)
+def test_narrow_table_values_are_validated_before_coercion(
+    tmp_path: Path, new: str
+) -> None:
+    """MOR-4442: ``int()`` coercion must not silently rewrite a typo. Before
+    the check, ``[1500, 1800.9, 2000]`` loaded as ``[1500, 1800, 2000]``,
+    ``true`` loaded as ``1``, and a scalar died with a raw TypeError instead
+    of a load error. Falsy scalars are values too: they used to bypass the
+    check entirely -- ``0``/``false``/``0.0`` died on iteration and ``''``
+    loaded as an empty narrow table."""
+    path = _write_variant(tmp_path, "narrow_table = [1500, 1800, 2000]", new)
+    with pytest.raises(
+        RigLoadError,
+        match=r"\[filters\.width\.SSB\]\.narrow_table must be a list of integers",
+    ):
+        load_rig(path)
+
+
 def test_dual_receiver_variant_loads_with_both_narrow_reads(
     tmp_path: Path,
 ) -> None:

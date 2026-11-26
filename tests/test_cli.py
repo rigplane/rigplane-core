@@ -3239,7 +3239,10 @@ class TestStartupBusyHoldOrdering:
                     ),
                     timeout=2.0,
                 )
-            except (asyncio.TimeoutError, TimeoutError):
+            except (asyncio.TimeoutError, TimeoutError, AssertionError):
+                # MOR-3938: await_until names its expiry with an
+                # AssertionError; a stalled startup must still cancel the
+                # run task instead of leaking it.
                 run_task.cancel()
                 pytest.fail("serve did not start while the connect held busy")
             server = _BusyHoldWebServer.instances[-1]
@@ -3306,7 +3309,10 @@ class TestStartupBusyHoldOrdering:
                     ),
                     timeout=2.0,
                 )
-            except (asyncio.TimeoutError, TimeoutError):
+            except (asyncio.TimeoutError, TimeoutError, AssertionError):
+                # MOR-3938: await_until names its expiry with an
+                # AssertionError; a stalled startup must still cancel the
+                # run task instead of leaking it.
                 run_task.cancel()
                 pytest.fail("serve did not start while the connect held busy")
             server = _BusyHoldWebServer.instances[-1]
@@ -3355,7 +3361,10 @@ class TestStartupBusyHoldOrdering:
                     ),
                     timeout=2.0,
                 )
-            except (asyncio.TimeoutError, TimeoutError):
+            except (asyncio.TimeoutError, TimeoutError, AssertionError):
+                # MOR-3938: await_until names its expiry with an
+                # AssertionError; a stalled startup must still cancel the
+                # run task instead of leaking it.
                 run_task.cancel()
                 pytest.fail("serve did not start while the connect held busy")
             run_task.cancel()
@@ -3619,7 +3628,10 @@ class TestDisconnectDuringStartupBusyHold:
                     ),
                     timeout=5.0,
                 )
-            except (asyncio.TimeoutError, TimeoutError):
+            except (asyncio.TimeoutError, TimeoutError, AssertionError):
+                # MOR-3938: await_until names its expiry with an
+                # AssertionError; a stalled startup must still cancel the
+                # run task instead of leaking it.
                 run_task.cancel()
                 pytest.fail("serve did not start while the connect held busy")
             server = _BusyHoldWebServer.instances[-1]
@@ -3676,7 +3688,10 @@ class TestDisconnectDuringStartupBusyHold:
                     ),
                     timeout=5.0,
                 )
-            except (asyncio.TimeoutError, TimeoutError):
+            except (asyncio.TimeoutError, TimeoutError, AssertionError):
+                # MOR-3938: await_until names its expiry with an
+                # AssertionError; a stalled startup must still cancel the
+                # run task instead of leaking it.
                 run_task.cancel()
                 pytest.fail("serve did not start after the normal connect")
             server = _BusyHoldWebServer.instances[-1]
@@ -4396,7 +4411,10 @@ class TestLiveOwnerExitCode:
                     ),
                     timeout=10.0,
                 )
-            except (asyncio.TimeoutError, TimeoutError):
+            except (asyncio.TimeoutError, TimeoutError, AssertionError):
+                # MOR-3938: await_until names its expiry with an
+                # AssertionError; a stalled startup must still cancel the
+                # run task instead of leaking it.
                 run_task.cancel()
                 pytest.fail("serve did not start while the connect held busy")
             result = await asyncio.wait_for(run_task, timeout=30.0)

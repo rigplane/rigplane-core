@@ -3459,6 +3459,22 @@ def load_rig(path: Path) -> RigConfig:
             defaults_raw = raw_rule.get("defaults", [])
             table_raw = raw_rule.get("table", [])
             narrow_table_raw = raw_rule.get("narrow_table", [])
+            # MOR-4442: coerce nothing silently. A float, bool or string in
+            # ``narrow_table`` used to pass through ``int()`` (so ``1800.9``
+            # became ``1800`` and ``true`` became ``1``) and a scalar raised
+            # a raw TypeError; both are load errors naming the table. Falsy
+            # scalars are values too (``0``, ``false``, ``0.0`` and ``''``
+            # used to skip this check: the numbers died on iteration and the
+            # empty string loaded as an empty table), so the type check is
+            # unconditional; an empty list stays a valid empty narrow table.
+            if not isinstance(narrow_table_raw, list) or any(
+                isinstance(value, bool) or not isinstance(value, int)
+                for value in narrow_table_raw
+            ):
+                raise RigLoadError(
+                    f"{filename}: [filters.width.{mode_key}].narrow_table "
+                    "must be a list of integers"
+                )
             filter_config[str(mode_key).upper()] = FilterWidthRule(
                 defaults=tuple(int(value) for value in defaults_raw),
                 narrow_table=tuple(int(v) for v in narrow_table_raw),
