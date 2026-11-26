@@ -631,9 +631,10 @@ async def test_receive_recoverable_io_error_returns_next_valid_frame() -> None:
     link, reader, _ = await _make_link()
     try:
         reader.push_error(OSError("temporary serial read failure"))
-        reader.push(b"\xfe\xfe\x98\xe0\x03\xfd")
+        response = b"\xfe\xfe\xe0\x98\x03\x00\x40\x07\x14\x00\xfd"
+        reader.push(response)
         # Timeout must exceed backoff (0.5s in _read_once) to allow recovery
-        assert await link.receive(timeout=1.0) == b"\xfe\xfe\x98\xe0\x03\xfd"
+        assert await link.receive(timeout=1.0) == response
         assert link.connected is True
         assert link.healthy is True
     finally:

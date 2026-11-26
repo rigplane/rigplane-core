@@ -10,6 +10,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
+from ....commands import CONTROLLER_ADDR, parse_civ_frame
 from ....core.exceptions import CommandError
 from ....core.serial_health import SerialLinkHealth
 from ....core.serial_open import open_serial_port
@@ -520,7 +521,17 @@ class SerialCivLink:
             if chunk is None:
                 return None
             for parsed in self._codec.feed(chunk):
-                self._link_health.record_response()
+                try:
+                    frame = parse_civ_frame(parsed)
+                except ValueError:
+                    pass
+                else:
+                    if (
+                        frame.to_addr in (CONTROLLER_ADDR, 0x00)
+                        and 0x00 < frame.from_addr < CONTROLLER_ADDR
+                    ):
+                        self._healthy = True
+                        self._link_health.record_response()
                 self._frames.put_nowait(parsed)
 
     async def _read_once(self) -> bytes | None:
@@ -566,7 +577,6 @@ class SerialCivLink:
             self._link_health.record_failure()
             return None
 
-        self._healthy = True
         return bytes(chunk)
 
     async def _writer_loop(

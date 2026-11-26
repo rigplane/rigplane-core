@@ -167,10 +167,17 @@ class CatQueryResponse(str):
     """A normal CAT reply retaining the currency of its wire exchange."""
 
     is_current: Callable[[], bool]
+    record_response: Callable[[], None]
 
-    def __new__(cls, response: str, is_current: Callable[[], bool]) -> CatQueryResponse:
+    def __new__(
+        cls,
+        response: str,
+        is_current: Callable[[], bool],
+        record_response: Callable[[], None],
+    ) -> CatQueryResponse:
         reply = super().__new__(cls, response)
         reply.is_current = is_current
+        reply.record_response = record_response
         return reply
 
 
@@ -612,12 +619,16 @@ class YaesuCatTransport:
 
             def response_is_current() -> bool:
                 return (
-                    self.connected
+                    self.io_available
                     and self._writer is writer
                     and self._stats.reconnects == reconnects
                     and self._capture_provider_generation is capture
                     and (capture is None or capture() == generation)
                 )
+
+            def record_response() -> None:
+                if response_is_current():
+                    self._link_health.record_response()
 
             await self._raw_write(command, is_current=is_current)
             self._stats.queries += 1
@@ -673,10 +684,8 @@ class YaesuCatTransport:
                     continue
 
                 # ── Match! ──
-                if self._writer is writer and self._stats.reconnects == reconnects:
-                    self._link_health.record_response()
                 self._stats.record_success()
-                return CatQueryResponse(response, response_is_current)
+                return CatQueryResponse(response, response_is_current, record_response)
 
             # Exhausted all attempts
             self._stats.record_error(f"no match for {command}")

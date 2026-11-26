@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from types import SimpleNamespace
 from typing import Any
 
@@ -31,7 +32,7 @@ from rigplane.runtime.managed_tx_state import (
     ActuationResult,
     EffectToken,
 )
-from rigplane.testing.timing import VirtualClock
+from rigplane.testing.timing import VirtualClock, await_until
 from rigplane.web import runtime_helpers
 from rigplane.web.server import WebConfig, WebServer
 
@@ -69,6 +70,7 @@ class _Cable:
         self.writer: _Writer | None = None
         self.peer = _FakeSerialCivLink(model_id=0x94)
         self.respond = True
+        self.reply_overrides: dict[bytes, bytes] = {}
         self.transmitting = False
 
     async def open(self, *args: Any, **kwargs: Any) -> tuple[Any, Any]:
@@ -129,6 +131,7 @@ class _Writer:
                     b"FA;": b"FA014074000;",
                     b"TX;": b"TX1;" if self.cable.transmitting else b"TX0;",
                 }.get(payload)
+                response = self.cable.reply_overrides.get(payload, response)
                 if response is not None:
                     self.reader.feed_data(response)
         self.pending.clear()
@@ -156,6 +159,39 @@ async def _finish(clock: VirtualClock, operation: Any) -> Any:
         await asyncio.gather(task, return_exceptions=True)
 
 
+async def _api_json(server: WebServer, path: str = "/api/v1/info") -> dict[str, Any]:
+    async def request() -> dict[str, Any]:
+        reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
+        try:
+            writer.write(
+                f"GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+                "Content-Length: 0\r\nConnection: close\r\n\r\n".encode("ascii")
+            )
+            await writer.drain()
+            headers = await reader.readuntil(b"\r\n\r\n")
+            assert headers.split(b"\r\n", 1)[0] == b"HTTP/1.1 200 OK"
+            length = next(
+                int(line.split(b":", 1)[1])
+                for line in headers.split(b"\r\n")
+                if line.lower().startswith(b"content-length:")
+            )
+            return json.loads(await reader.readexactly(length))
+        finally:
+            writer.close()
+            await writer.wait_closed()
+
+    task = asyncio.create_task(request())
+    try:
+        await await_until(
+            task.done, interval=0.001, description="serial health HTTP response"
+        )
+        return task.result()
+    finally:
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("personality", ["icom", "yaesu"])
 @pytest.mark.parametrize("failure", ["write", "read", "eof"])
@@ -167,8 +203,6 @@ async def test_serial_loss_reaches_public_state_and_recovers(
 ) -> None:
     virtual_clock = serial_clock
     cable = _Cable(personality)
-    poller: YaesuCatPoller | None = None
-    poll_task: asyncio.Task[None] | None = None
     if personality == "icom":
         link = SerialCivLink(
             device="COM3",
@@ -187,12 +221,22 @@ async def test_serial_loss_reaches_public_state_and_recovers(
             device="COM3", profile="ftx1", audio_driver=FakeAudioDriver()
         )
 
-    server = WebServer(radio, WebConfig())
+    server = WebServer(
+        radio,
+        WebConfig(host="127.0.0.1", port=0, discovery=False, read_only=True),
+    )
     try:
         await _finish(virtual_clock, radio.connect())
-        initial = server.build_public_state()
+        await _finish(virtual_clock, server.start())
+        if personality == "yaesu":
+            assert isinstance(server._state_poller, YaesuCatPoller)
+        else:
+            assert server._radio_poller is not None
+        initial = await _api_json(server)
         assert initial["connection"]["controlConnected"] is True
-        assert initial["radioHealth"]["readiness"] == "ready"
+        assert initial["connection"]["radioReady"] is True
+        initial_state = await _api_json(server, "/api/v1/state")
+        assert initial_state["radioHealth"]["readiness"] == "ready"
 
         cable.present = False
         if failure == "read":
@@ -206,64 +250,151 @@ async def test_serial_loss_reaches_public_state_and_recovers(
                         virtual_clock, link.send_written(b"\xfe\xfe\x94\xe0\x03\xfd")
                     )
         else:
-            if failure != "write":
-                with pytest.raises(cat_transport.CatTransportError):
-                    await _finish(virtual_clock, radio._transport.readline())
-            else:
+            if failure == "write":
                 with pytest.raises(cat_transport.CatTransportError):
                     await radio._transport.query("FA;")
 
         if failure == "write":
-            immediate = server.build_public_state()
+            immediate = await _api_json(server)
             assert immediate["connection"]["controlConnected"] is False
-            assert immediate["radioHealth"]["radioLink"] == "reconnecting"
-            assert immediate["radioHealth"]["readiness"] != "ready"
+            assert immediate["connection"]["radioReady"] is False
 
-        if personality == "yaesu":
-            poller = YaesuCatPoller(radio)
-            poller._paused.set()
-
-            async def poll() -> None:
-                await radio._transport.query("FA;")
-
-            poll_task = asyncio.create_task(poller._run_poll_cycle("fast", poll, 0.2))
-
-        # One existing Icom watchdog tick / projection poll, with no real sleep.
+        # The server owns the production poller; no recovery coroutine is replaced.
         await virtual_clock.elapse(0.2)
         for _ in range(120):
-            state = server.build_public_state()
+            state = await _api_json(server)
             assert state["connection"]["controlConnected"] is False
             assert state["connection"]["rigConnected"] is False
-            assert state["radioHealth"]["radioLink"] == "reconnecting"
-            assert state["radioHealth"]["readiness"] != "ready"
+            assert state["connection"]["radioReady"] is False
+            public_state = await _api_json(server, "/api/v1/state")
+            assert public_state["radioHealth"]["radioLink"] == "reconnecting"
+            assert public_state["radioHealth"]["readiness"] != "ready"
             await virtual_clock.elapse(0.2)
 
         previous_opens = cable.opens
         cable.present = True
         for _ in range(60):
             await virtual_clock.elapse(0.2)
-            recovered = server.build_public_state()
-            if recovered["radioHealth"]["readiness"] == "ready":
+            recovered = await _api_json(server)
+            if recovered["connection"]["radioReady"] is True:
                 break
         assert cable.opens > previous_opens
         assert recovered["connection"]["controlConnected"] is True
         assert recovered["connection"]["rigConnected"] is True
-        assert recovered["radioHealth"]["radioLink"] == "connected"
-        assert recovered["radioHealth"]["readiness"] == "ready"
-        if poll_task is not None:
-            poll_task.cancel()
-            await asyncio.gather(poll_task, return_exceptions=True)
+        assert recovered["connection"]["radioReady"] is True
+        recovered_state = await _api_json(server, "/api/v1/state")
+        assert recovered_state["radioHealth"]["radioLink"] == "connected"
+        assert recovered_state["radioHealth"]["readiness"] == "ready"
         await _finish(virtual_clock, radio.disconnect())
-        stopped = server.build_public_state()
-        assert stopped["connection"]["controlConnected"] is False
-        assert stopped["radioHealth"]["radioLink"] != "reconnecting"
+        server.note_operator_disconnect()
+        stopped_info = await _api_json(server)
+        assert stopped_info["connection"]["controlConnected"] is False
+        stopped_state = await _api_json(server, "/api/v1/state")
+        assert stopped_state["connection"]["controlConnected"] is False
+        assert stopped_state["radioHealth"]["radioLink"] != "reconnecting"
     finally:
-        if poll_task is not None:
-            poll_task.cancel()
-            await asyncio.gather(poll_task, return_exceptions=True)
-        if poller is not None:
-            await poller.stop()
-        await _finish(virtual_clock, radio.disconnect())
+        try:
+            await _finish(virtual_clock, server.stop())
+        finally:
+            await _finish(virtual_clock, radio.disconnect())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "noise",
+    [
+        b"garbage",
+        b"\xfe\xfe\xfd",
+        b"\xfe\xfe\xe0\x94\xfd",
+        b"\xfe\xfe\x94\xe0\x03\xfd",
+        b"\xfe\xfe\xe1\x94\x03\x00\x40\x07\x14\x00\xfd",
+        b"\xfe\xfe\xe0\xe1\x03\x00\x40\x07\x14\x00\xfd",
+        b"\xfe\xfe\xe0\x94\x03\x00\x40",
+    ],
+    ids=[
+        "garbage",
+        "short-frame",
+        "no-command",
+        "echo",
+        "other-destination",
+        "controller-source",
+        "partial",
+    ],
+)
+async def test_icom_recovery_requires_a_parsed_radio_frame(
+    noise: bytes, serial_clock: VirtualClock
+) -> None:
+    cable = _Cable("icom")
+    cable.respond = False
+    link = SerialCivLink(
+        device="COM3", open_serial_connection=cable.open, require_optional_deps=False
+    )
+    await link.connect()
+    try:
+        writer = cable.writer
+        assert writer is not None
+        writer.fail_next = True
+        with pytest.raises(OSError, match="transient"):
+            await _finish(serial_clock, link.send_written(b"\xfe\xfe\x94\xe0\x03\xfd"))
+        assert link.connected is False
+        cable.reader.feed_data(noise)
+        try:
+            await _finish(serial_clock, link.receive(timeout=0.3))
+        except serial_civ_link.SerialFrameTimeoutError:
+            pass
+        assert link.connected is False
+        assert link.healthy is False
+
+        valid = b"\xfe\xfe\xe0\x94\x03\x00\x40\x07\x14\x00\xfd"
+        cable.reader.feed_data(valid)
+        assert await _finish(serial_clock, link.receive(timeout=0.3)) == valid
+        assert link.connected is True
+        assert link.healthy is True
+        assert cable.opens == 1
+    finally:
+        await link.disconnect()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "noise",
+    [b"FA;", b"garbage;", b"FAgarbage;", b"FA123;", b"FA\xff;", b"FB014074000;"],
+    ids=[
+        "echo",
+        "garbage",
+        "matching-prefix-garbage",
+        "short-value",
+        "non-ascii",
+        "other-query",
+    ],
+)
+async def test_yaesu_recovery_requires_a_parsed_matching_reply(
+    noise: bytes,
+    serial_clock: VirtualClock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cable = _Cable("yaesu")
+    monkeypatch.setattr(cat_transport, "open_serial_port", cable.open)
+    radio = YaesuCatRadio(device="COM3", profile="ftx1", audio_driver=FakeAudioDriver())
+    await radio._transport.connect()
+    try:
+        writer = cable.writer
+        assert writer is not None
+        writer.fail_next = True
+        with pytest.raises(cat_transport.CatTransportError, match="transient"):
+            await _finish(serial_clock, radio._transport._raw_write("FA;"))
+        assert radio.control_connected is False
+        cable.reply_overrides[b"FA;"] = noise
+        with pytest.raises((cat_transport.CatTransportError, ValueError)):
+            await _finish(serial_clock, radio.get_freq())
+        assert radio.control_connected is False
+
+        cable.reply_overrides[b"FA;"] = b"FA014074000;"
+        assert await _finish(serial_clock, radio.get_freq()) == 14_074_000
+        assert radio.control_connected is True
+        assert cable.opens == 1
+    finally:
+        await radio._transport.close()
 
 
 @pytest.mark.parametrize("personality", ["icom", "yaesu"])

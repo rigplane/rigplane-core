@@ -1569,6 +1569,8 @@ class YaesuCatRadio:
             and semantic_valid
             and self._identity_generation == identity_generation
         ):
+            if isinstance(raw, CatQueryResponse):
+                raw.record_response()
             self._transport.last_valid_frame_monotonic = time.monotonic()
         return result
 
