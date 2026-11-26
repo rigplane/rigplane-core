@@ -118,6 +118,7 @@ __all__ = [
     "IceServer",
     "IfKind",
     "WindowsAdapterFacts",
+    "apply_ice_gather_scope",
     "apply_ice_gathering_policy",
     "classify_linux_interface",
     "classify_macos_interface",
@@ -902,6 +903,16 @@ _active_policy: contextvars.ContextVar[IceGatheringPolicy | None] = (
     contextvars.ContextVar("rigplane_ice_gathering_policy", default=None)
 )
 
+#: The live inner gather calls of the current negotiation, or ``None``
+#: outside one. Each ``negotiate()`` publishes its session's set for the
+#: duration of its gathering; the hook registers every shielded component
+#: call it starts (removed on completion) so the session close can await
+#: them before ``pc.close()``. ``None`` means "some other aioice user":
+#: the hook awaits bare, exactly like the original (MOR-4671).
+_active_gather_scope: contextvars.ContextVar[set[asyncio.Task[Any]] | None] = (
+    contextvars.ContextVar("rigplane_ice_gather_scope", default=None)
+)
+
 #: Whether the aioice hooks are installed. Set once, never cleared: the
 #: hooks are process-wide and stay installed for the process lifetime.
 _installed: bool = False
@@ -1014,6 +1025,35 @@ def install_ice_gathering_policy() -> None:
             return addresses
         return selected
 
+    async def _await_component(call: Any) -> Any:
+        """Await one bounded component call, tracked under the live scope.
+
+        Inside a Core ``negotiate()`` the call runs shielded and stays
+        registered in the scope until DONE: an outer cancellation (a close
+        racing the gather) then lets the inner wait settle its STUN/TURN
+        grandchildren instead of detaching them, and the session close
+        awaits the registered calls before ``pc.close()`` so no retry
+        timer fires on a closed transport (MOR-4671). Registration is
+        removed by a done-callback, so a cancelled hook never loses a
+        still-running call. Outside a scope the call is awaited bare,
+        exactly like the original.
+        """
+        scope = _active_gather_scope.get()
+        if scope is None:
+            return await call
+
+        def release_component(done: asyncio.Task[Any]) -> None:
+            # The shield waiter may already be cancelled and close may still be
+            # draining handler tasks. Retrieve the result before releasing ownership.
+            if not done.cancelled():
+                done.exception()
+            scope.discard(done)
+
+        inner: asyncio.Task[Any] = asyncio.ensure_future(call)
+        scope.add(inner)
+        inner.add_done_callback(release_component)
+        return await asyncio.shield(inner)
+
     async def _bounded_component_candidates(
         self: Any, component: int, addresses: list[str], timeout: int = 5
     ) -> Any:
@@ -1024,7 +1064,11 @@ def install_ice_gathering_policy() -> None:
         try:
             infos = _enumerate_local_addresses()
         except Exception:
-            return await original_component(self, component, addresses, timeout=bound)
+            # Same tracking as the normal path: a close racing this
+            # fallback gather must settle it before pc.close() (MOR-4671).
+            return await _await_component(
+                original_component(self, component, addresses, timeout=bound)
+            )
         default_ips = {info.ip for info in infos if info.is_default_route}
         first = [addr for addr in addresses if addr in default_ips]
         rest = [addr for addr in addresses if addr not in default_ips]
@@ -1032,7 +1076,9 @@ def install_ice_gathering_policy() -> None:
             # No default-route address among the candidates (or nothing
             # beyond it): today's behaviour — every kept address may query
             # STUN/TURN, bounded by the cap.
-            return await original_component(self, component, addresses, timeout=bound)
+            return await _await_component(
+                original_component(self, component, addresses, timeout=bound)
+            )
         # Server-reflexive and relayed candidates come from the
         # default-route address(es) only: aioice queries STUN from EVERY
         # IPv4 host address it binds, so one interface that cannot reach
@@ -1050,15 +1096,15 @@ def install_ice_gathering_policy() -> None:
         # per-Connection lock serialises them while a policy is active.
         lock = _gather_lock(self)
         async with lock:
-            first_candidates = await original_component(
-                self, component, first, timeout=bound
+            first_candidates = await _await_component(
+                original_component(self, component, first, timeout=bound)
             )
             saved = (self.stun_server, self.turn_server)
             self.stun_server = None
             self.turn_server = None
             try:
-                rest_candidates = await original_component(
-                    self, component, rest, timeout=bound
+                rest_candidates = await _await_component(
+                    original_component(self, component, rest, timeout=bound)
                 )
             finally:
                 self.stun_server, self.turn_server = saved
@@ -1109,3 +1155,22 @@ def apply_ice_gathering_policy(
         yield
     finally:
         _active_policy.reset(token)
+
+
+@contextlib.contextmanager
+def apply_ice_gather_scope(
+    inflight: set[asyncio.Task[Any]],
+) -> Iterator[None]:
+    """Publish the live-gather set for the current negotiation (MOR-4671).
+
+    Each ``negotiate()`` publishes its session's set for the duration of
+    its gathering; the hook registers every shielded component call there
+    (removed on completion) so the session close can await them before
+    ``pc.close()``. Only the matching ``negotiate()`` task sees the value;
+    concurrent negotiations keep their own.
+    """
+    token = _active_gather_scope.set(inflight)
+    try:
+        yield
+    finally:
+        _active_gather_scope.reset(token)

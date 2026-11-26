@@ -54,7 +54,8 @@ scope = [
     "pillow>=10.0",
 ]
 dsp = ["scipy>=1.11"]
-webrtc = ["aiortc>=1.9"]
+# aioice must cancel and settle connectivity checks before closing their sockets.
+webrtc = ["aioice>=0.13.0", "aiortc>=1.9"]
 tls = ["cryptography>=41.0"]
 # SoapySDR Python bindings have no official PyPI wheel — they come from the
 # system (`python3-soapysdr` on Debian/Raspberry Pi OS) or a SoapySDR build.
