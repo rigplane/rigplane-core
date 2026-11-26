@@ -1,3 +1,10 @@
+// Python companion (producer side of the same documents): the backend responses and the
+// WebSocket are replaced here (vi.mock of $lib/transport/http-client, vi.stubGlobal of
+// WebSocket) with the shared golden documents `micGainCapabilities`, `micGainRefused` and
+// `micGainRecovered`; tests/web/test_state_wire_goldens.py::test_ftx1_mic_gain_replay_publishes_refusal_and_recovery
+// produces the scenario from the real Python producer and
+// tests/web/test_state_wire_goldens.py::test_committed_golden_is_current fails when the committed
+// golden drifts from what the producer emits.
 import { flushSync, mount, tick, unmount } from 'svelte';
 import { expect, it, vi } from 'vitest';
 import { webglFixture } from '$lib/renderers/__tests__/webgl-fixture';
