@@ -131,6 +131,33 @@ describe('apiFetch', () => {
     expect(stub).toHaveBeenCalledWith(path, init);
   });
 
+  it.each([
+    { 'x-rigplane-controller': 'caller-key', 'Content-Type': 'application/json' },
+    new Headers({ 'X-RigPlane-Controller': 'caller-key' }),
+    [['X-RIGPLANE-CONTROLLER', 'caller-key']],
+  ] satisfies HeadersInit[])('lets an explicit caller controller header win and passes init through', async (headers) => {
+    vi.spyOn(controllerClient, 'headers').mockReturnValue({ 'X-RigPlane-Controller': controllerKey });
+    const stub = vi.fn(async () => new Response('{}'));
+    vi.stubGlobal('fetch', stub);
+    const init: RequestInit = { method: 'POST', headers, body: '{}' };
+    await apiFetch('/api/v1/managed-transmit/command', init);
+    const [, sent] = stub.mock.calls[0] as unknown as [string, RequestInit];
+    expect(sent).toBe(init);
+    expect(controllerClient.headers).not.toHaveBeenCalled();
+  });
+
+  it('keeps a plain-object headers shape when attaching the credential', async () => {
+    vi.spyOn(controllerClient, 'headers').mockReturnValue({ 'X-RigPlane-Controller': controllerKey });
+    const stub = vi.fn(async () => new Response('{}'));
+    vi.stubGlobal('fetch', stub);
+    await apiFetch('/api/v1/eibi/fetch', { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+    const [, sent] = stub.mock.calls[0] as unknown as [string, RequestInit];
+    expect(sent.headers).toEqual({
+      'Content-Type': 'application/json',
+      'X-RigPlane-Controller': controllerKey,
+    });
+  });
+
   it('preserves the captured release credential after the current session is gone', async () => {
     vi.spyOn(controllerClient, 'headers').mockReturnValue({});
     const stub = vi.fn(async () => new Response('{}'));
