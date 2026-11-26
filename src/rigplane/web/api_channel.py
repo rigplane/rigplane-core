@@ -267,6 +267,9 @@ class ApiWirePayload:
 #: change cannot drift past its exported contract.
 _WIRE_FIELD_TYPES: Final[Mapping[str, str]] = {
     "str": "string",
+    # ControllerRole is Literal["primary", "auxiliary"] — a string on the
+    # wire; the values are documented on the contract type itself.
+    "ControllerRole": "string",
     "str | None": "string | null",
     "int": "integer",
     "bool": "boolean",

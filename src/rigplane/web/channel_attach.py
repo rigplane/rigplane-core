@@ -21,20 +21,24 @@ control attach lands or the 5 s attach bound closes the channel.
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Final, Literal, Self, get_args
+from typing import Final, Literal, Self, cast, get_args
 
 from ..runtime.controller_authority import ControllerError
 
 __all__ = [
     "ATTACH_ACK_KINDS",
     "ATTACH_ACK_VERSION",
+    "CONTROL_WS_QUERY_KEYS",
     "DATA_CHANNELS",
     "RIGCTL_MAX_FRAME_BYTES",
     "RIGCTL_VERSIONS",
     "ChannelAttachedAck",
     "ChannelKind",
     "ClientChannelParams",
+    "ControlWsQuery",
+    "ControllerRole",
     "DataChannelLabel",
     "DataChannelSpec",
     "FrameCarriage",
@@ -222,6 +226,93 @@ def decode_rigctl_attach_result(
 #: concrete type; the adapter states which transport it is.
 TransportKind = Literal["ws", "datachannel"]
 
+#: Controller roles of the control-WebSocket query contract.
+ControllerRole = Literal["primary", "auxiliary"]
+
+#: The query keys of the control WebSocket (``GET /api/v1/ws``): the
+#: published allowlist (MOR-4252). Core's own parse stays lenient for
+#: released clients — it ignores keys outside this set — but a gateway
+#: may refuse them; either way this set is the single source both sides
+#: track. Add a key here AND in :class:`ControlWsQuery` when the
+#: endpoint grows one; ``tests/contracts/test_query_contracts.py``
+#: fails when the two drift apart.
+CONTROL_WS_QUERY_KEYS: Final[frozenset[str]] = frozenset(
+    {"controller_role", "state_delta"}
+)
+
+
+@dataclass(frozen=True, slots=True)
+class ControlWsQuery:
+    """The published query contract of ``GET /api/v1/ws`` (MOR-4252).
+
+    One definition, two acceptance levels:
+
+    * :meth:`accept` — Core's own parse, kept lenient for released
+      clients: keys outside :data:`CONTROL_WS_QUERY_KEYS` are ignored, a
+      repeated ``controller_role`` is refused
+      (``ControllerError("invalid_request", 400)``), and any
+      ``state_delta`` value other than exactly ``"2"`` selects delta
+      version 1 (a ``state_delta=1`` client degrades, it is not
+      refused). The role value itself is validated at ticket attach
+      (``ControllerAuthority.attach`` refuses anything outside
+      ``primary``/``auxiliary`` with a 400), exactly as the upgrade path
+      always did.
+    * :meth:`parse` — the strict contract a gateway may enforce: only
+      :data:`CONTROL_WS_QUERY_KEYS`, each key at most once,
+      ``controller_role`` in ``{"primary", "auxiliary"}`` and
+      ``state_delta`` exactly ``"2"`` when present. Returns ``None`` on
+      any violation.
+
+    The strict parse still defaults an absent ``controller_role`` to
+    ``"primary"`` and an absent ``state_delta`` to version 1, because
+    that is what Core accepts; a gateway that requires either key (or a
+    session) applies a deliberately stricter policy on top.
+    """
+
+    controller_role: ControllerRole = "primary"
+    state_delta: int = 1
+
+    @staticmethod
+    def state_delta_version(query: Mapping[str, list[str]] | None) -> int:
+        """``2`` when the query carries exactly ``state_delta=2``, else ``1``.
+
+        Every WebSocket path reads ``state_delta`` this way, not only the
+        control path.
+        """
+        return 2 if (query or {}).get("state_delta") == ["2"] else 1
+
+    @classmethod
+    def accept(cls, query: Mapping[str, list[str]] | None) -> Self:
+        """Core's own acceptance of a ``/api/v1/ws`` query (lenient)."""
+        q = query or {}
+        role = q.get("controller_role", ["primary"])
+        if len(role) != 1:
+            raise ControllerError("invalid_request", 400)
+        return cls(
+            # The value is validated against ControllerRole at ticket
+            # attach; the parse keeps the historical pass-through so a
+            # sessionless local-mode channel is not refused early.
+            controller_role=cast(ControllerRole, role[0]),
+            state_delta=cls.state_delta_version(q),
+        )
+
+    @classmethod
+    def parse(cls, query: Mapping[str, list[str]] | None) -> Self | None:
+        """The strict gateway-grade contract; ``None`` means refuse."""
+        q = query or {}
+        if any(key not in CONTROL_WS_QUERY_KEYS for key in q):
+            return None
+        role = q.get("controller_role", ["primary"])
+        if len(role) != 1 or role[0] not in get_args(ControllerRole):
+            return None
+        delta = q.get("state_delta", [])
+        if len(delta) > 1 or (delta and delta[0] != "2"):
+            return None
+        return cls(
+            controller_role=cast(ControllerRole, role[0]),
+            state_delta=2 if delta else 1,
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class ClientChannelParams:
@@ -239,7 +330,7 @@ class ClientChannelParams:
     """
 
     controller_key: str | None
-    controller_role: str = "primary"
+    controller_role: ControllerRole = "primary"
     state_delta: int = 1
     rigctl_version: int | None = None
 
@@ -252,7 +343,9 @@ class ClientChannelParams:
     ) -> Self:
         """Parse WebSocket query + pre-filtered protocol list.
 
-        Exactly the historical upgrade rules: at most one
+        Exactly the historical upgrade rules, parsed through
+        :class:`ControlWsQuery` — the published contract
+        (:data:`CONTROL_WS_QUERY_KEYS`) is the single source: at most one
         ``rigplane-controller-v1.*`` protocol is accepted (more than one
         is an ambiguous key), the ``controller_role`` query value must be
         singular on ``/api/v1/ws`` (``"auxiliary"`` is forced everywhere
@@ -265,16 +358,16 @@ class ClientChannelParams:
         if len(protocols) > 1:
             raise ControllerError("controller_invalid")
         if path == "/api/v1/ws":
-            role = (query or {}).get("controller_role", ["primary"])
-            if len(role) != 1:
-                raise ControllerError("invalid_request", 400)
-            role_value = role[0]
+            ws_query = ControlWsQuery.accept(query)
+            role_value = ws_query.controller_role
+            state_delta = ws_query.state_delta
         else:
             role_value = "auxiliary"
+            state_delta = ControlWsQuery.state_delta_version(query)
         return cls(
             controller_key=protocols[0].split(".", 1)[1] if protocols else None,
             controller_role=role_value,
-            state_delta=2 if (query or {}).get("state_delta") == ["2"] else 1,
+            state_delta=state_delta,
         )
 
     @classmethod
@@ -333,7 +426,9 @@ class ClientChannelParams:
             raise ValueError("attach frame 'state_delta' must be 1 or 2")
         return cls(
             controller_key=key,
-            controller_role=role,
+            # Validated against ControllerRole at ticket attach, exactly
+            # like the WebSocket query value (see ControlWsQuery.accept).
+            controller_role=cast(ControllerRole, role),
             state_delta=raw_delta,
             rigctl_version=rigctl_version,
         )

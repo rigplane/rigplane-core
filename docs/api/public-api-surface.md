@@ -385,6 +385,14 @@ without a major version.
   payloads that skip unknown fields and unknown frame types,
   `API_SEND_HIGH_WATER_BYTES`: frames of at most 16 KB in both directions,
   at most 32 KB buffered before a sender waits).
+- HTTP/WS query contracts (MOR-4252): `CONTROL_WS_QUERY_KEYS`,
+  `ControllerRole` and `ControlWsQuery` for the `GET /api/v1/ws` query,
+  `MEMORIES_QUERY_KEYS` and `MemoriesQuery` for the
+  `GET /api/v1/memories` query. Each contract type carries Core's own
+  lenient parse (`accept`) and the strict allowlist/cardinality parse a
+  gateway may enforce (`parse`); Core's own handlers consume the same
+  definitions (canonical modules `rigplane.web.channel_attach` and
+  `rigplane.web.memory_api`). See `docs/api/web.md` § "Query contracts".
 
 Example (valid, lazy-loaded):
 

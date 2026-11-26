@@ -9,7 +9,8 @@ DTO (``frontend/src/lib/types/memory-list.ts``) declares the same fields.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Literal, NotRequired, TypedDict
+from dataclasses import dataclass
+from typing import Final, Literal, NotRequired, Self, TypedDict
 
 from rigplane.core.types import (
     MemoryBlock,
@@ -95,14 +96,72 @@ class MemoryPagePayload(TypedDict):
     entries: list[MemoryEntryPayload]
 
 
-def _int_param(query: Mapping[str, list[str]], name: str, default: int) -> int:
-    raw = query.get(name)
-    if not raw:
-        return default
-    try:
-        return int(raw[0])
-    except ValueError:
-        raise ValueError(f"{name} must be an integer") from None
+#: The query keys of ``GET /api/v1/memories``: the published allowlist
+#: (MOR-4252). Core's own parse stays lenient for released clients — it
+#: ignores keys outside this set — but a gateway may refuse them; either
+#: way this set is the single source both sides track. Add a key here
+#: AND in :class:`MemoriesQuery` when the endpoint grows one;
+#: ``tests/contracts/test_query_contracts.py`` fails when the two drift
+#: apart.
+MEMORIES_QUERY_KEYS: Final[frozenset[str]] = frozenset({"count", "group", "start"})
+
+
+@dataclass(frozen=True, slots=True)
+class MemoriesQuery:
+    """The published query contract of ``GET /api/v1/memories`` (MOR-4252).
+
+    One definition, two acceptance levels:
+
+    * :meth:`accept` — Core's own parse, kept lenient for released
+      clients: keys outside :data:`MEMORIES_QUERY_KEYS` are ignored, a
+      repeated key keeps its first value, and a non-integer value is a
+      ``ValueError``. ``None`` fields take the server's defaults
+      (the profile's first group/channel, ``DEFAULT_PAGE``).
+    * :meth:`parse` — the strict contract a gateway may enforce: only
+      :data:`MEMORIES_QUERY_KEYS`, each key at most once, every value an
+      integer, and ``count`` within ``1..MAX_PAGE``. Returns ``None`` on
+      any violation. The ``group``/``start`` bounds depend on the radio
+      profile, which only the producer knows; they stay with
+      :func:`parse_memory_query`.
+    """
+
+    group: int | None = None
+    start: int | None = None
+    count: int | None = None
+
+    @staticmethod
+    def _int(values: list[str], name: str) -> int:
+        try:
+            return int(values[0])
+        except ValueError:
+            raise ValueError(f"{name} must be an integer") from None
+
+    @classmethod
+    def accept(cls, query: Mapping[str, list[str]]) -> Self:
+        """Core's own acceptance (lenient; see the class docstring)."""
+        return cls(
+            group=(cls._int(raw, "group") if (raw := query.get("group")) else None),
+            start=(cls._int(raw, "start") if (raw := query.get("start")) else None),
+            count=(cls._int(raw, "count") if (raw := query.get("count")) else None),
+        )
+
+    @classmethod
+    def parse(cls, query: Mapping[str, list[str]]) -> Self | None:
+        """The strict gateway-grade contract; ``None`` means refuse."""
+        if any(key not in MEMORIES_QUERY_KEYS for key in query):
+            return None
+        values: dict[str, int] = {}
+        for name, raw in query.items():
+            if len(raw) != 1:
+                return None
+            try:
+                values[name] = int(raw[0])
+            except ValueError:
+                return None
+        count = values.get("count")
+        if count is not None and not 1 <= count <= MAX_PAGE:
+            return None
+        return cls(group=values.get("group"), start=values.get("start"), count=count)
 
 
 def parse_memory_query(
@@ -110,13 +169,16 @@ def parse_memory_query(
 ) -> tuple[int, list[int]]:
     """Return ``(group, channels)`` for ``?group=&start=&count=``.
 
-    Defaults to the first group, the first channel and ``DEFAULT_PAGE``
-    channels; the page is clipped at the profile's last channel. Anything
-    outside the profile's bounds is a ``ValueError``.
+    Parses through :class:`MemoriesQuery` — the published contract
+    (:data:`MEMORIES_QUERY_KEYS`) is the single source — then applies the
+    profile's bounds. Defaults to the first group, the first channel and
+    ``DEFAULT_PAGE`` channels; the page is clipped at the profile's last
+    channel. Anything outside the profile's bounds is a ``ValueError``.
     """
-    group = _int_param(query, "group", memory.first_group)
-    start = _int_param(query, "start", memory.first_channel)
-    count = _int_param(query, "count", DEFAULT_PAGE)
+    parsed = MemoriesQuery.accept(query)
+    group = parsed.group if parsed.group is not None else memory.first_group
+    start = parsed.start if parsed.start is not None else memory.first_channel
+    count = parsed.count if parsed.count is not None else DEFAULT_PAGE
     if not memory.first_group <= group <= memory.last_group:
         raise ValueError(
             f"group must be {memory.first_group}-{memory.last_group}, got {group}"
