@@ -1,4 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { flushSync, mount, unmount } from 'svelte';
 import { TRANSMIT_CAPABILITIES, NEVER_GUARDED, CAPABILITY_ATTRIBUTE } from '../transmit-capabilities';
 import { setLocale } from '../i18n';
@@ -22,7 +25,6 @@ import { topologyFixtures, withTxAux, withRitXit, withCwKeyer, withAntenna } fro
 import RxTxSurface from '../../semantic/RxTxSurface.svelte';
 import CwKeyerInstrumentHostFixture from '../../semantic/__tests__/fixtures/CwKeyerInstrumentHostFixture.svelte';
 import AntennaInstrumentHostFixture from '../../semantic/__tests__/fixtures/AntennaInstrumentHostFixture.svelte';
-import desktopControlsCss from '../../skins/desktop-v2/semantic-controls.css?raw';
 import RepeaterSurface from '../../semantic/RepeaterSurface.svelte';
 import ManagedTotControl from '../../components-v2/controls/ManagedTotControl.svelte';
 import TxMicProcessingControl from '../../components-v2/controls/TxMicProcessingControl.svelte';
@@ -69,14 +71,17 @@ vi.mock('../local-extensions/LocalExtensionsHost.svelte', async () =>
   import('../../components-v2/layout/__tests__/SpectrumPanelStub.svelte'));
 
 const markerSelector = `[${CAPABILITY_ATTRIBUTE}]`;
+const desktopControlsCss = readFileSync(
+  resolve(dirname(fileURLToPath(import.meta.url)), '../../skins/desktop-v2/semantic-controls.css'), 'utf8',
+);
 
 // Keep this total over the registry's type, including QA layouts and mobile.
 const layouts = {
-  'desktop-v2': true, 'sdr-test': true, 'lcd-cockpit': true, 'lcd-scope': true,
-  'peer-split': true, 'unified-instrument': true, 'panadapter-first': true,
-  'dual-receiver-cockpit': true, 'flagship-probe': true, 'dual-sdr-face': true,
-  mobile: true,
-} satisfies Record<SkinId, true>;
+  'desktop-v2': 'latch', 'sdr-test': 'latch', 'lcd-cockpit': 'latch', 'lcd-scope': 'latch',
+  'peer-split': null, 'unified-instrument': null, 'panadapter-first': null,
+  'dual-receiver-cockpit': 'latch', 'flagship-probe': 'latch', 'dual-sdr-face': null,
+  mobile: 'hold',
+} satisfies Record<SkinId, 'latch' | 'hold' | null>;
 
 const seen = new Set<string>();
 const idleTx = { phase: 'idle', intent: null, radioTx: 'off', txRisk: 'none', fault: null } as const;
@@ -108,7 +113,8 @@ beforeEach(() => {
       }])),
     },
   };
-  harness.caps = fixture.caps();
+  const caps = fixture.caps()!;
+  harness.caps = { ...caps, capabilities: [...caps.capabilities, 'vfo_swap', 'vfo_equalize'] };
   harness.tx = { ...IDLE_TX };
   harness.calls = [];
   setCapabilities(harness.caps!);
@@ -203,8 +209,14 @@ function assertLayoutIdentifiers(skin: SkinId) {
       assertCapability(control, TRANSMIT_CAPABILITIES.txSettings);
     }
   }
-  assertCapability(target.querySelector(skin === 'mobile' ? '.ptt-fab' : '.rx-tx-key'),
-    skin === 'mobile' ? TRANSMIT_CAPABILITIES.txHold : TRANSMIT_CAPABILITIES.txKey);
+  const keyMode = layouts[skin];
+  if (keyMode === null) {
+    expect(target.querySelector('.peer-split-glass')).not.toBeNull();
+    expect(target.querySelector('.rx-tx-key, .ptt-fab')).toBeNull();
+  } else {
+    assertCapability(target.querySelector(keyMode === 'hold' ? '.ptt-fab' : '.rx-tx-key'),
+      keyMode === 'hold' ? TRANSMIT_CAPABILITIES.txHold : TRANSMIT_CAPABILITIES.txKey);
+  }
 }
 
 describe('transmit capability DOM contract (MOR-4837)', () => {
@@ -531,7 +543,9 @@ describe('registry inventory harness cases', () => {
       ['equalize', TRANSMIT_CAPABILITIES.vfoTransfer],
       ['swap', TRANSMIT_CAPABILITIES.vfoTransfer],
     ] as const) {
-      assertCapability(target.querySelector(`.vfo-operation-instrument-seat[data-field="${field}"] button`), capability);
+      const controls = target.querySelectorAll(`.vfo-operation-instrument-seat[data-field="${field}"] button`);
+      expect(controls.length, field).toBeGreaterThan(0);
+      for (const control of controls) assertCapability(control, capability);
     }
     for (const field of ['dualWatch', 'activeReceiver']) {
       for (const control of target.querySelectorAll(`.vfo-operation-instrument-seat[data-field="${field}"] button`)) {
@@ -543,6 +557,7 @@ describe('registry inventory harness cases', () => {
   it('exercises split and VFO transfer in the desktop layout', async () => {
     await render('desktop-v2');
     assertCapability(target.querySelector('[data-vfo-split]'), TRANSMIT_CAPABILITIES.split);
+    assertCapability(target.querySelector('[data-vfo-equalize]'), TRANSMIT_CAPABILITIES.vfoTransfer);
     assertCapability(target.querySelector('[data-vfo-swap]'), TRANSMIT_CAPABILITIES.vfoTransfer);
   });
 });

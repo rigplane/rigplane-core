@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { parse } from 'svelte/compiler';
 import { CAPABILITY_ATTRIBUTE, CAPABILITY_DATA_KEY, TRANSMIT_CAPABILITIES, MARKED_CONTROL_HANDLERS, NON_DOM_TX_PATHS } from '../transmit-capabilities';
-import defaultKeymap from '../../../../rigs/_keyboard-default.toml?raw';
+
+const defaultKeymap = readFileSync(
+  resolve(dirname(fileURLToPath(import.meta.url)), '../../../../rigs/_keyboard-default.toml'), 'utf8',
+);
 
 const sources = import.meta.glob('../../**/*.{svelte,ts}', { query: '?raw', import: 'default', eager: true }) as Record<string, string>;
 const product = Object.entries(sources).filter(([path]) =>
