@@ -302,7 +302,7 @@ describe('the CW-keyer surface is NOT a key path (decomposition R9)', () => {
     expect([...new Set(specifiers)]).toEqual([
       '$lib/i18n', './CwKeyerInstrumentHost.svelte', '$lib/types/capabilities',
       './radio-view-model', '$lib/utils/tx-permit',
-      './pressed-of', '../primitives/reading-text', 'svelte',
+      './pressed-of', '../primitives/reading-text', '$lib/transmit-capabilities', 'svelte',
       '../primitives/control-feedback/control-feedback-presentation',
       '../primitives/scalar/committed-scalar.svelte',
       '../primitives/scalar/value-control-core',

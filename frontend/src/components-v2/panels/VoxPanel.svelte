@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { CAPABILITY_ATTRIBUTE, CAPABILITY_DATA_KEY, TRANSMIT_CAPABILITIES } from '$lib/transmit-capabilities';
   import { ValueControl } from '../controls/value-control';
   import { rawToPercentDisplay } from '../../primitives/scalar/value-control-core';
   import { HardwareButton } from '$lib/Button';
@@ -30,9 +31,10 @@
   }
 </script>
 
-<div class="panel-body">
+<div class="panel-body" {...{ [CAPABILITY_ATTRIBUTE]: TRANSMIT_CAPABILITIES.txSettings.id }}>
   <div class="toggle-row">
-    <HardwareButton indicator="edge-left" active={voxOn} color="amber" onclick={onVoxToggle}>
+    <HardwareButton indicator="edge-left" active={voxOn} color="amber" onclick={onVoxToggle}
+      data={{ [CAPABILITY_DATA_KEY]: TRANSMIT_CAPABILITIES.vox.id }}>
       VOX {voxOn ? 'ON' : 'OFF'}
     </HardwareButton>
   </div>

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { CAPABILITY_DATA_KEY, TRANSMIT_CAPABILITIES } from '$lib/transmit-capabilities';
   /**
    * ESSENTIALS panel — mobile IA chip-scroll default-active content (#839).
    * 90%-of-the-time controls: VFO ops, MODE quick, FILTER quick, AUDIO, DSP toggles.
@@ -141,13 +142,16 @@
       indicator="edge-left"
       color={vfoOps.splitActive ? 'yellow' : 'muted'}
       onclick={onSplitToggle}
+      data={{ [CAPABILITY_DATA_KEY]: TRANSMIT_CAPABILITIES.split.id }}
     >
       SPLIT
     </HardwareButton>
-    <HardwareButton indicator="edge-left" color="cyan" onclick={onSwap}>
+    <HardwareButton indicator="edge-left" color="cyan" onclick={onSwap}
+      data={{ [CAPABILITY_DATA_KEY]: TRANSMIT_CAPABILITIES.vfoTransfer.id }}>
       A↔B
     </HardwareButton>
-    <HardwareButton indicator="edge-left" color="cyan" onclick={onEqual}>
+    <HardwareButton indicator="edge-left" color="cyan" onclick={onEqual}
+      data={{ [CAPABILITY_DATA_KEY]: TRANSMIT_CAPABILITIES.vfoTransfer.id }}>
       A=B
     </HardwareButton>
   </div>

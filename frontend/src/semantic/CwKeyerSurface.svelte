@@ -132,6 +132,7 @@
 </script>
 
 <script lang="ts">
+  import { CAPABILITY_ATTRIBUTE, TRANSMIT_CAPABILITIES } from '$lib/transmit-capabilities';
   import { onDestroy, untrack } from 'svelte';
   import {
     type ControlFeedbackPresentationInput,
@@ -456,6 +457,7 @@
                  KNOWN; the gate below is untouched (rule 2). -->
             <button
               type="button" class="cw-keyer-choice"
+              {...{ [CAPABILITY_ATTRIBUTE]: TRANSMIT_CAPABILITIES.cwBreakIn.id }}
               data-testid={`cw-keyer-break-in-${decode ?? String(choice.value)}`}
               aria-pressed={cw.breakIn.reading.status === 'known'
                 ? cw.breakIn.reading.value === decode : undefined}
@@ -500,6 +502,7 @@
         || (cw.breakIn.reading.status === 'known' && cw.breakIn.reading.value === 'semi'))}
         <label
           class="cw-keyer-level" data-testid={`cw-keyer-${field}`}
+          {...{ [CAPABILITY_ATTRIBUTE]: field === 'breakInDelay' ? TRANSMIT_CAPABILITIES.cwBreakIn.id : undefined }}
           data-observed={usable(f)}
         >
           <span class="cw-keyer-name">{label}</span>
@@ -553,6 +556,7 @@
     {#if cw.reversePaddle.availability.structural}
       <button
         type="button" class="cw-keyer-toggle" data-testid="cw-keyer-reverse-paddle"
+        {...{ [CAPABILITY_ATTRIBUTE]: TRANSMIT_CAPABILITIES.txSettings.id }}
         aria-pressed={pressedOf(cw.reversePaddle)}
         disabled={!reversePaddleToggle.available}
         onclick={() => reversePaddleToggle.invoke()}

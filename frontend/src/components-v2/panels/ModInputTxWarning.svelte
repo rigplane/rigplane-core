@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { CAPABILITY_ATTRIBUTE, TRANSMIT_CAPABILITIES } from '$lib/transmit-capabilities';
   /**
    * MOD-input TX preflight warning (MOR-617).
    *
@@ -29,6 +30,7 @@
         type="button"
         class="set-lan"
         data-testid="mod-input-set-lan"
+        {...{ [CAPABILITY_ATTRIBUTE]: TRANSMIT_CAPABILITIES.txSettings.id }}
         onclick={handlers.onSetLan}
       >
         {t('core.txGuard.setLan')}

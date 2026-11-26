@@ -34,6 +34,7 @@
 </script>
 
 <script lang="ts">
+  import { TRANSMIT_CAPABILITIES } from '$lib/transmit-capabilities';
   import { onDestroy } from 'svelte';
   import { t } from '$lib/i18n';
   import { vfoEqualLabel, vfoSwapLabel } from '../components-v2/vfo/vfo-ops-utils';
@@ -166,6 +167,7 @@
 {#snippet split()}
   {#if finiteAppearance}{#key rendererContext}{#key finiteAppearance.toggle}<ControlInstrumentRendererHost
     seat={splitSeat} renderer={finiteAppearance.toggle}
+    capability={TRANSMIT_CAPABILITIES.split.id}
   />{/key}{/key}{/if}
 {/snippet}
 {#snippet dualWatch()}
@@ -181,11 +183,13 @@
 {#snippet equalize()}
   {#if finiteAppearance}{#key rendererContext}{#key finiteAppearance.action}<ControlInstrumentRendererHost
     seat={equalizeSeat} renderer={finiteAppearance.action}
+    capability={TRANSMIT_CAPABILITIES.vfoTransfer.id}
   />{/key}{/key}{/if}
 {/snippet}
 {#snippet swap()}
   {#if finiteAppearance}{#key rendererContext}{#key finiteAppearance.action}<ControlInstrumentRendererHost
     seat={swapSeat} renderer={finiteAppearance.action}
+    capability={TRANSMIT_CAPABILITIES.vfoTransfer.id}
   />{/key}{/key}{/if}
 {/snippet}
 {@render children(handles())}

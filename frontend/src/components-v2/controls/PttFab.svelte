@@ -28,6 +28,7 @@
   Part of #840 / epic #818 mobile IA followup.
 -->
 <script lang="ts">
+  import { CAPABILITY_ATTRIBUTE, TRANSMIT_CAPABILITIES } from '$lib/transmit-capabilities';
   import { Mic, MicOff } from 'lucide-svelte';
   import type { PttHold } from '../wiring/managed-tx-gesture';
 
@@ -47,7 +48,9 @@
   const holdButton = (node: HTMLElement) => hold.attach(node, { guard });
 </script>
 
+<!-- Unkey is never gated: in latched mode this button only releases TX. -->
 <button
+  {...{ [CAPABILITY_ATTRIBUTE]: mode === 'latched' ? undefined : TRANSMIT_CAPABILITIES.txHold.id }}
   class="ptt-fab"
   class:ptt-fab-held={mode === 'held'}
   class:ptt-fab-latched={mode === 'latched'}
